@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.uv-cache/
+*.egg-info/
+environment_files/
+.demo-hos/
+.verify-hos-*/
+.arc3-hos*/
+hos.toml
+.env

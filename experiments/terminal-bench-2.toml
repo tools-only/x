@@ -1,0 +1,12 @@
+version = 1
+name = "terminal-bench-methodology-v1"
+environment = "terminal-bench-2"
+dataset = "terminal-bench/terminal-bench-2"
+
+[training]
+tasks = [
+  "build-pmars",
+]
+
+[testing]
+tasks = []

@@ -1,0 +1,10 @@
+{
+    "task": {
+        "name": "terminal-bench/overfull-hbox",
+        "ref": "sha256:984d672ae34ada00db17a8c024110fb3527fbb5bce0844e8c0fd9b4e4d4fdacf",
+        "source": "terminal-bench/terminal-bench-2"
+    },
+    "trial_name": "overfull-hbox__DCf8TPy",
+    "trials_dir": "jobs\\2026-08-23__13-33-32",
+    "job_id": "bc44e61a-75fd-4dfc-8bb9-e2c6fb84d003"
+}

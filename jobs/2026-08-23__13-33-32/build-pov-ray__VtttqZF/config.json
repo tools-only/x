@@ -1,0 +1,10 @@
+{
+    "task": {
+        "name": "terminal-bench/build-pov-ray",
+        "ref": "sha256:b64f3fd6f47dc8848fdd6ce990fbedce9577d97ea4f7fd1c489c42338229d078",
+        "source": "terminal-bench/terminal-bench-2"
+    },
+    "trial_name": "build-pov-ray__VtttqZF",
+    "trials_dir": "jobs\\2026-08-23__13-33-32",
+    "job_id": "bc44e61a-75fd-4dfc-8bb9-e2c6fb84d003"
+}

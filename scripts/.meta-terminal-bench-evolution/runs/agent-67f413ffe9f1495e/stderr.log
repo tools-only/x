@@ -1,0 +1,18 @@
+2026-08-23 02:03:02,082 | INFO | hos.runtime | pid=311720 | runtime.boot pid=311720 run=agent-67f413ffe9f1495e role=root driver=llm
+2026-08-23 02:03:02,083 | INFO | hos.runtime | pid=311720 | runtime.ready.sent pid=311720 run=agent-67f413ffe9f1495e
+2026-08-23 02:03:02,083 | INFO | hos.runtime | pid=311720 | runtime.driver.enter run=agent-67f413ffe9f1495e role=root driver=llm agent=meta-researcher
+2026-08-23 02:03:02,083 | INFO | hos.runtime | pid=311720 | runtime.driver.llm.begin run=agent-67f413ffe9f1495e provider=meta
+2026-08-23 02:03:02,083 | ERROR | hos.runtime | pid=311720 | runtime.failed pid=311720 error=configuration file not found: D:\guan\scripts\hos.toml
+Traceback (most recent call last):
+  File "D:\guan\src\hos\runtime.py", line 105, in main
+    result = run(init)
+             ^^^^^^^^^
+  File "D:\guan\src\hos\runtime.py", line 74, in run
+    return run_llm_agent(init, host_result)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\guan\src\hos\llm_runtime.py", line 340, in run_llm_agent
+    provider = load_config().resolve_provider(provider_name, require_secret=True)
+               ^^^^^^^^^^^^^
+  File "D:\guan\src\hos\config.py", line 164, in load_config
+    raise ConfigError(f"configuration file not found: {selected_path}")
+hos.config.ConfigError: configuration file not found: D:\guan\scripts\hos.toml

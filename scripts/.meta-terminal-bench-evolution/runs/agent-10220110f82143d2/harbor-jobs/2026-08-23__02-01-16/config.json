@@ -1,0 +1,21 @@
+{
+    "job_name": "2026-08-23__02-01-16",
+    "jobs_dir": "D:\\guan\\scripts\\.meta-terminal-bench-evolution\\runs\\agent-10220110f82143d2\\harbor-jobs",
+    "n_concurrent_trials": 1,
+    "quiet": true,
+    "agents": [
+        {
+            "name": "hos.harbor_bridge:HosTaskAgent"
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench/terminal-bench-2",
+            "ref": "sha256:c6fc2e2382c1dbae99b2d5ecd2f4f4a60c3c01e0d84642d69b4afd92e99d078b",
+            "task_names": [
+                "terminal-bench/circuit-fibsqrt"
+            ],
+            "n_tasks": 1
+        }
+    ]
+}

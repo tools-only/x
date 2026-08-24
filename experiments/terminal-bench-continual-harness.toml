@@ -1,0 +1,21 @@
+version = 1
+name = "terminal-bench-continual-harness"
+environment = "terminal-bench-2"
+dataset = "terminal-bench/terminal-bench-2"
+
+# Primary Continual Harness task: bounded debugging/edit/verify loop.
+[training]
+tasks = [
+  "overfull-hbox",
+]
+
+[testing]
+tasks = []
+
+# Add these tasks only after the primary task produces evaluable runs and
+# successor Harness versions:
+# "video-processing"       # longer implementation task
+# "build-pmars"            # network/package/build stress task
+# "build-pov-ray"          # legacy-source build stress task
+# "make-mips-interpreter"  # long-horizon implementation task
+# "circuit-fibsqrt"        # long-horizon hardware-logic task

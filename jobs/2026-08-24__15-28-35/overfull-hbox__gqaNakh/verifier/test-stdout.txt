@@ -1,0 +1,17 @@
+Err:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+  500  reading HTTP response body: unexpected EOF [IP: 104.20.28.246 80]
+Hit:2 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Get:4 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+Get:5 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+Get:6 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages [1808 kB]
+Ign:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Get:8 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [117 kB]
+Ign:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Ign:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Ign:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Err:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+  Connection failed [IP: 172.66.152.176 80]
+Ign:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Err:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+  Connection failed [IP: 172.66.152.176 80]

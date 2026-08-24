@@ -1,0 +1,4 @@
+Skipping image OS validation for alexgshaw/circuit-fibsqrt:20251031: docker inspect returned 1
+Trial circuit-fibsqrt__gyEKWSh failed: configuration file not found: D:\guan\scripts\hos.toml
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached

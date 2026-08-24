@@ -1,0 +1,42 @@
+Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [335 kB]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+  Connection failed [IP: 146.75.46.132 80]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+  Connection failed [IP: 146.75.46.132 80]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+  Connection failed [IP: 146.75.46.132 80]
+Fetched 583 kB in 7min 52s (1235 B/s)
+Reading package lists...
+E: Failed to fetch http://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages  Connection failed [IP: 146.75.46.132 80]
+E: Some index files failed to download. They have been ignored, or old ones used instead.
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Some packages could not be installed. This may mean that you have
+requested an impossible situation or if you are using the unstable
+distribution that some required packages have not yet been created
+or been moved out of Incoming.
+The following information may help to resolve the situation:
+
+The following packages have unmet dependencies:
+ libcurl4 : Depends: libbrotli1 (>= 0.6.0) but it is not installable
+            Depends: libgssapi-krb5-2 (>= 1.17) but it is not going to be installed
+            Depends: libldap-2.5-0 (>= 2.5.4) but it is not installable
+            Depends: libpsl5 (>= 0.16.0) but it is not installable
+            Depends: librtmp1 (>= 2.3) but it is not installable
+            Depends: libssh2-1 (>= 1.7.0) but it is not installable
+E: Unable to correct problems, you have held broken packages.
+/tests/test.sh: line 8: curl: command not found
+/tests/test.sh: line 10: /root/.local/bin/env: No such file or directory
+/tests/test.sh: line 19: uvx: command not found

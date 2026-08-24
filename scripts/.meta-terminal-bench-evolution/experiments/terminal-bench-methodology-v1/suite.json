@@ -1,0 +1,1 @@
+{"dataset":"terminal-bench/terminal-bench-2","environment":"terminal-bench-2","name":"terminal-bench-methodology-v1","testing_tasks":["video-processing","make-mips-interpreter","circuit-fibsqrt"],"training_tasks":["build-pmars","overfull-hbox"]}

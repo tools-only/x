@@ -1,0 +1,25 @@
+Get:1 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+Get:2 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+Get:3 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [50.0 kB]
+Hit:4 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:5 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Get:6 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1525 kB]
+Get:7 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1193 kB]
+Ign:8 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages
+Ign:9 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+Ign:10 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages
+Ign:10 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages
+Err:10 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages
+  Connection failed [IP: 104.20.28.246 80]
+Get:10 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1385 kB]
+Ign:11 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Ign:12 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages
+Ign:8 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages
+Get:9 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages [1808 kB]
+Ign:11 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Get:12 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [117 kB]
+Get:8 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+Ign:11 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Ign:11 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+Err:11 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+  Connection failed [IP: 104.20.28.246 80]

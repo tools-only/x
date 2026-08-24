@@ -1,0 +1,1 @@
+{"driver":"llm","error":{"message":"configuration file not found: D:\\guan\\scripts\\hos.toml","type":"ConfigError"},"finished_at":"2026-08-22T18:02:38.569675+00:00","kernel_pid":311980,"pid":311980,"role":"root","runtime_pid":313308,"runtime_ready":true,"state":"failed"}

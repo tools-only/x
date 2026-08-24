@@ -1,0 +1,22 @@
+# Harness Kernel provider configuration.
+# Copy this file to hos.toml. Keep API keys in environment variables.
+version = 1
+default_provider = "task"
+
+[providers.task]
+type = "openai_compatible"
+base_url = "https://yibuapi.com/v1"
+endpoint = "/chat/completions"
+model = "gpt-5.5"
+api_key_env = "TASK_PROVIDER_API_KEY"
+timeout_seconds = 300
+
+[providers.meta]
+type = "openai_compatible"
+base_url = "https://yibuapi.com/v1"
+endpoint = "/chat/completions"
+model = "gpt-5.5"
+api_key_env = "META_PROVIDER_API_KEY"
+timeout_seconds = 300
+
+

@@ -1,0 +1,37 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\guan\src\hos\runtime.py", line 9, in <module>
+    from .llm_runtime import run_llm_agent
+  File "D:\guan\src\hos\llm_runtime.py", line 13, in <module>
+    from .provider import ProviderError, assistant_message, create_provider_client
+  File "D:\guan\src\hos\provider.py", line 9, in <module>
+    from openai import APIError, APIConnectionError, APITimeoutError, OpenAI
+  File "D:\guan\.venv\Lib\site-packages\openai\__init__.py", line 9, in <module>
+    from . import types
+  File "D:\guan\.venv\Lib\site-packages\openai\types\__init__.py", line 63, in <module>
+    from .eval_create_params import EvalCreateParams as EvalCreateParams
+  File "D:\guan\.venv\Lib\site-packages\openai\types\eval_create_params.py", line 10, in <module>
+    from .graders.grader_inputs_param import GraderInputsParam
+  File "D:\guan\.venv\Lib\site-packages\openai\types\graders\__init__.py", line 5, in <module>
+    from .multi_grader import MultiGrader as MultiGrader
+  File "D:\guan\.venv\Lib\site-packages\openai\types\graders\multi_grader.py", line 8, in <module>
+    from .label_model_grader import LabelModelGrader
+  File "D:\guan\.venv\Lib\site-packages\openai\types\graders\label_model_grader.py", line 7, in <module>
+    from .grader_inputs import GraderInputs
+  File "D:\guan\.venv\Lib\site-packages\openai\types\graders\grader_inputs.py", line 7, in <module>
+    from ..responses.response_input_text import ResponseInputText
+  File "D:\guan\.venv\Lib\site-packages\openai\types\responses\__init__.py", line 6, in <module>
+    from .response import Response as Response
+  File "D:\guan\.venv\Lib\site-packages\openai\types\responses\response.py", line 20, in <module>
+    from .response_input_item import ResponseInputItem
+  File "D:\guan\.venv\Lib\site-packages\openai\types\responses\response_input_item.py", line 16, in <module>
+    from .response_computer_tool_call import ResponseComputerToolCall
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1096, in get_code
+  File "<frozen importlib._bootstrap_external>", line 691, in _classify_pyc
+  File "<frozen importlib._bootstrap_external>", line 84, in _unpack_uint32
+KeyboardInterrupt

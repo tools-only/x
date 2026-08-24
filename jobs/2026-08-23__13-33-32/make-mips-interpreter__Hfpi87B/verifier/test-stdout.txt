@@ -1,0 +1,108 @@
+Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Ign:5 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Ign:5 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Get:5 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [335 kB]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+  Connection failed [IP: 146.75.46.132 80]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+  Connection failed [IP: 146.75.46.132 80]
+Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+  Connection failed [IP: 146.75.46.132 80]
+Fetched 576 kB in 8min 22s (1148 B/s)
+Reading package lists...
+E: Failed to fetch http://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages  Connection failed [IP: 146.75.46.132 80]
+E: Some index files failed to download. They have been ignored, or old ones used instead.
+Reading package lists...
+Building dependency tree...
+Reading state information...
+curl is already the newest version (7.88.1-10+deb12u14).
+The following additional packages will be installed:
+  bzip2 file libfribidi0 libglib2.0-0 libglib2.0-data libgraphite2-3
+  libharfbuzz0b libimagequant0 liblcms2-2 libmagic-mgc libmagic1 libopenjp2-7
+  libraqm0 libwebpdemux2 libwebpmux3 mailcap mime-support python3-olefile
+  shared-mime-info xdg-user-dirs xz-utils
+Suggested packages:
+  bzip2-doc low-memory-monitor liblcms2-utils python-pil-doc
+The following NEW packages will be installed:
+  bzip2 file libfribidi0 libglib2.0-0 libglib2.0-data libgraphite2-3
+  libharfbuzz0b libimagequant0 liblcms2-2 libmagic-mgc libmagic1 libopenjp2-7
+  libraqm0 libwebpdemux2 libwebpmux3 mailcap mime-support python3-olefile
+  python3-pil shared-mime-info xdg-user-dirs xz-utils
+0 upgraded, 22 newly installed, 0 to remove and 34 not upgraded.
+Need to get 7603 kB of archives.
+After this operation, 35.8 MB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian bookworm/main amd64 bzip2 amd64 1.0.8-5+b1 [49.8 kB]
+Ign:2 http://deb.debian.org/debian bookworm/main amd64 libmagic-mgc amd64 1:5.44-3
+Err:3 http://deb.debian.org/debian bookworm/main amd64 libmagic1 amd64 1:5.44-3
+  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+Get:4 http://deb.debian.org/debian bookworm/main amd64 file amd64 1:5.44-3 [42.5 kB]
+Ign:5 http://deb.debian.org/debian bookworm/main amd64 mailcap all 3.70+nmu1
+Err:6 http://deb.debian.org/debian bookworm/main amd64 mime-support all 3.66
+  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+Ign:7 http://deb.debian.org/debian bookworm/main amd64 xz-utils amd64 5.4.1-1
+Get:8 http://deb.debian.org/debian bookworm/main amd64 libfribidi0 amd64 1.0.8-2.1 [65.0 kB]
+Err:9 http://deb.debian.org/debian bookworm/main amd64 libglib2.0-0 amd64 2.74.6-2+deb12u7
+  404  Not Found [IP: 146.75.46.132 80]
+Err:10 http://deb.debian.org/debian bookworm/main amd64 libglib2.0-data all 2.74.6-2+deb12u7
+  404  Not Found [IP: 146.75.46.132 80]
+Get:11 http://deb.debian.org/debian bookworm/main amd64 libgraphite2-3 amd64 1.3.14-1 [81.2 kB]
+Ign:12 http://deb.debian.org/debian bookworm/main amd64 libharfbuzz0b amd64 6.0.0+dfsg-3
+Get:13 http://deb.debian.org/debian bookworm/main amd64 libimagequant0 amd64 2.17.0-1 [32.5 kB]
+Err:14 http://deb.debian.org/debian-security bookworm-security/main amd64 liblcms2-2 amd64 2.14-2+deb12u1
+  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+Get:15 http://deb.debian.org/debian-security bookworm-security/main amd64 libopenjp2-7 amd64 2.5.0-2+deb12u3 [189 kB]
+Get:16 http://deb.debian.org/debian bookworm/main amd64 libraqm0 amd64 0.7.0-4.1 [10.6 kB]
+Ign:17 http://deb.debian.org/debian bookworm/main amd64 libwebpdemux2 amd64 1.2.4-0.2+deb12u1
+Get:18 http://deb.debian.org/debian bookworm/main amd64 libwebpmux3 amd64 1.2.4-0.2+deb12u1 [109 kB]
+Get:19 http://deb.debian.org/debian bookworm/main amd64 python3-olefile all 0.46-3 [36.1 kB]
+Get:20 http://deb.debian.org/debian bookworm/main amd64 python3-pil amd64 9.4.0-1.1+deb12u1 [472 kB]
+Err:21 http://deb.debian.org/debian bookworm/main amd64 shared-mime-info amd64 2.2-1
+  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+Get:22 http://deb.debian.org/debian bookworm/main amd64 xdg-user-dirs amd64 0.18-1 [54.4 kB]
+Get:7 http://deb.debian.org/debian bookworm/main amd64 xz-utils amd64 5.4.1-1 [471 kB]
+Err:2 http://deb.debian.org/debian bookworm/main amd64 libmagic-mgc amd64 1:5.44-3
+  Connection failed [IP: 146.75.46.132 80]
+Get:5 http://deb.debian.org/debian bookworm/main amd64 mailcap all 3.70+nmu1 [32.0 kB]
+Err:12 http://deb.debian.org/debian bookworm/main amd64 libharfbuzz0b amd64 6.0.0+dfsg-3
+  Connection failed [IP: 146.75.46.132 80]
+Get:17 http://deb.debian.org/debian bookworm/main amd64 libwebpdemux2 amd64 1.2.4-0.2+deb12u1 [99.4 kB]
+Fetched 1745 kB in 3min 10s (9196 B/s)
+E: Failed to fetch http://deb.debian.org/debian/pool/main/f/file/libmagic-mgc_5.44-3_amd64.deb  Connection failed [IP: 146.75.46.132 80]
+E: Failed to fetch http://deb.debian.org/debian/pool/main/f/file/libmagic1_5.44-3_amd64.deb  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+E: Failed to fetch http://deb.debian.org/debian/pool/main/m/mime-support/mime-support_3.66_all.deb  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+E: Failed to fetch http://deb.debian.org/debian/pool/main/g/glib2.0/libglib2.0-0_2.74.6-2%2bdeb12u7_amd64.deb  404  Not Found [IP: 146.75.46.132 80]
+E: Failed to fetch http://deb.debian.org/debian/pool/main/g/glib2.0/libglib2.0-data_2.74.6-2%2bdeb12u7_all.deb  404  Not Found [IP: 146.75.46.132 80]
+E: Failed to fetch http://deb.debian.org/debian/pool/main/h/harfbuzz/libharfbuzz0b_6.0.0%2bdfsg-3_amd64.deb  Connection failed [IP: 146.75.46.132 80]
+E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/l/lcms2/liblcms2-2_2.14-2%2bdeb12u1_amd64.deb  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+E: Failed to fetch http://deb.debian.org/debian/pool/main/s/shared-mime-info/shared-mime-info_2.2-1_amd64.deb  500  reading HTTP response body: unexpected EOF [IP: 146.75.46.132 80]
+E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+downloading uv 0.9.5 x86_64-unknown-linux-gnu
+no checksums to verify
+installing to /root/.local/bin
+  uv
+  uvx
+everything's installed!
+
+To add $HOME/.local/bin to your PATH, either restart your shell or run:
+
+    source $HOME/.local/bin/env (sh, bash, zsh)
+    source $HOME/.local/bin/env.fish (fish)
+Downloading pygments (1.2MiB)
+Downloading numpy (15.9MiB)
+Downloading pillow (4.4MiB)
+ Downloading pygments
+ Downloading pillow
+  × Failed to download `numpy==2.3.1`
+  ├─▶ Failed to extract archive:
+  │   numpy-2.3.1-cp313-cp313-manylinux_2_28_x86_64.whl
+  ├─▶ I/O operation failed during extraction
+  ╰─▶ Failed to download distribution due to network timeout. Try increasing
+      UV_HTTP_TIMEOUT (current value: 30s).

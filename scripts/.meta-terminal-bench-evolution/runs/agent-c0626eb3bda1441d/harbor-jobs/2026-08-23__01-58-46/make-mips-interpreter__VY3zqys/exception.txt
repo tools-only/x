@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\trial.py", line 378, in run
+    await self._run()
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\single_step.py", line 41, in _run
+    await self._run_agent()
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\single_step.py", line 77, in _run_agent
+    await self._run_agent_phase(
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\trial.py", line 480, in _run_agent_phase
+    await asyncio.wait_for(
+  File "C:\Users\qi\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "D:\guan\src\hos\harbor_bridge.py", line 99, in run
+    provider = load_config(config_path).resolve_provider(provider_name, require_secret=True)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\guan\src\hos\config.py", line 164, in load_config
+    raise ConfigError(f"configuration file not found: {selected_path}")
+hos.config.ConfigError: configuration file not found: D:\guan\scripts\hos.toml

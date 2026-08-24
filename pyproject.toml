@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimal-harness-kernel"
+version = "0.1.0"
+description = "File-native kernel-managed meta-harness demo"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.0",
+]
+
+[project.scripts]
+hos = "hos.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

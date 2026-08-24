@@ -1,0 +1,13 @@
+{
+    "task": {
+        "name": "terminal-bench/circuit-fibsqrt",
+        "ref": "sha256:fe25ab474ba626c4f45f57e757e86f2ad292de80b505e5b7ba0ba76c30d7fcc8",
+        "source": "terminal-bench/terminal-bench-2"
+    },
+    "trial_name": "circuit-fibsqrt__gyEKWSh",
+    "trials_dir": "D:\\guan\\scripts\\.meta-terminal-bench-evolution\\runs\\agent-10220110f82143d2\\harbor-jobs\\2026-08-23__02-01-16",
+    "agent": {
+        "name": "hos.harbor_bridge:HosTaskAgent"
+    },
+    "job_id": "2e8a69f7-dde7-485c-8f98-080e69925d71"
+}

@@ -1,0 +1,2 @@
+{"at":"2026-08-22T17:58:45.094043+00:00","harness":"sha256:a0468d583dff7cac0082f74c5c0c6cf6131f63d4700f9cc7d9a3e23d02e68a68","seq":1,"type":"harness.started"}
+{"at":"2026-08-22T18:01:15.505652+00:00","error":{"message":"'NoneType' object has no attribute 'get'","type":"AttributeError"},"seq":2,"type":"harness.failed"}

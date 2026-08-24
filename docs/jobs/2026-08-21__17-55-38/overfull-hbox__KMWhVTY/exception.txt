@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\trial.py", line 375, in run
+    await self._prepare()
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\trial.py", line 409, in _prepare
+    await self._setup_agent_environment()
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\trial.py", line 1210, in _setup_agent_environment
+    await self._start_agent_environment()
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\trial\trial.py", line 1216, in _start_agent_environment
+    await asyncio.wait_for(
+  File "C:\Users\qi\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\environments\docker\docker.py", line 908, in start
+    await self._run_docker_compose_command(["up", "--detach", "--wait"])
+  File "C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\environments\docker\docker.py", line 656, in _run_docker_compose_command
+    raise RuntimeError(
+RuntimeError: Docker compose command failed for environment overfull-hbox. Command: docker compose --project-name overfull-hbox__kmwhvty__env --project-directory C:\Users\qi\.cache\harbor\tasks\packages\terminal-bench\overfull-hbox\984d672ae34ada00db17a8c024110fb3527fbb5bce0844e8c0fd9b4e4d4fdacf\environment -f C:\Users\qi\AppData\Local\Temp\tmpjziugaw3\overfull-hbox__KMWhVTY__env-docker-compose-resources.json -f C:\Users\qi\AppData\Roaming\uv\tools\harbor\Lib\site-packages\harbor\environments\docker\docker-compose-prebuilt.yaml -f C:\Users\qi\AppData\Local\Temp\tmpe7gal2v_\docker-compose-environment.json -f C:\Users\qi\AppData\Local\Temp\tmpx6pbsaid\docker-compose-mounts.json up --detach --wait. Return code: 1. Stdout:  Image alexgshaw/overfull-hbox:20251031 Pulling 
+ Image alexgshaw/overfull-hbox:20251031 Error failed to resolve reference "docker.io/alexgshaw/overfull-hbox:20251031": failed to authorize: failed to fetch anonymous token: Get "https://auth.docker.io/token?scope=repository%3Aalexgshaw%2Foverfull-hbox%3Apull&service=registry.docker.io": net/http: TLS handshake timeout
+Error response from daemon: failed to resolve reference "docker.io/alexgshaw/overfull-hbox:20251031": failed to authorize: failed to fetch anonymous token: Get "https://auth.docker.io/token?scope=repository%3Aalexgshaw%2Foverfull-hbox%3Apull&service=registry.docker.io": net/http: TLS handshake timeout
+. Stderr: None. 

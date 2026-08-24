@@ -1,0 +1,8 @@
+{"at":"2026-08-22T17:58:20.915066+00:00","harness":"sha256:a0468d583dff7cac0082f74c5c0c6cf6131f63d4700f9cc7d9a3e23d02e68a68","type":"checkpoint.started"}
+{"at":"2026-08-22T17:58:20.918067+00:00","task":"video-processing","type":"task.started"}
+{"at":"2026-08-22T17:58:45.078616+00:00","evaluable":false,"score":0.0,"state":"failed","task":"video-processing","type":"task.finished"}
+{"at":"2026-08-22T17:58:45.078616+00:00","task":"make-mips-interpreter","type":"task.started"}
+{"at":"2026-08-22T18:01:15.518196+00:00","evaluable":false,"score":0.0,"state":"failed","task":"make-mips-interpreter","type":"task.finished"}
+{"at":"2026-08-22T18:01:15.518196+00:00","task":"circuit-fibsqrt","type":"task.started"}
+{"at":"2026-08-22T18:02:09.626066+00:00","evaluable":false,"score":0.0,"state":"failed","task":"circuit-fibsqrt","type":"task.finished"}
+{"at":"2026-08-22T18:02:09.626066+00:00","completed_tasks":0,"evaluable_tasks":0,"mean_score_all":0.0,"mean_score_evaluable":null,"positive_score_tasks":0,"total_tasks":3,"type":"checkpoint.finished"}

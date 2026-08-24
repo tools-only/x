@@ -1,0 +1,72 @@
+# Harness Kernel provider configuration.
+# Copy this file to hos.toml. Keep API keys in environment variables.
+version = 1
+default_provider = "custom"
+
+[providers.custom]
+type = "openai_compatible"
+base_url = "https://your-provider.example/v1"
+endpoint = "/chat/completions"
+model = "your-model-id"
+api_key_env = "CUSTOM_PROVIDER_API_KEY"
+timeout_seconds = 120
+auth_header = "Authorization"
+auth_prefix = "Bearer"
+
+# Optional provider-native reasoning controls, compatible with gateways such as
+# cc-switch/OpenRouter. The table is sent as the request's `reasoning` object.
+[providers.custom.reasoning]
+enabled = true
+effort = "high"
+# reasoning_effort = "high"
+
+# Non-secret headers may be written directly.
+[providers.custom.headers]
+X-Client = "meta-harness"
+
+# Secret/dynamic header values are read from environment variables and redacted.
+[providers.custom.header_env]
+X-Tenant-Id = "CUSTOM_PROVIDER_TENANT_ID"
+
+[providers.openai]
+type = "openai_compatible"
+base_url = "https://api.openai.com/v1"
+endpoint = "/chat/completions"
+model = "your-openai-model"
+api_key_env = "OPENAI_API_KEY"
+timeout_seconds = 120
+
+[providers.anthropic]
+type = "anthropic_messages"
+base_url = "https://api.anthropic.com"
+endpoint = "/v1/messages"
+model = "your-claude-model"
+api_key_env = "ANTHROPIC_API_KEY"
+anthropic_version = "2023-06-01"
+timeout_seconds = 120
+
+# Anthropic profiles map this table to the Messages API `thinking` object.
+# [providers.anthropic.reasoning]
+# type = "enabled"
+# budget_tokens = 4096
+
+[providers.openrouter]
+type = "openai_compatible"
+base_url = "https://openrouter.ai/api/v1"
+endpoint = "/chat/completions"
+model = "your-openrouter-model"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_seconds = 120
+
+[providers.openrouter.headers]
+HTTP-Referer = "https://localhost/meta-harness"
+X-Title = "Meta Harness"
+
+[providers.local]
+type = "openai_compatible"
+base_url = "http://127.0.0.1:8000/v1"
+endpoint = "/chat/completions"
+model = "local-model"
+timeout_seconds = 300
+auth_header = "Authorization"
+auth_prefix = "Bearer"

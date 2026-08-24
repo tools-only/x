@@ -1,0 +1,4 @@
+{"agent":"sha256:eef7ebc7bd29997c2209ad9d1524f1b61ff5c910e2896ca474625f30bff6c6c4","at":"2026-08-22T18:02:32.357700+00:00","pid":307044,"seq":1,"type":"agent.started"}
+{"at":"2026-08-22T18:02:33.782415+00:00","driver":"llm","pid":307044,"seq":2,"type":"runtime.start_sent"}
+{"at":"2026-08-22T18:02:33.783424+00:00","driver":"llm","pid":309312,"role":"root","seq":3,"type":"runtime.ready"}
+{"at":"2026-08-22T18:02:33.969835+00:00","error":{"message":"configuration file not found: D:\\guan\\scripts\\hos.toml","type":"ConfigError"},"seq":4,"type":"agent.failed"}

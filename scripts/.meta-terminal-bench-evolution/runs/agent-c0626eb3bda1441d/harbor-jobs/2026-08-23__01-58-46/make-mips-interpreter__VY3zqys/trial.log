@@ -1,0 +1,3 @@
+Skipping image OS validation for alexgshaw/make-mips-interpreter:20251031: docker inspect returned 1
+Trial make-mips-interpreter__VY3zqys failed: configuration file not found: D:\guan\scripts\hos.toml
+Collecting main service artifacts

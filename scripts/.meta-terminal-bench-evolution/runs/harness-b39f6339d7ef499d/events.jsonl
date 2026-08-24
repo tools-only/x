@@ -1,0 +1,2 @@
+{"at":"2026-08-22T18:02:29.234513+00:00","harness":"sha256:de6c012504e79a42b3da6f47c34a49f2aabef453c751f23f608d01ebad6addea","seq":1,"type":"harness.started"}
+{"at":"2026-08-22T18:02:30.808769+00:00","error":{"message":"configuration file not found: D:\\guan\\scripts\\hos.toml","type":"RuntimeError"},"seq":2,"type":"harness.failed"}

@@ -1,0 +1,48 @@
+{
+    "id": "bc44e61a-75fd-4dfc-8bb9-e2c6fb84d003",
+    "started_at": "2026-08-23T13:33:38.798050",
+    "updated_at": "2026-08-23T13:52:17.839925",
+    "finished_at": "2026-08-23T13:52:17.839925",
+    "n_total_trials": 5,
+    "stats": {
+        "n_completed_trials": 5,
+        "n_errored_trials": 2,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "oracle__terminal-bench/terminal-bench-2": {
+                "n_trials": 3,
+                "n_errors": 2,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "make-mips-interpreter__Hfpi87B",
+                            "circuit-fibsqrt__GVWKqyZ",
+                            "video-processing__SNrqDab"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "RuntimeError": [
+                        "build-pov-ray__VtttqZF"
+                    ],
+                    "AgentTimeoutError": [
+                        "overfull-hbox__DCf8TPy"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null
+    }
+}

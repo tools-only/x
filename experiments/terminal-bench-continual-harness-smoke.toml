@@ -1,0 +1,24 @@
+version = 1
+name = "terminal-bench-continual-harness-smoke"
+environment = "terminal-bench-2"
+dataset = "terminal-bench/terminal-bench-2"
+
+# Stage 1: existing environment, bounded debugging task, minimal network noise.
+[training]
+tasks = [
+  "overfull-hbox",
+
+  # Stage 2: add after Stage 1 produces evaluable TaskRuns and live successors.
+  # "video-processing",
+
+  # Stage 3: network/download/build stress tests.
+  # "build-pmars",
+  # "build-pov-ray",
+
+  # Stage 4: long-horizon implementation tasks.
+  # "make-mips-interpreter",
+  # "circuit-fibsqrt",
+]
+
+[testing]
+tasks = []

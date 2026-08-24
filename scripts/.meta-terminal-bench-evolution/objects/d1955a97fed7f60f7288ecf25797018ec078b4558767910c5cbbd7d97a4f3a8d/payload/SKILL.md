@@ -1,0 +1,1 @@
+Solve the assigned task with authoritative environment feedback.

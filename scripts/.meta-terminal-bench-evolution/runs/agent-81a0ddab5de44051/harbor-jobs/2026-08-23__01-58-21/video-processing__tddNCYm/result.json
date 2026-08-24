@@ -1,0 +1,112 @@
+{
+    "id": "dc3624ff-2752-4f66-a10d-d021747c4065",
+    "task_name": "terminal-bench/video-processing",
+    "trial_name": "video-processing__tddNCYm",
+    "trial_uri": "file:///D:/guan/scripts/.meta-terminal-bench-evolution/runs/agent-81a0ddab5de44051/harbor-jobs/2026-08-23__01-58-21/video-processing__tddNCYm",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "video-processing",
+        "ref": "sha256:59730f0ccdc323eb45aa433d094cd7c2f29a0084d3670ce7cc93acee9b516ade"
+    },
+    "source": "terminal-bench/terminal-bench-2",
+    "task_checksum": "a09d41da0822cc6467ba7ee3631fd205130acb0008d8488b44084b0864ee499f",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/video-processing",
+            "ref": "sha256:59730f0ccdc323eb45aa433d094cd7c2f29a0084d3670ce7cc93acee9b516ade",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2"
+        },
+        "trial_name": "video-processing__tddNCYm",
+        "trials_dir": "D:\\guan\\scripts\\.meta-terminal-bench-evolution\\runs\\agent-81a0ddab5de44051\\harbor-jobs\\2026-08-23__01-58-21",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "hos.harbor_bridge:HosTaskAgent",
+            "import_path": null,
+            "model_name": null,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {},
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": "7b5d2780-e94f-466d-9f9b-60363660ae2d",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "hos-task-agent",
+        "version": "1",
+        "model_info": null
+    },
+    "agent_result": {
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": null,
+    "verifier_environment_mode": "shared",
+    "exception_info": {
+        "exception_type": "ConfigError",
+        "exception_message": "configuration file not found: D:\\guan\\scripts\\hos.toml",
+        "exception_traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\qi\\AppData\\Roaming\\uv\\tools\\harbor\\Lib\\site-packages\\harbor\\trial\\trial.py\", line 378, in run\n    await self._run()\n  File \"C:\\Users\\qi\\AppData\\Roaming\\uv\\tools\\harbor\\Lib\\site-packages\\harbor\\trial\\single_step.py\", line 41, in _run\n    await self._run_agent()\n  File \"C:\\Users\\qi\\AppData\\Roaming\\uv\\tools\\harbor\\Lib\\site-packages\\harbor\\trial\\single_step.py\", line 77, in _run_agent\n    await self._run_agent_phase(\n  File \"C:\\Users\\qi\\AppData\\Roaming\\uv\\tools\\harbor\\Lib\\site-packages\\harbor\\trial\\trial.py\", line 480, in _run_agent_phase\n    await asyncio.wait_for(\n  File \"C:\\Users\\qi\\AppData\\Roaming\\uv\\python\\cpython-3.12-windows-x86_64-none\\Lib\\asyncio\\tasks.py\", line 520, in wait_for\n    return await fut\n           ^^^^^^^^^\n  File \"D:\\guan\\src\\hos\\harbor_bridge.py\", line 99, in run\n    provider = load_config(config_path).resolve_provider(provider_name, require_secret=True)\n               ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\guan\\src\\hos\\config.py\", line 164, in load_config\n    raise ConfigError(f\"configuration file not found: {selected_path}\")\nhos.config.ConfigError: configuration file not found: D:\\guan\\scripts\\hos.toml\n",
+        "occurred_at": "2026-08-22T17:58:35.938038Z"
+    },
+    "started_at": "2026-08-22T17:58:26.548469Z",
+    "finished_at": "2026-08-22T17:58:39.870184Z",
+    "environment_setup": {
+        "started_at": "2026-08-22T17:58:26.762361Z",
+        "finished_at": "2026-08-22T17:58:35.929384Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-22T17:58:35.929384Z",
+        "finished_at": "2026-08-22T17:58:35.929384Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-22T17:58:35.929384Z",
+        "finished_at": "2026-08-22T17:58:35.936489Z"
+    },
+    "verifier": null,
+    "step_results": null
+}
