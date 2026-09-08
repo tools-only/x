@@ -1,0 +1,255 @@
+{
+  "format": "officebench-task-artifact-contract-v1",
+  "purpose": "Backend action, artifact, and verification semantics available to the current task agent.",
+  "scope": {
+    "task_workspace": "current_case_testbed_only",
+    "working_directory": ".",
+    "allowed_relative_roots": [
+      "data",
+      "calendar",
+      "emails"
+    ],
+    "input_resources": "Initial task files are under data/ unless the task states another path inside this testbed.",
+    "excluded_resource_classes": [
+      "sibling_run_outputs",
+      "benchmark_dataset_sources",
+      "benchmark_scoring_sources",
+      "project_implementation_sources"
+    ],
+    "boundary_behavior": "Requests that address resources outside the current testbed return semantic_error with error_kind=task_resource_boundary_violation.",
+    "safe_file_inspection": "Use workspace_file_action for bounded listing or text reads. Broad shell execution is unavailable because it cannot enforce the task-resource boundary reliably."
+  },
+  "task_language_conventions": {
+    "relative_time": "If a task says next week without naming a different weekday or date, use the same weekday exactly seven calendar days after the supplied current date.",
+    "singular_calendar_event": "A singular request to schedule or create a calendar event is written to the current user's calendar. Emailing or notifying people does not imply writing each recipient's calendar; do that only when the task explicitly requests calendar entries for them.",
+    "named_email_artifact": "When a task names an email artifact such as training.eml, use the filename stem (training) as the email subject so the backend creates that filename.",
+    "named_calendar_artifact": "A named event such as training.ics describes the event content/label, not a literal output path. The backend stores it in calendar/{user}.ics.",
+    "source_membership": "Phrases such as all team members from a source include every matching row in that source unless the task explicitly excludes someone. The current user may therefore also be a recipient.",
+    "artifact_identifier_case": "Names used in artifact paths are case-sensitive. Pass user, username, sender, recipient, subject, and email_id with the exact spelling and capitalization supplied by the task, source data, or list action; do not normalize them to lowercase.",
+    "row_scoped_schedule": "When a roster or schedule assigns each named person a section and time range, a singular current-user calendar event uses the current user's exact row time. Personalized notifications use each recipient's own row section/time. Do not replace a person's row time with the union of all rows unless the task explicitly requests an all-day or aggregate event.",
+    "activity_text": "Use the natural-language activity phrase from the task in event summaries and notification content. A named .ics artifact stem is a label hint, but should not cause loss of meaningful words such as team in team training.",
+    "no_hidden_lookup_needed": "Resolve task details from the task statement, supplied current date/user, and current-testbed inputs. Do not search external benchmark or implementation resources for alternate interpretations."
+  },
+  "model_disclosure": {
+    "format": "officebench-task-artifact-contract-v1",
+    "scope": "current_case_testbed_only; use only relative data/, calendar/, and emails/ paths",
+    "safe_inspection": "workspace_file_action lists files or reads UTF-8 text; read .xlsx with officebench_action(app=excel, action=read_file, args={file_path:<relative path>}); broad shell is unavailable",
+    "calendar": "calendar.create_event(user,summary,time_start,time_end) writes calendar/{user}.ics; verify with calendar.list_events(username). Preserve user/username capitalization exactly. A singular calendar request targets the current user unless other calendars are explicitly requested. If a source row assigns that user a section/time, use that exact row time rather than an aggregate span. Preserve the task's activity phrase (for example team training) in summary. A name like training.ics is not a literal output path.",
+    "email": "email.send_email(sender,recipient,subject,content) supports one recipient and writes emails/{sender}/{subject}.eml plus emails/{recipient}/{subject}.eml; verify with list/read. Preserve names/subject capitalization exactly. A requested training.eml means subject=training. Same-user/same-subject copies are overwritten, so send the current user's personalized self-addressed copy last when needed.",
+    "time_and_membership": "next week with no other date means the same weekday exactly seven days after the supplied current date. All members from a source means every matching row, including the current user unless explicitly excluded. For row-scoped section/time data, use each person's own row in personalized notifications and the current user's row for a singular current-user calendar event.",
+    "research_and_harness": "This is backend/task-language disclosure, not a task answer or scoring rule. Research and harness changes remain optional."
+  },
+  "actions": {
+    "workspace_file.list_files": {
+      "tool": "workspace_file_action",
+      "args": {
+        "action": "list_files",
+        "path": "relative directory; use . for the testbed root"
+      },
+      "reads": "Only the selected directory under the current testbed.",
+      "limits": "At most 200 entries; symbolic links are not followed."
+    },
+    "workspace_file.read_text": {
+      "tool": "workspace_file_action",
+      "args": {
+        "action": "read_text",
+        "path": "relative file path under the current testbed"
+      },
+      "reads": "UTF-8 text from one current-testbed file.",
+      "limits": "At most 262144 bytes; use the matching OfficeBench document action for binary Office files."
+    },
+    "calendar.list_events": {
+      "tool": "calendar_action or officebench_action",
+      "args": {
+        "username": "string"
+      },
+      "reads": [
+        "calendar/{username}.ics"
+      ]
+    },
+    "calendar.create_event": {
+      "tool": "calendar_action or officebench_action",
+      "args": {
+        "user": "string",
+        "summary": "string",
+        "time_start": "YYYY-MM-DD HH:MM:SS",
+        "time_end": "YYYY-MM-DD HH:MM:SS"
+      },
+      "artifacts": [
+        {
+          "path": "calendar/{user}.ics",
+          "effect": "create_or_update_named_user_calendar"
+        }
+      ],
+      "semantics": {
+        "users_per_call": 1,
+        "multi_calendar_request": "Create and verify one event separately for every user whose calendar the task explicitly asks to modify; email recipients alone are not implicit calendar targets.",
+        "atomicity": "one named-user calendar per direct call"
+      },
+      "verify_with": "calendar.list_events"
+    },
+    "calendar.delete_event": {
+      "tool": "calendar_action or officebench_action",
+      "args": {
+        "user": "string",
+        "summary": "string"
+      },
+      "artifacts": [
+        {
+          "path": "calendar/{user}.ics",
+          "effect": "remove_matching_summary_from_named_user_calendar"
+        }
+      ],
+      "verify_with": "calendar.list_events"
+    },
+    "email.send_email": {
+      "tool": "email_action or officebench_action",
+      "args": {
+        "sender": "string",
+        "recipient": "string",
+        "subject": "filename-safe string",
+        "content": "string"
+      },
+      "artifacts": [
+        {
+          "path": "emails/{sender}/{subject}.eml",
+          "effect": "sender_copy"
+        },
+        {
+          "path": "emails/{recipient}/{subject}.eml",
+          "effect": "recipient_copy"
+        }
+      ],
+      "semantics": {
+        "recipients_per_call": 1,
+        "atomicity": "one sender and one recipient copy per call",
+        "filename_source": "subject",
+        "existing_same_subject_copy": "overwritten",
+        "personalized_sender_copy": "Repeated same-subject sends overwrite the sender copy. If the sender is also a recipient and needs sender-specific content, send that self-addressed message last."
+      },
+      "verify_with": [
+        "email.list_emails",
+        "email.read_email"
+      ]
+    },
+    "email.list_emails": {
+      "tool": "email_action or officebench_action",
+      "args": {
+        "username": "string"
+      },
+      "reads": "emails/{username}/*.eml"
+    },
+    "email.read_email": {
+      "tool": "email_action or officebench_action",
+      "args": {
+        "username": "string",
+        "email_id": "filename returned by email.list_emails"
+      },
+      "reads": "emails/{username}/{email_id}"
+    },
+    "excel.read_file": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative path under the current testbed",
+        "sheet": "optional sheet name"
+      },
+      "reads": "The selected workbook and sheet; returns populated cells as (row, col): value."
+    },
+    "excel.set_cell": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative path under the current testbed",
+        "row_idx": "integer or numeric string",
+        "column_idx": "integer or numeric string",
+        "text": "value",
+        "sheet_name": "optional sheet name"
+      },
+      "artifacts": [
+        {
+          "path": "{file_path}",
+          "effect": "update_workbook_cell"
+        }
+      ],
+      "verify_with": "excel.read_file"
+    },
+    "excel.delete_cell": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative path under the current testbed",
+        "row_idx": "integer or numeric string",
+        "column_idx": "integer or numeric string",
+        "sheet_name": "optional sheet name"
+      },
+      "artifacts": [
+        {
+          "path": "{file_path}",
+          "effect": "clear_workbook_cell"
+        }
+      ],
+      "verify_with": "excel.read_file"
+    },
+    "excel.create_new_file": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative output path under the current testbed"
+      },
+      "artifacts": [
+        {
+          "path": "{file_path}",
+          "effect": "create_workbook"
+        }
+      ],
+      "verify_with": "excel.read_file"
+    },
+    "word.read_file": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative path under the current testbed"
+      },
+      "reads": "Paragraph text from one Word document."
+    },
+    "word.create_new_file": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative output path under the current testbed"
+      },
+      "artifacts": [
+        {
+          "path": "{file_path}",
+          "effect": "create_word_document"
+        }
+      ],
+      "verify_with": "word.read_file"
+    },
+    "word.write_to_file": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative path under the current testbed",
+        "contents": "string",
+        "style": "optional pure-text, title, or subtitle"
+      },
+      "artifacts": [
+        {
+          "path": "{file_path}",
+          "effect": "append_document_content"
+        }
+      ],
+      "verify_with": "word.read_file"
+    },
+    "pdf.read_file": {
+      "tool": "officebench_action",
+      "args": {
+        "pdf_file_path": "relative path under the current testbed"
+      },
+      "reads": "Extracted text from all PDF pages."
+    },
+    "ocr.recognize_file": {
+      "tool": "officebench_action",
+      "args": {
+        "file_path": "relative image path under the current testbed"
+      },
+      "reads": "Recognized text from one image."
+    }
+  },
+  "non_contract": "This resource describes backend behavior only. It does not state task answers, scoring conditions, or required research and harness decisions."
+}

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "autoresearch-pi-project"
 version = "0.1.0"
-description = "Isolated autoresearch-meta runtime backed by Pi Agent and tested against JIT shopping."
+description = "Pi-native autoresearch task agent with self-modifying harness and OfficeBench smoke support."
 requires-python = ">=3.10"
 dependencies = [
   "pyyaml>=6.0",
@@ -19,3 +19,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+
+[project.scripts]
+autoresearch-pi = "autoresearch_pi.cli:main"
