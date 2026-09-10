@@ -19,11 +19,23 @@ from autoresearch_pi.officebench_e2e import (
     run_pi_officebench_task,
     run_officebench_e2e,
     run_officebench_e2e_batch,
+    run_officebench_e2e_cohort,
+    run_officebench_e2e_continuation,
+    run_officebench_e2e_experiment,
 )
 from autoresearch_pi.officebench_tool_bridge import (
     apply_task_resource_boundary,
     classify_officebench_result,
 )
+
+
+@pytest.mark.parametrize("event", [
+    {"args": {"action": "inspect"}},
+    {"arguments": {"action": "inspect"}},
+    {"toolCall": {"arguments": {"action": "inspect"}}},
+])
+def test_tool_call_arguments_accepts_pi_event_shapes(event):
+    assert officebench_e2e._tool_call_arguments(event) == {"action": "inspect"}
 from autoresearch_pi.project import ProjectPaths
 
 
@@ -33,6 +45,41 @@ def test_extract_answer_from_pi_agent_end():
         "messages": [{"role": "assistant", "content": [{"type": "text", "text": "done"}]}],
     },)
     assert _extract_answer(events) == "done"
+
+
+def test_officebench_continuation_shares_task_resource_root_without_runner_decisions(monkeypatch, tmp_path):
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    paths.runs_dir.mkdir(parents=True, exist_ok=True)
+    root = paths.runs_dir / "continuation"
+    workspace = tmp_path / "workspace"
+    testbed = workspace / "testbed"
+    testbed.mkdir(parents=True)
+    calls = []
+
+    item = {"question_id": "fixture", "question": "q", "answer": "a", "_workspace": str(workspace), "_testbed_dir": str(testbed)}
+    monkeypatch.setattr(officebench_e2e, "_prepare_real_case", lambda paths, root, case_id: (SimpleNamespace(evaluate=lambda *args, **kwargs: {"score": 1.0, "is_pass": True}), item, "task"))
+    monkeypatch.setattr(officebench_e2e, "_evaluator_required_paths", lambda item, testbed: [])
+    monkeypatch.setattr(officebench_e2e, "_target_manifest", lambda testbed, required: {})
+    monkeypatch.setattr(officebench_e2e, "_build_task_resource_catalog", lambda *args: {"format": "fixture"})
+    def fake_runner(stage_root, workspace, prompt, paths, *, timeout, experiment_variant, resource_root):
+        calls.append((stage_root, workspace, prompt, resource_root))
+        resource_root.mkdir(parents=True, exist_ok=True)
+        (resource_root / "research-resources.jsonl").write_text(json.dumps({"finding_id": "finding-1", "version": len(calls)}) + "\n", encoding="utf-8")
+        events = ({
+            "type": "tool_execution_start", "toolName": "research_resource",
+            "args": {"action": "inspect"},
+        },) if len(calls) == 2 else ()
+        return PiOfficeBenchRun("test", "fixture", "done", True, "", events, {}, {}, {}, {}, {}, {})
+    result = run_officebench_e2e_continuation(root, case_id="fixture", paths=paths, pi_runner=fake_runner)
+    summary = json.loads(result.summary.read_text(encoding="utf-8"))
+    assert summary["passed"] is True
+    assert len(calls) == 2
+    assert calls[0][3] == calls[1][3]
+    assert calls[0][0] != calls[1][0]
+    assert calls[0][2] == "task"
+    assert summary["stages"][0]["resource_counts"]["inspect_calls"] == 0
+    assert summary["stages"][1]["resource_counts"]["inspect_calls"] == 1
+    assert summary["stages"][1]["resource_counts"]["finding_events_cumulative"] == 1
 
 
 @pytest.mark.parametrize(
@@ -73,6 +120,104 @@ def test_officebench_bridge_classifies_model_relevant_outcomes(text, expected):
     assert classify_officebench_result(text) == expected
 
 
+def test_officebench_cohort_isolates_cases_and_aggregates_without_control_plane(tmp_path):
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    calls = []
+
+    def fake_experiment(root, *, case_id, repeats, paths):
+        calls.append((root, case_id, repeats, paths))
+        root.mkdir(parents=True)
+        summary = root / "summary.json"
+        summary.write_text(json.dumps({
+            "status": "completed", "pair_count": repeats,
+            "pairs": [{"repeat": index + 1, "observed_delta": {"score": 0.0, "passed": 0, "model_turns": -2, "backend_bridge_processes": -3}} for index in range(repeats)],
+            "aggregate": {"variants": {
+                "control": {"runs": repeats, "passes": repeats, "length_failures": 0, "observed_execution_condition_effects": 0},
+                "treatment": {"runs": repeats, "passes": repeats - (1 if case_id == "3-52-0" else 0), "length_failures": 1 if case_id == "3-52-0" else 0, "observed_execution_condition_effects": 1 if case_id == "2-13-0" else 0},
+            }}, "causal_claim": "not_automatically_established",
+        }), encoding="utf-8")
+        return SimpleNamespace(summary=summary)
+
+    root = paths.root / "runs" / "cohort"
+    result = run_officebench_e2e_cohort(
+        root, case_ids=["2-13-0", "3-45-0", "3-52-0", "2-13-0"], repeats=2,
+        paths=paths, experiment_runner=fake_experiment,
+    )
+    report = json.loads(result.summary.read_text(encoding="utf-8"))
+    assert [call[1] for call in calls] == ["2-13-0", "3-45-0", "3-52-0"]
+    assert report["case_ids"] == ["2-13-0", "3-45-0", "3-52-0"]
+    assert report["case_count"] == 3
+    assert report["aggregate"]["variants"]["control"]["runs"] == 6
+    assert report["aggregate"]["variants"]["treatment"]["passes"] == 5
+    assert report["aggregate"]["variants"]["treatment"]["observed_execution_condition_effects"] == 1
+    assert report["aggregate"]["paired_deltas"]["pairs_with_delta"] == 6
+    assert report["aggregate"]["paired_deltas"]["average_treatment_minus_control"]["model_turns"] == -2.0
+    assert report["aggregate"]["paired_deltas"]["average_treatment_minus_control"]["backend_bridge_processes"] == -3.0
+
+
+def test_officebench_cohort_rejects_empty_or_nonempty_output(tmp_path):
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    with pytest.raises(ValueError, match="at least one"):
+        run_officebench_e2e_cohort(paths.root / "runs" / "empty", case_ids=[], paths=paths)
+    root = paths.root / "runs" / "existing"
+    root.mkdir(parents=True)
+    (root / "keep.txt").write_text("keep", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty directory"):
+        run_officebench_e2e_cohort(root, case_ids=["2-13-0"], paths=paths)
+
+
+def test_officebench_cohort_projects_hidden_strata_after_pairs_complete(tmp_path):
+    """Catches validation hypotheses leaking into the per-case task runner."""
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    calls = []
+
+    def fake_experiment(root, *, case_id, repeats, paths):
+        calls.append((case_id, repeats))
+        root.mkdir(parents=True)
+        summary = root / "summary.json"
+        summary.write_text(json.dumps({
+            "status": "completed",
+            "pair_count": 1,
+            "pairs": [{
+                "repeat": 1,
+                "variants": {
+                    "control": {"passed": True},
+                    "treatment": {
+                        "passed": True,
+                        "finding_count": 0,
+                        "decision_count": 0,
+                        "applied_decision_count": 0,
+                        "correctness_gated_effect": "not_attempted",
+                    },
+                },
+                "observed_delta": {"model_turns": 0, "backend_bridge_processes": 0},
+            }],
+            "aggregate": {"variants": {
+                "control": {"runs": 1, "passes": 1},
+                "treatment": {"runs": 1, "passes": 1},
+            }},
+        }), encoding="utf-8")
+        return SimpleNamespace(summary=summary)
+
+    result = run_officebench_e2e_cohort(
+        paths.root / "runs" / "cohort-with-validation",
+        case_ids=["2-13-0"],
+        paths=paths,
+        experiment_runner=fake_experiment,
+        validation_strata={"officebench:2-13-0": {
+            "stratum": "low_next_request_benefit",
+            "hypothesis": "no_change_is_valid",
+        }},
+    )
+    report = json.loads(result.summary.read_text(encoding="utf-8"))
+
+    assert calls == [("2-13-0", 1)]
+    assert report["validation_evidence"]["agent_visible"] is False
+    assert report["validation_evidence"]["records"][0]["agent_posture"] == "no_change"
+    assert report["validation_evidence"]["records"][0]["hypothesis_consistency"] == "supported"
+    assert report["validation_evidence"]["aggregate"]["harness_improvement"] == "not_established"
+
+
 def test_runtime_task_discloses_actual_initial_capabilities_without_two_tool_conflict():
     stale = (
         "Task instructions.\n"
@@ -87,13 +232,12 @@ def test_runtime_task_discloses_actual_initial_capabilities_without_two_tool_con
     updated = _replace_stale_runtime_capability_disclosure(stale)
 
     assert "only have two exposed tools" not in updated
-    assert "calendar_action" in updated
-    assert "email_action" in updated
-    assert "research_resource" in updated
-    assert "decide_execution_surface" in updated
+    assert "The initial Pi task tools are" not in updated
+    assert "live Pi tool schema" in updated
+    assert "model-visible task capability catalog" in updated
     assert "optional" in updated.lower()
     assert "current case testbed is the only task workspace" in updated
-    assert "workspace_file_action" in updated
+    assert "When workspace_file_action is active" in updated
     assert "task-resource boundary" in updated
     assert "D:\\runs\\sibling" not in updated
     assert '"app": "shell"' not in updated
@@ -114,6 +258,10 @@ def test_artifact_contract_discloses_backend_outputs_without_evaluator_answers()
         {"path": "emails/{recipient}/{subject}.eml", "effect": "recipient_copy"},
     ]
     assert contract["actions"]["email.send_email"]["semantics"]["recipients_per_call"] == 1
+    assert contract["actions"]["workspace_file.write_text"]["artifacts"] == [
+        {"path": "{path}", "effect": "create_or_replace_utf8_text"},
+    ]
+    assert contract["actions"]["workspace_file.make_directory"]["scope"] == "current testbed only"
     assert "exactly seven" in contract["task_language_conventions"]["relative_time"]
     assert "current user's calendar" in contract["task_language_conventions"]["singular_calendar_event"]
     assert "case-sensitive" in contract["task_language_conventions"]["artifact_identifier_case"]
@@ -174,6 +322,18 @@ def test_task_resource_catalog_bounds_inventory_and_selects_relevant_contracts(t
     assert "private.txt" not in serialized
     assert "evaluator" not in serialized.lower()
 
+    output_catalog = officebench_e2e._build_task_resource_catalog(
+        testbed,
+        "Create different folders by class numbers and save each student as [NAME].txt.",
+        _officebench_artifact_contract(),
+    )
+    assert not {
+        "excel.set_cell", "excel.delete_cell", "excel.create_new_file",
+    }.intersection(output_catalog["action_contracts"])
+    assert list(output_catalog["action_contracts"])[-2:] == [
+        "workspace_file.make_directory", "workspace_file.write_text",
+    ]
+
 
 def test_execution_efficiency_counts_bridge_processes_and_disclosure_reads(tmp_path):
     assert hasattr(officebench_e2e, "_execution_efficiency"), "execution efficiency projection is missing"
@@ -212,6 +372,54 @@ def test_execution_efficiency_counts_bridge_processes_and_disclosure_reads(tmp_p
     assert report["workspace_file_action_calls"] == 1
     assert report["catalog_initial_disclosures"] == 1
     assert report["inventory_entries_disclosed"] == 1
+
+
+def test_execution_efficiency_profiles_repeated_actions_by_assistant_response(tmp_path):
+    root = tmp_path / "response-profile"
+    root.mkdir()
+    observations = [
+        {"event_id": "email-1", "tool": "email_action", "operation": "send_email",
+         "category": "task_action", "outcome": "success"},
+        {"event_id": "email-2", "tool": "email_action", "operation": "send_email",
+         "category": "task_action", "outcome": "success"},
+        {"event_id": "email-3", "tool": "email_action", "operation": "send_email",
+         "category": "task_action", "outcome": "success"},
+    ]
+    (root / "execution-observations.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in observations), encoding="utf-8",
+    )
+    (root / "harness-decisions.jsonl").write_text(json.dumps({
+        "decision_id": "decision-1", "toolCallId": "surface-1", "applied": True,
+    }) + "\n", encoding="utf-8")
+    events = (
+        {"type": "message_end", "message": {"role": "assistant", "content": [
+            {"type": "toolCall", "id": "email-1", "name": "email_action"},
+            {"type": "toolCall", "id": "email-2", "name": "email_action"},
+        ]}},
+        {"type": "message_end", "message": {"role": "assistant", "content": [
+            {"type": "toolCall", "id": "surface-1", "name": "decide_execution_surface"},
+            {"type": "toolCall", "id": "email-3", "name": "email_action"},
+        ]}},
+    )
+    native = PiOfficeBenchRun("0.80.6", "model", "done", True, "", events, {}, {}, {}, {}, {}, {})
+
+    profile = officebench_e2e._execution_efficiency(root, native)["response_profile"]
+
+    assert profile["agent_visible"] is False
+    assert profile["candidate_inference"] == "none"
+    assert profile["first_applied_decision_response"] == 2
+    assert profile["repeated_action_groups"] == [{
+        "tool": "email_action",
+        "operation": "send_email",
+        "calls": 3,
+        "attempted_work_units": 3,
+        "assistant_responses": 2,
+        "max_calls_in_one_response": 2,
+        "all_calls_issued_in_one_response": False,
+        "calls_before_decision_response": 2,
+        "calls_in_decision_response": 1,
+        "calls_after_decision_response": 0,
+    }]
 
 
 def test_bridge_boundary_allows_testbed_paths_and_rejects_external_resources(tmp_path):
@@ -272,7 +480,7 @@ def test_resource_boundary_assessment_projects_rejected_attempts(tmp_path):
 @pytest.mark.parametrize(
     "findings,decisions,effects,expected_status",
     [
-        ([], [], [], "candidate_seen_no_finding"),
+        ([], [], [], "no_finding"),
         (
             [{"finding_id": "finding-1", "evidence_refs": ["calendar-1"]}],
             [],
@@ -302,7 +510,7 @@ def test_resource_boundary_assessment_projects_rejected_attempts(tmp_path):
         ),
     ],
 )
-def test_research_connection_reports_where_a_candidate_stopped(
+def test_research_connection_reports_agent_authored_evidence_chain(
     tmp_path, findings, decisions, effects, expected_status,
 ):
     root = tmp_path / expected_status
@@ -310,9 +518,7 @@ def test_research_connection_reports_where_a_candidate_stopped(
     observations = [
         {
             "event_id": "calendar-1", "tool": "calendar_action", "category": "task_action",
-            "outcome": "success", "decision_support": {
-                "capability_id": "execution_tool_surface", "candidate_mode": "calendar_focused",
-            },
+            "outcome": "success",
         },
         {"event_id": "calendar-2", "tool": "calendar_action", "category": "task_action", "outcome": "success"},
     ]
@@ -330,11 +536,12 @@ def test_research_connection_reports_where_a_candidate_stopped(
     report = _research_connection(root)
 
     assert report["status"] == expected_status
-    assert report["candidate_observation_ids"] == ["calendar-1"]
-    assert report["candidates_with_later_relevant_work"] == ["calendar-1"]
+    assert report["execution_observation_ids"] == ["calendar-1", "calendar-2"]
+    assert "candidate_observation_ids" not in report
+    assert "candidate_linked_finding_ids" not in report
 
 
-def test_research_connection_accepts_direct_execution_evidence_without_prefabricated_candidate(tmp_path):
+def test_research_connection_uses_agent_citations_without_prefabricated_candidate(tmp_path):
     root = tmp_path / "direct-evidence"
     root.mkdir()
     records = {
@@ -361,7 +568,7 @@ def test_research_connection_accepts_direct_execution_evidence_without_prefabric
     report = _research_connection(root)
 
     assert report["status"] == "apply_effect_observed"
-    assert report["candidate_observation_ids"] == []
+    assert report["execution_observation_ids"] == ["sheet-read"]
     assert report["evidence_linked_finding_ids"] == ["finding-1"]
     assert report["evidence_linked_decision_ids"] == ["decision-1"]
     assert report["connection_origin"] == "direct_execution_observation"
@@ -399,7 +606,8 @@ def test_e2e_uses_real_evaluator_result_and_emits_handoffs(monkeypatch, tmp_path
         ),
     )
 
-    def fake_pi(_root, _workspace, task, _paths):
+    def fake_pi(_root, _workspace, task, _paths, *, experiment_variant="treatment"):
+        assert experiment_variant == "treatment"
         assert task == "task prompt with generic runner notes about Word, PDF, OCR and Excel tools"
         contract = json.loads((_root / "artifact-contract.json").read_text(encoding="utf-8"))
         catalog = json.loads((_root / "task-resource-catalog.json").read_text(encoding="utf-8"))
@@ -418,12 +626,11 @@ def test_e2e_uses_real_evaluator_result_and_emits_handoffs(monkeypatch, tmp_path
             "",
             (
                 {"type": "turn_end"},
-                {"type": "tool_execution_start", "toolName": "set_evidence_policy"},
                 {"type": "tool_execution_start", "toolName": "officebench_action"},
             ),
-            {"value": "summary_only"},
-            {"value": "source_and_date"},
-            {"value": "source_and_date"},
+            {},
+            {},
+            {},
             {"value": "general"},
             {
                 "value": "calendar_focused",
@@ -464,7 +671,8 @@ def test_e2e_uses_real_evaluator_result_and_emits_handoffs(monkeypatch, tmp_path
     assert summary["closed_loop_evidence"]["canonical_sources"]["artifact_contract"] == (
         "artifact-contract.json"
     )
-    assert summary["tool_sequence"] == ["set_evidence_policy", "officebench_action"]
+    assert summary["tool_sequence"] == ["officebench_action"]
+    assert set(summary["pi_native_mutation"]) == {"execution_surface"}
     assert summary["execution_efficiency"]["catalog_initial_disclosures"] == 1
     assert result.auto_research_handoff.is_file()
     assert result.self_harness_handoff.is_file()
@@ -473,6 +681,38 @@ def test_e2e_uses_real_evaluator_result_and_emits_handoffs(monkeypatch, tmp_path
     assert "calendar API succeeded while shell probe failed" in harness_handoff
     assert "Later model request observed tool change: `True`" in harness_handoff
     assert result.round_hierarchy.is_file()
+
+
+def test_e2e_control_variant_reaches_pi_runner_and_is_recorded(monkeypatch, tmp_path: Path):
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    root = paths.root / "runs" / "control"
+    item = {
+        "question_id": "case-1", "question": "task",
+        "_workspace": str(root / "workspace"),
+    }
+    adapter = SimpleNamespace(evaluate=lambda *args, **kwargs: {"score": 1, "is_pass": True})
+    monkeypatch.setattr(
+        "autoresearch_pi.officebench_e2e._prepare_real_case",
+        lambda *args: (adapter, item, "task"),
+    )
+    native = PiOfficeBenchRun("test", "fixture", "done", True, "", (), {}, {}, {})
+    seen = []
+
+    def fake_pi(_root, _workspace, _task, _paths, *, experiment_variant):
+        seen.append(experiment_variant)
+        return native
+
+    result = run_officebench_e2e(
+        root, paths=paths, pi_runner=fake_pi, experiment_variant="control",
+    )
+    summary = json.loads(result.summary.read_text(encoding="utf-8"))
+
+    assert seen == ["control"]
+    assert summary["experiment"] == {
+        "variant": "control",
+        "agent_visible_attribution": False,
+        "purpose": "paired_task_completion_comparison",
+    }
 
 
 def test_batch_runs_first_n_cases_independently_and_aggregates(tmp_path: Path):
@@ -547,20 +787,92 @@ def test_batch_continues_after_case_runner_error(tmp_path: Path):
     assert error["error_type"] == "TimeoutError"
 
 
-@pytest.mark.parametrize("after,observed", [({}, {}), ({"value": "source_and_date"}, {})])
-def test_task_pass_does_not_require_mutation_or_observation(monkeypatch, tmp_path, after, observed):
+def test_experiment_runs_counterbalanced_pairs_and_reports_observed_deltas(tmp_path: Path):
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    calls = []
+
+    def fake_case_runner(root, *, case_id, paths, experiment_variant):
+        del paths
+        calls.append((root, case_id, experiment_variant))
+        root.mkdir(parents=True)
+        treatment = experiment_variant == "treatment"
+        summary = root / "summary.json"
+        summary.write_text(json.dumps({
+            "status": "passed" if treatment else "failed",
+            "execution_model": "fixture-model",
+            "score": 1.0 if treatment else 0.0,
+            "passed": treatment,
+            "pi_agent_succeeded": treatment,
+            "pi_agent_error": "" if treatment else "length",
+            "evaluator_passed": treatment,
+            "outcomes": {"task_correctness": {"all_required_paths_changed": treatment}},
+            "research_connection": {"status": "apply_effect_observed" if treatment else "no_finding"},
+            "execution_condition_effect": {"status": "supported" if treatment else "not_attempted"},
+            "harness_improvement": "not_established",
+            "execution_efficiency": {
+                "model_turns": 3 if treatment else 5,
+                "backend_bridge_processes": 2 if treatment else 4,
+                "research_resource_calls": 1 if treatment else 0,
+                "response_profile": {"repeated_action_groups": [{
+                    "assistant_responses": 2 if treatment else 1,
+                    "max_calls_in_one_response": 3 if treatment else 6,
+                }]},
+            },
+        }), encoding="utf-8")
+        return SimpleNamespace(summary=summary, score=1.0 if treatment else 0.0, passed=treatment)
+
+    result = run_officebench_e2e_experiment(
+        paths.root / "runs" / "experiment",
+        case_id="3-6-0",
+        repeats=2,
+        paths=paths,
+        case_runner=fake_case_runner,
+    )
+    report = json.loads(result.summary.read_text(encoding="utf-8"))
+
+    assert [variant for _, _, variant in calls] == [
+        "control", "treatment", "treatment", "control",
+    ]
+    assert report["design"]["unit"] == "same_case_paired_run"
+    assert report["design"]["agent_runtime"] == "fresh_independent_pi_process_per_variant"
+    assert report["pairs"][0]["observed_delta"]["score"] == 1.0
+    assert report["pairs"][0]["observed_delta"]["model_turns"] == -2
+    assert report["aggregate"]["completion_wins"] == {
+        "treatment": 2, "control": 0, "ties": 0,
+    }
+    assert report["aggregate"]["variants"]["treatment"]["pass_rate"] == 1.0
+    assert report["aggregate"]["variants"]["control"]["length_failures"] == 2
+    assert report["pairs"][0]["variants"]["treatment"]["multi_response_repeated_action_groups"] == 1
+    assert report["pairs"][0]["variants"]["control"]["max_repeated_calls_in_one_response"] == 6
+    assert report["causal_claim"] == "not_automatically_established"
+
+
+def test_task_pass_does_not_require_mutation_or_observation(monkeypatch, tmp_path):
     paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
     root = paths.root / "runs" / "optional"
     item = {"question_id": "test", "question": "task", "_workspace": str(root / "workspace")}
     adapter = SimpleNamespace(evaluate=lambda *args, **kwargs: {"score": 1, "is_pass": True})
     monkeypatch.setattr("autoresearch_pi.officebench_e2e._prepare_real_case", lambda *args: (adapter, item, "task"))
-    native = PiOfficeBenchRun("test", "fixture", "done", True, "", (), {"value": "summary_only"}, after, observed)
-    result = run_officebench_e2e(root, paths=paths, pi_runner=lambda *args: native)
+    native = PiOfficeBenchRun("test", "fixture", "done", True, "", (), {}, {}, {})
+    result = run_officebench_e2e(root, paths=paths, pi_runner=lambda *args, **kwargs: native)
     summary = json.loads(result.summary.read_text(encoding="utf-8"))
     assert result.passed
     assert summary["harness_improvement"] == "not_established"
     assert summary["research_notes"]["status"] == "not_recorded"
-    assert summary["pi_native_mutation"]["context_hook_observed"] is False
+    assert summary["pi_native_mutation"] == {
+        "execution_surface": {
+            "before": None,
+            "after": None,
+            "observed": None,
+            "active_tools_after": [],
+            "active_tools_observed": [],
+            "successful_operations": 0,
+            "actual_changes": 0,
+            "changed": False,
+            "observed_next_request": False,
+            "effect": "active_tool_set_for_next_model_request",
+        },
+    }
     assert "No agent-authored research notes" in result.auto_research_handoff.read_text(encoding="utf-8")
 
 
@@ -626,7 +938,7 @@ time.sleep(10)
     assert next(event for event in events if event.get("toolName") == "probe")["toolName"] == "probe"
 
 
-def test_mutation_observation_requires_matching_call_and_hook():
+def test_real_officebench_mutation_projection_omits_text_only_evidence_policy():
     from dataclasses import replace
     native = PiOfficeBenchRun("fixture", "fixture", "done", True, "", (
         {"type": "tool_execution_end", "toolName": "set_evidence_policy", "result": {"details": {"changed": True}}},
@@ -635,10 +947,10 @@ def test_mutation_observation_requires_matching_call_and_hook():
     ), {"value": "summary_only"}, {"value": "source_and_date", "toolCallId": "second"}, {
         "value": "source_and_date", "toolCallId": "first", "observedBy": "context_hook_before_model_request",
     })
-    assert _mutation_evidence(native)["context_hook_observed"] is False
-    report = _mutation_evidence(replace(native, observed={**native.observed, "toolCallId": "second"}))
-    assert report["context_hook_observed"] is True
-    assert report["actual_changes"] == 1 and report["successful_operations"] == 2
+    assert _mutation_evidence(native) == _mutation_evidence(
+        replace(native, events=(), before={}, after={}, observed={})
+    )
+    assert set(_mutation_evidence(native)) == {"execution_surface"}
 
 
 def test_execution_surface_observation_requires_matching_surface_call():
@@ -687,7 +999,7 @@ def test_notes_are_reported_as_claims_and_agent_failure_stays_separate(monkeypat
     item = {"question_id": "test", "question": "task", "_workspace": str(root)}
     adapter = SimpleNamespace(evaluate=lambda *args, **kwargs: {"score": 1, "is_pass": True})
     monkeypatch.setattr("autoresearch_pi.officebench_e2e._prepare_real_case", lambda *args: (adapter, item, "task"))
-    def fake_pi(*args):
+    def fake_pi(*args, **kwargs):
         (root / "task-notes.md").write_text("Uncertainty remains; adjustment was not tested.", encoding="utf-8")
         return PiOfficeBenchRun("fixture", "fixture", "", False, "interrupted", (), {}, {}, {})
     result = run_officebench_e2e(root, paths=paths, pi_runner=fake_pi)
@@ -708,7 +1020,7 @@ def test_summary_keeps_execution_evaluation_correctness_and_harness_outcomes_sep
     monkeypatch.setattr("autoresearch_pi.officebench_e2e._prepare_real_case", lambda *args: (adapter, item, "task"))
     native = PiOfficeBenchRun("fixture", "fixture", "Tom", True, "", (), {}, {}, {})
 
-    result = run_officebench_e2e(root, paths=paths, pi_runner=lambda *args: native)
+    result = run_officebench_e2e(root, paths=paths, pi_runner=lambda *args, **kwargs: native)
     outcomes = json.loads(result.summary.read_text(encoding="utf-8"))["outcomes"]
 
     assert outcomes["task_execution"] == {"status": "succeeded", "agent_error": None}
@@ -745,7 +1057,7 @@ def test_change_aware_correctness_exposes_legacy_pass_with_unchanged_target(monk
     monkeypatch.setattr("autoresearch_pi.officebench_e2e._prepare_real_case", prepare)
     native = PiOfficeBenchRun("fixture", "fixture", "Tom", True, "", (), {}, {}, {})
 
-    result = run_officebench_e2e(root, paths=paths, pi_runner=lambda *args: native)
+    result = run_officebench_e2e(root, paths=paths, pi_runner=lambda *args, **kwargs: native)
     summary = json.loads(result.summary.read_text(encoding="utf-8"))
     correctness = summary["outcomes"]["task_correctness"]
 
@@ -777,7 +1089,7 @@ def test_change_aware_correctness_detects_created_evaluator_target(monkeypatch, 
         testbed.joinpath("data").mkdir(parents=True)
         return adapter, item, "task"
 
-    def fake_pi(*args):
+    def fake_pi(*args, **kwargs):
         testbed.joinpath("data", "result.txt").write_text("created", encoding="utf-8")
         return PiOfficeBenchRun("fixture", "fixture", "done", True, "", (), {}, {}, {})
 
@@ -845,7 +1157,7 @@ def test_loop_integrity_is_separate_from_improvement(
     adapter = SimpleNamespace(evaluate=lambda *args, **kwargs: {"score": 1, "is_pass": True})
     monkeypatch.setattr("autoresearch_pi.officebench_e2e._prepare_real_case", lambda *args: (adapter, item, "task"))
 
-    def fake_pi(*args):
+    def fake_pi(*args, **kwargs):
         if resources:
             (root / "execution-observations.jsonl").write_text(
                 json.dumps({"event_id": "tool-1", "tool": "calendar_action"}) + "\n",
@@ -993,6 +1305,10 @@ def test_closed_loop_evidence_is_a_compact_self_contained_projection(tmp_path):
         "execution-observations.jsonl": [{
             "event_id": "probe-1", "tool": "calendar_action", "operation": "list_events",
             "category": "task_action", "outcome": "success", "result_summary": "No events for Alice.",
+        }, {
+            "event_id": "failed-read-1", "tool": "workspace_file_action", "operation": "read_text",
+            "category": "resource", "outcome": "semantic_error", "error_kind": "resource_access_error",
+            "result_summary": "The path is outside the current testbed.",
         }],
         "research-resources.jsonl": [{
             "goal_id": "research-goal-1", "finding_id": "finding-1",
@@ -1000,6 +1316,20 @@ def test_closed_loop_evidence_is_a_compact_self_contained_projection(tmp_path):
             "evidence": "A direct probe succeeded.", "decision": "Enable batch.",
             "evidence_refs": ["probe-1"], "expected_recurrence": "high", "remaining_uses": 12,
             "status": "active",
+        }, {
+            "goal_id": "research-goal-2", "finding_id": "finding-2",
+            "question": "Which paths remain valid?", "scope": "Later task-local reads",
+            "uncertainty": "Whether the boundary recurs.", "evidence": "An outside read failed.",
+            "decision": "Use testbed-relative paths.", "evidence_refs": ["failed-read-1"],
+            "expected_recurrence": "high", "remaining_uses": 2,
+            "status": "resolved", "resolution": "supported",
+        }, {
+            "goal_id": "research-goal-3", "finding_id": "finding-3",
+            "question": "Was the boundary conclusion valid?", "scope": "Later task-local reads",
+            "uncertainty": "Resolved.", "evidence": "Later evidence contradicted it.",
+            "decision": "Do not retain the earlier conclusion.", "evidence_refs": ["failed-read-1"],
+            "expected_recurrence": "high", "remaining_uses": 2,
+            "status": "resolved", "resolution": "contradicted",
         }],
         "harness-decisions.jsonl": [{
             "decision_id": "decision-1", "toolCallId": "decision-call",
@@ -1056,7 +1386,7 @@ def test_closed_loop_evidence_is_a_compact_self_contained_projection(tmp_path):
 
     report = _closed_loop_evidence(
         root, native,
-        {"status": "apply_effect_observed", "connection_origin": "decision_support"},
+        {"status": "apply_effect_observed", "connection_origin": "direct_execution_observation"},
         {"status": "linked_effect_observed"},
         {"status": "supported"},
     )
@@ -1066,6 +1396,11 @@ def test_closed_loop_evidence_is_a_compact_self_contained_projection(tmp_path):
     assert report["research"]["goal_coverage"] == "agent_declared_structured_goals"
     assert report["research"]["goals"][0]["goal_id"] == "research-goal-1"
     assert report["research"]["goals"][0]["evidence_observations"][0]["summary"] == "No events for Alice."
+    assert report["research"]["goals"][0]["basis_outcomes"] == ["success"]
+    assert report["research"]["goals"][0]["visible_for_later_decisions"] is True
+    assert report["research"]["goals"][1]["basis_outcomes"] == ["semantic_error"]
+    assert report["research"]["goals"][1]["visible_for_later_decisions"] is True
+    assert report["research"]["goals"][2]["visible_for_later_decisions"] is False
     assert report["available_resources"]["available_inactive"][0]["tool"] == "calendar_batch_action"
     task_catalog = report["available_resources"]["task_resource_catalog"]
     assert "calendar.create_event" in task_catalog["action_contracts"]

@@ -1,0 +1,25 @@
+{
+  "format": "constitutional-validation-v1",
+  "cases": {
+    "officebench:3-6-0": {
+      "stratum": "future_independent_work",
+      "hypothesis": "apply_if_supported"
+    },
+    "officebench:2-13-0": {
+      "stratum": "future_independent_work",
+      "hypothesis": "apply_if_supported"
+    },
+    "officebench:2-15-0": {
+      "stratum": "low_next_request_benefit",
+      "hypothesis": "no_change_is_valid"
+    },
+    "shopping:3:2": {
+      "stratum": "feedback_dependent",
+      "hypothesis": "no_change_is_valid"
+    },
+    "shopping:3:3": {
+      "stratum": "feedback_dependent",
+      "hypothesis": "no_change_is_valid"
+    }
+  }
+}

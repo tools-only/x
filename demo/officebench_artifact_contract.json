@@ -17,7 +17,7 @@
       "project_implementation_sources"
     ],
     "boundary_behavior": "Requests that address resources outside the current testbed return semantic_error with error_kind=task_resource_boundary_violation.",
-    "safe_file_inspection": "Use workspace_file_action for bounded listing or text reads. Broad shell execution is unavailable because it cannot enforce the task-resource boundary reliably."
+    "safe_file_inspection": "Use workspace_file_action for bounded listing, UTF-8 text reads, directory creation, or UTF-8 text writes inside the current testbed. Broad shell execution is unavailable because it cannot enforce the task-resource boundary reliably."
   },
   "task_language_conventions": {
     "relative_time": "If a task says next week without naming a different weekday or date, use the same weekday exactly seven calendar days after the supplied current date.",
@@ -33,7 +33,7 @@
   "model_disclosure": {
     "format": "officebench-task-artifact-contract-v1",
     "scope": "current_case_testbed_only; use only relative data/, calendar/, and emails/ paths",
-    "safe_inspection": "workspace_file_action lists files or reads UTF-8 text; read .xlsx with officebench_action(app=excel, action=read_file, args={file_path:<relative path>}); broad shell is unavailable",
+    "safe_inspection": "workspace_file_action lists files, reads UTF-8 text, creates relative directories, or writes UTF-8 text inside the current testbed; write_text requires an existing parent and args={action:write_text,path:<relative path>,text:<content>}; read .xlsx with officebench_action(app=excel, action=read_file, args={file_path:<relative path>}); broad shell is unavailable",
     "calendar": "calendar.create_event(user,summary,time_start,time_end) writes calendar/{user}.ics; verify with calendar.list_events(username). Preserve user/username capitalization exactly. A singular calendar request targets the current user unless other calendars are explicitly requested. If a source row assigns that user a section/time, use that exact row time rather than an aggregate span. Preserve the task's activity phrase (for example team training) in summary. A name like training.ics is not a literal output path.",
     "email": "email.send_email(sender,recipient,subject,content) supports one recipient and writes emails/{sender}/{subject}.eml plus emails/{recipient}/{subject}.eml; verify with list/read. Preserve names/subject capitalization exactly. A requested training.eml means subject=training. Same-user/same-subject copies are overwritten, so send the current user's personalized self-addressed copy last when needed.",
     "time_and_membership": "next week with no other date means the same weekday exactly seven days after the supplied current date. All members from a source means every matching row, including the current user unless explicitly excluded. For row-scoped section/time data, use each person's own row in personalized notifications and the current user's row for a singular current-user calendar event.",
@@ -249,6 +249,37 @@
         "file_path": "relative image path under the current testbed"
       },
       "reads": "Recognized text from one image."
+    },
+    "workspace_file.make_directory": {
+      "tool": "workspace_file_action",
+      "args": {
+        "action": "make_directory",
+        "path": "relative directory path under the current testbed"
+      },
+      "scope": "current testbed only",
+      "artifacts": [
+        {
+          "path": "{path}",
+          "effect": "create_directory_and_missing_parents"
+        }
+      ]
+    },
+    "workspace_file.write_text": {
+      "tool": "workspace_file_action",
+      "args": {
+        "action": "write_text",
+        "path": "relative file path under the current testbed",
+        "text": "UTF-8 text content"
+      },
+      "scope": "current testbed only",
+      "limits": "At most 262144 UTF-8 bytes; parent directory must already exist; symbolic links are not followed.",
+      "artifacts": [
+        {
+          "path": "{path}",
+          "effect": "create_or_replace_utf8_text"
+        }
+      ],
+      "verify_with": "workspace_file.read_text"
     }
   },
   "non_contract": "This resource describes backend behavior only. It does not state task answers, scoring conditions, or required research and harness decisions."

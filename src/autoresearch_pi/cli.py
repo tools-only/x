@@ -12,9 +12,21 @@ from pathlib import Path
 
 from .jit_adapter import JitAdapter
 from .meta_harness_demo import run_demo
-from .officebench_e2e import run_officebench_e2e, run_officebench_e2e_batch
+from .officebench_e2e import (
+    run_officebench_e2e,
+    run_officebench_e2e_batch,
+    run_officebench_e2e_cohort,
+    run_officebench_e2e_continuation,
+    run_officebench_e2e_experiment,
+)
 from .project import ProjectPaths
 from .task_agent import PiTaskAgent
+from .shopping_e2e import (
+    run_shopping_e2e,
+    run_shopping_e2e_experiment,
+    run_shopping_context_compaction_ablation,
+)
+from .validation_evidence import load_validation_manifest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +49,59 @@ def main(argv: list[str] | None = None) -> int:
     e2e_selection = e2e.add_mutually_exclusive_group()
     e2e_selection.add_argument("--case", default=None)
     e2e_selection.add_argument("--max-samples", type=int, default=None)
+    experiment = sub.add_parser(
+        "officebench-experiment",
+        help="run counterbalanced control/treatment pairs for one real OfficeBench case",
+    )
+    experiment.add_argument("--root", type=Path, default=None)
+    experiment.add_argument("--case", required=True)
+    experiment.add_argument("--repeats", type=int, default=1)
+    cohort = sub.add_parser(
+        "officebench-cohort",
+        help="run isolated control/treatment pairs for a validation cohort",
+    )
+    cohort.add_argument("--root", type=Path, default=None)
+    cohort.add_argument("--cases", required=True, help="comma-separated OfficeBench case IDs")
+    cohort.add_argument("--repeats", type=int, default=1)
+    cohort.add_argument("--validation-manifest", type=Path, default=None)
+    continuation = sub.add_parser(
+        "officebench-continuation",
+        help="continue one OfficeBench task across two independent Pi processes",
+    )
+    continuation.add_argument("--root", type=Path, default=None)
+    continuation.add_argument("--case", default=None)
+    continuation.add_argument("--variant", choices=("control", "treatment"), default="treatment")
+    continuation.add_argument("--timeout", type=float, default=900.0)
+    shopping = sub.add_parser("shopping-e2e", help="run one JIT DeepPlanning Shopping case through Pi")
+    shopping.add_argument("--root", type=Path, default=None)
+    shopping.add_argument("--dataset", type=Path, default=None)
+    shopping.add_argument("--level", choices=("1", "2", "3"), default="3")
+    shopping.add_argument("--case", default="1")
+    shopping.add_argument("--variant", choices=("control", "treatment"), default="treatment")
+    shopping.add_argument("--timeout", type=float, default=900.0)
+    shopping.add_argument(
+        "--context-compaction", action="store_true",
+        help="expose the optional Agent-selected Pi context capability for this isolated run",
+    )
+    shopping_experiment = sub.add_parser(
+        "shopping-experiment",
+        help="run counterbalanced control/treatment pairs for Shopping cases",
+    )
+    shopping_experiment.add_argument("--root", type=Path, default=None)
+    shopping_experiment.add_argument("--dataset", type=Path, default=None)
+    shopping_experiment.add_argument("--cases", required=True, help="comma-separated LEVEL:CASE values, e.g. 2:2,3:2")
+    shopping_experiment.add_argument("--repeats", type=int, default=1)
+    shopping_experiment.add_argument("--timeout", type=float, default=900.0)
+    shopping_experiment.add_argument("--validation-manifest", type=Path, default=None)
+    shopping_context_ablation = sub.add_parser(
+        "shopping-context-ablation",
+        help="compare Shopping treatment runs with and without Agent-owned context compaction",
+    )
+    shopping_context_ablation.add_argument("--root", type=Path, default=None)
+    shopping_context_ablation.add_argument("--dataset", type=Path, default=None)
+    shopping_context_ablation.add_argument("--cases", required=True, help="comma-separated LEVEL:CASE values")
+    shopping_context_ablation.add_argument("--repeats", type=int, default=1)
+    shopping_context_ablation.add_argument("--timeout", type=float, default=900.0)
     args = parser.parse_args(argv)
     paths = ProjectPaths.from_environment()
     paths.assert_isolated()
@@ -94,6 +159,70 @@ def main(argv: list[str] | None = None) -> int:
         result = run_officebench_e2e(root, case_id=args.case, paths=paths)
         print(result.summary.read_text(encoding="utf-8"), end="")
         return 0 if result.passed else 1
+    if args.command == "officebench-experiment":
+        root = (args.root or paths.runs_dir / "pi-officebench-experiment").resolve()
+        result = run_officebench_e2e_experiment(
+            root, case_id=args.case, repeats=args.repeats, paths=paths,
+        )
+        print(result.summary.read_text(encoding="utf-8"), end="")
+        return 0
+    if args.command == "officebench-cohort":
+        root = (args.root or paths.runs_dir / "pi-officebench-cohort").resolve()
+        case_ids = [token.strip() for token in args.cases.split(",") if token.strip()]
+        result = run_officebench_e2e_cohort(
+            root, case_ids=case_ids, repeats=args.repeats, paths=paths,
+            **({"validation_strata": load_validation_manifest(args.validation_manifest)}
+               if args.validation_manifest else {}),
+        )
+        print(result.summary.read_text(encoding="utf-8"), end="")
+        return 0
+    if args.command == "officebench-continuation":
+        root = (args.root or paths.runs_dir / "pi-officebench-continuation").resolve()
+        result = run_officebench_e2e_continuation(
+            root, case_id=args.case, paths=paths,
+            experiment_variant=args.variant, timeout=args.timeout,
+        )
+        print(result.summary.read_text(encoding="utf-8"), end="")
+        return 0 if json.loads(result.summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "shopping-e2e":
+        root = (args.root or paths.runs_dir / f"pi-shopping-level{args.level}-case{args.case}").resolve()
+        summary = run_shopping_e2e(
+            root, dataset=args.dataset, level=args.level, case_id=args.case,
+            experiment_variant=args.variant, timeout=args.timeout,
+            context_compaction=args.context_compaction,
+        )
+        print(summary.read_text(encoding="utf-8"), end="")
+        return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "shopping-experiment":
+        root = (args.root or paths.runs_dir / "pi-shopping-experiment").resolve()
+        cases: list[tuple[str, str]] = []
+        for token in args.cases.split(","):
+            token = token.strip()
+            if not token or ":" not in token:
+                raise SystemExit("--cases must be comma-separated LEVEL:CASE values")
+            level, case_id = token.split(":", 1)
+            cases.append((level.strip(), case_id.strip()))
+        result = run_shopping_e2e_experiment(
+            root, cases=cases, repeats=args.repeats, dataset=args.dataset, timeout=args.timeout,
+            **({"validation_strata": load_validation_manifest(args.validation_manifest)}
+               if args.validation_manifest else {}),
+        )
+        print(result.summary.read_text(encoding="utf-8"), end="")
+        return 0
+    if args.command == "shopping-context-ablation":
+        root = (args.root or paths.runs_dir / "pi-shopping-context-ablation").resolve()
+        cases: list[tuple[str, str]] = []
+        for token in args.cases.split(","):
+            token = token.strip()
+            if not token or ":" not in token:
+                raise SystemExit("--cases must be comma-separated LEVEL:CASE values")
+            level, case_id = token.split(":", 1)
+            cases.append((level.strip(), case_id.strip()))
+        result = run_shopping_context_compaction_ablation(
+            root, cases=cases, repeats=args.repeats, dataset=args.dataset, timeout=args.timeout,
+        )
+        print(result.summary.read_text(encoding="utf-8"), end="")
+        return 0
     return 0
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,11 @@ from typing import Any, Callable, Sequence
 
 from .pi_kernel import PiKernel
 from .project import ProjectPaths
+from .validation_evidence import (
+    aggregate_validation_evidence,
+    project_pair_evidence,
+    validation_manifest_fingerprint,
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,29 @@ class OfficeBenchE2EBatchResult:
     summary: Path
 
 
+@dataclass(frozen=True)
+class OfficeBenchE2EExperimentResult:
+    root: Path
+    case_id: str
+    pair_count: int
+    summary: Path
+
+
+@dataclass(frozen=True)
+class OfficeBenchE2ECohortResult:
+    root: Path
+    case_ids: tuple[str, ...]
+    repeats: int
+    summary: Path
+
+
+@dataclass(frozen=True)
+class OfficeBenchE2EContinuationResult:
+    root: Path
+    case_id: str
+    summary: Path
+
+
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -88,6 +117,7 @@ def _build_task_resource_catalog(
             elif path.is_file():
                 entries.append({"path": relative_path, "kind": "file", "size": path.stat().st_size})
 
+    task_lowered = task.lower()
     searchable = f"{task}\n" + "\n".join(entry["path"] for entry in entries)
     lowered = searchable.lower()
     app_markers = {
@@ -101,6 +131,9 @@ def _build_task_resource_catalog(
     relevant_apps = sorted(
         app for app, markers in app_markers.items() if any(marker in lowered for marker in markers)
     )
+    task_apps = {
+        app for app, markers in app_markers.items() if any(marker in task_lowered for marker in markers)
+    }
     actions = artifact_contract.get("actions") or {}
     selected_actions: set[str] = set()
     if "calendar" in relevant_apps:
@@ -111,16 +144,25 @@ def _build_task_resource_catalog(
         selected_actions.update({"email.send_email", "email.list_emails", "email.read_email"})
     if "excel" in relevant_apps:
         selected_actions.add("excel.read_file")
-        if any(marker in task.lower() for marker in ("cell", "update", "edit", "write", "delete", "create")):
+        if "excel" in task_apps and any(
+            marker in task_lowered for marker in ("cell", "update", "edit", "write", "delete", "create")
+        ):
             selected_actions.update({"excel.set_cell", "excel.delete_cell", "excel.create_new_file"})
     if "word" in relevant_apps:
         selected_actions.add("word.read_file")
-        if any(marker in task.lower() for marker in ("create", "write", "append", "edit")):
+        if "word" in task_apps and any(
+            marker in task_lowered for marker in ("create", "write", "append", "edit")
+        ):
             selected_actions.update({"word.create_new_file", "word.write_to_file"})
     if "pdf" in relevant_apps:
         selected_actions.add("pdf.read_file")
     if "ocr" in relevant_apps:
         selected_actions.add("ocr.recognize_file")
+    text_output_verbs = ("create", "write", "save", "generate", "export", "store")
+    if re.search(r"\b(?:create|make)\b(?:\s+\w+){0,3}\s+(?:folders?|directories)\b", task_lowered):
+        selected_actions.add("workspace_file.make_directory")
+    if ".txt" in task_lowered and any(verb in task_lowered for verb in text_output_verbs):
+        selected_actions.add("workspace_file.write_text")
     action_contracts = {
         name: value
         for name, value in actions.items()
@@ -212,6 +254,28 @@ def _target_manifest(testbed: Path, required_paths: Sequence[str]) -> dict[str, 
         "algorithm": "sha256",
         "targets": {path: _target_fingerprint(testbed, path) for path in required_paths},
     }
+
+
+def _jsonl_count(path: Path) -> int:
+    """Count valid JSONL records without exposing their contents to summaries."""
+    if not path.is_file():
+        return 0
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    except OSError:
+        return 0
+
+
+def _changed_target_count(before: dict[str, Any], after: dict[str, Any], paths: Sequence[str]) -> int:
+    before_targets = before.get("targets", {})
+    after_targets = after.get("targets", {})
+    return sum(1 for path in paths if before_targets.get(path) != after_targets.get(path))
+
+
+def _present_target_count(manifest: dict[str, Any], paths: Sequence[str]) -> int:
+    targets = manifest.get("targets", {})
+    return sum(1 for path in paths if isinstance(targets.get(path), dict)
+               and targets[path].get("kind") != "missing")
 
 
 def _task_correctness_assessment(
@@ -396,6 +460,96 @@ def _task_resource_boundary_assessment(root: Path) -> dict[str, Any]:
     }
 
 
+def _execution_response_profile(
+    root: Path,
+    native: PiOfficeBenchRun,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe repeated task actions without inferring an optimization candidate."""
+    tool_call_responses: dict[str, int] = {}
+    assistant_response = 0
+    for event in native.events:
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        assistant_response += 1
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "toolCall":
+                continue
+            tool_call_id = part.get("id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                tool_call_responses[tool_call_id] = assistant_response
+
+    decisions, _ = _read_jsonl(root / "harness-decisions.jsonl")
+    applied_decision_responses = [
+        tool_call_responses[decision["toolCallId"]]
+        for decision in decisions
+        if decision.get("applied") is True
+        and isinstance(decision.get("toolCallId"), str)
+        and decision["toolCallId"] in tool_call_responses
+    ]
+    first_decision_response = min(applied_decision_responses) if applied_decision_responses else None
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for observation in observations:
+        if observation.get("category") != "task_action":
+            continue
+        key = (str(observation.get("tool") or "unknown"), str(observation.get("operation") or "unknown"))
+        grouped.setdefault(key, []).append(observation)
+
+    repeated: list[dict[str, Any]] = []
+    for (tool, operation), records in sorted(grouped.items()):
+        if len(records) < 2:
+            continue
+        response_numbers = [
+            tool_call_responses.get(str(record.get("event_id"))) for record in records
+        ]
+        known_responses = [value for value in response_numbers if value is not None]
+        counts_by_response = {
+            value: known_responses.count(value) for value in set(known_responses)
+        }
+        relative_counts = {
+            "calls_before_decision_response": None,
+            "calls_in_decision_response": None,
+            "calls_after_decision_response": None,
+        }
+        if first_decision_response is not None:
+            relative_counts = {
+                "calls_before_decision_response": sum(
+                    value is not None and value < first_decision_response for value in response_numbers
+                ),
+                "calls_in_decision_response": sum(
+                    value == first_decision_response for value in response_numbers
+                ),
+                "calls_after_decision_response": sum(
+                    value is not None and value > first_decision_response for value in response_numbers
+                ),
+            }
+        repeated.append({
+            "tool": tool,
+            "operation": operation,
+            "calls": len(records),
+            "attempted_work_units": sum(int(record.get("attempted_work_units", 1)) for record in records),
+            "assistant_responses": len(set(known_responses)),
+            "max_calls_in_one_response": max(counts_by_response.values(), default=0),
+            "all_calls_issued_in_one_response": len(records) > 0 and len(set(known_responses)) == 1
+            and len(known_responses) == len(records),
+            **relative_counts,
+        })
+    return {
+        "agent_visible": False,
+        "candidate_inference": "none",
+        "first_applied_decision_response": first_decision_response,
+        "repeated_action_groups": repeated,
+        "source_refs": ["pi-events.jsonl", "execution-observations.jsonl", "harness-decisions.jsonl"],
+    }
+
+
 def _execution_efficiency(root: Path, native: PiOfficeBenchRun) -> dict[str, Any]:
     """Summarize model/resource/backend work without treating score as causal evidence."""
     observations, issues = _read_jsonl(root / "execution-observations.jsonl")
@@ -449,6 +603,7 @@ def _execution_efficiency(root: Path, native: PiOfficeBenchRun) -> dict[str, Any
         ),
         "catalog_initial_disclosures": int(catalog_path.is_file()),
         "inventory_entries_disclosed": inventory_entries,
+        "response_profile": _execution_response_profile(root, native, observations),
         "record_issues": issues,
         "source_refs": ["pi-events.jsonl", "execution-observations.jsonl", "task-resource-catalog.json"],
     }
@@ -584,39 +739,13 @@ def _research_connection(root: Path) -> dict[str, Any]:
     findings, _histories, version_issues = _research_versions(finding_events)
     issues.extend(finding_issues + decision_issues + effect_issues + version_issues)
 
-    candidates: list[tuple[int, dict[str, Any]]] = []
-    for index, observation in enumerate(observations):
-        support = observation.get("decision_support")
-        if (
-            isinstance(support, dict)
-            and support.get("capability_id") == "execution_tool_surface"
-            and isinstance(observation.get("event_id"), str)
-        ):
-            candidates.append((index, observation))
-    candidate_ids = {observation["event_id"] for _, observation in candidates}
-    execution_ids = {
-        observation.get("event_id") for observation in observations
+    execution_observation_ids = [
+        observation["event_id"] for observation in observations
         if isinstance(observation.get("event_id"), str)
-    }
-
-    candidates_with_later_work: list[str] = []
-    for index, observation in candidates:
-        mode = (observation.get("decision_support") or {}).get("candidate_mode")
-        later_relevant = any(
-            later.get("category") == "task_action"
-            and (
-                mode not in {"calendar_focused", "calendar_batch", "email_batch"}
-                or mode in {"calendar_focused", "calendar_batch"}
-                and later.get("tool") in {"calendar_action", "calendar_batch_action"}
-                or mode == "email_batch" and later.get("tool") in {"email_action", "email_batch_action"}
-            )
-            for later in observations[index + 1:]
-        )
-        if later_relevant:
-            candidates_with_later_work.append(observation["event_id"])
+    ]
+    execution_ids = set(execution_observation_ids)
 
     evidence_linked_findings: dict[str, dict[str, Any]] = {}
-    candidate_linked_findings: dict[str, dict[str, Any]] = {}
     for finding in findings:
         finding_id = finding.get("finding_id")
         evidence_refs = finding.get("evidence_refs")
@@ -632,11 +761,8 @@ def _research_connection(root: Path) -> dict[str, Any]:
             issues.append(f"{finding_id}:connection_unknown_evidence")
             continue
         evidence_linked_findings[finding_id] = finding
-        if any(reference in candidate_ids for reference in evidence_refs):
-            candidate_linked_findings[finding_id] = finding
 
     evidence_linked_decisions: dict[str, dict[str, Any]] = {}
-    candidate_linked_decisions: dict[str, dict[str, Any]] = {}
     for decision in decisions:
         decision_id = decision.get("decision_id")
         basis = decision.get("basis_resource_ids")
@@ -646,8 +772,6 @@ def _research_connection(root: Path) -> dict[str, Any]:
             and any(finding_id in evidence_linked_findings for finding_id in basis)
         ):
             evidence_linked_decisions[decision_id] = decision
-            if any(finding_id in candidate_linked_findings for finding_id in basis):
-                candidate_linked_decisions[decision_id] = decision
 
     applied = {
         decision_id: decision for decision_id, decision in evidence_linked_decisions.items()
@@ -672,33 +796,29 @@ def _research_connection(root: Path) -> dict[str, Any]:
             status = "apply_unobserved"
     elif evidence_linked_findings:
         status = "finding_recorded_no_decision"
-    elif candidates:
-        status = "candidate_seen_no_finding"
     else:
-        status = "no_candidate"
-    if candidate_linked_decisions:
-        connection_origin = "decision_support"
-    elif evidence_linked_decisions or evidence_linked_findings:
-        connection_origin = "direct_execution_observation"
-    elif candidates:
-        connection_origin = "decision_support"
-    else:
-        connection_origin = "none"
+        status = "no_finding"
+    connection_origin = (
+        "direct_execution_observation"
+        if evidence_linked_decisions or evidence_linked_findings
+        else "none"
+    )
     return {
         "status": status,
         "connection_origin": connection_origin,
-        "candidate_observation_ids": [observation["event_id"] for _, observation in candidates],
-        "candidates_with_later_relevant_work": candidates_with_later_work,
+        "execution_observation_ids": execution_observation_ids,
         "evidence_linked_finding_ids": sorted(evidence_linked_findings),
         "evidence_linked_decision_ids": sorted(evidence_linked_decisions),
-        "candidate_linked_finding_ids": sorted(candidate_linked_findings),
-        "candidate_linked_decision_ids": sorted(candidate_linked_decisions),
         "observed_applied_decision_ids": sorted(observed_applied),
         "issues": issues,
     }
 
 
 def _execution_condition_effect(root: Path) -> dict[str, Any]:
+    batch_specs = {
+        "calendar_batch_utilization": ("calendar_batch", "calendar_batch_action"),
+        "email_batch_utilization": ("email_batch", "email_batch_action"),
+    }
     observations, issues = _read_jsonl(root / "execution-observations.jsonl")
     finding_events, finding_issues = _read_jsonl(root / "research-resources.jsonl")
     decisions, decision_issues = _read_jsonl(root / "harness-decisions.jsonl")
@@ -833,12 +953,9 @@ def _execution_condition_effect(root: Path) -> dict[str, Any]:
                 for observation in window_observations
                 if observation is not None
             )
-        if decision.get("effect_metric") in {"calendar_batch_utilization", "email_batch_utilization"}:
-            expected_batch_tool = (
-                "calendar_batch_action"
-                if decision.get("effect_metric") == "calendar_batch_utilization"
-                else "email_batch_action"
-            )
+        batch_spec = batch_specs.get(decision.get("effect_metric"))
+        if batch_spec:
+            _expected_batch_mode, expected_batch_tool = batch_spec
             batch_observations = [
                 observation for observation in window_observations
                 if observation is not None and observation.get("tool") == expected_batch_tool
@@ -884,12 +1001,8 @@ def _execution_condition_effect(root: Path) -> dict[str, Any]:
 
         recomputed_verdict = "inconclusive"
         if completion_reason == "horizon_reached" and exposure_observed and window_observations:
-            if decision.get("effect_metric") in {"calendar_batch_utilization", "email_batch_utilization"}:
-                expected_batch_mode = (
-                    "calendar_batch"
-                    if decision.get("effect_metric") == "calendar_batch_utilization"
-                    else "email_batch"
-                )
+            if batch_spec:
+                expected_batch_mode, _expected_batch_tool = batch_spec
                 if (
                     decision.get("value") == expected_batch_mode
                     and actual_window["batch_tool_calls"] > 0
@@ -966,6 +1079,25 @@ def _compact_trace_event(event: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _tool_call_arguments(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Return arguments from either Pi's execution or message event shape.
+
+    Pi emits ``args`` on ``tool_execution_*`` events, while the preceding
+    assistant message stores the same payload as ``toolCall.arguments`` (and
+    older adapters may use the top-level ``arguments`` key).  Observability
+    must accept all official/legacy shapes without changing runtime behavior.
+    """
+    for value in (
+        event.get("args"),
+        event.get("arguments"),
+        (event.get("toolCall") or {}).get("arguments")
+        if isinstance(event.get("toolCall"), dict) else None,
+    ):
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def _load_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
@@ -1020,7 +1152,21 @@ def _extract_answer(events: Sequence[dict[str, Any]]) -> str:
     return _extract_agent_outcome(events)[0]
 
 
-def run_pi_officebench_task(root: Path, workspace: Path, task: str, paths: ProjectPaths, *, timeout: float = 900.0) -> PiOfficeBenchRun:
+def run_pi_officebench_task(
+    root: Path,
+    workspace: Path,
+    task: str,
+    paths: ProjectPaths,
+    *,
+    timeout: float = 900.0,
+    experiment_variant: str = "treatment",
+    resource_root: Path | None = None,
+) -> PiOfficeBenchRun:
+    # `root` owns this process's trace and Pi config. `resource_root`, when
+    # supplied by the continuation evaluator, is the same-task append-only
+    # resource directory shared by multiple independent Pi processes.
+    resource_root = (resource_root or root).resolve()
+    resource_root.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(_load_dotenv(paths.jit_root / ".env"))
     model = env.get("EXEC_MODEL", "a:deepseek-v4-flash")
@@ -1069,13 +1215,13 @@ def run_pi_officebench_task(root: Path, workspace: Path, task: str, paths: Proje
         python_path += os.pathsep + env["PYTHONPATH"]
     env.update({
         "PI_CODING_AGENT_DIR": str(agent_dir),
-        "PI_OFFICEBENCH_E2E_ROOT": str(root),
+        "PI_OFFICEBENCH_E2E_ROOT": str(resource_root),
         "PI_OFFICEBENCH_WORKSPACE": str(workspace),
+        "PI_OFFICEBENCH_EXPERIMENT_VARIANT": experiment_variant,
         "JIT_ROOT": str(paths.jit_root),
         "JIT_PYTHON": os.getenv("JIT_PYTHON", r"D:\anaconda\envs\jit\python.exe"),
         "PYTHONPATH": python_path,
     })
-
     trace = root / "pi-events.jsonl"
     with trace.open("x", encoding="utf-8") as stream:
         def persist(event: dict[str, Any]) -> None:
@@ -1103,7 +1249,7 @@ def run_pi_officebench_task(root: Path, workspace: Path, task: str, paths: Proje
         })
     answer, agent_succeeded, agent_error = _extract_agent_outcome(events)
 
-    native_root = root / "pi-native"
+    native_root = resource_root / "pi-native"
     snapshots = []
     for name in ("before", "after", "observed"):
         path = native_root / f"{name}.json"
@@ -1138,10 +1284,9 @@ def _replace_stale_runtime_capability_disclosure(task: str) -> str:
     """Align the imported OfficeBench prompt with tools registered by this Pi extension."""
     task = task.replace(
         "You only have two exposed tools in this environment: `officebench_action` and `final_answer`.",
-        "The initial Pi task tools are `officebench_action`, `calendar_action`, `email_action`, "
-        "`workspace_file_action`, `task_notes`, "
-        "`research_resource`, `decide_execution_surface`, and `set_evidence_policy`. The live Pi tool "
-        "schema is authoritative because an optional execution-surface decision can change later requests.",
+        "The live Pi tool schema and model-visible task capability catalog are authoritative because "
+        "the extension selects task-relevant initial tools and an optional execution-surface decision "
+        "can change later requests.",
     )
     task = task.replace(
         "Every OfficeBench action must be called through `officebench_action` using JSON of the form ",
@@ -1177,7 +1322,8 @@ def _replace_stale_runtime_capability_disclosure(task: str) -> str:
     )
     return task + (
         "\nThe current case testbed is the only task workspace. Use relative data/, calendar/, and emails/ "
-        "paths. Use workspace_file_action for bounded file listing or text reads. Broad shell execution is "
+        "paths. When workspace_file_action is active, use it for bounded file listing or text reads. "
+        "Broad shell execution is "
         "unavailable because it cannot reliably enforce this task-resource boundary. The injected artifact "
         "contract is the authoritative backend contract; sibling runs, benchmark sources, scoring sources, "
         "and project implementation files are not task resources and are unnecessary. "
@@ -1217,8 +1363,7 @@ def _render_handoffs(
     connection = outcomes["research_connection"]
     effect = outcomes["execution_condition_effect"]
     lifecycle = outcomes["research_lifecycle"]
-    mutation = _mutation_evidence(native)
-    surface = mutation["execution_surface"]
+    surface = _mutation_evidence(native)["execution_surface"]
     auto = root / "auto-research-handoff.md"
     auto.write_text(
         "# Auto-Research Handoff\n\n"
@@ -1236,7 +1381,7 @@ def _render_handoffs(
         + notes_summary
         + resources_summary
         + f"Research-to-execution connection: `{connection['status']}` "
-        + f"({len(connection['candidate_observation_ids'])} visible candidates).\n"
+        + f"({len(connection['evidence_linked_finding_ids'])} evidence-linked findings).\n"
         + f"Loop-integrity status: `{loop['status']}`.\n"
         + f"Research lifecycle: `{lifecycle['status']}`; pending effect assessments: "
         + f"`{len(lifecycle['pending_effect_assessment_ids'])}`.\n"
@@ -1248,11 +1393,7 @@ def _render_handoffs(
         "# Self-Harness Handoff\n\n"
         "This is task-local evidence and is not inherited by an independent task.\n\n"
         f"- Pi version: `{native.pi_version}`\n"
-        "- Logical primitive: `evidence_policy`\n"
-        "- Pi-native realization: registered tool updates extension-local guidance; public context hook inserts it before the next model request\n"
-        f"- Before: `{native.before.get('value')}`\n"
-        f"- After mutation: `{native.after.get('value')}`\n"
-        f"- Later context hook observed: `{mutation['context_hook_observed']}`\n"
+        "- Logical primitive: `execution_tool_surface`\n"
         "- Pi-native behavior capability: `pi.setActiveTools`\n"
         f"- Adjustment basis: {native.surface_after.get('basis') or 'not recorded'}\n"
         f"- Operation: `{json.dumps(native.surface_after.get('operation') or {}, ensure_ascii=False)}`\n"
@@ -1263,7 +1404,6 @@ def _render_handoffs(
         f"- Bounded execution-condition effect: `{effect['status']}` ({effect['assessment_count']} assessments)\n"
         "- Canonical linked records: `research-resources.jsonl`, `harness-decisions.jsonl`, `harness-observations.jsonl`, and `effect-assessments.jsonl`; their contents are not copied into this handoff\n"
         f"- Execution surface before/after/observed: `{native.surface_before.get('value')}` / `{native.surface_after.get('value')}` / `{native.surface_observed.get('value')}`\n"
-        f"- Last observed value: `{native.observed.get('value')}`\n"
         "- Scope: one Pi task process; no mutation is a valid outcome\n"
         "- Evidence: pi-events.jsonl contains tool call IDs, arguments, results and ordering; task-notes.md contains optional agent-authored reasons/observations\n"
         "- A context-hook snapshot is not proof of model compliance or performance improvement\n"
@@ -1285,11 +1425,6 @@ def _render_handoffs(
 
 
 def _mutation_evidence(native: PiOfficeBenchRun) -> dict[str, Any]:
-    operations = [
-        event for event in native.events
-        if event.get("type") == "tool_execution_end"
-        and event.get("toolName") == "set_evidence_policy" and not event.get("isError")
-    ]
     surface_operations = [
         event for event in native.events
         if event.get("type") == "tool_execution_end"
@@ -1313,19 +1448,6 @@ def _mutation_evidence(native: PiOfficeBenchRun) -> dict[str, Any]:
         and native.surface_observed.get("observedBy") == "context_hook_before_model_request"
     )
     return {
-        "capability_initialized": bool(native.before),
-        "before": native.before.get("value"),
-        "after": native.after.get("value"),
-        "observed": native.observed.get("value"),
-        "successful_operations": len(operations),
-        "actual_changes": sum(event.get("result", {}).get("details", {}).get("changed") is True for event in operations),
-        "context_hook_observed": bool(
-            native.after.get("toolCallId")
-            and native.after.get("toolCallId") == native.observed.get("toolCallId")
-            and native.after.get("value") == native.observed.get("value")
-            and native.observed.get("observedBy") == "context_hook_before_model_request"
-        ),
-        "effect": "guidance_in_next_model_context_not_backend_enforcement",
         "execution_surface": {
             "before": native.surface_before.get("value"),
             "after": native.surface_after.get("value"),
@@ -1453,6 +1575,19 @@ def _closed_loop_evidence(
                 "summary": observation.get("result_summary") if observation else None,
                 "source_ref": f"execution-observations.jsonl#{observation_id}",
             })
+        basis_outcomes = list(dict.fromkeys(
+            observation["outcome"]
+            for observation in evidence_observations
+            if isinstance(observation.get("outcome"), str)
+        ))
+        visible_for_later_decisions = (
+            finding.get("status", "active") != "resolved"
+            or (
+                finding.get("resolution") == "supported"
+                and isinstance(finding.get("remaining_uses"), int)
+                and finding["remaining_uses"] > 0
+            )
+        )
         goals.append({
             "goal_id": goal_id,
             "statement": finding.get("question"),
@@ -1477,6 +1612,8 @@ def _closed_loop_evidence(
             "evidence_refs": list(finding.get("evidence_refs") or []),
             "assessment_refs": list(finding.get("assessment_refs") or []),
             "evidence_observations": evidence_observations,
+            "basis_outcomes": basis_outcomes,
+            "visible_for_later_decisions": visible_for_later_decisions,
             "source_ref": f"research-resources.jsonl#{finding.get('research_event_id') or finding_id}",
         })
 
@@ -1630,10 +1767,9 @@ def _separate_outcomes(
     execution_condition_effect: dict[str, Any],
     research_lifecycle: dict[str, Any],
 ) -> dict[str, Any]:
-    mutation = _mutation_evidence(native)
-    surface = mutation["execution_surface"]
-    actual_changes = mutation["actual_changes"] + surface["actual_changes"]
-    later_observed = mutation["context_hook_observed"] or surface["observed_next_request"]
+    surface = _mutation_evidence(native)["execution_surface"]
+    actual_changes = surface["actual_changes"]
+    later_observed = surface["observed_next_request"]
     if actual_changes == 0:
         adjustment_status = "not_changed"
     elif later_observed:
@@ -1668,8 +1804,11 @@ def run_officebench_e2e(
     *,
     case_id: str | None = "1-2-0",
     paths: ProjectPaths | None = None,
-    pi_runner: Callable[[Path, Path, str, ProjectPaths], PiOfficeBenchRun] = run_pi_officebench_task,
+    pi_runner: Callable[..., PiOfficeBenchRun] = run_pi_officebench_task,
+    experiment_variant: str = "treatment",
 ) -> OfficeBenchE2EResult:
+    if experiment_variant not in {"control", "treatment"}:
+        raise ValueError("experiment_variant must be 'control' or 'treatment'")
     paths = paths or ProjectPaths.from_environment()
     paths.assert_isolated()
     root = root.resolve()
@@ -1692,7 +1831,7 @@ def run_officebench_e2e(
     required_paths = _evaluator_required_paths(item, testbed)
     targets_before = _target_manifest(testbed, required_paths)
     _write_json(root / "evaluator-targets-before.json", targets_before)
-    native = pi_runner(root, workspace, task, paths)
+    native = pi_runner(root, workspace, task, paths, experiment_variant=experiment_variant)
     targets_after = _target_manifest(testbed, required_paths)
     _write_json(root / "evaluator-targets-after.json", targets_after)
 
@@ -1706,6 +1845,16 @@ def run_officebench_e2e(
     loop_integrity = _loop_integrity(root)
     research_connection = _research_connection(root)
     execution_condition_effect = _execution_condition_effect(root)
+    execution_condition_effect = {
+        **execution_condition_effect,
+        "correctness_gated_status": (
+            "supported" if execution_condition_effect.get("status") == "supported"
+            and bool(native.agent_succeeded and evaluator_passed
+                     and task_correctness.get("all_required_paths_changed", True))
+            else "observed_but_correctness_failed"
+            if execution_condition_effect.get("status") == "supported" else "not_attempted"
+        ),
+    }
     research_lifecycle = _research_lifecycle(root)
     task_resource_boundary = _task_resource_boundary_assessment(root)
     outcomes = _separate_outcomes(
@@ -1725,6 +1874,11 @@ def run_officebench_e2e(
         "case_id": item.get("question_id"),
         "question": item.get("question"),
         "execution_model": native.model,
+        "experiment": {
+            "variant": experiment_variant,
+            "agent_visible_attribution": experiment_variant == "treatment",
+            "purpose": "paired_task_completion_comparison",
+        },
         "pi_version": native.pi_version,
         "pi_native_mutation": _mutation_evidence(native),
         "outcomes": outcomes,
@@ -1773,6 +1927,163 @@ def run_officebench_e2e(
         ],
     })
     return OfficeBenchE2EResult(root, str(item.get("question_id")), score, passed, summary, auto, harness, hierarchy)
+
+
+def run_officebench_e2e_continuation(
+    root: Path,
+    *,
+    case_id: str | None = "1-2-0",
+    paths: ProjectPaths | None = None,
+    pi_runner: Callable[..., PiOfficeBenchRun] = run_pi_officebench_task,
+    experiment_variant: str = "treatment",
+    timeout: float = 900.0,
+) -> OfficeBenchE2EContinuationResult:
+    """Evaluate a supported same-task continuation across two Pi processes.
+
+    This is an evaluation-only path. Each stage owns a separate Pi process,
+    trace and config directory, while both stages share the one prepared
+    OfficeBench workspace and one task-local JSONL resource root. The runner
+    supplies only the continuation prompt and records outcomes; the agent may
+    ignore ``inspect`` and may choose no research or no mutation.
+    """
+    if experiment_variant not in {"control", "treatment"}:
+        raise ValueError("experiment_variant must be 'control' or 'treatment'")
+    paths = paths or ProjectPaths.from_environment()
+    paths.assert_isolated()
+    root = root.resolve()
+    runs = paths.runs_dir.resolve()
+    if runs != root and runs not in root.parents:
+        raise ValueError("continuation output must stay inside the project runs directory")
+    if root.exists() and any(root.iterdir()):
+        raise ValueError("continuation output must be an empty directory; use a new run root")
+    root.mkdir(parents=True, exist_ok=True)
+
+    adapter, item, task = _prepare_real_case(paths, root, case_id)
+    workspace = Path(item["_workspace"])
+    testbed = Path(item.get("_testbed_dir") or workspace / "testbed")
+    resource_root = root / "task-state"
+    resource_root.mkdir(parents=True, exist_ok=True)
+    artifact_contract = _officebench_artifact_contract()
+    _write_json(resource_root / "artifact-contract.json", artifact_contract)
+    _write_json(resource_root / "task-resource-catalog.json", _build_task_resource_catalog(
+        testbed, str(item.get("question") or task), artifact_contract,
+    ))
+    required_paths = _evaluator_required_paths(item, testbed)
+    targets_before = _target_manifest(testbed, required_paths)
+    _write_json(root / "evaluator-targets-before.json", targets_before)
+
+    stage_results: list[dict[str, Any]] = []
+    stage_runs: list[PiOfficeBenchRun] = []
+    stage_prompts = (
+        # The evaluation runner must not decompose the task into a research or
+        # preparation phase.  Stage one receives the ordinary task unchanged;
+        # process separation is an external continuation test condition only.
+        task,
+        task + "\n\nContinue the same task from the current testbed and task-local resources left by an earlier Pi process. "
+        "First inspect what is already present and do not repeat artifact writes or verification for requirements that are already complete; finish only missing or unresolved work. "
+        "If prior research resources are relevant, you may call research_resource action=inspect (read-only) before deciding what to do next. "
+        "The current tool surface starts from its safe baseline; choose any research, apply/keep decision, and artifact actions yourself. "
+        "Do not assume that a prior process changed the harness unless a later Pi observation confirms it.",
+    )
+    for index, prompt in enumerate(stage_prompts, start=1):
+        stage_root = root / f"stage-{index}"
+        stage_root.mkdir(parents=True, exist_ok=True)
+        stage_targets_before = _target_manifest(testbed, required_paths)
+        try:
+            native = pi_runner(
+                stage_root, workspace, prompt, paths,
+                timeout=timeout, experiment_variant=experiment_variant,
+                resource_root=resource_root,
+            )
+            stage_runs.append(native)
+            # Resource files are append-only and shared by both processes;
+            # these are cumulative task counts.  Inspect calls are derived
+            # from Pi's actual ``args`` field (with compatibility fallbacks),
+            # not from the assistant message's ``arguments`` shape.
+            stage_resource_counts = {
+                "finding_events_cumulative": _jsonl_count(resource_root / "research-resources.jsonl"),
+                "inspect_calls": sum(
+                    1 for event in native.events
+                    if event.get("type") == "tool_execution_start"
+                    and event.get("toolName") == "research_resource"
+                    and (_tool_call_arguments(event) or {}).get("action") == "inspect"
+                ),
+                "decision_events_cumulative": _jsonl_count(resource_root / "harness-decisions.jsonl"),
+                "exposure_events_cumulative": _jsonl_count(resource_root / "harness-observations.jsonl"),
+                "effect_assessments_cumulative": _jsonl_count(resource_root / "effect-assessments.jsonl"),
+            }
+            stage_targets_after = _target_manifest(testbed, required_paths)
+            stage_results.append({
+                "stage": index, "status": "succeeded" if native.agent_succeeded else "failed",
+                "agent_succeeded": native.agent_succeeded, "agent_error": native.agent_error,
+                "model": native.model, "event_count": len(native.events),
+                "trace": str(stage_root / "pi-events.jsonl"),
+                "resource_counts": stage_resource_counts,
+                "required_targets_present_before": _present_target_count(stage_targets_before, required_paths),
+                "required_targets_present_after": _present_target_count(stage_targets_after, required_paths),
+                "required_targets_changed_in_stage": _changed_target_count(
+                    stage_targets_before, stage_targets_after, required_paths,
+                ),
+            })
+        except Exception as exc:
+            stage_results.append({
+                "stage": index, "status": "error", "agent_succeeded": False,
+                "agent_error": str(exc), "error_type": type(exc).__name__,
+                "trace": str(stage_root / "pi-events.jsonl"),
+            })
+            break
+
+    targets_after = _target_manifest(testbed, required_paths)
+    _write_json(root / "evaluator-targets-after.json", targets_after)
+    final = stage_runs[-1] if stage_runs else PiOfficeBenchRun(
+        "unknown", "unknown", "", False, "no stage completed", (), {}, {}, {}, {}, {}, {},
+    )
+    evaluation = adapter.evaluate(final.answer, item.get("answer", ""), item=item) if stage_runs else {
+        "score": 0.0, "is_pass": False, "error": "no stage completed",
+    }
+    _write_json(root / "jit-evaluation.json", evaluation)
+    _write_json(root / "task-result.json", {"answer": final.answer, "model": final.model})
+    loop_integrity = _loop_integrity(resource_root)
+    research_connection = _research_connection(resource_root)
+    effect = _execution_condition_effect(resource_root)
+    effect = {
+        **effect,
+        "correctness_gated_status": (
+            "supported" if effect.get("status") == "supported"
+            and bool(final.agent_succeeded and evaluation.get("is_pass", False))
+            else "observed_but_correctness_failed"
+            if effect.get("status") == "supported" else "not_attempted"
+        ),
+    }
+    lifecycle = _research_lifecycle(resource_root)
+    passed = bool(evaluation.get("is_pass", False)) and final.agent_succeeded and len(stage_runs) == 2
+    stage2_preexisting_complete = bool(stage_results and len(stage_results) > 1
+                                       and stage_results[1].get("required_targets_present_before") == len(required_paths)
+                                       and required_paths)
+    summary = root / "summary.json"
+    _write_json(summary, {
+        "status": "passed" if passed else "failed",
+        "pipeline": "pi-native-officebench-e2e-continuation",
+        "case_id": item.get("question_id"), "question": item.get("question"),
+        "experiment": {"variant": experiment_variant, "stage_count": len(stage_runs),
+                        "resource_scope": "one task-local resource root shared by two Pi processes"},
+        "stages": stage_results,
+        "task_workspace": str(workspace), "task_resource_root": str(resource_root),
+        "research_loop": loop_integrity, "research_connection": research_connection,
+        "research_lifecycle": lifecycle, "execution_condition_effect": effect,
+        "evaluator": evaluation, "score": float(evaluation.get("score", 0.0) or 0.0),
+        "evaluator_passed": bool(evaluation.get("is_pass", False)), "passed": passed,
+        "harness_improvement": "not_established",
+        "continuation_claim": "agent_continuation_observed" if len(stage_runs) == 2 else "not_observed",
+        "continuation_quality": "stage2_started_after_task_already_complete"
+        if stage2_preexisting_complete else "stage2_had_remaining_or_unverified_work",
+        "limitations": [
+            "The runner supplies stage prompts but does not require inspect, research, or mutation.",
+            "Sharing task-local JSONL is a same-task continuation condition, not cross-task memory.",
+            "A two-process continuation and observed effect do not establish general harness improvement.",
+        ],
+    })
+    return OfficeBenchE2EContinuationResult(root, str(item.get("question_id")), summary)
 
 
 def _officebench_case_ids(paths: ProjectPaths, max_samples: int) -> list[str]:
@@ -1858,3 +2169,365 @@ def run_officebench_e2e_batch(
         "isolation": "each case used a separate Pi process and fresh OfficeBench workspace",
     })
     return OfficeBenchE2EBatchResult(root, len(records), passed_cases, failed_cases, summary)
+
+
+def _experiment_variant_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    efficiency = summary.get("execution_efficiency") or {}
+    response_profile = efficiency.get("response_profile") or {}
+    repeated_groups = response_profile.get("repeated_action_groups") or []
+    outcomes = summary.get("outcomes") or {}
+    correctness = outcomes.get("task_correctness") or {}
+    research_connection = summary.get("research_connection") or {}
+    condition_effect = summary.get("execution_condition_effect") or {}
+    research_loop = summary.get("research_loop") or {}
+    research_lifecycle = summary.get("research_lifecycle") or {}
+    agent_error = str(summary.get("pi_agent_error") or "")
+    return {
+        "status": summary.get("status", "failed"),
+        "execution_model": summary.get("execution_model"),
+        "score": float(summary.get("score", 0.0)),
+        "passed": bool(summary.get("passed", False)),
+        "pi_agent_succeeded": bool(summary.get("pi_agent_succeeded", False)),
+        "pi_agent_error": agent_error,
+        "length_failure": "length" in agent_error.lower(),
+        "evaluator_passed": bool(summary.get("evaluator_passed", False)),
+        "all_required_paths_changed": correctness.get("all_required_paths_changed"),
+        "research_connection": research_connection.get("status", "not_available"),
+        "execution_condition_effect": condition_effect.get("status", "not_available"),
+        "correctness_gated_effect": condition_effect.get("correctness_gated_status", "not_available"),
+        "finding_count": int(research_loop.get("finding_count", 0) or 0),
+        "decision_count": int(research_loop.get("decision_count", 0) or 0),
+        "applied_decision_count": max(
+            0,
+            int(research_loop.get("decision_count", 0) or 0)
+            - len(research_loop.get("kept_decision_ids", []) or []),
+        ),
+        "research_lifecycle": research_lifecycle.get("status", "not_attempted"),
+        "harness_improvement": summary.get("harness_improvement", "not_established"),
+        "model_turns": efficiency.get("model_turns"),
+        "backend_bridge_processes": efficiency.get("backend_bridge_processes"),
+        "research_resource_calls": efficiency.get("research_resource_calls"),
+        "repeated_action_group_count": len(repeated_groups),
+        "multi_response_repeated_action_groups": sum(
+            isinstance(group, dict) and int(group.get("assistant_responses", 0)) > 1
+            for group in repeated_groups
+        ),
+        "max_repeated_calls_in_one_response": max(
+            (int(group.get("max_calls_in_one_response", 0)) for group in repeated_groups if isinstance(group, dict)),
+            default=0,
+        ),
+    }
+
+
+def _numeric_delta(treatment: dict[str, Any], control: dict[str, Any], key: str) -> int | float | None:
+    treatment_value = treatment.get(key)
+    control_value = control.get(key)
+    if not isinstance(treatment_value, (int, float)) or isinstance(treatment_value, bool):
+        return None
+    if not isinstance(control_value, (int, float)) or isinstance(control_value, bool):
+        return None
+    return treatment_value - control_value
+
+
+def run_officebench_e2e_experiment(
+    root: Path,
+    *,
+    case_id: str,
+    repeats: int = 1,
+    paths: ProjectPaths | None = None,
+    case_runner: Callable[..., OfficeBenchE2EResult] = run_officebench_e2e,
+) -> OfficeBenchE2EExperimentResult:
+    """Run counterbalanced control/treatment pairs without entering the agent control plane."""
+    if repeats < 1:
+        raise ValueError("repeats must be at least 1")
+    baseline_label, treatment_label = "control", "treatment"
+    arm_kwargs = {
+        "control": {"experiment_variant": "control"},
+        "treatment": {"experiment_variant": "treatment"},
+    }
+    variant_descriptions = {
+        "control": "same task tools and evaluator without agent-visible attribution resources or execution-surface mutation",
+        "treatment": "current optional task-local attribution resources and Pi-native execution-surface mutation",
+    }
+    paths = paths or ProjectPaths.from_environment()
+    paths.assert_isolated()
+    root = root.resolve()
+    runs = paths.runs_dir.resolve()
+    if runs != root and runs not in root.parents:
+        raise ValueError("experiment output must stay inside the project runs directory")
+    if root.exists() and any(root.iterdir()):
+        raise ValueError("experiment output must be an empty directory; use a new run root")
+    root.mkdir(parents=True, exist_ok=True)
+
+    pairs: list[dict[str, Any]] = []
+    labels = (baseline_label, treatment_label)
+    variant_records: dict[str, list[dict[str, Any]]] = {label: [] for label in labels}
+    completion_wins = {treatment_label: 0, baseline_label: 0, "ties": 0}
+    for repeat_index in range(1, repeats + 1):
+        order = list(labels) if repeat_index % 2 else list(reversed(labels))
+        pair_variants: dict[str, dict[str, Any]] = {}
+        for variant in order:
+            variant_root = root / f"repeat-{repeat_index:03d}" / variant
+            try:
+                result = case_runner(
+                    variant_root, case_id=case_id, paths=paths, **arm_kwargs[variant],
+                )
+                variant_summary = json.loads(result.summary.read_text(encoding="utf-8"))
+                metrics = _experiment_variant_metrics(variant_summary)
+                metrics["summary"] = str(result.summary)
+            except Exception as exc:  # preserve the paired record and continue with the other arm
+                error_path = variant_root / "runner-error.json"
+                _write_json(error_path, {
+                    "case_id": case_id, "variant": variant,
+                    "error_type": type(exc).__name__, "error": str(exc),
+                })
+                metrics = _experiment_variant_metrics({
+                    "status": "error", "pi_agent_error": str(exc),
+                })
+                metrics["summary"] = str(error_path)
+            pair_variants[variant] = metrics
+            variant_records[variant].append(metrics)
+
+        treatment = pair_variants[treatment_label]
+        control = pair_variants[baseline_label]
+        treatment_pass = int(treatment["passed"])
+        control_pass = int(control["passed"])
+        if treatment_pass > control_pass:
+            completion_wins[treatment_label] += 1
+        elif control_pass > treatment_pass:
+            completion_wins[baseline_label] += 1
+        else:
+            completion_wins["ties"] += 1
+        pairs.append({
+            "repeat": repeat_index,
+            "execution_order": order,
+            "variants": pair_variants,
+            "same_execution_model": treatment.get("execution_model") == control.get("execution_model"),
+            "observed_delta": {
+                "score": _numeric_delta(treatment, control, "score"),
+                "passed": treatment_pass - control_pass,
+                "model_turns": _numeric_delta(treatment, control, "model_turns"),
+                "backend_bridge_processes": _numeric_delta(
+                    treatment, control, "backend_bridge_processes",
+                ),
+            },
+        })
+
+    aggregates: dict[str, dict[str, Any]] = {}
+    for variant, records in variant_records.items():
+        score_total = sum(float(record["score"]) for record in records)
+        aggregates[variant] = {
+            "runs": len(records),
+            "passes": sum(bool(record["passed"]) for record in records),
+            "pass_rate": sum(bool(record["passed"]) for record in records) / len(records),
+            "average_score": score_total / len(records),
+            "length_failures": sum(bool(record["length_failure"]) for record in records),
+            "finding_or_decision_connections": sum(
+                record["research_connection"] not in {
+                    "no_finding", "not_available",
+                }
+                for record in records
+            ),
+            "observed_execution_condition_effects": sum(
+                record["execution_condition_effect"] == "supported" for record in records
+            ),
+            "correctness_gated_execution_condition_effects": sum(
+                record.get("correctness_gated_effect") == "supported" for record in records
+            ),
+        }
+
+    summary = root / "summary.json"
+    _write_json(summary, {
+        "status": "completed",
+        "pipeline": "pi-native-officebench-e2e-paired-experiment",
+        "case_id": case_id,
+        "pair_count": repeats,
+        "design": {
+            "unit": "same_case_paired_run",
+            "variants": variant_descriptions,
+            "execution_order": "counterbalanced_by_repeat",
+            "agent_runtime": "fresh_independent_pi_process_per_variant",
+            "task_workspace": "fresh_independent_officebench_workspace_per_variant",
+        },
+        "pairs": pairs,
+        "aggregate": {"completion_wins": completion_wins, "variants": aggregates},
+        "causal_claim": "not_automatically_established",
+        "interpretation": [
+            "Use task completion and evaluator correctness as primary outcomes; findings are mediators, not rewards.",
+            "Observed paired deltas need repeated cases and stable model settings before supporting a causal claim.",
+            "Artifact-path changes and evaluator scores remain separate signals, not interchangeable proof.",
+        ],
+    })
+    return OfficeBenchE2EExperimentResult(root, case_id, repeats, summary)
+
+
+def run_officebench_e2e_cohort(
+    root: Path,
+    *,
+    case_ids: Sequence[str],
+    repeats: int = 1,
+    paths: ProjectPaths | None = None,
+    experiment_runner: Callable[..., OfficeBenchE2EExperimentResult] = run_officebench_e2e_experiment,
+    validation_strata: dict[str, dict[str, str]] | None = None,
+) -> OfficeBenchE2ECohortResult:
+    """Run several isolated OfficeBench control/treatment experiments.
+
+    This is an evaluation-only coordinator. Each case is delegated to the
+    existing paired runner in its own directory; no research, mutation, or
+    scheduling decision is made here.
+    """
+    if repeats < 1:
+        raise ValueError("repeats must be at least 1")
+    baseline_label, treatment_label = "control", "treatment"
+    normalized = tuple(dict.fromkeys(str(case_id).strip() for case_id in case_ids if str(case_id).strip()))
+    if not normalized:
+        raise ValueError("case_ids must contain at least one case")
+    paths = paths or ProjectPaths.from_environment()
+    paths.assert_isolated()
+    root = root.resolve()
+    runs = paths.runs_dir.resolve()
+    if runs != root and runs not in root.parents:
+        raise ValueError("cohort output must stay inside the project runs directory")
+    if root.exists() and any(root.iterdir()):
+        raise ValueError("cohort output must be an empty directory; use a new run root")
+    root.mkdir(parents=True, exist_ok=True)
+    case_reports: list[dict[str, Any]] = []
+    for case_id in normalized:
+        case_root = root / case_id
+        try:
+            result = experiment_runner(
+                case_root, case_id=case_id, repeats=repeats, paths=paths,
+            )
+            report = json.loads(result.summary.read_text(encoding="utf-8"))
+            case_reports.append({
+                "case_id": case_id,
+                "status": report.get("status", "completed"),
+                "summary": str(result.summary),
+                "pair_count": report.get("pair_count", repeats),
+                "aggregate": report.get("aggregate", {}),
+                "causal_claim": report.get("causal_claim", "not_automatically_established"),
+            })
+        except Exception as exc:
+            case_root.mkdir(parents=True, exist_ok=True)
+            error_path = case_root / "runner-error.json"
+            _write_json(error_path, {"case_id": case_id, "error_type": type(exc).__name__, "error": str(exc)})
+            case_reports.append({
+                "case_id": case_id, "status": "error", "summary": str(error_path),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    variant_aggregates: dict[str, dict[str, int | float]] = {}
+    for variant in (baseline_label, treatment_label):
+        records = [
+            report.get("aggregate", {}).get("variants", {}).get(variant, {})
+            for report in case_reports
+            if isinstance(report.get("aggregate"), dict)
+        ]
+        records = [record for record in records if isinstance(record, dict) and record.get("runs")]
+        runs_total = sum(int(record.get("runs", 0)) for record in records)
+        passes = sum(int(record.get("passes", 0)) for record in records)
+        variant_aggregates[variant] = {
+            "runs": runs_total,
+            "passes": passes,
+            "pass_rate": passes / runs_total if runs_total else 0.0,
+            "average_score": (
+                sum(float(record.get("average_score", 0.0) or 0.0) * int(record.get("runs", 0)) for record in records) / runs_total
+                if runs_total else 0.0
+            ),
+            "length_failures": sum(int(record.get("length_failures", 0)) for record in records),
+            "observed_execution_condition_effects": sum(int(record.get("observed_execution_condition_effects", 0)) for record in records),
+            "correctness_gated_execution_condition_effects": sum(int(record.get("correctness_gated_execution_condition_effects", 0)) for record in records),
+            "finding_or_decision_connections": sum(int(record.get("finding_or_decision_connections", 0)) for record in records),
+        }
+    paired_delta_records: list[dict[str, Any]] = []
+    validation_pair_records: list[dict[str, Any]] = []
+    for report in case_reports:
+        if not isinstance(report.get("aggregate"), dict):
+            continue
+        # The per-case paired runner stores one observed delta per repeat. Keep
+        # those compact deltas here so cohort analysis does not need to reopen
+        # every nested variant summary.
+        case_summary_path = report.get("summary")
+        if not case_summary_path:
+            continue
+        try:
+            case_summary = json.loads(Path(str(case_summary_path)).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for pair in case_summary.get("pairs", []) if isinstance(case_summary, dict) else []:
+            if isinstance(pair, dict) and isinstance(pair.get("observed_delta"), dict):
+                paired_delta_records.append({
+                    "case_id": report["case_id"],
+                    "repeat": pair.get("repeat"),
+                    "observed_delta": pair["observed_delta"],
+                })
+                validation_pair_records.append({
+                    "case_id": report["case_id"],
+                    "repeat": pair.get("repeat"),
+                    "pair": pair,
+                })
+    def mean_delta(key: str) -> float | None:
+        values = [
+            delta.get(key) for item in paired_delta_records
+            for delta in [item.get("observed_delta", {})]
+            if isinstance(delta.get(key), (int, float)) and not isinstance(delta.get(key), bool)
+        ]
+        return sum(float(value) for value in values) / len(values) if values else None
+    validation_records: list[dict[str, Any]] = []
+    if validation_strata:
+        for item in validation_pair_records:
+            case_key = f"officebench:{item['case_id']}"
+            labels = validation_strata.get(case_key)
+            if labels is None:
+                continue
+            validation_records.append({
+                "benchmark": "officebench",
+                "case_id": item["case_id"],
+                "repeat": item.get("repeat"),
+                **project_pair_evidence(labels, item["pair"]),
+            })
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "pipeline": "pi-native-officebench-e2e-cohort",
+        "case_ids": list(normalized),
+        "case_count": len(normalized),
+        "repeat_count": repeats,
+        "design": {
+            "unit": "independent_same_case_paired_run",
+            "coordinator_role": "isolation_and_aggregation_only",
+            "agent_runtime": "fresh_independent_pi_process_per_variant",
+            "task_workspace": "fresh independent OfficeBench workspace per variant",
+        },
+        "cases": case_reports,
+        "aggregate": {
+            "variants": variant_aggregates,
+            "paired_deltas": {
+                "pairs_with_delta": len(paired_delta_records),
+                "average_treatment_minus_control": {
+                    "score": mean_delta("score"),
+                    "passed": mean_delta("passed"),
+                    "model_turns": mean_delta("model_turns"),
+                    "backend_bridge_processes": mean_delta("backend_bridge_processes"),
+                },
+                "source": "nested paired experiment observed_delta fields",
+            },
+        },
+        "harness_improvement": "not_established",
+        "causal_claim": "not_automatically_established",
+        "interpretation": [
+            "Cases are heterogeneous validation strata, not interchangeable samples.",
+            "Task correctness and execution-condition effects remain separate outcomes.",
+            "A cohort summary does not replace repeated held-out evaluation or establish causality.",
+        ],
+    }
+    if validation_strata:
+        payload["validation_evidence"] = {
+            "agent_visible": False,
+            "selection_policy": "runner_only_predeclared_strata",
+            "manifest_sha256": validation_manifest_fingerprint(validation_strata),
+            "records": validation_records,
+            "unlabelled_pair_count": len(paired_delta_records) - len(validation_records),
+            "aggregate": aggregate_validation_evidence(validation_records),
+        }
+    summary = root / "summary.json"
+    _write_json(summary, payload)
+    return OfficeBenchE2ECohortResult(root, normalized, repeats, summary)

@@ -2,17 +2,16 @@
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-type EvidencePolicy = "summary_only" | "source_and_date";
 type ExpectedRecurrence = "low" | "medium" | "high";
 type SurfaceChoice = "apply" | "keep";
 type SurfaceMode = "general" | "calendar_focused" | "calendar_batch" | "email_batch";
 type EffectMetric = "semantic_error_rate" | "focused_tool_use_rate" | "calendar_batch_utilization" | "email_batch_utilization";
-type ResearchAction = "record" | "open" | "update" | "resolve" | "reopen";
+type ResearchAction = "record" | "open" | "update" | "resolve" | "reopen" | "inspect";
 type ResearchStatus = "open" | "active" | "resolved";
 type SurfaceDecisionInput = {
 	choice: SurfaceChoice;
@@ -24,27 +23,6 @@ type SurfaceDecisionInput = {
 };
 type SurfaceDecisionParams = SurfaceDecisionInput & { basis_resource_ids: string[] };
 type ObservationOutcome = "success" | "semantic_error" | "transport_error";
-type DecisionSupport = {
-	capability_id: "execution_tool_surface";
-	current_surface: SurfaceMode;
-	candidate_mode: "calendar_batch" | "email_batch";
-	reason: "direct_calendar_path_observed" | "calendar_path_error_observed" | "structured_email_source_observed" | "direct_email_path_observed";
-	next_request_effect: string;
-	consider_if: string;
-	skip_if: string;
-	evidence_ref: string;
-	record_with: "research_resource";
-	decide_with: "research_resource.continue_with or decide_execution_surface";
-	one_step_if_worthwhile: string;
-	cost_model: {
-		direct_bridge_processes: "remaining_uses";
-		batch_bridge_processes: 1;
-		decision_model_requests: 1;
-		break_even_remaining_uses: number;
-	};
-	input_shape: string;
-	no_change_valid: true;
-};
 type ExecutionObservation = {
 	event_id: string;
 	tool: string;
@@ -53,8 +31,6 @@ type ExecutionObservation = {
 	outcome: ObservationOutcome;
 	error_kind?: string;
 	category: "task_action" | "resource";
-	relevant_capability?: "execution_tool_surface";
-	decision_support?: DecisionSupport;
 	attempted_work_units?: number;
 	completed_work_units?: number;
 	result_summary: string;
@@ -106,15 +82,17 @@ type ResearchFinding = {
 class TaskResourceBoundaryError extends Error {}
 
 export default function officeBenchE2EExtension(pi: ExtensionAPI) {
+	const experimentVariant = process.env.PI_OFFICEBENCH_EXPERIMENT_VARIANT === "control"
+		? "control" : "treatment";
 	const toolSurfaces: Record<SurfaceMode, string[]> = {
-		general: ["officebench_action", "calendar_action", "email_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface", "set_evidence_policy"],
-		calendar_focused: ["calendar_action", "email_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface", "set_evidence_policy"],
-		calendar_batch: ["calendar_action", "calendar_batch_action", "email_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface", "set_evidence_policy"],
-		email_batch: ["calendar_action", "email_action", "email_batch_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface", "set_evidence_policy"],
+		general: experimentVariant === "control"
+			? ["officebench_action", "calendar_action", "email_action", "workspace_file_action", "task_notes"]
+			: ["officebench_action", "calendar_action", "email_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface"],
+		calendar_focused: ["calendar_action", "email_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface"],
+		calendar_batch: ["calendar_action", "calendar_batch_action", "email_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface"],
+		email_batch: ["calendar_action", "email_action", "email_batch_action", "workspace_file_action", "task_notes", "research_resource", "decide_execution_surface"],
 	};
-	let evidencePolicy: EvidencePolicy = "summary_only";
 	let baselineWritten = false;
-	let lastEvidenceMutationCallId: string | undefined;
 	let lastSurfaceMutationCallId: string | undefined;
 	let lastSurfaceAdjustment: {
 		decisionId: string;
@@ -136,7 +114,6 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 	const findings = new Map<string, ResearchFinding>();
 	const effectAssessments = new Map<string, Record<string, unknown>>();
 	const absorbedEffectAssessments = new Set<string>();
-	const decisionSupportEmitted = new Set<"calendar_batch" | "email_batch">();
 	const observedSurfaceCalls = new Set<string>();
 	let pendingEffectWindow: PendingEffectWindow | undefined;
 	let taskNotes = "";
@@ -168,31 +145,31 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		};
 	const relevantApps = Array.isArray(taskResourceCatalog.relevant_apps)
 		? taskResourceCatalog.relevant_apps.filter((value): value is string => typeof value === "string") : [];
-	const catalogInventory = taskResourceCatalog.inventory as { entries?: Array<{ path?: string; kind?: string }>; truncated?: boolean } | undefined;
-	const inventoryFiles = catalogInventory?.entries?.filter((entry) => entry.kind === "file") ?? [];
-	const textFilePattern = /\.(?:txt|md|json|jsonl|csv|tsv|xml|html?|ya?ml)$/i;
-	const completeBinaryOnlyInventory = existsSync(runTaskCatalogPath)
-		&& catalogInventory?.truncated === false
-		&& inventoryFiles.length > 0
-		&& inventoryFiles.every((entry) => typeof entry.path === "string" && !textFilePattern.test(entry.path));
-	if (completeBinaryOnlyInventory) {
+	// The broad compatibility tool remains available for mixed tasks, but a
+	// task-relevant direct Excel contract avoids making the model guess action
+	// names such as excel.write_file. This is exposed identically in control and
+	// treatment; it is a resource/contract correction, not an attribution aid.
+	if (relevantApps.includes("excel")) {
 		for (const tools of Object.values(toolSurfaces)) {
-			const index = tools.indexOf("workspace_file_action");
-			if (index >= 0) tools.splice(index, 1);
+			const index = tools.indexOf("officebench_action");
+			if (index >= 0) tools.splice(index, 0, "excel_action");
 		}
 	}
 	mkdirSync(nativeRoot, { recursive: true });
-	writeFileSync(join(outputRoot, "capability-catalog.json"), `${JSON.stringify({
-		format: "task-local-capability-catalog-v1",
+	const taskCapabilityCatalog = {
+		format: "task-local-capability-catalog-v2",
 		recordedAt: new Date().toISOString(),
 		scope: "one_pi_agent_process",
 		effect_timing: "next_model_request",
+		selection: "agent-authored from task-local evidence",
+		runtime_inference: "none",
 		initial_surface: "general",
 		active_tools: toolSurfaces.general,
 		available_inactive: [{
 			tool: "calendar_batch_action",
 			kind: "task_action",
 			changes: "perform 2-16 real calendar creates through one Pi tool call and one Python bridge process",
+			input: "events: 2-16 items with user, summary, time_start, and time_end",
 			enabled_by: "pi.setActiveTools via a finding-backed calendar_batch decision",
 			effective_at: "next_model_request",
 			scope: "current Pi task process",
@@ -216,17 +193,68 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 			{ id: "task_notes", kind: "task_resource", optional: true, changes_execution: false },
 			{ id: "research_resource", kind: "task_resource", optional: true,
 				produces: ["versioned research-goal-N", "versioned finding-N"],
-				lifecycle: ["open", "update", "resolve", "reopen"],
+				lifecycle: ["open", "update", "resolve", "reopen", "inspect"],
 				changes_execution: "only when an active evidence-backed version supplies optional continue_with" },
 			{ id: "execution_tool_surface", kind: "self_harness_capability", optional: true,
 				pi_native_operation: "pi.setActiveTools", effective_at: "next_model_request" },
-			{ id: "evidence_policy", kind: "context_guidance", optional: true,
-				pi_native_operation: "context hook", effective_at: "next_model_request" },
 		],
 		surface_modes: toolSurfaces,
-	}, null, 2)}\n`, "utf8");
+	};
+	const agentCapabilityDisclosure = {
+		format: "task-local-capability-disclosure-v1",
+		scope: taskCapabilityCatalog.scope,
+		effect_timing: taskCapabilityCatalog.effect_timing,
+		selection: taskCapabilityCatalog.selection,
+		initial_surface: taskCapabilityCatalog.initial_surface,
+		available_inactive: taskCapabilityCatalog.available_inactive,
+	};
+	writeFileSync(join(outputRoot, "capability-catalog.json"), `${JSON.stringify(taskCapabilityCatalog, null, 2)}\n`, "utf8");
 	const appendJsonl = (name: string, value: unknown) =>
 		appendFileSync(join(outputRoot, name), `${JSON.stringify(value)}\n`, "utf8");
+	const readJsonl = (name: string): Array<Record<string, any>> => {
+		const path = join(outputRoot, name);
+		if (!existsSync(path)) return [];
+		try {
+			return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+				try {
+					const value = JSON.parse(line);
+					return value && typeof value === "object" && !Array.isArray(value) ? [value as Record<string, any>] : [];
+				} catch { return []; }
+			});
+		} catch { return []; }
+	};
+	const numericSuffix = (value: unknown): number => {
+		const match = typeof value === "string" && value.match(/(?:^|[-_])(\d+)$/);
+		return match ? Number(match[1]) : 0;
+	};
+	// Rehydrate only append-only task resources from this run directory. This
+	// restores agent-visible facts after a supported same-task restart without
+	// importing another task's state or reconstructing a control workflow.
+	for (const observation of readJsonl("execution-observations.jsonl")) {
+		if (typeof observation.event_id === "string") executionObservations.set(observation.event_id, observation as ExecutionObservation);
+	}
+	for (const finding of readJsonl("research-resources.jsonl")) {
+		if (typeof finding.finding_id !== "string" || typeof finding.version !== "number") continue;
+		const previous = findings.get(finding.finding_id);
+		if (!previous || finding.version >= previous.version) findings.set(finding.finding_id, finding as ResearchFinding);
+		findingCounter = Math.max(findingCounter, numericSuffix(finding.finding_id));
+		researchEventCounter = Math.max(researchEventCounter, numericSuffix(finding.research_event_id));
+	}
+	for (const assessment of readJsonl("effect-assessments.jsonl")) {
+		if (typeof assessment.effect_assessment_id === "string") {
+			effectAssessments.set(assessment.effect_assessment_id, assessment);
+			effectAssessmentCounter = Math.max(effectAssessmentCounter, numericSuffix(assessment.effect_assessment_id));
+		}
+	}
+	for (const finding of findings.values()) {
+		for (const assessmentId of finding.assessment_refs ?? []) absorbedEffectAssessments.add(assessmentId);
+	}
+	for (const decision of readJsonl("harness-decisions.jsonl")) {
+		decisionCounter = Math.max(decisionCounter, numericSuffix(decision.decision_id));
+	}
+	const restoredResourceHint = experimentVariant === "treatment" && (findings.size || effectAssessments.size)
+		? "This task directory contains prior task-local research records from an earlier supported continuation. They are not execution state: if relevant, call research_resource action=inspect (read-only) to review them; the current Pi tool surface still starts from its safe baseline and any new apply/keep decision remains yours. "
+		: "";
 	const summarize = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 240);
 	const finishEffectWindow = (completionReason: "horizon_reached" | "task_settled" | "superseded") => {
 		if (!pendingEffectWindow) return;
@@ -304,13 +332,12 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		// the same assistant response were selected from the old surface and must
 		// not consume the post-change observation horizon.
 		if (!observedSurfaceCalls.has(window.toolCallId)) return;
-		const metricRelevant = window.effectMetric === "email_batch_utilization"
-			? observation.tool === "email_action" || observation.tool === "email_batch_action"
-				|| observation.operation.startsWith("email.")
-			: ["calendar_batch_utilization", "focused_tool_use_rate"].includes(window.effectMetric)
-				? observation.tool === "calendar_action" || observation.tool === "calendar_batch_action"
-					|| observation.operation.startsWith("calendar.")
-				: true;
+		const metricApp = window.effectMetric === "email_batch_utilization" ? "email"
+			: ["calendar_batch_utilization", "focused_tool_use_rate"].includes(window.effectMetric) ? "calendar" : undefined;
+		const metricRelevant = metricApp
+			? observation.tool === `${metricApp}_action` || observation.tool === `${metricApp}_batch_action`
+				|| observation.operation.startsWith(`${metricApp}.`)
+			: true;
 		if (!metricRelevant) return;
 		window.observationIds.push(observation.event_id);
 		if (observation.outcome !== "success") window.semanticErrors += 1;
@@ -338,56 +365,8 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		category: "task_action" | "resource" = "task_action",
 		workUnits?: { attempted: number; completed: number },
 	) => {
-		const calendarRelevant = tool === "calendar_action" || operation.startsWith("calendar.");
-		const emailBatchEvidence = relevantApps.includes("email") && outcome === "success"
-			&& (operation === "excel.read_file" || tool === "email_action" && operation === "send_email"
-				|| operation === "email.send_email");
-		let decisionSupport: DecisionSupport | undefined = category === "task_action"
-			&& executionSurface === "general" && emailBatchEvidence
-			? {
-				capability_id: "execution_tool_surface",
-				current_surface: executionSurface,
-				candidate_mode: "email_batch",
-				reason: operation === "excel.read_file" ? "structured_email_source_observed" : "direct_email_path_observed",
-				next_request_effect: "pi.setActiveTools can enable email_batch_action before the next model request; one Pi call can perform multiple real email sends",
-				consider_if: "remaining_uses >= 4, sends are similar, and per-item non-atomic results are acceptable",
-				skip_if: "remaining_uses < 4 unless another concrete benefit exceeds the decision cost, messages cannot be prepared together, or partial-failure handling makes batching unsuitable",
-				evidence_ref: toolCallId,
-				record_with: "research_resource",
-				decide_with: "research_resource.continue_with or decide_execution_surface",
-				one_step_if_worthwhile: `If remaining_uses >= 4 and this observation is sufficient evidence, call research_resource once with action=record, evidence_refs=["${toolCallId}"], and continue_with mode=email_batch; otherwise continue directly without research or change.`,
-				cost_model: { direct_bridge_processes: "remaining_uses", batch_bridge_processes: 1,
-					decision_model_requests: 1, break_even_remaining_uses: 4 },
-				input_shape: "sender, subject, content_template, recipients[{recipient,variables}]",
-				no_change_valid: true,
-			}
-			: category === "task_action" && executionSurface === "general" && calendarRelevant
-			? {
-				capability_id: "execution_tool_surface",
-				current_surface: executionSurface,
-				candidate_mode: "calendar_batch",
-				reason: outcome === "success" ? "direct_calendar_path_observed" : "calendar_path_error_observed",
-				next_request_effect: "pi.setActiveTools can enable calendar_batch_action before the next model request; one Pi call can perform multiple real calendar creates",
-				consider_if: "remaining_uses >= 3, creates are similar, and the observed direct calendar path is suitable for them",
-				skip_if: "remaining_uses < 3 unless another concrete benefit exceeds the decision cost, creates are not similar, or partial-failure handling makes batching unsuitable",
-				evidence_ref: toolCallId,
-				record_with: "research_resource",
-				decide_with: "research_resource.continue_with or decide_execution_surface",
-				one_step_if_worthwhile: `If remaining_uses >= 3 and this observation is sufficient evidence, call research_resource once with action=record, evidence_refs=["${toolCallId}"], and continue_with mode=calendar_batch; otherwise continue directly without research or change.`,
-				cost_model: { direct_bridge_processes: "remaining_uses", batch_bridge_processes: 1,
-					decision_model_requests: 1, break_even_remaining_uses: 3 },
-				input_shape: "events[{user,summary,time_start,time_end}]",
-				no_change_valid: true,
-			}
-			: undefined;
-		if (decisionSupport) {
-			if (decisionSupportEmitted.has(decisionSupport.candidate_mode)) decisionSupport = undefined;
-			else decisionSupportEmitted.add(decisionSupport.candidate_mode);
-		}
 		const record: ExecutionObservation = { event_id: toolCallId, tool, operation, status, outcome,
 			error_kind: errorKind, category,
-			relevant_capability: category === "task_action" ? "execution_tool_surface" : undefined,
-			decision_support: decisionSupport,
 			attempted_work_units: workUnits?.attempted,
 			completed_work_units: workUnits?.completed,
 			result_summary: summarize(result), recordedAt: new Date().toISOString() };
@@ -397,28 +376,15 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		return record;
 	};
 	const visibleObservation = (text: string, observation: ExecutionObservation) => {
-		const card = { observation_id: observation.event_id, operation: observation.operation,
+		if (experimentVariant === "control") return text;
+		const card = { observation_id: observation.event_id, tool: observation.tool,
+			operation: observation.operation,
 			outcome: observation.outcome, error_kind: observation.error_kind,
 			attempted_work_units: observation.attempted_work_units,
-			completed_work_units: observation.completed_work_units,
-			relevant_capability: observation.relevant_capability,
-			decision_support: observation.decision_support };
+			completed_work_units: observation.completed_work_units };
 		return `${text}\n\nEXECUTION_OBSERVATION: ${JSON.stringify(card)}`;
 	};
 
-	const snapshot = (stage: "before" | "after" | "observed", observedBy: string) => {
-		const value = {
-			stage,
-			primitive: "evidence_policy",
-			value: evidencePolicy,
-			scope: "one_pi_agent_process",
-			observedBy,
-			toolCallId: lastEvidenceMutationCallId,
-			activeTools: pi.getActiveTools(),
-		};
-		writeFileSync(join(nativeRoot, `${stage}.json`), `${JSON.stringify(value, null, 2)}\n`, "utf8");
-		return value;
-	};
 	const surfaceSnapshot = (stage: "before" | "after" | "observed", observedBy: string) => {
 		const activeTools = pi.getActiveTools();
 		const value = { stage, primitive: "execution_tool_surface", value: executionSurface,
@@ -518,51 +484,48 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		return { decision, details };
 	};
 
+	const attributionMethod = experimentVariant === "treatment" ? `${method}\n\n` : "";
+	const attributionInstructions = experimentVariant === "treatment"
+		? "The listed Pi tools describe actual task-local capabilities. task_notes and research_resource are optional current-task resources, not required research steps. When a material uncertainty must be investigated before a later decision, research_resource can open a bounded goal, then update, resolve, or reopen its stable versioned finding as evidence arrives. A direct evidence-backed record remains valid when no prospective goal would help. " +
+			"Task-action results end with neutral EXECUTION_OBSERVATION metadata whose observation_id can be cited by research_resource; the result body itself remains authoritative. " +
+			"The runtime does not infer capability candidates from task actions, prescribe task-specific thresholds, or create findings and decisions. Static tool contracts describe the available operations; the Agent alone decides from task-local evidence whether a capability is relevant and whether to record, apply, keep, revert, or ignore it. An active evidence-backed finding may use research_resource.continue_with or the separate decide_execution_surface tool; apply or keep are both valid. " +
+			"An apply takes effect before the next model request and starts the declared bounded effect window; its assessment is returned to this task when available. A system assessment remains pending until an agent-authored research update or resolution cites its assessment ID; absorb, reject, or leave it pending explicitly instead of treating the runtime metric as an automatic research conclusion. " +
+			"Routine one-off observations need no finding or decision, and no research or harness change is required. "
+		: "";
+
 	pi.on("before_agent_start", async (event) => {
 		if (!baselineWritten) {
 			// Registered tools can be held inactive by Pi without changing its protocol.
 			// This establishes the initial surface; only an agent decision can enable batch later.
 			pi.setActiveTools(toolSurfaces.general);
-			snapshot("before", "before_agent_start");
 			surfaceSnapshot("before", "before_agent_start");
 			baselineWritten = true;
 		}
 		return {
 			systemPrompt:
 				`${event.systemPrompt}\n\n` +
-				`${method}\n\n` +
+				attributionMethod +
+				(experimentVariant === "treatment"
+					? `Current task capability catalog (bounded static disclosure): ${JSON.stringify(agentCapabilityDisclosure)}\n\n`
+					: "") +
 				`Current task resource catalog (bounded authoritative initial disclosure): ${JSON.stringify(taskResourceCatalog)}\n\n` +
 				"This catalog already contains the relevant exact action contracts, task-language conventions, and bounded relative-path inventory. Use its listed paths directly and do not spend calls rediscovering the inventory or querying the complete canonical contract. Treat the catalog as settled execution semantics and proceed without searching for alternate hidden interpretations. " +
 				`Initial task-local Pi tools: ${pi.getActiveTools().join(", ")}. The live tool schema is authoritative if this set changes. ` +
 				"The current case testbed is the only task workspace. Do not inspect sibling runs, benchmark data or scoring sources, or project implementation files; they are outside the task-resource boundary and are unnecessary because the artifact contract states the supported behavior. " +
-				"The listed Pi tools describe actual task-local capabilities. task_notes and research_resource are optional current-task resources, not required research steps. When a material uncertainty must be investigated before a later decision, research_resource can open a bounded goal, then update, resolve, or reopen its stable versioned finding as evidence arrives. A direct evidence-backed record remains valid when no prospective goal would help. " +
-				"Task-action results end with compact EXECUTION_OBSERVATION cards whose observation_id can be cited by research_resource. " +
-				"A decision_support field makes a relevant finding-to-capability connection visible; it is an option, not a requirement or proof that changing is worthwhile. " +
-				"Initially inactive calendar_batch_action and email_batch_action capabilities can each perform 2-16 real repeated writes through one Pi call and one Python bridge process. A successful structured source read or direct action may expose decision_support for the relevant batch mode. When remaining work meets that card's disclosed break-even and the observation is sufficient evidence, one research_resource action=record with continue_with can record the finding and apply or keep in the same call; the selected batch mode becomes visible on the next request. The separate decide_execution_surface tool remains available when the choice is deferred. No research or change remains valid when its benefit does not exceed the decision cost. calendar_focused only removes the broad tool. " +
-				"Pi automatically requests the model again after each tool result. Therefore, when a batch adjustment is worthwhile, call research_resource.continue_with once, end that deliberation, and use the newly visible batch tool on the immediately following request; do not repeatedly reconsider before the declared reconsider condition. " +
-				"An apply takes effect before the next model request and starts the declared bounded effect window; its assessment is returned to this task when available. A system assessment remains pending until an agent-authored research update or resolution cites its assessment ID; absorb, reject, or leave it pending explicitly instead of treating the runtime metric as an automatic research conclusion. " +
-				"Routine one-off observations need no finding or decision, and no research or harness change is required. " +
+				restoredResourceHint +
+				attributionInstructions +
 				"Use workspace_file_action for bounded testbed listing and text reads; broad shell execution is unavailable because it cannot be reliably confined. All task actions must use an available task tool. Finish with a concise natural-language answer after required artifact changes are complete.",
 		};
 	});
 
-	// Public Pi hook: the next model request sees the current policy, including
-	// continuations within the same prompt. This is guidance, not enforcement.
 	pi.on("context", async (event) => {
-		const guidance = evidencePolicy === "source_and_date"
-			? "Retain source identifiers and dates/times when interpreting evidence. Before drawing a conclusion, check that records refer to the relevant participants and date range; mark missing provenance or temporal ambiguity explicitly."
-			: "Summarize relevant evidence concisely while preserving facts necessary for the task. Do not invent missing facts.";
-		if (lastEvidenceMutationCallId) snapshot("observed", "context_hook_before_model_request");
+		if (experimentVariant === "control") return { messages: event.messages };
 		const shouldObserveSurface = lastSurfaceMutationCallId
 			&& !observedSurfaceCalls.has(lastSurfaceMutationCallId);
 		const surfaceObservation = shouldObserveSurface
 			? surfaceSnapshot("observed", "context_hook_before_model_request")
 			: undefined;
-		const messages = [...event.messages, {
-			role: "user" as const,
-			content: [{ type: "text" as const, text: `Current task-local evidence guidance (${evidencePolicy}): ${guidance}` }],
-			timestamp: Date.now(),
-		}];
+		const messages = [...event.messages];
 		if (surfaceObservation) {
 			observedSurfaceCalls.add(lastSurfaceMutationCallId!);
 			const persistedObservation = {
@@ -612,16 +575,34 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 			});
 		}
 		if (findings.size) {
-			const digest = [...findings.values()].filter((finding) => finding.status !== "resolved").slice(-5)
-				.map(({ goal_id, finding_id, version, status, question, scope, uncertainty, evidence_plan,
-					evidence, evidence_refs, assessment_refs, expected_recurrence, remaining_uses, decision }) =>
-					({ goal_id, finding_id, version, status, question, scope, uncertainty,
-						evidence_plan: status === "open" ? evidence_plan : undefined,
-						evidence, evidence_refs, assessment_refs, expected_recurrence, remaining_uses, decision }));
+			const ordered = [...findings.values()];
+			const active = ordered.filter((finding) => finding.status !== "resolved").slice(-5);
+			const retainedCapacity = Math.min(3, 5 - active.length);
+			const retained = retainedCapacity > 0
+				? ordered.filter((finding) => finding.status === "resolved"
+					&& finding.resolution === "supported" && finding.remaining_uses > 0).slice(-retainedCapacity)
+				: [];
+			const digest = [...active, ...retained].map((finding) => finding.status === "resolved"
+				? {
+					goal_id: finding.goal_id, finding_id: finding.finding_id, version: finding.version,
+					status: finding.status, resolution: finding.resolution, scope: finding.scope,
+					decision: finding.decision, evidence_refs: finding.evidence_refs,
+					remaining_uses: finding.remaining_uses, retained_for_later_decisions: true,
+				}
+				: {
+					goal_id: finding.goal_id, finding_id: finding.finding_id, version: finding.version,
+					status: finding.status, question: finding.question, scope: finding.scope,
+					uncertainty: finding.uncertainty,
+					evidence_plan: finding.status === "open" ? finding.evidence_plan : undefined,
+					evidence: finding.evidence, evidence_refs: finding.evidence_refs,
+					assessment_refs: finding.assessment_refs,
+					expected_recurrence: finding.expected_recurrence,
+					remaining_uses: finding.remaining_uses, decision: finding.decision,
+				});
 			if (digest.length) {
 				messages.push({
 					role: "user" as const,
-					content: [{ type: "text" as const, text: `Active task-local execution findings: ${JSON.stringify(digest)}` }],
+					content: [{ type: "text" as const, text: `Task-local execution findings: ${JSON.stringify(digest)}` }],
 					timestamp: Date.now(),
 				});
 			}
@@ -667,14 +648,20 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 			|| isAbsolute(lexicalRelative)) {
 			throw new TaskResourceBoundaryError("path leaves the current testbed");
 		}
-		if (existsSync(candidate)) {
-			if (lstatSync(candidate).isSymbolicLink()) throw new TaskResourceBoundaryError("symbolic links are outside the task-resource contract");
-			const actual = realpathSync(candidate);
-			const actualRelative = relative(realpathSync(testbedRoot), actual);
-			if (actualRelative === ".." || actualRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
-				|| isAbsolute(actualRelative)) {
-				throw new TaskResourceBoundaryError("resolved path leaves the current testbed");
+		let existingPrefix = testbedRoot;
+		let cursor = testbedRoot;
+		for (const segment of lexicalRelative.split(/[\\/]/).filter(Boolean)) {
+			cursor = join(cursor, segment);
+			if (!existsSync(cursor)) break;
+			if (lstatSync(cursor).isSymbolicLink()) {
+				throw new TaskResourceBoundaryError("symbolic links are outside the task-resource contract");
 			}
+			existingPrefix = cursor;
+		}
+		const actualRelative = relative(realpathSync(testbedRoot), realpathSync(existingPrefix));
+		if (actualRelative === ".." || actualRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+			|| isAbsolute(actualRelative)) {
+			throw new TaskResourceBoundaryError("resolved path leaves the current testbed");
 		}
 		return candidate;
 	};
@@ -682,21 +669,37 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "workspace_file_action",
 		label: "Task Workspace Files",
-		description: "Inspect files only inside the current OfficeBench testbed. action=list_files lists up to 200 entries under a relative directory without following symbolic links. action=read_text reads one UTF-8 text file up to 262144 bytes. Use OfficeBench excel/word/pdf/ocr actions for binary documents. Attempts to use absolute paths, .. traversal, symlinks, sibling runs, benchmark sources, scoring sources, or project source return task_resource_boundary_violation.",
+		description: "Read or create plain-text resources only inside the current OfficeBench testbed. action=list_files lists up to 200 entries under a relative directory without following symbolic links; action=read_text reads one UTF-8 text file up to 262144 bytes; action=make_directory creates a relative directory; action=write_text writes one UTF-8 file up to 262144 bytes and requires its parent directory to exist. Use OfficeBench excel/word/pdf/ocr actions for binary documents. Attempts to use absolute paths, .. traversal, symlinks, sibling runs, benchmark sources, scoring sources, or project source return task_resource_boundary_violation.",
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("list_files"), Type.Literal("read_text")]),
+			action: Type.Union([Type.Literal("list_files"), Type.Literal("read_text"), Type.Literal("make_directory"), Type.Literal("write_text")]),
 			path: Type.String(),
 			recursive: Type.Optional(Type.Boolean()),
+			text: Type.Optional(Type.String()),
 		}),
 		async execute(toolCallId, params) {
 			try {
 				const target = resolveTaskFile(params.path || ".");
 				let text: string;
+				let category: "task_action" | "resource" = "resource";
 				if (params.action === "read_text") {
 					const stat = lstatSync(target);
 					if (!stat.isFile()) throw new Error("read_text target is not a regular file");
 					if (stat.size > 262_144) throw new Error("read_text target exceeds 262144 bytes");
 					text = readFileSync(target, "utf8");
+				} else if (params.action === "make_directory") {
+					mkdirSync(target, { recursive: true });
+					text = JSON.stringify({ path: params.path, created: true });
+					category = "task_action";
+				} else if (params.action === "write_text") {
+					if (typeof params.text !== "string") throw new Error("write_text requires text");
+					if (Buffer.byteLength(params.text, "utf8") > 262_144) throw new Error("write_text content exceeds 262144 bytes");
+					const parent = dirname(target);
+					if (!existsSync(parent) || !lstatSync(parent).isDirectory()) {
+						throw new Error("write_text parent directory does not exist");
+					}
+					writeFileSync(target, params.text, "utf8");
+					text = JSON.stringify({ path: params.path, bytes: Buffer.byteLength(params.text, "utf8") });
+					category = "task_action";
 				} else {
 					const stat = lstatSync(target);
 					if (!stat.isDirectory()) throw new Error("list_files target is not a directory");
@@ -719,7 +722,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 					text = JSON.stringify({ root: params.path || ".", entries, truncated: entries.length >= 200 });
 				}
 				const observation = recordExecutionObservation(toolCallId, "workspace_file_action", params.action,
-					"completed", text, "success", undefined, "resource");
+					"completed", text, "success", undefined, category);
 				return { content: [{ type: "text", text: visibleObservation(text, observation) }],
 					details: { action: params.action, path: params.path, observation } };
 			} catch (error) {
@@ -737,17 +740,17 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "research_resource",
 		label: "Research Resource",
-		description: "Optional versioned current-task research resource. Always choose action. action=open records a bounded question, scope, uncertainty and evidence_plan before evidence exists. action=record creates one active evidence-backed finding when exploration already produced a conclusion. action=update adds known task observation IDs or pending effect assessment IDs; action=resolve records the final supported, contradicted, inconclusive, or no-longer-relevant judgment; action=reopen resumes a resolved goal after new evidence. When exactly one unresolved goal exists, update/resolve may omit finding_id and target_version; otherwise cite both from the active digest. Only an active evidence-backed record/update may use continue_with. Runtime effect assessments remain pending until cited in assessment_refs.",
+		description: "Optional versioned current-task research resource. action=inspect is read-only and returns task-local findings/effect assessments after a supported same-task restart; it never creates a goal or changes execution. action=open records a bounded question, scope, uncertainty and evidence_plan before evidence exists. action=record creates one active evidence-backed finding when exploration already produced a conclusion; question and uncertainty may be omitted for a compact outcome-derived record. record requires evidence plus either decision or continue_with; when decision is omitted, continue_with supplies the saved execution decision. action=update adds known task observation IDs or pending effect assessment IDs; action=resolve records the final supported, contradicted, inconclusive, or no-longer-relevant judgment; action=reopen resumes a resolved goal after new evidence. When exactly one unresolved goal exists, update/resolve may omit finding_id and target_version; otherwise cite both from the active digest. Only an active evidence-backed record/update may use continue_with. Runtime effect assessments remain pending until cited in assessment_refs.",
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("record"), Type.Literal("open"), Type.Literal("update"), Type.Literal("resolve"), Type.Literal("reopen")]),
+			action: Type.Union([Type.Literal("record"), Type.Literal("open"), Type.Literal("update"), Type.Literal("resolve"), Type.Literal("reopen"), Type.Literal("inspect")]),
 			finding_id: Type.Optional(Type.String()),
 			target_version: Type.Optional(Type.Integer({ minimum: 1 })),
 			question: Type.Optional(Type.String()), scope: Type.Optional(Type.String()),
 			uncertainty: Type.Optional(Type.String()),
-			evidence_plan: Type.Array(Type.String(), { maxItems: 8 }),
+			evidence_plan: Type.Optional(Type.Array(Type.String(), { maxItems: 8 })),
 			evidence: Type.Optional(Type.String()), decision: Type.Optional(Type.String()),
-			evidence_refs: Type.Array(Type.String()),
-			assessment_refs: Type.Array(Type.String()),
+			evidence_refs: Type.Optional(Type.Array(Type.String())),
+			assessment_refs: Type.Optional(Type.Array(Type.String())),
 			expected_recurrence: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
 			remaining_uses: Type.Optional(Type.Integer({ minimum: 0 })),
 			resolution: Type.Optional(Type.Union([Type.Literal("supported"), Type.Literal("contradicted"), Type.Literal("inconclusive"), Type.Literal("no_longer_relevant")])),
@@ -762,6 +765,57 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		}),
 		async execute(toolCallId, params) {
 			const action = params.action as ResearchAction;
+			if (action === "inspect") {
+				const requestedFinding = params.finding_id?.trim();
+				const selected = [...findings.values()]
+					.filter((finding) => !requestedFinding || finding.finding_id === requestedFinding)
+					.sort((a, b) => a.finding_id.localeCompare(b.finding_id));
+				const assessments = [...effectAssessments.values()]
+					.filter((assessment) => !requestedFinding
+						|| selected.some((finding) => (finding.assessment_refs ?? []).includes(String(assessment.effect_assessment_id))))
+					.slice(-8);
+				const compactFinding = (finding: ResearchFinding) => ({
+					goal_id: finding.goal_id, finding_id: finding.finding_id, version: finding.version,
+					action: finding.action, status: finding.status, resolution: finding.resolution,
+					question: summarize(finding.question), scope: summarize(finding.scope),
+					uncertainty: summarize(finding.uncertainty), evidence: summarize(finding.evidence),
+					decision: summarize(finding.decision), evidence_refs: finding.evidence_refs,
+					assessment_refs: finding.assessment_refs, expected_recurrence: finding.expected_recurrence,
+					remaining_uses: finding.remaining_uses,
+				});
+				const compactDecision = (decision: Record<string, any>) => ({
+					decision_id: decision.decision_id, choice: decision.choice, applied: decision.applied,
+					value: decision.value, basis_resource_ids: decision.basis_resource_ids,
+					basis_snapshots: decision.basis_snapshots, effect_metric: decision.effect_metric,
+					toolCallId: decision.toolCallId,
+				});
+				const compactExposure = (observation: Record<string, any>) => ({
+					observation_id: observation.observation_id, decision_id: observation.decision_id,
+					effect_observed: observation.effect_observed, operation: observation.operation,
+					consequence: observation.consequence,
+				});
+				const compactAssessment = (assessment: Record<string, any>) => ({
+					effect_assessment_id: assessment.effect_assessment_id, decision_id: assessment.decision_id,
+					effect_metric: assessment.effect_metric, verdict: assessment.verdict,
+					window: assessment.window ? {
+						completed_work_units: assessment.window.completed_work_units,
+						attempted_work_units: assessment.window.attempted_work_units,
+						tool_call_compression: assessment.window.tool_call_compression,
+						observation_ids: assessment.window.observation_ids,
+					} : undefined,
+				});
+				const resource = {
+					format: "task-local-research-inspection-v1",
+					scope: "current task only",
+					findings: selected.map(compactFinding),
+					prior_decisions: readJsonl("harness-decisions.jsonl").slice(-8).map(compactDecision),
+					exposure_observations: readJsonl("harness-observations.jsonl").slice(-8).map(compactExposure),
+					pending_effect_assessments: assessments.filter((assessment) => !absorbedEffectAssessments.has(String(assessment.effect_assessment_id))).map(compactAssessment),
+					resolved_effect_assessments: assessments.filter((assessment) => absorbedEffectAssessments.has(String(assessment.effect_assessment_id))).map(compactAssessment),
+					read_only: true,
+				};
+				return { content: [{ type: "text", text: JSON.stringify(resource) }], details: resource };
+			}
 			const requiredString = (value: unknown, name: string) => {
 				if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required for research action ${action}`);
 				return value.trim();
@@ -780,7 +834,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 				const question = requiredString(params.question, "question");
 				const scope = requiredString(params.scope, "scope");
 				const uncertainty = requiredString(params.uncertainty, "uncertainty");
-				const evidencePlan = params.evidence_plan.map((value) => requiredString(value, "evidence_plan item"));
+				const evidencePlan = (params.evidence_plan ?? []).map((value) => requiredString(value, "evidence_plan item"));
 				if (!evidencePlan.length) throw new Error("evidence_plan is required for research action open");
 				const findingOrdinal = ++findingCounter;
 				record = {
@@ -796,10 +850,13 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 				};
 			} else if (action === "record") {
 				if (!evidenceRefs.length) throw new Error("evidence_refs is required for the evidence-backed record form");
-				const question = requiredString(params.question, "question");
-				const uncertainty = requiredString(params.uncertainty, "uncertainty");
+				const question = params.question?.trim() || "What should later execution infer from the cited outcome?";
+				const uncertainty = params.uncertainty?.trim()
+					|| "Whether this finding remains valid within the current task.";
 				const evidence = requiredString(params.evidence, "evidence");
-				const decision = requiredString(params.decision, "decision");
+				const decision = params.decision?.trim() || (continueWith
+					? `${continueWith.choice} ${continueWith.mode}: ${continueWith.expected_effect}`
+					: requiredString(params.decision, "decision"));
 				const findingOrdinal = ++findingCounter;
 				record = {
 					research_event_id: `research-event-${++researchEventCounter}`,
@@ -880,27 +937,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 				})}`;
 				return { content: [{ type: "text", text }], details: record };
 			}
-			const alternativeModes = (["general", "calendar_focused", "calendar_batch", "email_batch"] as SurfaceMode[])
-				.filter((mode) => mode !== executionSurface);
-			const decisionPoint = {
-				finding_id: record.finding_id,
-				capability_id: "execution_tool_surface",
-				current_surface: executionSurface,
-				decision_tool: "decide_execution_surface",
-				choices: [
-					{ choice: "keep", mode: executionSurface, effect: "record the reason and leave later model requests unchanged" },
-					...alternativeModes.map((mode) => ({ choice: "apply", mode,
-						effect: mode === "calendar_batch"
-							? "call pi.setActiveTools now; enable one-call multi-event creation before the next model request"
-							: mode === "email_batch"
-								? "call pi.setActiveTools now; enable one-call multi-email sending before the next model request"
-							: "call pi.setActiveTools now; the changed tool set is visible before the next model request" })),
-				],
-				weigh: { expected_recurrence: record.expected_recurrence, remaining_uses: record.remaining_uses },
-				no_change_valid: true,
-			};
-			const text = `${JSON.stringify(record)}\n\nEXECUTION_DECISION_POINT: ${JSON.stringify(decisionPoint)}`;
-			return { content: [{ type: "text", text }], details: { ...record, decision_point: decisionPoint } };
+			return { content: [{ type: "text", text: JSON.stringify(record) }], details: record };
 		},
 	});
 
@@ -1053,7 +1090,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "calendar_action",
 		label: "Calendar Action",
-		description: "Execute one real JIT OfficeBench calendar action through one Python bridge process. Use action=list_events with args={username:string}, action=create_event with args={user:string,summary:string,time_start:'YYYY-MM-DD HH:MM:SS',time_end:'YYYY-MM-DD HH:MM:SS'}, or action=delete_event with args={user:string,summary:string}. Each create_event changes only that user's calendar. Multiple direct calls in one response still start separate bridge processes. If a prior observation establishes 2-16 similar remaining creates, the optional finding-backed calendar_batch surface may reduce that execution cost; keeping this direct tool is valid. This direct tool remains enabled in calendar_focused and calendar_batch modes.",
+		description: "Execute one real JIT OfficeBench calendar action through one Python bridge process. Use action=list_events with args={username:string}, action=create_event with args={user:string,summary:string,time_start:'YYYY-MM-DD HH:MM:SS',time_end:'YYYY-MM-DD HH:MM:SS'}, or action=delete_event with args={user:string,summary:string}. Each create_event changes only that user's calendar. Multiple direct calls in one response still start separate bridge processes. This direct tool remains enabled in calendar_focused and calendar_batch modes.",
 		parameters: Type.Object({ action: Type.String(), args: Type.Record(Type.String(), Type.Unknown()) }),
 		async execute(toolCallId, params) {
 			try {
@@ -1064,6 +1101,26 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 					details: { executionSurface, app: "calendar", action: params.action, observation } };
 			} catch (error) {
 				recordExecutionObservation(toolCallId, "calendar_action", params.action, "failed", String(error), "transport_error", "bridge_failure");
+				throw error;
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "excel_action",
+		label: "Excel Action",
+		description: "Execute one exact JIT OfficeBench Excel action in the current case testbed. Use action=read_file with args={file_path: relative path under testbed, sheet?: sheet name}; action=set_cell with args={file_path: relative path, row_idx: integer or numeric string, column_idx: integer or numeric string, text: value, sheet_name?: sheet name}; action=delete_cell with the same location args; or action=create_new_file with args={file_path: relative output path}. Do not guess other Excel action names. Verify writes with read_file. This direct task tool is available in all execution surfaces when Excel is relevant.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("read_file"), Type.Literal("set_cell"), Type.Literal("delete_cell"), Type.Literal("create_new_file")]),
+			args: Type.Record(Type.String(), Type.Unknown()),
+		}),
+		async execute(toolCallId, params) {
+			try {
+				const result = runOfficeBenchAction({ app: "excel", action: params.action, args: params.args });
+				const observation = recordExecutionObservation(toolCallId, "excel_action", `excel.${params.action}`, "completed", result.text, result.outcome, result.error_kind);
+				return { content: [{ type: "text", text: visibleObservation(result.text, observation) }], details: { executionSurface, app: "excel", action: params.action, observation } };
+			} catch (error) {
+				recordExecutionObservation(toolCallId, "excel_action", `excel.${params.action}`, "failed", String(error), "transport_error", "bridge_failure");
 				throw error;
 			}
 		},
@@ -1090,24 +1147,6 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "set_evidence_policy",
-		label: "Set Evidence Policy",
-		description:
-			"Optionally change task-local evidence guidance. summary_only asks for concise relevant evidence; source_and_date asks to retain provenance/time and flag ambiguity. Pi's context hook applies the current setting before the next model request, including within this prompt. Does not change backend data, enforce correctness, or prove improvement. No change is a valid choice; use task_notes for supporting evidence and subsequent observations when useful.",
-		parameters: Type.Object({
-			value: Type.Union([Type.Literal("summary_only"), Type.Literal("source_and_date")]),
-		}),
-		async execute(toolCallId, params) {
-			const previous = evidencePolicy;
-			evidencePolicy = params.value;
-			lastEvidenceMutationCallId = toolCallId;
-			const result = snapshot("after", "set_evidence_policy_tool");
-			const details = { ...result, previous, changed: previous !== evidencePolicy, effectiveAt: "next_model_request", improvement: "not_established" };
-			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
-		},
-	});
-
-	pi.registerTool({
 		name: "officebench_action",
 		label: "OfficeBench Action",
 		description:
@@ -1128,7 +1167,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 				const observation = recordExecutionObservation(toolCallId, "officebench_action",
 					`${params.app}.${params.action}`, "completed", result.text, result.outcome, result.error_kind);
 				return { content: [{ type: "text", text: visibleObservation(result.text, observation) }],
-					details: { evidencePolicy, app: params.app, action: params.action, observation } };
+					details: { app: params.app, action: params.action, observation } };
 			} catch (error) {
 				recordExecutionObservation(toolCallId, "officebench_action",
 					`${params.app}.${params.action}`, "failed", String(error), "transport_error", "bridge_failure");

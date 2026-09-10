@@ -144,7 +144,9 @@ within the run.
 
 There is still working-memory forgetting:
 
-- extension memory is not hydrated from JSONL after a process restart;
+- OfficeBench/Shopping extensions now hydrate their task-local JSONL state after a
+  supported same-task restart, but the generic `PiTaskAgent` runtime has no
+  cross-extension recovery protocol;
 - only five latest unresolved findings are placed in repeated context;
 - resolved findings leave the active digest and there is no read-only catalog
   or relevance query for recalling them;
@@ -157,14 +159,22 @@ forgetting better than it prevents inaccessible memory.
 
 ### Minimal next mechanism
 
-Add a task-local retrieval layer without automatic research scheduling:
+Keep the task-local retrieval layer minimal and extension-owned, without automatic
+research scheduling:
 
-- replay append-only logs on extension startup to reconstruct latest finding,
-  assessment, and decision state;
-- expose a read-only research catalog/query by goal, status, capability, and
-  evidence/assessment ID;
-- maintain a small active working set plus compact resolved summaries;
-- select context by task/capability relevance before recency;
+- the OfficeBench/Shopping `research_resource(action="inspect")` path already
+  replays append-only logs on extension startup and reconstructs the latest
+  finding/effect state;
+- it exposes a bounded read-only snapshot, while the agent still decides whether
+  to use the restored fact or re-apply a capability;
+- do not add a generic kernel-side catalog/query or cross-extension recovery
+  protocol until a real task demonstrates that the extension-local path is
+  insufficient;
+- keep only the current deterministic bounded digest; do not add automatic
+  relevance ranking or a runtime-selected working set;
+- when more history is needed, the Agent explicitly calls the existing
+  read-only `research_resource(action="inspect")` path and selects the finding
+  itself;
 - retain explicit resolve/reopen tombstones so old conclusions are not silently
   revived.
 
@@ -180,8 +190,9 @@ should not be added to the current task-local kernel prematurely.
 2. Keep the single capability-specific effect window, gated by native Pi
    exposure; add multi-window analysis only after real overlapping changes make
    the current representation insufficient.
-3. Add log hydration and read-only relevance retrieval for process restart and
-   many-goal tasks.
+3. Keep extension-owned log hydration and validate Agent-invoked read-only
+   inspection on process restart or many-goal tasks; do not add automatic
+   retrieval policy without a demonstrated failure.
 4. Consider cross-task learning only after the first three produce stable,
    replayable evidence.
 

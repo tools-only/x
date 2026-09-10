@@ -20,9 +20,139 @@ export default function offlineProvider(pi: ExtensionAPI) {
 		remaining_uses: remainingUses,
 	});
 	const scenario = process.env.PI_TEST_SCENARIO;
-	const steps = scenario === "baseline" ? [] : scenario === "workspace_boundary" ? [
+	const steps = scenario === "shopping_overlapping_effect_ids" ? [
+		{ name: "add_product_to_cart", arguments: { product_id: "4cfaa37a", quantity: 1 } },
+		{ name: "research_resource", arguments: {
+			action: "record", evidence: "The first cart write succeeded and two similar additions remain.",
+			decision: "Use the batch surface for two remaining additions.",
+			evidence_refs: ["shopping-observation-1"], evidence_plan: [], assessment_refs: [],
+			expected_recurrence: "high", remaining_uses: 2,
+			continue_with: { choice: "apply", mode: "shopping_batch", expected_effect: "add two products in one call", observation_horizon: 1, reconsider_when: "a batch item fails" },
+		} },
+		{ name: "get_product_details", arguments: { product_ids: ["1dd78d40"] } },
+		{ name: "research_resource", arguments: {
+			action: "record", evidence: "The full product detail is large and its needed conclusion is retained here.",
+			decision: "Compact only the cited detail observation.",
+			evidence_refs: ["shopping-observation-2"], evidence_plan: [], assessment_refs: [],
+			expected_recurrence: "high", remaining_uses: 2,
+		} },
+		{ name: "compact_observation_context", arguments: {
+			finding_id: "finding-2", target_version: 1, observation_ids: ["shopping-observation-2"],
+			expected_effect: "remove one historical result body", reconsider_when: "the exact detail is needed",
+		} },
+		{ name: "shopping_batch_action", arguments: { items: [
+			{ product_id: "1dd78d40", quantity: 1 }, { product_id: "b9edc4d3", quantity: 1 },
+		] } },
+	] : scenario === "shopping_observation_compaction" ? [
+		{ name: "get_product_details", arguments: { product_ids: ["4cfaa37a"] } },
+		{ name: "get_product_details", arguments: { product_ids: ["1dd78d40"] } },
+		{ name: "research_resource", arguments: {
+			action: "record",
+			question: "Can an evidence-bearing product observation leave the active model context after its conclusion is retained?",
+			uncertainty: "Whether a precise task-local reference can replace one large historical result without hiding another result.",
+			evidence: "The first full product-detail observation is large, its relevant conclusion is recorded here, and later reasoning can recover the canonical result by exact ID.",
+			decision: "Compact only shopping-observation-1 after preserving this finding and keep shopping-observation-2 fully visible.",
+			evidence_refs: ["shopping-observation-1"], evidence_plan: [], assessment_refs: [],
+			expected_recurrence: "high", remaining_uses: 3,
+		} },
+		{ name: "compact_observation_context", arguments: {
+			finding_id: "finding-1", target_version: 1,
+			observation_ids: ["shopping-observation-1"],
+			expected_effect: "remove the cited historical result body from later model requests while retaining an exact canonical reference",
+			reconsider_when: "the exact observation must be inspected again or task correctness degrades",
+		} },
+		{ name: "research_resource", arguments: {
+			action: "resolve", finding_id: "finding-1", target_version: 1,
+			uncertainty: "Resolved for this selected context representation.",
+			evidence: "The Pi context hook reported that only the selected observation body was replaced on the next model request.",
+			decision: "Keep the task-local representation change for the remaining task.",
+			evidence_plan: [], evidence_refs: ["shopping-observation-1"],
+			assessment_refs: ["effect-assessment-1"], expected_recurrence: "low",
+			remaining_uses: 0, resolution: "supported",
+		} },
+		{ name: "research_resource", arguments: {
+			action: "inspect", finding_id: "finding-1", observation_id: "shopping-observation-1",
+			evidence_refs: [], assessment_refs: [],
+		} },
+	] : scenario === "shopping_continue_without_decision" ? [
+		{ name: "add_product_to_cart", arguments: { product_id: "4cfaa37a", quantity: 1 } },
+		{ name: "research_resource", arguments: {
+			action: "record", evidence: "The first cart write succeeded and two similar additions remain.",
+			evidence_refs: ["shopping-observation-1"], evidence_plan: [], assessment_refs: [],
+			expected_recurrence: "high", remaining_uses: 2,
+			continue_with: { choice: "apply", mode: "shopping_batch", expected_effect: "add two products in one Pi call", observation_horizon: 1, reconsider_when: "a batch item fails" },
+		} },
+		{ name: "shopping_batch_action", arguments: { items: [
+			{ product_id: "1dd78d40", quantity: 1 }, { product_id: "b9edc4d3", quantity: 1 },
+		] } },
+	] : scenario === "shopping_exposure_gate" ? [
+		{ name: "add_product_to_cart", arguments: { product_id: "4cfaa37a", quantity: 1 } },
+		[
+			{ name: "research_resource", arguments: {
+				action: "record", evidence: "The first cart write succeeded and repeated additions remain.",
+				decision: "Use the task-local batch surface for the remaining additions.", evidence_refs: ["shopping-observation-1"],
+				evidence_plan: [], assessment_refs: [], expected_recurrence: "high", remaining_uses: 3,
+				continue_with: { choice: "apply", mode: "shopping_batch", expected_effect: "add two products in one Pi call", observation_horizon: 1, reconsider_when: "a batch item fails" },
+			} },
+			// This call was selected from the old surface in the same assistant
+			// response as the decision and must not enter the effect window.
+			{ name: "add_product_to_cart", arguments: { product_id: "1dd78d40", quantity: 1 } },
+		],
+		{ name: "shopping_batch_action", arguments: { items: [
+			{ product_id: "b9edc4d3", quantity: 1 }, { product_id: "4cfaa37a", quantity: 1 },
+		] } },
+		{ name: "get_cart_info", arguments: { unused: "" } },
+	] : scenario === "shopping_batch_surface" ? [
+		{ name: "add_product_to_cart", arguments: { product_id: "4cfaa37a", quantity: 1 } },
+		{ name: "research_resource", arguments: {
+			action: "record", evidence: "The first cart write succeeded and three product additions remain.",
+			decision: "Use the task-local batch surface for the remaining additions.", evidence_refs: ["shopping-observation-1"],
+			evidence_plan: [], assessment_refs: [], expected_recurrence: "high", remaining_uses: 3,
+			continue_with: { choice: "apply", mode: "shopping_batch", expected_effect: "add two products in one Pi call", observation_horizon: 1, reconsider_when: "a batch item fails" },
+		} },
+		{ name: "shopping_batch_action", arguments: { items: [
+			{ product_id: "1dd78d40", quantity: 1 }, { product_id: "b9edc4d3", quantity: 1 },
+		] } },
+		{ name: "get_cart_info", arguments: { unused: "" } },
+	] : scenario === "shopping_resource_inspect" ? [
+		{ name: "research_resource", arguments: { action: "inspect", evidence_refs: [], assessment_refs: [] } },
+	] : scenario === "shopping_resource_inspect_oldest" ? [
+		{ name: "research_resource", arguments: { action: "inspect", finding_id: "finding-1", evidence_refs: [], assessment_refs: [] } },
+	] : scenario === "shopping_projection_cards" ? [
+		{ name: "get_product_details", arguments: { product_ids: ["4cfaa37a", "1dd78d40"] } },
+		{ name: "get_product_details", arguments: { product_ids: ["4cfaa37a", "1dd78d40"] } },
+		{ name: "add_product_to_cart", arguments: { product_id: "4cfaa37a", quantity: 1 } },
+	] : scenario === "baseline" ? [] : scenario === "control_observation" ? [
+		{ name: "calendar_action", arguments: { action: "list_events", args: { username: "Fixture-A" } } },
+	] : scenario === "workspace_write" ? [
+		{ name: "workspace_file_action", arguments: { action: "make_directory", path: "data/class_1" } },
+		{ name: "workspace_file_action", arguments: { action: "write_text", path: "data/class_1/Noah.txt", text: "Noah\n" } },
+		{ name: "workspace_file_action", arguments: { action: "read_text", path: "data/class_1/Noah.txt" } },
+		{ name: "workspace_file_action", arguments: { action: "write_text", path: "../outside.txt", text: "escape" } },
+	] : scenario === "workspace_boundary" ? [
 		{ name: "workspace_file_action", arguments: { action: "list_files", path: "data", recursive: false } },
 		{ name: "workspace_file_action", arguments: { action: "read_text", path: "../sibling/summary.json" } },
+	] : scenario === "experience_retention" ? [
+		{ name: "workspace_file_action", arguments: { action: "read_text", path: "../outside.txt" } },
+		{ name: "workspace_file_action", arguments: { action: "read_text", path: "../outside.txt" } },
+		{ name: "research_resource", arguments: {
+			action: "record",
+			evidence: "The same bounded workspace access failed twice.",
+			decision: "Use only catalogued testbed-relative paths for later workspace reads.",
+			scope: "Later workspace reads in this task",
+			evidence_refs: ["fixture-2"], evidence_plan: [], assessment_refs: [],
+			expected_recurrence: "high", remaining_uses: 2,
+		} },
+		{ name: "research_resource", arguments: {
+			action: "resolve", finding_id: "finding-1", target_version: 1,
+			evidence_refs: ["fixture-2"], evidence_plan: [], assessment_refs: [],
+			expected_recurrence: "high", remaining_uses: 2, resolution: "supported",
+		} },
+		{ name: "research_resource", arguments: researchArguments("high", 1) },
+		{ name: "research_resource", arguments: researchArguments("high", 1) },
+		{ name: "research_resource", arguments: researchArguments("high", 1) },
+		{ name: "research_resource", arguments: researchArguments("high", 1) },
+		{ name: "research_resource", arguments: researchArguments("high", 1) },
 	] : scenario === "surface" ? [
 		{ name: "officebench_action", arguments: { app: "calendar", action: "calendar_action", args: {} } },
 		{ name: "research_resource", arguments: researchArguments("high", 8) },
@@ -56,7 +186,6 @@ export default function offlineProvider(pi: ExtensionAPI) {
 			question: "Can repeated personalized emails use fewer Pi tool calls?",
 			uncertainty: "Whether the structured source is readable and enough similar sends remain.",
 			evidence: "The Excel source was read successfully and three personalized sends remain.",
-			decision: "Enable the task-local email batch capability for the repeated sends.",
 			evidence_refs: ["fixture-1"], evidence_plan: [], assessment_refs: [],
 			expected_recurrence: "high", remaining_uses: 3,
 			continue_with: { choice: "apply", mode: "email_batch",
@@ -130,13 +259,38 @@ export default function offlineProvider(pi: ExtensionAPI) {
 		{ name: "task_notes", arguments: { text: "Observed one transient action error." } },
 		{ name: "research_resource", arguments: researchArguments("low", 1) },
 		{ name: "decide_execution_surface", arguments: { choice: "keep", mode: "general", basis_resource_ids: ["finding-1"], expected_effect: "avoid adjustment overhead for one remaining use", effect_metric: "semantic_error_rate", observation_horizon: 1, reconsider_when: "the error recurs" } },
+	] : scenario === "research_record" ? [
+		{ name: "calendar_action", arguments: { action: "list_events", args: { username: "Fixture-A" } } },
+		{ name: "research_resource", arguments: {
+			action: "record", evidence: "The bounded calendar probe succeeded and repeated writes remain.",
+			decision: "Switch to the batch surface for the remaining writes.", evidence_refs: ["fixture-1"],
+			evidence_plan: [], assessment_refs: [], expected_recurrence: "high", remaining_uses: 3,
+		} },
+	] : scenario === "resource_inspect" ? [
+		{ name: "research_resource", arguments: {
+			action: "inspect", evidence_refs: [], assessment_refs: [], evidence_plan: [],
+		} },
+	] : scenario === "resource_inspect_oldest" ? [
+		{ name: "research_resource", arguments: {
+			action: "inspect", finding_id: "finding-1",
+			evidence_refs: [], assessment_refs: [], evidence_plan: [],
+		} },
+	] : scenario === "resource_continue" ? [
+		{ name: "research_resource", arguments: {
+			action: "inspect", evidence_refs: [], assessment_refs: [], evidence_plan: [],
+		} },
+		{ name: "decide_execution_surface", arguments: {
+			choice: "apply", mode: "calendar_focused", basis_resource_ids: ["finding-1"],
+			expected_effect: "use the focused calendar tool after the restart",
+			effect_metric: "focused_tool_use_rate", observation_horizon: 1,
+			reconsider_when: "the next calendar action completes",
+		} },
+		{ name: "calendar_action", arguments: { action: "create_event", args: { user: "Fixture-Restart", summary: "continued", time_start: "2024-05-01 09:00:00", time_end: "2024-05-01 10:00:00" } } },
 	] : scenario === "invalid_surface" ? [
 		{ name: "decide_execution_surface", arguments: { choice: "apply", mode: "calendar_focused", basis_resource_ids: ["missing-finding"], expected_effect: "narrow tools", effect_metric: "semantic_error_rate", observation_horizon: 1, reconsider_when: "task ends" } },
 	] : [
 		{ name: "task_notes", arguments: { text: "Fixture question: dated records may be ambiguous. Expected effect: retain provenance. This is scripted test evidence, not a real research finding." } },
-		{ name: "set_evidence_policy", arguments: { value: "source_and_date" } },
 		{ name: "task_notes", arguments: { text: "Fixture follow-up: inspect subsequent model context; improvement remains unestablished." } },
-		{ name: "set_evidence_policy", arguments: { value: "summary_only" } },
 		{ name: "task_notes", arguments: { text: "" } },
 	];
 	pi.registerProvider("offline-context-test", {
