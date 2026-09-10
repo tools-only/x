@@ -17,6 +17,7 @@ type FindingBasis = {
 
 type CompactionDependencies = {
 	enabled: boolean;
+	scope?: string;
 	getFinding: (findingId: string) => FindingBasis | undefined;
 	getObservation: (observationId: string) => Record<string, unknown> | undefined;
 	allocateDecisionId: () => string;
@@ -48,6 +49,7 @@ export function installAgentOwnedObservationCompaction(
 	dependencies: CompactionDependencies,
 ): { enabled: boolean; toolName: string; capability?: Record<string, unknown> } {
 	const { enabled, getFinding, getObservation, allocateDecisionId, append, pendingAssessments } = dependencies;
+	const scope = dependencies.scope ?? "current Shopping task";
 	if (!enabled) return { enabled: false, toolName: OBSERVATION_COMPACTION_TOOL };
 
 	let applied: AppliedCompaction | undefined;
@@ -58,14 +60,14 @@ export function installAgentOwnedObservationCompaction(
 		changes: "replace only Agent-selected, finding-cited historical tool-result bodies with exact canonical references",
 		enabled_by: "an explicit Agent tool call naming an active finding version and its cited observation IDs",
 		effective_at: "next_model_request",
-		scope: "current Shopping task",
+		scope,
 		canonical_data: "execution-observations.jsonl remains complete",
 	};
 
 	pi.registerTool({
 		name: OBSERVATION_COMPACTION_TOOL,
 		label: "Compact Selected Observation Context",
-		description: "Optional Pi-native context representation change. After an active finding preserves the conclusion of cited Shopping observations, explicitly select 1-8 of those exact observation IDs. On later model requests only their historical result bodies become canonical references; full task-local JSONL remains unchanged. No change is valid.",
+		description: "Optional Pi-native context representation change. After an active finding preserves the conclusion of cited task observations, explicitly select 1-8 of those exact observation IDs. On later model requests only their historical result bodies become canonical references; full task-local JSONL remains unchanged. No change is valid.",
 		parameters: Type.Object({
 			finding_id: Type.String(),
 			target_version: Type.Integer({ minimum: 1 }),
@@ -128,7 +130,7 @@ export function installAgentOwnedObservationCompaction(
 		const messages = event.messages.map((message) => {
 			const value = message as any;
 			const observationId = value?.role === "toolResult"
-				? value?.details?.observation?.event_id
+				? value?.details?.observation?.event_id ?? value?.details?.observation?.observation_id
 				: undefined;
 			if (typeof observationId !== "string" || !selected.has(observationId)) return message;
 			const marker = observationCompactionMarker(observationId, applied!.finding.finding_id, applied!.finding.version);
@@ -170,7 +172,7 @@ export function installAgentOwnedObservationCompaction(
 				improvement: "not_established",
 				attribution: {
 					kind: "bounded_native_context_exposure", intervention: "observation_context_representation",
-					decision_id: applied.decisionId, confounders_controlled: false, scope: "current Shopping task",
+					decision_id: applied.decisionId, confounders_controlled: false, scope,
 				},
 				reconsider_when: applied.reconsiderWhen,
 				recordedAt: new Date().toISOString(),
