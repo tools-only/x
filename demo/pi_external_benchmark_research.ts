@@ -124,7 +124,7 @@ export default function externalBenchmarkResearch(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "research_resource",
 		label: "Task-local Research Resource",
-		description: "Optional Agent-authored, versioned current-task finding. Cite exact execution observation IDs. inspect is read-only. No research and no change are valid.",
+		description: "Optional Agent-authored, versioned current-task finding. For a concise finding, pass one observation_id (or evidence_refs for several); the cited observation must be real. inspect is read-only. No research and no change are valid.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("record"), Type.Literal("update"), Type.Literal("resolve"), Type.Literal("inspect")]),
 			finding_id: Type.Optional(Type.String()),
@@ -135,7 +135,7 @@ export default function externalBenchmarkResearch(pi: ExtensionAPI) {
 			uncertainty: Type.Optional(Type.String()),
 			evidence: Type.Optional(Type.String()),
 			decision: Type.Optional(Type.String()),
-			evidence_refs: Type.Array(Type.String()),
+			evidence_refs: Type.Optional(Type.Array(Type.String())),
 			assessment_refs: Type.Optional(Type.Array(Type.String())),
 			expected_recurrence: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
 			remaining_uses: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -152,7 +152,13 @@ export default function externalBenchmarkResearch(pi: ExtensionAPI) {
 					effect_assessments: readJsonl("effect-assessments.jsonl").slice(-8) };
 				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 			}
-			const evidenceRefs = Array.isArray(p.evidence_refs) ? p.evidence_refs : [];
+			// A single observation_id is the low-friction path for a local pattern.
+			// Keep the evidence requirement strict: shorthand is normalized to the
+			// same validated evidence_refs representation before persistence.
+			const evidenceRefs = Array.isArray(p.evidence_refs) ? p.evidence_refs.slice() : [];
+			if (!evidenceRefs.length && typeof p.observation_id === "string" && p.observation_id) {
+				evidenceRefs.push(p.observation_id);
+			}
 			if (!evidenceRefs.length || evidenceRefs.some((id: string) => !observations.has(id))) throw new Error("findings require known execution observation IDs");
 			const assessmentRefs = Array.isArray(p.assessment_refs) ? p.assessment_refs : [];
 			if (assessmentRefs.some((id: string) => !pendingAssessments.has(id))) throw new Error("unknown effect assessment reference");

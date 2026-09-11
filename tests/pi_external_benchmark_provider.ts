@@ -23,7 +23,7 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 		{ name: "research_resource", arguments: {
 			action: "record", evidence: "The probe is large and its relevant conclusion is retained.",
 			decision: "Compact the cited observation for later requests.",
-			evidence_refs: ["execution-observation-1"], assessment_refs: [],
+			observation_id: "execution-observation-1", assessment_refs: [],
 			expected_recurrence: "high", remaining_uses: 2,
 		} },
 		{ name: "compact_observation_context", arguments: {
