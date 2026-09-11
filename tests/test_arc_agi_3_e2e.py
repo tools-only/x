@@ -123,6 +123,10 @@ def test_arc_summary_keeps_native_correctness_separate_from_harness_effect(tmp_p
         json.dumps({"effect_assessment_id": "assessment-1", "verdict": "supported"}) + "\n",
         encoding="utf-8",
     )
+    (tmp_path / "pi-events.jsonl").write_text(
+        json.dumps({"type": "message_end", "message": {"stopReason": "error", "errorMessage": "provider unavailable"}}) + "\n",
+        encoding="utf-8",
+    )
     scorecard = {"scorecard_id": "card-1", "games": {"ls20-test": {"levels_completed": 3}}}
 
     summary = project_arc_summary(
@@ -144,6 +148,8 @@ def test_arc_summary_keeps_native_correctness_separate_from_harness_effect(tmp_p
     }
     assert summary["self_harness_evaluation"]["supported_effect_assessments"] == 1
     assert summary["self_harness_evaluation"]["harness_improved"] is None
+    assert summary["runtime"]["provider_error_count"] == 1
+    assert summary["runtime"]["last_provider_error"] == "provider unavailable"
     assert summary["passed"] is True
     assert summary["artifacts"]["bridge_events"] == "bridge-events.jsonl"
 

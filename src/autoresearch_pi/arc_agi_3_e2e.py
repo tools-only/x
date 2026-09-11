@@ -62,6 +62,15 @@ def project_arc_summary(
     decisions = _read_jsonl(root / "harness-decisions.jsonl")
     exposures = _read_jsonl(root / "harness-observations.jsonl")
     assessments = _read_jsonl(root / "effect-assessments.jsonl")
+    pi_events = _read_jsonl(root / "pi-events.jsonl")
+    provider_errors = [
+        str((event.get("message") or {}).get("errorMessage"))
+        for event in pi_events
+        if event.get("type") == "message_end"
+        and isinstance(event.get("message"), dict)
+        and event["message"].get("stopReason") == "error"
+        and (event.get("message") or {}).get("errorMessage")
+    ]
     supported = [item for item in assessments if item.get("verdict") == "supported"]
     terminal_state = str(bridge_result.get("terminal_state") or "UNKNOWN")
     levels_completed = int(bridge_result.get("levels_completed", 0) or 0)
@@ -96,6 +105,8 @@ def project_arc_summary(
             "pi_api": (model_settings or {}).get("pi_api"),
             "context_window": (model_settings or {}).get("context_window"),
             "max_output_tokens": (model_settings or {}).get("max_tokens"),
+            "provider_error_count": len(provider_errors),
+            "last_provider_error": provider_errors[-1] if provider_errors else None,
         },
         "research": {"finding_versions": len(findings), "latest_findings": findings[-5:]},
         "self_harness_evaluation": {
