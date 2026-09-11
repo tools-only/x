@@ -59,7 +59,8 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			"research_resource citing the exact observation; update it if later evidence changes " +
 			"the choice. After several repeated probes with the same apparent outcome, " +
 			"pause to consider whether the stable pattern or a discriminating next probe " +
-			"deserves one finding before repeating again. This is optional: direct play and " +
+			"deserves one finding before repeating again. A finding may simply preserve a " +
+			"local pattern or rule out a probe; it need not imply a harness change. This is optional: direct play and " +
 			"no harness change remain valid.",
 		}));
 }
