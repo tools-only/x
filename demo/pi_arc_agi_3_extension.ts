@@ -50,6 +50,9 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			"When an observed local pattern, or a more informative next probe, would change " +
 			"how you continue this game, you may record one concise task-local finding with " +
 			"research_resource citing the exact observation; update it if later evidence changes " +
-			"the choice. This is optional: direct play and no harness change remain valid.",
-	}));
+			"the choice. After several repeated probes with the same apparent outcome, " +
+			"pause to consider whether the stable pattern or a discriminating next probe " +
+			"deserves one finding before repeating again. This is optional: direct play and " +
+			"no harness change remain valid.",
+		}));
 }
