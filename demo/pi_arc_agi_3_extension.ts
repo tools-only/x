@@ -66,6 +66,9 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			"no harness change remain valid. If useful, the shortest record is " +
 			"research_resource(action=record, observation_id=<exact observation id>, " +
 			"evidence=<what was learned>, decision=<next probe or action>); question and " +
-			"scope may use the tool defaults.",
+			"scope may use the tool defaults. Research and compact_observation_context " +
+			"do not advance the ARC game or consume its action budget; they only change " +
+			"what is available on later model requests, so use them only when that tradeoff " +
+			"is worthwhile.",
 		}));
 }
