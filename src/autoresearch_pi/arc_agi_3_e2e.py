@@ -119,6 +119,57 @@ def project_arc_summary(
     }
 
 
+def compare_arc_runs(control: dict[str, Any], treatment: dict[str, Any]) -> dict[str, Any]:
+    """Compare paired ARC summaries without conflating mechanism and task success."""
+    control_eval = control.get("benchmark_evaluation") or {}
+    treatment_eval = treatment.get("benchmark_evaluation") or {}
+    control_runtime = control.get("runtime") or {}
+    treatment_runtime = treatment.get("runtime") or {}
+    control_harness = control.get("self_harness_evaluation") or {}
+    treatment_harness = treatment.get("self_harness_evaluation") or {}
+    control_levels = int(control_eval.get("levels_completed", 0) or 0)
+    treatment_levels = int(treatment_eval.get("levels_completed", 0) or 0)
+    control_actions = int(control_runtime.get("agent_actions", 0) or 0)
+    treatment_actions = int(treatment_runtime.get("agent_actions", 0) or 0)
+    level_delta = treatment_levels - control_levels
+    action_delta = treatment_actions - control_actions
+    task_improved: bool | None
+    if treatment_levels != control_levels:
+        task_improved = treatment_levels > control_levels
+    elif bool(treatment_eval.get("passed")) != bool(control_eval.get("passed")):
+        task_improved = bool(treatment_eval.get("passed"))
+    else:
+        task_improved = None
+    supported_delta = int(treatment_harness.get("supported_effect_assessments", 0) or 0) - int(
+        control_harness.get("supported_effect_assessments", 0) or 0
+    )
+    return {
+        "task": {
+            "control_levels_completed": control_levels,
+            "treatment_levels_completed": treatment_levels,
+            "levels_delta": level_delta,
+            "control_passed": bool(control_eval.get("passed")),
+            "treatment_passed": bool(treatment_eval.get("passed")),
+            "action_delta": action_delta,
+            "harness_improved": task_improved,
+        },
+        "mechanism": {
+            "control_decisions": int(control_harness.get("decision_count", 0) or 0),
+            "treatment_decisions": int(treatment_harness.get("decision_count", 0) or 0),
+            "control_supported_effects": int(control_harness.get("supported_effect_assessments", 0) or 0),
+            "treatment_supported_effects": int(treatment_harness.get("supported_effect_assessments", 0) or 0),
+            "supported_effect_delta": supported_delta,
+        },
+        "interpretation": (
+            "Task-level improvement is supported by the paired outcome."
+            if task_improved is True else
+            "Mechanism effect is observed, but paired task improvement is not established."
+            if supported_delta > 0 else
+            "No task-level or mechanism improvement is established by this pair."
+        ),
+    }
+
+
 def _post_json(url: str, payload: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",

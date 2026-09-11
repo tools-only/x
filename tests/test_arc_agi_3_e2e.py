@@ -10,7 +10,7 @@ from autoresearch_pi.arc_agi_3_adapter import (
     OFFICIAL_ARC_SYSTEM_PROMPT,
     resolve_model_settings,
 )
-from autoresearch_pi.arc_agi_3_e2e import project_arc_summary
+from autoresearch_pi.arc_agi_3_e2e import compare_arc_runs, project_arc_summary
 
 
 class FakeAction:
@@ -146,3 +146,22 @@ def test_arc_summary_keeps_native_correctness_separate_from_harness_effect(tmp_p
     assert summary["self_harness_evaluation"]["harness_improved"] is None
     assert summary["passed"] is True
     assert summary["artifacts"]["bridge_events"] == "bridge-events.jsonl"
+
+
+def test_arc_pair_comparison_does_not_infer_task_gain_from_mechanism_only():
+    control = {
+        "benchmark_evaluation": {"levels_completed": 0, "passed": False},
+        "runtime": {"agent_actions": 1},
+        "self_harness_evaluation": {"decision_count": 0, "supported_effect_assessments": 0},
+    }
+    treatment = {
+        "benchmark_evaluation": {"levels_completed": 0, "passed": False},
+        "runtime": {"agent_actions": 1},
+        "self_harness_evaluation": {"decision_count": 1, "supported_effect_assessments": 1},
+    }
+
+    comparison = compare_arc_runs(control, treatment)
+
+    assert comparison["task"]["harness_improved"] is None
+    assert comparison["mechanism"]["supported_effect_delta"] == 1
+    assert "not established" in comparison["interpretation"]
