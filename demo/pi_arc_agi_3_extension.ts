@@ -40,7 +40,14 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params) {
 			const value = await bridge("/action", params as Record<string, unknown>);
-			return { content: [{ type: "text", text: JSON.stringify(value) }], details: value };
+			const delta = value.observation_delta as Record<string, unknown> | undefined;
+			const deltaText = delta
+				? `Observation delta (deterministic, latest frame): changed_cells=${String(delta.changed_cells ?? 0)}, bbox=${JSON.stringify(delta.bbox ?? null)}`
+				: "Observation delta unavailable for this action.";
+			return {
+				content: [{ type: "text", text: deltaText }, { type: "text", text: JSON.stringify(value) }],
+				details: value,
+			};
 		},
 	});
 	externalBenchmarkResearch(pi);
