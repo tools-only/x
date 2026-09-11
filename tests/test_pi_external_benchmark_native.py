@@ -17,7 +17,7 @@ def _pi_cli() -> tuple[str, str]:
     return node, str(cli)
 
 
-def _run_fixture(root: Path, variant: str) -> list[dict]:
+def _run_fixture(root: Path, variant: str, *, initial_findings: list[dict] | None = None, steps: list[dict] | None = None) -> list[dict]:
     node, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     command = (
@@ -27,12 +27,21 @@ def _run_fixture(root: Path, variant: str) -> list[dict]:
         "--extension", str(project / "tests" / "pi_external_benchmark_provider.ts"),
     )
     root.mkdir()
-    with PiKernel(command, cwd=str(root), env={
+    if initial_findings:
+        (root / "research-resources.jsonl").write_text(
+            "".join(json.dumps(item) + "\n" for item in initial_findings), encoding="utf-8"
+        )
+    env = {
         "PI_CODING_AGENT_DIR": str(root / ".pi-agent"),
         "PI_AUTORESEARCH_E2E_ROOT": str(root),
         "PI_AUTORESEARCH_ROOT": str(project),
         "PI_AUTORESEARCH_VARIANT": variant,
         "PI_AUTORESEARCH_CONTEXT_COMPACTION": "enabled",
+    }
+    if steps is not None:
+        env["PI_EXTERNAL_STEPS"] = json.dumps(steps)
+    with PiKernel(command, cwd=str(root), env={
+        **env,
     }, timeout=60) as kernel:
         kernel.prompt("Run the deterministic external benchmark fixture.")
         return kernel.wait_for_agent_events(timeout=60)
@@ -112,3 +121,35 @@ def test_shared_external_extension_control_hides_research_and_mutation_tools(tmp
     assert names == {"benchmark_probe"}
     assert not (root / "research-resources.jsonl").exists()
     assert not (root / "harness-decisions.jsonl").exists()
+
+
+def test_active_finding_projection_is_bounded_and_recent(tmp_path):
+    root = tmp_path / "bounded"
+    findings = [
+        {
+            "goal_id": f"research-goal-{index}", "finding_id": f"finding-{index}", "version": 1,
+            "research_event_id": f"research-event-{index}", "evidence_refs": ["execution-observation-1"],
+            "assessment_refs": [], "status": "active", "question": "q" * 500,
+            "scope": "scope", "uncertainty": "uncertainty", "evidence": "evidence",
+            "decision": "decision", "expected_recurrence": "high", "remaining_uses": 1,
+            "recordedAt": f"2026-09-11T00:00:0{index}Z",
+        }
+        for index in range(1, 5)
+    ]
+    _run_fixture(
+        root, "treatment", initial_findings=findings,
+        steps=[{"name": "research_resource", "arguments": {
+            "action": "inspect", "evidence_refs": [], "assessment_refs": [],
+        }}],
+    )
+    contexts = [json.loads(line)["context"] for line in (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    resources = [
+        part["text"]
+        for message in contexts[0]["messages"]
+        for part in message.get("content", [])
+        if part.get("type") == "text" and part["text"].startswith("Active task-local research findings for later decisions:")
+    ]
+    assert len(resources) == 1
+    projected = json.loads(resources[0].split(": ", 1)[1])
+    assert [item["finding_id"] for item in projected] == ["finding-2", "finding-3", "finding-4"]
+    assert len(projected[-1]["question"]) == 320
