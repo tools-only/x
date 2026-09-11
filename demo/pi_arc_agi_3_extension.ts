@@ -54,6 +54,8 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => ({
 		systemPrompt: `${ARC_SYSTEM_PROMPT}\n\n${event.systemPrompt}\n\n` +
 			"During exploration, treat repeated state changes as evidence for a later choice. " +
+			"Each arc_action result begins with a deterministic Observation delta; read that " +
+			"short line before deciding whether to repeat or change the probe. " +
 			"When an observed local pattern, or a more informative next probe, would change " +
 			"how you continue this game, you may record one concise task-local finding with " +
 			"research_resource citing the exact observation; update it if later evidence changes " +
