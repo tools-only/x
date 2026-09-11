@@ -146,7 +146,7 @@ export function installAgentOwnedObservationCompaction(
 			const allMatched = applied.observationIds.every((id) => matched.has(id));
 			const removedChars = Math.max(0, originalChars - replacementChars);
 			const exposure = {
-				observation_id: `shopping-harness-observation-${applied.decisionId.replace(/^decision-/, "")}`,
+				observation_id: `task-harness-observation-${applied.decisionId.replace(/^decision-/, "")}`,
 				decision_id: applied.decisionId, toolCallId: applied.toolCallId,
 				basis_resource_ids: [applied.finding.finding_id],
 				operation: { capability: "pi.context", value: "exact_observation_reference", observation_ids: applied.observationIds },
