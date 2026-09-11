@@ -17,7 +17,8 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 			return { content: [{ type: "text", text: "probe:" + "x".repeat(4096) }], details: { fixture: true } };
 		},
 	});
-	const steps = process.env.PI_AUTORESEARCH_VARIANT === "control" ? [] : [
+	const configuredSteps = process.env.PI_EXTERNAL_STEPS ? JSON.parse(process.env.PI_EXTERNAL_STEPS) : undefined;
+	const steps = configuredSteps ?? (process.env.PI_AUTORESEARCH_VARIANT === "control" ? [] : [
 		{ name: "benchmark_probe", arguments: {} },
 		{ name: "research_resource", arguments: {
 			action: "record", evidence: "The probe is large and its relevant conclusion is retained.",
@@ -43,7 +44,7 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 			action: "inspect", observation_id: "execution-observation-1",
 			evidence_refs: [], assessment_refs: [],
 		} },
-	];
+	]);
 	pi.registerProvider("offline-external-test", {
 		api: "openai-completions", apiKey: "offline", baseUrl: "http://unused.invalid",
 		models: [{ id: "scripted", name: "scripted", reasoning: false, input: ["text"],
