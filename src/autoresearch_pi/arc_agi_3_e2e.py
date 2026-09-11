@@ -280,6 +280,11 @@ def _run_pi(root: Path, *, bridge_url: str, game: str, variant: str, timeout: fl
     try:
         kernel_timeout = timeout if timeout is not None else 12 * 60 * 60
         with PiKernel(command, cwd=str(root), env=env, timeout=kernel_timeout, event_sink=persist) as kernel:
+            # Match the official ARC runtime's proactive context management.
+            # This is Pi's native session facility, enabled for both arms; the
+            # treatment-only finding-backed context capability remains a
+            # separate, optional self-harness intervention.
+            kernel.send("set_auto_compaction", enabled=True)
             response = kernel.prompt(
                 f"Play ARC-AGI-3 game {game}. Call arc_state with request='current' and use arc_action until the native game reaches WIN, "
                 "or until the action budget is exhausted. Research resources are optional and should be used only "
