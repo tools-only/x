@@ -51,6 +51,30 @@ def serialize_frame(raw: Any, *, action_name: Callable[[int], str]) -> dict[str,
     }
 
 
+def frame_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Summarize the deterministic visual delta without interpreting its cause."""
+    before_frames = before.get("frames") or []
+    after_frames = after.get("frames") or []
+    previous = before_frames[-1] if before_frames else []
+    current = after_frames[-1] if after_frames else []
+    changed: list[tuple[int, int]] = []
+    for row, (old_row, new_row) in enumerate(zip(previous, current)):
+        for col, (old, new) in enumerate(zip(old_row, new_row)):
+            if old != new:
+                changed.append((row, col))
+    result: dict[str, Any] = {
+        "changed_cells": len(changed),
+        "frame_available": bool(previous and current),
+    }
+    if changed:
+        rows, cols = zip(*changed)
+        result["bbox"] = {
+            "top": min(rows), "left": min(cols),
+            "bottom": max(rows), "right": max(cols),
+        }
+    return result
+
+
 def parse_action_payload(
     payload: dict[str, Any],
     available_actions: list[str],
@@ -195,9 +219,11 @@ class ArcBridge:
             self.level_action_counts[level] += 1
             self.adapter.record_action(action.name)
             after = self._frame()
+            after["observation_delta"] = frame_delta(before, after)
             self._append({
                 "event": "action", "index": self.actions, "action": action.name,
-                "coordinates": action.action_data.model_dump(), "state_before": before["state"], "frame": after,
+                "coordinates": action.action_data.model_dump(), "state_before": before["state"],
+                "observation_delta": after["observation_delta"], "frame": after,
             })
             after_level = int(after["levels_completed"])
             while len(self.level_action_counts) <= after_level:

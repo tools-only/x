@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from autoresearch_pi.arc_agi_3_bridge import parse_action_payload, serialize_frame
+from autoresearch_pi.arc_agi_3_bridge import frame_delta, parse_action_payload, serialize_frame
 from autoresearch_pi.arc_agi_3_bridge import derive_action_budget
 from autoresearch_pi.arc_agi_3_adapter import (
     ArcAgi3Adapter,
@@ -50,6 +50,16 @@ def test_arc_frame_serialization_preserves_native_state_and_available_actions():
         "guid": "guid-1",
         "full_reset": False,
         "available_actions": ["ACTION1", "ACTION6"],
+    }
+
+
+def test_arc_frame_delta_reports_only_changed_cells_and_bounds():
+    before = {"frames": [[ [0, 0, 0], [0, 0, 0] ]]}
+    after = {"frames": [[ [0, 1, 0], [0, 0, 2] ]]}
+    assert frame_delta(before, after) == {
+        "changed_cells": 2,
+        "frame_available": True,
+        "bbox": {"top": 0, "left": 1, "bottom": 1, "right": 2},
     }
 
 
