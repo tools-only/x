@@ -75,6 +75,15 @@ def test_arc_action_validation_rejects_unavailable_and_bad_coordinates():
     assert action.data == {"x": 8, "y": 9}
 
 
+def test_arc_simple_action_ignores_provider_default_coordinates():
+    actions = {"ACTION1": FakeAction("ACTION1")}
+    action = parse_action_payload(
+        {"action": "ACTION1", "x": 0, "y": 0}, ["ACTION1"], actions.__getitem__
+    )
+    assert action.name == "ACTION1"
+    assert action.data is None
+
+
 def test_arc_adapter_matches_official_frame_shape_and_reset_visibility():
     adapter = ArcAgi3Adapter()
     frame = {

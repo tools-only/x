@@ -67,7 +67,13 @@ def parse_action_payload(
     if supplied != expected:
         if complex_action:
             raise ValueError("complex ARC actions require exactly integer coordinates x and y")
-        raise ValueError("simple ARC actions accept only the action name")
+        # Some providers habitually emit optional coordinates even when the
+        # selected native action is simple.  They have no semantic effect for
+        # a simple ARC action, so ignore them instead of consuming an invalid
+        # exploration turn.  Complex actions remain strict below.
+        unexpected = supplied - {"action", "x", "y"}
+        if unexpected:
+            raise ValueError("unsupported fields for simple ARC actions: " + ", ".join(sorted(unexpected)))
     if complex_action:
         x, y = payload.get("x"), payload.get("y")
         if type(x) is not int or type(y) is not int:
