@@ -47,6 +47,7 @@ function compactText(value: unknown, maximum = 320): string {
 function activeFindingDigest(findings: Map<string, Finding>): Record<string, unknown>[] {
 	return [...findings.values()]
 		.filter((finding) => finding.status === "active" && finding.remaining_uses > 0)
+		.sort((left, right) => String(left.recordedAt).localeCompare(String(right.recordedAt)))
 		.slice(-3)
 		.map((finding) => ({
 			goal_id: finding.goal_id,
