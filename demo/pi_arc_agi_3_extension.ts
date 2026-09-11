@@ -63,6 +63,9 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			"pause to consider whether the stable pattern or a discriminating next probe " +
 			"deserves one finding before repeating again. A finding may simply preserve a " +
 			"local pattern or rule out a probe; it need not imply a harness change. This is optional: direct play and " +
-			"no harness change remain valid.",
+			"no harness change remain valid. If useful, the shortest record is " +
+			"research_resource(action=record, observation_id=<exact observation id>, " +
+			"evidence=<what was learned>, decision=<next probe or action>); question and " +
+			"scope may use the tool defaults.",
 		}));
 }
