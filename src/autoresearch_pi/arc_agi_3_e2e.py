@@ -225,8 +225,22 @@ def _run_pi(root: Path, *, bridge_url: str, game: str, variant: str, timeout: fl
             )
             if response.get("success") is False:
                 return 1
+            consecutive_provider_errors = 0
             while True:
                 turn_events = kernel.wait_for_agent_events(timeout=timeout)
+                turn_failed = any(
+                    event.get("type") == "message_end"
+                    and isinstance(event.get("message"), dict)
+                    and event["message"].get("stopReason") == "error"
+                    for event in turn_events
+                )
+                tool_completed = any(event.get("type") == "tool_execution_end" for event in turn_events)
+                if turn_failed and not tool_completed:
+                    consecutive_provider_errors += 1
+                    if consecutive_provider_errors >= 3:
+                        return 1
+                else:
+                    consecutive_provider_errors = 0
                 state = _get_json(bridge_url + "/state")
                 game_state = str(state.get("state", ""))
                 used = int((state.get("action_budget") or {}).get("used", 0) or 0)
