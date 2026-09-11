@@ -10,7 +10,7 @@ from autoresearch_pi.arc_agi_3_adapter import (
     OFFICIAL_ARC_SYSTEM_PROMPT,
     resolve_model_settings,
 )
-from autoresearch_pi.arc_agi_3_e2e import compare_arc_runs, project_arc_summary
+from autoresearch_pi.arc_agi_3_e2e import _partial_bridge_result, compare_arc_runs, project_arc_summary
 
 
 class FakeAction:
@@ -171,6 +171,19 @@ def test_arc_summary_keeps_native_correctness_separate_from_harness_effect(tmp_p
     assert summary["runtime"]["last_provider_error"] == "provider unavailable"
     assert summary["passed"] is True
     assert summary["artifacts"]["bridge_events"] == "bridge-events.jsonl"
+
+
+def test_partial_bridge_result_preserves_interrupted_action_metadata(tmp_path):
+    (tmp_path / "bridge-events.jsonl").write_text(
+        json.dumps({"event": "scorecard_opened", "scorecard_id": "card-1"}) + "\n"
+        + json.dumps({"event": "action", "index": 1, "frame": {"state": "NOT_FINISHED", "levels_completed": 0}}) + "\n"
+        + json.dumps({"event": "action", "index": 2, "frame": {"state": "PLAYING", "levels_completed": 1}}) + "\n",
+        encoding="utf-8",
+    )
+    assert _partial_bridge_result(tmp_path) == {
+        "terminal_state": "PLAYING", "levels_completed": 1, "actions": 2,
+        "forced_actions": 0, "scorecard_id": "card-1", "partial": True,
+    }
 
 
 def test_arc_pair_comparison_does_not_infer_task_gain_from_mechanism_only():

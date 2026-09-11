@@ -46,6 +46,23 @@ def _scorecard_id(scorecard: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _partial_bridge_result(root: Path) -> dict[str, Any]:
+    """Recover action/state metadata when an interrupted bridge never closed."""
+    events = _read_jsonl(root / "bridge-events.jsonl")
+    actions = [event for event in events if event.get("event") == "action"]
+    forced = [event for event in events if event.get("event") == "forced_action"]
+    last_frame = (actions[-1].get("frame") if actions else None) or {}
+    opened = next((event for event in events if event.get("event") == "scorecard_opened"), {})
+    return {
+        "terminal_state": str(last_frame.get("state") or "UNKNOWN"),
+        "levels_completed": int(last_frame.get("levels_completed", 0) or 0),
+        "actions": len(actions),
+        "forced_actions": len(forced),
+        "scorecard_id": opened.get("scorecard_id"),
+        "partial": True,
+    }
+
+
 def project_arc_summary(
     root: Path,
     *,
@@ -420,6 +437,8 @@ def run_arc_agi_3_e2e(
                 bridge.wait(timeout=5)
     if not bridge_result and (root / "bridge-result.json").is_file():
         bridge_result = json.loads((root / "bridge-result.json").read_text(encoding="utf-8"))
+    if not bridge_result:
+        bridge_result = _partial_bridge_result(root)
     scorecard = None
     if (root / "arc-scorecard.json").is_file():
         scorecard = json.loads((root / "arc-scorecard.json").read_text(encoding="utf-8"))
