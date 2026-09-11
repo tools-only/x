@@ -57,6 +57,10 @@ def test_shared_external_extension_closes_finding_compaction_effect_loop(tmp_pat
     decision = json.loads((root / "harness-decisions.jsonl").read_text(encoding="utf-8").splitlines()[0])
     exposure = json.loads((root / "harness-observations.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assessment = json.loads((root / "effect-assessments.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    research_exposures = [
+        json.loads(line)
+        for line in (root / "research-exposures.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
 
     assert observations[0]["observation_id"] == "execution-observation-1"
     assert "x" * 100 in observations[0]["result_text"]
@@ -69,6 +73,11 @@ def test_shared_external_extension_closes_finding_compaction_effect_loop(tmp_pat
     assert exposure["effect_observed"] is True
     assert assessment["verdict"] == "supported"
     assert assessment["window"]["removed_chars"] > 0
+    assert research_exposures
+    assert any(
+        any(item["finding_id"] == "finding-1" for item in exposure["finding_ids"])
+        for exposure in research_exposures
+    )
 
     contexts = [
         json.loads(line)["context"]

@@ -59,6 +59,7 @@ def project_arc_summary(
 ) -> dict[str, Any]:
     """Project native task outcome and task-local mechanism evidence separately."""
     findings = _read_jsonl(root / "research-resources.jsonl")
+    research_exposures = _read_jsonl(root / "research-exposures.jsonl")
     decisions = _read_jsonl(root / "harness-decisions.jsonl")
     exposures = _read_jsonl(root / "harness-observations.jsonl")
     assessments = _read_jsonl(root / "effect-assessments.jsonl")
@@ -108,7 +109,12 @@ def project_arc_summary(
             "provider_error_count": len(provider_errors),
             "last_provider_error": provider_errors[-1] if provider_errors else None,
         },
-        "research": {"finding_versions": len(findings), "latest_findings": findings[-5:]},
+        "research": {
+            "finding_versions": len(findings),
+            "latest_findings": findings[-5:],
+            "exposure_count": len(research_exposures),
+            "latest_exposures": research_exposures[-8:],
+        },
         "self_harness_evaluation": {
             "decision_count": len(decisions),
             "exposure_count": len(exposures),
@@ -124,6 +130,7 @@ def project_arc_summary(
             "pi_events": "pi-events.jsonl",
             "observations": "execution-observations.jsonl",
             "findings": "research-resources.jsonl",
+            "research_exposures": "research-exposures.jsonl",
             "decisions": "harness-decisions.jsonl",
             "effects": "effect-assessments.jsonl",
         },

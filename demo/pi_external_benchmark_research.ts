@@ -91,6 +91,7 @@ export default function externalBenchmarkResearch(pi: ExtensionAPI) {
 	let findingCounter = nextCounter(findingRecords, "finding_id");
 	let researchCounter = nextCounter(findingRecords, "research_event_id");
 	let decisionCounter = nextCounter(readJsonl("harness-decisions.jsonl"), "decision_id");
+	let exposureCounter = nextCounter(readJsonl("research-exposures.jsonl"), "exposure_id");
 	const pendingAssessments = new Map<string, Record<string, unknown>>();
 	for (const assessment of readJsonl("effect-assessments.jsonl")) {
 		pendingAssessments.set(String(assessment.effect_assessment_id), assessment);
@@ -210,6 +211,7 @@ export default function externalBenchmarkResearch(pi: ExtensionAPI) {
 	pi.on("context", async (event) => {
 		const resources: any[] = [];
 		const activeFindings = activeFindingDigest(findings);
+		const pending = [...pendingAssessments.values()];
 		if (activeFindings.length) {
 			resources.push({
 				role: "user",
@@ -220,17 +222,25 @@ export default function externalBenchmarkResearch(pi: ExtensionAPI) {
 				timestamp: Date.now(),
 			});
 		}
-		if (pendingAssessments.size) {
+		if (pending.length) {
 			resources.push({
 				role: "user",
 				content: [{
 					type: "text",
-					text: `Pending task-local execution-condition effects: ${JSON.stringify([...pendingAssessments.values()])}`,
+					text: `Pending task-local execution-condition effects: ${JSON.stringify(pending)}`,
 				}],
 				timestamp: Date.now(),
 			});
 		}
 		if (!resources.length) return {};
+		append("research-exposures.jsonl", {
+			exposure_id: `exposure-${++exposureCounter}`,
+			finding_ids: activeFindings.map((finding) => ({ finding_id: finding.finding_id, version: finding.version })),
+			pending_assessment_ids: pending.map((assessment) => assessment.effect_assessment_id),
+			message_count_before: event.messages.length,
+			message_count_after: event.messages.length + resources.length,
+			recordedAt: new Date().toISOString(),
+		});
 		return { messages: [...event.messages, ...resources] };
 	});
 }
