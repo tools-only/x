@@ -1530,7 +1530,7 @@ Agent absorption 链保持不变。
 hook 被后续请求观察，但它只改变指导文本，不能承担真实 benchmark 的行为优化验证。真实
 OfficeBench extension 已经停止注册该工具；本轮进一步删除 Python summary、outcome 和
 self-harness handoff 中遗留的 evidence-policy 事件计数、before/after/observed 值与
-`guidance_in_next_model_context_not_backend_enforcement` 声称。真实 runtime 现在只把
+`system_prompt_overlay_in_next_model_context_not_backend_enforcement` 声称。真实 runtime 现在只把
 `execution_tool_surface` / `pi.setActiveTools()` 计作 Pi-native harness mutation。测试 provider 的
 默认 OfficeBench fixture 也不再调用已删除工具；独立 demo 的 extension 与机械通路测试未改。
 

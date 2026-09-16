@@ -4,6 +4,8 @@ This demo makes the current architecture inspectable without a remote model. A d
 
 The self-harness portion runs inside the actually installed Pi CLI. A test-only extension registers the LLM-facing `set_evidence_policy` tool and a `before_agent_start` hook. Three model-free Pi commands exercise the same extension state in one process: `summary_only → source_and_date → observed source_and_date`.
 
+Prompt contracts are collected in [`prompts/`](prompts/README.md). The runtime loads them from there and fills only task-specific values such as the ARC game, current evidence, or allowed subagent tools.
+
 Run from the repository root:
 
 ```powershell
@@ -40,7 +42,42 @@ export JIT_PYTHON='D:/anaconda/envs/jit/python.exe'
   --case '1-2-0'
 ```
 
-The command loads `D:\JIT\.env` and requires a new or empty output directory, preserving existing results. It starts from a fresh task-local Pi config/workspace and writes `summary.json`, `artifact-contract.json`, `task-resource-catalog.json`, incremental `pi-events.jsonl`, `pi-runtime-status.json`, model-visible execution observations, append-only versioned research snapshots, optional decisions/effect assessments, target-only SHA-256 manifests, native baseline/optional mutation snapshots, the JIT evaluation, two handoffs, and the round hierarchy. Timeouts retain partial received events and an interrupted status. Agent completion, evaluator signal, artifact change, execution efficiency, task-resource-boundary audit, loop integrity, research lifecycle state, task-local execution-condition effect, and unestablished harness improvement are reported separately. `behavioral_loop_established` means a finding-backed change had a bounded observed effect; only `research_lifecycle_closed` additionally means the agent absorbed that effect into a later research version and resolved the relevant goal.
+The command loads model credentials from this repository's `.env` (or the current process) and requires a new or empty output directory, preserving existing results. It does not read the external JIT checkout's `.env`. It starts from a fresh task-local Pi config/workspace and writes `summary.json`, `artifact-contract.json`, `task-resource-catalog.json`, incremental `pi-events.jsonl`, `pi-runtime-status.json`, model-visible execution observations, append-only versioned research snapshots, optional decisions/effect assessments, target-only SHA-256 manifests, native baseline/optional mutation snapshots, the JIT evaluation, two handoffs, and the round hierarchy. Timeouts retain partial received events and an interrupted status. Child processes also emit the observation-only `subagent-progress.jsonl` probe incrementally, including provider-turn/tool stage, event counters, last child event time, liveness, and report-submission state; it never steers or caps research. Agent completion, evaluator signal, artifact change, execution efficiency, task-resource-boundary audit, loop integrity, research lifecycle state, task-local execution-condition effect, and unestablished harness improvement are reported separately. `behavioral_loop_established` means a finding-backed change had a bounded observed effect; only `research_lifecycle_closed` additionally means the agent absorbed that effect into a later research version and resolved the relevant goal.
+
+## Shared external-benchmark lifecycle
+
+`pi_external_benchmark_research.ts` supplies the same optional, task-local research/finding/evidence lifecycle plus memory, task-local system-prompt overlays, task-local SKILL.md resources, active-tool selection, context focus, and effect assessment to ARC-AGI-3 and Terminal-Bench. Its first treatment request reads the fixed Auto-Research method and exposes direct component creation operations with no bootstrap, repetition, finding, or validation prerequisite; it records a zero-resource `task-harness-entry.jsonl` audit and never invokes Pi's native skill loader. It also writes a causal-neutral `execution-signals.jsonl` index, derives bounded `pattern-candidates.jsonl` checkpoints from repeated or contrasting tool outcomes, and projects an on-demand multilevel research graph from parent/dependency fields already stored in versioned findings. Candidates never become findings or harness changes automatically. Auto-Research deliveries are reviewed inside the isolated child through `research_approval` (`inspect`, `approve`, `reject`, `defer`), which binds the complete structured delivery hash and only versions approval metadata in `task-harness-proposals.jsonl`. Parent-side code deterministically compiles reviewed deliveries into `auto-research-harness-routes.jsonl`; the parent has no approval adapter and executes each ready route through the concrete Pi `task_*` native call. Auto-Research itself never applies the route. `pi_arc_agi_3_extension.ts` adds the native state/action surface and optional task-local read-only Pi subagents; `pi_terminal_bench_extension.ts` retains Pi's native terminal tools. Environment adapters own transport and native evaluation, not research scheduling. Control mode registers none of the treatment capabilities. Treatment mode allows direct task completion with no research and no mutation.
+
+Active research, memory, skill, tool, and subagent indexes are projected through Pi's `context` hook; canonical content remains in run-local JSONL or `SKILL.md`. The shared extension also installs an adapter-independent task-local context lifecycle: it deduplicates repeated projections, keeps the initial task prompt plus a recent valid suffix, archives older transcript messages behind recoverable markers, bounds oversized retained messages, and records metrics in `task-context-compactions.jsonl`. It is enabled by default for treatment and can be disabled only for an explicit ablation with `PI_AUTORESEARCH_CONTEXT_LIFECYCLE=disabled`; `PI_AUTORESEARCH_CONTEXT_COMPACTION` remains the separate Agent-selected observation-representation capability. A skill created during a run becomes usable after the Agent reads its projected path; `task_harness(action="focus", resource_refs=[...])` can narrow later context to exact task-local versions. `loaded_by_pi` is not used as a task lifecycle signal: the runner disables native skills and the extension does not register task-local skill paths with Pi's loader. ARC delegation starts an isolated Pi process with only the Agent-selected subset of `arc_state` and `inspect_arc_trajectory`; `arc_action` is never available to the child.
+
+The provider telemetry extension also writes `context-token-debug.jsonl`. It records one
+size-only context snapshot per provider turn, including estimated tokens for the system
+prompt, task prompt, checkpoint, self-harness, memory, skills, tools,
+subagents, research, ARC observations, tool results, and remaining messages. The
+estimate is `ceil(JSON characters / 4)` and is explicitly marked as heuristic; when a
+provider returns usage, a linked record contains the actual input/output token fields.
+Custom providers that skip `before_provider_request` use the final Pi `context` hook as
+a fallback and mark the measurement basis accordingly. Prompt/resource bodies are not
+copied into this debug log. Read-only ARC subagents write the same schema to
+`subagent-context-token-debug.jsonl` so their turns remain separate from the parent.
+
+ARC uses the independent `arc_agi_3_adapter.py` / `arc_agi_3_official_adapter.ts`
+contract for both arms. It mirrors the official ARC `BenchmarkingAgent` system
+prompt, seven-frame interpolation, RESET visibility rule, 0--63 coordinate
+validation, and `ceil(baseline_actions * 5)` per-level budgets. The bridge only
+transports SDK frames/actions and owns the native scorecard. Set
+`ARC_OPENAI_API_BASE`, `ARC_OPENAI_API_KEY`, and `ARC_MODEL` in this repository's
+`.env` for ARC-specific credentials; they override generic model variables only
+for ARC. The default Pi API is `openai-responses` to match the official model
+configuration (`ARC_PI_API=openai-completions` is an explicit gateway fallback).
+The treatment-only research extension is mounted after this adapter and does
+not alter the ARC frame or action contract.
+
+For a real technical closure probe, add `--harness-validation` to the ARC command.
+The probe asks the Agent to create, use, and revise one instance of every basic
+task-local resource (memory, skill, tool, and read-only subagent) before
+gameplay. This is intentionally separate from an ordinary treatment run, which
+measures autonomous trigger behavior. Native skill loading remains disabled in both.
 
 When continuing the same task after a supported Pi extension restart, the optional
 `research_resource(action="inspect")` call reads a bounded, read-only snapshot of
@@ -50,7 +87,11 @@ tool surface, create a finding, schedule research, or inspect sibling runs. The
 extension starts from its safe baseline; the agent decides whether any restored fact
 is relevant and whether to make a new Pi-native decision.
 The projection truncates long finding prose while retaining versions, references,
-status, and effect fields; canonical JSONL remains the complete record.
+status, and effect fields; canonical JSONL remains the complete record. `inspect`
+supports bounded search by text, status, goal, and attention state. Pinned resources
+replace recent entries within the existing projection limit. A finding update can cite
+the later task observation in which it was used and its reconsider condition. These
+links expose a research-to-task chain but do not establish task improvement.
 
 Shopping keeps the complete backend tool result model-visible and appends only
 neutral execution provenance/outcome metadata. It does not infer a capability

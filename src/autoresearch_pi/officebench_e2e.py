@@ -1100,6 +1100,8 @@ def _tool_call_arguments(event: dict[str, Any]) -> dict[str, Any] | None:
 
 def _load_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
+    if not path.is_file():
+        return values
     for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -1168,11 +1170,12 @@ def run_pi_officebench_task(
     resource_root = (resource_root or root).resolve()
     resource_root.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env.update(_load_dotenv(paths.jit_root / ".env"))
+    for key, value in _load_dotenv(paths.root / ".env").items():
+        env.setdefault(key, value)
     model = env.get("EXEC_MODEL", "a:deepseek-v4-flash")
     base_url = env.get("OPENAI_API_BASE", "")
     if not base_url or not env.get("OPENAI_API_KEY"):
-        raise RuntimeError("D:\\JIT\\.env must define OPENAI_API_BASE and OPENAI_API_KEY")
+        raise RuntimeError("the project .env or process environment must define OPENAI_API_BASE and OPENAI_API_KEY")
 
     agent_dir = root / ".pi-agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -1203,11 +1206,13 @@ def run_pi_officebench_task(
         "--provider", "yibu",
         "--model", model,
         "--no-session",
-        "--no-extensions",
         "--no-skills",
+        "--no-extensions",
         "--no-prompt-templates",
         "--no-context-files",
         "--no-builtin-tools",
+        "--exclude-tools",
+        "bash,edit,write,grep,find,ls,read",
         "--extension", str(extension),
     )
     python_path = str(paths.root / "src")
@@ -1216,6 +1221,8 @@ def run_pi_officebench_task(
     env.update({
         "PI_CODING_AGENT_DIR": str(agent_dir),
         "PI_OFFICEBENCH_E2E_ROOT": str(resource_root),
+        "PI_AUTORESEARCH_E2E_ROOT": str(resource_root),
+        "PI_AUTORESEARCH_OWNS_TASK": "enabled",
         "PI_OFFICEBENCH_WORKSPACE": str(workspace),
         "PI_OFFICEBENCH_EXPERIMENT_VARIANT": experiment_variant,
         "JIT_ROOT": str(paths.jit_root),

@@ -13,14 +13,51 @@ import json
 import math
 import os
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 from .arc_agi_3_adapter import ArcAgi3Adapter, DEFAULT_ACTION_BUDGET_MULTIPLIER
 
 
 ARC_ACTION_BUDGET_MULTIPLIER = DEFAULT_ACTION_BUDGET_MULTIPLIER
+
+
+def exception_details(error: BaseException) -> dict[str, Any]:
+    """Return transport-safe diagnostics for an SDK/environment exception.
+
+    ARC SDK failures are often surfaced by the underlying HTTP client as the
+    unhelpful ``fetch failed`` message.  Preserve the concrete exception
+    class, errno/syscall and chained cause so the parent can distinguish an
+    environment failure from a malformed action or provider failure.  This
+    is diagnostics only; it never decides whether an action should be
+    replayed.
+    """
+    details: dict[str, Any] = {
+        "type": type(error).__name__,
+        "message": str(error),
+        "repr": repr(error),
+        "traceback": "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+    }
+    for name in ("code", "errno", "strerror", "filename", "filename2", "winerror", "status"):
+        value = getattr(error, name, None)
+        if value is not None:
+            details[name] = value
+    cause = error.__cause__ or error.__context__
+    if cause is not None and cause is not error:
+        details["cause"] = exception_details(cause)
+    return details
+
+
+class ArcEnvironmentError(RuntimeError):
+    """An ARC SDK environment call failed after action validation."""
+
+    def __init__(self, operation: str, details: dict[str, Any]):
+        self.operation = operation
+        self.details = details
+        super().__init__(f"ARC environment {operation} failed: {details.get('type')}: {details.get('message')}")
 
 
 def derive_action_budget(baseline_actions: list[int] | None, multiplier: float = ARC_ACTION_BUDGET_MULTIPLIER) -> int:
@@ -72,7 +109,109 @@ def frame_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]
             "top": min(rows), "left": min(cols),
             "bottom": max(rows), "right": max(cols),
         }
+        # Preserve exact local evidence so the agent can update its working
+        # frame without fetching another full observation. The canonical full
+        # frame is retained in the bridge event log as the transport fallback.
+        result["cells"] = [
+            {"row": row, "col": col, "value": after_frames[-1][row][col]}
+            for row, col in changed
+        ]
+        result["cells_truncated"] = False
     return result
+
+
+def project_trajectory(
+    events: list[dict[str, Any]], *, projection: str = "transitions", last_n: int | None = None,
+) -> dict[str, Any]:
+    """Return a bounded factual view over canonical ARC action events.
+
+    The projection deliberately contains no interpretation or recommended next
+    action.  The agent may cite the returned canonical action IDs in a later
+    research observation, while ``bridge-events.jsonl`` remains authoritative.
+    """
+    if projection not in {"transitions", "repeated_actions", "level_boundaries"}:
+        raise ValueError("projection must be transitions, repeated_actions, or level_boundaries")
+    if last_n is not None and last_n < 1:
+        raise ValueError("last_n must be >= 1")
+
+    transitions: list[dict[str, Any]] = []
+    previous_level = 0
+    for event in events:
+        if event.get("event") != "action":
+            continue
+        frame = event.get("frame") if isinstance(event.get("frame"), dict) else {}
+        delta = event.get("observation_delta") if isinstance(event.get("observation_delta"), dict) else {}
+        index = int(event.get("index", len(transitions) + 1))
+        level_after = int(frame.get("levels_completed", previous_level) or 0)
+        level_before = int(event.get("level_before", previous_level) or 0)
+        transition = {
+            "action_id": f"arc-action-{index}",
+            "action": str(event.get("action") or "UNKNOWN"),
+            "coordinates": event.get("coordinates"),
+            "state_before": str(event.get("state_before") or "UNKNOWN"),
+            "state_after": str(frame.get("state") or "UNKNOWN"),
+            "level_before": level_before,
+            "level_after": level_after,
+            "level_changed": level_after != level_before,
+            "changed_cells": int(delta.get("changed_cells", 0) or 0),
+            "bbox": delta.get("bbox"),
+        }
+        transitions.append(transition)
+        previous_level = level_after
+
+    latest_level_change = next(
+        (index for index in range(len(transitions) - 1, -1, -1) if transitions[index]["level_changed"]),
+        None,
+    )
+    actions_since_level_change = (
+        len(transitions) if latest_level_change is None else len(transitions) - latest_level_change - 1
+    )
+    selected = transitions if last_n is None else transitions[-last_n:]
+    if projection == "level_boundaries":
+        items: list[dict[str, Any]] = [item for item in selected if item["level_changed"]]
+    elif projection == "repeated_actions":
+        groups: list[dict[str, Any]] = []
+        for item in selected:
+            key = (
+                item["action"], item["level_before"], item["level_after"], item["state_after"],
+                item["changed_cells"], json.dumps(item["bbox"], sort_keys=True),
+            )
+            previous = groups[-1] if groups else None
+            if previous and previous.get("_key") == key:
+                previous["end_action_id"] = item["action_id"]
+                previous["count"] += 1
+                continue
+            groups.append({
+                "_key": key,
+                "start_action_id": item["action_id"],
+                "end_action_id": item["action_id"],
+                "action": item["action"],
+                "count": 1,
+                "level": item["level_before"],
+                "level_after": item["level_after"],
+                "state_after": item["state_after"],
+                "changed_cells": item["changed_cells"],
+                "bbox": item["bbox"],
+            })
+        for group in groups:
+            group.pop("_key", None)
+        items = groups
+    else:
+        items = selected
+
+    return {
+        "projection": projection,
+        "summary": {
+            "actions_available": len(transitions),
+            "actions_considered": len(selected),
+            "items_returned": len(items),
+            "current_level": transitions[-1]["level_after"] if transitions else 0,
+            "latest_action_id": transitions[-1]["action_id"] if transitions else None,
+            "actions_since_level_change": actions_since_level_change,
+        },
+        "items": items,
+        "canonical_source": "bridge-events.jsonl",
+    }
 
 
 def parse_action_payload(
@@ -131,7 +270,11 @@ class ArcBridge:
         self.forced_actions = 0
         self.closed = False
         self.scorecard: dict[str, Any] | None = None
+        self._close_result: dict[str, Any] | None = None
         self._lock = threading.Lock()
+        self._events: list[dict[str, Any]] = []
+        self._events_lock = threading.Lock()
+        self._disk_events_available = True
         self._append({
             "event": "scorecard_opened", "game": game, "scorecard_id": self.card_id,
             "baseline_actions": baseline_actions,
@@ -141,9 +284,28 @@ class ArcBridge:
         self._normalize_initial_state()
 
     def _append(self, event: dict[str, Any]) -> None:
-        with (self.root / "bridge-events.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-            stream.flush()
+        # The bridge may run under the ARC SDK interpreter, whose sandbox
+        # identity is not guaranteed to have workspace write access. Keep the
+        # canonical event stream in memory and let the parent pull it over
+        # HTTP; persist opportunistically when the filesystem is available.
+        with self._events_lock:
+            self._events.append(event)
+        if not self._disk_events_available:
+            return
+        try:
+            with (self.root / "bridge-events.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+                stream.flush()
+        except OSError:
+            self._disk_events_available = False
+
+    def events(self, *, after: int = 0) -> dict[str, Any]:
+        """Return canonical bridge events for parent-side durable projection."""
+        if after < 0:
+            raise ValueError("after must be >= 0")
+        with self._events_lock:
+            start = min(after, len(self._events))
+            return {"events": self._events[start:], "next": len(self._events)}
 
     def _frame(self) -> dict[str, Any]:
         frame = serialize_frame(
@@ -164,7 +326,40 @@ class ArcBridge:
         if frame["state"] != "NOT_PLAYED":
             return
         action = self.game_action.from_name("RESET")
-        raw = self.environment.step(action, data=action.action_data.model_dump(), reasoning={})
+        action_data = action.action_data.model_dump()
+        self._append({
+            "event": "environment_call_started", "operation": "step",
+            "attempted_index": self.actions + 1, "action": action.name,
+            "coordinates": action_data, "level_before": 0,
+            "state_before": frame["state"], "reason": "initial_not_played",
+        })
+        try:
+            raw = self.environment.step(action, data=action_data, reasoning={})
+        except Exception as exc:
+            details = exception_details(exc)
+            self._append({
+                "event": "environment_error", "operation": "step",
+                "attempted_index": self.actions + 1, "action": action.name,
+                "coordinates": action_data, "level_before": 0,
+                "state_before": frame["state"], "reason": "initial_not_played",
+                "retryable": False, "error": details,
+            })
+            raise ArcEnvironmentError("step", details) from exc
+        if raw is None:
+            details = {
+                "type": "EnvironmentReturnedNoFrame",
+                "message": "ARC SDK environment.step returned None; the remote wrapper may have swallowed a request failure",
+                "repr": "None",
+                "traceback": "",
+            }
+            self._append({
+                "event": "environment_error", "operation": "step",
+                "attempted_index": self.actions + 1, "action": action.name,
+                "coordinates": action_data, "level_before": 0,
+                "state_before": frame["state"], "reason": "initial_not_played",
+                "retryable": False, "error": details,
+            })
+            raise ArcEnvironmentError("step", details)
         self.actions += 1
         self.level_action_counts[0] += 1
         self.forced_actions += 1
@@ -191,6 +386,12 @@ class ArcBridge:
             }
             return frame
 
+    def trajectory(self, *, projection: str, last_n: int) -> dict[str, Any]:
+        with self._lock:
+            with self._events_lock:
+                events = list(self._events)
+            return project_trajectory(events, projection=projection, last_n=last_n)
+
     def step(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             if self.closed:
@@ -214,18 +415,63 @@ class ArcBridge:
             )
             reasoning_text = payload.get("reasoning")
             reasoning = {"summary": reasoning_text} if isinstance(reasoning_text, str) and reasoning_text else {}
-            raw = self.environment.step(action, data=action.action_data.model_dump(), reasoning=reasoning)
+            action_data = action.action_data.model_dump()
+            # Record the boundary before entering the SDK.  If its network
+            # fetch hangs or the client drops the response, /events remains
+            # readable and proves exactly which validated action was in flight.
+            self._append({
+                "event": "environment_call_started", "operation": "step",
+                "attempted_index": self.actions + 1, "action": action.name,
+                "coordinates": action_data, "level_before": level,
+                "state_before": before["state"],
+            })
+            try:
+                raw = self.environment.step(action, data=action_data, reasoning=reasoning)
+            except Exception as exc:
+                details = exception_details(exc)
+                self._append({
+                    "event": "environment_error", "operation": "step",
+                    "attempted_index": self.actions + 1, "action": action.name,
+                    "coordinates": action_data, "level_before": level,
+                    "state_before": before["state"], "retryable": False,
+                    "error": details,
+                })
+                raise ArcEnvironmentError("step", details) from exc
+            if raw is None:
+                # The official RemoteEnvironmentWrapper currently catches
+                # requests exceptions and returns None.  That means action
+                # acceptance is unknown: never count or replay it as success.
+                details = {
+                    "type": "EnvironmentReturnedNoFrame",
+                    "message": "ARC SDK environment.step returned None; the remote wrapper may have swallowed a request failure",
+                    "repr": "None",
+                    "traceback": "",
+                }
+                self._append({
+                    "event": "environment_error", "operation": "step",
+                    "attempted_index": self.actions + 1, "action": action.name,
+                    "coordinates": action_data, "level_before": level,
+                    "state_before": before["state"], "retryable": False,
+                    "error": details,
+                })
+                raise ArcEnvironmentError("step", details)
             self.actions += 1
             self.level_action_counts[level] += 1
             self.adapter.record_action(action.name)
             after = self._frame()
             after["observation_delta"] = frame_delta(before, after)
+            after_level = int(after["levels_completed"])
+            after["public_transition"] = {
+                "level_before": level,
+                "level_after": after_level,
+                "level_changed": after_level != level,
+            }
             self._append({
                 "event": "action", "index": self.actions, "action": action.name,
                 "coordinates": action.action_data.model_dump(), "state_before": before["state"],
+                "level_before": level,
                 "observation_delta": after["observation_delta"], "frame": after,
             })
-            after_level = int(after["levels_completed"])
             while len(self.level_action_counts) <= after_level:
                 self.level_action_counts.append(0)
             after_level_budget = (
@@ -247,9 +493,12 @@ class ArcBridge:
                 native = self.arcade.close_scorecard(self.card_id)
                 self.scorecard = native.model_dump(mode="json") if native is not None else None
                 self.closed = True
-                (self.root / "arc-scorecard.json").write_text(
-                    json.dumps(self.scorecard, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
+                try:
+                    (self.root / "arc-scorecard.json").write_text(
+                        json.dumps(self.scorecard, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                    )
+                except OSError:
+                    pass
                 frame = self._frame()
                 result = {
                     "terminal_state": frame["state"], "levels_completed": frame["levels_completed"],
@@ -258,11 +507,18 @@ class ArcBridge:
                     "action_budget_multiplier": self.action_budget_multiplier,
                     "action_budget": self.max_actions,
                 }
-                (self.root / "bridge-result.json").write_text(
-                    json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
                 self._append({"event": "scorecard_closed", **result})
-            return json.loads((self.root / "bridge-result.json").read_text(encoding="utf-8"))
+                try:
+                    (self.root / "bridge-result.json").write_text(
+                        json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+                self._close_result = result
+            response = dict(self._close_result or {})
+            with self._events_lock:
+                response["events"] = list(self._events)
+            return response
 
 
 def _make_handler(bridge: ArcBridge):
@@ -275,14 +531,44 @@ def _make_handler(bridge: ArcBridge):
             self.end_headers()
             self.wfile.write(body)
 
+        def _error(self, status: int, error: Exception) -> None:
+            if isinstance(error, ArcEnvironmentError):
+                self._json(status, {
+                    "format": "arc-bridge-error-v1",
+                    "error": str(error),
+                    "error_type": type(error).__name__,
+                    "operation": f"environment.{error.operation}",
+                    "retryable": False,
+                    "details": error.details,
+                })
+                return
+            self._json(status, {"error": f"{type(error).__name__}: {error}"})
+
         def do_GET(self) -> None:  # noqa: N802
-            if self.path != "/state":
+            parsed = urlparse(self.path)
+            if parsed.path not in {"/state", "/trajectory", "/events"}:
                 self._json(404, {"error": "not found"})
                 return
             try:
-                self._json(200, bridge.state())
+                if parsed.path == "/state":
+                    self._json(200, bridge.state())
+                    return
+                if parsed.path == "/events":
+                    query = parse_qs(parsed.query)
+                    raw_after = (query.get("after") or ["0"])[0]
+                    self._json(200, bridge.events(after=int(raw_after)))
+                    return
+                query = parse_qs(parsed.query)
+                projection = (query.get("projection") or ["transitions"])[0]
+                raw_last_n = (query.get("last_n") or [None])[0]
+                last_n = int(raw_last_n) if raw_last_n is not None else None
+                self._json(200, bridge.trajectory(projection=projection, last_n=last_n))
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+            except ArcEnvironmentError as exc:
+                self._error(502, exc)
             except Exception as exc:
-                self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+                self._error(500, exc)
 
         def do_POST(self) -> None:  # noqa: N802
             try:
@@ -297,8 +583,10 @@ def _make_handler(bridge: ArcBridge):
                     self._json(404, {"error": "not found"})
             except ValueError as exc:
                 self._json(400, {"error": str(exc)})
+            except ArcEnvironmentError as exc:
+                self._error(502, exc)
             except Exception as exc:
-                self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+                self._error(500, exc)
 
         def log_message(self, _format: str, *_args: Any) -> None:
             return
@@ -311,24 +599,52 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--game", required=True)
     parser.add_argument("--max-actions", type=int, default=None)
+    parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # The parent creates the run root.  An ARC SDK child may be unable to
+        # stat/mutate that directory under a restricted process identity, but
+        # it can still serve the in-memory bridge protocol to its parent.
+        pass
     bridge: ArcBridge | None = None
     server: ThreadingHTTPServer | None = None
     try:
         bridge = ArcBridge(root, args.game, args.max_actions)
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(bridge))
+        server = ThreadingHTTPServer(("127.0.0.1", args.port), _make_handler(bridge))
         port = server.server_address[1]
         ready = {"status": "ready", "host": "127.0.0.1", "port": port, "game": args.game, "pid": os.getpid()}
-        (root / "bridge-ready.json").write_text(json.dumps(ready, indent=2) + "\n", encoding="utf-8")
+        try:
+            (root / "bridge-ready.json").write_text(json.dumps(ready, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            # Parent-side readiness is transported by stdout/HTTP when the
+            # SDK child cannot write into the workspace.
+            pass
+        print(json.dumps(ready, ensure_ascii=False), flush=True)
         server.serve_forever()
         return 0
     except Exception as exc:
-        (root / "bridge-error.json").write_text(
-            json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        details = exception_details(exc)
+        error_payload: dict[str, Any] = {
+            "format": "arc-bridge-startup-error-v1",
+            "error": f"{type(exc).__name__}: {exc}",
+            "details": details,
+        }
+        if isinstance(exc, ArcEnvironmentError):
+            error_payload.update({
+                "operation": f"environment.{exc.operation}",
+                "retryable": False,
+                "environment_error": exc.details,
+            })
+        try:
+            (root / "bridge-error.json").write_text(
+                json.dumps(error_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            print(json.dumps({"status": "error", **error_payload}, ensure_ascii=False), flush=True)
         return 1
     finally:
         if server is not None:

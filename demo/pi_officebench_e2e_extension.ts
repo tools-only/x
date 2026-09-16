@@ -6,6 +6,8 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { installTaskLocalContextLifecycle } from "./pi_task_local_context_lifecycle.ts";
+import { loadPrompt } from "./prompt_loader.ts";
 
 type ExpectedRecurrence = "low" | "medium" | "high";
 type SurfaceChoice = "apply" | "keep";
@@ -118,7 +120,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 	let pendingEffectWindow: PendingEffectWindow | undefined;
 	let taskNotes = "";
 	let executionSurface: SurfaceMode = "general";
-	const method = readFileSync(fileURLToPath(new URL("./auto_research_method.md", import.meta.url)), "utf8");
+	const method = loadPrompt("auto_research_method.md");
 	const outputRoot = resolve(process.env.PI_OFFICEBENCH_E2E_ROOT ?? ".");
 	const nativeRoot = join(outputRoot, "pi-native");
 	const workspace = resolve(process.env.PI_OFFICEBENCH_WORKSPACE ?? ".");
@@ -255,7 +257,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 	const restoredResourceHint = experimentVariant === "treatment" && (findings.size || effectAssessments.size)
 		? "This task directory contains prior task-local research records from an earlier supported continuation. They are not execution state: if relevant, call research_resource action=inspect (read-only) to review them; the current Pi tool surface still starts from its safe baseline and any new apply/keep decision remains yours. "
 		: "";
-	const summarize = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 240);
+	const summarize = (text: string) => text.replace(/\s+/g, " ").trim();
 	const finishEffectWindow = (completionReason: "horizon_reached" | "task_settled" | "superseded") => {
 		if (!pendingEffectWindow) return;
 		const window = pendingEffectWindow;
@@ -552,7 +554,6 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		}
 		const pendingAssessments = [...effectAssessments.values()]
 			.filter((assessment) => !absorbedEffectAssessments.has(String(assessment.effect_assessment_id)))
-			.slice(-5)
 			.map((assessment) => {
 				const window = assessment.window as Record<string, unknown> | undefined;
 				return {
@@ -576,12 +577,9 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 		}
 		if (findings.size) {
 			const ordered = [...findings.values()];
-			const active = ordered.filter((finding) => finding.status !== "resolved").slice(-5);
-			const retainedCapacity = Math.min(3, 5 - active.length);
-			const retained = retainedCapacity > 0
-				? ordered.filter((finding) => finding.status === "resolved"
-					&& finding.resolution === "supported" && finding.remaining_uses > 0).slice(-retainedCapacity)
-				: [];
+			const active = ordered.filter((finding) => finding.status !== "resolved");
+			const retained = ordered.filter((finding) => finding.status === "resolved"
+				&& finding.resolution === "supported" && finding.remaining_uses > 0);
 			const digest = [...active, ...retained].map((finding) => finding.status === "resolved"
 				? {
 					goal_id: finding.goal_id, finding_id: finding.finding_id, version: finding.version,
@@ -747,7 +745,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 			target_version: Type.Optional(Type.Integer({ minimum: 1 })),
 			question: Type.Optional(Type.String()), scope: Type.Optional(Type.String()),
 			uncertainty: Type.Optional(Type.String()),
-			evidence_plan: Type.Optional(Type.Array(Type.String(), { maxItems: 8 })),
+			evidence_plan: Type.Optional(Type.Array(Type.String())),
 			evidence: Type.Optional(Type.String()), decision: Type.Optional(Type.String()),
 			evidence_refs: Type.Optional(Type.Array(Type.String())),
 			assessment_refs: Type.Optional(Type.Array(Type.String())),
@@ -759,7 +757,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 				mode: Type.Union([Type.Literal("general"), Type.Literal("calendar_focused"), Type.Literal("calendar_batch"), Type.Literal("email_batch")]),
 				expected_effect: Type.String(),
 				effect_metric: Type.Union([Type.Literal("semantic_error_rate"), Type.Literal("focused_tool_use_rate"), Type.Literal("calendar_batch_utilization"), Type.Literal("email_batch_utilization")]),
-				observation_horizon: Type.Integer({ minimum: 1, maximum: 8 }),
+				observation_horizon: Type.Integer({ minimum: 1 }),
 				reconsider_when: Type.String(),
 			})),
 		}),
@@ -773,7 +771,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 				const assessments = [...effectAssessments.values()]
 					.filter((assessment) => !requestedFinding
 						|| selected.some((finding) => (finding.assessment_refs ?? []).includes(String(assessment.effect_assessment_id))))
-					.slice(-8);
+					;
 				const compactFinding = (finding: ResearchFinding) => ({
 					goal_id: finding.goal_id, finding_id: finding.finding_id, version: finding.version,
 					action: finding.action, status: finding.status, resolution: finding.resolution,
@@ -808,8 +806,8 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 					format: "task-local-research-inspection-v1",
 					scope: "current task only",
 					findings: selected.map(compactFinding),
-					prior_decisions: readJsonl("harness-decisions.jsonl").slice(-8).map(compactDecision),
-					exposure_observations: readJsonl("harness-observations.jsonl").slice(-8).map(compactExposure),
+					prior_decisions: readJsonl("harness-decisions.jsonl").map(compactDecision),
+					exposure_observations: readJsonl("harness-observations.jsonl").map(compactExposure),
 					pending_effect_assessments: assessments.filter((assessment) => !absorbedEffectAssessments.has(String(assessment.effect_assessment_id))).map(compactAssessment),
 					resolved_effect_assessments: assessments.filter((assessment) => absorbedEffectAssessments.has(String(assessment.effect_assessment_id))).map(compactAssessment),
 					read_only: true,
@@ -971,7 +969,7 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 			basis_resource_ids: Type.Array(Type.String(), { minItems: 1 }),
 			expected_effect: Type.String(),
 			effect_metric: Type.Union([Type.Literal("semantic_error_rate"), Type.Literal("focused_tool_use_rate"), Type.Literal("calendar_batch_utilization"), Type.Literal("email_batch_utilization")]),
-			observation_horizon: Type.Integer({ minimum: 1, maximum: 8 }),
+			observation_horizon: Type.Integer({ minimum: 1 }),
 			reconsider_when: Type.String(),
 		}),
 		async execute(toolCallId, params) {
@@ -1175,4 +1173,10 @@ export default function officeBenchE2EExtension(pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	// The provider transcript is a bounded treatment projection; OfficeBench
+	// task artifacts and observations remain canonical on disk.
+	if (experimentVariant !== "control") {
+		installTaskLocalContextLifecycle(pi, { root: outputRoot, enabled: true });
+	}
 }

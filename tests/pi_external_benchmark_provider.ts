@@ -5,19 +5,42 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 export default function externalBenchmarkFixture(pi: ExtensionAPI) {
+	const root = process.env.PI_AUTORESEARCH_E2E_ROOT!;
+	const contextPath = join(root, "provider-contexts.jsonl");
 	let request = 0;
 	let toolCall = 0;
-	const root = process.env.PI_AUTORESEARCH_E2E_ROOT!;
 	pi.registerTool({
 		name: "benchmark_probe",
 		label: "Benchmark Probe",
 		description: "Return one large deterministic benchmark observation.",
-		parameters: Type.Object({}),
-		async execute() {
-			return { content: [{ type: "text", text: "probe:" + "x".repeat(4096) }], details: { fixture: true } };
+		parameters: Type.Object({
+			fail: Type.Optional(Type.String()),
+			state_changed: Type.Optional(Type.Boolean()),
+			progressed: Type.Optional(Type.Boolean()),
+		}),
+		async execute(_toolCallId, params) {
+			const values = params as { fail?: string; state_changed?: boolean; progressed?: boolean };
+			const failure = values.fail;
+			if (failure) throw new Error(failure);
+			const autoresearchSignals = [
+				...(typeof values.state_changed === "boolean" ? [{
+					layer: "environment_state", outcome: values.state_changed ? "changed" : "unchanged",
+					labels: [values.state_changed ? "visible_state_changed" : "visible_state_unchanged"],
+					pattern_key: "benchmark_probe:fixture",
+				}] : []),
+				...(typeof values.progressed === "boolean" ? [{
+					layer: "task_progress", outcome: values.progressed ? "advanced" : "not_advanced",
+					labels: [values.progressed ? "public_progress_advanced" : "public_progress_not_advanced"],
+					pattern_key: "benchmark_probe:fixture",
+				}] : []),
+			];
+			return { content: [{ type: "text", text: "probe:" + "x".repeat(4096) }], details: {
+				fixture: true, ...(autoresearchSignals.length ? { autoresearch_signals: autoresearchSignals } : {}),
+			} };
 		},
 	});
 	const configuredSteps = process.env.PI_EXTERNAL_STEPS ? JSON.parse(process.env.PI_EXTERNAL_STEPS) : undefined;
+	const thinkingChars = Math.max(0, Number(process.env.PI_EXTERNAL_THINKING_CHARS ?? "0") || 0);
 	const steps = configuredSteps ?? (process.env.PI_AUTORESEARCH_VARIANT === "control" ? [] : [
 		{ name: "benchmark_probe", arguments: {} },
 		{ name: "research_resource", arguments: {
@@ -51,27 +74,29 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 			contextWindow: 128000, maxTokens: 1024,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
 		streamSimple(model, context) {
-			appendFileSync(join(root, "provider-contexts.jsonl"), JSON.stringify({ request, context }) + "\n", "utf8");
+			appendFileSync(contextPath, JSON.stringify({ request, context }) + "\n", "utf8");
 			const step = steps[request++];
 			const stream = createAssistantMessageEventStream();
 			const output: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider,
-				model: model.id, content: [], stopReason: step ? "toolUse" : "stop", timestamp: Date.now(),
+				model: model.id, content: [], stopReason: step?.stop_reason ?? (step ? "toolUse" : "stop"), timestamp: Date.now(),
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 			stream.push({ type: "start", partial: output });
 			if (step) {
+				if (thinkingChars) output.content.push({ type: "thinking", thinking: "x".repeat(thinkingChars) } as any);
 				const block = { type: "toolCall" as const, id: `fixture-${++toolCall}`, name: step.name, arguments: step.arguments };
 				output.content.push(block);
-				stream.push({ type: "toolcall_start", contentIndex: 0, partial: output });
-				stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(step.arguments), partial: output });
-				stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: block, partial: output });
+				const toolCallIndex = output.content.length - 1;
+				stream.push({ type: "toolcall_start", contentIndex: toolCallIndex, partial: output });
+				stream.push({ type: "toolcall_delta", contentIndex: toolCallIndex, delta: JSON.stringify(step.arguments), partial: output });
+				stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall: block, partial: output });
 			} else {
 				output.content.push({ type: "text", text: "fixture complete" });
 				stream.push({ type: "text_start", contentIndex: 0, partial: output });
 				stream.push({ type: "text_delta", contentIndex: 0, delta: "fixture complete", partial: output });
 				stream.push({ type: "text_end", contentIndex: 0, content: "fixture complete", partial: output });
 			}
-			stream.push({ type: "done", reason: step ? "toolUse" : "stop", message: output });
+			stream.push({ type: "done", reason: output.stopReason as "toolUse" | "stop" | "length", message: output });
 			stream.end();
 			return stream;
 		},

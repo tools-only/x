@@ -44,7 +44,10 @@ def _provider_observation_texts(
                 continue
             details = message.get("details")
             observation = details.get("observation") if isinstance(details, dict) else None
-            observation_id = observation.get("event_id") if isinstance(observation, dict) else None
+            observation_id = (
+                observation.get("event_id") or observation.get("observation_id")
+                if isinstance(observation, dict) else None
+            )
             text = _message_text(message)
             if isinstance(observation_id, str) and text is not None:
                 found.setdefault(observation_id, []).append((request_index, text))
@@ -63,7 +66,10 @@ def _event_observation_texts(
             continue
         details = result.get("details")
         observation = details.get("observation") if isinstance(details, dict) else None
-        observation_id = observation.get("event_id") if isinstance(observation, dict) else None
+        observation_id = (
+            observation.get("event_id") or observation.get("observation_id")
+            if isinstance(observation, dict) else None
+        )
         text = _message_text(result)
         if isinstance(observation_id, str) and text is not None:
             found.setdefault(observation_id, []).append((index, text))
@@ -83,9 +89,9 @@ def audit_observation_compaction_effects(
     """Recompute supported context effects from completed, Agent-invisible records."""
 
     observations_by_id = {
-        item.get("event_id"): item
+        item.get("event_id") or item.get("observation_id"): item
         for item in observations
-        if isinstance(item.get("event_id"), str)
+        if isinstance(item.get("event_id") or item.get("observation_id"), str)
     }
     findings_by_version = {
         (item.get("finding_id"), item.get("version")): item
@@ -162,7 +168,10 @@ def audit_observation_compaction_effects(
         if any(observation_id not in observations_by_id for observation_id in selected):
             local.append("unknown_selected_observation")
         for observation_id in selected:
-            canonical_result = observations_by_id.get(observation_id, {}).get("result")
+            canonical = observations_by_id.get(observation_id, {})
+            canonical_result = canonical.get("result")
+            if not isinstance(canonical_result, str):
+                canonical_result = canonical.get("result_text")
             if not isinstance(canonical_result, str) or canonical_result.startswith("[Task-local observation "):
                 local.append("canonical_observation_not_full")
                 break

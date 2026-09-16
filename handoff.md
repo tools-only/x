@@ -1,5 +1,7 @@
 # Autoresearch Pi / Self-Harness Handoff
 
+> 2026-09-16 延后待办：[ARC adapter 边界、离线/在线研究模式与上下文连续性](docs/deferred-research-todos.md)。用户要求先记录，在后续相关架构、研究交互或压缩工作中适时提醒；具体触发条件见待办文件，尚未开始实施。
+
 > 2026-09-08 真实闭环优化：[已实现、未实现、下一阶段目标](docs/tracks/2026-09-07-autoresearch-self-harness-optimization.md)。当前链路为 `model-visible EXECUTION_OBSERVATION → research-goal-N/finding-N → apply/keep decision-N → optional pi.setActiveTools() → exposure observation → bounded effect-assessment-N`。初始隐藏的 `calendar_batch_action` 只有在 finding-backed `calendar_batch` 决策后才进入下一模型请求；一个 Pi tool call/一个 Python bridge 进程可完成 2–16 个真实 create。可选 `research_resource.continue_with` 在同一 agent 决策中落 finding 与关联 decision，省略则不修改。`summary.json.closed_loop_evidence` 现在紧凑投影全部已声明 goals、决策时 capability catalog、证据摘要、Pi 原生修改前后与 effect，并引用 canonical 文件而不复制完整 trace。Runner 独立重算任务正确性信号、连接、loop integrity 和 task-local effect；`harness_improvement` 仍保持 `not_established`。全量测试 **64 passed**。
 
 > Level 3 证据：`runs/level3-3-6-0-auditable-summary-1` 因 email 契约未披露而 length 失败；新增在所有 surface 中保持可用的 `email_action` 后，`runs/level3-3-6-0-auditable-summary-2-email-contract` 正常完成并得到 JIT score 1.0，生成 1 个日历文件与 14 个邮件副本。该模型选择 no-change，所以 summary 如实显示空 goals/changes 和完整可用资源；不要把它表述为新的 harness 闭环样本。

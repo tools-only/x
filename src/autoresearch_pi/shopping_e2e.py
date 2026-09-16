@@ -22,6 +22,7 @@ from .observation_compaction_evidence import (
     audit_observation_compaction_effects,
 )
 from .pi_kernel import PiKernel
+from .project import load_project_dotenv
 from .validation_evidence import (
     aggregate_validation_evidence,
     project_pair_evidence,
@@ -590,20 +591,14 @@ def _run_pi_shopping_task(
     extension = Path(__file__).resolve().parents[2] / "demo" / "pi_shopping_e2e_extension.ts"
     agent_dir = root / ".pi-agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    dotenv = Path(env.get("JIT_ROOT", r"D:\JIT")) / ".env"
-    if dotenv.is_file():
-        for line in dotenv.read_text(encoding="utf-8-sig").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            value = value.strip().strip('"').strip("'")
-            env.setdefault(key.strip(), value)
+    project_root = Path(__file__).resolve().parents[2]
+    env = load_project_dotenv(project_root)
     src = str(Path(__file__).resolve().parent.parent)
     env.update({
         "PI_CODING_AGENT_DIR": str(agent_dir),
         "PI_SHOPPING_E2E_ROOT": str(root),
+        "PI_AUTORESEARCH_E2E_ROOT": str(root),
+        "PI_AUTORESEARCH_OWNS_TASK": "enabled",
         "PI_SHOPPING_DB_DIR": case["db_dir"],
         "PI_SHOPPING_CART_PATH": case["cart_path"],
         "JIT_ROOT": env.get("JIT_ROOT", r"D:\JIT"),
@@ -619,9 +614,9 @@ def _run_pi_shopping_task(
     model = env.get("EXEC_MODEL", "a:deepseek-v4-flash")
     base_url, api_key = env.get("OPENAI_API_BASE"), env.get("OPENAI_API_KEY")
     if not base_url or not api_key:
-        raise RuntimeError("D:\\JIT\\.env must define OPENAI_API_BASE and OPENAI_API_KEY")
+        raise RuntimeError("the project .env or process environment must define OPENAI_API_BASE and OPENAI_API_KEY")
     (agent_dir / "models.json").write_text(json.dumps({"providers": {"yibu": {"baseUrl": base_url, "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True, "models": [{"id": model, "name": model, "reasoning": False, "contextWindow": 128000, "maxTokens": 8192}]}}}), encoding="utf-8")
-    command = (node, cli, "--mode", "rpc", "--provider", "yibu", "--model", model, "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--extension", str(extension))
+    command = (node, cli, "--mode", "rpc", "--provider", "yibu", "--model", model, "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--exclude-tools", "bash,edit,write,grep,find,ls,read", "--extension", str(extension))
     events: list[dict[str, Any]] = []
     root.mkdir(parents=True, exist_ok=True)
     contract_source = jit_root / "benchmark" / "adapter" / "deepplanning.py"

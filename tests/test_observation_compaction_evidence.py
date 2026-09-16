@@ -108,3 +108,21 @@ def test_compaction_audit_recomputes_from_pi_events_when_provider_payload_is_not
 
 	assert [item["effect_assessment_id"] for item in supported] == ["effect-assessment-1"]
 	assert issues == []
+
+
+def test_compaction_audit_accepts_generic_external_observation_identifiers():
+	observations, findings, decisions, exposures, assessments, contexts = _valid_records()
+	observations[0]["observation_id"] = observations[0].pop("event_id")
+	observations[0]["result_text"] = observations[0].pop("result")
+	for request in contexts:
+		for message in request["context"]["messages"]:
+			observation = (message.get("details") or {}).get("observation")
+			if observation and "event_id" in observation:
+				observation["observation_id"] = observation.pop("event_id")
+
+	supported, issues = audit_observation_compaction_effects(
+		observations, findings, decisions, exposures, assessments, contexts,
+	)
+
+	assert issues == []
+	assert supported == assessments

@@ -1,6 +1,6 @@
 # Historical plan (superseded): Autoresearch Pi Kernel
 
-> Superseded by `harness-boundary-v1`. Do not use this plan as implementation guidance: its agent-owned harness, source validation, checkpoint, and outer-loop design conflict with the current Pi-native boundary.
+> Superseded by `harness-boundary-v1`. Do not use this plan as implementation reference: its agent-owned harness, source validation, checkpoint, and outer-loop design conflict with the current Pi-native boundary.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 

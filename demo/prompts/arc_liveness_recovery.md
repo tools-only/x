@@ -1,0 +1,3 @@
+ARC liveness recovery. The previous parent turn spent a long time without an executable result. The external game and task-local state were not reset. Supplied state={{state}}, levels_completed={{levels_completed}}, action_budget={{action_budget}}, latest_action_evidence={{latest_action_evidence}}.
+
+Use the durable native context and supplied evidence. Long or uncertain analysis may be delegated through auto_research; specifically needed exact resource pages and task-local harness operations remain available. Do not replay the whole archived transcript. Research is recovery progress but not an ARC action. Submit one arc_action as the final call when the decision cycle is ready.

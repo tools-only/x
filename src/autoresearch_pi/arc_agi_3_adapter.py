@@ -21,7 +21,10 @@ OFFICIAL_ARC_SYSTEM_PROMPT = (
 DEFAULT_MAX_ANIMATION_FRAMES = 7
 DEFAULT_ACTION_BUDGET_MULTIPLIER = 5.0
 OFFICIAL_CONTEXT_WINDOW = 175_000
-OFFICIAL_MAX_OUTPUT_TOKENS = 128_000
+# Mirrors ARC-AGI-3 benchmarking.Agent.MAX_RUNTIME_SECONDS.  The e2e
+# runner uses this only as Pi's per-operation wait ceiling; it does not add a
+# second session deadline or a project-specific shorter timeout.
+OFFICIAL_MAX_RUNTIME_SECONDS = 12 * 60 * 60
 
 
 def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
@@ -37,7 +40,6 @@ def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
         "api_key": environment.get("ARC_OPENAI_API_KEY") or environment.get("OPENAI_API_KEY"),
         "model": environment.get("ARC_MODEL") or environment.get("EXEC_MODEL") or "gpt-5.6-sol",
         "context_window": OFFICIAL_CONTEXT_WINDOW,
-        "max_tokens": OFFICIAL_MAX_OUTPUT_TOKENS,
         "official_runtime": "openai-python/responses",
         "pi_api": environment.get("ARC_PI_API") or "openai-responses",
     }

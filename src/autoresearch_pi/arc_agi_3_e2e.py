@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import time
 import urllib.error
@@ -18,8 +19,23 @@ from .arc_agi_3_adapter import (
     DEFAULT_ACTION_BUDGET_MULTIPLIER,
     DEFAULT_MAX_ANIMATION_FRAMES,
     OFFICIAL_ARC_SYSTEM_PROMPT,
+    OFFICIAL_MAX_RUNTIME_SECONDS,
     resolve_model_settings,
 )
+from .observation_compaction_evidence import audit_observation_compaction_effects
+from .research_evidence import project_research_evidence
+from .subagent_broker import SubagentBroker
+
+
+_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "demo" / "prompts"
+
+
+def _load_prompt(name: str, **values: str) -> str:
+    """Load a human-readable runtime prompt and expand simple placeholders."""
+    prompt = (_PROMPTS_DIR / name).read_text(encoding="utf-8").strip()
+    for key, value in values.items():
+        prompt = prompt.replace("{{" + key + "}}", value)
+    return prompt
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -34,6 +50,292 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             records.append(value)
     return records
+
+
+def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    """Append one compact runtime fact without rewriting the artifact."""
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _compact_arc_pi_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep ARC execution evidence without repeating full assistant payloads."""
+    event_type = event.get("type")
+    if event_type in {"message_start", "turn_end", "agent_end"}:
+        return None
+    if event_type != "message_end":
+        return event
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return {"type": "message_end"}
+    retained = {
+        key: message[key]
+        for key in (
+            "role", "stopReason", "errorMessage", "usage", "provider", "model", "api", "timestamp"
+        )
+        if key in message
+    }
+    return {"type": "message_end", "message": retained}
+
+
+def _project_arc_kernel_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Retain only fields needed to drive a live ARC turn in process memory."""
+    event_type = event.get("type")
+    if event_type == "response":
+        return event
+    if event_type == "message_end":
+        return _compact_arc_pi_event(event)
+    if event_type == "tool_execution_end":
+        projected = {
+            "type": "tool_execution_end",
+            "toolName": event.get("toolName"),
+            "isError": event.get("isError", False),
+        }
+        if "toolCallId" in event:
+            projected["toolCallId"] = event.get("toolCallId")
+        # Keep only the small decision signature inputs/evidence needed by
+        # the generic watchdog; do not duplicate the full ARC frame in RAM.
+        if "args" in event:
+            projected["args"] = event.get("args")
+        result = event.get("result")
+        details = result.get("details") if isinstance(result, dict) else None
+        if isinstance(details, dict):
+            evidence = {
+                key: details[key]
+                for key in (
+                    "version", "revision", "state_version", "state", "progress",
+                    "levels_completed", "action_budget",
+                    "public_transition", "arc_action_boundary", "arc_terminal",
+                    "terminal_reason",
+                )
+                if key in details
+            }
+            if evidence:
+                projected["evidence"] = evidence
+        return projected
+    if event_type == "agent_progress_watchdog":
+        return event
+    if event_type in {"turn_start", "agent_end", "agent_settled"}:
+        return {"type": event_type}
+    return None
+
+
+def _latest_records(
+    records: list[dict[str, Any]],
+    *,
+    key: str,
+    fields: tuple[str, ...],
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Project latest component versions without copying large task-local bodies."""
+    latest: dict[str, dict[str, Any]] = {}
+    for record in records:
+        identity = record.get(key)
+        if not isinstance(identity, str) or not identity:
+            continue
+        previous = latest.get(identity)
+        if previous is None or int(record.get("version", 0) or 0) >= int(previous.get("version", 0) or 0):
+            latest[identity] = record
+    selected = sorted(latest.values(), key=lambda item: str(item.get("recordedAt") or ""))[-limit:]
+    return [{field: item.get(field) for field in fields if field in item} for item in selected]
+
+
+def _provider_telemetry_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate provider telemetry without copying request or response bodies."""
+    requests = [item for item in records if item.get("event") == "provider_request"]
+    responses = [item for item in records if item.get("event") == "provider_response"]
+    assistants = [item for item in records if item.get("event") == "assistant_message"]
+
+    def values(items: list[dict[str, Any]], key: str) -> list[int]:
+        return [int(item[key]) for item in items if isinstance(item.get(key), (int, float))]
+
+    def stats(items: list[dict[str, Any]], key: str) -> dict[str, Any]:
+        selected = values(items, key)
+        return {
+            "count": len(selected),
+            "first": selected[0] if selected else None,
+            "last": selected[-1] if selected else None,
+            "maximum": max(selected) if selected else None,
+            "total": sum(selected),
+        }
+
+    stop_reasons: dict[str, int] = {}
+    for item in assistants:
+        reason = str(item.get("stop_reason") or "unknown")
+        stop_reasons[reason] = stop_reasons.get(reason, 0) + 1
+    return {
+        "record_count": len(records),
+        "request_count": len(requests),
+        "response_count": len(responses),
+        "assistant_message_count": len(assistants),
+        "payload_json_chars": stats(requests, "payload_json_chars"),
+        "message_count": stats(requests, "message_count"),
+        "system_message_json_chars": stats(requests, "system_message_json_chars"),
+        "tool_result_json_chars": stats(requests, "tool_result_json_chars"),
+        "tool_definition_json_chars": stats(requests, "tool_definition_json_chars"),
+        "response_latency_ms": stats(responses, "latency_ms"),
+        "assistant_elapsed_ms": stats(assistants, "elapsed_ms"),
+        "stop_reasons": stop_reasons,
+        "interpretation": (
+            "Observation-only request telemetry; payload bodies and credentials are not persisted. "
+            "A missing request count can occur for providers that bypass the HTTP payload hook."
+        ),
+    }
+
+
+def _context_token_debug_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize the privacy-preserving per-turn context token debug log."""
+    requests = [item for item in records if item.get("event") == "provider_request_context"]
+    usages = [item for item in records if item.get("event") == "provider_response_usage"]
+
+    def numeric_values(items: list[dict[str, Any]], key: str) -> list[int]:
+        return [int(item[key]) for item in items if isinstance(item.get(key), (int, float))]
+
+    def stats(items: list[dict[str, Any]], key: str) -> dict[str, Any]:
+        values = numeric_values(items, key)
+        return {
+            "count": len(values),
+            "first": values[0] if values else None,
+            "last": values[-1] if values else None,
+            "maximum": max(values) if values else None,
+            "total": sum(values),
+        }
+
+    latest_modules = requests[-1].get("modules") if requests else {}
+    return {
+        "record_count": len(records),
+        "request_count": len(requests),
+        "usage_count": len(usages),
+        "estimated_input_tokens": stats(requests, "estimated_input_tokens"),
+        "actual_input_tokens": stats(usages, "actual_input_tokens"),
+        "actual_output_tokens": stats(usages, "actual_output_tokens"),
+        "latest_turn": requests[-1].get("turn") if requests else None,
+        "latest_modules": latest_modules,
+        "interpretation": (
+            "Per-provider-turn context accounting. estimated_input_tokens uses the explicit "
+            "provider-independent JSON-character heuristic; actual_input_tokens is copied from "
+            "the provider usage event when available. Module bodies are not persisted."
+        ),
+    }
+
+
+def _auto_research_harness_closure(
+    *,
+    route_receipts: list[dict[str, Any]],
+    memory: list[dict[str, Any]],
+    skills: list[dict[str, Any]],
+    task_tools: list[dict[str, Any]],
+    subagents: list[dict[str, Any]],
+    system_prompts: list[dict[str, Any]],
+    context_exposures: list[dict[str, Any]],
+    task_tool_events: list[dict[str, Any]],
+    subagent_invocations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Prove route -> native materialization -> later use for all five components."""
+    specs = {
+        "system_prompt": ("task_system_prompt", "system_prompt", system_prompts, "name"),
+        "skills": ("task_skill", "skill", skills, "name"),
+        "memory": ("task_memory", "memory", memory, "key"),
+        "tools": ("task_tool", "tool", task_tools, "name"),
+        "subagents": ("task_subagent", "subagent", subagents, "name"),
+    }
+
+    def exact_record(records: list[dict[str, Any]], identity_key: str, ref: str) -> dict[str, Any] | None:
+        try:
+            _kind, tail = ref.split(":", 1)
+            name, raw_version = tail.rsplit("@v", 1)
+            version = int(raw_version)
+        except (ValueError, TypeError):
+            return None
+        return next((item for item in records
+                     if str(item.get(identity_key) or "") == name
+                     and int(item.get("version", 0) or 0) == version), None)
+
+    def after(item: dict[str, Any], timestamp: str) -> bool:
+        return str(item.get("recordedAt") or "") >= timestamp
+
+    projected: dict[str, Any] = {}
+    for component, (native_tool, resource_kind, records, identity_key) in specs.items():
+        candidates = [item for item in route_receipts
+                      if item.get("native_tool") == native_tool
+                      and item.get("status") == "applied"
+                      and item.get("applied") is not False]
+        route_applied = bool(candidates)
+        selected_receipt: dict[str, Any] | None = None
+        selected_record: dict[str, Any] | None = None
+        used_after_route = False
+        for receipt in candidates:
+            ref = str(receipt.get("resource_ref") or "")
+            if not ref.startswith(resource_kind + ":"):
+                continue
+            record = exact_record(records, identity_key, ref)
+            if record is None:
+                continue
+            receipt_time = str(receipt.get("recordedAt") or "")
+            version = int(record.get("version", 0) or 0)
+            name = str(record.get(identity_key) or "")
+            if component == "memory":
+                resource_id = str(record.get("memory_id") or "")
+                used = any(after(exposure, receipt_time) and any(
+                    str(item.get("memory_id") or "") == resource_id
+                    and int(item.get("version", 0) or 0) == version
+                    for item in exposure.get("memory_versions", [])
+                ) for exposure in context_exposures)
+            elif component == "skills":
+                used = any(after(exposure, receipt_time) and any(
+                    str(item.get("name") or "") == name
+                    and int(item.get("version", 0) or 0) == version
+                    for item in exposure.get("skill_versions", [])
+                ) for exposure in context_exposures)
+            elif component == "system_prompt":
+                used = any(after(exposure, receipt_time) and any(
+                    str(item.get("name") or "") == name
+                    and int(item.get("version", 0) or 0) == version
+                    for item in exposure.get("system_prompt_versions", [])
+                ) for exposure in context_exposures)
+            elif component == "tools":
+                used = any(after(event, receipt_time)
+                           and event.get("event") == "invoked"
+                           and event.get("status") == "completed"
+                           and event.get("semantic_effect_observed") is True
+                           and str(event.get("name") or "") == name
+                           and int(event.get("version", 0) or 0) == version
+                           for event in task_tool_events)
+            else:
+                used = any(after(invocation, receipt_time)
+                           and invocation.get("status") == "completed"
+                           and str(invocation.get("agent_name") or "") == name
+                           and isinstance(invocation.get("result"), dict)
+                           and bool(str(invocation["result"].get("text") or "").strip())
+                           for invocation in subagent_invocations)
+            selected_receipt, selected_record = receipt, record
+            if used:
+                used_after_route = True
+                break
+        projected[component] = {
+            "route_applied": route_applied,
+            "materialized": selected_record is not None,
+            "used_after_route": used_after_route,
+            "route_id": selected_receipt.get("route_id") if selected_receipt else None,
+            "resource_ref": selected_receipt.get("resource_ref") if selected_receipt else None,
+        }
+    required = ["system_prompt", "skills", "memory", "tools", "subagents"]
+    return {
+        "required_components": required,
+        "complete": all(
+            projected[name]["route_applied"]
+            and projected[name]["materialized"]
+            and projected[name]["used_after_route"]
+            for name in required
+        ),
+        "components": projected,
+        "interpretation": (
+            "A component closes only when an approved Auto-Research route receipt applied its native Pi mutation, "
+            "the exact resource version exists, and a later parent turn exposed or invoked that version. "
+            "Tool invocation additionally requires a non-passthrough semantic effect; subagent invocation requires "
+            "a completed non-empty result."
+        ),
+    }
 
 
 def _scorecard_id(scorecard: dict[str, Any] | None) -> str | None:
@@ -73,14 +375,69 @@ def project_arc_summary(
     pi_returncode: int,
     timed_out: bool,
     model_settings: dict[str, Any] | None = None,
+    harness_validation: bool = False,
+    auto_research_validation: bool = False,
 ) -> dict[str, Any]:
     """Project native task outcome and task-local mechanism evidence separately."""
     findings = _read_jsonl(root / "research-resources.jsonl")
+    execution_signals = _read_jsonl(root / "execution-signals.jsonl")
+    pattern_candidates = _read_jsonl(root / "pattern-candidates.jsonl")
+    self_harness_checkpoints = _read_jsonl(root / "self-harness-checkpoints.jsonl")
     research_exposures = _read_jsonl(root / "research-exposures.jsonl")
+    research_validation_windows = _read_jsonl(root / "research-validation-windows.jsonl")
+    validation_records = _read_jsonl(root / "task-validations.jsonl")
+    latest_validations = {record["validation_id"]: record for record in validation_records}
     decisions = _read_jsonl(root / "harness-decisions.jsonl")
     exposures = _read_jsonl(root / "harness-observations.jsonl")
     assessments = _read_jsonl(root / "effect-assessments.jsonl")
     pi_events = _read_jsonl(root / "pi-events.jsonl")
+    observations = _read_jsonl(root / "execution-observations.jsonl")
+    provider_contexts = _read_jsonl(root / "provider-contexts.jsonl")
+    task_harness_entry = _read_jsonl(root / "task-harness-entry.jsonl")
+    memory = _read_jsonl(root / "task-memory.jsonl")
+    skills = _read_jsonl(root / "task-skills.jsonl")
+    skill_events = _read_jsonl(root / "task-skill-events.jsonl")
+    task_context_exposures = _read_jsonl(root / "task-harness-context-exposures.jsonl")
+    task_harness_opportunities = _read_jsonl(root / "task-harness-opportunities.jsonl")
+    task_resource_access = _read_jsonl(root / "task-resource-access.jsonl")
+    system_prompts = _read_jsonl(root / "task-system-prompt.jsonl")
+    task_tools = _read_jsonl(root / "task-tools.jsonl")
+    task_tool_invocations = _read_jsonl(root / "task-tool-events.jsonl")
+    native_skill_discovery = _read_jsonl(root / "native-skill-discovery.jsonl")
+    provider_telemetry = _read_jsonl(root / "provider-telemetry.jsonl")
+    context_token_debug = _read_jsonl(root / "context-token-debug.jsonl")
+    subagent_provider_telemetry = _read_jsonl(root / "subagent-provider-telemetry.jsonl")
+    subagent_context_token_debug = _read_jsonl(root / "subagent-context-token-debug.jsonl")
+    subagent_progress = _read_jsonl(root / "subagent-progress.jsonl")
+    auto_research_runs = _read_jsonl(root / "auto-research-runs.jsonl")
+    auto_research_route_receipts = _read_jsonl(root / "auto-research-harness-route-receipts.jsonl")
+    bridge_events = _read_jsonl(root / "bridge-events.jsonl")
+    environment_errors = [
+        event for event in bridge_events if event.get("event") == "environment_error"
+    ]
+    environment_calls_started = [
+        event for event in bridge_events if event.get("event") == "environment_call_started"
+    ]
+    watchdog_events = [item for item in pi_events if item.get("type") == "agent_progress_watchdog"]
+    recovery_phase_events = [item for item in pi_events if item.get("type") == "arc_recovery_phase"]
+    subagents = _read_jsonl(root / "task-subagents.jsonl")
+    subagent_invocations = _read_jsonl(root / "subagent-invocations.jsonl")
+    completed_subagent_invocations = [
+        item for item in subagent_invocations
+        if item.get("status") == "completed" or (item.get("status") is None and isinstance(item.get("result"), dict))
+    ]
+    failed_subagent_invocations = [item for item in subagent_invocations if item.get("status") == "failed"]
+    subagent_usage = {
+        key: sum(
+            int((((item.get("result") or {}).get("usage") or {}).get(key, 0)) or 0)
+            for item in completed_subagent_invocations
+        )
+        for key in ("input", "output", "cacheRead", "cacheWrite")
+    }
+    subagent_usage["cost_total"] = sum(
+        float((((((item.get("result") or {}).get("usage") or {}).get("cost") or {}).get("total", 0)) or 0))
+        for item in completed_subagent_invocations
+    )
     provider_errors = [
         str((event.get("message") or {}).get("errorMessage"))
         for event in pi_events
@@ -90,9 +447,50 @@ def project_arc_summary(
         and (event.get("message") or {}).get("errorMessage")
     ]
     supported = [item for item in assessments if item.get("verdict") == "supported"]
+    supported_decision_ids = {
+        item.get("decision_id") for item in supported if isinstance(item.get("decision_id"), str)
+    }
+    runtime_exposure_linked_decisions = {
+        item.get("decision_id")
+        for item in exposures
+        if item.get("effect_observed") is True and item.get("decision_id") in supported_decision_ids
+    }
+    independently_supported, effect_integrity_issues = audit_observation_compaction_effects(
+        observations,
+        findings,
+        decisions,
+        exposures,
+        assessments,
+        provider_contexts,
+        pi_events=pi_events,
+    )
+    independently_supported_decisions = {
+        item.get("decision_id") for item in independently_supported if item.get("decision_id")
+    }
+    provider_verified_decisions = {
+        item.get("decision_id")
+        for item in exposures
+        if item.get("observation_kind") == "final_provider_payload"
+        and item.get("effect_observed") is True
+        and item.get("decision_id") in independently_supported_decisions
+    }
     terminal_state = str(bridge_result.get("terminal_state") or "UNKNOWN")
     levels_completed = int(bridge_result.get("levels_completed", 0) or 0)
     benchmark_passed = terminal_state == "WIN"
+    bridge_partial = bool(bridge_result.get("partial"))
+    run_complete = bool(
+        scorecard is not None
+        and not bridge_partial
+        and pi_returncode == 0
+        and not timed_out
+    )
+    completion_status = (
+        "timed_out" if timed_out else
+        "interrupted" if pi_returncode == 130 else
+        "runner_failed" if pi_returncode != 0 else
+        "partial" if bridge_partial or scorecard is None else
+        "completed"
+    )
     return {
         "pipeline": "pi-native-arc-agi-3-e2e",
         "game": game,
@@ -113,6 +511,7 @@ def project_arc_summary(
             "terminal_state": terminal_state,
             "levels_completed": levels_completed,
             "passed": benchmark_passed,
+            "evaluation_complete": bool(scorecard is not None and not bridge_partial),
         },
         "runtime": {
             "pi_returncode": pi_returncode,
@@ -120,36 +519,253 @@ def project_arc_summary(
             "agent_actions": int(bridge_result.get("actions", 0) or 0),
             "forced_actions": int(bridge_result.get("forced_actions", 0) or 0),
             "model": (model_settings or {}).get("model"),
+            "provider": (model_settings or {}).get("provider"),
+            "provider_extension": (model_settings or {}).get("provider_extension"),
             "pi_api": (model_settings or {}).get("pi_api"),
             "context_window": (model_settings or {}).get("context_window"),
             "max_output_tokens": (model_settings or {}).get("max_tokens"),
             "provider_error_count": len(provider_errors),
             "last_provider_error": provider_errors[-1] if provider_errors else None,
+            "environment_call_count": len(environment_calls_started),
+            "environment_error_count": len(environment_errors),
+            "last_environment_error": environment_errors[-1] if environment_errors else None,
+            "run_complete": run_complete,
+            "completion_status": completion_status,
+            "harness_validation": harness_validation,
+            "auto_research_validation": auto_research_validation,
+            "recovery": {
+                "phase_transition_count": len(recovery_phase_events),
+                "latest_phase": recovery_phase_events[-1].get("to") if recovery_phase_events else "normal",
+                "transitions": recovery_phase_events,
+            },
+            "watchdog": {
+                "event_count": len(watchdog_events),
+                "interventions": [
+                    {
+                        "number": item.get("intervention_number"),
+                        "kind": item.get("intervention"),
+                        "repeated_read_calls": item.get("read_only_calls"),
+                    }
+                    for item in watchdog_events
+                ],
+            },
+        },
+        "native_skills": {
+            "audit_count": len(native_skill_discovery),
+            "latest": native_skill_discovery[-1] if native_skill_discovery else None,
+            "source": "disabled_for_task_local_harness",
+            "latest_skill_count": (
+                int(native_skill_discovery[-1].get("skill_count", 0) or 0)
+                if native_skill_discovery else 0
+            ),
+            "latest_skill_description_chars": (
+                int(native_skill_discovery[-1].get("skill_description_chars", 0) or 0)
+                if native_skill_discovery else 0
+            ),
+            "interpretation": (
+                "The task-local harness does not use Pi native skill discovery or loading; "
+                "task skills are projected by the extension from run-local resources."
+            ),
+        },
+        "task_local_entry": {
+            "audit_count": len(task_harness_entry),
+            "initial": task_harness_entry[0] if task_harness_entry else None,
+            "initial_resource_counts": (
+                task_harness_entry[0].get("initial_resource_counts")
+                if task_harness_entry else None
+            ),
+            "latest": task_harness_entry[-1] if task_harness_entry else None,
+            "native_skill_loading": bool(task_harness_entry[-1].get("native_skill_loading")) if task_harness_entry else False,
+            "interpretation": "The first treatment request exposes direct task-local component operations and the task_harness start/inspect/enable/focus entry; resource contents still start empty.",
+        },
+        "provider_telemetry": {
+            "main": _provider_telemetry_summary(provider_telemetry),
+            "context_tokens": _context_token_debug_summary(context_token_debug),
+            "subagents": {
+                **_provider_telemetry_summary(subagent_provider_telemetry),
+                "context_tokens": _context_token_debug_summary(subagent_context_token_debug),
+            },
+            "progress": {
+                "record_count": len(subagent_progress),
+                "latest": subagent_progress[-1] if subagent_progress else None,
+                "latest_by_progress_id": {
+                    str(progress_id): record
+                    for progress_id, record in {
+                        str(item.get("progress_id")): item
+                        for item in subagent_progress
+                        if item.get("progress_id")
+                    }.items()
+                },
+                "interpretation": (
+                    "Observation-only child liveness and protocol-stage telemetry. "
+                    "It does not steer, interrupt, cap, approve, or route a child."
+                ),
+            },
         },
         "research": {
-            "finding_versions": len(findings),
-            "latest_findings": findings[-5:],
+            **project_research_evidence(
+                findings=findings,
+                execution_signals=execution_signals,
+                pattern_candidates=pattern_candidates,
+                harness_decisions=decisions,
+                harness_observations=exposures,
+                effect_assessments=assessments,
+            ),
             "exposure_count": len(research_exposures),
-            "latest_exposures": research_exposures[-8:],
+            "self_harness_checkpoint_count": len(self_harness_checkpoints),
+            "latest_exposures": research_exposures,
+            "validation_windows": {
+                "event_count": len(research_validation_windows),
+                "opened": len([item for item in research_validation_windows if item.get("status") == "open"]),
+                "awaiting_assessment": len([item for item in research_validation_windows if item.get("status") == "awaiting_assessment"]),
+                "expired": len([item for item in research_validation_windows if item.get("status") in {"expired", "awaiting_assessment", "falsify", "inconclusive"}]),
+                "latest": research_validation_windows,
+            },
+            "auto_research": {
+                "run_count": len(auto_research_runs),
+                "completed": sum(item.get("status") == "completed" for item in auto_research_runs),
+                "invalid_reports": sum(item.get("status") == "invalid_report" for item in auto_research_runs),
+                "failed": sum(item.get("status") == "failed" for item in auto_research_runs),
+                "latest": [
+                    {
+                        **{key: item.get(key) for key in (
+                            "run_id", "version", "status", "scope", "summary", "report_ref",
+                            "finding_count", "proposal_count", "progress_ref", "progress_id",
+                        ) if key in item},
+                        "output_tokens": int(
+                            (((item.get("result_summary") or {}).get("usage") or {}).get("output", 0))
+                            or (((item.get("result") or {}).get("usage") or {}).get("output", 0))
+                            or 0
+                        ),
+                    }
+                    for item in auto_research_runs
+                ],
+            },
+            "auto_research_harness_closure": _auto_research_harness_closure(
+                route_receipts=auto_research_route_receipts,
+                memory=memory,
+                skills=skills,
+                task_tools=task_tools,
+                subagents=subagents,
+                system_prompts=system_prompts,
+                context_exposures=task_context_exposures,
+                task_tool_events=task_tool_invocations,
+                subagent_invocations=subagent_invocations,
+            ),
+            "validation_ledger": {
+                "version_count": len(validation_records),
+                "test_count": len(latest_validations),
+                "unresolved": sum(r.get("status") == "open" for r in latest_validations.values()),
+                "assessed": sum(r.get("status") == "assessed" for r in latest_validations.values()),
+                "interpretation": "Agent-authored evidence-linked assessments, not independent proof or a count of research tool calls.",
+            },
+        },
+        "task_local_resources": {
+            "system_prompt": {
+                "version_count": len(system_prompts),
+                "latest": _latest_records(
+                    system_prompts, key="name",
+                    fields=("system_prompt_id", "name", "version", "status", "content", "basis_refs", "decision_id", "expected_effect", "reconsider_when"),
+                ),
+            },
+            "memory": {
+                "version_count": len(memory),
+                "latest": _latest_records(
+                    memory, key="key",
+                    fields=("memory_id", "key", "version", "status", "content", "scope", "basis_refs", "pinned"),
+                ),
+            },
+            "skills": {
+                "version_count": len(skills),
+                "event_count": len(skill_events),
+                "latest": _latest_records(
+                    skills, key="name",
+                    fields=("skill_id", "name", "version", "status", "description", "file", "basis_refs", "decision_id", "expected_effect", "reconsider_when"),
+                ),
+            },
+            "tools": {
+                "version_count": len(task_tools),
+                "invocation_count": len([
+                    item for item in task_tool_invocations
+                    if item.get("event") == "invoked" and item.get("status") == "completed"
+                ]),
+                "failed_invocation_count": len([
+                    item for item in task_tool_invocations
+                    if item.get("event") == "invoked" and item.get("status") == "failed"
+                ]),
+                "latest": _latest_records(
+                    task_tools, key="name",
+                    fields=("tool_id", "name", "version", "status", "description", "input_schema", "implementation_ref", "program", "exposed_name", "adapter_id", "permission", "basis_refs", "decision_id", "expected_effect", "reconsider_when"),
+                ),
+            },
+            "subagents": {
+                "version_count": len(subagents),
+                "invocation_count": len(subagent_invocations),
+                "completed_invocations": len(completed_subagent_invocations),
+                "failed_invocations": len(failed_subagent_invocations),
+                "usage": subagent_usage,
+                "latest": _latest_records(
+                    subagents, key="name",
+                    fields=("agent_id", "name", "version", "status", "description", "tools", "file", "basis_refs", "decision_id", "expected_effect", "reconsider_when"),
+                ),
+            },
+            "context_exposure_count": len(task_context_exposures),
+            "opportunity_count": len(task_harness_opportunities),
+            "resource_access_count": len(task_resource_access),
         },
         "self_harness_evaluation": {
             "decision_count": len(decisions),
             "exposure_count": len(exposures),
             "effect_assessment_count": len(assessments),
             "supported_effect_assessments": len(supported),
+            "runtime_exposure_linked_supported_effect_assessments": len(runtime_exposure_linked_decisions),
+            "artifact_integrity_supported_effect_assessments": len(independently_supported),
+            "provider_payload_verified_effect_assessments": len(provider_verified_decisions),
+            "unverified_supported_effect_assessments": max(
+                0, len(supported) - len(provider_verified_decisions)
+            ),
+            "effect_integrity_issues": effect_integrity_issues,
             "harness_improved": None,
-            "interpretation": "Mechanism evidence is a mediator; improvement requires a paired benchmark comparison.",
+            "interpretation": (
+                "Runtime effect claims and independent artifact checks are mediators; "
+                "harness improvement requires a valid paired benchmark comparison."
+            ),
         },
         "native_scorecard": scorecard,
         "artifacts": {
             "bridge_events": "bridge-events.jsonl",
+            "trajectory": "bridge-events.jsonl#action-events",
             "scorecard": "arc-scorecard.json",
             "pi_events": "pi-events.jsonl",
             "observations": "execution-observations.jsonl",
+            "execution_signals": "execution-signals.jsonl",
+            "pattern_candidates": "pattern-candidates.jsonl",
             "findings": "research-resources.jsonl",
+            "research_validation_windows": "research-validation-windows.jsonl",
             "research_exposures": "research-exposures.jsonl",
+            "self_harness_checkpoints": "self-harness-checkpoints.jsonl",
             "decisions": "harness-decisions.jsonl",
+            "harness_observations": "harness-observations.jsonl",
             "effects": "effect-assessments.jsonl",
+            "task_memory": "task-memory.jsonl",
+            "task_context_exposures": "task-harness-context-exposures.jsonl",
+            "task_harness_opportunities": "task-harness-opportunities.jsonl",
+            "task_resource_access": "task-resource-access.jsonl",
+            "native_skill_discovery": "native-skill-discovery.jsonl",
+            "task_harness_entry": "task-harness-entry.jsonl",
+            "task_harness_entry_events": "task-harness-entry-events.jsonl",
+            "provider_telemetry": "provider-telemetry.jsonl",
+            "context_token_debug": "context-token-debug.jsonl",
+            "subagent_provider_telemetry": "subagent-provider-telemetry.jsonl",
+            "subagent_context_token_debug": "subagent-context-token-debug.jsonl",
+            "auto_research_runs": "auto-research-runs.jsonl",
+            "auto_research_reports": "auto-research-reports.jsonl",
+            "auto_research_route_receipts": "auto-research-harness-route-receipts.jsonl",
+            "task_skills": "task-skills.jsonl",
+            "task_skill_events": "task-skill-events.jsonl",
+            "task_subagents": "task-subagents.jsonl",
+            "subagent_invocations": "subagent-invocations.jsonl",
+            "subagent_progress": "subagent-progress.jsonl",
         },
     }
 
@@ -158,6 +774,8 @@ def compare_arc_runs(control: dict[str, Any], treatment: dict[str, Any]) -> dict
     """Compare paired ARC summaries without conflating mechanism and task success."""
     control_eval = control.get("benchmark_evaluation") or {}
     treatment_eval = treatment.get("benchmark_evaluation") or {}
+    control_scorecard = control.get("native_scorecard") or {}
+    treatment_scorecard = treatment.get("native_scorecard") or {}
     control_runtime = control.get("runtime") or {}
     treatment_runtime = treatment.get("runtime") or {}
     control_harness = control.get("self_harness_evaluation") or {}
@@ -168,25 +786,81 @@ def compare_arc_runs(control: dict[str, Any], treatment: dict[str, Any]) -> dict
     treatment_actions = int(treatment_runtime.get("agent_actions", 0) or 0)
     level_delta = treatment_levels - control_levels
     action_delta = treatment_actions - control_actions
+    control_score = control_eval.get("score", control_scorecard.get("score"))
+    treatment_score = treatment_eval.get("score", treatment_scorecard.get("score"))
+    control_score = float(control_score) if isinstance(control_score, (int, float)) else None
+    treatment_score = float(treatment_score) if isinstance(treatment_score, (int, float)) else None
+    score_delta = (
+        treatment_score - control_score
+        if control_score is not None and treatment_score is not None else None
+    )
     task_improved: bool | None
     if treatment_levels != control_levels:
         task_improved = treatment_levels > control_levels
     elif bool(treatment_eval.get("passed")) != bool(control_eval.get("passed")):
         task_improved = bool(treatment_eval.get("passed"))
+    elif score_delta is not None and score_delta != 0:
+        task_improved = score_delta > 0
     else:
         task_improved = None
     supported_delta = int(treatment_harness.get("supported_effect_assessments", 0) or 0) - int(
         control_harness.get("supported_effect_assessments", 0) or 0
     )
+    provider_verified_delta = int(
+        treatment_harness.get("provider_payload_verified_effect_assessments", 0) or 0
+    ) - int(control_harness.get("provider_payload_verified_effect_assessments", 0) or 0)
+    runtime_linked_delta = int(
+        treatment_harness.get("runtime_exposure_linked_supported_effect_assessments", 0) or 0
+    ) - int(control_harness.get("runtime_exposure_linked_supported_effect_assessments", 0) or 0)
+    invalid_reasons: list[str] = []
+    if not control.get("game") or not treatment.get("game"):
+        invalid_reasons.append("game_missing")
+    elif control.get("game") != treatment.get("game"):
+        invalid_reasons.append("game_mismatch")
+    if (control.get("experiment") or {}).get("variant") != "control":
+        invalid_reasons.append("control_variant_mismatch")
+    if (treatment.get("experiment") or {}).get("variant") != "treatment":
+        invalid_reasons.append("treatment_variant_mismatch")
+    if control_runtime.get("run_complete") is not True:
+        invalid_reasons.append("control_run_incomplete")
+    if treatment_runtime.get("run_complete") is not True:
+        invalid_reasons.append("treatment_run_incomplete")
+    control_model = control_runtime.get("model")
+    treatment_model = treatment_runtime.get("model")
+    if not control_model or not treatment_model:
+        invalid_reasons.append("model_missing")
+    elif control_model != treatment_model:
+        invalid_reasons.append("model_mismatch")
+    for key in ("pi_api", "context_window", "max_output_tokens"):
+        if control_runtime.get(key) is None or treatment_runtime.get(key) is None:
+            invalid_reasons.append(f"{key}_missing")
+        elif control_runtime.get(key) != treatment_runtime.get(key):
+            invalid_reasons.append(f"{key}_mismatch")
+    comparison_valid = not invalid_reasons
+    treatment_improved = task_improved if comparison_valid else None
+    treatment_decisions = int(treatment_harness.get("decision_count", 0) or 0)
+    harness_improved = (
+        True
+        if treatment_improved is True
+        and treatment_decisions > 0
+        and max(runtime_linked_delta, provider_verified_delta) > 0
+        else None
+    )
     return {
+        "comparison_valid": comparison_valid,
+        "invalid_reasons": invalid_reasons,
         "task": {
             "control_levels_completed": control_levels,
             "treatment_levels_completed": treatment_levels,
             "levels_delta": level_delta,
+            "control_score": control_score,
+            "treatment_score": treatment_score,
+            "score_delta": score_delta,
             "control_passed": bool(control_eval.get("passed")),
             "treatment_passed": bool(treatment_eval.get("passed")),
             "action_delta": action_delta,
-            "harness_improved": task_improved,
+            "treatment_improved": treatment_improved,
+            "harness_improved": harness_improved,
         },
         "mechanism": {
             "control_decisions": int(control_harness.get("decision_count", 0) or 0),
@@ -194,10 +868,17 @@ def compare_arc_runs(control: dict[str, Any], treatment: dict[str, Any]) -> dict
             "control_supported_effects": int(control_harness.get("supported_effect_assessments", 0) or 0),
             "treatment_supported_effects": int(treatment_harness.get("supported_effect_assessments", 0) or 0),
             "supported_effect_delta": supported_delta,
+            "runtime_exposure_linked_effect_delta": runtime_linked_delta,
+            "provider_payload_verified_effect_delta": provider_verified_delta,
         },
         "interpretation": (
-            "Task-level improvement is supported by the paired outcome."
-            if task_improved is True else
+            "Paired task or harness improvement is not established because the runs are not comparable: "
+            + ", ".join(invalid_reasons) + "."
+            if not comparison_valid else
+            "Task treatment gain and a supported effect linked to a recorded Pi runtime exposure are both present in this pair."
+            if harness_improved is True else
+            "Task treatment gain is supported, but self-harness improvement is not established."
+            if treatment_improved is True else
             "Mechanism effect is observed, but paired task improvement is not established."
             if supported_delta > 0 else
             "No task-level or mechanism improvement is established by this pair."
@@ -210,8 +891,23 @@ def _post_json(url: str, payload: dict[str, Any], timeout: float = 10.0) -> dict
         url, data=json.dumps(payload).encode("utf-8"), method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        value = json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            value = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        # Keep structured bridge diagnostics (notably environment.step's
+        # underlying SDK cause) instead of reducing every failure to
+        # ``HTTP Error 502``.  The caller still treats this as a failed
+        # operation and never replays an uncertain action automatically.
+        try:
+            body = json.loads(exc.read())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {"error": str(exc)}
+        raise RuntimeError(json.dumps({
+            "format": "arc-bridge-http-error-v1", "url": url,
+            "status": exc.code, "response": body,
+            "retryable": bool(body.get("retryable", False)) if isinstance(body, dict) else False,
+        }, ensure_ascii=False)) from exc
     if not isinstance(value, dict):
         raise ValueError("ARC bridge returned a non-object")
     return value
@@ -235,21 +931,360 @@ def _resolve_pi_cli() -> tuple[str, str]:
     return node, str(cli)
 
 
-def _wait_for_bridge(root: Path, process: subprocess.Popen[str], timeout: float = 60.0) -> dict[str, Any]:
+def _wait_for_bridge(
+    root: Path,
+    process: subprocess.Popen[str],
+    timeout: float = 60.0,
+    *,
+    port: int | None = None,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     ready_path = root / "bridge-ready.json"
     while time.monotonic() < deadline:
         if ready_path.is_file():
             return json.loads(ready_path.read_text(encoding="utf-8"))
+        if port is not None:
+            try:
+                ready = _get_json(f"http://127.0.0.1:{port}/state", timeout=0.5)
+                # A valid state response proves that the HTTP bridge is live;
+                # the state itself is not used as the readiness receipt.
+                ready = {
+                    "status": "ready", "host": "127.0.0.1", "port": port,
+                    "game": ready.get("game_id"), "pid": process.pid,
+                }
+                try:
+                    ready_path.write_text(json.dumps(ready, indent=2) + "\n", encoding="utf-8")
+                except OSError:
+                    pass
+                return ready
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
         if process.poll() is not None:
             error_path = root / "bridge-error.json"
             detail = error_path.read_text(encoding="utf-8") if error_path.is_file() else ""
             raise RuntimeError(f"ARC bridge exited before ready: {detail}")
         time.sleep(0.1)
-    raise TimeoutError("timed out waiting for ARC bridge readiness")
+    # A readiness timeout is a startup failure, not a reason to silently wait
+    # longer.  Persist enough child diagnostics for the caller to distinguish
+    # SDK import/hardware failures from a deadlocked server.
+    diagnostics: dict[str, Any] = {"returncode": process.poll()}
+    # Never call read() on a live pipe here: the bridge still owns its stderr
+    # descriptor and read-to-EOF would turn a bounded readiness failure into
+    # an unbounded runner hang.  The outer finally block terminates the bridge
+    # and persists the real stderr tail after EOF.
+    if process.poll() is not None and process.stderr is not None:
+        try:
+            diagnostics["stderr_tail"] = process.stderr.read()[-16_384:]
+        except (OSError, ValueError):
+            diagnostics["stderr_tail"] = ""
+    else:
+        diagnostics["stderr_tail"] = "deferred until bridge termination"
+    (root / "bridge-startup-diagnostics.json").write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    raise TimeoutError("timed out waiting for ARC bridge readiness; see bridge-startup-diagnostics.json")
 
 
-def _run_pi(root: Path, *, bridge_url: str, game: str, variant: str, timeout: float | None, context_compaction: bool) -> int:
+def _pick_bridge_port() -> int:
+    """Reserve an ephemeral localhost port for the child bridge."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _sync_bridge_events(root: Path, bridge_url: str, after: int) -> int:
+    """Pull canonical bridge events and persist them from the parent process."""
+    payload = _get_json(f"{bridge_url}/events?after={after}")
+    events = payload.get("events")
+    if not isinstance(events, list):
+        raise ValueError("ARC bridge /events returned a non-list events field")
+    if events:
+        path = root / "bridge-events.jsonl"
+        with path.open("a", encoding="utf-8") as stream:
+            for event in events:
+                if isinstance(event, dict):
+                    stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+            stream.flush()
+    return int(payload.get("next", after) or after)
+
+
+def _append_bridge_event_batch(root: Path, events: list[Any]) -> None:
+    """Persist a complete in-memory bridge batch without duplicating events."""
+    existing = len(_read_jsonl(root / "bridge-events.jsonl"))
+    if existing >= len(events):
+        return
+    path = root / "bridge-events.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        for event in events[existing:]:
+            if isinstance(event, dict):
+                stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        stream.flush()
+
+
+def _arc_terminal_or_budget_exhausted(state: dict[str, Any]) -> bool:
+    """Stop the Pi loop when native state or either budget boundary is terminal."""
+    if str(state.get("state", "")) == "WIN":
+        return True
+    budget = state.get("action_budget")
+    if not isinstance(budget, dict):
+        return False
+    used = int(budget.get("used", 0) or 0)
+    maximum = int(budget.get("maximum", 0) or 0)
+    total_used = int(budget.get("total_used", 0) or 0)
+    total_maximum = int(budget.get("total_maximum", 0) or 0)
+    return used >= maximum or total_used >= total_maximum
+
+
+def _arc_continuation_prompt(state: dict[str, Any], *, truncated: bool) -> str:
+    """Choose the next prompt while preserving retryability after a failed life."""
+    if str(state.get("state", "")) == "GAME_OVER":
+        return _load_prompt("arc_game_over_recovery.md")
+    if truncated:
+        return _load_prompt("arc_length_recovery.md", **{
+            "state": "unknown",
+            "levels_completed": "unknown",
+            "action_budget": "unknown",
+            "available_actions": "unknown",
+            "latest_action_evidence": "unknown",
+            "research_notice": "",
+        })
+    return _load_prompt("arc_followup.md")
+
+
+def _turn_has_arc_action(events: list[dict[str, Any]]) -> bool:
+    """Return true only when this turn actually submitted an ARC action.
+
+    A successful read or task-local harness mutation is useful evidence, but it
+    does not advance the game.  Keeping this predicate at the adapter boundary
+    prevents those operations from accidentally satisfying the ARC progress
+    contract.
+    """
+    return any(
+        event.get("type") == "tool_execution_end"
+        and event.get("toolName") == "arc_action"
+        and not bool(event.get("isError", False))
+        for event in events
+    )
+
+
+def _turn_has_task_local_progress(events: list[dict[str, Any]]) -> bool:
+    """Recognize bounded harness work without treating it as ARC progress."""
+    task_local_tools = {
+        "task_harness", "research_resource", "task_memory",
+        "task_skill", "task_tool", "task_subagent", "delegate_task",
+        "task_tool_policy", "assess_harness_effect", "task_resource", "task_validation",
+        "auto_research",
+    }
+    return any(
+        event.get("type") == "tool_execution_end"
+        and str(event.get("toolName") or "") in task_local_tools
+        and not bool(event.get("isError", False))
+        for event in events
+    )
+
+
+ARC_RECOVERY_PHASES = frozenset({
+    "normal", "compact_recovery", "research_returned", "awaiting_action",
+})
+
+
+def _turn_has_auto_research_result(events: list[dict[str, Any]]) -> bool:
+    """Recognize a completed child report without treating it as an ARC action."""
+    return any(
+        event.get("type") == "tool_execution_end"
+        and event.get("toolName") == "auto_research"
+        and not bool(event.get("isError", False))
+        for event in events
+    )
+
+
+def _advance_arc_recovery_phase(
+    phase: str, events: list[dict[str, Any]],
+) -> str:
+    """Advance the compact recovery protocol while preserving the action boundary.
+
+    Research and task-local harness work are legitimate recovery progress.  They
+    never masquerade as an environment action, and the phase remains recoverable
+    until a real ``arc_action`` closes the decision cycle.
+    """
+    if phase not in ARC_RECOVERY_PHASES:
+        raise ValueError(f"unknown ARC recovery phase: {phase}")
+    if phase == "normal":
+        return phase
+    if _turn_has_arc_action(events):
+        return "normal"
+    if _turn_has_auto_research_result(events):
+        return "research_returned"
+    if _turn_has_task_local_progress(events) or phase == "research_returned":
+        return "awaiting_action"
+    return phase
+
+
+def _repeated_arc_action_intervention(
+    events: list[dict[str, Any]], state: dict[str, Any],
+) -> bool:
+    """Detect a short no-progress action run without choosing the next action."""
+    actions = [
+        event for event in events
+        if event.get("type") == "tool_execution_end"
+        and event.get("toolName") == "arc_action"
+        and not bool(event.get("isError", False))
+    ]
+    if len(actions) < 3:
+        return False
+    names = [str((event.get("args") or {}).get("action", "")) for event in actions[-3:]]
+    if not names[0] or names != [names[0]] * 3:
+        return False
+    # An action may legitimately repeat while advancing a level. Only flag
+    # repeated actions when the latest public transition says no progress.
+    details = actions[-1].get("evidence")
+    transition = details.get("public_transition") if isinstance(details, dict) else None
+    if isinstance(transition, dict) and transition.get("level_changed"):
+        return False
+    return str(state.get("state", "")) not in {"WIN", "GAME_OVER"}
+
+
+def _open_research_validation_window(
+    decision: Any,
+    *,
+    action_index: int,
+    action_name: str | None = None,
+    changed_cells: Any = None,
+    level_changed: Any = False,
+) -> dict[str, Any] | None:
+    """Normalize an agent-declared research test window.
+
+    A validation window is evidence bookkeeping, not an execution budget.  It
+    may expire and request assessment, but it never computes a semantic verdict or
+    admits or rejects a native ARC action.
+    """
+    if not isinstance(decision, dict):
+        return None
+    raw = decision.get("validation_window")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        action_limit = int(raw.get("actions", 0))
+    except (TypeError, ValueError):
+        return None
+    if action_limit < 1:
+        return None
+    # This is Agent-authored evidence bookkeeping, not an execution quota.
+    # Keep the protocol's positive-integer requirement without introducing a
+    # project-local maximum that silently changes the requested experiment.
+    expiry = str(raw.get("on_expiry") or "falsify")
+    if expiry not in {"falsify", "inconclusive"}:
+        expiry = "falsify"
+    return {
+        "type": "research_validation_window",
+        "status": "open",
+        "hypothesis_id": str(decision.get("hypothesis_id") or "unidentified-hypothesis"),
+        "hypothesis_version": int(decision.get("hypothesis_version", 1) or 1),
+        "hypothesis": str(decision.get("hypothesis") or ""),
+        "prediction": str(decision.get("prediction") or ""),
+        "falsifier": str(decision.get("falsifier") or ""),
+        "expected": str(raw.get("expected") or ""),
+        "on_expiry": expiry,
+        "action_limit": action_limit,
+        "actions_used": 1,
+        "start_action_index": action_index,
+        "last_action_index": action_index,
+        "evidence": [{
+            "action_index": action_index,
+            "action": action_name,
+            "changed_cells": changed_cells,
+            "level_changed": bool(level_changed),
+        }],
+    }
+
+
+def _expire_research_validation_window_if_consumed(
+    window: dict[str, Any], *, action_index: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Expire a newly opened one-action window at the declaring action."""
+    if int(window.get("actions_used", 0) or 0) < int(window.get("action_limit", 0) or 0):
+        return window, None
+    return None, {
+        **window,
+        "status": "awaiting_assessment",
+        "outcome": "unassessed",
+        "assessment_required": True,
+        "expired_at_action_index": action_index,
+    }
+
+
+def _advance_research_validation_window(
+    window: dict[str, Any] | None,
+    *,
+    action_index: int,
+    action_name: str,
+    changed_cells: Any,
+    level_changed: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Consume one action in a declared window and report expiry only."""
+    if window is None:
+        return None, None
+    updated = dict(window)
+    updated["actions_used"] = int(updated.get("actions_used", 0) or 0) + 1
+    updated["last_action_index"] = action_index
+    updated["last_action"] = action_name
+    updated["last_changed_cells"] = changed_cells
+    updated["last_level_changed"] = bool(level_changed)
+    updated["evidence"] = [
+        *(updated.get("evidence") if isinstance(updated.get("evidence"), list) else []),
+        {
+            "action_index": action_index,
+            "action": action_name,
+            "changed_cells": changed_cells,
+            "level_changed": bool(level_changed),
+        },
+    ]
+    if updated["actions_used"] < int(updated["action_limit"]):
+        return updated, None
+    expired = {
+        **updated,
+        "status": "awaiting_assessment",
+        "outcome": "unassessed",
+        "assessment_required": True,
+        "expired_at_action_index": action_index,
+    }
+    return None, expired
+
+
+def _same_research_validation_window(
+    active: dict[str, Any] | None,
+    candidate: dict[str, Any] | None,
+    decision: Any,
+) -> bool:
+    """Return whether a repeated declaration continues the current test.
+
+    The hypothesis id is the stable identity. A caller must explicitly set
+    ``validation_window.replace`` or increase ``hypothesis_version`` to begin a
+    distinct window; textual refinement alone does not erase accumulated
+    evidence.
+    """
+    if active is None or candidate is None or not isinstance(decision, dict):
+        return False
+    raw = decision.get("validation_window")
+    replace = bool(raw.get("replace", False)) if isinstance(raw, dict) else False
+    return (
+        not replace
+        and active.get("hypothesis_id") == candidate.get("hypothesis_id")
+        and int(active.get("hypothesis_version", 1) or 1)
+        == int(candidate.get("hypothesis_version", 1) or 1)
+    )
+
+
+def _run_pi(
+    root: Path, *, bridge_url: str, game: str, variant: str,
+    context_compaction: bool, subagent_broker_url: str | None = None,
+    harness_validation: bool = False,
+    auto_research_validation: bool = False,
+    provider_name: str = "yibu",
+    model_name: str | None = None,
+    provider_extension: Path | None = None,
+    environment_overrides: dict[str, str] | None = None,
+) -> int:
     node, cli = _resolve_pi_cli()
     project_root = Path(__file__).resolve().parents[2]
     extension = project_root / "demo" / "pi_arc_agi_3_extension.ts"
@@ -258,33 +1293,61 @@ def _run_pi(root: Path, *, bridge_url: str, game: str, variant: str, timeout: fl
     env = load_project_dotenv(project_root)
     model_settings = resolve_model_settings(env)
     base_url, api_key = model_settings["base_url"], model_settings["api_key"]
-    if not base_url or not api_key:
+    if provider_extension is None and (not base_url or not api_key):
         raise RuntimeError(
             "this project environment must define ARC_OPENAI_API_BASE/ARC_OPENAI_API_KEY "
             "or OPENAI_API_BASE/OPENAI_API_KEY"
         )
-    model = str(model_settings["model"])
+    model = str(model_name or model_settings["model"])
     # The Pi child reads the canonical variable names from its own process.
     # Keep ARC-scoped values isolated from the parent process and from other
     # benchmark adapters.
-    env["OPENAI_API_BASE"] = str(base_url)
-    env["OPENAI_API_KEY"] = str(api_key)
-    (agent_dir / "models.json").write_text(json.dumps({"providers": {"yibu": {
-        "baseUrl": base_url, "api": model_settings["pi_api"], "apiKey": "$OPENAI_API_KEY",
-        "authHeader": True, "models": [{"id": model, "name": model, "reasoning": False,
-            "input": ["text"], "contextWindow": model_settings["context_window"],
-            "maxTokens": model_settings["max_tokens"],
-            "cost": {"input": 5, "output": 30, "cacheRead": 0, "cacheWrite": 0}}],
-    }}}), encoding="utf-8")
+    if provider_extension is None:
+        env["OPENAI_API_BASE"] = str(base_url)
+        env["OPENAI_API_KEY"] = str(api_key)
+        (agent_dir / "models.json").write_text(json.dumps({"providers": {provider_name: {
+            "baseUrl": base_url, "api": model_settings["pi_api"], "apiKey": "$OPENAI_API_KEY",
+            "authHeader": True, "models": [{"id": model, "name": model, "reasoning": False,
+                "input": ["text"], "contextWindow": model_settings["context_window"],
+                "cost": {"input": 5, "output": 30, "cacheRead": 0, "cacheWrite": 0}}],
+        }}}), encoding="utf-8")
     env.update({
         "PI_CODING_AGENT_DIR": str(agent_dir), "PI_AUTORESEARCH_E2E_ROOT": str(root),
+        # The run root is the durable boundary; this semantic id makes an
+        # accidental root reuse by a different ARC task fail closed in the
+        # task-local TypeScript resource registries.
+        "PI_AUTORESEARCH_TASK_ID": f"arc-agi-3:{game}:{root.name}",
+        "PI_AUTORESEARCH_OWNS_TASK": "enabled",
         "PI_AUTORESEARCH_ROOT": str(project_root), "PI_AUTORESEARCH_VARIANT": variant,
         "PI_AUTORESEARCH_CONTEXT_COMPACTION": "enabled" if context_compaction else "disabled",
         "PI_ARC_BRIDGE_URL": bridge_url, "PI_ARC_GAME": game,
+        "PI_ARC_EXECUTION_GATE": "enabled",
+        "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": provider_name,
+        "PI_AUTORESEARCH_MODEL": model,
+        "PI_AUTORESEARCH_SCOPED_READ": "enabled",
     })
-    command = [node, cli, "--mode", "rpc", "--provider", "yibu", "--model", model,
+    if subagent_broker_url:
+        env["PI_AUTORESEARCH_SUBAGENT_BROKER_URL"] = subagent_broker_url
+    if environment_overrides:
+        env.update({str(key): str(value) for key, value in environment_overrides.items()})
+    command = [node, cli, "--mode", "rpc", "--provider", provider_name, "--model", model,
                "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
-               "--no-context-files", "--no-builtin-tools", "--extension", str(extension)]
+               "--no-context-files",
+               # Keep the built-in `read` tool available so the Agent can
+               # consume native SKILL.md instructions. The yibu
+               # OpenAI-compatible gateway rejects Pi's optional-only `ls`
+               # schema (it serializes `required` as null), so exclude the
+               # dangerous and gateway-incompatible built-ins individually.
+               # Extension/custom tools remain available at this boundary.
+               # ARC task state and task-local resources have dedicated,
+               # bounded tools. Exclude Pi's generic read surface: it can
+               # only read native skill/agent files, while ARC artifacts are
+               # deliberately accessible through checkpoint/trajectory
+               # projections instead of raw JSONL dumps.
+               "--exclude-tools", "bash,edit,write,grep,find,ls,read",
+               "--extension", str(extension)]
+    if provider_extension is not None:
+        command.extend(["--extension", str(provider_extension.resolve())])
     trace = (root / "pi-events.jsonl").open("a", encoding="utf-8")
     # Pi emits streaming deltas whose ``partial`` payload repeats the entire
     # assistant message on every token.  Persisting those deltas makes a long
@@ -294,49 +1357,219 @@ def _run_pi(root: Path, *, bridge_url: str, game: str, variant: str, timeout: fl
     persisted_event_types = {
         "response", "turn_start", "turn_end", "agent_start", "agent_end",
         "agent_settled", "message_start", "message_end", "toolCall",
-        "tool_execution_start", "tool_execution_end", "text", "thinking",
+        "tool_execution_start", "tool_execution_end", "agent_progress_watchdog", "text", "thinking",
+        "arc_progress_intervention", "arc_recovery_phase", "arc_deadline_admission",
     }
     def persist(event: dict[str, Any]) -> None:
         if event.get("type") not in persisted_event_types:
             return
-        trace.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        projected = _compact_arc_pi_event(event)
+        if projected is None:
+            return
+        trace.write(json.dumps(projected, ensure_ascii=False, separators=(",", ":")) + "\n")
         trace.flush()
     try:
-        kernel_timeout = timeout if timeout is not None else 12 * 60 * 60
-        with PiKernel(command, cwd=str(root), env=env, timeout=kernel_timeout, event_sink=persist) as kernel:
+        # ARC's official Agent owns the wall-clock allowance. This runner does
+        # not add an independent session deadline.
+        kernel_timeout = OFFICIAL_MAX_RUNTIME_SECONDS
+        session_deadline = None
+        with PiKernel(
+            command,
+            cwd=str(root),
+            env=env,
+            timeout=kernel_timeout,
+            deadline=session_deadline,
+            event_sink=persist,
+            event_projector=_project_arc_kernel_event,
+        ) as kernel:
+            bridge_event_cursor = len(_read_jsonl(root / "bridge-events.jsonl"))
             # Match the official ARC runtime's proactive context management.
             # This is Pi's native session facility, enabled for both arms; the
             # treatment-only finding-backed context capability remains a
             # separate, optional self-harness intervention.
             kernel.send("set_auto_compaction", enabled=True)
-            response = kernel.prompt(
-                f"Play ARC-AGI-3 game {game}. Call arc_state with request='current' and use arc_action until the native game reaches WIN, "
-                "or until the action budget is exhausted. Research resources are optional and should be used only "
-                "when an observed pattern can change a later execution decision."
-            )
+            prompt = _load_prompt("arc_decision_cycle.md", game=game)
+            if harness_validation:
+                prompt = _load_prompt("arc_harness_validation.md", game=game)
+            if auto_research_validation:
+                prompt = _load_prompt("arc_auto_research_validation.md", game=game)
+            response = kernel.prompt(prompt)
             if response.get("success") is False:
                 return 1
-            consecutive_provider_errors = 0
+            consecutive_length_responses = 0
+            active_research_window: dict[str, Any] | None = None
+            pending_research_notice: str | None = None
+            research_window_path = root / "research-validation-windows.jsonl"
+            latest_action_evidence: dict[str, Any] | None = None
+            # Recovery is an explicit state machine. A clean-context research
+            # report or task-local harness operation is useful recovery work,
+            # but only a native action closes the ARC decision cycle.
+            recovery_phase = "normal"
             while True:
-                turn_events = kernel.wait_for_agent_events(timeout=timeout)
-                turn_failed = any(
-                    event.get("type") == "message_end"
-                    and isinstance(event.get("message"), dict)
-                    and event["message"].get("stopReason") == "error"
-                    for event in turn_events
+                turn_events = kernel.wait_for_agent_events(
+                    timeout=None,
+                    # ARC must stop the model turn at the committed action.
+                    # Planning, research, and task-local harness calls are
+                    # intentionally allowed before that final action; the
+                    # bridge still receives exactly one native action per
+                    # decision cycle.
+                    stop_after_progress_tools=("arc_action",),
                 )
-                tool_completed = any(event.get("type") == "tool_execution_end" for event in turn_events)
-                if turn_failed and not tool_completed:
-                    consecutive_provider_errors += 1
-                    if consecutive_provider_errors >= 3:
-                        return 1
-                else:
-                    consecutive_provider_errors = 0
+                bridge_event_cursor = _sync_bridge_events(root, bridge_url, bridge_event_cursor)
+                turn_has_action = _turn_has_arc_action(turn_events)
+                previous_recovery_phase = recovery_phase
+                recovery_phase = _advance_arc_recovery_phase(recovery_phase, turn_events)
+                if recovery_phase != previous_recovery_phase:
+                    persist({
+                        "type": "arc_recovery_phase",
+                        "from": previous_recovery_phase,
+                        "to": recovery_phase,
+                        "arc_action": turn_has_action,
+                        "auto_research": _turn_has_auto_research_result(turn_events),
+                    })
+                for event in turn_events:
+                    if event.get("type") == "tool_execution_end" and event.get("toolName") == "arc_action" and not event.get("isError", False):
+                        action_name = str((event.get("args") or {}).get("action", ""))
+                        # PiKernel may deliver either the compact projected
+                        # event or the raw tool event depending on the event
+                        # cursor boundary. Normalize the evidence before
+                        # constructing the durable latest-action checkpoint.
+                        # Keep this ordering deliberate: the checkpoint must
+                        # never reference event-local variables before they
+                        # have been initialized (a failed recovery here used
+                        # to turn a successful ARC action into runner return 1).
+                        evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
+                        raw_result = event.get("result") if isinstance(event.get("result"), dict) else {}
+                        raw_details = raw_result.get("details") if isinstance(raw_result.get("details"), dict) else {}
+                        transition = (
+                            evidence.get("public_transition")
+                            if isinstance(evidence, dict) else None
+                        ) or raw_details.get("public_transition")
+                        observation_delta = (
+                            evidence.get("observation_delta")
+                            if isinstance(evidence.get("observation_delta"), dict) else None
+                        ) or (
+                            raw_details.get("observation_delta")
+                            if isinstance(raw_details.get("observation_delta"), dict) else {}
+                        )
+                        latest_action_evidence = {
+                            "action": action_name,
+                            "changed_cells": observation_delta.get("changed_cells"),
+                            "bbox": observation_delta.get("bbox"),
+                            "level_changed": transition.get("level_changed") if isinstance(transition, dict) else False,
+                        }
+                        # A real action proves the recovery made progress;
+                        # only then may a later length stop receive another
+                        # one-time recovery opportunity.
+                        consecutive_length_responses = 0
+                        # Research windows are agent-declared evidence tests.
+                        # They annotate the next decisions and may expire, but
+                        # they never reject a native ARC action and never act
+                        # as a substitute for the ARC action budget.
+                        action_budget = (
+                            evidence.get("action_budget")
+                            if isinstance(evidence.get("action_budget"), dict) else None
+                        ) or (
+                            raw_details.get("action_budget")
+                            if isinstance(raw_details.get("action_budget"), dict) else {}
+                        )
+                        try:
+                            action_index = int(action_budget.get("total_used", 0) or 0)
+                        except (TypeError, ValueError):
+                            action_index = 0
+                        decision = (event.get("args") or {}).get("decision")
+                        opened_window = _open_research_validation_window(
+                            decision, action_index=action_index,
+                            action_name=action_name,
+                            changed_cells=observation_delta.get("changed_cells"),
+                            level_changed=(transition.get("level_changed") if isinstance(transition, dict) else False),
+                        )
+                        if action_name == "RESET" and active_research_window is not None:
+                            _append_jsonl(research_window_path, {
+                                **active_research_window,
+                                "status": "reset",
+                                "outcome": "reset",
+                                "expired_at_action_index": action_index,
+                            })
+                            active_research_window = None
+                        if _same_research_validation_window(
+                            active_research_window, opened_window, decision,
+                        ):
+                            active_research_window, expired_window = _advance_research_validation_window(
+                                active_research_window,
+                                action_index=action_index,
+                                action_name=action_name,
+                                changed_cells=observation_delta.get("changed_cells"),
+                                level_changed=(transition.get("level_changed") if isinstance(transition, dict) else False),
+                            )
+                            if expired_window is not None:
+                                _append_jsonl(research_window_path, expired_window)
+                                pending_research_notice = (
+                                    "Research validation window is awaiting assessment for "
+                                    f"{expired_window['hypothesis_id']}; outcome="
+                                    f"{expired_window['outcome']}. No semantic verdict was computed. "
+                                    "The task_validation ledger retains the hypothesis for an evidence-linked assessment; "
+                                    "this does not block actions."
+                                )
+                            elif active_research_window is not None:
+                                _append_jsonl(research_window_path, {
+                                    **active_research_window, "status": "progress",
+                                })
+                        elif opened_window is not None:
+                            if active_research_window is not None:
+                                _append_jsonl(research_window_path, {
+                                    **active_research_window,
+                                    "status": "superseded",
+                                    "outcome": "superseded",
+                                    "expired_at_action_index": action_index,
+                                })
+                            active_research_window, expired_window = (
+                                _expire_research_validation_window_if_consumed(
+                                    opened_window, action_index=action_index,
+                                )
+                            )
+                            _append_jsonl(
+                                research_window_path,
+                                expired_window if expired_window is not None else opened_window,
+                            )
+                            if expired_window is not None:
+                                pending_research_notice = (
+                                    "Research validation window is awaiting assessment for "
+                                    f"{expired_window['hypothesis_id']}; outcome=unassessed. "
+                                    "No semantic verdict was computed and ARC actions remain available."
+                                )
+                            else:
+                                pending_research_notice = (
+                                    "Research validation window opened for "
+                                    f"{opened_window['hypothesis_id']} "
+                                    f"({opened_window['action_limit']} actions). "
+                                    "Use the declared prediction and falsifier; window expiry will be recorded "
+                                    "without stopping ARC actions."
+                                )
+                        elif active_research_window is not None:
+                            active_research_window, expired_window = _advance_research_validation_window(
+                                active_research_window,
+                                action_index=action_index,
+                                action_name=action_name,
+                                changed_cells=observation_delta.get("changed_cells"),
+                                level_changed=(transition.get("level_changed") if isinstance(transition, dict) else False),
+                            )
+                            if expired_window is not None:
+                                _append_jsonl(research_window_path, expired_window)
+                                pending_research_notice = (
+                                    "Research validation window is awaiting assessment for "
+                                    f"{expired_window['hypothesis_id']}; outcome="
+                                    f"{expired_window['outcome']}. "
+                                    "No semantic verdict has been computed. The task_validation ledger retains "
+                                    "the hypothesis for an evidence-linked assessment; expiry does not block actions."
+                                )
+                # Provider errors and auxiliary no-action turns are surfaced
+                # through the native Pi event stream and the next continuation
+                # prompt. Do not impose a local retry/turn-count cutoff: the
+                # only run budgets are ARC's official time/action budgets and
+                # the provider's own transport boundary.
                 state = _get_json(bridge_url + "/state")
-                game_state = str(state.get("state", ""))
-                used = int((state.get("action_budget") or {}).get("used", 0) or 0)
-                maximum = int((state.get("action_budget") or {}).get("maximum", 0) or 0)
-                if game_state == "WIN" or used >= maximum:
+                if _arc_terminal_or_budget_exhausted(state):
                     return 0
                 # ``follow_up`` only queues a message while an agent loop is
                 # still active.  At this point the previous loop has emitted
@@ -350,21 +1583,90 @@ def _run_pi(root: Path, *, bridge_url: str, game: str, variant: str, timeout: fl
                     and event["message"].get("stopReason") == "length"
                     for event in turn_events
                 )
-                continuation = (
-                    "Your previous response hit the output limit. Do not explain or dump the frame; "
-                    "call arc_state once and immediately submit one arc_action."
-                    if truncated else
-                    "Continue the same ARC game. Read the current arc_state and submit the next "
-                    "available arc_action; do not stop until WIN or the native action budget is exhausted."
-                )
+                if truncated:
+                    consecutive_length_responses += 1
+                    # A length stop is a model-session failure, not an ARC or
+                    # research failure. Recreate only Pi's in-memory session;
+                    # the bridge, checkpoint, task-local resources and child
+                    # reports remain durable. The compact recovery protocol
+                    # permits bounded research/resource work before its final
+                    # action, so repeated truncation is bounded by the caller's
+                    # deadline rather than a universal turn-count cutoff.
+                    kernel.new_session()
+                    recovery_state = _get_json(bridge_url + "/state")
+                    recovery = _load_prompt("arc_length_recovery.md", **{
+                        "state": str(recovery_state.get("state")),
+                        "levels_completed": str(recovery_state.get("levels_completed", 0)),
+                        "action_budget": json.dumps(recovery_state.get("action_budget", {}), separators=(",", ":")),
+                        "available_actions": json.dumps(recovery_state.get("agent_available_actions", recovery_state.get("available_actions", [])), separators=(",", ":")),
+                        "latest_action_evidence": json.dumps(latest_action_evidence, separators=(",", ":")),
+                        "research_notice": f"{pending_research_notice} " if pending_research_notice else "",
+                    })
+                    previous_recovery_phase = recovery_phase
+                    recovery_phase = "compact_recovery"
+                    persist({
+                        "type": "arc_recovery_phase", "from": previous_recovery_phase,
+                        "to": recovery_phase, "reason": "model_output_length",
+                        "consecutive_length_responses": consecutive_length_responses,
+                    })
+                    follow_up = kernel.prompt(recovery)
+                    if follow_up.get("success") is False:
+                        return 1
+                    kernel.wait_for_event(("turn_start",), timeout=None)
+                    pending_research_notice = None
+                    continue
+                else:
+                    consecutive_length_responses = 0
+                if not turn_has_action:
+                    if recovery_phase != "normal":
+                        continuation = _load_prompt("arc_recovery_followup.md", **{
+                            "phase": recovery_phase,
+                            "state": str(state.get("state")),
+                            "levels_completed": str(state.get("levels_completed", 0)),
+                            "action_budget": json.dumps(state.get("action_budget", {}), separators=(",", ":")),
+                            "available_actions": json.dumps(state.get("agent_available_actions", state.get("available_actions", [])), separators=(",", ":")),
+                            "latest_action_evidence": json.dumps(latest_action_evidence, separators=(",", ":")),
+                            "research_notice": f"{pending_research_notice} " if pending_research_notice else "",
+                        })
+                    else:
+                        continuation = _load_prompt("arc_followup.md")
+                else:
+                    continuation = _arc_continuation_prompt(state, truncated=truncated)
+                if pending_research_notice:
+                    continuation = f"{pending_research_notice}\n{continuation}"
                 follow_up = kernel.prompt(continuation)
                 if follow_up.get("success") is False:
-                    return 1
+                    # Some Pi versions reject a normal prompt immediately
+                    # after an action-boundary abort even though the action
+                    # itself completed successfully.  The bridge/checkpoint
+                    # is authoritative; recover the model session once
+                    # instead of misclassifying the completed action as a
+                    # runner failure.
+                    kernel.new_session()
+                    recovery_state = _get_json(bridge_url + "/state")
+                    recovery = _load_prompt("arc_action_boundary_recovery.md", **{
+                        "state": str(recovery_state.get("state")),
+                        "levels_completed": str(recovery_state.get("levels_completed", 0)),
+                        "action_budget": json.dumps(recovery_state.get("action_budget", {}), separators=(",", ":")),
+                        "latest_action_evidence": json.dumps(latest_action_evidence, separators=(",", ":")),
+                    })
+                    recovered = kernel.prompt(recovery)
+                    if recovered.get("success") is False:
+                        return 1
+                    kernel.wait_for_event(("turn_start",), timeout=None)
+                    previous_recovery_phase = recovery_phase
+                    recovery_phase = "awaiting_action"
+                    persist({
+                        "type": "arc_recovery_phase", "from": previous_recovery_phase,
+                        "to": recovery_phase, "reason": "action_boundary_prompt_rejected",
+                    })
+                    continue
                 # ``agent_settled`` from the previous turn is already in the
                 # RPC event stream. Advance the cursor to the new turn before
                 # collecting its completion, otherwise the runner can return
                 # immediately without giving the continuation a chance to act.
-                kernel.wait_for_event(("turn_start",), timeout=timeout)
+                kernel.wait_for_event(("turn_start",), timeout=None)
+                pending_research_notice = None
     except TimeoutError:
         return 124
     finally:
@@ -377,12 +1679,21 @@ def run_arc_agi_3_e2e(
     arc_root: Path,
     game: str,
     experiment_variant: str = "treatment",
-    timeout: float | None = None,
     max_actions: int | None = None,
     context_compaction: bool = False,
+    harness_validation: bool = False,
+    auto_research_validation: bool = False,
+    pi_provider: str = "yibu",
+    pi_model: str | None = None,
+    pi_provider_extension: Path | None = None,
+    pi_environment: dict[str, str] | None = None,
 ) -> Path:
     if experiment_variant not in {"control", "treatment"}:
         raise ValueError("experiment_variant must be control or treatment")
+    if (harness_validation or auto_research_validation) and experiment_variant != "treatment":
+        raise ValueError("task-local validation probes require the treatment variant")
+    if harness_validation and auto_research_validation:
+        raise ValueError("choose one task-local validation probe")
     if max_actions is not None and max_actions < 1:
         raise ValueError("max_actions must be at least 1")
     root = root.resolve()
@@ -398,25 +1709,38 @@ def run_arc_agi_3_e2e(
     model_settings = resolve_model_settings(env)
     src = str(Path(__file__).resolve().parent.parent)
     env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
-    bridge_command = [str(arc_python), "-m", "autoresearch_pi.arc_agi_3_bridge", "--root", str(root), "--game", game]
+    bridge_port = _pick_bridge_port()
+    bridge_command = [str(arc_python), "-m", "autoresearch_pi.arc_agi_3_bridge", "--root", str(root), "--game", game, "--port", str(bridge_port)]
     if max_actions is not None:
         bridge_command.extend(["--max-actions", str(max_actions)])
     bridge = subprocess.Popen(
         bridge_command,
         cwd=str(arc_root), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+    subagent_broker = SubagentBroker()
+    subagent_broker.start()
     pi_returncode = 1
     timed_out = False
     bridge_result: dict[str, Any] = {}
     try:
-        ready = _wait_for_bridge(root, bridge)
+        ready = _wait_for_bridge(root, bridge, port=bridge_port)
         bridge_url = f"http://127.0.0.1:{int(ready['port'])}"
         pi_returncode = _run_pi(
             root, bridge_url=bridge_url, game=game, variant=experiment_variant,
-            timeout=timeout, context_compaction=context_compaction,
+            context_compaction=context_compaction,
+            subagent_broker_url=subagent_broker.url,
+            harness_validation=harness_validation,
+            auto_research_validation=auto_research_validation,
+            provider_name=pi_provider,
+            model_name=pi_model,
+            provider_extension=pi_provider_extension,
+            environment_overrides=pi_environment,
         )
         timed_out = pi_returncode == 124
         bridge_result = _post_json(bridge_url + "/close", {})
+        bridge_events = bridge_result.pop("events", [])
+        if isinstance(bridge_events, list):
+            _append_bridge_event_batch(root, bridge_events)
         bridge.wait(timeout=30)
     except (Exception, KeyboardInterrupt) as exc:
         (root / "runner-error.json").write_text(
@@ -428,6 +1752,7 @@ def run_arc_agi_3_e2e(
         # its scorecard and bridge-result are flushed before projection.
         pi_returncode = 130 if isinstance(exc, KeyboardInterrupt) else 1
     finally:
+        subagent_broker.close()
         if bridge.poll() is None:
             bridge.terminate()
             try:
@@ -435,6 +1760,15 @@ def run_arc_agi_3_e2e(
             except subprocess.TimeoutExpired:
                 bridge.kill()
                 bridge.wait(timeout=5)
+        # Popen uses pipes so startup/runtime diagnostics are otherwise lost
+        # when the runner exits on an exception or timeout.
+        if bridge.stderr is not None:
+            try:
+                stderr = bridge.stderr.read()
+                if stderr:
+                    (root / "bridge-stderr.log").write_text(stderr[-65_536:], encoding="utf-8")
+            except (OSError, ValueError):
+                pass
     if not bridge_result and (root / "bridge-result.json").is_file():
         bridge_result = json.loads((root / "bridge-result.json").read_text(encoding="utf-8"))
     if not bridge_result:
@@ -442,10 +1776,17 @@ def run_arc_agi_3_e2e(
     scorecard = None
     if (root / "arc-scorecard.json").is_file():
         scorecard = json.loads((root / "arc-scorecard.json").read_text(encoding="utf-8"))
+    summary_model_settings = dict(model_settings)
+    summary_model_settings["model"] = pi_model or summary_model_settings.get("model")
+    summary_model_settings["provider"] = pi_provider
+    summary_model_settings["provider_extension"] = (
+        str(pi_provider_extension.resolve()) if pi_provider_extension is not None else None
+    )
     payload = project_arc_summary(
         root, game=game, variant=experiment_variant, bridge_result=bridge_result,
         scorecard=scorecard, pi_returncode=pi_returncode, timed_out=timed_out,
-        model_settings=model_settings,
+        model_settings=summary_model_settings, harness_validation=harness_validation,
+        auto_research_validation=auto_research_validation,
     )
     summary = root / "summary.json"
     temporary = root / "summary.json.tmp"

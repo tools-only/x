@@ -45,12 +45,12 @@ def test_installed_pi_task_runtime_omits_weak_evidence_policy(tmp_path):
     request = json.loads((root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()[0])
     tool_names = {tool["name"] for tool in request["context"]["tools"]}
     assert "set_evidence_policy" not in tool_names
-    guidance = [
+    legacy_overlay = [
         part["text"] for message in request["context"]["messages"] if message["role"] == "user"
         for part in message["content"] if part.get("type") == "text"
-        and part["text"].startswith("Current task-local evidence guidance (")
+        and part["text"].startswith("Current task-local system-prompt overlay (")
     ]
-    assert guidance == []
+    assert legacy_overlay == []
     prompt = request["context"]["systemPrompt"]
     assert "No research stages or harness changes are mandatory" in prompt
     assert "neutral EXECUTION_OBSERVATION metadata" in prompt
@@ -100,12 +100,12 @@ def test_installed_pi_control_variant_hides_agent_visible_attribution(tmp_path):
     assert "email_batch_action" not in system_prompt
     assert "expected reduction in calls, errors, or context" not in system_prompt
     assert "decision_support" not in system_prompt
-    injected = [
+    legacy_overlay = [
         part["text"] for message in request["context"]["messages"] if message["role"] == "user"
         for part in message["content"] if part.get("type") == "text"
-        and part["text"].startswith("Current task-local evidence guidance (")
+        and part["text"].startswith("Current task-local system-prompt overlay (")
     ]
-    assert injected == []
+    assert legacy_overlay == []
     observations = [
         json.loads(line)
         for line in (root / "execution-observations.jsonl").read_text(encoding="utf-8").splitlines()

@@ -180,7 +180,6 @@ def run_pi_native_probe(root: Path, extension: Path) -> NativeEvidence:
         "--mode", "rpc",
         "--no-session",
         "--no-extensions",
-        "--no-skills",
         "--no-context-files",
         "--offline",
         "--extension", str(extension),
