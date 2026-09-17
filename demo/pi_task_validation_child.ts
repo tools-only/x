@@ -30,6 +30,8 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 		const runId = String(process.env.PI_AUTO_RESEARCH_RUN_ID ?? "");
 		if (!/^auto-research-[1-9]\d*$/.test(runId)) throw new Error("invalid Auto-Research run id");
 		const sessionId = String(process.env.PI_AUTO_RESEARCH_SESSION_ID ?? runId);
+		const interactionMode = process.env.PI_AUTO_RESEARCH_INTERACTION_MODE === "non_blocking"
+			? "non_blocking" : "blocking";
 		const profile = loadResearchProfile(process.env.PI_AUTO_RESEARCH_SCOPE ?? "unspecified");
 		const commonInstructions = loadPrompt("auto_research_child_contract.md");
 		const approvalStore = new AutoResearchApprovalStore(root, runId, sessionId);
@@ -127,13 +129,14 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			const checkpoint = {
 				...savedCheckpoint,
 				format: "auto-research-checkpoint-v1", session_id: sessionId,
-				status: paused ? "paused" : "active", cursor: String(params.cursor ?? ""),
+				status: paused ? "pending" : "active", cursor: String(params.cursor ?? ""),
 					evidence_refs: Array.isArray(params.evidence_refs) ? params.evidence_refs.map(String) : [],
 					selected_resource_refs: Array.isArray(params.resource_refs) ? params.resource_refs.map(String) : (params.selected_resource_refs ?? refs),
 					unresolved_questions: Array.isArray(params.unresolved_questions) ? params.unresolved_questions.map(String) : [],
 					draft_findings: Array.isArray(params.draft_findings) ? params.draft_findings : [],
 				next_step: String(params.next_step ?? ""), pause_reason: paused ? String(params.reason ?? "agent requested pause") : null,
 				resume_condition: String(params.resume_condition ?? "new evidence or an explicit parent resume"),
+				...(paused ? { wait_for: String(params.wait_for) } : {}),
 					evidence_read_count: evidenceReadCount, evidence_audit: evidenceAudit(), recordedAt: new Date().toISOString(),
 					evidence_progress: { pages: [...pageCoverage], read_counts: [...readCounts] },
 			};
@@ -147,7 +150,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 		};
 		pi.registerTool({
 			name: "research_checkpoint", label: "Auto-Research checkpoint",
-			description: "Save a task-local research cursor. action=pause suspends the child without declaring the question complete; the parent can resume the same session later.",
+			description: "Save a task-local research cursor. In a non-blocking run, action=pause ends this child process with a pending checkpoint. Blocking runs cannot pause: submit an inconclusive or unresolved final report instead.",
 			parameters: Type.Object({
 				action: Type.Union([Type.Literal("save"), Type.Literal("pause")]),
 				cursor: Type.Optional(Type.String()),
@@ -157,10 +160,23 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 				draft_findings: Type.Optional(Type.Array(Type.Any())),
 				next_step: Type.Optional(Type.String()),
 				reason: Type.Optional(Type.String()),
-				resume_condition: Type.Optional(Type.String()),
+				wait_for: Type.Optional(Type.Union([
+					Type.Literal("next_parent_evidence"), Type.Literal("manual_resume"),
+				])),
 			}),
 			async execute(_id, params) {
-				const checkpoint = saveResearchCheckpoint(params as Record<string, any>, params.action === "pause");
+				const paused = params.action === "pause";
+				if (paused && interactionMode === "blocking") {
+					appendControl({ event: "research_pause_rejected", session_id: sessionId, interaction_mode: interactionMode });
+					throw new Error("blocking Auto-Research cannot wait for future parent evidence; submit an inconclusive or unresolved final report");
+				}
+				if (paused && (!String(params.reason ?? "").trim() || !String(params.next_step ?? "").trim() || !params.wait_for)) {
+					throw new Error("non-blocking pause requires reason, next_step, and wait_for");
+				}
+				const checkpoint = saveResearchCheckpoint({
+					...params,
+					...(paused ? { resume_condition: params.wait_for } : {}),
+				}, paused);
 				const { evidence_progress, ...semanticCheckpoint } = checkpoint;
 				return { content: [{ type: "text", text: JSON.stringify(semanticCheckpoint) }], details: semanticCheckpoint,
 					...(params.action === "pause" ? { terminate: true } : {}) };

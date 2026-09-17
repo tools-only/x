@@ -59,6 +59,45 @@ type AutoResearchContextWindow = {
 	max_chars?: number;
 };
 
+type ResearchSessionStatus = "active" | "pending" | "completed" | "failed" | "cancelled";
+type ResearchInteractionMode = "blocking" | "non_blocking";
+
+const RESEARCH_RECORD_FILES = new Set([
+	"auto-research-sessions.jsonl", "auto-research-runs.jsonl", "auto-research-reports.jsonl",
+	"auto-research-harness-routes.jsonl", "auto-research-harness-route-receipts.jsonl",
+	"subagent-progress.jsonl", "execution-observations.jsonl", "task-memory.jsonl", "task-skills.jsonl",
+	"task-tools.jsonl", "task-subagents.jsonl", "task-system-prompt.jsonl",
+]);
+
+function readResearchRecords(root: string, filename: string): Record<string, any>[] {
+	if (!RESEARCH_RECORD_FILES.has(filename)) throw new Error(`research runtime cannot read ${filename}`);
+	const path = join(root, filename);
+	if (!existsSync(path)) return [];
+	return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+		try {
+			const value = JSON.parse(line);
+			return value && typeof value === "object" && !Array.isArray(value) ? [value] : [];
+		} catch { return []; }
+	});
+}
+
+function researchSessionId(reference: unknown): string {
+	return String(reference ?? "").replace(/^research_session:/, "").replace(/@v\d+$/, "");
+}
+
+function latestResearchSession(root: string, sessionId: string): Record<string, any> | undefined {
+	return readResearchRecords(root, "auto-research-sessions.jsonl")
+		.filter((item) => item.session_id === sessionId)
+		.sort((a, b) => Number(b.version ?? 0) - Number(a.version ?? 0))[0];
+}
+
+function canonicalEvidenceSequence(root: string): number {
+	return [
+		"execution-observations.jsonl", "auto-research-reports.jsonl", "task-memory.jsonl", "task-skills.jsonl",
+		"task-tools.jsonl", "task-subagents.jsonl", "task-system-prompt.jsonl",
+	].reduce((total, filename) => total + readResearchRecords(root, filename).length, 0);
+}
+
 const CONTEXT_WINDOW_FILES = new Set(["task-checkpoint.json", "execution-observations.jsonl"]);
 
 function readJsonl(root: string, filename: string): Record<string, any>[] {
@@ -362,6 +401,29 @@ function brokerChild(brokerUrl: string, payload: Record<string, unknown>): any {
 	return child;
 }
 
+function brokerJsonRequest(brokerUrl: string, endpoint: string, payload: Record<string, unknown>): Promise<Record<string, any>> {
+	return new Promise((resolvePromise, rejectPromise) => {
+		const body = JSON.stringify(payload);
+		const request = httpRequest(new URL(endpoint, brokerUrl), {
+			method: "POST",
+			headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+		}, (response) => {
+			let text = "";
+			response.setEncoding("utf8");
+			response.on("data", (chunk: string) => { text += chunk; });
+			response.on("end", () => {
+				let value: Record<string, any> = {};
+				try { value = JSON.parse(text || "{}"); } catch {}
+				if ((response.statusCode ?? 500) >= 400) rejectPromise(new Error(String(value.error ?? `subagent broker HTTP ${response.statusCode}`)));
+				else resolvePromise(value);
+			});
+		});
+		request.on("error", rejectPromise);
+		request.write(body);
+		request.end();
+	});
+}
+
 function runChildPi(
 	root: string,
 	definition: AgentDefinition,
@@ -377,6 +439,8 @@ function runChildPi(
 	progressId?: string,
 	nativeSessionId?: string,
 	researchScope = "unspecified",
+	researchInteractionMode: "blocking" | "non_blocking" = "blocking",
+	detached = false,
 ): Promise<Record<string, unknown>> {
 	const cli = process.env.PI_AUTORESEARCH_PI_CLI;
 	const provider = process.env.PI_AUTORESEARCH_PROVIDER;
@@ -421,6 +485,7 @@ function runChildPi(
 	const grantedRefs = [...normalizedResourceRefs, ...resources.map((r) => r.resource_ref), ...evidence.map((item) => item.ref)];
 	const researchEnvironment = researchProtocol ? {
 		PI_AUTO_RESEARCH_SCOPE: researchScope,
+		PI_AUTO_RESEARCH_INTERACTION_MODE: researchInteractionMode,
 		PI_AUTO_RESEARCH_TOOL_CONTRACT: JSON.stringify({
 			declarative_program_steps: TASK_TOOL_PROGRAM_STEP_KINDS,
 			allowed_implementation_refs: adapter.taskToolAllowedImplementations ?? [],
@@ -449,49 +514,46 @@ function runChildPi(
 	const promptPath = join(promptDir, `${promptKey}.txt`);
 	writeFileSync(promptPath, childPrompt, "utf8");
 	args.push(`@${promptPath}`);
+	const progressKey = String(progressId ?? researchRunId ?? `child-pid-pending`);
+	const brokerUrl = String(process.env.PI_AUTORESEARCH_SUBAGENT_BROKER_URL ?? "").trim();
+	const childEnv = {
+		...process.env,
+		PI_EXTERNAL_STEPS: "[]",
+		PI_AUTORESEARCH_VARIANT: "control",
+		PI_TASK_SUBAGENT_TOOLS: JSON.stringify(definition.tools),
+		PI_TASK_CHILD_RESOURCE_REFS: JSON.stringify(grantedRefs),
+		PI_TASK_CHILD_RESEARCH_PROTOCOL: researchProtocol ? "1" : "0",
+		...researchEnvironment,
+		...(researchRunId ? { PI_AUTO_RESEARCH_RUN_ID: researchRunId } : {}),
+		...(researchSessionId ? { PI_AUTO_RESEARCH_SESSION_ID: researchSessionId } : {}),
+		...(process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS
+			? { PI_AUTORESEARCH_CONTEXT_MAX_CHARS: process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS }
+			: {}),
+		PI_TASK_CHILD: "1",
+	} as Record<string, string>;
+	if (detached) {
+		if (!brokerUrl) throw new Error("non-blocking Auto-Research requires the persistent subagent broker");
+		const brokerDir = join(root, "task-context-cache", "auto-research-broker");
+		mkdirSync(brokerDir, { recursive: true });
+		return brokerJsonRequest(brokerUrl, "/enqueue", {
+			job_id: progressKey, command: [process.execPath, ...args], cwd: root, env: childEnv,
+			status_path: join(brokerDir, `${researchRunId}.json`),
+			events_path: join(brokerDir, `${researchRunId}.events.jsonl`),
+		});
+	}
 	return new Promise((resolvePromise, rejectPromise) => {
 		const progressPath = join(root, "subagent-progress.jsonl");
 		const progressStartedAtMs = Date.now();
-		const progressKey = String(progressId ?? researchRunId ?? `child-pid-pending`);
-		const brokerUrl = String(process.env.PI_AUTORESEARCH_SUBAGENT_BROKER_URL ?? "").trim();
 		let child: any;
 		try {
 		child = brokerUrl ? brokerChild(brokerUrl, {
 			job_id: progressKey,
 			command: [process.execPath, ...args],
 			cwd: root,
-			env: {
-				...process.env,
-				PI_EXTERNAL_STEPS: "[]",
-				PI_AUTORESEARCH_VARIANT: "control",
-				PI_TASK_SUBAGENT_TOOLS: JSON.stringify(definition.tools),
-				PI_TASK_CHILD_RESOURCE_REFS: JSON.stringify(grantedRefs),
-				PI_TASK_CHILD_RESEARCH_PROTOCOL: researchProtocol ? "1" : "0",
-				...researchEnvironment,
-				...(researchRunId ? { PI_AUTO_RESEARCH_RUN_ID: researchRunId } : {}),
-				...(researchSessionId ? { PI_AUTO_RESEARCH_SESSION_ID: researchSessionId } : {}),
-				...(process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS
-					? { PI_AUTORESEARCH_CONTEXT_MAX_CHARS: process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS }
-					: {}),
-				PI_TASK_CHILD: "1",
-			},
+			env: childEnv,
 		}) : spawn(process.execPath, args, {
 			cwd: root,
-			env: {
-				...process.env,
-				PI_EXTERNAL_STEPS: "[]",
-				PI_AUTORESEARCH_VARIANT: "control",
-				PI_TASK_SUBAGENT_TOOLS: JSON.stringify(definition.tools),
-				PI_TASK_CHILD_RESOURCE_REFS: JSON.stringify(grantedRefs),
-				PI_TASK_CHILD_RESEARCH_PROTOCOL: researchProtocol ? "1" : "0",
-				...researchEnvironment,
-				...(researchRunId ? { PI_AUTO_RESEARCH_RUN_ID: researchRunId } : {}),
-				...(researchSessionId ? { PI_AUTO_RESEARCH_SESSION_ID: researchSessionId } : {}),
-				...(process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS
-					? { PI_AUTORESEARCH_CONTEXT_MAX_CHARS: process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS }
-					: {}),
-				PI_TASK_CHILD: "1",
-			},
+			env: childEnv,
 			windowsHide: true,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -723,7 +785,7 @@ function runChildPi(
 				} catch (error) {
 					return rejectPromise(new Error(`research checkpoint is unreadable: ${String(error)}`));
 				}
-				if (existingCheckpoint?.status === "paused") return resolvePromise({
+				if (existingCheckpoint?.status === "pending") return resolvePromise({
 					text: "", stop_reason: "paused", checkpoint: existingCheckpoint, child_exit_code: code, usage, provider, model,
 					event_count: eventCount, progress_ref: "subagent-progress.jsonl", progress_id: progressKey,
 					resolved_evidence_refs: evidenceRefs, adapter_id: adapter.adapterId,
@@ -739,7 +801,7 @@ function runChildPi(
 					...(existingCheckpoint ?? {}),
 					format: "auto-research-checkpoint-v1",
 					session_id: researchSessionId ?? researchRunId,
-					status: "paused",
+					status: "active",
 					cursor: existingCheckpoint?.cursor || "provider-output-length",
 					evidence_refs: evidenceRefs,
 					selected_resource_refs: resourceRefs,
@@ -1130,15 +1192,89 @@ export function installTaskLocalSubagents(
 		let researchSessionCounter = 0;
 		for (const line of (existsSync(join(root, "auto-research-sessions.jsonl"))
 			? readFileSync(join(root, "auto-research-sessions.jsonl"), "utf8").split(/\r?\n/).filter(Boolean) : [])) {
-			try { researchSessionCounter = Math.max(researchSessionCounter, Number(String(JSON.parse(line).session_id ?? "").match(/(\d+)$/)?.[1] ?? 0)); } catch {}
+			try {
+				const item = JSON.parse(line);
+				researchSessionCounter = Math.max(researchSessionCounter, Number(String(item.session_id ?? "").match(/(\d+)$/)?.[1] ?? 0));
+				researchRunCounter = Math.max(researchRunCounter, Number(String(item.run_id ?? "").match(/(\d+)$/)?.[1] ?? 0));
+			} catch {}
 		}
-		pi.registerTool({
+		const readJsonObject = (path: string): Record<string, any> | undefined => {
+			if (!existsSync(path)) return undefined;
+			try {
+				const value = JSON.parse(readFileSync(path, "utf8"));
+				return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+			} catch { return undefined; }
+		};
+		const refreshDetachedSession = (session: Record<string, any>): Record<string, any> => {
+			if (session.status !== "active" || session.interaction_mode !== "non_blocking") return session;
+			const runId = String(session.run_id ?? "");
+			const brokerStatus = readJsonObject(join(root, "task-context-cache", "auto-research-broker", `${runId}.json`));
+			if (brokerStatus?.status === "active") return session;
+			const nextVersion = Number(session.version ?? 0) + 1;
+			const recordedAt = new Date().toISOString();
+			const checkpoint = readJsonObject(join(root, "task-context-cache", "auto-research-checkpoints", `${session.session_id}.json`));
+			const reportPath = join(root, "task-context-cache", "auto-research-child-results", `${runId}.json`);
+			const rawReport = readJsonObject(reportPath);
+			if (brokerStatus?.status === "completed" && !rawReport && checkpoint?.status === "pending") {
+				const runtimeCheckpoint = { ...checkpoint, after_evidence_sequence: canonicalEvidenceSequence(root),
+					checkpoint_ref: `research_checkpoint:${session.session_id}@v${nextVersion}`, recorded_at: recordedAt };
+				const pending = { ...session, version: nextVersion, status: "pending" as ResearchSessionStatus,
+					checkpoint: runtimeCheckpoint, reconciliation_status: "not_applicable", recordedAt };
+				append("auto-research-sessions.jsonl", pending);
+				append("auto-research-runs.jsonl", { run_id: runId, version: 1, session_id: session.session_id,
+					status: "pending", question: session.question, scope: session.scope, evidence_refs: session.evidence_refs ?? [],
+					resource_refs: session.resource_refs ?? [], checkpoint: runtimeCheckpoint, startedAt: session.recordedAt,
+					completedAt: recordedAt, summary: "Research is pending without a conclusion." });
+				return pending;
+			}
+			if (brokerStatus?.status === "completed" && rawReport) {
+				const report = normalizeAutoResearchReport(rawReport);
+				const reportRef = `research_report:${runId}@v1`;
+				const proposals = Array.isArray(report.harness_proposals) ? report.harness_proposals : [];
+				const capabilities = pi.getAllTools().map((tool) => tool.name);
+				const routes = proposals.map((proposal: Record<string, any>) => compileHarnessRoute({
+					runId, approvalId: String(proposal.approval_id), approvalVersion: Number(proposal.approval_version),
+					approvalStatus: String(proposal.approval_status), delivery: proposal.delivery, capabilities,
+				}));
+				for (const route of routes) append("auto-research-harness-routes.jsonl", route);
+				const audit = readJsonObject(join(root, "task-context-cache", "auto-research-child-results", `${runId}.audit.json`));
+				const summary = String(report.conclusion ?? report.status ?? "completed");
+				append("auto-research-reports.jsonl", { run_id: runId, version: 1, status: "completed", summary,
+					report, evidence_audit: audit ?? null, recordedAt });
+				append("auto-research-runs.jsonl", { run_id: runId, version: 1, session_id: session.session_id,
+					status: "completed", question: session.question, scope: session.scope, evidence_refs: session.evidence_refs ?? [],
+					resource_refs: session.resource_refs ?? [], report_ref: reportRef, finding_count: report.findings.length,
+					proposal_count: proposals.length, route_execution_count: 0, evidence_audit: audit ?? null,
+					startedAt: session.recordedAt, completedAt: recordedAt, summary });
+				const completed = { ...session, version: nextVersion, status: "completed" as ResearchSessionStatus,
+					research_run_ref: `research_run:${runId}@v1`, report_ref: reportRef, summary,
+					reconciliation_status: routes.length ? "pending" : "applied", recordedAt };
+				append("auto-research-sessions.jsonl", completed);
+				return completed;
+			}
+			const failed = { ...session, version: nextVersion, status: "failed" as ResearchSessionStatus,
+				failure_code: brokerStatus?.status === "failed" ? "background_child_failed" : "orphaned_active_session",
+				error: brokerStatus?.status === "failed" ? `background child exited with ${brokerStatus.exit_code}` : "parent runtime restarted without a durable broker result",
+				reconciliation_status: "not_applicable", recordedAt };
+			append("auto-research-sessions.jsonl", failed);
+			return failed;
+		};
+		// Active records are refreshed from durable broker results at parent-owned
+		// runtime points (before_agent_start and inspect), never during extension
+		// loading when native tool capabilities are not initialized yet.
+		let autoResearchTool: any;
+		autoResearchTool = {
 			name: "auto_research",
 			label: adapter.autoResearchLabel ?? "Auto-Research in clean context",
 			description: "Run Auto-Research in an isolated task-local Pi subagent. Use for validating an existing hypothesis or harness component, exploring task decomposition or difficult solution paths, researching a method/composition, or comparing possible approaches. The child receives only explicitly selected evidence/resources and read-only adapter tools. It cannot mutate parent resources or submit an environment action. The parent receives structured reviewed deliveries plus a deterministic code-compiled route_plan and executes ready steps through Pi native harness tools.",
 			parameters: (() => {
 				const schema = Type.Object({
-				action: Type.Optional(Type.Union([Type.Literal("start"), Type.Literal("resume")])),
+				action: Type.Optional(Type.Union([
+					Type.Literal("start"), Type.Literal("inspect"), Type.Literal("resume"), Type.Literal("cancel"),
+				])),
+				interaction_mode: Type.Optional(Type.Union([
+					Type.Literal("blocking"), Type.Literal("non_blocking"),
+				], { description: "blocking waits for a final report; non_blocking returns an accepted session immediately and may later become pending or completed." })),
 				question: Type.Optional(Type.String({ minLength: 1 })),
 				session_ref: Type.Optional(Type.String()),
 				scope: Type.Optional(Type.Union([
@@ -1165,26 +1301,59 @@ export function installTaskLocalSubagents(
 				return schema;
 			})(),
 			async execute(toolCallId, params, signal) {
-				const admission = admitTaskLocalOperation("auto_research");
-				if (admission) return admission;
 				if (process.env.PI_TASK_CHILD === "1") throw new Error("recursive auto-research is not enabled");
 				const action = String(params.action ?? "start");
+				if (["inspect", "cancel"].includes(action)) {
+					const sessionId = researchSessionId(params.session_ref);
+					if (!sessionId) throw new Error(`${action} requires session_ref`);
+					let session = latestResearchSession(root, sessionId);
+					if (!session) throw new Error(`unknown research session: ${String(params.session_ref ?? "")}`);
+					if (action === "inspect") session = refreshDetachedSession(session);
+					if (action === "cancel") {
+						const admission = admitTaskLocalOperation("auto_research");
+						if (admission) return admission;
+						if (["completed", "cancelled"].includes(String(session.status))) throw new Error(`research session is not cancellable: ${session.status}`);
+						const brokerUrl = String(process.env.PI_AUTORESEARCH_SUBAGENT_BROKER_URL ?? "").trim();
+						if (brokerUrl && session.run_id) {
+							await brokerJsonRequest(brokerUrl, "/cancel", { job_id: `${session.run_id}:continuation-1` }).catch(() => ({}));
+						}
+						const cancelled = { ...session, version: Number(session.version) + 1, status: "cancelled" as ResearchSessionStatus,
+							reconciliation_status: "not_applicable", cancelledAt: new Date().toISOString(), recordedAt: new Date().toISOString() };
+						append("auto-research-sessions.jsonl", cancelled);
+						return { content: [{ type: "text", text: JSON.stringify({ format: "auto-research-session-v1",
+							session_ref: `research_session:${sessionId}@v${cancelled.version}`, status: cancelled.status }) }], details: cancelled };
+					}
+					const runId = String(session.run_id ?? "");
+					const progress = readResearchRecords(root, "subagent-progress.jsonl")
+						.filter((item) => !runId || String(item.progress_id ?? "").startsWith(runId)).at(-1) ?? null;
+					const report = readResearchRecords(root, "auto-research-reports.jsonl").find((item) => item.run_id === runId) ?? null;
+					const routes = readResearchRecords(root, "auto-research-harness-routes.jsonl").filter((item) => String(item.route_id ?? "").startsWith(`${runId}:`));
+					const receipts = readResearchRecords(root, "auto-research-harness-route-receipts.jsonl").filter((item) => String(item.route_id ?? "").startsWith(`${runId}:`));
+					const inspected = { format: "auto-research-session-v1", session_ref: `research_session:${sessionId}@v${session.version}`,
+						status: session.status, interaction_mode: session.interaction_mode ?? "blocking", reconciliation_status: session.reconciliation_status ?? "not_applicable",
+						checkpoint: session.checkpoint ?? null, progress, report, routes, receipts };
+					return { content: [{ type: "text", text: JSON.stringify(inspected) }], details: inspected };
+				}
+				const admission = admitTaskLocalOperation("auto_research");
+				if (admission) return admission;
 				let priorSession: Record<string, any> | undefined;
 				if (action === "resume") {
 					const requested = String(params.session_ref ?? "");
-					const sessionId = requested.replace(/^research_session:/, "").replace(/@v\d+$/, "");
+					const sessionId = researchSessionId(requested);
 					if (!sessionId) throw new Error("resume requires session_ref");
-					const sessionLines = existsSync(join(root, "auto-research-sessions.jsonl"))
-						? readFileSync(join(root, "auto-research-sessions.jsonl"), "utf8").split(/\r?\n/).filter(Boolean) : [];
-					for (const line of sessionLines) { try { const item = JSON.parse(line); if (item.session_id === sessionId && (!priorSession || Number(item.version) > Number(priorSession.version))) priorSession = item; } catch {} }
+					priorSession = latestResearchSession(root, sessionId);
 					if (!priorSession) throw new Error(`unknown research session: ${requested}`);
-					if (!["paused", "failed", "active"].includes(String(priorSession.status))) throw new Error(`research session is not resumable: ${priorSession.status}`);
+					if (!["pending", "failed", "active"].includes(String(priorSession.status))) throw new Error(`research session is not resumable: ${priorSession.status}`);
 				}
 				const sessionId = priorSession?.session_id ?? `research-session-${++researchSessionCounter}`;
 				const nativeChildSessionId = String(priorSession?.native_child_session_id ?? randomUUID());
-				const runId = `auto-research-${++researchRunCounter}`;
+				const alreadyActive = (params as any).__background_claimed === true;
+				const runId = alreadyActive ? String(priorSession?.run_id ?? "") : `auto-research-${++researchRunCounter}`;
+				if (!runId) throw new Error("background research resume lost its durable run id");
 				const question = String(params.question ?? priorSession?.question ?? "").trim();
 				const researchScope = String(params.scope ?? priorSession?.scope ?? "unspecified");
+				const interactionMode = String(params.interaction_mode ?? priorSession?.interaction_mode ?? "blocking") as ResearchInteractionMode;
+				if (!["blocking", "non_blocking"].includes(interactionMode)) throw new Error(`unsupported interaction_mode: ${interactionMode}`);
 				if (!question) throw new Error("start requires question; resume may inherit it from session_ref");
 				// Page coverage and read signatures are restored by the child runtime,
 				// not reasoning instructions. Keep them out of the provider prompt.
@@ -1207,6 +1376,10 @@ export function installTaskLocalSubagents(
 				const inheritedRefs = [...new Set([
 					...(params.resource_refs ?? priorSession?.resource_refs ?? []),
 					...(params.inherit_harness_refs ?? []),
+			])];
+				const evidenceRefs = [...new Set([
+					...(action === "resume" ? priorSession?.evidence_refs ?? [] : []),
+					...(params.evidence_refs ?? []),
 				])];
 				const contextWindow = compactContextWindow(
 					root,
@@ -1215,8 +1388,28 @@ export function installTaskLocalSubagents(
 				const contextRefs = params.context_window?.context_refs ?? [];
 				const childResourceRefs = [...new Set([...inheritedRefs, ...contextRefs].map(normalizeChildResourceRef))];
 				const startedAt = new Date().toISOString();
-				let result: Record<string, unknown>;
 				let continuationCheckpoint = priorSession?.checkpoint as Record<string, unknown> | undefined;
+				const activeVersion = alreadyActive ? Number(priorSession?.version ?? 1) : Number(priorSession?.version ?? 0) + 1;
+				if (!alreadyActive) {
+					append("auto-research-sessions.jsonl", { session_id: sessionId, version: activeVersion, status: "active" as ResearchSessionStatus,
+						interaction_mode: interactionMode, question, scope: researchScope,
+						constraints: params.constraints ?? priorSession?.constraints ?? [], evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
+						run_id: runId, native_child_session_id: nativeChildSessionId, reconciliation_status: "not_applicable",
+						recordedAt: startedAt });
+				}
+				const terminalVersion = activeVersion + 1;
+				if (!alreadyActive && interactionMode === "non_blocking") {
+					await runChildPi(
+						root, definition, adapter, buildTask(continuationCheckpoint, 1), evidenceRefs, childResourceRefs, undefined,
+						contextWindow, true, runId, sessionId, `${runId}:continuation-1`, nativeChildSessionId,
+						researchScope, interactionMode, true,
+					);
+					const accepted = { format: "auto-research-accepted-v1", accepted: true,
+						session_ref: `research_session:${sessionId}@v${activeVersion}`, run_id: runId,
+						status: "active", interaction_mode: interactionMode };
+					return { content: [{ type: "text", text: JSON.stringify(accepted) }], details: accepted };
+				}
+				let result: Record<string, unknown>;
 				let continuationAttempt = 0;
 				const cumulativeUsage: Record<string, any> = {
 					input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
@@ -1246,9 +1439,9 @@ export function installTaskLocalSubagents(
 						}
 						result = await runChildPi(
 							root, definition, adapter, buildTask(continuationCheckpoint, continuationAttempt),
-							params.evidence_refs ?? priorSession?.evidence_refs ?? [], childResourceRefs, signal,
+							evidenceRefs, childResourceRefs, signal,
 							contextWindow, true, runId, sessionId, `${runId}:continuation-${continuationAttempt}`,
-							nativeChildSessionId, researchScope,
+							nativeChildSessionId, researchScope, interactionMode,
 						);
 						accumulateUsage(result.usage);
 						const stopReason = String(result.stop_reason ?? "unknown");
@@ -1269,9 +1462,14 @@ export function installTaskLocalSubagents(
 					}
 					result.usage = cumulativeUsage;
 				} catch (error) {
+					if (latestResearchSession(root, sessionId)?.status === "cancelled") {
+						return { content: [{ type: "text", text: JSON.stringify({ format: "auto-research-result-v1",
+							session_ref: `research_session:${sessionId}@v${latestResearchSession(root, sessionId)?.version}`,
+							status: "cancelled", run_id: runId }) }], details: { status: "cancelled", run_id: runId } };
+					}
 					const failureRef = `research_run:${runId}@v1`;
 					append("auto-research-runs.jsonl", { run_id: runId, version: 1, session_id: sessionId, status: "failed", question,
-						scope: researchScope, evidence_refs: params.evidence_refs ?? priorSession?.evidence_refs ?? [], resource_refs: inheritedRefs,
+						scope: researchScope, evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
 						inherited_harness_refs: params.inherit_harness_refs ?? [], context_window: contextWindow,
 						toolCallId, startedAt, completedAt: new Date().toISOString(),
 						progress_ref: "subagent-progress.jsonl", progress_id: `${runId}:continuation-${continuationAttempt}`,
@@ -1279,9 +1477,10 @@ export function installTaskLocalSubagents(
 						error: error instanceof Error ? error.message : String(error),
 						summary: "Auto-Research child failed before producing a structured report.",
 					});
-					append("auto-research-sessions.jsonl", { session_id: sessionId, version: Number(priorSession?.version ?? 0) + 1, status: "failed", question, scope: researchScope,
+					append("auto-research-sessions.jsonl", { session_id: sessionId, version: terminalVersion, status: "failed", question, scope: researchScope,
+						interaction_mode: interactionMode, reconciliation_status: "not_applicable",
 						constraints: params.constraints ?? priorSession?.constraints ?? [],
-						evidence_refs: params.evidence_refs ?? priorSession?.evidence_refs ?? [], resource_refs: inheritedRefs,
+						evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
 						run_id: runId, native_child_session_id: nativeChildSessionId, recordedAt: new Date().toISOString() });
 					throw new Error(`Auto-Research failed; inspect ${failureRef} with task_resource before retrying: ${error instanceof Error ? error.message : String(error)}`);
 				}
@@ -1289,39 +1488,45 @@ export function installTaskLocalSubagents(
 				if (result.stop_reason === "paused") {
 					const generatedCheckpoint = result.checkpoint as Record<string, unknown> | undefined;
 					const checkpoint = generatedCheckpoint ?? {
-						format: "auto-research-checkpoint-v1", session_id: sessionId, status: "paused",
-						cursor: "agent-requested-pause", evidence_refs: params.evidence_refs ?? [],
+						format: "auto-research-checkpoint-v1", session_id: sessionId, status: "pending",
+						cursor: "agent-requested-pause", evidence_refs: evidenceRefs,
 						selected_resource_refs: inheritedRefs, unresolved_questions: [], draft_findings: [],
 						next_step: "Resume this research session when the declared condition is satisfied.",
 						pause_reason: "agent_requested_pause",
-						resume_condition: "an explicit parent resume of this research_session",
+						wait_for: "manual_resume", resume_condition: "manual_resume",
 						evidence_audit: {
 							format: "research-evidence-audit-v1",
-							status: [...new Set([...inheritedRefs, ...(params.evidence_refs ?? [])])].length ? "partial" : "no_selected_refs",
-							required_refs: [...new Set([...inheritedRefs, ...(params.evidence_refs ?? [])])],
+							status: [...new Set([...inheritedRefs, ...evidenceRefs])].length ? "partial" : "no_selected_refs",
+							required_refs: [...new Set([...inheritedRefs, ...evidenceRefs])],
 							complete_refs: [],
-							incomplete_refs: [...new Set([...inheritedRefs, ...(params.evidence_refs ?? [])])],
+							incomplete_refs: [...new Set([...inheritedRefs, ...evidenceRefs])],
 							read_count: 0, repeated_read_count: 0, review_checkpoint_count: 0, threshold_reached: false,
 						},
 						recordedAt: new Date().toISOString(),
 					};
-					const sessionRecord = { session_id: sessionId, version: Number(priorSession?.version ?? 0) + 1, status: "paused", question, scope: researchScope,
+					const waitFor = ["next_parent_evidence", "manual_resume"].includes(String(checkpoint.wait_for))
+						? String(checkpoint.wait_for) : "manual_resume";
+					const afterEvidenceSequence = canonicalEvidenceSequence(root);
+					const runtimeCheckpoint = { ...checkpoint, status: "pending", wait_for: waitFor,
+						after_evidence_sequence: afterEvidenceSequence, recorded_at: new Date().toISOString() };
+					const sessionRecord = { session_id: sessionId, version: terminalVersion, status: "pending" as ResearchSessionStatus, question, scope: researchScope,
+						interaction_mode: interactionMode, reconciliation_status: "not_applicable",
 						constraints: params.constraints ?? priorSession?.constraints ?? [],
 						native_child_session_id: nativeChildSessionId,
-						run_id: runId, evidence_refs: params.evidence_refs ?? priorSession?.evidence_refs ?? [], resource_refs: inheritedRefs,
-						checkpoint, cursor: checkpoint?.cursor ?? null, recordedAt: new Date().toISOString() };
+						run_id: runId, evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
+						checkpoint: runtimeCheckpoint, cursor: runtimeCheckpoint.cursor ?? null, recordedAt: new Date().toISOString() };
 					append("auto-research-sessions.jsonl", sessionRecord);
-					append("auto-research-runs.jsonl", { run_id: runId, version: 1, session_id: sessionId, status: "paused", question,
+					append("auto-research-runs.jsonl", { run_id: runId, version: 1, session_id: sessionId, status: "pending", question,
 						scope: researchScope, evidence_refs: sessionRecord.evidence_refs,
-						resource_refs: inheritedRefs, checkpoint, result_summary: { stop_reason: result.stop_reason ?? "paused", usage: result.usage ?? {},
+						resource_refs: inheritedRefs, checkpoint: runtimeCheckpoint, result_summary: { stop_reason: result.stop_reason ?? "paused", usage: result.usage ?? {},
 							provider: result.provider ?? null, model: result.model ?? null, event_count: result.event_count ?? 0,
 							adapter_id: result.adapter_id ?? adapter.adapterId, progress_ref: result.progress_ref ?? "subagent-progress.jsonl", progress_id: result.progress_id ?? runId },
 						startedAt, completedAt: new Date().toISOString(), summary: "Research paused; no conclusion was declared." });
-					return { content: [{ type: "text", text: JSON.stringify({ format: "auto-research-result-v1", resource_ref: `research_session:${sessionId}@v${sessionRecord.version}`, session_ref: `research_session:${sessionId}@v${sessionRecord.version}`, run_id: runId, status: "paused", question, checkpoint, adoption: "Paused research is not complete and no proposal was applied." }) }], details: { resource_ref: `research_session:${sessionId}@v${sessionRecord.version}`, session_ref: `research_session:${sessionId}@v${sessionRecord.version}`, run_id: runId, status: "paused", question, report_summary: "Research paused without a conclusion.", proposal_count: 0 } };
+					return { content: [{ type: "text", text: JSON.stringify({ format: "auto-research-result-v1", resource_ref: `research_session:${sessionId}@v${sessionRecord.version}`, session_ref: `research_session:${sessionId}@v${sessionRecord.version}`, run_id: runId, status: "pending", question, checkpoint: runtimeCheckpoint, adoption: "Pending research is not complete and no proposal was applied." }) }], details: { resource_ref: `research_session:${sessionId}@v${sessionRecord.version}`, session_ref: `research_session:${sessionId}@v${sessionRecord.version}`, run_id: runId, status: "pending", question, report_summary: "Research is pending without a conclusion.", proposal_count: 0 } };
 				}
 				const parsedReport = parseAutoResearchReport(reportText);
 				const report = normalizeAutoResearchReport(parsedReport);
-				const selectedAuditRefs = [...new Set([...(params.evidence_refs ?? []), ...inheritedRefs]
+				const selectedAuditRefs = [...new Set([...evidenceRefs, ...inheritedRefs]
 					.filter((ref) => /^(memory|skill|tool|subagent|finding|context):/.test(String(ref))))];
 				const evidenceAudit = result.evidence_audit ?? (selectedAuditRefs.length ? {
 					format: "research-evidence-audit-v1", status: "partial", required_refs: selectedAuditRefs,
@@ -1339,11 +1544,9 @@ export function installTaskLocalSubagents(
 					capabilities,
 				}));
 				for (const route of routePlans) append("auto-research-harness-routes.jsonl", route);
-				// Approved routes are applied by the parent runtime before this tool
-				// returns. The child has already bound the exact delivery hash, so a
-				// second model-generated apply call would add no semantic value and can
-				// only introduce copy/argument drift. Explicit task_harness replay stays
-				// available for recovery and idempotent retries.
+				// Blocking delivery reaches a parent-owned safe point inside this tool
+				// call. A background completion only persists the compiled route; a
+				// later parent-turn reconciliation must apply it before context build.
 				const applyRoute = nativeHarnessRouteApplier(pi);
 				const routeExecutions: Record<string, unknown>[] = [];
 				for (const route of routePlans) {
@@ -1389,7 +1592,7 @@ export function installTaskLocalSubagents(
 				};
 				const record = {
 					run_id: runId, version: 1, session_id: sessionId, status: reportStatus, question,
-					scope: researchScope, evidence_refs: params.evidence_refs ?? priorSession?.evidence_refs ?? [], resource_refs: inheritedRefs,
+					scope: researchScope, evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
 					inherited_harness_refs: params.inherit_harness_refs ?? [], context_window: contextWindow,
 					report_ref: reportRef, finding_count: report.findings.length, proposal_count: proposals.length,
 					route_execution_count: routeExecutions.length,
@@ -1403,8 +1606,10 @@ export function installTaskLocalSubagents(
 					report, evidence_audit: record.evidence_audit, recordedAt: record.completedAt,
 				});
 				append("auto-research-runs.jsonl", record);
-				const sessionVersion = Number(priorSession?.version ?? 0) + 1;
+				const sessionVersion = terminalVersion;
+				const reconciliationStatus = routeExecutionFailed ? "failed" : "applied";
 				append("auto-research-sessions.jsonl", { session_id: sessionId, version: sessionVersion, status: "completed", question, run_id: runId,
+					interaction_mode: interactionMode, reconciliation_status: reconciliationStatus,
 					native_child_session_id: nativeChildSessionId,
 					research_run_ref: `research_run:${runId}@v1`, evidence_refs: record.evidence_refs, scope: record.scope,
 					summary: record.summary, report_status: record.status, recordedAt: record.completedAt });
@@ -1415,6 +1620,7 @@ export function installTaskLocalSubagents(
 					routePlans: routePlansWithExecution,
 				});
 				(capsule as Record<string, any>).route_executions = routeExecutions;
+				(capsule as Record<string, any>).reconciliation_status = reconciliationStatus;
 				return {
 					...(routeExecutionFailed ? { isError: true } : {}),
 					content: [{ type: "text", text: JSON.stringify(capsule) }],
@@ -1429,6 +1635,15 @@ export function installTaskLocalSubagents(
 					},
 				};
 			},
+		};
+		pi.registerTool(autoResearchTool);
+		pi.on("before_agent_start", () => {
+			const latest = new Map<string, Record<string, any>>();
+			for (const item of readResearchRecords(root, "auto-research-sessions.jsonl")) {
+				const previous = latest.get(String(item.session_id));
+				if (!previous || Number(item.version) > Number(previous.version)) latest.set(String(item.session_id), item);
+			}
+			for (const session of latest.values()) refreshDetachedSession(session);
 		});
 	}
 }

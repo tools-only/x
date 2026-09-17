@@ -246,7 +246,7 @@ def test_provider_length_boundary_is_resumed_inside_one_parent_tool_call(tmp_pat
 	assert not completed.get("isError"), completed
 	assert json.loads(completed["result"]["content"][0]["text"])["status"] == "completed"
 	sessions = records(root, "auto-research-sessions.jsonl")
-	assert len(sessions) == 1
+	assert [item["status"] for item in sessions] == ["active", "completed"]
 	assert sessions[-1]["status"] == "completed"
 	receipts = records(root, "auto-research-continuations.jsonl")
 	assert [item["stop_reason"] for item in receipts] == ["length", "submitted_report"]

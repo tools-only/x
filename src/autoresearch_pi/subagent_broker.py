@@ -10,6 +10,7 @@ NDJSON and does not make research or scheduling decisions.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,6 +53,10 @@ class _BrokerHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if self.path == "/spawn":
                 self._stream_spawn(payload)
+            elif self.path == "/enqueue":
+                self._json_response(202, self.server.broker.enqueue(payload))  # type: ignore[attr-defined]
+            elif self.path == "/inspect":
+                self._json_response(200, self.server.broker.inspect(str(payload.get("job_id", ""))))  # type: ignore[attr-defined]
             elif self.path == "/cancel":
                 self.server.broker.cancel(str(payload.get("job_id", "")))  # type: ignore[attr-defined]
                 self._json_response(200, {"ok": True})
@@ -171,6 +176,76 @@ class SubagentBroker:
     def finish(self, job_id: str) -> None:
         with self._lock:
             self._jobs.pop(job_id, None)
+
+    @staticmethod
+    def _write_status(path: Path, value: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.replace(path)
+
+    def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        command = payload.get("command")
+        cwd = payload.get("cwd")
+        environment = payload.get("env")
+        job_id = str(payload.get("job_id", ""))
+        status_path = Path(str(payload.get("status_path", ""))).resolve()
+        events_path = Path(str(payload.get("events_path", ""))).resolve()
+        if not job_id:
+            raise ValueError("job_id is required")
+        if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
+            raise ValueError("command must be a non-empty string array")
+        if not isinstance(cwd, str) or not cwd:
+            raise ValueError("cwd must be a non-empty string")
+        if not isinstance(environment, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in environment.items()):
+            raise ValueError("env must be a string map")
+        if not str(payload.get("status_path", "")) or not str(payload.get("events_path", "")):
+            raise ValueError("status_path and events_path are required")
+        child = self.spawn(job_id, command, cwd, environment)
+        active = {"format": "subagent-broker-job-v1", "job_id": job_id, "status": "active", "pid": child.pid}
+        self._write_status(status_path, active)
+        events_lock = threading.Lock()
+
+        def capture(stream: Any, name: str) -> None:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            while True:
+                chunk = stream.readline()
+                if not chunk:
+                    break
+                data = chunk.decode("utf-8", errors="replace")
+                if name == "stdout":
+                    try:
+                        event = json.loads(data)
+                    except (TypeError, ValueError):
+                        event = None
+                    if isinstance(event, dict) and event.get("type") in {"message_update", "text_delta", "thinking_delta"}:
+                        continue
+                with events_lock, events_path.open("a", encoding="utf-8") as target:
+                    target.write(json.dumps({"event": name, "data": data}, ensure_ascii=False) + "\n")
+            stream.close()
+
+        def wait_for_child() -> None:
+            stdout_thread = threading.Thread(target=capture, args=(child.stdout, "stdout"), daemon=True)
+            stderr_thread = threading.Thread(target=capture, args=(child.stderr, "stderr"), daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
+            code = child.wait()
+            stdout_thread.join()
+            stderr_thread.join()
+            self.finish(job_id)
+            self._write_status(status_path, {**active, "status": "completed" if code == 0 else "failed", "exit_code": code})
+
+        threading.Thread(target=wait_for_child, name=f"subagent-job-{job_id}", daemon=True).start()
+        return active
+
+    def inspect(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            child = self._jobs.get(job_id)
+        if child is None:
+            return {"job_id": job_id, "status": "unknown"}
+        code = child.poll()
+        return {"job_id": job_id, "status": "active" if code is None else "completed" if code == 0 else "failed",
+                "pid": child.pid, "exit_code": code}
 
     def cancel(self, job_id: str) -> None:
         with self._lock:

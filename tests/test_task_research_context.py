@@ -3,12 +3,14 @@ import json
 import os
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from autoresearch_pi.task_scope import seal_task_scope
+from autoresearch_pi.subagent_broker import SubagentBroker
 from test_pi_external_benchmark_native import _pi_cli, _run_fixture
 
 
@@ -19,6 +21,18 @@ def records(root, name):
 
 def results(events, name):
     return [e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == name]
+
+
+def wait_for_broker_job(root, run_id, timeout=10):
+    status_path = root / "task-context-cache" / "auto-research-broker" / f"{run_id}.json"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if status_path.exists():
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if status.get("status") != "active":
+                return status
+        time.sleep(0.05)
+    raise AssertionError(f"broker job {run_id} did not finish")
 
 
 def harness_delivery(delivery_id, semantic_kind, name, content, **overrides):
@@ -996,29 +1010,41 @@ def test_auto_research_child_keeps_read_surface_until_agent_submits(tmp_path):
     assert len(child_contexts) >= 3
 
 
-def test_auto_research_pause_persists_a_resumable_session_checkpoint(tmp_path):
+def test_non_blocking_auto_research_persists_a_pending_session_checkpoint(tmp_path):
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "auto-research-pause"
-    events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
-        "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
-        "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
-        "PI_SUBAGENT_STEPS": json.dumps([{"name": "research_checkpoint", "arguments": {
-            "action": "pause", "cursor": "page-2", "unresolved_questions": ["Need a discriminating observation."],
-            "resume_condition": "new observation",
-        }}]),
-    }, steps=[{"name": "auto_research", "arguments": {
-        "question": "Which path should be validated next?", "scope": "solution_path",
-    }}])
-    result = results(events, "auto_research")[0]
-    assert not result.get("isError")
-    payload = json.loads(result["result"]["content"][0]["text"])
-    assert payload["status"] == "paused"
-    assert payload["checkpoint"]["cursor"] == "page-2"
-    sessions = records(root, "auto-research-sessions.jsonl")
-    assert sessions[-1]["status"] == "paused"
-    assert sessions[-1]["checkpoint"]["resume_condition"] == "new observation"
-    assert records(root, "auto-research-runs.jsonl")[-1]["status"] == "paused"
+    broker = SubagentBroker()
+    broker.start()
+    try:
+        child_env = {
+            "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+            "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+            "PI_AUTORESEARCH_SUBAGENT_BROKER_URL": broker.url,
+            "PI_SUBAGENT_STEPS": json.dumps([{"name": "research_checkpoint", "arguments": {
+                "action": "pause", "cursor": "page-2", "unresolved_questions": ["Need a discriminating observation."],
+                "reason": "Need a discriminating observation.", "next_step": "Compare the next observation.",
+                "wait_for": "next_parent_evidence",
+            }}]),
+        }
+        events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=child_env,
+                              steps=[{"name": "auto_research", "arguments": {
+                                  "question": "Which path should be validated next?", "scope": "solution_path", "interaction_mode": "non_blocking",
+                              }}])
+        payload = json.loads(results(events, "auto_research")[0]["result"]["content"][0]["text"])
+        assert payload["status"] == "active" and payload["accepted"] is True
+        wait_for_broker_job(root, "auto-research-1")
+        _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=child_env,
+                     steps=[{"name": "auto_research", "arguments": {"action": "inspect", "session_ref": payload["session_ref"]}}])
+        sessions = records(root, "auto-research-sessions.jsonl")
+        assert sessions[0]["status"] == "active"
+        assert sessions[-1]["status"] == "pending"
+        assert sessions[-1]["checkpoint"]["cursor"] == "page-2"
+        assert sessions[-1]["checkpoint"]["wait_for"] == "next_parent_evidence"
+        assert isinstance(sessions[-1]["checkpoint"]["after_evidence_sequence"], int)
+        assert records(root, "auto-research-runs.jsonl")[-1]["status"] == "pending"
+    finally:
+        broker.close()
 
 
 def test_auto_research_resume_reuses_the_same_session(tmp_path):
@@ -1029,24 +1055,133 @@ def test_auto_research_resume_reuses_the_same_session(tmp_path):
         "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
         "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
     }
-    _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
-        **base_env, "PI_SUBAGENT_STEPS": json.dumps([{"name": "research_checkpoint", "arguments": {"action": "pause", "cursor": "cursor-1"}}]),
-    }, steps=[{"name": "auto_research", "arguments": {"question": "Which path?", "scope": "solution_path"}}])
-    session = records(root, "auto-research-sessions.jsonl")[-1]
-    report = {"format": "auto-research-report-v1", "status": "inconclusive", "conclusion": "Resume retained the cursor.",
-              "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [], "validation_plan": "observe next state", "harness_proposals": []}
+    broker = SubagentBroker()
+    broker.start()
+    try:
+        base_env["PI_AUTORESEARCH_SUBAGENT_BROKER_URL"] = broker.url
+        _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
+            **base_env, "PI_SUBAGENT_STEPS": json.dumps([{"name": "research_checkpoint", "arguments": {
+                "action": "pause", "cursor": "cursor-1", "reason": "Need evidence", "next_step": "Inspect it",
+                "wait_for": "manual_resume",
+            }}]),
+        }, steps=[{"name": "auto_research", "arguments": {
+            "question": "Which path?", "scope": "solution_path", "interaction_mode": "non_blocking",
+        }}])
+        wait_for_broker_job(root, "auto-research-1")
+        # Startup harvests the pending checkpoint before the explicit resume.
+        report = {"format": "auto-research-report-v1", "status": "inconclusive", "conclusion": "Resume retained the cursor.",
+                  "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [], "validation_plan": "observe next state", "harness_proposals": []}
+        events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
+            **base_env, "PI_SUBAGENT_REPORT": json.dumps(report),
+            "PI_SUBAGENT_STEPS": json.dumps([{"name": "submit_research_report", "arguments": {"report": report}}]),
+        }, steps=[{"name": "auto_research", "arguments": {"action": "resume", "session_ref": "research_session:research-session-1@v1"}}])
+        payload = json.loads(results(events, "auto_research")[0]["result"]["content"][0]["text"])
+        assert payload["status"] == "active" and payload["accepted"] is True
+        pending = next(item for item in reversed(records(root, "auto-research-sessions.jsonl")) if item["status"] == "pending")
+        wait_for_broker_job(root, "auto-research-2")
+        _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=base_env,
+                     steps=[{"name": "auto_research", "arguments": {"action": "inspect", "session_ref": payload["session_ref"]}}])
+        sessions = records(root, "auto-research-sessions.jsonl")
+        assert sessions[-1]["status"] == "completed"
+        assert sessions[-1]["session_id"] == pending["session_id"]
+        assert sessions[-1]["version"] == pending["version"] + 2
+        assert records(root, "auto-research-runs.jsonl")[-1]["session_id"] == pending["session_id"]
+    finally:
+        broker.close()
+
+
+def test_blocking_auto_research_rejects_pending_and_requires_a_final_report(tmp_path):
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "auto-research-blocking-pending"
+    report = {"format": "auto-research-report-v1", "status": "unresolved", "conclusion": "Future parent evidence is required.",
+              "findings": [], "evidence_refs": [], "alternatives": [], "limitations": ["No later observation exists yet."],
+              "validation_plan": "Continue the parent task and research again after new evidence.", "harness_proposals": []}
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
-        **base_env, "PI_SUBAGENT_REPORT": json.dumps(report),
-        "PI_SUBAGENT_STEPS": json.dumps([{"name": "submit_research_report", "arguments": {"report": report}}]),
-    }, steps=[{"name": "auto_research", "arguments": {"action": "resume", "session_ref": f"research_session:{session['session_id']}@v{session['version']}"}}])
-    result = results(events, "auto_research")[0]
-    assert not result.get("isError")
-    payload = json.loads(result["result"]["content"][0]["text"])
+        "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+        "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+        "PI_SUBAGENT_REPORT": json.dumps(report),
+        "PI_SUBAGENT_STEPS": json.dumps([
+            {"name": "research_checkpoint", "arguments": {"action": "pause", "reason": "Need evidence",
+                "next_step": "Inspect the next observation", "wait_for": "next_parent_evidence"}},
+            {"name": "submit_research_report", "arguments": {"report": report}},
+        ]),
+    }, steps=[{"name": "auto_research", "arguments": {"question": "Can this be decided now?", "interaction_mode": "blocking"}}])
+    payload = json.loads(results(events, "auto_research")[0]["result"]["content"][0]["text"])
     assert payload["status"] == "completed"
-    sessions = records(root, "auto-research-sessions.jsonl")
-    assert sessions[-1]["session_id"] == session["session_id"]
-    assert sessions[-1]["version"] == session["version"] + 1
-    assert records(root, "auto-research-runs.jsonl")[-1]["session_id"] == session["session_id"]
+    assert records(root, "auto-research-sessions.jsonl")[-1]["status"] == "completed"
+    assert any(item["event"] == "research_pause_rejected" for item in records(root, "auto-research-child-control.jsonl"))
+
+
+def test_non_blocking_session_can_be_inspected_and_cancelled(tmp_path):
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "auto-research-cancel"
+    broker = SubagentBroker()
+    broker.start()
+    try:
+        events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
+            "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+            "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+            "PI_AUTORESEARCH_SUBAGENT_BROKER_URL": broker.url, "PI_SUBAGENT_FORCE_LENGTH": "1",
+        }, steps=[
+            {"name": "auto_research", "arguments": {"question": "Keep researching until cancelled.", "interaction_mode": "non_blocking"}},
+            {"name": "auto_research", "arguments": {"action": "inspect", "session_ref": "research_session:research-session-1@v1"}},
+            {"name": "auto_research", "arguments": {"action": "cancel", "session_ref": "research_session:research-session-1@v1"}},
+        ])
+        payloads = [json.loads(item["result"]["content"][0]["text"]) for item in results(events, "auto_research")]
+        assert payloads[0]["accepted"] is True
+        assert payloads[1]["status"] == "active"
+        assert payloads[2]["status"] == "cancelled"
+        assert records(root, "auto-research-sessions.jsonl")[-1]["status"] == "cancelled"
+    finally:
+        broker.close()
+
+
+def test_non_blocking_completion_compiles_route_without_mutating_parent_harness(tmp_path):
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "auto-research-background-route"
+    delivery = harness_delivery(
+        "background-review", "procedure", "background-review",
+        "Inspect the selected observation and preserve uncertainty.",
+    )
+    report = {
+        "format": "auto-research-report-v1", "status": "provisional",
+        "conclusion": "The procedure is a candidate for the next parent turn.",
+        "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
+        "validation_plan": "Apply at a parent-owned safe point.",
+        "harness_proposals": [{"approval_id": "auto-research-1:proposal-1"}],
+    }
+    broker = SubagentBroker()
+    broker.start()
+    try:
+        child_env = {
+            "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+            "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+            "PI_AUTORESEARCH_SUBAGENT_BROKER_URL": broker.url, "PI_SUBAGENT_REPORT": json.dumps(report),
+            "PI_SUBAGENT_STEPS": json.dumps([
+                {"name": "research_approval", "arguments": {"action": "propose", "approval_id": "auto-research-1:proposal-1", "delivery": delivery}},
+                {"name": "research_approval", "arguments": {"action": "approve", "approval_id": "auto-research-1:proposal-1", "target_version": 1}},
+                {"name": "submit_research_report", "arguments": {"report": report}},
+            ]),
+        }
+        events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=child_env,
+                              steps=[{"name": "auto_research", "arguments": {
+                                  "question": "Should this procedure be retained?", "interaction_mode": "non_blocking",
+                              }}])
+        accepted = json.loads(results(events, "auto_research")[0]["result"]["content"][0]["text"])
+        wait_for_broker_job(root, "auto-research-1")
+        inspect_events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=child_env,
+                                      steps=[{"name": "auto_research", "arguments": {"action": "inspect", "session_ref": accepted["session_ref"]}}])
+        inspected = json.loads(results(inspect_events, "auto_research")[0]["result"]["content"][0]["text"])
+        assert inspected["status"] == "completed"
+        assert inspected["reconciliation_status"] == "pending"
+        assert records(root, "auto-research-harness-routes.jsonl")[-1]["route_status"] == "ready"
+        assert records(root, "task-skills.jsonl") == []
+        assert records(root, "auto-research-harness-route-receipts.jsonl") == []
+    finally:
+        broker.close()
 
 
 def test_auto_research_does_not_close_reads_for_incomplete_selected_evidence(tmp_path):

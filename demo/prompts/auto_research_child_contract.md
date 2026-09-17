@@ -27,7 +27,9 @@ interpretations; a reference establishes provenance, not correctness.
   saved work instead of repeating completed investigation.
 - If a missing observation or experiment prevents a conclusion, state what is
   missing and how it would distinguish the alternatives. Submit a partial or
-  inconclusive result, or pause for that evidence.
+  inconclusive result. In a non-blocking run, you may instead save a pending
+  checkpoint with `wait_for`; a blocking run must return an inconclusive or
+  unresolved final report and cannot wait for future parent evidence.
 - Submit the structured report through `submit_research_report`. Its schema
   defines the fields. Give conclusions, supporting references, uncertainty,
   alternatives, limitations, and the next validation when needed. Do not repeat
