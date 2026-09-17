@@ -17,6 +17,7 @@ import {
 import { HarnessDeliverySchema } from "./pi_auto_research_harness_schema.ts";
 import { ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
 import { resourceMetadata, taskRecords, versionConflict } from "./pi_task_resource_store.ts";
+import { loadPrompt } from "./prompt_loader.ts";
 
 export type ApprovalAction = "approve" | "reject" | "defer";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "deferred";
@@ -186,10 +187,10 @@ export function installAutoResearchApprovalTool(
 	pi.registerTool({
 		name: AUTO_RESEARCH_APPROVAL_TOOL,
 		label: "Auto-Research proposal review",
-		description: "Inspect or review a complete structured Auto-Research harness delivery inside the isolated research child. After propose returns, use the returned exact approval_id and version immediately with approve, reject, or defer before proposing another delivery; never guess an id or approve a different body. These actions only change versioned status/tag and never mutate parent harness resources or the environment.",
+		description: "Read contract for evidence-based delivery field rules and available tool implementations before proposing a harness change. Propose its complete body, then decide using the returned exact approval_id and version before another proposal. Inspect retrieves prior proposals. Review does not mutate the parent harness or environment.",
 		parameters: Type.Object({
 			action: Type.Union([
-				Type.Literal("propose"), Type.Literal("inspect"), Type.Literal("approve"),
+				Type.Literal("contract"), Type.Literal("propose"), Type.Literal("inspect"), Type.Literal("approve"),
 				Type.Literal("reject"), Type.Literal("defer"),
 			]),
 			approval_id: Type.Optional(Type.String()),
@@ -199,6 +200,13 @@ export function installAutoResearchApprovalTool(
 		}),
 		async execute(_toolCallId, params) {
 			const p = params as Record<string, any>;
+			if (p.action === "contract") {
+				const result = {
+					instructions: loadPrompt("auto_research_delivery_guide.md"),
+					tool_creation_contract: JSON.parse(process.env.PI_AUTO_RESEARCH_TOOL_CONTRACT ?? "null"),
+				};
+				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+			}
 			if (p.action === "inspect") {
 				const result = store.inspect(p.approval_id ? String(p.approval_id) : undefined);
 				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };

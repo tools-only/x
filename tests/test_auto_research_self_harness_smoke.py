@@ -202,7 +202,7 @@ def test_child_context_projection_fits_requested_budget_and_keeps_page_reference
         if part.get("type") == "text" and "Parent-selected context window" in part.get("text", "")
     )
     marker = "Parent-selected context window (bounded state, not the parent transcript): "
-    encoded = prompt.split(marker, 1)[1].split("\nUse only", 1)[0]
+    encoded = prompt.split(marker, 1)[1].split("\n\n# Available access", 1)[0]
     window = json.loads(encoded)
     assert len(json.dumps(window, ensure_ascii=False, separators=(",", ":"))) <= 6000
     assert window["projection"]["truncated"] is True

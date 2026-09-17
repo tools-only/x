@@ -4,7 +4,7 @@
  * Pi children, structured report parser, code router, native harness tools,
  * action boundaries, and next-turn context projection are production paths.
  */
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -12,11 +12,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type Step =
 	| { kind: "tool"; name: string; arguments: Record<string, unknown> }
 	| { kind: "text"; text: string }
-	| { kind: "length"; text: string };
+	| { kind: "length"; text: string; thinkingOnly?: boolean };
 
 const scenario = String(process.env.PI_ARC_SMOKE_SCENARIO ?? "memory");
 const root = String(process.env.PI_AUTORESEARCH_E2E_ROOT ?? ".");
 const evidenceRef = "execution-observation-1";
+const researchScope = process.env.PI_ARC_SMOKE_SCOPE ?? "harness_component";
 
 function deliveryFor(name: string): Record<string, unknown> {
 	const common = {
@@ -104,12 +105,21 @@ function providerStep(request: number, context: any): Step {
 	if (isChild && process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1") {
 		const lengthMarker = join(root, "arc-smoke-auto-research-length-once.marker");
 		if (scenario === "memory" && !existsSync(lengthMarker)) {
+			if (request === 0) return { kind: "tool", name: "arc_state", arguments: { request: "current" } };
+			if (request === 1) return { kind: "tool", name: "research_checkpoint", arguments: {
+				action: "save", cursor: "SMOKE_SAVED_CURSOR", evidence_refs: [evidenceRef],
+				draft_findings: [{ conclusion: "SMOKE_SAVED_FINDING", evidence_refs: [evidenceRef] }],
+				unresolved_questions: ["SMOKE_PENDING_APPROVAL"], next_step: "Approve and submit the saved finding.",
+			} };
 			writeFileSync(lengthMarker, "native-session continuation required\n", "utf8");
-			return { kind: "length", text: "SMOKE_AUTO_RESEARCH_PARTIAL" };
+			return { kind: "length", text: "Synthetic reasoning-only interruption", thinkingOnly: true };
 		}
 		const delivery = deliveryFor(scenario);
 		const report = reportFor(delivery);
+		if (scenario === "memory" && request === 0) return { kind: "tool", name: "arc_state", arguments: { request: "current" } };
+		if (scenario === "memory" && request === 1) return { kind: "tool", name: "research_checkpoint", arguments: { action: "save" } };
 		const steps: Step[] = [
+			{ kind: "tool", name: "research_approval", arguments: { action: "contract" } },
 			{ kind: "tool", name: "research_approval", arguments: {
 				action: "propose", approval_id: "auto-research-1:proposal-1", delivery,
 			} },
@@ -118,7 +128,7 @@ function providerStep(request: number, context: any): Step {
 			} },
 			{ kind: "tool", name: "submit_research_report", arguments: { report } },
 		];
-		return steps[request] ?? { kind: "text", text: "research fixture complete" };
+		return steps[request - (scenario === "memory" ? 2 : 0)] ?? { kind: "text", text: "research fixture complete" };
 	}
 	if (isChild) {
 		const marker = join(root, "arc-smoke-delegate-length-once.marker");
@@ -134,7 +144,7 @@ function providerStep(request: number, context: any): Step {
 		{ kind: "tool", name: "arc_state", arguments: { request: "current" } },
 		{ kind: "tool", name: "auto_research", arguments: {
 			question: `Route the deterministic ${scenario} finding for next-turn use.`,
-			scope: "harness_component", evidence_refs: [evidenceRef],
+			...(researchScope ? { scope: researchScope } : {}), evidence_refs: [evidenceRef],
 		} },
 		{ kind: "tool", name: "arc_action", arguments: {
 			action: "ACTION1", reasoning: "End the first smoke turn after the routed mutation.",
@@ -161,14 +171,29 @@ function providerStep(request: number, context: any): Step {
 
 function contextEvidence(request: number, context: any) {
 	const encoded = JSON.stringify(context.messages ?? []);
+	const system = String(context.systemPrompt ?? "");
+	const contractResults = (context.messages ?? []).filter((m: any) => m.role === "toolResult")
+		.flatMap((m: any) => (m.content ?? []).filter((b: any) => b.type === "text").map((b: any) => {
+			try { return JSON.parse(b.text); } catch { return {}; }
+		}));
 	return {
 		format: "arc-real-runner-provider-context-v1",
 		scenario, request, child: process.env.PI_TASK_CHILD === "1",
 		research_child: process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1",
+		parent_guide_present: system.includes("# Auto-Research: parent guide"),
+		child_guide_present: system.includes("# Auto-Research: child instructions"),
+		profile_headings: [...system.matchAll(/^# Research focus: (.+)$/gm)].map((match) => match[1]),
+		delivery_guide_in_system: system.includes("# Candidate harness delivery"),
+		contract_capabilities_seen: contractResults.some((r: any) =>
+			String(r.instructions ?? "").includes("# Candidate harness delivery")
+			&& r.tool_creation_contract?.declarative_program_steps?.includes("select")),
 		tool_names: (context.tools ?? []).map((tool: any) => String(tool.name)),
 		system_has_marker: String(context.systemPrompt ?? "").includes("SMOKE_SYSTEM_MARKER"),
 		messages_have_memory_marker: encoded.includes("SMOKE_MEMORY_MARKER"),
 		messages_have_skill_marker: encoded.includes("SMOKE_SKILL_MARKER"),
+		checkpoint_reloaded: process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1"
+			&& existsSync(join(root, "task-context-cache", "auto-research-checkpoints", `${process.env.PI_AUTO_RESEARCH_SESSION_ID}.json`))
+			? JSON.parse(readFileSync(join(root, "task-context-cache", "auto-research-checkpoints", `${process.env.PI_AUTO_RESEARCH_SESSION_ID}.json`), "utf8")) : null,
 	};
 }
 
@@ -199,6 +224,11 @@ export default function arcHarnessSmokeProvider(pi: ExtensionAPI) {
 				stream.push({ type: "toolcall_start", contentIndex: 0, partial: output });
 				stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(step.arguments), partial: output });
 				stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: block, partial: output });
+			} else if (step.kind === "length" && step.thinkingOnly) {
+				output.content.push({ type: "thinking", thinking: step.text });
+				stream.push({ type: "thinking_start", contentIndex: 0, partial: output });
+				stream.push({ type: "thinking_delta", contentIndex: 0, delta: step.text, partial: output });
+				stream.push({ type: "thinking_end", contentIndex: 0, content: step.text, partial: output });
 			} else {
 				output.content.push({ type: "text", text: step.text });
 				stream.push({ type: "text_start", contentIndex: 0, partial: output });

@@ -1307,8 +1307,9 @@ def _run_pi(
         env["OPENAI_API_KEY"] = str(api_key)
         (agent_dir / "models.json").write_text(json.dumps({"providers": {provider_name: {
             "baseUrl": base_url, "api": model_settings["pi_api"], "apiKey": "$OPENAI_API_KEY",
-            "authHeader": True, "models": [{"id": model, "name": model, "reasoning": False,
+            "authHeader": True, "models": [{"id": model, "name": model, "reasoning": True,
                 "input": ["text"], "contextWindow": model_settings["context_window"],
+                **({"maxTokens": model_settings["max_tokens"]} if model_settings.get("max_tokens") else {}),
                 "cost": {"input": 5, "output": 30, "cacheRead": 0, "cacheWrite": 0}}],
         }}}), encoding="utf-8")
     env.update({

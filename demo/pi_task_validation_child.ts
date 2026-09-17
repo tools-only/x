@@ -1,5 +1,5 @@
 /** Extra read-only task resource access for an isolated Pi child. */
-import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -9,6 +9,8 @@ import { harnessDeliveryHash } from "./pi_auto_research_harness_router.ts";
 import { installTaskResourceReader } from "./pi_task_resource_store.ts";
 import { installTaskLocalContextLifecycle } from "./pi_task_local_context_lifecycle.ts";
 import { loadPrompt } from "./prompt_loader.ts";
+import { createHash } from "node:crypto";
+import { loadResearchProfile } from "./pi_auto_research_profiles.ts";
 
 export default function taskValidationChild(pi: ExtensionAPI) {
 	if (process.env.PI_TASK_CHILD !== "1") throw new Error("this extension is only for isolated task children");
@@ -16,12 +18,20 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 	const refs = JSON.parse(process.env.PI_TASK_CHILD_RESOURCE_REFS ?? "[]");
 	if (!Array.isArray(refs) || refs.some((ref) => typeof ref !== "string")) throw new Error("invalid child resource grants");
 	installTaskResourceReader(pi, root, refs);
-	installTaskLocalContextLifecycle(pi, { root, keepRecentMessages: 12 });
-	pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${loadPrompt("task_validation_child.md")}` }));
+	installTaskLocalContextLifecycle(pi, {
+		root,
+		keepRecentMessages: 12,
+		compactCompletedToolReasoning: true,
+	});
+	if (process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL !== "1") {
+		pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${loadPrompt("task_validation_child.md")}` }));
+	}
 	if (process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1") {
 		const runId = String(process.env.PI_AUTO_RESEARCH_RUN_ID ?? "");
 		if (!/^auto-research-[1-9]\d*$/.test(runId)) throw new Error("invalid Auto-Research run id");
 		const sessionId = String(process.env.PI_AUTO_RESEARCH_SESSION_ID ?? runId);
+		const profile = loadResearchProfile(process.env.PI_AUTO_RESEARCH_SCOPE ?? "unspecified");
+		const commonInstructions = loadPrompt("auto_research_child_contract.md");
 		const approvalStore = new AutoResearchApprovalStore(root, runId, sessionId);
 		installAutoResearchApprovalTool(pi, approvalStore);
 		const controlPath = join(root, "auto-research-child-control.jsonl");
@@ -102,22 +112,35 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			"utf8",
 		);
 		const checkpointPath = join(root, "task-context-cache", "auto-research-checkpoints", `${sessionId}.json`);
+		let savedCheckpoint: Record<string, any> = existsSync(checkpointPath)
+			? JSON.parse(readFileSync(checkpointPath, "utf8")) : {};
+		evidenceReadCount = Number(savedCheckpoint.evidence_read_count ?? 0);
+		reviewCheckpointCount = Number(savedCheckpoint.evidence_audit?.review_checkpoint_count ?? 0);
+		for (const [ref, coverage] of savedCheckpoint.evidence_progress?.pages ?? []) pageCoverage.set(ref, coverage);
+		for (const [signature, count] of savedCheckpoint.evidence_progress?.read_counts ?? []) {
+			readCounts.set(signature, count);
+			readSignatures.add(signature);
+		}
 		const saveResearchCheckpoint = (params: Record<string, any>, paused: boolean) => {
+			params = { ...savedCheckpoint, ...params };
 			mkdirSync(join(root, "task-context-cache", "auto-research-checkpoints"), { recursive: true });
 			const checkpoint = {
+				...savedCheckpoint,
 				format: "auto-research-checkpoint-v1", session_id: sessionId,
 				status: paused ? "paused" : "active", cursor: String(params.cursor ?? ""),
 					evidence_refs: Array.isArray(params.evidence_refs) ? params.evidence_refs.map(String) : [],
-					selected_resource_refs: Array.isArray(params.resource_refs) ? params.resource_refs.map(String) : refs,
+					selected_resource_refs: Array.isArray(params.resource_refs) ? params.resource_refs.map(String) : (params.selected_resource_refs ?? refs),
 					unresolved_questions: Array.isArray(params.unresolved_questions) ? params.unresolved_questions.map(String) : [],
 					draft_findings: Array.isArray(params.draft_findings) ? params.draft_findings : [],
 				next_step: String(params.next_step ?? ""), pause_reason: paused ? String(params.reason ?? "agent requested pause") : null,
 				resume_condition: String(params.resume_condition ?? "new evidence or an explicit parent resume"),
-				evidence_read_count: evidenceReadCount, evidence_audit: evidenceAudit(), recordedAt: new Date().toISOString(),
+					evidence_read_count: evidenceReadCount, evidence_audit: evidenceAudit(), recordedAt: new Date().toISOString(),
+					evidence_progress: { pages: [...pageCoverage], read_counts: [...readCounts] },
 			};
 			const temporary = `${checkpointPath}.tmp`;
 			writeFileSync(temporary, JSON.stringify(checkpoint) + "\n", "utf8");
 			renameSync(temporary, checkpointPath);
+			savedCheckpoint = checkpoint;
 			appendControl({ event: paused ? "research_paused" : "research_checkpoint_saved", session_id: sessionId,
 				cursor: checkpoint.cursor, evidence_read_count: evidenceReadCount, resume_condition: checkpoint.resume_condition });
 			return checkpoint;
@@ -138,14 +161,15 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			}),
 			async execute(_id, params) {
 				const checkpoint = saveResearchCheckpoint(params as Record<string, any>, params.action === "pause");
-				return { content: [{ type: "text", text: JSON.stringify(checkpoint) }], details: checkpoint,
+				const { evidence_progress, ...semanticCheckpoint } = checkpoint;
+				return { content: [{ type: "text", text: JSON.stringify(semanticCheckpoint) }], details: semanticCheckpoint,
 					...(params.action === "pause" ? { terminate: true } : {}) };
 			},
 		});
 		pi.registerTool({
 			name: "submit_research_report",
 			label: "Submit Auto-Research report",
-			description: "Return the final structured Auto-Research report to the parent as one object. This ends the child run; it does not mutate or validate parent resources.",
+			description: "Submit findings and evidence to the parent and end this research run. status: supported_within_scope when the supplied evidence supports the answer; provisional for a tentative answer; inconclusive when alternatives cannot be distinguished; contradicted when evidence refutes the claim; unresolved when necessary evidence is missing. A report does not itself prove benefit or mutate resources.",
 			parameters: Type.Object({
 				report: Type.Object({
 					format: Type.Literal("auto-research-report-v1"),
@@ -155,7 +179,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 					]),
 					conclusion: Type.String(),
 					findings: Type.Array(Type.Object({
-						subject_kind: Type.String(),
+						subject_kind: Type.String({ description: "Object addressed: task, component, composition, strategy, or research_method. Describe this finding, not the selected research scope." }),
 						question: Type.String(),
 						conclusion: Type.String(),
 						evidence_refs: Type.Array(Type.String()),
@@ -254,11 +278,21 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			readSignatures.add(signature);
 			readCounts.set(signature, (readCounts.get(signature) ?? 0) + 1);
 			addCoverage(readDetails(event));
+			// Persist mechanical progress even when the model's next response ends
+			// in thinking-only length before it can save a semantic checkpoint.
+			saveResearchCheckpoint({}, false);
 			// Repeated reads are provenance only. The child Agent chooses whether
 			// more pages/observations are useful, or whether to submit/pause.
 		});
-		pi.on("before_agent_start", (event) => ({
-			systemPrompt: `${event.systemPrompt}\n\n${loadPrompt("auto_research_method.md")}\n\n${loadPrompt("auto_research_child_contract.md")}`,
-		}));
+		pi.on("before_agent_start", (event) => {
+			const instructions = commonInstructions + (profile.instructions ? "\n\n" + profile.instructions : "");
+			appendFileSync(join(root, "auto-research-prompt-loads.jsonl"), JSON.stringify({
+				run_id: runId, session_id: sessionId, scope: profile.scope, profile_file: profile.file,
+				profile_sha256: profile.sha256, common_sha256: createHash("sha256").update(commonInstructions).digest("hex"),
+				common_chars: commonInstructions.length, profile_chars: profile.instructions.length,
+				recordedAt: new Date().toISOString(),
+			}) + "\n", "utf8");
+			return { systemPrompt: `${event.systemPrompt}\n\n${instructions}` };
+		});
 	}
 }

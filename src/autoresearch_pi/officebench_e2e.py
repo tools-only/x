@@ -1190,7 +1190,7 @@ def run_pi_officebench_task(
                 "models": [{
                     "id": model,
                     "name": model,
-                    "reasoning": False,
+                    "reasoning": True,
                     "contextWindow": 128000,
                     "maxTokens": 8192,
                 }],

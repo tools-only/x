@@ -26,6 +26,8 @@ export type TaskLocalContextLifecycleOptions = {
 	keepRecentMessages?: number;
 	headMessages?: number;
 	maxMessageChars?: number;
+	/** Omit private reasoning from completed tool transactions in the provider projection. */
+	compactCompletedToolReasoning?: boolean;
 	enabled?: boolean;
 };
 
@@ -166,6 +168,28 @@ function hasToolResultAfter(messages: ContextMessage[], start: number): boolean 
 	return [...expectedIds].every((id) => resultIds.has(id));
 }
 
+function isReasoningContentBlock(item: any): boolean {
+	if (!item || typeof item !== "object" || typeof item.type !== "string") return false;
+	return /(^|[_-])(thinking|reasoning)([_-]|$)/i.test(item.type);
+}
+
+function compactCompletedToolReasoning(messages: ContextMessage[]): {
+	messages: ContextMessage[];
+	removedBlocks: number;
+} {
+	let removedBlocks = 0;
+	const projected = messages.map((message, index) => {
+		if (!hasToolCall(message) || !hasToolResultAfter(messages, index)) return message;
+		const content = (message.content as any[]).filter((item) => {
+			if (!isReasoningContentBlock(item)) return true;
+			removedBlocks += 1;
+			return false;
+		});
+		return content.length === message.content.length ? message : { ...message, content };
+	});
+	return { messages: projected, removedBlocks };
+}
+
 const STRUCTURAL_STRING_KEYS = new Set([
 	"id", "toolCallId", "name", "type", "role", "api", "provider", "model", "stopReason",
 	"timestamp", "isError", "arguments",
@@ -258,6 +282,7 @@ function projectBoundedContext(
 	headMessages: number,
 	maxMessageChars: number,
 	artifactPath: string,
+	compactCompletedReasoning: boolean,
 ): {
 	messages: ContextMessage[];
 	beforeChars: number;
@@ -268,6 +293,7 @@ function projectBoundedContext(
 	latestToolTransactionPreserved: boolean;
 	latestToolResultPreserved: boolean;
 	budgetDegraded: boolean;
+	completedToolReasoningBlocksRemoved: number;
 } {
 	// Different provider serializers may add separators or escape characters
 	// differently. Reserve a small margin so the configured bound is strict
@@ -278,38 +304,42 @@ function projectBoundedContext(
 	const beforeChars = jsonChars(messages);
 	const deduped = dedupeProjections(messages);
 	const dedupedCount = messages.length - deduped.length;
-	const headEnd = firstUserHead(deduped, headMessages);
-	const minimumTail = Math.min(deduped.length, Math.max(headEnd, deduped.length - keepRecentMessages));
-	let preferredStart = Math.min(deduped.length - 1, minimumTail);
-	while (preferredStart > headEnd && !isSafeSuffixStart(deduped[preferredStart])) preferredStart -= 1;
-	if (preferredStart <= headEnd) preferredStart = Math.min(deduped.length - 1, headEnd + 1);
-	const transactions = toolTransactionStarts(deduped);
+	const completedReasoning = compactCompletedReasoning
+		? compactCompletedToolReasoning(deduped)
+		: { messages: deduped, removedBlocks: 0 };
+	const providerMessages = completedReasoning.messages;
+	const headEnd = firstUserHead(providerMessages, headMessages);
+	const minimumTail = Math.min(providerMessages.length, Math.max(headEnd, providerMessages.length - keepRecentMessages));
+	let preferredStart = Math.min(providerMessages.length - 1, minimumTail);
+	while (preferredStart > headEnd && !isSafeSuffixStart(providerMessages[preferredStart])) preferredStart -= 1;
+	if (preferredStart <= headEnd) preferredStart = Math.min(providerMessages.length - 1, headEnd + 1);
+	const transactions = toolTransactionStarts(providerMessages);
 	const latestToolStart = transactions.at(-1);
 	// A new user continuation can arrive after the latest tool result. Do not
 	// let it become the archive boundary: that would remove the very result the
 	// next turn needs in order to choose an action.
 	const maximumStart = latestToolStart === undefined
-		? Math.max(headEnd, deduped.length - 1)
+		? Math.max(headEnd, providerMessages.length - 1)
 		: latestToolStart;
 	const firstCandidateStart = Math.min(preferredStart, maximumStart);
 
 	const candidate = (start: number) => {
-		const middle = deduped.slice(headEnd, start);
+		const middle = providerMessages.slice(headEnd, start);
 		const protectedCards = middle.filter(protectedProjection);
 		const archived = middle.filter((message) => !protectedProjection(message));
-		const tail = compactMessages(deduped.slice(start), maxMessageChars);
-		return [...deduped.slice(0, headEnd), ...(archived.length ? [archiveMarker(archived, artifactPath)] : []), ...protectedCards, ...tail];
+		const tail = compactMessages(providerMessages.slice(start), maxMessageChars);
+		return [...providerMessages.slice(0, headEnd), ...(archived.length ? [archiveMarker(archived, artifactPath)] : []), ...protectedCards, ...tail];
 	};
 
-	let projected = compactMessages(deduped, maxMessageChars);
+	let projected = compactMessages(providerMessages, maxMessageChars);
 	let archivedCount = 0;
 	let selectedStart = headEnd;
 	let selected = false;
 	let budgetDegraded = false;
-	if (jsonChars(projected) > projectionBudget || deduped.length > headEnd + keepRecentMessages) {
+	if (jsonChars(projected) > projectionBudget || providerMessages.length > headEnd + keepRecentMessages) {
 		const starts: number[] = [];
 		for (let index = firstCandidateStart; index <= maximumStart; index += 1) {
-			if (isSafeSuffixStart(deduped[index])) starts.push(index);
+			if (isSafeSuffixStart(providerMessages[index])) starts.push(index);
 		}
 		for (const start of starts) {
 			const next = candidate(start);
@@ -339,7 +369,7 @@ function projectBoundedContext(
 		}
 	}
 	const latestToolResultPreserved = latestToolStart === undefined
-		|| !hasToolResultAfter(deduped, latestToolStart)
+		|| !hasToolResultAfter(providerMessages, latestToolStart)
 		|| (latestToolStart >= selectedStart && latestProjectedToolStart >= 0
 			&& hasToolResultAfter(projected, latestProjectedToolStart));
 
@@ -353,6 +383,7 @@ function projectBoundedContext(
 		latestToolTransactionPreserved,
 		latestToolResultPreserved,
 		budgetDegraded,
+		completedToolReasoningBlocksRemoved: completedReasoning.removedBlocks,
 	};
 }
 
@@ -414,6 +445,7 @@ export function installTaskLocalContextLifecycle(
 		}];
 		const result = projectBoundedContext(
 			sourceMessages, workingTarget, keepRecent, headMessages, maxMessageChars, artifactPath,
+			options.compactCompletedToolReasoning ?? false,
 		);
 		// Persist the exact source before reducing it, including assistant-only
 		// reasoning/text that is absent from observation artifacts. Hash references
@@ -462,6 +494,7 @@ export function installTaskLocalContextLifecycle(
 				latest_tool_transaction_preserved: result.latestToolTransactionPreserved,
 				latest_tool_result_preserved: result.latestToolResultPreserved,
 				budget_degraded: result.budgetDegraded,
+				completed_tool_reasoning_blocks_removed: result.completedToolReasoningBlocksRemoved,
 				protected_overflow: result.afterChars > maxChars,
 				archive_ref: archiveRef,
 				max_chars: maxChars,

@@ -14,6 +14,14 @@ from .arc_agi_3_e2e import run_arc_agi_3_e2e
 
 
 SCENARIOS = ("memory", "skills", "tools", "subagents", "system_prompt")
+PROFILE_HEADINGS = {
+    "harness_component": "component",
+    "composition": "composition",
+    "task_decomposition": "task decomposition",
+    "solution_path": "solution path",
+    "strategy": "strategy and organization",
+    "research_method": "research method",
+}
 
 
 def _records(path: Path) -> list[dict[str, Any]]:
@@ -34,7 +42,7 @@ def _check(condition: bool, message: str, checks: list[dict[str, Any]]) -> None:
     checks.append({"check": message, "passed": bool(condition)})
 
 
-def _validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
+def _validate_scenario(root: Path, scenario: str, scope: str | None = None) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
     runtime = summary.get("runtime") if isinstance(summary.get("runtime"), dict) else {}
@@ -83,6 +91,22 @@ def _validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
     contexts = [item for item in _records(root / "arc-smoke-provider-contexts.jsonl")
                 if item.get("child") is False]
     next_turn = [item for item in contexts if int(item.get("request", -1)) >= 4]
+    _check(bool(contexts) and all(item.get("parent_guide_present") for item in contexts),
+           "ARC parent uses the shared parent guide", checks)
+    research_contexts = [item for item in _records(root / "arc-smoke-provider-contexts.jsonl")
+                         if item.get("research_child")]
+    expected_headings = [PROFILE_HEADINGS[scope]] if scope in PROFILE_HEADINGS else []
+    _check(bool(research_contexts) and all(item.get("child_guide_present")
+               and not item.get("parent_guide_present")
+               and item.get("profile_headings") == expected_headings
+               and not item.get("delivery_guide_in_system") for item in research_contexts),
+           "child receives only its common guide and selected research profile", checks)
+    _check(any(item.get("contract_capabilities_seen") for item in research_contexts),
+           "child fetched delivery rules and executable capabilities on demand", checks)
+    prompt_loads = _records(root / "auto-research-prompt-loads.jsonl")
+    _check(bool(prompt_loads) and all(item.get("scope") == (scope or "unspecified")
+               and bool(item.get("profile_sha256")) == bool(expected_headings)
+               for item in prompt_loads), "actual child profile load is recorded across continuations", checks)
     _check(bool(next_turn), "a later real parent provider turn occurred after route application", checks)
     if scenario == "memory":
         _check(any(item.get("messages_have_memory_marker") is True for item in next_turn),
@@ -117,6 +141,24 @@ def _validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
 
     if scenario == "memory":
         continuations = _records(root / "auto-research-continuations.jsonl")
+        checkpoint = continuations[0].get("checkpoint", {}) if continuations else {}
+        _check(checkpoint.get("cursor") == "SMOKE_SAVED_CURSOR"
+               and "SMOKE_SAVED_FINDING" in json.dumps(checkpoint.get("draft_findings"))
+               and checkpoint.get("partial_output") == ""
+               and checkpoint.get("evidence_read_count", 0) >= 1,
+               "thinking-only length preserved semantic checkpoint and evidence progress", checks)
+        child_contexts = [item for item in _records(root / "arc-smoke-provider-contexts.jsonl")
+                          if item.get("research_child") and item.get("request") == 0]
+        _check(any((item.get("checkpoint_reloaded") or {}).get("cursor") == "SMOKE_SAVED_CURSOR"
+                   and (item.get("checkpoint_reloaded") or {}).get("evidence_read_count", 0) >= 1
+                   for item in child_contexts),
+               "next real child process reloaded the saved research state", checks)
+        _check(any((item.get("checkpoint_reloaded") or {}).get("evidence_read_count", 0) >= 2
+                   and "SMOKE_SAVED_FINDING" in json.dumps((item.get("checkpoint_reloaded") or {}).get("draft_findings"))
+                   and (item.get("checkpoint_reloaded") or {}).get("cursor") == "SMOKE_SAVED_CURSOR"
+                   for item in _records(root / "arc-smoke-provider-contexts.jsonl")
+                   if item.get("research_child") and item.get("request") == 2),
+               "resumed child advanced evidence count without overwriting saved findings", checks)
         _check([item.get("stop_reason") for item in continuations] == ["length", "submitted_report"],
                "Auto-Research resumed a provider length boundary and submitted", checks)
         _check(len({item.get("session_id") for item in continuations}) == 1
@@ -125,6 +167,7 @@ def _validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
 
     return {
         "scenario": scenario,
+        "research_scope": scope,
         "passed": all(item["passed"] for item in checks),
         "checks": checks,
         "run_root": str(root),
@@ -139,8 +182,13 @@ def run_arc_harness_smoke(root: Path, *, arc_root: Path, game: str = "ls20") -> 
     project_root = Path(__file__).resolve().parents[2]
     provider = project_root / "tools" / "arc_harness_smoke_provider.ts"
     results: list[dict[str, Any]] = []
-    for scenario in SCENARIOS:
-        scenario_root = root / scenario
+    cases = list(zip(SCENARIOS, list(PROFILE_HEADINGS)[:5], SCENARIOS)) + [
+        ("memory", "research_method", "profile-research-method"),
+        ("memory", None, "profile-general"),
+        ("memory", "hypothesis", "profile-hypothesis"),
+    ]
+    for scenario, scope, case_name in cases:
+        scenario_root = root / case_name
         try:
             run_arc_agi_3_e2e(
                 scenario_root,
@@ -154,11 +202,12 @@ def run_arc_harness_smoke(root: Path, *, arc_root: Path, game: str = "ls20") -> 
                 pi_provider_extension=provider,
                 pi_environment={
                     "PI_ARC_SMOKE_SCENARIO": scenario,
+                    "PI_ARC_SMOKE_SCOPE": scope or "",
                     "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(provider),
                     "PI_AUTORESEARCH_THINKING": "off",
                 },
             )
-            results.append(_validate_scenario(scenario_root, scenario))
+            results.append(_validate_scenario(scenario_root, scenario, scope))
         except BaseException as exc:
             results.append({
                 "scenario": scenario,

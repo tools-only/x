@@ -755,10 +755,12 @@ def test_arc_summary_proves_all_five_auto_research_routes_were_materialized_and_
     }) + "\n", encoding="utf-8")
     (tmp_path / "task-tool-events.jsonl").write_text(json.dumps({
         "event": "invoked", "name": "arc-diff", "version": 1,
-        "status": "completed", "recordedAt": "2026-09-16T00:00:02.000Z",
+        "status": "completed", "semantic_effect_observed": True,
+        "recordedAt": "2026-09-16T00:00:02.000Z",
     }) + "\n", encoding="utf-8")
     (tmp_path / "subagent-invocations.jsonl").write_text(json.dumps({
         "invocation_id": "invocation-1", "agent_name": "arc-critic", "status": "completed",
+        "result": {"text": "The critic returned a semantic counterexample."},
         "recordedAt": "2026-09-16T00:00:02.000Z",
     }) + "\n", encoding="utf-8")
 

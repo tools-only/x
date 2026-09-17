@@ -170,20 +170,21 @@ export default function externalBenchmarkResearch(
 		return;
 	}
 	mkdirSync(root, { recursive: true });
-	const mainResearchContract = loadPrompt("auto_research_main_contract.md");
 	installTaskResourceReader(pi, root);
 	const validationLedger = installTaskValidation(pi, root);
-	// ARC has a much tighter action/deadline loop than the other adapters. Keep
-	// the full research method in the child-only protocol; the parent receives
-	// only the executable entry contract (or ARC's compact action contract).
-		const projectedMethod = process.env.PI_ARC_EXECUTION_GATE === "enabled"
-		? loadPrompt("auto_research_arc_contract.md")
-		: mainResearchContract;
 	let surfaceInitialized = false;
 	let harnessWindowOpen = false;
 	const arcCoreTools = () => ["arc_state", "arc_action", "inspect_arc_trajectory", "task_harness", "task_harness_status", "research_resource"]
 		.filter((name) => pi.getAllTools().some((tool) => tool.name === name));
 	pi.on("before_agent_start", (event) => {
+		// Describe Auto-Research only when this adapter actually installed the
+		// executable parent entry. This keeps adapters such as Terminal-Bench
+		// from advertising a child lifecycle they do not provide.
+		const autoResearchAvailable = pi.getAllTools().some((tool) => tool.name === "auto_research");
+		const projectedMethod = autoResearchAvailable
+			? loadPrompt("auto_research_main_contract.md") + (process.env.PI_ARC_EXECUTION_GATE === "enabled"
+				? "\n\n" + loadPrompt("auto_research_arc_contract.md") : "")
+			: "";
 		if (!surfaceInitialized) {
 			surfaceInitialized = true;
 			const compactArc = process.env.PI_ARC_EXECUTION_GATE === "enabled";
@@ -238,7 +239,9 @@ export default function externalBenchmarkResearch(
 			])].filter((name) => registered.has(name)));
 			append("task-harness-entry.jsonl", {
 				format: "task-local-direct-entry-v1", native_skill_loading: false,
-				main_contract_sha256: createHash("sha256").update(mainResearchContract).digest("hex"),
+				main_contract_sha256: autoResearchAvailable
+					? createHash("sha256").update(loadPrompt("auto_research_main_contract.md")).digest("hex")
+					: null,
 				active_tools: pi.getActiveTools(),
 				initial_resource_counts: Object.fromEntries(
 					["skills", "memory", "tools", "subagents"].map((kind) =>

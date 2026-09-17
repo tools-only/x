@@ -9,6 +9,7 @@ export default function subagentFixtureProvider(pi: ExtensionAPI) {
 	let configuredSteps: Array<{ name: string; arguments: Record<string, unknown> }> = [];
 	try { configuredSteps = JSON.parse(process.env.PI_SUBAGENT_STEPS ?? "[]"); } catch {}
 	const configuredReport = process.env.PI_SUBAGENT_REPORT;
+	const thinkingChars = Math.max(0, Number(process.env.PI_SUBAGENT_THINKING_CHARS ?? "0") || 0);
 	const forceLength = process.env.PI_SUBAGENT_FORCE_LENGTH === "1";
 	const forceLengthOnce = process.env.PI_SUBAGENT_FORCE_LENGTH_ONCE === "1";
 	pi.on("before_agent_start", (event) => {
@@ -53,11 +54,18 @@ export default function subagentFixtureProvider(pi: ExtensionAPI) {
 			};
 			stream.push({ type: "start", partial: output });
 			if (step) {
+				if (thinkingChars) {
+					output.content.push({
+						type: "thinking",
+						thinking: "child-completed-tool-reasoning:" + "x".repeat(thinkingChars),
+					} as any);
+				}
 				const block = { type: "toolCall" as const, id: `subagent-fixture-${++toolCall}`, name: step.name, arguments: step.arguments };
 				output.content.push(block);
-				stream.push({ type: "toolcall_start", contentIndex: 0, partial: output });
-				stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(step.arguments), partial: output });
-				stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: block, partial: output });
+				const toolCallIndex = output.content.length - 1;
+				stream.push({ type: "toolcall_start", contentIndex: toolCallIndex, partial: output });
+				stream.push({ type: "toolcall_delta", contentIndex: toolCallIndex, delta: JSON.stringify(step.arguments), partial: output });
+				stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall: block, partial: output });
 			} else {
 				const text = lengthThisProcess
 					? "Partial research reasoning preserved for deterministic runtime continuation."

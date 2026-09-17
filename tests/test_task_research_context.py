@@ -497,6 +497,61 @@ def test_ephemeral_validation_child_has_only_selected_resources_and_clean_contex
     assert all(r["count"] == 0 for r in records(root, "subagent-native-skills.jsonl"))
 
 
+def test_auto_research_child_drops_completed_tool_reasoning_from_provider_projection(tmp_path):
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "auto-research-completed-reasoning"
+    report = {
+        "format": "auto-research-report-v1",
+        "status": "inconclusive",
+        "conclusion": "The fixture observation is insufficient for a stronger conclusion.",
+        "findings": [],
+        "evidence_refs": [],
+        "alternatives": ["Collect another independent observation."],
+        "limitations": ["Only one fixture observation was available."],
+        "validation_plan": "Collect one discriminating observation.",
+        "harness_proposals": [],
+    }
+    events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
+        "PI_AUTORESEARCH_PI_CLI": cli,
+        "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+        "PI_AUTORESEARCH_MODEL": "scripted",
+        "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+        "PI_SUBAGENT_THINKING_CHARS": "24000",
+        "PI_SUBAGENT_REPORT": json.dumps(report),
+        "PI_SUBAGENT_STEPS": json.dumps([
+            {"name": "fixture_state", "arguments": {}},
+            {"name": "submit_research_report", "arguments": {"report": report}},
+        ]),
+    }, steps=[{"name": "auto_research", "arguments": {
+        "question": "What does the fixture observation establish?",
+        "scope": "hypothesis",
+    }}])
+
+    assert not results(events, "auto_research")[0].get("isError")
+    child_contexts = records(root, "subagent-provider-contexts.jsonl")
+    assert len(child_contexts) >= 2
+    second_messages = child_contexts[1]["context"]["messages"]
+    second_context = json.dumps(second_messages)
+    assert "child-completed-tool-reasoning:" not in second_context
+
+    fixture_call = next(
+        block
+        for message in second_messages if message.get("role") == "assistant"
+        for block in message.get("content", [])
+        if block.get("type") == "toolCall" and block.get("name") == "fixture_state"
+    )
+    assert fixture_call["arguments"] == {}
+    assert any(
+        message.get("role") == "toolResult"
+        and message.get("toolCallId") == fixture_call["id"]
+        for message in second_messages
+    )
+
+    archived_context = records(root, "task-context-cache/messages.jsonl")
+    assert "child-completed-tool-reasoning:" in json.dumps(archived_context)
+
+
 def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_path):
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
@@ -632,8 +687,8 @@ def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_pat
     assert all(item["count"] == 0 for item in records(root, "subagent-native-skills.jsonl"))
     child_contexts = records(root, "subagent-provider-contexts.jsonl")
     child_context = json.dumps(child_contexts)
-    assert "Auto-Research child reporting contract" in child_context
-    assert "Research objects and agent choices" in child_context
+    assert "Auto-Research: child instructions" in child_context
+    assert "Research focus: component" in child_context
     submit_tool = next(
         tool
         for context in child_contexts
@@ -857,6 +912,7 @@ def test_auto_research_inherits_only_selected_harness_versions_and_context_windo
         "PI_SUBAGENT_REPORT": json.dumps(report),
         "PI_SUBAGENT_STEPS": json.dumps([
             {"name": "task_resource", "arguments": {"action": "read", "ref": "memory:chosen@v1", "limit": 8000}},
+            {"name": "submit_research_report", "arguments": {"report": report}},
         ]),
     }, steps=[
         {"name": "task_memory", "arguments": {"action": "upsert", "key": "chosen", "content": "selected-full-body", "summary": "Selected harness memory summary"}},
@@ -1017,6 +1073,7 @@ def test_auto_research_does_not_close_reads_for_incomplete_selected_evidence(tmp
         "PI_SUBAGENT_STEPS": json.dumps([
             {"name": "task_resource", "arguments": {"action": "read", "ref": "memory:chosen@v1", "offset": 0, "limit": 240}},
             {"name": "task_resource", "arguments": {"action": "read", "ref": "memory:chosen@v1", "offset": 0, "limit": 240}},
+            {"name": "submit_research_report", "arguments": {"report": report}},
         ]),
     }, steps=[
         {"name": "task_memory", "arguments": {"action": "upsert", "key": "chosen", "content": "selected evidence " * 1200}},

@@ -2,10 +2,17 @@
 
 These files are the human-readable prompt contracts used by the Pi extensions and ARC runner.
 
-- `auto_research_method.md`: shared task-local Auto-Research method.
-- `auto_research_main_contract.md`: compact parent-Agent entry and adoption contract.
-- `auto_research_child_contract.md`: isolated child reporting contract.
-- `auto_research_arc_contract.md`: compact ARC projection of the Auto-Research method.
+- `auto_research_main_contract.md`: compact parent-Agent usage and adoption guide;
+  it is loaded only when the adapter has registered `auto_research`.
+- `auto_research_child_contract.md`: common isolated-child task, material, and
+  delivery instructions.
+- `auto_research_delivery_guide.md`: harness-delivery classification and review
+  rules, loaded on demand through `research_approval(action="contract")`.
+- `research_profiles/*.md`: one research-method focus selected by the parent
+  `scope`; general and hypothesis research load no profile.
+- `auto_research_arc_contract.md`: ARC-only environment-action and harness boundary.
+- `auto_research_method.md`: compact non-ARC task-local self-harness guidance for
+  legacy integrations that explicitly load it; it is not the child protocol.
 - `self_harness_opportunity.md`: portfolio disclosure without a recommended resource type.
 - `self_harness_index.md`: compact resource index and available access interfaces.
 - `arc_system_prompt.md`: official ARC agent contract.
@@ -18,14 +25,13 @@ These files are the human-readable prompt contracts used by the Pi extensions an
 
 Dynamic values such as the game name, action budget, latest evidence, and allowed subagent tools are filled in by the runtime. Generated task-local `SKILL.md` and subagent `.md` files remain under each task's `task-harness/` directory and are not preloaded here.
 
-The Auto-Research method separates task scope, research objects, resource interfaces
-and the core feedback cycle. Questions, experiment design, scheduling and resource
-selection belong to the agent. Lower-order-first describes complexity and dependencies,
-not an ordering of memory,  skills, tools or subagents.
+The parent receives only the compact usage guide and, for ARC, its action boundary.
+The child receives the common child instructions plus at most one selected research
+profile. Delivery classification is not permanently placed in the child system
+prompt: a child that has evidence for a harness proposal requests it through the
+approval tool. Research profiles affect how the question is investigated; they do
+not grant permissions, select a harness destination, or alter the report schema.
 
-The parent Agent receives only the compact entry contract. The full method is
-loaded into an isolated Auto-Research child together with the child reporting
-contract. ARC may additionally use its compact action-boundary contract when
-the execution gate is enabled. The separate ARC startup, continuation and
-recovery prompts, and runtime admission policies also affect behavior; these
-research contracts do not override those rules.
+The separate ARC startup, continuation and recovery prompts, runtime admission
+policies, and native tool schemas still govern execution. Prompt text must not
+advertise a capability that the current adapter did not register.

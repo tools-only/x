@@ -67,7 +67,7 @@ class AutoResearchPiAgent(Pi):
         models = {"providers": {provider: {
             "baseUrl": base_url, "api": "openai-completions", "apiKey": "$OPENAI_API_KEY",
             "authHeader": True, "models": [{
-                "id": model, "name": model, "reasoning": False, "contextWindow": 128000, "maxTokens": 8192,
+                "id": model, "name": model, "reasoning": True, "contextWindow": 128000, "maxTokens": 8192,
             }],
         }}}
         await self._upload_config_text(

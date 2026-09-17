@@ -35,7 +35,13 @@ def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
     default Pi API is OpenAI Responses, matching ARC's official config; set
     ``ARC_PI_API=openai-completions`` only for a gateway that lacks Responses.
     """
-    return {
+    # This is provider capability/configuration, not a research output quota.
+    # Do not guess the gateway's ceiling from its model name.
+    declared_output = environment.get("ARC_MODEL_MAX_OUTPUT_TOKENS")
+    max_output = int(declared_output) if declared_output else None
+    if max_output is not None and max_output <= 0:
+        raise ValueError("ARC_MODEL_MAX_OUTPUT_TOKENS must be a positive provider-supported value")
+    settings = {
         "base_url": environment.get("ARC_OPENAI_API_BASE") or environment.get("OPENAI_API_BASE"),
         "api_key": environment.get("ARC_OPENAI_API_KEY") or environment.get("OPENAI_API_KEY"),
         "model": environment.get("ARC_MODEL") or environment.get("EXEC_MODEL") or "gpt-5.6-sol",
@@ -43,6 +49,9 @@ def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
         "official_runtime": "openai-python/responses",
         "pi_api": environment.get("ARC_PI_API") or "openai-responses",
     }
+    if max_output is not None:
+        settings["max_tokens"] = max_output
+    return settings
 
 
 @dataclass
