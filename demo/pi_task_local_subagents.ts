@@ -31,6 +31,7 @@ import {
 } from "./pi_auto_research_agenda.ts";
 import { autoResearchHistoryGrants, buildAutoResearchHistoryCatalog } from "./pi_auto_research_history.ts";
 import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
+import { canonicalTextBody } from "./pi_harness_protocol.ts";
 
 type AgentDefinition = {
 	adapter_id?: string;
@@ -1259,7 +1260,7 @@ export function installTaskLocalSubagents(
 			if (previous && params.target_version !== previous.version) return versionConflict("subagent", previous, params.target_version);
 			const status = params.action === "retire" ? "retired" : "active";
 			const description = String(params.description ?? previous?.description ?? `Task-local independent reviewer: ${name}`).trim();
-			const instructions = String(params.instructions ?? previous?.instructions ?? "").trim();
+			const instructions = canonicalTextBody(params.instructions ?? previous?.instructions, "subagent instructions");
 			if (status === "active" && (!description || !instructions)) throw new Error("active subagent requires description and instructions");
 			const tools = params.tools ?? previous?.tools ?? defaultTools;
 			const unknownTools = tools.filter((tool) => !allowedTools.has(tool));

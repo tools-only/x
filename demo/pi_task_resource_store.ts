@@ -4,6 +4,7 @@ import { join, relative, isAbsolute } from "node:path";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { canonicalTextBody } from "./pi_harness_protocol.ts";
 import { assertTaskRecordScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
 import { taskResourceName } from "./pi_task_resource_identity.ts";
 
@@ -55,8 +56,9 @@ export function installTaskResultSemantics(pi: ExtensionAPI) {
 }
 
 export function resourceSummary(record: Record<string, any>, _maximum?: number): string {
-	const source = String(record.summary ?? record.description ?? record.content ?? record.instructions
-		?? record.question ?? record.hypothesis ?? record.proposal?.summary ?? record.error ?? record.result_text ?? record.result?.text ?? "");
+	const raw = record.summary ?? record.description ?? record.content ?? record.instructions
+		?? record.question ?? record.hypothesis ?? record.proposal?.summary ?? record.error ?? record.result_text ?? record.result?.text ?? "";
+	const source = raw === "" ? "" : canonicalTextBody(raw, "resource summary");
 	return source.replace(/\s+/g, " ").trim();
 }
 

@@ -33,7 +33,7 @@ import {
 	advanceMethodApplication, advanceMethodAssessment, buildCrossContextResearchCandidates,
 	buildMethodFeedbackHandoff, latestMethodRecords,
 } from "./pi_research_method_runtime.ts";
-import { assertParentChangeSource, classifyHarnessChangeTargets, classifySemanticKind, normalizeCapabilityRequest, normalizeSemanticCandidate, type HarnessChange } from "./pi_harness_protocol.ts";
+import { assertParentChangeSource, canonicalTextBody, classifyHarnessChangeTargets, classifySemanticKind, normalizeCapabilityRequest, normalizeSemanticCandidate, type HarnessChange } from "./pi_harness_protocol.ts";
 import {
 	assemblyConflictDetails,
 	assemblySelectsReference,
@@ -1618,7 +1618,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 							evidence_refs: evidenceRefs,
 							applicability: String(candidate.applicability ?? candidate.scope?.statement ?? candidate.scope ?? entry.next_use),
 							counterexamples: String(candidate.counterexamples ?? transition?.limiting_uncertainty ?? "No counterexample supplied."),
-							candidate: String(candidate.instructions ?? candidate.content ?? candidate.summary),
+							candidate: canonicalTextBody(candidate.instructions ?? candidate.content ?? candidate.summary, "review candidate"),
 							next_use: String(entry.next_use), validation: String(entry.validation),
 						}];
 					}
@@ -1869,8 +1869,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			const status = p.action === "retire" ? "retired" : "active";
 			if (p.content !== undefined && p.append_content !== undefined) throw new Error("choose content replacement or append_content, not both");
 			const content = p.append_content !== undefined
-				? `${previous?.content ?? ""}${String(p.append_content)}`
-				: String(p.content ?? previous?.content ?? "").trim();
+				? `${previous?.content ?? ""}${canonicalTextBody(p.append_content, "memory append_content", false)}`
+				: canonicalTextBody(p.content ?? previous?.content, "memory content");
 			if (status === "active" && !content) throw new Error("active memory requires content");
 			const views = coherentMemory(p, previous);
 			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "memory", key);
@@ -1949,7 +1949,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			if (p.action !== "create" && !previous) throw new Error("unknown system prompt segment");
 			if (previous && Number(p.target_version) !== previous.version) return versionConflict("system_prompt", previous, p.target_version);
 			const status = p.action === "retire" ? "retired" : "active";
-			const content = String(p.content ?? previous?.content ?? "").trim();
+			const content = canonicalTextBody(p.content ?? previous?.content, "system prompt content");
 			if (status === "active" && !content) throw new Error("active system prompt segment requires content");
 			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "system_prompt", name);
 			const decisionId = dependencies.allocateDecisionId();
@@ -2048,7 +2048,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			if (previous && Number(p.target_version) !== previous.version) return versionConflict("skill", previous, p.target_version);
 			const status = p.action === "retire" ? "retired" : "active";
 			const description = String(p.description ?? previous?.description ?? `Task-local skill: ${name}`).replace(/\s+/g, " ").trim();
-			const instructions = String(p.instructions ?? previous?.instructions ?? "").trim();
+			const instructions = canonicalTextBody(p.instructions ?? previous?.instructions, "skill instructions");
 			if (status === "active" && (!description || !instructions)) throw new Error("active skill requires description and instructions");
 			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "skill", name);
 			const path = join(skillsDir, name, "SKILL.md");
@@ -2385,7 +2385,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					description: compactText(item.description), path: item.path, basis_refs: item.basis_refs,
 				...((!compactArc && ![...readSkills].some((key) => key.startsWith(`${item.skill_id}@`)))
 					|| resourceIsExplicitlyFocused("skill", item)
-						? { instructions: String(item.instructions), focused: true }
+						? { instructions: canonicalTextBody(item.instructions, "stored skill instructions"), focused: true }
 					: {}),
 			}));
 			resources.push({

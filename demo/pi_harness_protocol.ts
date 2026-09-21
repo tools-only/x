@@ -65,6 +65,40 @@ export type ResearchResult = {
 export type HarnessRouteTarget = "memory" | "system_prompt" | "skill" | "tool" | "subagent" | "research_only";
 
 /**
+ * Materialize a semantic delivery body at the text-resource boundary.
+ *
+ * Research and review records intentionally allow structured JSON in
+ * `content` so fields such as procedures, maps, predictions, and limits are
+ * not lost.  Native Pi resources, however, are text (`SKILL.md`, prompt
+ * overlays, memory bodies, and subagent instructions).  Never use
+ * `String(object)` here: JavaScript would silently produce `[object Object]`
+ * and destroy the body.  Structured values are preserved losslessly as a
+ * deterministic fenced JSON document; plain text remains plain text.
+ */
+export function canonicalTextBody(value: unknown, field: string, trimString = true): string {
+	if (typeof value === "string") {
+		const text = trimString ? value.trim() : value;
+		if (!text && trimString) throw new Error(`${field} is required`);
+		return text;
+	}
+	if (value === undefined || value === null) return "";
+	if (typeof value === "object") {
+		const serialized = JSON.stringify(sortStructuredValue(value), null, 2);
+		if (!serialized) throw new Error(`${field} must contain serializable text`);
+		return `\`\`\`json\n${serialized}\n\`\`\``;
+	}
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	throw new Error(`${field} must be text or a JSON value`);
+}
+
+function sortStructuredValue(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sortStructuredValue);
+	if (!value || typeof value !== "object") return value;
+	const record = value as Record<string, unknown>;
+	return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortStructuredValue(record[key])]));
+}
+
+/**
  * The facade accepts the compact component words that a parent naturally uses
  * after inspecting a portfolio, but stores and routes only canonical semantic
  * kinds.  This is deliberately a data-only compatibility step: it neither

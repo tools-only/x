@@ -217,6 +217,43 @@ def test_facade_accepts_component_words_and_supplies_current_update_version(tmp_
     assert records(root, "task-skills.jsonl")[-1]["name"] == "check-state"
 
 
+def test_facade_renders_structured_text_bodies_without_object_coercion(tmp_path):
+    root = tmp_path / "structured-text-bodies"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [
+                {"operation": "create", "candidate": {
+                    "semantic_kind": "procedure", "execution": "text",
+                    "reuse": "expected_reuse", "reasoning": "bounded_judgment",
+                    "name": "structured-method", "summary": "Preserve a structured method.",
+                    "content": {
+                        "procedure": ["Read the delta.", "Separate field and HUD groups."],
+                        "known_action_map": {"ACTION1": "up"},
+                    },
+                }},
+                {"operation": "create", "candidate": {
+                    "semantic_kind": "fact", "execution": "text", "name": "structured-state",
+                    "content": {"confirmed": ["ACTION1=up"], "unknown": ["goal"]},
+                }},
+            ],
+            "decision": {"basis_refs": [], "reason": "Persist complete structured bodies.",
+                         "expected": "Later reads preserve every field as deterministic text."},
+        }},
+    ])
+    errors = [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
+    assert not errors, errors
+    skill = records(root, "task-skills.jsonl")[0]
+    memory = records(root, "task-memory.jsonl")[0]
+    skill_text = (root / "task-harness" / "skills" / "structured-method" / "SKILL.md").read_text(encoding="utf-8")
+    assert skill["instructions"] == skill_text.split("---\n\n", 1)[1].rstrip()
+    assert "[object Object]" not in skill["instructions"]
+    assert '"procedure"' in skill["instructions"]
+    assert '"known_action_map"' in skill["instructions"]
+    assert memory["content"] != "[object Object]"
+    assert '"confirmed"' in memory["content"]
+
+
 def test_facade_preserves_knowledge_lifecycle_links(tmp_path):
     root = tmp_path / "facade-knowledge-links"
     events = _run_fixture(root, "treatment", steps=[

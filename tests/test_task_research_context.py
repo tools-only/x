@@ -195,6 +195,22 @@ def test_router_normalizes_structured_predicate_and_jsonpath_count_pipeline():
     ]
 
 
+def test_router_preserves_structured_delivery_content_as_deterministic_text():
+    delivery = harness_delivery(
+        "structured-content", "procedure", "structured-content",
+        {"procedure": ["Read the delta.", "Separate field and HUD groups."],
+         "known_action_map": {"ACTION1": "up"}},
+    )
+    result = run_router_helper(
+        "router.normalizeHarnessDelivery(JSON.parse(process.env.AUTORESEARCH_ROUTER_TEST_INPUT))",
+        input_value=delivery,
+    )
+    assert result["content"].startswith("```json\n")
+    assert '"known_action_map"' in result["content"]
+    assert '"procedure"' in result["content"]
+    assert "[object Object]" not in result["content"]
+
+
 def test_router_compiles_boolean_filter_shorthand_from_agent_schema():
     delivery = harness_delivery(
         "boolean-filter", "computation", "boolean-filter", "Count enabled items.",

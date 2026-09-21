@@ -1,7 +1,7 @@
 /** Deterministic Auto-Research delivery -> Pi native harness call compiler. */
 import { createHash } from "node:crypto";
 import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
-import { classifyHarnessChangeTargets, type HarnessRouteTarget } from "./pi_harness_protocol.ts";
+import { canonicalTextBody, classifyHarnessChangeTargets, type HarnessRouteTarget } from "./pi_harness_protocol.ts";
 
 export const HARNESS_SEMANTIC_KINDS = [
 	"fact", "plan", "procedure", "computation", "role", "assessment", "evidence",
@@ -393,8 +393,10 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 	const value = input as Record<string, any>;
 	if (value.format !== "auto-research-harness-delivery-v1") throw new Error("unsupported harness delivery format");
 	if (!HARNESS_SEMANTIC_KINDS.includes(value.semantic_kind)) throw new Error(`unknown semantic_kind: ${String(value.semantic_kind)}`);
-	const requiredStrings = ["delivery_id", "name", "summary", "content", "trigger", "expected_effect", "reconsider_when"];
+	const requiredStrings = ["delivery_id", "name", "summary", "trigger", "expected_effect", "reconsider_when"];
 	for (const field of requiredStrings) if (!String(value[field] ?? "").trim()) throw new Error(`delivery.${field} is required`);
+	const content = canonicalTextBody(value.content, "delivery.content");
+	if (!content) throw new Error("delivery.content is required");
 	if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(String(value.delivery_id))
 		|| !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(String(value.name))
 		|| String(value.delivery_id).includes("--") || String(value.name).includes("--")) {
@@ -481,7 +483,7 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 		delivery_id: String(value.delivery_id).trim(),
 		name: String(value.name).trim(),
 		summary: String(value.summary).trim(),
-		content: String(value.content).trim(),
+		content,
 		description: value.description === undefined ? undefined : String(value.description).trim(),
 		scope: { kind: value.scope.kind, statement: String(value.scope.statement).trim() },
 		trigger: String(value.trigger).trim(),
