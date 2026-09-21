@@ -16,7 +16,7 @@ import { installTaskLocalTools, type TaskToolAdapter } from "./pi_task_local_too
 import { admitTaskLocalOperation } from "./pi_task_execution_admission.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
 import { loadPrompt, renderPrompt } from "./prompt_loader.ts";
-import { baselineMethodCatalog, readBaselineMethod, BASELINE_AUTHORING_GUIDANCE } from "./pi_harness_baseline_methods.ts";
+import { baselineMethodCatalog, readBaselineMethod, BASELINE_AUTHORING_GUIDANCE, creatorForHarnessKind } from "./pi_harness_baseline_methods.ts";
 import { memoryValidityContext, normalizeMemoryValidity, type MemoryValidity, type MemoryValidityContext } from "./pi_memory_validity.ts";
 import { resourceMetadata, resolveTaskResource, taskRecords, versionConflict } from "./pi_task_resource_store.ts";
 import {
@@ -126,6 +126,7 @@ type SkillRecord = KnowledgeLinks & {
 	reconsider_when?: string;
 	routing_id?: string;
 	source_approval_ref?: string;
+	authoring_method_ref?: string;
 	recordedAt: string;
 };
 
@@ -342,6 +343,24 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		const values = Array.isArray(references) ? references.map(String) : [];
 		return dependencies.resolveBasisRefs ? dependencies.resolveBasisRefs(values) : values;
 	};
+	const requireCreatorRead = (kind: "skill" | "tool" | "subagent", candidate: Record<string, any>) => {
+		const methodName = creatorForHarnessKind(kind);
+		if (!methodName) return;
+		const supplied = String(candidate.authoring_method_ref ?? "").trim();
+		const catalogEntry = baselineMethodCatalog().find((item) => item.name === methodName);
+		const expected = catalogEntry?.method_ref ?? "";
+		if (!supplied) {
+			throw new Error(`authoring_method_ref is required for ${kind} creation/update; first call task_harness(action=read_method, method_name=${methodName}) and pass its method_ref`);
+		}
+		if (supplied !== expected) {
+			throw new Error(`authoring_method_ref does not match the current ${methodName} baseline; call task_harness(action=read_method, method_name=${methodName}) again`);
+		}
+		const reads = readJsonl("task-baseline-method-reads.jsonl");
+		if (!reads.some((row) => row.name === methodName && row.method_ref === supplied && row.sha256 === catalogEntry?.sha256 && row.actor !== "child")) {
+			throw new Error(`creator method ${methodName} was not read in this run; call task_harness(action=read_method, method_name=${methodName}) before creating ${kind}`);
+		}
+		return supplied;
+	};
 	const registerRoutableTool = (definition: any) => {
 		pi.registerTool(definition);
 		registerNativeHarnessExecutor(pi, String(definition.name), definition.execute);
@@ -412,6 +431,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				if (semanticTarget === "research_only") throw new Error("assessment/evidence changes remain research-only");
 				const operation = String(change.operation);
 				for (const targetKind of classifyHarnessChangeTargets(candidate)) {
+					if (["skill", "tool", "subagent"].includes(targetKind) && ["create", "update"].includes(operation)) {
+						requireCreatorRead(targetKind as "skill" | "tool" | "subagent", candidate);
+					}
 					const target = targetKind === "system_prompt" ? "task_system_prompt" : `task_${targetKind}`;
 					const suppliedVersion = targetKind === "system_prompt" ? candidate.prompt_target_version : candidate.target_version;
 					const resolvedVersion = operation === "update" && suppliedVersion === undefined
@@ -437,12 +459,15 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					else if (target === "task_system_prompt") args = { ...common, action: candidate.prompt_operation ?? operation,
 						name: candidate.name, content: candidate.prompt_text ?? candidate.content, scope: candidate.scope?.statement ?? candidate.scope };
 					else if (target === "task_skill") args = { ...common, action: operation, name: candidate.name,
-						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content, method: candidate.method };
+						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content, method: candidate.method,
+						authoring_method_ref: candidate.authoring_method_ref };
 					else if (target === "task_tool") args = { ...common, action: operation, name: candidate.name,
 						description: candidate.description ?? candidate.summary, input_schema: candidate.input_schema ?? { type: "object" },
-						implementation_ref: candidate.implementation_ref, program: candidate.program };
+						implementation_ref: candidate.implementation_ref, program: candidate.program,
+						authoring_method_ref: candidate.authoring_method_ref };
 					else args = { ...common, action: operation, name: candidate.name,
-						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content, tools: candidate.tools, context_recipe: candidate.context_recipe };
+						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content, tools: candidate.tools, context_recipe: candidate.context_recipe,
+						authoring_method_ref: candidate.authoring_method_ref };
 					nativeChanges.push({ target, args });
 				}
 			}
@@ -1599,8 +1624,11 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			if (params.action === "read_method") {
 				const method = readBaselineMethod(params.method_name ?? "", params.method_resource ?? "SKILL.md", params.expected_sha256);
 				const { content, ...receipt } = method;
-				append("task-baseline-method-reads.jsonl", { ...receipt, toolCallId, recordedAt: new Date().toISOString() });
-				return { content: [{ type: "text", text: content }], details: receipt };
+				append("task-baseline-method-reads.jsonl", { ...receipt, actor: "parent", toolCallId, recordedAt: new Date().toISOString() });
+				// Keep the method body available to the author while making the exact
+				// immutable reference machine-readable in the model-visible result.
+				// `details` alone is not a reliable provider surface.
+				return { content: [{ type: "text", text: JSON.stringify({ format: "baseline-method-read-v1", ...receipt, content }) }], details: receipt };
 			}
 			const admission = admitTaskLocalOperation("task_harness");
 			if (admission) return admission;
@@ -2107,7 +2135,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	registerRoutableTool({
 		name: "task_skill",
 		label: "Task-local Pi skill",
-		description: "Create, revise, retire, or inspect a task-local Pi-format SKILL.md. Active skill indexes enter later Pi contexts and the skill is usable after read returns its instructions. The Agent may create or update a skill directly from a task observation; no finding is required. Skills are task-local context resources; native skill discovery and loading are disabled. If research actually motivates a change, cite its exact finding, candidate, or observation identifier in basis_refs; an empty basis remains valid but is not research-linked.",
+		description: "Create, revise, retire, or inspect a task-local Pi-format SKILL.md. Active skill indexes enter later Pi contexts and the skill is usable after read returns its instructions. Creation/update must be authored with skill-creator and include the exact authoring_method_ref from task_harness(action=read_method); this tool persists and validates the authored result but does not invent it. Skills are task-local context resources; native skill discovery and loading are disabled. If research actually motivates a change, cite its exact finding, candidate, or observation identifier in basis_refs.",
 		parameters: Type.Object({
 			...linkParameters,
 			action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("retire"), Type.Literal("inspect")]),
@@ -2119,6 +2147,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
+			authoring_method_ref: Type.Optional(Type.String({ description: "Exact method_ref returned by task_harness(action=read_method) for skill-creator." })),
 			routing_id: Type.Optional(Type.String()),
 			source_approval_ref: Type.Optional(Type.String()),
 		}),
@@ -2165,6 +2194,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				reconsider_when: String(p.reconsider_when ?? previous?.reconsider_when ?? "the skill is unused, contradicted, or no longer relevant"),
 				routing_id: p.routing_id ? String(p.routing_id) : previous?.routing_id,
 				source_approval_ref: p.source_approval_ref ? String(p.source_approval_ref) : previous?.source_approval_ref,
+				authoring_method_ref: String(p.authoring_method_ref ?? previous?.authoring_method_ref ?? "").trim(),
 				recordedAt: new Date().toISOString(),
 			};
 			if (status === "active") {
@@ -2370,8 +2400,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				compactArc
 					? renderPrompt("self_harness_index.md", { active_resources: JSON.stringify(resourceCounts) })
 					: `Task-local self-harness is UNLOCKED for this treatment task. Current active resources: ${JSON.stringify(resourceCounts)}. ` +
-					  `Creation is available now through ${supportedCreation.join(", ")}; no bootstrap, repeated operation, prior finding, or validation mode is required. ` +
-					  "Start with the smallest useful lower-order capability when it will help: memory for durable facts, skill for a repeatable procedure, tool for a structured adapter-bounded operation, or a subagent for an independent read-only question. " +
+						`Creation is available now through ${supportedCreation.join(", ")}; memory may be recorded directly, but skill/tool/subagent creation first requires reading its fixed creator with task_harness(action=read_method) and passing the returned method_ref as authoring_method_ref. Auto-Research first requires reading research-orchestration and passing its method_ref. ` +
+						"Start with the smallest useful lower-order capability when it will help: memory for durable facts, skill for a repeatable procedure, tool for a structured adapter-bounded operation, or a subagent for an independent read-only question. " +
 					  "Create, actually use, inspect the result, and revise only when evidence warrants; choose freely if direct execution has higher value. task_harness provides status and context focus. Auto-Research may study the task path, a component, a composition, a strategy, or the research method itself.",
 			}],
 		}];

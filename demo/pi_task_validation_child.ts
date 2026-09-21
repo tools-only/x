@@ -26,7 +26,8 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			if (p.action === "list") return { content: [{ type: "text", text: JSON.stringify(baselineMethodCatalog()) }] };
 			const method = readBaselineMethod(p.name ?? "", p.resource ?? "SKILL.md", p.expected_sha256);
 			const { content, ...receipt } = method;
-			return { content: [{ type: "text", text: content }], details: receipt };
+			appendFileSync(join(root, "task-baseline-method-reads.jsonl"), JSON.stringify({ ...receipt, actor: "child", recordedAt: new Date().toISOString() }) + "\n", "utf8");
+			return { content: [{ type: "text", text: JSON.stringify({ format: "baseline-method-read-v1", ...receipt, content }) }], details: receipt };
 		} });
 	pi.on("before_agent_start", event => ({ systemPrompt: `${event.systemPrompt}\n\nBaseline methods (read with harness_method): ${JSON.stringify(baselineMethodCatalog())}. ${BASELINE_AUTHORING_GUIDANCE.replaceAll('task_harness(action=read_method, method_name=...)', 'harness_method(action=read, name=...)')}` }));
 	const refs = JSON.parse(process.env.PI_TASK_CHILD_RESOURCE_REFS ?? "[]");

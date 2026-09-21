@@ -5,7 +5,9 @@ import { dirname, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "harness-methods");
-const names = ["skill-creator", "tool-creator", "subagent-creator", "research-orchestration"] as const;
+export const BASELINE_METHOD_NAMES = ["skill-creator", "tool-creator", "subagent-creator", "research-orchestration"] as const;
+export type BaselineMethodName = typeof BASELINE_METHOD_NAMES[number];
+const names = BASELINE_METHOD_NAMES;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 function read(name: string, resource: string): string {
     if (!(names as readonly string[]).includes(name)) throw new Error("Unknown baseline method; use action=methods");
@@ -35,4 +37,8 @@ export function baselineMethodCatalog() {
             read_call: { action: "read_method", method_name: name, expected_sha256: sha256 } };
     });
 }
-export const BASELINE_AUTHORING_GUIDANCE = "Before creating/revising a skill, tool or subagent, load the corresponding baseline creator with task_harness(action=read_method, method_name=...). Reuse already loaded guidance. Use research-orchestration for research allocation and delivery. These fixed methods are independent of the dynamic component pool/assembly. Memory records facts/hypotheses with validity; skills teach procedures; tools execute operations; subagents configure clean contexts. Creation/read/assembly is not evidence of utility.";
+export const BASELINE_AUTHORING_GUIDANCE = "Before creating/revising a skill, tool or subagent, load the corresponding baseline creator with task_harness(action=read_method, method_name=...). Reuse already loaded guidance and pass the returned method_ref as authoring_method_ref on the create/update candidate. Before starting or enqueueing Auto-Research, load research-orchestration the same way and pass its method_ref as authoring_method_ref. The runtime rejects creator-dependent writes without a matching recorded read; it validates and persists content but never authors it. These fixed methods are independent of the dynamic component pool/assembly. Memory records facts/hypotheses with validity; skills teach procedures; tools execute operations; subagents configure clean contexts. Creation/read/assembly is not evidence of utility.";
+
+export function creatorForHarnessKind(kind: string): BaselineMethodName | undefined {
+	return ({ skill: "skill-creator", tool: "tool-creator", subagent: "subagent-creator" } as Record<string, BaselineMethodName>)[kind];
+}

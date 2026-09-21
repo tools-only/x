@@ -92,7 +92,11 @@ For a completed Auto-Research result, decide only whether to adopt it. Call
 `task_harness(action=adopt_research, research_run_ref=...)`; omit the run ref
 when there is exactly one adoptable result. The runtime resolves route refs,
 delivery hashes, component versions, execution order, receipts, and session
-status. Do not copy or orchestrate individual `apply_route` calls.
+status. Before adopting any skill/tool/subagent delivery, read the corresponding
+fixed creator with `task_harness(action=read_method, method_name=...)` and pass
+its exact `method_ref` as `authoring_method_ref`; the runtime rejects adoption
+without that creator read. Do not copy or orchestrate individual `apply_route`
+calls.
 
 When repeated manual analysis, similar delegations, capability failures, stagnation
 or a completed task phase reveal a method question, conduct a bounded harness

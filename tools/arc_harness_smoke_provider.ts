@@ -8,6 +8,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { baselineMethodCatalog } from "../demo/pi_harness_baseline_methods.ts";
 
 type Step =
 	| { kind: "tool"; name: string; arguments: Record<string, unknown> }
@@ -21,9 +22,36 @@ const researchScope = process.env.PI_ARC_SMOKE_SCOPE ?? "harness_component";
 const crossContextMethod = process.env.PI_ARC_SMOKE_CROSS_CONTEXT_METHOD === "1";
 const methodLifecycle = process.env.PI_ARC_SMOKE_METHOD_LIFECYCLE === "1" || crossContextMethod;
 const methodConstructionRefs = crossContextMethod
-	? ["execution-observation-2", "execution-observation-5"] : [evidenceRef];
-const methodContrastRefs = crossContextMethod ? ["execution-observation-4"] : [];
+	? ["execution-observation-1", "execution-observation-4"] : [evidenceRef];
+const methodContrastRefs = crossContextMethod ? ["execution-observation-3"] : [];
 const methodEvidenceRefs = [...methodConstructionRefs, ...methodContrastRefs];
+const baselineRef = (name: string) => baselineMethodCatalog().find((item) => item.name === name)?.method_ref;
+const readBaseline = (name: string): Step => ({ kind: "tool", name: "task_harness", arguments: {
+	action: "read_method", method_name: name,
+	...(baselineRef(name) ? { expected_sha256: String(baselineRef(name)).split(":sha256:")[1] } : {}),
+} });
+
+const scenarioResourceRefs: Record<string, string> = {
+	memory: "memory:smoke-memory@v1",
+	skills: "skill:smoke-skill@v1",
+	tools: "tool:smoke-counter@v1",
+	subagents: "subagent:smoke-reviewer@v1",
+	system_prompt: "system_prompt:smoke-core-rule@v1",
+};
+
+function assemble(ref: string, expectedRevision = 0): Step {
+	return { kind: "tool", name: "task_harness", arguments: {
+		action: "assemble",
+		expected_assembly_revision: expectedRevision,
+		selected_resource_refs: [ref],
+		prompt_contributions: [],
+		decision: {
+			basis_refs: [evidenceRef],
+			reason: `Select ${ref} for the next bounded smoke use.`,
+			expected: "Only the exact selected component version enters the active Harness.",
+		},
+	} };
+}
 
 function methodForSmoke(): Record<string, unknown> {
 	return {
@@ -57,6 +85,7 @@ function methodForSmoke(): Record<string, unknown> {
 }
 
 function deliveryFor(name: string): Record<string, unknown> {
+	const creatorRef = (creator: string) => baselineRef(creator);
 	const common = {
 		format: "auto-research-harness-delivery-v1",
 		delivery_id: `smoke-${name.replaceAll("_", "-")}`,
@@ -73,6 +102,8 @@ function deliveryFor(name: string): Record<string, unknown> {
 		...common, semantic_kind: "fact", name: "smoke-memory",
 		summary: "A routed fact visible to the next ARC turn.",
 		content: "SMOKE_MEMORY_MARKER: route-to-memory succeeded.",
+		atom: { subject: "smoke-routing", predicate: "memory-route-status",
+			value: "SMOKE_MEMORY_MARKER: route-to-memory succeeded." },
 		reasoning: "none", execution: "text", context_visibility: "always",
 		prompt_channel: "task_prompt",
 		prompt_layer: "task_policy",
@@ -80,6 +111,7 @@ function deliveryFor(name: string): Record<string, unknown> {
 	};
 	if (name === "skills") return {
 		...common, semantic_kind: "procedure", name: "smoke-skill",
+		authoring_method_ref: creatorRef("skill-creator"),
 		summary: "A routed procedure visible to the next ARC turn.",
 		content: "SMOKE_SKILL_MARKER: inspect the current state, then make one ARC action.",
 		description: "Deterministic next-turn smoke procedure.",
@@ -88,6 +120,7 @@ function deliveryFor(name: string): Record<string, unknown> {
 	};
 	if (name === "tools" && crossContextMethod) return {
 		...common,
+		authoring_method_ref: creatorRef("skill-creator"),
 		basis_refs: methodEvidenceRefs,
 		semantic_kind: "procedure",
 		name: "smoke-action-method",
@@ -106,7 +139,7 @@ function deliveryFor(name: string): Record<string, unknown> {
 		expected_effect: "the later parent ARC decision is selected by this exact procedure version",
 	};
 	if (name === "tools") return {
-		...common, basis_refs: methodEvidenceRefs, semantic_kind: "computation", name: "smoke-counter",
+		...common, authoring_method_ref: creatorRef("tool-creator"), basis_refs: methodEvidenceRefs, semantic_kind: "computation", name: "smoke-counter",
 		summary: "Count enabled items after deterministic filtering.",
 		content: "Pick items, filter enabled=true, map value, and count the result.",
 		description: "Deterministic enabled-item counter.",
@@ -128,6 +161,7 @@ function deliveryFor(name: string): Record<string, unknown> {
 	};
 	if (name === "subagents") return {
 		...common, semantic_kind: "role", name: "smoke-reviewer",
+		authoring_method_ref: creatorRef("subagent-creator"),
 		summary: "An independent read-only ARC reviewer.",
 		content: "Return one concise independent result for the delegated ARC question.",
 		description: "Deterministic routed subagent role.",
@@ -139,6 +173,8 @@ function deliveryFor(name: string): Record<string, unknown> {
 		...common, semantic_kind: "fact", name: "smoke-core-rule",
 		summary: "A continuously salient ARC execution rule.",
 		content: "SMOKE_SYSTEM_MARKER: use only actions advertised by the current ARC state.",
+		atom: { subject: "arc-action-selection", predicate: "allowed-action-source",
+			value: "SMOKE_SYSTEM_MARKER: use only actions advertised by the current ARC state." },
 		reasoning: "none", execution: "text", context_visibility: "always",
 		prompt_channel: "system_prompt", prompt_operation: "create",
 		system_prompt_basis: { source: "validated_environment_invariant", evidence_refs: [evidenceRef] },
@@ -180,7 +216,7 @@ function reportFor(delivery: Record<string, unknown>): Record<string, unknown> {
 }
 
 function feedbackReport(): Record<string, unknown> {
-	const actualUseRef = resourceRefForUse("smoke-action-method") ?? "execution-observation-6";
+	const actualUseRef = resourceRefForUse("smoke-action-method") ?? "execution-observation-5";
 	return {
 		format: "auto-research-report-v1",
 		status: "supported_within_scope",
@@ -276,11 +312,11 @@ function providerStep(request: number, context: any): Step {
 		if (crossContextMethod) {
 			const reads = runId === "auto-research-1"
 				? [...constructionPreActionStateRefs(),
-					"observation:execution-observation-2@v1", "observation:execution-observation-4@v1",
-					"observation:execution-observation-5@v1"]
-				: ["observation:execution-observation-2@v1", "observation:execution-observation-4@v1",
-					"observation:execution-observation-5@v1",
-					`observation:${resourceRefForUse("smoke-action-method") ?? "execution-observation-6"}@v1`,
+					"observation:execution-observation-1@v1", "observation:execution-observation-3@v1",
+					"observation:execution-observation-4@v1"]
+				: ["observation:execution-observation-1@v1", "observation:execution-observation-3@v1",
+					"observation:execution-observation-4@v1",
+					`observation:${resourceRefForUse("smoke-action-method") ?? "execution-observation-5"}@v1`,
 					"effect_assessment:effect-assessment-1@v1"];
 			if (request < reads.length) return { kind: "tool", name: "task_resource", arguments: {
 				action: "read", ref: reads[request], offset: 0, limit: 200000,
@@ -318,25 +354,28 @@ function providerStep(request: number, context: any): Step {
 	if (crossContextMethod) {
 		const commonPrefix: Step[] = [
 			{ kind: "tool", name: "task_harness", arguments: { action: "start" } },
-			{ kind: "tool", name: "arc_state", arguments: { request: "current" } },
 			{ kind: "tool", name: "arc_action", arguments: { action: "ACTION1", reasoning: "Record ACTION1 in attempt 1." } },
 			{ kind: "tool", name: "arc_action", arguments: { action: "RESET", reasoning: "Create a distinct online attempt without rewinding the trajectory." } },
 			{ kind: "tool", name: "arc_action", arguments: { action: "ACTION2", reasoning: "Change the second attempt's pre-state before repeating ACTION1." } },
 			{ kind: "tool", name: "arc_action", arguments: { action: "ACTION1", reasoning: "Record the same action from a different pre-state in attempt 2." } },
 			{ kind: "tool", name: "task_harness", arguments: { action: "inspect" } },
+			readBaseline("research-orchestration"),
 			{ kind: "tool", name: "auto_research", arguments: {
 				action: "start",
 				research_candidate_ref: crossContextCandidateRef() ?? "research_candidate:missing@v1",
+				authoring_method_ref: baselineRef("research-orchestration"),
 			} },
 		];
 		const method = realResearchMethodState();
 		return [
 			...commonPrefix,
+			readBaseline("skill-creator"),
 			{ kind: "tool", name: "task_harness", arguments: {
 				action: "adopt_research", research_run_ref: "research_run:auto-research-1@v1",
 			} },
-			{ kind: "tool", name: "task_resource", arguments: {
-				action: "read", ref: method.resourceRef ?? "skill:smoke-action-method@v1",
+			assemble("skill:smoke-action-method@v1"),
+			{ kind: "tool", name: "task_harness", arguments: {
+				action: "focus", resource_refs: [method.resourceRef ?? "skill:smoke-action-method@v1"],
 			} },
 			{ kind: "tool", name: "arc_action", arguments: {
 				action: method.nextAction ?? "ACTION2",
@@ -350,7 +389,9 @@ function providerStep(request: number, context: any): Step {
 				consequence: "The adopted procedure selected and justified the later ARC action; feedback research must compare its visible result with the recorded prediction.",
 				remaining_uncertainty: "The scripted parent records use but does not supply the semantic verdict for the child-authored prediction.",
 			} },
+			readBaseline("research-orchestration"),
 			{ kind: "tool", name: "auto_research", arguments: { action: "start", interaction_mode: "blocking",
+				authoring_method_ref: baselineRef("research-orchestration"),
 				research_handoff_ref: "research_handoff:method-feedback-effect-assessment-1@v1" } },
 			{ kind: "tool", name: "task_harness", arguments: { action: "inspect" } },
 			{ kind: "tool", name: "arc_action", arguments: { action: "ACTION3", reasoning: "Cross a later real parent boundary after feedback research." } },
@@ -363,20 +404,25 @@ function providerStep(request: number, context: any): Step {
 	} };
 	const parentSteps: Step[] = [
 		{ kind: "tool", name: "task_harness", arguments: { action: "start" } },
-		{ kind: "tool", name: "arc_state", arguments: { request: "current" } },
+		{ kind: "tool", name: "arc_action", arguments: {
+			action: "ACTION1", reasoning: "Create one real observation before starting bounded research.",
+		} },
+		readBaseline("research-orchestration"),
 		{ kind: "tool", name: "auto_research", arguments: {
 			question: `Route the deterministic ${scenario} finding for next-turn use.`,
 			...(researchScope ? { scope: researchScope } : {}), evidence_refs: [evidenceRef],
+			authoring_method_ref: baselineRef("research-orchestration"),
 			...(methodLifecycle ? { research_kind: "capability", research_line_ref: "research_line:arc-smoke-counter@v1" } : {}),
 		} },
+		...(scenarioResourceRefs[scenario].startsWith("skill:") ? [readBaseline("skill-creator")] : []),
+		...(scenarioResourceRefs[scenario].startsWith("tool:") ? [readBaseline("tool-creator")] : []),
+		...(scenarioResourceRefs[scenario].startsWith("subagent:") ? [readBaseline("subagent-creator")] : []),
 		adoptRoute,
-		{ kind: "tool", name: "arc_action", arguments: {
-			action: "ACTION1", reasoning: "End the first smoke turn after the routed mutation.",
-		} },
+		assemble(scenarioResourceRefs[scenario]),
 	];
 	const use: Record<string, Step> = {
-		memory: { kind: "tool", name: "task_resource", arguments: { action: "read", ref: "memory:smoke-memory@v1" } },
-		skills: { kind: "tool", name: "task_resource", arguments: { action: "read", ref: "skill:smoke-skill@v1" } },
+		memory: { kind: "tool", name: "task_harness", arguments: { action: "focus", resource_refs: ["memory:smoke-memory@v1"] } },
+		skills: { kind: "tool", name: "task_harness", arguments: { action: "focus", resource_refs: ["skill:smoke-skill@v1"] } },
 		tools: { kind: "tool", name: "task_tool_smoke-counter_v1", arguments: { input: { items: [
 			{ value: "a", enabled: true }, { value: "b", enabled: false }, { value: "c", enabled: true },
 		] } } },
@@ -384,7 +430,7 @@ function providerStep(request: number, context: any): Step {
 			agent_name: "smoke-reviewer", task: "Return the deterministic independent smoke result.",
 			evidence_refs: [evidenceRef], resource_refs: [],
 		} },
-		system_prompt: { kind: "tool", name: "task_resource", arguments: { action: "read", ref: "system_prompt:smoke-core-rule@v1" } },
+		system_prompt: { kind: "tool", name: "task_harness", arguments: { action: "focus", resource_refs: ["system_prompt:smoke-core-rule@v1"] } },
 	};
 	parentSteps.push(use[scenario]);
 	if (methodLifecycle) parentSteps.push({ kind: "tool", name: "task_harness", arguments: {
@@ -399,13 +445,16 @@ function providerStep(request: number, context: any): Step {
 					content: "SMOKE_OLD_DEPENDENT", depends_on_refs: ["memory:smoke-memory@v1"] } },
 				{ operation: "create", candidate: { semantic_kind: "memory", key: "smoke-state",
 					content: "SMOKE_OLD_STATE", depends_on_refs: ["skill:smoke-dependent@v1"],
+					atom: { subject: "smoke-task", predicate: "transitive-state", value: "SMOKE_OLD_STATE" },
 					projection: { channel: "task_prompt", layer: "task_state" } } },
 				{ operation: "create", candidate: { semantic_kind: "policy", name: "smoke-new-policy",
 					content: "SMOKE_NEW_POLICY", scope: { kind: "task_wide", statement: "this deterministic ARC smoke task" },
+					atom: { subject: "smoke-routing", predicate: "active-policy", value: "SMOKE_NEW_POLICY" },
 					context_visibility: "always", stability: "stable_in_scope", prompt_channel: "task_prompt",
 					prompt_layer: "task_policy", supersedes_refs: ["memory:smoke-memory@v1"] } },
 			], decision: { basis_refs: [evidenceRef], reason: "Exercise replacement and dependent suspension through the parent facade.",
 				expected: "The new policy replaces the old policy and suspends guidance that depends on it." } } },
+			assemble("memory:smoke-new-policy@v1", 1),
 		);
 	}
 	parentSteps.push({ kind: "tool", name: "arc_action", arguments: {
@@ -415,8 +464,12 @@ function providerStep(request: number, context: any): Step {
 		parentSteps.push({ kind: "tool", name: "task_harness", arguments: { action: "inspect" } },
 			{ kind: "tool", name: "arc_action", arguments: { action: "ACTION1", reasoning: "Verify revised policy on a later real parent turn." } });
 	}
+	if (scenario === "system_prompt") {
+		parentSteps.push({ kind: "tool", name: "task_harness", arguments: { action: "inspect" } },
+			{ kind: "tool", name: "arc_action", arguments: { action: "ACTION3", reasoning: "Verify the selected system overlay on a later real parent turn." } });
+	}
 	if (process.env.PI_ARC_SMOKE_PERIODIC === "1") {
-		parentSteps.splice(2, 1,
+		parentSteps.splice(1, 4,
 			...Array.from({length:5}, ():Step => ({kind:"tool",name:"arc_action",arguments:{action:"ACTION1",reasoning:"Collect periodic window evidence."}})),
 			{kind:"tool",name:"task_harness",arguments:{action:"review",review:[],transition_analysis:{
 				observed_changes:"Five action results were recorded; inspect their canonical deltas.",
@@ -427,6 +480,9 @@ function providerStep(request: number, context: any): Step {
 			}}},
 			{kind:"tool",name:"auto_research",arguments:{action:"start",interaction_mode:"blocking"}},
 			{kind:"tool",name:"task_harness",arguments:{action:"inspect"}},
+			adoptRoute,
+			assemble(scenarioResourceRefs[scenario]),
+			{kind:"tool",name:"arc_action",arguments:{action:"ACTION1",reasoning:"Cross a real action boundary with the selected component."}},
 		);
 	}
 	return parentSteps[request] ?? { kind: "text", text: "parent fixture complete" };
@@ -445,6 +501,8 @@ function contextEvidence(request: number, context: any) {
 		scenario, request, child: process.env.PI_TASK_CHILD === "1",
 		research_child: process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1",
 		parent_guide_present: system.includes("# Auto-Research: parent guide"),
+		parent_decision_contract_present: system.includes("AUTO-RESEARCH:")
+			&& encoded.includes("Use Auto-Research for a grounded uncertainty"),
 		child_guide_present: system.includes("# Auto-Research: child instructions"),
 		profile_headings: [...system.matchAll(/^# Research focus: (.+)$/gm)].map((match) => match[1]),
 		delivery_guide_in_system: system.includes("# Candidate harness delivery"),

@@ -62,6 +62,7 @@ uses this compact contract:
 ```text
 format=auto-research-harness-delivery-v1
 delivery_id, semantic_kind, operation, name, summary, content
+authoring_method_ref=<exact method_ref returned by harness_method(action=read, name=<corresponding creator>)>
 for fact/plan: atom={subject,predicate,value} (exactly one independently selectable claim)
 scope={kind,current_step|condition|task_wide; statement}, trigger, exclusions
 stability=transient|conditional|stable_in_scope
@@ -77,6 +78,11 @@ Add only target-specific optional fields requested by the workset, such as
 refs. Use stable lowercase-hyphen names. The runtime validates the full delivery,
 keeps an unsupported implementation pending, and routes valid candidates; the
 child never applies or approves them.
+
+Before authoring a procedure/skill, computation/tool, or role/subagent delivery,
+read the corresponding fixed creator with `harness_method(action="read", name=...)`.
+The parent must also read and cite that creator before adoption; a research report
+or runtime route cannot substitute for creator-authoring.
 
 Do not package a stage recap as one fact. Controls, spatial structure, mechanism
 hypotheses and a current route have different validity and selection boundaries,

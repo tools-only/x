@@ -59,6 +59,7 @@ type TaskToolRecord = {
 	reconsider_when: string;
 	routing_id?: string;
 	source_approval_ref?: string;
+	authoring_method_ref?: string;
 	recordedAt: string;
 };
 
@@ -462,7 +463,7 @@ export function installTaskLocalTools(
 		label: "Task-local tool portfolio",
 		description:
 			"Create, revise, retire, or inspect an agent-defined task-local Pi tool. " +
-			"The agent may create or update a tool directly from a task observation; no finding is required. " +
+			"Creation/update must first use tool-creator and include its exact authoring_method_ref; this runtime validates and persists the authored contract but does not invent it. " +
 			`Use program.steps for a new declarative behavior with ${TASK_TOOL_PROGRAM_STEP_KINDS.join(", ")} steps; adapter calls remain permission checked. Analysis outputs include evidence provenance when input carries evidence_ref/source_version. Arbitrary host code and extensions are never loaded.`,
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("retire"), Type.Literal("inspect")]),
@@ -475,6 +476,7 @@ export function installTaskLocalTools(
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
+			authoring_method_ref: Type.Optional(Type.String({ description: "Exact method_ref returned by task_harness(action=read_method) for tool-creator." })),
 			routing_id: Type.Optional(Type.String()),
 			source_approval_ref: Type.Optional(Type.String()),
 		}),
@@ -535,6 +537,7 @@ export function installTaskLocalTools(
 				reconsider_when: String(p.reconsider_when ?? previous?.reconsider_when ?? "the tool is unused, contradicted, or no longer relevant"),
 				routing_id: p.routing_id ? String(p.routing_id) : previous?.routing_id,
 				source_approval_ref: p.source_approval_ref ? String(p.source_approval_ref) : previous?.source_approval_ref,
+				authoring_method_ref: p.authoring_method_ref ? String(p.authoring_method_ref) : previous?.authoring_method_ref,
 				recordedAt: new Date().toISOString(),
 			};
 			if (status === "active") register(record);

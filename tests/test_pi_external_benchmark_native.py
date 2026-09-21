@@ -220,7 +220,7 @@ def test_agent_can_apply_multiple_compaction_decisions_to_new_observations(tmp_p
     assert "execution-observation-2 compacted by finding-2@v1" in later_payloads
 
 
-def test_component_tools_disclose_direct_creation_without_a_finding_gate():
+def test_component_tools_disclose_creator_authoring_gate():
     project = Path(__file__).resolve().parents[1]
     descriptions = {
         "task_memory": (project / "demo" / "pi_task_local_self_harness.ts").read_text(encoding="utf-8"),
@@ -229,8 +229,12 @@ def test_component_tools_disclose_direct_creation_without_a_finding_gate():
         "task_subagent": (project / "demo" / "pi_task_local_subagents.ts").read_text(encoding="utf-8"),
     }
     for tool_name, source in descriptions.items():
-        assert "directly from a task observation" in source, tool_name
-        assert "no finding is required" in source, tool_name
+        if tool_name == "task_memory":
+            assert "memory may be recorded directly" in source, tool_name
+        else:
+            creator = {"task_skill": "skill-creator", "task_tool": "tool-creator", "task_subagent": "subagent-creator"}[tool_name]
+            assert creator in source, tool_name
+            assert "authoring_method_ref" in source, tool_name
 
 
 def test_harness_effect_assessment_accepts_native_exposure_reference(tmp_path):

@@ -34,6 +34,7 @@ import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harne
 import { canonicalTextBody } from "./pi_harness_protocol.ts";
 import { normalizeContextRecipe, type SubagentContextRecipe } from "./pi_subagent_context_recipe.ts";
 import { memoryValidityContext } from "./pi_memory_validity.ts";
+import { baselineMethodCatalog } from "./pi_harness_baseline_methods.ts";
 
 type AgentDefinition = {
 	adapter_id?: string;
@@ -53,6 +54,7 @@ type AgentDefinition = {
 	reconsider_when?: string;
 	routing_id?: string;
 	source_approval_ref?: string;
+	authoring_method_ref?: string;
 	recordedAt: string;
 };
 
@@ -1192,6 +1194,26 @@ export function installTaskLocalSubagents(
 	}
 	const root = resolve(process.env.PI_AUTORESEARCH_E2E_ROOT ?? ".");
 	const taskScope = ensureTaskScope(root);
+	const readBaselineMethodReceipts = () => {
+		const path = join(root, "task-baseline-method-reads.jsonl");
+		if (!existsSync(path)) return [] as Record<string, any>[];
+		return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+			try { const value = JSON.parse(line); return value && typeof value === "object" && !Array.isArray(value) ? [value] : []; }
+			catch { return []; }
+		});
+	};
+	const requireResearchOrchestrationRead = (params: Record<string, any>) => {
+		const supplied = String(params.authoring_method_ref ?? "").trim();
+		const catalogEntry = baselineMethodCatalog().find((item) => item.name === "research-orchestration");
+		const expected = catalogEntry?.method_ref ?? "";
+		if (!supplied) throw new Error("authoring_method_ref is required for Auto-Research; first call task_harness(action=read_method, method_name=research-orchestration) and pass its method_ref");
+		if (supplied !== expected) throw new Error("authoring_method_ref does not match the current research-orchestration baseline; read it again before starting Auto-Research");
+		const reads = readBaselineMethodReceipts();
+		if (!reads.some((row) => row.name === "research-orchestration" && row.method_ref === supplied && row.sha256 === catalogEntry?.sha256 && row.actor !== "child")) {
+			throw new Error("research-orchestration was not read in this run; call task_harness(action=read_method, method_name=research-orchestration) before starting Auto-Research");
+		}
+		return supplied;
+	};
 	const agentsDir = join(root, "task-harness", "agents");
 	const path = join(root, "task-subagents.jsonl");
 	const records = existsSync(path)
@@ -1235,7 +1257,7 @@ export function installTaskLocalSubagents(
 	registerRoutableTool({
 		name: "task_subagent",
 		label: adapter.definitionLabel ?? "Task-local subagent definition",
-		description: "Create, revise, retire, or inspect a task-local Pi subagent definition for the current benchmark adapter. A definition does not execute until delegate_task is called. The subagent can be created directly from a task observation; no finding is required. It is an independent model pass: give it a concrete competing interpretation, counterexample search, trajectory audit, or separable subproblem so it can add information rather than repeat the parent's narration. If research motivates it, cite the exact basis reference.",
+		description: "Create, revise, retire, or inspect a task-local Pi subagent definition for the current benchmark adapter. Creation/update must first use subagent-creator and include its exact authoring_method_ref; this runtime validates and persists the authored context recipe but does not invent it. A definition does not execute until delegate_task is called. It is an independent model pass: give it a concrete competing interpretation, counterexample search, trajectory audit, or separable subproblem so it can add information rather than repeat the parent's narration. If research motivates it, cite the exact basis reference.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("retire"), Type.Literal("inspect")]),
 			name: Type.Optional(Type.String()),
@@ -1247,6 +1269,7 @@ export function installTaskLocalSubagents(
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
+			authoring_method_ref: Type.Optional(Type.String({ description: "Exact method_ref returned by task_harness(action=read_method) for subagent-creator." })),
 			routing_id: Type.Optional(Type.String()),
 			source_approval_ref: Type.Optional(Type.String()),
 		}),
@@ -1294,6 +1317,7 @@ export function installTaskLocalSubagents(
 				reconsider_when: params.reconsider_when ?? previous?.reconsider_when ?? "delegation does not add decision-relevant evidence",
 				routing_id: params.routing_id ? String(params.routing_id) : previous?.routing_id,
 				source_approval_ref: params.source_approval_ref ? String(params.source_approval_ref) : previous?.source_approval_ref,
+				authoring_method_ref: params.authoring_method_ref ? String(params.authoring_method_ref) : previous?.authoring_method_ref,
 				recordedAt: new Date().toISOString(),
 			};
 			if (status === "active") {
@@ -1794,7 +1818,8 @@ export function installTaskLocalSubagents(
 				], { description: "blocking waits for a final report; non_blocking returns an accepted session immediately and may later become pending or completed." })),
 				question: Type.Optional(Type.String({ minLength: 1 })),
 				current_concern: Type.Optional(Type.String({ minLength: 1, description: "Optional immediate concern for an open research allocation. The child still chooses and scopes the research question." })),
-				research_candidate_ref: Type.Optional(Type.String({ description: "Exact code-generated cross-context research candidate from task_harness_status." })),
+					research_candidate_ref: Type.Optional(Type.String({ description: "Exact code-generated cross-context research candidate from task_harness_status." })),
+				authoring_method_ref: Type.Optional(Type.String({ description: "Exact method_ref returned by task_harness(action=read_method) for research-orchestration." })),
 				research_handoff_ref: Type.Optional(Type.String()),
 				session_ref: Type.Optional(Type.String()),
 				plan_ref: Type.Optional(Type.String()),
@@ -1850,6 +1875,8 @@ export function installTaskLocalSubagents(
 			async execute(toolCallId, params, signal) {
 				if (process.env.PI_TASK_CHILD === "1") throw new Error("recursive auto-research is not enabled");
 				const action = String(params.action ?? "start");
+				const authoringMethodRef = ["start", "enqueue"].includes(action)
+					? requireResearchOrchestrationRead(params as Record<string, any>) : String(params.authoring_method_ref ?? "").trim() || undefined;
 				if (action === "start" && !params.research_line_ref) {
 					params.research_line_ref = inferResearchLineRef(root, params);
 				}
@@ -2100,7 +2127,7 @@ export function installTaskLocalSubagents(
 					research_state: { scope: researchScope, research_kind: researchKind,
 						research_line_ref: params.research_line_ref ?? priorSession?.research_line_ref ?? null,
 						session_id: sessionId, action, continuation_attempt: continuationAttempt,
-						open_allocation: openAllocation,
+						open_allocation: openAllocation, ...(authoringMethodRef ? { authoring_method_ref: authoringMethodRef } : {}),
 						completion_mode: checkpoint?.report_submission_error
 							? "repair_report_submission" : "converge_to_report" },
 					research_checkpoint: checkpoint ? checkpointPrompt(checkpoint) : null,
@@ -2213,7 +2240,7 @@ export function installTaskLocalSubagents(
 							research_candidate_ref: params.research_candidate_ref ?? priorSession?.research_candidate_ref ?? null,
 							research_handoff_ref: params.research_handoff_ref ?? priorSession?.research_handoff_ref ?? null,
 							constraints: params.constraints ?? priorSession?.constraints ?? [], evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
-							open_allocation: openAllocation,
+							open_allocation: openAllocation, ...(authoringMethodRef ? { authoring_method_ref: authoringMethodRef } : {}),
 							current_concern: params.current_concern ?? priorSession?.current_concern ?? null,
 							history_cursor: historyCatalog?.cursor ?? priorSession?.history_cursor ?? null,
 							run_id: runId, native_child_session_id: nativeChildSessionId, reconciliation_status: "not_applicable",
@@ -2481,7 +2508,7 @@ export function installTaskLocalSubagents(
 					research_progress: report.research_progress ?? null,
 					agenda_ref: agenda ? `research_agenda:${agenda.agenda_id}@v${agenda.version}` : null,
 					parent_attention: parentAttention,
-					open_allocation: openAllocation,
+					open_allocation: openAllocation, ...(authoringMethodRef ? { authoring_method_ref: authoringMethodRef } : {}),
 					toolCallId, startedAt,
 					continuation_attempts: continuationAttempt,
 					completedAt: new Date().toISOString(), summary: String(report.conclusion ?? report.status ?? "completed"),

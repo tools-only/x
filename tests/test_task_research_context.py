@@ -1,5 +1,6 @@
 """Small real-Pi, offline-provider checks for the task-local working set."""
 import json
+import hashlib
 import os
 import subprocess
 import threading
@@ -64,6 +65,12 @@ def harness_delivery(delivery_id, semantic_kind, name, content, **overrides):
             "predicate": "states" if semantic_kind == "fact" else "plans",
             "value": content,
         }
+    if semantic_kind in {"procedure", "computation", "role"}:
+        creator = {"procedure": "skill-creator", "computation": "tool-creator", "role": "subagent-creator"}[semantic_kind]
+        creator_dir = Path(__file__).resolve().parents[1] / "demo" / "harness-methods" / creator
+        method_text = ((creator_dir / "PI_ADAPTATION.md").read_text(encoding="utf-8") + "\n\n---\n\n"
+                       + (creator_dir / "SKILL.md").read_text(encoding="utf-8")) if creator == "skill-creator" else (creator_dir / "SKILL.md").read_text(encoding="utf-8")
+        defaults["authoring_method_ref"] = f"baseline_method:{creator}@sha256:{hashlib.sha256(method_text.encode('utf-8')).hexdigest()}"
     defaults.update(overrides)
     if (defaults["context_visibility"] == "always" and "prompt_operation" not in defaults):
         defaults["prompt_operation"] = "create"
@@ -215,6 +222,16 @@ def test_router_preserves_structured_delivery_content_as_deterministic_text():
     assert '"known_action_map"' in result["content"]
     assert '"procedure"' in result["content"]
     assert "[object Object]" not in result["content"]
+
+
+def test_router_rejects_creator_dependent_delivery_without_method_ref():
+    delivery = harness_delivery("missing-creator-ref", "procedure", "missing-creator-ref", "Read the delta.")
+    delivery.pop("authoring_method_ref")
+    with pytest.raises(AssertionError):
+        run_router_helper(
+            "router.normalizeHarnessDelivery(JSON.parse(process.env.AUTORESEARCH_ROUTER_TEST_INPUT))",
+            input_value=delivery,
+        )
 
 
 def test_router_compiles_boolean_filter_shorthand_from_agent_schema():

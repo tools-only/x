@@ -34,11 +34,76 @@ def test_baseline_methods_are_discoverable_without_dynamic_components(tmp_path):
     body = outputs[1]["result"]["content"][0]["text"]
     assert "Running and evaluating test cases" in body
     assert "Pi runtime adaptation" in body
+    read_payload = json.loads(body)
+    assert read_payload["format"] == "baseline-method-read-v1"
+    assert read_payload["method_ref"].startswith("baseline_method:skill-creator@sha256:")
     assert not records(tmp_path, "task-skills.jsonl")
     context = records(tmp_path, "provider-contexts.jsonl")[0]["context"]
     assert "skill-creator" in json.dumps(context)
     assert "Running and evaluating test cases" not in json.dumps(context)
     assert records(tmp_path, "task-baseline-method-reads.jsonl")[0]["sha256"]
+
+
+def test_creator_read_is_required_before_facade_skill_creation(tmp_path):
+    candidate = {
+        "semantic_kind": "procedure", "execution": "text", "reuse": "expected_reuse",
+        "reasoning": "bounded_judgment", "name": "creator-gated-skill",
+        "summary": "A creator-gated procedure.",
+        "content": "Read the current frame before choosing a probe.",
+        "scope": {"kind": "task_wide", "statement": "this task"},
+        "context_visibility": "on_demand", "stability": "stable_in_scope",
+        "basis_refs": [],
+    }
+    blocked = _run_fixture(tmp_path / "blocked", "treatment", steps=[{
+        "name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "create", "candidate": candidate}],
+            "decision": {"basis_refs": [], "reason": "Try an unauthored skill.", "expected": "Must be rejected."},
+        },
+    }])
+    assert results(blocked, "task_harness")[-1].get("isError")
+    assert not records(tmp_path / "blocked", "task-skills.jsonl")
+
+    method_ref = module_eval("pi_harness_baseline_methods.ts", "m.baselineMethodCatalog().find(x=>x.name==='skill-creator').method_ref")
+    accepted = _run_fixture(tmp_path / "accepted", "treatment", steps=[
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "skill-creator"}},
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "create", "candidate": {
+                **candidate, "authoring_method_ref": method_ref,
+            }}],
+            "decision": {"basis_refs": [], "reason": "Use the skill creator output.", "expected": "The authored method is available."},
+        }},
+    ])
+    assert not results(accepted, "task_harness")[-1].get("isError")
+    assert records(tmp_path / "accepted", "task-skills.jsonl")[-1]["status"] == "active"
+    assert records(tmp_path / "accepted", "task-skills.jsonl")[-1]["authoring_method_ref"] == method_ref
+
+
+def test_auto_research_requires_parent_research_orchestration_read(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    _, cli = _pi_cli()
+    report = {
+        "format": "auto-research-report-v1", "status": "inconclusive",
+        "conclusion": "No extra evidence was available.", "findings": [],
+        "evidence_refs": [], "alternatives": [], "limitations": [],
+        "validation_plan": "Retry after a grounded question.", "harness_proposals": [],
+    }
+    events = _run_fixture(
+        tmp_path, "treatment",
+        extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+        extra_env={
+            "PI_AUTORESEARCH_PI_CLI": cli,
+            "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+            "PI_AUTORESEARCH_MODEL": "scripted",
+            "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+            "PI_SUBAGENT_REPORT": json.dumps(report),
+            "PI_SUBAGENT_STEPS": json.dumps([{"name": "submit_research_report", "arguments": {"report": report}}]),
+        },
+        steps=[{"name": "auto_research", "arguments": {"question": "Must be rejected without the orchestration method."}}],
+    )
+    failure = results(events, "auto_research")[0]
+    assert failure["isError"]
+    assert "research-orchestration" in failure["result"]["content"][0]["text"]
+    assert not records(tmp_path, "auto-research-runs.jsonl")
 
 
 def test_baseline_reader_rejects_traversal_and_unknown_resources():

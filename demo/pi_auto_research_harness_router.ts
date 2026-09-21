@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
 import { normalizeMemoryValidity, type MemoryValidity } from "./pi_memory_validity.ts";
+import { baselineMethodCatalog } from "./pi_harness_baseline_methods.ts";
 import { canonicalTextBody, classifyHarnessChangeTargets, normalizeHarnessMemoryAtom,
 	type HarnessMemoryAtom, type HarnessRouteTarget } from "./pi_harness_protocol.ts";
 
@@ -82,6 +83,8 @@ export type HarnessDelivery = {
 	reconsider_when: string;
 	/** Explicit abstraction required for method lifecycle tracking. */
 	method?: ResearchMethodSpecification;
+	/** Exact fixed creator method used to author this candidate. */
+	authoring_method_ref?: string;
 };
 
 function schemaFieldType(inputSchema: Record<string, unknown> | undefined, collection: string, field: string): string {
@@ -423,6 +426,13 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 		|| !String(value.scope.statement ?? "").trim()) throw new Error("delivery.scope is invalid");
 	if (!["transient", "conditional", "stable_in_scope"].includes(value.stability)) throw new Error("delivery.stability is invalid");
 	if (!["one_off", "expected_reuse"].includes(value.reuse)) throw new Error("delivery.reuse is invalid");
+	const creatorName = ({ procedure: "skill-creator", computation: "tool-creator", role: "subagent-creator" } as Record<string, string>)[String(value.semantic_kind)];
+	if (creatorName) {
+		const supplied = String(value.authoring_method_ref ?? "").trim();
+		const expected = baselineMethodCatalog().find((item) => item.name === creatorName)?.method_ref ?? "";
+		if (!supplied) throw new Error(`delivery.authoring_method_ref is required for ${value.semantic_kind}; child must read ${creatorName} with harness_method first`);
+		if (supplied !== expected) throw new Error(`delivery.authoring_method_ref does not match the current ${creatorName} baseline`);
+	}
 	// Correct only the unambiguous category-copy error.  This keeps the durable
 	// schema strict while avoiding loss of an otherwise complete computation
 	// candidate at the model/tool boundary.
