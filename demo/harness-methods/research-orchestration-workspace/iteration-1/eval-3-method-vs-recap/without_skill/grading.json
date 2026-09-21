@@ -1,0 +1,100 @@
+{
+  "expectations": [
+    {
+      "text": "The research object is a reusable controlled-object identification method rather than a recap, and the plan explicitly handles the counter animation and collision/zero-displacement cases.",
+      "passed": true,
+      "evidence": "The decision names the research object as a falsifiable method for recognizing the controlled object from action/frame evidence while distinguishing ‘HUD/计数器动画、真实移动和碰撞导致的零位移.’ It explicitly requires an executable identification procedure rather than a recap. Separate decomposition sections cover the counter counterexample and treat collision samples as a key discriminating condition instead of bad data."
+    },
+    {
+      "text": "The initial worker is a one-off clean, read-only child; it is not granted actions or replay and no persistent subagent is created immediately.",
+      "passed": true,
+      "evidence": "The decision says ‘先建立一次性的干净 child 上下文，不立即创建持久 subagent’ and defines the child as read-only offline analysis. It explicitly states that the child cannot operate the game or request replay and that main retains exclusive control of all later game actions. The transcript confirms no child or game environment was called in this planning run."
+    },
+    {
+      "text": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.",
+      "passed": true,
+      "evidence": "The component section keeps the result as a candidate method rather than creating a skill now; skill creation requires triggers, steps, abstention/failure conditions, and held-out or later-observation validation, and it explicitly says a skill records the method, not this trajectory. A Pi task-local tool is deferred until connected-component diff/matching/statistics become repeated deterministic work; its contract is bounded and it must pass semantic-output tests on both the counter and collision cases before assembly. It also explicitly says ‘这里不涉及 MCP.’"
+    },
+    {
+      "text": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.",
+      "passed": true,
+      "evidence": "The seven useful-result criteria require reproducible steps, counter and collision handling, evidence provenance, abstention, and a verifiable prediction on a held-out or later observation. The plan specifies withholding a clip when possible and otherwise reporting non-identifiability plus the minimum-information experiment. Feedback returns a later prediction/result to the same research line. Stop/pause conditions cover success on counter, collision, and held-out/new samples; non-identifiability pending a safe observation; failed revision; unacceptable action risk; and budget/value limits."
+    }
+  ],
+  "summary": {
+    "passed": 4,
+    "failed": 0,
+    "total": 4,
+    "pass_rate": 1.0
+  },
+  "execution_metrics": {
+    "tool_calls": null,
+    "total_tool_calls": null,
+    "total_steps": null,
+    "errors_encountered": null,
+    "output_chars": 2357,
+    "transcript_chars": 310,
+    "note": "No metrics.json or isolated executor telemetry was available; unavailable fields remain null. Character counts were measured directly from the supplied text files."
+  },
+  "timing": {
+    "executor_duration_seconds": null,
+    "grader_duration_seconds": null,
+    "total_duration_seconds": null,
+    "total_tokens": null,
+    "tool_calls": null,
+    "note": "The supplied timing.json explicitly reports that isolated timing, token-usage, and cost telemetry were unavailable; no estimates were made."
+  },
+  "claims": [
+    {
+      "claim": "The proposal is method research rather than trajectory recap.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "decision.md defines a repeatable, falsifiable identification workflow with candidate generation, competing hypotheses, collision handling, abstention, and held-out testing, and explicitly rejects recap-only output."
+    },
+    {
+      "claim": "The initial child is one-off, clean-context, read-only, and cannot act or replay.",
+      "type": "process",
+      "verified": true,
+      "evidence": "These limits are stated directly in the decision, and the transcript reports that no child or game environment was invoked."
+    },
+    {
+      "claim": "Any proposed tool is a Pi task-local tool rather than an MCP server.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "The tool section explicitly names a ‘Pi task-local tool,’ scopes it to structured deterministic frame processing, and states ‘这里不涉及 MCP.’"
+    },
+    {
+      "claim": "The plan gives memory an explicit validity boundary rather than treating all observations as durable knowledge.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The memory section distinguishes episode/level facts, short-term state/level position-map-collision facts, and control rules that may become longer-term only after cross-level validation."
+    },
+    {
+      "claim": "The controlled-object method will pass a held-out or later observation and improve decisions.",
+      "type": "quality",
+      "verified": false,
+      "evidence": "The document defines this as a future promotion gate and feedback step. No held-out execution, later observation, semantic tool output, or decision-quality result exists in the supplied artifacts."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.",
+        "reason": "This assertion contains three distinct gates. Splitting them would expose an output that handles skill promotion correctly but proposes an unvalidated or non-Pi tool, or vice versa."
+      },
+      {
+        "assertion": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.",
+        "reason": "Four independent orchestration properties share one verdict. Separate assertions would provide more discriminating failure localization."
+      },
+      {
+        "reason": "The prompt explicitly asks whether memory should be created, and the without-skill output provides unusually strong validity-scope handling, but no assertion checks memory lifecycle or the distinction between evidence-backed memory and unverified identity claims. Consider adding one."
+      }
+    ],
+    "overall": "The assertions are substantively aligned and the response genuinely satisfies them. More atomic assertions, plus an explicit memory-lifecycle check, would make the eval more diagnostic."
+  }
+}

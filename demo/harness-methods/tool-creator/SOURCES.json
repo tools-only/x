@@ -1,0 +1,16 @@
+{
+  "primary": {
+    "project": "earendil-works/pi",
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.80.6",
+    "revision": "v0.80.6",
+    "path": "packages/coding-agent/docs/extensions.md",
+    "license": "MIT",
+    "url": "https://github.com/earendil-works/pi/blob/v0.80.6/packages/coding-agent/docs/extensions.md"
+  },
+  "project_contracts": [
+    "demo/pi_task_local_tools.ts",
+    "demo/pi_task_tool_contract.ts"
+  ],
+  "adaptation": "Pi-native tool authoring constrained to the task-local declarative program and adapter implementation substrate. No arbitrary extension loading is implied."
+}

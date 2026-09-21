@@ -514,8 +514,8 @@ export function methodRecordsFromReport(input: {
 			...((input.comparison?.repeated_cases ?? []).flatMap((group: Row) => group.cases ?? [])),
 		].filter((item: Row) => cited.has(observationReferenceId(item.observation_ref)));
 		const episodeContextIds = unique(citedCases.map((item: Row) => item.episode_context_id));
-		const maturity: MethodMaturity = specification && groundedConstructionRefs.length
-			? "candidate_method" : "experience";
+		const maturity: MethodMaturity = specification ? "candidate_method" : "experience";
+		const groundingStatus = groundedConstructionRefs.length ? "grounded" : "ungrounded";
 		return [{
 			format: "task-method-lifecycle-v1",
 			method_id: methodId,
@@ -530,6 +530,7 @@ export function methodRecordsFromReport(input: {
 			source_run_ref: `research_run:${input.runId}@v1`,
 			source_report_ref: input.reportRef,
 			method: specification ?? null,
+			grounding_status: groundingStatus,
 			construction_evidence_refs: groundedConstructionRefs,
 			contrast_evidence_refs: contrastRefs,
 			context_ids: contextIds,
@@ -542,8 +543,10 @@ export function methodRecordsFromReport(input: {
 			validation_refs: [],
 			component_status: proposal.standalone
 				? (delivery.delivery_id ? "proposed_separately" : "method_only") : "proposal_attached",
-			maturity_reason: maturity === "candidate_method"
+			maturity_reason: maturity === "candidate_method" && groundingStatus === "grounded"
 				? "Auto-Research supplied an explicit method structure grounded in selected evidence; future use is still required."
+				: maturity === "candidate_method"
+					? "Auto-Research supplied an explicit reusable method structure without local construction evidence; it remains an untested candidate."
 				: "The delivery lacks an explicit grounded method structure and remains task experience.",
 			recordedAt: input.recordedAt ?? new Date().toISOString(),
 		}];

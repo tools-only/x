@@ -7,5 +7,8 @@ Keep stable system directives separate from changing task policies and state: me
 For a direct change, submit one `task_harness(action=change)` call. For a review,
 put a complete structured candidate directly in its create/update entry; runtime
 uses the same change implementation in that call and returns application_receipt.
+Fact and plan memory candidates contain exactly one
+`atom={subject,predicate,value}`; current runtime state and compound stage recaps
+stay outside the component pool.
 An entry without a complete candidate remains pending_candidate_body. Do not
 count a review, handoff, exposure or projection as a converted capability.

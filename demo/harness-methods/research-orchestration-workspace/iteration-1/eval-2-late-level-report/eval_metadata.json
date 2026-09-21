@@ -1,0 +1,10 @@
+{
+  "eval_id": 2,
+  "eval_name": "late-level-report",
+  "prompt": "主 agent 已在 observation:24 进入 level 2。现在收到在 level 1 observation:18 快照上启动的研究结果：建议按 RIGHT, RIGHT, UP 去旧地图的门，并提出一个通过跨帧动作对照识别受控实体的方法；该方法只在构造用的两段帧上试过。请决定如何使用这份报告，包括是否创建/装配 harness、是否请求实验和如何评估。环境历史不可回退，剩余行动有限。不要执行动作，输出 decision.md。",
+  "assertions": [
+    "The level-1 RIGHT, RIGHT, UP route is rejected as stale for level 2 and is not projected into the current task prompt.",
+    "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.",
+    "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria."
+  ]
+}

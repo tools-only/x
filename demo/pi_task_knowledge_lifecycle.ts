@@ -1,5 +1,6 @@
 /** Version validity and coherent views. No inference from free-form evidence text. */
 import { createHash } from "node:crypto";
+import { memoryValidityReasons, type MemoryValidityContext } from "./pi_memory_validity.ts";
 
 export type KnowledgeLinks = { depends_on_refs?: string[]; supersedes_refs?: string[] };
 export type KnowledgeAvailability = "loaded" | "unloaded" | "suspended" | "retired";
@@ -74,7 +75,7 @@ export function knowledgeControlReceipt(record: RecordValue, input: KnowledgeCon
 		evidence_status: knowledgeEvidenceStatus(next), evidence_refs: next.evidence_refs ?? [] };
 }
 
-export function knowledgeState(entries: KnowledgeEntry[]) {
+export function knowledgeState(entries: KnowledgeEntry[], context?: MemoryValidityContext) {
     const latest = new Map<string, KnowledgeEntry>();
     const versions = new Map<string, KnowledgeEntry>();
     for (const entry of entries) {
@@ -100,6 +101,7 @@ export function knowledgeState(entries: KnowledgeEntry[]) {
         if (record.status !== "active") why.push(`status:${record.status}`);
         if (record.availability && record.availability !== "loaded") why.push(`availability:${record.availability}`);
         if (knowledgeEvidenceStatus(record) === "refuted") why.push("evidence:refuted");
+        if (kind === "memory") why.push(...memoryValidityReasons(record.validity, context));
         if (latest.get(`${kind}:${record[identities[kind]]}`)?.record.version !== record.version) why.push("version_replaced");
         if (replaced.has(ref)) why.push(`superseded_by:${replaced.get(ref)}`);
         const path = new Set([...visiting, ref]);
@@ -122,8 +124,8 @@ export function knowledgeState(entries: KnowledgeEntry[]) {
 }
 
 export function normalizeKnowledgeLinks(input: RecordValue, previous: RecordValue | undefined,
-    entries: KnowledgeEntry[], kind: string, name: string): KnowledgeLinks {
-    const state = knowledgeState(entries);
+    entries: KnowledgeEntry[], kind: string, name: string, context?: MemoryValidityContext): KnowledgeLinks {
+    const state = knowledgeState(entries, context);
     const result: KnowledgeLinks = {};
     for (const field of ["depends_on_refs", "supersedes_refs"] as const) {
         if (input[field] === undefined) {
@@ -150,7 +152,7 @@ export function normalizeKnowledgeLinks(input: RecordValue, previous: RecordValu
     // Evaluate the proposed graph to reject indirect cycles or self-invalidating replacement.
     const candidate = { ...previous, ...result, [identities[kind]]: name,
         version: (previous?.version ?? 0) + 1, status: "active" };
-    const trial = knowledgeState([...entries, { kind, record: candidate }]);
+    const trial = knowledgeState([...entries, { kind, record: candidate }], context);
     if ((input.depends_on_refs !== undefined || input.supersedes_refs !== undefined) && !trial.eligible(kind, candidate)) {
         throw new Error("depends_on_refs creates an invalid dependency chain; inspect and revalidate prerequisites first");
     }

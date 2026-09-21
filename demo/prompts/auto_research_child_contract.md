@@ -50,8 +50,10 @@ A reusable method is more than a trajectory summary. Put it in
 `method_candidates` with the complete tool-schema fields: its problem, inputs,
 invariants, varying parameters, ordered steps, decision points, stop conditions,
 failure modes, construction and contrast evidence, next applicable use, predicted
-semantic result and falsifier. Construction evidence creates a candidate; only a
-later assessed use can support utility. A method may be submitted without an
+semantic result and falsifier. An explicit structure may be submitted as an
+untested candidate with empty construction evidence; label that uncertainty.
+Construction evidence makes it grounded, while only a later assessed use can
+support utility. A method may be submitted without an
 executable Harness component.
 
 Use `harness_proposals` only for a complete implementation candidate. A delivery
@@ -60,6 +62,7 @@ uses this compact contract:
 ```text
 format=auto-research-harness-delivery-v1
 delivery_id, semantic_kind, operation, name, summary, content
+for fact/plan: atom={subject,predicate,value} (exactly one independently selectable claim)
 scope={kind,current_step|condition|task_wide; statement}, trigger, exclusions
 stability=transient|conditional|stable_in_scope
 reuse=one_off|expected_reuse
@@ -74,6 +77,12 @@ Add only target-specific optional fields requested by the workset, such as
 refs. Use stable lowercase-hyphen names. The runtime validates the full delivery,
 keeps an unsupported implementation pending, and routes valid candidates; the
 child never applies or approves them.
+
+Do not package a stage recap as one fact. Controls, spatial structure, mechanism
+hypotheses and a current route have different validity and selection boundaries,
+so return separate atomic deliveries when more than one is justified. Do not
+persist current frame, position or remaining budget as memory; the parent runtime
+already supplies them.
 
 ## Parent experiment request
 

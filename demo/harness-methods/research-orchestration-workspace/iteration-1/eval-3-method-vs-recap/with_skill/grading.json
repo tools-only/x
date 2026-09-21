@@ -1,0 +1,97 @@
+{
+  "expectations": [
+    {
+      "text": "The research object is a reusable controlled-object identification method rather than a recap, and the plan explicitly handles the counter animation and collision/zero-displacement cases.",
+      "passed": true,
+      "evidence": "The decision defines the research object as ‘依据动作条件和时序证据识别受控对象，并在证据不足时保留候选’ and explicitly says ‘三次误判是方法失效的案例，不把复述轨迹作为研究目标.’ Its method compares controlled-object movement with UI animation, states that change area only generates candidates, and explicitly requires that ‘零位移不能直接排除“自己”’ when collision is a possible explanation."
+    },
+    {
+      "text": "The initial worker is a one-off clean, read-only child; it is not granted actions or replay and no persistent subagent is created immediately.",
+      "passed": true,
+      "evidence": "The plan chooses ‘一次性干净上下文中的只读 child’ and says the first round only analyzes existing evidence. It explicitly denies ‘控制、回放、回滚或私有评估访问权限,’ reserves every real action for main, and later states ‘现在不创建持久 subagent.’ The transcript also confirms that no child or game action was actually launched during this planning run."
+    },
+    {
+      "text": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.",
+      "passed": true,
+      "evidence": "The persistence section says not to create a skill or Pi task-local tool now. A skill is considered only after the method shows explainable benefit on a new case and has clear boundaries; a tool is considered only for a clear, repeatable mechanical processing need via ‘pi.registerTool／项目声明式 substrate.’ The useful-result and feedback sections require application to a new case, comparison against the largest-change rule, and separation of report delivery, adoption, and actual improvement, while explicitly rejecting a mere recap as sufficient."
+    },
+    {
+      "text": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.",
+      "passed": true,
+      "evidence": "Useful output is defined by applicability, inputs, steps, outputs, uncertainty, failure boundaries, and a next discriminating test. The plan asks for a new-case discrimination plan and later feedback containing exact inputs, candidate outputs, adoption, errors/abstentions, and action/latency cost. It explicitly treats unidentifiability and minimum missing evidence as useful and requires abstention conditions. Concrete controls include one report, at most one follow-up and one main-approved action, ending at the milestone, pausing for missing/unsafe evidence, and stopping when budget is exhausted or new material no longer changes the judgment."
+    }
+  ],
+  "summary": {
+    "passed": 4,
+    "failed": 0,
+    "total": 4,
+    "pass_rate": 1.0
+  },
+  "execution_metrics": {
+    "tool_calls": null,
+    "total_tool_calls": null,
+    "total_steps": null,
+    "errors_encountered": null,
+    "output_chars": 1669,
+    "transcript_chars": 273,
+    "note": "No metrics.json or isolated executor telemetry was available; unavailable fields remain null. Character counts were measured directly from the supplied text files."
+  },
+  "timing": {
+    "executor_duration_seconds": null,
+    "grader_duration_seconds": null,
+    "total_duration_seconds": null,
+    "total_tokens": null,
+    "tool_calls": null,
+    "note": "The supplied timing.json says the run was interrupted and resumed, so no unified timing, token, or tool-call figures can be estimated."
+  },
+  "claims": [
+    {
+      "claim": "The decision uses a one-off clean, read-only child and preserves exclusive game-action authority for main.",
+      "type": "process",
+      "verified": true,
+      "evidence": "decision.md explicitly specifies a one-off clean read-only child, denies control/replay/rollback, and says main decides and executes every real action."
+    },
+    {
+      "claim": "The proposed method handles both counter-animation confounding and collision-induced zero displacement.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The workflow compares UI animation against controlled-object explanations and explicitly retains the controlled-object candidate when collision can explain zero displacement."
+    },
+    {
+      "claim": "No current frames are available, so the run does not claim that the controlled object has been identified or the method validated.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "decision.md states ‘当前题目没有实际帧，不能声称已定位对象或验证方法’; the provided eval input and transcript contain no frames or validation results."
+    },
+    {
+      "claim": "No persistent subagent, skill, Pi task-local tool, or unverified identity memory is created now.",
+      "type": "process",
+      "verified": true,
+      "evidence": "The persistence section explicitly declines these mutations and limits storage to research agenda/checkpoint state; the transcript confirms that no persistent component was created."
+    },
+    {
+      "claim": "The proposed later comparison can demonstrate improvement over the largest-change rule.",
+      "type": "quality",
+      "verified": false,
+      "evidence": "The comparison and feedback protocol is well specified, but it is a future validation plan. No new case, semantic result, or measured improvement is present in this run."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.",
+        "reason": "This combines three independently important checks. Splitting it into skill-method gating, Pi-tool deterministic/semantic gating, and prohibition on packaging observations as skills would prevent one strong clause from masking a missing clause."
+      },
+      {
+        "assertion": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.",
+        "reason": "This bundles four dimensions into one binary verdict. Separate assertions would better discriminate plans that provide stop conditions but omit held-out feedback or abstention behavior."
+      }
+    ],
+    "overall": "The assertions target substantive orchestration behavior and this output satisfies them genuinely. Their main weakness is bundling several independently failure-prone requirements into two compound assertions."
+  }
+}

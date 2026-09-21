@@ -65,7 +65,7 @@ def _validate_scenario(
     summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
     runtime = summary.get("runtime") if isinstance(summary.get("runtime"), dict) else {}
     _check(runtime.get("pi_returncode") == 0, "real ARC Pi loop exited cleanly", checks)
-    expected_actions = 7 if periodic else 3 if scenario == "memory" else 2
+    expected_actions = 7 if periodic else 3 if scenario in {"memory", "system_prompt"} else 2
     _check(runtime.get("agent_actions") == expected_actions, "expected real ARC action boundaries completed", checks)
 
     events = _records(root / "pi-events.jsonl")
@@ -74,10 +74,10 @@ def _validate_scenario(
         for event in events
         if event.get("type") == "tool_execution_start"
     ]
-    required_prefix = ["task_harness", "arc_state", "arc_action" if periodic else "auto_research"]
-    _check(parent_tools[:3] == required_prefix,
-           "opening parent turn forced task_harness -> arc_state -> auto_research", checks)
-    _check("arc_action" in parent_tools[3:], "first parent turn ended at a real ARC action", checks)
+    _check(parent_tools[:2] == ["task_harness", "arc_action"],
+           "opening parent flow used the runtime-injected ARC state and created real action evidence", checks)
+    _check("arc_state" not in parent_tools,
+           "main Agent did not manually reload ARC state already injected by the adapter", checks)
     if periodic:
         reviews = _records(root / "task-harness-reviews.jsonl")
         handoffs = _records(root / "auto-research-handoffs.jsonl")
@@ -104,8 +104,8 @@ def _validate_scenario(
     _check(any(item.get("route_status") == "ready" for item in routes),
            "code router compiled a ready route", checks)
     if not periodic:
-        _check(parent_tools[:5] == ["task_harness", "arc_state", "auto_research", "task_harness", "arc_action"],
-               "parent explicitly adopted the research proposal before the first ARC action", checks)
+        _check(parent_tools[:5] == ["task_harness", "arc_action", "auto_research", "task_harness", "task_harness"],
+               "parent researched from real action evidence, then explicitly adopted and assembled the proposal", checks)
         auto_end = next((index for index, event in enumerate(events)
                          if event.get("type") == "tool_execution_end" and event.get("toolName") == "auto_research"), -1)
         apply_start = next((index for index, event in enumerate(events)
@@ -131,11 +131,23 @@ def _validate_scenario(
     _check(any(item.get(identity) == expected and item.get("status") == "active" for item in resources),
            f"native {scenario} resource materialized", checks)
 
+    selected_ref = {
+        "memory": "memory:smoke-memory@v1",
+        "skills": "skill:smoke-skill@v1",
+        "tools": "tool:smoke-counter@v1",
+        "subagents": "subagent:smoke-reviewer@v1",
+        "system_prompt": "system_prompt:smoke-core-rule@v1",
+    }[scenario]
+    assemblies = _records(root / "task-harness-assemblies.jsonl")
+    _check(any(selected_ref in item.get("selected_resource_refs", []) for item in assemblies),
+           "main Agent explicitly selected the exact materialized component version", checks)
+
     contexts = [item for item in _records(root / "arc-smoke-provider-contexts.jsonl")
                 if item.get("child") is False]
-    next_turn = [item for item in contexts if int(item.get("request", -1)) >= 4]
-    _check(bool(contexts) and all(item.get("parent_guide_present") for item in contexts),
-           "ARC parent uses the shared parent guide", checks)
+    next_turn = contexts
+    _check(bool(contexts) and all(item.get("parent_decision_contract_present")
+                                  or item.get("parent_guide_present") for item in contexts),
+           "ARC parent receives the thin decision-cycle Auto-Research contract", checks)
     research_contexts = [item for item in _records(root / "arc-smoke-provider-contexts.jsonl")
                          if item.get("research_child")]
     expected_headings = [PROFILE_HEADINGS[scope]] if scope in PROFILE_HEADINGS else []
@@ -158,7 +170,7 @@ def _validate_scenario(
         _check(any(item.get("messages_have_memory_marker") is True for item in next_turn),
                "next parent turn received routed memory content", checks)
         if not periodic:
-            _check(any(item.get("knowledge_lifecycle_verified") for item in contexts if item.get("request", -1) >= 9),
+            _check(any(item.get("knowledge_lifecycle_verified") for item in contexts),
                    "later real parent turn received replacement policy and suspended transitive stale guidance", checks)
     elif scenario == "skills":
         _check(any(item.get("messages_have_skill_marker") is True for item in next_turn),
@@ -260,28 +272,29 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
     starts = [event for event in events if event.get("type") == "tool_execution_start"]
     parent_sequence = [(event.get("toolName"), event.get("args", {}).get("action")) for event in starts]
     expected_prefix = [
-        ("task_harness", "start"), ("arc_state", None),
+        ("task_harness", "start"),
         ("arc_action", "ACTION1"), ("arc_action", "RESET"),
         ("arc_action", "ACTION2"), ("arc_action", "ACTION1"),
         ("task_harness", "inspect"), ("auto_research", "start"),
         ("task_harness", "adopt_research"),
+        ("task_harness", "assemble"),
     ]
     expected_suffix = [
         ("task_harness", "assess_effect"), ("auto_research", "start"),
         ("task_harness", "inspect"), ("arc_action", "ACTION3"),
     ]
     sequence_ok = (parent_sequence[:len(expected_prefix)] == expected_prefix
-                   and parent_sequence[len(expected_prefix)][0] == "task_resource"
+                   and parent_sequence[len(expected_prefix)] == ("task_harness", "focus")
                    and parent_sequence[len(expected_prefix) + 1][0] == "arc_action"
                    and parent_sequence[len(expected_prefix) + 2:len(expected_prefix) + 6] == expected_suffix)
     _check(sequence_ok, "parent preserved the online sequence from two contexts through feedback research", checks)
 
     observations = _records(root / "execution-observations.jsonl")
     by_id = {item.get("observation_id"): item for item in observations}
-    _check(by_id.get("execution-observation-2", {}).get("input", {}).get("action") == "ACTION1"
-           and by_id.get("execution-observation-3", {}).get("input", {}).get("action") == "RESET"
-           and by_id.get("execution-observation-4", {}).get("input", {}).get("action") == "ACTION2"
-           and by_id.get("execution-observation-5", {}).get("input", {}).get("action") == "ACTION1",
+    _check(by_id.get("execution-observation-1", {}).get("input", {}).get("action") == "ACTION1"
+           and by_id.get("execution-observation-2", {}).get("input", {}).get("action") == "RESET"
+           and by_id.get("execution-observation-3", {}).get("input", {}).get("action") == "ACTION2"
+           and by_id.get("execution-observation-4", {}).get("input", {}).get("action") == "ACTION1",
            "same ARC action produced distinct observable transitions across a reset and intervening action", checks)
 
     opportunities = _records(root / "auto-research-opportunities.jsonl")
@@ -298,9 +311,9 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
                "level:0:attempt:1", "level:0:attempt:2",
            }
            and set(opportunity.get("construction_evidence_refs", [])) == {
-               "execution-observation-2", "execution-observation-5",
+               "execution-observation-1", "execution-observation-4",
            }
-           and "execution-observation-4" in opportunity.get("intervening_evidence_refs", []),
+           and "execution-observation-3" in opportunity.get("intervening_evidence_refs", []),
            "runtime discovered a causal-neutral candidate from public pre-action states rather than attempt identity",
            checks)
     sessions = _records(root / "auto-research-sessions.jsonl")
@@ -312,7 +325,7 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
     _check(candidate_ref is not None
            and construction_session.get("research_candidate_ref") == candidate_ref
            and set(construction_session.get("evidence_refs", [])) >= {
-               "execution-observation-2", "execution-observation-4", "execution-observation-5",
+               "execution-observation-1", "execution-observation-3", "execution-observation-4",
            }, "parent selected one candidate ref and runtime expanded its exact evidence", checks)
 
     bundles = _records(root / "auto-research-comparison-bundles.jsonl")
@@ -323,7 +336,7 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
            and construction.get("semantic_equivalence_claimed") is False,
            "code-built comparison remained causal-neutral", checks)
     _check(set(construction.get("selected_evidence_refs", [])) >= {
-        "execution-observation-2", "execution-observation-4", "execution-observation-5",
+        "execution-observation-1", "execution-observation-3", "execution-observation-4",
     } and set(construction.get("episode_context_ids", [])) >= {
         "level:0:attempt:1", "level:0:attempt:2",
     } and repeated_action.get("context_count") == 2
@@ -332,7 +345,7 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
 
     construction_cards = [item for item in construction.get("evidence_cards", [])
                           if item.get("observation_ref") in {
-                              "execution-observation-2", "execution-observation-5",
+                              "execution-observation-1", "execution-observation-4",
                           }]
     construction_pre_state_refs = {
         item.get("pre_action_condition", {}).get("canonical_detail_ref")
@@ -351,9 +364,9 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
     accesses = _records(root / "task-resource-access.jsonl")
     child_reads = [item.get("resource_ref") for item in accesses if item.get("reader") == "subagent"]
     _check(construction_pre_state_refs.issubset(set(child_reads))
-           and "observation:execution-observation-2@v1" in child_reads
-           and "observation:execution-observation-4@v1" in child_reads
-           and "observation:execution-observation-5@v1" in child_reads,
+           and "observation:execution-observation-1@v1" in child_reads
+           and "observation:execution-observation-3@v1" in child_reads
+           and "observation:execution-observation-4@v1" in child_reads,
            "construction child read both public pre-action states, construction observations, and the contrast", checks)
 
     reports = _records(root / "auto-research-reports.jsonl")
@@ -363,11 +376,11 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
     method_candidate = method_candidates[0] if method_candidates else {}
     method = method_candidate.get("method", {})
     _check(_observation_ids(first_body.get("evidence_refs", [])) >= {
-        "execution-observation-2", "execution-observation-4", "execution-observation-5",
+        "execution-observation-1", "execution-observation-3", "execution-observation-4",
     } and _observation_ids(method.get("construction_evidence_refs", [])) >= {
-        "execution-observation-2", "execution-observation-5",
+        "execution-observation-1", "execution-observation-4",
     } and _observation_ids(method.get("contrast_evidence_refs", [])) >= {
-        "execution-observation-4",
+        "execution-observation-3",
     }, "child grounded the method in two contexts and an explicit contrast", checks)
     _check(bool(method.get("invariants")) and bool(method.get("parameters"))
            and bool(method.get("steps")) and bool(method.get("falsifier")),
@@ -393,7 +406,11 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
     resource_refs = lifecycle[1].get("resource_refs", []) if len(lifecycle) >= 2 else []
     _check(bool(resource_refs) and any(str(ref).startswith("skill:") for ref in resource_refs),
            "child-authored method procedure was adopted as an exact harness version", checks)
-    accesses_by_parent = [item for item in accesses if item.get("reader") == "parent"]
+    exposures = _records(root / "task-harness-context-exposures.jsonl")
+    exact_skill_exposed = any(any(
+        item.get("name") == "smoke-action-method" and item.get("version") == 1
+        for item in exposure.get("skill_versions", [])
+    ) for exposure in exposures)
     later_action = next((item for item in observations
                          if item.get("tool_name") == "arc_action"
                          and item.get("input", {}).get("decision", {}).get("basis_refs") == resource_refs), {})
@@ -402,7 +419,7 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
     decision = later_action.get("input", {}).get("decision", {})
     _check(later_action.get("tool_name") == "arc_action"
            and bool(resource_refs) and cited_basis == resource_refs
-           and any(item.get("resource_ref") in resource_refs for item in accesses_by_parent)
+           and exact_skill_exposed
            and bool(decision.get("prediction")) and bool(decision.get("falsifier")) and len(lifecycle) >= 3
            and lifecycle[2].get("actual_use_observation_refs") == [actual_use_ref],
            "evaluation credited the later ARC action selected from the exact read procedure version", checks)
@@ -419,7 +436,7 @@ def _validate_cross_context_method(root: Path) -> dict[str, Any]:
            },
            "feedback research returned on the same research line", checks)
     _check(f"observation:{actual_use_ref}@v1" in child_reads
-           and "observation:execution-observation-4@v1" in child_reads,
+           and "observation:execution-observation-3@v1" in child_reads,
            "feedback child read actual use alongside construction and contrast evidence", checks)
     _check(not _records(root / "task-operation-failures.jsonl"),
            "cross-context method loop had no operation failures", checks)
@@ -472,7 +489,8 @@ def run_arc_harness_smoke(
                 **({"bridge_python": Path(sys.executable), "bridge_module_paths": (project_root / "tools/mock_arc_sdk",)} if mock_environment else {}),
                 game=game,
                 experiment_variant="treatment",
-                max_actions=7 if periodic else 6 if cross_context_method else 3 if scenario == "memory" else 2,
+                max_actions=(7 if periodic else 6 if cross_context_method
+                             else 3 if scenario in {"memory", "system_prompt"} else 2),
                 context_compaction=True,
                 pi_provider="offline-arc-harness-smoke",
                 pi_model="scripted",

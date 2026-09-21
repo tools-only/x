@@ -1,0 +1,11 @@
+{
+  "eval_id": 3,
+  "eval_name": "method-vs-recap",
+  "prompt": "最近游戏中三次把最大的变化块当作自己，其中一次其实是计数器动画；一次碰撞导致自己不动。当前可以安全等候思考，尚未有相关研究线。你可给只读 child 提供动作前后帧，也可建立一次性的干净上下文。请设计下一步工作：需要什么研究对象、如何分解、是否应创建持久 subagent/skill/tool/memory、什么结果算有用、何时停止。请勿假设 child 可以控制游戏或回放，输出 decision.md。",
+  "assertions": [
+    "The research object is a reusable controlled-object identification method rather than a recap, and the plan explicitly handles the counter animation and collision/zero-displacement cases.",
+    "The initial worker is a one-off clean, read-only child; it is not granted actions or replay and no persistent subagent is created immediately.",
+    "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.",
+    "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions."
+  ]
+}

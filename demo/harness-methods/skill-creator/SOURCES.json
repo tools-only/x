@@ -1,0 +1,7 @@
+{
+  "upstream": "anthropics/claude-plugins-official",
+  "revision": "c447c3207a425bc4e2a0d068435f64b0477ae981",
+  "path": "plugins/skill-creator/skills/skill-creator",
+  "license": "Apache-2.0",
+  "adaptation": "SKILL.md and supporting resources retained; separate PI_ADAPTATION.md maps runtime mechanics. Line endings normalized."
+}

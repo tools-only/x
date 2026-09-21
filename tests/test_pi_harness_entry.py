@@ -94,8 +94,8 @@ def test_context_token_debug_breaks_down_each_provider_turn(tmp_path):
     assert requests[0]["modules"]["task_prompt"]["estimated_tokens"] > 0
     assert requests[0]["modules"]["checkpoint"]["estimated_tokens"] > 0
     assert requests[0]["modules"]["tools"]["estimated_tokens"] > 0
-    assert requests[1]["modules"]["memory"]["estimated_tokens"] > 0
-    assert requests[2]["modules"]["skills"]["estimated_tokens"] > 0
+    assert requests[1]["modules"]["memory"]["estimated_tokens"] == 0
+    assert requests[2]["modules"]["skills"]["estimated_tokens"] == 0
     assert all("Keep the observed delta" not in json.dumps(item) for item in debug)
 
 
@@ -122,6 +122,14 @@ def test_task_system_prompt_overlay_uses_native_before_agent_start_on_next_agent
                 "action": "create", "name": "stable-observation-rule",
                 "content": "Keep observed state separate from inferred cause.",
                 "scope": "current task",
+            },
+        }, {
+            "name": "task_harness", "arguments": {
+                "action": "assemble", "expected_assembly_revision": 0,
+                "selected_resource_refs": ["system_prompt:stable-observation-rule@v1"],
+                "prompt_contributions": [],
+                "decision": {"basis_refs": [], "reason": "Select the stable rule.",
+                             "expected": "The next request receives the selected overlay."},
             },
         }]),
     }
@@ -193,6 +201,7 @@ def test_facade_accepts_component_words_and_supplies_current_update_version(tmp_
             "action": "change",
             "changes": [{"operation": "create", "candidate": {
                 "semantic_kind": "memory", "key": "state", "content": "v1",
+                "atom": {"subject": "fixture state", "predicate": "equals", "value": "v1"},
             }}],
             "decision": {"basis_refs": [], "reason": "Keep state.", "expected": "State is available."},
         }},
@@ -200,6 +209,7 @@ def test_facade_accepts_component_words_and_supplies_current_update_version(tmp_
             "action": "change",
             "changes": [{"operation": "update", "candidate": {
                 "semantic_kind": "memory", "key": "state", "content": "v2",
+                "atom": {"subject": "fixture state", "predicate": "equals", "value": "v2"},
             }}],
             "decision": {"basis_refs": [], "reason": "Refresh state.", "expected": "New state replaces old state."},
         }},
@@ -234,7 +244,9 @@ def test_facade_renders_structured_text_bodies_without_object_coercion(tmp_path)
                 }},
                 {"operation": "create", "candidate": {
                     "semantic_kind": "fact", "execution": "text", "name": "structured-state",
-                    "content": {"confirmed": ["ACTION1=up"], "unknown": ["goal"]},
+                    "content": {"confirmed": ["ACTION1=up"]},
+                    "atom": {"subject": "controls", "predicate": "confirmed_mapping",
+                             "value": {"ACTION1": "up"}},
                 }},
             ],
             "decision": {"basis_refs": [], "reason": "Persist complete structured bodies.",
@@ -251,7 +263,7 @@ def test_facade_renders_structured_text_bodies_without_object_coercion(tmp_path)
     assert '"procedure"' in skill["instructions"]
     assert '"known_action_map"' in skill["instructions"]
     assert memory["content"] != "[object Object]"
-    assert '"confirmed"' in memory["content"]
+    assert '"ACTION1"' in memory["content"]
 
 
 def test_facade_preserves_knowledge_lifecycle_links(tmp_path):
@@ -262,6 +274,7 @@ def test_facade_preserves_knowledge_lifecycle_links(tmp_path):
             "changes": [
                 {"operation": "create", "candidate": {
                     "semantic_kind": "memory", "key": "old-policy", "content": "old",
+                    "atom": {"subject": "fixture policy", "predicate": "version", "value": "old"},
                 }},
                 {"operation": "create", "candidate": {
                     "semantic_kind": "skill", "name": "dependent", "content": "Use the old policy.",
@@ -269,6 +282,7 @@ def test_facade_preserves_knowledge_lifecycle_links(tmp_path):
                 }},
                 {"operation": "create", "candidate": {
                     "semantic_kind": "memory", "key": "new-policy", "content": "new",
+                    "atom": {"subject": "fixture policy", "predicate": "version", "value": "new"},
                     "supersedes_refs": ["memory:old-policy@v1"],
                 }},
             ],
@@ -289,11 +303,13 @@ def test_facade_rejects_explicit_stale_update_version(tmp_path):
     events = _run_fixture(root, "treatment", steps=[
         {"name": "task_harness", "arguments": {
             "action": "change", "changes": [{"operation": "create", "candidate": {
-                "semantic_kind": "memory", "key": "state", "content": "v1"}}],
+                "semantic_kind": "memory", "key": "state", "content": "v1",
+                "atom": {"subject": "fixture state", "predicate": "equals", "value": "v1"}}}],
             "decision": {"basis_refs": [], "reason": "Create state.", "expected": "State exists."}}},
         {"name": "task_harness", "arguments": {
             "action": "change", "changes": [{"operation": "update", "candidate": {
-                "semantic_kind": "memory", "key": "state", "target_version": 2, "content": "bad"}}],
+                "semantic_kind": "memory", "key": "state", "target_version": 2, "content": "bad",
+                "atom": {"subject": "fixture state", "predicate": "equals", "value": "bad"}}}],
             "decision": {"basis_refs": [], "reason": "Attempt stale write.", "expected": "Conflict is reported."}}},
     ])
     writes = records(root, "task-memory.jsonl")
@@ -347,6 +363,152 @@ def test_explicit_assembly_selects_pool_and_projects_non_memory_prompt_source(tm
     contribution = next(item for item in prompt_receipt["selected"] if item["layer"] == "method")
     assert contribution["source_ref"] == "skill:route-check@v1"
     assert len(contribution["sha256"]) == 64
+
+
+def test_atomic_memories_are_independently_selected_and_projected(tmp_path):
+    root = tmp_path / "atomic-memory-assembly"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [
+                {"operation": "create", "candidate": {
+                    "semantic_kind": "fact", "name": "control-mapping",
+                    "atom": {"subject": "ls20 controls", "predicate": "action_mapping",
+                             "value": {"ACTION1": "up", "ACTION2": "down"}},
+                    "summary": "Verified control mapping.",
+                    "scope": {"kind": "task_wide", "statement": "ls20 task"},
+                    "context_visibility": "always", "prompt_channel": "task_prompt",
+                    "prompt_text": "Verified controls: ACTION1=up; ACTION2=down.",
+                    "basis_refs": ["observation:controls@v1"],
+                }},
+                {"operation": "create", "candidate": {
+                    "semantic_kind": "plan", "name": "route-to-ring",
+                    "atom": {"subject": "upper ring", "predicate": "planned_route",
+                             "value": ["ACTION1", "ACTION1", "ACTION1"]},
+                    "summary": "Conditional route to the upper ring.",
+                    "scope": {"kind": "condition", "statement": "while north corridor is open"},
+                    "context_visibility": "always", "prompt_channel": "task_prompt",
+                    "prompt_text": "ROUTE_SHOULD_STAY_OUT",
+                    "basis_refs": ["observation:route@v1"],
+                }},
+            ],
+            "decision": {"basis_refs": ["observation:controls@v1", "observation:route@v1"],
+                         "reason": "Persist independently invalidatable controls and route.",
+                         "expected": "The parent can select either atom without loading the other."},
+        }},
+        {"name": "task_harness", "arguments": {"action": "inspect"}},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["memory:control-mapping@v1"],
+            "prompt_contributions": [],
+            "decision": {"basis_refs": ["observation:controls@v1"],
+                         "reason": "Only the control mapping is needed for the next decision.",
+                         "expected": "The next context includes controls and omits the route."},
+        }},
+        {"name": "task_harness", "arguments": {"action": "inspect"}},
+    ])
+    assert not [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
+    memories = records(root, "task-memory.jsonl")
+    assert [item["key"] for item in memories] == ["control-mapping", "route-to-ring"]
+    assert memories[0]["atom"]["predicate"] == "action_mapping"
+    assert memories[1]["atom"]["predicate"] == "planned_route"
+
+    inspections = [json.loads(item["result"]["content"][0]["text"])
+                   for item in results(events, "task_harness") if not item.get("isError")]
+    before_assembly = inspections[1]
+    assert before_assembly["current_assembly"] is None
+    assert not any(item["selected"] for item in before_assembly["component_pool"])
+    assert {item["atom"]["predicate"] for item in before_assembly["component_pool"]
+            if item["kind"] == "memory"} == {"action_mapping", "planned_route"}
+
+    context_text = json.dumps(records(root, "provider-contexts.jsonl")[-1]["context"])
+    assert "Verified controls: ACTION1=up; ACTION2=down." in context_text
+    assert "ROUTE_SHOULD_STAY_OUT" not in context_text
+    assembly = records(root, "task-harness-assemblies.jsonl")[-1]
+    assert assembly["selected_resource_refs"] == ["memory:control-mapping@v1"]
+
+
+def test_atomic_memory_revision_does_not_rewrite_other_atoms(tmp_path):
+    root = tmp_path / "atomic-memory-revision"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [
+                {"operation": "create", "candidate": {"semantic_kind": "fact", "name": "controls",
+                    "atom": {"subject": "controls", "predicate": "action_mapping", "value": {"ACTION1": "up"}}}},
+                {"operation": "create", "candidate": {"semantic_kind": "fact", "name": "tile-lattice",
+                    "atom": {"subject": "level-1 grid", "predicate": "tile_size", "value": 5}}},
+            ], "decision": {"basis_refs": [], "reason": "Create separate facts.",
+                            "expected": "Each fact has an independent version chain."}}},
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "update", "candidate": {
+                "semantic_kind": "fact", "name": "controls",
+                "atom": {"subject": "controls", "predicate": "action_mapping",
+                         "value": {"ACTION1": "up", "ACTION2": "down"}}}}],
+            "decision": {"basis_refs": [], "reason": "Extend only the control mapping.",
+                         "expected": "The tile lattice keeps its original version."}}},
+    ])
+    assert not [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
+    memories = records(root, "task-memory.jsonl")
+    assert [(item["key"], item["version"]) for item in memories] == [
+        ("controls", 1), ("tile-lattice", 1), ("controls", 2),
+    ]
+
+
+def test_atomic_memory_revision_keeps_subject_and_predicate_identity(tmp_path):
+    root = tmp_path / "atomic-memory-identity"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "fact", "name": "controls",
+                "atom": {"subject": "controls", "predicate": "action_mapping", "value": {"ACTION1": "up"}}}}],
+            "decision": {"basis_refs": [], "reason": "Create one control atom.",
+                         "expected": "Its identity is stable across revisions."}}},
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "update", "candidate": {
+                "semantic_kind": "fact", "name": "controls",
+                "atom": {"subject": "goal", "predicate": "target", "value": "vault"}}}],
+            "decision": {"basis_refs": [], "reason": "Attempt to reuse the key for another subject.",
+                         "expected": "The write is rejected before a new version is stored."}}},
+    ])
+    output = results(events, "task_harness")[-1]
+    receipt = json.loads(output["result"]["content"][0]["text"])
+    assert receipt["status"] == "failed"
+    assert "cannot change subject or predicate" in json.dumps(receipt)
+    assert [(item["key"], item["version"]) for item in records(root, "task-memory.jsonl")] == [("controls", 1)]
+
+
+def test_facade_rejects_non_atomic_fact_memory(tmp_path):
+    root = tmp_path / "reject-compound-memory"
+    events = _run_fixture(root, "treatment", steps=[{"name": "task_harness", "arguments": {
+        "action": "change", "changes": [{"operation": "create", "candidate": {
+            "semantic_kind": "fact", "name": "whole-level-note",
+            "content": "position, controls, target and remaining route",
+        }}],
+        "decision": {"basis_refs": [], "reason": "Attempt a compound memory.",
+                     "expected": "The deterministic boundary rejects it."},
+    }}])
+    output = results(events, "task_harness")[0]
+    assert output.get("isError")
+    assert "atom={subject,predicate,value}" in output["result"]["content"][0]["text"]
+
+
+def test_prompt_contribution_cannot_bypass_component_selection(tmp_path):
+    root = tmp_path / "prompt-source-selection"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_skill", "arguments": {"action": "create", "name": "route-check",
+                                                "instructions": "Check the destination."}},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": [],
+            "prompt_contributions": [{"contribution_id": "bypass", "source_ref": "skill:route-check@v1",
+                                      "layer": "method", "content": "Use the unselected skill."}],
+            "decision": {"basis_refs": [], "reason": "Attempt an invalid composition.",
+                         "expected": "The runtime rejects an unselected component source."},
+        }},
+    ])
+    output = results(events, "task_harness")[-1]
+    assert output.get("isError")
+    assert "must also be selected" in output["result"]["content"][0]["text"]
 
 
 def test_assembly_revision_conflict_does_not_replace_current_selection(tmp_path):
@@ -497,16 +659,25 @@ def test_direct_skill_research_revision_projects_next_request_without_native_loa
     path = root / "task-harness" / "skills" / "probe" / "SKILL.md"
     events = _run_fixture(root, "treatment", steps=[
         {"name": "task_skill", "arguments": {"action": "create", "name": "probe", "instructions": "Predict before probing."}},
+        {"name": "task_harness", "arguments": {"action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:probe@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the probe skill.",
+                         "expected": "The skill can be read on the next step."}}},
         {"name": "read", "arguments": {"path": str(path)}},
         {"name": "benchmark_probe", "arguments": {"progressed": False}},
         {"name": "research_resource", "arguments": {"action": "open", "question": "Does the trial method distinguish explanations?", "evidence_to_seek": "A contrasting prediction", "subject_kind": "component", "hypothesis": "Comparing predictions reduces ambiguous probes.", "subject_refs": ["skill:probe@v1"], "component_refs": ["skill:probe@v1"]}},
         {"name": "task_skill", "arguments": {"action": "update", "name": "probe", "target_version": 1, "instructions": "Compare competing predictions before probing.", "basis_refs": ["finding-1"]}},
+        {"name": "task_harness", "arguments": {"action": "assemble", "expected_assembly_revision": 1,
+            "selected_resource_refs": ["skill:probe@v2"], "prompt_contributions": [],
+            "decision": {"basis_refs": ["finding-1"], "reason": "Select the revised skill version.",
+                         "expected": "Later requests use only the revised procedure."}}},
         {"name": "benchmark_probe", "arguments": {"progressed": True}},
         {"name": "assess_harness_effect", "arguments": {"decision_id": "decision-2", "observation_refs": ["execution-observation-2"], "verdict": "inconclusive", "consequence": "Progress observed, attribution remains uncertain."}},
     ])
     assert not [e for e in events if e.get("type") == "tool_execution_end" and e.get("isError")]
     contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
-    projected = [m for m in contexts[5]["messages"] if "Active task-local skills" in json.dumps(m)]
+    projected = [m for context in contexts for m in context["messages"]
+                 if "Active task-local skills" in json.dumps(m) and "skill:probe@v2" in json.dumps(m)]
     assert "skill:probe@v2" in json.dumps(projected)
     assert "Compare competing predictions" in path.read_text(encoding="utf-8")
     assert "instructions" not in json.dumps(projected)  # full body is available by explicit read/focus
@@ -526,6 +697,10 @@ def test_effect_assessment_binds_unique_exposed_decision_and_observations(tmp_pa
     path = root / "task-harness" / "skills" / "probe" / "SKILL.md"
     events = _run_fixture(root, "treatment", steps=[
         {"name": "task_skill", "arguments": {"action": "create", "name": "probe", "instructions": "Inspect once."}},
+        {"name": "task_harness", "arguments": {"action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:probe@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the skill for one read.",
+                         "expected": "The read is bound to the exact selected version."}}},
         {"name": "read", "arguments": {"path": str(path)}},
         {"name": "task_harness", "arguments": {
             "action": "assess_effect", "verdict": "inconclusive",
@@ -679,14 +854,56 @@ def test_task_harness_focus_projects_only_selected_task_resource_versions(tmp_pa
             "action": "create", "name": "beta", "description": "Second trial", "instructions": "Use beta.",
         }},
         {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:alpha@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select alpha for the next request.",
+                         "expected": "Only alpha enters the active Harness."},
+        }},
+        {"name": "task_harness", "arguments": {
             "action": "focus", "resource_refs": ["skill:alpha@v1"],
         }},
     ])
     contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
-    focused = [message for message in contexts[3]["messages"] if "Active task-local skills" in json.dumps(message)]
+    focused = [message for message in contexts[4]["messages"] if "Active task-local skills" in json.dumps(message)]
     assert len(focused) == 1
     assert "alpha" in json.dumps(focused[0])
     assert "beta" not in json.dumps(focused[0])
+
+
+def test_new_assembly_clears_focus_from_the_previous_assembly(tmp_path):
+    root = tmp_path / "assembly-clears-focus"
+    events = _run_fixture(root, "treatment", arc_compact=True, steps=[
+        {"name": "task_skill", "arguments": {
+            "action": "create", "name": "alpha", "instructions": "Use alpha.",
+        }},
+        {"name": "task_skill", "arguments": {
+            "action": "create", "name": "beta", "instructions": "Use beta.",
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:alpha@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select alpha.",
+                         "expected": "Only alpha is selected."},
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "focus", "resource_refs": ["skill:alpha@v1"],
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 1,
+            "selected_resource_refs": ["skill:beta@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Switch to beta.",
+                         "expected": "The old alpha focus cannot hide beta."},
+        }},
+        {"name": "task_harness", "arguments": {"action": "inspect"}},
+    ])
+    contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
+    selected = [message for message in contexts[5]["messages"]
+                if "Active task-local skills" in json.dumps(message)]
+    assert len(selected) == 1
+    assert "beta" in json.dumps(selected[0])
+    assert "alpha" not in json.dumps(selected[0])
+    status = results(events, "task_harness")[-1]
+    assert json.loads(status["result"]["content"][0]["text"])["focused_resource_refs"] is None
 
 
 def test_compact_arc_focus_projects_memory_body_after_creation(tmp_path):
@@ -696,6 +913,12 @@ def test_compact_arc_focus_projects_memory_body_after_creation(tmp_path):
         {"name": "task_memory", "arguments": {
             "action": "upsert", "key": "action-effects",
             "content": "Keep public common changes separate from action-specific changes.",
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["memory:action-effects@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the action-effects memory.",
+                         "expected": "The focused body can enter the next request."},
         }},
         {"name": "task_harness", "arguments": {
             "action": "focus", "resource_refs": ["memory:memory-1@v1"],
@@ -725,6 +948,12 @@ def test_compact_arc_focus_projects_skill_instructions_and_system_prompt_body(tm
             "instructions": "Compare competing predictions before selecting a probe.",
         }},
         {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:probe-method@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the probe method.",
+                         "expected": "The selected skill can be focused."},
+        }},
+        {"name": "task_harness", "arguments": {
             "action": "focus", "resource_refs": ["skill:skill-1@v1"],
         }},
     ])
@@ -735,6 +964,12 @@ def test_compact_arc_focus_projects_skill_instructions_and_system_prompt_body(tm
     _run_fixture(prompt_root, "treatment", arc_compact=True, steps=[
         {"name": "task_system_prompt", "arguments": {
             "action": "create", "name": "review-rule", "content": "After a repeated outcome, compare two hypotheses.",
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["system_prompt:review-rule@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the review rule.",
+                         "expected": "The overlay enters the next request."},
         }},
     ])
     prompt_contexts = [item["context"] for item in records(prompt_root, "provider-contexts.jsonl")]
@@ -759,6 +994,12 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
                 "basis_refs": [], "reason": "Create a reusable observation procedure.",
                 "expected": "The procedure can be read and used on a later decision.",
             },
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:probe@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the created procedure.",
+                         "expected": "The selected skill can be read."},
         }},
         {"name": "task_harness", "arguments": {
             "action": "enable", "enabled_tools": ["skill"],
@@ -800,7 +1041,7 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
         "arc_state", "inspect_arc_trajectory", "task_harness_status", "task_checkpoint",
         "task_resource", "task_validation", "research_resource", "delegate_task", "task_skill",
     })
-    assert "read" in {tool["name"] for tool in contexts[2]["tools"]}
+    assert "read" in {tool["name"] for tool in contexts[3]["tools"]}
     assert any(
         event.get("event") == "read_by_agent" and event.get("name") == "probe"
         for event in records(root, "task-skill-events.jsonl")

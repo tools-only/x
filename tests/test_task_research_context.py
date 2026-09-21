@@ -58,6 +58,12 @@ def harness_delivery(delivery_id, semantic_kind, name, content, **overrides):
         "expected_effect": "improve the next bounded fixture decision",
         "reconsider_when": "a later fixture observation contradicts it",
     }
+    if semantic_kind in {"fact", "plan"}:
+        defaults["atom"] = {
+            "subject": name,
+            "predicate": "states" if semantic_kind == "fact" else "plans",
+            "value": content,
+        }
     defaults.update(overrides)
     if (defaults["context_visibility"] == "always" and "prompt_operation" not in defaults):
         defaults["prompt_operation"] = "create"
@@ -796,12 +802,14 @@ def test_harness_protocol_keeps_auto_research_out_of_change_boundary():
 def test_harness_protocol_normalizes_parent_component_aliases_before_routing():
     state = run_harness_protocol_helper(
         "protocol.classifyHarnessChangeTargets(JSON.parse(process.env.HARNESS_PROTOCOL_TEST_INPUT))",
-        input_value={"layer": "task_state", "name": "map", "content": "verified mapping"},
+        input_value={"layer": "task_state", "name": "map", "content": "verified mapping",
+                     "atom": {"subject": "controls", "predicate": "action_mapping", "value": "verified mapping"}},
     )
     assert state == ["memory"]
     policy = run_harness_protocol_helper(
         "protocol.normalizeSemanticCandidate(JSON.parse(process.env.HARNESS_PROTOCOL_TEST_INPUT))",
-        input_value={"component": "task_prompt", "name": "guidance", "content": "use the verified map"},
+        input_value={"component": "task_prompt", "name": "guidance", "content": "use the verified map",
+                     "atom": {"subject": "next decision", "predicate": "uses", "value": "the verified map"}},
     )
     assert policy["semantic_kind"] == "plan"
     assert policy["execution"] == "text"
@@ -827,6 +835,7 @@ def test_unified_change_protocol_routes_prompt_tools_and_subagents():
         {
             "semantic_kind": "fact", "execution": "text", "prompt_channel": "task_prompt",
             "context_visibility": "always",
+            "atom": {"subject": "current state", "predicate": "contains", "value": "fixture fact"},
         },
         {
             "semantic_kind": "fact", "execution": "text", "prompt_channel": "system_prompt",
@@ -834,6 +843,7 @@ def test_unified_change_protocol_routes_prompt_tools_and_subagents():
             "scope": {"kind": "task_wide", "statement": "whole task"},
             "basis_refs": ["context:contract@v1"],
             "system_prompt_basis": {"source": "explicit_task_contract", "evidence_refs": ["context:contract@v1"]},
+            "atom": {"subject": "task contract", "predicate": "requires", "value": "fixture rule"},
         },
         {
             "semantic_kind": "computation", "execution": "pure_computation",
@@ -1667,6 +1677,12 @@ def test_memory_conflict_recovers_without_overwrite_and_reads_full_pages(tmp_pat
         {"name": "task_memory", "arguments": {"action": "upsert", "key": "model", "content": "body" * 1800, "summary": "An untested model."}},
         {"name": "task_memory", "arguments": {"action": "upsert", "key": "model", "target_version": 2, "content": "wrong overwrite"}},
         {"name": "task_memory", "arguments": {"action": "upsert", "key": "model", "target_version": 1, "append_content": " END", "summary": "Updated untested model."}},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["memory:model@v2"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the recovered memory version.",
+                         "expected": "The next request exposes only the recovered version."},
+        }},
         {"name": "task_resource", "arguments": {"action": "read", "ref": "memory:model@v2", "offset": 200, "limit": 240}},
         {"name": "task_resource", "arguments": {"action": "read", "ref": "failure:failure-1@v1", "limit": 8000}},
     ])
@@ -2492,6 +2508,13 @@ def test_research_method_is_validated_only_after_adoption_actual_use_and_assessm
                 "action": "adopt_research",
                 "research_run_ref": "research_run:auto-research-1@v1",
             }},
+            {"name": "task_harness", "arguments": {
+                "action": "assemble", "expected_assembly_revision": 0,
+                "selected_resource_refs": ["tool:state-selector@v1"], "prompt_contributions": [],
+                "decision": {"basis_refs": ["research_run:auto-research-1@v1"],
+                             "reason": "Select the adopted computation for its bounded trial.",
+                             "expected": "Only the exact adopted version can be invoked."},
+            }},
             {"name": "task_tool_state-selector_v1", "arguments": {
                 "input": {"state": "RUNNING", "irrelevant": "discard-me"},
             }},
@@ -2610,6 +2633,12 @@ def test_task_memory_plan_projection_enters_dynamic_task_prompt_context_without_
             "action": "upsert", "key": "next-plan", "content": "Use the verified sequence.",
             "summary": "Dynamic task plan.", "scope": "this task",
             "projection": {"channel": "task_prompt", "prompt_text": "For this task, use the verified sequence."},
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["memory:next-plan@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select the dynamic task plan.",
+                         "expected": "The next request receives only the selected plan."},
         }},
     ])
     assert not results(events, "task_memory")[0].get("isError")

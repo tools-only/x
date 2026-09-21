@@ -32,6 +32,8 @@ import {
 import { autoResearchHistoryGrants, buildAutoResearchHistoryCatalog } from "./pi_auto_research_history.ts";
 import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
 import { canonicalTextBody } from "./pi_harness_protocol.ts";
+import { normalizeContextRecipe, type SubagentContextRecipe } from "./pi_subagent_context_recipe.ts";
+import { memoryValidityContext } from "./pi_memory_validity.ts";
 
 type AgentDefinition = {
 	adapter_id?: string;
@@ -43,6 +45,7 @@ type AgentDefinition = {
 	description: string;
 	instructions: string;
 	tools: string[];
+	context_recipe?: SubagentContextRecipe;
 	file: string;
 	basis_refs: string[];
 	decision_id?: string;
@@ -634,6 +637,7 @@ function runChildPi(
 		...additionalResourceGrants,
 	])];
 	const toolCreationContract = {
+		memory_validity_context: memoryValidityContext(ensureTaskScope(root).taskId, readResearchRecords(root, "execution-observations.jsonl")),
 		declarative_program_steps: TASK_TOOL_PROGRAM_STEP_KINDS,
 		step_shapes: {
 			pick: { kind: "pick", source: "input", field: "items" },
@@ -1239,6 +1243,7 @@ export function installTaskLocalSubagents(
 			description: Type.Optional(Type.String()),
 			instructions: Type.Optional(Type.String()),
 			tools: Type.Optional(Type.Array(Type.String())),
+			context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
@@ -1264,8 +1269,8 @@ export function installTaskLocalSubagents(
 			if (status === "active" && (!description || !instructions)) throw new Error("active subagent requires description and instructions");
 			const tools = params.tools ?? previous?.tools ?? defaultTools;
 			const unknownTools = tools.filter((tool) => !allowedTools.has(tool));
-			if (!tools.length || unknownTools.length) {
-				throw new Error(`subagent tools must be a non-empty subset of adapter tools; unknown: ${unknownTools.join(", ")}`);
+			if (unknownTools.length) {
+				throw new Error(`subagent tools must be a subset of adapter tools; unknown: ${unknownTools.join(", ")}`);
 			}
 			const file = join(agentsDir, `${name}.md`);
 			const version = (previous?.version ?? 0) + 1;
@@ -1280,6 +1285,8 @@ export function installTaskLocalSubagents(
 				description,
 				instructions,
 				tools,
+				...(params.context_recipe !== undefined ? { context_recipe: normalizeContextRecipe(params.context_recipe) }
+					: previous?.context_recipe ? { context_recipe: previous.context_recipe } : {}),
 				file,
 				basis_refs: params.basis_refs ? resolveBasisRefs(params.basis_refs) : previous?.basis_refs ?? [],
 				decision_id: decisionId,
@@ -1337,6 +1344,8 @@ export function installTaskLocalSubagents(
 			agent_name: Type.Optional(Type.String()),
 			instructions: Type.Optional(Type.String()),
 			task: Type.String(),
+			tools: Type.Optional(Type.Array(Type.String())),
+			context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 			evidence_refs: Type.Optional(Type.Array(Type.String())),
 			resource_refs: Type.Optional(Type.Array(Type.String())),
 		}, { additionalProperties: false }),
@@ -1351,7 +1360,7 @@ export function installTaskLocalSubagents(
 				: perCallInstructions ? {
 					agent_id: "ephemeral", name: "ephemeral-validator", version: 1, status: "active",
 					description: "Agent-authored per-call research/validation role", instructions: perCallInstructions,
-					tools: defaultTools, file: "", basis_refs: [], recordedAt: new Date().toISOString(),
+					tools: params.tools ?? defaultTools, file: "", basis_refs: [], recordedAt: new Date().toISOString(),
 				} : undefined;
 			if (!definition || definition.status !== "active" || (definition.availability ?? "loaded") !== "loaded") controlError("required_selection",[{path:"agent_name|instructions",message:"Supply an existing loaded active agent_name or a nonempty task/instructions value"}],
 				{candidates:[...agents.values()].filter(row => row.status === "active").map(row => ({agent_name:row.name,description:row.description})),
@@ -1372,7 +1381,15 @@ export function installTaskLocalSubagents(
 			const startedAt = new Date().toISOString();
 			const invocationId = `subagent-invocation-${++invocationCounter}`;
 			const nativeChildSessionId = randomUUID();
-			const childContextWindow = await withPublishedStateSnapshot(adapter, undefined, definition.tools);
+			if (params.agent_name && params.tools !== undefined) throw new Error("Revise saved agent tools through task_harness; per-call tools are for ephemeral roles");
+			if (definition.tools.some(name => !allowedTools.has(name))) throw new Error("delegate tools exceed the adapter allowlist");
+			const recipe = params.context_recipe !== undefined ? normalizeContextRecipe(params.context_recipe) : definition.context_recipe;
+			const childContextWindow = await withPublishedStateSnapshot(adapter, recipe ? compactContextWindow(root, recipe) : undefined, definition.tools);
+			const delegatedTask = recipe?.output_contract ? `${params.task}\n\nRequired output: ${recipe.output_contract}` : params.task;
+			const resourceRefs = [...new Set([...(params.resource_refs ?? []), ...(recipe?.inherit_harness_refs ?? [])])];
+			append("subagent-context-bindings.jsonl", { invocation_id: invocationId, context_recipe: recipe ?? null,
+				evidence_refs: params.evidence_refs ?? [], resource_refs: resourceRefs, tools: definition.tools,
+				recordedAt: startedAt });
 			let result: Record<string, unknown>;
 			try {
 				let continuationAttempt = 0;
@@ -1386,12 +1403,12 @@ export function installTaskLocalSubagents(
 				while (true) {
 					continuationAttempt += 1;
 					const continuationTask = continuationAttempt === 1
-						? params.task
-						: `${params.task}\n\nNative Pi session continuation after provider output-length. ` +
+						? delegatedTask
+						: `${delegatedTask}\n\nNative Pi session continuation after provider output-length. ` +
 							"Continue from the existing transcript and return the requested result now; do not restart completed inspection or repeat prior reasoning.";
 					result = await runChildPi(
 						root, definition, adapter, continuationTask,
-						params.evidence_refs ?? [], params.resource_refs ?? [], signal,
+						params.evidence_refs ?? [], resourceRefs, signal,
 						childContextWindow, false, undefined, undefined,
 						`${invocationId}:continuation-${continuationAttempt}`,
 						nativeChildSessionId,

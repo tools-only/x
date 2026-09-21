@@ -1,0 +1,74 @@
+{
+  "expectations": [
+    {
+      "text": "The level-1 RIGHT, RIGHT, UP route is rejected as stale for level 2 and is not projected into the current task prompt.",
+      "passed": true,
+      "evidence": "decision.md explicitly compares the current and source scopes, rejects the route, and names the projection boundary: ‘拒绝采用 `RIGHT, RIGHT, UP`：其地图、门和路径前提已过期，不写入当前 task_prompt，也不为验证旧路线消耗行动。’"
+    },
+    {
+      "text": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.",
+      "passed": true,
+      "evidence": "decision.md decomposes the report into stale observations, stale route inference, and a transferable method candidate. It says the two constructed frames do not establish transfer or task benefit, then explicitly states: ‘现在不创建、不发布、不装配 harness；研究完成不等于主 agent 采纳。’ Creation is gated on stable reusable value from new cases."
+    },
+    {
+      "text": "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria.",
+      "passed": true,
+      "evidence": "decision.md refuses extra probe actions and old-level replay, prioritizes saved frame-action records not used to construct the method, and otherwise waits for naturally produced evidence. It reserves any future probe decision to the main agent and says ‘不存在对子 agent 的动作授权’. It requires comparison to the current recognizer and records correctness evidence, uncertainty, costs, and whether the method actually reduces decision ambiguity."
+    }
+  ],
+  "summary": {
+    "passed": 3,
+    "failed": 0,
+    "total": 3,
+    "pass_rate": 1.0
+  },
+  "timing": {
+    "total_tokens": null,
+    "duration_ms": null,
+    "total_duration_seconds": null,
+    "measurement_note": "Collaboration completion did not expose token or duration metrics; not estimated."
+  },
+  "claims": [
+    {
+      "claim": "The old route's map, door, and path assumptions are stale at level 2.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "The prompt establishes that the route was derived from level 1 / observation:18 while the authoritative state is level 2 / observation:24; decision.md correctly refuses to transfer those level-local assumptions."
+    },
+    {
+      "claim": "The recognition method has not yet demonstrated transfer to level 2 or task-score improvement.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The only stated evidence is two construction examples. decision.md accurately classifies that evidence as insufficient and does not claim method benefit."
+    },
+    {
+      "claim": "The run did not execute actions, launch research, or create/assemble a harness.",
+      "type": "process",
+      "verified": true,
+      "evidence": "transcript.md explicitly reports ‘未执行游戏动作、启动研究、创建或装配 harness’; the only execution output present is outputs/decision.md."
+    },
+    {
+      "claim": "Reusing the original research line in non-blocking mode is the appropriate next research allocation.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The recommendation preserves the existing unresolved research object, feeds back the level change, avoids duplicate research, and lets the main agent proceed. These properties are directly supported by decision.md, though no actual research execution was performed."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.",
+        "reason": "The current assertion does not distinguish deferring all component creation from immediately creating a disabled candidate harness. The with-skill output makes this lifecycle boundary explicit, while the without-skill output takes the other path and still passes. Add an assertion for the intended candidate-to-component transition."
+      },
+      {
+        "reason": "No assertion checks whether the decision reuses the existing research session/line, feeds changed applicability back to it, defines stop/restart conditions, or avoids duplicate research. These are substantive orchestration behaviors present in the with-skill output and are likely important to this skill's discriminating value."
+      }
+    ],
+    "overall": "The assertions verify safe handling of stale reports and evidence quality, but they miss several orchestration-specific behaviors that distinguish the skill-guided result: research-line continuity, explicit stop/restart gates, and the exact lifecycle boundary before component creation."
+  }
+}

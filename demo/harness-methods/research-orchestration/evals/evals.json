@@ -1,0 +1,42 @@
+{
+  "skill_name": "research-orchestration",
+  "evals": [
+    {
+      "id": 1,
+      "name": "duplicate-agenda",
+      "prompt": "你是一个单次生命网格游戏的主 agent。现在第 15 步，runtime 又提示需要研究；已有 non_blocking session research-session-2 正在研究怎样区分 HUD 动画与受控对象，已读取 observation:8 与 observation:11。你刚得到 observation:15（HUD 闪烁、两个移动区域），当前目标可沿已确认安全路线继续。请给出现在的研究调度决策、依据及后续反馈计划。不要实际调用环境或外部服务，输出 decision.md。",
+      "expected_output": "A justified scheduling and adoption decision with evidence boundaries and next feedback.",
+      "expectations": [
+        "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.",
+        "observation:15 is treated as incremental evidence with uncertainty; two moving regions are not declared to be controlled objects.",
+        "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred."
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "late-level-report",
+      "prompt": "主 agent 已在 observation:24 进入 level 2。现在收到在 level 1 observation:18 快照上启动的研究结果：建议按 RIGHT, RIGHT, UP 去旧地图的门，并提出一个通过跨帧动作对照识别受控实体的方法；该方法只在构造用的两段帧上试过。请决定如何使用这份报告，包括是否创建/装配 harness、是否请求实验和如何评估。环境历史不可回退，剩余行动有限。不要执行动作，输出 decision.md。",
+      "expected_output": "A justified scheduling and adoption decision with evidence boundaries and next feedback.",
+      "expectations": [
+        "The level-1 RIGHT, RIGHT, UP route is rejected as stale for level 2 and is not projected into the current task prompt.",
+        "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.",
+        "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria."
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "method-vs-recap",
+      "prompt": "最近游戏中三次把最大的变化块当作自己，其中一次其实是计数器动画；一次碰撞导致自己不动。当前可以安全等候思考，尚未有相关研究线。你可给只读 child 提供动作前后帧，也可建立一次性的干净上下文。请设计下一步工作：需要什么研究对象、如何分解、是否应创建持久 subagent/skill/tool/memory、什么结果算有用、何时停止。请勿假设 child 可以控制游戏或回放，输出 decision.md。",
+      "expected_output": "A justified scheduling and adoption decision with evidence boundaries and next feedback.",
+      "expectations": [
+        "The research object is a reusable controlled-object identification method rather than a recap, and the plan explicitly handles the counter animation and collision/zero-displacement cases.",
+        "The initial worker is a one-off clean, read-only child; it is not granted actions or replay and no persistent subagent is created immediately.",
+        "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.",
+        "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions."
+      ],
+      "files": []
+    }
+  ]
+}

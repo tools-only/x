@@ -11,7 +11,9 @@ export const ResearchMethodSpecificationSchema = Type.Object({
 	decision_points: Type.Array(Type.String({ minLength: 1 })),
 	stop_conditions: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
 	failure_modes: Type.Array(Type.String({ minLength: 1 })),
-	construction_evidence_refs: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+	construction_evidence_refs: Type.Array(Type.String({ minLength: 1 }), {
+		description: "May be empty for an explicitly untested method candidate; empty evidence never implies support.",
+	}),
 	contrast_evidence_refs: Type.Array(Type.String({ minLength: 1 })),
 	next_use: Type.String({ minLength: 1 }),
 	predicted_semantic_result: Type.String({ minLength: 1 }),
@@ -57,6 +59,11 @@ export const HarnessDeliverySchema = Type.Object({
 	name: Type.String({ pattern: "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" }),
 	summary: Type.String(),
 	content: Type.String(),
+	validity: Type.Optional(Type.Object({
+		scope: Type.Union([Type.Literal("task"), Type.Literal("episode"), Type.Literal("level"), Type.Literal("state")]),
+		task_ref: Type.String(), instance_ref: Type.String(),
+	})),
+	context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	description: Type.Optional(Type.String()),
 	scope: Type.Object({
 		kind: Type.Union([Type.Literal("current_step"), Type.Literal("condition"), Type.Literal("task_wide")]),
@@ -100,7 +107,7 @@ export const HarnessDeliverySchema = Type.Object({
 	input_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	implementation_ref: Type.Optional(Type.String()),
 	program: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-	tools: Type.Optional(Type.Array(Type.String(), { minItems: 1 })),
+	tools: Type.Optional(Type.Array(Type.String())),
 	basis_refs: Type.Array(Type.String()),
 	expected_effect: Type.String(),
 	reconsider_when: Type.String(),

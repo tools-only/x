@@ -22,6 +22,15 @@ and stage results back into the research; a local check is not whole-game benefi
 
 Harness writes use one parent boundary: `task_harness(action='change', changes=[...], decision={reason,expected,basis_refs})`. The semantic candidate routes deterministically to one of five persistent component kinds: memory, system_prompt, skill, adapter-bounded tool, or read-only subagent. `task_prompt` is not a sixth kind; it is the current assembly's source-agnostic output channel. The native component writers, checkpoint, validation, resource index and ordinary delegation are runtime support operations, not first-line model choices. Open one through `task_harness(action='activate')` only when a concrete decision needs its exact output. Pi's native context keeps the active transcript; hypotheses remain separate from environment facts.
 
+Every fact or plan memory change must contain exactly one structured
+`atom={subject,predicate,value}`. The atom is the smallest unit whose evidence,
+scope, invalidation or selection may change independently. Split controls,
+geometry, mechanism hypotheses and routes into separate changes; do not store a
+whole stage recap as one memory. Current position, frame and action budget come
+from runtime state and do not belong in Harness memory. Skills describe how to
+derive or use facts and may depend on exact memory refs; they must not copy the
+facts into their instructions.
+
 Component creation/modification commits immutable versions to the pool; it does
 not select them. Inspect `task_harness(action='inspect')` for the pool and current
 assembly. When a later request needs a changed composition, call
@@ -29,6 +38,10 @@ assembly. When a later request needs a changed composition, call
 smallest compatible exact-version selection, and any exact-source prompt
 contributions. Active is not selected. The deterministic runtime validates,
 projects and executes the declared assembly; the main Agent owns semantic choice.
+With no assembly, the selected component set is empty. An assembly persists
+across turns, so reassemble only when the needed composition or an exact selected
+version changes. Structured activation may suppress a selected contribution when
+its state condition no longer holds, but code never chooses relevance.
 Direct `arc_action` remains valid without reassembly. Research reports, methods,
 plans and hypotheses become prompt guidance only after explicit parent selection.
 

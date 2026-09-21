@@ -17,6 +17,9 @@ Review does not itself start research. For create/update, include a complete
 structured `candidate` in the review entry when you have already decided its
 content. Runtime routes and applies it in this same call and returns
 `application_receipt`; do not repeat the decision through a second change call.
+Fact and plan candidates require one `atom={subject,predicate,value}`. Split a
+stage recap into independently selectable facts, hypotheses and plans whenever
+their evidence, scope or invalidation differs.
 If the review only identifies a gap, omit candidate and runtime records
 `pending_candidate_body` without inventing a component. Only an applied native
 receipt is application evidence.

@@ -1,0 +1,7 @@
+{
+  "upstream": "anthropics/claude-plugins-official",
+  "revision": "c447c3207a425bc4e2a0d068435f64b0477ae981",
+  "path": "plugins/plugin-dev/skills/agent-development",
+  "license": "Apache-2.0",
+  "adaptation": "Modified: triggers, responsibilities, methodology, output, least privilege and tests mapped to Pi clean context and saved recipes."
+}

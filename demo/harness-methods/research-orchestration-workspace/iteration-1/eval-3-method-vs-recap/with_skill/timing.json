@@ -1,0 +1,6 @@
+{
+  "duration_ms": null,
+  "total_tokens": null,
+  "tool_calls": null,
+  "note": "执行曾中断后恢复，未提供可用于完整评估运行的统一计时与令牌指标；局部工具耗时不能代表完整运行，故不可估计，填写 null。"
+}

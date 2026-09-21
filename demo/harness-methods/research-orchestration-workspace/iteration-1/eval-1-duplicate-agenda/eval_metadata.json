@@ -1,0 +1,10 @@
+{
+  "eval_id": 1,
+  "eval_name": "duplicate-agenda",
+  "prompt": "你是一个单次生命网格游戏的主 agent。现在第 15 步，runtime 又提示需要研究；已有 non_blocking session research-session-2 正在研究怎样区分 HUD 动画与受控对象，已读取 observation:8 与 observation:11。你刚得到 observation:15（HUD 闪烁、两个移动区域），当前目标可沿已确认安全路线继续。请给出现在的研究调度决策、依据及后续反馈计划。不要实际调用环境或外部服务，输出 decision.md。",
+  "assertions": [
+    "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.",
+    "observation:15 is treated as incremental evidence with uncertainty; two moving regions are not declared to be controlled objects.",
+    "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred."
+  ]
+}

@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eval Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600&family=Lora:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --bg: #faf9f5;
+      --surface: #ffffff;
+      --border: #e8e6dc;
+      --text: #141413;
+      --text-muted: #b0aea5;
+      --accent: #d97757;
+      --accent-hover: #c4613f;
+      --green: #788c5d;
+      --green-bg: #eef2e8;
+      --red: #c44;
+      --red-bg: #fceaea;
+      --header-bg: #141413;
+      --header-text: #faf9f5;
+      --radius: 6px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Lora', Georgia, serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---- Header ---- */
+    .header {
+      background: var(--header-bg);
+      color: var(--header-text);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .header h1 {
+      font-family: 'Poppins', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+    .header .instructions {
+      font-size: 0.8rem;
+      opacity: 0.7;
+      margin-top: 0.25rem;
+    }
+    .header .progress {
+      font-size: 0.875rem;
+      opacity: 0.8;
+      text-align: right;
+    }
+
+    /* ---- Main content ---- */
+    .main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    /* ---- Sections ---- */
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      flex-shrink: 0;
+    }
+    .section-header {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.75rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .section-body {
+      padding: 1rem;
+    }
+
+    /* ---- Config badge ---- */
+    .config-badge {
+      display: inline-block;
+      padding: 0.2rem 0.625rem;
+      border-radius: 9999px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-left: 0.75rem;
+      vertical-align: middle;
+    }
+    .config-badge.config-primary {
+      background: rgba(33, 150, 243, 0.12);
+      color: #1976d2;
+    }
+    .config-badge.config-baseline {
+      background: rgba(255, 193, 7, 0.15);
+      color: #f57f17;
+    }
+
+    /* ---- Prompt ---- */
+    .prompt-text {
+      white-space: pre-wrap;
+      font-size: 0.9375rem;
+      line-height: 1.6;
+    }
+
+    /* ---- Outputs ---- */
+    .output-file {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .output-file + .output-file {
+      margin-top: 1rem;
+    }
+    .output-file-header {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .output-file-header .dl-btn {
+      font-size: 0.7rem;
+      color: var(--accent);
+      text-decoration: none;
+      cursor: pointer;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-weight: 500;
+      opacity: 0.8;
+    }
+    .output-file-header .dl-btn:hover {
+      opacity: 1;
+      text-decoration: underline;
+    }
+    .output-file-content {
+      padding: 0.75rem;
+      overflow-x: auto;
+    }
+    .output-file-content pre {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+    }
+    .output-file-content img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+    }
+    .output-file-content iframe {
+      width: 100%;
+      height: 600px;
+      border: none;
+    }
+    .output-file-content table {
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+      width: 100%;
+    }
+    .output-file-content table td,
+    .output-file-content table th {
+      border: 1px solid var(--border);
+      padding: 0.375rem 0.5rem;
+      text-align: left;
+    }
+    .output-file-content table th {
+      background: var(--bg);
+      font-weight: 600;
+    }
+    .output-file-content .download-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    .output-file-content .download-link:hover {
+      background: var(--border);
+    }
+    .empty-state {
+      color: var(--text-muted);
+      font-style: italic;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    /* ---- Feedback ---- */
+    .prev-feedback {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.625rem 0.75rem;
+      margin-top: 0.75rem;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .prev-feedback-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.25rem;
+      color: var(--text-muted);
+    }
+    .feedback-textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.9375rem;
+      line-height: 1.5;
+      resize: vertical;
+      color: var(--text);
+    }
+    .feedback-textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    .feedback-status {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      min-height: 1.1em;
+    }
+
+    /* ---- Grades (collapsible) ---- */
+    .grades-toggle {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .grades-toggle:hover {
+      color: var(--accent);
+    }
+    .grades-toggle .arrow {
+      margin-right: 0.5rem;
+      transition: transform 0.15s;
+      font-size: 0.75rem;
+    }
+    .grades-toggle .arrow.open {
+      transform: rotate(90deg);
+    }
+    .grades-content {
+      display: none;
+      margin-top: 0.75rem;
+    }
+    .grades-content.open {
+      display: block;
+    }
+    .grades-summary {
+      font-size: 0.875rem;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .grade-badge {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .grade-pass { background: var(--green-bg); color: var(--green); }
+    .grade-fail { background: var(--red-bg); color: var(--red); }
+    .assertion-list {
+      list-style: none;
+    }
+    .assertion-item {
+      padding: 0.625rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8125rem;
+    }
+    .assertion-item:last-child { border-bottom: none; }
+    .assertion-status {
+      font-weight: 600;
+      margin-right: 0.5rem;
+    }
+    .assertion-status.pass { color: var(--green); }
+    .assertion-status.fail { color: var(--red); }
+    .assertion-evidence {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      margin-top: 0.25rem;
+      padding-left: 1.5rem;
+    }
+
+    /* ---- View tabs ---- */
+    .view-tabs {
+      display: flex;
+      gap: 0;
+      padding: 0 2rem;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .view-tab {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.625rem 1.25rem;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      background: none;
+      color: var(--text-muted);
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .view-tab:hover { color: var(--text); }
+    .view-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .view-panel { display: none; }
+    .view-panel.active { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
+    /* ---- Benchmark view ---- */
+    .benchmark-view {
+      padding: 1.5rem 2rem;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .benchmark-table {
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 0.8125rem;
+      width: 100%;
+      margin-bottom: 1.5rem;
+    }
+    .benchmark-table th, .benchmark-table td {
+      padding: 0.625rem 0.75rem;
+      text-align: left;
+      border: 1px solid var(--border);
+    }
+    .benchmark-table th {
+      font-family: 'Poppins', sans-serif;
+      background: var(--header-bg);
+      color: var(--header-text);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .benchmark-table tr:hover { background: var(--bg); }
+    .benchmark-table tr.benchmark-row-with { background: rgba(33, 150, 243, 0.06); }
+    .benchmark-table tr.benchmark-row-without { background: rgba(255, 193, 7, 0.06); }
+    .benchmark-table tr.benchmark-row-with:hover { background: rgba(33, 150, 243, 0.12); }
+    .benchmark-table tr.benchmark-row-without:hover { background: rgba(255, 193, 7, 0.12); }
+    .benchmark-table tr.benchmark-row-avg { font-weight: 600; border-top: 2px solid var(--border); }
+    .benchmark-table tr.benchmark-row-avg.benchmark-row-with { background: rgba(33, 150, 243, 0.12); }
+    .benchmark-table tr.benchmark-row-avg.benchmark-row-without { background: rgba(255, 193, 7, 0.12); }
+    .benchmark-delta-positive { color: var(--green); font-weight: 600; }
+    .benchmark-delta-negative { color: var(--red); font-weight: 600; }
+    .benchmark-notes {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+    }
+    .benchmark-notes h3 {
+      font-family: 'Poppins', sans-serif;
+      font-size: 0.875rem;
+      margin-bottom: 0.75rem;
+    }
+    .benchmark-notes ul {
+      list-style: disc;
+      padding-left: 1.25rem;
+    }
+    .benchmark-notes li {
+      font-size: 0.8125rem;
+      line-height: 1.6;
+      margin-bottom: 0.375rem;
+    }
+    .benchmark-empty {
+      color: var(--text-muted);
+      font-style: italic;
+      text-align: center;
+      padding: 3rem;
+    }
+
+    /* ---- Navigation ---- */
+    .nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 2rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .nav-btn {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.5rem 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text);
+      transition: all 0.15s;
+    }
+    .nav-btn:hover:not(:disabled) {
+      background: var(--bg);
+      border-color: var(--text-muted);
+    }
+    .nav-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .done-btn {
+      font-family: 'Poppins', sans-serif;
+      padding: 0.5rem 1.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+    .done-btn:hover {
+      background: var(--bg);
+      border-color: var(--text-muted);
+    }
+    .done-btn.ready {
+      border: none;
+      background: var(--accent);
+      color: white;
+      font-weight: 600;
+    }
+    .done-btn.ready:hover {
+      background: var(--accent-hover);
+    }
+    /* ---- Done overlay ---- */
+    .done-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 100;
+      justify-content: center;
+      align-items: center;
+    }
+    .done-overlay.visible {
+      display: flex;
+    }
+    .done-card {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 2rem 3rem;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      max-width: 500px;
+    }
+    .done-card h2 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .done-card p {
+      color: var(--text-muted);
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+    .done-card .btn-row {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: center;
+    }
+    .done-card button {
+      padding: 0.5rem 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    .done-card button:hover {
+      background: var(--bg);
+    }
+    /* ---- Toast ---- */
+    .toast {
+      position: fixed;
+      bottom: 5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--header-bg);
+      color: var(--header-text);
+      padding: 0.625rem 1.25rem;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      z-index: 200;
+    }
+    .toast.visible {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" style="height:100vh; display:flex; flex-direction:column;">
+    <div class="header">
+      <div>
+        <h1>Eval Review: <span id="skill-name"></span></h1>
+        <div class="instructions">Review each output and leave feedback below. Navigate with arrow keys or buttons. When done, copy feedback and paste into Claude Code.</div>
+      </div>
+      <div class="progress" id="progress"></div>
+    </div>
+
+    <!-- View tabs (only shown when benchmark data exists) -->
+    <div class="view-tabs" id="view-tabs" style="display:none;">
+      <button class="view-tab active" onclick="switchView('outputs')">Outputs</button>
+      <button class="view-tab" onclick="switchView('benchmark')">Benchmark</button>
+    </div>
+
+    <!-- Outputs panel (qualitative review) -->
+    <div class="view-panel active" id="panel-outputs">
+    <div class="main">
+      <!-- Prompt -->
+      <div class="section">
+        <div class="section-header">Prompt <span class="config-badge" id="config-badge" style="display:none;"></span></div>
+        <div class="section-body">
+          <div class="prompt-text" id="prompt-text"></div>
+        </div>
+      </div>
+
+      <!-- Outputs -->
+      <div class="section">
+        <div class="section-header">Output</div>
+        <div class="section-body" id="outputs-body">
+          <div class="empty-state">No output files found</div>
+        </div>
+      </div>
+
+      <!-- Previous Output (collapsible) -->
+      <div class="section" id="prev-outputs-section" style="display:none;">
+        <div class="section-header">
+          <div class="grades-toggle" onclick="togglePrevOutputs()">
+            <span class="arrow" id="prev-outputs-arrow">&#9654;</span>
+            Previous Output
+          </div>
+        </div>
+        <div class="grades-content" id="prev-outputs-content"></div>
+      </div>
+
+      <!-- Grades (collapsible) -->
+      <div class="section" id="grades-section" style="display:none;">
+        <div class="section-header">
+          <div class="grades-toggle" onclick="toggleGrades()">
+            <span class="arrow" id="grades-arrow">&#9654;</span>
+            Formal Grades
+          </div>
+        </div>
+        <div class="grades-content" id="grades-content"></div>
+      </div>
+
+      <!-- Feedback -->
+      <div class="section">
+        <div class="section-header">Your Feedback</div>
+        <div class="section-body">
+          <textarea
+            class="feedback-textarea"
+            id="feedback"
+            placeholder="What do you think of this output? Any issues, suggestions, or things that look great?"
+          ></textarea>
+          <div class="feedback-status" id="feedback-status"></div>
+          <div class="prev-feedback" id="prev-feedback" style="display:none;">
+            <div class="prev-feedback-label">Previous feedback</div>
+            <div id="prev-feedback-text"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nav" id="outputs-nav">
+      <button class="nav-btn" id="prev-btn" onclick="navigate(-1)">&#8592; Previous</button>
+      <button class="done-btn" id="done-btn" onclick="showDoneDialog()">Submit All Reviews</button>
+      <button class="nav-btn" id="next-btn" onclick="navigate(1)">Next &#8594;</button>
+    </div>
+    </div><!-- end panel-outputs -->
+
+    <!-- Benchmark panel (quantitative stats) -->
+    <div class="view-panel" id="panel-benchmark">
+      <div class="benchmark-view" id="benchmark-content">
+        <div class="benchmark-empty">No benchmark data available. Run a benchmark to see quantitative results here.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Done overlay -->
+  <div class="done-overlay" id="done-overlay">
+    <div class="done-card">
+      <h2>Review Complete</h2>
+      <p>Your feedback has been saved. Go back to your Claude Code session and tell Claude you're done reviewing.</p>
+      <div class="btn-row">
+        <button onclick="closeDoneDialog()">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ---- Embedded data (injected by generate_review.py) ----
+    const EMBEDDED_DATA = {"skill_name": "research-orchestration", "runs": [{"id": "eval-1-duplicate-agenda-with_skill", "prompt": "\u4f60\u662f\u4e00\u4e2a\u5355\u6b21\u751f\u547d\u7f51\u683c\u6e38\u620f\u7684\u4e3b agent\u3002\u73b0\u5728\u7b2c 15 \u6b65\uff0cruntime \u53c8\u63d0\u793a\u9700\u8981\u7814\u7a76\uff1b\u5df2\u6709 non_blocking session research-session-2 \u6b63\u5728\u7814\u7a76\u600e\u6837\u533a\u5206 HUD \u52a8\u753b\u4e0e\u53d7\u63a7\u5bf9\u8c61\uff0c\u5df2\u8bfb\u53d6 observation:8 \u4e0e observation:11\u3002\u4f60\u521a\u5f97\u5230 observation:15\uff08HUD \u95ea\u70c1\u3001\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\uff09\uff0c\u5f53\u524d\u76ee\u6807\u53ef\u6cbf\u5df2\u786e\u8ba4\u5b89\u5168\u8def\u7ebf\u7ee7\u7eed\u3002\u8bf7\u7ed9\u51fa\u73b0\u5728\u7684\u7814\u7a76\u8c03\u5ea6\u51b3\u7b56\u3001\u4f9d\u636e\u53ca\u540e\u7eed\u53cd\u9988\u8ba1\u5212\u3002\u4e0d\u8981\u5b9e\u9645\u8c03\u7528\u73af\u5883\u6216\u5916\u90e8\u670d\u52a1\uff0c\u8f93\u51fa decision.md\u3002", "eval_id": 1, "outputs": [{"name": "decision.md", "type": "text", "content": "# \u7b2c 15 \u6b65\u7814\u7a76\u8c03\u5ea6\u51b3\u7b56\n\n\u7ee7\u7eed\u6cbf\u5df2\u786e\u8ba4\u5b89\u5168\u8def\u7ebf\u6267\u884c\uff1b\u4fdd\u7559 `research-session-2` \u7684 `non_blocking` \u8c03\u5ea6\uff0c\u4e0d\u65b0\u5efa\u7814\u7a76\u4f1a\u8bdd\u3001\u4e0d\u5207\u6362\u4e3a\u963b\u585e\uff0c\u4e5f\u4e0d\u56e0 runtime \u518d\u6b21\u63d0\u9192\u800c\u8ffd\u52a0\u4e00\u4e2a\u7814\u7a76\u5b50\u4efb\u52a1\u3002\n\n\u73b0\u6709\u7814\u7a76\u95ee\u9898\u4ecd\u662f\u201c\u5982\u4f55\u533a\u5206 HUD \u52a8\u753b\u4e0e\u53d7\u63a7\u5bf9\u8c61\u201d\u3002`observation:15` \u4e2d\u7684 HUD \u95ea\u70c1\u548c\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\u662f\u8fd9\u4e00\u95ee\u9898\u7684\u65b0\u6848\u4f8b\uff0c\u5c1a\u4e0d\u8db3\u4ee5\u8868\u660e\u51fa\u73b0\u4e86\u72ec\u7acb\u7814\u7a76\u8bae\u9898\u3002\u5df2\u6709\u4f1a\u8bdd\u8bfb\u8fc7 `observation:8`\u3001`observation:11`\uff0c\u5e94\u590d\u7528\u8fd9\u6761\u7814\u7a76\u7ebf\u3002\u5f53\u524d\u884c\u52a8\u4e0d\u4f9d\u8d56\u7814\u7a76\u7ed3\u8bba\uff0c\u5355\u6b21\u751f\u547d\u4e5f\u4e0d\u9002\u5408\u4e3a\u91cd\u590d\u7814\u7a76\u989d\u5916\u6d88\u8017\u5371\u9669\u52a8\u4f5c\u3002\n\n## \u73b0\u6709\u4f1a\u8bdd\u7684\u589e\u91cf\u5de5\u4f5c\u96c6\n\n\u5728\u8be5\u4f1a\u8bdd\u53ef\u63a5\u6536\u66f4\u65b0\u7684\u68c0\u67e5\u70b9\u8865\u5145 `observation:15` \u7684\u539f\u59cb\u8bc1\u636e\u53ca\u5176\u51c6\u786e\u5f15\u7528\uff0c\u5e76\u9644\u4e0a\u5df2\u6709\u7684\u52a8\u4f5c\u8bb0\u5f55\uff08\u82e5\u53ef\u7528\uff09\u3002\u672c\u9898\u53ea\u63d0\u4f9b\u4e86\u6587\u5b57\u6458\u8981\uff0c\u4e0d\u80fd\u58f0\u79f0\u5df2\u7ecf\u8bfb\u53d6\u6216\u53d1\u9001\u539f\u59cb\u89c2\u6d4b\u3002\u5e94\u6807\u660e\u54ea\u4e9b\u533a\u57df\u3001\u65f6\u95f4\u5e8f\u5217\u6216\u52a8\u4f5c\u5173\u8054\u4fe1\u606f\u5c1a\u4e0d\u53ef\u8bbf\u95ee\uff1b\u4e0d\u628a\u201c\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\u201d\u76f4\u63a5\u89e3\u91ca\u4e3a\u4e24\u4e2a\u53ef\u63a7\u5bf9\u8c61\u3002\n\n\u7ee7\u7eed\u6bd4\u8f83 HUD \u81ea\u53d1\u52a8\u753b\u3001\u53d7\u63a7\u5bf9\u8c61\u8fd0\u52a8\uff0c\u4ee5\u53ca\u5176\u4ed6\u73af\u5883\u8fd0\u52a8\u7b49\u89e3\u91ca\u3002\u8981\u6c42\u7814\u7a76\u7ed9\u51fa\u53ef\u590d\u7528\u7684\u5224\u522b\u65b9\u6cd5\u3001\u9002\u7528\u6761\u4ef6\u3001\u5931\u8d25\u8fb9\u754c\u548c\u5c1a\u4e0d\u80fd\u533a\u5206\u7684\u60c5\u51b5\uff1b\u672c\u8f6e\u53ef\u8fbe\u91cc\u7a0b\u7891\u662f\u63d0\u51fa\u4e00\u4e2a\u80fd\u7531\u540e\u7eed\u5b89\u5168\u8def\u7ebf\u89c2\u6d4b\u68c0\u9a8c\u7684\u5224\u522b\u6807\u51c6\uff0c\u800c\u4e0d\u662f\u5f3a\u884c\u8ba4\u5b9a\u67d0\u4e00\u533a\u57df\u53ef\u63a7\u3002\n\n\u4e0b\u4e00\u9879\u5224\u522b\u6d4b\u8bd5\u4f18\u5148\u5229\u7528\u4e3b agent \u539f\u672c\u5c31\u8981\u6267\u884c\u7684\u5b89\u5168\u52a8\u4f5c\uff1a\u5bf9\u7167\u52a8\u4f5c\u524d\u540e\u7684\u7cbe\u786e\u89c2\u6d4b\u4e0e\u52a8\u4f5c\u8bb0\u5f55\uff0c\u68c0\u67e5\u5019\u9009\u533a\u57df\u662f\u5426\u6309\u8f93\u5165\u65b9\u5411\u51fa\u73b0\u53ef\u9884\u6d4b\u53d8\u5316\uff0c\u4ee5\u53ca HUD \u53d8\u5316\u80fd\u5426\u7531\u72ec\u7acb\u95ea\u70c1\u89e3\u91ca\u3002\u4e00\u6b21\u540c\u6b65\u53d8\u5316\u4ecd\u53ef\u80fd\u662f\u5de7\u5408\uff1b\u5982\u679c\u73b0\u6709\u89c2\u6d4b\u7c92\u5ea6\u65e0\u6cd5\u5224\u522b\uff0c\u5c31\u8bb0\u5f55\u6240\u7f3a\u8bc1\u636e\u5e76\u7b49\u5f85\u5b89\u5168\u673a\u4f1a\uff0c\u4e0d\u989d\u5916\u6267\u884c\u5371\u9669\u8bd5\u63a2\u3002\n\n## \u540e\u7eed\u53cd\u9988\u4e0e\u505c\u6b62\u6761\u4ef6\n\n\u4e3b agent \u7ee7\u7eed\u638c\u63e1\u6bcf\u4e2a\u771f\u5b9e\u52a8\u4f5c\u7684\u9009\u62e9\u548c\u6267\u884c\u3002\u540e\u7eed\u83b7\u5f97\u5b89\u5168\u52a8\u4f5c\u4ea7\u751f\u7684\u65b0\u8bc1\u636e\u65f6\uff0c\u5c06\u89c2\u6d4b\u5f15\u7528\u3001\u8f93\u5165\u3001\u5019\u9009\u65b9\u6cd5\u7684\u9884\u6d4b\u4e0e\u5b9e\u9645\u53d8\u5316\u3001\u5931\u8d25\u6848\u4f8b\u53ca\u52a8\u4f5c\u6210\u672c\u53cd\u9988\u7ed9\u540c\u4e00\u4f1a\u8bdd\uff1b\u4ec5\u5728\u6709\u65b0\u589e\u5224\u522b\u4fe1\u606f\u65f6\u63a8\u8fdb\u7814\u7a76\uff0c\u907f\u514d\u91cd\u590d\u56de\u987e\u3002\n\n\u62a5\u544a\u8fd4\u56de\u540e\u5148\u6838\u5bf9\u5f53\u524d\u5173\u5361\u548c\u72b6\u6001\u3002\u8fc7\u65f6\u7684\u5177\u4f53\u52a8\u4f5c\u5efa\u8bae\u4e0d\u76f4\u63a5\u91c7\u7528\uff1b\u4ecd\u9002\u7528\u7684\u5224\u522b\u65b9\u6cd5\u53ef\u5728\u65b0\u6848\u4f8b\u4e0a\u68c0\u9a8c\u3002\u5206\u522b\u8bb0\u5f55\u201c\u6536\u5230\u62a5\u544a\u201d\u201c\u5b9e\u9645\u5e94\u7528\u201d\u548c\u201c\u5e26\u6765\u6536\u76ca\u201d\uff0c\u4e0d\u80fd\u7528\u62a5\u544a\u5b8c\u6210\u6216\u91cd\u590d\u7ed3\u8bba\u4ee3\u66ff\u6709\u6548\u6027\u8bc1\u636e\u3002\n\n\u82e5\u65b9\u6cd5\u8fbe\u5230\u5224\u522b\u6807\u51c6\u5219\u7ed3\u675f\u672c\u8f6e\uff1b\u82e5\u7f3a\u5c11\u5fc5\u8981\u8bc1\u636e\u3001\u9884\u7b97\u8017\u5c3d\u6216\u7ee7\u7eed\u7814\u7a76\u6ca1\u6709\u65b0\u589e\u4fe1\u606f\uff0c\u5219\u6682\u505c\u5e76\u4fdd\u7559\u672a\u51b3\u95ee\u9898\u53ca\u91cd\u542f\u6761\u4ef6\u3002\u53ea\u6709\u5b89\u5168\u8def\u7ebf\u5931\u6548\u3001\u4e0b\u4e00\u52a8\u4f5c\u786e\u5b9e\u4f9d\u8d56\u8be5\u533a\u5206\u4e14\u73b0\u6709\u7814\u7a76\u80fd\u63d0\u4f9b\u53ef\u8fbe\u7b54\u6848\u65f6\uff0c\u624d\u91cd\u65b0\u8bc4\u4f30\u662f\u5426\u9700\u8981\u963b\u585e\u7b49\u5f85\u3002runtime \u63d0\u9192\u672c\u8eab\u4e0d\u6784\u6210\u91cd\u542f\u6761\u4ef6\u3002\n\n\u4ee5\u4e0a\u4e3a\u8c03\u5ea6\u65b9\u6848\uff1b\u672c\u6b21\u672a\u8c03\u7528\u73af\u5883\u3001\u7814\u7a76\u4f1a\u8bdd\u6216\u5916\u90e8\u670d\u52a1\u3002\n"}], "grading": {"expectations": [{"text": "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.", "passed": true, "evidence": "The decision opens with: \"\u7ee7\u7eed\u6cbf\u5df2\u786e\u8ba4\u5b89\u5168\u8def\u7ebf\u6267\u884c\uff1b\u4fdd\u7559 `research-session-2` \u7684 `non_blocking` \u8c03\u5ea6\uff0c\u4e0d\u65b0\u5efa\u7814\u7a76\u4f1a\u8bdd\u3001\u4e0d\u5207\u6362\u4e3a\u963b\u585e\". It also explains that observation:15 remains within the existing HUD-versus-controlled-object question, so reuse is substantive rather than merely naming the session."}, {"text": "observation:15 is treated as incremental evidence with uncertainty; two moving regions are not declared to be controlled objects.", "passed": true, "evidence": "Under \"\u73b0\u6709\u4f1a\u8bdd\u7684\u589e\u91cf\u5de5\u4f5c\u96c6\", the output says to supplement the existing checkpoint with observation:15 and explicitly states: \"\u4e0d\u628a\u2018\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\u2019\u76f4\u63a5\u89e3\u91ca\u4e3a\u4e24\u4e2a\u53ef\u63a7\u5bf9\u8c61\". It preserves competing explanations (HUD animation, controlled-object motion, and other environmental motion) and asks for later safe-action evidence."}, {"text": "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred.", "passed": true, "evidence": "The output explicitly requires separate records for \"\u6536\u5230\u62a5\u544a\", \"\u5b9e\u9645\u5e94\u7528\", and \"\u5e26\u6765\u6536\u76ca\". It specifies feedback fields (observation reference, input, prediction versus actual change, failures, and action cost), stopping or pausing when the criterion is met, evidence is unavailable, budget is exhausted, or no new information is produced, and escalation only when the safe route fails or the next action truly depends on the unresolved distinction. Both the decision and transcript state that no environment, research-session, or external-service call occurred."}], "summary": {"passed": 3, "failed": 0, "total": 3, "pass_rate": 1.0}, "timing": {"executor_duration_seconds": null, "grader_duration_seconds": null, "total_duration_seconds": null, "measurement_note": "The supplied timing.json reports null token and duration values because collaboration completion exposed no metrics; no values were estimated. Grader duration was likewise not measured."}, "claims": [{"claim": "No duplicate research session was opened and research-session-2 remains non_blocking.", "type": "process", "verified": true, "evidence": "The artifact is explicitly a proposed scheduling decision, and both decision.md and transcript.md state that no actual research scheduling interface was called; within that scope, the prescribed state is to retain research-session-2 and open nothing else."}, {"claim": "observation:15 belongs to the existing HUD-animation-versus-controlled-object research question rather than proving a new independent agenda.", "type": "factual", "verified": true, "evidence": "This follows from the supplied scenario and is reflected without overclaiming: the output calls observation:15 a new case for the same question and retains multiple candidate explanations."}, {"claim": "A later safe action can be used to test whether a candidate region changes predictably with input.", "type": "quality", "verified": true, "evidence": "The proposed test compares exact before/after observations and the action record while explicitly warning that one synchronous change may be coincidental and prohibiting extra dangerous probes. This is a coherent, falsifiable test plan, though it has not yet been executed."}, {"claim": "No environment, research-session, or external-service call occurred in this run.", "type": "process", "verified": true, "evidence": "transcript.md records only reading the skill and writing the two local files, and both transcript.md and decision.md explicitly disclaim any environment or external call."}], "user_notes_summary": {"uncertainties": [], "needs_review": [], "workarounds": []}, "eval_feedback": {"suggestions": [{"assertion": "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.", "reason": "The prompt itself supplies the existing session, its mode, the overlapping agenda, and the safe route, so a shallow restatement can pass. A more discriminating variant should include two superficially similar but semantically distinct research agendas and require a justified same-agenda/different-agenda decision."}, {"assertion": "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred.", "reason": "This combines several independently important behaviors into one binary assertion. Split delivery/application/benefit accounting, feedback payload quality, stopping conditions, escalation conditions, and no-call honesty so a response cannot mask one missing behavior with strength elsewhere."}, {"reason": "No assertion tests whether the proposed research deliverable is a reusable method with applicability and failure boundaries rather than a one-off trajectory conclusion. The with-skill output does this well, but the current rubric gives no credit or discrimination for it."}], "overall": "The assertions cover the core scheduling safety properties, but much of the desired answer is directly cued by the prompt. They do not strongly distinguish skill-guided orchestration from competent prompt following, nor do they isolate the separate lifecycle properties bundled into assertion 3."}}}, {"id": "eval-1-duplicate-agenda-without_skill", "prompt": "\u4f60\u662f\u4e00\u4e2a\u5355\u6b21\u751f\u547d\u7f51\u683c\u6e38\u620f\u7684\u4e3b agent\u3002\u73b0\u5728\u7b2c 15 \u6b65\uff0cruntime \u53c8\u63d0\u793a\u9700\u8981\u7814\u7a76\uff1b\u5df2\u6709 non_blocking session research-session-2 \u6b63\u5728\u7814\u7a76\u600e\u6837\u533a\u5206 HUD \u52a8\u753b\u4e0e\u53d7\u63a7\u5bf9\u8c61\uff0c\u5df2\u8bfb\u53d6 observation:8 \u4e0e observation:11\u3002\u4f60\u521a\u5f97\u5230 observation:15\uff08HUD \u95ea\u70c1\u3001\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\uff09\uff0c\u5f53\u524d\u76ee\u6807\u53ef\u6cbf\u5df2\u786e\u8ba4\u5b89\u5168\u8def\u7ebf\u7ee7\u7eed\u3002\u8bf7\u7ed9\u51fa\u73b0\u5728\u7684\u7814\u7a76\u8c03\u5ea6\u51b3\u7b56\u3001\u4f9d\u636e\u53ca\u540e\u7eed\u53cd\u9988\u8ba1\u5212\u3002\u4e0d\u8981\u5b9e\u9645\u8c03\u7528\u73af\u5883\u6216\u5916\u90e8\u670d\u52a1\uff0c\u8f93\u51fa decision.md\u3002", "eval_id": 1, "outputs": [{"name": "decision.md", "type": "text", "content": "# \u7b2c 15 \u6b65\u7814\u7a76\u8c03\u5ea6\u51b3\u7b56\n\n\u7ee7\u7eed\u6cbf\u5df2\u786e\u8ba4\u5b89\u5168\u8def\u7ebf\u63a8\u8fdb\uff1b\u4fdd\u7559\u73b0\u6709 `non_blocking` \u7814\u7a76\u4f1a\u8bdd `research-session-2`\uff0c\u4e0d\u65b0\u5efa\u540c\u9898\u4f1a\u8bdd\uff0c\u4e0d\u5207\u6362\u4e3a\u963b\u585e\u7b49\u5f85\u3002runtime \u7684\u518d\u6b21\u63d0\u793a\u662f\u68c0\u67e5\u7814\u7a76\u9700\u6c42\u7684\u4fe1\u53f7\uff0c\u4e0d\u80fd\u5355\u72ec\u4f5c\u4e3a\u91cd\u590d\u542f\u52a8\u7814\u7a76\u7684\u4f9d\u636e\u3002\n\n\u73b0\u6709\u4f1a\u8bdd\u6b63\u5728\u7814\u7a76\u201c\u600e\u6837\u533a\u5206 HUD \u52a8\u753b\u4e0e\u53d7\u63a7\u5bf9\u8c61\u201d\uff0c\u4e0e observation:15 \u4e2d\u7684 HUD \u95ea\u70c1\u3001\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\u76f4\u63a5\u91cd\u5408\u3002\u8be5\u4f1a\u8bdd\u5df2\u8bfb\u53d6 observation:8 \u548c observation:11\uff0c\u800c\u5f53\u524d\u884c\u52a8\u5df2\u6709\u5b89\u5168\u4f9d\u636e\uff1b\u91cd\u590d\u7814\u7a76\u6216\u7b49\u5f85\u90fd\u4f1a\u5360\u7528\u8d44\u6e90\uff0c\u5374\u6ca1\u6709\u660e\u786e\u65b0\u589e\u6536\u76ca\u3002\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\u672c\u8eab\u8fd8\u4e0d\u8db3\u4ee5\u786e\u5b9a\u53d7\u63a7\u5bf9\u8c61\uff0c\u4e0d\u80fd\u628a\u7814\u7a76\u4e2d\u7684\u731c\u6d4b\u5f53\u4f5c\u884c\u52a8\u4f9d\u636e\u3002\n\n## \u540e\u7eed\u53cd\u9988\u8ba1\u5212\n\n1. \u82e5\u8fd0\u884c\u65f6\u652f\u6301\u5411\u73b0\u6709\u4f1a\u8bdd\u8ffd\u52a0\u6750\u6599\uff0c\u5c06 observation:15 \u7684\u5f15\u7528\u53ca\u201cHUD \u95ea\u70c1\u3001\u51fa\u73b0\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\u201d\u4f5c\u4e3a\u589e\u91cf\u8bc1\u636e\u4ea4\u7ed9 `research-session-2`\uff0c\u6ce8\u660e\u5176\u6b64\u524d\u5df2\u8bfb\u53d6 observation:8\u3001observation:11\u3002\u8bf7\u5b83\u6bd4\u8f83\u8fd9\u4e9b\u89c2\u6d4b\uff0c\u53cd\u9988\u5404\u533a\u57df\u7684\u8eab\u4efd\u5224\u65ad\u3001\u8bc1\u636e\u3001\u7f6e\u4fe1\u5ea6\u53ca\u5c1a\u7f3a\u7684\u9a8c\u8bc1\u6761\u4ef6\u3002\u82e5\u4e0d\u652f\u6301\u8ffd\u52a0\uff0c\u5219\u4fdd\u7559\u8be5\u89c2\u6d4b\uff0c\u7b49\u4f1a\u8bdd\u8fd4\u56de\u540e\u518d\u5bf9\u7167\uff1b\u4e0d\u4e3a\u8865\u5145\u4e00\u5e27\u800c\u53e6\u5f00\u91cd\u590d\u7814\u7a76\u3002\n2. \u4e3b agent \u7ee7\u7eed\u5b89\u5168\u884c\u52a8\uff0c\u5728\u540e\u7eed\u6b63\u5e38\u56de\u5408\u68c0\u67e5\u7814\u7a76\u662f\u5426\u8fd4\u56de\uff0c\u907f\u514d\u8fde\u7eed\u8f6e\u8be2\u3002\u8bb0\u5f55\u5b9e\u9645\u52a8\u4f5c\u4e0e\u968f\u540e\u533a\u57df\u53d8\u5316\u7684\u5bf9\u5e94\u5173\u7cfb\uff0c\u4f9b\u6838\u9a8c\u63a7\u5236\u5173\u7cfb\uff1b\u5355\u6b21\u751f\u547d\u4e0b\uff0c\u4e0d\u4e3a\u8fa8\u8ba4\u5bf9\u8c61\u800c\u6267\u884c\u672a\u7ecf\u786e\u8ba4\u5b89\u5168\u7684\u8bd5\u63a2\u52a8\u4f5c\u3002\n3. \u4f1a\u8bdd\u8fd4\u56de\u540e\uff0c\u5c06\u7ed3\u8bba\u4e0e observation:15 \u53ca\u66f4\u65b0\u89c2\u6d4b\u6838\u5bf9\uff0c\u660e\u786e\u54ea\u4e9b\u5224\u65ad\u5f97\u5230\u652f\u6301\u3001\u54ea\u4e9b\u4ecd\u4e0d\u786e\u5b9a\uff0c\u518d\u53cd\u9988\u7ed9\u7814\u7a76\u4f1a\u8bdd\u6216\u540e\u7eed\u7814\u7a76\u3002\u53ea\u91c7\u7eb3\u6709\u8bc1\u636e\u4e14\u4ecd\u9002\u7528\u4e8e\u5f53\u524d\u5c40\u9762\u7684\u7ed3\u8bba\uff1b\u7814\u7a76\u5b8c\u6210\u72b6\u6001\u672c\u8eab\u4e0d\u4ee3\u8868\u7ed3\u8bba\u5df2\u9a8c\u8bc1\u3002\n4. \u82e5\u5b89\u5168\u8def\u7ebf\u5931\u6548\uff0c\u6216\u4e0b\u4e00\u6b65\u5fc5\u987b\u4f9d\u8d56\u5c1a\u672a\u89e3\u51b3\u7684\u5bf9\u8c61\u8fa8\u8ba4\uff0c\u5219\u91cd\u65b0\u8bc4\u4f30\u7d27\u8feb\u6027\uff1a\u5148\u83b7\u53d6\u73b0\u6709\u4f1a\u8bdd\u72b6\u6001\u53ca\u53ef\u7528\u90e8\u5206\u7ed3\u8bba\uff0c\u5fc5\u8981\u65f6\u7b49\u5f85\u8be5\u4f1a\u8bdd\u3002\u4ec5\u5f53\u5b83\u7ed3\u675f\u3001\u5931\u8d25\u6216\u65e0\u6cd5\u8986\u76d6\u65b0\u7684\u5173\u952e\u95ee\u9898\u65f6\uff0c\u624d\u8003\u8651\u5e26\u660e\u786e\u65b0\u589e\u95ee\u9898\u7684\u540e\u7eed\u7814\u7a76\uff0c\u5e76\u6cbf\u7528\u5df2\u6709\u8bc1\u636e\uff0c\u907f\u514d\u5e76\u53d1\u91cd\u590d\u3002\n\n\u4ee5\u4e0a\u5747\u4e3a\u8c03\u5ea6\u4e0e\u53cd\u9988\u8ba1\u5212\uff0c\u672a\u5b9e\u9645\u53d1\u9001\u6750\u6599\u3001\u8c03\u7528\u73af\u5883\u6216\u542f\u52a8\u4efb\u4f55\u7814\u7a76\u3002\n"}], "grading": {"expectations": [{"text": "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.", "passed": true, "evidence": "The decision states: \"\u7ee7\u7eed\u6cbf\u5df2\u786e\u8ba4\u5b89\u5168\u8def\u7ebf\u63a8\u8fdb\uff1b\u4fdd\u7559\u73b0\u6709 `non_blocking` \u7814\u7a76\u4f1a\u8bdd `research-session-2`\uff0c\u4e0d\u65b0\u5efa\u540c\u9898\u4f1a\u8bdd\uff0c\u4e0d\u5207\u6362\u4e3a\u963b\u585e\u7b49\u5f85\". It also ties the choice to the overlap between the existing agenda and observation:15, rather than treating the runtime reminder as a sufficient trigger."}, {"text": "observation:15 is treated as incremental evidence with uncertainty; two moving regions are not declared to be controlled objects.", "passed": true, "evidence": "The output proposes adding observation:15 to research-session-2 as \"\u589e\u91cf\u8bc1\u636e\" and states: \"\u4e24\u4e2a\u79fb\u52a8\u533a\u57df\u672c\u8eab\u8fd8\u4e0d\u8db3\u4ee5\u786e\u5b9a\u53d7\u63a7\u5bf9\u8c61\". Its feedback request asks for evidence, confidence, and missing validation conditions, preserving uncertainty."}, {"text": "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred.", "passed": true, "evidence": "The plan distinguishes a returned/completed report from validation and adoption by stating that completion does not mean the conclusion is verified and only evidence-backed, still-current conclusions should be adopted. It specifies incremental evidence, action/change records, return-time checking, and escalation when the safe route fails or the next step depends on identification; it permits a new line only after the existing session ends, fails, or cannot cover a genuinely new critical question. The final sentence and transcript both state that no material, environment, or research call was actually sent."}], "summary": {"passed": 3, "failed": 0, "total": 3, "pass_rate": 1.0}, "timing": {"executor_duration_seconds": null, "grader_duration_seconds": null, "total_duration_seconds": null, "measurement_note": "The supplied timing.json reports null token and duration values because collaboration completion exposed no metrics; no values were estimated. Grader duration was likewise not measured."}, "claims": [{"claim": "The runtime reminder alone is insufficient reason to start duplicate research.", "type": "quality", "verified": true, "evidence": "The decision consistently applies agenda overlap and current action dependency as the decision criteria, retaining the existing session rather than reacting mechanically to the reminder."}, {"claim": "Two moving regions in observation:15 do not establish which region is controlled.", "type": "factual", "verified": true, "evidence": "The scenario provides no action-correlated evidence that would establish control, and the output correctly labels the identity as unresolved rather than asserting one."}, {"claim": "A completed research status is not evidence that its conclusion has been validated in the current state.", "type": "quality", "verified": true, "evidence": "The plan requires checking the returned conclusion against observation:15 and newer observations, tracking supported versus uncertain judgments, and adopting only evidence-backed conclusions that remain applicable."}, {"claim": "No environment, research, or external-service call occurred in this run.", "type": "process", "verified": true, "evidence": "transcript.md reports only local file writes, and decision.md explicitly states that no material was sent and no environment or research was started."}], "user_notes_summary": {"uncertainties": [], "needs_review": [], "workarounds": []}, "eval_feedback": {"suggestions": [{"assertion": "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.", "reason": "The prompt already exposes nearly every fact needed to restate this conclusion. Add a competing candidate agenda or ambiguous overlap so passing requires an actual agenda-identity test rather than keyword reuse."}, {"assertion": "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred.", "reason": "This binary assertion bundles multiple lifecycle properties. The without-skill answer passes while only implying benefit tracking through validation/adoption, whereas the with-skill answer explicitly separates report receipt, application, and benefit. Separate assertions would expose that qualitative difference."}, {"reason": "No assertion requires a reusable research deliverable with applicability conditions, failure boundaries, and a falsifiable method. That omission reduces the eval's ability to measure the intended research-orchestration abstraction rather than generic scheduling competence."}], "overall": "All stated assertions are met, but the eval has limited discriminating power because the scenario strongly cues the desired reuse decision. The rubric also under-measures explicit benefit accounting and method-level research output, which are the clearest differences between the two runs."}}}, {"id": "eval-2-late-level-report-with_skill", "prompt": "\u4e3b agent \u5df2\u5728 observation:24 \u8fdb\u5165 level 2\u3002\u73b0\u5728\u6536\u5230\u5728 level 1 observation:18 \u5feb\u7167\u4e0a\u542f\u52a8\u7684\u7814\u7a76\u7ed3\u679c\uff1a\u5efa\u8bae\u6309 RIGHT, RIGHT, UP \u53bb\u65e7\u5730\u56fe\u7684\u95e8\uff0c\u5e76\u63d0\u51fa\u4e00\u4e2a\u901a\u8fc7\u8de8\u5e27\u52a8\u4f5c\u5bf9\u7167\u8bc6\u522b\u53d7\u63a7\u5b9e\u4f53\u7684\u65b9\u6cd5\uff1b\u8be5\u65b9\u6cd5\u53ea\u5728\u6784\u9020\u7528\u7684\u4e24\u6bb5\u5e27\u4e0a\u8bd5\u8fc7\u3002\u8bf7\u51b3\u5b9a\u5982\u4f55\u4f7f\u7528\u8fd9\u4efd\u62a5\u544a\uff0c\u5305\u62ec\u662f\u5426\u521b\u5efa/\u88c5\u914d harness\u3001\u662f\u5426\u8bf7\u6c42\u5b9e\u9a8c\u548c\u5982\u4f55\u8bc4\u4f30\u3002\u73af\u5883\u5386\u53f2\u4e0d\u53ef\u56de\u9000\uff0c\u5269\u4f59\u884c\u52a8\u6709\u9650\u3002\u4e0d\u8981\u6267\u884c\u52a8\u4f5c\uff0c\u8f93\u51fa decision.md\u3002", "eval_id": 2, "outputs": [{"name": "decision.md", "type": "text", "content": "# \u51b3\u7b56\n\n\u5f53\u524d\u4e3a level 2 / observation:24\uff1b\u62a5\u544a\u6765\u81ea level 1 / observation:18\u3002\u62d2\u7edd\u91c7\u7528 `RIGHT, RIGHT, UP`\uff1a\u5176\u5730\u56fe\u3001\u95e8\u548c\u8def\u5f84\u524d\u63d0\u5df2\u8fc7\u671f\uff0c\u4e0d\u5199\u5165\u5f53\u524d task_prompt\uff0c\u4e5f\u4e0d\u4e3a\u9a8c\u8bc1\u65e7\u8def\u7ebf\u6d88\u8017\u884c\u52a8\u3002\u5386\u53f2\u4e0d\u53ef\u56de\u9000\u3002\n\n\u5c06\u62a5\u544a\u62c6\u5206\u4e3a\u65e7\u5173\u5361\u89c2\u5bdf\u3001\u65e7\u8def\u7ebf\u63a8\u65ad\u548c\u53ef\u8fc1\u79fb\u7684\u65b9\u6cd5\u5019\u9009\u3002\u8de8\u5e27\u52a8\u4f5c\u5bf9\u7167\u8bc6\u522b\u53d7\u63a7\u5b9e\u4f53\u7684\u65b9\u6cd5\u53ef\u4fdd\u7559\uff0c\u4f46\u4e24\u6bb5\u6784\u9020\u5e27\u53ea\u8bc1\u660e\u5176\u5728\u6784\u9020\u6848\u4f8b\u4e0a\u7684\u8868\u73b0\uff0c\u5c1a\u4e0d\u80fd\u8bc1\u660e\u80fd\u8fc1\u79fb\u81f3 level 2 \u6216\u6539\u5584\u4efb\u52a1\u6210\u7ee9\u3002\n\n## Harness \u4e0e\u7814\u7a76\u5206\u914d\n\n\u73b0\u5728\u4e0d\u521b\u5efa\u3001\u4e0d\u53d1\u5e03\u3001\u4e0d\u88c5\u914d harness\uff1b\u7814\u7a76\u5b8c\u6210\u4e0d\u7b49\u4e8e\u4e3b agent \u91c7\u7eb3\u3002\u5148\u5728\u539f research_session / research_line \u53cd\u9988\u5173\u5361\u53d8\u5316\uff0c\u4fdd\u7559\u201c\u5728\u76f8\u673a\u79fb\u52a8\u3001\u591a\u4e2a\u5b9e\u4f53\u540c\u65f6\u79fb\u52a8\u65f6\u8bc6\u522b\u53d7\u63a7\u5b9e\u4f53\u201d\u7684\u7814\u7a76\u95ee\u9898\u3002\u8bf7\u6c42\u4e00\u6b21\u6709\u754c\u65b9\u6cd5\u8865\u5145\uff1a\u660e\u786e\u8f93\u5165\u5e27\u4e0e\u52a8\u4f5c\u7684\u5bf9\u9f50\u65b9\u5f0f\u3001\u9002\u7528\u524d\u63d0\u3001\u5224\u522b\u6b65\u9aa4\u3001\u8f93\u51fa\u53ca\u4e0d\u786e\u5b9a\u6027\u3001\u5931\u8d25\u8fb9\u754c\uff0c\u5e76\u7ed9\u51fa\u72ec\u7acb\u65b0\u6848\u4f8b\u7684\u5224\u522b\u9884\u6d4b\u3002\u590d\u7528\u539f\u7ebf\uff0c\u91c7\u7528 non_blocking\uff1b\u4e3b agent \u65e0\u9700\u7b49\u5f85\u5373\u53ef\u5b89\u5168\u63a8\u8fdb\u3002\u82e5\u5f53\u524d\u5e76\u65e0\u5b9e\u4f53\u8bc6\u522b\u4e0d\u786e\u5b9a\u6027\uff0c\u5219\u53ea\u8bb0\u5f55\u5019\u9009\u5e76\u6682\u7f13\u7ee7\u7eed\u7814\u7a76\u3002\n\n## \u5b9e\u9a8c\u51b3\u7b56\n\n\u4e0d\u6279\u51c6\u989d\u5916\u771f\u5b9e\u63a2\u6d4b\u52a8\u4f5c\uff0c\u4e0d\u8bf7\u6c42\u91cd\u6f14\u65e7\u5173\u5361\u3002\u5b9e\u9a8c\u4f18\u5148\u4f7f\u7528\u5df2\u7ecf\u4fdd\u5b58\u3001\u4e14\u672a\u7528\u4e8e\u6784\u9020\u65b9\u6cd5\u7684\u51c6\u786e\u5e27\u2014\u52a8\u4f5c\u8bb0\u5f55\uff1b\u82e5\u6ca1\u6709\u8fd9\u7c7b\u8bb0\u5f55\uff0c\u7b49\u5f85\u6b63\u5e38\u63a8\u8fdb\u81ea\u7136\u4ea7\u751f\u65b0\u8bc1\u636e\u3002\u8fd9\u91cc\u4e0d\u5047\u5b9a\u53ef\u8bbf\u95ee\u66f4\u591a\u5386\u53f2\u6216\u72ec\u7acb\u8bc4\u4f30\u5668\u3002\n\n\u4e0b\u4e00\u9879\u5224\u522b\u6d4b\u8bd5\u5e94\u6bd4\u8f83\u5019\u9009\u65b9\u6cd5\u4e0e\u5f53\u524d\u8bc6\u522b\u529e\u6cd5\uff0c\u5e76\u5217\u51fa\u66ff\u4ee3\u89e3\u91ca\uff1a\u5b9e\u4f53\u54cd\u5e94\u52a8\u4f5c\u3001\u76f8\u673a\u6574\u4f53\u5e73\u79fb\u3001\u591a\u4e2a\u5b9e\u4f53\u53d7\u5171\u540c\u4e8b\u4ef6\u5f71\u54cd\u3002\u7814\u7a76\u65b9\u9700\u9884\u5148\u8bf4\u660e\u5404\u89e3\u91ca\u5bf9\u540c\u4e00\u52a8\u4f5c\u53ca\u8de8\u5e27\u76f8\u5bf9\u4f4d\u79fb\u7684\u4e0d\u540c\u9884\u6d4b\u3002\u82e5\u672a\u6765\u8bc6\u522b\u6b67\u4e49\u786e\u5b9e\u963b\u65ad\u63a8\u8fdb\uff0c\u624d\u7531\u4e3b agent \u6839\u636e\u5f53\u524d level 2 \u72b6\u6001\u9010\u4e2a\u5ba1\u67e5\u63a2\u6d4b\u52a8\u4f5c\u7684\u524d\u63d0\u3001\u98ce\u9669\u3001\u9884\u7b97\u4e0a\u9650\u548c\u505c\u6b62\u6761\u4ef6\uff1b\u4e0d\u5b58\u5728\u5bf9\u5b50 agent \u7684\u52a8\u4f5c\u6388\u6743\u3002\u672c\u6b21\u4e0d\u6267\u884c\u4efb\u4f55\u52a8\u4f5c\u3002\n\n## \u8bc4\u4f30\u4e0e\u540e\u7eed\n\n\u5728\u72ec\u7acb\u65b0\u6848\u4f8b\u4e0a\u8bb0\u5f55\u539f\u59cb\u8f93\u5165\u3001\u5019\u9009\u5b9e\u4f53\u53ca\u7f6e\u4fe1\u5ea6\u3001\u57fa\u7ebf\u7ed3\u679c\u3001\u9884\u6d4b\u4e0e\u968f\u540e\u53ef\u89c2\u6d4b\u8bc1\u636e\u7684\u7b26\u5408\u7a0b\u5ea6\uff0c\u4ee5\u53ca\u6a21\u578b\u6210\u672c\u3001\u5ef6\u8fdf\u548c\u65b0\u589e\u884c\u52a8\u6210\u672c\u3002\u65e0\u6cd5\u72ec\u7acb\u786e\u8ba4\u8eab\u4efd\u65f6\u4fdd\u7559\u201c\u672a\u786e\u5b9a\u201d\uff0c\u4e0d\u80fd\u4ee5\u4e3b agent \u540c\u610f\u6216\u91cd\u590d\u62a5\u544a\u5145\u5f53\u9a8c\u8bc1\u3002\u5173\u6ce8\u8bef\u8bc6\u522b\u3001\u76f8\u673a\u5e72\u6270\u3001\u8de8\u5173\u5361\u5931\u6548\u548c\u662f\u5426\u5b9e\u9645\u51cf\u5c11\u51b3\u7b56\u6b67\u4e49\u3002\n\n\u82e5\u65b0\u6848\u4f8b\u663e\u793a\u7a33\u5b9a\u53ef\u590d\u7528\u4ef7\u503c\uff0c\u518d\u901a\u8fc7\u76f8\u5e94 creator \u521b\u5efa\u5019\u9009\u7ec4\u4ef6\uff0c\u7531\u4e3b agent \u5ba1\u67e5\u5e76\u9009\u62e9\u7cbe\u786e\u7248\u672c\u88c5\u914d\uff1b\u5206\u522b\u8bb0\u5f55\u521b\u5efa\u3001\u66b4\u9732\u3001\u8bfb\u53d6\u3001\u5b9e\u9645\u5e94\u7528\u4e0e\u5b9e\u9645\u83b7\u76ca\u3002\u83b7\u76ca\u987b\u6709\u540e\u7eed\u771f\u5b9e\u4f7f\u7528\u8bc1\u636e\uff0c\u4e0d\u80fd\u7531\u7ec4\u4ef6\u5b58\u5728\u63a8\u5b9a\u3002\n\n\u8fbe\u5230\u5224\u522b\u6807\u51c6\u3001\u51fa\u73b0\u660e\u786e\u5931\u8d25\u8fb9\u754c\u3001\u9884\u7b97\u8017\u5c3d\u6216\u6ca1\u6709\u65b0\u4fe1\u606f\u5373\u505c\u6b62\uff1b\u5c06\u7cbe\u786e\u7684\u65b0\u8bc1\u636e\u53ca\u5931\u8d25\u53cd\u9988\u539f\u7814\u7a76\u7ebf\u3002\u7f3a\u8bc1\u636e\u65f6\u4fdd\u7559\u672a\u89e3\u51b3\u95ee\u9898\uff0c\u91cd\u542f\u6761\u4ef6\u4e3a\u83b7\u5f97\u72ec\u7acb\u4e14\u6709\u5224\u522b\u529b\u7684\u65b0\u5e27\u2014\u52a8\u4f5c\u6848\u4f8b\uff0c\u6216\u5f53\u524d\u5173\u5361\u7684\u8bc6\u522b\u6b67\u4e49\u4f7f\u4e00\u6b21\u4f4e\u6210\u672c\u5b9e\u9a8c\u503c\u5f97\u6295\u5165\u3002\n"}], "grading": {"expectations": [{"text": "The level-1 RIGHT, RIGHT, UP route is rejected as stale for level 2 and is not projected into the current task prompt.", "passed": true, "evidence": "decision.md explicitly compares the current and source scopes, rejects the route, and names the projection boundary: \u2018\u62d2\u7edd\u91c7\u7528 `RIGHT, RIGHT, UP`\uff1a\u5176\u5730\u56fe\u3001\u95e8\u548c\u8def\u5f84\u524d\u63d0\u5df2\u8fc7\u671f\uff0c\u4e0d\u5199\u5165\u5f53\u524d task_prompt\uff0c\u4e5f\u4e0d\u4e3a\u9a8c\u8bc1\u65e7\u8def\u7ebf\u6d88\u8017\u884c\u52a8\u3002\u2019"}, {"text": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.", "passed": true, "evidence": "decision.md decomposes the report into stale observations, stale route inference, and a transferable method candidate. It says the two constructed frames do not establish transfer or task benefit, then explicitly states: \u2018\u73b0\u5728\u4e0d\u521b\u5efa\u3001\u4e0d\u53d1\u5e03\u3001\u4e0d\u88c5\u914d harness\uff1b\u7814\u7a76\u5b8c\u6210\u4e0d\u7b49\u4e8e\u4e3b agent \u91c7\u7eb3\u3002\u2019 Creation is gated on stable reusable value from new cases."}, {"text": "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria.", "passed": true, "evidence": "decision.md refuses extra probe actions and old-level replay, prioritizes saved frame-action records not used to construct the method, and otherwise waits for naturally produced evidence. It reserves any future probe decision to the main agent and says \u2018\u4e0d\u5b58\u5728\u5bf9\u5b50 agent \u7684\u52a8\u4f5c\u6388\u6743\u2019. It requires comparison to the current recognizer and records correctness evidence, uncertainty, costs, and whether the method actually reduces decision ambiguity."}], "summary": {"passed": 3, "failed": 0, "total": 3, "pass_rate": 1.0}, "timing": {"total_tokens": null, "duration_ms": null, "total_duration_seconds": null, "measurement_note": "Collaboration completion did not expose token or duration metrics; not estimated."}, "claims": [{"claim": "The old route's map, door, and path assumptions are stale at level 2.", "type": "factual", "verified": true, "evidence": "The prompt establishes that the route was derived from level 1 / observation:18 while the authoritative state is level 2 / observation:24; decision.md correctly refuses to transfer those level-local assumptions."}, {"claim": "The recognition method has not yet demonstrated transfer to level 2 or task-score improvement.", "type": "quality", "verified": true, "evidence": "The only stated evidence is two construction examples. decision.md accurately classifies that evidence as insufficient and does not claim method benefit."}, {"claim": "The run did not execute actions, launch research, or create/assemble a harness.", "type": "process", "verified": true, "evidence": "transcript.md explicitly reports \u2018\u672a\u6267\u884c\u6e38\u620f\u52a8\u4f5c\u3001\u542f\u52a8\u7814\u7a76\u3001\u521b\u5efa\u6216\u88c5\u914d harness\u2019; the only execution output present is outputs/decision.md."}, {"claim": "Reusing the original research line in non-blocking mode is the appropriate next research allocation.", "type": "quality", "verified": true, "evidence": "The recommendation preserves the existing unresolved research object, feeds back the level change, avoids duplicate research, and lets the main agent proceed. These properties are directly supported by decision.md, though no actual research execution was performed."}], "user_notes_summary": {"uncertainties": [], "needs_review": [], "workarounds": []}, "eval_feedback": {"suggestions": [{"assertion": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.", "reason": "The current assertion does not distinguish deferring all component creation from immediately creating a disabled candidate harness. The with-skill output makes this lifecycle boundary explicit, while the without-skill output takes the other path and still passes. Add an assertion for the intended candidate-to-component transition."}, {"reason": "No assertion checks whether the decision reuses the existing research session/line, feeds changed applicability back to it, defines stop/restart conditions, or avoids duplicate research. These are substantive orchestration behaviors present in the with-skill output and are likely important to this skill's discriminating value."}], "overall": "The assertions verify safe handling of stale reports and evidence quality, but they miss several orchestration-specific behaviors that distinguish the skill-guided result: research-line continuity, explicit stop/restart gates, and the exact lifecycle boundary before component creation."}}}, {"id": "eval-2-late-level-report-without_skill", "prompt": "\u4e3b agent \u5df2\u5728 observation:24 \u8fdb\u5165 level 2\u3002\u73b0\u5728\u6536\u5230\u5728 level 1 observation:18 \u5feb\u7167\u4e0a\u542f\u52a8\u7684\u7814\u7a76\u7ed3\u679c\uff1a\u5efa\u8bae\u6309 RIGHT, RIGHT, UP \u53bb\u65e7\u5730\u56fe\u7684\u95e8\uff0c\u5e76\u63d0\u51fa\u4e00\u4e2a\u901a\u8fc7\u8de8\u5e27\u52a8\u4f5c\u5bf9\u7167\u8bc6\u522b\u53d7\u63a7\u5b9e\u4f53\u7684\u65b9\u6cd5\uff1b\u8be5\u65b9\u6cd5\u53ea\u5728\u6784\u9020\u7528\u7684\u4e24\u6bb5\u5e27\u4e0a\u8bd5\u8fc7\u3002\u8bf7\u51b3\u5b9a\u5982\u4f55\u4f7f\u7528\u8fd9\u4efd\u62a5\u544a\uff0c\u5305\u62ec\u662f\u5426\u521b\u5efa/\u88c5\u914d harness\u3001\u662f\u5426\u8bf7\u6c42\u5b9e\u9a8c\u548c\u5982\u4f55\u8bc4\u4f30\u3002\u73af\u5883\u5386\u53f2\u4e0d\u53ef\u56de\u9000\uff0c\u5269\u4f59\u884c\u52a8\u6709\u9650\u3002\u4e0d\u8981\u6267\u884c\u52a8\u4f5c\uff0c\u8f93\u51fa decision.md\u3002", "eval_id": 2, "outputs": [{"name": "decision.md", "type": "text", "content": "# \u8fdf\u5230\u7814\u7a76\u62a5\u544a\u7684\u4f7f\u7528\u51b3\u7b56\n\n\u5f53\u524d\u6743\u5a01\u72b6\u6001\u662f observation:24\u3001level 2\u3002\u62a5\u544a\u57fa\u4e8e level 1\u3001observation:18\uff1b\u5176 RIGHT, RIGHT, UP \u8def\u7ebf\u5df2\u5931\u53bb\u9002\u7528\u4f9d\u636e\uff0c\u4e0d\u6267\u884c\u3001\u4e0d\u6392\u961f\uff0c\u4e5f\u4e0d\u4ee5\u65e7\u5730\u56fe\u76ee\u6807\u8986\u76d6\u5f53\u524d\u8ba1\u5212\u3002\u62a5\u544a\u4fdd\u7559\u6765\u6e90\u3001\u5feb\u7167\u548c\u5173\u5361\u6807\u8bb0\u3002\n\n\u8de8\u5e27\u52a8\u4f5c\u5bf9\u7167\u65b9\u6cd5\u5177\u6709\u590d\u7528\u6f5c\u529b\uff0c\u4f46\u4e24\u6bb5\u6784\u9020\u5e27\u53ea\u80fd\u8bc1\u660e\u793a\u4f8b\u53ef\u8fd0\u884c\uff0c\u5c1a\u4e0d\u80fd\u8bc1\u660e\u771f\u5b9e\u573a\u666f\u6709\u6548\u3002\u5c06\u5176\u767b\u8bb0\u4e3a\u5b9e\u9a8c\u6027\u65b9\u6cd5\uff0c\u521b\u5efa\u9694\u79bb\u3001\u9ed8\u8ba4\u7981\u7528\u7684\u5019\u9009 harness\uff1b\u6682\u4e0d\u88c5\u914d\u8fdb\u4e3b agent \u7684\u884c\u52a8\u51b3\u7b56\u94fe\uff0c\u4e0d\u8d4b\u4e88\u5176\u53d1\u51fa\u52a8\u4f5c\u7684\u6743\u9650\u3002\u5019\u9009\u8f93\u5165\u4e3a\u540c\u4e00\u5173\u5361\u5185\u771f\u5b9e\u7684\u52a8\u4f5c\u524d\u540e\u89c2\u6d4b\u53ca\u5bf9\u5e94\u52a8\u4f5c\uff0c\u8f93\u51fa\u53d7\u63a7\u5b9e\u4f53\u5019\u9009\u3001\u8bc1\u636e\u548c\u4e0d\u786e\u5b9a\u6027\uff1b\u8de8\u5173\u5361\u3001\u7f3a\u5e27\u6216\u8bc1\u636e\u51b2\u7a81\u65f6\u5fc5\u987b\u5f03\u6743\u3002\u5177\u4f53\u5b9e\u73b0\u5c1a\u672a\u7531\u672c\u51b3\u7b56\u6267\u884c\u3002\n\n\u8bf7\u6c42\u4e00\u6b21\u6709\u660e\u786e\u4e0a\u9650\u7684\u7814\u7a76\u5b9e\u9a8c\uff1a\u4f18\u5148\u4f7f\u7528\u73b0\u6709\u53ef\u7528\u7684\u771f\u5b9e\u89c2\u6d4b\u4e0e\u52a8\u4f5c\u8bb0\u5f55\uff0c\u68c0\u67e5\u65b9\u6cd5\u80fd\u5426\u533a\u5206\u53d7\u63a7\u5b9e\u4f53\u3001\u81ea\u4e3b\u79fb\u52a8\u5bf9\u8c61\u548c\u955c\u5934\u4f4d\u79fb\u3002\u628a\u6784\u9020\u5e27\u4f5c\u4e3a\u5f00\u53d1\u6837\u4f8b\uff0c\u53e6\u7528\u672a\u53c2\u4e0e\u8c03\u8bd5\u7684\u771f\u5b9e\u7247\u6bb5\u9a8c\u8bc1\uff1b\u65e7\u5173\u5361\u901a\u8fc7\u4e0d\u4ee3\u8868 level 2 \u901a\u8fc7\u3002\u82e5\u5f53\u524d\u5173\u5361\u6ca1\u6709\u8db3\u591f\u7684\u5df2\u8bb0\u5f55\u5e27\uff0c\u7b49\u5f85\u4e3b agent \u539f\u8ba1\u5212\u52a8\u4f5c\u4ea7\u751f\u65b0\u89c2\u6d4b\uff0c\u4ee5\u53ea\u8bfb\u5f71\u5b50\u65b9\u5f0f\u8bc4\u4f30\u3002\u4e0d\u5f97\u91cd\u653e\u73af\u5883\u3001\u56de\u9000\u5386\u53f2\u6216\u4e3a\u4e86\u7814\u7a76\u9ed8\u8ba4\u6d88\u8017\u989d\u5916\u52a8\u4f5c\uff1b\u9884\u7b97\u4e0d\u8db3\u5219\u5ef6\u540e\u5b9e\u9a8c\u3002\n\n\u8bc4\u4f30\u5173\u6ce8\u5b9e\u4f53\u8bc6\u522b\u662f\u5426\u6b63\u786e\u3001\u9519\u8bef\u5f52\u56e0\u4e0e\u5f03\u6743\u60c5\u51b5\u3001\u5bf9\u906e\u6321\u6216\u65e0\u4f4d\u79fb\u7b49\u6b67\u4e49\u7684\u5904\u7406\uff0c\u4ee5\u53ca\u8ba1\u7b97\u4e0e\u884c\u52a8\u6210\u672c\u3002\u4f7f\u7528\u53ef\u72ec\u7acb\u6838\u5b9e\u7684\u73af\u5883\u4fe1\u606f\u6216\u4eba\u5de5\u6807\u6ce8\u4f5c\u53c2\u7167\uff0c\u4e0d\u80fd\u7528\u65b9\u6cd5\u81ea\u5df1\u7684\u7ed3\u8bba\u9a8c\u8bc1\u81ea\u5df1\uff0c\u4e5f\u4e0d\u80fd\u4ec5\u51ed\u7814\u7a76\u4efb\u52a1\u5b8c\u6210\u6216\u7a0b\u5e8f\u65e0\u62a5\u9519\u5224\u5b9a\u6210\u529f\u3002\u7f3a\u5c11\u53ef\u9760\u53c2\u7167\u65f6\uff0c\u7ed3\u8bba\u53ea\u80fd\u662f\u5f85\u9a8c\u8bc1\u3002\n\n\u53ea\u6709\u5728\u72ec\u7acb\u771f\u5b9e\u7247\u6bb5\u4e0a\u53d6\u5f97\u53ef\u4fe1\u8bc1\u636e\uff0c\u4e14\u5728 level 2 \u7684\u5f71\u5b50\u8fd0\u884c\u4e2d\u663e\u793a\u9002\u7528\u3001\u5f00\u9500\u53ef\u63a5\u53d7\u540e\uff0c\u624d\u8003\u8651\u5c06 harness \u4f5c\u4e3a\u8f85\u52a9\u89c2\u6d4b\u5de5\u5177\u88c5\u914d\uff1b\u521d\u671f\u4fdd\u7559\u5f03\u6743\u53ca\u5feb\u901f\u7981\u7528\u673a\u5236\u3002\u7814\u7a76\u8fd4\u56de\u65f6\u518d\u6b21\u6838\u5bf9\u5f53\u524d\u5173\u5361\u4e0e observation\uff0c\u65e7\u8def\u7ebf\u59cb\u7ec8\u4e0d\u56e0\u65b9\u6cd5\u9a8c\u8bc1\u901a\u8fc7\u800c\u6062\u590d\u6709\u6548\u3002\u672c\u6b21\u53ea\u4f5c\u51b3\u7b56\uff0c\u4e0d\u6267\u884c\u52a8\u4f5c\uff0c\u4e0d\u5ba3\u79f0\u65b9\u6cd5\u6216\u5b8c\u6574\u94fe\u8def\u5df2\u9a8c\u6536\u3002\n"}], "grading": {"expectations": [{"text": "The level-1 RIGHT, RIGHT, UP route is rejected as stale for level 2 and is not projected into the current task prompt.", "passed": true, "evidence": "decision.md identifies observation:24 / level 2 as authoritative and says the level-1 route has lost its applicability: \u2018\u5176 RIGHT, RIGHT, UP \u8def\u7ebf\u5df2\u5931\u53bb\u9002\u7528\u4f9d\u636e\uff0c\u4e0d\u6267\u884c\u3001\u4e0d\u6392\u961f\uff0c\u4e5f\u4e0d\u4ee5\u65e7\u5730\u56fe\u76ee\u6807\u8986\u76d6\u5f53\u524d\u8ba1\u5212\u3002\u2019 This substantively excludes the route from the current plan/prompt rather than merely declining to execute it now."}, {"text": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.", "passed": true, "evidence": "decision.md separately preserves the cross-frame method while stating that two constructed frame pairs do not establish real-world validity: \u2018\u4e24\u6bb5\u6784\u9020\u5e27\u53ea\u80fd\u8bc1\u660e\u793a\u4f8b\u53ef\u8fd0\u884c\uff0c\u5c1a\u4e0d\u80fd\u8bc1\u660e\u771f\u5b9e\u573a\u666f\u6709\u6548\u3002\u2019 It proposes only an isolated, disabled candidate and explicitly says \u2018\u6682\u4e0d\u88c5\u914d\u8fdb\u4e3b agent \u7684\u884c\u52a8\u51b3\u7b56\u94fe\u2019. The final paragraph also denies acceptance based on this decision alone."}, {"text": "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria.", "passed": true, "evidence": "decision.md treats constructed frames as development examples and requires \u2018\u672a\u53c2\u4e0e\u8c03\u8bd5\u7684\u771f\u5b9e\u7247\u6bb5\u2019 or observations arising from the main agent's already planned actions. It explicitly forbids replay, rollback, and default extra action spending: \u2018\u4e0d\u5f97\u91cd\u653e\u73af\u5883\u3001\u56de\u9000\u5386\u53f2\u6216\u4e3a\u4e86\u7814\u7a76\u9ed8\u8ba4\u6d88\u8017\u989d\u5916\u52a8\u4f5c\u2019. Validation checks controlled-entity correctness, error attribution, abstention, ambiguity handling, compute/action cost, and independent reference evidence rather than task completion or lack of errors."}], "summary": {"passed": 3, "failed": 0, "total": 3, "pass_rate": 1.0}, "timing": {"total_tokens": null, "duration_ms": null, "total_duration_seconds": null, "measurement_note": "Collaboration completion did not expose token or duration metrics; not estimated."}, "claims": [{"claim": "The level-1 route is stale at level 2 and should not control the current plan.", "type": "quality", "verified": true, "evidence": "The supplied eval facts place the report at level 1 / observation:18 and the current state at level 2 / observation:24; decision.md correctly scopes and rejects the route on that basis."}, {"claim": "Two constructed frame pairs are insufficient evidence that the recognition method works in real scenarios.", "type": "quality", "verified": true, "evidence": "decision.md does not overclaim validation and prescribes held-out real fragments plus independent reference evidence. This is justified by the prompt's statement that the method was tested only on its two construction examples."}, {"claim": "No candidate harness or experiment was actually implemented by this run.", "type": "process", "verified": true, "evidence": "transcript.md states \u2018\u672a\u5b9e\u65bd\u5019\u9009 harness \u6216\u5b9e\u9a8c\u2019 and the only output file present is outputs/decision.md."}, {"claim": "An isolated, disabled candidate harness should be created now.", "type": "quality", "verified": false, "evidence": "The output proposes creation before held-out validation, but the available evidence cannot establish that creation at this stage is beneficial. It remains a recommendation, not a verified outcome."}], "user_notes_summary": {"uncertainties": [], "needs_review": [], "workarounds": []}, "eval_feedback": {"suggestions": [{"assertion": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.", "reason": "This assertion allows both immediate creation of a disabled candidate harness and deferring component creation until after discriminating evidence. Those are materially different lifecycle decisions. Add an assertion stating whether unvalidated reports may create a component record or must remain a research candidate outside the component pool."}, {"assertion": "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria.", "reason": "The output gives sound correctness and cost criteria, but the assertion does not require comparison with the current recognition baseline or a downstream task-level benefit such as reduced decision ambiguity. Requiring both would better distinguish method validation from merely measuring detector accuracy."}], "overall": "The assertions strongly test staleness handling and safe evidence collection, but they under-specify the boundary between a research candidate and component creation and only loosely define semantic benefit."}}}, {"id": "eval-3-method-vs-recap-with_skill", "prompt": "\u6700\u8fd1\u6e38\u620f\u4e2d\u4e09\u6b21\u628a\u6700\u5927\u7684\u53d8\u5316\u5757\u5f53\u4f5c\u81ea\u5df1\uff0c\u5176\u4e2d\u4e00\u6b21\u5176\u5b9e\u662f\u8ba1\u6570\u5668\u52a8\u753b\uff1b\u4e00\u6b21\u78b0\u649e\u5bfc\u81f4\u81ea\u5df1\u4e0d\u52a8\u3002\u5f53\u524d\u53ef\u4ee5\u5b89\u5168\u7b49\u5019\u601d\u8003\uff0c\u5c1a\u672a\u6709\u76f8\u5173\u7814\u7a76\u7ebf\u3002\u4f60\u53ef\u7ed9\u53ea\u8bfb child \u63d0\u4f9b\u52a8\u4f5c\u524d\u540e\u5e27\uff0c\u4e5f\u53ef\u5efa\u7acb\u4e00\u6b21\u6027\u7684\u5e72\u51c0\u4e0a\u4e0b\u6587\u3002\u8bf7\u8bbe\u8ba1\u4e0b\u4e00\u6b65\u5de5\u4f5c\uff1a\u9700\u8981\u4ec0\u4e48\u7814\u7a76\u5bf9\u8c61\u3001\u5982\u4f55\u5206\u89e3\u3001\u662f\u5426\u5e94\u521b\u5efa\u6301\u4e45 subagent/skill/tool/memory\u3001\u4ec0\u4e48\u7ed3\u679c\u7b97\u6709\u7528\u3001\u4f55\u65f6\u505c\u6b62\u3002\u8bf7\u52ff\u5047\u8bbe child \u53ef\u4ee5\u63a7\u5236\u6e38\u620f\u6216\u56de\u653e\uff0c\u8f93\u51fa decision.md\u3002", "eval_id": 3, "outputs": [{"name": "decision.md", "type": "text", "content": "# \u4e0b\u4e00\u6b65\u51b3\u7b56\n\n\u542f\u52a8\u4e00\u6761\u6709\u754c\u7814\u7a76\u7ebf\uff1a\u7814\u7a76\u201c\u4f9d\u636e\u52a8\u4f5c\u6761\u4ef6\u548c\u65f6\u5e8f\u8bc1\u636e\u8bc6\u522b\u53d7\u63a7\u5bf9\u8c61\uff0c\u5e76\u5728\u8bc1\u636e\u4e0d\u8db3\u65f6\u4fdd\u7559\u5019\u9009\u201d\u7684\u65b9\u6cd5\u3002\u4e09\u6b21\u8bef\u5224\u662f\u65b9\u6cd5\u5931\u6548\u7684\u6848\u4f8b\uff0c\u4e0d\u628a\u590d\u8ff0\u8f68\u8ff9\u4f5c\u4e3a\u7814\u7a76\u76ee\u6807\u3002\u9898\u8bbe\u8bf4\u660e\u5c1a\u65e0\u76f8\u5173\u7814\u7a76\u7ebf\uff1b\u6b64\u6b21\u5efa\u7acb\u4e00\u6761\u7ebf\uff0c\u540e\u7eed\u8bc1\u636e\u56de\u5230\u540c\u4e00\u7ebf\u3002\n\n\u4e0b\u4e00\u6b21\u79fb\u52a8\u9700\u8981\u53ef\u9760\u7684\u81ea\u6211\u5b9a\u4f4d\uff0c\u800c\u73b0\u5728\u53ef\u5b89\u5168\u7b49\u5019\uff0c\u56e0\u6b64\u9009\u62e9\u4e00\u6b21 blocking \u7814\u7a76\uff0c\u4f7f\u7528\u4e00\u6b21\u6027\u5e72\u51c0\u4e0a\u4e0b\u6587\u4e2d\u7684\u53ea\u8bfb child\u3002\u5176\u9884\u671f\u6536\u76ca\u662f\u4fee\u6b63\u4f1a\u53cd\u590d\u5f71\u54cd\u52a8\u4f5c\u9009\u62e9\u7684\u8bc6\u522b\u89c4\u5219\uff1b\u9996\u8f6e\u53ea\u5206\u6790\u5df2\u6709\u8bc1\u636e\uff0c\u4e0d\u6d88\u8017\u65b0\u73af\u5883\u52a8\u4f5c\u3002\u4e0d\u56e0\u9519\u8bef\u6b21\u6570\u6216\u7ec4\u4ef6\u7a7a\u7f3a\u521b\u5efa\u66f4\u591a child\u3002\n\n## \u5de5\u4f5c\u5305\u4e0e\u5206\u89e3\n\nmain \u63d0\u4f9b\u4e09\u6b21\u6848\u4f8b\u7684\u539f\u59cb\u52a8\u4f5c\u524d\u540e\u5e27\u3001\u5e27\u987a\u5e8f\u3001\u51c6\u786e\u52a8\u4f5c\u53ca\u53ef\u83b7\u5f97\u7684\u8fde\u7eed\u5e27\u3002\u6ce8\u660e\u52a8\u4f5c\u662f\u5426\u6210\u529f\u6267\u884c\u3001\u7f3a\u5931\u4fe1\u606f\u53ca\u5f53\u524d\u72b6\u6001\u3002\u5148\u8ba9 child \u72ec\u7acb\u5217\u5019\u9009\uff0c\u518d\u63d0\u4f9b\u201c\u8ba1\u6570\u5668\u52a8\u753b\u201d\u201c\u78b0\u649e\u4e0d\u52a8\u201d\u7684\u5df2\u77e5\u6807\u7b7e\uff0c\u5e76\u6ce8\u660e\u6807\u7b7e\u4f9d\u636e\uff1b\u4e0d\u80fd\u628a parent \u7684\u8bef\u5224\u5f53\u6210\u89c6\u89c9\u4e8b\u5b9e\u3002\u5f53\u524d\u9898\u76ee\u6ca1\u6709\u5b9e\u9645\u5e27\uff0c\u4e0d\u80fd\u58f0\u79f0\u5df2\u5b9a\u4f4d\u5bf9\u8c61\u6216\u9a8c\u8bc1\u65b9\u6cd5\u3002\n\n\u7814\u7a76\u5206\u4e09\u6b65\uff0c\u5728\u540c\u4e00 child \u5185\u5b8c\u6210\uff1a\n\n1. \u6bd4\u8f83\u5019\u9009\u89e3\u91ca\uff1a\u6700\u5927\u53d8\u5316\u6765\u81ea\u53d7\u63a7\u5bf9\u8c61\u3001\u754c\u9762\u52a8\u753b\u6216\u5176\u4ed6\u73af\u5883\u53d8\u5316\uff1b\u53d7\u63a7\u5bf9\u8c61\u4e5f\u53ef\u80fd\u56e0\u78b0\u649e\u6ca1\u6709\u4f4d\u79fb\u3002\u53d8\u5316\u9762\u79ef\u53ea\u751f\u6210\u5019\u9009\uff0c\u4e0d\u80fd\u72ec\u81ea\u786e\u8ba4\u8eab\u4efd\u3002\n2. \u4ea7\u51fa\u53ef\u6267\u884c\u65b9\u6cd5\uff1a\u8f93\u5165\u52a8\u4f5c\u4e0e\u8fde\u7eed\u5e27\uff1b\u5217\u51fa\u591a\u4e2a\u5bf9\u8c61\u5019\u9009\uff0c\u8bb0\u5f55\u8de8\u5e27\u5916\u89c2\u3001\u4f4d\u7f6e\u3001\u6301\u7eed\u6027\u3001\u754c\u9762\u533a\u57df\u53ca\u4e0e\u52a8\u4f5c\u65b9\u5411\u7684\u76f8\u5bb9\u6027\uff1b\u5bf9\u52a8\u753b\u3001\u906e\u6321\u3001\u955c\u5934\u79fb\u52a8\u548c\u78b0\u649e\u89e3\u91ca\u4fdd\u7559\u4e0d\u786e\u5b9a\u6027\u3002\u754c\u9762\u4f4d\u7f6e\u548c\u5bf9\u8c61\u5916\u89c2\u5c5e\u4e8e\u968f\u6e38\u620f\u53d8\u5316\u7684\u6761\u4ef6\uff0c\u52a8\u4f5c\u4e0e\u54cd\u5e94\u7684\u5173\u7cfb\u4e5f\u987b\u6309\u5f53\u524d\u89c4\u5219\u786e\u8ba4\uff0c\u4e0d\u80fd\u5047\u5b9a\u6309\u65b9\u5411\u5fc5\u7136\u4f4d\u79fb\u3002\u96f6\u4f4d\u79fb\u4e0d\u80fd\u76f4\u63a5\u6392\u9664\u201c\u81ea\u5df1\u201d\u3002\u8f93\u51fa\u5019\u9009\u3001\u652f\u6301\uff0f\u53cd\u5bf9\u8bc1\u636e\u3001\u7f6e\u4fe1\u4f9d\u636e\u548c\u5f03\u5224\u6761\u4ef6\u3002\n3. \u7ed9\u51fa\u4e00\u4e2a\u65b0\u6848\u4f8b\u7684\u5224\u522b\u65b9\u6848\uff0c\u4ee5\u53ca\u65e7\u89c4\u5219\u4e0e\u65b0\u65b9\u6cd5\u7684\u4e0d\u540c\u9884\u6d4b\u3002\u9996\u4e2a\u91cc\u7a0b\u7891\u662f\u4e00\u4efd\u80fd\u5904\u7406\u8ba1\u6570\u5668\u8bef\u5bfc\u548c\u78b0\u649e\u96f6\u4f4d\u79fb\u7684\u65b9\u6cd5\u53ca\u5176\u5931\u8d25\u8fb9\u754c\uff1b\u4e0d\u8981\u6c42\u7acb\u5373\u751f\u6210\u7ec4\u4ef6\u3002\n\nchild \u65e0\u63a7\u5236\u3001\u56de\u653e\u3001\u56de\u6eda\u6216\u79c1\u6709\u8bc4\u4f30\u8bbf\u95ee\u6743\u9650\u3002\u5b83\u53ea\u80fd\u5206\u6790\u4f20\u5165\u6750\u6599\u3001\u8bf7\u6c42\u5177\u4f53\u8865\u5145\u8bc1\u636e\u548c\u5efa\u8bae\u6d4b\u8bd5\uff1bmain \u51b3\u5b9a\u5e76\u6267\u884c\u6bcf\u4e00\u6b21\u5b9e\u9645\u52a8\u4f5c\u3002\n\n## \u6709\u7528\u7ed3\u679c\u4e0e\u9a8c\u8bc1\n\n\u6709\u7528\u62a5\u544a\u987b\u8bf4\u660e\u9002\u7528\u6761\u4ef6\u3001\u8f93\u5165\u3001\u5224\u65ad\u6b65\u9aa4\u3001\u8f93\u51fa\u3001\u4e0d\u786e\u5b9a\u6027\u3001\u5931\u8d25\u8fb9\u754c\u53ca\u4e0b\u4e00\u5224\u522b\u6d4b\u8bd5\u3002\u5b83\u5e94\u89e3\u91ca\u4e3a\u4f55\u8ba1\u6570\u5668\u4e0d\u80fd\u4ec5\u51ed\u53d8\u5316\u9762\u79ef\u88ab\u9009\u4e2d\u3001\u4e3a\u4f55\u78b0\u649e\u65f6\u5e94\u4fdd\u7559\u5019\u9009\u3002\u82e5\u73b0\u6709\u5e27\u65e0\u6cd5\u533a\u5206\u5047\u8bbe\uff0c\u660e\u786e\u4e0d\u53ef\u8fa8\u8bc6\u6761\u4ef6\u548c\u6700\u5c0f\u7f3a\u5931\u8bc1\u636e\u4e5f\u662f\u6709\u7528\u7ed3\u679c\uff1b\u53ea\u91cd\u65b0\u8bb2\u8ff0\u4e09\u6b21\u7ecf\u5386\u4e0d\u7b97\u8fbe\u6807\u3002\n\nmain \u5148\u6838\u5bf9\u62a5\u544a\u662f\u5426\u9002\u7528\u4e8e\u5f53\u524d\u5173\u5361\u548c\u72b6\u6001\u3002\u82e5\u4ecd\u9700\u8bc1\u636e\u4e14\u5f53\u524d\u89c4\u5219\u4e0e\u5b89\u5168\u6761\u4ef6\u5141\u8bb8\uff0c\u7531 main \u5728\u53ef\u901a\u884c\u65b9\u5411\u6267\u884c\u4e00\u4e2a\u4f4e\u6210\u672c\u52a8\u4f5c\uff0c\u4fdd\u7559\u524d\u540e\u5e27\uff1a\u53d7\u63a7\u5bf9\u8c61\u5e94\u5448\u73b0\u4e0e\u52a8\u4f5c\u76f8\u5bb9\u7684\u54cd\u5e94\uff0c\u8ba1\u6570\u5668\u53d8\u5316\u53ef\u80fd\u4e0d\u5177\u76f8\u540c\u7a7a\u95f4\u5bf9\u5e94\uff1b\u82e5\u52a8\u4f5c\u53d7\u963b\u3001\u5b58\u5728\u8054\u52a8\u52a8\u753b\u6216\u591a\u4e2a\u5019\u9009\u540c\u6837\u76f8\u5bb9\uff0c\u5219\u7ed3\u679c\u4ecd\u4e0d\u786e\u5b9a\u3002child \u4e0d\u5f97\u81ea\u884c\u6267\u884c\u6b64\u6d4b\u8bd5\uff0c\u4e5f\u4e0d\u80fd\u5c06\u52a8\u4f5c\u76f8\u5173\u6027\u76f4\u63a5\u5f53\u6210\u5145\u5206\u56e0\u679c\u8bc1\u660e\u3002\u5df2\u6709\u65e5\u5fd7\u82e5\u5305\u542b\u5c1a\u672a\u7528\u4e8e\u8bbe\u8ba1\u65b9\u6cd5\u7684\u6848\u4f8b\uff0c\u4f18\u5148\u7528\u5b83\u68c0\u9a8c\uff0c\u65e0\u987b\u5047\u88c5\u62e5\u6709\u56de\u653e\u80fd\u529b\u3002\n\n\u5b9e\u9645\u4f7f\u7528\u540e\u56de\u4f20\u7cbe\u786e\u8f93\u5165\u3001\u5019\u9009\u8f93\u51fa\u3001main \u7684\u91c7\u7528\u65b9\u5f0f\u3001\u9519\u8bef\uff0f\u5f03\u5224\u548c\u52a8\u4f5c\u53ca\u5ef6\u8fdf\u6210\u672c\uff0c\u5728\u65b0\u6848\u4f8b\u4e0a\u4e0e\u6700\u5927\u53d8\u5316\u89c4\u5219\u6bd4\u8f83\u3002\u533a\u5206\u201c\u62a5\u544a\u5df2\u4ea4\u4ed8\u201d\u201c\u65b9\u6cd5\u5df2\u91c7\u7528\u201d\u548c\u201c\u6548\u679c\u6709\u6539\u5584\u201d\uff1bchild \u4e0e main \u610f\u89c1\u4e00\u81f4\u4e0d\u80fd\u589e\u52a0\u8bc1\u636e\u5f3a\u5ea6\u3002\n\n## \u6301\u4e45\u5316\u4e0e\u505c\u6b62\n\n\u73b0\u5728\u4e0d\u521b\u5efa\u6301\u4e45 subagent\u3001skill \u6216 Pi task-local tool\u3002\u6301\u7eed\u590d\u53d1\u4e14\u591a\u8f6e\u72ec\u7acb\u7814\u7a76\u786e\u6709\u6536\u76ca\u65f6\u518d\u8003\u8651\u6301\u4e45 subagent\uff1b\u65b9\u6cd5\u5728\u65b0\u6848\u4f8b\u4e2d\u6709\u53ef\u8bf4\u660e\u7684\u6536\u76ca\u4e14\u8fb9\u754c\u6e05\u695a\u65f6\u518d\u8003\u8651 skill\uff1b\u4ec5\u5f53\u51fa\u73b0\u660e\u786e\u3001\u53ef\u91cd\u590d\u7684\u673a\u68b0\u5904\u7406\u9700\u6c42\u65f6\u8003\u8651\u901a\u8fc7 pi.registerTool\uff0f\u9879\u76ee\u58f0\u660e\u5f0f substrate \u5efa\u7acb\u5de5\u5177\u3002memory \u4e5f\u4e0d\u56fa\u5316\u201c\u6700\u5927\u7684\u53d8\u5316\u5757\u662f\u81ea\u5df1\u201d\u6216\u672a\u8bc1\u5b9e\u8eab\u4efd\uff1b\u4ec5\u5728\u7814\u7a76\u7ebf\u7684 agenda/checkpoint \u8bb0\u5f55\u95ee\u9898\u3001\u5907\u9009\u89e3\u91ca\u3001\u5df2\u77e5\u53cd\u4f8b\u3001\u5f53\u524d\u4e0d\u786e\u5b9a\u6027\u548c\u4e0b\u4e2a\u6d4b\u8bd5\uff0c\u907f\u514d\u5f62\u6210\u91cd\u590d\u7814\u7a76\u3002\n\n\u9884\u7b97\u4e3a\u4e00\u8f6e\u62a5\u544a\uff0c\u5fc5\u8981\u65f6\u4ec5\u8ffd\u52a0\u4e00\u8f6e\u643a\u5e26\u65b0\u8bc1\u636e\u7684\u53cd\u9988\uff0c\u4ee5\u53ca\u6700\u591a\u4e00\u6b21\u7ecf main \u786e\u8ba4\u5b89\u5168\u7684\u5224\u522b\u52a8\u4f5c\u3002\u65b9\u6cd5\u8fbe\u5230\u4e0a\u8ff0\u91cc\u7a0b\u7891\u5373\u7ed3\u675f\u9996\u8f6e\uff1b\u7f3a\u5e27\u6216\u65e0\u6cd5\u5b89\u5168\u533a\u5206\u65f6\u6682\u505c\u5e76\u8bb0\u5f55\u6240\u9700\u5e27\uff0f\u52a8\u4f5c\u6761\u4ef6\uff1b\u9884\u7b97\u8017\u5c3d\u6216\u65b0\u589e\u6750\u6599\u4e0d\u518d\u6539\u53d8\u5224\u65ad\u65f6\u505c\u6b62\u3002\u4fdd\u7559\u672a\u51b3\u95ee\u9898\u53ca\u91cd\u65b0\u542f\u52a8\u6761\u4ef6\uff0c\u4e0d\u5c06\u6682\u505c\u3001\u7a7a\u7ed3\u679c\u6216\u672a\u9a8c\u8bc1\u7684\u65b9\u6cd5\u5305\u88c5\u6210\u6210\u529f\u3002\n"}], "grading": {"expectations": [{"text": "The research object is a reusable controlled-object identification method rather than a recap, and the plan explicitly handles the counter animation and collision/zero-displacement cases.", "passed": true, "evidence": "The decision defines the research object as \u2018\u4f9d\u636e\u52a8\u4f5c\u6761\u4ef6\u548c\u65f6\u5e8f\u8bc1\u636e\u8bc6\u522b\u53d7\u63a7\u5bf9\u8c61\uff0c\u5e76\u5728\u8bc1\u636e\u4e0d\u8db3\u65f6\u4fdd\u7559\u5019\u9009\u2019 and explicitly says \u2018\u4e09\u6b21\u8bef\u5224\u662f\u65b9\u6cd5\u5931\u6548\u7684\u6848\u4f8b\uff0c\u4e0d\u628a\u590d\u8ff0\u8f68\u8ff9\u4f5c\u4e3a\u7814\u7a76\u76ee\u6807.\u2019 Its method compares controlled-object movement with UI animation, states that change area only generates candidates, and explicitly requires that \u2018\u96f6\u4f4d\u79fb\u4e0d\u80fd\u76f4\u63a5\u6392\u9664\u201c\u81ea\u5df1\u201d\u2019 when collision is a possible explanation."}, {"text": "The initial worker is a one-off clean, read-only child; it is not granted actions or replay and no persistent subagent is created immediately.", "passed": true, "evidence": "The plan chooses \u2018\u4e00\u6b21\u6027\u5e72\u51c0\u4e0a\u4e0b\u6587\u4e2d\u7684\u53ea\u8bfb child\u2019 and says the first round only analyzes existing evidence. It explicitly denies \u2018\u63a7\u5236\u3001\u56de\u653e\u3001\u56de\u6eda\u6216\u79c1\u6709\u8bc4\u4f30\u8bbf\u95ee\u6743\u9650,\u2019 reserves every real action for main, and later states \u2018\u73b0\u5728\u4e0d\u521b\u5efa\u6301\u4e45 subagent.\u2019 The transcript also confirms that no child or game action was actually launched during this planning run."}, {"text": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.", "passed": true, "evidence": "The persistence section says not to create a skill or Pi task-local tool now. A skill is considered only after the method shows explainable benefit on a new case and has clear boundaries; a tool is considered only for a clear, repeatable mechanical processing need via \u2018pi.registerTool\uff0f\u9879\u76ee\u58f0\u660e\u5f0f substrate.\u2019 The useful-result and feedback sections require application to a new case, comparison against the largest-change rule, and separation of report delivery, adoption, and actual improvement, while explicitly rejecting a mere recap as sufficient."}, {"text": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.", "passed": true, "evidence": "Useful output is defined by applicability, inputs, steps, outputs, uncertainty, failure boundaries, and a next discriminating test. The plan asks for a new-case discrimination plan and later feedback containing exact inputs, candidate outputs, adoption, errors/abstentions, and action/latency cost. It explicitly treats unidentifiability and minimum missing evidence as useful and requires abstention conditions. Concrete controls include one report, at most one follow-up and one main-approved action, ending at the milestone, pausing for missing/unsafe evidence, and stopping when budget is exhausted or new material no longer changes the judgment."}], "summary": {"passed": 4, "failed": 0, "total": 4, "pass_rate": 1.0}, "execution_metrics": {"tool_calls": null, "total_tool_calls": null, "total_steps": null, "errors_encountered": null, "output_chars": 1669, "transcript_chars": 273, "note": "No metrics.json or isolated executor telemetry was available; unavailable fields remain null. Character counts were measured directly from the supplied text files."}, "timing": {"executor_duration_seconds": null, "grader_duration_seconds": null, "total_duration_seconds": null, "total_tokens": null, "tool_calls": null, "note": "The supplied timing.json says the run was interrupted and resumed, so no unified timing, token, or tool-call figures can be estimated."}, "claims": [{"claim": "The decision uses a one-off clean, read-only child and preserves exclusive game-action authority for main.", "type": "process", "verified": true, "evidence": "decision.md explicitly specifies a one-off clean read-only child, denies control/replay/rollback, and says main decides and executes every real action."}, {"claim": "The proposed method handles both counter-animation confounding and collision-induced zero displacement.", "type": "quality", "verified": true, "evidence": "The workflow compares UI animation against controlled-object explanations and explicitly retains the controlled-object candidate when collision can explain zero displacement."}, {"claim": "No current frames are available, so the run does not claim that the controlled object has been identified or the method validated.", "type": "factual", "verified": true, "evidence": "decision.md states \u2018\u5f53\u524d\u9898\u76ee\u6ca1\u6709\u5b9e\u9645\u5e27\uff0c\u4e0d\u80fd\u58f0\u79f0\u5df2\u5b9a\u4f4d\u5bf9\u8c61\u6216\u9a8c\u8bc1\u65b9\u6cd5\u2019; the provided eval input and transcript contain no frames or validation results."}, {"claim": "No persistent subagent, skill, Pi task-local tool, or unverified identity memory is created now.", "type": "process", "verified": true, "evidence": "The persistence section explicitly declines these mutations and limits storage to research agenda/checkpoint state; the transcript confirms that no persistent component was created."}, {"claim": "The proposed later comparison can demonstrate improvement over the largest-change rule.", "type": "quality", "verified": false, "evidence": "The comparison and feedback protocol is well specified, but it is a future validation plan. No new case, semantic result, or measured improvement is present in this run."}], "user_notes_summary": {"uncertainties": [], "needs_review": [], "workarounds": []}, "eval_feedback": {"suggestions": [{"assertion": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.", "reason": "This combines three independently important checks. Splitting it into skill-method gating, Pi-tool deterministic/semantic gating, and prohibition on packaging observations as skills would prevent one strong clause from masking a missing clause."}, {"assertion": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.", "reason": "This bundles four dimensions into one binary verdict. Separate assertions would better discriminate plans that provide stop conditions but omit held-out feedback or abstention behavior."}], "overall": "The assertions target substantive orchestration behavior and this output satisfies them genuinely. Their main weakness is bundling several independently failure-prone requirements into two compound assertions."}}}, {"id": "eval-3-method-vs-recap-without_skill", "prompt": "\u6700\u8fd1\u6e38\u620f\u4e2d\u4e09\u6b21\u628a\u6700\u5927\u7684\u53d8\u5316\u5757\u5f53\u4f5c\u81ea\u5df1\uff0c\u5176\u4e2d\u4e00\u6b21\u5176\u5b9e\u662f\u8ba1\u6570\u5668\u52a8\u753b\uff1b\u4e00\u6b21\u78b0\u649e\u5bfc\u81f4\u81ea\u5df1\u4e0d\u52a8\u3002\u5f53\u524d\u53ef\u4ee5\u5b89\u5168\u7b49\u5019\u601d\u8003\uff0c\u5c1a\u672a\u6709\u76f8\u5173\u7814\u7a76\u7ebf\u3002\u4f60\u53ef\u7ed9\u53ea\u8bfb child \u63d0\u4f9b\u52a8\u4f5c\u524d\u540e\u5e27\uff0c\u4e5f\u53ef\u5efa\u7acb\u4e00\u6b21\u6027\u7684\u5e72\u51c0\u4e0a\u4e0b\u6587\u3002\u8bf7\u8bbe\u8ba1\u4e0b\u4e00\u6b65\u5de5\u4f5c\uff1a\u9700\u8981\u4ec0\u4e48\u7814\u7a76\u5bf9\u8c61\u3001\u5982\u4f55\u5206\u89e3\u3001\u662f\u5426\u5e94\u521b\u5efa\u6301\u4e45 subagent/skill/tool/memory\u3001\u4ec0\u4e48\u7ed3\u679c\u7b97\u6709\u7528\u3001\u4f55\u65f6\u505c\u6b62\u3002\u8bf7\u52ff\u5047\u8bbe child \u53ef\u4ee5\u63a7\u5236\u6e38\u620f\u6216\u56de\u653e\uff0c\u8f93\u51fa decision.md\u3002", "eval_id": 3, "outputs": [{"name": "decision.md", "type": "text", "content": "# \u4e0b\u4e00\u6b65\u7814\u7a76\u8c03\u5ea6\u51b3\u7b56\n\n## \u51b3\u7b56\n\n\u5f00\u542f\u4e00\u6761\u77ed\u671f\u3001\u5047\u8bbe\u9a71\u52a8\u7684\u7814\u7a76\u7ebf\uff0c\u7814\u7a76\u5bf9\u8c61\u662f\uff1a**\u5982\u4f55\u6839\u636e\u52a8\u4f5c\u524d\u540e\u5e27\u53ca\u52a8\u4f5c\u7ed3\u679c\u8bc6\u522b\u53d7\u63a7\u5bf9\u8c61\uff0c\u5e76\u53ef\u9760\u5730\u533a\u5206 HUD/\u8ba1\u6570\u5668\u52a8\u753b\u3001\u771f\u5b9e\u79fb\u52a8\u548c\u78b0\u649e\u5bfc\u81f4\u7684\u96f6\u4f4d\u79fb**\u3002\u7814\u7a76\u4ea7\u7269\u5fc5\u987b\u662f\u53ef\u6267\u884c\u3001\u53ef\u8bc1\u4f2a\u7684\u8bc6\u522b\u6d41\u7a0b\uff0c\u800c\u4e0d\u662f\u201c\u4e09\u6b21\u770b\u5230\u4e86\u4ec0\u4e48\u201d\u7684\u8f68\u8ff9\u590d\u8ff0\u3002\n\n\u5148\u5efa\u7acb\u4e00\u6b21\u6027\u7684\u5e72\u51c0 child \u4e0a\u4e0b\u6587\uff0c\u4e0d\u7acb\u5373\u521b\u5efa\u6301\u4e45 subagent\u3002child \u53ea\u8bfb\u63a5\u6536\u6750\u6599\u5e76\u505a\u79bb\u7ebf\u5206\u6790\uff1b\u5b83\u4e0d\u80fd\u64cd\u4f5c\u6e38\u620f\u3001\u8bf7\u6c42\u56de\u653e\u6216\u628a\u672a\u7ecf\u9a8c\u8bc1\u7684\u5224\u65ad\u76f4\u63a5\u88c5\u914d\u7ed9\u4e3b agent\u3002\u4e3b agent \u4ecd\u72ec\u5360\u540e\u7eed\u6240\u6709\u6e38\u620f\u52a8\u4f5c\u3002\n\n## \u8f93\u5165\u4e0e\u8bc1\u636e\u8fb9\u754c\n\n\u7ed9 child \u63d0\u4f9b\u5e26\u7a33\u5b9a\u7f16\u53f7\u7684\u52a8\u4f5c\u524d\u540e\u5e27\uff0c\u4ee5\u53ca\u6700\u5c11\u7684\u4e8b\u5b9e\u6807\u7b7e\uff1a\u53d1\u51fa\u7684\u52a8\u4f5c\u3001\u52a8\u4f5c\u662f\u5426\u6210\u529f\u8fd4\u56de\u3001\u662f\u5426\u53d1\u751f\u78b0\u649e\u8ff9\u8c61\u3002\u6750\u6599\u81f3\u5c11\u8986\u76d6\uff1a\n\n1. \u4e24\u4e2a\u201c\u6700\u5927\u53d8\u5316\u5757\u786e\u5b9e\u53ef\u80fd\u662f\u53d7\u63a7\u5bf9\u8c61\u201d\u7684\u6b63\u4f8b\uff1b\n2. \u4e00\u4e2a\u201c\u6700\u5927\u53d8\u5316\u5757\u5176\u5b9e\u662f\u8ba1\u6570\u5668\u52a8\u753b\u201d\u7684\u53cd\u4f8b\uff1b\n3. \u4e00\u4e2a\u201c\u53d1\u51fa\u65b9\u5411\u52a8\u4f5c\u4f46\u5bf9\u8c61\u56e0\u78b0\u649e\u800c\u4e0d\u52a8\u201d\u7684\u96f6\u4f4d\u79fb\u4f8b\uff1b\n4. \u82e5\u5b58\u5728\uff0c\u989d\u5916\u63d0\u4f9b\u5b8c\u5168\u65e0\u52a8\u4f5c\u6216\u4ec5 HUD \u53d8\u5316\u7684\u8d1f\u5bf9\u7167\u3002\n\n\u4e0d\u8981\u628a\u201c\u6700\u5927\u53d8\u5316\u5757\u5c31\u662f\u81ea\u5df1\u201d\u4f5c\u4e3a\u4e8b\u5b9e\u5199\u5165\u4e0a\u4e0b\u6587\uff0c\u53ea\u628a\u5b83\u5217\u4e3a\u5f85\u68c0\u9a8c\u5047\u8bbe\u3002\u73b0\u6709\u56db\u7c7b\u7247\u6bb5\u6765\u81ea\u540c\u4e00\u6bb5\u6e38\u620f\uff0c\u5176\u7ed3\u8bba\u6700\u591a\u662f\u5f53\u524d episode \u7684\u5019\u9009\u89c4\u5f8b\uff0c\u4e0d\u80fd\u81ea\u52a8\u5916\u63a8\u5230\u5176\u4ed6 level \u6216\u6e38\u620f\u3002\n\n## \u5206\u89e3\n\n### 1. \u5019\u9009\u751f\u6210\n\n\u8ba9 child \u5bf9\u6bcf\u7ec4\u524d\u540e\u5e27\u63d0\u53d6\u6240\u6709\u53d8\u5316\u8fde\u901a\u5757\u53ca\u4e0d\u53d8\u4f46\u53ef\u80fd\u5c5e\u4e8e\u5bf9\u8c61\u7684\u90bb\u8fd1\u533a\u57df\uff0c\u8bb0\u5f55\u4f4d\u7f6e\u3001\u8fb9\u754c\u6846\u3001\u989c\u8272/\u5f62\u72b6\u3001\u9762\u79ef\u548c\u4f4d\u79fb\u3002HUD \u533a\u57df\u4e0d\u80fd\u4ec5\u51ed\u201c\u5c0f\u201d\u6216\u201c\u56fa\u5b9a\u201d\u5148\u9a8c\u88ab\u63d0\u524d\u5220\u9664\u3002\n\n### 2. \u7ade\u4e89\u5047\u8bbe\u4e0e\u53cd\u4f8b\u5ba1\u67e5\n\n\u81f3\u5c11\u6bd4\u8f83\u4ee5\u4e0b\u89e3\u91ca\uff1a\u6700\u5927\u53d8\u5316\u5757\u3001\u4e0e\u52a8\u4f5c\u65b9\u5411\u4e00\u81f4\u7684\u6210\u5bf9\u6d88\u5931/\u51fa\u73b0\u7ed3\u6784\u3001\u8de8\u5e27\u4fdd\u6301\u5916\u89c2\u7684\u5019\u9009\u3001\u56fa\u5b9a\u5c4f\u5e55\u533a\u57df\u52a8\u753b\u3002\u8981\u6c42\u9010\u4f8b\u8bf4\u660e\u6bcf\u79cd\u89e3\u91ca\u4e3a\u4ec0\u4e48\u901a\u8fc7\u6216\u5931\u8d25\uff0c\u5c24\u5176\u89e3\u91ca\u8ba1\u6570\u5668\u53cd\u4f8b\u3002\n\n### 3. \u96f6\u4f4d\u79fb\u5904\u7406\n\n\u628a\u78b0\u649e\u6837\u672c\u89c6\u4e3a\u5173\u952e\u5224\u522b\u6761\u4ef6\uff0c\u800c\u4e0d\u662f\u574f\u6570\u636e\u3002\u8bc6\u522b\u6d41\u7a0b\u5e94\u533a\u5206\u201c\u6ca1\u6709\u53d7\u63a7\u5bf9\u8c61\u201d\u548c\u201c\u53d7\u63a7\u5bf9\u8c61\u88ab\u963b\u6321\u800c\u672a\u4f4d\u79fb\u201d\uff1b\u53ef\u4ee5\u5229\u7528\u6b64\u524d\u5df2\u5efa\u7acb\u7684\u5019\u9009\u8eab\u4efd\u3001\u9759\u6001\u5916\u89c2\u3001\u90bb\u63a5\u969c\u788d\u548c\u5c40\u90e8\u53d8\u5316\uff0c\u800c\u4e0d\u80fd\u628a\u4f4d\u79fb\u7f3a\u5931\u76f4\u63a5\u5f53\u4f5c\u8eab\u4efd\u5426\u5b9a\u3002\n\n### 4. \u8f93\u51fa\u5224\u522b\u5668\u4e0e\u5b9e\u9a8c\u8ba1\u5212\n\nchild \u5e94\u8fd4\u56de\uff1a\u5019\u9009\u6392\u5e8f\u6b65\u9aa4\u3001\u6bcf\u4e00\u6b65\u6240\u9700\u89c2\u6d4b\u3001\u51b2\u7a81\u65f6\u7684\u7f6e\u4fe1\u5ea6/\u5f03\u6743\u6761\u4ef6\u3001\u5df2\u77e5\u5931\u8d25\u6a21\u5f0f\uff0c\u4ee5\u53ca\u540e\u7eed\u5b89\u5168\u52a8\u4f5c\u80fd\u591f\u533a\u5206\u54ea\u4e9b\u4ecd\u5b58\u5047\u8bbe\u3002\u672a\u6765\u5b9e\u9a8c\u7531\u4e3b agent \u5728\u81ea\u7136\u63a8\u8fdb\u4e14\u5b89\u5168\u65f6\u6267\u884c\uff0cchild \u53ea\u5206\u6790\u968f\u540e\u5f97\u5230\u7684\u65b0\u5e27\u3002\n\n### 5. \u7559\u51fa\u9a8c\u8bc1\n\n\u82e5\u6837\u672c\u8db3\u591f\uff0c\u6784\u9020\u65b9\u6cd5\u65f6\u6682\u4e0d\u5c55\u793a\u81f3\u5c11\u4e00\u4e2a\u7247\u6bb5\uff0c\u5b8c\u6210\u89c4\u5219\u540e\u518d\u7528\u8be5\u7247\u6bb5\u68c0\u9a8c\u3002\u82e5\u6837\u672c\u4e0d\u8db3\uff0c\u5219\u660e\u786e\u62a5\u544a\u201c\u5c1a\u4e0d\u53ef\u5224\u5b9a\u201d\uff0c\u5e76\u628a\u4e0b\u4e00\u4e2a\u6700\u5c0f\u4fe1\u606f\u589e\u76ca\u5b9e\u9a8c\u5199\u6e05\u695a\uff0c\u4e0d\u7528\u6d41\u7545\u7684\u603b\u7ed3\u66ff\u4ee3\u8bc1\u636e\u3002\n\n## \u662f\u5426\u521b\u5efa harness \u7ec4\u4ef6\n\n- **Subagent\uff1a\u6682\u4e0d\u6301\u4e45\u5316\u3002** \u5f53\u524d\u95ee\u9898\u8fb9\u754c\u6e05\u6670\uff0c\u4e00\u6b21\u6027\u5e72\u51c0\u4e0a\u4e0b\u6587\u8db3\u591f\u3002\u53ea\u6709\u540c\u7c7b\u8bc6\u522b\u5de5\u4f5c\u6301\u7eed\u51fa\u73b0\u3001\u9700\u8981\u79ef\u7d2f\u4e00\u5957\u7a33\u5b9a\u5206\u6790\u4e0a\u4e0b\u6587\u6216\u591a\u8f6e\u590d\u6838\u65f6\uff0c\u624d\u4fdd\u5b58\u6301\u4e45 subagent \u914d\u65b9\u3002\n- **Skill\uff1a\u73b0\u5728\u4e0d\u521b\u5efa\u6b63\u5f0f skill\u3002** \u5148\u4fdd\u7559\u4e3a\u5019\u9009\u65b9\u6cd5\u3002\u53ea\u6709\u5b83\u6709\u660e\u786e\u89e6\u53d1\u6761\u4ef6\u3001\u9010\u6b65\u6d41\u7a0b\u3001\u5f03\u6743/\u5931\u8d25\u6761\u4ef6\uff0c\u5e76\u901a\u8fc7\u81f3\u5c11\u4e00\u4e2a\u672a\u53c2\u4e0e\u6784\u9020\u7684\u7247\u6bb5\u6216\u540e\u7eed\u65b0\u89c2\u6d4b\u9a8c\u8bc1\u540e\uff0c\u624d\u521b\u5efa\u201c\u53d7\u63a7\u5bf9\u8c61\u8bc6\u522b\u201dskill\u3002skill \u8bb0\u5f55\u65b9\u6cd5\u53ca\u9002\u7528\u6761\u4ef6\uff0c\u4e0d\u8bb0\u5f55\u672c\u6b21\u8f68\u8ff9\u3002\n- **Tool\uff1a\u6682\u4e0d\u521b\u5efa\u3002** \u82e5\u7814\u7a76\u53d1\u73b0\u8fde\u901a\u5757\u5dee\u5206\u3001\u5019\u9009\u5339\u914d\u548c\u4f4d\u79fb\u7edf\u8ba1\u9700\u8981\u88ab\u53cd\u590d\u3001\u786e\u5b9a\u6027\u6267\u884c\uff0c\u518d\u521b\u5efa\u4e00\u4e2a\u53d7\u9650\u7684 **Pi task-local tool**\uff0c\u8f93\u5165\u4e3a\u660e\u786e\u7684\u5e27\u5f15\u7528\u548c\u53c2\u6570\uff0c\u8f93\u51fa\u4e3a\u7ed3\u6784\u5316\u5019\u9009\u53ca\u5ea6\u91cf\uff1b\u4e0d\u8ba9\u5b83\u81ea\u884c\u51b3\u5b9a\u54ea\u4e2a\u5019\u9009\u662f\u201c\u81ea\u5df1\u201d\u3002\u5fc5\u987b\u7528\u8ba1\u6570\u5668\u53cd\u4f8b\u548c\u78b0\u649e\u6837\u672c\u9a8c\u8bc1\u5b9e\u9645\u8bed\u4e49\u8f93\u51fa\u540e\u624d\u88c5\u914d\u3002\u8fd9\u91cc\u4e0d\u6d89\u53ca MCP\u3002\n- **Memory\uff1a\u521b\u5efa\u5c11\u91cf\u6709\u6709\u6548\u671f\u7684\u4e8b\u5b9e\u8bb0\u5fc6\u3002** \u5f53\u524d episode/level \u5185\u53ef\u8bb0\u4f4f\u5df2\u786e\u8ba4\u7684\u5019\u9009\u8eab\u4efd\u3001\u63a7\u5236\u65b9\u5411\u6620\u5c04\u548c\u5f53\u524d\u672a\u51b3\u5047\u8bbe\uff1b\u5355\u4e2a\u5e27\u4f4d\u7f6e\u3001\u5730\u56fe\u5c40\u90e8\u548c\u78b0\u649e\u72b6\u6001\u5c5e\u4e8e\u77ed\u671f state/level memory\u3002\u53ea\u6709\u8de8 level \u518d\u9a8c\u8bc1\u7684\u63a7\u5236\u89c4\u5f8b\u624d\u5347\u7ea7\u4e3a\u66f4\u957f\u671f\u8bb0\u5fc6\u3002\u7814\u7a76\u7ed3\u8bba\u53ca\u5176\u8bc1\u636e\u5f15\u7528\u5e94\u4e0e\u539f\u59cb\u77ed\u671f\u4e8b\u5b9e\u5206\u5f00\u3002\n\n## \u6709\u7528\u7ed3\u679c\u7684\u5224\u636e\n\n\u7814\u7a76\u7ed3\u679c\u53ea\u6709\u540c\u65f6\u6ee1\u8db3\u4e0b\u5217\u6761\u4ef6\u624d\u503c\u5f97\u91c7\u7528\uff1a\n\n1. \u7ed9\u51fa\u53ef\u7531\u53e6\u4e00\u4e2a agent \u91cd\u590d\u6267\u884c\u7684\u6b65\u9aa4\uff0c\u800c\u975e\u89c2\u5bdf\u6458\u8981\uff1b\n2. \u80fd\u89e3\u91ca\u4e3a\u4ec0\u4e48\u201c\u6700\u5927\u53d8\u5316\u5757\u201d\u4f1a\u5728\u8ba1\u6570\u5668\u6837\u672c\u4e0a\u5931\u8d25\uff1b\n3. \u660e\u786e\u5904\u7406\u78b0\u649e\u5bfc\u81f4\u7684\u96f6\u4f4d\u79fb\uff0c\u800c\u4e0d\u662f\u4f9d\u8d56\u6bcf\u6b65\u5fc5\u79fb\u52a8\uff1b\n4. \u5bf9\u6bcf\u9879\u7ed3\u8bba\u9644\u5e26\u6765\u6e90\u7247\u6bb5\uff0c\u5e76\u533a\u5206\u89c2\u5bdf\u3001\u63a8\u65ad\u548c\u731c\u60f3\uff1b\n5. \u6709\u7f6e\u4fe1\u5ea6\u6216\u5f03\u6743\u5206\u652f\uff0c\u4e0d\u5728\u8bc1\u636e\u4e0d\u8db3\u65f6\u5f3a\u884c\u8ba4\u5b9a\uff1b\n6. \u5728\u7559\u51fa\u7247\u6bb5\u6216\u968f\u540e\u65b0\u89c2\u6d4b\u4e0a\u4ea7\u751f\u53ef\u6838\u9a8c\u9884\u6d4b\uff1b\n7. \u82e5\u5efa\u8bae Pi task-local tool\uff0c\u5fc5\u987b\u7ed9\u51fa\u786e\u5b9a\u6027\u8f93\u5165\u8f93\u51fa\u5951\u7ea6\u548c\u8bed\u4e49\u6d4b\u8bd5\u6848\u4f8b\u3002\n\n\u53ea\u590d\u8ff0\u4e09\u6b21\u8f68\u8ff9\u3001\u6362\u4e00\u79cd\u63aa\u8f9e\u58f0\u79f0\u201c\u6700\u5927\u5757\u901a\u5e38\u662f\u81ea\u5df1\u201d\uff0c\u6216\u63d0\u51fa\u65e0\u6cd5\u7531\u672a\u6765\u89c2\u6d4b\u8bc1\u4f2a\u7684\u539f\u5219\uff0c\u90fd\u4e0d\u7b97\u6709\u7528\u7ed3\u679c\u3002\n\n## \u53cd\u9988\u4e0e\u505c\u6b62\u6761\u4ef6\n\nchild \u9996\u6b21\u8fd4\u56de\u540e\uff0c\u4e3b agent\u53ea\u91c7\u7eb3\u5df2\u7ecf\u6709\u8bc1\u636e\u652f\u6491\u4e14\u98ce\u9669\u53ef\u63a7\u7684\u90e8\u5206\uff1b\u5019\u9009\u65b9\u6cd5\u8fdb\u5165\u5f85\u9a8c\u8bc1\u72b6\u6001\uff0c\u4e0d\u7acb\u5373\u5f53\u4f5c\u4e8b\u5b9e\u3002\u4e0b\u4e00\u6b21\u81ea\u7136\u51fa\u73b0\u5b89\u5168\u4e14\u6709\u533a\u5206\u5ea6\u7684\u52a8\u4f5c\u673a\u4f1a\u65f6\uff0c\u4e3b agent\u6536\u96c6\u4e00\u4e2a\u65b0\u524d\u540e\u5e27\uff0c\u5c06\u9884\u6d4b\u4e0e\u7ed3\u679c\u53cd\u9988\u5230\u540c\u4e00\u7814\u7a76\u7ebf\u4e0a\u3002\u9884\u6d4b\u6210\u529f\u624d\u8003\u8651\u63d0\u5347\u4e3a skill \u6216\u5b9e\u73b0 Pi task-local tool\uff1b\u5931\u8d25\u5219\u8981\u6c42 child \u5b9a\u4f4d\u5931\u8d25\u6761\u4ef6\u5e76\u4fee\u8ba2\u6216\u653e\u5f03\u65b9\u6cd5\u3002\n\n\u6ee1\u8db3\u4ee5\u4e0b\u4efb\u4e00\u6761\u4ef6\u5373\u505c\u6b62\u5f53\u524d\u7814\u7a76\u7ebf\uff1a\n\n- \u65b9\u6cd5\u901a\u8fc7\u9884\u5148\u7ea6\u5b9a\u7684\u53cd\u4f8b\u3001\u78b0\u649e\u4f8b\u548c\u81f3\u5c11\u4e00\u4e2a\u7559\u51fa/\u65b0\u6837\u672c\uff0c\u4e14\u5269\u4f59\u4e0d\u786e\u5b9a\u6027\u5df2\u6709\u660e\u786e\u5f03\u6743\u89c4\u5219\uff1b\n- \u8bc1\u636e\u8868\u660e\u4ec5\u51ed\u73b0\u6709\u5e27\u65e0\u6cd5\u533a\u5206\u5019\u9009\uff0cchild \u5df2\u7ed9\u51fa\u6240\u9700\u7684\u6700\u5c0f\u65b0\u589e\u89c2\u6d4b\uff1b\u6b64\u65f6\u6682\u505c\u7b49\u5f85\u4e3b agent \u7684\u5b89\u5168\u81ea\u7136\u89c2\u6d4b\uff0c\u800c\u4e0d\u91cd\u590d\u5206\u6790\uff1b\n- \u8fde\u7eed\u4e00\u6b21\u4fee\u8ba2\u4ecd\u4e0d\u80fd\u89e3\u91ca\u540c\u4e00\u53cd\u4f8b\uff0c\u6216\u8f93\u51fa\u6301\u7eed\u9000\u5316\u4e3a\u8f68\u8ff9\u590d\u8ff0\uff1b\n- \u83b7\u53d6\u4e0b\u4e00\u9879\u8bc1\u636e\u9700\u8981\u5192\u4e0d\u53ef\u63a5\u53d7\u7684\u751f\u547d/\u884c\u52a8\u9884\u7b97\u98ce\u9669\uff1b\n- \u7814\u7a76\u7ee7\u7eed\u6d88\u8017\u7684\u9884\u7b97\u8d85\u8fc7\u5176\u5bf9\u5f53\u524d\u51b3\u7b56\u7684\u9884\u671f\u4ef7\u503c\u3002\n\n"}], "grading": {"expectations": [{"text": "The research object is a reusable controlled-object identification method rather than a recap, and the plan explicitly handles the counter animation and collision/zero-displacement cases.", "passed": true, "evidence": "The decision names the research object as a falsifiable method for recognizing the controlled object from action/frame evidence while distinguishing \u2018HUD/\u8ba1\u6570\u5668\u52a8\u753b\u3001\u771f\u5b9e\u79fb\u52a8\u548c\u78b0\u649e\u5bfc\u81f4\u7684\u96f6\u4f4d\u79fb.\u2019 It explicitly requires an executable identification procedure rather than a recap. Separate decomposition sections cover the counter counterexample and treat collision samples as a key discriminating condition instead of bad data."}, {"text": "The initial worker is a one-off clean, read-only child; it is not granted actions or replay and no persistent subagent is created immediately.", "passed": true, "evidence": "The decision says \u2018\u5148\u5efa\u7acb\u4e00\u6b21\u6027\u7684\u5e72\u51c0 child \u4e0a\u4e0b\u6587\uff0c\u4e0d\u7acb\u5373\u521b\u5efa\u6301\u4e45 subagent\u2019 and defines the child as read-only offline analysis. It explicitly states that the child cannot operate the game or request replay and that main retains exclusive control of all later game actions. The transcript confirms no child or game environment was called in this planning run."}, {"text": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.", "passed": true, "evidence": "The component section keeps the result as a candidate method rather than creating a skill now; skill creation requires triggers, steps, abstention/failure conditions, and held-out or later-observation validation, and it explicitly says a skill records the method, not this trajectory. A Pi task-local tool is deferred until connected-component diff/matching/statistics become repeated deterministic work; its contract is bounded and it must pass semantic-output tests on both the counter and collision cases before assembly. It also explicitly says \u2018\u8fd9\u91cc\u4e0d\u6d89\u53ca MCP.\u2019"}, {"text": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.", "passed": true, "evidence": "The seven useful-result criteria require reproducible steps, counter and collision handling, evidence provenance, abstention, and a verifiable prediction on a held-out or later observation. The plan specifies withholding a clip when possible and otherwise reporting non-identifiability plus the minimum-information experiment. Feedback returns a later prediction/result to the same research line. Stop/pause conditions cover success on counter, collision, and held-out/new samples; non-identifiability pending a safe observation; failed revision; unacceptable action risk; and budget/value limits."}], "summary": {"passed": 4, "failed": 0, "total": 4, "pass_rate": 1.0}, "execution_metrics": {"tool_calls": null, "total_tool_calls": null, "total_steps": null, "errors_encountered": null, "output_chars": 2357, "transcript_chars": 310, "note": "No metrics.json or isolated executor telemetry was available; unavailable fields remain null. Character counts were measured directly from the supplied text files."}, "timing": {"executor_duration_seconds": null, "grader_duration_seconds": null, "total_duration_seconds": null, "total_tokens": null, "tool_calls": null, "note": "The supplied timing.json explicitly reports that isolated timing, token-usage, and cost telemetry were unavailable; no estimates were made."}, "claims": [{"claim": "The proposal is method research rather than trajectory recap.", "type": "quality", "verified": true, "evidence": "decision.md defines a repeatable, falsifiable identification workflow with candidate generation, competing hypotheses, collision handling, abstention, and held-out testing, and explicitly rejects recap-only output."}, {"claim": "The initial child is one-off, clean-context, read-only, and cannot act or replay.", "type": "process", "verified": true, "evidence": "These limits are stated directly in the decision, and the transcript reports that no child or game environment was invoked."}, {"claim": "Any proposed tool is a Pi task-local tool rather than an MCP server.", "type": "factual", "verified": true, "evidence": "The tool section explicitly names a \u2018Pi task-local tool,\u2019 scopes it to structured deterministic frame processing, and states \u2018\u8fd9\u91cc\u4e0d\u6d89\u53ca MCP.\u2019"}, {"claim": "The plan gives memory an explicit validity boundary rather than treating all observations as durable knowledge.", "type": "quality", "verified": true, "evidence": "The memory section distinguishes episode/level facts, short-term state/level position-map-collision facts, and control rules that may become longer-term only after cross-level validation."}, {"claim": "The controlled-object method will pass a held-out or later observation and improve decisions.", "type": "quality", "verified": false, "evidence": "The document defines this as a future promotion gate and feedback step. No held-out execution, later observation, semantic tool output, or decision-quality result exists in the supplied artifacts."}], "user_notes_summary": {"uncertainties": [], "needs_review": [], "workarounds": []}, "eval_feedback": {"suggestions": [{"assertion": "Skill and Pi task-local tool creation are gated on a reusable method or deterministic operation plus semantic validation; observations are not packaged directly as a skill.", "reason": "This assertion contains three distinct gates. Splitting them would expose an output that handles skill promotion correctly but proposes an unvalidated or non-Pi tool, or vice versa."}, {"assertion": "The plan defines useful outputs, held-out or later-use feedback, uncertainty/abstention, and concrete pause or stop conditions.", "reason": "Four independent orchestration properties share one verdict. Separate assertions would provide more discriminating failure localization."}, {"reason": "The prompt explicitly asks whether memory should be created, and the without-skill output provides unusually strong validity-scope handling, but no assertion checks memory lifecycle or the distinction between evidence-backed memory and unverified identity claims. Consider adding one."}], "overall": "The assertions are substantively aligned and the response genuinely satisfies them. More atomic assertions, plus an explicit memory-lifecycle check, would make the eval more diagnostic."}}}], "previous_feedback": {}, "previous_outputs": {}, "benchmark": {"metadata": {"skill_name": "research-orchestration", "skill_path": "demo/harness-methods/research-orchestration", "executor_model": "independent collaboration agents; exact model telemetry unavailable", "analyzer_model": "independent collaboration agents; exact model telemetry unavailable", "timestamp": "2026-09-21T10:41:52Z", "evals_run": [1, 2, 3], "runs_per_configuration": 1}, "runs": [{"eval_id": 1, "eval_name": "duplicate-agenda", "configuration": "with_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}}, {"eval_id": 1, "eval_name": "duplicate-agenda", "configuration": "without_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}}, {"eval_id": 2, "eval_name": "late-level-report", "configuration": "with_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}}, {"eval_id": 2, "eval_name": "late-level-report", "configuration": "without_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}}, {"eval_id": 3, "eval_name": "method-vs-recap", "configuration": "with_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 4, "failed": 0, "total": 4, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}}, {"eval_id": 3, "eval_name": "method-vs-recap", "configuration": "without_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 4, "failed": 0, "total": 4, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}}], "run_summary": {"with_skill": {"pass_rate": {"mean": 1.0, "stddev": 0.0, "min": 1.0, "max": 1.0}, "time_seconds": {"mean": null, "stddev": null, "min": null, "max": null}, "tokens": {"mean": null, "stddev": null, "min": null, "max": null}}, "without_skill": {"pass_rate": {"mean": 1.0, "stddev": 0.0, "min": 1.0, "max": 1.0}, "time_seconds": {"mean": null, "stddev": null, "min": null, "max": null}, "tokens": {"mean": null, "stddev": null, "min": null, "max": null}}, "delta": {"pass_rate": "+0.00", "time_seconds": "unavailable", "tokens": "unavailable"}}, "notes": ["All six runs passed the current assertions; the observed pass-rate delta is zero.", "This is one run per configuration, so it does not estimate variance or demonstrate skill benefit.", "Graders found the prompts and compound assertions insufficiently discriminating: they strongly cue the desired decision and do not distinguish some creation timing or orchestration choices.", "Token and duration telemetry were not exposed and were left null rather than estimated."]}};
+
+    // ---- State ----
+    let feedbackMap = {};  // run_id -> feedback text
+    let currentIndex = 0;
+    let visitedRuns = new Set();
+
+    // ---- Init ----
+    async function init() {
+      // Load saved feedback from server — but only if this isn't a fresh
+      // iteration (indicated by previous_feedback being present). When
+      // previous feedback exists, the feedback.json on disk is stale from
+      // the prior iteration and should not pre-fill the textareas.
+      const hasPrevious = Object.keys(EMBEDDED_DATA.previous_feedback || {}).length > 0
+        || Object.keys(EMBEDDED_DATA.previous_outputs || {}).length > 0;
+      if (!hasPrevious) {
+        try {
+          const resp = await fetch("/api/feedback");
+          const data = await resp.json();
+          if (data.reviews) {
+            for (const r of data.reviews) feedbackMap[r.run_id] = r.feedback;
+          }
+        } catch { /* first run, no feedback yet */ }
+      }
+
+      document.getElementById("skill-name").textContent = EMBEDDED_DATA.skill_name;
+      showRun(0);
+
+      // Wire up feedback auto-save
+      const textarea = document.getElementById("feedback");
+      let saveTimeout = null;
+      textarea.addEventListener("input", () => {
+        clearTimeout(saveTimeout);
+        document.getElementById("feedback-status").textContent = "";
+        saveTimeout = setTimeout(() => saveCurrentFeedback(), 800);
+      });
+    }
+
+    // ---- Navigation ----
+    function navigate(delta) {
+      const newIndex = currentIndex + delta;
+      if (newIndex >= 0 && newIndex < EMBEDDED_DATA.runs.length) {
+        saveCurrentFeedback();
+        showRun(newIndex);
+      }
+    }
+
+    function updateNavButtons() {
+      document.getElementById("prev-btn").disabled = currentIndex === 0;
+      document.getElementById("next-btn").disabled =
+        currentIndex === EMBEDDED_DATA.runs.length - 1;
+    }
+
+    // ---- Show a run ----
+    function showRun(index) {
+      currentIndex = index;
+      const run = EMBEDDED_DATA.runs[index];
+
+      // Progress
+      document.getElementById("progress").textContent =
+        `${index + 1} of ${EMBEDDED_DATA.runs.length}`;
+
+      // Prompt
+      document.getElementById("prompt-text").textContent = run.prompt;
+
+      // Config badge
+      const badge = document.getElementById("config-badge");
+      const configMatch = run.id.match(/(with_skill|without_skill|new_skill|old_skill)/);
+      if (configMatch) {
+        const config = configMatch[1];
+        const isBaseline = config === "without_skill" || config === "old_skill";
+        badge.textContent = config.replace(/_/g, " ");
+        badge.className = "config-badge " + (isBaseline ? "config-baseline" : "config-primary");
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
+
+      // Outputs
+      renderOutputs(run);
+
+      // Previous outputs
+      renderPrevOutputs(run);
+
+      // Grades
+      renderGrades(run);
+
+      // Previous feedback
+      const prevFb = (EMBEDDED_DATA.previous_feedback || {})[run.id];
+      const prevEl = document.getElementById("prev-feedback");
+      if (prevFb) {
+        document.getElementById("prev-feedback-text").textContent = prevFb;
+        prevEl.style.display = "block";
+      } else {
+        prevEl.style.display = "none";
+      }
+
+      // Feedback
+      document.getElementById("feedback").value = feedbackMap[run.id] || "";
+      document.getElementById("feedback-status").textContent = "";
+
+      updateNavButtons();
+
+      // Track visited runs and promote done button when all visited
+      visitedRuns.add(index);
+      const doneBtn = document.getElementById("done-btn");
+      if (visitedRuns.size >= EMBEDDED_DATA.runs.length) {
+        doneBtn.classList.add("ready");
+      }
+
+      // Scroll main content to top
+      document.querySelector(".main").scrollTop = 0;
+    }
+
+    // ---- Render outputs ----
+    function renderOutputs(run) {
+      const container = document.getElementById("outputs-body");
+      container.innerHTML = "";
+
+      const outputs = run.outputs || [];
+      if (outputs.length === 0) {
+        container.innerHTML = '<div class="empty-state">No output files</div>';
+        return;
+      }
+
+      for (const file of outputs) {
+        const fileDiv = document.createElement("div");
+        fileDiv.className = "output-file";
+
+        // Always show file header with download link
+        const header = document.createElement("div");
+        header.className = "output-file-header";
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = file.name;
+        header.appendChild(nameSpan);
+        const dlBtn = document.createElement("a");
+        dlBtn.className = "dl-btn";
+        dlBtn.textContent = "Download";
+        dlBtn.download = file.name;
+        dlBtn.href = getDownloadUri(file);
+        header.appendChild(dlBtn);
+        fileDiv.appendChild(header);
+
+        const content = document.createElement("div");
+        content.className = "output-file-content";
+
+        if (file.type === "text") {
+          const pre = document.createElement("pre");
+          pre.textContent = file.content;
+          content.appendChild(pre);
+        } else if (file.type === "image") {
+          const img = document.createElement("img");
+          img.src = file.data_uri;
+          img.alt = file.name;
+          content.appendChild(img);
+        } else if (file.type === "pdf") {
+          const iframe = document.createElement("iframe");
+          iframe.src = file.data_uri;
+          content.appendChild(iframe);
+        } else if (file.type === "xlsx") {
+          renderXlsx(content, file.data_b64);
+        } else if (file.type === "binary") {
+          const a = document.createElement("a");
+          a.className = "download-link";
+          a.href = file.data_uri;
+          a.download = file.name;
+          a.textContent = "Download " + file.name;
+          content.appendChild(a);
+        } else if (file.type === "error") {
+          const pre = document.createElement("pre");
+          pre.textContent = file.content;
+          pre.style.color = "var(--red)";
+          content.appendChild(pre);
+        }
+
+        fileDiv.appendChild(content);
+        container.appendChild(fileDiv);
+      }
+    }
+
+    // ---- XLSX rendering via SheetJS ----
+    function renderXlsx(container, b64Data) {
+      try {
+        const raw = Uint8Array.from(atob(b64Data), c => c.charCodeAt(0));
+        const wb = XLSX.read(raw, { type: "array" });
+
+        for (let i = 0; i < wb.SheetNames.length; i++) {
+          const sheetName = wb.SheetNames[i];
+          const ws = wb.Sheets[sheetName];
+
+          if (wb.SheetNames.length > 1) {
+            const sheetLabel = document.createElement("div");
+            sheetLabel.style.cssText =
+              "font-weight:600; font-size:0.8rem; color:#b0aea5; margin-top:0.5rem; margin-bottom:0.25rem;";
+            sheetLabel.textContent = "Sheet: " + sheetName;
+            container.appendChild(sheetLabel);
+          }
+
+          const htmlStr = XLSX.utils.sheet_to_html(ws, { editable: false });
+          const wrapper = document.createElement("div");
+          wrapper.innerHTML = htmlStr;
+          container.appendChild(wrapper);
+        }
+      } catch (err) {
+        container.textContent = "Error rendering spreadsheet: " + err.message;
+      }
+    }
+
+    // ---- Grades ----
+    function renderGrades(run) {
+      const section = document.getElementById("grades-section");
+      const content = document.getElementById("grades-content");
+
+      if (!run.grading) {
+        section.style.display = "none";
+        return;
+      }
+
+      const grading = run.grading;
+      section.style.display = "block";
+      // Reset to collapsed
+      content.classList.remove("open");
+      document.getElementById("grades-arrow").classList.remove("open");
+
+      const summary = grading.summary || {};
+      const expectations = grading.expectations || [];
+
+      let html = '<div style="padding: 1rem;">';
+
+      // Summary line
+      const passRate = summary.pass_rate != null
+        ? Math.round(summary.pass_rate * 100) + "%"
+        : "?";
+      const badgeClass = summary.pass_rate >= 0.8 ? "grade-pass" : summary.pass_rate >= 0.5 ? "" : "grade-fail";
+      html += '<div class="grades-summary">';
+      html += '<span class="grade-badge ' + badgeClass + '">' + passRate + '</span>';
+      html += '<span>' + (summary.passed || 0) + ' passed, ' + (summary.failed || 0) + ' failed of ' + (summary.total || 0) + '</span>';
+      html += '</div>';
+
+      // Assertions list
+      html += '<ul class="assertion-list">';
+      for (const exp of expectations) {
+        const statusClass = exp.passed ? "pass" : "fail";
+        const statusIcon = exp.passed ? "\u2713" : "\u2717";
+        html += '<li class="assertion-item">';
+        html += '<span class="assertion-status ' + statusClass + '">' + statusIcon + '</span>';
+        html += '<span>' + escapeHtml(exp.text) + '</span>';
+        if (exp.evidence) {
+          html += '<div class="assertion-evidence">' + escapeHtml(exp.evidence) + '</div>';
+        }
+        html += '</li>';
+      }
+      html += '</ul>';
+
+      html += '</div>';
+      content.innerHTML = html;
+    }
+
+    function toggleGrades() {
+      const content = document.getElementById("grades-content");
+      const arrow = document.getElementById("grades-arrow");
+      content.classList.toggle("open");
+      arrow.classList.toggle("open");
+    }
+
+    // ---- Previous outputs (collapsible) ----
+    function renderPrevOutputs(run) {
+      const section = document.getElementById("prev-outputs-section");
+      const content = document.getElementById("prev-outputs-content");
+      const prevOutputs = (EMBEDDED_DATA.previous_outputs || {})[run.id];
+
+      if (!prevOutputs || prevOutputs.length === 0) {
+        section.style.display = "none";
+        return;
+      }
+
+      section.style.display = "block";
+      // Reset to collapsed
+      content.classList.remove("open");
+      document.getElementById("prev-outputs-arrow").classList.remove("open");
+
+      // Render the files into the content area
+      content.innerHTML = "";
+      const wrapper = document.createElement("div");
+      wrapper.style.padding = "1rem";
+
+      for (const file of prevOutputs) {
+        const fileDiv = document.createElement("div");
+        fileDiv.className = "output-file";
+
+        const header = document.createElement("div");
+        header.className = "output-file-header";
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = file.name;
+        header.appendChild(nameSpan);
+        const dlBtn = document.createElement("a");
+        dlBtn.className = "dl-btn";
+        dlBtn.textContent = "Download";
+        dlBtn.download = file.name;
+        dlBtn.href = getDownloadUri(file);
+        header.appendChild(dlBtn);
+        fileDiv.appendChild(header);
+
+        const fc = document.createElement("div");
+        fc.className = "output-file-content";
+
+        if (file.type === "text") {
+          const pre = document.createElement("pre");
+          pre.textContent = file.content;
+          fc.appendChild(pre);
+        } else if (file.type === "image") {
+          const img = document.createElement("img");
+          img.src = file.data_uri;
+          img.alt = file.name;
+          fc.appendChild(img);
+        } else if (file.type === "pdf") {
+          const iframe = document.createElement("iframe");
+          iframe.src = file.data_uri;
+          fc.appendChild(iframe);
+        } else if (file.type === "xlsx") {
+          renderXlsx(fc, file.data_b64);
+        } else if (file.type === "binary") {
+          const a = document.createElement("a");
+          a.className = "download-link";
+          a.href = file.data_uri;
+          a.download = file.name;
+          a.textContent = "Download " + file.name;
+          fc.appendChild(a);
+        }
+
+        fileDiv.appendChild(fc);
+        wrapper.appendChild(fileDiv);
+      }
+
+      content.appendChild(wrapper);
+    }
+
+    function togglePrevOutputs() {
+      const content = document.getElementById("prev-outputs-content");
+      const arrow = document.getElementById("prev-outputs-arrow");
+      content.classList.toggle("open");
+      arrow.classList.toggle("open");
+    }
+
+    // ---- Feedback (saved to server -> feedback.json) ----
+    function saveCurrentFeedback() {
+      const run = EMBEDDED_DATA.runs[currentIndex];
+      const text = document.getElementById("feedback").value;
+
+      if (text.trim() === "") {
+        delete feedbackMap[run.id];
+      } else {
+        feedbackMap[run.id] = text;
+      }
+
+      // Build reviews array from map
+      const reviews = [];
+      for (const [run_id, feedback] of Object.entries(feedbackMap)) {
+        if (feedback.trim()) {
+          reviews.push({ run_id, feedback, timestamp: new Date().toISOString() });
+        }
+      }
+
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviews, status: "in_progress" }),
+      }).then(() => {
+        document.getElementById("feedback-status").textContent = "Saved";
+      }).catch(() => {
+        // Static mode or server unavailable — no-op on auto-save,
+        // feedback will be downloaded on final submit
+        document.getElementById("feedback-status").textContent = "Will download on submit";
+      });
+    }
+
+    // ---- Done ----
+    function showDoneDialog() {
+      // Save current textarea to feedbackMap (but don't POST yet)
+      const run = EMBEDDED_DATA.runs[currentIndex];
+      const text = document.getElementById("feedback").value;
+      if (text.trim() === "") {
+        delete feedbackMap[run.id];
+      } else {
+        feedbackMap[run.id] = text;
+      }
+
+      // POST once with status: complete — include ALL runs so the model
+      // can distinguish "no feedback" (looks good) from "not reviewed"
+      const reviews = [];
+      const ts = new Date().toISOString();
+      for (const r of EMBEDDED_DATA.runs) {
+        reviews.push({ run_id: r.id, feedback: feedbackMap[r.id] || "", timestamp: ts });
+      }
+      const payload = JSON.stringify({ reviews, status: "complete" }, null, 2);
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      }).then(() => {
+        document.getElementById("done-overlay").classList.add("visible");
+      }).catch(() => {
+        // Server not available (static mode) — download as file
+        const blob = new Blob([payload], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "feedback.json";
+        a.click();
+        URL.revokeObjectURL(url);
+        document.getElementById("done-overlay").classList.add("visible");
+      });
+    }
+
+    function closeDoneDialog() {
+      // Reset status back to in_progress
+      saveCurrentFeedback();
+      document.getElementById("done-overlay").classList.remove("visible");
+    }
+
+    // ---- Toast ----
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      toast.textContent = message;
+      toast.classList.add("visible");
+      setTimeout(() => toast.classList.remove("visible"), 2000);
+    }
+
+    // ---- Keyboard nav ----
+    document.addEventListener("keydown", (e) => {
+      // Don't capture when typing in textarea
+      if (e.target.tagName === "TEXTAREA") return;
+
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        navigate(-1);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        navigate(1);
+      }
+    });
+
+    // ---- Util ----
+    function getDownloadUri(file) {
+      if (file.data_uri) return file.data_uri;
+      if (file.data_b64) return "data:application/octet-stream;base64," + file.data_b64;
+      if (file.type === "text") return "data:text/plain;charset=utf-8," + encodeURIComponent(file.content);
+      return "#";
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // ---- View switching ----
+    function switchView(view) {
+      document.querySelectorAll(".view-tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".view-panel").forEach(p => p.classList.remove("active"));
+      document.querySelector(`[onclick="switchView('${view}')"]`).classList.add("active");
+      document.getElementById("panel-" + view).classList.add("active");
+    }
+
+    // ---- Benchmark rendering ----
+    function renderBenchmark() {
+      const data = EMBEDDED_DATA.benchmark;
+      if (!data) return;
+
+      // Show the tabs
+      document.getElementById("view-tabs").style.display = "flex";
+
+      const container = document.getElementById("benchmark-content");
+      const summary = data.run_summary || {};
+      const metadata = data.metadata || {};
+      const notes = data.notes || [];
+
+      let html = "";
+
+      // Header
+      html += "<h2 style='font-family: Poppins, sans-serif; margin-bottom: 0.5rem;'>Benchmark Results</h2>";
+      html += "<p style='color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1.25rem;'>";
+      if (metadata.skill_name) html += "<strong>" + escapeHtml(metadata.skill_name) + "</strong> &mdash; ";
+      if (metadata.timestamp) html += metadata.timestamp + " &mdash; ";
+      if (metadata.evals_run) html += "Evals: " + metadata.evals_run.join(", ") + " &mdash; ";
+      html += (metadata.runs_per_configuration || "?") + " runs per configuration";
+      html += "</p>";
+
+      // Summary table
+      html += '<table class="benchmark-table">';
+
+      function fmtStat(stat, pct) {
+        if (!stat) return "—";
+        const suffix = pct ? "%" : "";
+        const m = pct ? (stat.mean * 100).toFixed(0) : stat.mean.toFixed(1);
+        const s = pct ? (stat.stddev * 100).toFixed(0) : stat.stddev.toFixed(1);
+        return m + suffix + " ± " + s + suffix;
+      }
+
+      function deltaClass(val) {
+        if (!val) return "";
+        const n = parseFloat(val);
+        if (n > 0) return "benchmark-delta-positive";
+        if (n < 0) return "benchmark-delta-negative";
+        return "";
+      }
+
+      // Discover config names dynamically (everything except "delta")
+      const configs = Object.keys(summary).filter(k => k !== "delta");
+      const configA = configs[0] || "config_a";
+      const configB = configs[1] || "config_b";
+      const labelA = configA.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      const labelB = configB.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      const a = summary[configA] || {};
+      const b = summary[configB] || {};
+      const delta = summary.delta || {};
+
+      html += "<thead><tr><th>Metric</th><th>" + escapeHtml(labelA) + "</th><th>" + escapeHtml(labelB) + "</th><th>Delta</th></tr></thead>";
+      html += "<tbody>";
+
+      html += "<tr><td><strong>Pass Rate</strong></td>";
+      html += "<td>" + fmtStat(a.pass_rate, true) + "</td>";
+      html += "<td>" + fmtStat(b.pass_rate, true) + "</td>";
+      html += '<td class="' + deltaClass(delta.pass_rate) + '">' + (delta.pass_rate || "—") + "</td></tr>";
+
+      // Time (only show row if data exists)
+      if (a.time_seconds || b.time_seconds) {
+        html += "<tr><td><strong>Time (s)</strong></td>";
+        html += "<td>" + fmtStat(a.time_seconds, false) + "</td>";
+        html += "<td>" + fmtStat(b.time_seconds, false) + "</td>";
+        html += '<td class="' + deltaClass(delta.time_seconds) + '">' + (delta.time_seconds ? delta.time_seconds + "s" : "—") + "</td></tr>";
+      }
+
+      // Tokens (only show row if data exists)
+      if (a.tokens || b.tokens) {
+        html += "<tr><td><strong>Tokens</strong></td>";
+        html += "<td>" + fmtStat(a.tokens, false) + "</td>";
+        html += "<td>" + fmtStat(b.tokens, false) + "</td>";
+        html += '<td class="' + deltaClass(delta.tokens) + '">' + (delta.tokens || "—") + "</td></tr>";
+      }
+
+      html += "</tbody></table>";
+
+      // Per-eval breakdown (if runs data available)
+      const runs = data.runs || [];
+      if (runs.length > 0) {
+        const evalIds = [...new Set(runs.map(r => r.eval_id))].sort((a, b) => a - b);
+
+        html += "<h3 style='font-family: Poppins, sans-serif; margin-bottom: 0.75rem;'>Per-Eval Breakdown</h3>";
+
+        const hasTime = runs.some(r => r.result && r.result.time_seconds != null);
+        const hasErrors = runs.some(r => r.result && r.result.errors > 0);
+
+        for (const evalId of evalIds) {
+          const evalRuns = runs.filter(r => r.eval_id === evalId);
+          const evalName = evalRuns[0] && evalRuns[0].eval_name ? evalRuns[0].eval_name : "Eval " + evalId;
+
+          html += "<h4 style='font-family: Poppins, sans-serif; margin: 1rem 0 0.5rem; color: var(--text);'>" + escapeHtml(evalName) + "</h4>";
+          html += '<table class="benchmark-table">';
+          html += "<thead><tr><th>Config</th><th>Run</th><th>Pass Rate</th>";
+          if (hasTime) html += "<th>Time (s)</th>";
+          if (hasErrors) html += "<th>Crashes During Execution</th>";
+          html += "</tr></thead>";
+          html += "<tbody>";
+
+          // Group by config and render with average rows
+          const configGroups = [...new Set(evalRuns.map(r => r.configuration))];
+          for (let ci = 0; ci < configGroups.length; ci++) {
+            const config = configGroups[ci];
+            const configRuns = evalRuns.filter(r => r.configuration === config);
+            if (configRuns.length === 0) continue;
+
+            const rowClass = ci === 0 ? "benchmark-row-with" : "benchmark-row-without";
+            const configLabel = config.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+            for (const run of configRuns) {
+              const r = run.result || {};
+              const prClass = r.pass_rate >= 0.8 ? "benchmark-delta-positive" : r.pass_rate < 0.5 ? "benchmark-delta-negative" : "";
+              html += '<tr class="' + rowClass + '">';
+              html += "<td>" + configLabel + "</td>";
+              html += "<td>" + run.run_number + "</td>";
+              html += '<td class="' + prClass + '">' + ((r.pass_rate || 0) * 100).toFixed(0) + "% (" + (r.passed || 0) + "/" + (r.total || 0) + ")</td>";
+              if (hasTime) html += "<td>" + (r.time_seconds != null ? r.time_seconds.toFixed(1) : "—") + "</td>";
+              if (hasErrors) html += "<td>" + (r.errors || 0) + "</td>";
+              html += "</tr>";
+            }
+
+            // Average row
+            const rates = configRuns.map(r => (r.result || {}).pass_rate || 0);
+            const avgRate = rates.reduce((a, b) => a + b, 0) / rates.length;
+            const avgPrClass = avgRate >= 0.8 ? "benchmark-delta-positive" : avgRate < 0.5 ? "benchmark-delta-negative" : "";
+            html += '<tr class="benchmark-row-avg ' + rowClass + '">';
+            html += "<td>" + configLabel + "</td>";
+            html += "<td>Avg</td>";
+            html += '<td class="' + avgPrClass + '">' + (avgRate * 100).toFixed(0) + "%</td>";
+            if (hasTime) {
+              const times = configRuns.map(r => (r.result || {}).time_seconds).filter(t => t != null);
+              html += "<td>" + (times.length ? (times.reduce((a, b) => a + b, 0) / times.length).toFixed(1) : "—") + "</td>";
+            }
+            if (hasErrors) html += "<td></td>";
+            html += "</tr>";
+          }
+          html += "</tbody></table>";
+
+          // Per-assertion detail for this eval
+          const runsWithExpectations = {};
+          for (const config of configGroups) {
+            runsWithExpectations[config] = evalRuns.filter(r => r.configuration === config && r.expectations && r.expectations.length > 0);
+          }
+          const hasAnyExpectations = Object.values(runsWithExpectations).some(runs => runs.length > 0);
+          if (hasAnyExpectations) {
+            // Collect all unique assertion texts across all configs
+            const allAssertions = [];
+            const seen = new Set();
+            for (const config of configGroups) {
+              for (const run of runsWithExpectations[config]) {
+                for (const exp of (run.expectations || [])) {
+                  if (!seen.has(exp.text)) {
+                    seen.add(exp.text);
+                    allAssertions.push(exp.text);
+                  }
+                }
+              }
+            }
+
+            html += '<table class="benchmark-table" style="margin-top: 0.5rem;">';
+            html += "<thead><tr><th>Assertion</th>";
+            for (const config of configGroups) {
+              const label = config.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+              html += "<th>" + escapeHtml(label) + "</th>";
+            }
+            html += "</tr></thead><tbody>";
+
+            for (const assertionText of allAssertions) {
+              html += "<tr><td>" + escapeHtml(assertionText) + "</td>";
+
+              for (const config of configGroups) {
+                html += "<td>";
+                for (const run of runsWithExpectations[config]) {
+                  const exp = (run.expectations || []).find(e => e.text === assertionText);
+                  if (exp) {
+                    const cls = exp.passed ? "benchmark-delta-positive" : "benchmark-delta-negative";
+                    const icon = exp.passed ? "\u2713" : "\u2717";
+                    html += '<span class="' + cls + '" title="Run ' + run.run_number + ': ' + escapeHtml(exp.evidence || "") + '">' + icon + "</span> ";
+                  } else {
+                    html += "— ";
+                  }
+                }
+                html += "</td>";
+              }
+              html += "</tr>";
+            }
+            html += "</tbody></table>";
+          }
+        }
+      }
+
+      // Notes
+      if (notes.length > 0) {
+        html += '<div class="benchmark-notes">';
+        html += "<h3>Analysis Notes</h3>";
+        html += "<ul>";
+        for (const note of notes) {
+          html += "<li>" + escapeHtml(note) + "</li>";
+        }
+        html += "</ul></div>";
+      }
+
+      container.innerHTML = html;
+    }
+
+    // ---- Start ----
+    init();
+    renderBenchmark();
+  </script>
+</body>
+</html>
+

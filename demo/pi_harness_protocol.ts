@@ -65,6 +65,18 @@ export type ResearchResult = {
 export type HarnessRouteTarget = "memory" | "system_prompt" | "skill" | "tool" | "subagent" | "research_only";
 
 /**
+ * One independently selectable and independently invalidatable unit of task
+ * knowledge.  A fact or plan may contain structured data, but it must describe
+ * one subject/predicate pair.  Larger notes remain research/trajectory
+ * resources and are not admitted as Harness memory components.
+ */
+export type HarnessMemoryAtom = {
+	subject: string;
+	predicate: string;
+	value: unknown;
+};
+
+/**
  * Materialize a semantic delivery body at the text-resource boundary.
  *
  * Research and review records intentionally allow structured JSON in
@@ -96,6 +108,26 @@ function sortStructuredValue(value: unknown): unknown {
 	if (!value || typeof value !== "object") return value;
 	const record = value as Record<string, unknown>;
 	return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortStructuredValue(record[key])]));
+}
+
+export function normalizeHarnessMemoryAtom(value: unknown): HarnessMemoryAtom {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("fact/plan memory requires atom={subject,predicate,value}");
+	}
+	const atom = value as Record<string, unknown>;
+	const subject = String(atom.subject ?? "").trim();
+	const predicate = String(atom.predicate ?? "").trim();
+	if (!subject) throw new Error("memory atom.subject is required");
+	if (!predicate) throw new Error("memory atom.predicate is required");
+	if (!("value" in atom) || atom.value === undefined) throw new Error("memory atom.value is required");
+	// JSON serialization is the persistence boundary. Reject values that would
+	// silently disappear or fail only after a partial native route has run.
+	try {
+		JSON.stringify(sortStructuredValue(atom.value));
+	} catch {
+		throw new Error("memory atom.value must be JSON serializable");
+	}
+	return { subject, predicate, value: sortStructuredValue(atom.value) };
 }
 
 /**
@@ -171,6 +203,12 @@ export function normalizeSemanticCandidate(input: Record<string, any>): Record<s
 	if (candidate.target_version === undefined && Number.isInteger(candidate.current_version)) {
 		candidate.target_version = candidate.current_version;
 	}
+	if (["fact", "plan"].includes(String(candidate.semantic_kind)) && candidate.atom !== undefined) {
+		candidate.atom = normalizeHarnessMemoryAtom(candidate.atom);
+		// The structured atom is authoritative. Native memory keeps its existing
+		// text boundary by materializing only the atom value as deterministic text.
+		candidate.content = canonicalTextBody(candidate.atom.value, "memory atom.value");
+	}
 	delete candidate.kind;
 	delete candidate.current_version;
 	return candidate;
@@ -194,6 +232,7 @@ function validateSystemPromptProjection(candidate: Record<string, any>, base: Ha
 export function classifyHarnessChangeTargets(candidate: Record<string, any>): HarnessRouteTarget[] {
 	candidate = normalizeSemanticCandidate(candidate);
 	const base = classifySemanticKind(candidate);
+	if (base === "memory") normalizeHarnessMemoryAtom(candidate.atom);
 	if (candidate.prompt_channel === "system_prompt") {
 		validateSystemPromptProjection(candidate, base);
 		return [base, "system_prompt"];
@@ -304,7 +343,7 @@ export function classifySemanticKind(candidate: Record<string, any>): HarnessRou
 			return "tool";
 		case "role":
 			if (candidate.execution !== "model_delegation") throw new Error("role must use model_delegation execution");
-			if (!Array.isArray(candidate.tools) || !candidate.tools.length) throw new Error("role requires an explicit tool set");
+			if (!Array.isArray(candidate.tools)) throw new Error("role requires an explicit tool set (empty is valid for pure reasoning)");
 			return "subagent";
 		case "assessment":
 		case "evidence":

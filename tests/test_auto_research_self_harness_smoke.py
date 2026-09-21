@@ -161,11 +161,19 @@ def test_smoke_next_turn_uses_skill_materialized_by_previous_route(tmp_path):
                 "question": "Should the next turn use a reusable review procedure?",
                 "scope": "harness_component",
             }},
-            {"name": "task_harness", "arguments": {
-                "action": "apply_route",
-                "route_ref": "harness_route:auto-research-1:route-next-turn-review@v1",
-                "expected_delivery_hash": route_hash,
-            }},
+                {"name": "task_harness", "arguments": {
+                    "action": "apply_route",
+                    "route_ref": "harness_route:auto-research-1:route-next-turn-review@v1",
+                    "expected_delivery_hash": route_hash,
+                }},
+                {"name": "task_harness", "arguments": {
+                    "action": "assemble", "expected_assembly_revision": 0,
+                    "selected_resource_refs": ["skill:next-turn-review@v1"],
+                    "prompt_contributions": [],
+                    "decision": {"basis_refs": ["research_run:auto-research-1@v1"],
+                                 "reason": "Select the adopted review procedure for the next turn.",
+                                 "expected": "The next parent request can use the exact selected skill."},
+                }},
         ],
     )
     assert not results(first_events, "auto_research")[0].get("isError")

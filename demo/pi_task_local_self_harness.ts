@@ -16,6 +16,8 @@ import { installTaskLocalTools, type TaskToolAdapter } from "./pi_task_local_too
 import { admitTaskLocalOperation } from "./pi_task_execution_admission.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
 import { loadPrompt, renderPrompt } from "./prompt_loader.ts";
+import { baselineMethodCatalog, readBaselineMethod, BASELINE_AUTHORING_GUIDANCE } from "./pi_harness_baseline_methods.ts";
+import { memoryValidityContext, normalizeMemoryValidity, type MemoryValidity, type MemoryValidityContext } from "./pi_memory_validity.ts";
 import { resourceMetadata, resolveTaskResource, taskRecords, versionConflict } from "./pi_task_resource_store.ts";
 import {
 	nativeHarnessExecutor,
@@ -23,6 +25,7 @@ import {
 	registerNativeHarnessRouteApplier,
 } from "./pi_task_harness_route_runtime.ts";
 import type { ActivationCondition } from "./pi_auto_research_harness_router.ts";
+import { normalizeMethodSpecification, type ResearchMethodSpecification } from "./pi_auto_research_harness_router.ts";
 import { buildPeriodicResearchHandoff, harnessLifecycle, methodResearchContract, periodicReviewWindows, reviewProgress, normalizeHarnessReview, validateTransitionAnalysis, reviewInputContract, REVIEW_COMPONENTS, REVIEW_DISPOSITIONS } from "./pi_harness_review.ts";
 import { controlError, eligibleResearchHandoffStatuses, latestControlRecords, selectControlTarget, stableControlJSON, failureClassification } from "./pi_harness_control.ts";
 import { advanceResearchHandoff, reconcileResearchHandoffs, resolveResearchHandoff } from "./pi_auto_research_handoff.ts";
@@ -33,7 +36,9 @@ import {
 	advanceMethodApplication, advanceMethodAssessment, buildCrossContextResearchCandidates,
 	buildMethodFeedbackHandoff, latestMethodRecords,
 } from "./pi_research_method_runtime.ts";
-import { assertParentChangeSource, canonicalTextBody, classifyHarnessChangeTargets, classifySemanticKind, normalizeCapabilityRequest, normalizeSemanticCandidate, type HarnessChange } from "./pi_harness_protocol.ts";
+import { assertParentChangeSource, canonicalTextBody, classifyHarnessChangeTargets, classifySemanticKind,
+	normalizeCapabilityRequest, normalizeHarnessMemoryAtom, normalizeSemanticCandidate,
+	type HarnessChange, type HarnessMemoryAtom } from "./pi_harness_protocol.ts";
 import {
 	assemblyConflictDetails,
 	assemblySelectsReference,
@@ -77,12 +82,15 @@ type Dependencies = {
 };
 
 type MemoryRecord = KnowledgeLinks & {
+    validity?: MemoryValidity;
 	summary?: string;
 	memory_id: string;
 	key: string;
 	version: number;
 	status: "active" | "retired";
 	content: string;
+	/** Absent only on historical records written before atomic memory. */
+	atom?: HarnessMemoryAtom;
 	scope: string;
 	basis_refs: string[];
 	pinned: boolean;
@@ -103,6 +111,8 @@ type MemoryRecord = KnowledgeLinks & {
 };
 
 type SkillRecord = KnowledgeLinks & {
+	method?: ResearchMethodSpecification;
+	authoring_status?: "structured_grounded_candidate" | "structured_untested_candidate" | "unstructured_requires_review";
 	skill_id: string;
 	name: string;
 	version: number;
@@ -142,8 +152,9 @@ export function taskKnowledgeEntries(read: (name: string) => Record<string, any>
 
 export function renderTaskSystemPromptOverlay(
 	records: SystemPromptRecord[], entries?: KnowledgeEntry[], assembly?: HarnessAssembly,
+	validityContext?: MemoryValidityContext,
 ): string {
-	const validity = knowledgeState(entries ?? records.map(record => ({ kind: "system_prompt", record })));
+	const validity = knowledgeState(entries ?? records.map(record => ({ kind: "system_prompt", record })), validityContext);
 	const active = [...latestBy(records, "name").values()]
 		.filter((item) => validity.eligible("system_prompt", item)
 			&& assemblySelectsReference(assembly, [
@@ -316,7 +327,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	const systemPromptRecords = readJsonl("task-system-prompt.jsonl") as SystemPromptRecord[];
 	const systemPrompts = latestBy(systemPromptRecords, "name");
 	const knowledgeEntries = () => taskKnowledgeEntries(readJsonl);
-	const currentKnowledge = () => knowledgeState(knowledgeEntries());
+	const currentValidityContext = () => memoryValidityContext(taskScope.taskId, readJsonl("execution-observations.jsonl"));
+	const currentKnowledge = () => knowledgeState(knowledgeEntries(), currentValidityContext());
 	const linkParameters = {
 		depends_on_refs: Type.Optional(Type.Array(Type.String({ description: "Exact current memory/skill/system_prompt version required for validity; distinct from historical basis_refs." }))),
 		supersedes_refs: Type.Optional(Type.Array(Type.String({ description: "Exact current versions explicitly replaced by this resource; dependent guidance requires revalidation." }))),
@@ -416,7 +428,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					};
 					let args: Record<string, any>;
 					if (target === "task_memory") args = { ...common, action: "upsert", key: candidate.key ?? candidate.name,
-						content: candidate.content, summary: candidate.summary, scope: candidate.scope?.statement ?? candidate.scope,
+						content: candidate.content, atom: candidate.atom, summary: candidate.summary, scope: candidate.scope?.statement ?? candidate.scope, validity: candidate.validity,
 						...(candidate.projection ? { projection: candidate.projection }
 							: candidate.context_visibility === "always" && (candidate.prompt_channel ?? "task_prompt") === "task_prompt"
 								? { projection: { channel: "task_prompt", ...(candidate.prompt_layer ? { layer: candidate.prompt_layer } : {}),
@@ -425,12 +437,12 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					else if (target === "task_system_prompt") args = { ...common, action: candidate.prompt_operation ?? operation,
 						name: candidate.name, content: candidate.prompt_text ?? candidate.content, scope: candidate.scope?.statement ?? candidate.scope };
 					else if (target === "task_skill") args = { ...common, action: operation, name: candidate.name,
-						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content };
+						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content, method: candidate.method };
 					else if (target === "task_tool") args = { ...common, action: operation, name: candidate.name,
 						description: candidate.description ?? candidate.summary, input_schema: candidate.input_schema ?? { type: "object" },
 						implementation_ref: candidate.implementation_ref, program: candidate.program };
 					else args = { ...common, action: operation, name: candidate.name,
-						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content, tools: candidate.tools };
+						description: candidate.description ?? candidate.summary, instructions: candidate.instructions ?? candidate.content, tools: candidate.tools, context_recipe: candidate.context_recipe };
 					nativeChanges.push({ target, args });
 				}
 			}
@@ -597,6 +609,12 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				availability: String(record.availability ?? (record.status === "retired" ? "retired" : "loaded")),
 				eligible: reasons.length === 0,
 				reasons,
+				...(record.summary ? { summary: compactText(record.summary) } : {}),
+				...(record.scope ? { scope: record.scope } : {}),
+				...(kind === "memory" && record.atom ? { atom: {
+					subject: String(record.atom.subject), predicate: String(record.atom.predicate),
+					value_preview: compactText(canonicalTextBody(record.atom.value, "memory atom.value")).slice(0, 240),
+				} } : {}),
 				aliases: resourceRefVariants(kind, record),
 				record,
 			};
@@ -629,21 +647,24 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		focusedResourceRefs !== undefined && resourceIsFocused(kind, item);
 	const applyAssemblyToolSurface = () => {
 		const assembly = currentAssembly();
-		if (!assembly) return;
 		const allDynamicNames = new Set(readJsonl("task-tools.jsonl")
 			.map((item) => String(item.exposed_name ?? "")).filter(Boolean));
-		const selectedDynamicNames = componentPool()
+		const pool = componentPool();
+		const selectedDynamicNames = pool
 			.filter((entry) => entry.kind === "tool" && entry.eligible
 				&& assemblySelectsReference(assembly, entry.aliases))
 			.map((entry) => String(entry.record.exposed_name ?? "")).filter(Boolean);
+		const selectedSubagent = pool.some((entry) => entry.kind === "subagent" && entry.eligible
+			&& assemblySelectsReference(assembly, entry.aliases));
+		const registered = new Set(pi.getAllTools().map((tool) => tool.name));
 		pi.setActiveTools([...new Set([
 			...pi.getActiveTools().filter((name) => !allDynamicNames.has(name)),
 			...selectedDynamicNames,
+			...(selectedSubagent && registered.has("delegate_task") ? ["delegate_task"] : []),
 			...protectedManagementTools,
 		])]);
 	};
 	const projectTranscriptForAssembly = (messages: any[]): any[] => {
-		if (!currentAssembly()) return messages;
 		const nativeKinds: Record<string, { kind: string; file: string; key: string }> = {
 			task_memory: { kind: "memory", file: "task-memory.jsonl", key: "key" },
 			task_system_prompt: { kind: "system_prompt", file: "task-system-prompt.jsonl", key: "name" },
@@ -674,6 +695,40 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			if (!Array.isArray(message?.content)) return message;
 			let changed = false;
 			const content = message.content.map((item: Record<string, any>) => {
+				const facadeToolName = String(item?.name ?? item?.toolName ?? "");
+				const facadeArgsKey = item.arguments !== undefined ? "arguments" : item.input !== undefined ? "input" : undefined;
+				if (facadeToolName === "task_harness" && facadeArgsKey) {
+					const facadeArgs = { ...(item[facadeArgsKey] ?? {}) } as Record<string, any>;
+					if (facadeArgs.action === "change" && Array.isArray(facadeArgs.changes)) {
+						const projectedChanges = facadeArgs.changes.map((change: Record<string, any>) => {
+							if (!change?.candidate || typeof change.candidate !== "object") return change;
+							try {
+								const candidate = normalizeSemanticCandidate(change.candidate);
+								const target = classifySemanticKind(candidate);
+								if (target === "research_only") return change;
+								const kind = target === "system_prompt" ? "system_prompt" : target;
+								const identity = String(kind === "memory" ? candidate.key ?? candidate.name : candidate.name ?? "").trim();
+								const file = ({ memory: "task-memory.jsonl", system_prompt: "task-system-prompt.jsonl",
+									skill: "task-skills.jsonl", tool: "task-tools.jsonl", subagent: "task-subagents.jsonl" } as Record<string, string>)[kind];
+								const key = kind === "memory" ? "key" : "name";
+								const record = file && identity ? latestBy(readJsonl(file), key).get(identity) : undefined;
+								if (record && resourceIsAssembled(kind, record)) return change;
+								changed = true;
+								const redacted = { ...change.candidate } as Record<string, any>;
+								for (const field of ["content", "append_content", "prompt_text", "instructions", "description", "program"]) {
+									if (field in redacted) redacted[field] = "[omitted: component is not selected by the current Harness assembly]";
+								}
+								if (redacted.atom && typeof redacted.atom === "object") {
+									redacted.atom = { ...redacted.atom, value: "[omitted: unselected memory atom]" };
+								}
+								return { ...change, candidate: redacted };
+							} catch {
+								return change;
+							}
+						});
+						if (changed) return { ...item, [facadeArgsKey]: { ...facadeArgs, changes: projectedChanges } };
+					}
+				}
 				const itemCallId = String(item?.id ?? item?.toolCallId ?? "");
 				if (!itemCallId || selectionByCall.get(itemCallId) !== false) return item;
 				const argsKey = item.arguments !== undefined ? "arguments" : item.input !== undefined ? "input" : undefined;
@@ -1410,6 +1465,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				})),
 				pending_research_handoff: pendingResearchHandoff() ?? null,
 				pending_research_adoptions: Object.values(pendingResearchAdoptions),
+				baseline_methods: baselineMethodCatalog(),
+				authoring_guidance: BASELINE_AUTHORING_GUIDANCE,
+				memory_validity_context: currentValidityContext(),
 				cross_context_research_candidates: crossContextResearchCandidates,
 				research_experiment_candidates: researchExperimentCandidates,
 				pending_pattern_extraction: periodicReviewEnabled() ? pendingPeriodicReview() ?? null : null,
@@ -1445,7 +1503,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					component_pool: "current selectable projection of the committed immutable version store; historical versions remain readable through task_resource",
 					selection: "exact current eligible component versions",
 					task_prompt: "source-agnostic assembly output channel",
-					legacy: "all eligible active components until the first explicit assembly",
+					default_selection: "none until the main Agent commits the first explicit assembly",
 					runtime: "validates, projects, exposes, executes, and records receipts without semantic selection",
 				},
 				resources: {
@@ -1466,7 +1524,10 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			label: "Task-local working methods",
 			description: "Task-local Self-Harness facade. action=change creates, updates, or retires immutable component versions in the pool; action=assemble lets the main Agent select exact current versions and source-agnostic task_prompt contributions for later requests. Active pool membership does not imply assembly selection. Code validates versions, applies the selected runtime surface, records receipts, and never chooses semantic composition. Use action=adopt_research only after deciding to adopt a completed result; research output is not guidance until selected. Direct task action does not require reassembly. apply_route is a low-level recovery entry. Periodic reviews require grounded transition_analysis; decide_research only manages handoff lifecycle.",
 			parameters: Type.Object({
-				action: Type.Union([Type.Literal("start"), Type.Literal("inspect"), Type.Literal("status"), Type.Literal("review"), Type.Literal("level_review"), Type.Literal("report_level_reset"), Type.Literal("decide_research"), Type.Literal("enable"), Type.Literal("activate"), Type.Literal("focus"), Type.Literal("assemble"), Type.Literal("change"), Type.Literal("adopt_research"), Type.Literal("apply_route"), Type.Literal("assess_effect")]),
+				action: Type.Union([Type.Literal("methods"), Type.Literal("read_method"), Type.Literal("start"), Type.Literal("inspect"), Type.Literal("status"), Type.Literal("review"), Type.Literal("level_review"), Type.Literal("report_level_reset"), Type.Literal("decide_research"), Type.Literal("enable"), Type.Literal("activate"), Type.Literal("focus"), Type.Literal("assemble"), Type.Literal("change"), Type.Literal("adopt_research"), Type.Literal("apply_route"), Type.Literal("assess_effect")]),
+				method_name: Type.Optional(Type.String()),
+				method_resource: Type.Optional(Type.String()),
+				expected_sha256: Type.Optional(Type.String()),
 				changes: Type.Optional(Type.Array(Type.Union([
 					Type.Object({ operation: Type.Union([Type.Literal("create"), Type.Literal("update")]), candidate: Type.Optional(Type.Record(Type.String(), Type.Any())), candidate_ref: Type.Optional(Type.String()) }),
 					Type.Object({ operation: Type.Union([Type.Literal("retire"), Type.Literal("reuse")]), target_ref: Type.String() }),
@@ -1534,6 +1595,13 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				remaining_uncertainty: Type.Optional(Type.String()),
 			}),
 		async execute(toolCallId, params) {
+			if (params.action === "methods") return { content: [{ type: "text", text: JSON.stringify({ methods: baselineMethodCatalog() }) }] };
+			if (params.action === "read_method") {
+				const method = readBaselineMethod(params.method_name ?? "", params.method_resource ?? "SKILL.md", params.expected_sha256);
+				const { content, ...receipt } = method;
+				append("task-baseline-method-reads.jsonl", { ...receipt, toolCallId, recordedAt: new Date().toISOString() });
+				return { content: [{ type: "text", text: content }], details: receipt };
+			}
 			const admission = admitTaskLocalOperation("task_harness");
 			if (admission) return admission;
 			if (params.action === "report_level_reset") {
@@ -1710,6 +1778,10 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 						resolveComponentRef: resolveCurrentComponentRef,
 						resolveSourceRef: resolvePromptSourceRef,
 					});
+					// Focus expands bodies within one assembly. Carrying its exact refs
+					// into a new assembly can hide every newly selected component, so a
+					// successful composition change deterministically clears it.
+					focusedResourceRefs = undefined;
 					append("task-harness-assemblies.jsonl", assembly);
 					applyAssemblyToolSurface();
 					const receipt = {
@@ -1838,6 +1910,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			append_content: Type.Optional(Type.String()),
 			summary: Type.Optional(Type.String()),
 			scope: Type.Optional(Type.String()),
+			validity: Type.Optional(Type.Object({ scope: Type.Union([Type.Literal("task"), Type.Literal("episode"), Type.Literal("level"), Type.Literal("state")]), task_ref: Type.Optional(Type.String()), instance_ref: Type.Optional(Type.String()) })),
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			pinned: Type.Optional(Type.Boolean()),
 			projection: Type.Optional(Type.Union([Type.Null(), Type.Object({
@@ -1846,6 +1919,11 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				prompt_text: Type.Optional(Type.String()),
 				activation: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 			})])),
+			atom: Type.Optional(Type.Object({
+				subject: Type.String(),
+				predicate: Type.String(),
+				value: Type.Unknown(),
+			})),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
 			routing_id: Type.Optional(Type.String()),
@@ -1868,12 +1946,21 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			if (!previous && p.target_version !== undefined) throw new Error("target_version is only valid for an existing memory");
 			const status = p.action === "retire" ? "retired" : "active";
 			if (p.content !== undefined && p.append_content !== undefined) throw new Error("choose content replacement or append_content, not both");
+			if (p.append_content !== undefined && (p.atom !== undefined || previous?.atom)) {
+				throw new Error("atomic memory cannot append text; revise the atom as one versioned unit");
+			}
+			const atom = p.atom !== undefined ? normalizeHarnessMemoryAtom(p.atom) : previous?.atom;
+			if (previous?.atom && atom
+				&& (previous.atom.subject !== atom.subject || previous.atom.predicate !== atom.predicate)) {
+				throw new Error("atomic memory update cannot change subject or predicate; create a new atom key and supersede the old version");
+			}
 			const content = p.append_content !== undefined
 				? `${previous?.content ?? ""}${canonicalTextBody(p.append_content, "memory append_content", false)}`
-				: canonicalTextBody(p.content ?? previous?.content, "memory content");
+				: atom ? canonicalTextBody(atom.value, "memory atom.value")
+					: canonicalTextBody(p.content ?? previous?.content, "memory content");
 			if (status === "active" && !content) throw new Error("active memory requires content");
 			const views = coherentMemory(p, previous);
-			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "memory", key);
+			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "memory", key, currentValidityContext());
 			const decisionId = dependencies.allocateDecisionId();
 			const record: MemoryRecord = {
 				...links,
@@ -1883,6 +1970,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				version: (previous?.version ?? 0) + 1,
 				status,
 				content,
+				...(atom ? { atom } : {}),
+				...(p.validity !== undefined ? { validity: normalizeMemoryValidity(p.validity, currentValidityContext()) }
+					: previous?.validity ? { validity: previous.validity } : {}),
 				scope: String(p.scope ?? previous?.scope ?? "current task"),
 				basis_refs: Array.isArray(p.basis_refs) ? resolveBasisRefs(p.basis_refs) : previous?.basis_refs ?? [],
 				pinned: Boolean(p.pinned ?? previous?.pinned ?? false),
@@ -1951,7 +2041,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			const status = p.action === "retire" ? "retired" : "active";
 			const content = canonicalTextBody(p.content ?? previous?.content, "system prompt content");
 			if (status === "active" && !content) throw new Error("active system prompt segment requires content");
-			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "system_prompt", name);
+			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "system_prompt", name, currentValidityContext());
 			const decisionId = dependencies.allocateDecisionId();
 			const record: SystemPromptRecord = {
 				...links,
@@ -2005,7 +2095,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			});
 		}
 		const assembly = currentAssembly();
-		const overlay = renderTaskSystemPromptOverlay(active, knowledgeEntries(), assembly);
+		const overlay = renderTaskSystemPromptOverlay(active, knowledgeEntries(), assembly, currentValidityContext());
 		append("task-system-prompt-assemblies.jsonl", { format: "task-system-prompt-assembly-v1",
 			assembly_ref: assembly ? `harness_assembly:${assembly.assembly_id}@v${assembly.revision}` : null,
 			selected: active.map(item => promptReceipt("system_overlay", knowledgeRef("system_prompt", item), item.content)),
@@ -2025,6 +2115,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			target_version: Type.Optional(Type.Integer({ minimum: 1 })),
 			description: Type.Optional(Type.String()),
 			instructions: Type.Optional(Type.String()),
+			method: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
@@ -2049,8 +2140,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			const status = p.action === "retire" ? "retired" : "active";
 			const description = String(p.description ?? previous?.description ?? `Task-local skill: ${name}`).replace(/\s+/g, " ").trim();
 			const instructions = canonicalTextBody(p.instructions ?? previous?.instructions, "skill instructions");
+			const method = normalizeMethodSpecification(p.method ?? (p.instructions === undefined ? previous?.method : undefined));
 			if (status === "active" && (!description || !instructions)) throw new Error("active skill requires description and instructions");
-			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "skill", name);
+			const links = normalizeKnowledgeLinks(p, previous, knowledgeEntries(), "skill", name, currentValidityContext());
 			const path = join(skillsDir, name, "SKILL.md");
 			const decisionId = dependencies.allocateDecisionId();
 			const record: SkillRecord = {
@@ -2061,6 +2153,11 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				status,
 				description,
 				instructions,
+				...(method ? { method } : {}),
+				authoring_status: method
+					? (method.construction_evidence_refs.length
+						? "structured_grounded_candidate" : "structured_untested_candidate")
+					: "unstructured_requires_review",
 				file: path,
 				basis_refs: Array.isArray(p.basis_refs) ? resolveBasisRefs(p.basis_refs) : previous?.basis_refs ?? [],
 				decision_id: decisionId,
@@ -2266,7 +2363,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			...(pi.getAllTools().some((tool) => tool.name === "task_subagent")
 				? ["task_subagent.create", "delegate_task"] : []),
 		];
-		const resources: any[] = [{
+		const resources: any[] = [{ role: "user", timestamp: Date.now(), content: [{ type: "text", text:
+			`Baseline authoring methods: ${JSON.stringify(baselineMethodCatalog())}. ${BASELINE_AUTHORING_GUIDANCE} Memory validity bindings: ${JSON.stringify(currentValidityContext())}.` }] }, {
 			role: "user", timestamp: Date.now(),
 			content: [{ type: "text", text:
 				compactArc

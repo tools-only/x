@@ -261,7 +261,8 @@ def test_native_review_infers_components_and_materializes_complete_candidates(tm
         {'disposition':'create','reason':'Keep current map facts','next_use':'Plan the next action',
          'validation':'The next observation is consistent with the map',
          'candidate':{'semantic_kind':'task_state','name':'current-map','summary':'Current map',
-                      'content':'The current fixture map has two observed outcome classes.'}},
+                      'content':'The current fixture map has two observed outcome classes.',
+                      'atom':{'subject':'current fixture map','predicate':'outcome_class_count','value':2}}},
     ]
     events = _run_fixture(tmp_path,'treatment',extra_extensions=[project/'tests/pi_periodic_review_fixture.ts'],
         extra_env={'PI_HARNESS_PERIODIC_REVIEW':'enabled'},steps=actions+[
@@ -438,6 +439,10 @@ def test_plan_and_node_refs_are_bound_for_unique_skip_target(tmp_path):
 def test_effect_assessment_binds_unique_decision_without_inventing_verdict(tmp_path):
     events = _run_fixture(tmp_path,'treatment',steps=[
         {'name':'task_memory','arguments':{'action':'upsert','key':'claim','content':'Unverified claim'}},
+        {'name':'task_harness','arguments':{'action':'assemble','expected_assembly_revision':0,
+            'selected_resource_refs':['memory:claim@v1'],'prompt_contributions':[],
+            'decision':{'basis_refs':[],'reason':'Select the claim for this evaluation.',
+                        'expected':'The next observation can be assessed against the selected claim.'}}},
         {'name':'benchmark_probe','arguments':{}},
         {'name':'task_harness','arguments':{'action':'assess_effect','observation_refs':['execution-observation-1'],
             'verdict':'inconclusive','consequence':'The observation does not distinguish the claim'}}])

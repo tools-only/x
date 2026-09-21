@@ -1,7 +1,9 @@
 /** Deterministic Auto-Research delivery -> Pi native harness call compiler. */
 import { createHash } from "node:crypto";
 import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
-import { canonicalTextBody, classifyHarnessChangeTargets, type HarnessRouteTarget } from "./pi_harness_protocol.ts";
+import { normalizeMemoryValidity, type MemoryValidity } from "./pi_memory_validity.ts";
+import { canonicalTextBody, classifyHarnessChangeTargets, normalizeHarnessMemoryAtom,
+	type HarnessMemoryAtom, type HarnessRouteTarget } from "./pi_harness_protocol.ts";
 
 export const HARNESS_SEMANTIC_KINDS = [
 	"fact", "plan", "procedure", "computation", "role", "assessment", "evidence",
@@ -45,6 +47,10 @@ export type HarnessDelivery = {
 	name: string;
 	summary: string;
 	content: string;
+	/** Required for fact/plan deliveries; one independently selectable claim. */
+	atom?: HarnessMemoryAtom;
+	validity?: MemoryValidity;
+	context_recipe?: Record<string, unknown>;
 	description?: string;
 	scope: { kind: "current_step" | "condition" | "task_wide"; statement: string };
 	trigger: string;
@@ -376,7 +382,10 @@ export function normalizeMethodSpecification(value: unknown): ResearchMethodSpec
 		decision_points: list("decision_points"),
 		stop_conditions: list("stop_conditions", 1),
 		failure_modes: list("failure_modes"),
-		construction_evidence_refs: list("construction_evidence_refs", 1),
+		// A method can be authored from a task contract, prior knowledge, or a
+		// hypothesis before local construction evidence exists. Keep it explicitly
+		// ungrounded rather than rejecting the reusable structure at this boundary.
+		construction_evidence_refs: list("construction_evidence_refs"),
 		contrast_evidence_refs: list("contrast_evidence_refs"),
 		next_use: String(method.next_use).trim(),
 		predicted_semantic_result: String(method.predicted_semantic_result).trim(),
@@ -395,7 +404,11 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 	if (!HARNESS_SEMANTIC_KINDS.includes(value.semantic_kind)) throw new Error(`unknown semantic_kind: ${String(value.semantic_kind)}`);
 	const requiredStrings = ["delivery_id", "name", "summary", "trigger", "expected_effect", "reconsider_when"];
 	for (const field of requiredStrings) if (!String(value[field] ?? "").trim()) throw new Error(`delivery.${field} is required`);
-	const content = canonicalTextBody(value.content, "delivery.content");
+	const atom = ["fact", "plan"].includes(String(value.semantic_kind))
+		? normalizeHarnessMemoryAtom(value.atom) : undefined;
+	const content = atom
+		? canonicalTextBody(atom.value, "delivery.atom.value")
+		: canonicalTextBody(value.content, "delivery.content");
 	if (!content) throw new Error("delivery.content is required");
 	if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(String(value.delivery_id))
 		|| !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(String(value.name))
@@ -484,6 +497,7 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 		name: String(value.name).trim(),
 		summary: String(value.summary).trim(),
 		content,
+		...(atom ? { atom } : {}),
 		description: value.description === undefined ? undefined : String(value.description).trim(),
 		scope: { kind: value.scope.kind, statement: String(value.scope.statement).trim() },
 		trigger: String(value.trigger).trim(),
@@ -495,6 +509,8 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 		...(systemPromptBasis ? { system_prompt_basis: systemPromptBasis } : {}),
 		...(activation ? { activation } : {}),
 		...(method ? { method } : {}),
+		...(value.validity !== undefined ? { validity: normalizeMemoryValidity(value.validity) } : {}),
+		...(value.context_recipe !== undefined ? { context_recipe: value.context_recipe } : {}),
 		tools: Array.isArray(value.tools) ? [...new Set(value.tools.map(String).map((item) => item.trim()).filter(Boolean))] : undefined,
 	} as HarnessDelivery;
 	if (delivery.semantic_kind === "computation" && delivery.program) {
@@ -605,7 +621,8 @@ function nativeArguments(
 		routing_id: routeId,
 		source_approval_ref: approvalRef,
 	};
-	if (target === "memory") return { ...common, key: delivery.name, content: delivery.content,
+	if (target === "memory") return { ...common, key: delivery.name, content: delivery.content, atom: delivery.atom,
+		...(delivery.validity ? { validity: delivery.validity } : {}),
 		summary: delivery.summary, scope: delivery.scope.statement,
 		...(delivery.context_visibility === "always" && (delivery.prompt_channel ?? "task_prompt") === "task_prompt" ? {
 			projection: {
@@ -616,7 +633,7 @@ function nativeArguments(
 			},
 		} : {}) };
 	if (target === "skill") return { ...common, name: delivery.name,
-		description: delivery.description ?? delivery.summary, instructions: delivery.content };
+		description: delivery.description ?? delivery.summary, instructions: delivery.content, method: delivery.method };
 	if (target === "tool") return { ...common, name: delivery.name,
 		description: delivery.description ?? delivery.summary,
 		input_schema: delivery.input_schema ?? { type: "object" },
@@ -624,6 +641,7 @@ function nativeArguments(
 		...(delivery.program ? { program: delivery.program } : {}) };
 	if (target === "subagent") return { ...common, name: delivery.name,
 		description: delivery.description ?? delivery.summary, instructions: delivery.content,
+		...(delivery.context_recipe ? { context_recipe: delivery.context_recipe } : {}),
 		...(delivery.tools ? { tools: delivery.tools } : {}) };
 	return common;
 }

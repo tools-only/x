@@ -13,10 +13,22 @@ import { loadPrompt } from "./prompt_loader.ts";
 import { createHash } from "node:crypto";
 import { loadResearchProfile } from "./pi_auto_research_profiles.ts";
 import { canonicalEvidenceSnapshot } from "./pi_auto_research_evidence.ts";
+import { baselineMethodCatalog, readBaselineMethod, BASELINE_AUTHORING_GUIDANCE } from "./pi_harness_baseline_methods.ts";
 
 export default function taskValidationChild(pi: ExtensionAPI) {
 	if (process.env.PI_TASK_CHILD !== "1") throw new Error("this extension is only for isolated task children");
 	const root = process.env.PI_AUTORESEARCH_E2E_ROOT!;
+	pi.registerTool({ name: "harness_method", label: "Read baseline authoring method",
+		description: "Discover or read fixed skill/tool/subagent creators and research-orchestration. Read-only; no task mutation or environment access.",
+		parameters: Type.Object({ action: Type.Union([Type.Literal("list"), Type.Literal("read")]),
+			name: Type.Optional(Type.String()), resource: Type.Optional(Type.String()), expected_sha256: Type.Optional(Type.String()) }),
+		async execute(_id, p) {
+			if (p.action === "list") return { content: [{ type: "text", text: JSON.stringify(baselineMethodCatalog()) }] };
+			const method = readBaselineMethod(p.name ?? "", p.resource ?? "SKILL.md", p.expected_sha256);
+			const { content, ...receipt } = method;
+			return { content: [{ type: "text", text: content }], details: receipt };
+		} });
+	pi.on("before_agent_start", event => ({ systemPrompt: `${event.systemPrompt}\n\nBaseline methods (read with harness_method): ${JSON.stringify(baselineMethodCatalog())}. ${BASELINE_AUTHORING_GUIDANCE.replaceAll('task_harness(action=read_method, method_name=...)', 'harness_method(action=read, name=...)')}` }));
 	const refs = JSON.parse(process.env.PI_TASK_CHILD_RESOURCE_REFS ?? "[]");
 	if (!Array.isArray(refs) || refs.some((ref) => typeof ref !== "string")) throw new Error("invalid child resource grants");
 	installTaskResourceReader(pi, root, refs);

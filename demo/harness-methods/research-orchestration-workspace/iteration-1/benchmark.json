@@ -1,0 +1,30 @@
+{
+  "metadata": {
+    "skill_name": "research-orchestration",
+    "skill_path": "demo/harness-methods/research-orchestration",
+    "executor_model": "independent collaboration agents; exact model telemetry unavailable",
+    "analyzer_model": "independent collaboration agents; exact model telemetry unavailable",
+    "timestamp": "2026-09-21T10:41:52Z",
+    "evals_run": [1, 2, 3],
+    "runs_per_configuration": 1
+  },
+  "runs": [
+    {"eval_id": 1, "eval_name": "duplicate-agenda", "configuration": "with_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}},
+    {"eval_id": 1, "eval_name": "duplicate-agenda", "configuration": "without_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}},
+    {"eval_id": 2, "eval_name": "late-level-report", "configuration": "with_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}},
+    {"eval_id": 2, "eval_name": "late-level-report", "configuration": "without_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 3, "failed": 0, "total": 3, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}},
+    {"eval_id": 3, "eval_name": "method-vs-recap", "configuration": "with_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 4, "failed": 0, "total": 4, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}},
+    {"eval_id": 3, "eval_name": "method-vs-recap", "configuration": "without_skill", "run_number": 1, "result": {"pass_rate": 1.0, "passed": 4, "failed": 0, "total": 4, "time_seconds": null, "tokens": null, "tool_calls": null, "errors": 0}}
+  ],
+  "run_summary": {
+    "with_skill": {"pass_rate": {"mean": 1.0, "stddev": 0.0, "min": 1.0, "max": 1.0}, "time_seconds": {"mean": null, "stddev": null, "min": null, "max": null}, "tokens": {"mean": null, "stddev": null, "min": null, "max": null}},
+    "without_skill": {"pass_rate": {"mean": 1.0, "stddev": 0.0, "min": 1.0, "max": 1.0}, "time_seconds": {"mean": null, "stddev": null, "min": null, "max": null}, "tokens": {"mean": null, "stddev": null, "min": null, "max": null}},
+    "delta": {"pass_rate": "+0.00", "time_seconds": "unavailable", "tokens": "unavailable"}
+  },
+  "notes": [
+    "All six runs passed the current assertions; the observed pass-rate delta is zero.",
+    "This is one run per configuration, so it does not estimate variance or demonstrate skill benefit.",
+    "Graders found the prompts and compound assertions insufficiently discriminating: they strongly cue the desired decision and do not distinguish some creation timing or orchestration choices.",
+    "Token and duration telemetry were not exposed and were left null rather than estimated."
+  ]
+}

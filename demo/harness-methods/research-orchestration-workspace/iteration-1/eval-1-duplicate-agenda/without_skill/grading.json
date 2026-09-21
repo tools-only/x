@@ -1,0 +1,78 @@
+{
+  "expectations": [
+    {
+      "text": "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.",
+      "passed": true,
+      "evidence": "The decision states: \"继续沿已确认安全路线推进；保留现有 `non_blocking` 研究会话 `research-session-2`，不新建同题会话，不切换为阻塞等待\". It also ties the choice to the overlap between the existing agenda and observation:15, rather than treating the runtime reminder as a sufficient trigger."
+    },
+    {
+      "text": "observation:15 is treated as incremental evidence with uncertainty; two moving regions are not declared to be controlled objects.",
+      "passed": true,
+      "evidence": "The output proposes adding observation:15 to research-session-2 as \"增量证据\" and states: \"两个移动区域本身还不足以确定受控对象\". Its feedback request asks for evidence, confidence, and missing validation conditions, preserving uncertainty."
+    },
+    {
+      "text": "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred.",
+      "passed": true,
+      "evidence": "The plan distinguishes a returned/completed report from validation and adoption by stating that completion does not mean the conclusion is verified and only evidence-backed, still-current conclusions should be adopted. It specifies incremental evidence, action/change records, return-time checking, and escalation when the safe route fails or the next step depends on identification; it permits a new line only after the existing session ends, fails, or cannot cover a genuinely new critical question. The final sentence and transcript both state that no material, environment, or research call was actually sent."
+    }
+  ],
+  "summary": {
+    "passed": 3,
+    "failed": 0,
+    "total": 3,
+    "pass_rate": 1.0
+  },
+  "timing": {
+    "executor_duration_seconds": null,
+    "grader_duration_seconds": null,
+    "total_duration_seconds": null,
+    "measurement_note": "The supplied timing.json reports null token and duration values because collaboration completion exposed no metrics; no values were estimated. Grader duration was likewise not measured."
+  },
+  "claims": [
+    {
+      "claim": "The runtime reminder alone is insufficient reason to start duplicate research.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The decision consistently applies agenda overlap and current action dependency as the decision criteria, retaining the existing session rather than reacting mechanically to the reminder."
+    },
+    {
+      "claim": "Two moving regions in observation:15 do not establish which region is controlled.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "The scenario provides no action-correlated evidence that would establish control, and the output correctly labels the identity as unresolved rather than asserting one."
+    },
+    {
+      "claim": "A completed research status is not evidence that its conclusion has been validated in the current state.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The plan requires checking the returned conclusion against observation:15 and newer observations, tracking supported versus uncertain judgments, and adopting only evidence-backed conclusions that remain applicable."
+    },
+    {
+      "claim": "No environment, research, or external-service call occurred in this run.",
+      "type": "process",
+      "verified": true,
+      "evidence": "transcript.md reports only local file writes, and decision.md explicitly states that no material was sent and no environment or research was started."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "The decision reuses research-session-2/non_blocking instead of opening a duplicate line, while allowing the confirmed safe route to continue.",
+        "reason": "The prompt already exposes nearly every fact needed to restate this conclusion. Add a competing candidate agenda or ambiguous overlap so passing requires an actual agenda-identity test rather than keyword reuse."
+      },
+      {
+        "assertion": "The plan distinguishes report delivery from later application/benefit and gives concrete feedback, stopping, and escalation conditions without claiming an environment call occurred.",
+        "reason": "This binary assertion bundles multiple lifecycle properties. The without-skill answer passes while only implying benefit tracking through validation/adoption, whereas the with-skill answer explicitly separates report receipt, application, and benefit. Separate assertions would expose that qualitative difference."
+      },
+      {
+        "reason": "No assertion requires a reusable research deliverable with applicability conditions, failure boundaries, and a falsifiable method. That omission reduces the eval's ability to measure the intended research-orchestration abstraction rather than generic scheduling competence."
+      }
+    ],
+    "overall": "All stated assertions are met, but the eval has limited discriminating power because the scenario strongly cues the desired reuse decision. The rubric also under-measures explicit benefit accounting and method-level research output, which are the clearest differences between the two runs."
+  }
+}

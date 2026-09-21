@@ -10,6 +10,10 @@ focus does not determine the delivery type.
   procedure supplies reusable steps involving judgment; computation supplies an
   executable transformation; role defines continuing open-ended model work;
   assessment evaluates a claim or result; evidence supplies supporting material.
+- Every fact or plan supplies one `atom={subject,predicate,value}`. One atom may
+  have structured values such as an action mapping or a route, but it cannot mix
+  subjects whose evidence, scope, invalidation or selection can change separately.
+  The atom value is authoritative; content is its deterministic text form.
 - operation: create a new resource, update a supplied existing version, reuse it
   unchanged, or retire it when the evidence supports removal. For updates/retirement,
   use the observed target_version, not an invented future version.

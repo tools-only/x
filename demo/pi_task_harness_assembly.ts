@@ -200,9 +200,15 @@ export function createHarnessAssembly(options: CreateAssemblyOptions): HarnessAs
 	if (!Array.isArray(rawContributions)) throw new Error("prompt_contributions must be an array");
 	const contributions = rawContributions.map((item, index) =>
 		normalizeContribution(item, index, options.resolveSourceRef));
+	const selectedSet = new Set(selected);
 	const contributionIds = new Set<string>();
 	for (const item of contributions) {
 		if (contributionIds.has(item.contribution_id)) throw new Error(`duplicate prompt contribution: ${item.contribution_id}`);
+		const sourceKind = item.source_ref.split(":", 1)[0];
+		if ((HARNESS_COMPONENT_KINDS as readonly string[]).includes(sourceKind)
+			&& !selectedSet.has(item.source_ref)) {
+			throw new Error(`prompt contribution component source must also be selected: ${item.source_ref}`);
+		}
 		contributionIds.add(item.contribution_id);
 	}
 	return {
@@ -298,7 +304,9 @@ export function renderPromptContributions(
 }
 
 export function assemblySelectsReference(assembly: HarnessAssembly | undefined, variants: string[]): boolean {
-	if (!assembly) return true;
+	// Pool membership never means runtime selection. Until the parent creates
+	// the first explicit assembly, no component content or capability is active.
+	if (!assembly) return false;
 	const selected = new Set(assembly.selected_resource_refs);
 	return variants.some(reference => selected.has(reference));
 }

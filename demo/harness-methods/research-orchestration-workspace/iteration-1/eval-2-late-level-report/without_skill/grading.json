@@ -1,0 +1,75 @@
+{
+  "expectations": [
+    {
+      "text": "The level-1 RIGHT, RIGHT, UP route is rejected as stale for level 2 and is not projected into the current task prompt.",
+      "passed": true,
+      "evidence": "decision.md identifies observation:24 / level 2 as authoritative and says the level-1 route has lost its applicability: ‘其 RIGHT, RIGHT, UP 路线已失去适用依据，不执行、不排队，也不以旧地图目标覆盖当前计划。’ This substantively excludes the route from the current plan/prompt rather than merely declining to execute it now."
+    },
+    {
+      "text": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.",
+      "passed": true,
+      "evidence": "decision.md separately preserves the cross-frame method while stating that two constructed frame pairs do not establish real-world validity: ‘两段构造帧只能证明示例可运行，尚不能证明真实场景有效。’ It proposes only an isolated, disabled candidate and explicitly says ‘暂不装配进主 agent 的行动决策链’. The final paragraph also denies acceptance based on this decision alone."
+    },
+    {
+      "text": "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria.",
+      "passed": true,
+      "evidence": "decision.md treats constructed frames as development examples and requires ‘未参与调试的真实片段’ or observations arising from the main agent's already planned actions. It explicitly forbids replay, rollback, and default extra action spending: ‘不得重放环境、回退历史或为了研究默认消耗额外动作’. Validation checks controlled-entity correctness, error attribution, abstention, ambiguity handling, compute/action cost, and independent reference evidence rather than task completion or lack of errors."
+    }
+  ],
+  "summary": {
+    "passed": 3,
+    "failed": 0,
+    "total": 3,
+    "pass_rate": 1.0
+  },
+  "timing": {
+    "total_tokens": null,
+    "duration_ms": null,
+    "total_duration_seconds": null,
+    "measurement_note": "Collaboration completion did not expose token or duration metrics; not estimated."
+  },
+  "claims": [
+    {
+      "claim": "The level-1 route is stale at level 2 and should not control the current plan.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The supplied eval facts place the report at level 1 / observation:18 and the current state at level 2 / observation:24; decision.md correctly scopes and rejects the route on that basis."
+    },
+    {
+      "claim": "Two constructed frame pairs are insufficient evidence that the recognition method works in real scenarios.",
+      "type": "quality",
+      "verified": true,
+      "evidence": "decision.md does not overclaim validation and prescribes held-out real fragments plus independent reference evidence. This is justified by the prompt's statement that the method was tested only on its two construction examples."
+    },
+    {
+      "claim": "No candidate harness or experiment was actually implemented by this run.",
+      "type": "process",
+      "verified": true,
+      "evidence": "transcript.md states ‘未实施候选 harness 或实验’ and the only output file present is outputs/decision.md."
+    },
+    {
+      "claim": "An isolated, disabled candidate harness should be created now.",
+      "type": "quality",
+      "verified": false,
+      "evidence": "The output proposes creation before held-out validation, but the available evidence cannot establish that creation at this stage is beneficial. It remains a recommendation, not a verified outcome."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "The recognition method is separated from the stale route and remains an unvalidated candidate; no active Harness version is immediately assembled from report completion alone.",
+        "reason": "This assertion allows both immediate creation of a disabled candidate harness and deferring component creation until after discriminating evidence. Those are materially different lifecycle decisions. Add an assertion stating whether unvalidated reports may create a component record or must remain a research candidate outside the component pool."
+      },
+      {
+        "assertion": "Validation uses held-out or naturally produced evidence under main-agent action control, without rollback, replay, or an assumed child action capability, and defines semantic benefit criteria.",
+        "reason": "The output gives sound correctness and cost criteria, but the assertion does not require comparison with the current recognition baseline or a downstream task-level benefit such as reduced decision ambiguity. Requiring both would better distinguish method validation from merely measuring detector accuracy."
+      }
+    ],
+    "overall": "The assertions strongly test staleness handling and safe evidence collection, but they under-specify the boundary between a research candidate and component creation and only loosely define semantic benefit."
+  }
+}
