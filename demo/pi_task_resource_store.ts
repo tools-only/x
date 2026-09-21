@@ -5,11 +5,14 @@ import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertTaskRecordScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
+import { taskResourceName } from "./pi_task_resource_identity.ts";
 
 const FILES: Record<string, string> = {
 	memory: "task-memory.jsonl", skill: "task-skills.jsonl",
+	level_review: "task-level-reviews.jsonl",
 	tool: "task-tools.jsonl", subagent: "task-subagents.jsonl", finding: "research-resources.jsonl",
 	observation: "execution-observations.jsonl", validation: "task-validations.jsonl",
+	pre_action_state: "pre-action-states.jsonl",
 	delegation: "subagent-invocations.jsonl", context: "task-context-cache/messages.jsonl",
 	proposal: "task-harness-proposals.jsonl", system_prompt: "task-system-prompt.jsonl",
 	harness_route: "auto-research-harness-routes.jsonl",
@@ -18,6 +21,9 @@ const FILES: Record<string, string> = {
 	research_run: "auto-research-runs.jsonl",
 	research_report: "auto-research-reports.jsonl",
 	research_session: "auto-research-sessions.jsonl",
+	method: "task-method-lifecycle.jsonl",
+	effect_assessment: "effect-assessments.jsonl",
+	harness_observation: "harness-observations.jsonl",
 };
 
 const installedSemantics = new WeakSet<object>();
@@ -47,8 +53,7 @@ export function resourceSummary(record: Record<string, any>, _maximum?: number):
 }
 
 export function resourceName(record: Record<string, any>): string {
-	return String(record.key ?? record.name ?? record.finding_id
-		?? record.approval_id ?? record.receipt_id ?? record.route_id ?? record.observation_id ?? record.validation_id ?? record.invocation_id ?? record.failure_id ?? record.run_id ?? record.session_id ?? record.archive_id ?? "");
+	return taskResourceName(record);
 }
 
 export function resourceMetadata(kind: string, record: Record<string, any>) {
@@ -60,8 +65,10 @@ export function resourceMetadata(kind: string, record: Record<string, any>) {
 		summary: resourceSummary(record), summary_kind: record.summary ? "agent_authored" : "extractive_excerpt",
 		chars: serialized.length, sha256: createHash("sha256").update(serialized).digest("hex"),
 		basis_refs: record.basis_refs ?? record.evidence_refs ?? [],
+		...(record.depends_on_refs ? { depends_on_refs: record.depends_on_refs } : {}),
+		...(record.supersedes_refs ? { supersedes_refs: record.supersedes_refs } : {}),
 		epistemic_status: unverifiedMemory ? "unverified_hypothesis"
-			: ["observation", "failure"].includes(kind) ? "recorded_tool_output_not_causal_interpretation"
+			: ["observation", "pre_action_state", "failure"].includes(kind) ? "recorded_tool_output_not_causal_interpretation"
 			: kind === "context" ? "recorded_transcript" : "agent_authored_not_independently_verified",
 		...(unverifiedMemory ? { epistemic_label: "UNVERIFIED HYPOTHESIS" } : {}),
 		read: { tool: "task_resource", action: "read", ref, offset: 0, limit: 2000 },
@@ -125,7 +132,7 @@ export function versionConflict(kind: string, record: Record<string, any>, reque
 		format: "task-resource-version-conflict-v1", applied: false,
 		requested_version: requested ?? null, current_version: record.version,
 		current: resourceMetadata(kind, record),
-		recovery: "target_version means the CURRENT version, not the new version. Read current if needed, merge intentionally, then retry with current_version. No write was applied.",
+		recovery: "target_version means the CURRENT version, not the new version. Read current if needed, merge intentionally, then retry with target_version. No write was applied.",
 	};
 	return { isError: true, content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
 }
@@ -172,7 +179,12 @@ export function installTaskResourceReader(pi: ExtensionAPI, root: string, allowe
 				appendFileSync(join(root, "task-resource-access.jsonl"), JSON.stringify(stampTaskRecord(scope, {
 					resource_ref: ref, operation: "paged_read", offset, chars: result.text.length,
 					limit, total: serialized.length, next_offset: nextOffset, truncated: nextOffset !== null, provenance,
-					reader: allowed ? "subagent" : "parent", recordedAt: new Date().toISOString(),
+					reader: allowed ? "subagent" : "parent",
+					...(allowed && process.env.PI_AUTO_RESEARCH_RUN_ID ? {
+						research_run_id: process.env.PI_AUTO_RESEARCH_RUN_ID,
+						research_session_id: process.env.PI_AUTO_RESEARCH_SESSION_ID ?? null,
+					} : {}),
+					recordedAt: new Date().toISOString(),
 				})) + "\n");
 				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 			}

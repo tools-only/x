@@ -8,8 +8,13 @@ import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
 import { renderPrompt } from "./prompt_loader.ts";
 
 async function bridgeState() {
+	const snapshot = String(process.env.PI_TASK_CHILD_STATE_SNAPSHOT ?? "").trim();
+	if (snapshot) {
+		try { return JSON.parse(snapshot) as Record<string, unknown>; }
+		catch { throw new Error("invalid parent-published ARC state snapshot"); }
+	}
 	const base = process.env.PI_ARC_BRIDGE_URL;
-	if (!base) throw new Error("PI_ARC_BRIDGE_URL is not configured");
+	if (!base) throw new Error("parent-published ARC state snapshot is not available");
 	const response = await fetch(`${base}/state`);
 	const value = await response.json() as Record<string, unknown>;
 	if (!response.ok) throw new Error(String(value.error ?? `ARC bridge HTTP ${response.status}`));

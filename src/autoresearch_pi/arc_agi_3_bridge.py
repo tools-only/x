@@ -9,11 +9,13 @@ runs remain inspectable.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import threading
 import traceback
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +25,38 @@ from .arc_agi_3_adapter import ArcAgi3Adapter, DEFAULT_ACTION_BUDGET_MULTIPLIER
 
 
 ARC_ACTION_BUDGET_MULTIPLIER = DEFAULT_ACTION_BUDGET_MULTIPLIER
+
+
+def public_state_fingerprint(frame: dict[str, Any]) -> dict[str, Any]:
+    """Identify an action's public pre-state without persisting another frame copy.
+
+    The digest covers only values already exposed by the ARC observation. Runtime
+    counters, attempt identity and action budgets are deliberately excluded so
+    they cannot manufacture a new situation while the environment is unchanged.
+    """
+    public_state = public_pre_action_state(frame)
+    canonical = json.dumps(public_state, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":")).encode("utf-8")
+    return {
+        "format": "arc-public-pre-action-state-v1",
+        "fingerprint": hashlib.sha256(canonical).hexdigest(),
+        "state": public_state["state"],
+        "levels_completed": public_state["levels_completed"],
+        "available_actions": public_state["agent_available_actions"],
+    }
+
+
+def public_pre_action_state(frame: dict[str, Any]) -> dict[str, Any]:
+    """Return the lossless public state used to compute the pre-action digest."""
+    return {
+        "frames": frame.get("frames") or [],
+        "state": frame.get("state"),
+        "levels_completed": frame.get("levels_completed"),
+        "win_levels": frame.get("win_levels"),
+        "available_actions": sorted(map(str, frame.get("available_actions") or [])),
+        "agent_available_actions": sorted(map(str, frame.get("agent_available_actions") or [])),
+        "full_reset": bool(frame.get("full_reset", False)),
+    }
 
 
 def exception_details(error: BaseException) -> dict[str, Any]:
@@ -299,6 +333,38 @@ class ArcBridge:
         except OSError:
             self._disk_events_available = False
 
+    def _persist_pre_action_state(
+        self, frame: dict[str, Any], *, attempted_index: int,
+    ) -> dict[str, Any]:
+        summary = public_state_fingerprint(frame)
+        marker_path = self.root / ".task-scope.json"
+        if not marker_path.is_file():
+            return summary
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if marker.get("format") != "task-local-scope-v1":
+                return summary
+            state_id = f"arc-pre-action-{attempted_index}"
+            record = {
+                "format": "arc-public-pre-action-state-resource-v1",
+                "state_id": state_id,
+                "version": 1,
+                "fingerprint": summary["fingerprint"],
+                "public_state": public_pre_action_state(frame),
+                "recordedAt": datetime.now(timezone.utc).isoformat(),
+                "task_id": marker.get("task_id"),
+                "task_root_fingerprint": marker.get("root_fingerprint"),
+            }
+            with (self.root / "pre-action-states.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+                stream.flush()
+            return {**summary, "resource_ref": f"pre_action_state:{state_id}@v1"}
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            # The digest remains usable when the ARC SDK process cannot write
+            # the optional lossless snapshot. Never fail or repeat an action
+            # because an evidence-sidecar write was unavailable.
+            return summary
+
     def events(self, *, after: int = 0) -> dict[str, Any]:
         """Return canonical bridge events for parent-side durable projection."""
         if after < 0:
@@ -399,6 +465,7 @@ class ArcBridge:
             if self.actions >= self.max_actions:
                 raise ValueError("ARC action budget exhausted")
             before = self._frame()
+            pre_action_state = public_state_fingerprint(before)
             level = int(before["levels_completed"])
             while len(self.level_action_counts) <= level:
                 self.level_action_counts.append(0)
@@ -424,6 +491,7 @@ class ArcBridge:
                 "attempted_index": self.actions + 1, "action": action.name,
                 "coordinates": action_data, "level_before": level,
                 "state_before": before["state"],
+                "pre_action_state": pre_action_state,
             })
             try:
                 raw = self.environment.step(action, data=action_data, reasoning=reasoning)
@@ -434,6 +502,7 @@ class ArcBridge:
                     "attempted_index": self.actions + 1, "action": action.name,
                     "coordinates": action_data, "level_before": level,
                     "state_before": before["state"], "retryable": False,
+                    "pre_action_state": pre_action_state,
                     "error": details,
                 })
                 raise ArcEnvironmentError("step", details) from exc
@@ -452,13 +521,18 @@ class ArcBridge:
                     "attempted_index": self.actions + 1, "action": action.name,
                     "coordinates": action_data, "level_before": level,
                     "state_before": before["state"], "retryable": False,
+                    "pre_action_state": pre_action_state,
                     "error": details,
                 })
                 raise ArcEnvironmentError("step", details)
             self.actions += 1
+            pre_action_state = self._persist_pre_action_state(
+                before, attempted_index=self.actions,
+            )
             self.level_action_counts[level] += 1
             self.adapter.record_action(action.name)
             after = self._frame()
+            after["pre_action_state"] = pre_action_state
             after["observation_delta"] = frame_delta(before, after)
             after_level = int(after["levels_completed"])
             after["public_transition"] = {
@@ -470,6 +544,7 @@ class ArcBridge:
                 "event": "action", "index": self.actions, "action": action.name,
                 "coordinates": action.action_data.model_dump(), "state_before": before["state"],
                 "level_before": level,
+                "pre_action_state": pre_action_state,
                 "observation_delta": after["observation_delta"], "frame": after,
             })
             while len(self.level_action_counts) <= after_level:

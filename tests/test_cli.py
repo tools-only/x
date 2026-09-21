@@ -30,6 +30,29 @@ def test_shopping_e2e_cli_enables_isolated_context_compaction_capability(monkeyp
     assert seen == [(root.resolve(), "2", "11", "treatment", True)]
 
 
+def test_arc_method_audit_cli_prints_audit_and_returns_incomplete(monkeypatch, tmp_path, capsys):
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    monkeypatch.setattr(cli.ProjectPaths, "from_environment", lambda: paths)
+    seen = []
+
+    def fake_audit(root):
+        seen.append(root)
+        root.mkdir(parents=True)
+        path = root / "method-evolution-audit.json"
+        path.write_text(json.dumps({"complete": False, "first_incomplete_stage": "method_candidate"}),
+                        encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(cli, "write_arc_method_evolution_audit", fake_audit)
+    root = tmp_path / "interrupted-run"
+
+    code = cli.main(["arc-method-audit", "--root", str(root)])
+
+    assert code == 1
+    assert seen == [root]
+    assert json.loads(capsys.readouterr().out)["first_incomplete_stage"] == "method_candidate"
+
+
 def test_officebench_experiment_cli_runs_requested_pair_count(monkeypatch, tmp_path):
     paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
     monkeypatch.setattr(cli.ProjectPaths, "from_environment", lambda: paths)

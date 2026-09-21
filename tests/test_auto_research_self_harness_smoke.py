@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 from pathlib import Path
 
 from test_pi_external_benchmark_native import _pi_cli, _run_fixture
-from test_task_research_context import harness_delivery, records, results, run_router_helper
+from test_task_research_context import harness_delivery, records, results, run_router_helper, wait_for_broker_job
 from autoresearch_pi.subagent_broker import SubagentBroker
 
 
@@ -59,6 +59,66 @@ def test_smoke_parent_auto_research_starts_real_child(tmp_path):
     assert progress[-1]["phase"] == "completed"
     assert "spawn EPERM" not in json.dumps(progress)
     assert records(root, "auto-research-runs.jsonl")[0]["status"] == "completed"
+
+
+def test_non_blocking_experiment_request_reaches_parent_inbox_and_status(tmp_path):
+    """A child experiment request is durable and visible to the next parent turn."""
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "parent-receives-experiment"
+    report = {
+        "format": "auto-research-report-v1",
+        "status": "supported_within_scope",
+        "conclusion": "One parent probe can distinguish the two live explanations.",
+        "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
+        "validation_plan": "Run the bounded parent probe and compare its transition.",
+        "experiment_request": {
+            "objective": "Distinguish direct control from autonomous motion.",
+            "prerequisites": ["The object is visible"],
+            "parent_action": "Apply ACTION1 once at the current state.",
+            "suggested_next_action": "ACTION1",
+            "requested_max_actions": 1,
+            "predicted_outcomes": [{
+                "condition": "direct control",
+                "expected_observation": "The object changes immediately",
+                "implication": "Retain the direct-control hypothesis",
+            }],
+            "falsifier": "The same change occurs without ACTION1.",
+            "expected_information_gain": "Separates the two live explanations.",
+            "action_cost": "One parent ARC action.",
+            "stop_condition": "Stop after the first discriminating transition.",
+            "evidence_refs": [],
+        },
+        "harness_proposals": [],
+    }
+    broker = SubagentBroker()
+    broker.start()
+    try:
+        env = {
+            **_child_env(project, cli, report, [{"name": "submit_research_report", "arguments": {"report": report}}]),
+            "PI_AUTORESEARCH_SUBAGENT_BROKER_URL": broker.url,
+        }
+        first = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+                             extra_env=env, steps=[{"name": "auto_research", "arguments": {
+                                 "question": "Which parent probe best distinguishes the current explanations?",
+                                 "interaction_mode": "non_blocking", "research_kind": "mechanism",
+                             }}])
+        accepted = json.loads(results(first, "auto_research")[0]["result"]["content"][0]["text"])
+        wait_for_broker_job(root, "auto-research-1")
+        second = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+                              extra_env=env, steps=[{"name": "task_harness_status", "arguments": {"request": "current"}}])
+        status = json.loads(results(second, "task_harness_status")[0]["result"]["content"][0]["text"])
+        candidates = status["research_experiment_candidates"]
+        assert candidates and candidates[0]["request"]["request_ref"].startswith("research-experiment:auto-research-1")
+        assert candidates[0]["request"]["parent_action"] == report["experiment_request"]["parent_action"]
+        context_text = json.dumps(records(root, "provider-contexts.jsonl")[-1])
+        assert "AUTO-RESEARCH COMPLETION INBOX" in context_text
+        assert report["experiment_request"]["objective"] in context_text
+        assert accepted["accepted"] is True and accepted["status"] == "active"
+        persisted = records(root, "auto-research-reports.jsonl")[-1]
+        assert persisted["experiment_request"]["request_ref"].startswith("research-experiment:auto-research-1")
+    finally:
+        broker.close()
 
 
 def test_smoke_next_turn_uses_skill_materialized_by_previous_route(tmp_path):
@@ -257,4 +317,11 @@ def test_provider_length_boundary_is_resumed_inside_one_parent_tool_call(tmp_pat
 	assert len({item["run_id"] for item in receipts}) == 1
 	contexts = records(root, "subagent-provider-contexts.jsonl")
 	assert len(contexts) == 2
-	assert "Previous research checkpoint" in json.dumps(contexts[-1])
+	# Verify the actual continuation state, not its old prose heading.
+	prompt = (root / ".task-child-prompts" / "auto-research-1_continuation-2.txt").read_text(encoding="utf-8")
+	workset = json.loads(prompt.split("\n", 1)[1].split("\nParent-selected", 1)[0])
+	assert receipts[0]["checkpoint"]["partial_output"]
+	assert "partial_output" not in workset["research_checkpoint"]
+	assert receipts[0]["checkpoint"]["partial_output"] not in prompt
+	assert "Complete the existing research turn from the native session" in workset["goal"]
+	assert workset["research_state"]["continuation_attempt"] == 2

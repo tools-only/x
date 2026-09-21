@@ -1,5 +1,5 @@
 /** ARC-AGI-3 environment adapter with a task-local self-harness entry. */
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -25,6 +25,34 @@ function durableSelfHarnessPreludeCompleted(): boolean {
 	}
 }
 
+function uniquePendingResearchExperiment(root: string | undefined): Record<string, any> | undefined {
+	if (!root) return undefined;
+	const reportPath = join(root, "auto-research-reports.jsonl");
+	if (!existsSync(reportPath)) return undefined;
+	const reports = new Map<string, Record<string, any>>();
+	for (const line of readFileSync(reportPath, "utf8").split(/\r?\n/).filter(Boolean)) {
+		try {
+			const row = JSON.parse(line);
+			if (!row?.run_id) continue;
+			const prior = reports.get(String(row.run_id));
+			if (!prior || Number(row.version ?? 0) >= Number(prior.version ?? 0)) reports.set(String(row.run_id), row);
+		} catch { /* ignore damaged trailing diagnostic lines */ }
+	}
+	const observed = new Map<string, number>();
+	const eventPath = join(root, "research-experiment-events.jsonl");
+	if (existsSync(eventPath)) for (const line of readFileSync(eventPath, "utf8").split(/\r?\n/).filter(Boolean)) {
+		try { const row = JSON.parse(line); if (row?.request_ref) observed.set(String(row.request_ref), (observed.get(String(row.request_ref)) ?? 0) + 1); } catch {}
+	}
+	const requests = [...reports.values()].flatMap(row => {
+		const request = row.experiment_request ?? row.report?.experiment_request;
+		return request && typeof request === "object" ? [{ ...request, request_ref: request.request_ref ?? `research-experiment:${row.run_id}` }] : [];
+	}).filter(request => {
+		const max = Number(request.requested_max_actions ?? 0);
+		return max > 0 && (observed.get(String(request.request_ref)) ?? 0) < max;
+	});
+	return requests.length === 1 ? requests[0] : undefined;
+}
+
 // The rendered text is the model-facing frame representation. Keep raw frame
 // matrices in the bridge/artifact log, but do not duplicate them in Pi tool
 // details: Pi includes details in later model requests and the duplicate would
@@ -34,7 +62,7 @@ function publicToolDetails(value: Record<string, unknown>): Record<string, unkno
 	const fields = [
 		"game_id", "state", "levels_completed", "win_levels", "available_actions",
 		"agent_available_actions", "action_budget", "guid", "full_reset",
-		"observation_delta", "public_transition", "autoresearch_signals",
+		"pre_action_state", "observation_delta", "public_transition", "autoresearch_signals",
 	];
 	const details = Object.fromEntries(fields
 		.filter((field) => Object.prototype.hasOwnProperty.call(value, field))
@@ -204,9 +232,13 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 	// The real ARC gate requires a one-time self-harness prelude before the
 	// first observation/action. Later cycles use the projected portfolio and
 	// checkpoint without repeating kickoff.
-	const selfHarnessPreludeRequired = treatment && process.env.PI_ARC_EXECUTION_GATE === "enabled";
+	// Self-Harness is available from the first turn, but it is not a semantic
+	// precondition for reading or acting in the live environment. Requiring a
+	// kickoff would hand control of the irreversible trajectory to bookkeeping.
+	const selfHarnessPreludeRequired = false;
 	let selfHarnessPreludeComplete = !selfHarnessPreludeRequired || durableSelfHarnessPreludeCompleted();
 	const recentActions: Array<Record<string, unknown>> = [];
+	const researchExperimentBudgets = new Map<string, { approved: number; used: number }>();
 	const actionEffects = new Map<string, { attempts: number; distinct_effects: EffectRecord[] }>();
 	let actionCount = 0;
 	let stateEpoch = 0;
@@ -225,13 +257,6 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 		// the existing project adapters' gateway-compatible tool contracts.
 		parameters: Type.Object({ request: Type.String() }),
 		async execute(_toolCallId, params) {
-			if (!selfHarnessPreludeComplete) {
-				return {
-					content: [{ type: "text", text: "SELF_HARNESS_PRELUDE_REQUIRED: call task_harness(action='start') before reading ARC state." }],
-					details: { format: "arc-self-harness-prelude-v1", admitted: false, next: "task_harness" },
-					isError: true,
-				};
-			}
 			const value = await bridge("/state");
 			const request = String((params as Record<string, unknown> | undefined)?.request ?? "current");
 			const requestedFull = ["current", "full", "frame"].includes(request);
@@ -268,6 +293,7 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 				prediction: Type.Optional(Type.String()),
 				falsifier: Type.Optional(Type.String()),
 				next_step: Type.Optional(Type.String()),
+				basis_refs: Type.Optional(Type.Array(Type.String({ description: "Exact adopted harness resource versions that influenced this action." }))),
 				decision_refs: Type.Optional(Type.Array(Type.String())),
 				validation_window: Type.Optional(Type.Object({
 					actions: Type.Integer({ minimum: 1 }),
@@ -277,22 +303,49 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 						Type.Literal("falsify"), Type.Literal("inconclusive"),
 					])),
 				})),
+				research_request_ref: Type.Optional(Type.String()),
+				approve_research_experiment: Type.Optional(Type.Boolean({ description: "Approve the unique pending Auto-Research experiment request for this action; runtime binds its request_ref." })),
+				approved_max_actions: Type.Optional(Type.Integer({ minimum: 1 })),
 			})),
 		}),
 		executionMode: "sequential",
 		async execute(_toolCallId, params) {
-			if (!selfHarnessPreludeComplete) {
-				return {
-					content: [{ type: "text", text: "SELF_HARNESS_PRELUDE_REQUIRED: call task_harness(action='start') before submitting an ARC action." }],
-					details: { format: "arc-self-harness-prelude-v1", admitted: false, next: "task_harness" },
-					isError: true,
-				};
+			const decision = (params as Record<string, unknown>).decision as Record<string, unknown> | undefined;
+			const activeExperiments = [...researchExperimentBudgets.entries()]
+				.filter(([, budget]) => budget.used < budget.approved)
+				.map(([request_ref, budget]) => ({ request_ref, requested_max_actions: budget.approved }));
+			const pendingRequest = decision?.approve_research_experiment === true
+				? activeExperiments.length === 1
+					? activeExperiments[0]
+					: uniquePendingResearchExperiment(process.env.PI_AUTORESEARCH_E2E_ROOT)
+				: undefined;
+			if (decision?.approve_research_experiment === true && !pendingRequest) {
+				throw new Error("approve_research_experiment requires exactly one pending research experiment; inspect task_harness_status only when selection is ambiguous");
+			}
+			const requestRef = String(decision?.research_request_ref ?? pendingRequest?.request_ref ?? "").trim();
+			const approvedMax = Number(decision?.approved_max_actions ?? pendingRequest?.requested_max_actions ?? 0);
+			if (requestRef) {
+				if (!Number.isInteger(approvedMax) || approvedMax < 1) throw new Error("research_request_ref requires approved_max_actions");
+				const current = researchExperimentBudgets.get(requestRef) ?? { approved: approvedMax, used: 0 };
+				if (current.approved !== approvedMax) throw new Error(`research request budget cannot change after acceptance: ${requestRef}`);
+				if (current.used >= current.approved) throw new Error(`research request action budget exhausted: ${requestRef}`);
+				researchExperimentBudgets.set(requestRef, current);
 			}
 			// Decision metadata is for the task checkpoint only. Never forward it
 			// to the official ARC action parser, which accepts only action data.
 			const { decision: decisionCapsule, ...actionPayload } = params as Record<string, unknown>;
 			const value = await bridge("/action", actionPayload);
 			actionCount += 1;
+			if (requestRef) {
+				const current = researchExperimentBudgets.get(requestRef)!;
+				current.used += 1;
+				const root = process.env.PI_AUTORESEARCH_E2E_ROOT;
+				if (root) appendFileSync(join(root, "research-experiment-events.jsonl"), JSON.stringify({
+					format: "research-experiment-action-v1", request_ref: requestRef,
+					action_index: current.used, approved_max_actions: current.approved,
+					tool_call_id: _toolCallId, action: actionPayload.action, recordedAt: new Date().toISOString(),
+				}) + "\n", "utf8");
+			}
 			const delta = value.observation_delta as Record<string, unknown> | undefined;
 			const transition = value.public_transition as Record<string, unknown> | undefined;
 			const budget = value.action_budget as Record<string, unknown> | undefined;
@@ -359,12 +412,9 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			});
 			const trajectoryCard = `Recent action trajectory (latest first): ${JSON.stringify([...recentActions].reverse())}`;
 			const effectLedger = `Compact action-effect ledger: ${JSON.stringify(Object.fromEntries(actionEffects))}. Classifications are action_invariant_candidate/action_conditioned_candidate only; they are observed evidence, not object identification or semantic labels such as budget.`;
-			const previous = recentActions.at(-2) as Record<string, any> | undefined;
-			const currentBox = delta?.bbox as Record<string, number> | undefined;
-			const previousBox = previous?.bbox as Record<string, number> | undefined;
-			const motionCard = currentBox && previousBox
-				? `Changed-region geometry since prior action: dx=${((currentBox.left + currentBox.right) - (previousBox.left + previousBox.right)) / 2}, dy=${((currentBox.top + currentBox.bottom) - (previousBox.top + previousBox.bottom)) / 2}. This describes only changed cells, not an identified object's motion.`
-				: "";
+			const changeShapeCard = `Changed groups: ${JSON.stringify({count:classifiedComponents.length,
+				sizes:classifiedComponents.map(component => component.changed_cells),
+				boxes:classifiedComponents.map(component => component.bbox)})}. These are separate groups of changed cells; they do not by themselves identify movement, blocking, a counter, or a goal.`;
 			// The action result is retained in Pi's transcript.  Repeating a full
 			// 64x64 lossless frame here makes every later provider request carry
 			// another copy of the same-sized observation.  The authoritative frame
@@ -372,7 +422,7 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			// explicitly required to refresh it.  This keeps action evidence and
 			// decision state separate without changing the native environment.
 			const continuation = budgetExhausted
-				? "ARC action budget is exhausted. This is the terminal result for this run; do not call arc_state, arc_action, research, or task-local harness tools again."
+				? "ARC action budget is exhausted. Do not call environment actions or research again. The runner may request a final read-only level retrospective through task_resource and task_harness(action='level_review')."
 				: "The delta is recorded evidence, not an interpretation. arc_state(request='full') retrieves the complete current frame when needed.";
 			return {
 				// Pi's agent loop treats this as a completed tool batch.  It emits
@@ -381,7 +431,7 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 				// This is the authoritative action boundary; ctx.abort() below is
 				// only a compatibility fallback for older Pi versions.
 				terminate: true,
-				content: [{ type: "text", text: `${transitionCard}\n${trajectoryCard}\n${effectLedger}\n${motionCard}\n${deltaText}\n${continuation}` }],
+				content: [{ type: "text", text: `${transitionCard}\n${trajectoryCard}\n${effectLedger}\n${changeShapeCard}\n${deltaText}\n${continuation}` }],
 				details: {
 					...publicToolDetails(value),
 					arc_action_boundary: true,
@@ -407,9 +457,9 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 	});
 	installArcTrajectoryResource(pi, treatment);
 	const research = externalBenchmarkResearch(pi, treatment
-		? { baseTools: ["arc_state", "arc_action", "inspect_arc_trajectory"], taskToolAdapter: createArcTaskToolAdapter(() => bridge("/state"), (params) => bridge("/action", params)) }
+		? { baseTools: ["arc_state", "arc_action", "inspect_arc_trajectory"], taskToolAdapter: createArcTaskToolAdapter(() => bridge("/state")) }
 		: {});
-	installArcTaskSubagents(pi, treatment, research?.resolveBasisRefs);
+	installArcTaskSubagents(pi, treatment, research?.resolveBasisRefs, () => bridge("/state"));
 	// `tool_result` is emitted before Pi finalizes the tool execution and before
 	// the next provider turn is scheduled. Stop here, after the bridge result is
 	// available to the shared research/checkpoint middleware. The later
@@ -432,8 +482,8 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 		const durableStarted = selfHarnessPreludeComplete || durableSelfHarnessPreludeCompleted();
 		if (durableStarted) selfHarnessPreludeComplete = true;
 		const prelude = durableStarted
-			? "SELF-HARNESS PRELUDE STATUS: completed for this task. Do not repeat task_harness(start); inspect or use the current task-local portfolio only when useful. "
-			: "SELF-HARNESS PRELUDE: on the first decision cycle, call task_harness(action='start') before arc_state or arc_action. This kickoff is one-time; ";
+			? "SELF-HARNESS STATUS: available for this task. Inspect or change the current task-local portfolio only when useful. "
+			: "SELF-HARNESS STATUS: available from the first decision cycle; use it only when the current task justifies the cost. ";
 		return {
 		systemPrompt: `${ARC_SYSTEM_PROMPT}\n\n${event.systemPrompt}\n\n${prelude}` +
 			"Each arc_action returns a deterministic observation delta; call arc_state(request='current') " +

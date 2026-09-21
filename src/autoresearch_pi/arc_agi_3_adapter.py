@@ -22,9 +22,33 @@ DEFAULT_MAX_ANIMATION_FRAMES = 7
 DEFAULT_ACTION_BUDGET_MULTIPLIER = 5.0
 OFFICIAL_CONTEXT_WINDOW = 175_000
 # Mirrors ARC-AGI-3 benchmarking.Agent.MAX_RUNTIME_SECONDS.  The e2e
-# runner uses this only as Pi's per-operation wait ceiling; it does not add a
-# second session deadline or a project-specific shorter timeout.
+# runner uses this as Pi's per-operation wait ceiling. Ordinary runs add no
+# second session deadline; an explicit experimental cutoff is separately labeled.
 OFFICIAL_MAX_RUNTIME_SECONDS = 12 * 60 * 60
+SUPPORTED_INPUT_MODALITIES = ("text", "image")
+
+
+def resolve_input_modalities(value: str | Iterable[str] | None) -> tuple[str, ...]:
+    """Normalize the Pi model input capability declaration.
+
+    The declaration controls the provider model registry only.  The ARC
+    adapter may still choose a text representation for a particular tool
+    result; advertising ``image`` makes an image-capable provider available to
+    that runtime without forcing every run to use it.
+    """
+    if value is None:
+        return ("text",)
+    raw = value.split(",") if isinstance(value, str) else value
+    modalities = tuple(dict.fromkeys(str(item).strip().lower() for item in raw if str(item).strip()))
+    if not modalities:
+        raise ValueError("input modalities must include at least one of: text,image")
+    unknown = [item for item in modalities if item not in SUPPORTED_INPUT_MODALITIES]
+    if unknown:
+        raise ValueError(
+            f"unsupported ARC input modality: {', '.join(unknown)}; "
+            f"supported modalities are {', '.join(SUPPORTED_INPUT_MODALITIES)}"
+        )
+    return modalities
 
 
 def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
@@ -48,6 +72,7 @@ def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
         "context_window": OFFICIAL_CONTEXT_WINDOW,
         "official_runtime": "openai-python/responses",
         "pi_api": environment.get("ARC_PI_API") or "openai-responses",
+        "input_modalities": list(resolve_input_modalities(environment.get("ARC_INPUT_MODALITIES"))),
     }
     if max_output is not None:
         settings["max_tokens"] = max_output

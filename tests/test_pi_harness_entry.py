@@ -14,15 +14,16 @@ def records(root, name):
 
 def test_empty_task_has_direct_creation_and_method_at_first_request(tmp_path):
     root = tmp_path / "entry"
-    _run_fixture(root, "treatment", steps=[])
+    _run_fixture(root, "treatment", steps=[], extra_extensions=[Path(__file__).resolve().parents[1] / 'tests/pi_non_arc_task_subagents.ts'])
     context = records(root, "provider-contexts.jsonl")[0]["context"]
     names = {tool["name"] for tool in context["tools"]}
     assert {"research_resource", "task_harness", "task_harness_status", "task_skill", "task_memory", "task_system_prompt", "read", "assess_harness_effect"} <= names
     assert not any(name.startswith("task_") and ("guid" + "ance") in name for name in names)
-    assert "task_subagent" not in names  # no adapter configured
-    assert "task_tool" not in names
+    assert "task_subagent" in names  # the research contract requires a configured adapter
+    assert "auto_research" in names
     assert "Auto-Research" in context["systemPrompt"]
-    assert "composition" in context["systemPrompt"]
+    research = next(tool for tool in context['tools'] if tool['name'] == 'auto_research')
+    assert 'composition' in {choice['const'] for choice in research['parameters']['properties']['scope']['anyOf']}
     method = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "auto_research_method.md").read_text(encoding="utf-8")
     main_contract = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "auto_research_main_contract.md").read_text(encoding="utf-8")
     assert main_contract in context["systemPrompt"]
@@ -37,6 +38,38 @@ def test_empty_task_has_direct_creation_and_method_at_first_request(tmp_path):
     opportunities = records(root, "task-harness-opportunities.jsonl")
     assert opportunities[0]["trigger"] == "initial_surface"
     assert opportunities[0]["observation_count"] == 0
+
+
+def test_real_provider_surface_exposes_facade_without_native_mutation_tools(tmp_path):
+    root = tmp_path / "facade-surface"
+    _run_fixture(root, "treatment")
+    context = records(root, "provider-contexts.jsonl")[0]["context"]
+    names = {tool["name"] for tool in context["tools"]}
+    assert "task_harness" in names
+    assert not names.intersection({"task_memory", "task_system_prompt", "task_skill", "task_tool", "task_subagent"})
+
+
+def test_harness_status_alias_and_review_schema_expose_legal_values(tmp_path):
+    root = tmp_path / "tool-contract-descriptions"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name":"task_harness","arguments":{"action":"status"}},
+        {"name":"task_harness","arguments":{"action":"inspect"}},
+    ])
+    tools = {
+        tool["name"]: tool
+        for tool in records(root, "provider-contexts.jsonl")[0]["context"]["tools"]
+    }
+
+    status_description = tools["task_harness_status"]["description"]
+    harness_description = tools["task_harness"]["description"]
+    harness_schema = tools["task_harness"]["parameters"]
+
+    outputs = [e for e in events if e.get('type') == 'tool_execution_end' and e.get('toolName') == 'task_harness']
+    assert len(outputs) == 2 and all(not e.get('isError') for e in outputs)
+    disposition = harness_schema['properties']['review']['items']['properties']['disposition']
+    assert {choice['const'] for choice in disposition['anyOf']} == {'create','update','reuse','defer','not_applicable','keep'}
+    status = json.loads(outputs[0]['result']['content'][0]['text'])
+    assert status['review_contract']['repair_template']['action'] == 'review'
 
 
 def test_context_token_debug_breaks_down_each_provider_turn(tmp_path):
@@ -118,11 +151,116 @@ def test_task_harness_start_is_a_non_mutating_creation_kickoff(tmp_path):
         "memory": 0, "system_prompt": 0,
         "skill": 0, "tool": 0, "subagent": 0,
     }
-    assert "task_memory(action=upsert)" in entry["creation_calls"]
-    assert "task_skill(action=create)" in entry["creation_calls"]
+    assert entry["creation_calls"] == ["task_harness(action=change)"]
     assert "lifecycle" in entry
     assert not records(root, "task-memory.jsonl")
     assert not records(root, "task-skills.jsonl")
+
+
+def test_facade_routes_skill_and_system_prompt_overlay_in_one_parent_change(tmp_path):
+    root = tmp_path / "facade-overlay"
+    events = _run_fixture(root, "treatment", steps=[{
+        "name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "procedure", "execution": "text",
+                "reuse": "expected_reuse", "reasoning": "bounded_judgment",
+                "name": "delta-method", "summary": "Review the latest delta.",
+                "content": "Compare competing predictions before selecting a probe.",
+                "scope": {"kind": "task_wide", "statement": "this task"},
+                "context_visibility": "always", "stability": "stable_in_scope",
+                "prompt_channel": "system_prompt",
+                "basis_refs": ["observation:validated@v1"],
+                "system_prompt_basis": {"source": "validated_environment_invariant", "evidence_refs": ["observation:validated@v1"]},
+            }}],
+            "decision": {"basis_refs": ["observation:validated@v1"], "reason": "Repeated deltas require a stable review rule.", "expected": "The review rule remains available."},
+        },
+    }])
+    errors = [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
+    assert not errors
+    receipts = records(root, "task-harness-change-receipts.jsonl")
+    assert receipts and receipts[-1]["status"] == "applied"
+    assert [item["native_tool"] for item in receipts[-1]["results"]] == ["task_skill", "task_system_prompt"]
+    assert records(root, "task-skills.jsonl")[0]["status"] == "active"
+    assert records(root, "task-system-prompt.jsonl")[0]["status"] == "active"
+
+
+def test_facade_accepts_component_words_and_supplies_current_update_version(tmp_path):
+    root = tmp_path / "facade-update-version"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "memory", "key": "state", "content": "v1",
+            }}],
+            "decision": {"basis_refs": [], "reason": "Keep state.", "expected": "State is available."},
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [{"operation": "update", "candidate": {
+                "semantic_kind": "memory", "key": "state", "content": "v2",
+            }}],
+            "decision": {"basis_refs": [], "reason": "Refresh state.", "expected": "New state replaces old state."},
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "skill", "name": "check-state", "content": "Read state before acting.",
+            }}],
+            "decision": {"basis_refs": [], "reason": "Reuse the check.", "expected": "The method can be opened later."},
+        }},
+    ])
+    assert not [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
+    assert [row["version"] for row in records(root, "task-memory.jsonl")] == [1, 2]
+    assert records(root, "task-memory.jsonl")[-1]["content"] == "v2"
+    assert records(root, "task-skills.jsonl")[-1]["name"] == "check-state"
+
+
+def test_facade_preserves_knowledge_lifecycle_links(tmp_path):
+    root = tmp_path / "facade-knowledge-links"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [
+                {"operation": "create", "candidate": {
+                    "semantic_kind": "memory", "key": "old-policy", "content": "old",
+                }},
+                {"operation": "create", "candidate": {
+                    "semantic_kind": "skill", "name": "dependent", "content": "Use the old policy.",
+                    "depends_on_refs": ["memory:old-policy@v1"],
+                }},
+                {"operation": "create", "candidate": {
+                    "semantic_kind": "memory", "key": "new-policy", "content": "new",
+                    "supersedes_refs": ["memory:old-policy@v1"],
+                }},
+            ],
+            "decision": {
+                "basis_refs": [], "reason": "Replace the policy and retain its dependency graph.",
+                "expected": "The old policy and dependent guidance are suspended.",
+            },
+        }},
+    ])
+
+    assert not [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
+    assert records(root, "task-skills.jsonl")[-1]["depends_on_refs"] == ["memory:old-policy@v1"]
+    assert records(root, "task-memory.jsonl")[-1]["supersedes_refs"] == ["memory:old-policy@v1"]
+
+
+def test_facade_rejects_explicit_stale_update_version(tmp_path):
+    root = tmp_path / "facade-stale-version"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "memory", "key": "state", "content": "v1"}}],
+            "decision": {"basis_refs": [], "reason": "Create state.", "expected": "State exists."}}},
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "update", "candidate": {
+                "semantic_kind": "memory", "key": "state", "target_version": 2, "content": "bad"}}],
+            "decision": {"basis_refs": [], "reason": "Attempt stale write.", "expected": "Conflict is reported."}}},
+    ])
+    writes = records(root, "task-memory.jsonl")
+    assert len(writes) == 1 and writes[0]["content"] == "v1"
+    assert records(root, "task-harness-change-receipts.jsonl")[-1]["status"] == "failed"
 
 
 def test_direct_skill_research_revision_projects_next_request_without_native_loader(tmp_path):
@@ -152,6 +290,67 @@ def test_direct_skill_research_revision_projects_next_request_without_native_loa
     assert not records(root, "task-harness-bootstrap.jsonl")
     assert not any(e["event"] == "loaded_by_pi" for e in records(root, "task-skill-events.jsonl"))
     assert records(root, "effect-assessments.jsonl")[0]["verdict"] == "inconclusive"
+
+
+def test_effect_assessment_binds_unique_exposed_decision_and_observations(tmp_path):
+    root = tmp_path / "assessment-binding"
+    path = root / "task-harness" / "skills" / "probe" / "SKILL.md"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_skill", "arguments": {"action": "create", "name": "probe", "instructions": "Inspect once."}},
+        {"name": "read", "arguments": {"path": str(path)}},
+        {"name": "task_harness", "arguments": {
+            "action": "assess_effect", "verdict": "inconclusive",
+            "consequence": "Keep observing before revising the skill.",
+        }},
+    ])
+    assert not [e for e in events if e.get("type") == "tool_execution_end" and e.get("isError")]
+    assessment = records(root, "effect-assessments.jsonl")[0]
+    assert assessment["decision_id"] == "decision-1"
+    assert assessment["observation_refs"] == ["skill-projection-decision-1", "skill-read-decision-1"]
+
+
+def test_adopt_research_applies_all_ready_routes_without_parent_route_fields(tmp_path):
+    root = tmp_path / "adopt-research"
+    root.mkdir()
+    route = {
+        "format": "auto-research-harness-route-v1",
+        "route_id": "auto-research-1:route-fact",
+        "route_ref": "harness_route:auto-research-1:route-fact@v1",
+        "version": 1,
+        "run_id": "auto-research-1",
+        "delivery_id": "fact",
+        "delivery_hash": "sha256:test",
+        "approval_ref": "proposal:auto-research-1:proposal-1@v1",
+        "review_status": "approved",
+        "disposition": "materialize",
+        "route_status": "ready",
+        "steps": [{
+            "step_id": "auto-research-1:route-fact:step-1", "order": 1,
+            "target": "memory", "native_tool": "task_memory", "status": "ready", "depends_on": [],
+            "native_call": {"name": "task_memory", "arguments": {
+                "action": "upsert", "key": "research-fact", "content": "Keep the verified fact.",
+                "routing_id": "auto-research-1:route-fact",
+                "source_approval_ref": "proposal:auto-research-1:proposal-1@v1",
+            }},
+        }],
+    }
+    (root / "auto-research-harness-routes.jsonl").write_text(json.dumps(route) + "\n", encoding="utf-8")
+    (root / "auto-research-sessions.jsonl").write_text(json.dumps({
+        "session_id": "research-session-1", "version": 2, "status": "completed",
+        "run_id": "auto-research-1", "reconciliation_status": "awaiting_parent_change",
+    }) + "\n", encoding="utf-8")
+    events = _run_fixture(root, "treatment", steps=[{
+        "name": "task_harness", "arguments": {
+            "action": "adopt_research", "research_run_ref": "research_run:auto-research-1@v1",
+        },
+    }])
+    result = next(e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == "task_harness")
+    assert result.get("isError") is not True
+    body = json.loads(result["result"]["content"][0]["text"])
+    assert body["status"] == "adopted"
+    assert records(root, "task-memory.jsonl")[-1]["key"] == "research-fact"
+    assert records(root, "auto-research-harness-routes.jsonl")[-1]["route_status"] == "fulfilled"
+    assert records(root, "auto-research-sessions.jsonl")[-1]["reconciliation_status"] == "adopted"
 
 
 def test_task_harness_restores_an_authorized_tool_without_granting_host_tools(tmp_path):
@@ -200,7 +399,8 @@ def test_task_harness_focus_projects_only_selected_task_resource_versions(tmp_pa
 
 def test_compact_arc_focus_projects_memory_body_after_creation(tmp_path):
     root = tmp_path / "compact-memory"
-    _run_fixture(root, "treatment", arc_compact=True, steps=[
+    _run_fixture(root, "treatment", arc_compact=True,
+        extra_extensions=[Path(__file__).resolve().parents[1] / 'tests/pi_non_arc_task_subagents.ts'], steps=[
         {"name": "task_memory", "arguments": {
             "action": "upsert", "key": "action-effects",
             "content": "Keep public common changes separate from action-specific changes.",
@@ -294,10 +494,9 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
               if event.get("type") == "tool_execution_end" and event.get("isError")]
     assert not errors
     contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
-    # ARC now exposes the scoped task-local reader from the first planning
-    # cycle so a created skill can be created, read, and used without a
-    # separate enable-only turn. Native skills remain disabled.
-    assert "read" in {tool["name"] for tool in contexts[0]["tools"]}
+    # The compact surface exposes skill inspect directly; enabling skill also
+    # exposes the scoped reader before the explicit read in this sequence.
+    assert "task_skill" in {tool["name"] for tool in contexts[0]["tools"]}
     assert "read" in {tool["name"] for tool in contexts[1]["tools"]}
     assert any(
         event.get("event") == "read_by_agent" and event.get("name") == "probe"
@@ -333,7 +532,7 @@ def test_repeated_real_operations_surface_a_neutral_self_harness_opportunity(tmp
     ])
     contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
     assert any(
-        "Self-harness opportunity is available" in json.dumps(message)
+        "Self-harness review opportunity" in json.dumps(message)
         and "benchmark_probe" in json.dumps(message)
         and "Resource types with no active instance" in json.dumps(message)
         for context in contexts

@@ -45,15 +45,23 @@ task-local system prompt / skill / memory / tool / subagent
 
 ### 1.1 Native capability availability
 
-`task_skill`、`task_memory`、`task_system_prompt`、`task_subagent` 以及（当
-adapter 提供 task-tool 实现时）`task_tool`，由 Pi extension 在 Agent 回合
-开始前注册。Agent 不需要额外执行一个“注册该工具”的仪式：
-`task_harness(action=start)` 暴露精确的创建入口，下一轮 provider context 会
-包含其 live descriptor。若 host 没有注册某个 native entrypoint，parent 无法
+`task_harness` 是 parent 唯一的模型可见 harness 写入口。`task_skill`、
+`task_memory`、`task_system_prompt`、`task_subagent` 以及（当 adapter 提供
+task-tool 实现时）`task_tool` 由 Pi extension 注册为内部 native executor；
+facade 根据候选语义选择它们。Agent 不需要额外执行一个“注册该工具”的仪式：
+`task_harness(action=start)` 只返回入口契约，`task_harness(action=change)`
+提交实际变更。若 host 没有注册某个 native entrypoint，parent 无法
 仅凭 route 或 delivery 正文凭空制造 Pi registration；route 必须诚实地进入
 `partial`/`unsupported` 并携带恢复引用。`task_tool` 在 adapter 提供 factory
 时可执行纯声明式 program；需要不存在的 adapter authority 的操作属于
 capability gap，不能伪造成功或静默扩大 host 权限。
+
+一个 change 可以触达一个基础组件，也可以触达一个基础组件及其
+`system_prompt` overlay：`fact/plan` 的基础目标是 `memory`，
+`procedure/computation/role` 的基础目标分别是 `skill/tool/subagent`；显式的
+`prompt_channel=system_prompt` 会在同一 facade 调用中追加有证据约束的
+`task_system_prompt` 步骤。`task_prompt` 仍是 memory 的动态投影，不是额外的
+持久组件。回执按步骤记录每个 native executor 的结果。
 
 ## 2. 三类对象必须严格区分
 
@@ -87,7 +95,7 @@ Delivery 是 child 根据一个或多个 findings/evidence 提炼出来的、具
 
 ### 2.3 Route：parent 可执行的确定性计划
 
-Route 是代码路由器对一个已审批 delivery 的编译结果。它包含精确 native tool call、依赖顺序、delivery hash、approval ref 和状态。`auto_research` 返回前，parent runtime 自动执行所有 `ready` route；`task_harness(action="apply_route")` 仅用于显式恢复或幂等重放。
+Route 是代码路由器对一个已审批 delivery 的编译结果。它包含精确 native tool call、依赖顺序、delivery hash、approval ref 和状态。Parent 只决定是否采用 research 结果并调用 `task_harness(action="adopt_research", research_run_ref=...)`；runtime 自动选择该 run 的 ready routes、核验 hash/版本、执行 native step、写入 receipt 并更新 session。只有多个待采用 run 时才必须传 `research_run_ref`。`task_harness(action="apply_route")` 保留为 runtime/诊断恢复和幂等重放接口，不是普通 agent 工作流。
 
 ### 2.4 Runtime 状态与 research-only 不是 harness 组件
 

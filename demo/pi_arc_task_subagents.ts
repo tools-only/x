@@ -9,6 +9,7 @@ export function installArcTaskSubagents(
 	pi: ExtensionAPI,
 	enabled: boolean,
 	resolveBasisRefs?: (references: string[]) => string[],
+	publishStateSnapshot?: () => Promise<Record<string, unknown>>,
 ): void {
 	installTaskLocalSubagents(pi, enabled, {
 		adapterId: "arc_agi_3",
@@ -23,5 +24,29 @@ export function installArcTaskSubagents(
 		taskToolAllowedImplementations: [
 			"arc.public_state", "arc.action_sequence", "arc_state", "arc_action_sequence",
 		],
+		taskToolImplementationOutputSchemas: {
+			"arc.public_state": { type: "object", properties: {
+				game_id: { type: "string" }, state: { type: "string" }, levels_completed: { type: "number" },
+				win_levels: { type: "number" }, available_actions: { type: "array", items: { type: "string" } },
+				agent_available_actions: { type: "array", items: { type: "string" } },
+				action_budget: { type: "object" }, guid: { type: "string" }, full_reset: { type: "boolean" },
+			} },
+			arc_state: { type: "object", properties: {
+				game_id: { type: "string" }, state: { type: "string" }, levels_completed: { type: "number" },
+				win_levels: { type: "number" }, available_actions: { type: "array", items: { type: "string" } },
+				agent_available_actions: { type: "array", items: { type: "string" } },
+				action_budget: { type: "object" }, guid: { type: "string" }, full_reset: { type: "boolean" },
+			} },
+			"arc.action_sequence": { type: "object", properties: {
+				actions: { type: "array", items: { type: "string" } }, requested_actions: { type: "array", items: { type: "string" } },
+				status: { type: "string" }, boundary: { type: "string" },
+			} },
+			arc_action_sequence: { type: "object", properties: {
+				actions: { type: "array", items: { type: "string" } }, requested_actions: { type: "array", items: { type: "string" } },
+				status: { type: "string" }, boundary: { type: "string" },
+			} },
+		},
+		publishStateSnapshot,
+		stateSnapshotTools: ["arc_state"],
 	}, resolveBasisRefs);
 }

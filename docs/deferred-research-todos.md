@@ -80,4 +80,14 @@
 
 ## 后续更新
 
+2026-09-18：B/C/D 的 guidance 层补充：Auto-Research 按有依据的问题组织跨阶段研究；parent 发起前须提供前提/材料/访问条件、可达中间目标、局部评测及成本/停止条件；child 区分候选构造与局部验证；方法后续使用证据回流到可恢复 session 或引用前序报告的后续研究。见 `docs/plans/2026-09-18-grounded-auto-research-guidance.md`。此次未新增动作权限、自动研究线调度或压缩恢复能力，尚不能据此勾选跨阶段研究质量、在线实验通信与认知连续性验收项。
+
+2026-09-18：D 的部分进展已实现：精确版本依赖与显式替换、失效的传递抑制、任务策略/动态状态分层及条件投影、组装版本回执。见 `docs/plans/2026-09-18-harness-knowledge-lifecycle.md`。真实 ARC runner 的 10 场景验收通过（确定性 provider、真实 SDK/运行链路）。这不等于已完成跨压缩的认知质量验证；历史 checkpoint/对话没有语义重写，真实模型收益仍待对照实验。C 的父子证据通信设计仍未由本次工作完成。
+
+2026-09-18：证据驱动 self-harness 第一波已实现：blocking Auto-Research 可在当前计算片段结束时 yield 为 pending，后台恢复强制 non-blocking；研究 findings 支持解释/方法正确性/方法收益的独立 assessment；task tool 与 saved subagent 调用检查当前可用性。见 `docs/plans/2026-09-18-evidence-driven-self-harness-design.md`。仍未完成真实 ARC 全链路重新验收、父子主动实验通信、跨压缩语义质量和真实 provider/DeepSeek 研究收益对照。
+
 开始任一项时，补充最新代码证据、范围与验收方式；完成后勾选并链接实现/实验结果。候选方案在确认前保留为待探索项。
+
+2026-09-20：后续 A/B/C/D 设计须对照 [单次生命在线 Self-Harness 模型与最小迁移规范](plans/2026-09-20-agent-native-single-life-harness.md)。固定前提为单条不可回退环境历史、main agent 独占逐步交互及结果上下文、child 仅请求预算内实验、Self-Harness 为非 LLM 的版本/组装/证据机制。上文曾列为候选的 child 控制权交接、自动执行 lease、跳过 parent 模型的中间结果路由，在当前范式下不采用。本文档链接表示设计约束落盘，不表示机制已实现或闭环验收通过；backlog 状态保持未完成。
+
+2026-09-20：B/C 的部分外围机制已实现：runtime 自动组织跨阶段/尝试的精确比较材料但不作语义或因果判断；child 可提交显式方法抽象；方法采用、真实工具/子 agent 调用、效果评估和同研究线 feedback handoff 已版本化贯通。ARC child 现在由 parent 启动时发布固定只读状态快照，不再继承 live bridge。skill read、memory/prompt exposure 明确不算 actual use。组件/非 ARC Pi 集成测试已通过；真实 provider 的方法质量、后续 held-out 使用收益、skill/memory/prompt 到具体行动的精确使用关系及跨压缩认知连续性仍未验证，因此 B/C/D 不勾选完成，也不声称 ARC self-harness 全链路闭环。

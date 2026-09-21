@@ -280,6 +280,12 @@ function payloadStats(payload: unknown): Record<string, unknown> {
 	};
 }
 
+function resourceRefsInPayload(payload: unknown): string[] {
+	const text = JSON.stringify(payload ?? "");
+	const refs = text.match(/(?:memory|skill|tool|subagent|system_prompt|finding|context):[a-zA-Z0-9._:@/-]+/g) ?? [];
+	return [...new Set(refs)].sort();
+}
+
 /** Install observation-only telemetry without changing provider behavior. */
 export function installProviderTelemetry(
 	pi: ExtensionAPI,
@@ -352,6 +358,20 @@ export function installProviderTelemetry(
 			recordedAt: new Date(startedAtMs).toISOString(),
 			...payloadStats(event.payload),
 		});
+		// This is the first boundary where the provider payload is authoritative.
+		// Keep a compact assembly join here so a later action/effect can point to
+		// the exact request that exposed a resource. If an adapter bypasses this
+		// hook, the fallback telemetry remains explicitly non-effective.
+		append({
+			event: "harness_assembly",
+			assembly_ref: `${scope}-assembly-${record.requestIndex}`,
+			request_id: record.requestId,
+			request_index: record.requestIndex,
+			measurement_basis: "provider_payload",
+			resource_refs: resourceRefsInPayload(event.payload),
+			provider_payload_sha256: createHash("sha256").update(JSON.stringify(event.payload ?? null)).digest("hex"),
+			recordedAt: new Date(startedAtMs).toISOString(),
+		});
 	});
 
 	pi.on("after_provider_response", (event) => {
@@ -382,10 +402,14 @@ export function installProviderTelemetry(
 		const message = event.message as Record<string, unknown>;
 		if (message?.role !== "assistant") return;
 		const completedAtMs = Date.now();
+		const contextFallback = pendingContextStats;
+		pendingContextStats = undefined;
+		let fallbackAssemblyRecorded = false;
 		let record = lastResponse ?? inFlight.at(-1);
 		if (record?.usageLogged) record = undefined;
 		if (!record) {
 			const startedAtMs = completedAtMs;
+			const fallbackStats = contextFallback;
 			record = {
 				requestId: `${scope}-provider-${++requestIndex}`,
 				requestIndex,
@@ -395,11 +419,33 @@ export function installProviderTelemetry(
 				event: "provider_request_context",
 				turn: record.requestIndex,
 				request_id: record.requestId,
-				measurement_basis: pendingContextStats ? "context_hook_fallback" : "unavailable",
-				...(pendingContextStats ?? contextTokenStats(undefined)),
+				measurement_basis: contextFallback ? "context_hook_fallback" : "unavailable",
+				...(contextFallback ?? contextTokenStats(undefined)),
 				recordedAt: new Date(startedAtMs).toISOString(),
 			});
-			pendingContextStats = undefined;
+			append({
+				event: "harness_assembly",
+				assembly_ref: `${scope}-assembly-${record.requestIndex}`,
+				request_id: record.requestId,
+				request_index: record.requestIndex,
+				measurement_basis: "context_hook_fallback",
+				resource_refs: [],
+				context_stats: fallbackStats ?? null,
+				recordedAt: new Date(startedAtMs).toISOString(),
+			});
+			fallbackAssemblyRecorded = true;
+		}
+		if (contextFallback && record && !fallbackAssemblyRecorded) {
+			append({
+				event: "harness_assembly",
+				assembly_ref: `${scope}-assembly-${record.requestIndex}`,
+				request_id: record.requestId,
+				request_index: record.requestIndex,
+				measurement_basis: "context_hook_fallback",
+				resource_refs: [],
+				context_stats: contextFallback,
+				recordedAt: new Date(completedAtMs).toISOString(),
+			});
 		}
 		const usage = message.usage && typeof message.usage === "object"
 			? message.usage as Record<string, unknown>

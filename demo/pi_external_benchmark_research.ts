@@ -18,7 +18,9 @@ import {
 	HARNESS_BOOTSTRAP_TOOL,
 	installTaskLocalSelfHarness,
 	renderTaskSystemPromptOverlay,
+	taskKnowledgeEntries,
 	SELF_HARNESS_MANAGEMENT_TOOLS,
+	INTERNAL_NATIVE_HARNESS_TOOLS,
 } from "./pi_task_local_self_harness.ts";
 import type { TaskToolAdapter } from "./pi_task_local_tools.ts";
 import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
@@ -28,6 +30,7 @@ import { installTaskValidation } from "./pi_task_validation.ts";
 import { loadPrompt } from "./prompt_loader.ts";
 import { admitTaskLocalOperation, noteArcActionCompleted } from "./pi_task_execution_admission.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
+import { bindOperationIdentity, controlOperationKey, eligibleResearchHandoffStatuses, failureClassification, latestControlRecords } from "./pi_harness_control.ts";
 
 type Finding = {
 	subject_kind?: "task" | "component" | "composition" | "strategy" | "research_method";
@@ -72,6 +75,10 @@ function compactText(value: unknown, _maximum?: number): string {
 	// length quota. Provider transport may project/ archive separately, while
 	// canonical records remain complete and recoverable.
 	return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function boundedText(value: unknown, maximum: number): string {
+	return compactText(value).slice(0, Math.max(0, maximum));
 }
 
 function nextCounter(records: Record<string, unknown>[], key: string): number {
@@ -219,7 +226,12 @@ export default function externalBenchmarkResearch(
 			// resulting bodies, so lazy disclosure is not a prerequisite for
 			// context efficiency.
 			const ordinaryManagement = [
-				...SELF_HARNESS_MANAGEMENT_TOOLS, "research_resource", "task_subagent", "delegate_task", "read",
+				...SELF_HARNESS_MANAGEMENT_TOOLS,
+				// The scripted external fixture uses explicit PI_EXTERNAL_STEPS to
+				// exercise native executors. Preserve that diagnostic surface while
+				// real provider runs receive only the task_harness facade.
+				...(process.env.PI_EXTERNAL_STEPS !== undefined ? INTERNAL_NATIVE_HARNESS_TOOLS : []),
+				"research_resource", "delegate_task", "read",
 			];
 			// ARC's first provider request exposes only semantic controls and the
 			// deterministic task control plane.  Bookkeeping/index operations are
@@ -236,7 +248,9 @@ export default function externalBenchmarkResearch(
 				.filter((name) => !compactInitialExcluded.has(name));
 			pi.setActiveTools([...new Set([...initialManagement, ...initialCore, ...requested,
 				...(process.env.PI_AUTORESEARCH_CONTEXT_COMPACTION === "enabled" && !compactArc ? [OBSERVATION_COMPACTION_TOOL] : []),
-			])].filter((name) => registered.has(name)));
+			])].filter((name) => registered.has(name)
+				&& (process.env.PI_EXTERNAL_STEPS !== undefined
+					|| !(INTERNAL_NATIVE_HARNESS_TOOLS as readonly string[]).includes(name))));
 			append("task-harness-entry.jsonl", {
 				format: "task-local-direct-entry-v1", native_skill_loading: false,
 				main_contract_sha256: autoResearchAvailable
@@ -256,7 +270,7 @@ export default function externalBenchmarkResearch(
 		// Put the task-local method and its prelude before the benchmark prompt.
 		// The benchmark still defines the environment contract, but the first
 		// planning frame is now self-harness/research oriented.
-		const overlay = renderTaskSystemPromptOverlay(readJsonl("task-system-prompt.jsonl") as any);
+		const overlay = renderTaskSystemPromptOverlay(readJsonl("task-system-prompt.jsonl") as any, taskKnowledgeEntries(readJsonl));
 		return { systemPrompt: `${projectedMethod}\n\n${event.systemPrompt}${overlay ? `\n\n# Task-local system-prompt overlay\n${overlay}` : ""}` };
 	});
 	const readJsonl = (name: string): Record<string, any>[] => {
@@ -278,7 +292,8 @@ export default function externalBenchmarkResearch(
 		"effect-assessments.jsonl", "task-resource-access.jsonl", "task-harness-entry.jsonl",
 		"task-harness-entry-events.jsonl", "task-harness-bootstrap.jsonl", "task-harness-opportunities.jsonl",
 		"task-harness-context-exposures.jsonl", "task-skill-events.jsonl", "task-tool-events.jsonl",
-		"subagent-invocations.jsonl", "harness-observations.jsonl",
+		"task-prompt-assemblies.jsonl", "task-system-prompt-assemblies.jsonl",
+		"subagent-invocations.jsonl", "harness-observations.jsonl", "auto-research-adoption-events.jsonl",
 	]);
 	const append = (name: string, value: unknown) => appendFileSync(
 		join(root, name),
@@ -291,6 +306,7 @@ export default function externalBenchmarkResearch(
 	type TaskCheckpoint = {
 		format: "task-local-checkpoint-v1";
 		revision: number;
+		patch_sequence: number;
 		harness_started: boolean;
 		latest_observation?: Record<string, unknown>;
 		recent_observations: Record<string, unknown>[];
@@ -315,63 +331,202 @@ export default function externalBenchmarkResearch(
 		harness_proposal_count?: number;
 		recordedAt: string;
 	};
+	type TaskCheckpointPatch = {
+		format: "task-local-checkpoint-patch-v1";
+		sequence: number;
+		revision: number;
+		patch: Partial<TaskCheckpoint>;
+		recordedAt: string;
+	};
+	const checkpointPatchPath = join(root, "task-checkpoint-patches.jsonl");
+	const emptyCheckpoint = (): TaskCheckpoint => ({
+		format: "task-local-checkpoint-v1", revision: 0, patch_sequence: 0, harness_started: false,
+		recent_observations: [], decision_refs: [], recent_actions: [], recordedAt: new Date().toISOString(),
+	});
+	let checkpointSnapshotNeedsRefresh = false;
+	const normalizeCheckpointObservation = (value: unknown): Record<string, unknown> | undefined => {
+		if (!value || typeof value !== "object") return undefined;
+		const source = value as Record<string, unknown>;
+		const originalExcerpt = String(source.result_excerpt ?? "");
+		const resultExcerpt = boundedText(originalExcerpt, 720);
+		if (resultExcerpt !== originalExcerpt) checkpointSnapshotNeedsRefresh = true;
+		return { ...source, result_excerpt: resultExcerpt };
+	};
+	const normalizeCheckpoint = (value: Record<string, unknown>): TaskCheckpoint => {
+		const originalRecent = Array.isArray(value.recent_observations) ? value.recent_observations : [];
+		if (originalRecent.length > 5) checkpointSnapshotNeedsRefresh = true;
+		const recentObservations = originalRecent.slice(-5)
+			.map(normalizeCheckpointObservation)
+			.filter((item): item is Record<string, unknown> => Boolean(item));
+		const latestObservation = normalizeCheckpointObservation(value.latest_observation);
+		const patchSequence = Math.max(0, Number(value.patch_sequence ?? 0));
+		if (!("patch_sequence" in value)) checkpointSnapshotNeedsRefresh = true;
+		return {
+			...emptyCheckpoint(), ...value,
+			patch_sequence: patchSequence,
+			recent_observations: recentObservations,
+			...(latestObservation ? { latest_observation: latestObservation } : {}),
+		} as TaskCheckpoint;
+	};
 	const readCheckpoint = (): TaskCheckpoint => {
-		if (!existsSync(checkpointPath)) return {
-			format: "task-local-checkpoint-v1", revision: 0, harness_started: false,
-			recent_observations: [], decision_refs: [], recent_actions: [], recordedAt: new Date().toISOString(),
-		};
+		if (!existsSync(checkpointPath)) return emptyCheckpoint();
 		try {
 			const value = JSON.parse(readFileSync(checkpointPath, "utf8"));
-			if (value && typeof value === "object") return value as TaskCheckpoint;
+			if (value && typeof value === "object") return normalizeCheckpoint(value);
 		} catch { /* recover from the last valid runtime state */ }
-		return {
-			format: "task-local-checkpoint-v1", revision: 0, harness_started: false,
-			recent_observations: [], decision_refs: [], recent_actions: [], recordedAt: new Date().toISOString(),
-		};
+		return emptyCheckpoint();
 	};
+	const readCheckpointPatches = (): TaskCheckpointPatch[] => {
+		if (!existsSync(checkpointPatchPath)) return [];
+		return readFileSync(checkpointPatchPath, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+			try {
+				const value = JSON.parse(line);
+				return value?.format === "task-local-checkpoint-patch-v1"
+					&& value.patch && typeof value.patch === "object" ? [value as TaskCheckpointPatch] : [];
+			} catch { return []; }
+		});
+	};
+	const applyCheckpointPatch = (
+		current: TaskCheckpoint,
+		record: TaskCheckpointPatch,
+		patchSequence: number,
+	): TaskCheckpoint => ({
+		...current,
+		...record.patch,
+		format: "task-local-checkpoint-v1",
+		revision: Math.max(Number(current.revision ?? 0) + 1, Number(record.revision ?? 0)),
+		patch_sequence: patchSequence,
+		recordedAt: record.recordedAt,
+	});
 	let checkpoint = readCheckpoint();
+	let checkpointSnapshotSequence = checkpoint.patch_sequence;
+	const startupPatches = readCheckpointPatches();
+	for (let index = checkpointSnapshotSequence; index < startupPatches.length; index += 1) {
+		checkpoint = applyCheckpointPatch(checkpoint, startupPatches[index], index + 1);
+	}
+	let checkpointPatchSequence = startupPatches.length;
 	let checkpointWriteCounter = 0;
-	const saveCheckpoint = (patch: Partial<TaskCheckpoint>) => {
-		checkpoint = {
-			...checkpoint, ...patch, format: "task-local-checkpoint-v1",
-			revision: Number(checkpoint.revision ?? 0) + 1,
-			recordedAt: new Date().toISOString(),
-		};
-		// Session recovery can briefly overlap the previous Pi process.  A
-		// process-shared `.tmp` name lets the writers overwrite each other's
-		// staging file and produces intermittent Windows EPERM rename failures.
-		// Keep the write atomic while giving every writer its own staging path.
+	const flushCheckpoint = (reason: "agent_end" | "periodic") => {
+		const patches = readCheckpointPatches();
+		let refreshed = readCheckpoint();
+		for (let index = refreshed.patch_sequence; index < patches.length; index += 1) {
+			refreshed = applyCheckpointPatch(refreshed, patches[index], index + 1);
+		}
+		checkpoint = refreshed;
+		checkpointPatchSequence = patches.length;
+		if (existsSync(checkpointPath) && checkpointSnapshotSequence >= patches.length
+			&& !checkpointSnapshotNeedsRefresh) return;
+		const serialized = JSON.stringify(checkpoint) + "\n";
 		const temporary = `${checkpointPath}.${process.pid}.${++checkpointWriteCounter}.tmp`;
-		writeFileSync(temporary, JSON.stringify(checkpoint) + "\n", "utf8");
+		writeFileSync(temporary, serialized, "utf8");
 		try {
 			renameSync(temporary, checkpointPath);
 		} catch (error) {
 			// Leave the uniquely named staging file for recovery diagnostics; the
-			// caller records the operation failure and can retry from the last
-			// authoritative checkpoint without corrupting the destination.
+			// patch log remains authoritative for all changes after the last snapshot.
 			throw error;
 		}
+		checkpointSnapshotSequence = checkpoint.patch_sequence;
+		checkpointSnapshotNeedsRefresh = false;
+		append("task-checkpoint-events.jsonl", {
+			event: "snapshot_saved", reason, revision: checkpoint.revision,
+			patch_sequence: checkpoint.patch_sequence, snapshot_bytes: Buffer.byteLength(serialized, "utf8"),
+			recordedAt: checkpoint.recordedAt,
+		});
 	};
+	const saveCheckpoint = (patch: Partial<TaskCheckpoint>) => {
+		const recordedAt = new Date().toISOString();
+		const revision = Number(checkpoint.revision ?? 0) + 1;
+		const sequence = checkpointPatchSequence + 1;
+		const record: TaskCheckpointPatch = {
+			format: "task-local-checkpoint-patch-v1", sequence, revision, patch, recordedAt,
+		};
+		appendFileSync(checkpointPatchPath, JSON.stringify(record) + "\n", "utf8");
+		checkpoint = {
+			...checkpoint, ...patch, format: "task-local-checkpoint-v1",
+			revision, patch_sequence: sequence, recordedAt,
+		};
+		checkpointPatchSequence = sequence;
+		if (checkpointPatchSequence - checkpointSnapshotSequence >= 32) flushCheckpoint("periodic");
+	};
+	pi.on("agent_end", async () => {
+		flushCheckpoint("agent_end");
+	});
 	const trackedResourceTools = new Set<string>([...SELF_HARNESS_MANAGEMENT_TOOLS,
-		"task_subagent", "research_resource", "task_validation", "task_checkpoint", "delegate_task", "auto_research"]);
+		...INTERNAL_NATIVE_HARNESS_TOOLS, "research_resource", "task_validation", "task_checkpoint", "delegate_task", "auto_research"]);
 	let failureCounter = nextCounter(readJsonl("task-operation-failures.jsonl"), "failure_id");
 	const operationKey = (tool: string, input: Record<string, any>) =>
-		`${tool}:${input.key ?? input.name ?? input.finding_id ?? input.validation_id ?? input.agent_name ?? ""}`;
+		controlOperationKey(tool, input, taskScope.taskId);
 	const failedOperation = (tool: string, input: Record<string, any>, toolCallId: string, error: string) => {
 		const key = operationKey(tool, input);
 		const failureId = `failure-${++failureCounter}`;
+		const classification = failureClassification(error);
+		const candidates = Array.isArray(classification.candidates) ? classification.candidates : [];
+		const recoveryOperationKeys = candidates
+			.map((candidate: Record<string, any>) => candidate.research_handoff_ref)
+			.filter(Boolean)
+			.map((research_handoff_ref: string) => operationKey(tool, {...input, research_handoff_ref}));
 		const failure = { operation_key: key, tool, action: input.action, toolCallId, error,
+			...(classification.failure_class === "version_conflict" && Number.isInteger(classification.current_version)
+				? {recovery_operation_key:operationKey(tool,{...input,target_version:classification.current_version})} : {}),
+			...(recoveryOperationKeys.length ? {recovery_operation_keys: recoveryOperationKeys} : {}),
+			failure_id:failureId, recordedAt:new Date().toISOString(), resolved_by:null,
+			failure_class:classification.failure_class, retryable:classification.retryable, required_next_call:classification.required_next_call,
+			recovery_hint:classification.recovery_hint ?? null,
 			resource_ref: `failure:${failureId}@v1`,
-			note: "Inspect the authoritative current version before a deliberate retry; incomplete arguments must not be replayed automatically." };
+			note: "Follow required_next_call; only success for the same action and bound target resolves this failure." };
 		append("task-operation-failures.jsonl", { ...failure, failure_id: failureId, version: 1, status: "failed",
 			error, attempted_input: input,
-			applied: /task-resource-version-conflict-v1|was not executed/.test(error) ? false : null });
-		saveCheckpoint({ pending_operations: [...(checkpoint.pending_operations ?? []).filter((r) => r.operation_key !== key), failure] });
+			applied: classification.applied });
+		const pending = (checkpoint.pending_operations ?? []).filter((r) => r.operation_key !== key);
+		if (classification.retryable !== false) pending.push(failure);
+		saveCheckpoint({ pending_operations: pending });
 	};
+	const reconcilePendingOperations = () => {
+		const pending = checkpoint.pending_operations ?? [];
+		if (!pending.length) return;
+		const reviews = readJsonl("task-harness-reviews.jsonl");
+		const opportunities = readJsonl("task-harness-opportunities.jsonl");
+		const reviewEvents = readJsonl("task-harness-review-events.jsonl");
+		const handoffs = latestControlRecords(readJsonl("auto-research-handoffs.jsonl"), "handoff_id");
+		const obsolete = (record: Record<string, any>) => {
+			const classification = failureClassification(String(record.error ?? ""));
+			if (classification.retryable === false || record.retryable === false) return true;
+			let operation: Record<string, any>;
+			try { operation = JSON.parse(String(record.operation_key)); } catch { return false; }
+			const target = operation.target ?? {};
+			if (record.tool === "task_harness" && record.action === "review" && target.opportunity_id) {
+				const opportunity = opportunities.find((item) => item.opportunity_id === target.opportunity_id);
+				return reviews.some((item) => item.opportunity_id === target.opportunity_id)
+					|| Boolean(opportunity?.window?.window_id && reviewEvents.some((item) => item.window_id === opportunity.window.window_id && item.status === "failed"));
+			}
+			if (record.tool === "task_harness" && record.action === "decide_research" && target.research_decision) {
+				const statuses = eligibleResearchHandoffStatuses(target.research_decision);
+				if (target.research_handoff_ref) return !handoffs.some((item) => {
+					const ref = `research_handoff:${item.handoff_id}@v${item.version}`;
+					return ref === target.research_handoff_ref && statuses.includes(item.status);
+				});
+				return !handoffs.some((item) => statuses.includes(item.status));
+			}
+			return false;
+		};
+		const retired = pending.filter(obsolete);
+		if (!retired.length) return;
+		for (const prior of retired) append("task-operation-resolutions.jsonl", {
+			failure_ref: prior.resource_ref,
+			operation_key: prior.operation_key,
+			resolution_kind: "retired",
+			resolved_by: "runtime_reconciliation",
+			reason: "The failed target is no longer eligible for the same repair operation.",
+			recordedAt: new Date().toISOString(),
+		});
+		saveCheckpoint({ pending_operations: pending.filter((item) => !retired.includes(item)) });
+	};
+	reconcilePendingOperations();
 	const inFlightResourceInputs = new Map<string, Record<string, any>>();
 	const handledResourceFailures = new Set<string>();
 	pi.on("tool_execution_start", (event) => {
-		if (trackedResourceTools.has(event.toolName)) inFlightResourceInputs.set(event.toolCallId, event.args as Record<string, any>);
+		if (trackedResourceTools.has(event.toolName)) inFlightResourceInputs.set(event.toolCallId, bindOperationIdentity(event.toolName, event.args as Record<string, any>, readJsonl));
 	});
 	pi.on("tool_execution_end", (event) => {
 		const input = inFlightResourceInputs.get(event.toolCallId);
@@ -408,9 +563,9 @@ export default function externalBenchmarkResearch(
 			observation_id: observationId,
 			tool_name: String(event.toolName ?? "unknown"),
 			is_error: Boolean(event.isError),
-			result_excerpt: compactText(resultText, 720),
+			result_excerpt: boundedText(resultText, 720),
 		};
-		const recent = [...(checkpoint.recent_observations ?? []), item];
+		const recent = [...(checkpoint.recent_observations ?? []), item].slice(-5);
 		const details = event.details as Record<string, unknown> | undefined;
 		const transition = details?.public_transition as Record<string, unknown> | undefined;
 		const delta = details?.observation_delta as Record<string, unknown> | undefined;
@@ -456,7 +611,7 @@ export default function externalBenchmarkResearch(
 			current_subgoal: Type.Optional(Type.String()),
 			hypothesis: Type.Optional(Type.String()),
 			next_step: Type.Optional(Type.String()),
-			working_summary: Type.Optional(Type.String()),
+			working_summary: Type.Optional(Type.Union([Type.String(), Type.Record(Type.String(), Type.Unknown())])),
 			summary_basis_refs: Type.Optional(Type.Array(Type.String())),
 			decision_refs: Type.Optional(Type.Array(Type.String())),
 		}),
@@ -468,6 +623,7 @@ export default function externalBenchmarkResearch(
 			const patch: Partial<TaskCheckpoint> = {};
 			for (const key of ["current_subgoal", "hypothesis", "next_step", "working_summary"] as const) {
 				if (typeof input[key] === "string") patch[key] = input[key];
+				else if (key === "working_summary" && input[key] && typeof input[key] === "object") patch[key] = JSON.stringify(input[key]);
 			}
 			if (Array.isArray(input.summary_basis_refs)) patch.summary_basis_refs = input.summary_basis_refs.map(String);
 			if (Array.isArray(input.decision_refs)) patch.decision_refs = input.decision_refs.map(String);
@@ -527,7 +683,7 @@ export default function externalBenchmarkResearch(
 
 	pi.on("tool_result", async (event) => {
 		if (event.toolName === "arc_action" && !event.isError) noteArcActionCompleted();
-		const toolInput = (event.input as Record<string, unknown> | undefined) ?? {};
+		const toolInput = inFlightResourceInputs.get(event.toolCallId) ?? (event.input as Record<string, unknown> | undefined) ?? {};
 		if (event.toolName === "task_harness" && ["enable", "activate"].includes(String(toolInput.action ?? ""))) {
 			harnessWindowOpen = true;
 		}
@@ -577,11 +733,21 @@ export default function externalBenchmarkResearch(
 				failedOperation(event.toolName, toolInput, event.toolCallId, textContent(event.content));
 				handledResourceFailures.add(event.toolCallId);
 			} else if (toolInput.action !== "inspect") {
-				saveCheckpoint({ pending_operations: (checkpoint.pending_operations ?? [])
-					.filter((r) => r.operation_key !== operationKey(event.toolName, toolInput)) });
+				const pendingOperations = checkpoint.pending_operations ?? [];
+				const resolvedKey = operationKey(event.toolName, toolInput);
+				const remainingOperations = pendingOperations
+					.filter((r) => r.operation_key !== resolvedKey
+						&& r.recovery_operation_key !== resolvedKey
+						&& !(Array.isArray(r.recovery_operation_keys) && r.recovery_operation_keys.includes(resolvedKey)));
+				if (remainingOperations.length !== pendingOperations.length) {
+					for (const prior of pendingOperations.filter(r => !remainingOperations.includes(r)))
+						append("task-operation-resolutions.jsonl",{failure_ref:prior.resource_ref,operation_key:prior.operation_key,
+							resolved_operation_key:operationKey(event.toolName,toolInput),resolved_by:event.toolCallId,recordedAt:new Date().toISOString()});
+					saveCheckpoint({ pending_operations: remainingOperations });
+				}
 			}
 		}
-		if (taskHarnessRead || ["task_resource", "task_validation", "research_resource", "auto_research", OBSERVATION_COMPACTION_TOOL, HARNESS_BOOTSTRAP_TOOL, ...SELF_HARNESS_MANAGEMENT_TOOLS, "task_subagent"].includes(event.toolName as any)) return {};
+		if (taskHarnessRead || ["task_checkpoint", "task_resource", "task_validation", "research_resource", "auto_research", OBSERVATION_COMPACTION_TOOL, HARNESS_BOOTSTRAP_TOOL, ...SELF_HARNESS_MANAGEMENT_TOOLS, ...INTERNAL_NATIVE_HARNESS_TOOLS].includes(event.toolName as any)) return {};
 		const observationId = `execution-observation-${++observationCounter}`;
 		const resultText = textContent(event.content);
 		const observation = {
@@ -592,11 +758,36 @@ export default function externalBenchmarkResearch(
 			input: event.input,
 			result_text: resultText,
 			result: resultText,
+			...(event.toolName === "arc_action" ? { arc_outcome: Object.fromEntries(
+				["state", "levels_completed", "pre_action_state", "public_transition", "action_budget", "full_reset"]
+					.filter(key => Object.prototype.hasOwnProperty.call(event.details ?? {}, key))
+					.map(key => [key, (event.details as Record<string, unknown>)[key]]),
+			) } : {}),
 			is_error: Boolean(event.isError),
 			recordedAt: new Date().toISOString(),
 		};
 		observations.set(observationId, observation);
 		append("execution-observations.jsonl", observation);
+		const experimentDecision = event.toolName === "arc_action"
+			&& event.input && typeof (event.input as Record<string, unknown>).decision === "object"
+			? (event.input as Record<string, any>).decision as Record<string, any> : undefined;
+		const experimentRequestRef = String(experimentDecision?.research_request_ref ?? "").trim();
+		if (experimentRequestRef) {
+			append("research-experiment-events.jsonl", {
+				format: "research-experiment-observation-v1",
+				request_ref: experimentRequestRef,
+				evidence_ref: observationId,
+				observation_summary: {
+					state: event.details?.state,
+					levels_completed: event.details?.levels_completed,
+					public_transition: event.details?.public_transition,
+					action_budget: event.details?.action_budget,
+					observation_delta: event.details?.observation_delta,
+				},
+				is_error: Boolean(event.isError),
+				recordedAt: new Date().toISOString(),
+			});
+		}
 		checkpointObservation(event, observationId, resultText);
 		const newSignals = classifyExecutionSignals(
 			observation,
@@ -889,6 +1080,23 @@ export default function externalBenchmarkResearch(
 	});
 	pi.on("context", async (event) => {
 		const resources: any[] = [];
+		// A non-blocking child can finish after the tool result that originally
+		// marked it active. Refresh the projected status from the append-only
+		// session ledger so later parent turns do not keep seeing stale "active".
+		if (checkpoint.research_session_ref) {
+			const match = checkpoint.research_session_ref.match(/^research_session:([^@]+)@v\d+$/);
+			if (match) {
+				const latest = readJsonl("auto-research-sessions.jsonl")
+					.filter(row => row.session_id === match[1])
+					.sort((a, b) => Number(a.version ?? 0) - Number(b.version ?? 0)).at(-1);
+				if (latest && (checkpoint.research_status !== latest.status
+					|| checkpoint.research_session_ref !== `research_session:${latest.session_id}@v${latest.version}`)) {
+					saveCheckpoint({ research_status:String(latest.status),
+						research_session_ref:`research_session:${latest.session_id}@v${latest.version}`,
+						...(latest.summary ? {research_report_summary:compactText(latest.summary,600)} : {}) });
+				}
+			}
+		}
 		// Project only decision-bearing checkpoint fields. The full checkpoint is
 		// durable on disk, but replaying five 720-character observation excerpts
 		// on every context hook needlessly reintroduces the history growth that

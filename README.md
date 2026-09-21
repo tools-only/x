@@ -29,6 +29,34 @@ python -m pytest
 
 `pytest` 只用于组件级诊断，不能作为 Auto-Research/self-harness 闭环完成的证据。ARC 闭环验收必须运行下文的真实 ARC runner smoke。
 
+## Auto-Research 机制优化 TODO
+
+Auto-Research 的定位是：围绕有材料支撑的不确定性或解题能力缺口，开展可跨阶段持续的有界研究。
+主 agent 在发起前提供三个条件：具体前提与可访问材料/权限、当前阶段有望达成的中间目标、
+可在局部状态或代表性输入上判别成败的评测预期（含执行者、成本和停止条件）。条件不足时先补材料、
+缩小问题或延后，不能把“如何通关”直接作为没有前置支撑的研究目标。
+研究可以利用已有方法知识构造候选，再以任务证据检验；后续实际使用结果回流到研究中。
+这些是父子 guidance 的语义要求，不是新增的运行时硬门禁，也不保证每次研究得到确定结论。
+使用方式、字段映射及例子见 [Auto-Research 定位与使用](docs/plans/2026-09-18-grounded-auto-research-guidance.md)。
+
+第一阶段范围是“动态研究执行协议 + 统一上下文预算管理”。完整研究材料继续持久化到 task-local artifacts；provider 每轮只接收当前工作集。
+
+- [x] 动态研究计划：parent 在下发前声明复杂度；没有前序研究结果支持的复合目标必须先拆成带完成条件的节点，不能整体直接交给一个 child。
+- [x] 依赖与并发队列：计划使用 DAG、`concurrency_limit` 和 `after_dependencies` / `parent_release` 门控；未满足依赖的节点保持 pending，语义条件由 parent 显式释放。
+- [x] 进展驱动恢复：blocking 和 non-blocking child 的 `length` 续跑比较持久化语义 checkpoint；连续无进展时停止重复续跑并返回 inconclusive/stalled 状态及诊断。
+- [x] child 任务输入预算：研究目标、约束、当前节点、checkpoint 和精确引用属于必需层；观察正文和已完成节点详情属于按需层；生成的 child 任务 prompt 使用一个总字符预算并记录遥测。这不是 system、工具 schema、历史消息合计的 provider token 预算。
+- [x] 第一阶段组件验收：覆盖复杂目标准入、DAG 阻塞/释放、并发槽、阶段结果引用、无进展截断和输入预算；真实 provider 行为仍需实际运行验证。
+- [ ] 第二阶段：根据真实运行遥测校准 token 估算与模型专用 tokenizer，比较总 token、重复取证、延迟和研究质量。
+- [ ] 第二阶段：评估多个 child 的自动调度、公平性、取消传播、失败重试和资源冲突；在证据证明有收益前保持 parent 主导调度。
+- [ ] 第二阶段：完成跨 parent compaction、session rotation 和 child 恢复的认知连续性实验，并验证关键反证与未完成实验不会丢失。
+
+已进行保守的 prompt 分层优化：parent 保留复杂度、拆解、依赖语义和效果判断；
+`auto_research(action="contract")` 按需提供操作说明，不启动研究。child 工作集显式保留
+当前节点、总目标和前序结果引用，区分 parent checkpoint 与 research checkpoint；
+选入的 parent 摘要同时携带依据、决策胶囊和待完成操作。调度门禁、权限和原生交付路由不变。
+设计与验证边界见 [prompt 分层设计](docs/plans/2026-09-17-research-prompt-layering-design.md)
+及 [运行时 prompt 说明](demo/prompts/README.md)。
+
 ## 运行
 
 先执行环境诊断：
@@ -121,6 +149,12 @@ python -m autoresearch_pi.cli arc-harness-smoke \
   --game 'ls20' \
   --root 'D:/autoresearch_pi_project/runs/arc-harness-smoke-manual'
 ```
+
+ARC provider input capabilities are configurable per run. The default is
+`text`; pass `--input-modalities text,image` (or set
+`ARC_INPUT_MODALITIES=text,image`) when the selected provider/model accepts
+image inputs. This changes the Pi model capability declaration; the current
+ARC frame adapter still renders the canonical frame as text coordinate runs.
 
 只有聚合文件 `arc-self-harness-smoke-summary.json` 的 `passed=true` 才能证明路由/装载链路可达；它不证明真实 provider 的策略质量或 ARC 游戏表现。
 

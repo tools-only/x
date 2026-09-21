@@ -44,6 +44,7 @@ type TaskToolRecord = {
 	name: string;
 	version: number;
 	status: "active" | "retired";
+	availability?: "loaded" | "unloaded" | "suspended" | "retired";
 	description: string;
 	input_schema: Record<string, unknown>;
 	implementation_ref: string;
@@ -361,6 +362,11 @@ export function installTaskLocalTools(
 				const invocationId = `task-tool-invocation-${++invocationCounter}`;
 				const input = normalizeInput((params as Record<string, unknown>).input);
 				try {
+					const current = tools.get(record.name);
+					if (!current || current.exposed_name !== record.exposed_name
+						|| current.status !== "active" || (current.availability ?? "loaded") !== "loaded") {
+						throw new Error(`task tool is unavailable: ${record.name}@v${record.version}`);
+					}
 					if (record.program) {
 						const result = await executeTaskProgram(record.program, input, adapter, {
 							root, name: record.name, version: record.version,
@@ -375,6 +381,17 @@ export function installTaskLocalTools(
 							input, output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
 							...semanticInvocationEvidence(input, result),
 							status: "completed", recordedAt: new Date().toISOString(),
+						});
+						if (record.decision_id) append("harness-observations.jsonl", {
+							observation_id: `task-tool-use-${invocationId}`,
+							observation_kind: "pi_task_tool_invocation",
+							decision_id: record.decision_id,
+							basis_resource_ids: record.basis_refs,
+							operation: { capability:"pi_task_tool", component:"task_tool", name:record.name, version:record.version },
+							actual_use: true, semantic_effect_observed: true,
+							invocation_id: invocationId,
+							semantic_output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
+							effect_observed: true, recordedAt: new Date().toISOString(),
 						});
 						return { ...result, content };
 					}
@@ -394,6 +411,17 @@ export function installTaskLocalTools(
 						input, output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
 						...semanticInvocationEvidence(input, result),
 						status: "completed", recordedAt: new Date().toISOString(),
+					});
+					if (record.decision_id) append("harness-observations.jsonl", {
+						observation_id: `task-tool-use-${invocationId}`,
+						observation_kind: "pi_task_tool_invocation",
+						decision_id: record.decision_id,
+						basis_resource_ids: record.basis_refs,
+						operation: { capability:"pi_task_tool", component:"task_tool", name:record.name, version:record.version },
+						actual_use: true, semantic_effect_observed: true,
+						invocation_id: invocationId,
+						semantic_output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
+						effect_observed: true, recordedAt: new Date().toISOString(),
 					});
 					return { ...result, content };
 				} catch (error) {
@@ -491,7 +519,7 @@ export function installTaskLocalTools(
 			const exposedName = `task_tool_${name}_v${version}`;
 			const decisionId = dependencies.allocateDecisionId();
 			const record: TaskToolRecord = {
-				tool_id: toolId, name, version, status, description, input_schema: schema,
+				tool_id: toolId, name, version, status, availability: status === "retired" ? "retired" : "loaded", description, input_schema: schema,
 				implementation_ref: implementationRef, adapter_id: adapter.adapterId,
 				...(program ? { program: program as TaskToolProgram } : {}),
 				permission: adapter.permission, exposed_name: exposedName,

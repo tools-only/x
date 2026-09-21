@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -20,6 +22,7 @@ from .arc_agi_3_adapter import (
     DEFAULT_MAX_ANIMATION_FRAMES,
     OFFICIAL_ARC_SYSTEM_PROMPT,
     OFFICIAL_MAX_RUNTIME_SECONDS,
+    resolve_input_modalities,
     resolve_model_settings,
 )
 from .observation_compaction_evidence import audit_observation_compaction_effects
@@ -338,6 +341,442 @@ def _auto_research_harness_closure(
     }
 
 
+METHOD_EVOLUTION_STAGE_ORDER = (
+    "cross_situation_induction",
+    "method_candidate",
+    "adoption",
+    "actual_arc_use",
+    "effect_evaluation",
+    "feedback_research",
+)
+
+
+def _method_evolution_audit(
+    *,
+    methods: list[dict[str, Any]],
+    comparisons: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    assessments: list[dict[str, Any]],
+    handoffs: list[dict[str, Any]],
+    reports: list[dict[str, Any]],
+    resource_accesses: list[dict[str, Any]] | None = None,
+    harness_resources: dict[str, dict[str, Any]] | None = None,
+    research_runs: list[dict[str, Any]] | None = None,
+    subagent_progress: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Audit the strict online method lifecycle from durable references.
+
+    The audit deliberately ignores component exposure and standalone tool use.
+    A method reaches actual use only when a later successful ``arc_action``
+    cites an exact adopted resource version in ``decision.basis_refs``.
+    """
+    research_runs = research_runs or []
+    subagent_progress = subagent_progress or []
+    resource_accesses = resource_accesses or []
+    harness_resources = harness_resources or {}
+    by_observation = {
+        str(item.get("observation_id") or item.get("event_id") or ""): item
+        for item in observations
+    }
+    by_assessment = {
+        str(item.get("effect_assessment_id") or ""): item for item in assessments
+    }
+    by_report_ref: dict[str, dict[str, Any]] = {}
+    for item in reports:
+        run_id = str(item.get("run_id") or "")
+        version = int(item.get("version", 1) or 1)
+        if run_id:
+            by_report_ref[str(item.get("report_ref") or f"research_report:{run_id}@v{version}")] = item
+
+    def report_body(item: dict[str, Any] | None) -> dict[str, Any]:
+        if not item:
+            return {}
+        nested = item.get("report")
+        return nested if isinstance(nested, dict) else item
+
+    def supported_report(item: dict[str, Any] | None) -> bool:
+        body = report_body(item)
+        return bool(
+            item
+            and item.get("status") == "completed"
+            and body.get("status") in {"supported", "supported_within_scope"}
+            and (body.get("conclusion") or body.get("findings"))
+        )
+
+    def observation_ref_id(value: Any) -> str:
+        reference = str(value or "")
+        match = re.match(r"^observation:([^@]+)@v\d+$", reference)
+        return match.group(1) if match else reference
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in methods:
+        method_id = str(item.get("method_id") or "")
+        if method_id:
+            grouped.setdefault(method_id, []).append(item)
+
+    def stage(passed: bool, reason: str, refs: list[str] | None = None) -> dict[str, Any]:
+        return {
+            "passed": bool(passed),
+            "reason": reason,
+            "evidence_refs": list(dict.fromkeys(str(ref) for ref in (refs or []) if str(ref))),
+        }
+
+    chains: list[dict[str, Any]] = []
+    for method_id, versions in sorted(grouped.items()):
+        versions.sort(key=lambda item: int(item.get("version", 0) or 0))
+        candidate = next((item for item in versions
+                          if item.get("maturity") == "candidate_method"), versions[0])
+        specification = candidate.get("method") if isinstance(candidate.get("method"), dict) else {}
+        construction_refs = [str(ref) for ref in candidate.get("construction_evidence_refs", [])]
+        context_ids = [str(ref) for ref in candidate.get("context_ids", [])]
+        episode_ids = [str(ref) for ref in candidate.get("episode_context_ids", [])]
+        exact_construction = [ref for ref in construction_refs if ref in by_observation]
+        source_report_ref = str(candidate.get("source_report_ref") or "")
+        source_run_id = str(candidate.get("source_run_ref") or "").removeprefix("research_run:").split("@", 1)[0]
+        if not source_run_id:
+            source_run_id = source_report_ref.removeprefix("research_report:").split("@", 1)[0]
+        source_comparison = next((item for item in comparisons
+                                  if str(item.get("run_id") or "") == source_run_id), {})
+        construction_contexts = {
+            str(case.get("situation_context_id") or case.get("context_id") or "")
+            for group in [*(source_comparison.get("outcome_contrasts") or []), *(source_comparison.get("repeated_cases") or [])]
+            for case in group.get("cases", [])
+            if observation_ref_id(case.get("observation_ref")) in set(exact_construction)
+            and str(case.get("situation_context_id") or case.get("context_id") or "")
+        }
+        source_report = by_report_ref.get(source_report_ref)
+        report_evidence = {
+            str(ref) for ref in report_body(source_report).get("evidence_refs", [])
+        }
+        induction_ok = (
+            candidate.get("generalization_basis") == "cross_context"
+            and len(set(context_ids)) >= 2
+            and len(construction_contexts) >= 2
+            and len(set(exact_construction)) >= 2
+            and supported_report(source_report)
+            and set(exact_construction).issubset(report_evidence)
+        )
+        stages: dict[str, dict[str, Any]] = {
+            "cross_situation_induction": stage(
+                induction_ok,
+                "Exact construction observations map to distinct situations in the source comparison."
+                if induction_ok else
+                "No supported research report preserves at least two exact construction observations that map to distinct situations in its source comparison.",
+                [source_report_ref, *exact_construction, *context_ids, *episode_ids],
+            ),
+        }
+        required_method_fields = ("invariants", "parameters", "steps", "falsifier")
+        structured = induction_ok and all(bool(specification.get(key)) for key in required_method_fields)
+        candidate_ref = f"method:{method_id}@v{int(candidate.get('version', 1) or 1)}"
+        stages["method_candidate"] = stage(
+            structured,
+            "The candidate contains invariants, parameters, executable steps, and a falsifier."
+            if structured else
+            "The cross-situation result is missing a structured reusable method or falsifier.",
+            [candidate_ref, str(candidate.get("candidate_ref") or "")],
+        )
+
+        adopted = next((item for item in versions
+                        if item.get("resource_refs") and item.get("application_refs")), None)
+        adopted_refs = [str(ref) for ref in (adopted or {}).get("resource_refs", [])]
+        adopted_at = str((adopted or {}).get("recordedAt") or "")
+        adoption_ok = structured and bool(adopted_refs) and bool(adopted_at)
+        stages["adoption"] = stage(
+            adoption_ok,
+            "The parent adoption materialized exact versioned harness resources."
+            if adoption_ok else "No parent adoption produced an exact versioned harness resource.",
+            [*(adopted or {}).get("application_refs", []), *adopted_refs],
+        )
+
+        action_uses: list[str] = []
+        use_contracts: dict[str, dict[str, Any]] = {}
+        for observation_id, observation in by_observation.items():
+            if observation.get("tool_name") != "arc_action" or observation.get("is_error") is True:
+                continue
+            observed_at = str(observation.get("recordedAt") or "")
+            if not observed_at or observed_at <= adopted_at:
+                continue
+            decision = ((observation.get("input") or {}).get("decision") or {})
+            basis_refs = {str(ref) for ref in decision.get("basis_refs", [])}
+            cited_refs = sorted(basis_refs.intersection(adopted_refs))
+            if not cited_refs:
+                continue
+            prediction = str(decision.get("prediction") or "").strip()
+            falsifier = str(decision.get("falsifier") or "").strip()
+            read_refs = sorted({
+                str(access.get("resource_ref") or "")
+                for access in resource_accesses
+                if access.get("reader") == "parent"
+                and str(access.get("recordedAt") or "") > adopted_at
+                and str(access.get("recordedAt") or "") <= observed_at
+                and str(access.get("resource_ref") or "") in cited_refs
+                and access.get("operation") == "paged_read"
+            })
+            if not prediction or not falsifier or not read_refs:
+                continue
+            matched_contract_ref = None
+            for resource_ref in read_refs:
+                resource = harness_resources.get(resource_ref) or {}
+                content = str(resource.get("instructions") or resource.get("content") or "")
+                fields = {
+                    match.group(1).upper(): match.group(2).strip()
+                    for match in re.finditer(r"^(NEXT_ACTION|PREDICTION|FALSIFIER)\s*[:=]\s*(.+)$", content, re.I | re.M)
+                }
+                selected = re.search(r"\b(?:RESET|ACTION\d+)\b", fields.get("NEXT_ACTION", ""), re.I)
+                if (selected and selected.group(0).upper() == str((observation.get("input") or {}).get("action") or "").upper()
+                        and fields.get("PREDICTION") == prediction
+                        and fields.get("FALSIFIER") == falsifier):
+                    matched_contract_ref = resource_ref
+                    break
+            if not matched_contract_ref:
+                continue
+            action_uses.append(observation_id)
+            use_contracts[observation_id] = {
+                "adopted_resource_refs": cited_refs,
+                "read_resource_refs": read_refs,
+                "action": ((observation.get("input") or {}).get("action")),
+                "prediction": prediction,
+                "falsifier": falsifier,
+                "matched_contract_ref": matched_contract_ref,
+            }
+        actual_use_ok = adoption_ok and bool(action_uses)
+        stages["actual_arc_use"] = stage(
+            actual_use_ok,
+            "A later successful ARC action follows a parent read of the exact adopted version and preserves its prediction and falsifier."
+            if actual_use_ok else
+            "No later successful ARC action follows an exact parent resource read while citing that version with a prediction and falsifier; exposure, reading, citation alone, and standalone tool calls do not count.",
+            action_uses,
+        )
+        stages["actual_arc_use"]["use_contracts"] = use_contracts
+
+        evaluated_refs: list[str] = []
+        for version in versions:
+            actual_refs = {str(ref) for ref in version.get("actual_use_observation_refs", [])}
+            for validation_ref in version.get("validation_refs", []):
+                match = re.match(r"^effect_assessment:([^@]+)@v\d+$", str(validation_ref))
+                assessment = by_assessment.get(match.group(1)) if match else None
+                assessed_observations = {
+                    str(ref) for ref in (assessment or {}).get("observation_refs", [])
+                }
+                assessment_at = str((assessment or {}).get("recordedAt") or "")
+                action_times = [
+                    str(by_observation[ref].get("recordedAt") or "")
+                    for ref in set(action_uses).intersection(actual_refs).intersection(assessed_observations)
+                ]
+                if action_times and assessment_at and all(assessment_at > value for value in action_times):
+                    evaluated_refs.extend([str(validation_ref), *set(action_uses).intersection(assessed_observations)])
+        evaluation_ok = actual_use_ok and bool(evaluated_refs)
+        stages["effect_evaluation"] = stage(
+            evaluation_ok,
+            "An effect assessment cites the same ARC action credited as actual use."
+            if evaluation_ok else
+            "No effect assessment and method lifecycle version jointly cite the actual-use ARC action.",
+            evaluated_refs,
+        )
+
+        line_ref = str(candidate.get("research_line_ref") or "")
+        completed_feedback = next((item for item in handoffs
+                                   if item.get("status") == "completed"
+                                   and str(item.get("research_line_ref") or "") == line_ref
+                                   and str(item.get("method_ref") or "").startswith(f"method:{method_id}@")), None)
+        feedback_report_ref = str((completed_feedback or {}).get("report_ref") or "")
+        feedback_report = by_report_ref.get(feedback_report_ref)
+        feedback_body_refs = {observation_ref_id(ref) for ref in report_body(feedback_report).get("evidence_refs", [])}
+        feedback_run_id = str((completed_feedback or {}).get("run_id") or "")
+        feedback_reads = {
+            str(item.get("resource_ref") or "") for item in resource_accesses
+            if str(item.get("research_run_id") or "") == feedback_run_id
+            and item.get("reader") == "subagent" and item.get("operation") == "paged_read"
+        }
+        feedback_assessment_ref = str((completed_feedback or {}).get("effect_assessment_ref") or "")
+        feedback_actual_refs = set(action_uses).intersection(feedback_body_refs)
+        feedback_at = str((completed_feedback or {}).get("recordedAt") or "")
+        evaluated_assessment_times = [
+            str(item.get("recordedAt") or "")
+            for item in assessments
+            if str(item.get("effect_assessment_id") or "") in {
+                re.match(r"^effect_assessment:([^@]+)@v\d+$", ref).group(1)
+                for ref in evaluated_refs
+                if re.match(r"^effect_assessment:([^@]+)@v\d+$", ref)
+            }
+        ]
+        feedback_ok = (
+            evaluation_ok
+            and completed_feedback is not None
+            and feedback_report is not None
+            and str(feedback_report.get("research_line_ref") or "") == line_ref
+            and feedback_report_ref != source_report_ref
+            and str(completed_feedback.get("effect_assessment_ref") or "") in evaluated_refs
+            and bool(feedback_actual_refs)
+            and f"observation:{next(iter(feedback_actual_refs))}@v1" in feedback_reads
+            and feedback_assessment_ref in feedback_reads
+            and bool(feedback_at)
+            and bool(evaluated_assessment_times)
+            and all(feedback_at > value for value in evaluated_assessment_times)
+        )
+        stages["feedback_research"] = stage(
+            feedback_ok,
+            "A completed feedback child on the same research line read the effect assessment and cited the assessed actual-use action."
+            if feedback_ok else
+            "No completed same-line feedback report both reads the effect assessment and cites its assessed actual-use action.",
+            [feedback_assessment_ref, feedback_report_ref, line_ref, *sorted(feedback_actual_refs)],
+        )
+        first_incomplete = next((name for name in METHOD_EVOLUTION_STAGE_ORDER
+                                 if not stages[name]["passed"]), None)
+        chains.append({
+            "method_id": method_id,
+            "source_report_ref": source_report_ref or None,
+            "research_line_ref": line_ref or None,
+            "generalization_scope": candidate.get("generalization_scope"),
+            "latest_maturity": versions[-1].get("maturity"),
+            "complete": first_incomplete is None,
+            "first_incomplete_stage": first_incomplete,
+            "stages": stages,
+        })
+
+    complete_chains = [chain for chain in chains if chain["complete"]]
+    comparison_evidence: list[dict[str, Any]] = []
+    report_inductions: list[dict[str, Any]] = []
+    for comparison in comparisons:
+        situation_ids = [str(ref) for ref in (
+            comparison.get("situation_context_ids") or comparison.get("context_ids") or []
+        ) if str(ref)]
+        selected_refs = [str(ref) for ref in comparison.get("selected_evidence_refs", [])
+                         if str(ref) in by_observation]
+        if len(set(situation_ids)) < 2 or len(set(selected_refs)) < 2:
+            continue
+        prepared = {
+            "run_id": comparison.get("run_id"),
+            "research_line_ref": comparison.get("research_line_ref"),
+            "situation_context_ids": list(dict.fromkeys(situation_ids)),
+            "episode_context_ids": list(dict.fromkeys(
+                str(ref) for ref in comparison.get("episode_context_ids", []) if str(ref)
+            )),
+            "evidence_refs": list(dict.fromkeys(selected_refs)),
+            "causal_interpretation": comparison.get("causal_interpretation"),
+            "semantic_equivalence_claimed": comparison.get("semantic_equivalence_claimed"),
+        }
+        comparison_evidence.append(prepared)
+        report_ref = next((
+            ref for ref, report in by_report_ref.items()
+            if str(report.get("run_id") or "") == str(comparison.get("run_id") or "")
+        ), None)
+        report = by_report_ref.get(report_ref or "")
+        body_refs = {str(ref) for ref in report_body(report).get("evidence_refs", [])}
+        cases = [
+            case
+            for repeated in comparison.get("repeated_cases", [])
+            for case in repeated.get("cases", [])
+            if isinstance(case, dict)
+        ]
+        cited_situations = {
+            str(case.get("situation_context_id") or case.get("context_id") or "")
+            for case in cases
+            if str(case.get("observation_ref") or "") in body_refs
+        }
+        cited_refs = sorted(body_refs.intersection(selected_refs))
+        if supported_report(report) and len(cited_situations) >= 2 and len(cited_refs) >= 2:
+            report_inductions.append({
+                "run_id": comparison.get("run_id"),
+                "report_ref": report_ref,
+                "research_line_ref": comparison.get("research_line_ref"),
+                "situation_context_ids": sorted(cited_situations),
+                "evidence_refs": cited_refs,
+            })
+    observed_induction = bool(report_inductions) or any(
+        chain["stages"]["cross_situation_induction"]["passed"] for chain in chains
+    )
+    if complete_chains:
+        first_incomplete_stage = None
+    elif chains:
+        # Report the most advanced reference-consistent chain. This answers
+        # where the run stopped without allowing unrelated partial chains to
+        # combine into a false completion.
+        progress = lambda chain: next(
+            (index for index, name in enumerate(METHOD_EVOLUTION_STAGE_ORDER)
+             if not chain["stages"][name]["passed"]), len(METHOD_EVOLUTION_STAGE_ORDER)
+        )
+        first_incomplete_stage = max(chains, key=progress)["first_incomplete_stage"]
+    else:
+        first_incomplete_stage = "method_candidate" if observed_induction else "cross_situation_induction"
+    rejected_submissions = [
+        item for item in subagent_progress
+        if item.get("last_tool_name") == "submit_research_report"
+        and item.get("is_error") is True
+    ]
+    stalled_runs = [
+        str(item.get("run_id")) for item in research_runs
+        if item.get("status") == "completed"
+        and str(((item.get("result_summary") or {}).get("stop_reason") or "")) == "stalled"
+    ]
+    failed_runs = [
+        {"run_id": item.get("run_id"), "error": item.get("error")}
+        for item in research_runs if item.get("status") == "failed"
+    ]
+    return {
+        "format": "arc-method-evolution-audit-v1",
+        "stage_order": list(METHOD_EVOLUTION_STAGE_ORDER),
+        "complete": bool(complete_chains),
+        "method_count": len(chains),
+        "complete_method_count": len(complete_chains),
+        "first_incomplete_stage": first_incomplete_stage,
+        "cross_situation_induction_observed": observed_induction,
+        # Compatibility alias retained for summaries written by the first
+        # audit draft.  New consumers should use the explicit field above.
+        "cross_situation_evidence_observed": observed_induction,
+        "cross_situation_material_ready": bool(comparison_evidence),
+        "cross_situation_inductions": report_inductions,
+        "orphan_cross_situation_evidence": comparison_evidence if not chains else [],
+        "delivery_diagnostics": {
+            "rejected_report_submission_count": len(rejected_submissions),
+            "rejected_report_run_ids": list(dict.fromkeys(
+                str(item.get("research_run_id")) for item in rejected_submissions
+                if item.get("research_run_id")
+            )),
+            "stalled_run_ids": list(dict.fromkeys(stalled_runs)),
+            "failed_runs": failed_runs,
+            "interpretation": (
+                "A rejected report submission shows that the child reached the structured delivery boundary, "
+                "but its unpersisted payload does not count as a supported induction. Stalled and failed runs "
+                "explain delivery failure without promoting private or invalid output into lifecycle evidence."
+            ),
+        },
+        "chains": chains,
+        "interpretation": (
+            "Completion requires one reference-consistent chain from cross-situation evidence through a structured method, "
+            "parent adoption, a later ARC action following a read of the exact adopted version while preserving its "
+            "prediction and falsifier, assessment of that same action, "
+            "and a completed feedback report on the same research line."
+        ),
+    }
+
+
+def write_arc_method_evolution_audit(root: Path) -> Path:
+    """Rebuild the six-stage audit from durable run artifacts."""
+    root = root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    audit = _method_evolution_audit(
+        methods=_read_jsonl(root / "task-method-lifecycle.jsonl"),
+        comparisons=_read_jsonl(root / "auto-research-comparison-bundles.jsonl"),
+        observations=_read_jsonl(root / "execution-observations.jsonl"),
+        assessments=_read_jsonl(root / "effect-assessments.jsonl"),
+        handoffs=_read_jsonl(root / "auto-research-handoffs.jsonl"),
+        reports=_read_jsonl(root / "auto-research-reports.jsonl"),
+        resource_accesses=_read_jsonl(root / "task-resource-access.jsonl"),
+        harness_resources={
+            f"skill:{item.get('name')}@v{int(item.get('version', 1) or 1)}": item
+            for item in _read_jsonl(root / "task-skills.jsonl") if item.get("name")
+        },
+        research_runs=_read_jsonl(root / "auto-research-runs.jsonl"),
+        subagent_progress=_read_jsonl(root / "subagent-progress.jsonl"),
+    )
+    path = root / "method-evolution-audit.json"
+    temporary = root / "method-evolution-audit.json.tmp"
+    temporary.write_text(json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
 def _scorecard_id(scorecard: dict[str, Any] | None) -> str | None:
     if not scorecard:
         return None
@@ -377,6 +816,7 @@ def project_arc_summary(
     model_settings: dict[str, Any] | None = None,
     harness_validation: bool = False,
     auto_research_validation: bool = False,
+    cross_situation_validation: bool = False,
 ) -> dict[str, Any]:
     """Project native task outcome and task-local mechanism evidence separately."""
     findings = _read_jsonl(root / "research-resources.jsonl")
@@ -410,6 +850,10 @@ def project_arc_summary(
     subagent_context_token_debug = _read_jsonl(root / "subagent-context-token-debug.jsonl")
     subagent_progress = _read_jsonl(root / "subagent-progress.jsonl")
     auto_research_runs = _read_jsonl(root / "auto-research-runs.jsonl")
+    auto_research_reports = _read_jsonl(root / "auto-research-reports.jsonl")
+    auto_research_handoffs = _read_jsonl(root / "auto-research-handoffs.jsonl")
+    auto_research_comparisons = _read_jsonl(root / "auto-research-comparison-bundles.jsonl")
+    method_lifecycle = _read_jsonl(root / "task-method-lifecycle.jsonl")
     auto_research_route_receipts = _read_jsonl(root / "auto-research-harness-route-receipts.jsonl")
     bridge_events = _read_jsonl(root / "bridge-events.jsonl")
     environment_errors = [
@@ -533,6 +977,7 @@ def project_arc_summary(
             "completion_status": completion_status,
             "harness_validation": harness_validation,
             "auto_research_validation": auto_research_validation,
+            "cross_situation_validation": cross_situation_validation,
             "recovery": {
                 "phase_transition_count": len(recovery_phase_events),
                 "latest_phase": recovery_phase_events[-1].get("to") if recovery_phase_events else "normal",
@@ -641,6 +1086,27 @@ def project_arc_summary(
                     for item in auto_research_runs
                 ],
             },
+            "method_evolution": _method_evolution_audit(
+                methods=method_lifecycle,
+                comparisons=auto_research_comparisons,
+                observations=observations,
+                assessments=assessments,
+                handoffs=auto_research_handoffs,
+                reports=auto_research_reports,
+                resource_accesses=task_resource_access,
+                harness_resources={
+                    **{
+                        f"skill:{item.get('name')}@v{int(item.get('version', 1) or 1)}": item
+                        for item in skills if item.get("name")
+                    },
+                    **{
+                        f"tool:{item.get('name')}@v{int(item.get('version', 1) or 1)}": item
+                        for item in task_tools if item.get("name")
+                    },
+                },
+                research_runs=auto_research_runs,
+                subagent_progress=subagent_progress,
+            ),
             "auto_research_harness_closure": _auto_research_harness_closure(
                 route_receipts=auto_research_route_receipts,
                 memory=memory,
@@ -760,6 +1226,10 @@ def project_arc_summary(
             "subagent_context_token_debug": "subagent-context-token-debug.jsonl",
             "auto_research_runs": "auto-research-runs.jsonl",
             "auto_research_reports": "auto-research-reports.jsonl",
+            "auto_research_handoffs": "auto-research-handoffs.jsonl",
+            "auto_research_comparisons": "auto-research-comparison-bundles.jsonl",
+            "method_lifecycle": "task-method-lifecycle.jsonl",
+            "method_evolution_audit": "method-evolution-audit.json",
             "auto_research_route_receipts": "auto-research-harness-route-receipts.jsonl",
             "task_skills": "task-skills.jsonl",
             "task_skill_events": "task-skill-events.jsonl",
@@ -1067,6 +1537,18 @@ def _turn_has_arc_action(events: list[dict[str, Any]]) -> bool:
     )
 
 
+def _turn_provider_error(events: list[dict[str, Any]]) -> str | None:
+    """Return the provider failure that ended this turn, if any."""
+    for event in reversed(events):
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict) or message.get("stopReason") != "error":
+            continue
+        return str(message.get("errorMessage") or "provider returned stopReason=error")
+    return None
+
+
 def _turn_has_task_local_progress(events: list[dict[str, Any]]) -> bool:
     """Recognize bounded harness work without treating it as ARC progress."""
     task_local_tools = {
@@ -1280,10 +1762,13 @@ def _run_pi(
     context_compaction: bool, subagent_broker_url: str | None = None,
     harness_validation: bool = False,
     auto_research_validation: bool = False,
+    cross_situation_validation: bool = False,
     provider_name: str = "yibu",
     model_name: str | None = None,
+    input_modalities: str | tuple[str, ...] | list[str] | None = None,
     provider_extension: Path | None = None,
     environment_overrides: dict[str, str] | None = None,
+    experiment_timeout_seconds: float | None = None,
 ) -> int:
     node, cli = _resolve_pi_cli()
     project_root = Path(__file__).resolve().parents[2]
@@ -1292,6 +1777,8 @@ def _run_pi(
     agent_dir.mkdir(parents=True, exist_ok=True)
     env = load_project_dotenv(project_root)
     model_settings = resolve_model_settings(env)
+    if input_modalities is not None:
+        model_settings["input_modalities"] = list(resolve_input_modalities(input_modalities))
     base_url, api_key = model_settings["base_url"], model_settings["api_key"]
     if provider_extension is None and (not base_url or not api_key):
         raise RuntimeError(
@@ -1302,13 +1789,22 @@ def _run_pi(
     # The Pi child reads the canonical variable names from its own process.
     # Keep ARC-scoped values isolated from the parent process and from other
     # benchmark adapters.
-    if provider_extension is None:
+    configure_real_provider = provider_extension is None
+    if configure_real_provider and (not base_url or not api_key):
+        raise RuntimeError(
+            "the selected real parent or research-child provider requires "
+            "ARC_OPENAI_API_BASE/ARC_OPENAI_API_KEY or OPENAI_API_BASE/OPENAI_API_KEY"
+        )
+    if configure_real_provider:
         env["OPENAI_API_BASE"] = str(base_url)
         env["OPENAI_API_KEY"] = str(api_key)
         (agent_dir / "models.json").write_text(json.dumps({"providers": {provider_name: {
             "baseUrl": base_url, "api": model_settings["pi_api"], "apiKey": "$OPENAI_API_KEY",
+            # Preserve system instructions as system; Pi otherwise promotes
+            # them to developer for reasoning models on unknown gateways.
+            "compat": {"supportsDeveloperRole": False},
             "authHeader": True, "models": [{"id": model, "name": model, "reasoning": True,
-                "input": ["text"], "contextWindow": model_settings["context_window"],
+                "input": model_settings["input_modalities"], "contextWindow": model_settings["context_window"],
                 **({"maxTokens": model_settings["max_tokens"]} if model_settings.get("max_tokens") else {}),
                 "cost": {"input": 5, "output": 30, "cacheRead": 0, "cacheWrite": 0}}],
         }}}), encoding="utf-8")
@@ -1323,10 +1819,13 @@ def _run_pi(
         "PI_AUTORESEARCH_CONTEXT_COMPACTION": "enabled" if context_compaction else "disabled",
         "PI_ARC_BRIDGE_URL": bridge_url, "PI_ARC_GAME": game,
         "PI_ARC_EXECUTION_GATE": "enabled",
+        "PI_HARNESS_PERIODIC_REVIEW": "enabled",
         "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": provider_name,
         "PI_AUTORESEARCH_MODEL": model,
         "PI_AUTORESEARCH_SCOPED_READ": "enabled",
     })
+    if provider_extension is not None:
+        env["PI_AUTORESEARCH_PROVIDER_EXTENSION"] = str(provider_extension.resolve())
     if subagent_broker_url:
         env["PI_AUTORESEARCH_SUBAGENT_BROKER_URL"] = subagent_broker_url
     if environment_overrides:
@@ -1360,6 +1859,7 @@ def _run_pi(
         "agent_settled", "message_start", "message_end", "toolCall",
         "tool_execution_start", "tool_execution_end", "agent_progress_watchdog", "text", "thinking",
         "arc_progress_intervention", "arc_recovery_phase", "arc_deadline_admission",
+        "arc_provider_failure",
     }
     def persist(event: dict[str, Any]) -> None:
         if event.get("type") not in persisted_event_types:
@@ -1370,10 +1870,10 @@ def _run_pi(
         trace.write(json.dumps(projected, ensure_ascii=False, separators=(",", ":")) + "\n")
         trace.flush()
     try:
-        # ARC's official Agent owns the wall-clock allowance. This runner does
-        # not add an independent session deadline.
+        # Preserve native defaults; a manager may explicitly bound an experiment.
         kernel_timeout = OFFICIAL_MAX_RUNTIME_SECONDS
-        session_deadline = None
+        session_deadline = (time.monotonic() + experiment_timeout_seconds
+                            if experiment_timeout_seconds is not None else None)
         with PiKernel(
             command,
             cwd=str(root),
@@ -1394,6 +1894,8 @@ def _run_pi(
                 prompt = _load_prompt("arc_harness_validation.md", game=game)
             if auto_research_validation:
                 prompt = _load_prompt("arc_auto_research_validation.md", game=game)
+            if cross_situation_validation:
+                prompt = _load_prompt("arc_cross_situation_validation.md", game=game)
             response = kernel.prompt(prompt)
             if response.get("success") is False:
                 return 1
@@ -1564,13 +2066,46 @@ def _run_pi(
                                     "No semantic verdict has been computed. The task_validation ledger retains "
                                     "the hypothesis for an evidence-linked assessment; expiry does not block actions."
                                 )
-                # Provider errors and auxiliary no-action turns are surfaced
-                # through the native Pi event stream and the next continuation
-                # prompt. Do not impose a local retry/turn-count cutoff: the
-                # only run budgets are ARC's official time/action budgets and
-                # the provider's own transport boundary.
+                provider_error = _turn_provider_error(turn_events)
+                if provider_error is not None:
+                    # Provider transport/quota failure is not an ARC no-action
+                    # decision. Re-prompting here can spin while the online
+                    # environment remains frozen at its last committed action.
+                    persist({
+                        "type": "arc_provider_failure",
+                        "error": provider_error,
+                        "arc_action_committed": turn_has_action,
+                    })
+                    return 1
                 state = _get_json(bridge_url + "/state")
                 if _arc_terminal_or_budget_exhausted(state):
+                    if variant == "treatment":
+                        # The action is already committed. A final read-only turn
+                        # can assign outcome credit without another environment step.
+                        review_response = kernel.prompt(
+                            "ARC_TERMINAL_LEVEL_REVIEW: The environment run has ended. "
+                            "Perform whole-level outcome analysis for pending level windows, "
+                            "read exact evidence with task_resource and submit "
+                            "task_harness(action='level_review'). Assess useful behaviors and "
+                            "actually applied harness versions, wasted work, failure/reset "
+                            "causes, lessons and next-attempt recommendations. Do not take "
+                            "environment actions, start research, or mutate harness resources. "
+                            "Finish after submitting the reviews; uncertainty is valid."
+                        )
+                        review_error = None
+                        if review_response.get("success") is not False:
+                            try:
+                                review_events = kernel.wait_for_agent_events(timeout=120)
+                                review_error = _turn_provider_error(review_events)
+                            except Exception as exc:
+                                # Analysis failure must not rewrite the committed game result.
+                                review_error = str(exc)
+                        _append_jsonl(root / "task-level-review-events.jsonl", {
+                            "event": "terminal_review_turn_finished",
+                            "submission_count": len(_read_jsonl(root / "task-level-reviews.jsonl")),
+                            "prompt_accepted": review_response.get("success") is not False,
+                            "error": review_error,
+                        })
                     return 0
                 # ``follow_up`` only queues a message while an agent loop is
                 # still active.  At this point the previous loop has emitted
@@ -1684,16 +2219,26 @@ def run_arc_agi_3_e2e(
     context_compaction: bool = False,
     harness_validation: bool = False,
     auto_research_validation: bool = False,
+    cross_situation_validation: bool = False,
     pi_provider: str = "yibu",
     pi_model: str | None = None,
+    input_modalities: str | tuple[str, ...] | list[str] | None = None,
     pi_provider_extension: Path | None = None,
     pi_environment: dict[str, str] | None = None,
+    bridge_python: Path | None = None,
+    bridge_module_paths: tuple[Path, ...] = (),
+    experiment_timeout_seconds: float | None = None,
 ) -> Path:
+    if experiment_timeout_seconds is not None and (
+        not math.isfinite(experiment_timeout_seconds) or experiment_timeout_seconds <= 0
+    ):
+        raise ValueError("experiment_timeout_seconds must be finite and positive")
     if experiment_variant not in {"control", "treatment"}:
         raise ValueError("experiment_variant must be control or treatment")
-    if (harness_validation or auto_research_validation) and experiment_variant != "treatment":
+    validation_probes = [harness_validation, auto_research_validation, cross_situation_validation]
+    if any(validation_probes) and experiment_variant != "treatment":
         raise ValueError("task-local validation probes require the treatment variant")
-    if harness_validation and auto_research_validation:
+    if sum(bool(value) for value in validation_probes) > 1:
         raise ValueError("choose one task-local validation probe")
     if max_actions is not None and max_actions < 1:
         raise ValueError("max_actions must be at least 1")
@@ -1702,14 +2247,16 @@ def run_arc_agi_3_e2e(
         raise ValueError("ARC output must be an empty directory; use a new run root")
     root.mkdir(parents=True, exist_ok=True)
     arc_root = arc_root.resolve()
-    arc_python = arc_root / ".venv" / "Scripts" / "python.exe"
+    arc_python = bridge_python or arc_root / ".venv" / "Scripts" / "python.exe"
     if not arc_python.is_file():
         raise FileNotFoundError(f"ARC SDK interpreter was not found: {arc_python}")
     project_root = Path(__file__).resolve().parents[2]
     env = load_project_dotenv(project_root)
     model_settings = resolve_model_settings(env)
+    if input_modalities is not None:
+        model_settings["input_modalities"] = list(resolve_input_modalities(input_modalities))
     src = str(Path(__file__).resolve().parent.parent)
-    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join([src, *(str(path.resolve()) for path in bridge_module_paths), env.get("PYTHONPATH", "")])
     bridge_port = _pick_bridge_port()
     bridge_command = [str(arc_python), "-m", "autoresearch_pi.arc_agi_3_bridge", "--root", str(root), "--game", game, "--port", str(bridge_port)]
     if max_actions is not None:
@@ -1732,10 +2279,14 @@ def run_arc_agi_3_e2e(
             subagent_broker_url=subagent_broker.url,
             harness_validation=harness_validation,
             auto_research_validation=auto_research_validation,
+            cross_situation_validation=cross_situation_validation,
             provider_name=pi_provider,
             model_name=pi_model,
+            input_modalities=model_settings["input_modalities"],
             provider_extension=pi_provider_extension,
             environment_overrides=pi_environment,
+            **({"experiment_timeout_seconds": experiment_timeout_seconds}
+               if experiment_timeout_seconds is not None else {}),
         )
         timed_out = pi_returncode == 124
         bridge_result = _post_json(bridge_url + "/close", {})
@@ -1788,8 +2339,20 @@ def run_arc_agi_3_e2e(
         scorecard=scorecard, pi_returncode=pi_returncode, timed_out=timed_out,
         model_settings=summary_model_settings, harness_validation=harness_validation,
         auto_research_validation=auto_research_validation,
+        cross_situation_validation=cross_situation_validation,
     )
+    method_audit = root / "method-evolution-audit.json"
+    method_audit_tmp = root / "method-evolution-audit.json.tmp"
+    method_audit_tmp.write_text(
+        json.dumps(payload["research"]["method_evolution"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    method_audit_tmp.replace(method_audit)
     summary = root / "summary.json"
+    if experiment_timeout_seconds is not None:
+        payload["experiment_limits"] = {"pi_runtime_seconds": experiment_timeout_seconds,
+                                        "max_actions": max_actions,
+                                        "official_benchmark_default": False}
     temporary = root / "summary.json.tmp"
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(summary)

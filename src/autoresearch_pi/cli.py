@@ -27,7 +27,7 @@ from .shopping_e2e import (
     run_shopping_context_compaction_ablation,
 )
 from .validation_evidence import load_validation_manifest
-from .arc_agi_3_e2e import run_arc_agi_3_e2e
+from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
 from .terminal_bench_e2e import run_terminal_bench_e2e
 
@@ -111,7 +111,13 @@ def main(argv: list[str] | None = None) -> int:
     arc.add_argument("--game", default="ls20")
     arc.add_argument("--variant", choices=("control", "treatment"), default="treatment")
     arc.add_argument("--max-actions", type=int, default=None, help="Optional override; omitted derives baseline_actions x 5")
+    arc.add_argument(
+        "--input-modalities", default=None,
+        help="Comma-separated provider input modalities (text,image); defaults to ARC_INPUT_MODALITIES or text",
+    )
     arc.add_argument("--context-compaction", action="store_true")
+    arc.add_argument("--experiment-timeout", type=float, default=None,
+                     help="Opt-in experimental Pi runtime cutoff in seconds; not an official ARC limit")
     arc.add_argument(
         "--harness-validation", action="store_true",
         help="run an explicit real-ARC task-local self-harness closure probe before gameplay",
@@ -120,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         "--auto-research-validation", action="store_true",
         help="run a real-ARC memory -> clean child research -> parent action plumbing probe",
     )
+    arc.add_argument(
+        "--cross-situation-validation", action="store_true",
+        help="run the real-ARC cross-situation method adoption/use/assessment/feedback probe",
+    )
     arc_smoke = sub.add_parser(
         "arc-harness-smoke",
         help="run deterministic provider scenarios through the real ARC/Pi self-harness runtime",
@@ -127,6 +137,13 @@ def main(argv: list[str] | None = None) -> int:
     arc_smoke.add_argument("--root", type=Path, required=True)
     arc_smoke.add_argument("--arc-root", type=Path, default=None)
     arc_smoke.add_argument("--game", default="ls20")
+    arc_smoke.add_argument("--mock-environment", action="store_true", help="mock SDK environment only; keep ARC bridge, Pi and child broker real")
+    arc_smoke.add_argument("--case", default=None, help="run one named acceptance case")
+    arc_method_audit = sub.add_parser(
+        "arc-method-audit",
+        help="audit cross-situation induction through feedback from durable ARC run artifacts",
+    )
+    arc_method_audit.add_argument("--root", type=Path, required=True)
     terminal = sub.add_parser("terminal-bench-e2e", help="run one local Terminal-Bench task through Pi and Harbor")
     terminal.add_argument("--root", type=Path, default=None)
     terminal.add_argument("--dataset", type=Path, default=None)
@@ -265,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             "max_actions": args.max_actions,
             "context_compaction": args.context_compaction,
         }
+        if args.input_modalities is not None:
+            arc_kwargs["input_modalities"] = args.input_modalities
         # Keep the default call compatible with lightweight runners/mocks that
         # predate the opt-in closure probe; the new argument is meaningful only
         # when the user explicitly enables it.
@@ -272,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
             arc_kwargs["harness_validation"] = True
         if args.auto_research_validation:
             arc_kwargs["auto_research_validation"] = True
+        if args.cross_situation_validation:
+            arc_kwargs["cross_situation_validation"] = True
+        if args.experiment_timeout is not None:
+            arc_kwargs["experiment_timeout_seconds"] = args.experiment_timeout
         summary = run_arc_agi_3_e2e(root, **arc_kwargs)
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
@@ -280,10 +303,17 @@ def main(argv: list[str] | None = None) -> int:
             args.root,
             arc_root=args.arc_root or paths.arc_agi_3_root,
             game=args.game,
+            mock_environment=args.mock_environment,
+            case=args.case,
         )
         value = json.loads(summary.read_text(encoding="utf-8"))
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return 0 if value.get("passed") is True else 1
+    if args.command == "arc-method-audit":
+        audit_path = write_arc_method_evolution_audit(args.root)
+        value = json.loads(audit_path.read_text(encoding="utf-8"))
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+        return 0 if value.get("complete") is True else 1
     if args.command == "terminal-bench-e2e":
         root = (args.root or paths.runs_dir / f"pi-terminal-bench-{args.task}").resolve()
         summary = run_terminal_bench_e2e(

@@ -1,6 +1,6 @@
 # Candidate harness delivery
 
-Use the delivery schema on research_approval. Describe the content you actually
+Use the delivery schema on submit_research_report. Describe the content you actually
 validated; do not choose attributes merely to force a destination. The research
 focus does not determine the delivery type.
 
@@ -26,12 +26,18 @@ focus does not determine the delivery type.
   execution is text for instructions/knowledge, pure_computation for a declared
   program without adapter_call, adapter_operation for an authorized adapter call,
   or model_delegation for role instructions executed by a model.
+  `reasoning` describes whether judgment is needed; it is not an execution mode.
+  A deterministic adapter-backed computation therefore uses reasoning=none and
+  execution=adapter_operation.
 - context_visibility: always only when subsequent decisions throughout the
   applicable scope need the content; otherwise on_demand.
 - basis_refs identify the observations or resources supporting these choices.
   Include each in the relevant report/finding evidence_refs. expected_effect states
   the predicted benefit; reconsider_when states evidence or changes that would
-  require revisiting it. Predictions are not observed benefits.
+  require revisiting it. Predictions are not observed benefits. A provisional
+  delivery is allowed when its scope, uncertainty, falsifier and next bounded use
+  are explicit. Routing or applying it enables trial; it does not prove the
+  mechanism or task benefit.
 
 ## Supply a usable body
 
@@ -55,11 +61,43 @@ intended projection; they must not broaden the supported applicability.
 
 ## Review and return
 
-Propose the complete body. Use the returned approval_id and current version to
-approve, reject, or defer that exact proposal before proposing another. Approval
-means your evidence supports the delivery within its stated limits; reject a
-contradicted/invalid delivery, and defer one awaiting necessary evidence.
-Inspect an existing proposal when resuming instead of recreating it.
-Submit decided approval identifiers in harness_proposals; do not repeat bodies.
-An empty proposal list is valid. Parent-side code routes and applies approved
-deliveries and reports the outcome; your review never changes the parent harness.
+For procedures, specify inputs, judgment branches, outputs and stopping conditions.
+For computations, specify a representative input and expected semantic output;
+check the program against that case when execution is available, otherwise state
+the untested limitation. For roles, specify the return contract and required
+evidence access as well as tools; a tool allowlist alone does not grant archive
+access. Reuse or revise existing resources before adding near-duplicates.
+
+Connect validation to the research's local evaluation: starting conditions or
+representative input, expected versus actual observable result, executor and
+cost/stop bound. State which stage criterion passed, failed or remains untested;
+separate a useful local check from later transfer and task-level benefit. Include
+the evidence needed from the next applicable use so the parent can feed it back
+to ongoing research or a bounded follow-up. Use existing report/delivery fields;
+an evaluation plan or an inconclusive result is not a validated capability.
+
+Use expected_effect to describe the next applicable use and the observable check
+that would distinguish useful output from mere invocation. Use reconsider_when
+for failure, changed prerequisites or contradictory evidence. These are plans for
+later evaluation, not claims of benefit. Conditional decision guidance may use
+prompt_channel=task_prompt with appropriate visibility and activation; it need
+not satisfy the stronger system_prompt invariant requirement.
+
+For always-visible fact/plan deliveries, prompt_layer=task_policy carries a
+conditional decision procedure; task_state (default) carries the live state or
+plan. Use activation for executable conditions. Full evidence belongs in scoped
+resources. Keep changing strategies out of stable system overlays.
+
+When validity relies on another harness resource, declare its exact current
+version in depends_on_refs. These are validity prerequisites, not historical
+basis_refs. A revised/retired/replaced prerequisite suspends dependent guidance
+until explicitly revalidated. supersedes_refs names exact current memory, skill
+or system_prompt versions that this delivery replaces. Cite only replacements
+supported by evidence; the runtime cannot infer semantic contradictions. Keep
+content, summary and optional prompt_text coherent in the same delivery.
+
+Return the complete body and a stable candidate_ref when the proposal may be
+resumed. Parent-side code validates and later adopts the candidate through the
+single task_harness(action="change") boundary. This report never changes the
+parent Harness. An empty proposal list is valid, and a proposal is not evidence
+of correctness or benefit.

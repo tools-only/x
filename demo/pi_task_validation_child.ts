@@ -3,7 +3,8 @@ import { appendFileSync, existsSync, readFileSync, mkdirSync, renameSync, writeF
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { assertHarnessProposalEvidenceLinks, normalizeAutoResearchReport } from "./pi_auto_research_output.ts";
+import { assertHarnessProposalEvidenceLinks, assertResearchAssessmentReferences, assertResearchConfidenceUpdate, normalizeAutoResearchReport } from "./pi_auto_research_output.ts";
+import { ResearchMethodCandidateSchema } from "./pi_auto_research_harness_schema.ts";
 import { AutoResearchApprovalStore, installAutoResearchApprovalTool } from "./pi_auto_research_approvals.ts";
 import { harnessDeliveryHash } from "./pi_auto_research_harness_router.ts";
 import { installTaskResourceReader } from "./pi_task_resource_store.ts";
@@ -11,6 +12,7 @@ import { installTaskLocalContextLifecycle } from "./pi_task_local_context_lifecy
 import { loadPrompt } from "./prompt_loader.ts";
 import { createHash } from "node:crypto";
 import { loadResearchProfile } from "./pi_auto_research_profiles.ts";
+import { canonicalEvidenceSnapshot } from "./pi_auto_research_evidence.ts";
 
 export default function taskValidationChild(pi: ExtensionAPI) {
 	if (process.env.PI_TASK_CHILD !== "1") throw new Error("this extension is only for isolated task children");
@@ -35,7 +37,12 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 		const profile = loadResearchProfile(process.env.PI_AUTO_RESEARCH_SCOPE ?? "unspecified");
 		const commonInstructions = loadPrompt("auto_research_child_contract.md");
 		const approvalStore = new AutoResearchApprovalStore(root, runId, sessionId);
-		installAutoResearchApprovalTool(pi, approvalStore);
+		// The child returns immutable candidate bodies directly. Keep the approval
+		// ledger readable for old reports, but do not expose a child-side
+		// propose/approve workflow in the native tool surface.
+		if (process.env.PI_AUTO_RESEARCH_LEGACY_APPROVALS === "1") {
+			installAutoResearchApprovalTool(pi, approvalStore);
+		}
 		const controlPath = join(root, "auto-research-child-control.jsonl");
 		// Evidence volume is not governed by a runtime count. The child model owns
 		// the stopping decision: it may read more pages, change representation, or
@@ -125,18 +132,25 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 		}
 		const saveResearchCheckpoint = (params: Record<string, any>, paused: boolean) => {
 			params = { ...savedCheckpoint, ...params };
+			const evidenceCursor = canonicalEvidenceSnapshot(root);
 			mkdirSync(join(root, "task-context-cache", "auto-research-checkpoints"), { recursive: true });
 			const checkpoint = {
 				...savedCheckpoint,
 				format: "auto-research-checkpoint-v1", session_id: sessionId,
 				status: paused ? "pending" : "active", cursor: String(params.cursor ?? ""),
-					evidence_refs: Array.isArray(params.evidence_refs) ? params.evidence_refs.map(String) : [],
-					selected_resource_refs: Array.isArray(params.resource_refs) ? params.resource_refs.map(String) : (params.selected_resource_refs ?? refs),
+				evidence_refs: [...new Set(Array.isArray(params.evidence_refs) ? params.evidence_refs.map(String) : [])],
+				selected_resource_refs: [...new Set(Array.isArray(params.resource_refs)
+					? params.resource_refs.map(String) : (params.selected_resource_refs ?? refs).map(String))],
 					unresolved_questions: Array.isArray(params.unresolved_questions) ? params.unresolved_questions.map(String) : [],
 					draft_findings: Array.isArray(params.draft_findings) ? params.draft_findings : [],
 				next_step: String(params.next_step ?? ""), pause_reason: paused ? String(params.reason ?? "agent requested pause") : null,
+				...(params.report_submission_error ? { report_submission_error: String(params.report_submission_error) } : {}),
 				resume_condition: String(params.resume_condition ?? "new evidence or an explicit parent resume"),
 				...(paused ? { wait_for: String(params.wait_for) } : {}),
+				...(paused ? {
+					after_evidence_sequence: evidenceCursor.sequence,
+					after_evidence_refs: evidenceCursor.refs,
+				} : {}),
 					evidence_read_count: evidenceReadCount, evidence_audit: evidenceAudit(), recordedAt: new Date().toISOString(),
 					evidence_progress: { pages: [...pageCoverage], read_counts: [...readCounts] },
 			};
@@ -148,9 +162,9 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 				cursor: checkpoint.cursor, evidence_read_count: evidenceReadCount, resume_condition: checkpoint.resume_condition });
 			return checkpoint;
 		};
-		pi.registerTool({
+		if (process.env.PI_AUTO_RESEARCH_CHECKPOINT_TOOL !== "0") pi.registerTool({
 			name: "research_checkpoint", label: "Auto-Research checkpoint",
-			description: "Save a task-local research cursor. In a non-blocking run, action=pause ends this child process with a pending checkpoint. Blocking runs cannot pause: submit an inconclusive or unresolved final report instead.",
+			description: "Save a task-local research cursor. action=pause ends this child process with a pending checkpoint for either interaction mode; blocking waits only for this compute slice and returns pending instead of waiting for future parent evidence.",
 			parameters: Type.Object({
 				action: Type.Union([Type.Literal("save"), Type.Literal("pause")]),
 				cursor: Type.Optional(Type.String()),
@@ -166,10 +180,6 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			}),
 			async execute(_id, params) {
 				const paused = params.action === "pause";
-				if (paused && interactionMode === "blocking") {
-					appendControl({ event: "research_pause_rejected", session_id: sessionId, interaction_mode: interactionMode });
-					throw new Error("blocking Auto-Research cannot wait for future parent evidence; submit an inconclusive or unresolved final report");
-				}
 				if (paused && (!String(params.reason ?? "").trim() || !String(params.next_step ?? "").trim() || !params.wait_for)) {
 					throw new Error("non-blocking pause requires reason, next_step, and wait_for");
 				}
@@ -185,7 +195,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "submit_research_report",
 			label: "Submit Auto-Research report",
-			description: "Submit findings and evidence to the parent and end this research run. status: supported_within_scope when the supplied evidence supports the answer; provisional for a tentative answer; inconclusive when alternatives cannot be distinguished; contradicted when evidence refutes the claim; unresolved when necessary evidence is missing. A report does not itself prove benefit or mutate resources.",
+			description: "Submit one auto-research-report-v1 and end this run. Optional extension objects are validated by the runtime after the call. A report does not mutate parent resources.",
 			parameters: Type.Object({
 				report: Type.Object({
 					format: Type.Literal("auto-research-report-v1"),
@@ -200,25 +210,28 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 						conclusion: Type.String(),
 						evidence_refs: Type.Array(Type.String()),
 						uncertainty: Type.String(),
+						assessment: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+							description: "Optional finding assessment; runtime validates its canonical fields.",
+						})),
 					}),),
 					evidence_refs: Type.Array(Type.String()),
 					alternatives: Type.Array(Type.String()),
 					limitations: Type.Array(Type.String()),
 					validation_plan: Type.String(),
-					evidence_audit: Type.Optional(Type.Object({
-						format: Type.Literal("research-evidence-audit-v1"),
-						status: Type.String(),
-						required_refs: Type.Array(Type.String()),
-						complete_refs: Type.Array(Type.String()),
-						incomplete_refs: Type.Array(Type.String()),
-						read_count: Type.Integer({ minimum: 0 }),
-						repeated_read_count: Type.Integer({ minimum: 0 }),
-						review_checkpoint_count: Type.Integer({ minimum: 0 }),
-						threshold_reached: Type.Boolean(),
+					planning_implications: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Unknown()), {
+						description: "Optional decision implications; runtime validates and normalizes canonical fields.",
 					})),
-					harness_proposals: Type.Array(Type.Object({
-						approval_id: Type.String(),
+					next_research_question: Type.Optional(Type.String()),
+					experiment_request: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+						description: "Optional bounded request for a parent-executed experiment; runtime validates the canonical request contract.",
 					})),
+					confidence_update: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+						description: "Optional confidence change; runtime rejects unsupported increases.",
+					})),
+					method_candidates: Type.Optional(Type.Array(ResearchMethodCandidateSchema)),
+					harness_proposals: Type.Array(Type.Record(Type.String(), Type.Unknown()), {
+						description: "Optional complete auto-research-harness-delivery-v1 candidates. Runtime validates, routes, and keeps invalid implementations pending without discarding a valid method.",
+					}),
 				}),
 			}),
 			async execute(_id, params) {
@@ -233,6 +246,9 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 					...suppliedReport,
 					harness_proposals: Array.isArray(suppliedReport.harness_proposals)
 						? suppliedReport.harness_proposals.map((item: any) => {
+							if (item?.format === "auto-research-harness-delivery-v1") {
+								return { ...(item.candidate_ref ? { candidate_ref: item.candidate_ref } : {}), delivery: item };
+							}
 							if (item?.delivery) return item;
 							const approval = item?.approval_id ? approvalStore.get(String(item.approval_id)) : undefined;
 							if (!approval) return item;
@@ -241,10 +257,30 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 						: suppliedReport.harness_proposals,
 				};
 				const report = normalizeAutoResearchReport(hydratedInput);
+				assertResearchConfidenceUpdate(report);
 				assertHarnessProposalEvidenceLinks(report);
-				const reviewedProposals = report.harness_proposals.map((proposal: Record<string, any>) => {
+				assertResearchAssessmentReferences(report, (reference) => {
+					const path = join(root, "effect-assessments.jsonl");
+					if (!existsSync(path)) return undefined;
+					return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+						try {
+							const value = JSON.parse(line);
+							return String(value?.effect_assessment_id ?? "") === reference ? [value] : [];
+						} catch { return []; }
+					}).at(-1);
+				});
+				const reviewedProposals = report.harness_proposals.map((proposal: Record<string, any>, index: number) => {
 					const approval = proposal.approval_id ? approvalStore.get(String(proposal.approval_id)) : undefined;
-					if (!approval) throw new Error(`unknown approval_id in report: ${String(proposal.approval_id)}`);
+					if (!approval && !proposal.delivery) {
+						if (proposal.proposal_status === "pending_implementation" && proposal.proposal_error) {
+							return { ...proposal, candidate_ref: String(proposal.candidate_ref ?? `${runId}:pending-candidate-${index + 1}`) };
+						}
+						throw new Error(`proposal ${index + 1} requires delivery or a known approval_id`);
+					}
+					if (!approval) {
+						const candidateRef = String(proposal.candidate_ref ?? `${runId}:candidate-${index + 1}:${harnessDeliveryHash(proposal.delivery)}`);
+						return { ...proposal, candidate_ref: candidateRef };
+					}
 					if (approval.proposal.delivery_hash !== harnessDeliveryHash(proposal.delivery)) {
 						throw new Error(`report proposal does not match approval object: ${approval.approval_id}`);
 					}
@@ -286,7 +322,20 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			pendingReadSignatures.set(event.toolCallId, JSON.stringify([event.toolName, event.args ?? null]));
 		});
 		pi.on("tool_execution_end", (event) => {
-			if (event.toolName === "submit_research_report" || reportSubmitted || event.isError) return;
+			if (event.toolName === "submit_research_report") {
+				if (event.isError && !reportSubmitted) {
+					const text = event.result?.content?.find((item: any) => item?.type === "text")?.text;
+					const error = String(text ?? "submit_research_report failed schema or semantic validation").slice(0, 8000);
+					saveResearchCheckpoint({
+						cursor: "repair-report-submission",
+						next_step: "Correct only the rejected report fields and call submit_research_report again; preserve supported conclusions and evidence references.",
+						unresolved_questions: [error], report_submission_error: error,
+					}, false);
+					appendControl({ event: "report_submission_rejected", session_id: sessionId, error });
+				}
+				return;
+			}
+			if (reportSubmitted || event.isError) return;
 			if (!new Set(["arc_state", "inspect_arc_trajectory", "task_resource"]).has(event.toolName)) return;
 			evidenceReadCount += 1;
 			const signature = pendingReadSignatures.get(event.toolCallId) ?? JSON.stringify([event.toolName, null]);
@@ -302,13 +351,16 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 		});
 		pi.on("before_agent_start", (event) => {
 			const instructions = commonInstructions + (profile.instructions ? "\n\n" + profile.instructions : "");
+			const convergence = savedCheckpoint.report_submission_error
+				? "\n\nThe previous submit_research_report call was rejected. Preserve its supported analysis, correct only the reported schema/semantic errors, and submit again before doing more inspection."
+				: "";
 			appendFileSync(join(root, "auto-research-prompt-loads.jsonl"), JSON.stringify({
 				run_id: runId, session_id: sessionId, scope: profile.scope, profile_file: profile.file,
 				profile_sha256: profile.sha256, common_sha256: createHash("sha256").update(commonInstructions).digest("hex"),
 				common_chars: commonInstructions.length, profile_chars: profile.instructions.length,
 				recordedAt: new Date().toISOString(),
 			}) + "\n", "utf8");
-			return { systemPrompt: `${event.systemPrompt}\n\n${instructions}` };
+			return { systemPrompt: `${event.systemPrompt}\n\n${instructions}${convergence}` };
 		});
 	}
 }

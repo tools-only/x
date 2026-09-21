@@ -615,7 +615,8 @@ def _run_pi_shopping_task(
     base_url, api_key = env.get("OPENAI_API_BASE"), env.get("OPENAI_API_KEY")
     if not base_url or not api_key:
         raise RuntimeError("the project .env or process environment must define OPENAI_API_BASE and OPENAI_API_KEY")
-    (agent_dir / "models.json").write_text(json.dumps({"providers": {"yibu": {"baseUrl": base_url, "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True, "models": [{"id": model, "name": model, "reasoning": True, "contextWindow": 128000, "maxTokens": 8192}]}}}), encoding="utf-8")
+    # Keep system instructions as system instead of Pi's reasoning-model developer role.
+    (agent_dir / "models.json").write_text(json.dumps({"providers": {"yibu": {"baseUrl": base_url, "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True, "compat": {"supportsDeveloperRole": False}, "models": [{"id": model, "name": model, "reasoning": True, "contextWindow": 128000, "maxTokens": 8192}]}}}), encoding="utf-8")
     command = (node, cli, "--mode", "rpc", "--provider", "yibu", "--model", model, "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--exclude-tools", "bash,edit,write,grep,find,ls,read", "--extension", str(extension))
     events: list[dict[str, Any]] = []
     root.mkdir(parents=True, exist_ok=True)

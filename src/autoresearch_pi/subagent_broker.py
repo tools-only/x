@@ -13,8 +13,32 @@ import json
 from pathlib import Path
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+
+_PROGRESS_KEYS = (
+    "cursor", "status", "draft_findings", "supported_findings", "unresolved_questions", "next_step",
+    "evidence_refs", "selected_resource_refs", "wait_for", "resume_condition",
+)
+
+
+def _semantic_checkpoint_fingerprint(path: Path | None) -> str:
+    if path is None or not path.exists():
+        return "{}"
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return "{}"
+    if not isinstance(checkpoint, dict):
+        return "{}"
+    if (checkpoint.get("pause_reason") == "provider_stop_reason_length"
+            and checkpoint.get("cursor") == "provider-output-length"
+            and not checkpoint.get("draft_findings") and not checkpoint.get("evidence_refs")):
+        return "{}"
+    semantic = {key: checkpoint[key] for key in _PROGRESS_KEYS if key in checkpoint}
+    return json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 class _BrokerServer(ThreadingHTTPServer):
@@ -58,8 +82,7 @@ class _BrokerHandler(BaseHTTPRequestHandler):
             elif self.path == "/inspect":
                 self._json_response(200, self.server.broker.inspect(str(payload.get("job_id", ""))))  # type: ignore[attr-defined]
             elif self.path == "/cancel":
-                self.server.broker.cancel(str(payload.get("job_id", "")))  # type: ignore[attr-defined]
-                self._json_response(200, {"ok": True})
+                self._json_response(200, self.server.broker.cancel(str(payload.get("job_id", ""))))  # type: ignore[attr-defined]
             else:
                 self._json_response(404, {"error": "unknown broker endpoint"})
         except BrokenPipeError:
@@ -151,7 +174,9 @@ class SubagentBroker:
         self._server: _BrokerServer | None = None
         self._thread: threading.Thread | None = None
         self._jobs: dict[str, subprocess.Popen[bytes]] = {}
+        self._cancelled: set[str] = set()
         self._lock = threading.Lock()
+        self._status_lock = threading.Lock()
 
     @property
     def url(self) -> str:
@@ -177,12 +202,22 @@ class SubagentBroker:
         with self._lock:
             self._jobs.pop(job_id, None)
 
-    @staticmethod
-    def _write_status(path: Path, value: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
-        temporary.replace(path)
+    def _write_status(self, path: Path, value: dict[str, Any]) -> None:
+        with self._status_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
+            for attempt in range(20):
+                try:
+                    temporary.replace(path)
+                    return
+                except PermissionError:
+                    if attempt == 19:
+                        raise
+                    # Windows can briefly deny os.replace while an inspector
+                    # has the old status file open. Keep the update atomic and
+                    # retry the same already-written temporary file.
+                    time.sleep(0.01)
 
     def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
         command = payload.get("command")
@@ -191,6 +226,9 @@ class SubagentBroker:
         job_id = str(payload.get("job_id", ""))
         status_path = Path(str(payload.get("status_path", ""))).resolve()
         events_path = Path(str(payload.get("events_path", ""))).resolve()
+        checkpoint_path = (Path(str(payload["checkpoint_path"])).resolve()
+                           if str(payload.get("checkpoint_path", "")) else None)
+        max_stagnant = max(1, int(payload.get("max_stagnant_continuations", 3)))
         if not job_id:
             raise ValueError("job_id is required")
         if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
@@ -201,12 +239,17 @@ class SubagentBroker:
             raise ValueError("env must be a string map")
         if not str(payload.get("status_path", "")) or not str(payload.get("events_path", "")):
             raise ValueError("status_path and events_path are required")
+        with self._lock:
+            existing = self._jobs.get(job_id)
+        if existing is not None and existing.poll() is None:
+            raise ValueError(f"job is already active: {job_id}")
         child = self.spawn(job_id, command, cwd, environment)
-        active = {"format": "subagent-broker-job-v1", "job_id": job_id, "status": "active", "pid": child.pid}
+        active = {"format": "subagent-broker-job-v1", "job_id": job_id, "status": "active", "pid": child.pid,
+                  "continuation_attempts": 1}
         self._write_status(status_path, active)
         events_lock = threading.Lock()
 
-        def capture(stream: Any, name: str) -> None:
+        def capture(stream: Any, name: str, lifecycle: dict[str, Any]) -> None:
             events_path.parent.mkdir(parents=True, exist_ok=True)
             while True:
                 chunk = stream.readline()
@@ -220,20 +263,63 @@ class SubagentBroker:
                         event = None
                     if isinstance(event, dict) and event.get("type") in {"message_update", "text_delta", "thinking_delta"}:
                         continue
+                    if isinstance(event, dict) and event.get("type") == "message_end" and event.get("message", {}).get("role") == "assistant":
+                        lifecycle["stop_reason"] = event.get("message", {}).get("stopReason")
                 with events_lock, events_path.open("a", encoding="utf-8") as target:
                     target.write(json.dumps({"event": name, "data": data}, ensure_ascii=False) + "\n")
             stream.close()
 
         def wait_for_child() -> None:
-            stdout_thread = threading.Thread(target=capture, args=(child.stdout, "stdout"), daemon=True)
-            stderr_thread = threading.Thread(target=capture, args=(child.stderr, "stderr"), daemon=True)
-            stdout_thread.start()
-            stderr_thread.start()
-            code = child.wait()
-            stdout_thread.join()
-            stderr_thread.join()
-            self.finish(job_id)
-            self._write_status(status_path, {**active, "status": "completed" if code == 0 else "failed", "exit_code": code})
+            current = child
+            attempt = 1
+            stagnant_continuations = 0
+            previous_progress = "{}"
+            while True:
+                lifecycle: dict[str, Any] = {"stop_reason": None}
+                stdout_thread = threading.Thread(target=capture, args=(current.stdout, "stdout", lifecycle), daemon=True)
+                stderr_thread = threading.Thread(target=capture, args=(current.stderr, "stderr", lifecycle), daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                code = current.wait()
+                stdout_thread.join()
+                stderr_thread.join()
+                with self._lock:
+                    cancelled = job_id in self._cancelled
+                if cancelled:
+                    self._write_status(status_path, {**active, "status": "cancelled", "exit_code": code,
+                                                      "continuation_attempts": attempt})
+                    self.finish(job_id)
+                    with self._lock:
+                        self._cancelled.discard(job_id)
+                    return
+                if code == 0 and payload.get("continue_on_length") is True and lifecycle["stop_reason"] == "length":
+                    progress = _semantic_checkpoint_fingerprint(checkpoint_path)
+                    if progress != "{}" and progress != previous_progress:
+                        stagnant_continuations = 0
+                    else:
+                        stagnant_continuations += 1
+                    previous_progress = progress
+                    if stagnant_continuations >= max_stagnant:
+                        self._write_status(status_path, {**active, "pid": current.pid, "status": "stalled",
+                                                          "exit_code": code, "continuation_attempts": attempt,
+                                                          "last_stop_reason": "length",
+                                                          "stagnant_continuations": stagnant_continuations})
+                        self.finish(job_id)
+                        return
+                    attempt += 1
+                    current = self.spawn(job_id, command, cwd, environment)
+                    self._write_status(status_path, {**active, "pid": current.pid, "status": "active",
+                                                      "continuation_attempts": attempt, "last_stop_reason": "length",
+                                                      "stagnant_continuations": stagnant_continuations})
+                    continue
+                provider_failed = lifecycle["stop_reason"] == "error"
+                self._write_status(status_path, {**active, "pid": current.pid,
+                                                  "status": "completed" if code == 0 and not provider_failed else "failed",
+                                                  "exit_code": code, "continuation_attempts": attempt,
+                                                  "last_stop_reason": lifecycle["stop_reason"],
+                                                  "failure_kind": "provider_error" if provider_failed else None})
+                self.finish(job_id)
+                return
 
         threading.Thread(target=wait_for_child, name=f"subagent-job-{job_id}", daemon=True).start()
         return active
@@ -244,14 +330,24 @@ class SubagentBroker:
         if child is None:
             return {"job_id": job_id, "status": "unknown"}
         code = child.poll()
-        return {"job_id": job_id, "status": "active" if code is None else "completed" if code == 0 else "failed",
+        return {"job_id": job_id, "status": "active",
                 "pid": child.pid, "exit_code": code}
 
-    def cancel(self, job_id: str) -> None:
+    def cancel(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             child = self._jobs.get(job_id)
-        if child is not None and child.poll() is None:
+            if child is not None:
+                self._cancelled.add(job_id)
+        if child is None:
+            return {"job_id": job_id, "status": "unknown", "cancelled": False}
+        if child.poll() is None:
             child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+        return {"job_id": job_id, "status": "cancelled", "cancelled": True, "exit_code": child.returncode}
 
     def close(self) -> None:
         with self._lock:

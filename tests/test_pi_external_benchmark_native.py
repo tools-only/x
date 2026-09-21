@@ -31,6 +31,7 @@ def _run_fixture(
     provider_thinking_chars: int | None = None,
     arc_compact: bool = False,
     extra_env: dict[str, str] | None = None,
+    prompt: str = "Run the deterministic external benchmark fixture.",
 ) -> list[dict]:
     node, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
@@ -54,6 +55,7 @@ def _run_fixture(
         "PI_AUTORESEARCH_VARIANT": variant,
         "PI_AUTORESEARCH_CONTEXT_COMPACTION": "enabled",
         "PI_AUTORESEARCH_SCOPED_READ": "enabled",
+        "PI_HARNESS_PERIODIC_REVIEW": "enabled",
     }
     if steps is not None:
         env["PI_EXTERNAL_STEPS"] = json.dumps(steps)
@@ -77,7 +79,7 @@ def _run_fixture(
         with PiKernel(command, cwd=str(root), env={
             **env,
         }, timeout=60) as kernel:
-            kernel.prompt("Run the deterministic external benchmark fixture.")
+            kernel.prompt(prompt)
             return kernel.wait_for_agent_events(timeout=60)
     finally:
         if broker is not None:
@@ -86,7 +88,7 @@ def _run_fixture(
 
 def test_shared_external_extension_closes_finding_compaction_effect_loop(tmp_path):
     root = tmp_path / "treatment"
-    events = _run_fixture(root, "treatment")
+    events = _run_fixture(root, "treatment", extra_extensions=[Path(__file__).resolve().parents[1] / 'tests/pi_non_arc_task_subagents.ts'])
 
     assert any(event.get("type") == "agent_end" for event in events)
     observations = [json.loads(line) for line in (root / "execution-observations.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -120,8 +122,10 @@ def test_shared_external_extension_closes_finding_compaction_effect_loop(tmp_pat
         json.loads(line)["context"]
         for line in (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert "Auto-Research entry for the parent Agent" in contexts[0]["systemPrompt"]
-    assert {"benchmark_probe", "task_harness", "task_skill", "task_memory", "research_resource"} <= {tool["name"] for tool in contexts[0]["tools"]}
+    assert "# Auto-Research: parent guide" in contexts[0]["systemPrompt"]
+    first_tools = {tool["name"] for tool in contexts[0]["tools"]}
+    assert {"benchmark_probe", "task_harness", "research_resource", "auto_research"} <= first_tools
+    assert not ({"task_memory", "task_system_prompt", "task_skill", "task_tool", "task_subagent"} & first_tools)
 
     active_resources = [
         part["text"]
@@ -344,6 +348,105 @@ def test_task_harness_status_exposes_all_mutable_components(tmp_path):
     assert modules["delegate_task"]["supported"] is False
 
 
+def test_task_harness_status_exposes_cross_context_candidate_without_starting_research(tmp_path):
+    root = tmp_path / "cross-context-research-candidate"
+    root.mkdir()
+    observations = [
+        {"observation_id": "o1", "tool_name": "arc_action", "input": {"action": "ACTION1"},
+         "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+                         "observation_delta": {"changed_cells": 2}}},
+        {"observation_id": "contrast", "tool_name": "arc_action", "input": {"action": "ACTION2"},
+         "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+                         "observation_delta": {"changed_cells": 4}}},
+        {"observation_id": "o2", "tool_name": "arc_action", "input": {"action": "ACTION1"},
+         "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+                         "observation_delta": {"changed_cells": 0}}},
+    ]
+    (root / "execution-observations.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in observations), encoding="utf-8",
+    )
+    events = _run_fixture(root, "treatment", steps=[{
+        "name": "task_harness_status", "arguments": {"request": "current"},
+    }])
+    status_event = next(event for event in events if event.get("type") == "tool_execution_end"
+                        and event.get("toolName") == "task_harness_status")
+    status = json.loads(status_event["result"]["content"][0]["text"])
+    candidates = status["cross_context_research_candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["evidence_refs"] == ["o1", "o2", "contrast"]
+    assert candidates[0]["situation_count"] == 2
+    assert candidates[0]["research_call"] == {
+        "action": "start", "research_candidate_ref": candidates[0]["candidate_ref"],
+    }
+    assert not (root / "auto-research-sessions.jsonl").exists()
+    assert len(records := [json.loads(line) for line in
+                           (root / "auto-research-opportunities.jsonl").read_text(encoding="utf-8").splitlines()]) == 1
+    assert records[0]["causal_interpretation"] is False
+
+
+def test_cross_context_candidate_is_discovered_after_environment_action_without_status_scan(tmp_path):
+    root = tmp_path / "cross-context-candidate-auto-discovery"
+    root.mkdir()
+    observations = [
+        {"observation_id": "o1", "tool_name": "arc_action", "input": {"action": "ACTION1"},
+         "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+                         "observation_delta": {"changed_cells": 2}}},
+        {"observation_id": "o2", "tool_name": "arc_action", "input": {"action": "ACTION1"},
+         "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+                         "observation_delta": {"changed_cells": 0}}},
+    ]
+    (root / "execution-observations.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in observations), encoding="utf-8",
+    )
+    _run_fixture(root, "treatment", steps=[{
+        "name": "benchmark_probe", "arguments": {"value": "advance one environment boundary"},
+    }])
+    opportunities = [json.loads(line) for line in
+                     (root / "auto-research-opportunities.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(opportunities) == 1
+    assert not (root / "auto-research-sessions.jsonl").exists()
+    contexts = [json.loads(line) for line in
+                (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert "Cross-context research candidates (runtime facts, optional choices)" in json.dumps(contexts)
+
+
+def test_failed_research_session_does_not_consume_cross_context_candidate(tmp_path):
+    root = tmp_path / "cross-context-candidate-failed-retry"
+    root.mkdir()
+    observations = [
+        {"observation_id": "o1", "tool_name": "arc_action", "input": {"action": "ACTION1"},
+         "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+                         "observation_delta": {"changed_cells": 2}}},
+        {"observation_id": "o2", "tool_name": "arc_action", "input": {"action": "ACTION1"},
+         "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+                         "observation_delta": {"changed_cells": 0}}},
+    ]
+    (root / "execution-observations.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in observations), encoding="utf-8",
+    )
+    first = _run_fixture(root, "treatment", steps=[{
+        "name": "task_harness_status", "arguments": {"request": "current"},
+    }])
+    status = json.loads(next(event for event in first if event.get("type") == "tool_execution_end"
+                             and event.get("toolName") == "task_harness_status")
+                        ["result"]["content"][0]["text"])
+    candidate_ref = status["cross_context_research_candidates"][0]["candidate_ref"]
+    opportunity = [json.loads(line) for line in
+                   (root / "auto-research-opportunities.jsonl").read_text(encoding="utf-8").splitlines()][0]
+    (root / "auto-research-sessions.jsonl").write_text(json.dumps({
+        "session_id": "failed-session", "version": 2, "status": "failed",
+        "research_candidate_ref": candidate_ref,
+    }) + "\n", encoding="utf-8")
+    later = _run_fixture(root, "treatment", steps=[{
+        "name": "task_harness_status", "arguments": {"request": "current"},
+    }])
+    later_status = json.loads(next(event for event in later if event.get("type") == "tool_execution_end"
+                                   and event.get("toolName") == "task_harness_status")
+                              ["result"]["content"][0]["text"])
+    assert later_status["cross_context_research_candidates"][0]["candidate_ref"] == candidate_ref
+    assert opportunity["status"] == "available"
+
+
 def test_task_harness_start_is_idempotent_and_checkpoint_is_projected(tmp_path):
     root = tmp_path / "checkpoint-and-idempotent-start"
     events = _run_fixture(root, "treatment", steps=[
@@ -380,6 +483,136 @@ def test_task_harness_start_is_idempotent_and_checkpoint_is_projected(tmp_path):
     ]
     assert len(start_results) == 2
     assert "already_started" in start_results[-1]["result"]["content"][0]["text"]
+
+
+def test_repeated_checkpoint_updates_do_not_recursively_amplify_observations(tmp_path):
+    root = tmp_path / "bounded-checkpoint-updates"
+    updates = [
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update",
+            "current_subgoal": f"Keep semantic checkpoint {index}.",
+            "hypothesis": "The checkpoint control plane stays separate from execution evidence.",
+            "next_step": "Continue from the latest bounded semantic state.",
+        }}
+        for index in range(8)
+    ]
+    probes = [{"name": "benchmark_probe", "arguments": {}} for _ in range(7)]
+    _run_fixture(root, "treatment", steps=[
+        *probes,
+        *updates,
+    ])
+
+    observations = [
+        json.loads(line)
+        for line in (root / "execution-observations.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["tool_name"] for item in observations] == ["benchmark_probe"] * 7
+    assert all("x" * 4096 in item["result_text"] for item in observations)
+
+    checkpoint_path = root / "task-checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint["current_subgoal"] == "Keep semantic checkpoint 7."
+    assert len(checkpoint["recent_observations"]) == 5
+    assert all(len(item["result_excerpt"]) <= 720 for item in checkpoint["recent_observations"])
+    assert checkpoint_path.stat().st_size < 20_000
+
+    patch_path = root / "task-checkpoint-patches.jsonl"
+    assert patch_path.exists()
+    patch_lines = patch_path.read_text(encoding="utf-8").splitlines()
+    patches = [json.loads(line) for line in patch_lines]
+    assert len(patches) == 15
+    assert [item["sequence"] for item in patches] == list(range(1, len(patches) + 1))
+    assert max(map(len, patch_lines)) < 10_000
+    assert checkpoint["patch_sequence"] == patches[-1]["sequence"]
+
+    checkpoint_events = [
+        json.loads(line)
+        for line in (root / "task-checkpoint-events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["event"] for item in checkpoint_events].count("snapshot_saved") == 1
+
+
+def test_checkpoint_recovery_replays_patches_after_the_latest_snapshot(tmp_path):
+    root = tmp_path / "checkpoint-patch-recovery"
+    _run_fixture(root, "treatment", steps=[
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update",
+            "current_subgoal": "Persist the base snapshot.",
+        }},
+    ])
+
+    checkpoint_path = root / "task-checkpoint.json"
+    snapshot = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    next_sequence = int(snapshot.get("patch_sequence", 0)) + 1
+    with (root / "task-checkpoint-patches.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "format": "task-local-checkpoint-patch-v1",
+            "sequence": next_sequence,
+            "revision": int(snapshot["revision"]) + 1,
+            "patch": {
+                "current_subgoal": "Recover this unsnapshotted semantic patch.",
+                "next_step": "Resume from the replayed patch.",
+            },
+            "recordedAt": "2026-09-17T14:00:00.000Z",
+        }) + "\n")
+
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_checkpoint", "arguments": {"action": "inspect"}},
+    ])
+    inspection_event = next(
+        event for event in events
+        if event.get("type") == "tool_execution_end" and event.get("toolName") == "task_checkpoint"
+    )
+    recovered = json.loads(inspection_event["result"]["content"][0]["text"])
+    assert recovered["current_subgoal"] == "Recover this unsnapshotted semantic patch."
+    assert recovered["next_step"] == "Resume from the replayed patch."
+    assert recovered["patch_sequence"] == next_sequence
+
+    refreshed_snapshot = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert refreshed_snapshot["patch_sequence"] == next_sequence
+
+
+def test_checkpoint_recovery_compacts_an_oversized_legacy_snapshot(tmp_path):
+    root = tmp_path / "legacy-checkpoint-recovery"
+    root.mkdir()
+    legacy_observations = [
+        {
+            "observation_id": f"execution-observation-{index}",
+            "tool_name": "benchmark_probe",
+            "is_error": False,
+            "result_excerpt": f"legacy-{index}:" + "x" * 5_000,
+        }
+        for index in range(8)
+    ]
+    checkpoint_path = root / "task-checkpoint.json"
+    checkpoint_path.write_text(json.dumps({
+        "format": "task-local-checkpoint-v1",
+        "revision": 17,
+        "harness_started": True,
+        "recent_observations": legacy_observations,
+        "latest_observation": legacy_observations[-1],
+        "decision_refs": [],
+        "recent_actions": [],
+        "current_subgoal": "Preserve this semantic state during migration.",
+        "recordedAt": "2026-09-17T13:00:00.000Z",
+    }) + "\n", encoding="utf-8")
+
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_checkpoint", "arguments": {"action": "inspect"}},
+    ])
+    inspection_event = next(
+        event for event in events
+        if event.get("type") == "tool_execution_end" and event.get("toolName") == "task_checkpoint"
+    )
+    recovered = json.loads(inspection_event["result"]["content"][0]["text"])
+    assert recovered["current_subgoal"] == "Preserve this semantic state during migration."
+    assert len(recovered["recent_observations"]) == 5
+    assert all(len(item["result_excerpt"]) <= 720 for item in recovered["recent_observations"])
+    assert len(recovered["latest_observation"]["result_excerpt"]) <= 720
+
+    refreshed_snapshot = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert refreshed_snapshot["recent_observations"] == recovered["recent_observations"]
+    assert checkpoint_path.stat().st_size < 20_000
 
 
 def test_arc_adapter_starts_empty_with_direct_component_operations(tmp_path):
@@ -1663,6 +1896,9 @@ def test_task_skill_creation_projection_and_later_read_are_distinct_facts(tmp_pa
         and item["decision_id"] == "decision-1"
         for item in observations
     )
+    skill_read = next(item for item in observations if item["observation_kind"] == "pi_skill_read")
+    assert skill_read["actual_use"] is False
+    assert skill_read["semantic_effect_observed"] is False
 
 
 def test_task_tool_policy_changes_the_later_native_pi_tool_set(tmp_path):
@@ -1804,8 +2040,10 @@ def test_arc_task_subagent_runs_an_isolated_read_only_pi_loop(tmp_path):
     )["context"]
     assert {tool["name"] for tool in child_context["tools"]} == {"inspect_arc_trajectory", "task_resource"}
     assert "read-only task-local ARC subagent" in child_context["systemPrompt"]
-    assert "Two interpretations remain viable." in child_context["messages"][0]["content"][0]["text"]
-    assert "The settled frame is more informative than the animation history." in json.dumps(child_context)
+    assert "memory:trajectory-note@v1" in child_context["messages"][0]["content"][0]["text"]
+    assert "task_resource" in {tool['name'] for tool in child_context['tools']}
+    assert "Two interpretations remain viable." not in child_context["messages"][0]["content"][0]["text"]  # bodies are paged on demand
+    assert "The settled frame is more informative than the animation history." not in json.dumps(child_context)  # selected ref is granted; full body requires task_resource
     child_telemetry = [
         json.loads(line)
         for line in (root / "subagent-provider-telemetry.jsonl").read_text(encoding="utf-8").splitlines()
@@ -2091,7 +2329,7 @@ def test_arc_task_tool_is_public_state_only_and_dynamic(tmp_path):
     assert "secret_evaluator_field" not in invocation["output_excerpt"]
 
 
-def test_arc_task_tool_stops_a_bounded_sequence_at_native_terminal_state(tmp_path):
+def test_arc_task_tool_returns_a_plan_without_advancing_live_environment(tmp_path):
     calls = []
 
     class StateHandler(BaseHTTPRequestHandler):
@@ -2166,7 +2404,7 @@ def test_arc_task_tool_stops_a_bounded_sequence_at_native_terminal_state(tmp_pat
         thread.join(timeout=5)
 
     assert any(event.get("type") == "agent_end" for event in events)
-    assert calls == ["ACTION1"]
+    assert calls == []
     record = json.loads((root / "task-tools.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert record["implementation_ref"] == "arc.action_sequence"
     invocation = next(
@@ -2176,4 +2414,5 @@ def test_arc_task_tool_stops_a_bounded_sequence_at_native_terminal_state(tmp_pat
     )
     assert invocation["status"] == "completed"
     assert invocation["output_excerpt"].count("ACTION1") >= 3
-    assert "changed_cells" in invocation["output_excerpt"]
+    assert "parent_arc_action" in invocation["output_excerpt"]
+    assert "changed_cells" not in invocation["output_excerpt"]

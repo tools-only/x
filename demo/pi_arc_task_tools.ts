@@ -17,7 +17,6 @@ function publicState(value: Record<string, unknown>): Record<string, unknown> {
 
 export function createArcTaskToolAdapter(
 	getState: () => Promise<Record<string, unknown>>,
-	performAction?: (params: Record<string, unknown>) => Promise<Record<string, unknown>>,
 ): TaskToolAdapter {
 	return {
 		adapterId: "arc_agi_3",
@@ -45,7 +44,7 @@ export function createArcTaskToolAdapter(
 					details: { representation: "arc_public_state_projection", fields: Object.keys(result) },
 				};
 			}
-			if ((implementationRef !== "arc.action_sequence" && implementationRef !== "arc_action_sequence") || !performAction) {
+			if (implementationRef !== "arc.action_sequence" && implementationRef !== "arc_action_sequence") {
 				throw new Error(`unsupported ARC task tool implementation: ${implementationRef}`);
 			}
 			const actions = Array.isArray(input.actions)
@@ -61,34 +60,25 @@ export function createArcTaskToolAdapter(
 			);
 			const unknown = actions.filter((action) => !available.has(action));
 			if (unknown.length) throw new Error(`ARC actions are not currently available: ${unknown.join(", ")}`);
-			const results: Record<string, unknown>[] = [];
-			for (const action of actions) {
-				const value = await performAction({ action });
-				const transition = value.public_transition as Record<string, unknown> | undefined;
-				const delta = value.observation_delta as Record<string, unknown> | undefined;
-				results.push({
-					action,
-					state: value.state,
-					levels_completed: value.levels_completed,
-					changed_cells: delta?.changed_cells,
-					level_changed: transition?.level_changed,
-				});
-				if (value.state === "GAME_OVER" || value.state === "WIN") break;
-			}
-			const finalState = publicState(await getState());
-			const executedActions = results.map((result) => String(result.action));
+			// A task-local program may construct a bounded action plan, but it may
+			// never execute live environment actions. The parent agent must submit
+			// one action through the native arc_action boundary, observe its result,
+			// and decide whether to continue. This prevents a model-generated tool
+			// batch from advancing an irreversible environment several times before
+			// the parent sees an observation.
 			return {
 				content: [{ type: "text", text: JSON.stringify({
-					actions: executedActions,
+					actions,
 					requested_actions: actions,
-					results,
-					final_state: finalState,
+					status: "planned",
+					boundary: "parent_arc_action",
 				}) }],
 				details: {
-					representation: "arc_bounded_action_sequence",
-					attempted_actions: executedActions.length,
+					representation: "arc_bounded_action_plan",
+					attempted_actions: 0,
 					requested_actions: actions.length,
-					results,
+					live_execution: false,
+					boundary: "parent_arc_action",
 				},
 			};
 		},

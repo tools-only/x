@@ -47,6 +47,9 @@ const PROJECTION_PREFIXES: Array<[string, string]> = [
 	["archive", "[Task-local context archive]"],
 	["self_harness", "Task-local harness index:"],
 	["task_state", "CURRENT TASK STATE"],
+	["task_policy", "Active task policy:"],
+	["dynamic_task_state", "Active dynamic task/user prompt knowledge:"],
+	["knowledge_review", "Task-local knowledge requiring review:"],
 	["validation", "Task-local validation index:"],
 	["recovery", "Task-local operation recovery:"],
 	["memory", "Active task-local memory index:"],
@@ -63,7 +66,7 @@ const PROJECTION_PREFIXES: Array<[string, string]> = [
 ];
 
 function protectedProjection(message: ContextMessage): boolean {
-	return ["task_state", "recovery"].includes(projectionCategory(message) ?? "");
+	return ["task_state", "recovery", "task_policy", "dynamic_task_state", "knowledge_review"].includes(projectionCategory(message) ?? "");
 }
 
 function messageText(message: ContextMessage): string {

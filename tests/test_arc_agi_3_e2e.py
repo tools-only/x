@@ -12,6 +12,7 @@ from autoresearch_pi.arc_agi_3_bridge import (
     frame_delta,
     parse_action_payload,
     project_trajectory,
+    public_state_fingerprint,
     serialize_frame,
 )
 from autoresearch_pi.arc_agi_3_bridge import derive_action_budget
@@ -33,6 +34,7 @@ from autoresearch_pi.arc_agi_3_e2e import (
     _turn_has_task_local_progress,
     compare_arc_runs,
     project_arc_summary,
+    write_arc_method_evolution_audit,
 )
 
 
@@ -74,6 +76,48 @@ def test_arc_frame_serialization_preserves_native_state_and_available_actions():
         "full_reset": False,
         "available_actions": ["ACTION1", "ACTION6"],
     }
+
+
+def test_arc_public_state_fingerprint_uses_environment_state_not_runtime_counters():
+    first = {
+        "frames": [[[1, 2], [3, 4]]], "state": "PLAYING", "levels_completed": 1,
+        "win_levels": 4, "available_actions": ["ACTION2", "ACTION1"],
+        "agent_available_actions": ["RESET", "ACTION2", "ACTION1"], "full_reset": False,
+        "action_budget": {"used": 1},
+    }
+    same_state_later = {**first, "action_budget": {"used": 99}}
+    changed_frame = {**first, "frames": [[[1, 2], [3, 9]]]}
+    one = public_state_fingerprint(first)
+    two = public_state_fingerprint(same_state_later)
+    three = public_state_fingerprint(changed_frame)
+    assert one["fingerprint"] == two["fingerprint"]
+    assert one["fingerprint"] != three["fingerprint"]
+    assert len(one["fingerprint"]) == 64
+
+
+def test_arc_bridge_persists_versioned_pre_action_state_without_runtime_counters(tmp_path):
+    from autoresearch_pi.arc_agi_3_bridge import ArcBridge
+
+    (tmp_path / ".task-scope.json").write_text(json.dumps({
+        "format": "task-local-scope-v1", "task_id": "arc:test",
+        "root": str(tmp_path.resolve()), "root_fingerprint": "root-fingerprint",
+        "createdAt": "2026-01-01T00:00:00Z",
+    }), encoding="utf-8")
+    bridge = object.__new__(ArcBridge)
+    bridge.root = tmp_path
+    frame = {
+        "frames": [[[1, 2], [3, 4]]], "state": "PLAYING", "levels_completed": 1,
+        "win_levels": 4, "available_actions": ["ACTION1"],
+        "agent_available_actions": ["RESET", "ACTION1"], "full_reset": False,
+        "action_budget": {"used": 7},
+    }
+    summary = bridge._persist_pre_action_state(frame, attempted_index=3)
+    assert summary["resource_ref"] == "pre_action_state:arc-pre-action-3@v1"
+    record = json.loads((tmp_path / "pre-action-states.jsonl").read_text())
+    assert record["state_id"] == "arc-pre-action-3"
+    assert record["fingerprint"] == summary["fingerprint"]
+    assert "action_budget" not in record["public_state"]
+    assert record["task_id"] == "arc:test"
 
 
 def test_arc_environment_error_keeps_underlying_fetch_diagnostics():
@@ -325,7 +369,7 @@ def test_arc_does_not_hard_stop_after_actions_without_level_advancement():
     assert "consecutive_nonadvancing_actions >= 8" not in source
     assert "nonadvancing_action_interventions" not in source
     assert "reconstructionRequired" not in extension
-    assert "SELF_HARNESS_PRELUDE_REQUIRED" in extension
+    assert "SELF_HARNESS_PRELUDE_REQUIRED" not in extension
     assert "validation_window" in extension
 
 
@@ -436,7 +480,8 @@ def test_arc_action_marks_exhausted_budget_as_terminal_without_followup_reads():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_arc_agi_3_extension.ts").read_text(encoding="utf-8")
     assert "totalUsed >= totalMaximum" in source
     assert 'terminal_reason: "total_action_budget_exhausted"' in source
-    assert "do not call arc_state, arc_action, research, or task-local harness tools again" in source
+    assert "Do not call environment actions or research again" in source
+    assert "final read-only level retrospective" in source
 
 
 def test_arc_state_deduplicates_full_frame_within_same_action_epoch():
@@ -446,7 +491,7 @@ def test_arc_state_deduplicates_full_frame_within_same_action_epoch():
     assert 'const full = request === "full"' in source
     assert "before_agent_start" in source
     assert "${ARC_SYSTEM_PROMPT}\\n\\n${event.systemPrompt}" in source
-    assert "SELF-HARNESS PRELUDE STATUS: completed for this task" in source
+    assert "SELF-HARNESS PRELUDE STATUS: completed for this task" not in source
     assert "durableSelfHarnessPreludeCompleted()" in source
 
 
@@ -577,6 +622,7 @@ def test_arc_adapter_scopes_model_settings_without_a_local_output_limit():
         "ARC_OPENAI_API_BASE": "https://arc.example/v1",
         "ARC_OPENAI_API_KEY": "arc-key",
         "ARC_MODEL": "gpt-5.6-sol",
+        "ARC_INPUT_MODALITIES": "text,image",
         "EXEC_MODEL": "ignored",
     })
     assert settings["base_url"] == "https://arc.example/v1"
@@ -585,6 +631,85 @@ def test_arc_adapter_scopes_model_settings_without_a_local_output_limit():
     assert settings["context_window"] == 175_000
     assert "max_tokens" not in settings
     assert settings["pi_api"] == "openai-responses"
+    assert settings["input_modalities"] == ["text", "image"]
+
+
+def test_arc_system_instructions_stay_system_on_pi_wire(tmp_path, monkeypatch):
+    from autoresearch_pi import arc_agi_3_e2e as runner
+
+    node, cli = runner._resolve_pi_cli()
+    monkeypatch.setattr(runner, "load_project_dotenv", lambda _: {
+        "ARC_OPENAI_API_BASE": "https://yibuapi.com/v1",
+        "ARC_OPENAI_API_KEY": "test-only",
+        "ARC_MODEL": "a:deepseek-v4-flash",
+    })
+
+    class ConfigWritten(Exception):
+        pass
+
+    def stop_before_launch(*args, **kwargs):
+        raise ConfigWritten
+
+    monkeypatch.setattr(runner, "PiKernel", stop_before_launch)
+    with pytest.raises(ConfigWritten):
+        runner._run_pi(tmp_path, bridge_url="http://127.0.0.1:1", game="test",
+                       variant="treatment", context_compaction=False)
+    config_path = tmp_path / ".pi-agent" / "models.json"
+    sdk = (Path(cli).parent.parent / "node_modules" / "@earendil-works"
+           / "pi-ai" / "dist" / "api" / "openai-completions.js")
+    script = """
+import fs from 'node:fs';
+const {convertMessages} = await import(process.argv[1]);
+const provider = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).providers.yibu;
+const model = {...provider.models[0], provider: 'yibu', api: provider.api,
+    baseUrl: provider.baseUrl, compat: provider.compat};
+const messages = convertMessages(model, {
+    systemPrompt: 'Follow the task rules.',
+    messages: [{role: 'user', content: 'Solve this task.', timestamp: 1}],
+}, provider.compat);
+console.log(JSON.stringify(messages));
+"""
+    result = subprocess.run([node, "--input-type=module", "-e", script,
+                             sdk.as_uri(), str(config_path)],
+                            check=True, capture_output=True, text=True)
+    messages = json.loads(result.stdout)
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert messages[0]["content"] == "Follow the task rules."
+    assert messages[1]["content"] == "Solve this task."
+
+
+def test_arc_provider_input_modalities_are_configurable(tmp_path, monkeypatch):
+    from autoresearch_pi import arc_agi_3_e2e as runner
+
+    node, cli = runner._resolve_pi_cli()
+    monkeypatch.setattr(runner, "load_project_dotenv", lambda _: {
+        "ARC_OPENAI_API_BASE": "https://yibuapi.com/v1",
+        "ARC_OPENAI_API_KEY": "test-only",
+        "ARC_MODEL": "vision-model",
+    })
+
+    class ConfigWritten(Exception):
+        pass
+
+    def stop_before_launch(*args, **kwargs):
+        raise ConfigWritten
+
+    monkeypatch.setattr(runner, "PiKernel", stop_before_launch)
+    with pytest.raises(ConfigWritten):
+        runner._run_pi(
+            tmp_path, bridge_url="http://127.0.0.1:1", game="test",
+            variant="treatment", context_compaction=False,
+            input_modalities="text,image",
+        )
+    config = json.loads((tmp_path / ".pi-agent" / "models.json").read_text(encoding="utf-8"))
+    assert config["providers"]["yibu"]["models"][0]["input"] == ["text", "image"]
+
+
+def test_arc_provider_input_modalities_reject_unknown_values():
+    from autoresearch_pi.arc_agi_3_adapter import resolve_input_modalities
+
+    with pytest.raises(ValueError, match="unsupported ARC input modality"):
+        resolve_input_modalities("text,audio")
 
 
 def test_arc_summary_keeps_native_correctness_separate_from_harness_effect(tmp_path):
@@ -777,6 +902,278 @@ def test_arc_summary_proves_all_five_auto_research_routes_were_materialized_and_
                for item in closure["components"].values())
 
 
+def test_method_evolution_audit_requires_one_reference_consistent_online_chain():
+    from autoresearch_pi.arc_agi_3_e2e import _method_evolution_audit
+
+    method = {
+        "method_id": "move-rule", "version": 1, "maturity": "candidate_method",
+        "source_report_ref": "research_report:research-1@v1",
+        "research_line_ref": "research_line:movement@v1",
+        "candidate_ref": "candidate:move-rule@v1",
+        "generalization_basis": "cross_context",
+        "generalization_scope": "cross_situation_within_episode",
+        "construction_evidence_refs": ["observation-1", "observation-2"],
+        "context_ids": ["situation-a", "situation-b"],
+        "episode_context_ids": ["episode-1"],
+        "method": {"invariants": ["i"], "parameters": ["p"], "steps": ["s"], "falsifier": "f"},
+        "resource_refs": [], "application_refs": [], "validation_refs": [],
+        "recordedAt": "2026-01-01T00:00:02Z",
+    }
+    adopted = {**method, "version": 2, "maturity": "trial",
+               "resource_refs": ["skill:move-rule@v1"],
+               "application_refs": ["research_adoption:research-1:call-1"]}
+    assessed = {**adopted, "version": 3, "maturity": "validated_within_scope",
+                "validation_refs": ["effect_assessment:assessment-1@v1"],
+                "actual_use_observation_refs": ["observation-3"]}
+    observations = [
+        {"observation_id": "observation-1", "tool_name": "arc_action", "input": {"action": "ACTION1"}},
+        {"observation_id": "observation-2", "tool_name": "arc_action", "input": {"action": "ACTION1"}},
+        {"observation_id": "observation-3", "tool_name": "arc_action", "is_error": False,
+         "input": {"action": "ACTION2", "decision": {
+             "basis_refs": ["skill:move-rule@v1"], "prediction": "visible change", "falsifier": "no change"}},
+         "recordedAt": "2026-01-01T00:00:04Z"},
+    ]
+    audit = _method_evolution_audit(
+        methods=[method, adopted, assessed], comparisons=[{
+            "run_id": "research-1", "repeated_cases": [{"cases": [
+                {"observation_ref": "observation-1", "situation_context_id": "situation-a"},
+                {"observation_ref": "observation-2", "situation_context_id": "situation-b"},
+            ]}],
+        }], observations=observations,
+        assessments=[{"effect_assessment_id": "assessment-1", "observation_refs": ["observation-3"],
+                      "recordedAt": "2026-01-01T00:00:05Z"}],
+        handoffs=[{
+            "handoff_id": "feedback-1", "status": "completed",
+            "research_line_ref": "research_line:movement@v1",
+            "method_ref": "method:move-rule@v3",
+            "effect_assessment_ref": "effect_assessment:assessment-1@v1",
+                "run_id": "research-2",
+                "report_ref": "research_report:research-2@v1",
+                "recordedAt": "2026-01-01T00:00:06Z",
+            }],
+            reports=[
+                {"run_id": "research-1", "version": 1, "status": "completed",
+                 "research_line_ref": "research_line:movement@v1",
+                 "report": {"status": "supported_within_scope", "conclusion": "bounded rule",
+                            "evidence_refs": ["observation-1", "observation-2"]}},
+                {"run_id": "research-2", "version": 1, "research_line_ref": "research_line:movement@v1",
+                 "report": {"evidence_refs": ["observation-3"]}},
+        ],
+        resource_accesses=[
+            {"reader": "parent", "operation": "paged_read", "resource_ref": "skill:move-rule@v1",
+             "recordedAt": "2026-01-01T00:00:03Z"},
+            {"reader": "subagent", "operation": "paged_read", "research_run_id": "research-2",
+             "resource_ref": "observation:observation-3@v1", "recordedAt": "2026-01-01T00:00:05.100Z"},
+            {"reader": "subagent", "operation": "paged_read", "research_run_id": "research-2",
+             "resource_ref": "effect_assessment:assessment-1@v1", "recordedAt": "2026-01-01T00:00:05.200Z"},
+        ],
+        harness_resources={"skill:move-rule@v1": {
+            "instructions": "NEXT_ACTION: ACTION2\nPREDICTION: visible change\nFALSIFIER: no change",
+        }},
+    )
+    assert audit["complete"] is True
+    assert audit["complete_method_count"] == 1
+    assert audit["first_incomplete_stage"] is None
+    assert audit["chains"][0]["first_incomplete_stage"] is None
+    assert all(stage["passed"] for stage in audit["chains"][0]["stages"].values())
+
+
+def test_method_evolution_audit_requires_action_to_match_the_read_procedure_contract():
+    from autoresearch_pi.arc_agi_3_e2e import _method_evolution_audit
+
+    candidate = {
+        "method_id": "rule", "version": 1, "maturity": "candidate_method",
+        "source_report_ref": "research_report:research-1@v1",
+        "research_line_ref": "research_line:rule@v1", "generalization_basis": "cross_context",
+        "construction_evidence_refs": ["observation-1", "observation-2"],
+        "context_ids": ["situation-a", "situation-b"],
+        "method": {"invariants": ["i"], "parameters": ["p"], "steps": ["s"], "falsifier": "f"},
+        "resource_refs": [], "application_refs": [], "validation_refs": [],
+        "recordedAt": "2026-01-01T00:00:02Z",
+    }
+    adopted = {**candidate, "version": 2, "maturity": "trial",
+               "resource_refs": ["skill:rule@v1"], "application_refs": ["adoption-1"]}
+    reports = [{"run_id": "research-1", "version": 1, "status": "completed",
+                "report": {"status": "supported_within_scope", "conclusion": "rule",
+                           "evidence_refs": ["observation-1", "observation-2"]}}]
+    base_observations = [
+        {"observation_id": "observation-1", "tool_name": "arc_action"},
+        {"observation_id": "observation-2", "tool_name": "arc_action"},
+    ]
+    access = [{"reader": "parent", "operation": "paged_read", "resource_ref": "skill:rule@v1",
+               "recordedAt": "2026-01-01T00:00:03Z"}]
+    resources = {"skill:rule@v1": {
+        "instructions": "NEXT_ACTION: ACTION2\nPREDICTION: visible change\nFALSIFIER: no change",
+    }}
+
+    for action, prediction, expected in (
+        ("ACTION1", "visible change", False),
+        ("ACTION2", "different prediction", False),
+        ("ACTION2", "visible change", True),
+    ):
+        audit = _method_evolution_audit(
+            methods=[candidate, adopted], comparisons=[{
+                "run_id": "research-1", "repeated_cases": [{"cases": [
+                    {"observation_ref": "observation-1", "situation_context_id": "situation-a"},
+                    {"observation_ref": "observation-2", "situation_context_id": "situation-b"},
+                ]}],
+            }], assessments=[], handoffs=[], reports=reports,
+            observations=[*base_observations, {"observation_id": "observation-3", "tool_name": "arc_action",
+                "is_error": False, "recordedAt": "2026-01-01T00:00:04Z",
+                "input": {"action": action, "decision": {"basis_refs": ["skill:rule@v1"],
+                    "prediction": prediction, "falsifier": "no change"}}}],
+            resource_accesses=access, harness_resources=resources,
+        )
+        assert audit["chains"][0]["stages"]["actual_arc_use"]["passed"] is expected
+
+
+def test_method_evolution_audit_does_not_count_standalone_tool_use_as_arc_use():
+    from autoresearch_pi.arc_agi_3_e2e import _method_evolution_audit
+
+    candidate = {
+        "method_id": "rule", "version": 1, "maturity": "candidate_method",
+        "source_report_ref": "research_report:research-1@v1",
+        "research_line_ref": "research_line:rule@v1", "generalization_basis": "cross_context",
+        "construction_evidence_refs": ["observation-1", "observation-2"],
+        "context_ids": ["situation-a", "situation-b"],
+        "method": {"invariants": ["i"], "parameters": ["p"], "steps": ["s"], "falsifier": "f"},
+        "resource_refs": [], "application_refs": [], "validation_refs": [],
+        "recordedAt": "2026-01-01T00:00:02Z",
+    }
+    adopted = {**candidate, "version": 2, "maturity": "trial",
+               "resource_refs": ["tool:rule@v1"], "application_refs": ["adoption-1"]}
+    audit = _method_evolution_audit(
+        methods=[candidate, adopted], comparisons=[{
+            "run_id": "research-1", "repeated_cases": [{"cases": [
+                {"observation_ref": "observation-1", "situation_context_id": "situation-a"},
+                {"observation_ref": "observation-2", "situation_context_id": "situation-b"},
+            ]}],
+        }],
+        observations=[
+            {"observation_id": "observation-1", "tool_name": "arc_action", "input": {}},
+            {"observation_id": "observation-2", "tool_name": "arc_action", "input": {}},
+            {"observation_id": "tool-use-1", "tool_name": "task_tool_rule_v1", "input": {}},
+            {"observation_id": "observation-3", "tool_name": "arc_action", "input": {"decision": {}},
+             "recordedAt": "2026-01-01T00:00:04Z"},
+        ],
+        assessments=[], handoffs=[],
+        reports=[{"run_id": "research-1", "version": 1, "status": "completed",
+                  "research_line_ref": "research_line:rule@v1",
+                  "report": {"status": "supported_within_scope", "conclusion": "bounded rule",
+                             "evidence_refs": ["observation-1", "observation-2"]}}],
+    )
+    chain = audit["chains"][0]
+    assert audit["complete"] is False
+    assert chain["first_incomplete_stage"] == "actual_arc_use"
+    assert chain["stages"]["actual_arc_use"]["passed"] is False
+
+
+def test_method_evolution_audit_does_not_mistake_prepared_comparison_for_induction():
+    from autoresearch_pi.arc_agi_3_e2e import _method_evolution_audit
+
+    audit = _method_evolution_audit(
+        methods=[], assessments=[], handoffs=[], reports=[],
+        observations=[
+            {"observation_id": "observation-1", "tool_name": "arc_action"},
+            {"observation_id": "observation-2", "tool_name": "arc_action"},
+        ],
+        comparisons=[{
+            "run_id": "research-1", "research_line_ref": "research_line:movement@v1",
+            "selected_evidence_refs": ["observation-1", "observation-2"],
+            "situation_context_ids": ["situation-a", "situation-b"],
+            "episode_context_ids": ["episode-1"],
+            "causal_interpretation": False, "semantic_equivalence_claimed": False,
+        }],
+    )
+    assert audit["complete"] is False
+    assert audit["cross_situation_material_ready"] is True
+    assert audit["cross_situation_induction_observed"] is False
+    assert audit["cross_situation_evidence_observed"] is False
+    assert audit["first_incomplete_stage"] == "cross_situation_induction"
+    assert audit["orphan_cross_situation_evidence"][0]["evidence_refs"] == [
+        "observation-1", "observation-2",
+    ]
+
+
+def test_method_evolution_audit_counts_supported_cross_situation_report_before_method_candidate():
+    from autoresearch_pi.arc_agi_3_e2e import _method_evolution_audit
+
+    comparison = {
+        "run_id": "research-1", "research_line_ref": "research_line:movement@v1",
+        "selected_evidence_refs": ["observation-1", "observation-2"],
+        "situation_context_ids": ["situation-a", "situation-b"],
+        "repeated_cases": [{"cases": [
+            {"observation_ref": "observation-1", "situation_context_id": "situation-a"},
+            {"observation_ref": "observation-2", "situation_context_id": "situation-b"},
+        ]}],
+    }
+    report = {
+        "run_id": "research-1", "version": 1, "status": "completed",
+        "research_line_ref": "research_line:movement@v1",
+        "report": {"status": "supported_within_scope", "conclusion": "Shared bounded rule.",
+                   "evidence_refs": ["observation-1", "observation-2"]},
+    }
+    audit = _method_evolution_audit(
+        methods=[], comparisons=[comparison],
+        observations=[{"observation_id": "observation-1"}, {"observation_id": "observation-2"}],
+        assessments=[], handoffs=[], reports=[report],
+    )
+    assert audit["cross_situation_induction_observed"] is True
+    assert audit["cross_situation_evidence_observed"] is True
+    assert audit["first_incomplete_stage"] == "method_candidate"
+    assert audit["cross_situation_inductions"][0]["report_ref"] == "research_report:research-1@v1"
+
+
+def test_write_arc_method_evolution_audit_handles_interrupted_comparison_only_run(tmp_path):
+    (tmp_path / "execution-observations.jsonl").write_text(
+        "{\"observation_id\":\"observation-1\"}\n{\"observation_id\":\"observation-2\"}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "auto-research-comparison-bundles.jsonl").write_text(json.dumps({
+        "run_id": "research-1",
+        "selected_evidence_refs": ["observation-1", "observation-2"],
+        "situation_context_ids": ["situation-a", "situation-b"],
+    }) + "\n", encoding="utf-8")
+
+    path = write_arc_method_evolution_audit(tmp_path)
+    audit = json.loads(path.read_text(encoding="utf-8"))
+
+    assert path.name == "method-evolution-audit.json"
+    assert audit["complete"] is False
+    assert audit["cross_situation_material_ready"] is True
+    assert audit["cross_situation_induction_observed"] is False
+    assert audit["cross_situation_evidence_observed"] is False
+    assert audit["first_incomplete_stage"] == "cross_situation_induction"
+
+
+def test_method_evolution_audit_explains_rejected_delivery_without_promoting_it(tmp_path):
+    (tmp_path / "execution-observations.jsonl").write_text(
+        "{\"observation_id\":\"observation-1\"}\n{\"observation_id\":\"observation-2\"}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "auto-research-comparison-bundles.jsonl").write_text(json.dumps({
+        "run_id": "research-1", "selected_evidence_refs": ["observation-1", "observation-2"],
+        "situation_context_ids": ["situation-a", "situation-b"],
+    }) + "\n", encoding="utf-8")
+    (tmp_path / "subagent-progress.jsonl").write_text(json.dumps({
+        "research_run_id": "research-1", "event": "event",
+        "last_tool_name": "submit_research_report", "is_error": True,
+    }) + "\n", encoding="utf-8")
+    (tmp_path / "auto-research-runs.jsonl").write_text(json.dumps({
+        "run_id": "research-1", "status": "completed",
+        "result_summary": {"stop_reason": "stalled"},
+    }) + "\n", encoding="utf-8")
+
+    audit = json.loads(write_arc_method_evolution_audit(tmp_path).read_text(encoding="utf-8"))
+
+    assert audit["first_incomplete_stage"] == "cross_situation_induction"
+    assert audit["cross_situation_material_ready"] is True
+    assert audit["cross_situation_induction_observed"] is False
+    assert audit["delivery_diagnostics"]["rejected_report_submission_count"] == 1
+    assert audit["delivery_diagnostics"]["rejected_report_run_ids"] == ["research-1"]
+    assert audit["delivery_diagnostics"]["stalled_run_ids"] == ["research-1"]
+
+
 def test_real_arc_auto_research_validation_prompt_requires_evidence_backed_five_component_use():
     prompt = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "arc_auto_research_validation.md").read_text(encoding="utf-8")
     for token in ("system_prompt", "skills", "memory", "tools", "subagents"):
@@ -824,6 +1221,70 @@ def test_arc_trace_compacts_duplicate_lifecycle_messages_but_keeps_usage_and_err
     assert _compact_arc_pi_event({"type": "turn_end", "messages": [event]}) is None
     tool_event = {"type": "tool_execution_end", "toolName": "arc_action", "result": {"ok": True}}
     assert _compact_arc_pi_event(tool_event) is tool_event
+
+
+def test_arc_provider_error_is_a_fail_fast_turn_boundary():
+    from autoresearch_pi.arc_agi_3_e2e import _turn_provider_error
+
+    assert _turn_provider_error([{
+        "type": "message_end",
+        "message": {"stopReason": "error", "errorMessage": "pre_consume_token_quota_failed"},
+    }]) == "pre_consume_token_quota_failed"
+    assert _turn_provider_error([{
+        "type": "message_end", "message": {"stopReason": "stop"},
+    }]) is None
+
+
+def test_arc_runner_stops_after_one_provider_error_without_reprompting(tmp_path, monkeypatch):
+    from autoresearch_pi import arc_agi_3_e2e as runner
+
+    monkeypatch.setattr(runner, "load_project_dotenv", lambda _: {
+        "ARC_OPENAI_API_BASE": "https://provider.invalid/v1",
+        "ARC_OPENAI_API_KEY": "test-only",
+        "ARC_MODEL": "fixture-model",
+    })
+    prompts = []
+
+    class ErrorKernel:
+        def __init__(self, *args, **kwargs):
+            self.event_sink = kwargs["event_sink"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def send(self, *args, **kwargs):
+            return {"success": True}
+
+        def prompt(self, prompt):
+            prompts.append(prompt)
+            return {"success": True}
+
+        def wait_for_agent_events(self, **kwargs):
+            event = {"type": "message_end", "message": {
+                "stopReason": "error", "errorMessage": "quota exhausted",
+            }}
+            self.event_sink(event)
+            return [event]
+
+    monkeypatch.setattr(runner, "PiKernel", ErrorKernel)
+    monkeypatch.setattr(runner, "_sync_bridge_events", lambda _root, _url, cursor: cursor)
+    monkeypatch.setattr(runner, "_get_json", lambda *_: pytest.fail(
+        "provider errors must stop before querying or re-prompting the environment"
+    ))
+
+    assert runner._run_pi(
+        tmp_path, bridge_url="http://unused.invalid", game="test",
+        variant="treatment", context_compaction=False,
+    ) == 1
+    assert len(prompts) == 1
+    events = [json.loads(line) for line in (tmp_path / "pi-events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert events[-1] == {
+        "type": "arc_provider_failure", "error": "quota exhausted",
+        "arc_action_committed": False,
+    }
 
 
 def test_arc_kernel_projection_drops_stream_fragments_and_large_tool_results():
