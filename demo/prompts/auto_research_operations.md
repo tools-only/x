@@ -3,6 +3,17 @@
 This is an operation reference, not permission to bypass the parent policy.
 All references below are returned by tools; use their current exact versions.
 
+## Choose targeted or open research
+
+For a targeted investigation the parent supplies the bounded question and exact
+starting references described below. When constructing a good question would
+itself require replaying broad history, the parent may instead allocate one open
+turn with `auto_research(action="start")` and optional `current_concern`. Runtime
+provides the prior research agenda, a per-kind history cursor and read-only
+`task_resource` discovery. The child chooses one question, reads only needed exact
+versions, and updates the agenda in its report. A non-actionable update is stored
+without injecting its full reasoning into the main context.
+
 ## Prepare a bounded investigation
 
 Auto-Research investigates a concrete task-level research problem, including

@@ -9,6 +9,7 @@ import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_t
 import { versionConflict } from "./pi_task_resource_store.ts";
 import { registerNativeHarnessExecutor } from "./pi_task_harness_route_runtime.ts";
 import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
+import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
 
 export type TaskToolResult = {
 	content?: Array<{ type: "text"; text: string }>;
@@ -367,6 +368,12 @@ export function installTaskLocalTools(
 						|| current.status !== "active" || (current.availability ?? "loaded") !== "loaded") {
 						throw new Error(`task tool is unavailable: ${record.name}@v${record.version}`);
 					}
+					const assembly = latestHarnessAssembly(readJsonl(root, "task-harness-assemblies.jsonl"));
+					if (!assemblySelectsReference(assembly, [
+						`tool:${record.name}@v${record.version}`,
+						`tool:${record.tool_id}@v${record.version}`,
+						`tool:${record.exposed_name}@v${record.version}`,
+					])) throw new Error(`task tool is in the component pool but is not selected by the current Harness assembly: ${record.name}@v${record.version}`);
 					if (record.program) {
 						const result = await executeTaskProgram(record.program, input, adapter, {
 							root, name: record.name, version: record.version,

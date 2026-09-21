@@ -465,7 +465,7 @@ def test_arc_runner_requests_reset_after_game_over_while_budget_remains():
 def test_arc_adapter_delegates_task_local_entry_to_shared_extension():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_arc_agi_3_extension.ts").read_text(encoding="utf-8")
     assert "externalBenchmarkResearch" in source
-    assert "baseTools: [\"arc_state\", \"arc_action\", \"inspect_arc_trajectory\"]" in source
+    assert 'baseTools: ["arc_action"]' in source
     assert "HARNESS_BOOTSTRAP_TOOL" not in source
     assert "research_resource" not in source
 
@@ -484,12 +484,15 @@ def test_arc_action_marks_exhausted_budget_as_terminal_without_followup_reads():
     assert "final read-only level retrospective" in source
 
 
-def test_arc_state_deduplicates_full_frame_within_same_action_epoch():
+def test_arc_state_is_internal_and_current_frame_is_injected_per_decision_cycle():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_arc_agi_3_extension.ts").read_text(encoding="utf-8")
     assert "repeatedFullRequest" in source
     assert "request='full' retrieves it again" in source
     assert 'const full = request === "full"' in source
     assert "before_agent_start" in source
+    assert 'const currentState = await bridge("/state");' in source
+    assert "# Current public ARC state (automatically supplied)" in source
+    assert "The current complete public ARC frame is automatically supplied" in source
     assert "${ARC_SYSTEM_PROMPT}\\n\\n${event.systemPrompt}" in source
     assert "SELF-HARNESS PRELUDE STATUS: completed for this task" not in source
     assert "durableSelfHarnessPreludeCompleted()" in source
@@ -497,12 +500,14 @@ def test_arc_state_deduplicates_full_frame_within_same_action_epoch():
 
 def test_arc_adapter_requests_only_arc_tools_as_benchmark_base_tools():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_arc_agi_3_extension.ts").read_text(encoding="utf-8")
-    assert '"arc_state", "arc_action"' in source
+    assert 'baseTools: ["arc_action"]' in source
+    assert 'pi.setActiveTools(["arc_action"])' in source
 
 
-def test_arc_exposes_execution_checkpoint_without_preloading_task_resources():
+def test_arc_uses_a_thin_initial_control_surface_with_on_demand_support_tools():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_external_benchmark_research.ts").read_text(encoding="utf-8")
-    assert 'const core = ["task_harness", "task_harness_status", "task_checkpoint", "task_resource", "task_validation"]' in source
+    assert 'const core = compactArc ? ["task_harness", "auto_research"]' in source
+    assert 'const initialManagement = (compactArc' in source
     assert '"task_checkpoint"' in source
     assert "initial_resource_counts" in source
 
@@ -529,7 +534,7 @@ def test_arc_extension_stops_the_pi_turn_at_the_action_result_boundary():
     assert 'event.toolName === "arc_action"' in source
     assert "terminate: true" in source
     assert "ctx.abort()" in source
-    assert '"inspect_arc_trajectory"]' in source
+    assert 'baseTools: ["arc_action"]' in source
     assert 'baseTools:' in source
 
 

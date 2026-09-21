@@ -158,6 +158,8 @@ ARC frame adapter still renders the canonical frame as text coordinate runs.
 
 只有聚合文件 `arc-self-harness-smoke-summary.json` 的 `passed=true` 才能证明路由/装载链路可达；它不证明真实 provider 的策略质量或 ARC 游戏表现。
 
+真实 provider + 官方 ARC 在线环境运行时的分阶段证据、失败预期和允许结论见 [ARC 真实运行观测预期](docs/arc-real-run-observation-expectations.md)。
+
 Terminal-Bench 完整运行在本地 Harbor + Docker 中，native verifier reward 与 self-harness evidence 分开记录：
 
 ```bash

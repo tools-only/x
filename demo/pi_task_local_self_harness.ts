@@ -34,6 +34,17 @@ import {
 	buildMethodFeedbackHandoff, latestMethodRecords,
 } from "./pi_research_method_runtime.ts";
 import { assertParentChangeSource, classifyHarnessChangeTargets, classifySemanticKind, normalizeCapabilityRequest, normalizeSemanticCandidate, type HarnessChange } from "./pi_harness_protocol.ts";
+import {
+	assemblyConflictDetails,
+	assemblySelectsReference,
+	createHarnessAssembly,
+	latestHarnessAssembly,
+	renderPromptContributions,
+	TASK_PROMPT_LAYERS,
+	type HarnessAssembly,
+	type HarnessComponentKind,
+	type HarnessPoolEntry,
+} from "./pi_task_harness_assembly.ts";
 
 export const SELF_HARNESS_MANAGEMENT_TOOLS = [
 	"task_harness",
@@ -129,10 +140,16 @@ export function taskKnowledgeEntries(read: (name: string) => Record<string, any>
 		["system_prompt", "task-system-prompt.jsonl"]].flatMap(([kind, file]) => read(file).map(record => ({ kind, record })));
 }
 
-export function renderTaskSystemPromptOverlay(records: SystemPromptRecord[], entries?: KnowledgeEntry[]): string {
+export function renderTaskSystemPromptOverlay(
+	records: SystemPromptRecord[], entries?: KnowledgeEntry[], assembly?: HarnessAssembly,
+): string {
 	const validity = knowledgeState(entries ?? records.map(record => ({ kind: "system_prompt", record })));
 	const active = [...latestBy(records, "name").values()]
-		.filter((item) => validity.eligible("system_prompt", item))
+		.filter((item) => validity.eligible("system_prompt", item)
+			&& assemblySelectsReference(assembly, [
+				knowledgeRef("system_prompt", item),
+				`system_prompt:${item.segment_id}@v${item.version}`,
+			]))
 		.sort((left, right) => left.name.localeCompare(right.name));
 	if (!active.length) return "";
 	return active.map((item) =>
@@ -554,10 +571,123 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		...readJsonl("task-tools.jsonl").flatMap((item) => resourceRefVariants("tool", item)),
 		...readJsonl("task-subagents.jsonl").flatMap((item) => resourceRefVariants("subagent", item)),
 	]);
+	const currentAssembly = () => latestHarnessAssembly(readJsonl("task-harness-assemblies.jsonl"));
+	const componentPool = (): Array<HarnessPoolEntry & { aliases: string[]; record: Record<string, any> }> => {
+		const validity = currentKnowledge();
+		const sources: Array<[HarnessComponentKind, Record<string, any>[]]> = [
+			["memory", [...memories.values()]],
+			["system_prompt", [...systemPrompts.values()]],
+			["skill", [...skills.values()]],
+			["tool", [...latestBy(readJsonl("task-tools.jsonl"), "name").values()]],
+			["subagent", [...latestBy(readJsonl("task-subagents.jsonl"), "name").values()]],
+		];
+		return sources.flatMap(([kind, records]) => records.map(record => {
+			const reasons = ["memory", "system_prompt", "skill"].includes(kind)
+				? validity.reasons(kind, record)
+				: [
+					...(record.status === "active" ? [] : [`status:${String(record.status)}`]),
+					...((record.availability ?? "loaded") === "loaded" ? [] : [`availability:${String(record.availability)}`]),
+				];
+			return {
+				kind,
+				resource_ref: resourceMetadata(kind, record).resource_ref,
+				name: String(record.name ?? record.key ?? ""),
+				version: Number(record.version ?? 1),
+				status: String(record.status ?? "active"),
+				availability: String(record.availability ?? (record.status === "retired" ? "retired" : "loaded")),
+				eligible: reasons.length === 0,
+				reasons,
+				aliases: resourceRefVariants(kind, record),
+				record,
+			};
+		}));
+	};
+	const resolveCurrentComponentRef = (reference: string): string | undefined => {
+		const item = componentPool().find(entry => entry.eligible
+			&& (entry.resource_ref === reference || entry.aliases.includes(reference)));
+		return item?.resource_ref;
+	};
+	const resolvePromptSourceRef = (reference: string): string | undefined => {
+		const kind = String(reference).split(":", 1)[0];
+		if ((["memory", "system_prompt", "skill", "tool", "subagent"] as string[]).includes(kind)) {
+			return resolveCurrentComponentRef(reference);
+		}
+		try {
+			const record = resolveTaskResource(root, reference);
+			return resourceMetadata(kind, record).resource_ref;
+		} catch {
+			return undefined;
+		}
+	};
+	const referenceAvailable = (reference: string): boolean => Boolean(resolvePromptSourceRef(reference));
+	const resourceIsAssembled = (kind: string, item: Record<string, any>) =>
+		assemblySelectsReference(currentAssembly(), resourceRefVariants(kind, item));
 	const resourceIsFocused = (kind: string, item: Record<string, any>) =>
-		focusedResourceRefs === undefined || resourceRefVariants(kind, item).some((ref) => focusedResourceRefs?.has(ref));
+		resourceIsAssembled(kind, item)
+		&& (focusedResourceRefs === undefined || resourceRefVariants(kind, item).some((ref) => focusedResourceRefs?.has(ref)));
 	const resourceIsExplicitlyFocused = (kind: string, item: Record<string, any>) =>
 		focusedResourceRefs !== undefined && resourceIsFocused(kind, item);
+	const applyAssemblyToolSurface = () => {
+		const assembly = currentAssembly();
+		if (!assembly) return;
+		const allDynamicNames = new Set(readJsonl("task-tools.jsonl")
+			.map((item) => String(item.exposed_name ?? "")).filter(Boolean));
+		const selectedDynamicNames = componentPool()
+			.filter((entry) => entry.kind === "tool" && entry.eligible
+				&& assemblySelectsReference(assembly, entry.aliases))
+			.map((entry) => String(entry.record.exposed_name ?? "")).filter(Boolean);
+		pi.setActiveTools([...new Set([
+			...pi.getActiveTools().filter((name) => !allDynamicNames.has(name)),
+			...selectedDynamicNames,
+			...protectedManagementTools,
+		])]);
+	};
+	const projectTranscriptForAssembly = (messages: any[]): any[] => {
+		if (!currentAssembly()) return messages;
+		const nativeKinds: Record<string, { kind: string; file: string; key: string }> = {
+			task_memory: { kind: "memory", file: "task-memory.jsonl", key: "key" },
+			task_system_prompt: { kind: "system_prompt", file: "task-system-prompt.jsonl", key: "name" },
+			task_skill: { kind: "skill", file: "task-skills.jsonl", key: "name" },
+			task_tool: { kind: "tool", file: "task-tools.jsonl", key: "name" },
+			task_subagent: { kind: "subagent", file: "task-subagents.jsonl", key: "name" },
+		};
+		const selectionByCall = new Map<string, boolean>();
+		for (const message of messages) for (const item of Array.isArray(message?.content) ? message.content : []) {
+			const toolName = String(item?.name ?? item?.toolName ?? "");
+			const descriptor = nativeKinds[toolName];
+			if (!descriptor) continue;
+			const args = (item?.arguments ?? item?.input ?? {}) as Record<string, any>;
+			const identity = String(args[descriptor.key] ?? "").trim();
+			const record = identity ? latestBy(readJsonl(descriptor.file), descriptor.key).get(identity) : undefined;
+			const callId = String(item?.id ?? item?.toolCallId ?? "");
+			if (callId) selectionByCall.set(callId, Boolean(record && resourceIsAssembled(descriptor.kind, record)));
+		}
+		return messages.map((message) => {
+			const callId = String(message?.toolCallId ?? "");
+			if (message?.role === "toolResult" && callId && selectionByCall.get(callId) === false) {
+				const projection = {
+					format: "task-harness-transcript-projection-v1", selected: false,
+					reason: "component_not_selected_by_current_assembly",
+				};
+				return { ...message, content: [{ type: "text", text: JSON.stringify(projection) }], details: projection };
+			}
+			if (!Array.isArray(message?.content)) return message;
+			let changed = false;
+			const content = message.content.map((item: Record<string, any>) => {
+				const itemCallId = String(item?.id ?? item?.toolCallId ?? "");
+				if (!itemCallId || selectionByCall.get(itemCallId) !== false) return item;
+				const argsKey = item.arguments !== undefined ? "arguments" : item.input !== undefined ? "input" : undefined;
+				if (!argsKey) return item;
+				changed = true;
+				const args = { ...(item[argsKey] ?? {}) };
+				for (const key of ["content", "append_content", "prompt_text", "instructions", "description", "program"]) {
+					if (key in args) args[key] = "[omitted: component is not selected by the current Harness assembly]";
+				}
+				return { ...item, [argsKey]: args };
+			});
+			return changed ? { ...message, content } : message;
+		});
+	};
 	const recordResourceRead = (kind: string, item: Record<string, any>, via: string, access = "read") => {
 		append("task-resource-access.jsonl", {
 			access_id: `resource-access-${kind}-${item.decision_id ?? item.memory_id ?? item.skill_id ?? Date.now()}-${Date.now()}`,
@@ -628,6 +758,10 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	let terminalReview = false;
 	pi.on("before_agent_start", event => {
 		terminalReview = String(event.prompt ?? "").trimStart().startsWith("ARC_TERMINAL_LEVEL_REVIEW");
+		// A terminal review is a deterministic read-only phase.  The parent no
+		// longer has to notice that the normal thin ARC surface hid the resource
+		// reader, nor can it enable unrelated management tools at this boundary.
+		if (terminalReview) pi.setActiveTools([...new Set([...pi.getActiveTools(), "task_harness", "task_resource"])]);
 	});
 	pi.on("tool_call", event => {
 		if (!terminalReview) return;
@@ -764,6 +898,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				if (skill && !currentKnowledge().eligible("skill", skill)) {
 					throw new Error("skill requires review or is retired/superseded; inspect its exact task_resource version as historical evidence");
 				}
+				if (skill && !resourceIsAssembled("skill", skill)) {
+					throw new Error("skill is in the component pool but is not selected by the current Harness assembly");
+				}
 				const content = readFileSync(path, "utf8");
 				return { content: [{ type: "text", text: content }], details: { path, characters: content.length } };
 			},
@@ -849,6 +986,65 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		const receipts = taskRecords(root, "route_receipt")
 			.filter((item) => item.route_id === current.route_id && item.delivery_hash === expectedHash);
 		const appliedSteps = new Set(receipts.filter((item) => item.status === "applied").map((item) => String(item.step_id)));
+		const orderedSteps = [...current.steps].sort((left: any, right: any) => Number(left.order) - Number(right.order));
+		const nativeKinds: Record<string, { kind: string; file: string; key: string }> = {
+			task_memory: { kind: "memory", file: "task-memory.jsonl", key: "key" },
+			task_system_prompt: { kind: "system_prompt", file: "task-system-prompt.jsonl", key: "name" },
+			task_skill: { kind: "skill", file: "task-skills.jsonl", key: "name" },
+			task_tool: { kind: "tool", file: "task-tools.jsonl", key: "name" },
+			task_subagent: { kind: "subagent", file: "task-subagents.jsonl", key: "name" },
+		};
+		let preflightFailure: Record<string, any> | undefined;
+		const reachable = new Set(appliedSteps);
+		for (const step of orderedSteps) {
+			const stepId = String(step.step_id ?? "");
+			if (appliedSteps.has(stepId)) { reachable.add(stepId); continue; }
+			const executor = nativeHarnessExecutor(pi, String(step.native_tool));
+			const structurallyValid = Boolean(stepId) && step.status === "ready"
+				&& step.native_call?.name === step.native_tool
+				&& step.native_call?.arguments?.routing_id === current.route_id
+				&& step.native_call?.arguments?.source_approval_ref === current.approval_ref
+				&& (step.depends_on ?? []).every((dependency: unknown) => reachable.has(String(dependency)));
+			if (!executor || !structurallyValid || !nativeKinds[String(step.native_tool)]) {
+				preflightFailure = { step_id: stepId, status: "failed",
+					reason: !executor ? "native_harness_executor_unavailable" : "route_step_integrity_failure" };
+				break;
+			}
+			const descriptor = nativeKinds[String(step.native_tool)];
+			const args = step.native_call.arguments as Record<string, any>;
+			const identity = String(args[descriptor.key] ?? "").trim();
+			const latest = identity ? latestBy(readJsonl(descriptor.file), descriptor.key).get(identity) : undefined;
+			const mutatesExisting = latest && ["update", "upsert", "retire"].includes(String(args.action));
+			if (mutatesExisting && args.target_version === undefined) args.target_version = Number(latest.version);
+			if (mutatesExisting && Number(args.target_version) !== Number(latest.version)) {
+				preflightFailure = {
+					step_id: stepId, status: "failed", reason: "component_version_conflict",
+					current_version: Number(latest.version), requested_version: Number(args.target_version),
+					resource_ref: resourceMetadata(descriptor.kind, latest).resource_ref,
+				};
+				break;
+			}
+			reachable.add(stepId);
+		}
+		if (preflightFailure) {
+			const failedVersion = Number(current.version ?? 1) + 1;
+			append("auto-research-harness-route-receipts.jsonl", {
+				format: "auto-research-harness-route-receipt-v1",
+				receipt_id: `${current.route_id}:${String(preflightFailure.step_id)}:${toolCallId}:preflight`,
+				route_id: current.route_id, step_id: preflightFailure.step_id,
+				delivery_hash: expectedHash, status: "failed", applied: false,
+				phase: "preflight", ...preflightFailure,
+				source_approval_ref: current.approval_ref, recordedAt: new Date().toISOString(),
+			});
+			append("auto-research-harness-routes.jsonl", {
+				...current, version: failedVersion, route_status: "failed",
+				application_tool_call_id: toolCallId, application_completed_at: new Date().toISOString(),
+				applied_step_ids: [...appliedSteps], step_results: [preflightFailure],
+			});
+			const result = { format: "auto-research-harness-apply-result-v1", route_id: current.route_id,
+				route_status: "failed", idempotent: false, version: failedVersion, steps: [preflightFailure] };
+			return { isError: true, content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result };
+		}
 		let routeVersion = Number(current.version ?? 1) + 1;
 		append("auto-research-harness-routes.jsonl", {
 			...current, version: routeVersion, route_status: "applying",
@@ -856,7 +1052,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		});
 		const stepResults: Record<string, unknown>[] = [];
 		let failed = false;
-		for (const step of [...current.steps].sort((left: any, right: any) => Number(left.order) - Number(right.order))) {
+		for (const step of orderedSteps) {
 			const stepId = String(step.step_id ?? "");
 			if (appliedSteps.has(stepId)) {
 				stepResults.push({ step_id: stepId, status: "already_applied" });
@@ -1240,6 +1436,18 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				authorized_tools: [...authorized].sort(),
 				active_tools: [...active].sort(),
 				focused_resource_refs: focusedResourceRefs === undefined ? null : [...focusedResourceRefs].sort(),
+				current_assembly: currentAssembly() ?? null,
+				component_pool: componentPool().map(({ record: _record, aliases, ...entry }) => ({
+					...entry, selected: assemblySelectsReference(currentAssembly(), aliases),
+				})),
+				assembly_contract: {
+					owner: "main_agent",
+					component_pool: "current selectable projection of the committed immutable version store; historical versions remain readable through task_resource",
+					selection: "exact current eligible component versions",
+					task_prompt: "source-agnostic assembly output channel",
+					legacy: "all eligible active components until the first explicit assembly",
+					runtime: "validates, projects, exposes, executes, and records receipts without semantic selection",
+				},
 				resources: {
 					research: activeResearch,
 					memory: activeMemories,
@@ -1256,9 +1464,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	pi.registerTool({
 		name: "task_harness",
 			label: "Task-local working methods",
-				description: "Task-local Self-Harness facade. The parent chooses research, harness adoption, or ordinary interaction; code handles version binding, route compilation, native component calls, receipts, and lifecycle records. Use action=adopt_research after deciding to adopt one completed research result; omit route hashes and step details. Use action=change for a direct harness change, and action=assess_effect with only the semantic verdict/consequence when the unique decision can be bound automatically. apply_route is a low-level recovery entry, not the normal parent workflow. Periodic reviews require transition_analysis and grounded evidence. decide_research only manages the research handoff lifecycle.",
+			description: "Task-local Self-Harness facade. action=change creates, updates, or retires immutable component versions in the pool; action=assemble lets the main Agent select exact current versions and source-agnostic task_prompt contributions for later requests. Active pool membership does not imply assembly selection. Code validates versions, applies the selected runtime surface, records receipts, and never chooses semantic composition. Use action=adopt_research only after deciding to adopt a completed result; research output is not guidance until selected. Direct task action does not require reassembly. apply_route is a low-level recovery entry. Periodic reviews require grounded transition_analysis; decide_research only manages handoff lifecycle.",
 			parameters: Type.Object({
-				action: Type.Union([Type.Literal("start"), Type.Literal("inspect"), Type.Literal("status"), Type.Literal("review"), Type.Literal("level_review"), Type.Literal("report_level_reset"), Type.Literal("decide_research"), Type.Literal("enable"), Type.Literal("activate"), Type.Literal("focus"), Type.Literal("change"), Type.Literal("adopt_research"), Type.Literal("apply_route"), Type.Literal("assess_effect")]),
+				action: Type.Union([Type.Literal("start"), Type.Literal("inspect"), Type.Literal("status"), Type.Literal("review"), Type.Literal("level_review"), Type.Literal("report_level_reset"), Type.Literal("decide_research"), Type.Literal("enable"), Type.Literal("activate"), Type.Literal("focus"), Type.Literal("assemble"), Type.Literal("change"), Type.Literal("adopt_research"), Type.Literal("apply_route"), Type.Literal("assess_effect")]),
 				changes: Type.Optional(Type.Array(Type.Union([
 					Type.Object({ operation: Type.Union([Type.Literal("create"), Type.Literal("update")]), candidate: Type.Optional(Type.Record(Type.String(), Type.Any())), candidate_ref: Type.Optional(Type.String()) }),
 					Type.Object({ operation: Type.Union([Type.Literal("retire"), Type.Literal("reuse")]), target_ref: Type.String() }),
@@ -1311,8 +1519,11 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					candidate: Type.String(), next_use: Type.String(), validation: Type.String(),
 				}))),
 			}))),
-			enabled_tools: Type.Optional(Type.Array(Type.String())),
-			resource_refs: Type.Optional(Type.Array(Type.String())),
+				enabled_tools: Type.Optional(Type.Array(Type.String())),
+				resource_refs: Type.Optional(Type.Array(Type.String())),
+				expected_assembly_revision: Type.Optional(Type.Integer({ minimum: 0 })),
+				selected_resource_refs: Type.Optional(Type.Array(Type.String())),
+				prompt_contributions: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Any()))),
 				route_ref: Type.Optional(Type.String()),
 				expected_delivery_hash: Type.Optional(Type.String()),
 				research_run_ref: Type.Optional(Type.String({ description: "For adopt_research only. Omit when exactly one completed research result has materializable routes." })),
@@ -1491,6 +1702,30 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 			}
 			if (params.action === "change") return applyFacadeChanges(toolCallId, params as Record<string, any>);
+			if (params.action === "assemble") {
+				try {
+					const assembly = createHarnessAssembly({
+						input: params as Record<string, any>,
+						previous: currentAssembly(),
+						resolveComponentRef: resolveCurrentComponentRef,
+						resolveSourceRef: resolvePromptSourceRef,
+					});
+					append("task-harness-assemblies.jsonl", assembly);
+					applyAssemblyToolSurface();
+					const receipt = {
+						format: "task-harness-assembly-receipt-v1", applied: true,
+						assembly_ref: `harness_assembly:${assembly.assembly_id}@v${assembly.revision}`,
+						current_assembly: assembly,
+					};
+					append("task-harness-assembly-receipts.jsonl", { ...receipt, recordedAt: new Date().toISOString() });
+					return { content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
+				} catch (error) {
+					let details: Record<string, any>;
+					try { details = assemblyConflictDetails(error) as Record<string, any>; }
+					catch { throw error; }
+					return { isError: true, content: [{ type: "text", text: JSON.stringify(details) }], details };
+				}
+			}
 			if (params.action === "apply_route") return applyCompiledRoute(toolCallId, params as Record<string, any>);
 			if (params.action === "adopt_research") return adoptResearchResult(toolCallId, params as Record<string, any>);
 			if (params.action === "assess_effect") return assessHarnessEffect(toolCallId, params as Record<string, any>);
@@ -1548,6 +1783,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					research: "research_resource",
 					status: "task_harness_status", policy: "task_tool_policy",
 					validation: "task_validation", assessment: "assess_harness_effect",
+					trajectory: "inspect_arc_trajectory",
 					compaction: OBSERVATION_COMPACTION_TOOL,
 				};
 				// Accept resource-kind shorthands in addition to exact tool names.
@@ -1747,7 +1983,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	pi.on("before_agent_start", (event) => {
 		const validity = currentKnowledge();
 		const active = [...systemPrompts.values()]
-			.filter((item) => validity.eligible("system_prompt", item))
+			.filter((item) => validity.eligible("system_prompt", item) && resourceIsAssembled("system_prompt", item))
 			.sort((left, right) => left.name.localeCompare(right.name));
 		for (const item of active) {
 			const key = `${item.segment_id}@${item.version}`;
@@ -1768,8 +2004,10 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				effect_observed: true, recordedAt: new Date().toISOString(),
 			});
 		}
-		const overlay = renderTaskSystemPromptOverlay(active, knowledgeEntries());
+		const assembly = currentAssembly();
+		const overlay = renderTaskSystemPromptOverlay(active, knowledgeEntries(), assembly);
 		append("task-system-prompt-assemblies.jsonl", { format: "task-system-prompt-assembly-v1",
+			assembly_ref: assembly ? `harness_assembly:${assembly.assembly_id}@v${assembly.revision}` : null,
 			selected: active.map(item => promptReceipt("system_overlay", knowledgeRef("system_prompt", item), item.content)),
 			...promptReceipt("system_overlay", "assembled-overlay", overlay), recordedAt: new Date().toISOString() });
 		if (!active.length) return {};
@@ -1974,6 +2212,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 
 
 	pi.on("context", (event) => {
+		applyAssemblyToolSurface();
+		const assembledMessages = projectTranscriptForAssembly(event.messages);
 		const crossContextCandidates = refreshCrossContextResearchCandidates();
 		const pendingOutcomes = pendingLevelReviews();
 		const completedOutcomes = readJsonl("task-level-reviews.jsonl");
@@ -1985,9 +2225,10 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		if (lastReview) outcomeMessages.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
 			text: `Previous level retrospective (agent-assessed): ${JSON.stringify({ window_id: lastReview.window_id,
 				lessons: lastReview.lessons, next_attempt: lastReview.next_attempt, credits: lastReview.credits })}` }] });
-		if (terminalReview) return { messages: [...event.messages, ...outcomeMessages] };
+		if (terminalReview) return { messages: [...assembledMessages, ...outcomeMessages] };
 		const validity = currentKnowledge();
-		for (const item of [...systemPrompts.values()].filter((entry) => validity.eligible("system_prompt", entry))) {
+		for (const item of [...systemPrompts.values()].filter((entry) => validity.eligible("system_prompt", entry)
+			&& resourceIsAssembled("system_prompt", entry))) {
 			const key = `${item.segment_id}@${item.version}`;
 			if (!projectedSystemPrompts.has(key)) {
 				projectedSystemPrompts.add(key);
@@ -2079,6 +2320,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			}));
 		const activeTaskPromptMemories = [...memories.values()]
 			.filter((item) => memoryEligible(item)
+				&& resourceIsFocused("memory", item)
 				&& item.projection?.channel === "task_prompt"
 				&& activationMatches(item.projection.activation, projectionState))
 			.sort((left, right) => Number(right.pinned) - Number(left.pinned) || left.recordedAt.localeCompare(right.recordedAt))
@@ -2108,6 +2350,21 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				content: [{ type: "text", text: `${layer === "task_policy" ? "Active task policy" : "Active dynamic task/user prompt knowledge"}: ${JSON.stringify(selected)}` }],
 				timestamp: Date.now(),
 			});
+		}
+		const promptContributionSelection = renderPromptContributions(currentAssembly(), projectionState, referenceAvailable);
+		const promptLayerTitles: Record<string, string> = {
+			task_policy: "Active task policy",
+			method: "Active task-prompt method guidance",
+			working_plan: "Active task-prompt working plan",
+			hypothesis: "Active task-prompt hypotheses",
+			task_state: "Active dynamic task/user prompt knowledge",
+			research_inbox: "Active task-prompt research inbox",
+		};
+		for (const layer of TASK_PROMPT_LAYERS) {
+			const selected = promptContributionSelection.selected.filter((item) => item.layer === layer);
+			if (!selected.length) continue;
+			resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
+				text: `${promptLayerTitles[layer]}: ${JSON.stringify(selected)}` }] });
 		}
 		const activeSkills = [...skills.values()]
 			.filter((item) => validity.eligible("skill", item) && existsSync(item.file) && resourceIsFocused("skill", item))
@@ -2284,11 +2541,13 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		const inactiveConditionRefs = [...memories.values()].filter(item => validity.eligible("memory", item)
 			&& !activationMatches(item.projection?.activation, projectionState)).map(item => knowledgeRef("memory", item));
 		const signature = JSON.stringify({
+			assembly: currentAssembly() ? [currentAssembly()!.assembly_id, currentAssembly()!.revision] : null,
 			inactive_condition_refs: inactiveConditionRefs,
 			knowledge_notices: validity.notices,
 			pendingEffects: pendingEffects.map((item) => [item.decision_id, item.native_exposure_count]),
 			activeMemories,
 			dynamicTaskPromptMemories: activeTaskPromptMemories,
+			promptContributions: promptContributionSelection,
 			systemPrompts: [...systemPrompts.values()].filter((item) => validity.eligible("system_prompt", item))
 				.map((item) => [item.segment_id, item.version]),
 			skills: activeSkills.map((item) => [item.skill_id, item.version]),
@@ -2299,9 +2558,17 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			lastResourceSignature = signature;
 			append("task-prompt-assemblies.jsonl", {
 				format: "task-prompt-assembly-v1",
-				selected: activeTaskPromptMemories.map(item => promptReceipt(item.layer,
-					`memory:${item.key}@v${item.version}`, item.content)),
-				suppressed: validity.notices,
+				assembly_ref: currentAssembly()
+					? `harness_assembly:${currentAssembly()!.assembly_id}@v${currentAssembly()!.revision}` : null,
+				selected: [
+					...activeTaskPromptMemories.map(item => promptReceipt(item.layer,
+						`memory:${item.key}@v${item.version}`, item.content)),
+					...promptContributionSelection.selected.map(item => ({
+						...promptReceipt(item.layer, item.source_ref, item.content),
+						contribution_id: item.contribution_id, source_ref: item.source_ref,
+					})),
+				],
+				suppressed: [...validity.notices, ...promptContributionSelection.suppressed],
 				inactive_condition_refs: inactiveConditionRefs,
 				recordedAt: new Date().toISOString(),
 			});
@@ -2406,7 +2673,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		}
 		if (validity.notices.length) resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
 			text: `Task-local knowledge requiring review: ${JSON.stringify(validity.notices)}. These versions are not current guidance. Historical transcript/checkpoint mentions do not reactivate them. Native system overlays refresh at the next agent turn; use task_policy for changing strategies.` }] });
-		return resources.length || outcomeMessages.length ? { messages: [...event.messages, ...resources, ...outcomeMessages] } : {};
+		return resources.length || outcomeMessages.length || assembledMessages !== event.messages
+			? { messages: [...assembledMessages, ...resources, ...outcomeMessages] } : {};
 	});
 	// The scripted external fixture still invokes native component tools to
 	// verify executor compatibility. Production/model contexts expose only the

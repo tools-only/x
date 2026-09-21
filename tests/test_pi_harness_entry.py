@@ -5,6 +5,7 @@ from pathlib import Path
 
 from autoresearch_pi.pi_kernel import PiKernel
 from test_pi_external_benchmark_native import _pi_cli, _run_fixture
+from test_task_research_context import results
 
 
 def records(root, name):
@@ -21,12 +22,12 @@ def test_empty_task_has_direct_creation_and_method_at_first_request(tmp_path):
     assert not any(name.startswith("task_") and ("guid" + "ance") in name for name in names)
     assert "task_subagent" in names  # the research contract requires a configured adapter
     assert "auto_research" in names
-    assert "Auto-Research" in context["systemPrompt"]
+    assert "AUTO-RESEARCH:" in context["systemPrompt"]
     research = next(tool for tool in context['tools'] if tool['name'] == 'auto_research')
     assert 'composition' in {choice['const'] for choice in research['parameters']['properties']['scope']['anyOf']}
     method = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "auto_research_method.md").read_text(encoding="utf-8")
     main_contract = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "auto_research_main_contract.md").read_text(encoding="utf-8")
-    assert main_contract in context["systemPrompt"]
+    assert main_contract not in context["systemPrompt"]
     assert method not in context["systemPrompt"]
     assert not records(root, "task-skills.jsonl")
     assert not records(root, "task-memory.jsonl")
@@ -263,6 +264,197 @@ def test_facade_rejects_explicit_stale_update_version(tmp_path):
     assert records(root, "task-harness-change-receipts.jsonl")[-1]["status"] == "failed"
 
 
+def test_explicit_assembly_selects_pool_and_projects_non_memory_prompt_source(tmp_path):
+    root = tmp_path / "explicit-assembly"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_memory", "arguments": {
+            "action": "upsert", "key": "unselected-fact", "content": "DO_NOT_ASSEMBLE",
+        }},
+        {"name": "task_skill", "arguments": {
+            "action": "create", "name": "route-check", "instructions": "Check the destination before moving.",
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble",
+            "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:route-check@v1"],
+            "prompt_contributions": [{
+                "contribution_id": "route-method",
+                "source_ref": "skill:route-check@v1",
+                "layer": "method",
+                "content": "Use the route-check method for the current decision.",
+                "reconsider_when": "the destination representation changes",
+            }],
+            "decision": {
+                "basis_refs": [], "reason": "Use only the route method now.",
+                "expected": "The next request contains the selected method and omits unrelated memory.",
+            },
+        }},
+        {"name": "task_harness", "arguments": {"action": "inspect"}},
+    ])
+    assert not [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
+    assembly = records(root, "task-harness-assemblies.jsonl")[-1]
+    assert assembly["revision"] == 1
+    assert assembly["selected_resource_refs"] == ["skill:route-check@v1"]
+    status = json.loads(results(events, "task_harness")[-1]["result"]["content"][0]["text"])
+    assert status["current_assembly"]["revision"] == 1
+    assert {item["resource_ref"] for item in status["component_pool"]} >= {
+        "memory:unselected-fact@v1", "skill:route-check@v1",
+    }
+    context = records(root, "provider-contexts.jsonl")[-1]["context"]
+    text = json.dumps(context["messages"])
+    assert "Active task-prompt method guidance" in text
+    assert "Use the route-check method" in text
+    assert "Active task-local skills" in text and "route-check" in text
+    assert "DO_NOT_ASSEMBLE" not in text
+    prompt_receipt = records(root, "task-prompt-assemblies.jsonl")[-1]
+    contribution = next(item for item in prompt_receipt["selected"] if item["layer"] == "method")
+    assert contribution["source_ref"] == "skill:route-check@v1"
+    assert len(contribution["sha256"]) == 64
+
+
+def test_assembly_revision_conflict_does_not_replace_current_selection(tmp_path):
+    root = tmp_path / "assembly-version-conflict"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": [], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Start with no optional components.",
+                         "expected": "Only the base runtime remains assembled."},
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": [], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Stale replacement attempt.",
+                         "expected": "The runtime reports a conflict."},
+        }},
+    ])
+    outputs = results(events, "task_harness")
+    assert not outputs[0].get("isError")
+    assert outputs[1].get("isError")
+    body = json.loads(outputs[1]["result"]["content"][0]["text"])
+    assert body["format"] == "task-harness-assembly-version-conflict-v1"
+    assert body["current_revision"] == 1
+    assert len(records(root, "task-harness-assemblies.jsonl")) == 1
+
+
+def test_task_prompt_accepts_exact_research_plan_source(tmp_path):
+    root = tmp_path / "assembly-research-plan-source"
+    _run_fixture(root, "treatment", steps=[])
+    scope_record = records(root, "task-harness-entry.jsonl")[0]
+    scope = {key: scope_record[key] for key in ("task_id", "task_root_fingerprint") if key in scope_record}
+    with (root / "auto-research-plans.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            **scope, "format": "auto-research-plan-v1", "plan_id": "research-plan-1",
+            "version": 1, "status": "active", "nodes": [],
+        }) + "\n")
+    _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": [],
+            "prompt_contributions": [{
+                "contribution_id": "next-probe-plan",
+                "source_ref": "research_plan:research-plan-1@v1",
+                "layer": "working_plan", "content": "Compare the two probe outcomes before acting.",
+            }],
+            "decision": {"basis_refs": ["research_plan:research-plan-1@v1"],
+                         "reason": "The current decision needs the bounded research plan.",
+                         "expected": "The working plan is present in the next request."},
+        }},
+        {"name": "task_harness", "arguments": {"action": "inspect"}},
+    ])
+    text = json.dumps(records(root, "provider-contexts.jsonl")[-1]["context"]["messages"])
+    assert "Active task-prompt working plan" in text
+    assert "Compare the two probe outcomes before acting." in text
+    receipt = records(root, "task-prompt-assemblies.jsonl")[-1]
+    selected = next(item for item in receipt["selected"] if item.get("contribution_id") == "next-probe-plan")
+    assert selected["source_ref"] == "research_plan:research-plan-1@v1"
+
+
+def test_assembly_enforces_system_prompt_skill_and_dynamic_tool_use_boundaries(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "assembly-use-boundaries"
+    beta_path = root / "task-harness" / "skills" / "beta" / "SKILL.md"
+    events = _run_fixture(
+        root, "treatment",
+        extra_extensions=[project / "tests" / "pi_task_tool_fixture.ts"],
+        steps=[
+            {"name": "task_system_prompt", "arguments": {
+                "action": "create", "name": "selected-overlay", "content": "SELECTED_OVERLAY",
+            }},
+            {"name": "task_system_prompt", "arguments": {
+                "action": "create", "name": "pool-only-overlay", "content": "POOL_ONLY_OVERLAY",
+            }},
+            {"name": "task_skill", "arguments": {
+                "action": "create", "name": "alpha", "instructions": "Use alpha.",
+            }},
+            {"name": "task_skill", "arguments": {
+                "action": "create", "name": "beta", "instructions": "Use beta.",
+            }},
+            {"name": "task_tool", "arguments": {
+                "action": "create", "name": "alpha", "description": "Selected echo.",
+                "input_schema": {"type": "object"}, "implementation_ref": "fixture.echo",
+            }},
+            {"name": "task_tool", "arguments": {
+                "action": "create", "name": "beta", "description": "Pool-only echo.",
+                "input_schema": {"type": "object"}, "implementation_ref": "fixture.echo",
+            }},
+            {"name": "task_harness", "arguments": {
+                "action": "assemble", "expected_assembly_revision": 0,
+                "selected_resource_refs": [
+                    "system_prompt:selected-overlay@v1", "skill:alpha@v1", "tool:alpha@v1",
+                ],
+                "prompt_contributions": [],
+                "decision": {"basis_refs": [], "reason": "Use only alpha resources now.",
+                             "expected": "Pool-only resources are not exposed or callable."},
+            }},
+            {"name": "read", "arguments": {"path": str(beta_path)}},
+            {"name": "task_harness", "arguments": {"action": "inspect"}},
+        ],
+    )
+    read_result = results(events, "read")[-1]
+    assert read_result.get("isError")
+    assert "not selected" in read_result["result"]["content"][0]["text"]
+    _run_fixture(
+        root, "treatment", steps=[{"name": "task_harness", "arguments": {"action": "inspect"}}],
+        extra_extensions=[project / "tests" / "pi_task_tool_fixture.ts"],
+    )
+    context = records(root, "provider-contexts.jsonl")[-1]["context"]
+    assert "SELECTED_OVERLAY" in context["systemPrompt"]
+    assert "POOL_ONLY_OVERLAY" not in context["systemPrompt"]
+    tool_names = {tool["name"] for tool in context["tools"]}
+    assert "task_tool_alpha_v1" in tool_names
+    assert "task_tool_beta_v1" not in tool_names
+
+
+def test_assembly_rejects_unselected_saved_subagent_before_invocation(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "assembly-subagent-boundary"
+    events = _run_fixture(
+        root, "treatment",
+        extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+        steps=[
+            {"name": "task_subagent", "arguments": {
+                "action": "create", "name": "pool-only-reader",
+                "description": "Read public fixture state.",
+                "instructions": "Return a concise observation.", "tools": ["fixture_state"],
+            }},
+            {"name": "task_harness", "arguments": {
+                "action": "assemble", "expected_assembly_revision": 0,
+                "selected_resource_refs": [], "prompt_contributions": [],
+                "decision": {"basis_refs": [], "reason": "No saved role is needed now.",
+                             "expected": "Saved roles remain unavailable."},
+            }},
+            {"name": "delegate_task", "arguments": {
+                "agent_name": "pool-only-reader", "task": "Inspect public state.",
+            }},
+        ],
+    )
+    delegated = results(events, "delegate_task")[-1]
+    assert delegated.get("isError")
+    assert "not selected" in delegated["result"]["content"][0]["text"]
+    assert not records(root, "subagent-invocations.jsonl")
+
+
 def test_direct_skill_research_revision_projects_next_request_without_native_loader(tmp_path):
     root = tmp_path / "lifecycle"
     path = root / "task-harness" / "skills" / "probe" / "SKILL.md"
@@ -353,6 +545,69 @@ def test_adopt_research_applies_all_ready_routes_without_parent_route_fields(tmp
     assert records(root, "auto-research-sessions.jsonl")[-1]["reconciliation_status"] == "adopted"
 
 
+def test_adopt_research_preflights_all_route_versions_before_any_mutation(tmp_path):
+    root = tmp_path / "adopt-research-preflight"
+    _run_fixture(root, "treatment", steps=[
+        {"name": "task_memory", "arguments": {"action": "upsert", "key": "state", "content": "v1"}},
+        {"name": "task_memory", "arguments": {
+            "action": "upsert", "key": "state", "target_version": 1, "content": "v2",
+        }},
+    ])
+    current = records(root, "task-memory.jsonl")[-1]
+    scope = {key: current[key] for key in ("task_id", "task_root_fingerprint") if key in current}
+    route = {
+        **scope,
+        "format": "auto-research-harness-route-v1",
+        "route_id": "auto-research-1:route-stale", "route_ref": "harness_route:auto-research-1:route-stale@v1",
+        "version": 1, "run_id": "auto-research-1", "delivery_id": "stale", "delivery_hash": "sha256:stale",
+        "approval_ref": "proposal:auto-research-1:proposal-1@v1", "review_status": "approved",
+        "disposition": "materialize", "route_status": "ready",
+        "steps": [
+            {
+                "step_id": "auto-research-1:route-stale:step-1", "order": 1, "target": "skill",
+                "native_tool": "task_skill", "status": "ready", "depends_on": [],
+                "native_call": {"name": "task_skill", "arguments": {
+                    "action": "create", "name": "must-not-partially-apply", "instructions": "Never partially apply.",
+                    "routing_id": "auto-research-1:route-stale",
+                    "source_approval_ref": "proposal:auto-research-1:proposal-1@v1",
+                }},
+            },
+            {
+                "step_id": "auto-research-1:route-stale:step-2", "order": 2, "target": "memory",
+                "native_tool": "task_memory", "status": "ready",
+                "depends_on": ["auto-research-1:route-stale:step-1"],
+                "native_call": {"name": "task_memory", "arguments": {
+                    "action": "upsert", "key": "state", "target_version": 1, "content": "stale overwrite",
+                    "routing_id": "auto-research-1:route-stale",
+                    "source_approval_ref": "proposal:auto-research-1:proposal-1@v1",
+                }},
+            },
+        ],
+    }
+    with (root / "auto-research-harness-routes.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(route) + "\n")
+    with (root / "auto-research-sessions.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            **scope, "session_id": "research-session-1", "version": 1, "status": "completed",
+            "run_id": "auto-research-1", "reconciliation_status": "awaiting_parent_change",
+        }) + "\n")
+
+    events = _run_fixture(root, "treatment", steps=[{
+        "name": "task_harness", "arguments": {
+            "action": "adopt_research", "research_run_ref": "research_run:auto-research-1@v1",
+        },
+    }])
+    output = results(events, "task_harness")[-1]
+    assert output.get("isError")
+    assert not records(root, "task-skills.jsonl")
+    memories = records(root, "task-memory.jsonl")
+    assert len(memories) == 2 and memories[-1]["content"] == "v2"
+    latest_route = records(root, "auto-research-harness-routes.jsonl")[-1]
+    assert latest_route["route_status"] == "failed"
+    assert latest_route["step_results"][0]["reason"] == "component_version_conflict"
+    assert latest_route["step_results"][0]["current_version"] == 2
+
+
 def test_task_harness_restores_an_authorized_tool_without_granting_host_tools(tmp_path):
     root = tmp_path / "restore"
     events = _run_fixture(root, "treatment", steps=[
@@ -418,10 +673,8 @@ def test_compact_arc_focus_projects_memory_body_after_creation(tmp_path):
         if part.get("type") == "text" and "Active task-local memory" in part.get("text", "")
     )
     assert "Keep public common changes separate from action-specific changes." in memory_text
-    compact_method = (
-        Path(__file__).resolve().parents[1] / "demo" / "prompts" / "auto_research_arc_contract.md"
-    ).read_text(encoding="utf-8")
-    assert compact_method in contexts[0]["systemPrompt"]
+    assert "AUTO-RESEARCH:" in contexts[0]["systemPrompt"]
+    assert "full contract" not in contexts[0]["systemPrompt"]
     assert all("Prefer the next ARC action" not in json.dumps(context) for context in contexts)
     access = records(root, "task-resource-access.jsonl")
     assert not access  # focus/exposure is not the same as an explicit read
@@ -460,11 +713,18 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
     skill_path = root / "task-harness" / "skills" / "probe" / "SKILL.md"
     steps = [
         {"name": "task_harness", "arguments": {
-            "action": "enable", "enabled_tools": ["skill"],
+            "action": "change",
+            "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "skill", "name": "probe",
+                "content": "Use the settled observation before choosing the next action.",
+            }}],
+            "decision": {
+                "basis_refs": [], "reason": "Create a reusable observation procedure.",
+                "expected": "The procedure can be read and used on a later decision.",
+            },
         }},
-        {"name": "task_skill", "arguments": {
-            "action": "create", "name": "probe",
-            "instructions": "Use the settled observation before choosing the next action.",
+        {"name": "task_harness", "arguments": {
+            "action": "enable", "enabled_tools": ["skill"],
         }},
         {"name": "read", "arguments": {"path": str(skill_path)}},
     ]
@@ -494,10 +754,16 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
               if event.get("type") == "tool_execution_end" and event.get("isError")]
     assert not errors
     contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
-    # The compact surface exposes skill inspect directly; enabling skill also
-    # exposes the scoped reader before the explicit read in this sequence.
-    assert "task_skill" in {tool["name"] for tool in contexts[0]["tools"]}
-    assert "read" in {tool["name"] for tool in contexts[1]["tools"]}
+    # The initial ARC surface is only action, Harness and Auto-Research.
+    # Creation goes through the Harness facade; enabling the selected skill
+    # then exposes the scoped reader before its explicit read.
+    initial_tools = {tool["name"] for tool in contexts[0]["tools"]}
+    assert initial_tools >= {"arc_action", "task_harness", "auto_research"}
+    assert not initial_tools.intersection({
+        "arc_state", "inspect_arc_trajectory", "task_harness_status", "task_checkpoint",
+        "task_resource", "task_validation", "research_resource", "delegate_task", "task_skill",
+    })
+    assert "read" in {tool["name"] for tool in contexts[2]["tools"]}
     assert any(
         event.get("event") == "read_by_agent" and event.get("name") == "probe"
         for event in records(root, "task-skill-events.jsonl")

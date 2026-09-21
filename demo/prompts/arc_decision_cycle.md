@@ -1,4 +1,4 @@
-Play ARC-AGI-3 game {{game}}. Task-local self-harness and auto-research are available from the first cycle. Native skills are disabled; skills, memory, tools and subagent definitions start empty. Use task_harness only when the current decision justifies a change or inspection; it is not a prerequisite for arc_state or arc_action. The agent owns resource creation, revision, composition, research questions and delegation. Lower-order-first refers to complexity and dependencies, not a resource-type ladder; intermediate research need not change the next action.
+Play ARC-AGI-3 game {{game}}. The current public state is supplied automatically at the start of every decision cycle. Task-local self-harness and auto-research are available from the first cycle. Native skills are disabled; skills, memory, tools and subagent definitions start empty. Use task_harness only when the current decision justifies a change or inspection; it is not a prerequisite for arc_action. The agent owns resource creation, revision, composition, research questions and delegation. Lower-order-first refers to complexity and dependencies, not a resource-type ladder; intermediate research need not change the next action.
 
 Learn from before-state/action/after-state transitions: distinguish changes and
 invariants from hypotheses about their causes. Compare different actions in
@@ -20,7 +20,17 @@ Research may compare granted evidence across phases and construct candidate
 methods from prior knowledge, then test them locally. Feed later applicable use
 and stage results back into the research; a local check is not whole-game benefit.
 
-Harness writes use one parent boundary: `task_harness(action='change', changes=[...], decision={reason,expected,basis_refs})`. The semantic candidate routes deterministically to memory, task_prompt projection, an evidence-qualified system_prompt, skill, adapter-bounded tool, or read-only subagent. `task_memory`, `task_system_prompt`, `task_skill`, `task_tool` and `task_subagent` are native executors, not independent model decisions. `research_resource` manages research questions/findings; `task_validation` records hypotheses and evidence-linked assessments without gating creation; `task_resource` provides summary indexes and paged exact-version reads; `delegate_task` invokes a saved role or per-call clean-context reviewer. Pi's native context keeps the active transcript; hypotheses remain separate from environment facts.
+Harness writes use one parent boundary: `task_harness(action='change', changes=[...], decision={reason,expected,basis_refs})`. The semantic candidate routes deterministically to one of five persistent component kinds: memory, system_prompt, skill, adapter-bounded tool, or read-only subagent. `task_prompt` is not a sixth kind; it is the current assembly's source-agnostic output channel. The native component writers, checkpoint, validation, resource index and ordinary delegation are runtime support operations, not first-line model choices. Open one through `task_harness(action='activate')` only when a concrete decision needs its exact output. Pi's native context keeps the active transcript; hypotheses remain separate from environment facts.
+
+Component creation/modification commits immutable versions to the pool; it does
+not select them. Inspect `task_harness(action='inspect')` for the pool and current
+assembly. When a later request needs a changed composition, call
+`task_harness(action='assemble')` with the expected assembly revision, the
+smallest compatible exact-version selection, and any exact-source prompt
+contributions. Active is not selected. The deterministic runtime validates,
+projects and executes the declared assembly; the main Agent owns semantic choice.
+Direct `arc_action` remains valid without reassembly. Research reports, methods,
+plans and hypotheses become prompt guidance only after explicit parent selection.
 
 In a harness review, include a complete structured candidate on a create/update
 entry when its content is already decided. Runtime applies it through the same
@@ -41,12 +51,13 @@ reset_reason=...). This opens an explicitly agent-reported review, not a confirm
 environment event. Do not infer reset solely from changed-cell counts. The final
 ARC_TERMINAL_LEVEL_REVIEW turn is read-only and does not require an ARC action.
 
-Each bridge decision cycle may contain multiple analysis, research, creation, use or delegation steps, and must end with exactly one available arc_action as its final call. arc_state(request='current') provides the current frame once per action epoch; request='full' explicitly retrieves it again when needed. decision can carry hypothesis, prediction and falsifier; optional validation_window records a local test window, not a global action-stopping rule. Window expiry or replacement does not establish a hypothesis verdict. Continue until WIN or the native action budget is exhausted.
+Each bridge decision cycle may contain multiple analysis, research, creation, use or delegation steps, and must end with exactly one available arc_action as its final call. The complete current frame is already in the decision context; do not spend a tool call refreshing it. decision can carry hypothesis, prediction and falsifier; optional validation_window records a local test window, not a global action-stopping rule. Window expiry or replacement does not establish a hypothesis verdict. Continue until WIN or the native action budget is exhausted.
 
-Every 5 completed ARC actions, perform the pending trajectory pattern extraction
-before the next action. At multiples of 20, consolidate the last 20 actions instead
-of doing a second incremental review. Inspect task_harness(action=inspect) for the exact
-window and opportunity; submit evidence-linked task_harness(action=review).
+Runtime creates a compact review opportunity every 5 completed ARC actions and
+uses a 20-action boundary for consolidation. These are advisory, never action
+gates: inspect task_harness(action=inspect) only when the current decision would
+benefit from a Harness or research judgment, then submit an evidence-linked
+task_harness(action=review) when warranted.
 Omit opportunity_id when there is one pending review; runtime binds it. Submit only
 components with an opinion; runtime marks omitted components deferred. Use the
 returned review_contract for legal dispositions, required semantic fields and a
@@ -83,7 +94,7 @@ in distinct runtime situations. Treat it as one optional decision candidate. If
 you select it, pass its `research_call` directly to `auto_research`; do not rebuild
 the evidence list or infer that the grouped situations share a mechanism.
 Use the capsule's structured `next_experiment` (or the completion inbox and
-`task_harness_status.research_experiment_candidates`) as a decision candidate.
+`task_harness(action='inspect').research_experiment_candidates`) as a decision candidate.
 Check its `as_of_event` against the current state, then either discard it, record
 why it is not applicable, or accept the unique pending request with
 `arc_action.decision.approve_research_experiment=true`. Runtime binds its

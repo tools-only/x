@@ -1,5 +1,6 @@
 /** Lossless structured projection helpers for Auto-Research output. */
 import { normalizeHarnessDelivery, normalizeMethodSpecification, type HarnessRoutePlan } from "./pi_auto_research_harness_router.ts";
+import { normalizeResearchProgress } from "./pi_auto_research_agenda.ts";
 
 const ASSESSMENT_DIMENSIONS = new Set(["explanation", "method_correctness", "method_utility"]);
 const ASSESSMENT_VERDICTS = new Set(["supported", "contradicted", "inconclusive"]);
@@ -158,6 +159,7 @@ export function normalizeAutoResearchReport(input: unknown): Record<string, any>
 	const confidenceUpdate = normalizeConfidenceUpdate(report.confidence_update);
 	const planningImplications = normalizePlanningImplications(report.planning_implications);
 	const explicitMethodCandidates = normalizeMethodCandidates(report.method_candidates);
+	const researchProgress = normalizeResearchProgress(report.research_progress);
 	const migratedMethodCandidates = proposals.flatMap((item, index) => {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return [];
 		const raw = item.format === "auto-research-harness-delivery-v1" ? item : item.delivery;
@@ -197,6 +199,7 @@ export function normalizeAutoResearchReport(input: unknown): Record<string, any>
 		planning_implications: planningImplications,
 		method_candidates: methodCandidates,
 		next_research_question: normalizedText(report.next_research_question),
+		...(researchProgress ? { research_progress: researchProgress } : {}),
 		...(experimentRequest ? { experiment_request: experimentRequest } : {}),
 		...(confidenceUpdate ? { confidence_update: confidenceUpdate } : {}),
 		harness_proposals: proposals.flatMap((item) => {
@@ -284,6 +287,12 @@ export function assertHarnessProposalEvidenceLinks(report: Record<string, any>):
 		...(Array.isArray(report.findings) ? report.findings.flatMap((finding: Record<string, any>) =>
 			Array.isArray(finding?.evidence_refs) ? finding.evidence_refs.map(String) : []) : []),
 	]);
+	const progressRefs = Array.isArray(report.research_progress?.evidence_refs)
+		? report.research_progress.evidence_refs.map(String) : [];
+	const unlinkedProgressRefs = progressRefs.filter((reference: string) => !reportEvidenceRefs.has(reference));
+	if (unlinkedProgressRefs.length) {
+		throw new Error(`research progress evidence is not linked to report findings/evidence: ${unlinkedProgressRefs.join(", ")}`);
+	}
 	for (const candidate of Array.isArray(report.method_candidates) ? report.method_candidates : []) {
 		const refs = Array.isArray(candidate?.basis_refs) ? candidate.basis_refs.map(String) : [];
 		const methodRefs = [
@@ -372,6 +381,7 @@ export function buildAutoResearchCapsule(input: {
 		...(report.experiment_request ? { next_experiment: report.experiment_request } : {}),
 		...(report.confidence_update ? { confidence_update: report.confidence_update } : {}),
 		planning_implications: report.planning_implications,
+		...(report.research_progress ? { research_progress: report.research_progress } : {}),
 		next_research_question: report.next_research_question,
 		limitations: report.limitations,
 		method_candidates: report.method_candidates,

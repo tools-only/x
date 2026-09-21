@@ -216,23 +216,22 @@ def _validate_scenario(
     if scenario == "memory":
         continuations = _records(root / "auto-research-continuations.jsonl")
         checkpoint = continuations[0].get("checkpoint", {}) if continuations else {}
-        _check(checkpoint.get("cursor") == "SMOKE_SAVED_CURSOR"
-               and "SMOKE_SAVED_FINDING" in json.dumps(checkpoint.get("draft_findings"))
+        _check(checkpoint.get("cursor") == "provider-output-length"
+               and "observation:execution-observation-1@v1" in checkpoint.get("selected_resource_refs", [])
                and checkpoint.get("partial_output") == ""
                and checkpoint.get("evidence_read_count", 0) >= 1,
-               "thinking-only length preserved semantic checkpoint and evidence progress", checks)
+               "thinking-only length preserved runtime checkpoint and evidence progress", checks)
         child_contexts = [item for item in _records(root / "arc-smoke-provider-contexts.jsonl")
                           if item.get("research_child") and item.get("request") == 0]
-        _check(any((item.get("checkpoint_reloaded") or {}).get("cursor") == "SMOKE_SAVED_CURSOR"
+        _check(any((item.get("checkpoint_reloaded") or {}).get("cursor") == "provider-output-length"
                    and (item.get("checkpoint_reloaded") or {}).get("evidence_read_count", 0) >= 1
                    for item in child_contexts),
                "next real child process reloaded the saved research state", checks)
         _check(any((item.get("checkpoint_reloaded") or {}).get("evidence_read_count", 0) >= 2
-                   and "SMOKE_SAVED_FINDING" in json.dumps((item.get("checkpoint_reloaded") or {}).get("draft_findings"))
-                   and (item.get("checkpoint_reloaded") or {}).get("cursor") == "SMOKE_SAVED_CURSOR"
+                   and (item.get("checkpoint_reloaded") or {}).get("cursor") == "provider-output-length"
                    for item in _records(root / "arc-smoke-provider-contexts.jsonl")
-                   if item.get("research_child") and item.get("request") == 2),
-               "resumed child advanced evidence count without overwriting saved findings", checks)
+                   if item.get("research_child") and item.get("request", -1) >= 1),
+               "resumed child advanced persisted evidence progress", checks)
         _check([item.get("stop_reason") for item in continuations] == ["length", "submitted_report"],
                "Auto-Research resumed a provider length boundary and submitted", checks)
         _check(len({item.get("session_id") for item in continuations}) == 1

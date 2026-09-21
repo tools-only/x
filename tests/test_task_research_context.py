@@ -84,6 +84,36 @@ def run_output_policy_helper(expression: str, *, input_value=None):
     return json.loads(completed.stdout)
 
 
+def run_agenda_helper(expression: str, *, input_value=None):
+    node, _ = _pi_cli()
+    helper = Path(__file__).resolve().parents[1] / "demo" / "pi_auto_research_agenda.ts"
+    script = f'import * as agenda from {json.dumps(helper.as_uri())};console.log(JSON.stringify({expression}));'
+    env = os.environ.copy()
+    if input_value is not None:
+        env["AUTORESEARCH_AGENDA_TEST_INPUT"] = json.dumps(input_value)
+    completed = subprocess.run(
+        [node, "--experimental-strip-types", "--input-type=module", "-e", script],
+        capture_output=True, text=True, env=env,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_open_research_parent_attention_is_limited_to_actionable_delivery():
+    quiet = run_agenda_helper(
+        "agenda.researchReportNeedsParentAttention(JSON.parse(process.env.AUTORESEARCH_AGENDA_TEST_INPUT))",
+        input_value={"research_progress": {"parent_relevance": "later"}, "planning_implications": [],
+                     "method_candidates": [], "harness_proposals": []},
+    )
+    actionable = run_agenda_helper(
+        "agenda.researchReportNeedsParentAttention(JSON.parse(process.env.AUTORESEARCH_AGENDA_TEST_INPUT))",
+        input_value={"research_progress": {"parent_relevance": "later"},
+                     "experiment_request": {"objective": "distinguish alternatives"}},
+    )
+    assert quiet is False
+    assert actionable is True
+
+
 def run_router_helper(expression: str, *, input_value):
     node, _ = _pi_cli()
     helper = Path(__file__).resolve().parents[1] / "demo" / "pi_auto_research_harness_router.ts"
@@ -2729,6 +2759,100 @@ def test_non_blocking_auto_research_persists_a_pending_session_checkpoint(tmp_pa
         broker.close()
 
 
+def test_open_auto_research_owns_question_history_agenda_and_parent_delivery(tmp_path):
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "open-auto-research-agenda"
+    base_env = {
+        "PI_AUTORESEARCH_PI_CLI": cli,
+        "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+        "PI_AUTORESEARCH_MODEL": "scripted",
+        "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+    }
+    first_report = {
+        "format": "auto-research-report-v1",
+        "status": "provisional",
+        "conclusion": "A recurring representation question is worth tracking, but it does not change the current decision.",
+        "findings": [], "evidence_refs": [], "alternatives": ["The apparent recurrence may be incidental."],
+        "limitations": ["No discriminating environment evidence is available yet."],
+        "validation_plan": "Compare the next distinct state transition.",
+        "research_progress": {
+            "topic": "state representation recurrence",
+            "question": "Which state features recur before useful transitions?",
+            "status": "continue", "parent_relevance": "later",
+            "rationale": "The question may support a later reusable representation.",
+            "hypothesis": "A compact state relation may predict useful transitions.",
+            "evidence_refs": [], "next_step": "Compare the next distinct transition.",
+        },
+        "harness_proposals": [],
+    }
+    first_events = _run_fixture(
+        root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+        extra_env={
+            **base_env,
+            "PI_SUBAGENT_STEPS": json.dumps([
+                {"name": "task_resource", "arguments": {"action": "inspect", "kind": "observation", "limit": 10}},
+                {"name": "submit_research_report", "arguments": {"report": first_report}},
+            ]),
+        },
+        steps=[{"name": "auto_research", "arguments": {"action": "start", "current_concern": "Choose the next action cheaply."}}],
+    )
+    first_payload = json.loads(results(first_events, "auto_research")[0]["result"]["content"][0]["text"])
+    assert first_payload["format"] == "auto-research-progress-receipt-v1"
+    assert first_payload["parent_attention"] is False
+    assert "recurring representation" not in json.dumps(first_payload)
+    first_agenda = records(root, "auto-research-agenda.jsonl")[-1]
+    assert first_agenda["version"] == 1
+    assert first_agenda["topic"] == "state representation recurrence"
+    assert first_agenda["last_report_ref"] == "research_report:auto-research-1@v1"
+    first_prompt = (root / ".task-child-prompts" / "auto-research-1_continuation-1.txt").read_text(encoding="utf-8")
+    assert '"open_allocation":true' in first_prompt
+    assert '"format":"auto-research-history-catalog-v1"' in first_prompt
+    assert "Choose the next action cheaply" in first_prompt
+
+    second_report = {
+        "format": "auto-research-report-v1",
+        "status": "supported_within_scope",
+        "conclusion": "The prior research line now has a decision-relevant state comparison.",
+        "findings": [], "evidence_refs": ["research_report:auto-research-1@v1"],
+        "alternatives": [], "limitations": ["The conclusion remains local to observed states."],
+        "validation_plan": "Use the comparison in the current decision, then assess its result.",
+        "research_progress": {
+            "topic": "state representation recurrence",
+            "question": "Which state features recur before useful transitions?",
+            "status": "continue", "parent_relevance": "now",
+            "rationale": "The comparison now constrains the current decision.",
+            "hypothesis": "The recurring relation is locally predictive.",
+            "evidence_refs": ["research_report:auto-research-1@v1"],
+            "next_step": "Assess the next actual use.",
+        },
+        "harness_proposals": [],
+    }
+    second_events = _run_fixture(
+        root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+        extra_env={
+            **base_env,
+            "PI_SUBAGENT_STEPS": json.dumps([
+                {"name": "task_resource", "arguments": {"action": "read", "ref": "research_report:auto-research-1@v1", "limit": 8000}},
+                {"name": "submit_research_report", "arguments": {"report": second_report}},
+            ]),
+        },
+        steps=[{"name": "auto_research", "arguments": {"action": "start"}}],
+    )
+    second_payload = json.loads(results(second_events, "auto_research")[0]["result"]["content"][0]["text"])
+    assert second_payload["format"] == "auto-research-capsule-v1"
+    assert second_payload["summary"] == second_report["conclusion"]
+    agendas = records(root, "auto-research-agenda.jsonl")
+    assert [item["version"] for item in agendas] == [1, 2]
+    assert agendas[-1]["research_line_ref"] == agendas[0]["research_line_ref"]
+    second_prompt = (root / ".task-child-prompts" / "auto-research-2_continuation-1.txt").read_text(encoding="utf-8")
+    assert '"version":1' in second_prompt and '"research_agenda"' in second_prompt
+    assert '"new_versions":1' in second_prompt
+    accesses = records(root, "task-resource-access.jsonl")
+    assert any(item["resource_ref"] == "research_report:auto-research-1@v1"
+               and item.get("reader") == "subagent" for item in accesses)
+
+
 def test_auto_research_resume_reuses_the_same_session(tmp_path):
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
@@ -3438,7 +3562,7 @@ def test_closed_scope_rejects_reuse_but_allows_explicit_same_task_resume(tmp_pat
     assert check().returncode == 0
 
 
-def test_arc_current_supplies_frame_and_explicit_full_restores_same_version(tmp_path):
+def test_arc_runtime_supplies_current_frame_without_a_model_state_read(tmp_path):
     class State(BaseHTTPRequestHandler):
         def do_GET(self):
             body = json.dumps({"state": "NOT_FINISHED", "levels_completed": 0,
@@ -3462,8 +3586,7 @@ def test_arc_current_supplies_frame_and_explicit_full_restores_same_version(tmp_
         node, cli = _pi_cli()
         root = tmp_path / "frame"
         root.mkdir()
-        steps = [{"name": "task_harness", "arguments": {"action": "start"}}] + [
-            {"name": "arc_state", "arguments": {"request": request}} for request in ("current", "current", "full")]
+        steps = [{"name": "task_harness", "arguments": {"action": "start"}}]
         with PiKernel([node, cli, "--mode", "rpc", "--provider", "offline-external-test", "--model", "scripted",
                        "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
                        "--extension", str(project / "demo/pi_arc_agi_3_extension.ts"),
@@ -3481,6 +3604,8 @@ def test_arc_current_supplies_frame_and_explicit_full_restores_same_version(tmp_
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
-    states = results(events, "arc_state")
-    assert [s["result"]["details"]["frame_returned"] for s in states] == [True, False, True]
-    assert states[0]["result"]["content"][0]["text"] == states[2]["result"]["content"][0]["text"]
+    assert not results(events, "arc_state")
+    contexts = [json.loads(line)["context"] for line in (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert "# Current public ARC state (automatically supplied)" in contexts[0]["systemPrompt"]
+    assert "Lossless coordinate runs (inclusive columns), size=2x2:" in contexts[0]["systemPrompt"]
+    assert "arc_state" not in {tool["name"] for tool in contexts[0]["tools"]}

@@ -179,6 +179,8 @@ export function buildResearchWorkset(input: Record<string, any>, maxChars: numbe
 		checkpoint: input.checkpoint ?? null,
 		...(input.research_checkpoint !== undefined ? { research_checkpoint: input.research_checkpoint } : {}),
 		...(input.research_state !== undefined ? { research_state: input.research_state } : {}),
+		...(input.research_agenda !== undefined ? { research_agenda: input.research_agenda } : {}),
+		...(input.history_catalog !== undefined ? { history_catalog: input.history_catalog } : {}),
 		...(input.cross_context_comparison !== undefined ? { cross_context_comparison: input.cross_context_comparison } : {}),
 		resource_refs: [...new Set((Array.isArray(input.resource_refs) ? input.resource_refs : []).map(String))],
 		evidence_refs: [...new Set((Array.isArray(input.evidence_refs) ? input.evidence_refs : []).map(String))],

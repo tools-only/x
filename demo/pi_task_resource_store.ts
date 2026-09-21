@@ -21,6 +21,11 @@ const FILES: Record<string, string> = {
 	research_run: "auto-research-runs.jsonl",
 	research_report: "auto-research-reports.jsonl",
 	research_session: "auto-research-sessions.jsonl",
+	research_plan: "auto-research-plans.jsonl",
+	research_handoff: "auto-research-handoffs.jsonl",
+	research_candidate: "auto-research-opportunities.jsonl",
+	research_agenda: "auto-research-agenda.jsonl",
+	harness_assembly: "task-harness-assemblies.jsonl",
 	method: "task-method-lifecycle.jsonl",
 	effect_assessment: "effect-assessments.jsonl",
 	harness_observation: "harness-observations.jsonl",
@@ -40,8 +45,11 @@ export function installTaskResultSemantics(pi: ExtensionAPI) {
 	// result hook is required to preserve structured conflicts as real failures.
 	pi.on("tool_result", (event) => {
 		if ((event.details as any)?.format === "task-resource-version-conflict-v1") return { isError: true };
+		if ((event.details as any)?.format === "task-harness-assembly-version-conflict-v1") return { isError: true };
 		if ((event.details as any)?.format === "auto-research-harness-apply-result-v1"
 			&& ["partial", "failed"].includes(String((event.details as any)?.route_status))) return { isError: true };
+		if ((event.details as any)?.format === "auto-research-adoption-v1"
+			&& ["partial", "failed"].includes(String((event.details as any)?.status))) return { isError: true };
 		return {};
 	});
 }
@@ -143,6 +151,8 @@ export function installTaskResourceReader(pi: ExtensionAPI, root: string, allowe
 	installTaskResultSemantics(pi);
 	const scope = ensureTaskScope(root);
 	const allowed = allowedRefs ? new Set(allowedRefs) : undefined;
+	const isAllowed = (ref: string) => !allowed || allowed.has(ref)
+		|| allowed.has(`${String(ref).split(":", 1)[0]}:*`);
 	if (allowed) readerGrants.set(pi, allowed);
 	pi.registerTool({
 		name: "task_resource", label: "Task-local resource index and paged read",
@@ -156,7 +166,7 @@ export function installTaskResourceReader(pi: ExtensionAPI, root: string, allowe
 		async execute(_id, p) {
 			if (p.action === "read") {
 				const ref = String(p.ref ?? "");
-				if (allowed && !allowed.has(ref)) throw new Error("resource was not granted to this child invocation");
+				if (!isAllowed(ref)) throw new Error("resource was not granted to this child invocation");
 				const record = resolveTaskResource(root, ref);
 				const serialized = JSON.stringify(record);
 				const offset = p.offset ?? 0, limit = p.limit ?? 2000;
@@ -193,7 +203,7 @@ export function installTaskResourceReader(pi: ExtensionAPI, root: string, allowe
 				const latest = new Map<string, Record<string, any>>();
 				for (const record of taskRecords(root, kind)) {
 					const metadata = resourceMetadata(kind, record);
-					if (allowed && !allowed.has(metadata.resource_ref)) continue;
+					if (!isAllowed(metadata.resource_ref)) continue;
 					latest.set(resourceName(record), metadata);
 				}
 				return [...latest.values()];

@@ -53,7 +53,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 				// inherited task resources require paged task_resource coverage here;
 				// otherwise a large observation envelope can keep a bounded question
 				// from ever reaching its report boundary.
-				refs.filter((ref): ref is string => typeof ref === "string"
+				refs.filter((ref): ref is string => typeof ref === "string" && /@v[1-9]\d*$/.test(ref)
 					&& /^(memory|skill|tool|subagent|finding|context):/.test(ref)
 					// The child role definition is an execution envelope, not selected
 					// evidence for the question and must not make an otherwise empty
@@ -222,6 +222,16 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 						description: "Optional decision implications; runtime validates and normalizes canonical fields.",
 					})),
 					next_research_question: Type.Optional(Type.String()),
+					research_progress: Type.Optional(Type.Object({
+						topic: Type.String({ minLength: 1 }),
+						question: Type.String({ minLength: 1 }),
+						status: Type.Union([Type.Literal("continue"), Type.Literal("complete"), Type.Literal("drop")]),
+						parent_relevance: Type.Union([Type.Literal("now"), Type.Literal("later"), Type.Literal("none")]),
+						rationale: Type.Optional(Type.String()),
+						hypothesis: Type.Optional(Type.String()),
+						evidence_refs: Type.Optional(Type.Array(Type.String())),
+						next_step: Type.Optional(Type.String()),
+					})),
 					experiment_request: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
 						description: "Optional bounded request for a parent-executed experiment; runtime validates the canonical request contract.",
 					})),
@@ -257,6 +267,9 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 						: suppliedReport.harness_proposals,
 				};
 				const report = normalizeAutoResearchReport(hydratedInput);
+				if (process.env.PI_AUTO_RESEARCH_OPEN_ALLOCATION === "1" && !report.research_progress) {
+					throw new Error("open Auto-Research requires research_progress so the runtime can preserve its agenda");
+				}
 				assertResearchConfidenceUpdate(report);
 				assertHarnessProposalEvidenceLinks(report);
 				assertResearchAssessmentReferences(report, (reference) => {

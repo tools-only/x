@@ -212,7 +212,7 @@ function compactHistoricalArcFrames(messages: any[]): any[] {
 		if (actionResults.some((item) => item.index === index) && !retainedActionResults.has(index)) {
 			return {
 				...message,
-				content: [{ type: "text", text: "[Historical ARC action result omitted; authoritative transition and delta are retained in bridge-events.jsonl and execution-observations.jsonl. Use the latest action result or arc_state(current).]" }],
+				content: [{ type: "text", text: "[Historical ARC action result omitted; authoritative transition and delta are retained in bridge-events.jsonl and execution-observations.jsonl. The current public frame is supplied automatically at the next decision cycle.]" }],
 			};
 		}
 		if (index === latestFrameIndex && !hasActionAfterLatestFrame) return message;
@@ -221,7 +221,7 @@ function compactHistoricalArcFrames(messages: any[]): any[] {
 			...message,
 			content: [{
 				type: "text",
-				text: "[Historical ARC frame omitted from model context; the complete result is retained in execution-observations.jsonl and bridge-events.jsonl and is recoverable by its canonical observation ID.]",
+				text: "[Historical ARC frame omitted from model context; the complete result is retained in execution-observations.jsonl and bridge-events.jsonl. The current public frame is supplied automatically at the next decision cycle.]",
 			}],
 		};
 	});
@@ -250,8 +250,8 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 	// decisions. This is context representation, not resource creation.
 	pi.on("context", (event) => ({ messages: compactHistoricalArcFrames(event.messages) }));
 	pi.registerTool({
-		name: "arc_state", label: "ARC state",
-		description: "Read the current native ARC-AGI-3 frame, state, available actions, and remaining action budget.",
+		name: "arc_state", label: "ARC state (internal recovery)",
+		description: "Internal current-state reader. The main ARC agent receives the complete current public frame automatically at every decision cycle, so it does not need to call this tool. It remains registered for bounded recovery and read-only child adapters.",
 		// The configured OpenAI-compatible gateway rejects an empty object schema
 		// (it serializes it as null). Keep one harmless required field, matching
 		// the existing project adapters' gateway-compatible tool contracts.
@@ -423,7 +423,7 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			// decision state separate without changing the native environment.
 			const continuation = budgetExhausted
 				? "ARC action budget is exhausted. Do not call environment actions or research again. The runner may request a final read-only level retrospective through task_resource and task_harness(action='level_review')."
-				: "The delta is recorded evidence, not an interpretation. arc_state(request='full') retrieves the complete current frame when needed.";
+				: "The delta is recorded evidence, not an interpretation. The complete current public frame is supplied automatically at the next decision cycle.";
 			return {
 				// Pi's agent loop treats this as a completed tool batch.  It emits
 				// agent_end without asking the provider for another turn, while the
@@ -457,7 +457,7 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 	});
 	installArcTrajectoryResource(pi, treatment);
 	const research = externalBenchmarkResearch(pi, treatment
-		? { baseTools: ["arc_state", "arc_action", "inspect_arc_trajectory"], taskToolAdapter: createArcTaskToolAdapter(() => bridge("/state")) }
+		? { baseTools: ["arc_action"], taskToolAdapter: createArcTaskToolAdapter(() => bridge("/state")) }
 		: {});
 	installArcTaskSubagents(pi, treatment, research?.resolveBasisRefs, () => bridge("/state"));
 	// `tool_result` is emitted before Pi finalizes the tool execution and before
@@ -478,7 +478,14 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 		}
 		return {};
 	});
-	pi.on("before_agent_start", (event) => {
+	pi.on("before_agent_start", async (event) => {
+		// The public state is a deterministic input to every irreversible ARC
+		// decision.  Supplying it here keeps the parent context continuous and
+		// removes a redundant model-controlled read/action round trip.  The
+		// bridge still records the pre-action state for every executed action.
+		const currentState = await bridge("/state");
+		lastFullFrameActionCount = actionCount;
+		const currentFrame = renderArcLatestFrameRuns(currentState);
 		const durableStarted = selfHarnessPreludeComplete || durableSelfHarnessPreludeCompleted();
 		if (durableStarted) selfHarnessPreludeComplete = true;
 		const prelude = durableStarted
@@ -486,18 +493,17 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			: "SELF-HARNESS STATUS: available from the first decision cycle; use it only when the current task justifies the cost. ";
 		return {
 		systemPrompt: `${ARC_SYSTEM_PROMPT}\n\n${event.systemPrompt}\n\n${prelude}` +
-			"Each arc_action returns a deterministic observation delta; call arc_state(request='current') " +
-			"when the latest frame is needed for the next decision. Treat each response as a decision cycle: " +
+			"The current complete public ARC frame is automatically supplied below. Treat each response as a decision cycle: " +
 			"analyze evidence, use bounded research or task-local self-harness when useful, and make arc_action " +
 			"the final call. The bridge requires one action per cycle, not action-first behavior. " +
 			(treatment
 				? "The task-local self-harness starts empty, is not a native skill loader, and its creation interfaces are available from the first treatment request. Components and compositions can be created, used, researched and revised across decision cycles; immediate next-action benefit is not required. "
 				: "") +
-			"When an arc_action tests a hypothesis, include a compact decision object with the hypothesis, prediction, and falsifier so the native runtime can preserve it across context compaction; this metadata is not sent to the ARC environment. If the hypothesis has a bounded research test, add validation_window={actions,expected,on_expiry}; reuse the same hypothesis_id to accumulate its window, and set replace=true or increase hypothesis_version only to begin a distinct test. Expiry records an elapsed window awaiting assessment, not a semantic verdict, and never stops ARC actions.",
+			"When an arc_action tests a hypothesis, include a compact decision object with the hypothesis, prediction, and falsifier so the native runtime can preserve it across context compaction; this metadata is not sent to the ARC environment. If the hypothesis has a bounded research test, add validation_window={actions,expected,on_expiry}; reuse the same hypothesis_id to accumulate its window, and set replace=true or increase hypothesis_version only to begin a distinct test. Expiry records an elapsed window awaiting assessment, not a semantic verdict, and never stops ARC actions.\n\n# Current public ARC state (automatically supplied)\n" + currentFrame,
 		};
 	});
 	if (!treatment) pi.on("before_agent_start", () => {
-		pi.setActiveTools(["arc_state", "arc_action"]);
+		pi.setActiveTools(["arc_action"]);
 		return {};
 	});
 }

@@ -31,6 +31,7 @@ import { loadPrompt } from "./prompt_loader.ts";
 import { admitTaskLocalOperation, noteArcActionCompleted } from "./pi_task_execution_admission.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
 import { bindOperationIdentity, controlOperationKey, eligibleResearchHandoffStatuses, failureClassification, latestControlRecords } from "./pi_harness_control.ts";
+import { latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
 
 type Finding = {
 	subject_kind?: "task" | "component" | "composition" | "strategy" | "research_method";
@@ -188,9 +189,12 @@ export default function externalBenchmarkResearch(
 		// executable parent entry. This keeps adapters such as Terminal-Bench
 		// from advertising a child lifecycle they do not provide.
 		const autoResearchAvailable = pi.getAllTools().some((tool) => tool.name === "auto_research");
+		// Do not replay the long research operating manual into every parent
+		// decision.  The parent needs only the choice boundary; the full contract
+		// is available on demand through auto_research(action='contract'), while
+		// the child receives its own complete contract when it is actually run.
 		const projectedMethod = autoResearchAvailable
-			? loadPrompt("auto_research_main_contract.md") + (process.env.PI_ARC_EXECUTION_GATE === "enabled"
-				? "\n\n" + loadPrompt("auto_research_arc_contract.md") : "")
+			? "AUTO-RESEARCH: use auto_research(action='start') for a bounded targeted or open read-only investigation when it can change a later decision. The child cannot act in the environment or change Harness. It returns a concise current-decision capsule only when needed; otherwise progress remains in the task store. Call auto_research(action='contract') only when its detailed lifecycle or planning rules are needed. Adopt a completed Harness proposal only through task_harness(action='adopt_research')."
 			: "";
 		if (!surfaceInitialized) {
 			surfaceInitialized = true;
@@ -212,7 +216,12 @@ export default function externalBenchmarkResearch(
 		// so compaction/session recovery cannot erase the agent's hypothesis and
 		// next experiment. Research remains lazy and is enabled through the
 		// task_harness entry when it has a concrete decision benefit.
-		const core = ["task_harness", "task_harness_status", "task_checkpoint", "task_resource", "task_validation"];
+		// ARC starts with three semantic choices only: act, ask the Harness
+		// runtime to help, or ask Auto-Research to investigate.  Checkpointing,
+		// resource indexes, validation and detailed status are deterministic
+		// support operations.  They remain registered and can be opened through
+		// task_harness(action='activate') when a concrete decision needs them.
+		const core = compactArc ? ["task_harness", "auto_research"] : ["task_harness", "task_harness_status", "task_checkpoint", "task_resource", "task_validation"];
 			// Only ARC uses the compact first-turn surface.  Ordinary benchmark
 			// adapters rely on the original direct task-local lifecycle and must
 			// see the registered component operations immediately; otherwise their
@@ -241,7 +250,9 @@ export default function externalBenchmarkResearch(
 				"task_harness_status", "task_tool_policy", "research_resource",
 				"task_validation", "assess_harness_effect", "compact_observation_context", "read",
 			]) : new Set<string>();
-			const initialManagement = ordinaryManagement.filter((name) => !compactInitialExcluded.has(name));
+			const initialManagement = (compactArc
+				? ["task_harness", "auto_research"]
+				: ordinaryManagement).filter((name) => !compactInitialExcluded.has(name));
 			const initialCore = core.filter((name) => !compactInitialExcluded.has(name));
 			const requested = (options.baseTools ?? pi.getActiveTools().filter((name) =>
 				name !== HARNESS_BOOTSTRAP_TOOL && name !== OBSERVATION_COMPACTION_TOOL))
@@ -270,7 +281,11 @@ export default function externalBenchmarkResearch(
 		// Put the task-local method and its prelude before the benchmark prompt.
 		// The benchmark still defines the environment contract, but the first
 		// planning frame is now self-harness/research oriented.
-		const overlay = renderTaskSystemPromptOverlay(readJsonl("task-system-prompt.jsonl") as any, taskKnowledgeEntries(readJsonl));
+		const overlay = renderTaskSystemPromptOverlay(
+			readJsonl("task-system-prompt.jsonl") as any,
+			taskKnowledgeEntries(readJsonl),
+			latestHarnessAssembly(readJsonl("task-harness-assemblies.jsonl")),
+		);
 		return { systemPrompt: `${projectedMethod}\n\n${event.systemPrompt}${overlay ? `\n\n# Task-local system-prompt overlay\n${overlay}` : ""}` };
 	});
 	const readJsonl = (name: string): Record<string, any>[] => {

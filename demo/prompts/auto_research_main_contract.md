@@ -1,11 +1,19 @@
 # Auto-Research: parent guide
 
-You own environment actions and the task-local harness. Use auto_research to
-resolve a grounded uncertainty or develop a missing problem-solving capability
-through bounded investigation. Research can span task phases and examine both
-environment mechanisms and your own reasoning, representations and repeated work.
-Direct execution remains valid. The read-only child receives selected material,
-not your transcript; you obtain environment evidence and own harness changes.
+You own environment actions and the task-local harness. Use auto_research either
+for a targeted bounded question or to allocate one open research turn. An open
+call is `auto_research(action="start")`, optionally with `current_concern`; runtime
+restores the durable research agenda, publishes a metadata-only history catalog
+and grants paged read access, while the read-only child chooses the question and
+evidence. Research can span task phases and examine environment mechanisms, your
+reasoning, representations and repeated work. You obtain environment evidence and
+own harness changes.
+
+Open research returns a full capsule only when it requests a current decision,
+proposes a method/Harness change, asks for an experiment, or supplies a planning
+implication. Otherwise it returns a short `auto-research-progress-receipt-v1` and
+keeps the full report plus versioned agenda outside the main context. Inspect the
+session or exact report only when the main flow needs those details.
 
 Before starting, prepare three conditions in the existing question/constraints
 and, for a plan node, completion_contract:
@@ -136,7 +144,7 @@ boundary; inspect the degraded state and continue useful task work.
 Consume the returned structured `experiment_request` rather than guessing an
 action from prose. Blocking results expose it in the capsule; non-blocking
 results are delivered in the next parent-turn completion inbox and remain
-available through `task_harness_status.research_experiment_candidates`. The
+available through `task_harness(action='inspect').research_experiment_candidates`. The
 request is only a candidate: compare `as_of_event` with current state and either
 discard it with a recorded reason or accept the unique pending request in the
 native `arc_action` decision with `approve_research_experiment=true`. If several

@@ -291,23 +291,21 @@ function providerStep(request: number, context: any): Step {
 		}
 		const lengthMarker = join(root, "arc-smoke-auto-research-length-once.marker");
 		if (scenario === "memory" && !existsSync(lengthMarker)) {
-			if (request === 0) return { kind: "tool", name: "arc_state", arguments: { request: "current" } };
-			if (request === 1) return { kind: "tool", name: "research_checkpoint", arguments: {
-				action: "save", cursor: "SMOKE_SAVED_CURSOR", evidence_refs: [evidenceRef],
-				draft_findings: [{ conclusion: "SMOKE_SAVED_FINDING", evidence_refs: [evidenceRef] }],
-				unresolved_questions: ["SMOKE_PENDING_APPROVAL"], next_step: "Approve and submit the saved finding.",
+			if (request === 0) return { kind: "tool", name: "task_resource", arguments: {
+				action: "read", ref: `observation:${evidenceRef}@v1`, offset: 0, limit: 200000,
 			} };
 			writeFileSync(lengthMarker, "native-session continuation required\n", "utf8");
 			return { kind: "length", text: "Synthetic reasoning-only interruption", thinkingOnly: true };
 		}
 		const delivery = deliveryFor(scenario);
 		const report = reportFor(delivery);
-		if (scenario === "memory" && request === 0) return { kind: "tool", name: "arc_state", arguments: { request: "current" } };
-		if (scenario === "memory" && request === 1) return { kind: "tool", name: "research_checkpoint", arguments: { action: "save" } };
+		if (scenario === "memory" && request === 0) return { kind: "tool", name: "task_resource", arguments: {
+			action: "read", ref: `observation:${evidenceRef}@v1`, offset: 0, limit: 200000,
+		} };
 		const steps: Step[] = [
 			{ kind: "tool", name: "submit_research_report", arguments: { report } },
 		];
-		return steps[request - (scenario === "memory" ? 2 : 0)] ?? { kind: "text", text: "research fixture complete" };
+		return steps[request - (scenario === "memory" ? 1 : 0)] ?? { kind: "text", text: "research fixture complete" };
 	}
 	if (isChild) {
 		const marker = join(root, "arc-smoke-delegate-length-once.marker");
