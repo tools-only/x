@@ -1,6 +1,11 @@
 /** Lossless structured projection helpers for Auto-Research output. */
-import { normalizeHarnessDelivery, normalizeMethodSpecification, type HarnessRoutePlan } from "./pi_auto_research_harness_router.ts";
+import { assessMethodAbstraction, normalizeMethodSpecification } from "./pi_auto_research_harness_router.ts";
 import { normalizeResearchProgress } from "./pi_auto_research_agenda.ts";
+import { normalizeCandidateUpdates } from "./pi_task_strategy_state.ts";
+import { baselineMethodCatalog, creatorForHarnessKind, researchAuthoringPrerequisite } from "./pi_harness_baseline_methods.ts";
+import { arcActionCoordinates } from "./pi_arc_action_input.ts";
+import { isTaskPureAuthoringProgram, validateTaskPureExpressionProgram } from "./pi_task_pure_authoring.ts";
+import { validateTaskJsonSchema } from "./pi_task_json_schema.ts";
 
 const ASSESSMENT_DIMENSIONS = new Set(["explanation", "method_correctness", "method_utility"]);
 const ASSESSMENT_VERDICTS = new Set(["supported", "contradicted", "inconclusive"]);
@@ -100,6 +105,8 @@ function normalizeConfidenceUpdate(value: unknown): Record<string, any> | undefi
 	const update = value as Record<string, any>;
 	return {
 		disposition: normalizedText(update.disposition),
+		target_ref: normalizedText(update.target_ref),
+		experiment_ref: normalizedText(update.experiment_ref),
 		previous: normalizedText(update.previous),
 		current: normalizedText(update.current),
 		basis: normalizedText(update.basis),
@@ -114,12 +121,56 @@ function normalizePlanningImplications(value: unknown): Record<string, any>[] {
 		const implication = item as Record<string, any>;
 		return [{
 			decision_context: normalizedText(implication.decision_context),
-			implication: normalizedText(implication.implication),
+			implication: normalizedText(implication.implication ?? implication.decision),
+			...(normalizedText(implication.rationale) ? { rationale: normalizedText(implication.rationale) } : {}),
 			applicability: normalizedText(implication.applicability),
 			evidence_refs: normalizedList(implication.evidence_refs),
-			reconsider_when: normalizedText(implication.reconsider_when),
+			reconsider_when: normalizedText(implication.reconsider_when ?? implication.reconsider_condition ?? implication.reconsideration_condition),
 		}];
 	});
+}
+
+/** Reuse delivers the existing actionable core; no new research or adoption is implied. */
+export function researchActionContinuation(report: Record<string, any>, reportRef: string,
+	observations: Record<string, any>[] = [], reportedAt?: string): Record<string, any> {
+	const progress = report.research_progress;
+	const proposal = {
+		...(progress?.parent_relevance === "now" && progress.next_step ? { next_step: progress.next_step } : {}),
+		...(report.experiment_request ? { next_experiment: report.experiment_request } : {}),
+		...(report.planning_implications?.length ? { planning_implications: report.planning_implications } : {}),
+	};
+	const cutoff = String(report.experiment_request?.as_of_event ?? "").replace(/^observation:/, "").replace(/@v\d+$/, "");
+	const cutoffIndex = cutoff ? observations.findIndex(row => row.observation_id === cutoff) : -1;
+	const reportedTime = reportedAt ? Date.parse(reportedAt) : NaN;
+	const later = observations.filter((row, index) => !row.is_error && row.tool_name === "arc_action"
+		&& (Number.isFinite(reportedTime) ? Date.parse(row.recordedAt) > reportedTime : cutoffIndex >= 0 && index > cutoffIndex));
+	const candidateIds = new Set((report.candidate_updates ?? []).map((candidate: Record<string, any>) => candidate.id)
+		.filter((id: unknown) => typeof id === "string" && id.length > 0));
+	const requestRef = report.experiment_request?.request_ref;
+	const linked = later.filter(row => {
+		const decision = row.input?.decision;
+		return decision && (candidateIds.has(decision.hypothesis_id) || candidateIds.has(decision.selection?.candidate_id)
+			|| Boolean(requestRef && decision.research_request_ref === requestRef));
+	});
+	const receipts = [...new Map([...(linked.length ? [linked[0]] : []), ...later.slice(-3)]
+		.map(row => [row.observation_id, row])).values()].map(row => ({
+		observation_ref: `observation:${row.observation_id}@v${row.version ?? 1}`,
+		action: row.input?.action, ...arcActionCoordinates(row.input),
+		...(arcActionCoordinates(row.input) ? {target_cell:row.arc_outcome?.action_target_cell} : {}),
+		changed_cells: row.arc_outcome?.observation_delta?.changed_cells,
+		level_changed: row.arc_outcome?.public_transition?.level_changed ?? null,
+		level_after: row.arc_outcome?.public_transition?.level_after ?? row.arc_outcome?.levels_completed ?? null,
+	}));
+	return { report_ref: reportRef, epistemic_status: linked.length
+		? "parent_candidate_linked_action_executed_not_semantically_validated" : "child_proposal_not_verified_or_adopted",
+		...(linked.length ? { previous_proposal: proposal } : proposal),
+		...(later.length ? { followup_evidence: { action_count: later.length, linked_action_count: linked.length,
+			receipts, omitted_receipt_count: Math.max(0,later.length-receipts.length),
+			meaning: "Later environment evidence; linkage is an explicit parent candidate/request reference, not proof that the report or goal is correct." } } : {}),
+		limitations: (report.limitations ?? []).slice(0, 3),
+		decision_boundary: linked.length
+			? "The parent has already acted on a candidate/request from this report. Its earlier probe is previous work, not a fresh next step. Reassess with the later receipts and remaining goal uncertainty; local pixel effects do not validate a target."
+			: "Compare this existing proposal and its evidence cutoff with the current observation. Choose a concrete discriminating action, revise/reject it with evidence, or seek a specific missing fact. Repeating start with unchanged materials produces no new evidence; research completion is not an environment result." };
 }
 
 function normalizeMethodCandidates(value: unknown): Record<string, any>[] {
@@ -128,25 +179,41 @@ function normalizeMethodCandidates(value: unknown): Record<string, any>[] {
 		const candidate = item as Record<string, any>;
 		const method = normalizeMethodSpecification(candidate.method);
 		if (!method) return [];
+		const quality = assessMethodAbstraction(method);
 		const candidateRef = normalizedText(candidate.candidate_ref);
 		const name = normalizedText(candidate.name);
 		const semanticKind = normalizedText(candidate.semantic_kind);
 		if (!candidateRef || !name || !["procedure", "computation", "plan", "role"].includes(semanticKind)) {
 			throw new Error("method candidate requires candidate_ref, name, and a method semantic_kind");
 		}
+		const computation: Record<string, any> = {};
+		const fields = ["program", "input_schema", "output_schema"];
+		if (fields.some(field => Object.prototype.hasOwnProperty.call(candidate, field))) {
+			if (semanticKind !== "computation") throw new Error("only computation method candidates accept program/schema");
+			if (!isTaskPureAuthoringProgram(candidate.program)) {
+				throw new Error("method candidate program must use the existing bounded pure authoring format");
+			}
+			// Validate syntax/limits without evaluating the child-authored expression.
+			// Keep authored source, not compiled IR, for the parent's explicit choice.
+			validateTaskPureExpressionProgram(candidate.program);
+			computation.program = candidate.program;
+			for (const field of ["input_schema", "output_schema"]) {
+				if (Object.prototype.hasOwnProperty.call(candidate, field)) {
+					computation[field] = validateTaskJsonSchema(candidate[field], `$.method_candidates.${field}`);
+				}
+			}
+		}
+		if (Object.prototype.hasOwnProperty.call(candidate, "implementation_ref")) {
+			throw new Error("research method candidates cannot supply implementation_ref");
+		}
 		return [{
 			candidate_ref: candidateRef, name, semantic_kind: semanticKind,
 			summary: normalizedText(candidate.summary), basis_refs: normalizedList(candidate.basis_refs), method,
+			quality_advisory: quality, ...computation,
 			...(normalizedText(candidate.proposed_delivery_id)
 				? { proposed_delivery_id: normalizedText(candidate.proposed_delivery_id) } : {}),
 		}];
 	});
-}
-
-function isIsolatableImplementationError(message: string): boolean {
-	return message.startsWith("computation program")
-		|| message.startsWith("computation delivery requires program or implementation_ref")
-		|| message.startsWith("pure_computation program cannot contain adapter_call");
 }
 
 export function normalizeAutoResearchReport(input: unknown): Record<string, any> {
@@ -156,10 +223,13 @@ export function normalizeAutoResearchReport(input: unknown): Record<string, any>
 	const findings = Array.isArray(report.findings) ? report.findings : [];
 	const proposals = Array.isArray(report.harness_proposals) ? report.harness_proposals : [];
 	const experimentRequest = normalizeExperimentRequest(report.experiment_request);
-	const confidenceUpdate = normalizeConfidenceUpdate(report.confidence_update);
+	const rawConfidenceUpdate = Object.prototype.hasOwnProperty.call(report, "confidence_update")
+		? report.confidence_update : report.confidence_update_unparsed?.raw;
+	const confidenceUpdate = normalizeConfidenceUpdate(rawConfidenceUpdate);
 	const planningImplications = normalizePlanningImplications(report.planning_implications);
 	const explicitMethodCandidates = normalizeMethodCandidates(report.method_candidates);
 	const researchProgress = normalizeResearchProgress(report.research_progress);
+	const candidateUpdates = normalizeCandidateUpdates(report.candidate_updates);
 	const migratedMethodCandidates = proposals.flatMap((item, index) => {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return [];
 		const raw = item.format === "auto-research-harness-delivery-v1" ? item : item.delivery;
@@ -176,7 +246,7 @@ export function normalizeAutoResearchReport(input: unknown): Record<string, any>
 	const methodCandidates = [...explicitMethodCandidates,
 		...migratedMethodCandidates.filter((candidate) => !explicitRefs.has(candidate.candidate_ref)
 			&& (!candidate.proposed_delivery_id || !explicitDeliveryIds.has(candidate.proposed_delivery_id)))];
-	return {
+	const normalized: Record<string, any> = {
 		format: "auto-research-report-v1",
 		status: REPORT_STATUSES.has(status) ? status : "unresolved",
 		conclusion: normalizedText(report.conclusion),
@@ -197,44 +267,34 @@ export function normalizeAutoResearchReport(input: unknown): Record<string, any>
 		limitations: normalizedList(report.limitations),
 		validation_plan: normalizedText(report.validation_plan),
 		planning_implications: planningImplications,
+		candidate_updates: candidateUpdates,
 		method_candidates: methodCandidates,
 		next_research_question: normalizedText(report.next_research_question),
 		...(researchProgress ? { research_progress: researchProgress } : {}),
 		...(experimentRequest ? { experiment_request: experimentRequest } : {}),
 		...(confidenceUpdate ? { confidence_update: confidenceUpdate } : {}),
-		harness_proposals: proposals.flatMap((item) => {
-			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-			const directDelivery = item.format === "auto-research-harness-delivery-v1" ? item : undefined;
-			// The child may submit the compact approval-only form after the
-			// complete delivery has been bound in its approval ledger. The child
-			// submit handler hydrates that body before calling this normalizer;
-			// preserve absence here so the same normalizer can also be used by
-			// parent-side capsule parsing without inventing or truncating content.
-			let delivery;
-			let proposalError = "";
-			try {
-				delivery = directDelivery
-					? normalizeHarnessDelivery(directDelivery)
-					: item.delivery === undefined ? undefined : normalizeHarnessDelivery(item.delivery);
-			} catch (error) {
-				proposalError = error instanceof Error ? error.message : String(error);
-				if (!isIsolatableImplementationError(proposalError)) throw error;
-			}
-			return [{
-				...(item.candidate_ref ? { candidate_ref: normalizedText(item.candidate_ref) } : {}),
-				...(item.approval_id ? { approval_id: normalizedText(item.approval_id) } : {}),
-				...(item.approval_version !== undefined ? { approval_version: Number(item.approval_version) } : {}),
-				...(item.approval_status ? { approval_status: normalizedText(item.approval_status) } : {}),
-				...(item.approval_tag ? { approval_tag: normalizedText(item.approval_tag) } : {}),
-				...(delivery ? { delivery } : {}),
-				...(proposalError ? {
-					proposal_status: "pending_implementation",
-					proposal_error: proposalError,
-					delivery_id: normalizedText((directDelivery ?? item.delivery)?.delivery_id),
-				} : {}),
-			}];
-		}),
+		// Auto-Research is a read-only epistemic subsystem. Historical reports may
+		// contain the former child-authored delivery shape; its explicit method was
+		// migrated above, but no materializable body crosses this boundary.
+		harness_proposals: [],
+		...(proposals.length ? { boundary_violations: [{
+			code: "child_component_authoring_forbidden",
+			count: proposals.length,
+			disposition: "method_metadata_migrated_when_present; component_body_discarded",
+		}] } : {}),
 	};
+	if (rawConfidenceUpdate !== undefined) {
+		try {
+			if (!confidenceUpdate) throw new Error("confidence_update must be a structured object");
+			assertResearchConfidenceUpdate(normalized);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			delete normalized.confidence_update;
+			normalized.confidence_update_unparsed = { raw: rawConfidenceUpdate, warning: message };
+			normalized.warnings = [{ code: "confidence_update_not_applied", message }];
+		}
+	}
+	return normalized;
 }
 
 export function assertResearchAssessmentReferences(
@@ -302,49 +362,82 @@ export function assertHarnessProposalEvidenceLinks(report: Record<string, any>):
 		const unlinked = [...new Set([...refs, ...methodRefs])].filter((reference) => !reportEvidenceRefs.has(reference));
 		if (unlinked.length) throw new Error(`method candidate evidence is not linked to report findings/evidence: ${unlinked.join(", ")}`);
 	}
-	for (const proposal of Array.isArray(report.harness_proposals) ? report.harness_proposals : []) {
-		const deliveryBasisRefs = Array.isArray(proposal?.delivery?.basis_refs)
-			? proposal.delivery.basis_refs.map(String) : [];
-		const unlinkedDeliveryRefs = deliveryBasisRefs.filter((reference: string) => !reportEvidenceRefs.has(reference));
-		if (unlinkedDeliveryRefs.length) {
-			throw new Error(`delivery basis evidence is not linked to report findings/evidence: ${unlinkedDeliveryRefs.join(", ")}`);
-		}
-		const promptBasisRefs = Array.isArray(proposal?.delivery?.system_prompt_basis?.evidence_refs)
-			? proposal.delivery.system_prompt_basis.evidence_refs.map(String) : [];
-		const unlinkedPromptRefs = promptBasisRefs.filter((reference: string) => !reportEvidenceRefs.has(reference));
-		if (unlinkedPromptRefs.length) {
-			throw new Error(`system_prompt_basis evidence is not linked to report findings/evidence: ${unlinkedPromptRefs.join(", ")}`);
-		}
-	}
 }
 
-export function compactHarnessRouteForCapsule(route: HarnessRoutePlan): Record<string, any> {
-	return {
-		format: route.format,
-		route_id: route.route_id,
-		route_ref: route.route_ref,
-		version: route.version,
-		run_id: route.run_id,
-		delivery_id: route.delivery_id,
-		delivery_hash: route.delivery_hash,
-		approval_ref: route.approval_ref,
-		review_status: route.review_status,
-		disposition: route.disposition,
-		route_status: route.route_status,
-		...(route.execution_status ? { execution_status: route.execution_status } : {}),
-		...(route.execution_applied !== undefined ? { execution_applied: route.execution_applied } : {}),
-		base_target: route.base_target,
-		steps: route.steps.map((step) => ({
-			step_id: step.step_id,
-			order: step.order,
-			target: step.target,
-			native_tool: step.native_tool,
-			status: step.status,
-			depends_on: [...step.depends_on],
-			...(step.reason ? { reason: step.reason } : {}),
-		})),
-		router: { ...route.router },
-	};
+function safeId(value: string): string {
+	return value.replace(/[^a-zA-Z0-9-]/g, "-");
+}
+
+export function researchMethodResourceRef(runId: string, candidateRef: string): string {
+	return `method:${safeId(`method-${runId}-${candidateRef}`)}@v1`;
+}
+
+/** A non-executable handoff can carry authored pure code as research input.
+ * The parent still chooses the complete component and explicit activation. */
+export function buildParentAuthoringHandoffs(input: {
+	runId: string; reportRef: string; researchLineRef?: string; report: unknown;
+}): Record<string, any>[] {
+	const report = normalizeAutoResearchReport(input.report);
+	return report.method_candidates.flatMap((candidate: Record<string, any>) => {
+		// Applicability scope does not decide the component kind. A method limited
+		// to one situation may still be a Skill when it teaches a procedure rather
+		// than replaying the source trajectory.
+		const componentKind = ({ procedure: "skill", computation: "tool", role: "subagent", plan: "system_prompt" } as Record<string, string>)[candidate.semantic_kind];
+		if (!componentKind) return [];
+		const creatorName = componentKind === "system_prompt" ? undefined
+			: creatorForHarnessKind(componentKind as "skill" | "tool" | "subagent");
+		const creator = creatorName ? baselineMethodCatalog().find((item) => item.name === creatorName) : undefined;
+		if (creatorName && !creator) throw new Error(`missing baseline creator: ${String(creatorName)}`);
+		const methodRef = researchMethodResourceRef(input.runId, candidate.candidate_ref);
+		const handoffId = safeId(`${input.runId}-${candidate.candidate_ref}-${componentKind}`);
+		const required = componentKind === "system_prompt"
+			? ["scope", "content/strategy policy with applicability and reconsideration"]
+			: componentKind === "skill"
+			? ["description/use trigger", "instructions/procedural body"]
+			: componentKind === "tool"
+				? ["description", "input_schema", "program or implementation_ref", "output_schema when required by the program"]
+				: ["description/use trigger", "instructions/role contract", "tools (an empty array is valid)"];
+		return [{
+			format: "parent-capability-authoring-handoff-v1",
+			handoff_id: handoffId, version: 1,
+			resource_ref: `authoring_handoff:${handoffId}@v1`,
+			status: "awaiting_parent_authoring",
+			source: {
+				research_run_ref: `research_run:${input.runId}@v1`, report_ref: input.reportRef,
+				...(input.researchLineRef ? { research_line_ref: input.researchLineRef } : {}),
+				method_candidate_ref: candidate.candidate_ref, method_ref: methodRef,
+			},
+			recommended_component_kind: componentKind,
+			candidate_summary: candidate.summary,
+			quality_advisory: candidate.quality_advisory,
+			...(candidate.program ? { computation_candidate: Object.fromEntries(
+				["program", "input_schema", "output_schema"].filter(field => candidate[field] !== undefined)
+					.map(field => [field, candidate[field]])) } : {}),
+			...(creator ? { creator: {
+				name: creator.name, method_ref: creator.method_ref, sha256: creator.sha256,
+				read_call: { name: "task_harness", arguments: {
+					action: "read_method", method_name: creator.name, expected_sha256: creator.sha256,
+				} },
+			} } : {}),
+			authoring_contract: {
+				owner: "parent_agent", runtime_role: "validate_version_assemble_record_only",
+				creator_read_required: false, parent_authored_body_required: true,
+				research_is_input_not_component: true, required_parent_authored_fields: required,
+			},
+			change_call_template: {
+				name: "task_harness", executable: false,
+				arguments: { action: "change", changes: [{ operation: "create", candidate_seed: {
+					semantic_kind: candidate.semantic_kind, name: candidate.name,
+					basis_refs: [input.reportRef, methodRef],
+				} }], decision_seed: { basis_refs: [input.reportRef, methodRef] } },
+				required_before_execution: [
+					"Choose or revise the research input and supply the complete component candidate for the stated scope; creator reference and method quality metadata are optional.",
+					"Replace candidate_seed with candidate and provide decision.reason plus decision.expected.",
+				],
+			},
+			recordedAt: new Date().toISOString(),
+		}];
+	});
 }
 
 export function buildAutoResearchCapsule(input: {
@@ -357,7 +450,7 @@ export function buildAutoResearchCapsule(input: {
 	researchProblem?: Record<string, any>;
 	report: unknown;
 	usage?: Record<string, any>;
-	routePlans?: HarnessRoutePlan[];
+	parentAuthoringHandoffs?: Record<string, any>[];
 }): Record<string, any> {
 	const report = normalizeAutoResearchReport(input.report);
 	return {
@@ -369,6 +462,10 @@ export function buildAutoResearchCapsule(input: {
 		status: input.status,
 		scope: input.scope,
 		...(input.researchLineRef ? { research_line_ref: input.researchLineRef } : {}),
+		followup_template: {name:"auto_research", arguments:{action:"start",
+			authoring_method_ref:researchAuthoringPrerequisite().authoring_method_ref,
+			...(input.researchLineRef ? {research_line_ref:input.researchLineRef} : {}),
+			resource_refs:[input.reportRef]}, required_agent_fields:["question","interaction_mode"]},
 		...(input.researchProblem ? { research_problem: input.researchProblem } : {}),
 		summary: report.conclusion,
 		key_findings: report.findings.map((finding: Record<string, any>) => ({
@@ -380,44 +477,27 @@ export function buildAutoResearchCapsule(input: {
 		next_test: report.validation_plan,
 		...(report.experiment_request ? { next_experiment: report.experiment_request } : {}),
 		...(report.confidence_update ? { confidence_update: report.confidence_update } : {}),
+		...(report.warnings?.length ? { warnings: report.warnings } : {}),
 		planning_implications: report.planning_implications,
+		...(report.candidate_updates.length ? { candidate_updates: report.candidate_updates.slice(0, 3).map((item: Record<string, any>) => ({
+			id: item.id, kind: item.kind, status: item.status,
+			claim: item.claim.slice(0, 120), detail_ref: input.reportRef,
+		})), omitted_candidate_updates: Math.max(0, report.candidate_updates.length - 3) } : {}),
 		...(report.research_progress ? { research_progress: report.research_progress } : {}),
 		next_research_question: report.next_research_question,
 		limitations: report.limitations,
 		method_candidates: report.method_candidates,
-		proposal_index: report.harness_proposals.map((proposal: Record<string, any>, index: number) => ({
-			proposal_id: `${input.runId}:proposal-${index + 1}`,
-			...(proposal.candidate_ref ? { candidate_ref: proposal.candidate_ref } : {}),
-			...(proposal.approval_id ? { approval_id: proposal.approval_id } : {}),
-			...(proposal.approval_version !== undefined ? { approval_version: proposal.approval_version } : {}),
-			...(proposal.approval_status ? { approval_status: proposal.approval_status } : {}),
-			...(proposal.approval_tag ? { approval_tag: proposal.approval_tag } : {}),
-			delivery_id: proposal.delivery?.delivery_id ?? proposal.delivery_id ?? null,
-			semantic_kind: proposal.delivery?.semantic_kind ?? null,
-			operation: proposal.delivery?.operation ?? null,
-			name: proposal.delivery?.name ?? null,
-			summary: proposal.delivery?.summary ?? null,
-			basis_refs: proposal.delivery?.basis_refs ?? [],
-			...(proposal.proposal_status ? { status: proposal.proposal_status, reason: proposal.proposal_error } : {}),
-		})),
-		harness_outputs: (input.routePlans ?? []).map((route) => ({
-			delivery_id: route.delivery_id,
-			disposition: route.disposition,
-			status: route.route_status,
-			target: route.base_target,
-		})),
-		...((input.routePlans ?? []).some((route) => route.disposition === "materialize" && route.route_status === "ready") ? {
-			adoption_call: { name: "task_harness", arguments: {
-				action: "adopt_research", research_run_ref: `research_run:${input.runId}@v1`,
-			} },
-		} : {}),
+		parent_authoring_handoffs: input.parentAuthoringHandoffs ?? buildParentAuthoringHandoffs({
+			runId: input.runId, reportRef: input.reportRef, researchLineRef: input.researchLineRef, report,
+		}),
+		...(report.boundary_violations ? { boundary_violations: report.boundary_violations } : {}),
 		usage: {
 			input: Number(input.usage?.input ?? 0),
 			output: Number(input.usage?.output ?? 0),
 			cacheRead: Number(input.usage?.cacheRead ?? 0),
 			cacheWrite: Number(input.usage?.cacheWrite ?? 0),
 		},
-		adoption: "No child-side mutation occurred. Decide whether to adopt the completed research result; task_harness(action=adopt_research) resolves and executes its compiled routes. Only the returned native receipt proves application.",
+		authoring: "No child-side component creation or mutation occurred. A parent_authoring_handoff is research input, including optional bounded computation source. The parent chooses or revises a complete candidate, submits through the canonical authoring tools, then explicitly assembles and uses its exact version. Creator details are available on demand. Runtime never automatically turns a report into a component.",
 	};
 }
 

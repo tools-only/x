@@ -73,9 +73,6 @@ export function createResearchPlan(input: Record<string, any>, planId: string): 
 	const rationale = assertText(assessment.rationale, "complexity_assessment.rationale");
 	const rawNodes = Array.isArray(input.nodes) ? input.nodes : [];
 	if (!rawNodes.length) throw new Error("research plan requires at least one node");
-	if (assessment.level === "compound" && rawNodes.length < 2) {
-		throw new Error("compound research goals must be decomposed into at least two nodes");
-	}
 	const nodes: ResearchPlanNode[] = rawNodes.map((raw: Record<string, any>) => ({
 		...raw,
 		node_id: assertNodeId(raw.node_id),
@@ -180,8 +177,11 @@ export function buildResearchWorkset(input: Record<string, any>, maxChars: numbe
 		...(input.research_checkpoint !== undefined ? { research_checkpoint: input.research_checkpoint } : {}),
 		...(input.research_state !== undefined ? { research_state: input.research_state } : {}),
 		...(input.research_agenda !== undefined ? { research_agenda: input.research_agenda } : {}),
+		...(input.competing_research_agendas !== undefined ? { competing_research_agendas: input.competing_research_agendas } : {}),
 		...(input.history_catalog !== undefined ? { history_catalog: input.history_catalog } : {}),
 		...(input.cross_context_comparison !== undefined ? { cross_context_comparison: input.cross_context_comparison } : {}),
+		...(input.competition_view !== undefined ? { competition_view: input.competition_view } : {}),
+		...(input.competition_view_ref !== undefined ? { competition_view_ref: input.competition_view_ref } : {}),
 		resource_refs: [...new Set((Array.isArray(input.resource_refs) ? input.resource_refs : []).map(String))],
 		evidence_refs: [...new Set((Array.isArray(input.evidence_refs) ? input.evidence_refs : []).map(String))],
 		projection: {
@@ -193,6 +193,12 @@ export function buildResearchWorkset(input: Record<string, any>, maxChars: numbe
 	};
 	if (jsonChars(required) > maxChars) {
 		throw new Error("required research goal, constraints, checkpoint, and references exceed the provider input budget");
+	}
+	// Candidate state is a small aid to continuity, not a reason to fail a
+	// research workset whose required goal and evidence still fit.
+	if (input.strategy_candidates !== undefined
+		&& jsonChars({ ...required, strategy_candidates: input.strategy_candidates }) <= maxChars - 128) {
+		required.strategy_candidates = input.strategy_candidates;
 	}
 	const fullContext = String(input.selected_context ?? "");
 	let low = 0;

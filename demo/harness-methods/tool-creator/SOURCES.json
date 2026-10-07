@@ -12,5 +12,5 @@
     "demo/pi_task_local_tools.ts",
     "demo/pi_task_tool_contract.ts"
   ],
-  "adaptation": "Pi-native tool authoring constrained to the task-local declarative program and adapter implementation substrate. No arbitrary extension loading is implied."
+  "adaptation": "SKILL.md is the compact Pi authoring entry. Previous full adaptation retained in references/authoring-background.md; source license and supporting resources preserved."
 }

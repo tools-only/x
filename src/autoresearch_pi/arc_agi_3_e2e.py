@@ -9,12 +9,17 @@ import re
 import shutil
 import socket
 import subprocess
+import secrets
+import queue
+import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .jev_routing import apply_jev_routing_policy
 from .pi_kernel import PiKernel
 from .project import load_project_dotenv
 from .arc_agi_3_adapter import (
@@ -31,6 +36,77 @@ from .subagent_broker import SubagentBroker
 
 
 _PROMPTS_DIR = Path(__file__).resolve().parents[2] / "demo" / "prompts"
+
+
+class _ArcOuterRequestStopped(Exception):
+    """An operator-declared evaluation checkpoint stopped outer dispatch."""
+
+
+def _arc_reported_usage(path: Path) -> dict[str, Any]:
+    """Read the native shared ledger with the same fail-closed integrity rule."""
+    reported, unmeasured = 0, False
+    def invalid_constant(value: str):
+        raise ValueError(f"invalid JSON constant: {value}")
+    try:
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line, parse_constant=invalid_constant)
+                    if not isinstance(row, dict):
+                        raise ValueError("budget record must be an object")
+                    if row.get("event") == "unmeasured_usage":
+                        unmeasured = True
+                    if row.get("event") == "reported_usage":
+                        tokens = row.get("tokens")
+                        if type(tokens) is not int or not 0 <= tokens <= 2**53 - 1:
+                            unmeasured = True
+                        else:
+                            reported += tokens
+                except (ValueError, TypeError):
+                    unmeasured = True
+    except (OSError, UnicodeError):
+        unmeasured = True
+    return {"reported_tokens": reported, "unmeasured_usage": unmeasured}
+
+
+def _measured_parent_input(usage: Any) -> int | None:
+    """Native Pi input excludes cache; telemetry uses aliases for the same counts."""
+    if not isinstance(usage, dict):
+        return None
+    parts = [usage.get("input", usage.get("input_tokens")),
+             usage.get("cacheRead", usage.get("cache_read", 0)),
+             usage.get("cacheWrite", usage.get("cache_write", 0))]
+    if any(type(value) is not int or not 0 <= value <= 2**53 - 1 for value in parts):
+        return None
+    total = sum(parts)
+    # Native providers initialize all counts to zero before any measured usage.
+    return total if 0 < total <= 2**53 - 1 else None
+
+
+def _reasoning_investment_budget(*, shared_limit: int, no_level_limit: int | None,
+                                 levels_completed: int | None, usage: dict[str, Any],
+                                 parent_input_tokens: int | None, output_cap: int | None) -> dict[str, Any]:
+    """A two-request planning estimate, not a reservation or provider hard cap."""
+    def valid(value, positive=False):
+        return type(value) is int and (0 < value if positive else 0 <= value) and value <= 2**53 - 1
+    limits = [shared_limit]
+    if no_level_limit is not None and levels_completed == 0:
+        limits.append(no_level_limit)
+    reported = usage.get("reported_tokens")
+    budget_known = (all(valid(limit, True) for limit in limits) and valid(reported)
+                    and not usage.get("unmeasured_usage")
+                    and (no_level_limit is None or valid(levels_completed)))
+    remaining = min(limits) - reported if budget_known else None
+    reserve = (2 * (parent_input_tokens + output_cap)
+               if valid(parent_input_tokens, True) and valid(output_cap, True) else None)
+    if reserve is not None and not valid(reserve, True):
+        reserve = None
+    return {"latest_parent_input_tokens": parent_input_tokens, "output_cap": output_cap,
+            "reported_tokens": reported, "levels_completed": levels_completed,
+            "remaining_reported_tokens": remaining, "planning_reserve_tokens": reserve,
+            "fits": remaining is not None and reserve is not None and remaining >= reserve}
 
 
 def _load_prompt(name: str, **values: str) -> str:
@@ -113,6 +189,13 @@ def _project_arc_kernel_event(event: dict[str, Any]) -> dict[str, Any] | None:
                 )
                 if key in details
             }
+            delta = details.get("observation_delta")
+            if isinstance(delta, dict):
+                evidence["observation_delta"] = {
+                    key: delta[key]
+                    for key in ("changed_cells", "bbox", "frame_available")
+                    if key in delta
+                }
             if evidence:
                 projected["evidence"] = evidence
         return projected
@@ -121,6 +204,73 @@ def _project_arc_kernel_event(event: dict[str, Any]) -> dict[str, Any] | None:
     if event_type in {"turn_start", "agent_end", "agent_settled"}:
         return {"type": event_type}
     return None
+
+
+def _turn_has_nonreset_arc_feedback(events: list[dict[str, Any]]) -> bool:
+    """Accept committed public receipts, including a successful partial batch."""
+    def completed(receipt):
+        return (isinstance(receipt, dict) and isinstance(receipt.get("action"), str) and receipt.get("action") in
+                {"ACTION1", "ACTION2", "ACTION3", "ACTION4", "ACTION5", "ACTION6", "ACTION7"}
+                and not receipt.get("is_error", False) and not receipt.get("isError", False)
+                and (receipt.get("status") is None or isinstance(receipt.get("status"), str))
+                and receipt.get("status") not in {"failed", "error", "unknown", "pending"})
+
+    for event in events:
+        if event.get("type") != "tool_execution_end":
+            continue
+        evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
+        if (event.get("toolName") in {"arc_action", "arc_actions", "delegate_task"}
+                and evidence.get("nonreset_arc_feedback") is True):
+            return True  # This fact is produced only by the scoped projector below.
+        result = event.get("result") if isinstance(event.get("result"), dict) else {}
+        details = result.get("details") if isinstance(result.get("details"), dict) else {}
+        name = event.get("toolName")
+        if name == "arc_action" and not event.get("isError", False):
+            public = details or evidence
+            if (public.get("arc_action_boundary") is True or isinstance(public.get("state"), str)
+                    or isinstance(public.get("public_transition"), dict)) and completed(event.get("args")):
+                return True
+        receipts = details.get("completed") if name == "arc_actions" else (
+            details.get("arc_action_receipts") if name == "delegate_task" else None)
+        if isinstance(receipts, list) and any(completed(receipt) for receipt in receipts):
+            return True
+    return False
+
+
+def _project_arc_feedback_kernel_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep one receipt-derived fact for the opt-in allocator, never full frames."""
+    projected = _project_arc_kernel_event(event)
+    if projected is not None and _turn_has_nonreset_arc_feedback([event]):
+        projected.setdefault("evidence", {})["nonreset_arc_feedback"] = True
+    return projected
+
+
+def _initial_reasoning_after_feedback(env, reasoning_policy, reasoning_levels, model_settings):
+    configured = env.get("PI_REASONING_INITIAL_AFTER_FEEDBACK", "")
+    if configured not in {"", "disabled", "enabled"}:
+        raise ValueError("PI_REASONING_INITIAL_AFTER_FEEDBACK must be enabled or disabled")
+    if configured != "enabled":
+        return False
+    if (reasoning_policy != "adaptive-binary" or not {"off", "medium"}.issubset(reasoning_levels)
+            or model_settings.get("pi_api") != "openai-completions"
+            or model_settings.get("thinking_format") != "qwen"):
+        raise ValueError("initial reasoning after feedback requires adaptive-binary, verified off+medium, "
+                         "openai-completions and native qwen thinking format")
+    return True
+
+
+def _reasoning_length_recovery(env, reasoning_policy, reasoning_levels, model_settings, provider_extension=None):
+    configured = env.get("PI_REASONING_LENGTH_RECOVERY", "")
+    if configured not in {"", "disabled", "enabled"}:
+        raise ValueError("PI_REASONING_LENGTH_RECOVERY must be enabled or disabled")
+    if configured != "enabled":
+        return False
+    if (reasoning_policy != "adaptive-binary" or not {"off", "medium"}.issubset(reasoning_levels)
+            or model_settings.get("pi_api") != "openai-completions"
+            or model_settings.get("thinking_format") != "qwen" or provider_extension is not None):
+        raise ValueError("length recovery requires adaptive-binary, verified off+medium, "
+                         "openai-completions and native qwen HTTP thinking format")
+    return True
 
 
 def _latest_records(
@@ -166,6 +316,11 @@ def _provider_telemetry_summary(records: list[dict[str, Any]]) -> dict[str, Any]
     for item in assistants:
         reason = str(item.get("stop_reason") or "unknown")
         stop_reasons[reason] = stop_reasons.get(reason, 0) + 1
+    token_usage = {}
+    for key in ("input", "output", "reasoning", "non_reasoning_output", "cache_read", "cache_write", "total_tokens"):
+        known = [item.get("usage", {}).get(key) for item in assistants if isinstance(item.get("usage"), dict)]
+        numbers = [v for v in known if isinstance(v, (int, float))]
+        token_usage[key] = {"total": sum(numbers), "measured_messages": len(numbers), "message_count": len(assistants)}
     return {
         "record_count": len(records),
         "request_count": len(requests),
@@ -179,6 +334,8 @@ def _provider_telemetry_summary(records: list[dict[str, Any]]) -> dict[str, Any]
         "response_latency_ms": stats(responses, "latency_ms"),
         "assistant_elapsed_ms": stats(assistants, "elapsed_ms"),
         "stop_reasons": stop_reasons,
+        "token_usage": token_usage,
+        "superseded_attempts": sum(item.get("event") == "provider_attempt_superseded" for item in records),
         "interpretation": (
             "Observation-only request telemetry; payload bodies and credentials are not persisted. "
             "A missing request count can occur for providers that bypass the HTTP payload hook."
@@ -342,7 +499,6 @@ def _auto_research_harness_closure(
 
 
 METHOD_EVOLUTION_STAGE_ORDER = (
-    "cross_situation_induction",
     "method_candidate",
     "adoption",
     "actual_arc_use",
@@ -465,14 +621,18 @@ def _method_evolution_audit(
                 [source_report_ref, *exact_construction, *context_ids, *episode_ids],
             ),
         }
+        # The lifecycle audit also reads historical method records that predate
+        # the richer authoring contract. Runtime admission enforces the full
+        # procedural fields; the audit only needs enough structure to distinguish
+        # a method record from experience text.
         required_method_fields = ("invariants", "parameters", "steps", "falsifier")
-        structured = induction_ok and all(bool(specification.get(key)) for key in required_method_fields)
+        structured = all(bool(specification.get(key)) for key in required_method_fields)
         candidate_ref = f"method:{method_id}@v{int(candidate.get('version', 1) or 1)}"
         stages["method_candidate"] = stage(
             structured,
-            "The candidate contains invariants, parameters, executable steps, and a falsifier."
+            "The candidate contains a scoped procedure with inputs, decisions, stop and failure boundaries, and a falsifier."
             if structured else
-            "The cross-situation result is missing a structured reusable method or falsifier.",
+            "No trajectory-independent method candidate supplies the complete procedural contract.",
             [candidate_ref, str(candidate.get("candidate_ref") or "")],
         )
 
@@ -514,22 +674,11 @@ def _method_evolution_audit(
             })
             if not prediction or not falsifier or not read_refs:
                 continue
-            matched_contract_ref = None
-            for resource_ref in read_refs:
-                resource = harness_resources.get(resource_ref) or {}
-                content = str(resource.get("instructions") or resource.get("content") or "")
-                fields = {
-                    match.group(1).upper(): match.group(2).strip()
-                    for match in re.finditer(r"^(NEXT_ACTION|PREDICTION|FALSIFIER)\s*[:=]\s*(.+)$", content, re.I | re.M)
-                }
-                selected = re.search(r"\b(?:RESET|ACTION\d+)\b", fields.get("NEXT_ACTION", ""), re.I)
-                if (selected and selected.group(0).upper() == str((observation.get("input") or {}).get("action") or "").upper()
-                        and fields.get("PREDICTION") == prediction
-                        and fields.get("FALSIFIER") == falsifier):
-                    matched_contract_ref = resource_ref
-                    break
-            if not matched_contract_ref:
-                continue
+            # An online method may derive its next action and prediction from
+            # this frame. Requiring NEXT_ACTION in its archived body would
+            # reward fixed-state replay and reject legitimate parameterized
+            # procedures. This join establishes a traceable application, not
+            # semantic correctness; the later effect stage judges the result.
             action_uses.append(observation_id)
             use_contracts[observation_id] = {
                 "adopted_resource_refs": cited_refs,
@@ -537,12 +686,13 @@ def _method_evolution_audit(
                 "action": ((observation.get("input") or {}).get("action")),
                 "prediction": prediction,
                 "falsifier": falsifier,
-                "matched_contract_ref": matched_contract_ref,
+                "application_basis": "exact_read_plus_action_citation_and_testable_prediction",
+                "semantic_correctness": "not_established_until_effect_evaluation",
             }
         actual_use_ok = adoption_ok and bool(action_uses)
         stages["actual_arc_use"] = stage(
             actual_use_ok,
-            "A later successful ARC action follows a parent read of the exact adopted version and preserves its prediction and falsifier."
+            "A later successful ARC action cites a parent-read exact adopted version and records a prediction and falsifier; this is traceable use, not correctness."
             if actual_use_ok else
             "No later successful ARC action follows an exact parent resource read while citing that version with a prediction and falsifier; exposure, reading, citation alone, and standalone tool calls do not count.",
             action_uses,
@@ -698,7 +848,7 @@ def _method_evolution_audit(
         )
         first_incomplete_stage = max(chains, key=progress)["first_incomplete_stage"]
     else:
-        first_incomplete_stage = "method_candidate" if observed_induction else "cross_situation_induction"
+        first_incomplete_stage = "method_candidate"
     rejected_submissions = [
         item for item in subagent_progress
         if item.get("last_tool_name") == "submit_research_report"
@@ -743,10 +893,11 @@ def _method_evolution_audit(
         },
         "chains": chains,
         "interpretation": (
-            "Completion requires one reference-consistent chain from cross-situation evidence through a structured method, "
-            "parent adoption, a later ARC action following a read of the exact adopted version while preserving its "
+            "Completion requires one reference-consistent chain from a structured method through parent adoption, "
+            "a later ARC action following a read of the exact adopted version while preserving its "
             "prediction and falsifier, assessment of that same action, "
-            "and a completed feedback report on the same research line."
+            "and a completed feedback report on the same research line. Cross-situation evidence is diagnostic "
+            "for generalization scope, not a prerequisite for Skill identity or method adoption."
         ),
     }
 
@@ -930,7 +1081,13 @@ def project_arc_summary(
     )
     completion_status = (
         "timed_out" if timed_out else
+        "request_admission_declined" if pi_returncode == 126 else
+        "reported_budget_exhausted" if pi_returncode == 125 else
         "interrupted" if pi_returncode == 130 else
+        "provider_length_retry_exhausted" if pi_returncode != 0 and any(
+            event.get("type") == "reasoning_length_recovery_stopped"
+            and event.get("reason") == "consecutive_length_retry_exhausted" for event in pi_events
+        ) else
         "runner_failed" if pi_returncode != 0 else
         "partial" if bridge_partial or scorecard is None else
         "completed"
@@ -968,6 +1125,8 @@ def project_arc_summary(
             "pi_api": (model_settings or {}).get("pi_api"),
             "context_window": (model_settings or {}).get("context_window"),
             "max_output_tokens": (model_settings or {}).get("max_tokens"),
+            "review_configuration": (json.loads((root / "arc-runtime-config.json").read_text(encoding="utf-8"))
+                                     if (root / "arc-runtime-config.json").is_file() else None),
             "provider_error_count": len(provider_errors),
             "last_provider_error": provider_errors[-1] if provider_errors else None,
             "environment_call_count": len(environment_calls_started),
@@ -1030,6 +1189,12 @@ def project_arc_summary(
                 **_provider_telemetry_summary(subagent_provider_telemetry),
                 "context_tokens": _context_token_debug_summary(subagent_context_token_debug),
             },
+            "combined_usage": {
+                key: sum(_provider_telemetry_summary(rows)["token_usage"][key]["total"]
+                         for rows in (provider_telemetry, subagent_provider_telemetry))
+                for key in ("input", "output", "reasoning", "non_reasoning_output", "cache_read", "cache_write", "total_tokens")
+            },
+            "usage_interpretation": "Output includes reasoning; never add reasoning again. Missing reasoning/body counts remain unmeasured. Parent plus all child messages are counted, including failed and pending research slices.",
             "progress": {
                 "record_count": len(subagent_progress),
                 "latest": subagent_progress[-1] if subagent_progress else None,
@@ -1062,8 +1227,8 @@ def project_arc_summary(
             "validation_windows": {
                 "event_count": len(research_validation_windows),
                 "opened": len([item for item in research_validation_windows if item.get("status") == "open"]),
-                "awaiting_assessment": len([item for item in research_validation_windows if item.get("status") == "awaiting_assessment"]),
-                "expired": len([item for item in research_validation_windows if item.get("status") in {"expired", "awaiting_assessment", "falsify", "inconclusive"}]),
+                "awaiting_assessment": len([item for item in research_validation_windows if item.get("status") == "awaiting_assessment" or item.get("outcome") == "needs_assessment"]),
+                "expired": len([item for item in research_validation_windows if item.get("status") in {"expired", "awaiting_assessment", "falsify", "inconclusive"} or item.get("outcome") in {"not_met", "unknown", "needs_assessment", "interrupted"}]),
                 "latest": research_validation_windows,
             },
             "auto_research": {
@@ -1356,10 +1521,12 @@ def compare_arc_runs(control: dict[str, Any], treatment: dict[str, Any]) -> dict
     }
 
 
-def _post_json(url: str, payload: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
+def _post_json(url: str, payload: dict[str, Any], timeout: float = 10.0,
+               action_token: str | None = None) -> dict[str, Any]:
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 **({"X-ARC-Action-Token": action_token} if action_token else {})},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -1407,13 +1574,45 @@ def _wait_for_bridge(
     timeout: float = 60.0,
     *,
     port: int | None = None,
+    launch_id: str | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     ready_path = root / "bridge-ready.json"
+    receipts: queue.Queue[dict[str, Any]] = queue.Queue()
+    def valid_receipt(value):
+        return (isinstance(value, dict) and value.get("status") == "ready"
+                and value.get("host") == "127.0.0.1" and type(value.get("port")) is int
+                and 0 < value["port"] < 65536
+                and type(value.get("pid")) is int and value["pid"] > 0
+                and (value.get("launch_id") == launch_id if launch_id is not None
+                     else value.get("pid") == process.pid))
+    def read_stdout_receipt():
+        try:
+            for line in process.stdout:
+                try:
+                    value = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if valid_receipt(value):
+                    receipts.put(value)
+                    return
+        except (OSError, UnicodeError):
+            return  # File receipt and startup diagnostics remain available.
+    if getattr(process, "stdout", None) is not None:
+        threading.Thread(target=read_stdout_receipt, daemon=True, name="arc-bridge-readiness").start()
     while time.monotonic() < deadline:
         if ready_path.is_file():
-            return json.loads(ready_path.read_text(encoding="utf-8"))
-        if port is not None:
+            try:
+                value = json.loads(ready_path.read_text(encoding="utf-8"))
+                if valid_receipt(value):
+                    return value
+            except (OSError, ValueError):
+                pass  # A non-atomic child file write may still be in progress.
+        try:
+            return receipts.get_nowait()
+        except queue.Empty:
+            pass
+        if port:
             try:
                 ready = _get_json(f"http://127.0.0.1:{port}/state", timeout=0.5)
                 # A valid state response proves that the HTTP bridge is live;
@@ -1499,10 +1698,12 @@ def _arc_terminal_or_budget_exhausted(state: dict[str, Any]) -> bool:
     if not isinstance(budget, dict):
         return False
     used = int(budget.get("used", 0) or 0)
-    maximum = int(budget.get("maximum", 0) or 0)
+    maximum = budget.get("maximum")
     total_used = int(budget.get("total_used", 0) or 0)
-    total_maximum = int(budget.get("total_maximum", 0) or 0)
-    return used >= maximum or total_used >= total_maximum
+    total_maximum = budget.get("total_maximum")
+    return (maximum is not None and used >= int(maximum)) or (
+        total_maximum is not None and total_used >= int(total_maximum)
+    )
 
 
 def _arc_continuation_prompt(state: dict[str, Any], *, truncated: bool) -> str:
@@ -1531,7 +1732,11 @@ def _turn_has_arc_action(events: list[dict[str, Any]]) -> bool:
     """
     return any(
         event.get("type") == "tool_execution_end"
-        and event.get("toolName") == "arc_action"
+        and (event.get("toolName") == "arc_action"
+             or (event.get("toolName") == "arc_actions"
+                 and len((event.get("result") or {}).get("details", {}).get("completed", [])) > 0)
+             or (event.get("toolName") == "delegate_task"
+                 and (event.get("result") or {}).get("details", {}).get("arc_action_count", 0) > 0))
         and not bool(event.get("isError", False))
         for event in events
     )
@@ -1543,9 +1748,16 @@ def _turn_provider_error(events: list[dict[str, Any]]) -> str | None:
         if event.get("type") != "message_end":
             continue
         message = event.get("message")
-        if not isinstance(message, dict) or message.get("stopReason") != "error":
+        if not isinstance(message, dict):
             continue
-        return str(message.get("errorMessage") or "provider returned stopReason=error")
+        stop = message.get("stopReason")
+        if stop == "error":
+            return str(message.get("errorMessage") or "provider returned stopReason=error")
+        if stop in {"stop", "toolUse", "length"}:
+            # Pi may recover a transport error within this event window. A
+            # later successful model response supersedes the historical error.
+            # Ignore the runner's boundary abort while looking for that response.
+            return None
     return None
 
 
@@ -1634,7 +1846,7 @@ def _open_research_validation_window(
     changed_cells: Any = None,
     level_changed: Any = False,
 ) -> dict[str, Any] | None:
-    """Normalize an agent-declared research test window.
+    """Legacy log/fixture normalization; the live runner consumes task_validation.
 
     A validation window is evidence bookkeeping, not an execution budget.  It
     may expire and request assessment, but it never computes a semantic verdict or
@@ -1759,6 +1971,7 @@ def _same_research_validation_window(
 
 def _run_pi(
     root: Path, *, bridge_url: str, game: str, variant: str,
+    bridge_action_token: str | None = None,
     context_compaction: bool, subagent_broker_url: str | None = None,
     harness_validation: bool = False,
     auto_research_validation: bool = False,
@@ -1768,8 +1981,17 @@ def _run_pi(
     input_modalities: str | tuple[str, ...] | list[str] | None = None,
     provider_extension: Path | None = None,
     environment_overrides: dict[str, str] | None = None,
+    review_mode: str = "advisory",
     experiment_timeout_seconds: float | None = None,
+    reasoning_policy: str = "provider-default",
+    reasoning_levels: tuple[str, ...] = (),
+    max_output_tokens: int | None = None,
 ) -> int:
+    max_reported_tokens = (environment_overrides or {}).get("PI_PROVIDER_MAX_REPORTED_TOKENS")
+    from .reasoning_policy import validate_reasoning_options, select_reasoning_level
+    validate_reasoning_options(reasoning_policy, reasoning_levels, max_output_tokens)
+    if review_mode not in {"advisory", "required"}:
+        raise ValueError("review_mode must be advisory or required")
     node, cli = _resolve_pi_cli()
     project_root = Path(__file__).resolve().parents[2]
     extension = project_root / "demo" / "pi_arc_agi_3_extension.ts"
@@ -1777,6 +1999,14 @@ def _run_pi(
     agent_dir.mkdir(parents=True, exist_ok=True)
     env = load_project_dotenv(project_root)
     model_settings = resolve_model_settings(env)
+    initial_after_feedback = _initial_reasoning_after_feedback(
+        {**env, **(environment_overrides or {})}, reasoning_policy, reasoning_levels, model_settings)
+    reasoning_length_recovery = _reasoning_length_recovery(
+        {**env, **(environment_overrides or {})}, reasoning_policy, reasoning_levels, model_settings, provider_extension)
+    if reasoning_policy == "adaptive-binary" and model_settings.get("thinking_format") not in {"qwen", "qwen-chat-template"}:
+        raise ValueError("adaptive-binary requires an explicit verified Qwen thinking format")
+    if max_output_tokens is not None:
+        model_settings["max_tokens"] = max_output_tokens
     if input_modalities is not None:
         model_settings["input_modalities"] = list(resolve_input_modalities(input_modalities))
     base_url, api_key = model_settings["base_url"], model_settings["api_key"]
@@ -1798,11 +2028,17 @@ def _run_pi(
     if configure_real_provider:
         env["OPENAI_API_BASE"] = str(base_url)
         env["OPENAI_API_KEY"] = str(api_key)
+        env.setdefault("PI_PROVIDER_CONTEXT_ADMISSION", "enabled")
+        # An ARC-specific conservative reservation, not measured image usage.
+        # Keep its assumption explicit in every final admission record.
+        env.setdefault("PI_PROVIDER_IMAGE_TOKEN_RESERVE", "4096")
         (agent_dir / "models.json").write_text(json.dumps({"providers": {provider_name: {
             "baseUrl": base_url, "api": model_settings["pi_api"], "apiKey": "$OPENAI_API_KEY",
             # Preserve system instructions as system; Pi otherwise promotes
             # them to developer for reasoning models on unknown gateways.
-            "compat": {"supportsDeveloperRole": False},
+            "compat": {"supportsDeveloperRole": False,
+                       **({"thinkingFormat": model_settings["thinking_format"]}
+                          if model_settings.get("thinking_format") else {})},
             "authHeader": True, "models": [{"id": model, "name": model, "reasoning": True,
                 "input": model_settings["input_modalities"], "contextWindow": model_settings["context_window"],
                 **({"maxTokens": model_settings["max_tokens"]} if model_settings.get("max_tokens") else {}),
@@ -1818,36 +2054,92 @@ def _run_pi(
         "PI_AUTORESEARCH_ROOT": str(project_root), "PI_AUTORESEARCH_VARIANT": variant,
         "PI_AUTORESEARCH_CONTEXT_COMPACTION": "enabled" if context_compaction else "disabled",
         "PI_ARC_BRIDGE_URL": bridge_url, "PI_ARC_GAME": game,
+        "PI_ARC_INPUT_MODALITIES": ",".join(model_settings["input_modalities"]),
         "PI_ARC_EXECUTION_GATE": "enabled",
         "PI_HARNESS_PERIODIC_REVIEW": "enabled",
+        "PI_HARNESS_REVIEW_DECISION_REQUIRED": "enabled" if review_mode == "required" else "disabled",
         "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": provider_name,
         "PI_AUTORESEARCH_MODEL": model,
         "PI_AUTORESEARCH_SCOPED_READ": "enabled",
+        # Open research allocation permits orchestration without a preliminary
+        # read. Component authoring still requires an actual matching creator
+        # read, a complete candidate and explicit assembly/trial.
+        "PI_HARNESS_OPEN_ADMISSION": "enabled",
     })
+    # Give the Pi context lifecycle the same declared window/output reserve
+    # used by the provider registry. It may still report unknown when a custom
+    # provider does not declare them; never infer capacity from cache hits.
+    if (model_settings or {}).get("context_window"):
+        env["PI_AUTORESEARCH_MODEL_CONTEXT_TOKENS"] = str(model_settings["context_window"])
+    if (model_settings or {}).get("max_tokens"):
+        env["PI_AUTORESEARCH_MODEL_OUTPUT_TOKENS"] = str(model_settings["max_tokens"])
     if provider_extension is not None:
         env["PI_AUTORESEARCH_PROVIDER_EXTENSION"] = str(provider_extension.resolve())
     if subagent_broker_url:
         env["PI_AUTORESEARCH_SUBAGENT_BROKER_URL"] = subagent_broker_url
     if environment_overrides:
         env.update({str(key): str(value) for key, value in environment_overrides.items()})
+    if max_reported_tokens is not None:
+        if not str(max_reported_tokens).isdigit() or int(max_reported_tokens) <= 0:
+            raise ValueError("max_reported_tokens must be a positive integer")
+        env["PI_PROVIDER_TOKEN_BUDGET_ROOT"] = str(root.resolve())
+    no_level_configured = env.get("PI_ARC_NO_LEVEL_REPORTED_TOKENS")
+    no_level_scope = env.get("PI_ARC_NO_LEVEL_CHECKPOINT_SCOPE", "outer_prompt_dispatch")
+    if no_level_scope not in {"outer_prompt_dispatch", "parent_provider_requests"}:
+        raise ValueError("PI_ARC_NO_LEVEL_CHECKPOINT_SCOPE must be outer_prompt_dispatch or parent_provider_requests")
+    if no_level_scope == "parent_provider_requests" and not no_level_configured:
+        raise ValueError("parent_provider_requests requires a no-level reported usage checkpoint")
+    no_level_limit = None
+    if no_level_configured:
+        if not no_level_configured.isdigit() or not 0 < int(no_level_configured) <= 2**53 - 1:
+            raise ValueError("PI_ARC_NO_LEVEL_REPORTED_TOKENS must be a positive safe integer")
+        if not env.get("PI_PROVIDER_MAX_REPORTED_TOKENS"):
+            raise ValueError("PI_ARC_NO_LEVEL_REPORTED_TOKENS requires the shared native reported usage budget")
+        no_level_limit = int(no_level_configured)
+    shared_reported_limit = int(env["PI_PROVIDER_MAX_REPORTED_TOKENS"]) if env.get("PI_PROVIDER_MAX_REPORTED_TOKENS") else None
+    if bridge_action_token:
+        env["PI_ARC_ACTION_TOKEN"] = bridge_action_token
+    apply_jev_routing_policy(env)
+    (root / "arc-runtime-config.json").write_text(json.dumps({
+        "requested_review_mode": review_mode,
+        "review_mode": "required" if env.get("PI_HARNESS_REVIEW_DECISION_REQUIRED") == "enabled" else "advisory",
+        "periodic_review_enabled": env.get("PI_HARNESS_PERIODIC_REVIEW") == "enabled",
+        "reasoning_policy": reasoning_policy, "reasoning_levels": list(reasoning_levels),
+        **({"initial_reasoning_after_feedback": True} if initial_after_feedback else {}),
+        **({"reasoning_length_recovery": "native_off_once_per_length_streak"} if reasoning_length_recovery else {}),
+        **({"reasoning_investment_budget": "two_request_measured_input_estimate"}
+           if reasoning_length_recovery and shared_reported_limit is not None else {}),
+        "max_reported_tokens": shared_reported_limit,
+        "no_level_reported_tokens": no_level_limit,
+        "no_level_checkpoint_scope": no_level_scope if no_level_limit is not None else None,
+        **({"native_compaction_policy": "decline_unmeasured"} if no_level_scope == "parent_provider_requests" else {}),
+        "parent_max_output_tokens": model_settings.get("max_tokens"),
+        "child_max_output_tokens": model_settings.get("max_tokens"),
+        "output_envelope_scope": "shared_model_registry",
+        "parent_output_reserve": env.get("PI_AUTORESEARCH_MODEL_OUTPUT_TOKENS"),
+        "child_thinking": env.get("PI_AUTORESEARCH_THINKING", "provider-default"),
+        "provider_thinking_format": model_settings.get("thinking_format"),
+        "reasoning_history_policy": env.get("PI_PROVIDER_REASONING_HISTORY_POLICY", "preserve"),
+        "editable_reasoning_providers": env.get("PI_PROVIDER_EDITABLE_REASONING_PROVIDERS", ""),
+        "exact_region_table": env.get("PI_ARC_EXACT_REGION_TABLE") in {"enabled", "after_action"},
+        "exact_region_table_mode": env.get("PI_ARC_EXACT_REGION_TABLE", "disabled"),
+        "concise_arc_guidance": env.get("PI_ARC_CONCISE_GUIDANCE") == "enabled",
+        "tool_disclosure": env.get("PI_ARC_TOOL_DISCLOSURE", "on_demand"),
+        "child_observation": env.get("PI_ARC_CHILD_OBSERVATION", "on_demand"),
+    }, indent=2) + "\n", encoding="utf-8")
     command = [node, cli, "--mode", "rpc", "--provider", provider_name, "--model", model,
                "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
-               "--no-context-files",
-               # Keep the built-in `read` tool available so the Agent can
-               # consume native SKILL.md instructions. The yibu
-               # OpenAI-compatible gateway rejects Pi's optional-only `ls`
-               # schema (it serializes `required` as null), so exclude the
-               # dangerous and gateway-incompatible built-ins individually.
-               # Extension/custom tools remain available at this boundary.
-               # ARC task state and task-local resources have dedicated,
-               # bounded tools. Exclude Pi's generic read surface: it can
-               # only read native skill/agent files, while ARC artifacts are
-               # deliberately accessible through checkpoint/trajectory
-               # projections instead of raw JSONL dumps.
-               "--exclude-tools", "bash,edit,write,grep,find,ls,read",
+               "--no-context-files", "--no-builtin-tools",
+               # The extension registers its confined Skill/Subagent reader.
+               # Excluding the name 'read' also excludes that custom capability,
+               # so disable built-ins separately and keep its name available.
+               "--exclude-tools", "bash,edit,write,grep,find,ls",
                "--extension", str(extension)]
     if provider_extension is not None:
         command.extend(["--extension", str(provider_extension.resolve())])
+    # The SDK executes replacement hooks in extension order. This observer
+    # must follow every adapter/provider extension in our closed launch list.
+    command.extend(["--extension", str(extension.parent / "pi_final_provider_payload.ts")])
     trace = (root / "pi-events.jsonl").open("a", encoding="utf-8")
     # Pi emits streaming deltas whose ``partial`` payload repeats the entire
     # assistant message on every token.  Persisting those deltas makes a long
@@ -1855,11 +2147,12 @@ def _run_pi(
     # lifecycle, tool, response, and final-message events; omit only the
     # replaceable streaming fragments.
     persisted_event_types = {
-        "response", "turn_start", "turn_end", "agent_start", "agent_end",
+        "response", "turn_start", "turn_end", "agent_start", "agent_end", "provider_window_admission_declined",
         "agent_settled", "message_start", "message_end", "toolCall",
         "tool_execution_start", "tool_execution_end", "agent_progress_watchdog", "text", "thinking",
         "arc_progress_intervention", "arc_recovery_phase", "arc_deadline_admission",
-        "arc_provider_failure",
+        "arc_provider_failure", "reasoning_policy_selection", "reasoning_policy_consumed",
+        "reasoning_length_recovery_stopped",
     }
     def persist(event: dict[str, Any]) -> None:
         if event.get("type") not in persisted_event_types:
@@ -1867,6 +2160,7 @@ def _run_pi(
         projected = _compact_arc_pi_event(event)
         if projected is None:
             return
+        projected.setdefault("recordedAt", datetime.now(timezone.utc).isoformat())
         trace.write(json.dumps(projected, ensure_ascii=False, separators=(",", ":")) + "\n")
         trace.flush()
     try:
@@ -1881,26 +2175,145 @@ def _run_pi(
             timeout=kernel_timeout,
             deadline=session_deadline,
             event_sink=persist,
-            event_projector=_project_arc_kernel_event,
+            event_projector=_project_arc_feedback_kernel_event if initial_after_feedback else _project_arc_kernel_event,
         ) as kernel:
+            consumed_reasoning_opportunities: set[str] = set()
+            previous_reasoning_level = None
+            pending_reasoning_opportunity = None
+            pending_reasoning_keys: set[str] = set()
+            action_feedback_received = False
+            latest_parent_input_tokens = None
+            task_purpose = ""
+            def prompt_with_policy(message: str, preserve_level: bool = False, recover_reasoning_length: bool = False):
+                nonlocal previous_reasoning_level, pending_reasoning_opportunity, pending_reasoning_keys
+                usage, levels = None, None
+                if no_level_limit is not None:
+                    # At continuation this loop is settled and selected tools
+                    # already committed their receipts. Never abort message_end
+                    # for this softer checkpoint: only decline the next prompt.
+                    ledger_path = Path(env.get("PI_PROVIDER_TOKEN_BUDGET_ROOT", str(root))) / "provider-token-budget.jsonl"
+                    levels, state_error = None, None
+                    try:
+                        public_state = _get_json(bridge_url + "/state")
+                        levels = public_state.get("levels_completed")
+                        if type(levels) is not int or levels < 0:
+                            raise ValueError("public levels_completed must be a nonnegative integer")
+                    except (OSError, ValueError, TypeError, AttributeError) as exc:
+                        levels, state_error = None, f"{type(exc).__name__}: {exc}"
+                    usage = _arc_reported_usage(ledger_path)
+                    reason = ("unknown provider usage" if usage["unmeasured_usage"] else
+                              "unknown current public ARC levels" if state_error else
+                              "no first level by declared cost checkpoint"
+                              if levels == 0 and usage["reported_tokens"] >= no_level_limit else None)
+                    if reason:
+                        audit = {"reason": reason, "scope": "outer_prompt_dispatch",
+                                 "limit": no_level_limit, "levels_completed": levels, **usage,
+                                 "ledger_path": str(ledger_path.resolve()), "state_error": state_error,
+                                 "recordedAt": datetime.now(timezone.utc).isoformat(),
+                                 "interpretation": "Known shared parent/child usage; current response overshoot remains spent. Internal Pi continuations and asynchronous children are outside this checkpoint."}
+                        (root / "arc-request-admission-stop.json").write_text(
+                            json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                        raise _ArcOuterRequestStopped(reason)
+                # A new Pi session keeps durable evidence but loses its user
+                # purpose. Restore the original authored task only on recovery,
+                # rather than replaying the manual on every normal action.
+                if preserve_level and task_purpose:
+                    message = f"{task_purpose}\n\n{message}"
+                def state_from(name):
+                    try:
+                        value = json.loads((root / name).read_text(encoding="utf-8"))
+                        return value if isinstance(value, dict) else {}
+                    except (OSError, ValueError):
+                        return {}
+                checkpoint_state, strategy_state = state_from("task-checkpoint.json"), state_from("task-strategy-state.json")
+                if reasoning_policy == "adaptive-evidence":
+                    strategy_state = {**strategy_state, "geometry_evidence": state_from("arc-geometry-facts.json")}
+                opportunity = None
+                investment_budget = None
+                if recover_reasoning_length and previous_reasoning_level not in {None, "off"}:
+                    # Only the qualified parent assistant length branch may
+                    # change allocation; ordinary prompt rejection preserves it.
+                    level, reason = "off", "length_recovery_native_off"
+                elif preserve_level and previous_reasoning_level is not None:
+                    level, reason = previous_reasoning_level, "length_recovery_preserves_allocation"
+                else:
+                    level, reason = select_reasoning_level(checkpoint_state,
+                        strategy_state, reasoning_policy, reasoning_levels, consumed_reasoning_opportunities,
+                        first_deep_after_feedback=initial_after_feedback,
+                        action_feedback_received=action_feedback_received)
+                    if reasoning_length_recovery and level not in {None, "off"} and shared_reported_limit is not None:
+                        proposed_level, proposed_reason = level, reason
+                        if usage is None:
+                            ledger_path = Path(env.get("PI_PROVIDER_TOKEN_BUDGET_ROOT", str(root))) / "provider-token-budget.jsonl"
+                            usage = _arc_reported_usage(ledger_path)
+                        investment_budget = _reasoning_investment_budget(
+                            shared_limit=shared_reported_limit, no_level_limit=no_level_limit,
+                            levels_completed=levels, usage=usage, parent_input_tokens=latest_parent_input_tokens,
+                            output_cap=model_settings.get("max_tokens"))
+                        if not investment_budget["fits"]:
+                            # This opportunity has not received deep investment.
+                            # Do not freeze it into the completion-consumption path.
+                            level, reason = "off", "reasoning_investment_budget_deferred"
+                    if reasoning_policy == "adaptive-binary" and level != "off":
+                        from .reasoning_policy import binary_reasoning_opportunity
+                        opportunity, _ = binary_reasoning_opportunity(checkpoint_state, strategy_state, consumed_reasoning_opportunities,
+                            first_deep_after_feedback=initial_after_feedback,
+                            action_feedback_received=action_feedback_received)
+                    elif reasoning_policy == "adaptive-evidence" and level == "medium":
+                        from .reasoning_policy import evidence_reasoning_opportunity
+                        opportunity, _ = evidence_reasoning_opportunity(checkpoint_state, strategy_state, consumed_reasoning_opportunities)
+                result = kernel.send("set_thinking_level", level=level) if level is not None else None
+                persist({"type": "reasoning_policy_selection", "policy": reasoning_policy,
+                         "level": level, "reason": reason, "rpc_result": result,
+                         "opportunity_ref": opportunity,
+                         **({"proposed_level": proposed_level, "proposed_reason": proposed_reason,
+                             "investment_budget": investment_budget} if investment_budget is not None else {}),
+                         "capability_basis": "operator_declared" if reasoning_levels else "unknown"})
+                if result and result.get("success") is False:
+                    raise RuntimeError("Pi rejected the declared reasoning capability")
+                if not preserve_level:
+                    pending_reasoning_opportunity = opportunity
+                    if initial_after_feedback:
+                        from .reasoning_policy import binary_reasoning_consumption_keys
+                        pending_reasoning_keys = (binary_reasoning_consumption_keys(checkpoint_state, opportunity,
+                            first_deep_after_feedback=True) if opportunity else set())
+                previous_reasoning_level = level
+                return kernel.prompt(message)
             bridge_event_cursor = len(_read_jsonl(root / "bridge-events.jsonl"))
             # Match the official ARC runtime's proactive context management.
             # This is Pi's native session facility, enabled for both arms; the
             # treatment-only finding-backed context capability remains a
             # separate, optional self-harness intervention.
             kernel.send("set_auto_compaction", enabled=True)
-            prompt = _load_prompt("arc_decision_cycle.md", game=game)
+            prompt = _load_prompt("arc_decision_cycle_concise.md" if env.get("PI_ARC_CONCISE_GUIDANCE") == "enabled"
+                                  else "arc_decision_cycle.md", game=game)
             if harness_validation:
-                prompt = _load_prompt("arc_harness_validation.md", game=game)
+                prompt = _load_prompt("arc_harness_composition_validation.md"
+                                      if env.get("PI_HARNESS_COMPOSITION_VALIDATION") == "enabled"
+                                      else "arc_harness_validation.md", game=game)
+                capability = env.get("PI_HARNESS_CAPABILITY_VALIDATION")
+                if capability:
+                    creator = {"skill": "skill-creator", "tool": "tool-creator", "subagent": "subagent-creator"}.get(capability)
+                    if creator is None:
+                        raise ValueError("PI_HARNESS_CAPABILITY_VALIDATION must be skill, tool or subagent")
+                    prompt = _load_prompt("arc_harness_capability_validation.md", game=game,
+                                          component=capability, creator=creator)
             if auto_research_validation:
                 prompt = _load_prompt("arc_auto_research_validation.md", game=game)
             if cross_situation_validation:
                 prompt = _load_prompt("arc_cross_situation_validation.md", game=game)
-            response = kernel.prompt(prompt)
+            task_purpose = prompt
+            (root / "arc-parent-purpose.json").write_text(json.dumps({
+                "format": "arc-parent-purpose-v1", "prompt": prompt,
+                "harness_validation": harness_validation,
+                "auto_research_validation": auto_research_validation,
+                "cross_situation_validation": cross_situation_validation,
+            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            response = prompt_with_policy(prompt)
             if response.get("success") is False:
                 return 1
             consecutive_length_responses = 0
-            active_research_window: dict[str, Any] | None = None
+            seen_validation_versions: set[tuple[str, int]] = set()
             pending_research_notice: str | None = None
             research_window_path = root / "research-validation-windows.jsonl"
             latest_action_evidence: dict[str, Any] | None = None
@@ -1914,11 +2327,48 @@ def _run_pi(
                     # ARC must stop the model turn at the committed action.
                     # Planning, research, and task-local harness calls are
                     # intentionally allowed before that final action; the
-                    # bridge still receives exactly one native action per
-                    # decision cycle.
-                    stop_after_progress_tools=("arc_action",),
+                    # bridge records every native action in this decision
+                    # cycle, including a bounded batch or authorized child.
+                    stop_after_progress_tools=("arc_action", "arc_actions"),
                 )
+                if any(row.get("event") == "budget_stop"
+                       for row in _read_jsonl(root / "provider-token-budget.jsonl")):
+                    persist({"type": "reported_token_budget_exhausted",
+                             "limit": int(env["PI_PROVIDER_MAX_REPORTED_TOKENS"]),
+                             "interpretation": "Reported parent/child usage threshold; unfinished streams may add unmeasured cost."})
+                    return 125
+                if (root / "provider-window-admission-stop.json").exists():
+                    persist({"type": "provider_window_admission_declined",
+                             "interpretation": "Final payload window admission stopped before HTTP; no recovery replay."})
+                    return 126
+                if reasoning_length_recovery:
+                    for event in turn_events:
+                        message = event.get("message")
+                        if (event.get("type") == "message_end" and isinstance(message, dict)
+                                and message.get("role") == "assistant"
+                                and message.get("stopReason") in {"stop", "toolUse", "length"}):
+                            # Replace even with None: a new missing/malformed
+                            # measurement must not inherit an older valid count.
+                            latest_parent_input_tokens = _measured_parent_input(message.get("usage"))
+                # Admission/HTTP headers/aborted turns are not a consumed deep
+                # reasoning opportunity. Keep the allocation across recovery
+                # until a complete native assistant message actually returns.
+                if pending_reasoning_opportunity and any(
+                    event.get("type") == "message_end" and event.get("message", {}).get("role") == "assistant"
+                    and event["message"].get("stopReason") in {"stop", "toolUse"} for event in turn_events
+                ):
+                    from .reasoning_policy import consumed_opportunity_keys
+                    consumed_keys = (pending_reasoning_keys if initial_after_feedback else
+                                     consumed_opportunity_keys(pending_reasoning_opportunity))
+                    consumed_reasoning_opportunities.update(consumed_keys)
+                    persist({"type": "reasoning_policy_consumed", "opportunity_ref": pending_reasoning_opportunity,
+                             "level": previous_reasoning_level, "evidence": "complete_native_assistant_message",
+                             **({"opportunity_refs": sorted(consumed_keys)} if initial_after_feedback else {})})
+                    pending_reasoning_opportunity = None
+                    pending_reasoning_keys = set()
                 bridge_event_cursor = _sync_bridge_events(root, bridge_url, bridge_event_cursor)
+                if initial_after_feedback and _turn_has_nonreset_arc_feedback(turn_events):
+                    action_feedback_received = True
                 turn_has_action = _turn_has_arc_action(turn_events)
                 previous_recovery_phase = recovery_phase
                 recovery_phase = _advance_arc_recovery_phase(recovery_phase, turn_events)
@@ -1931,8 +2381,7 @@ def _run_pi(
                         "auto_research": _turn_has_auto_research_result(turn_events),
                     })
                 for event in turn_events:
-                    if event.get("type") == "tool_execution_end" and event.get("toolName") == "arc_action" and not event.get("isError", False):
-                        action_name = str((event.get("args") or {}).get("action", ""))
+                    if event.get("type") == "tool_execution_end" and event.get("toolName") in {"arc_action", "arc_actions", "delegate_task"} and not event.get("isError", False):
                         # PiKernel may deliver either the compact projected
                         # event or the raw tool event depending on the event
                         # cursor boundary. Normalize the evidence before
@@ -1944,14 +2393,21 @@ def _run_pi(
                         evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
                         raw_result = event.get("result") if isinstance(event.get("result"), dict) else {}
                         raw_details = raw_result.get("details") if isinstance(raw_result.get("details"), dict) else {}
+                        action_receipts = (raw_details.get("completed") if event.get("toolName") == "arc_actions"
+                                           else raw_details.get("arc_action_receipts") if event.get("toolName") == "delegate_task"
+                                           else None)
+                        if event.get("toolName") != "arc_action" and not action_receipts:
+                            continue
+                        latest_receipt = action_receipts[-1] if isinstance(action_receipts, list) else {}
+                        action_name = str(latest_receipt.get("action") or (event.get("args") or {}).get("action", ""))
                         transition = (
                             evidence.get("public_transition")
                             if isinstance(evidence, dict) else None
-                        ) or raw_details.get("public_transition")
+                        ) or latest_receipt.get("public_transition") or raw_details.get("public_transition")
                         observation_delta = (
                             evidence.get("observation_delta")
                             if isinstance(evidence.get("observation_delta"), dict) else None
-                        ) or (
+                        ) or latest_receipt.get("observation_delta") or (
                             raw_details.get("observation_delta")
                             if isinstance(raw_details.get("observation_delta"), dict) else {}
                         )
@@ -1965,107 +2421,29 @@ def _run_pi(
                         # only then may a later length stop receive another
                         # one-time recovery opportunity.
                         consecutive_length_responses = 0
-                        # Research windows are agent-declared evidence tests.
-                        # They annotate the next decisions and may expire, but
-                        # they never reject a native ARC action and never act
-                        # as a substitute for the ARC action budget.
-                        action_budget = (
-                            evidence.get("action_budget")
-                            if isinstance(evidence.get("action_budget"), dict) else None
-                        ) or (
-                            raw_details.get("action_budget")
-                            if isinstance(raw_details.get("action_budget"), dict) else {}
-                        )
-                        try:
-                            action_index = int(action_budget.get("total_used", 0) or 0)
-                        except (TypeError, ValueError):
-                            action_index = 0
-                        decision = (event.get("args") or {}).get("decision")
-                        opened_window = _open_research_validation_window(
-                            decision, action_index=action_index,
-                            action_name=action_name,
-                            changed_cells=observation_delta.get("changed_cells"),
-                            level_changed=(transition.get("level_changed") if isinstance(transition, dict) else False),
-                        )
-                        if action_name == "RESET" and active_research_window is not None:
+                        # Pi's validation ledger owns experiment lifecycle. This runner
+                        # projects exact versions and never starts or advances another timer.
+                        for validation in _read_jsonl(root / "task-validations.jsonl"):
+                            experiment = validation.get("experiment")
+                            if not isinstance(experiment, dict):
+                                continue
+                            identity = (str(validation.get("validation_id")), int(validation.get("version", 1)))
+                            if identity in seen_validation_versions:
+                                continue
+                            seen_validation_versions.add(identity)
+                            contract = experiment.get("contract") or {}
                             _append_jsonl(research_window_path, {
-                                **active_research_window,
-                                "status": "reset",
-                                "outcome": "reset",
-                                "expired_at_action_index": action_index,
+                                "type": "research_validation_window",
+                                "authority": "task_validation",
+                                "validation_ref": f"validation:{identity[0]}@v{identity[1]}",
+                                "hypothesis_id": contract.get("candidate_id"),
+                                "hypothesis_version": contract.get("candidate_version"),
+                                "test_id": contract.get("test_id"),
+                                "status": experiment.get("status"),
+                                "outcome": experiment.get("outcome"),
+                                "actions_used": experiment.get("actions_used", 0),
+                                "action_limit": contract.get("actions"),
                             })
-                            active_research_window = None
-                        if _same_research_validation_window(
-                            active_research_window, opened_window, decision,
-                        ):
-                            active_research_window, expired_window = _advance_research_validation_window(
-                                active_research_window,
-                                action_index=action_index,
-                                action_name=action_name,
-                                changed_cells=observation_delta.get("changed_cells"),
-                                level_changed=(transition.get("level_changed") if isinstance(transition, dict) else False),
-                            )
-                            if expired_window is not None:
-                                _append_jsonl(research_window_path, expired_window)
-                                pending_research_notice = (
-                                    "Research validation window is awaiting assessment for "
-                                    f"{expired_window['hypothesis_id']}; outcome="
-                                    f"{expired_window['outcome']}. No semantic verdict was computed. "
-                                    "The task_validation ledger retains the hypothesis for an evidence-linked assessment; "
-                                    "this does not block actions."
-                                )
-                            elif active_research_window is not None:
-                                _append_jsonl(research_window_path, {
-                                    **active_research_window, "status": "progress",
-                                })
-                        elif opened_window is not None:
-                            if active_research_window is not None:
-                                _append_jsonl(research_window_path, {
-                                    **active_research_window,
-                                    "status": "superseded",
-                                    "outcome": "superseded",
-                                    "expired_at_action_index": action_index,
-                                })
-                            active_research_window, expired_window = (
-                                _expire_research_validation_window_if_consumed(
-                                    opened_window, action_index=action_index,
-                                )
-                            )
-                            _append_jsonl(
-                                research_window_path,
-                                expired_window if expired_window is not None else opened_window,
-                            )
-                            if expired_window is not None:
-                                pending_research_notice = (
-                                    "Research validation window is awaiting assessment for "
-                                    f"{expired_window['hypothesis_id']}; outcome=unassessed. "
-                                    "No semantic verdict was computed and ARC actions remain available."
-                                )
-                            else:
-                                pending_research_notice = (
-                                    "Research validation window opened for "
-                                    f"{opened_window['hypothesis_id']} "
-                                    f"({opened_window['action_limit']} actions). "
-                                    "Use the declared prediction and falsifier; window expiry will be recorded "
-                                    "without stopping ARC actions."
-                                )
-                        elif active_research_window is not None:
-                            active_research_window, expired_window = _advance_research_validation_window(
-                                active_research_window,
-                                action_index=action_index,
-                                action_name=action_name,
-                                changed_cells=observation_delta.get("changed_cells"),
-                                level_changed=(transition.get("level_changed") if isinstance(transition, dict) else False),
-                            )
-                            if expired_window is not None:
-                                _append_jsonl(research_window_path, expired_window)
-                                pending_research_notice = (
-                                    "Research validation window is awaiting assessment for "
-                                    f"{expired_window['hypothesis_id']}; outcome="
-                                    f"{expired_window['outcome']}. "
-                                    "No semantic verdict has been computed. The task_validation ledger retains "
-                                    "the hypothesis for an evidence-linked assessment; expiry does not block actions."
-                                )
                 provider_error = _turn_provider_error(turn_events)
                 if provider_error is not None:
                     # Provider transport/quota failure is not an ARC no-action
@@ -2082,7 +2460,7 @@ def _run_pi(
                     if variant == "treatment":
                         # The action is already committed. A final read-only turn
                         # can assign outcome credit without another environment step.
-                        review_response = kernel.prompt(
+                        review_response = prompt_with_policy(
                             "ARC_TERMINAL_LEVEL_REVIEW: The environment run has ended. "
                             "Perform whole-level outcome analysis for pending level windows, "
                             "read exact evidence with task_resource and submit "
@@ -2117,17 +2495,26 @@ def _run_pi(
                     event.get("type") == "message_end"
                     and isinstance(event.get("message"), dict)
                     and event["message"].get("stopReason") == "length"
+                    and (not reasoning_length_recovery or event["message"].get("role") == "assistant")
                     for event in turn_events
                 )
                 if truncated:
                     consecutive_length_responses += 1
+                    if consecutive_length_responses > 1:
+                        persist({"type": "reasoning_length_recovery_stopped", "policy": reasoning_policy,
+                                 "reason": "consecutive_length_retry_exhausted",
+                                 "consecutive_length_responses": consecutive_length_responses,
+                                 "level": previous_reasoning_level})
+                        return 1
                     # A length stop is a model-session failure, not an ARC or
                     # research failure. Recreate only Pi's in-memory session;
                     # the bridge, checkpoint, task-local resources and child
                     # reports remain durable. The compact recovery protocol
                     # permits bounded research/resource work before its final
-                    # action, so repeated truncation is bounded by the caller's
-                    # deadline rather than a universal turn-count cutoff.
+                    # action. Every provider policy permits one retry per
+                    # consecutive length streak. The opt-in native policy
+                    # changes that retry's effort; the bound does not infer
+                    # effort support or change the provider-default payload.
                     kernel.new_session()
                     recovery_state = _get_json(bridge_url + "/state")
                     recovery = _load_prompt("arc_length_recovery.md", **{
@@ -2145,7 +2532,8 @@ def _run_pi(
                         "to": recovery_phase, "reason": "model_output_length",
                         "consecutive_length_responses": consecutive_length_responses,
                     })
-                    follow_up = kernel.prompt(recovery)
+                    follow_up = prompt_with_policy(recovery, preserve_level=True,
+                                                   recover_reasoning_length=reasoning_length_recovery)
                     if follow_up.get("success") is False:
                         return 1
                     kernel.wait_for_event(("turn_start",), timeout=None)
@@ -2170,7 +2558,7 @@ def _run_pi(
                     continuation = _arc_continuation_prompt(state, truncated=truncated)
                 if pending_research_notice:
                     continuation = f"{pending_research_notice}\n{continuation}"
-                follow_up = kernel.prompt(continuation)
+                follow_up = prompt_with_policy(continuation)
                 if follow_up.get("success") is False:
                     # Some Pi versions reject a normal prompt immediately
                     # after an action-boundary abort even though the action
@@ -2186,7 +2574,7 @@ def _run_pi(
                         "action_budget": json.dumps(recovery_state.get("action_budget", {}), separators=(",", ":")),
                         "latest_action_evidence": json.dumps(latest_action_evidence, separators=(",", ":")),
                     })
-                    recovered = kernel.prompt(recovery)
+                    recovered = prompt_with_policy(recovery, preserve_level=True)
                     if recovered.get("success") is False:
                         return 1
                     kernel.wait_for_event(("turn_start",), timeout=None)
@@ -2203,6 +2591,8 @@ def _run_pi(
                 # immediately without giving the continuation a chance to act.
                 kernel.wait_for_event(("turn_start",), timeout=None)
                 pending_research_notice = None
+    except _ArcOuterRequestStopped:
+        return 125
     except TimeoutError:
         return 124
     finally:
@@ -2225,10 +2615,23 @@ def run_arc_agi_3_e2e(
     input_modalities: str | tuple[str, ...] | list[str] | None = None,
     pi_provider_extension: Path | None = None,
     pi_environment: dict[str, str] | None = None,
+    review_mode: str = "advisory",
     bridge_python: Path | None = None,
     bridge_module_paths: tuple[Path, ...] = (),
     experiment_timeout_seconds: float | None = None,
+    reasoning_policy: str = "provider-default",
+    reasoning_levels: tuple[str, ...] = (),
+    max_output_tokens: int | None = None,
+    max_reported_tokens: int | None = None,
 ) -> Path:
+    from .reasoning_policy import validate_reasoning_options
+    validate_reasoning_options(reasoning_policy, reasoning_levels, max_output_tokens)
+    if max_reported_tokens is not None:
+        if isinstance(max_reported_tokens, bool) or not isinstance(max_reported_tokens, int) or max_reported_tokens <= 0:
+            raise ValueError("max_reported_tokens must be a positive integer")
+        pi_environment = {**(pi_environment or {}), "PI_PROVIDER_MAX_REPORTED_TOKENS": str(max_reported_tokens)}
+    if review_mode not in {"advisory", "required"}:
+        raise ValueError("review_mode must be advisory or required")
     if experiment_timeout_seconds is not None and (
         not math.isfinite(experiment_timeout_seconds) or experiment_timeout_seconds <= 0
     ):
@@ -2240,8 +2643,8 @@ def run_arc_agi_3_e2e(
         raise ValueError("task-local validation probes require the treatment variant")
     if sum(bool(value) for value in validation_probes) > 1:
         raise ValueError("choose one task-local validation probe")
-    if max_actions is not None and max_actions < 1:
-        raise ValueError("max_actions must be at least 1")
+    if max_actions is not None and max_actions < 0:
+        raise ValueError("max_actions must be nonnegative; 0 disables local step limits")
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError("ARC output must be an empty directory; use a new run root")
@@ -2253,28 +2656,46 @@ def run_arc_agi_3_e2e(
     project_root = Path(__file__).resolve().parents[2]
     env = load_project_dotenv(project_root)
     model_settings = resolve_model_settings(env)
+    _initial_reasoning_after_feedback({**env, **(pi_environment or {})},
+                                     reasoning_policy, reasoning_levels, model_settings)
+    _reasoning_length_recovery({**env, **(pi_environment or {})},
+                              reasoning_policy, reasoning_levels, model_settings, pi_provider_extension)
+    if reasoning_policy == "adaptive-binary" and model_settings.get("thinking_format") not in {"qwen", "qwen-chat-template"}:
+        raise ValueError("adaptive-binary requires an explicit verified Qwen thinking format")
+    if max_output_tokens is not None:
+        model_settings["max_tokens"] = max_output_tokens
     if input_modalities is not None:
         model_settings["input_modalities"] = list(resolve_input_modalities(input_modalities))
     src = str(Path(__file__).resolve().parent.parent)
     env["PYTHONPATH"] = os.pathsep.join([src, *(str(path.resolve()) for path in bridge_module_paths), env.get("PYTHONPATH", "")])
-    bridge_port = _pick_bridge_port()
+    # Bind once in the real child. Probe/close/rebind races with Windows port
+    # reservations or another listener and is not a reservation of ownership.
+    bridge_port = 0
+    bridge_launch_id = secrets.token_hex(16)
+    bridge_action_token = secrets.token_urlsafe(32)
     bridge_command = [str(arc_python), "-m", "autoresearch_pi.arc_agi_3_bridge", "--root", str(root), "--game", game, "--port", str(bridge_port)]
     if max_actions is not None:
         bridge_command.extend(["--max-actions", str(max_actions)])
     bridge = subprocess.Popen(
         bridge_command,
-        cwd=str(arc_root), env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=str(arc_root), env={**env, "ARC_BRIDGE_EVENT_WRITER": "parent",
+                                "ARC_BRIDGE_ACTION_TOKEN": bridge_action_token,
+                                "ARC_BRIDGE_LAUNCH_ID": bridge_launch_id},
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     subagent_broker = SubagentBroker()
     subagent_broker.start()
     pi_returncode = 1
     timed_out = False
     bridge_result: dict[str, Any] = {}
+    runner_stage = "bridge_readiness"
     try:
-        ready = _wait_for_bridge(root, bridge, port=bridge_port)
+        ready = _wait_for_bridge(root, bridge, launch_id=bridge_launch_id)
         bridge_url = f"http://127.0.0.1:{int(ready['port'])}"
+        runner_stage = "pi_parent_loop"
         pi_returncode = _run_pi(
             root, bridge_url=bridge_url, game=game, variant=experiment_variant,
+            bridge_action_token=bridge_action_token,
             context_compaction=context_compaction,
             subagent_broker_url=subagent_broker.url,
             harness_validation=harness_validation,
@@ -2285,18 +2706,28 @@ def run_arc_agi_3_e2e(
             input_modalities=model_settings["input_modalities"],
             provider_extension=pi_provider_extension,
             environment_overrides=pi_environment,
+            reasoning_policy=reasoning_policy, reasoning_levels=reasoning_levels,
+            max_output_tokens=max_output_tokens,
+            review_mode=review_mode,
             **({"experiment_timeout_seconds": experiment_timeout_seconds}
                if experiment_timeout_seconds is not None else {}),
         )
         timed_out = pi_returncode == 124
-        bridge_result = _post_json(bridge_url + "/close", {})
+        runner_stage = "bridge_close"
+        bridge_result = _post_json(bridge_url + "/close", {}, action_token=bridge_action_token)
         bridge_events = bridge_result.pop("events", [])
         if isinstance(bridge_events, list):
             _append_bridge_event_batch(root, bridge_events)
+        runner_stage = "bridge_exit"
         bridge.wait(timeout=30)
     except (Exception, KeyboardInterrupt) as exc:
         (root / "runner-error.json").write_text(
-            json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False, indent=2) + "\n",
+            json.dumps({"error": f"{type(exc).__name__}: {exc}",
+                        "stage": runner_stage,
+                        "pi_returncode_before_error": pi_returncode,
+                        "pi_timed_out_before_error": timed_out,
+                        "recovery": "Preserve this run's bridge events, last public observation, checkpoint and exact assembly refs; diagnose the failed stage before a fresh online attempt. Do not replay prior actions."},
+                       ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         # Preserve an analyzable terminal summary even when the operator
@@ -2349,9 +2780,11 @@ def run_arc_agi_3_e2e(
     )
     method_audit_tmp.replace(method_audit)
     summary = root / "summary.json"
-    if experiment_timeout_seconds is not None:
+    if experiment_timeout_seconds is not None or max_reported_tokens is not None:
         payload["experiment_limits"] = {"pi_runtime_seconds": experiment_timeout_seconds,
                                         "max_actions": max_actions,
+                                        "max_reported_tokens": max_reported_tokens,
+                                        "budget_basis": "Reported parent and child usage; unfinished streams may add unmeasured cost.",
                                         "official_benchmark_default": False}
     temporary = root / "summary.json.tmp"
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

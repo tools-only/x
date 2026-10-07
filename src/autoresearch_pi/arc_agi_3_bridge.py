@@ -13,7 +13,9 @@ import hashlib
 import json
 import math
 import os
+import secrets
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -143,15 +145,41 @@ def frame_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]
             "top": min(rows), "left": min(cols),
             "bottom": max(rows), "right": max(cols),
         }
-        # Preserve exact local evidence so the agent can update its working
-        # frame without fetching another full observation. The canonical full
-        # frame is retained in the bridge event log as the transport fallback.
+        # Preserve both public pixel values for direct comparison without
+        # fetching another full observation. value remains the after-value for
+        # existing consumers; before makes same-sized sparse changes reversible.
         result["cells"] = [
-            {"row": row, "col": col, "value": after_frames[-1][row][col]}
+            {"row": row, "col": col, "before": previous[row][col], "value": current[row][col]}
             for row, col in changed
         ]
         result["cells_truncated"] = False
     return result
+
+
+def action_target_cell(before: dict[str, Any], after: dict[str, Any], *, x: int, y: int) -> dict[str, Any] | None:
+    """Return the exact clicked pixel on both public frames; x is column, y is row."""
+    before_frames = before.get("frames") or []
+    after_frames = after.get("frames") or []
+    if not before_frames or not after_frames:
+        return None
+    try:
+        return {"x": x, "y": y,
+                "before": before_frames[-1][y][x], "after": after_frames[-1][y][x]}
+    except (IndexError, KeyError, TypeError):
+        return None
+
+
+def action_target_cell(before: dict[str, Any], after: dict[str, Any], *, x: int, y: int) -> dict[str, Any] | None:
+    """Return the exact clicked pixel on both public frames; x is column, y is row."""
+    before_frames = before.get("frames") or []
+    after_frames = after.get("frames") or []
+    if not before_frames or not after_frames:
+        return None
+    try:
+        return {"x": x, "y": y,
+                "before": before_frames[-1][y][x], "after": after_frames[-1][y][x]}
+    except (IndexError, KeyError, TypeError):
+        return None
 
 
 def project_trajectory(
@@ -283,6 +311,16 @@ def parse_action_payload(
 
 class ArcBridge:
     def __init__(self, root: Path, game: str, max_actions: int | None = None):
+        def startup_stage(stage: str) -> None:
+            try:
+                (root / "bridge-startup-stage.json").write_text(
+                    json.dumps({"stage": stage, "recorded_at": time.time()}) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
+        startup_stage("importing_arc_sdk")
         from arc_agi import Arcade, OperationMode
         from arcengine import GameAction
 
@@ -290,25 +328,35 @@ class ArcBridge:
         self.game = game
         self.max_actions = max_actions
         self.game_action = GameAction
+        startup_stage("creating_arcade")
         self.arcade = Arcade(operation_mode=OperationMode.ONLINE)
+        startup_stage("opening_scorecard")
         self.card_id = self.arcade.open_scorecard(tags=["agent", "pi-autoresearch-meta"])
+        startup_stage("creating_game")
         self.environment = self.arcade.make(game, scorecard_id=self.card_id)
+        startup_stage("game_created")
         baseline_actions = list(self.environment.info.baseline_actions or [])
         self.baseline_actions = baseline_actions
         self.action_budget_multiplier = ARC_ACTION_BUDGET_MULTIPLIER
         self.adapter = ArcAgi3Adapter(action_budget_multiplier=self.action_budget_multiplier)
         self.derived_action_budget = derive_action_budget(baseline_actions)
-        self.max_actions = int(max_actions) if max_actions is not None else self.derived_action_budget
+        if max_actions is not None and max_actions < 0:
+            raise ValueError("max_actions must be nonnegative")
+        self.max_actions = None if max_actions == 0 else (
+            int(max_actions) if max_actions is not None else self.derived_action_budget
+        )
         self.actions = 0
         self.level_action_counts: list[int] = [0]
         self.forced_actions = 0
         self.closed = False
         self.scorecard: dict[str, Any] | None = None
         self._close_result: dict[str, Any] | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self.action_token = os.environ.get("ARC_BRIDGE_ACTION_TOKEN", "")
+        self._leases: dict[str, dict[str, Any]] = {}
         self._events: list[dict[str, Any]] = []
         self._events_lock = threading.Lock()
-        self._disk_events_available = True
+        self._disk_events_available = os.environ.get("ARC_BRIDGE_EVENT_WRITER") != "parent"
         self._append({
             "event": "scorecard_opened", "game": game, "scorecard_id": self.card_id,
             "baseline_actions": baseline_actions,
@@ -373,6 +421,53 @@ class ArcBridge:
             start = min(after, len(self._events))
             return {"events": self._events[start:], "next": len(self._events)}
 
+    def issue_action_lease(self, *, token: str, max_actions: int,
+                           expected_fingerprint: str) -> dict[str, Any]:
+        """Give one child a bounded, state-bound capability; never expose the owner token."""
+        if not self.action_token or not secrets.compare_digest(token, self.action_token):
+            raise PermissionError("owner action token required")
+        if not 1 <= max_actions <= 16:
+            raise ValueError("max_actions must be between 1 and 16")
+        with self._lock:
+            current = public_state_fingerprint(self._frame())["fingerprint"]
+            if current != expected_fingerprint:
+                raise ValueError("ARC state changed before child action lease was issued")
+            if any(item["remaining"] > 0 for item in self._leases.values()):
+                raise ValueError("another ARC action lease is active")
+            lease_token = secrets.token_urlsafe(32)
+            self._leases[lease_token] = {"remaining": max_actions, "next_fingerprint": current}
+            return {"token": lease_token, "max_actions": max_actions,
+                    "expected_fingerprint": current}
+
+    def revoke_action_lease(self, *, owner_token: str, lease_token: str) -> None:
+        if not self.action_token or not secrets.compare_digest(owner_token, self.action_token):
+            raise PermissionError("owner action token required")
+        with self._lock:
+            self._leases.pop(lease_token, None)
+
+    def authorized_step(self, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+        with self._lock:
+            if self.action_token:
+                if secrets.compare_digest(token, self.action_token):
+                    if any(item["remaining"] > 0 for item in self._leases.values()):
+                        raise PermissionError("child action lease holds the ARC action boundary")
+                else:
+                    lease = self._leases.get(token)
+                    if not lease or lease["remaining"] <= 0:
+                        raise PermissionError("ARC action capability is absent or exhausted")
+                    # Reserve before the SDK call: an unknown response must never grant a retry.
+                    current = public_state_fingerprint(self._frame())["fingerprint"]
+                    if current != lease["next_fingerprint"]:
+                        lease["remaining"] = 0
+                        raise ValueError("ARC child action lease is stale")
+                    lease["remaining"] -= 1
+            result = self.step(payload)
+            if self.action_token and token != self.action_token:
+                lease = self._leases.get(token)
+                if lease:
+                    lease["next_fingerprint"] = public_state_fingerprint(result)["fingerprint"]
+            return result
+
     def _frame(self) -> dict[str, Any]:
         frame = serialize_frame(
             self.environment.observation_space,
@@ -436,10 +531,11 @@ class ArcBridge:
     def state(self) -> dict[str, Any]:
         with self._lock:
             frame = self._frame()
+            frame["state_fingerprint"] = public_state_fingerprint(frame)["fingerprint"]
             level = int(frame["levels_completed"])
             while len(self.level_action_counts) <= level:
                 self.level_action_counts.append(0)
-            level_budget = (
+            level_budget = None if self.max_actions is None else (
                 math.ceil(self.baseline_actions[level] * self.action_budget_multiplier)
                 if level < len(self.baseline_actions) else self.max_actions
             )
@@ -462,18 +558,18 @@ class ArcBridge:
         with self._lock:
             if self.closed:
                 raise ValueError("ARC scorecard is already closed")
-            if self.actions >= self.max_actions:
+            if self.max_actions is not None and self.actions >= self.max_actions:
                 raise ValueError("ARC action budget exhausted")
             before = self._frame()
             pre_action_state = public_state_fingerprint(before)
             level = int(before["levels_completed"])
             while len(self.level_action_counts) <= level:
                 self.level_action_counts.append(0)
-            level_budget = (
+            level_budget = None if self.max_actions is None else (
                 math.ceil(self.baseline_actions[level] * self.action_budget_multiplier)
                 if level < len(self.baseline_actions) else self.max_actions
             )
-            if self.level_action_counts[level] >= level_budget:
+            if level_budget is not None and self.level_action_counts[level] >= level_budget:
                 raise ValueError(f"ARC level {level} action budget exhausted")
             action = parse_action_payload(
                 payload,
@@ -534,6 +630,14 @@ class ArcBridge:
             after = self._frame()
             after["pre_action_state"] = pre_action_state
             after["observation_delta"] = frame_delta(before, after)
+            if isinstance(action_data.get("x"), int) and isinstance(action_data.get("y"), int):
+                target_cell = action_target_cell(before, after, x=action_data["x"], y=action_data["y"])
+                if target_cell is not None:
+                    after["action_target_cell"] = target_cell
+            if isinstance(action_data.get("x"), int) and isinstance(action_data.get("y"), int):
+                target_cell = action_target_cell(before, after, x=action_data["x"], y=action_data["y"])
+                if target_cell is not None:
+                    after["action_target_cell"] = target_cell
             after_level = int(after["levels_completed"])
             after["public_transition"] = {
                 "level_before": level,
@@ -549,7 +653,7 @@ class ArcBridge:
             })
             while len(self.level_action_counts) <= after_level:
                 self.level_action_counts.append(0)
-            after_level_budget = (
+            after_level_budget = None if self.max_actions is None else (
                 math.ceil(self.baseline_actions[after_level] * self.action_budget_multiplier)
                 if after_level < len(self.baseline_actions) else self.max_actions
             )
@@ -649,15 +753,29 @@ def _make_handler(bridge: ArcBridge):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
+                token = self.headers.get("X-ARC-Action-Token", "")
                 if self.path == "/action":
-                    self._json(200, bridge.step(payload))
+                    self._json(200, bridge.authorized_step(payload, token=token))
+                elif self.path == "/action-lease":
+                    if payload.get("operation") == "revoke":
+                        bridge.revoke_action_lease(owner_token=token,
+                                                   lease_token=str(payload.get("lease_token", "")))
+                        self._json(200, {"revoked": True})
+                    else:
+                        self._json(200, bridge.issue_action_lease(
+                            token=token, max_actions=int(payload.get("max_actions", 0)),
+                            expected_fingerprint=str(payload.get("expected_fingerprint", ""))))
                 elif self.path == "/close":
+                    if bridge.action_token and not secrets.compare_digest(token, bridge.action_token):
+                        raise PermissionError("owner action token required")
                     self._json(200, bridge.close())
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
                 else:
                     self._json(404, {"error": "not found"})
             except ValueError as exc:
                 self._json(400, {"error": str(exc)})
+            except PermissionError as exc:
+                self._json(403, {"error": str(exc), "retryable": False})
             except ArcEnvironmentError as exc:
                 self._error(502, exc)
             except Exception as exc:
@@ -691,6 +809,8 @@ def main(argv: list[str] | None = None) -> int:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), _make_handler(bridge))
         port = server.server_address[1]
         ready = {"status": "ready", "host": "127.0.0.1", "port": port, "game": args.game, "pid": os.getpid()}
+        if os.environ.get("ARC_BRIDGE_LAUNCH_ID"):
+            ready["launch_id"] = os.environ["ARC_BRIDGE_LAUNCH_ID"]
         try:
             (root / "bridge-ready.json").write_text(json.dumps(ready, indent=2) + "\n", encoding="utf-8")
         except OSError:

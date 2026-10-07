@@ -1,4 +1,14 @@
-# Auto-Research → Task-local Self-Harness 机制说明
+# Auto-Research → Task-local Self-Harness 机制说明（历史协议，已退役）
+
+> **状态（2026-09-22）：历史兼容文档，不是当前 agent 工作流。** 本文以下
+> `research_approval → harness delivery → route → adopt/apply_route` 协议已经退役，
+> 仅保留内部迁移/兼容测试。当前边界与验收以
+> [Harness capability authoring ADR](plans/2026-09-21-harness-capability-authoring-adr.md)
+> 和 [Harness 质量验收](plans/2026-09-21-harness-quality-acceptance.md) 为准：
+> Auto-Research child 只返回 findings、方法候选、规划影响和实验请求；parent
+> 读取对应 creator 后完整创作候选并显式 assembly；runtime 只做确定性校验、
+> 版本化、执行和证据记录。当前 `task_harness` schema 不暴露 `apply_route` 或
+> `adopt_research`，生产 child 工具面不含 `research_approval`。
 
 状态：当前实现说明（as implemented）  
 协议版本：`auto-research-report-v1` / `auto-research-harness-delivery-v1` / `harness-router-v1`  

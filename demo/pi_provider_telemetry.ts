@@ -1,9 +1,15 @@
-/** Generic, privacy-preserving provider request telemetry for Pi extensions. */
+/** Size-only provider telemetry, with an explicit opt-in full-payload debug dump. */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { loadPrompt } from "./prompt_loader.ts";
+import { competitionPayloadExposure } from "./pi_task_competition.ts";
+import { readWorkset } from "./pi_read_workset.ts";
+import { installProviderRequestAdmission, providerWindowRequestDeclined } from "./pi_provider_request_admission.ts";
+import { FINAL_PROVIDER_PAYLOAD_EVENT, type FinalProviderPayloadEvent } from "./pi_final_provider_payload.ts";
+import { reportedBudgetRequestDeclined } from "./pi_reported_token_budget.ts";
 
 type TelemetryOptions = {
 	root?: string;
@@ -17,12 +23,14 @@ type RequestRecord = {
 	requestIndex: number;
 	startedAtMs: number;
 	usageLogged?: boolean;
+	firstDeltaAtMs?: number;
 };
 
 type ContextModuleName =
 	| "system_prompt"
 	| "task_prompt"
 	| "checkpoint"
+	| "competition"
 	| "memory"
 	| "skills"
 	| "tools"
@@ -37,18 +45,22 @@ type ContextModuleName =
 type ContextModuleStats = {
 	json_chars: number;
 	string_chars: number;
+    text_json_chars: number;
+    image_count: number;
+    image_transport_chars: number;
 	estimated_tokens: number;
 	item_count: number;
 };
 
 const CONTEXT_MODULES: ContextModuleName[] = [
-	"system_prompt", "task_prompt", "checkpoint", "memory", "skills",
+	"system_prompt", "task_prompt", "checkpoint", "competition", "memory", "skills",
 	"tools", "subagents", "research", "self_harness", "arc_observation", "tool_results",
 	"assistant_messages", "other_messages",
 ];
 
 function emptyModuleStats(): ContextModuleStats {
-	return { json_chars: 0, string_chars: 0, estimated_tokens: 0, item_count: 0 };
+    return { json_chars: 0, string_chars: 0, text_json_chars: 0, image_count: 0,
+        image_transport_chars: 0, estimated_tokens: 0, item_count: 0 };
 }
 
 function newModuleStats(): Record<ContextModuleName, ContextModuleStats> {
@@ -97,7 +109,7 @@ function isArcObservation(message: unknown, text: string): boolean {
 	const value = message && typeof message === "object" ? message as Record<string, unknown> : {};
 	const toolName = String(value.name ?? value.toolName ?? value.tool_name ?? "");
 	return toolName === "arc_state" || toolName === "arc_action"
-		|| /(?:ARC state summary|Current transition:|Observation delta \(deterministic\)|Recent action trajectory|ARC action budget)/.test(text);
+		|| /(?:ARC_OBSERVATION_IMAGE|ARC_OBSERVATION_VIEW|ARC state summary|Current transition:|Observation delta \(deterministic\)|Recent action trajectory|ARC action budget)/.test(text);
 }
 
 function classifyMessage(message: unknown, firstUserMessage: boolean): ContextModuleName {
@@ -105,6 +117,7 @@ function classifyMessage(message: unknown, firstUserMessage: boolean): ContextMo
 	const text = messageText(message);
 	if (["system", "developer"].includes(role)) return "system_prompt";
 	if (firstUserMessage && role === "user") return "task_prompt";
+	if (hasPrefix(text, ["CURRENT COMPETITION VIEW:"])) return "competition";
 	if (hasPrefix(text, ["CURRENT DECISION CHECKPOINT", "CURRENT TASK STATE", "Task-local execution checkpoint:"])) return "checkpoint";
 	if (hasPrefix(text, ["Active task-local memory:", "Active task-local memory index:"])) return "memory";
 	if (hasPrefix(text, ["Active task-local skills"])) return "skills";
@@ -129,10 +142,35 @@ function addModuleValue(
 ): void {
 	const stats = modules[name];
 	const json = jsonChars(value);
+    const images = imageMeasurements(value);
 	stats.json_chars += json;
 	stats.string_chars += stringChars(value);
-	stats.estimated_tokens += estimatedTokens(json);
+    stats.text_json_chars += json - images.json_chars;
+    stats.image_count += images.count;
+    stats.image_transport_chars += images.chars;
+    stats.estimated_tokens += estimatedTokens(json - images.json_chars);
 	stats.item_count += 1;
+}
+
+/** Binary image bodies are transport, not tokenizer input. Text containing a
+ * data URI remains text unless it is inside a typed provider image block. */
+function imageMeasurements(value: unknown): { count: number; chars: number; json_chars: number } {
+    const stats = { count: 0, chars: 0, json_chars: 0 };
+    const visit = (item: any, insideImage = false) => {
+        if (!item || typeof item !== "object") return;
+        if (Array.isArray(item)) { for (const child of item) visit(child, insideImage); return; }
+        const image = ["image", "image_url", "input_image"].includes(String(item.type));
+        if (image) stats.count += 1;
+        for (const [key, child] of Object.entries(item)) {
+            if ((image || insideImage) && ["data", "url", "image_url"].includes(key)
+                && typeof child === "string" && (key === "data" || child.startsWith("data:image/"))) {
+                stats.chars += child.length;
+                stats.json_chars += jsonChars(child) - 2;
+            } else visit(child, image || insideImage);
+        }
+    };
+    visit(value);
+    return stats;
 }
 
 function contextTokenStats(payload: unknown): Record<string, unknown> {
@@ -146,6 +184,19 @@ function contextTokenStats(payload: unknown): Record<string, unknown> {
 		? [...messages, { role: "system", content: value.systemPrompt }]
 		: messages;
 	const tools = Array.isArray(value.tools) ? value.tools : [];
+	const currentMarker = "CURRENT PUBLIC ARC OBSERVATION (complete, ephemeral view):";
+	const historyMessages = effectiveMessages.flatMap((message: any) => {
+		if (["system", "developer"].includes(messageRole(message))) return [];
+		if (messageRole(message) !== "user") return [message];
+		if (typeof message.content === "string") return message.content.trimStart().startsWith(currentMarker) ? [] : [message];
+		if (!Array.isArray(message.content)) return [message];
+		const content = message.content.filter((part: any) => !(part?.type === "text"
+			&& typeof part.text === "string" && part.text.trimStart().startsWith(currentMarker)));
+		return content.length ? [{ ...message, content }] : [];
+	});
+	const historyImages = imageMeasurements(historyMessages);
+	const historyTextChars = Math.max(0, jsonChars(historyMessages) - historyImages.json_chars);
+	const historyTextBytes = Math.max(0, Buffer.byteLength(JSON.stringify(historyMessages), "utf8") - historyImages.json_chars);
 	const modules = newModuleStats();
 	let firstUserSeen = false;
 	for (const message of effectiveMessages) {
@@ -157,14 +208,36 @@ function contextTokenStats(payload: unknown): Record<string, unknown> {
 	const messageJsonChars = jsonChars(effectiveMessages);
 	const toolJsonChars = jsonChars(tools);
 	const contextJsonChars = messageJsonChars + toolJsonChars;
+    const images = imageMeasurements([effectiveMessages, tools]);
+    const textJsonChars = Math.max(0, contextJsonChars - images.json_chars);
+    const textJsonUtf8Bytes = Math.max(0, Buffer.byteLength(JSON.stringify(effectiveMessages), "utf8")
+        + Buffer.byteLength(JSON.stringify(tools), "utf8") - images.json_chars);
+    const textTokens = estimatedTokens(textJsonChars);
 	const accountedJsonChars = Object.values(modules).reduce((total, item) => total + item.json_chars, 0);
 	return {
 		context_json_chars: contextJsonChars,
+		history_text_json_chars: historyTextChars,
+		history_text_json_utf8_bytes: historyTextBytes,
+		history_message_count: historyMessages.length,
+		history_length_scope: "serialized messages excluding system/developer and current ephemeral ARC text; typed image transport excluded; schema separate",
+		history_estimated_text_tokens: estimatedTokens(historyTextChars),
 		context_string_chars: stringChars(messages) + stringChars(tools),
-		estimated_input_tokens: estimatedTokens(contextJsonChars),
-		token_estimate: { method: "ceil(json_chars / 4)", tokenizer: "provider-independent-heuristic" },
+        text_json_chars: textJsonChars,
+        text_json_utf8_bytes: textJsonUtf8Bytes,
+        estimated_input_tokens: textTokens,
+        estimated_text_tokens: textTokens,
+        estimated_image_tokens: images.count ? null : 0,
+        estimated_total_tokens: images.count ? null : textTokens,
+        image_count: images.count,
+        image_transport_chars: images.chars,
+        token_estimate: { method: "ceil(text_json_chars / 4)", tokenizer: "provider-independent-heuristic",
+            scope: "text_and_schema_only",
+            ...(images.count ? { image_note: "Image token cost is unknown; base64 transport is excluded from the text estimate. Provider reported input covers its actual accounting." } : {}) },
 		message_count: effectiveMessages.length,
 		tool_definition_count: tools.length,
+		tool_definition_sizes: tools.map((tool: any) => ({
+			name: String(tool?.name ?? tool?.function?.name ?? "unknown"), json_chars: jsonChars(tool),
+		})),
 		modules,
 		unattributed_context_json_chars: Math.max(0, contextJsonChars - accountedJsonChars),
 	};
@@ -186,6 +259,7 @@ function activeToolDefinitions(ctx: { getActiveTools?: () => string[]; getAllToo
 function usageNumber(usage: Record<string, unknown> | undefined, ...keys: string[]): number | undefined {
 	if (!usage) return undefined;
 	for (const key of keys) {
+		if (usage[key] === null || usage[key] === undefined) continue;
 		const number = Number(usage[key]);
 		if (Number.isFinite(number)) return number;
 	}
@@ -263,6 +337,8 @@ function payloadStats(payload: unknown): Record<string, unknown> {
 		max_tokens: typeof value.max_tokens === "number"
 			? value.max_tokens
 			: typeof value.max_completion_tokens === "number" ? value.max_completion_tokens : undefined,
+		reasoning_effort: value.reasoning_effort ?? value.reasoning?.effort ?? null,
+		enable_thinking: value.enable_thinking ?? value.chat_template_kwargs?.enable_thinking ?? null,
 		message_count: messages.count,
 		message_json_chars: messages.json_chars,
 		message_string_chars: messages.string_chars,
@@ -282,8 +358,138 @@ function payloadStats(payload: unknown): Record<string, unknown> {
 
 function resourceRefsInPayload(payload: unknown): string[] {
 	const text = JSON.stringify(payload ?? "");
-	const refs = text.match(/(?:memory|skill|tool|subagent|system_prompt|finding|context):[a-zA-Z0-9._:@/-]+/g) ?? [];
+	const refs = text.match(/(?:memory|skill|tool|subagent|system_prompt|finding|context|research_update|research_worker):[a-zA-Z0-9._:@/-]+/g) ?? [];
 	return [...new Set(refs)].sort();
+}
+
+type GuidanceExposureDescriptor = {
+	name: string;
+	sha256: string;
+	chars: number;
+	window_ids?: string[];
+	research_line_refs?: string[];
+};
+
+const GUIDANCE_PREFIXES: Record<string, string> = {
+	research_evidence_update: "Auto-Research evidence update:",
+	periodic_pattern_review: "Periodic pattern extraction due:",
+	capability_workflow_reference: "Capability workflow reference:",
+	capability_extraction_process: loadPrompt("capability_extraction_process.md").split(/\r?\n/, 1)[0],
+	pending_parent_capability_decisions: "Pending parent capability decisions (",
+	baseline_authoring_methods: "Baseline authoring methods:",
+};
+
+function latestExpectedGuidanceExposure(root: string): {
+	exposure_id: string | null;
+	descriptors: GuidanceExposureDescriptor[];
+} {
+	const path = join(root, "task-harness-context-exposures.jsonl");
+	if (!existsSync(path)) return { exposure_id: null, descriptors: [] };
+	const records = readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+		try { return [JSON.parse(line) as Record<string, unknown>]; }
+		catch { return []; }
+	});
+	const latest = records.findLast((record) => Array.isArray(record.guidance_exposures));
+	const descriptors = Array.isArray(latest?.guidance_exposures)
+		? latest.guidance_exposures.flatMap((item: any) => (
+			typeof item?.name === "string" && typeof item?.sha256 === "string"
+				&& Number.isFinite(Number(item?.chars))
+				? [{ name: item.name, sha256: item.sha256, chars: Number(item.chars),
+					...(Array.isArray(item.window_ids) ? { window_ids: item.window_ids.map(String) } : {}),
+					...(Array.isArray(item.research_line_refs) ? { research_line_refs: item.research_line_refs.map(String) } : {}) }]
+				: []
+		)) : [];
+	return { exposure_id: typeof latest?.exposure_id === "string" ? latest.exposure_id : null, descriptors };
+}
+
+function payloadStringLeaves(value: unknown, seen = new Set<object>()): string[] {
+	if (typeof value === "string") return [value];
+	if (!value || typeof value !== "object" || seen.has(value)) return [];
+	seen.add(value);
+	if (Array.isArray(value)) return value.flatMap((item) => payloadStringLeaves(item, seen));
+	return Object.values(value as Record<string, unknown>)
+		.flatMap((item) => payloadStringLeaves(item, seen));
+}
+
+function providerImageCarriers(value: unknown, seen = new Set<object>()): Array<{ kind: string; encoded: string }> {
+	if (!value || typeof value !== "object" || seen.has(value)) return [];
+	seen.add(value);
+	if (Array.isArray(value)) return value.flatMap((item) => providerImageCarriers(item, seen));
+	const item = value as Record<string, any>;
+	const kind = String(item.type ?? "");
+	const url = kind === "input_image" ? item.image_url
+		: kind === "image_url" ? item.image_url?.url ?? item.image_url : undefined;
+	const source = kind === "image" && item.source?.type === "base64"
+		? item.source.data : kind === "image" && item.mimeType === "image/png" ? item.data : undefined;
+	const direct = typeof url === "string" && url.startsWith("data:image/png;base64,")
+		? [{ kind, encoded: url.slice("data:image/png;base64,".length) }]
+		: typeof source === "string" && source.startsWith("iVBORw0KGgo")
+			? [{ kind, encoded: source }] : [];
+	return [...direct, ...Object.values(item).flatMap((child) => providerImageCarriers(child, seen))];
+}
+
+/** Check the serialized provider payload, not just the intended context view. */
+function arcObservationPayloadExposure(payload: unknown): Record<string, unknown> | null {
+	const leaves = payloadStringLeaves(payload);
+	const imageLabel = leaves.findLast((value) => value.includes("ARC_OBSERVATION_IMAGE {"));
+	if (imageLabel) {
+		const match = /ARC_OBSERVATION_IMAGE (\{[^\n]+\})/.exec(imageLabel);
+		let metadata: Record<string, unknown> = {};
+		try { metadata = match ? JSON.parse(match[1]) as Record<string, unknown> : {}; } catch {}
+		const imageSha = String(metadata.image_sha256 ?? "");
+		const carriers = providerImageCarriers(payload);
+		const matchingImageCount = carriers.filter(({ encoded }) => encoded.length <= 4_000_000
+			&& imageSha && createHash("sha256").update(Buffer.from(encoded, "base64")).digest("hex") === imageSha).length;
+		return {
+			codec: metadata.codec ?? null, canonical_ref: metadata.canonical_ref ?? null,
+			frame_sha256: metadata.frame_sha256 ?? null, image_sha256: imageSha || null,
+			image_bytes: metadata.image_bytes ?? null,
+			image_carrier_kinds: [...new Set(carriers.map((item) => item.kind))],
+			matching_image_content_count: matchingImageCount,
+			effective_image_exposure: matchingImageCount > 0,
+		};
+	}
+	const textView = leaves.find((value) => value.includes("ARC_OBSERVATION_VIEW {"));
+	if (!textView) return null;
+	const match = /ARC_OBSERVATION_VIEW (\{[^\n]+\})\n([\s\S]*?)\nARC_OBSERVATION_END ([a-f0-9]{64})/.exec(textView);
+	if (!match) return { codec: "arc-spatial-v1", effective_text_exposure: false };
+	let metadata: Record<string, unknown> = {};
+	try { metadata = JSON.parse(match[1]) as Record<string, unknown>; } catch {}
+	const bodySha = createHash("sha256").update(match[2]).digest("hex");
+	return {
+		codec: metadata.codec ?? null, canonical_ref: metadata.canonical_ref ?? null,
+		frame_sha256: metadata.frame_sha256 ?? null, body_chars: match[2].length,
+		effective_text_exposure: bodySha === match[3] && bodySha === metadata.body_sha256,
+	};
+}
+
+function guidanceExposureJoin(root: string, payload?: unknown): Record<string, unknown> {
+	const expected = latestExpectedGuidanceExposure(root);
+	const inspectable = payload !== undefined && payload !== null && typeof payload === "object";
+	const leaves = inspectable ? payloadStringLeaves(payload) : [];
+	const fullTextPresent = (descriptor: GuidanceExposureDescriptor): boolean => {
+		const prefix = GUIDANCE_PREFIXES[descriptor.name];
+		for (const text of leaves) {
+			if (text.length === descriptor.chars
+				&& createHash("sha256").update(text).digest("hex") === descriptor.sha256) return true;
+			if (!prefix || descriptor.chars > text.length) continue;
+			let offset = text.indexOf(prefix);
+			while (offset >= 0) {
+				const candidate = text.slice(offset, offset + descriptor.chars);
+				if (candidate.length === descriptor.chars
+					&& createHash("sha256").update(candidate).digest("hex") === descriptor.sha256) return true;
+				offset = text.indexOf(prefix, offset + prefix.length);
+			}
+		}
+		return false;
+	};
+	return {
+		runtime_expected_exposure_id: expected.exposure_id,
+		guidance_exposures: expected.descriptors.map((descriptor) => ({
+			...descriptor,
+			full_text_present: inspectable ? fullTextPresent(descriptor) : null,
+		})),
+	};
 }
 
 /** Install observation-only telemetry without changing provider behavior. */
@@ -297,21 +503,32 @@ export function installProviderTelemetry(
 	const scope = options.scope ?? "external-benchmark";
 	const path = join(root, fileName);
 	const contextTokenPath = join(root, contextTokenFileName);
+	// Explicit opt-in: a full provider payload may contain private task content.
+	const promptCapture = process.env.PI_AUTORESEARCH_PROVIDER_PROMPT_CAPTURE;
+	const captureMode = promptCapture === "first" || promptCapture === "all" ? promptCapture : "off";
 	mkdirSync(root, { recursive: true });
+	installProviderRequestAdmission(pi, root, scope, contextTokenStats);
 	const append = (value: Record<string, unknown>) => appendFileSync(
 		path,
-		JSON.stringify({ scope, ...value }) + "\n",
+		JSON.stringify({ scope, process_id: process.pid,
+			...(process.env.PI_AUTO_RESEARCH_RUN_ID ? { run_id: process.env.PI_AUTO_RESEARCH_RUN_ID } : {}),
+			...(process.env.PI_TASK_CHILD_CONTEXT_ID ? { child_context_id: process.env.PI_TASK_CHILD_CONTEXT_ID } : {}),
+			...value }) + "\n",
 		"utf8",
 	);
 	const appendContextTokenDebug = (value: Record<string, unknown>) => appendFileSync(
 		contextTokenPath,
-		JSON.stringify({ scope, ...value }) + "\n",
+		JSON.stringify({ scope, process_id: process.pid,
+			...(process.env.PI_TASK_CHILD_CONTEXT_ID ? { child_context_id: process.env.PI_TASK_CHILD_CONTEXT_ID } : {}),
+			...value }) + "\n",
 		"utf8",
 	);
 	let requestIndex = 0;
-	const inFlight: RequestRecord[] = [];
-	let lastResponse: RequestRecord | undefined;
+	// Pi's hooks carry no request ID. Its provider attempts are serial; a new
+	// payload supersedes a cancelled/retried attempt which never got message_end.
+	let activeRequest: RequestRecord | undefined;
 	let pendingContextStats: Record<string, unknown> | undefined;
+	let previousPrefixHash: string | undefined;
 
 	// Custom providers can bypass the provider-payload hook (notably
 	// `streamSimple` fixtures and some gateway adapters). The native context
@@ -329,15 +546,46 @@ export function installProviderTelemetry(
 		});
 	});
 
-	pi.on("before_provider_request", (event) => {
+	pi.events.on(FINAL_PROVIDER_PAYLOAD_EVENT, (value) => {
+		const event = value as FinalProviderPayloadEvent;
 		const startedAtMs = Date.now();
 		const record = {
 			requestId: `${scope}-provider-${++requestIndex}`,
 			requestIndex,
 			startedAtMs,
 		};
-		inFlight.push(record);
+		if (activeRequest && !activeRequest.usageLogged) append({ event: "provider_attempt_superseded",
+			request_id: activeRequest.requestId, replaced_by: record.requestId,
+			outcome: "no_completed_message", recordedAt: new Date(startedAtMs).toISOString() });
+		activeRequest = record;
+		if (captureMode === "all" || (captureMode === "first" && record.requestIndex === 1)) {
+			const safeScope = scope.replace(/[^a-zA-Z0-9_-]/g, "_");
+			const capturePath = join(root,
+				`provider-prompt-${safeScope}-${startedAtMs}-${process.pid}-${record.requestIndex}.json`);
+			try {
+				writeFileSync(capturePath, JSON.stringify({
+					scope,
+					request_id: record.requestId,
+					request_index: record.requestIndex,
+					captured_at: new Date(startedAtMs).toISOString(),
+					measurement_basis: "provider_payload",
+					payload: event.payload,
+				}, null, 2) + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+			} catch (error) {
+				console.error(`Provider prompt capture failed for ${record.requestId}:`, error);
+			}
+		}
 		const contextStats = contextTokenStats(event.payload);
+		const readCoverage = readWorkset(pi, root).payload(event.payload, record.requestId);
+		const requestPayload = event.payload as Record<string, any>;
+		const prefixHash = createHash("sha256").update(JSON.stringify({
+			system: requestPayload?.systemPrompt ?? (requestPayload?.messages ?? []).filter((m: any) => ["system", "developer"].includes(m.role)),
+			tools: requestPayload?.tools ?? [],
+		})).digest("hex");
+		append({ event: "stable_prefix", request_id: record.requestId, sha256: prefixHash,
+			changed: previousPrefixHash === undefined ? null : previousPrefixHash !== prefixHash,
+			measurement_basis: "provider_payload", cache_effect: "unmeasured" });
+		previousPrefixHash = prefixHash;
 		// The provider payload is authoritative when this hook exists; do not
 		// emit a second fallback snapshot for this request.
 		pendingContextStats = undefined;
@@ -369,14 +617,21 @@ export function installProviderTelemetry(
 			request_index: record.requestIndex,
 			measurement_basis: "provider_payload",
 			resource_refs: resourceRefsInPayload(event.payload),
+			competition_views: competitionPayloadExposure(event.payload, root),
+			read_workset: readCoverage,
+			arc_observation_view: arcObservationPayloadExposure(event.payload),
 			provider_payload_sha256: createHash("sha256").update(JSON.stringify(event.payload ?? null)).digest("hex"),
+			arc_decision_feedback_markers: [
+				"FIRST VISIBLE RESPONSE", "VISIBLE EFFECTS WITHOUT A LEVEL TRANSITION",
+				"REPEATED VISIBLE EFFECT AT THE SAME ACTION/COORDINATE", "REPEATED ZERO PIXEL DELTAS",
+			].filter((marker) => JSON.stringify(event.payload ?? null).includes(marker)),
+			...guidanceExposureJoin(root, event.payload),
 			recordedAt: new Date(startedAtMs).toISOString(),
 		});
 	});
 
 	pi.on("after_provider_response", (event) => {
-		const record = inFlight.shift();
-		lastResponse = record;
+		const record = activeRequest;
 		const completedAtMs = Date.now();
 		appendContextTokenDebug({
 			event: "provider_response",
@@ -389,6 +644,7 @@ export function installProviderTelemetry(
 		});
 		append({
 			event: "provider_response",
+			measurement_basis: "response_headers_only", pairing_basis: "serial_latest_attempt",
 			request_id: record?.requestId,
 			status: event.status,
 			latency_ms: record ? Math.max(0, completedAtMs - record.startedAtMs) : undefined,
@@ -398,6 +654,18 @@ export function installProviderTelemetry(
 		});
 	});
 
+	pi.on("message_update", (event) => {
+		const delta = event.assistantMessageEvent;
+		if (!activeRequest || activeRequest.firstDeltaAtMs !== undefined
+			|| !["text_delta", "thinking_delta", "toolcall_delta"].includes(delta?.type)
+			|| !(delta as any).delta) return;
+		const now = Date.now();
+		activeRequest.firstDeltaAtMs = now;
+		append({ event: "provider_first_model_delta", request_id: activeRequest.requestId,
+			measurement_basis: "first_native_model_delta_not_network_chunk", delta_kind: delta.type,
+			latency_ms: Math.max(0, now - activeRequest.startedAtMs), recordedAt: new Date(now).toISOString() });
+	});
+
 	pi.on("message_end", (event) => {
 		const message = event.message as Record<string, unknown>;
 		if (message?.role !== "assistant") return;
@@ -405,7 +673,7 @@ export function installProviderTelemetry(
 		const contextFallback = pendingContextStats;
 		pendingContextStats = undefined;
 		let fallbackAssemblyRecorded = false;
-		let record = lastResponse ?? inFlight.at(-1);
+		let record = activeRequest;
 		if (record?.usageLogged) record = undefined;
 		if (!record) {
 			const startedAtMs = completedAtMs;
@@ -415,6 +683,7 @@ export function installProviderTelemetry(
 				requestIndex,
 				startedAtMs,
 			};
+			readWorkset(pi, root).payload(undefined, record.requestId, false);
 			appendContextTokenDebug({
 				event: "provider_request_context",
 				turn: record.requestIndex,
@@ -431,6 +700,7 @@ export function installProviderTelemetry(
 				measurement_basis: "context_hook_fallback",
 				resource_refs: [],
 				context_stats: fallbackStats ?? null,
+				...guidanceExposureJoin(root),
 				recordedAt: new Date(startedAtMs).toISOString(),
 			});
 			fallbackAssemblyRecorded = true;
@@ -444,40 +714,75 @@ export function installProviderTelemetry(
 				measurement_basis: "context_hook_fallback",
 				resource_refs: [],
 				context_stats: contextFallback,
+				...guidanceExposureJoin(root),
 				recordedAt: new Date(completedAtMs).toISOString(),
 			});
 		}
 		const usage = message.usage && typeof message.usage === "object"
 			? message.usage as Record<string, unknown>
 			: undefined;
+		const reasoningTokens = usageNumber(usage, "reasoning", "reasoning_tokens");
+		const outputTokens = usageNumber(usage, "output", "output_tokens");
+        const failed = ["error", "aborted", "length"].includes(String(message.stopReason));
+        const knownTokens = [
+            usageNumber(usage, "input", "input_tokens"), outputTokens,
+            usageNumber(usage, "cacheRead", "cache_read", "cache_read_input_tokens"),
+            usageNumber(usage, "cacheWrite", "cache_write", "cache_creation_input_tokens"),
+            usageNumber(usage, "totalTokens", "total_tokens"),
+        ].some(value => value !== undefined && value > 0);
+        // Native adapters initialize usage to zero even when an HTTP error or
+        // canceled stream supplied none. Preserve uncertainty like the shared
+        // reported-token ledger; raw native usage remains in provider telemetry.
+        const unknownUsage = !usage || !knownTokens;
+		if ((providerWindowRequestDeclined(pi) || reportedBudgetRequestDeclined(pi)) && message.stopReason === "aborted" && !knownTokens) {
+			record.usageLogged = true;
+			appendContextTokenDebug({ event: "provider_request_declined", turn: record.requestIndex,
+				request_id: record.requestId, usage_status: "not_requested", provider_request_admitted: false,
+				recordedAt: new Date(completedAtMs).toISOString() });
+			return;
+		}
 		appendContextTokenDebug({
 			event: "provider_response_usage",
 			turn: record?.requestIndex,
 			request_id: record?.requestId,
-			actual_input_tokens: usageNumber(usage, "input", "input_tokens"),
-			actual_output_tokens: usageNumber(usage, "output", "output_tokens"),
-			cache_read_tokens: usageNumber(usage, "cacheRead", "cache_read", "cache_read_input_tokens"),
-			cache_write_tokens: usageNumber(usage, "cacheWrite", "cache_write", "cache_creation_input_tokens"),
-			total_tokens: usageNumber(usage, "totalTokens", "total_tokens"),
+            usage_status: unknownUsage ? "unknown" : failed ? "reported_partial" : "reported",
+            actual_input_tokens: unknownUsage ? null : usageNumber(usage, "input", "input_tokens"),
+            actual_output_tokens: unknownUsage ? null : outputTokens,
+            reasoning_tokens: unknownUsage ? null : reasoningTokens,
+            non_reasoning_output_tokens: !unknownUsage && reasoningTokens !== undefined && outputTokens !== undefined
+				? Math.max(0, outputTokens - reasoningTokens) : null,
+            cache_read_tokens: unknownUsage ? null : usageNumber(usage, "cacheRead", "cache_read", "cache_read_input_tokens"),
+            cache_write_tokens: unknownUsage ? null : usageNumber(usage, "cacheWrite", "cache_write", "cache_creation_input_tokens"),
+            total_tokens: unknownUsage ? null : usageNumber(usage, "totalTokens", "total_tokens"),
 			completed_at_ms: completedAtMs,
 			recordedAt: new Date(completedAtMs).toISOString(),
 		});
 		record.usageLogged = true;
 		append({
 			event: "assistant_message",
+			requested_tools: Array.isArray(message.content) ? (message.content as any[])
+				.filter(p => p.type === "toolCall").map(p => p.name) : [],
+			attribution: "descriptive_request_group_not_causal_reasoning_cost",
 			request_id: record?.requestId,
 			stop_reason: message.stopReason,
 			message_content_json_chars: jsonChars(message.content),
 			usage: usage ? {
 				input: usage.input,
 				output: usage.output,
+				reasoning: reasoningTokens ?? null,
+				non_reasoning_output: reasoningTokens !== undefined && outputTokens !== undefined
+					? Math.max(0, outputTokens - reasoningTokens) : null,
 				cache_read: usage.cacheRead,
 				cache_write: usage.cacheWrite,
 				total_tokens: usage.totalTokens,
+				cost: usage.cost,
 			} : undefined,
 			elapsed_ms: record ? Math.max(0, completedAtMs - record.startedAtMs) : undefined,
+			first_model_delta_ms: record?.firstDeltaAtMs !== undefined ? record.firstDeltaAtMs - record.startedAtMs : null,
+			stream_after_first_delta_ms: record?.firstDeltaAtMs !== undefined ? completedAtMs - record.firstDeltaAtMs : null,
 			completed_at_ms: completedAtMs,
 			recordedAt: new Date(completedAtMs).toISOString(),
 		});
+		activeRequest = undefined;
 	});
 }

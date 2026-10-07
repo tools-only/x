@@ -13,7 +13,10 @@ export const RESEARCH_PROFILE_FILES: Record<string, string> = {
 
 export function loadResearchProfile(scope = "unspecified") {
 	const file = Object.hasOwn(RESEARCH_PROFILE_FILES, scope) ? RESEARCH_PROFILE_FILES[scope] : null;
-	if (!file && !["unspecified", "hypothesis"].includes(scope)) throw new Error(`Unknown research scope: ${scope}`);
+	// `scope` is a task-level inquiry label, not a profile permission gate.
+	// New labels may be introduced alongside research_kind; when no dedicated
+	// profile exists, use the generic child contract instead of rejecting a
+	// valid research request at schema/runtime boundary.
 	const instructions = file ? loadPrompt(file) : "";
 	return { scope, file, instructions,
 		sha256: file ? createHash("sha256").update(instructions).digest("hex") : null };

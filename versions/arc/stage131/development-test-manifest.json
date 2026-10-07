@@ -1,0 +1,4 @@
+{
+  "tests/test_reported_token_budget_native.py": "678e2222baf033f327e6b9ea819703dcbb3fc01eca9911e998923a0c5adef1f1",
+  "tests/test_arc_parent_provider_admission_native.py": "41ebb79e3c4634fd3aba3b79c989af75126b41875ff5f393736058a861527cdb"
+}

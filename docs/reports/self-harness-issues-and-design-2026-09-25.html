@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Self-Harness 问题清单与优化设计</title>
+<style>body{margin:0;background:#f4f6f8;color:#203246;font:15px/1.7 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1100px;margin:auto;background:#fff;padding:44px 56px}h1,h2,h3{line-height:1.35;color:#123b60}h1{font-size:30px}h2{margin-top:38px;border-bottom:2px solid #dce7ef;padding-bottom:8px}h3{margin-top:25px}table{border-collapse:collapse;width:100%;margin:15px 0;font-size:14px}th,td{border:1px solid #d7e1ea;padding:10px;vertical-align:top}th{background:#eaf2f8;text-align:left}code{background:#eef2f5;padding:2px 4px;overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#17334a;color:white;padding:17px;border-radius:6px}.box{background:#f1f7fb;border-left:4px solid #3d789d;padding:14px}.warn{background:#fff6e6;border-left:4px solid #c7902f;padding:14px}.muted{color:#607282}li{margin:5px 0}@media print{body{background:white}main{padding:0}tr{break-inside:avoid}}</style></head><body><main>
+<h1>Self-Harness 问题清单与优化设计</h1>
+<p>审查快照：2026-09-25 约 11:05（北京时间）。基于当前工作树和真实 ARC 运行，不把待办或设计承诺当成已经交付的能力。此文件是设计建议，没有修改 runtime。</p>
+<div class="box"><strong>建议顺序：</strong>先修复评估与研究反馈的闭环、简化易错的模型调用界面，再检验 Skill 与 Tool 的实际收益。保留现有的版本、权限和环境边界；不增加创建配额、完整 method 档案或研究前置要求。</div>
+<h2>1. 审查依据与判断边界</h2>
+<p>当前 Pi 主 Agent 决定语义和组件选择；确定性 runtime 路由、保存版本、装配及执行；研究 child 只读分析，环境动作由主 Agent 执行。组件池、装配、曝光、实际使用、正确性是不同阶段。设计本身允许单场景、未经验证的 Skill 入池，也允许直接创建，无需先运行 Auto-Research。</p>
+<p>真实运行 <code>runs/arc-hypothesis-current-20260924/run</code> 在约11:03 的日志为第350动作、2关完成、NOT_FINISHED，主进程 PID 89352 仍在。现有 <code>skill:grid-delta-probe@v1</code>，装配 revision 3 选择该 Skill 及三条 Memory。到核对时 352 条 observation 中有 283 条 decision 引用此 Skill 精确版本；这是引用频率，不能单独证明步骤被正确执行或提升通关。研究报告已有两份 completed；第三个 session 最新记录为 active，其子进程存活与否未在本次核实。没有在该运行找到 task-tools／task-subagents 产物文件。</p>
+<p>真实 SDK 的15场景烟测通过，provider 为确定性替身；说明组件路径可达。最近一次全量 pytest 为621通过、51失败；这些失败成因不同，不宜合并解释。</p>
+
+<h2>2. 优先问题清单</h2>
+<table><tr><th>优先级／问题</th><th>证据与原因</th><th>影响</th><th>建议</th></tr>
+<tr><td>P0 · 效果复评自动绑定错误</td><td><code>assessHarnessEffect</code> 隐式候选过滤所有已有 assessment 的 decision。真实第20步引用 <code>memory:ls20_action_direction_map@v1</code>，但其 decision-1 已评估；未显式填写 decision_id 的新评估被绑定到别的候选，报“无实际使用证据”。</td><td>同一组件跨关持续验证受阻，错误还会被误诊为引用缺失。</td><td>当提供 observation_refs 时，从这些 observation 中使用的精确组件版本反查创建／变更 decision；候选含已评估决定。多候选返回 selection_required。显式 decision_id 优先。每次 assessment 保留独立事件，不覆盖旧评估。</td></tr>
+<tr><td>P0 · 研究报告到行动的采纳链较弱</td><td>报告1提出目标槽不可通过普通平移进入；报告2提出拨盘三色循环和优先右侧通路。报告有摘要、证据审计和规划影响，但现有快照尚未证明每项推断如何进入后续决策、被接受或否定。研究完成状态也不证明价值。</td><td>Auto-Research 可能产出精细分析，却无法说明它是否改变了主 Agent 的计划与实验。</td><td>为报告中“限制行动的结论／区分实验”生成可读建议卡，携带精确 report_ref、as_of_event、替代解释、预期与反证；主 Agent 在下一次相关决策选择采纳、驳回或延期，记录理由与后续 observation。保持主动选择，不自动执行动作。</td></tr>
+<tr><td>P1 · Review／Change 形状错误反复出现</td><td>本次运行16条 operation failure 中，有稳定 key 缺失3次，review 数组元素非法、reason 缺失、transition_analysis／evidence_refs／pattern 字段不匹配，以及一次 <code>semantic_kind: undefined</code>。其中有的已重试成功，但持续消耗轮次。</td><td>方法机会可能在修复输入契约时丢失；主 Agent 把注意力花在协议细节。</td><td>只保留一个公开写入入口，按操作生成短的、完整的可复制调用模板；错误响应给出最小修正字段与保留的候选内容。缺失 key／validity 等字段的说明与提交点同屏。保留结构校验，不新增语义准入。</td></tr>
+<tr><td>P1 · Skill 引用与实际方法效果混淆</td><td><code>grid-delta-probe@v1</code> 已被283条行动引用；effect-assessments 文件仅有1条，针对方向 Memory。Skill 正文有流程、停止与失败处理，是方法而非纯轨迹，但“最大非地板块就是可控对象”“约50格变化”属于条件性启发式。</td><td>大量引用容易被解读成高质量，具体步骤和适用范围却没有得到同等力度检验。</td><td>选几次真正满足／不满足触发条件的后续行动，比较预期与实际、记录失败路径和花费；对 Skill 做版本化修订。评估以语义结果和反例为准，不以引用次数计分。</td></tr>
+<tr><td>P1 · 研究会话连续性难以判断</td><td>两个 completed 报告之后，又有第三个 active session 记录。现有日志不等于进程存活证明；跨阶段结果有研究线引用，但对“旧问题已解决、哪个假设仍活跃、下一次何时值得研究”的主 Agent 投影尚未证实足够稳定。</td><td>容易重开重复问题，或在报告完成后失去未解的猜想。</td><td>维护研究线的轻量状态：已证据支持、被反例排除、待验证、下一条有信息量的实验、已过期前提；状态只聚合现有证据引用，不自动断言真假。completed 后续用新 follow-up 引用旧报告。</td></tr>
+<tr><td>P1 · Memory 的多义内容与生命周期</td><td>方向、地图、目标候选和燃料解释属于不同有效范围。已有 task／episode／level／state 作用域机制，但前期运行 Memory 曾把门、目标与燃料汇在一个原子内容中；level 事实过期后仍可在历史日志看到 active 旧条目，容易被误读。</td><td>修订一条事实可能意外影响其他事实；历史状态和当前投影混淆。</td><td>建议以“可单独被反证、过期或替换”为拆分尺度。inspect 展示当前 eligible、selected、expired 和历史状态各自含义；不把逐个细节都强拆，也不提高入池要求。</td></tr>
+<tr><td>P2 · Tool／Subagent 机会尚未在自主运行中体现</td><td>系统具备 Pi Tool 和保存型 Subagent 路径，真实 SDK 烟测验证连通，但当前这次自主 ARC 运行未见定义。不能从缺少产物推断接口坏了，也不能认为 Tool 必须出现。</td><td>路径预算检查、重复差分计算等可能继续耗费主 Agent 上下文。</td><td>对已出现的重复操作做机会评估：若 Pi tool 已披露实现面可执行且节省足够成本，直接用 creator 生成；否则继续使用 Skill／现有工具。Subagent 仅在独立或预配置上下文会产生信息增量时创建。</td></tr>
+<tr><td>P2 · Adapter 与 Agent runtime 职责混合</td><td><code>docs/deferred-research-todos.md</code> 的 A 项仍未完成：Pi ARC extension 同时包含环境工具、观察投影、上下文和研究辅助。当前代码也显示装配、child 路由分布多个模块。</td><td>测试与故障定位需要跨 bridge、runner、extension 和研究层追踪；未来其他环境复用困难。</td><td>按公开环境动作／canonical observation、Agent 侧投影与生命周期、研究调度三个接口渐进抽离。先写契约和边界测试，再迁移实现，保留现有运行兼容。</td></tr>
+<tr><td>P2 · 压缩后的认知连续性未验收</td><td>待办 D 指出：原始轨迹可检索不代表旧推理进入下一次模型输入。研究报告、checkpoint、Memory 和 prompt assembly 并存。</td><td>主 Agent 可能重复试验，或忘记仍需验证的约束。</td><td>审计一次真实 compaction／恢复前后的模型可见摘要：假设、反例、未完成实验、精确来源是否留存；按需改投影，避免建立新的并行真值仓库。</td></tr></table>
+
+<h2>3. 目标结构与资料流</h2>
+<pre>ARC adapter → canonical observation → Agent runtime 的派生视图／checkpoint
+                                      ↓
+主 Agent：对象／目标／约束／计划的假设与方法机会
+   ├─ creator → 父侧候选内容 → task_harness → 版本 pool
+   │                                      ↓ 主 Agent 精确装配
+   │                                    Skill／Pi Tool／Subagent／Memory／system
+   ├─ Auto-Research child（只读）→ 有依据的报告／实验请求
+   │                                      ↓ 主 Agent 选择
+   └─ arc_action（单一动作所有者）← 计划／已选择的方法
+                         ↓
+              observation → 使用评估／研究线反馈／组件修订</pre>
+<p>task_prompt 是装配的输出通道，可纳入从 Memory、研究报告、方法、计划等精确来源产生的内容。它不是 Memory 专属位置，也不是第六类持久组件。整个设计保留父 Agent 为语义作者和唯一环境动作决策者，runtime 只处理确定性边界。</p>
+
+<h2>4. 拟议的三项架构决策</h2>
+<h3>ADR-01（拟议）：评估事件绑定“使用版本 + 观察”，而非只绑定未评估创建决定</h3>
+<p><strong>背景：</strong>一次创建的组件可跨多关持续使用，单次 assessment 无法涵盖适用边界。<strong>决策：</strong>接受显式 decision_id；若输入有 observation_refs，则基于实际引用的精确版本生成候选 decision 列表，允许已有 assessment 的决定重复评估。多个匹配返回候选与完整重试模板。若为 retire／absence 评价，使用投影缺席证据的独立语义，不要求动作引用一个已退役资源。</p>
+<p><strong>代价：</strong>同一资源可产生多次甚至互相矛盾的 assessment，需按范围、时间和证据展示，而不能取最后一个覆盖旧结论。<strong>备选：</strong>强迫父 Agent 永远显式填写 decision_id；更简单，但真实调用已反复遗漏，不能修复默认行为。</p>
+
+<h3>ADR-02（拟议）：将研究报告变成可选择的决策候选</h3>
+<p><strong>背景：</strong>报告1、2已经有机制判断和实验建议，但“完成→影响行动→得到新证据”的关系需要精确记录。<strong>决策：</strong>现有 research inbox 增加轻量决策卡，引用报告精确版本、证据、当前状态版本、候选行动、替代结果和停止条件。父 Agent 明确采纳、驳回或延期；runtime 仅转发和记录。过期状态只提示重核，不自动执行。</p>
+<p><strong>代价：</strong>多一次短的决策记录与少量上下文；可用只展示当前相关卡控制成本。<strong>备选：</strong>自动执行研究请求；会越过主 Agent 唯一动作所有权，故不选。</p>
+
+<h3>ADR-03（拟议）：保留准入边界，缩短创建入口的模型契约</h3>
+<p><strong>背景：</strong>候选缺 key、validity、semantic_kind 或 review 数组形状导致重复失败。<strong>决策：</strong>公开界面按 change／review／assess 的当前上下文给完整短模板；响应给缺失字段、原输入保留引用和针对性重试；内部仍调用同一 preflight 与原生写入器。Skill 正文、Tool 程序、Subagent instructions 仍须由父 Agent 通过对应 creator 撰写。</p>
+<p><strong>代价：</strong>模板和实现契约需要同步测试；它不保证模型产出好方法。<strong>备选：</strong>再加一个完整 method 档案或研究完成门槛；会阻止早期试用，无法解决参数形状错误。</p>
+
+<h2>5. 按阶段实施与验收</h2>
+<table><tr><th>阶段</th><th>工作</th><th>验收证据</th></tr>
+<tr><td>一：消除闭环断点</td><td>修复复评选择和退役评价；给 review/change 的错误增加精确修复提示；保留输入候选。</td><td>第20步同型场景可自动绑定方向 Memory decision-1 再评估；已评估过的 Skill 仍可跨关复评；多候选返回选择而不误判。</td></tr>
+<tr><td>二：研究反馈</td><td>对报告1、2做父侧采纳与行动引用核查；实现当前相关的建议卡和 outcome 回流；第三个 active session 先核验进程，再判断是否需要恢复。</td><td>真实 ARC 中至少一条问题链包含：研究报告→父决策→环境 action→新 observation→研究结论修订或明确未决；反例与未采用理由可检索。</td></tr>
+<tr><td>三：方法质量</td><td>检查 grid-delta-probe 的实际触发、失败样本和适用边界；必要时出 v2；评估重复计算是否值得 Pi Tool。</td><td>展示至少一个有效使用和一个挑战／反例，说明动作选择与 Skill 步骤的关系；若建 Tool，要求实际调用与语义输出，而非只有入池。</td></tr>
+<tr><td>四：跨上下文与架构</td><td>审计压缩前后关键未决假设；把 adapter／runtime 契约落盘并做边界迁移。</td><td>真实输入侧可看见未完成实验和精确依据；bridge 只负责环境动作与公开结果，Agent 侧研究视图独立。</td></tr></table>
+<p>端到端线路验收仍使用真实 ARC bridge、Pi 父循环、child broker／process、结构化返回、代码路由、原生组件写入、后续 ARC action 和下一次父轮，覆盖 system_prompt、Skill、Memory、Pi Tool、Subagent 及 Auto-Research／普通 delegate 的 length continuation。确定性 provider 测连通；真实 provider 测自主转化、研究收益和游戏表现。每个结论按覆盖范围报告，不用局部绿灯替代整体。</p>
+
+<h2>6. 故障模式与成本约束</h2>
+<ul><li><strong>重复错误修复消耗行动窗口：</strong>review 和 change 的最小修复应保持 pending opportunity、原候选及其证据；不要让一次契约错误抹掉方法机会。</li>
+<li><strong>研究建议过期：</strong>比较 as_of_event 与当前状态；过期时主 Agent 重核前提，不直接执行旧动作。</li>
+<li><strong>错误的使用归因：</strong>把“版本被选中”“正文被读”“decision 引用”“具体步骤成功执行”分列，工具输出要验证语义。</li>
+<li><strong>上下文成本：</strong>只向父 Agent 展示当前相关研究卡，完整报告按精确引用读取；保留 canonical evidence 与压缩视图的来源关联。</li>
+<li><strong>权限与安全：</strong>Pi Tool 仅运行已披露的纯表达式／授权 adapter 操作；child 没有 ARC 写权限；版本引用和 scope 检查维持。</li>
+<li><strong>测试漂移：</strong>51个现有失败逐类处理，区分真实回归、旧契约预期、测试 fixture 和环境依赖；不能通过放宽语义断言制造全绿。</li></ul>
+
+<h2>7. 待办关系与当前建议</h2>
+<p><code>docs/deferred-research-todos.md</code> 中 A（adapter 边界）、B（研究目的与可观测视图）、C（父子证据／实验通信）、D（压缩后认知连续性）仍有未完成项。本方案优先做实际闭环需要的最小部分；其余候选设计保留评估，不视为自动批准全面重构。尤其遵循单次不可回退 ARC 历史、主 Agent 独占环境动作、child 只请求预算内实验。</p>
+<p class="muted">证据入口：demo/pi_task_local_self_harness.ts（preflight、assess_effect）、demo/pi_harness_review.ts（review）、demo/pi_task_harness_assembly.ts（装配）、demo/pi_memory_validity.ts（scope）、demo/pi_auto_research_agenda.ts、demo/prompts/capability_extraction_process.md；runs/arc-hypothesis-current-20260924/run/{task-operation-failures,execution-observations,task-skills,task-harness-assemblies,auto-research-reports,auto-research-sessions,effect-assessments}.jsonl；runs/arc-delta-full-smoke-20260925/arc-self-harness-smoke-summary.json；docs/deferred-research-todos.md。</p>
+</main></body></html>

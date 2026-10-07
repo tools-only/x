@@ -5,6 +5,8 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
 import { resolveTaskResource, resourceMetadata, taskRecords, versionConflict } from "./pi_task_resource_store.ts";
+import { actionFacts, advanceExperiment, normalizeExperiment } from "./pi_task_experiment.ts";
+import { reconcileExperimentPlan, readTaskStrategyState } from "./pi_task_strategy_state.ts";
 
 export function installTaskValidation(pi: ExtensionAPI, root: string) {
 	const scope = ensureTaskScope(root);
@@ -16,9 +18,32 @@ export function installTaskValidation(pi: ExtensionAPI, root: string) {
 		appendFileSync(join(root, "task-validations.jsonl"), JSON.stringify(stampTaskRecord(scope, record)) + "\n");
 		return record;
 	};
+	const prepareDecision = (decision: Record<string, any>) => {
+		const lastObservation = taskRecords(root, "observation").at(-1);
+		const contract = normalizeExperiment(decision, lastObservation ? resourceMetadata("observation", lastObservation).resource_ref : null);
+		if (!contract) return;
+		const existing = [...latest.values()].find(r => r.experiment?.contract.test_id === contract.test_id);
+		if (existing) {
+			// The same id is immutable, including after completion. Do not replace its cutoff.
+			const { evidence_cutoff: _cutoff, ...declared } = contract;
+			const { evidence_cutoff: _oldCutoff, ...original } = existing.experiment.contract;
+			if (JSON.stringify(declared) !== JSON.stringify(original)) throw new Error("experiment id already has a fixed contract; use a new id and retry_reason");
+			return existing;
+		}
+		const prior = [...latest.values()].filter(r => r.source_hypothesis_id === contract.candidate_id && r.experiment);
+		const candidate = readTaskStrategyState(root).candidates.find((c: Record<string, any>) => c.id === contract.candidate_id);
+		if (candidate && (candidate.version ?? 1) !== contract.candidate_version) throw new Error("experiment requires the current candidate version");
+		if (prior.length && !contract.retry_reason) throw new Error("another experiment for this hypothesis requires retry_reason; previous outcomes remain in the ledger");
+		return save({ validation_id: `validation-${++counter}`, version: 1, status: "open", origin: "action_decision",
+			source_hypothesis_id: contract.candidate_id, source_hypothesis_version: contract.candidate_version,
+			hypothesis: contract.hypothesis, prediction: contract.prediction, falsifier: decision.falsifier,
+			experiment: { contract, status: "open", samples: [], actions_used: 0 },
+			previous_test_refs: prior.map(r => `validation:${r.validation_id}@v${r.version}`),
+			recordedAt: new Date().toISOString() });
+	};
 	pi.registerTool({
 		name: "task_validation", label: "Task-local validation ledger",
-		description: "Open, assess, dispute, or inspect a task/research/harness hypothesis. Predictions, alternatives and verdicts are agent-authored, not environment facts. Assessments retain reasoning basis, exact evidence versions, dependency versions, and revision links. This ledger is optional and never gates resource creation or actions.",
+		description: "Open, assess, dispute, or inspect a deliberate task/research/harness hypothesis. ARC action decisions remain in the observation ledger; only a stable hypothesis_id opts one into this formal ledger. Omitted target_version resolves the current sequential version; an explicitly stale version conflicts. Assessment evidence_refs must be exact observation:, delegation:, or failure: refs, not the validation claim. This ledger is optional and never gates actions or resources.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("open"), Type.Literal("assess"), Type.Literal("dispute"), Type.Literal("inspect")]),
 			validation_id: Type.Optional(Type.String()), target_version: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -52,7 +77,8 @@ export function installTaskValidation(pi: ExtensionAPI, root: string) {
 			} else {
 				const previous = latest.get(String(p.validation_id));
 				if (!previous) throw new Error("unknown validation_id");
-				if (p.target_version !== previous.version) return versionConflict("validation", previous, p.target_version);
+				if (p.target_version !== undefined && p.target_version !== previous.version)
+					return versionConflict("validation", previous, p.target_version);
 				if (p.action === "dispute") {
 					if (!p.dispute?.trim() || !p.competing_explanation?.trim()) throw new Error("dispute requires dispute and competing_explanation");
 					for (const ref of p.evidence_refs ?? []) resolveTaskResource(root, String(ref));
@@ -91,26 +117,33 @@ export function installTaskValidation(pi: ExtensionAPI, root: string) {
 			return { content: [{ type: "text", text: JSON.stringify(record) }], details: record };
 		},
 	});
-	pi.on("context", (event) => {
-		const open = [...latest.values()].filter((r) => r.status === "open");
-		if (!open.length) return {};
-		return { messages: [...event.messages, { role: "user", timestamp: Date.now(), content: [{ type: "text",
-			text: `Task-local validation index: ${JSON.stringify({ unresolved: open.length,
-				recent: open.map((r) => resourceMetadata("validation", r)),
-				note: "Open is not validated. Assessments and alternative explanations are agent judgments; exact evidence remains readable." })}` }]}] };
-	});
+	// The evidence-bearing competition view replaces the old unresolved-ref index.
 	return {
+		prepareDecision,
+		observeAction(observationId: string, decision: Record<string, any> | undefined, action: Record<string, any>, details: Record<string, any>, isError = false) {
+			// Contracts are fixed in tool_call, before the environment is touched.
+			if (decision && !decision.validation_window && !isError) this.observeDecision(observationId, decision);
+			const ref = `observation:${observationId}@v1`, facts = actionFacts(details, action);
+			for (const record of [...latest.values()]) {
+				if (record.experiment?.status !== "open") continue;
+				const experiment = advanceExperiment(record.experiment, ref, facts, isError);
+				if (experiment === record.experiment) continue;
+				const saved = save({ ...record, experiment, version: record.version + 1,
+					status: experiment.status === "completed" ? "needs_assessment" : record.status,
+					recordedAt: new Date().toISOString() });
+				if (experiment.status === "completed") reconcileExperimentPlan(root, saved);
+			}
+		},
 		observeDecision(observationId: string, decision: Record<string, any>) {
-			if (!decision.hypothesis || !decision.prediction) return;
-			const sourceId = String(decision.hypothesis_id ?? observationId);
+			if (!decision.hypothesis_id || !decision.hypothesis || !decision.prediction) return;
+			const sourceId = String(decision.hypothesis_id);
 			const hypothesisVersion = Math.max(1, Number(decision.hypothesis_version ?? 1));
 			const existing = [...latest.values()].find((r) =>
-				r.source_hypothesis_id === sourceId && r.status === "open");
-			// A stable hypothesis id owns one open validation. Repeated action
-			// capsules continue that test even when their prose is refined. Only an
-			// explicit hypothesis-version increase starts a distinct validation.
-			if (existing && Number(existing.source_hypothesis_version ?? 1) === hypothesisVersion) return;
-			if (existing) save({ ...existing, version: Number(existing.version) + 1,
+				r.source_hypothesis_id === sourceId && Number(r.source_hypothesis_version ?? 1) === hypothesisVersion);
+			// Finished identities stay finished; prose changes cannot reopen them.
+			if (existing) return;
+			const previous = [...latest.values()].find(r => r.source_hypothesis_id === sourceId && r.status === "open" && !r.experiment);
+			if (previous) save({ ...previous, version: Number(previous.version) + 1,
 				status: "superseded", superseded_by_hypothesis_version: hypothesisVersion,
 				recordedAt: new Date().toISOString() });
 			save({ validation_id: `validation-${++counter}`, version: 1, status: "open", origin: "action_decision",

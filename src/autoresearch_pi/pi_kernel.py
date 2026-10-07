@@ -273,13 +273,14 @@ class PiKernel:
         watchdog_state: Optional[AgentLoopWatchdogState] = None,
         stop_after_progress_tools: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Collect one Pi turn, including tool calls, through agent_end/settled.
+        """Collect one Pi turn, including tool calls, through agent_settled.
 
         ``stop_after_progress_tools`` is an explicit action-boundary mode for
-        interactive environments.  Once one of these tools completes, abort
-        the remainder of the model turn so a tool result cannot trigger an
-        unbounded post-action read/planning loop.  The completed tool event is
-        retained and the caller starts the next turn explicitly.
+        interactive environments. Once one of these tools completes, use its
+        native termination or abort the remainder of a legacy model turn so a
+        tool result cannot trigger an unbounded post-action read/planning loop.
+        Retain all events through true settlement before returning control to
+        the caller, which starts the next turn explicitly.
         """
         operation_timeout = self.timeout if timeout is None else timeout
         deadline = time.monotonic() + self._remaining_timeout(operation_timeout)
@@ -317,23 +318,32 @@ class PiKernel:
                 # artificial aborted assistant message.  Keep abort for old
                 # adapters/Pi versions that have no native boundary marker.
                 if not native_boundary:
-                    self.abort()
+                    # The abort RPC is part of this handoff, so it must not
+                    # outlive the caller's shorter event-wait deadline.
+                    previous_deadline = self.deadline
+                    self.deadline = deadline
+                    try:
+                        self.abort()
+                    except TimeoutError as exc:
+                        raise TimeoutError("timed out waiting for Pi action-boundary settlement") from exc
+                    finally:
+                        self.deadline = previous_deadline
                 # Abort is asynchronous in Pi.  Do not let the caller issue
                 # the next prompt while the old turn is still settling; that
                 # race can make the first action-boundary turn look like a
                 # runner failure even though the action succeeded.
-                settle_deadline = min(deadline, time.monotonic() + 2.0)
                 settled_events = self.drain_events()
-                if any(event.get("type") in {"agent_settled", "agent_end"} for event in settled_events):
+                collected.extend(settled_events)
+                if any(event.get("type") == "agent_settled" for event in settled_events):
                     return collected
-                while time.monotonic() < settle_deadline:
-                    settled = self._receive_event(settle_deadline - time.monotonic())
+                while time.monotonic() < deadline:
+                    settled = self._receive_event(deadline - time.monotonic())
                     if settled:
+                        collected.append(settled)
                         self._event_cursor = len(self.events)
-                        if settled.get("type") in {"agent_settled", "agent_end"}:
-                            collected.append(settled)
-                            break
-                return collected
+                        if settled.get("type") == "agent_settled":
+                            return collected
+                raise TimeoutError("timed out waiting for Pi action-boundary settlement")
             if watchdog and event.get("type") == "tool_execution_end":
                 tool_name = str(event.get("toolName") or "")
                 if tool_name in (watchdog.progress_tools | watchdog.task_progress_tools):

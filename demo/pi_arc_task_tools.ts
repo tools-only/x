@@ -21,10 +21,9 @@ export function createArcTaskToolAdapter(
 	return {
 		adapterId: "arc_agi_3",
 		permission: "arc_adapter_bounded",
-		// The canonical refs are used in new programs. The short aliases are
-		// accepted because the native ARC tools are disclosed as arc_state and
-		// arc_action; this keeps agent-authored programs composable with the
-		// vocabulary already present in the same context.
+		// New programs use canonical refs. Short implementation aliases remain
+		// compatible with existing task-local programs; arc_state here projects
+		// public status fields and does not expose a parent pixel-reading tool.
 		allowedImplementations: [
 			"arc.public_state", "arc.action_sequence", "arc_state", "arc_action_sequence",
 		],

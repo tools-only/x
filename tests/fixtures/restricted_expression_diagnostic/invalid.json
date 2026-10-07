@@ -1,0 +1,30 @@
+{
+  "resource_ref": "observation:groups-invalid@v1",
+  "version": 1,
+  "groups": [
+    {
+      "id": "group-invalid-measurements",
+      "rule": {"minimum": 10},
+      "records": [
+        {
+          "id": "record-invalid-measurements",
+          "active": true,
+          "label": "wrong collection type",
+          "measurements": {"id": "measurement-10", "value": 10}
+        }
+      ]
+    },
+    {
+      "id": "group-invalid-rule",
+      "rule": {"maximum": 20},
+      "records": [
+        {
+          "id": "record-invalid-rule",
+          "active": true,
+          "label": "missing threshold",
+          "measurements": [{"id": "measurement-20", "value": 20}]
+        }
+      ]
+    }
+  ]
+}

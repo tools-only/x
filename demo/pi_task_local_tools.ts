@@ -1,23 +1,51 @@
 /** Adapter-bounded task-local tools registered through Pi's public API. */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { admitTaskLocalOperation } from "./pi_task_execution_admission.ts";
 import { Type } from "typebox";
+import { validateCreatorCitation } from "./pi_harness_baseline_methods.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
+import { memoryValidityContext, memoryValidityReasons, normalizeMemoryValidity, type MemoryValidity } from "./pi_memory_validity.ts";
 import { versionConflict } from "./pi_task_resource_store.ts";
 import { registerNativeHarnessExecutor } from "./pi_task_harness_route_runtime.ts";
-import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
+import { assertTaskToolName, TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
 import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
+import { methodUseRejection } from "./pi_research_method_runtime.ts";
+import {
+	evaluateTaskPureExpression, TASK_PURE_EXPRESSION_FORMAT,
+	validateTaskPureExpressionInputAccess,
+	type PureExpressionLimitRequest,
+} from "./pi_task_pure_expression.ts";
+import { validateTaskPureExpressionProgram, TASK_PURE_PYTHON_FORMAT, type PureSourceEvidence } from "./pi_task_pure_authoring.ts";
+import { preparePureExpressionInput } from "./pi_task_pure_expression_host.ts";
+import { assertTaskJsonSchemaValue, TaskJsonSchemaError, validateTaskJsonSchema } from "./pi_task_json_schema.ts";
 
 export type TaskToolResult = {
 	content?: Array<{ type: "text"; text: string }>;
 	details?: unknown;
 };
 
+/** Fresh schema instances for both ordinary pure calls and publication trials. */
+export function pureToolInvocationParameters() {
+	return Type.Object({
+		parameters: Type.Optional(Type.Object({}, { additionalProperties: true })),
+		bindings: Type.Optional(Type.Array(Type.Object({
+			name: Type.String(), ref: Type.String(),
+			// The runtime also accepts integer segments; gateways require string items.
+			path: Type.Array(Type.String()),
+		}, { additionalProperties: false }))),
+	}, { additionalProperties: false });
+}
+
 export type TaskToolProgram = {
 	steps: Array<Record<string, unknown>>;
+} | {
+	format: typeof TASK_PURE_EXPRESSION_FORMAT;
+	expression: Record<string, unknown>;
+	limits: PureExpressionLimitRequest;
 };
 
 export type TaskToolAdapter = {
@@ -38,9 +66,11 @@ export type TaskToolDependencies = {
 	append: (name: string, value: unknown) => void;
 	allocateDecisionId: () => string;
 	resolveBasisRefs?: (references: string[]) => string[];
+	prepareResourceBindingAuthorization?: () => void;
 };
 
 type TaskToolRecord = {
+	validity?: MemoryValidity;
 	tool_id: string;
 	name: string;
 	version: number;
@@ -48,6 +78,14 @@ type TaskToolRecord = {
 	availability?: "loaded" | "unloaded" | "suspended" | "retired";
 	description: string;
 	input_schema: Record<string, unknown>;
+	output_schema?: Record<string, unknown>;
+	program_sha256?: string;
+	program_authored_sha256?: string;
+	program_source_evidence?: PureSourceEvidence;
+	program_limits_requested?: PureExpressionLimitRequest;
+	program_limits_effective?: Record<string, number>;
+	input_schema_sha256?: string;
+	output_schema_sha256?: string;
 	implementation_ref: string;
 	program?: TaskToolProgram;
 	adapter_id: string;
@@ -62,12 +100,6 @@ type TaskToolRecord = {
 	authoring_method_ref?: string;
 	recordedAt: string;
 };
-
-function safeName(name: string): void {
-	if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(name) || name.includes("--")) {
-		throw new Error("task tool name must use lowercase letters, digits, or single hyphens");
-	}
-}
 
 function compactText(value: unknown, _maximum?: number): string {
 	return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -112,6 +144,29 @@ function normalizeInput(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
+function pureProgram(program: TaskToolProgram | undefined): program is Extract<TaskToolProgram, { format: string }> {
+	return Boolean(program && "format" in program && program.format === TASK_PURE_EXPRESSION_FORMAT);
+}
+
+function structuredPureFailure(error: unknown): Record<string, unknown> {
+	const candidate = error as { toJSON?: () => unknown; code?: unknown; path?: unknown; message?: unknown; consumed?: unknown; effective_limits?: unknown };
+	if (typeof candidate?.toJSON === "function") {
+		const value = candidate.toJSON();
+		if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+	}
+	return {
+		format: "task-pure-expression-error-v1",
+		code: typeof candidate?.code === "string" ? candidate.code : "invalid_program",
+		message: error instanceof Error ? error.message : String(error),
+		path: typeof candidate?.path === "string" ? candidate.path : "$",
+		...(candidate?.consumed ? { consumed: candidate.consumed } : {}),
+		...(candidate?.effective_limits ? { effective_limits: candidate.effective_limits } : {}),
+	};
+}
+
+function immutableJson<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
+function jsonSha256(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+
 function objectValue(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
 	return value as Record<string, unknown>;
@@ -145,6 +200,7 @@ async function executeTaskProgram(
 	adapter: TaskToolAdapter,
 	context: { root: string; name: string; version: number },
 ): Promise<TaskToolResult> {
+	if (pureProgram(program)) throw new Error("pure expression programs require the host input boundary");
 	if (!Array.isArray(program.steps) || !program.steps.length) throw new Error("task tool program requires at least one step");
 	let value: unknown = input;
 	let analysisOperation = "task_program";
@@ -345,29 +401,49 @@ export function installTaskLocalTools(
 
 	const register = (record: TaskToolRecord) => {
 		if (registered.has(record.exposed_name)) return;
-		pi.registerTool({
+		registerRoutableTool({
 			name: record.exposed_name,
 			label: `Task tool: ${record.name} v${record.version}`,
-			description:
-				`${record.description} ` +
-				`Adapter implementation ${record.implementation_ref} under ${record.permission}; adapter-owned refs are resolved by the adapter. ` +
-				`Input object schema: ${JSON.stringify(record.input_schema)}. ` +
-				"This task-local tool only accesses the adapter-provided backend.",
+			description: pureProgram(record.program)
+				? `${record.description} Pure JSON computation ${record.name}@v${record.version}. ` +
+					`Input schema: ${JSON.stringify(record.input_schema)}. Output schema: ${JSON.stringify(record.output_schema)}. ` +
+					"A binding fills its same-named input field: omit that field from parameters (no $binding placeholder). " +
+					(record.adapter_id === "arc_agi_3"
+						? "Use the snapshot's last frame index for the current numeric grid; creator/inspect prepares exact bindings. "
+						: "") + "Bindings are parent-only and never grant access."
+				: `${record.description} Adapter implementation ${record.implementation_ref} under ${record.permission}; adapter-owned refs are resolved by the adapter. ` +
+					`Input object schema: ${JSON.stringify(record.input_schema)}. This task-local tool only accesses the adapter-provided backend.`,
 			// Keep the dynamic function schema valid for OpenAI-compatible gateways
 			// while allowing analysis tools to receive nested observation JSON.
 			// Type.Unknown() emits an open JSON schema object; Type.Any() emits null
 			// in some gateways and rejects the whole tool.
-			parameters: Type.Object({
-				input: Type.Record(Type.String(), Type.Unknown()),
-			}),
-			async execute(toolCallId, params) {
+			parameters: pureProgram(record.program)
+				// Keep the provider-facing envelope deliberately boring.  A number of
+				// OpenAI-compatible gateways reject TypeBox's open Record/Unknown and
+				// optional/union expansions (they become `null` in required/items
+				// positions) even though Pi accepts them locally.  The runtime still
+				// performs the strict, richer validation after the call arrives.
+				? pureToolInvocationParameters()
+				: Type.Object({ input: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),
+			async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
 				const invocationId = `task-tool-invocation-${++invocationCounter}`;
-				const input = normalizeInput((params as Record<string, unknown>).input);
+				const invocation = params as Record<string, unknown>;
+				let input: Record<string, unknown> = {};
+				let failureEvidence: Record<string, unknown> = {};
+				let assemblyRef: string | null = null;
 				try {
+					if (!pureProgram(record.program)) input = normalizeInput(invocation.input);
 					const current = tools.get(record.name);
+					const methodRejection = methodUseRejection(readJsonl(root, "task-method-lifecycle.jsonl"), [`tool:${record.name}@v${record.version}`], readJsonl(root, "effect-assessments.jsonl"));
+					if (methodRejection) throw new Error(methodRejection);
 					if (!current || current.exposed_name !== record.exposed_name
 						|| current.status !== "active" || (current.availability ?? "loaded") !== "loaded") {
 						throw new Error(`task tool is unavailable: ${record.name}@v${record.version}`);
+					}
+					if (record.validity !== undefined) {
+						const reasons = memoryValidityReasons(record.validity,
+							memoryValidityContext(ensureTaskScope(root).taskId, readJsonl(root, "execution-observations.jsonl")));
+						if (reasons.length) throw new Error(`task tool scope requires review: ${record.name}@v${record.version}: ${reasons.join(", ")}`);
 					}
 					const assembly = latestHarnessAssembly(readJsonl(root, "task-harness-assemblies.jsonl"));
 					if (!assemblySelectsReference(assembly, [
@@ -375,28 +451,81 @@ export function installTaskLocalTools(
 						`tool:${record.tool_id}@v${record.version}`,
 						`tool:${record.exposed_name}@v${record.version}`,
 					])) throw new Error(`task tool is in the component pool but is not selected by the current Harness assembly: ${record.name}@v${record.version}`);
+					assemblyRef = assembly ? `harness_assembly:${assembly.assembly_id}@v${assembly.revision}` : null;
 					if (record.program) {
-						const result = await executeTaskProgram(record.program, input, adapter, {
-							root, name: record.name, version: record.version,
-						});
+						let result: TaskToolResult;
+						if (pureProgram(record.program)) {
+							if (signal?.aborted) throw new TaskJsonSchemaError("cancelled", "evaluation cancelled", "$invocation");
+							dependencies.prepareResourceBindingAuthorization?.();
+							const validatedProgram = validateTaskPureExpressionProgram(record.program);
+							failureEvidence = { effective_limits: validatedProgram.effective_limits,
+								consumed: { steps: 0, constructed_elements: 0, allocation_bytes: 0, input_bytes: 0, output_bytes: 0 } };
+							const prepared = preparePureExpressionInput(pi, root, invocation, {
+								max_input_bytes: validatedProgram.effective_limits.input_bytes,
+								max_record_bytes: validatedProgram.effective_limits.input_bytes,
+								max_preparation_bytes: validatedProgram.effective_limits.allocation_bytes,
+							});
+							if (signal?.aborted) throw new TaskJsonSchemaError("cancelled", "evaluation cancelled", "$invocation");
+							input = prepared.input;
+							failureEvidence = { input_provenance: prepared.provenance, preparation: prepared.preparation };
+							const schemaOptions = { is_cancelled: () => signal?.aborted === true };
+							const inputSchemaUsage = assertTaskJsonSchemaValue(record.input_schema, input, "invalid_input", "$input", schemaOptions);
+							failureEvidence = { ...failureEvidence, schema_validation: { input: inputSchemaUsage } };
+							const evaluated = evaluateTaskPureExpression(record.program, input, { is_cancelled: schemaOptions.is_cancelled });
+							failureEvidence = { ...failureEvidence, effective_limits: evaluated.effective_limits, consumed: evaluated.consumed };
+							const outputSchemaUsage = assertTaskJsonSchemaValue(record.output_schema!, evaluated.value, "invalid_output", "$output", schemaOptions);
+							const outputSha256 = createHash("sha256").update(evaluated.output_json).digest("hex");
+							result = {
+								content: [{ type: "text", text: evaluated.output_json }],
+									details: {
+									representation: TASK_PURE_EXPRESSION_FORMAT,
+									tool_ref: `tool:${record.name}@v${record.version}`,
+										program_sha256: record.program_sha256,
+										program_authored_sha256: record.program_authored_sha256,
+										input_schema_sha256: record.input_schema_sha256,
+										output_schema_sha256: record.output_schema_sha256,
+										program_limits_requested: record.program_limits_requested,
+										program_limits_effective: record.program_limits_effective,
+									output_sha256: outputSha256,
+									program_format: TASK_PURE_EXPRESSION_FORMAT,
+									input_provenance: prepared.provenance,
+									preparation: prepared.preparation,
+									effective_limits: evaluated.effective_limits,
+									consumed: evaluated.consumed,
+									schema_validation: { input: inputSchemaUsage, output: outputSchemaUsage },
+									output_schema_validated: true,
+								},
+							};
+							failureEvidence = { ...failureEvidence,
+								schema_validation: { input: inputSchemaUsage, output: outputSchemaUsage }, output_sha256: outputSha256 };
+						} else {
+							result = await executeTaskProgram(record.program, input, adapter, {
+								root, name: record.name, version: record.version,
+							});
+						}
 						const content = result.content?.length
 							? result.content
 							: [{ type: "text" as const, text: JSON.stringify(result.details ?? {}) }];
+						const semanticEvidence = semanticInvocationEvidence(input, result);
 						appendEvent({
-							event: "invoked", invocation_id: invocationId, toolCallId,
+							event: "invoked", invocation_id: invocationId, toolCallId, assembly_ref: assemblyRef,
 							tool_id: record.tool_id, name: record.name, version: record.version,
 							exposed_name: record.exposed_name, implementation_ref: record.implementation_ref,
 							input, output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
-							...semanticInvocationEvidence(input, result),
+							...semanticEvidence,
+							...(pureProgram(record.program) && result.details && typeof result.details === "object"
+								? { pure_expression: result.details as Record<string, unknown> } : {}),
 							status: "completed", recordedAt: new Date().toISOString(),
 						});
 						if (record.decision_id) append("harness-observations.jsonl", {
 							observation_id: `task-tool-use-${invocationId}`,
 							observation_kind: "pi_task_tool_invocation",
 							decision_id: record.decision_id,
+							resource_refs: [`tool:${record.name}@v${record.version}`],
 							basis_resource_ids: record.basis_refs,
 							operation: { capability:"pi_task_tool", component:"task_tool", name:record.name, version:record.version },
-							actual_use: true, semantic_effect_observed: true,
+							actual_use: true, semantic_effect_observed: semanticEvidence.semantic_effect_observed,
+							semantic_verification: semanticEvidence.semantic_verification,
 							invocation_id: invocationId,
 							semantic_output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
 							effect_observed: true, recordedAt: new Date().toISOString(),
@@ -412,34 +541,58 @@ export function installTaskLocalTools(
 					const content = result.content?.length
 						? result.content
 						: [{ type: "text" as const, text: JSON.stringify(result.details ?? {}) }];
+					const semanticEvidence = semanticInvocationEvidence(input, result);
 					appendEvent({
-						event: "invoked", invocation_id: invocationId, toolCallId,
+						event: "invoked", invocation_id: invocationId, toolCallId, assembly_ref: assemblyRef,
 						tool_id: record.tool_id, name: record.name, version: record.version,
 						exposed_name: record.exposed_name, implementation_ref: record.implementation_ref,
 						input, output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
-						...semanticInvocationEvidence(input, result),
+						...semanticEvidence,
 						status: "completed", recordedAt: new Date().toISOString(),
 					});
 					if (record.decision_id) append("harness-observations.jsonl", {
 						observation_id: `task-tool-use-${invocationId}`,
 						observation_kind: "pi_task_tool_invocation",
 						decision_id: record.decision_id,
+						resource_refs: [`tool:${record.name}@v${record.version}`],
 						basis_resource_ids: record.basis_refs,
 						operation: { capability:"pi_task_tool", component:"task_tool", name:record.name, version:record.version },
-						actual_use: true, semantic_effect_observed: true,
+						actual_use: true, semantic_effect_observed: semanticEvidence.semantic_effect_observed,
+						semantic_verification: semanticEvidence.semantic_verification,
 						invocation_id: invocationId,
 						semantic_output_excerpt: compactText(content.map((item) => item.text).join("\n"), 2_000),
 						effect_observed: true, recordedAt: new Date().toISOString(),
 					});
 					return { ...result, content };
 				} catch (error) {
+					const rawPureFailure = pureProgram(record.program) ? structuredPureFailure(error) : undefined;
+					const pureFailure = rawPureFailure ? {
+						...rawPureFailure,
+						consumed: rawPureFailure.consumed ?? failureEvidence.consumed ?? {
+							steps: 0, constructed_elements: 0, allocation_bytes: 0,
+							input_bytes: 0, output_bytes: 0,
+						},
+						effective_limits: rawPureFailure.effective_limits
+							?? failureEvidence.effective_limits ?? record.program_limits_effective,
+					} : undefined;
 					appendEvent({
-						event: "invoked", invocation_id: invocationId, toolCallId,
+						event: "invoked", invocation_id: invocationId, toolCallId, assembly_ref: assemblyRef,
 						tool_id: record.tool_id, name: record.name, version: record.version,
 						exposed_name: record.exposed_name, implementation_ref: record.implementation_ref,
-						input, status: "failed", error: error instanceof Error ? error.message : String(error),
+						...(pureFailure ? {
+							program_sha256: record.program_sha256,
+							program_authored_sha256: record.program_authored_sha256,
+							input_schema_sha256: record.input_schema_sha256,
+							output_schema_sha256: record.output_schema_sha256,
+							program_limits_requested: record.program_limits_requested,
+							program_limits_effective: record.program_limits_effective,
+						} : {}),
+						input, status: "failed",
+						error: pureFailure ?? (error instanceof Error ? error.message : String(error)),
+						...failureEvidence,
 						recordedAt: new Date().toISOString(),
 					});
+					if (pureFailure) throw new Error(JSON.stringify(pureFailure));
 					throw error;
 				}
 			},
@@ -461,26 +614,25 @@ export function installTaskLocalTools(
 	registerRoutableTool({
 		name: "task_tool",
 		label: "Task-local tool portfolio",
-		description:
-			"Create, revise, retire, or inspect an agent-defined task-local Pi tool. " +
-			"Creation/update must first use tool-creator and include its exact authoring_method_ref; this runtime validates and persists the authored contract but does not invent it. " +
-			`Use program.steps for a new declarative behavior with ${TASK_TOOL_PROGRAM_STEP_KINDS.join(", ")} steps; adapter calls remain permission checked. Analysis outputs include evidence provenance when input carries evidence_ref/source_version. Arbitrary host code and extensions are never loaded.`,
+		description: `Task-local Tool CRUD. Creator template optional. Use program.steps (${TASK_TOOL_PROGRAM_STEP_KINDS.join(", ")}) OR ${TASK_PURE_EXPRESSION_FORMAT}; adapter permissions remain enforced.`,
 		parameters: Type.Object({
+			validity: Type.Optional(Type.Object({ scope: Type.Union([Type.Literal("task"), Type.Literal("episode"), Type.Literal("level"), Type.Literal("state")]), task_ref: Type.Optional(Type.String()), instance_ref: Type.Optional(Type.String()) })),
 			action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("retire"), Type.Literal("inspect")]),
 			name: Type.Optional(Type.String()),
 			target_version: Type.Optional(Type.Integer({ minimum: 1 })),
 			description: Type.Optional(Type.String()),
 			input_schema: Type.Optional(Type.Record(Type.String(), Type.Any())),
+			output_schema: Type.Optional(Type.Record(Type.String(), Type.Any())),
 			implementation_ref: Type.Optional(Type.String()),
 			program: Type.Optional(Type.Record(Type.String(), Type.Any())),
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
-			authoring_method_ref: Type.Optional(Type.String({ description: "Exact method_ref returned by task_harness(action=read_method) for tool-creator." })),
+			authoring_method_ref: Type.Optional(Type.String({ description: "Exact tool-creator method_ref." })),
 			routing_id: Type.Optional(Type.String()),
 			source_approval_ref: Type.Optional(Type.String()),
 		}),
-		async execute(toolCallId, params) {
+		async execute(toolCallId, params, signal) {
 			const p = params as Record<string, any>;
 			if (p.action === "inspect") {
 				const selected = p.name ? [tools.get(String(p.name))].filter(Boolean) : [...tools.values()];
@@ -496,21 +648,26 @@ export function installTaskLocalTools(
 			}
 			const admission = admitTaskLocalOperation("task_tool");
 			if (admission) return admission;
+			if (["create", "update"].includes(p.action)) validateCreatorCitation("tool", p.authoring_method_ref);
 			const name = String(p.name ?? "").trim();
-			safeName(name);
+			assertTaskToolName(name);
 			const previous = tools.get(name);
 			if (p.action === "create" && previous) throw new Error("task tool already exists; use update");
 			if (p.action !== "create" && !previous) throw new Error("unknown task tool");
 			if (previous && Number(p.target_version) !== previous.version) {
 				return versionConflict("tool", previous, p.target_version);
 			}
+			const programWasProvided = p.program !== undefined;
 			const program = p.program === undefined
 				? previous?.program
 				: objectSchema(p.program);
-			if (program && (!Array.isArray(program.steps) || !program.steps.length)) {
-				throw new Error("program.steps must be a non-empty array");
-			}
-			const implementationRef = String(p.implementation_ref ?? previous?.implementation_ref ?? (program ? "task.local.program" : "")).trim();
+			const isPure = Boolean(program && Object.prototype.hasOwnProperty.call(program, "format"));
+			if (signal?.aborted) throw new Error("tool publication cancelled; no component was written");
+			const isSource = (program as any)?.format === TASK_PURE_PYTHON_FORMAT;
+			const validatedPureProgram = program && isPure ? validateTaskPureExpressionProgram(program) : undefined;
+			if (program && !isPure && (!Array.isArray(program.steps) || !program.steps.length)) throw new Error("program.steps must be a non-empty array");
+			const implementationRef = String(p.implementation_ref ?? previous?.implementation_ref
+				?? (isPure ? "task.local.pure_expression" : program ? "task.local.program" : "")).trim();
 			if (!program && !implementationAllowed(implementationRef)) {
 				throw new Error(`implementation is not allowed by adapter: ${implementationRef}`);
 			}
@@ -520,6 +677,33 @@ export function installTaskLocalTools(
 			// the safe default, so schema bookkeeping does not become an accidental
 			// prerequisite for trying a task-local capability.
 			const schema = objectSchema(p.input_schema, previous?.input_schema ?? { type: "object" });
+			const outputSchema = p.output_schema === undefined
+				? previous?.output_schema ?? (isSource ? {} : undefined) : objectSchema(p.output_schema);
+			if (isPure) {
+				validateTaskJsonSchema(schema, "$.input_schema");
+				if (!outputSchema) throw new Error("pure expression program requires output_schema");
+				validateTaskJsonSchema(outputSchema, "$.output_schema");
+				validateTaskPureExpressionInputAccess(validatedPureProgram!, schema);
+			}
+			const authoredProgramSha256 = program
+				? (!programWasProvided && previous?.program_authored_sha256
+					? previous.program_authored_sha256 : jsonSha256(program))
+				: undefined;
+			const requestedProgramLimits = validatedPureProgram
+				? (!programWasProvided && previous?.program_limits_requested
+					? immutableJson(previous.program_limits_requested)
+					: immutableJson(validatedPureProgram.limits))
+				: undefined;
+			// Freeze publication-time defaults into the immutable exact version. A
+			// later runtime may enforce a tighter hard ceiling, but changing defaults
+			// alone must never alter an already-published tool's budget contract.
+			const frozenProgram = validatedPureProgram && programWasProvided
+				? { format: validatedPureProgram.format, expression: validatedPureProgram.expression,
+					limits: { ...validatedPureProgram.effective_limits } }
+				: program;
+			const storedProgram = frozenProgram ? immutableJson(frozenProgram) as TaskToolProgram : undefined;
+			const storedInputSchema = immutableJson(schema);
+			const storedOutputSchema = outputSchema ? immutableJson(outputSchema) : undefined;
 			const status = p.action === "retire" ? "retired" : "active";
 			const version = (previous?.version ?? 0) + 1;
 			const toolId = previous?.tool_id ?? `task-tool-${++toolCounter}`;
@@ -528,18 +712,33 @@ export function installTaskLocalTools(
 			const exposedName = `task_tool_${name}_v${version}`;
 			const decisionId = dependencies.allocateDecisionId();
 			const record: TaskToolRecord = {
-				tool_id: toolId, name, version, status, availability: status === "retired" ? "retired" : "loaded", description, input_schema: schema,
+				...(p.validity !== undefined ? { validity: normalizeMemoryValidity(p.validity, memoryValidityContext(ensureTaskScope(root).taskId, scopedReadJsonl("execution-observations.jsonl"))) }
+					: previous?.validity ? { validity: previous.validity } : {}),
+				tool_id: toolId, name, version, status, availability: status === "retired" ? "retired" : "loaded", description, input_schema: storedInputSchema,
+				...(storedOutputSchema ? { output_schema: storedOutputSchema } : {}),
+				...(storedProgram ? { program_sha256: jsonSha256(storedProgram) } : {}),
+				...(authoredProgramSha256 ? { program_authored_sha256: authoredProgramSha256 } : {}),
+				...(validatedPureProgram?.source_evidence
+					? { program_source_evidence: immutableJson(validatedPureProgram.source_evidence) }
+					: !programWasProvided && previous?.program_source_evidence
+						? { program_source_evidence: immutableJson(previous.program_source_evidence) } : {}),
+				...(requestedProgramLimits ? { program_limits_requested: requestedProgramLimits } : {}),
+				...(validatedPureProgram ? { program_limits_effective: { ...validatedPureProgram.effective_limits } } : {}),
+				input_schema_sha256: jsonSha256(storedInputSchema),
+				...(storedOutputSchema ? { output_schema_sha256: jsonSha256(storedOutputSchema) } : {}),
 				implementation_ref: implementationRef, adapter_id: adapter.adapterId,
-				...(program ? { program: program as TaskToolProgram } : {}),
+				...(storedProgram ? { program: storedProgram } : {}),
 				permission: adapter.permission, exposed_name: exposedName,
 				basis_refs: resolveBasisRefs(p.basis_refs), decision_id: decisionId,
-				expected_effect: String(p.expected_effect ?? previous?.expected_effect ?? "provide a reusable adapter-bounded operation"),
+				expected_effect: String(p.expected_effect ?? previous?.expected_effect ?? (isPure
+					? "provide a reusable bounded pure JSON computation" : "provide a reusable adapter-bounded operation")),
 				reconsider_when: String(p.reconsider_when ?? previous?.reconsider_when ?? "the tool is unused, contradicted, or no longer relevant"),
 				routing_id: p.routing_id ? String(p.routing_id) : previous?.routing_id,
 				source_approval_ref: p.source_approval_ref ? String(p.source_approval_ref) : previous?.source_approval_ref,
 				authoring_method_ref: p.authoring_method_ref ? String(p.authoring_method_ref) : previous?.authoring_method_ref,
 				recordedAt: new Date().toISOString(),
 			};
+			if (signal?.aborted) throw new Error("tool publication cancelled; no component was written");
 			if (status === "active") register(record);
 			tools.set(name, record);
 			records.push(record);

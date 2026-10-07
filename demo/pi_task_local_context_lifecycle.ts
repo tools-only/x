@@ -28,6 +28,9 @@ export type TaskLocalContextLifecycleOptions = {
 	maxMessageChars?: number;
 	/** Omit private reasoning from completed tool transactions in the provider projection. */
 	compactCompletedToolReasoning?: boolean;
+	reasoningHistoryPolicy?: "preserve" | "discard_unsigned_thinking" | "summarize_openai_field" | "summarize_completed_openai_field";
+	/** Operator-verified providers whose plain reasoning_content history is editable. */
+	editableReasoningProviders?: string[];
 	enabled?: boolean;
 };
 
@@ -44,9 +47,15 @@ function estimatedTokensFromChars(chars: number): number {
 // the newest instance of each projection category; the canonical resources
 // remain in their JSONL/SKILL.md artifacts.
 const PROJECTION_PREFIXES: Array<[string, string]> = [
+	["periodic_pattern_review", "Periodic pattern extraction due:"],
+	["periodic_pattern_review", "Periodic evidence available:"],
+	["research_opportunities", "OPEN RESEARCH OPPORTUNITIES"],
+	["memory_candidates", "MEMORY SELECTION CANDIDATES"],
+	["research_evidence_update", "Auto-Research evidence update:"],
 	["archive", "[Task-local context archive]"],
 	["self_harness", "Task-local harness index:"],
 	["task_state", "CURRENT TASK STATE"],
+	["competition", "CURRENT COMPETITION VIEW:"],
 	["task_policy", "Active task policy:"],
 	["dynamic_task_state", "Active dynamic task/user prompt knowledge:"],
 	["knowledge_review", "Task-local knowledge requiring review:"],
@@ -63,10 +72,29 @@ const PROJECTION_PREFIXES: Array<[string, string]> = [
 	["active_findings", "Active task-local research findings"],
 	["patterns", "Automatically derived task-local pattern candidates:"],
 	["pending_research_effects", "Pending task-local execution-condition effects:"],
+	["child_context_continuity", "Child context continuity:"],
+	["capability_extraction_process", "# Derive capabilities from experience"],
+	["capability_workflow_reference", "Capability workflow reference:"],
+	["pending_parent_capability_decisions", "Pending parent capability decisions ("],
+	["baseline_authoring_methods", "Baseline authoring methods:"],
 ];
 
+const FULL_TEXT_GUIDANCE_CATEGORIES = new Set([
+	"periodic_pattern_review",
+	"research_evidence_update",
+	"competition",
+	"capability_extraction_process",
+	"pending_parent_capability_decisions",
+	"baseline_authoring_methods",
+]);
+
+function protectedGuidanceProjection(message: ContextMessage): boolean {
+	return FULL_TEXT_GUIDANCE_CATEGORIES.has(projectionCategory(message) ?? "");
+}
+
 function protectedProjection(message: ContextMessage): boolean {
-	return ["task_state", "recovery", "task_policy", "dynamic_task_state", "knowledge_review"].includes(projectionCategory(message) ?? "");
+	return Boolean(message.read_workset_required) || protectedGuidanceProjection(message)
+		|| ["task_state", "recovery", "task_policy", "dynamic_task_state", "knowledge_review"].includes(projectionCategory(message) ?? "");
 }
 
 function messageText(message: ContextMessage): string {
@@ -114,7 +142,8 @@ function positiveNumber(value: number | undefined, fallback: number): number {
 }
 
 function compactOversizedMessage(message: ContextMessage, maxChars: number): ContextMessage {
-	if (jsonChars(message) <= maxChars) return message;
+	if (jsonChars(message) <= maxChars || protectedProjection(message) || (message as any).read_workset_required
+		|| message.role === "assistant") return message;
 	const copy: ContextMessage = { ...message };
 	if (Array.isArray(copy.content)) {
 		copy.content = copy.content.map((item: any) => {
@@ -173,7 +202,64 @@ function hasToolResultAfter(messages: ContextMessage[], start: number): boolean 
 
 function isReasoningContentBlock(item: any): boolean {
 	if (!item || typeof item !== "object" || typeof item.type !== "string") return false;
-	return /(^|[_-])(thinking|reasoning)([_-]|$)/i.test(item.type);
+	return item.type === "thinking" && !item.thinkingSignature && !item.signature && !item.encrypted_content;
+}
+
+// Projection eligibility only: this does not require the Agent to author a
+// capsule. If public decision state is absent, keep the latest reasoning.
+function hasPublicDecisionCapsule(message: ContextMessage): boolean {
+	return message.content.some((item: any) => item?.type === "toolCall"
+		&& ["subgoal", "hypothesis", "prediction", "falsifier", "next_step"].every(key =>
+			typeof item.arguments?.decision?.[key] === "string" && item.arguments.decision[key].trim().length > 0));
+}
+
+function latestExchangeIsComplete(messages: ContextMessage[], start: number): boolean {
+	const calls = messages[start].content.filter((item: any) => item?.type === "toolCall");
+	const ids = calls.map((item: any) => item.id);
+	if (!ids.length || ids.some((id: any) => typeof id !== "string" || !id)
+		|| new Set(ids).size !== ids.length) return false;
+	const receipts = new Set<string>();
+	for (const message of messages.slice(start + 1)) {
+		if (["assistant", "user", "system"].includes(message.role)) break;
+		if (message.role !== "toolResult") continue;
+		if (!ids.includes(message.toolCallId)) return false;
+		if (message.isError || receipts.has(message.toolCallId)) return false;
+		receipts.add(message.toolCallId);
+	}
+	return receipts.size === ids.length;
+}
+
+function summarizeCompletedOpenAIReasoning(messages: ContextMessage[], providers: string[], includeLatest = false): {
+	messages: ContextMessage[]; summarizedBlocks: number;
+} {
+	let summarizedBlocks = 0;
+	const latestToolIndex = messages.findLastIndex(hasToolCall);
+	return { messages: messages.map((message, index) => {
+		// Field-name markers are editable routing metadata, not true signatures.
+		// The historical-only policy still requires a later assistant. The scoped
+		// completed policy can project the latest exchange once public decision
+		// state and every native tool receipt are present; this is a structural
+		// completion check, not a claim that a later model consumed the result.
+		if (message.api !== "openai-completions" || !providers.includes(message.provider)
+			|| ["length", "error", "aborted"].includes(message.stopReason)
+			|| !hasToolCall(message) || !hasToolResultAfter(messages, index)) return message;
+		if (index === latestToolIndex) {
+			if (!includeLatest || message.stopReason !== "toolUse" || !hasPublicDecisionCapsule(message)
+				|| !latestExchangeIsComplete(messages, index)
+				|| message.content.some((item: any) => item.signature || item.encrypted_content || item.redacted
+					|| (item.type === "thinking" && item.thinkingSignature && item.thinkingSignature !== "reasoning_content"))) return message;
+		} else if (!messages.slice(index + 1).some(m => m.role === "assistant")) return message;
+		const content = message.content.map((item: any) => {
+			if (item?.type !== "thinking" || item.thinkingSignature !== "reasoning_content"
+				|| item.signature || item.encrypted_content || typeof item.thinking !== "string"
+				|| item.thinking.length <= 3000) return item;
+			summarizedBlocks += 1;
+			const ref = `context:msg-${createHash("sha256").update(JSON.stringify(message)).digest("hex")}@v1`;
+			const label = index === latestToolIndex ? "Completed pre-result reasoning excerpt" : "Older completed reasoning excerpt";
+			return { type: "text", text: `[${label}; may contain superseded hypotheses. Exact source ${ref}. Current decision state and observations take precedence. Recover only for a specific missing fact.]\n${item.thinking.slice(-2500)}` };
+		});
+		return content.every((part: any, n: number) => part === message.content[n]) ? message : { ...message, content };
+	}), summarizedBlocks };
 }
 
 function compactCompletedToolReasoning(messages: ContextMessage[]): {
@@ -182,7 +268,8 @@ function compactCompletedToolReasoning(messages: ContextMessage[]): {
 } {
 	let removedBlocks = 0;
 	const projected = messages.map((message, index) => {
-		if (!hasToolCall(message) || !hasToolResultAfter(messages, index)) return message;
+		if (["length", "error", "aborted"].includes(message.stopReason)
+			|| !hasToolCall(message) || !hasToolResultAfter(messages, index)) return message;
 		const content = (message.content as any[]).filter((item) => {
 			if (!isReasoningContentBlock(item)) return true;
 			removedBlocks += 1;
@@ -204,6 +291,7 @@ const STRUCTURAL_STRING_KEYS = new Set([
 // shrink those fields too. Do not rewrite IDs, call links, tool names, or
 // arguments: those are the transaction topology and provider call shape.
 function shortenNonStructuralStrings(value: any, allowance: number, key?: string): any {
+	if (value?.role === "assistant") return value;
 	if (key === "arguments") return value;
 	if (typeof value === "string") {
 		if (key && STRUCTURAL_STRING_KEYS.has(key)) return value;
@@ -311,6 +399,13 @@ function projectBoundedContext(
 		? compactCompletedToolReasoning(deduped)
 		: { messages: deduped, removedBlocks: 0 };
 	const providerMessages = completedReasoning.messages;
+	// Retain complete call/result transactions for leased pages, never orphan tool results.
+	const leaseTransactions = toolTransactionStarts(providerMessages);
+	for (let t = 0; t < leaseTransactions.length; t++) {
+		const start = leaseTransactions[t], end = leaseTransactions[t + 1] ?? providerMessages.length;
+		if (providerMessages.slice(start, end).some(message => message.read_workset_required))
+			for (let index = start; index < end; index++) providerMessages[index] = { ...providerMessages[index], read_workset_required: true };
+	}
 	const headEnd = firstUserHead(providerMessages, headMessages);
 	const minimumTail = Math.min(providerMessages.length, Math.max(headEnd, providerMessages.length - keepRecentMessages));
 	let preferredStart = Math.min(providerMessages.length - 1, minimumTail);
@@ -322,7 +417,7 @@ function projectBoundedContext(
 	// let it become the archive boundary: that would remove the very result the
 	// next turn needs in order to choose an action.
 	const maximumStart = latestToolStart === undefined
-		? Math.max(headEnd, providerMessages.length - 1)
+		? providerMessages.length - 1
 		: latestToolStart;
 	const firstCandidateStart = Math.min(preferredStart, maximumStart);
 
@@ -331,7 +426,9 @@ function projectBoundedContext(
 		const protectedCards = middle.filter(protectedProjection);
 		const archived = middle.filter((message) => !protectedProjection(message));
 		const tail = compactMessages(providerMessages.slice(start), maxMessageChars);
-		return [...providerMessages.slice(0, headEnd), ...(archived.length ? [archiveMarker(archived, artifactPath)] : []), ...protectedCards, ...tail];
+		// A protected head may consume the entire short transcript. A required
+		// tail starting inside it must not duplicate the overlapping messages.
+		return [...providerMessages.slice(0, Math.min(headEnd, start)), ...(archived.length ? [archiveMarker(archived, artifactPath)] : []), ...protectedCards, ...tail];
 	};
 
 	let projected = compactMessages(providerMessages, maxMessageChars);
@@ -411,10 +508,16 @@ export function installTaskLocalContextLifecycle(
 	const transportInputTokens = Number.isFinite(configuredContextTokens) && configuredContextTokens > 0
 		? Math.max(1, Math.floor(configuredContextTokens - reservedOutputTokens))
 		: undefined;
-	const maxChars = positiveNumber(
-		options.maxChars ?? (transportInputTokens ? transportInputTokens * 4 : undefined)
-			?? Number(process.env.PI_AUTORESEARCH_CONTEXT_MAX_CHARS), DEFAULT_MAX_CHARS,
-	);
+	// The model window is a transport allowance, not an override of the
+	// operator's smaller working-context budget. Explicit settings may narrow
+	// that allowance but cannot expand it. Protected evidence still reports
+	// overflow rather than being discarded to satisfy this soft character bound.
+	const transportMaxChars = transportInputTokens ? transportInputTokens * 4 : undefined;
+	const configuredMaxChars = positiveNumber(options.maxChars, positiveNumber(
+		Number(process.env.PI_AUTORESEARCH_CONTEXT_MAX_CHARS), transportMaxChars ?? DEFAULT_MAX_CHARS,
+	));
+	const maxChars = transportMaxChars === undefined
+		? configuredMaxChars : Math.min(configuredMaxChars, transportMaxChars);
 	const keepRecent = positiveNumber(
 		options.keepRecentMessages ?? Number(process.env.PI_AUTORESEARCH_CONTEXT_KEEP_RECENT),
 		DEFAULT_KEEP_RECENT_MESSAGES,
@@ -431,25 +534,23 @@ export function installTaskLocalContextLifecycle(
 	const workingTarget = Math.floor(maxChars * 0.8);
 	const artifactPath = "task-local artifacts (execution-observations.jsonl, task-memory.jsonl, task-harness resources)";
 	let projectionCount = 0;
+	let lastBudgetNoticeBucket = -1;
 	const archivedHashes = new Set<string>();
 
 	pi.on("context", (event) => {
-		const sourceMessages: ContextMessage[] = [...(event.messages as ContextMessage[]), {
-			role: "user",
-			content: [{ type: "text", text: `Task-local context budget: ${JSON.stringify({
-				format: "task-context-budget-v1",
-				provider_context_window_tokens: Number.isFinite(configuredContextTokens) && configuredContextTokens > 0 ? Math.floor(configuredContextTokens) : null,
-				reserved_output_tokens: reservedOutputTokens || null,
-				transport_input_token_allowance: transportInputTokens ?? null,
-				estimated_current_input_tokens: estimatedTokensFromChars(jsonChars(event.messages)),
-				estimate_method: "ceil(json_chars/4)",
-				instruction: "You own relevance selection. Use task_harness focus, retire stale resources, or retrieve archived exact refs on demand before the provider envelope is exceeded.",
-			})}` }], timestamp: Date.now(),
-		}];
+		const sourceMessages: ContextMessage[] = event.messages as ContextMessage[];
+		const historyPolicy = options.reasoningHistoryPolicy ?? process.env.PI_PROVIDER_REASONING_HISTORY_POLICY;
+		const history = ["summarize_openai_field", "summarize_completed_openai_field"].includes(historyPolicy ?? "")
+			? summarizeCompletedOpenAIReasoning(sourceMessages, options.editableReasoningProviders
+				?? (process.env.PI_PROVIDER_EDITABLE_REASONING_PROVIDERS ?? "").split(",").map(p => p.trim()).filter(Boolean),
+				historyPolicy === "summarize_completed_openai_field")
+			: { messages: sourceMessages, summarizedBlocks: 0 };
 		const result = projectBoundedContext(
-			sourceMessages, workingTarget, keepRecent, headMessages, maxMessageChars, artifactPath,
-			options.compactCompletedToolReasoning ?? false,
+			history.messages, workingTarget, keepRecent, headMessages, maxMessageChars, artifactPath,
+			Boolean(options.compactCompletedToolReasoning
+				&& (options.reasoningHistoryPolicy ?? process.env.PI_PROVIDER_REASONING_HISTORY_POLICY) === "discard_unsigned_thinking"),
 		);
+		result.beforeChars = jsonChars(sourceMessages);
 		// Persist the exact source before reducing it, including assistant-only
 		// reasoning/text that is absent from observation artifacts. Hash references
 		// are task-local and paged by task_resource; the owning runner clears this
@@ -483,7 +584,20 @@ export function installTaskLocalContextLifecycle(
 			if (marker) marker.content = [{ type: "text", text: `[Task-local context archive] ${archiveRef}. ${result.archivedCount} messages archived. Use task_resource(action='read', ref=..., offset=..., limit=...) only when the native context lacks evidence required for the current decision; do not replay the archive by default. Context and resource indexes are working summaries, not proof. Research and clean-context delegation remain available.` }];
 			result.afterChars = jsonChars(result.messages);
 		}
-		if (result.beforeChars !== result.afterChars || result.dedupedCount > 0) {
+		const noticeThreshold = transportInputTokens
+			? Math.min(120_000, Math.floor(transportInputTokens * 4 * 0.55)) : 120_000;
+		const projectedChars = jsonChars(result.messages);
+		const noticeBucket = projectedChars > noticeThreshold
+			? Math.floor((projectedChars - noticeThreshold) / 50_000) : -1;
+		if (noticeBucket < 0) lastBudgetNoticeBucket = -1;
+		if (noticeBucket >= 0 && noticeBucket !== lastBudgetNoticeBucket
+			&& projectedChars + 350 < maxChars) {
+			lastBudgetNoticeBucket = noticeBucket;
+			result.messages.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
+				text: `Context high-water: ~${estimatedTokensFromChars(projectedChars)} estimated input tokens after projection (provider usage may differ). ${process.env.PI_TASK_CHILD === "1" ? "Use child_context(action='inspect')" : "Use task_harness(action='context')"} to select recoverable old results and relevant resources; preserve current decision evidence.` }] });
+			result.afterChars = jsonChars(result.messages);
+		}
+		if (result.beforeChars !== result.afterChars || result.dedupedCount > 0 || result.afterChars > maxChars) {
 			appendFileSync(logPath, JSON.stringify({
 				compaction_id: `context-compaction-${++projectionCount}`,
 				kind: "task_local_context_projection",
@@ -498,6 +612,8 @@ export function installTaskLocalContextLifecycle(
 				latest_tool_result_preserved: result.latestToolResultPreserved,
 				budget_degraded: result.budgetDegraded,
 				completed_tool_reasoning_blocks_removed: result.completedToolReasoningBlocksRemoved,
+				completed_field_reasoning_blocks_summarized: history.summarizedBlocks,
+				reasoning_history_policy: historyPolicy ?? "preserve",
 				protected_overflow: result.afterChars > maxChars,
 				archive_ref: archiveRef,
 				max_chars: maxChars,

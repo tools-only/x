@@ -1,0 +1,9 @@
+# Select and use exact components
+
+Main chooses relevance; runtime validates versions, scope, permissions and budget. Pool eligibility is not selection. Creation alone leaves a candidate in the pool. To write and explicitly select in one create/change call, supply assembly={expected_assembly_revision:N,selected_resource_refs:[existing exact refs to retain]}; successfully written versions are added from native receipts. Omission means pool-only writing. If writing succeeds but selection fails, retain the written versions and repair assembly without recreating them.
+
+For existing components, use task_harness(action=assemble) with current expected_assembly_revision, selected_resource_refs and decision={basis_refs,reason,expected}. Keep other needed selections. Receipts/current assembly provide revision and exact refs; inspect only if needed information is absent or stale. Omitted prompt_contributions retain existing contributions; [] clears them. An unchanged composition persists across parent turns; ordinary ARC actions do not need reassembly. No assembly means an empty selection.
+
+Follow typed receipt use entries: read the exact selected Skill and apply it, invoke the versioned Tool and check its semantic value, or delegate the selected Subagent and inspect its answer. Scoped Skill read preserves the composition; focus intentionally narrows it. Selected Memory enters task context and System Prompt enters policy context. Cite exact applied refs in a decision and compare predictions with actual outcomes; exposure or citations alone do not prove help.
+
+task_prompt is an output channel, not a sixth component. Parent-selected exact-source contributions may express policy, methods, plans, hypotheses, state or research from authorized resources. Research output never becomes guidance automatically. Keep uncertainty and counterevidence. Full details: contract(topic=assembly,section=all).

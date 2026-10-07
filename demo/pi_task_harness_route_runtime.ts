@@ -7,10 +7,16 @@ export type NativeHarnessResult = {
 	details?: unknown;
 };
 
-export type NativeHarnessExecutor = (
+export type NativeHarnessPreflight = (params: Record<string, any>) => void;
+
+export type NativeHarnessExecutor = ((
 	toolCallId: string,
 	params: Record<string, any>,
-) => Promise<NativeHarnessResult> | NativeHarnessResult;
+	signal?: AbortSignal,
+) => Promise<NativeHarnessResult> | NativeHarnessResult) & {
+	/** Read-only adapter admission before any write in a multi-component batch. */
+	preflight?: NativeHarnessPreflight;
+};
 
 // Extensions can be loaded through separate module instances and can receive
 // distinct API proxy objects.  A process-global registry keyed by the isolated
@@ -69,7 +75,9 @@ export function registerNativeHarnessExecutor(
 	pi: ExtensionAPI,
 	toolName: string,
 	execute: NativeHarnessExecutor,
+	preflight?: NativeHarnessPreflight,
 ): void {
+	if (preflight) execute.preflight = preflight;
 	registryFor(pi).set(toolName, execute);
 }
 

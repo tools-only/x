@@ -22,6 +22,20 @@ Auto-Research method resources
 
 ## 开发
 
+设计、实现、评审和完成声明遵循 [开发流程与证据标准](docs/development-workflow.md)，
+由仓库 [AGENTS.md](AGENTS.md) 约束后续开发 Agent。涉及机制或运行行为的实质变更，
+使用 [变更验收模板](docs/templates/meta-harness-change.md)，也可在已有计划/报告中保留相同栏目；
+小型文档修正和保持行为的维护只做与改动相称的检查。
+
+1. 从真实失败/机会及当前代码出发，定义一个可证伪命题、减负目标和有界评估。
+2. 优先简化现有流程，明确生命周期责任、正常执行成本和放弃条件；一次改变一个主要因素。
+3. 按改动范围验证功能和接线，再用真实模型验证自主采用，用独立对照运行验证净收益。
+4. 分别报告四层证据；没有运行的层级保留“未验证”，失败或无收益进入同一记录继续诊断。
+
+首份 [流程采用记录](docs/reports/2026-10-02-development-workflow-adoption.md) 已说明当前证据边界和下一轮最小实验。
+
+诊断高 token、推理延迟、重复取证或研究／组件未推进任务时，按需查阅 [优化经验手册](docs/optimization-handbook.md)。
+
 ```bash
 python -m pip install -e .
 python -m pytest
@@ -127,9 +141,35 @@ Auto-Research 不再由本地代码人为设置 output-token 上限；父 Agent 
 - `ARC_AGI_3_ROOT`：ARC-AGI-3 本地 checkout，默认 `D:\arc-agi-benchmark\arc-agi-3-benchmarking`
 - `TERMINAL_BENCH_DATASET`：本地 Terminal-Bench 任务集，默认 `D:\terminal-bench-2-1`
 
+项目锁定 `pi-jev@0.5.0`。由于该版本尚未公开通用 component source API，第一阶段的
+薄 adapter 直接使用同一 TypeSafe System One/Noul 协议选择唯一的 Self-Harness
+component pool，避免再建立一套 tool/skill registry。项目级变量
+`PI_AUTORESEARCH_JEV_ROUTING` 有三个值：
+
+- `disabled`（默认）：不调用 Jev，保留当前 assembly；
+- `shadow`：让 Jev 评估所有当前合法的 memory、system prompt、skill、tool 和
+  subagent，只记录 `task-harness-jev-routing.jsonl`，不改变 Pi surface；
+- `active`：把 Jev 选择的精确组件版本写入现有 assembly，由原有 Pi runtime
+  投影 context、system prompt、tools 和 subagents。
+
+`TYPESAFE_API_KEY` 可从环境变量或 `~/.pi/agent/secrets/typesafe_api_key` 读取。
+项目会强制 `PI_JEV_AUTO=0`，避免 stock pi-jev 另行路由 registered tools/skills。
+组件创建、版本、有效性、依赖、权限和效果证据仍由现有 Self-Harness 管理。
+
+可在一次命令上显式开关（全局参数放在子命令之前）：
+
+```powershell
+# 一键关闭；不会发出 Jev 请求
+python -m autoresearch_pi.cli --no-jev-routing arc-agi-3-e2e --game ls20
+
+# 先观察 Jev 决策，再打开实际路由
+python -m autoresearch_pi.cli --jev-routing shadow arc-agi-3-e2e --game ls20
+python -m autoresearch_pi.cli --jev-routing active arc-agi-3-e2e --game ls20
+```
+
 ## ARC-AGI-3 与 Terminal-Bench
 
-这两个环境复用同一组通用机制：真实工具 observation、开放 research goal 与 evidence-backed finding、task-local system-prompt overlay、skills、memory、tools、subagents、精确 evidence refs、通用 task-local context lifecycle、后续 exposure 和 effect assessment。lifecycle 默认自动去重 projection、限制 provider transcript、归档旧消息并保留可恢复引用；可用 `PI_AUTORESEARCH_CONTEXT_LIFECYCLE=disabled` 做显式 ablation。treatment 的首轮请求直接披露具体 task-local 创建操作与 `task_harness` start/inspect/enable/focus 入口；资源内容仍从空开始，并由 extension 的 `context` hook 投影到后续请求。Auto-Research child 使用 `research_approval` 绑定结构化 proposal；parent runtime 解析 report、用代码编译 route，并通过原生 task-local harness executor 应用所有 ready route。主 Agent 不暴露 child 审批工具，但会真实修改 system prompt、skills、memory、tools 或 subagents。ARC treatment 另提供 Agent 自主定义和调用的只读 Pi 子 Agent；子 Agent 没有环境动作权限。具体任务工具与 correctness evaluator 属于独立 adapter，不属于通用 self-harness。Agent-owned observation representation 仍由 `PI_AUTORESEARCH_CONTEXT_COMPACTION` 单独控制，默认不要求发生研究、委派或修改。
+这两个环境复用同一组通用机制：真实工具 observation、开放 research goal 与 evidence-backed finding、task-local system-prompt overlay、skills、memory、tools、subagents、精确 evidence refs、通用 task-local context lifecycle、后续 exposure 和 effect assessment。lifecycle 默认自动去重 projection、限制 provider transcript、归档旧消息并保留可恢复引用；可用 `PI_AUTORESEARCH_CONTEXT_LIFECYCLE=disabled` 做显式 ablation。treatment 的首轮请求直接披露 `task_harness` 的发现、creator 读取、parent authoring、版本池、assembly、focus 与 assessment 入口；资源内容仍从空开始，并由 extension 的 `context` hook 投影到后续请求。Auto-Research child 是只读研究者，只能返回 findings、方法候选、规划影响或实验请求；它不读取 creator、不生成 Harness 组件正文，也不能调用 mutation。主 Agent 按需读取 `skill-creator` / `tool-creator` / `subagent-creator`，完整创作候选并显式选择精确版本；runtime 只校验、版本化、装配、执行和记录证据。ARC treatment 另提供由主 Agent 创作和调用的只读 Pi 子 Agent；子 Agent 没有环境动作权限。具体任务工具与 correctness evaluator 属于独立 adapter，不属于通用 self-harness。Agent-owned observation representation 仍由 `PI_AUTORESEARCH_CONTEXT_COMPACTION` 单独控制，默认不要求发生研究、委派或修改。
 
 ARC-AGI-3 使用本地 checkout 内的官方 Python SDK，但正式游戏和 scorecard 仍由官方在线环境提供，因此需要 `ARC_API_KEY`：
 
@@ -140,7 +180,7 @@ export PYTHONPATH='D:/autoresearch_pi_project/src'
   --root 'D:/autoresearch_pi_project/runs/arc-ls20-treatment'
 ```
 
-真实 ARC runner 内的确定性 self-harness smoke 只 mock provider，不 mock ARC bridge、Pi parent/child、parser/router、原生 mutation 或下一 turn。它运行五个独立场景，并强制覆盖 Auto-Research 与普通 delegate 的 `length` 续接：
+真实 ARC runner 内的确定性 self-harness smoke 默认只 mock parent/child provider，不 mock ARC SDK environment、ARC bridge、Pi parent/child、结构化返回解析、parent creator read、semantic change classifier、原生 mutation、assembly 或下一 turn（显式 `--mock-environment` 才替换 SDK environment）。当前矩阵覆盖五类组件、方法正反反馈、跨情境闭环，并强制覆盖 Auto-Research 与普通 delegate 的 `length` 续接：
 
 ```bash
 export PYTHONPATH='D:/autoresearch_pi_project/src'
@@ -177,3 +217,26 @@ export PYTHONPATH='D:/autoresearch_pi_project/src'
 Agent 先对 system prompt、memory、skill、tool、subagent 完成 create/use/revise 探针；
 它是技术闭环验证，不代表普通 treatment 中的自主触发率。普通运行不加该参数，
 用于观察 Agent 是否会根据任务收益自发创建和优化资源。
+
+2026-10-02 的推理/历史实验配置见 [设计与真实验收记录](docs/plans/2026-10-02-context-tool-reasoning-design.md#16-暂停后推理驻留与研究到行动修复)。默认保持 provider 原生设置，以下都是显式开关，不能凭开启推断游戏能力或成本已改善：
+
+- `--reasoning-policy adaptive --reasoning-levels low,medium,high` 只选择操作者已核实的档位；未知能力保持 provider 默认。
+- `--reasoning-policy adaptive-evidence --reasoning-levels low,medium` 在初始探索、首次操作效果、明确反证与稀疏停滞时选medium，其他周期选low，不要求先建立active plan；RESET不抹除同关操作的计算身份，length/拒绝续轮恢复不提前消费。默认策略不变，此分配不代表目标已解。
+- `ARC_PI_THINKING_FORMAT=qwen` 或 `qwen-chat-template` 声明已验证的原生 on/off 语法，仅适用于 `openai-completions`。`--reasoning-policy adaptive-binary --reasoning-levels off,medium` 在新证据/反证等稀疏机会深入，其余周期关闭 thinking；length 和 action-boundary 恢复保留当前分配，完整模型消息后才消费机会。当前 Qwen 探索中固定 off 的任务质量失败，二元策略仍属实验。
+- `PI_PROVIDER_REASONING_HISTORY_POLICY=summarize_openai_field` 与 `PI_PROVIDER_EDITABLE_REASONING_PROVIDERS=yibu` 仅整理已声明 provider 的旧完整工具事务中的普通 `reasoning_content`，保留近期交换、协议签名/opaque、异常续接及精确原文引用。默认 `preserve`。
+- `PI_ARC_EXACT_REGION_TABLE=enabled` 附加当前公开像素的有界区域/坐标折叠表；完整当前网格/PNG保留，派生表不判断目标或编辑性，默认关闭。
+- `PI_ARC_CONCISE_GUIDANCE=enabled` 用精简的目标优先正文启动普通ARC任务，详细程序按需查contract；不替换显式closure探针、不关闭原runtime完整性检查，默认关闭。此开关的真实目标检验/关卡收益仍按设计记录分层验收。
+- `PI_ARC_TOOL_DISCLOSURE=on_demand` 发现研究机会时仅额外展示delegate/task_resource，其他注册能力经既有enable入口展示；权限、预算与版本校验保留，默认仍为原展示方式。
+- `PI_ARC_CHILD_OBSERVATION=published` 对已获arc_state授权的只读child，在每个provider续轮直接送入父发布时的完整固定grid/PNG，省去首次取图决策；不授予live环境或动作权限，不适用于action lease。默认按需读图，真实收益见[第17节](docs/plans/2026-10-02-context-tool-reasoning-design.md#17-290989-token失败后的输入重放与目标推进优化)。
+
+ARC动作证据卡覆盖所选动作时，仍保留child已授权的固定状态读取；动作卡完整不等于完整画面已提供。ARC当前完整观测现在经每次续轮的临时user槽提供；相同动作末帧与当前帧只发送一份像素，保留各自语义角色和不同动画帧。系统指导、必要状态、未完成推理事务及读页工作集保持可见；研究候选被显式关联行动执行后，旧建议转为previous_proposal并附后续真实回执，不再当作新next_step。这些功能修复不等于通关或净收益证明。
+
+2026-10-03起，`task_harness`默认展示常用控制参数；`contract(topic=review|level_review)`加载对应typed复盘字段，level_review需当前window_id。`auto_research`的start/assign直接可用；`contract(schema_action=enqueue)`加载多节点plan。已加载schema跨轮/会话恢复保留，旧完整调用仍按完整schema校验；`contract(schema_action=core)`主动缩回常用展示，`PI_MANAGEMENT_SCHEMA=full`回退完整注册。真实ARC初始六工具定义字符减少29.54%，确定性真实SDK矩阵17/419通过；真实模型采用、token/耗时及任务收益未测，见[设计第19节](docs/plans/2026-10-02-context-tool-reasoning-design.md#19-2026-10-03-核心管理-schema-按需精简)。
+
+ARC默认`task_harness(status|inspect)`保留可变任务状态、精确组件池/装配和待办；详细手册使用`section=<字段>`，完整状态使用`section=all`。三个creator默认返回完整短作者契约，支持资料按需读取；待创作正文跨轮/恢复保留，成功创建后收起。常用控制入口保持可用，选中Skill/Tool/Subagent才暴露对应使用入口；其他管理用`enable`发现，已有Memory或真实动作后可记录Memory。`--max-reported-tokens`是父子共享的已报告usage停止阈值，最后流及并发请求可能超额。最新SDK确定性矩阵17/425通过；真实qwen窄诊断创建并显式装配Skill、引用程序执行1动作，57356已报告tokens/0关。此前因预算取消的样本保留。五组件真实能力、普通采用及关卡收益仍未完成，见[设计第21节](docs/plans/2026-10-02-context-tool-reasoning-design.md#21-2026-10-03-面向关卡求解的创作与上下文整修)。
+
+两个创建/装配入口复用Pi原生顺序批次；同响应创建失败后不继续依赖装配或ARC动作，下一父轮可根据回执恢复。ARC默认`contract(topic=development)`返回完整短契约，旧两篇全文用既有`section=all`读取，正文12434→2641字符。当前源码SDK确定性矩阵17/425通过。真实qwen的三次有界探索合计143832已报告tokens/0动作；low样本有Skill候选和装配，但后续纯reasoning截断、预算停止，未证明批次采用或效率收益。普通推理默认未更改，详见[设计第22–24节](docs/plans/2026-10-02-context-tool-reasoning-design.md#22-2026-10-03-复用原生顺序工具批次降低首次使用往返)。
+
+五类组件的完整创作与精确装配仍保留；assembly回执提供短使用目录，选中Skill通过任务目录受限`read(path)`加载，保留共同装配Memory及后续System Prompt，重启后恢复使用接口。加强后的真实SDK确定性矩阵17/425通过（含Tool数值、Subagent语义返回和两类length）。真实qwen显式组合诊断未生成作者候选或assembly，不据此声称自主创作或游戏收益；成本、失败与恢复目标连续性缺口见[设计第20节](docs/plans/2026-10-02-context-tool-reasoning-design.md#20-2026-10-03-精简后的五类组件构造与组合使用验收)。
+
+实验应使用全新 run 目录，并显式给出 `--max-actions 60 --experiment-timeout 1800 --max-output-tokens 65536 --input-modalities text,image --review-mode advisory`。1800秒是实验停止条件，不是官方时间限制；到期时未运行满60动作须按真实数量报告。`arc-runtime-config.json`记录实际配置，`provider-telemetry.jsonl`记录发出的参数、首个模型delta、完成时长和usage。output已含reasoning，不重复相加；失败/pending缺usage不代表免费。组件检查、真实接线、自主采用及净收益分开验收。

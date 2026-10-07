@@ -1,0 +1,56 @@
+{
+  "resource_ref": "observation:groups-normal@v1",
+  "version": 1,
+  "groups": [
+    {
+      "id": "group-low",
+      "rule": {"minimum": 10},
+      "records": [
+        {
+          "id": "record-low-match",
+          "active": true,
+          "label": "first",
+          "measurements": [
+            {"id": "measurement-9", "value": 9},
+            {"id": "measurement-10", "value": 10},
+            {"id": "measurement-14", "value": 14}
+          ]
+        },
+        {
+          "id": "record-inactive",
+          "active": false,
+          "label": "inactive",
+          "measurements": [{"id": "measurement-100", "value": 100}]
+        },
+        {
+          "id": "record-low-empty",
+          "active": true,
+          "label": "no match",
+          "measurements": [{"id": "measurement-2", "value": 2}]
+        }
+      ]
+    },
+    {
+      "id": "group-high",
+      "rule": {"minimum": 50},
+      "records": [
+        {
+          "id": "record-high-match",
+          "active": true,
+          "label": "second",
+          "measurements": [
+            {"id": "measurement-49", "value": 49},
+            {"id": "measurement-50", "value": 50},
+            {"id": "measurement-80", "value": 80}
+          ]
+        },
+        {
+          "id": "record-high-empty",
+          "active": true,
+          "label": "also no match",
+          "measurements": [{"id": "measurement-30", "value": 30}]
+        }
+      ]
+    }
+  ]
+}

@@ -7,6 +7,7 @@
  */
 
 import { loadPrompt } from "./prompt_loader.ts";
+import { renderArcCoarseLayout, renderArcUniformTileMap } from "./pi_arc_observation_layout.ts";
 
 export const ARC_SYSTEM_PROMPT = loadPrompt("arc_system_prompt.md");
 
@@ -30,7 +31,7 @@ function runEncodedRow(row: unknown[], rowIndex: number, columnWidth: number): s
 }
 
 /** Lossless, coordinate-preserving projection of only the current ARC frame. */
-export function renderArcLatestFrameRuns(value: Record<string, any>): string {
+export function renderArcLatestFrameRuns(value: Record<string, any>, options: { derived?: boolean } = {}): string {
 	const frames = Array.isArray(value.frames) ? value.frames : [];
 	const current = frames.at(-1);
 	if (!Array.isArray(current)) return renderArcFrame(value);
@@ -40,14 +41,17 @@ export function renderArcLatestFrameRuns(value: Record<string, any>): string {
 		`State: ${String(value.state ?? "UNKNOWN")}`,
 		`Levels completed: ${Number(value.levels_completed ?? 0)}`,
 		`Current frame is the last rendered frame (${frames.length} of ${frames.length}); earlier frames are animation context.`,
+		`Coordinate convention: x is column, y is row; (x,y) addresses current frame[y][x].`,
+		...(options.derived === false ? [] : renderArcCoarseLayout(current)),
+		...(options.derived === false ? [] : renderArcUniformTileMap(current)),
 		`Lossless coordinate runs (inclusive columns), size=${current.length}x${width}:`,
 		...current.map((row: unknown, index: number) => runEncodedRow(Array.isArray(row) ? row : [row], index, columnWidth)),
 	];
 	const budget = value.action_budget;
 	if (budget && typeof budget === "object") {
 		parts.push(
-			`Action budget: level ${String(budget.used ?? 0)}/${String(budget.maximum ?? 0)}, ` +
-			`total ${String(budget.total_used ?? 0)}/${String(budget.total_maximum ?? 0)}`,
+			`Action budget: level ${String(budget.used ?? 0)}/${String(budget.maximum ?? "unlimited")}, ` +
+			`total ${String(budget.total_used ?? 0)}/${String(budget.total_maximum ?? "unlimited")}`,
 		);
 	}
 	const actions = Array.isArray(value.agent_available_actions)

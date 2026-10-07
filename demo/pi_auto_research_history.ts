@@ -6,6 +6,7 @@ export const AUTO_RESEARCH_HISTORY_KINDS = [
 	"research_agenda", "method", "effect_assessment", "harness_observation",
 	"failure", "finding", "validation", "memory", "skill", "tool",
 	"subagent", "system_prompt", "level_review",
+	"strategy_candidate", "competition_view",
 ] as const;
 
 export type AutoResearchHistoryCatalog = {

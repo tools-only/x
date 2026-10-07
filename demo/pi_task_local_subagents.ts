@@ -8,12 +8,14 @@ import { EventEmitter } from "node:events";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { validateToolArguments } from "@earendil-works/pi-ai/compat";
 import { admitTaskLocalOperation } from "./pi_task_execution_admission.ts";
-import { bindExperimentRequest, buildAutoResearchCapsule, normalizeAutoResearchReport } from "./pi_auto_research_output.ts";
-import { compileHarnessRoute } from "./pi_auto_research_harness_router.ts";
+import { bindExperimentRequest, buildAutoResearchCapsule, buildParentAuthoringHandoffs, normalizeAutoResearchReport, researchActionContinuation } from "./pi_auto_research_output.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
 import { Type } from "typebox";
-import { installTaskResultSemantics, resolveTaskResource, resourceMetadata, versionConflict } from "./pi_task_resource_store.ts";
+import { compactToolSchema } from "./pi_compact_tool_schema.ts";
+import { registerManagementTool } from "./pi_management_schema_surface.ts";
+import { installTaskResultSemantics, resolveTaskResource, resourceMetadata, taskRecords, versionConflict } from "./pi_task_resource_store.ts";
 import { registerNativeHarnessExecutor } from "./pi_task_harness_route_runtime.ts";
 import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
 import { loadPrompt } from "./prompt_loader.ts";
@@ -21,22 +23,35 @@ import { canonicalEvidenceSnapshot, parentEvidenceSnapshot, evidenceRefsAfter } 
 import { applyResearchHandoff, resolveResearchHandoff, researchHandoffReference, reconcileResearchHandoffs } from "./pi_auto_research_handoff.ts";
 import { controlError, latestControlRecords, selectControlTarget } from "./pi_harness_control.ts";
 import { readCurrentTaskCheckpoint } from "./pi_task_checkpoint_reader.ts";
+import { materializeStrategyCandidates, readTaskStrategyState, taskStrategyIndex, updateTaskStrategyState } from "./pi_task_strategy_state.ts";
+import { buildCompetitionView, competitionProjection, persistCompetitionView } from "./pi_task_competition.ts";
+import { auditResearchConfidence } from "./pi_research_confidence.ts";
+import { researchRequestIdentity } from "./pi_research_request_identity.ts";
 import {
 	buildResearchWorkset, compareResearchProgress, createResearchPlan, releaseResearchNode,
 	researchPlanView, transitionResearchNode, type ResearchPlan, type ResearchNodeStatus,
 } from "./pi_auto_research_protocol.ts";
-import { buildCrossContextComparison, crossContextComparisonForChild, methodRecordsFromReport } from "./pi_research_method_runtime.ts";
+import { buildCrossContextComparison, crossContextComparisonForChild, methodRecordsFromReport, methodUseRejection, bindResearchCandidateParameters } from "./pi_research_method_runtime.ts";
 import {
 	buildAutoResearchAgendaRecord, buildAutoResearchProgressReceipt, researchReportNeedsParentAttention,
 } from "./pi_auto_research_agenda.ts";
 import { autoResearchHistoryGrants, buildAutoResearchHistoryCatalog } from "./pi_auto_research_history.ts";
 import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
 import { canonicalTextBody } from "./pi_harness_protocol.ts";
-import { normalizeContextRecipe, type SubagentContextRecipe } from "./pi_subagent_context_recipe.ts";
-import { memoryValidityContext } from "./pi_memory_validity.ts";
-import { baselineMethodCatalog } from "./pi_harness_baseline_methods.ts";
+import { normalizeContextRecipe, normalizeDelegateOutputContract, type SubagentContextRecipe } from "./pi_subagent_context_recipe.ts";
+import { memoryValidityContext, memoryValidityReasons, normalizeMemoryValidity, type MemoryValidity } from "./pi_memory_validity.ts";
+import { baselineMethodCatalog, readBaselineMethod, validateCreatorCitation } from "./pi_harness_baseline_methods.ts";
+import { bridge } from "./pi_arc_bridge_client.ts";
+import { WORKER_EVIDENCE_KINDS, assignResearchWorker, researchWorkers, workerRef, resolveWorker,
+	updateWorker, routeWorkerEvidence, pendingWorkerEvidence } from "./pi_auto_research_workers.ts";
+import { advanceResearchWorkers, selectResearchIncrements, acknowledgeResearchIncrementPayload,
+	RESEARCH_INCREMENT_PREFIX } from "./pi_auto_research_worker_runtime.ts";
+import { FINAL_PROVIDER_PAYLOAD_EVENT, type FinalProviderPayloadEvent } from "./pi_final_provider_payload.ts";
+
+const CONTEXT_RECIPE_BRIEF = "Only include_checkpoint, recent_observations, recent_actions, inherit_harness_refs, output_contract, max_chars; recent observations are excerpts.";
 
 type AgentDefinition = {
+	validity?: MemoryValidity;
 	adapter_id?: string;
 	agent_id: string;
 	name: string;
@@ -74,7 +89,12 @@ export type TaskSubagentAdapter = {
 	taskToolImplementationOutputSchemas?: Record<string, unknown>;
 	/** Parent-runtime capture of the read-only environment boundary supplied to a child. */
 	publishStateSnapshot?: () => Promise<Record<string, unknown>>;
+	/** Resolve exactly one parent-selected immutable observation; never substitute live state. */
+	publishSelectedStateSnapshot?: (ref: string) => Promise<Record<string, unknown>>;
 	stateSnapshotTools?: string[];
+	/** Publish one immutable, exact-cutoff read-only trajectory for this child launch. */
+	publishTrajectorySnapshot?: () => Promise<{ ref: string }>;
+	trajectorySnapshotTools?: string[];
 };
 
 type AutoResearchContextWindow = {
@@ -89,10 +109,13 @@ type ResearchSessionStatus = "active" | "pending" | "completed" | "failed" | "ca
 type ResearchInteractionMode = "blocking" | "non_blocking";
 
 const RESEARCH_RECORD_FILES = new Set([
+	"subagent-context-bindings.jsonl",
 	"auto-research-sessions.jsonl", "auto-research-runs.jsonl", "auto-research-reports.jsonl",
 	"auto-research-plans.jsonl", "auto-research-handoffs.jsonl",
+	"parent-authoring-handoffs.jsonl",
 	"auto-research-agenda.jsonl",
 	"task-method-lifecycle.jsonl",
+	"effect-assessments.jsonl",
 	"auto-research-opportunities.jsonl",
 	"auto-research-harness-routes.jsonl", "auto-research-harness-route-receipts.jsonl",
 	"subagent-progress.jsonl", "execution-observations.jsonl", "task-memory.jsonl", "task-skills.jsonl",
@@ -118,6 +141,12 @@ function inferResearchLineRef(root: string, params: Record<string, any>): string
 	if (typeof params.research_line_ref === "string" && params.research_line_ref.trim()) {
 		return params.research_line_ref.trim();
 	}
+	// Exact, unique, existing identifiers are explicit selection, not semantic
+	// inference from prose. Never invent a line or merge distinct identifiers.
+	const mentionedLines = [...new Set(String(params.question ?? "").match(/\bresearch_line:[A-Za-z0-9_.-]+@v[1-9]\d*\b/g) ?? [])];
+	const knownLines = new Set([...readResearchRecords(root, "auto-research-reports.jsonl"),
+		...readResearchRecords(root, "auto-research-runs.jsonl")].map(row => row.research_line_ref));
+	if (mentionedLines.length === 1 && knownLines.has(mentionedLines[0])) return mentionedLines[0];
 	const explicitRefs = [
 		...(Array.isArray(params.resource_refs) ? params.resource_refs : []),
 		...(Array.isArray(params.evidence_refs) ? params.evidence_refs : []),
@@ -154,9 +183,49 @@ function latestResearchSession(root: string, sessionId: string): Record<string, 
 		.sort((a, b) => Number(b.version ?? 0) - Number(a.version ?? 0))[0];
 }
 
-function latestAutoResearchAgenda(root: string): Record<string, any> | undefined {
+function latestAutoResearchAgenda(root: string, researchLineRef?: string): Record<string, any> | undefined {
 	return readResearchRecords(root, "auto-research-agenda.jsonl")
-		.sort((left, right) => Number(right.version ?? 0) - Number(left.version ?? 0))[0];
+		.filter(item => !researchLineRef || item.research_line_ref === researchLineRef).at(-1);
+}
+
+function currentAutoResearchAgendas(root: string): Record<string, any>[] {
+	const byLine = new Map<string, Record<string, any>>();
+	for (const row of readResearchRecords(root, "auto-research-agenda.jsonl"))
+		byLine.set(String(row.research_line_ref ?? row.agenda_id), row);
+	return [...byLine.values()];
+}
+
+/** A topic is durable; each invocation/session is only one bounded worker run. */
+function researchTopicIndex(root: string, offset = 0, limit = 8, excludeLine?: string): Record<string, any> {
+	const agendas = currentAutoResearchAgendas(root);
+	const sessions = latestControlRecords(readResearchRecords(root, "auto-research-sessions.jsonl"), "session_id");
+	const byLine = new Map<string, Record<string, any>>();
+	for (const agenda of agendas) {
+		const line = String(agenda.research_line_ref ?? "");
+		if (line && line !== excludeLine) byLine.set(line, { line, agenda, sessions: [] });
+	}
+	for (const session of sessions) {
+		const line = String(session.research_line_ref ?? "");
+		if (!line || line === excludeLine) continue;
+		if (!byLine.has(line)) byLine.set(line, { line, agenda: null, sessions: [] });
+		byLine.get(line)!.sessions.push(session);
+	}
+	const all = [...byLine.values()].sort((a, b) => String(b.agenda?.recordedAt ?? b.sessions.at(-1)?.recordedAt ?? "")
+		.localeCompare(String(a.agenda?.recordedAt ?? a.sessions.at(-1)?.recordedAt ?? "")));
+	const topics = all.slice(offset, offset + limit).map((item) => {
+		const agenda = item.agenda;
+		const live = item.sessions.filter((session: Record<string, any>) => ["active", "pending"].includes(String(session.status)));
+		const failed = item.sessions.filter((session: Record<string, any>) => session.status === "failed");
+		return { topic_ref: item.line,
+			agenda_ref: agenda ? `research_agenda:${agenda.agenda_id}@v${agenda.version}` : null,
+			status: live.length ? "in_progress" : failed.length ? "needs_attention" : agenda?.status ?? "unreported",
+			topic: String(agenda?.topic ?? "").slice(0, 100),
+			question: String(agenda?.question ?? "").slice(0, 140),
+			last_report_ref: agenda?.last_report_ref ?? null,
+			live_session_count: live.length, failed_session_count: failed.length };
+	});
+	return { format: "auto-research-topic-index-v1", total: all.length, offset,
+		next_offset: offset + topics.length < all.length ? offset + topics.length : null, topics };
 }
 
 function researchPlanReference(reference: unknown): { planId: string; version?: number } {
@@ -207,9 +276,10 @@ export function compactContextWindow(root: string, requested?: AutoResearchConte
 	if (requested.include_checkpoint) {
 		const checkpoint = readCurrentTaskCheckpoint(root);
 		const selected: Record<string, unknown> = {};
-		for (const key of ["revision", "harness_started", "latest_environment", "current_subgoal", "hypothesis", "next_step", "working_summary", "summary_basis_refs", "decision_refs", "decision_capsule", "pending_operations"]) {
-			if (checkpoint[key] !== undefined) selected[key] = checkpoint[key];
+		for (const key of ["revision", "harness_started", "latest_environment", "task_goal", "success_conditions", "task_constraints", "planning_gap", "strategy_alternatives", "current_strategy", "current_subgoal", "hypothesis", "next_step", "working_summary", "summary_basis_refs", "decision_refs", "decision_capsule", "pending_operations"]) {
+			if (checkpoint[key] !== undefined && !(checkpoint.reasoning_state?.stale_fields ?? []).includes(key)) selected[key] = checkpoint[key];
 		}
+		if (checkpoint.reasoning_state) selected.reasoning_state = checkpoint.reasoning_state;
 		if (actionCount > 0) selected.recent_actions = Array.isArray(checkpoint.recent_actions)
 			? checkpoint.recent_actions.slice(-actionCount) : [];
 		result.checkpoint = selected;
@@ -329,17 +399,36 @@ async function withPublishedStateSnapshot(
 	adapter: TaskSubagentAdapter,
 	contextWindow?: Record<string, unknown>,
 	tools: string[] = [],
+	selectedRefs: string[] = [],
 ): Promise<Record<string, unknown> | undefined> {
+	const sceneRefs = [...new Set(selectedRefs.map(ref => String(ref).trim())
+		.filter(ref => ref.startsWith("observation_snapshot:")))];
+	const selectedRef = adapter.publishSelectedStateSnapshot && sceneRefs.length === 1 ? sceneRefs[0] : undefined;
 	const snapshotTools = new Set(adapter.stateSnapshotTools ?? []);
-	if (!adapter.publishStateSnapshot || !tools.some((tool) => snapshotTools.has(tool))) return contextWindow;
-	const snapshot = await adapter.publishStateSnapshot();
+	const trajectoryTools = new Set(adapter.trajectorySnapshotTools ?? []);
+	const needsState = !!selectedRef || (!!adapter.publishStateSnapshot && tools.some((tool) => snapshotTools.has(tool)));
+	const needsTrajectory = !!adapter.publishTrajectorySnapshot && tools.some((tool) => trajectoryTools.has(tool));
+	if (!needsState && !needsTrajectory) return contextWindow;
 	const base = contextWindow ?? { format: "parent-selected-context-window-v1", context_refs: [] };
-	// Transport the snapshot out-of-band. It must reach the child process but
-	// must not be serialized into the child prompt/workset, which would replay
-	// stale animation frames and duplicate the canonical read-only tool output.
-	Object.defineProperty(base, "__publishedStateSnapshot", {
-		value: snapshot, enumerable: false, configurable: false, writable: false,
-	});
+	if (needsState) {
+		const snapshot = selectedRef
+			? await adapter.publishSelectedStateSnapshot!(selectedRef)
+			: await adapter.publishStateSnapshot!();
+		// Transport the snapshot out-of-band. It must reach the child process but
+		// must not be serialized into the child prompt/workset.
+		Object.defineProperty(base, "__publishedStateSnapshot", {
+			value: snapshot, enumerable: false, configurable: false, writable: false,
+		});
+		if (selectedRef) Object.defineProperty(base, "__publishedStateSnapshotRef", {
+			value: selectedRef, enumerable: false, configurable: false, writable: false,
+		});
+	}
+	if (needsTrajectory) {
+		const snapshot = await adapter.publishTrajectorySnapshot!();
+		Object.defineProperty(base, "__publishedTrajectoryRef", {
+			value: snapshot.ref, enumerable: false, configurable: false, writable: false,
+		});
+	}
 	return base;
 }
 
@@ -367,7 +456,7 @@ function parseAutoResearchReport(text: string): Record<string, any> {
 		format: "auto-research-report-v1",
 		status: "unstructured_report",
 		conclusion: text,
-		evidence_refs: [], alternatives: [], harness_proposals: [], limitations: ["Child did not return valid JSON; inspect the full report."],
+		evidence_refs: [], alternatives: [], method_candidates: [], limitations: ["Child did not return valid JSON; inspect the full report."],
 	};
 }
 
@@ -579,6 +668,7 @@ function runChildPi(
 	researchInteractionMode: "blocking" | "non_blocking" = "blocking",
 	detached = false,
 	additionalResourceGrants: string[] = [],
+	arcActionLeaseToken?: string,
 ): Promise<Record<string, unknown>> {
 	const cli = process.env.PI_AUTORESEARCH_PI_CLI;
 	// A subagent is another session of the same configured agent runtime. Its
@@ -586,6 +676,7 @@ function runChildPi(
 	const provider = process.env.PI_AUTORESEARCH_PROVIDER;
 	const model = process.env.PI_AUTORESEARCH_MODEL;
 	if (!cli || !provider || !model) throw new Error("subagent Pi CLI, provider, or model is not configured");
+	const childNativeSessionId = nativeSessionId ?? randomUUID();
 	const args = [
 		cli,
 		"--mode", "json", "-p",
@@ -596,7 +687,7 @@ function runChildPi(
 		// transcript for audit/retrieval. Provider serialization may discard
 		// thinking-only messages, so semantic recovery uses saved checkpoints.
 		"--session-dir", join(root, ".task-child-sessions"),
-		"--session-id", nativeSessionId ?? randomUUID(),
+		"--session-id", childNativeSessionId,
 		"--no-extensions", "--no-skills", "--no-prompt-templates",
 		"--no-context-files", "--no-builtin-tools",
 		// Keep the child surface deterministic even when a provider/CLI build
@@ -637,8 +728,14 @@ function runChildPi(
 	const grantedRefs = [...new Set([
 		...normalizedResourceRefs, ...resources.map((r) => r.resource_ref), ...evidence.map((item) => item.ref),
 		...additionalResourceGrants,
+		...(typeof contextWindow?.__publishedTrajectoryRef === "string"
+			? [contextWindow.__publishedTrajectoryRef] : []),
 	])];
-	const toolCreationContract = {
+	// Retained only for scripted compatibility fixtures that explicitly invoke
+	// the retired research_approval tool. Production research children must not
+	// receive component schemas, programs, or creator inputs: they return
+	// findings and method metadata for the parent to author from.
+	const legacyToolCreationContract = {
 		memory_validity_context: memoryValidityContext(ensureTaskScope(root).taskId, readResearchRecords(root, "execution-observations.jsonl")),
 		declarative_program_steps: TASK_TOOL_PROGRAM_STEP_KINDS,
 		step_shapes: {
@@ -660,24 +757,30 @@ function runChildPi(
 		allowed_implementation_refs: adapter.taskToolAllowedImplementations ?? [],
 		allow_unlisted_implementations: adapter.taskToolAllowUnlistedImplementations === true,
 	};
+	const legacyApprovals = String(process.env.PI_SUBAGENT_STEPS ?? "").includes('"research_approval"');
 	const researchEnvironment = researchProtocol ? {
 		PI_AUTO_RESEARCH_SCOPE: researchScope,
 		PI_AUTO_RESEARCH_INTERACTION_MODE: researchInteractionMode,
 		// Scripted compatibility fixtures may still exercise the retired child
-		// approval ledger. Production children use direct immutable candidates.
-		...(String(process.env.PI_SUBAGENT_STEPS ?? "").includes('"research_approval"')
-			? { PI_AUTO_RESEARCH_LEGACY_APPROVALS: "1" } : {}),
-		PI_AUTO_RESEARCH_TOOL_CONTRACT: JSON.stringify(toolCreationContract),
+		// approval ledger. Production children receive neither it nor its former
+		// component-creation contract.
+		...(legacyApprovals ? {
+			PI_AUTO_RESEARCH_LEGACY_APPROVALS: "1",
+			PI_AUTO_RESEARCH_TOOL_CONTRACT: JSON.stringify(legacyToolCreationContract),
+		} : {}),
 	} : {};
 	args.push("--extension", join(dirname(fileURLToPath(import.meta.url)), "pi_task_validation_child.ts"));
+	args.push("--extension", join(dirname(fileURLToPath(import.meta.url)), "pi_final_provider_payload.ts"));
 	const promptPrefix = researchProtocol ? "# Research task workset\n" : "# Delegated task workset\n";
 	const contextMarker = "\nParent-selected context window (bounded state, not the parent transcript): ";
-	// The complete deterministic creation contract is supplied to the child
-	// extension through PI_AUTO_RESEARCH_TOOL_CONTRACT. Repeating it in provider
-	// prose wastes the bounded workset budget and can crowd out the actual goal.
-	const promptSuffix = `\n\n# Available access\nUse exposed tools under permission ${adapter.permission}; retrieve only the evidence needed for the question.\n`
+	// Current children receive the report schema through submit_research_report;
+	// no component-creation contract is injected into their environment.
+	const promptSuffix = `\n\n# Available access\nUse exposed tools under permission ${arcActionLeaseToken ? "bounded_arc_action_delegate" : adapter.permission}; retrieve only the evidence needed for the question.\n`
+		+ (typeof contextWindow?.__publishedTrajectoryRef === "string"
+			? `Fixed ARC trajectory cutoff: ${contextWindow.__publishedTrajectoryRef}. inspect_arc_trajectory uses this immutable evidence. For history beyond its 256-action projection limit, page this exact resource with task_resource.\n`
+			: "")
 		+ (researchProtocol
-			? "Native harness delivery schemas and allowed implementations are enforced by the child tools.\n" : "");
+			? "Return findings, method candidates, planning implications, or experiment requests only; the parent owns all Harness authoring.\n" : "");
 	const inputMaxChars = Math.max(1024, Math.floor(Number(
 		process.env.PI_AUTORESEARCH_CHILD_INPUT_MAX_CHARS
 			?? process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS
@@ -701,6 +804,23 @@ function runChildPi(
 		&& comparisonSelectedRefs.every((reference: string) => comparisonCardRefs.has(reference));
 	const workset = buildResearchWorkset({
 		...researchTask,
+		...(() => {
+			const binding = readResearchRecords(root, "subagent-context-bindings.jsonl")
+				.find(r => r.native_child_session_id === childNativeSessionId && r.competition_view_ref);
+			if ((continuationAttempt > 1 || /:continuation-(?:[2-9]|[1-9]\d+)/.test(String(progressId ?? ""))) && binding) {
+				grantedRefs.push(binding.competition_view_ref);
+				return { competition_view_ref: binding.competition_view_ref };
+			}
+			const view = buildCompetitionView(root, new Set(grantedRefs));
+			if (!view) return {};
+			persistCompetitionView(root, view);
+			grantedRefs.push(view.view_ref);
+			appendFileSync(join(root, "subagent-context-bindings.jsonl"), JSON.stringify(stampTaskRecord(ensureTaskScope(root), {
+				native_child_session_id: childNativeSessionId, competition_view_ref: view.view_ref,
+				progress_id: progressId, recordedAt: new Date().toISOString(),
+			})) + "\n");
+			return { competition_view: competitionProjection(view) };
+		})(),
 		goal: researchProtocol ? (researchTask.goal ?? task)
 			: `Role: ${definition.name}\n${definition.instructions}\nCanonical role resource: subagent:${definition.name}@v${definition.version}\nDelegated task: ${task}`,
 		constraints: researchTask.constraints ?? [],
@@ -756,12 +876,23 @@ function runChildPi(
 		...(contextWindow && typeof (contextWindow as any).__publishedStateSnapshot === "object"
 			? { PI_TASK_CHILD_STATE_SNAPSHOT: JSON.stringify((contextWindow as any).__publishedStateSnapshot) }
 			: { PI_TASK_CHILD_STATE_SNAPSHOT: "" }),
+		PI_TASK_CHILD_STATE_SNAPSHOT_REF: typeof contextWindow?.__publishedStateSnapshotRef === "string"
+			? contextWindow.__publishedStateSnapshotRef : "",
 		PI_EXTERNAL_STEPS: "[]",
 		PI_AUTORESEARCH_VARIANT: "control",
-		PI_TASK_SUBAGENT_TOOLS: JSON.stringify(definition.tools),
+		PI_TASK_SUBAGENT_TOOLS: JSON.stringify(arcActionLeaseToken
+			? [...new Set([...definition.tools, "arc_action"])] : definition.tools),
 		PI_TASK_CHILD_RESOURCE_REFS: JSON.stringify(grantedRefs),
+		PI_TASK_CHILD_CONTEXT_ID: childNativeSessionId,
+		PI_TASK_CHILD_CONTEXT_SCOPE: adapter.adapterId === "arc_agi_3"
+			? arcActionLeaseToken ? "arc-action-delegate" : "arc-readonly-subagent" : "task-child",
+		PI_TASK_CHILD_TRAJECTORY_REF: typeof contextWindow?.__publishedTrajectoryRef === "string"
+			? contextWindow.__publishedTrajectoryRef : "",
 		PI_TASK_CHILD_RESEARCH_PROTOCOL: researchProtocol ? "1" : "0",
 		PI_AUTO_RESEARCH_OPEN_ALLOCATION: researchProtocol && researchTask.research_state?.open_allocation ? "1" : "0",
+		PI_AUTO_RESEARCH_WORKER: researchProtocol && researchTask.research_state?.worker
+			? JSON.stringify({ ...researchTask.research_state.worker,
+				run_ids: [...researchTask.research_state.worker.run_ids, researchRunId].filter(Boolean) }) : "",
 		// A blocking exact-evidence comparison has two terminal choices: submit
 		// the current result, or return a bounded parent experiment request in that
 		// report. Provider length is resumed by the runtime/native Pi session, so
@@ -779,6 +910,12 @@ function runChildPi(
 	} as Record<string, string>;
 	// Do not inherit the parent's live bridge credential into a read-only child.
 	delete childEnv.PI_ARC_BRIDGE_URL;
+	delete childEnv.PI_ARC_ACTION_TOKEN;
+	delete childEnv.ARC_BRIDGE_ACTION_TOKEN;
+	if (arcActionLeaseToken) {
+		childEnv.PI_ARC_BRIDGE_URL = String(process.env.PI_ARC_BRIDGE_URL ?? "");
+		childEnv.PI_ARC_ACTION_TOKEN = arcActionLeaseToken;
+	}
 	// Child-specific model routing is unsupported. Remove stale legacy variables
 	// so extensions cannot accidentally reintroduce a split runtime.
 	delete childEnv.PI_AUTORESEARCH_CHILD_PROVIDER;
@@ -844,12 +981,12 @@ function runChildPi(
 		// provider that keeps returning toolUse cannot hold the parent ARC turn
 		// forever.  Auto-Research uses its own broker/continuation policy and is
 		// intentionally unaffected by these limits.
-		const maxToolStartsRaw = Number(process.env.PI_AUTORESEARCH_DELEGATE_MAX_TOOL_CALLS ?? 48);
+		const maxToolStartsRaw = Number(process.env.PI_AUTORESEARCH_DELEGATE_MAX_TOOL_CALLS ?? 24);
 		const maxToolStarts = Number.isFinite(maxToolStartsRaw) && maxToolStartsRaw > 0
-			? Math.floor(maxToolStartsRaw) : 48;
-		const maxRuntimeRaw = Number(process.env.PI_AUTORESEARCH_DELEGATE_MAX_RUNTIME_MS ?? 300_000);
+			? Math.floor(maxToolStartsRaw) : 24;
+		const maxRuntimeRaw = Number(process.env.PI_AUTORESEARCH_DELEGATE_MAX_RUNTIME_MS ?? 120_000);
 		const maxRuntimeMs = Number.isFinite(maxRuntimeRaw) && maxRuntimeRaw > 0
-			? maxRuntimeRaw : 300_000;
+			? maxRuntimeRaw : 120_000;
 		let guardReason: string | undefined;
 		let guardTimer: NodeJS.Timeout | undefined;
 		const appendProgress = (event: string, extra: Record<string, unknown> = {}) => {
@@ -1008,7 +1145,7 @@ function runChildPi(
 			});
 			if (signal?.aborted) return rejectPromise(new Error("subagent aborted"));
 			if (guardReason && guardReason !== "delegate_task aborted") {
-				return rejectPromise(new Error(`${guardReason}; retry with a smaller bounded task`));
+				return rejectPromise(new Error(`${guardReason}; retry with a smaller bounded task (for large ARC frames: ask for one region, one statistic, or one hypothesis at a time; do not request a full-frame exhaustive report)`));
 			}
 			const usage = assistantMessages.reduce((total, message) => ({
 				input: total.input + Number(message.usage?.input ?? 0),
@@ -1203,9 +1340,9 @@ export function installTaskLocalSubagents(
 		});
 	};
 	const requireResearchOrchestrationRead = (params: Record<string, any>) => {
-		const supplied = String(params.authoring_method_ref ?? "").trim();
 		const catalogEntry = baselineMethodCatalog().find((item) => item.name === "research-orchestration");
 		const expected = catalogEntry?.method_ref ?? "";
+		const supplied = String(params.authoring_method_ref ?? expected).trim();
 		if (!supplied) throw new Error("authoring_method_ref is required for Auto-Research; first call task_harness(action=read_method, method_name=research-orchestration) and pass its method_ref");
 		if (supplied !== expected) throw new Error("authoring_method_ref does not match the current research-orchestration baseline; read it again before starting Auto-Research");
 		const reads = readBaselineMethodReceipts();
@@ -1236,9 +1373,21 @@ export function installTaskLocalSubagents(
 		JSON.stringify(stampTaskRecord(taskScope, value as Record<string, unknown>)) + "\n",
 		"utf8",
 	);
-	const registerRoutableTool = (definition: any) => {
+	const validateDefinitionTools = (params: Record<string, any>): string[] => {
+		const previous = agents.get(String(params.name ?? "").trim());
+		const tools = params.tools ?? previous?.tools ?? defaultTools;
+		if (!Array.isArray(tools) || tools.some((tool: unknown) => typeof tool !== "string")) {
+			throw new Error("subagent tools must be an array of tool names");
+		}
+		const unknownTools = tools.filter((tool: string) => !allowedTools.has(tool));
+		if (unknownTools.length) {
+			throw new Error(`subagent tools must be a subset of adapter tools; unknown: ${unknownTools.join(", ")}`);
+		}
+		return tools;
+	};
+	const registerRoutableTool = (definition: any, preflight?: (params: Record<string, any>) => void) => {
 		pi.registerTool(definition);
-		registerNativeHarnessExecutor(pi, String(definition.name), definition.execute);
+		registerNativeHarnessExecutor(pi, String(definition.name), definition.execute, preflight);
 	};
 	let invocationCounter = 0;
 	const invocationPath = join(root, "subagent-invocations.jsonl");
@@ -1257,7 +1406,7 @@ export function installTaskLocalSubagents(
 	registerRoutableTool({
 		name: "task_subagent",
 		label: adapter.definitionLabel ?? "Task-local subagent definition",
-		description: "Create, revise, retire, or inspect a task-local Pi subagent definition for the current benchmark adapter. Creation/update must first use subagent-creator and include its exact authoring_method_ref; this runtime validates and persists the authored context recipe but does not invent it. A definition does not execute until delegate_task is called. It is an independent model pass: give it a concrete competing interpretation, counterexample search, trajectory audit, or separable subproblem so it can add information rather than repeat the parent's narration. If research motivates it, cite the exact basis reference.",
+		description: "Task-local Subagent CRUD. Creator template optional; author role instructions and explicit tools. Definitions run via delegate_task.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("retire"), Type.Literal("inspect")]),
 			name: Type.Optional(Type.String()),
@@ -1265,11 +1414,12 @@ export function installTaskLocalSubagents(
 			description: Type.Optional(Type.String()),
 			instructions: Type.Optional(Type.String()),
 			tools: Type.Optional(Type.Array(Type.String())),
-			context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+			context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: CONTEXT_RECIPE_BRIEF })),
+			validity: Type.Optional(Type.Object({ scope: Type.Union([Type.Literal("task"), Type.Literal("episode"), Type.Literal("level"), Type.Literal("state")]), task_ref: Type.Optional(Type.String()), instance_ref: Type.Optional(Type.String()) })),
 			basis_refs: Type.Optional(Type.Array(Type.String())),
 			expected_effect: Type.Optional(Type.String()),
 			reconsider_when: Type.Optional(Type.String()),
-			authoring_method_ref: Type.Optional(Type.String({ description: "Exact method_ref returned by task_harness(action=read_method) for subagent-creator." })),
+			authoring_method_ref: Type.Optional(Type.String({ description: "Exact subagent-creator method_ref." })),
 			routing_id: Type.Optional(Type.String()),
 			source_approval_ref: Type.Optional(Type.String()),
 		}),
@@ -1280,6 +1430,7 @@ export function installTaskLocalSubagents(
 			}
 			const admission = admitTaskLocalOperation("task_subagent");
 			if (admission) return admission;
+			if (["create", "update"].includes(params.action)) validateCreatorCitation("subagent", params.authoring_method_ref);
 			const name = String(params.name ?? "").trim();
 			safeName(name);
 			const previous = agents.get(name);
@@ -1290,15 +1441,23 @@ export function installTaskLocalSubagents(
 			const description = String(params.description ?? previous?.description ?? `Task-local independent reviewer: ${name}`).trim();
 			const instructions = canonicalTextBody(params.instructions ?? previous?.instructions, "subagent instructions");
 			if (status === "active" && (!description || !instructions)) throw new Error("active subagent requires description and instructions");
-			const tools = params.tools ?? previous?.tools ?? defaultTools;
-			const unknownTools = tools.filter((tool) => !allowedTools.has(tool));
-			if (unknownTools.length) {
-				throw new Error(`subagent tools must be a subset of adapter tools; unknown: ${unknownTools.join(", ")}`);
+			const tools = validateDefinitionTools(params);
+			let contextRecipe = previous?.context_recipe;
+			if (params.context_recipe !== undefined) {
+				try { contextRecipe = normalizeContextRecipe(params.context_recipe); }
+				catch (error) {
+					controlError("rejected_input", [{ path: "context_recipe", message: error instanceof Error ? error.message : String(error) }], {
+						phase: "preflight", no_component_written: true, retryable: false, required_next_call: undefined,
+						recovery_hint: "Correct the context recipe or omit it to use the documented defaults. No component was written.",
+					});
+				}
 			}
 			const file = join(agentsDir, `${name}.md`);
 			const version = (previous?.version ?? 0) + 1;
 			const decisionId = `subagent-decision-${previous?.agent_id ?? `subagent-${counter + 1}`}-v${version}`;
 			const record: AgentDefinition = {
+				...(params.validity !== undefined ? { validity: normalizeMemoryValidity(params.validity, memoryValidityContext(ensureTaskScope(root).taskId, readResearchRecords(root, "execution-observations.jsonl"))) }
+					: previous?.validity ? { validity: previous.validity } : {}),
 				adapter_id: adapter.adapterId,
 				agent_id: previous?.agent_id ?? `subagent-${++counter}`,
 				name,
@@ -1308,8 +1467,7 @@ export function installTaskLocalSubagents(
 				description,
 				instructions,
 				tools,
-				...(params.context_recipe !== undefined ? { context_recipe: normalizeContextRecipe(params.context_recipe) }
-					: previous?.context_recipe ? { context_recipe: previous.context_recipe } : {}),
+				...(contextRecipe ? { context_recipe: contextRecipe } : {}),
 				file,
 				basis_refs: params.basis_refs ? resolveBasisRefs(params.basis_refs) : previous?.basis_refs ?? [],
 				decision_id: decisionId,
@@ -1354,29 +1512,47 @@ export function installTaskLocalSubagents(
 			});
 			return { content: [{ type: "text", text: JSON.stringify(record) }], details: record };
 		},
-	});
+	}, (params) => { validateDefinitionTools(params); });
 
-	pi.registerTool({
-		name: "delegate_task",
-		label: adapter.delegationLabel ?? "Delegate task-local analysis",
-		description: "Run a clean-context Pi subagent for research, hypothesis or harness validation. Supply an existing agent_name OR per-call instructions for an ephemeral role; the latter creates no persistent definition. Only selected exact resource/evidence indexes and adapter read-only tools are inherited, not the parent transcript. Full data is paged on demand. A report does not automatically validate a claim or change resources; the parent chooses how to use it. Immediate next-action benefit is not required.",
-		// Keep the provider-facing function schema as one object.  The saved-agent
-		// vs ephemeral-instructions XOR is an execution concern; expressing it as
-		// a top-level Type.Union emits anyOf instead of the object parameters shape
-		// required by several OpenAI-compatible providers.
-		parameters: Type.Object({
+	// Preserve the native object schema; the compatibility field stays unadvertised.
+	const delegateParameters = Type.Object({
 			agent_name: Type.Optional(Type.String()),
 			instructions: Type.Optional(Type.String()),
 			task: Type.String(),
-			tools: Type.Optional(Type.Array(Type.String())),
-			context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+			tools: Type.Optional(Type.Array(Type.String(), { description: "ARC scene: include arc_state or one exact observation_snapshot ref; [] alone has no frame." })),
+			context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: CONTEXT_RECIPE_BRIEF })),
 			evidence_refs: Type.Optional(Type.Array(Type.String())),
 			resource_refs: Type.Optional(Type.Array(Type.String())),
-		}, { additionalProperties: false }),
+			action_authorization: Type.Optional(Type.Object({ max_actions: Type.Integer({ minimum: 1, maximum: 16 }) })),
+		}, { additionalProperties: false });
+	pi.registerTool({
+		name: "delegate_task",
+		label: adapter.delegationLabel ?? "Delegate task-local analysis",
+		description: "Run a clean-context child. ARC evidence is read-only unless this ordinary delegate_task explicitly grants a bounded action_authorization; Auto-Research remains read-only.",
+		parameters: delegateParameters,
+		prepareArguments(args) {
+			try {
+				const saved = typeof (args as any)?.agent_name === "string"
+					? agents.get((args as any).agent_name)?.context_recipe : undefined;
+				const normalized = normalizeDelegateOutputContract(args, saved);
+				const input = validateToolArguments({ name: "delegate_task", description: "", parameters: delegateParameters },
+					{ type: "toolCall", id: "delegate-input", name: "delegate_task", arguments: normalized as Record<string, any> }) as Record<string, any>;
+				if (input.context_recipe !== undefined) normalizeContextRecipe(input.context_recipe);
+				return input as any;
+			} catch (error) {
+				// No invocation, snapshot publication or child process exists yet.
+				controlError("rejected_input", [{ path: "delegate_task", message: String(error instanceof Error ? error.message : error) }], {
+					retryable: false, required_next_call: undefined,
+					recovery_hint: "Rejected before delegation. Correct the reported fields in a new call; inspect only if a reference is unknown.",
+				});
+			}
+		},
 		async execute(toolCallId, params, signal) {
 			const admission = admitTaskLocalOperation("delegate_task");
 			if (admission) return admission;
 			if (process.env.PI_TASK_CHILD === "1") throw new Error("recursive delegation is not enabled");
+			if (params.action_authorization && adapter.adapterId !== "arc_agi_3")
+				throw new Error("action_authorization is supported only for ARC delegate_task");
 			if (params.agent_name && params.instructions) throw new Error("choose a saved agent_name or ephemeral instructions, not both");
 			const perCallInstructions = params.instructions?.trim()
 				|| "Complete the supplied task as a read-only task-local analyst. Use only granted resources and tools, distinguish observations from inference, and return the requested deliverable with uncertainty.";
@@ -1389,7 +1565,15 @@ export function installTaskLocalSubagents(
 			if (!definition || definition.status !== "active" || (definition.availability ?? "loaded") !== "loaded") controlError("required_selection",[{path:"agent_name|instructions",message:"Supply an existing loaded active agent_name or a nonempty task/instructions value"}],
 				{candidates:[...agents.values()].filter(row => row.status === "active").map(row => ({agent_name:row.name,description:row.description})),
 				 repair_template:{tool:"delegate_task",arguments:{instructions:"<role instructions>",task:params.task}}});
+			let selectedAssemblyRef: string | null = null;
 			if (params.agent_name) {
+				if (definition.validity !== undefined) {
+					const reasons = memoryValidityReasons(definition.validity,
+						memoryValidityContext(ensureTaskScope(root).taskId, readResearchRecords(root, "execution-observations.jsonl")));
+					if (reasons.length) throw new Error(`saved subagent scope requires review: ${definition.name}@v${definition.version}: ${reasons.join(", ")}`);
+				}
+				const methodRejection = methodUseRejection(readResearchRecords(root, "task-method-lifecycle.jsonl"), [`subagent:${definition.name}@v${definition.version}`], readResearchRecords(root, "effect-assessments.jsonl"));
+				if (methodRejection) throw new Error(methodRejection);
 				const assembly = latestHarnessAssembly(readResearchRecords(root, "task-harness-assemblies.jsonl"));
 				const selected = assemblySelectsReference(assembly, [
 					`subagent:${definition.agent_id}@v${definition.version}`,
@@ -1401,19 +1585,34 @@ export function installTaskLocalSubagents(
 						action: "assemble", expected_assembly_revision: assembly?.revision,
 						selected_resource_refs: assembly?.selected_resource_refs ?? [],
 					} } });
+				selectedAssemblyRef = assembly ? `harness_assembly:${assembly.assembly_id}@v${assembly.revision}` : null;
 			}
 			const startedAt = new Date().toISOString();
 			const invocationId = `subagent-invocation-${++invocationCounter}`;
 			const nativeChildSessionId = randomUUID();
 			if (params.agent_name && params.tools !== undefined) throw new Error("Revise saved agent tools through task_harness; per-call tools are for ephemeral roles");
 			if (definition.tools.some(name => !allowedTools.has(name))) throw new Error("delegate tools exceed the adapter allowlist");
+			if (definition.tools.includes("arc_action") && !params.action_authorization)
+				throw new Error("arc_action requires this delegate_task call to specify action_authorization");
 			const recipe = params.context_recipe !== undefined ? normalizeContextRecipe(params.context_recipe) : definition.context_recipe;
-			const childContextWindow = await withPublishedStateSnapshot(adapter, recipe ? compactContextWindow(root, recipe) : undefined, definition.tools);
-			const delegatedTask = recipe?.output_contract ? `${params.task}\n\nRequired output: ${recipe.output_contract}` : params.task;
 			const resourceRefs = [...new Set([...(params.resource_refs ?? []), ...(recipe?.inherit_harness_refs ?? [])])];
+			const childContextWindow = await withPublishedStateSnapshot(adapter, recipe ? compactContextWindow(root, recipe) : undefined,
+				definition.tools, [...(params.evidence_refs ?? []), ...resourceRefs]);
+			const actionGrant = params.action_authorization;
+			const delegatedActions: Array<Record<string, unknown>> = [];
+			const delegatedTask = (recipe?.output_contract ? `${params.task}\n\nRequired output: ${recipe.output_contract}` : params.task)
+				+ (actionGrant ? `\n\nExplicit ARC action lease: at most ${actionGrant.max_actions} native actions for this invocation. Stop on an unknown result; never retry it automatically.` : "");
 			append("subagent-context-bindings.jsonl", { invocation_id: invocationId, context_recipe: recipe ?? null,
 				evidence_refs: params.evidence_refs ?? [], resource_refs: resourceRefs, tools: definition.tools,
+				effective_tools: actionGrant ? [...new Set([...definition.tools, "arc_action"])] : definition.tools,
+				action_authorization: actionGrant ?? null,
 				recordedAt: startedAt });
+			const arcCursor = actionGrant ? Number((await bridge("/events?after=0")).next) : 0;
+			const lease = actionGrant ? await bridge("/action-lease", {
+				max_actions: actionGrant.max_actions,
+				expected_fingerprint: String((await bridge("/state")).state_fingerprint ?? ""),
+			}) : undefined;
+			const leaseToken = typeof lease?.token === "string" ? lease.token : undefined;
 			let result: Record<string, unknown>;
 			try {
 				let continuationAttempt = 0;
@@ -1436,6 +1635,7 @@ export function installTaskLocalSubagents(
 						childContextWindow, false, undefined, undefined,
 						`${invocationId}:continuation-${continuationAttempt}`,
 						nativeChildSessionId,
+						"unspecified", "blocking", false, [], leaseToken,
 					);
 					const usage = result.usage && typeof result.usage === "object"
 						? result.usage as Record<string, any> : {};
@@ -1463,6 +1663,7 @@ export function installTaskLocalSubagents(
 				result.usage = cumulativeUsage;
 			} catch (error) {
 				append("subagent-invocations.jsonl", {
+					assembly_ref: selectedAssemblyRef,
 					invocation_id: invocationId,
 					toolCallId,
 					agent_id: definition.agent_id,
@@ -1482,10 +1683,54 @@ export function installTaskLocalSubagents(
 					error: error instanceof Error ? error.message : String(error),
 				});
 				throw error;
+			} finally {
+				if (leaseToken) {
+					try {
+					const window = await bridge(`/events?after=${arcCursor}`);
+					const actions = (Array.isArray(window.events) ? window.events : [])
+						.filter((item: any) => item?.event === "action");
+					for (const item of actions) {
+						const frame = { ...(item.frame && typeof item.frame === "object" ? item.frame : {}),
+							pre_action_state: item.pre_action_state ?? item.frame?.pre_action_state,
+							observation_delta: item.observation_delta ?? item.frame?.observation_delta,
+							action_budget: { ...(item.frame?.action_budget ?? {}), total_used: Number(item.index) } };
+						delegatedActions.push({ action_id: `arc-action-${String(item.index)}`,
+							action: item.action, state: frame.state, levels_completed: frame.levels_completed,
+							observation_delta: item.observation_delta, public_transition: frame.public_transition });
+						append("execution-observations.jsonl", {
+							observation_id: `delegated-arc-action-${String(item.index)}`,
+							tool_name: "arc_action", toolCallId,
+							input: { action: item.action, ...(item.coordinates ?? {}),
+								delegated_invocation_id: invocationId },
+							arc_outcome: Object.fromEntries(["state", "levels_completed", "pre_action_state",
+								"public_transition", "action_budget", "observation_delta", "action_target_cell"]
+								.filter((key) => frame[key] !== undefined).map((key) => [key, frame[key]])),
+							result_text: `Delegated ARC action ${String(item.index)}: ${String(item.action)}; ` +
+								`state=${String(frame.state ?? "UNKNOWN")}; level=${String(frame.levels_completed ?? "?")}; ` +
+								`changed_cells=${String(item.observation_delta?.changed_cells ?? "unknown")}`,
+							is_error: false, recordedAt: new Date().toISOString(),
+						});
+					}
+					append("delegated-arc-action-windows.jsonl", {
+						invocation_id: invocationId, action_count: actions.length,
+						action_ids: actions.map((item: any) => `arc-action-${String(item.index)}`),
+						recordedAt: new Date().toISOString(),
+					});
+					} finally {
+						await bridge("/action-lease", { operation: "revoke", lease_token: leaseToken });
+					}
+				}
 			}
+			if (delegatedActions.length) result.arc_action_receipts = delegatedActions;
 			const invocation = {
 				version: 1,
+				assembly_ref: selectedAssemblyRef,
 				ephemeral: definition.agent_id === "ephemeral",
+				invocation_kind: definition.agent_id === "ephemeral"
+					? "one_off_delegation" : "assembled_subagent_component_use",
+				component_ref: definition.agent_id === "ephemeral"
+					? null : `subagent:${definition.name}@v${definition.version}`,
+				component_created: false,
 				invocation_id: invocationId,
 				toolCallId,
 				agent_id: definition.agent_id,
@@ -1496,6 +1741,7 @@ export function installTaskLocalSubagents(
 				evidence_refs: params.evidence_refs ?? [],
 				resource_refs: params.resource_refs ?? [],
 				permission: adapter.permission,
+				...(actionGrant ? { action_authorization: actionGrant } : {}),
 				progress_ref: "subagent-progress.jsonl",
 				progress_id: String(result.progress_id ?? invocationId),
 				native_session_id: nativeChildSessionId,
@@ -1506,10 +1752,12 @@ export function installTaskLocalSubagents(
 			};
 			append("subagent-invocations.jsonl", invocation);
 			if (definition.decision_id) {
+				const hasSemanticReport = typeof result.text === "string" && result.text.trim().length > 0;
 				append("harness-observations.jsonl", {
 					observation_id: `subagent-use-${invocation.invocation_id}`,
 					observation_kind: "pi_subagent_invocation",
 					decision_id: definition.decision_id,
+					resource_refs: [`subagent:${definition.name}@v${definition.version}`],
 					basis_resource_ids: definition.basis_refs,
 					inherited_resource_refs: params.resource_refs ?? [],
 					operation: {
@@ -1520,8 +1768,8 @@ export function installTaskLocalSubagents(
 						permission: adapter.permission,
 					},
 					actual_use: true,
-					semantic_effect_observed: true,
-					effect_observed: true,
+					semantic_effect_observed: hasSemanticReport,
+					effect_observed: hasSemanticReport,
 					invocation_id: invocation.invocation_id,
 					recordedAt: invocation.completedAt,
 				});
@@ -1537,14 +1785,28 @@ export function installTaskLocalSubagents(
 				cost_total: Number(usage.cost?.total ?? 0),
 			};
 			return {
+				...(delegatedActions.length ? { terminate: true } : {}),
 				content: [
 					{ type: "text", text: JSON.stringify({ ...resourceMetadata("delegation", invocation),
+						invocation_kind: invocation.invocation_kind,
+						component_ref: invocation.component_ref,
+						component_created: false,
+						...(invocation.ephemeral ? { optional_persistence: {
+							automatic: false,
+							creator_call: { tool: "task_harness", arguments: {
+								action: "read_method", method_name: "subagent-creator",
+							} },
+							note: "Only the parent may author, pool, and assemble a reusable Subagent if this one-off role proves useful.",
+						} } : {}),
 						report_excerpt: String(result.text ?? ""),
 						report_truncated: false,
-						assessment: "agent_report_not_independent_verification" }) },
+						assessment: "agent_report_not_independent_verification",
+						...(delegatedActions.length ? { arc_action_receipts: delegatedActions } : {}) }) },
 					{ type: "text", text: `SUBAGENT_USAGE: ${JSON.stringify(usageSummary)}` },
 				],
-				details: invocation,
+				details: { ...invocation, arc_action_count: delegatedActions.length,
+					...(delegatedActions.length ? { arc_action_boundary: true,
+						arc_action_receipts: delegatedActions } : {}) },
 			};
 		},
 	});
@@ -1565,12 +1827,19 @@ export function installTaskLocalSubagents(
 			} catch {}
 		}
 		let researchPlanCounter = 0;
+		const planStates = new Map<string, ResearchPlan>();
+		let releasePlanSchema: ReturnType<typeof registerManagementTool>;
 		for (const plan of readResearchRecords(root, "auto-research-plans.jsonl")) {
+			const previous = planStates.get(plan.plan_id);
+			if (!previous || plan.version > previous.version) planStates.set(plan.plan_id, plan as ResearchPlan);
 			researchPlanCounter = Math.max(researchPlanCounter,
 				Number(String(plan.plan_id ?? "").match(/(\d+)$/)?.[1] ?? 0));
 		}
 		const persistPlan = (plan: ResearchPlan) => {
 			append("auto-research-plans.jsonl", plan);
+			planStates.set(plan.plan_id, plan);
+			if ([...planStates.values()].every(current => current.nodes.every(node => ["completed", "skipped"].includes(node.status))))
+				releasePlanSchema?.("enqueue", `research_plan:${plan.plan_id}@v${plan.version}`);
 			return plan;
 		};
 		const resolvePlan = (reference: unknown): ResearchPlan => {
@@ -1614,8 +1883,11 @@ export function installTaskLocalSubagents(
 			session: Record<string, any>, report: Record<string, any>, runId: string,
 			reportRef: string, recordedAt: string,
 		): Record<string, any> | undefined => {
-			if (session.open_allocation !== true || !report.research_progress) return undefined;
-			const previous = latestAutoResearchAgenda(root);
+			if (report.candidate_updates?.length) updateTaskStrategyState(root, {
+				candidate_updates: report.candidate_updates, source_ref: reportRef,
+			});
+			if (!report.research_progress) return undefined;
+			const previous = latestAutoResearchAgenda(root, String(session.research_line_ref ?? "research_line:task-auto-research-agenda@v1"));
 			if (previous?.last_run_ref === `research_run:${runId}@v1`) return previous;
 			const historyCursor = session.history_cursor && typeof session.history_cursor === "object"
 				? session.history_cursor : buildAutoResearchHistoryCatalog(root, previous?.history_cursor ?? {}).cursor;
@@ -1640,6 +1912,37 @@ export function installTaskLocalSubagents(
 				reconciliation_status: "not_applicable", recordedAt: new Date().toISOString() };
 			append("auto-research-sessions.jsonl", failed);
 			return failed;
+		};
+		// A publication and its terminal report can carry the same candidate.
+		// Preserve its exact method version and any completed parent handoff; a
+		// scientific revision gets a new version, never another conflicting v1.
+		const persistWorkerCandidates = (runId: string, reportRef: string, line: string, report: Record<string, any>) => {
+			const comparison = buildCrossContextComparison({ researchLineRef: line,
+				observations: readResearchRecords(root, "execution-observations.jsonl"), explicitEvidenceRefs: report.evidence_refs ?? [],
+				reports: readResearchRecords(root, "auto-research-reports.jsonl"), methods: readResearchRecords(root, "task-method-lifecycle.jsonl") });
+			const methods = methodRecordsFromReport({ runId, reportRef, researchLineRef: line, report, comparison,
+				recordedAt: new Date().toISOString() });
+			const refs = new Map<string, string>();
+			for (const method of methods) {
+				const candidate = report.method_candidates.find((c: any) => c.candidate_ref === method.candidate_ref);
+				const signature = JSON.stringify(candidate);
+				const prior = readResearchRecords(root, "task-method-lifecycle.jsonl").filter(m => m.method_id === method.method_id).at(-1);
+				const version = prior?.publication_signature === signature ? Number(prior.version) : Number(prior?.version ?? 0) + 1;
+				if (prior?.publication_signature !== signature) append("task-method-lifecycle.jsonl", { ...method, version, publication_signature: signature });
+				refs.set(String(method.candidate_ref), `method:${method.method_id}@v${version}`);
+			}
+			return buildParentAuthoringHandoffs({ runId, reportRef, researchLineRef: line, report }).map(handoff => {
+				const methodRef = refs.get(String(handoff.source.method_candidate_ref)) ?? handoff.source.method_ref;
+				const previous = readResearchRecords(root, "parent-authoring-handoffs.jsonl").filter(h => h.handoff_id === handoff.handoff_id).at(-1);
+				if (previous?.source?.method_ref === methodRef) return previous;
+				const version = Number(previous?.version ?? 0) + 1;
+				const next = { ...handoff, version, resource_ref: `authoring_handoff:${handoff.handoff_id}@v${version}`,
+					source: { ...handoff.source, method_ref: methodRef } };
+				next.change_call_template.arguments.changes[0].candidate_seed.basis_refs = [reportRef, methodRef];
+				next.change_call_template.arguments.decision_seed.basis_refs = [reportRef, methodRef];
+				append("parent-authoring-handoffs.jsonl", next);
+				return next;
+			});
 		};
 		const refreshDetachedSession = async (session: Record<string, any>): Promise<Record<string, any>> => {
 			if (session.status !== "active" || session.interaction_mode !== "non_blocking") return session;
@@ -1687,7 +1990,7 @@ export function installTaskLocalSubagents(
 			}
 			if (brokerStatus?.status === "completed" && rawReport) {
 				let report: Record<string, any>;
-				try { report = bindExperimentRequest(normalizeAutoResearchReport(rawReport), runId, session.evidence_refs ?? []); }
+				try { report = auditResearchConfidence(root, bindExperimentRequest(normalizeAutoResearchReport(rawReport), runId, session.evidence_refs ?? [])); }
 				catch (error) {
 					return failDetachedSession(session, "invalid_background_report",
 						error instanceof Error ? error.message : String(error));
@@ -1695,29 +1998,13 @@ export function installTaskLocalSubagents(
 				const reportRef = `research_report:${runId}@v1`;
 				const agenda = persistAgendaFromReport(session, report, runId, reportRef, recordedAt);
 				const parentAttention = session.open_allocation !== true || researchReportNeedsParentAttention(report);
-				const proposals = Array.isArray(report.harness_proposals) ? report.harness_proposals : [];
-				const capabilities = pi.getAllTools().map((tool) => tool.name);
-				let routes: Record<string, any>[];
-				try {
-					// Legacy approved proposals still get a compatibility route artifact.
-					// Native child deliveries are stored as candidates and compiled only
-					// after the parent explicitly adopts them through task_harness(change).
-					routes = proposals.filter((proposal: Record<string, any>) => proposal.delivery)
-					.map((proposal: Record<string, any>, index: number) => compileHarnessRoute({
-						runId,
-						approvalId: String(proposal.approval_id ?? proposal.candidate_ref ?? `${runId}-candidate-${index + 1}`),
-						approvalVersion: Number(proposal.approval_version ?? 1),
-						approvalStatus: String(proposal.approval_status ?? "approved"),
-						delivery: proposal.delivery, capabilities,
-						implementationOutputSchemas: adapter.taskToolImplementationOutputSchemas,
-					}));
-				} catch (error) {
-					return failDetachedSession(session, "background_route_compile_failed",
-						error instanceof Error ? error.message : String(error));
+				const authoringHandoffs = session.worker_id ? persistWorkerCandidates(runId, reportRef, session.research_line_ref, report)
+					: buildParentAuthoringHandoffs({ runId, reportRef, researchLineRef: session.research_line_ref ?? undefined, report });
+				const existingHandoffs = new Set(readResearchRecords(root, "parent-authoring-handoffs.jsonl")
+					.map((item) => String(item.handoff_id)));
+				for (const handoff of authoringHandoffs) if (!existingHandoffs.has(String(handoff.handoff_id))) {
+					append("parent-authoring-handoffs.jsonl", handoff);
 				}
-				const existingRouteIds = new Set(readResearchRecords(root, "auto-research-harness-routes.jsonl")
-					.filter((item) => String(item.route_id ?? "").startsWith(`${runId}:`)).map((item) => String(item.route_id)));
-				for (const route of routes) if (!existingRouteIds.has(String(route.route_id))) append("auto-research-harness-routes.jsonl", route);
 				const audit = readJsonObject(join(root, "task-context-cache", "auto-research-child-results", `${runId}.audit.json`));
 				const summary = String(report.conclusion ?? report.status ?? "completed");
 				if (!readResearchRecords(root, "auto-research-reports.jsonl").some((item) => item.run_id === runId)) {
@@ -1739,15 +2026,18 @@ export function installTaskLocalSubagents(
 						methods: readResearchRecords(root, "task-method-lifecycle.jsonl"),
 					});
 					append("auto-research-comparison-bundles.jsonl", { ...comparison, session_id:session.session_id, run_id:runId });
-					for (const methodRecord of methodRecordsFromReport({ runId, reportRef,
+					for (const methodRecord of session.worker_id ? [] : methodRecordsFromReport({ runId, reportRef,
 						researchLineRef:session.research_line_ref ?? null, report, comparison, recordedAt })) {
 						append("task-method-lifecycle.jsonl", methodRecord);
 					}
 				}
 				if (!readResearchRecords(root, "auto-research-runs.jsonl").some((item) => item.run_id === runId && item.status === "completed")) append("auto-research-runs.jsonl", { run_id: runId, version: 1, session_id: session.session_id,
-					status: "completed", question: session.question, scope: session.scope, evidence_refs: session.evidence_refs ?? [],
+						status: "completed", request_signature: session.request_signature,
+						question: session.question, scope: session.scope, evidence_refs: session.evidence_refs ?? [],
 					resource_refs: session.resource_refs ?? [], report_ref: reportRef, finding_count: report.findings.length,
-					proposal_count: proposals.length, route_execution_count: 0, evidence_audit: audit ?? null,
+					method_candidate_count: report.method_candidates.length,
+					parent_authoring_handoff_count: authoringHandoffs.length,
+					route_execution_count: 0, evidence_audit: audit ?? null,
 					experiment_request: report.experiment_request ?? null,
 					planning_implications: report.planning_implications ?? [],
 					next_research_question: report.next_research_question ?? "",
@@ -1755,7 +2045,6 @@ export function installTaskLocalSubagents(
 					agenda_ref: agenda ? `research_agenda:${agenda.agenda_id}@v${agenda.version}` : null,
 					parent_attention: parentAttention,
 					startedAt: session.recordedAt, completedAt: recordedAt, summary });
-				const hasReadyRoute = routes.some((route) => route.route_status === "ready" && route.apply_call);
 				const completed = { ...session, version: nextVersion, status: "completed" as ResearchSessionStatus,
 					research_run_ref: `research_run:${runId}@v1`, report_ref: reportRef, summary,
 					experiment_request: report.experiment_request ?? null,
@@ -1764,7 +2053,7 @@ export function installTaskLocalSubagents(
 					research_progress: report.research_progress ?? null,
 					agenda_ref: agenda ? `research_agenda:${agenda.agenda_id}@v${agenda.version}` : null,
 					parent_attention: parentAttention,
-					reconciliation_status: hasReadyRoute ? "awaiting_parent_change" : "not_applicable", recordedAt };
+					reconciliation_status: authoringHandoffs.length ? "awaiting_parent_authoring" : "not_applicable", recordedAt };
 				append("auto-research-sessions.jsonl", completed);
 				return completed;
 			}
@@ -1806,20 +2095,35 @@ export function installTaskLocalSubagents(
 		autoResearchTool = {
 			name: "auto_research",
 			label: adapter.autoResearchLabel ?? "Auto-Research in clean context",
-			description: "Allocate read-only Auto-Research in a clean-context child. Supply a question for targeted research, or call start without one so runtime restores the cross-stage agenda and history catalog while the child chooses one bounded research question. current_concern is optional context. Runtime owns sessions, continuation, report/agenda persistence and completion delivery. Only actionable open-research results return a full capsule. Parent owns all environment experiments and Harness adoption.",
+			description: "Bounded read-only research (start) or continuing workers (assign). Parent owns actions/adoption. contract(schema_action=enqueue) loads typed plan fields.",
 			parameters: (() => {
 				const schema = Type.Object({
 				action: Type.Optional(Type.Union([
 					Type.Literal("contract"), Type.Literal("start"), Type.Literal("inspect"), Type.Literal("resume"), Type.Literal("cancel"),
 					Type.Literal("enqueue"), Type.Literal("inspect_plan"), Type.Literal("release"), Type.Literal("skip"),
+					Type.Literal("topics"), Type.Literal("topic"),
+					Type.Literal("assign"), Type.Literal("workers"), Type.Literal("revoke"),
 				])),
+				worker_ref: Type.Optional(Type.String()),
+				assignment: Type.Optional(Type.Object({
+					worker_id: Type.String(), responsibility: Type.String(), stop_when: Type.String(),
+					handle_periodic_reviews: Type.Optional(Type.Boolean({ description: "Assign historical-window analysis; parent still owns adoption." })),
+					max_runs: Type.Integer({ minimum: 1, maximum: 100 }),
+					max_output_tokens: Type.Integer({ minimum: 1 }),
+					evidence_kinds: Type.Optional(Type.Array(Type.Union(WORKER_EVIDENCE_KINDS.map(k => Type.Literal(k))))),
+					notification_policy: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("index_only")])),
+				})),
 				interaction_mode: Type.Optional(Type.Union([
 					Type.Literal("blocking"), Type.Literal("non_blocking"),
-				], { description: "blocking waits for a final report; non_blocking returns an accepted session immediately and may later become pending or completed." })),
+				], { description: "blocking waits; non_blocking returns session immediately." })),
 				question: Type.Optional(Type.String({ minLength: 1 })),
-				current_concern: Type.Optional(Type.String({ minLength: 1, description: "Optional immediate concern for an open research allocation. The child still chooses and scopes the research question." })),
-					research_candidate_ref: Type.Optional(Type.String({ description: "Exact code-generated cross-context research candidate from task_harness_status." })),
-				authoring_method_ref: Type.Optional(Type.String({ description: "Exact method_ref returned by task_harness(action=read_method) for research-orchestration." })),
+				research_line_ref: Type.Optional(Type.String({ minLength: 1, description: "Durable topic identity; reuse it across independent research sessions." })),
+				offset: Type.Optional(Type.Integer({ minimum: 0 })),
+				limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 })),
+				current_concern: Type.Optional(Type.String({ minLength: 1, description: "Optional concern; child scopes question." })),
+					research_candidate_ref: Type.Optional(Type.String({ description: "Exact cross-context candidate ref." })),
+				research_reason: Type.Optional(Type.String({ minLength: 1, description: "Parent reason for skipping an exact research candidate." })),
+				authoring_method_ref: Type.Optional(Type.String({ description: "Exact research-orchestration method_ref." })),
 				research_handoff_ref: Type.Optional(Type.String()),
 				session_ref: Type.Optional(Type.String()),
 				plan_ref: Type.Optional(Type.String()),
@@ -1829,7 +2133,7 @@ export function installTaskLocalSubagents(
 					complexity_assessment:Type.Object({level:Type.Union([Type.Literal("simple"),Type.Literal("compound")]),rationale:Type.String({minLength:1})}),
 					concurrency_limit:Type.Optional(Type.Integer({minimum:1})),
 					nodes:Type.Array(Type.Object({
-						node_id:Type.String({pattern:"^[a-z0-9](?:[a-z0-9_.-]*[a-z0-9])?$",description:"Unique plan-local label, e.g. inspect-evidence; dependencies must exactly match another node_id. Runtime creates plan/session/handoff IDs."}),
+						node_id:Type.String({pattern:"^[a-z0-9](?:[a-z0-9_.-]*[a-z0-9])?$",description:"Plan-local ID; dependencies match node_id."}),
 						question:Type.String({minLength:1}),completion_contract:Type.String({minLength:1}),
 						research_kind:Type.Optional(Type.Union([
 							Type.Literal("mechanism"),Type.Literal("representation"),Type.Literal("capability"),Type.Literal("composition"),
@@ -1839,20 +2143,22 @@ export function installTaskLocalSubagents(
 						activation_policy:Type.Optional(Type.Union([Type.Literal("after_dependencies"),Type.Literal("parent_release")])),
 						scope:Type.Optional(Type.String()),constraints:Type.Optional(Type.Array(Type.String())),
 						evidence_refs:Type.Optional(Type.Array(Type.String())),resource_refs:Type.Optional(Type.Array(Type.String())),
-					}, {additionalProperties:true}), {minItems:1,description:"Compound goals require at least two nodes; dependencies must form an acyclic graph."}),
+					}, {additionalProperties:true}), {minItems:1,description:"Dependencies must be acyclic."}),
 				})),
 				complexity_assessment: Type.Optional(Type.Object({
 					level: Type.Union([Type.Literal("simple"), Type.Literal("compound")]),
 					rationale: Type.String({ minLength: 1 }),
 				}, { additionalProperties: true })),
-				scope: Type.Optional(Type.Union([
-					Type.Literal("hypothesis"), Type.Literal("harness_component"), Type.Literal("composition"),
-					Type.Literal("task_decomposition"), Type.Literal("solution_path"), Type.Literal("strategy"), Type.Literal("research_method"),
-				], { description: "Selects child research instructions: harness_component=behavior and applicability; composition=interactions; task_decomposition=subproblems; solution_path=alternative approaches; strategy=planning/delegation/context selection; research_method=research validity. Omit or use hypothesis for general investigation. This does not select a harness output type." })),
+				// Scope is a topic label passed through to the child and durable
+				// session. No runtime branch depends on a closed taxonomy. Keeping
+				// it open avoids rejecting grounded parent questions such as
+				// "problem_understanding" before the child can inspect evidence.
+				scope: Type.Optional(Type.String({ minLength: 1, maxLength: 120,
+					description: "Research focus/topic (e.g. exploration, strategy); not a Harness component." })),
 				research_kind: Type.Optional(Type.Union([
 					Type.Literal("mechanism"), Type.Literal("representation"), Type.Literal("capability"), Type.Literal("composition"),
 					Type.Literal("exploration"), Type.Literal("planning"), Type.Literal("solution"), Type.Literal("recovery"),
-				], { description: "The task-level object being studied. This does not select a harness component and does not imply persistence." })),
+				], { description: "Task research object; not a component choice." })),
 				evidence_refs: Type.Optional(Type.Array(Type.String())),
 				resource_refs: Type.Optional(Type.Array(Type.String())),
 				inherit_harness_refs: Type.Optional(Type.Array(Type.String())),
@@ -1864,20 +2170,39 @@ export function installTaskLocalSubagents(
 					max_chars: Type.Optional(Type.Integer({ minimum: 0 })),
 				})),
 				constraints: Type.Optional(Type.Array(Type.String())),
+				review_reason: Type.Optional(Type.String({ maxLength: 600, description: "New objective/check/method permitting re-review of unchanged evidence." })),
 				});
 				// Some OpenAI-compatible gateways reject TypeBox's null `required`
 				// marker when every field is optional (resume may inherit question).
 				// An explicit empty array preserves the optional API and valid JSON
 				// Schema semantics.
 				if (!Array.isArray((schema as any).required)) (schema as any).required = [];
-				return schema;
+				return compactToolSchema(schema);
 			})(),
 			async execute(toolCallId, params, signal) {
 				if (process.env.PI_TASK_CHILD === "1") throw new Error("recursive auto-research is not enabled");
 				const action = String(params.action ?? "start");
-				const authoringMethodRef = ["start", "enqueue"].includes(action)
+				if (["start", "enqueue", "assign"].includes(action)) {
+					const method = readBaselineMethod("research-orchestration");
+					const alreadyRead = readBaselineMethodReceipts().some(row => row.method_ref === method.method_ref
+						&& row.actor !== "child" && row.sha256 === method.sha256);
+					if (!alreadyRead) {
+						const { content, ...receipt } = method;
+						append("task-baseline-method-reads.jsonl", { ...receipt, actor: "parent", toolCallId,
+							source: "auto_research_start_preparation", recordedAt: new Date().toISOString() });
+						if (process.env.PI_HARNESS_OPEN_ADMISSION !== "enabled"
+							&& !pi.getAllTools().some((tool) => tool.name === "arc_action")) {
+							const result = { status: "authoring_method_supplied", started: false, method,
+								retry: { ...params, action, authoring_method_ref: method.method_ref },
+								instruction: "Read this research-orchestration method, then confirm or revise the proposed research by calling start/enqueue again. No research has started. Later calls may omit authoring_method_ref." };
+							return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+						}
+						params.authoring_method_ref = method.method_ref;
+					}
+				}
+				const authoringMethodRef = ["start", "enqueue", "assign"].includes(action)
 					? requireResearchOrchestrationRead(params as Record<string, any>) : String(params.authoring_method_ref ?? "").trim() || undefined;
-				if (action === "start" && !params.research_line_ref) {
+				if (["start", "assign"].includes(action) && !params.research_line_ref) {
 					params.research_line_ref = inferResearchLineRef(root, params);
 				}
 				if (action === "start" && params.research_candidate_ref) {
@@ -1889,23 +2214,79 @@ export function installTaskLocalSubagents(
 					if (!candidate) throw new Error(`unknown research candidate: ${String(params.research_candidate_ref)}`);
 					const preset = candidate.research_parameters as Record<string, any> | undefined;
 					if (!preset) throw new Error("research candidate has no runtime parameters");
-					params.question = preset.question;
-					params.scope = preset.scope;
-					params.research_kind = preset.research_kind;
-					params.research_line_ref = preset.research_line_ref;
-					params.evidence_refs = [...new Set((preset.evidence_refs ?? []).map(String))];
-					params.constraints = [...new Set([
-						...(preset.constraints ?? []).map(String), ...(params.constraints ?? []).map(String),
-					])];
+					Object.assign(params, bindResearchCandidateParameters(preset, params));
 				}
 				if (action === "contract") {
+					const topics = researchTopicIndex(root, 0, 3);
+					const allSessions = latestControlRecords(readResearchRecords(root,"auto-research-sessions.jsonl"),"session_id");
 					const contract = { format: "auto-research-operations-v1",
 						instructions: loadPrompt("auto_research_operations.md"),
-						agenda: latestAutoResearchAgenda(root) ?? null,
+						agenda: topics.total === 1 ? latestAutoResearchAgenda(root) ?? null : null,
+						topics,
 						handoffs:latestControlRecords(readResearchRecords(root,"auto-research-handoffs.jsonl"),"handoff_id").map(row => ({ref:researchHandoffReference(row),status:row.status,next_call:row.next_call ?? row.ready_call})),
-						sessions:latestControlRecords(readResearchRecords(root,"auto-research-sessions.jsonl"),"session_id").map(row => ({session_ref:`research_session:${row.session_id}@v${row.version}`,status:row.status})),
+						sessions:allSessions.filter(row => ["active", "pending", "failed"].includes(String(row.status)))
+						.slice(-8).map(row => ({session_ref:`research_session:${row.session_id}@v${row.version}`,
+							topic_ref:row.research_line_ref ?? null,status:row.status})),
+						session_count:allSessions.length,
 						plans:latestControlRecords(readResearchRecords(root,"auto-research-plans.jsonl"),"plan_id").map(row => researchPlanView(row as ResearchPlan)) };
 					return { content: [{ type: "text", text: JSON.stringify(contract) }], details: contract };
+				}
+				if (action === "workers") {
+					const result = { format: "auto-research-workers-index-v1", workers: researchWorkers(root).map(w => ({
+						worker_ref: workerRef(w), responsibility: w.responsibility, research_line_ref: w.research_line_ref,
+						status: w.status, started_runs: w.started_runs, max_runs: w.max_runs,
+						queued_evidence: pendingWorkerEvidence(w).length, consumed_evidence: w.consumed_refs.length,
+						session_id: w.session_id, last_report_ref: w.last_report_ref, stop_reason: w.stop_reason ?? null })) };
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+				}
+				if (action === "assign") {
+					const admission = admitTaskLocalOperation("auto_research"); if (admission) return admission;
+					if (params.plan_ref) {
+						const plan = resolvePlan(params.plan_ref); const view = researchPlanView(plan);
+						if (!params.node_id || !view.runnable_node_ids.includes(params.node_id))
+							throw new Error("assignment plan node must be explicitly selected and released/runnable");
+						const node = plan.nodes.find(n => n.node_id === params.node_id)!;
+						params.question ??= node.question; params.scope ??= node.scope;
+						params.resource_refs ??= node.resource_refs; params.constraints ??= node.constraints;
+					}
+					const worker = routeWorkerEvidence(root, assignResearchWorker(root, { ...params, ...params.assignment,
+						authoring_method_ref: authoringMethodRef }));
+					const result = { format: "auto-research-assigned-v1", worker_ref: workerRef(worker),
+						status: worker.status, research_line_ref: worker.research_line_ref,
+						instruction: "Authorized evidence is queued at each parent model boundary. No research cursor has been consumed yet. Parent continues acting and receives bounded current updates; details stay with this worker." };
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+				}
+				if (action === "revoke") {
+					const w = resolveWorker(root, String(params.worker_ref ?? ""));
+					const session = w.session_id ? latestResearchSession(root, w.session_id) : undefined;
+					let stopped = updateWorker(root, w, { status: "revoked", stop_reason: "parent_revoked" });
+					try {
+					if (session && ["active", "pending"].includes(session.status)) await autoResearchTool.execute(toolCallId + ":cancel", {
+						action: "cancel", session_ref: `research_session:${session.session_id}@v${session.version}`,
+						__worker_cancel_run_id: session.run_id }, signal);
+					} catch (error) { stopped = updateWorker(root, stopped, { stop_error: String(error) }); }
+					const result = { worker_ref: workerRef(stopped), status: stopped.status, ...(stopped.stop_error ? { stop_error: stopped.stop_error } : {}) };
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+				}
+				if (action === "topics") {
+					const result = researchTopicIndex(root, Number(params.offset ?? 0), Number(params.limit ?? 8));
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+				}
+				if (action === "topic") {
+					const line = String(params.research_line_ref ?? "").trim();
+					if (!line) throw new Error("topic inspection requires research_line_ref");
+					const agenda = latestAutoResearchAgenda(root, line) ?? null;
+					const sessions = latestControlRecords(readResearchRecords(root, "auto-research-sessions.jsonl"), "session_id")
+						.filter(row => row.research_line_ref === line)
+						.sort((a, b) => Number(["active", "pending", "failed"].includes(String(b.status)))
+							- Number(["active", "pending", "failed"].includes(String(a.status)))
+							|| String(b.recordedAt ?? "").localeCompare(String(a.recordedAt ?? "")));
+					if (!agenda && !sessions.length) throw new Error(`unknown research topic: ${line}`);
+					const result = { format: "auto-research-topic-v1", topic_ref: line, agenda,
+						sessions: sessions.slice(0, 8).map(row => ({ session_ref: `research_session:${row.session_id}@v${row.version}`,
+							status: row.status, report_ref: row.report_ref ?? null })),
+						omitted_session_count: Math.max(0, sessions.length - 8) };
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 				}
 				if (action === "enqueue") {
 					const admission = admitTaskLocalOperation("auto_research");
@@ -1914,6 +2295,26 @@ export function installTaskLocalSubagents(
 						`research-plan-${++researchPlanCounter}`));
 					const view = researchPlanView(plan);
 					return { content: [{ type: "text", text: JSON.stringify(view) }], details: view };
+				}
+				if (action === "skip" && params.research_candidate_ref) {
+					const admission = admitTaskLocalOperation("auto_research");
+					if (admission) return admission;
+					const match = /^research_candidate:([^@]+)@v([1-9]\d*)$/.exec(String(params.research_candidate_ref));
+					if (!match) throw new Error("research_candidate_ref must be an exact versioned research_candidate reference");
+					const candidate = latestControlRecords(readResearchRecords(root,"auto-research-opportunities.jsonl"),"candidate_id")
+						.find(row => String(row.candidate_id) === match[1]);
+					if (!candidate) throw new Error(`unknown research candidate: ${String(params.research_candidate_ref)}`);
+					if (Number(candidate.version) !== Number(match[2])) return versionConflict("research_candidate",candidate,Number(match[2]));
+					const reason = String(params.research_reason ?? params.review_reason ?? "").trim();
+					if (!reason) throw new Error("Skipping a research candidate requires research_reason");
+					const decision = { ...candidate, version: Number(candidate.version) + 1, status: "skipped",
+						decided_by: "parent", parent_reason: reason, skipped_candidate_ref: params.research_candidate_ref,
+						recordedAt: new Date().toISOString() };
+					append("auto-research-opportunities.jsonl",decision);
+					const receipt = { format: "auto-research-candidate-decision-v1", status: "skipped", decided_by: "parent",
+						candidate_ref: `research_candidate:${candidate.candidate_id}@v${decision.version}`,
+						parent_reason: reason, resume_condition: "changed_candidate_evidence", starts_research: false };
+					return { content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
 				}
 				if (["inspect_plan", "release", "skip"].includes(action)) {
 					if (params.research_handoff_ref) controlError("wrong_target_type",[{path:"research_handoff_ref",message:"skip/release operates on a plan node; handoff decisions belong to task_harness"}],
@@ -1942,14 +2343,22 @@ export function installTaskLocalSubagents(
 					if (!sessionId) throw new Error(`${action} requires session_ref`);
 					let session = latestResearchSession(root, sessionId);
 					if (!session) throw new Error(`unknown research session: ${String(params.session_ref ?? "")}`);
+					const ownedRunId = session.worker_id && (params as any).__worker_cancel_run_id === session.run_id
+						? session.run_id : undefined;
 					if (action === "inspect" || action === "cancel") session = await refreshDetachedSession(session);
 					if (action === "cancel") {
 						const admission = admitTaskLocalOperation("auto_research");
 						if (admission) return admission;
-						if (explicitSessionReference && requestedRef.version !== undefined && requestedRef.version !== Number(session.version))
+						const boundCancellation = ownedRunId && ownedRunId === session.run_id;
+						if (!boundCancellation && explicitSessionReference && requestedRef.version !== undefined && requestedRef.version !== Number(session.version))
 							controlError("version_conflict",[{path:"session_ref",message:`research session version conflict: expected v${requestedRef.version}, current v${session.version}`}],
 								{current_ref:`research_session:${sessionId}@v${session.version}`});
-						if (["completed", "cancelled"].includes(String(session.status))) throw new Error(`research session is not cancellable: ${session.status}`);
+						if (["completed", "cancelled"].includes(String(session.status))) {
+							if (!boundCancellation) throw new Error(`research session is not cancellable: ${session.status}`);
+							const result = { session_ref: `research_session:${sessionId}@v${session.version}`, status: session.status,
+								cancellation_required: false, run_id: ownedRunId };
+							return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+						}
 						const brokerUrl = String(process.env.PI_AUTORESEARCH_SUBAGENT_BROKER_URL ?? "").trim();
 						if (session.status === "active") {
 							if (!brokerUrl || !session.run_id) throw new Error("cannot confirm cancellation without the active child broker");
@@ -1961,6 +2370,7 @@ export function installTaskLocalSubagents(
 						const cancelled = { ...session, version: Number(session.version) + 1, status: "cancelled" as ResearchSessionStatus,
 							reconciliation_status: "not_applicable", cancelledAt: new Date().toISOString(), recordedAt: new Date().toISOString() };
 						append("auto-research-sessions.jsonl", cancelled);
+						syncPlanFromSession(cancelled);
 						return { content: [{ type: "text", text: JSON.stringify({ format: "auto-research-session-v1",
 							session_ref: `research_session:${sessionId}@v${cancelled.version}`, status: cancelled.status }) }], details: cancelled };
 					}
@@ -1969,12 +2379,12 @@ export function installTaskLocalSubagents(
 						.filter((item) => !runId || String(item.progress_id ?? "") === runId || String(item.progress_id ?? "").startsWith(`${runId}:`)).at(-1)
 						?? readJsonObject(join(root, "task-context-cache", "auto-research-broker", `${runId}.json`)) ?? null;
 					const report = readResearchRecords(root, "auto-research-reports.jsonl").find((item) => item.run_id === runId) ?? null;
-					const routes = readResearchRecords(root, "auto-research-harness-routes.jsonl").filter((item) => String(item.route_id ?? "").startsWith(`${runId}:`));
-					const receipts = readResearchRecords(root, "auto-research-harness-route-receipts.jsonl").filter((item) => String(item.route_id ?? "").startsWith(`${runId}:`));
+					const authoringHandoffs = readResearchRecords(root, "parent-authoring-handoffs.jsonl")
+						.filter((item) => item.source?.research_run_ref === `research_run:${runId}@v1`);
 					const inspected = { format: "auto-research-session-v1", session_ref: `research_session:${sessionId}@v${session.version}`,
 						status: session.status, interaction_mode: session.interaction_mode ?? "blocking", reconciliation_status: session.reconciliation_status ?? "not_applicable",
 						failure_code: session.failure_code ?? null, error: session.error ?? null,
-						checkpoint: session.checkpoint ?? null, progress, report, routes, receipts };
+						checkpoint: session.checkpoint ?? null, progress, report, parent_authoring_handoffs: authoringHandoffs };
 					return { content: [{ type: "text", text: JSON.stringify(inspected) }], details: inspected };
 				}
 				const admission = admitTaskLocalOperation("auto_research");
@@ -1999,30 +2409,16 @@ export function installTaskLocalSubagents(
 				}
 				if (action === "start" && !params.question && !params.plan_ref && !params.session_ref
 					&& !params.research_candidate_ref && !params.research_handoff_ref) {
-					const records = readResearchRecords(root,"auto-research-handoffs.jsonl");
-					const updates = reconcileResearchHandoffs(records,readResearchRecords(root,"auto-research-sessions.jsonl"),readResearchRecords(root,"auto-research-reports.jsonl"));
-					for (const update of updates) append("auto-research-handoffs.jsonl",update);
-					const eligible = latestControlRecords([...records, ...updates], "handoff_id")
-						.filter((row) => ["proposed", "failed"].includes(String(row.status)));
-					if (eligible.length === 1) {
-						params.research_handoff_ref = researchHandoffReference(eligible[0]);
-						params = applyResearchHandoff(params, eligible[0]) as typeof params;
-					} else {
-						openAllocation = true;
-						const agenda = latestAutoResearchAgenda(root);
-						params.research_line_ref = agenda?.status === "continue" && agenda.research_line_ref
-							? agenda.research_line_ref : "research_line:task-auto-research-agenda@v1";
-						params.question = "Use this research allocation to choose and investigate one high-value task-level question from the durable history and prior research agenda. Seek a recurring pattern, a falsifiable hypothesis, a reusable method, or evidence about an existing method. Finish one bounded research step; do not summarize the trajectory as the result.";
-						params.scope = params.scope ?? "research_method";
-						params.research_kind = params.research_kind ?? "capability";
-						params.constraints = [...new Set([
-							"Choose the research topic yourself from the history catalog and prior agenda; the parent has allocated research capacity but has not authored the research goal.",
-							"Inspect metadata first, read only evidence needed for the chosen question, compare alternatives, and preserve exact references.",
-							"Return research_progress even when no immediate parent action is warranted. Use parent_relevance=now only when the current main flow should consume the result.",
-							...(params.current_concern ? [`Optional current parent concern: ${params.current_concern}. Treat it as context, not a mandatory research conclusion.`] : []),
-							...(params.constraints ?? []),
-						])];
-					}
+					openAllocation = true;
+					params.question = "Choose and investigate one high-value bounded question for this research topic. Use the durable history and this topic's prior agenda when present. Compare alternatives, preserve exact references, and report one useful step.";
+					params.scope = params.scope ?? "research_method";
+					params.research_kind = params.research_kind ?? "capability";
+					params.constraints = [...new Set([
+						"Choose a question from the topic agenda or history catalog; do not treat a prior conclusion as mandatory.",
+						"Read only evidence needed for the chosen question and return research_progress even without an immediate parent decision.",
+						...(params.current_concern ? [`Optional parent concern: ${params.current_concern}.`] : []),
+						...(params.constraints ?? []),
+					])];
 				}
 				if (action === "resume" && !params.session_ref) {
 					const session = selectControlTarget(latestControlRecords(readResearchRecords(root,"auto-research-sessions.jsonl"),"session_id").filter(row => ["pending","failed"].includes(row.status)),"session_id");
@@ -2062,12 +2458,6 @@ export function installTaskLocalSubagents(
 					])];
 					params.context_window = node.context_window ?? params.context_window;
 					boundPlan = persistPlan(transitionResearchNode(boundPlan, boundNodeId, "active"));
-				} else if (action === "start" && params.complexity_assessment?.level === "compound") {
-					const supportingResearch = [...(params.resource_refs ?? []), ...(params.evidence_refs ?? [])]
-						.some((ref) => /^(research_run|research_report):/.test(String(ref)));
-					if (!supportingResearch) {
-						throw new Error("compound research without a prior research result must enqueue a decomposed research plan");
-					}
 				}
 				const alreadyActive = (params as any).__background_claimed === true;
 				let priorSession: Record<string, any> | undefined;
@@ -2078,6 +2468,9 @@ export function installTaskLocalSubagents(
 					if (!sessionId) throw new Error("resume requires session_ref");
 					priorSession = latestResearchSession(root, sessionId);
 					if (!priorSession) throw new Error(`unknown research session: ${requested}`);
+					if (priorSession.worker_id && !(params as any).__worker) {
+						throw new Error("Assigned sessions are resumed by their authorized worker. Inspect workers or revoke the exact worker_ref; create a new bounded assignment to change its authorization.");
+					}
 					if (requestedRef.version !== undefined && requestedRef.version !== Number(priorSession.version)) {
 						throw new Error(`research session version conflict: expected v${requestedRef.version}, current v${priorSession.version}`);
 					}
@@ -2090,16 +2483,38 @@ export function installTaskLocalSubagents(
 				const nativeChildSessionId = String(priorSession?.native_child_session_id ?? randomUUID());
 				const runId = alreadyActive ? String(priorSession?.run_id ?? "") : `auto-research-${++researchRunCounter}`;
 				if (!runId) throw new Error("background research resume lost its durable run id");
+				const requestTopicRef = params.research_line_ref ?? priorSession?.research_line_ref ?? null;
+				params.research_line_ref ??= priorSession?.research_line_ref ?? `research_line:${runId}@v1`;
 				const question = String(params.question ?? priorSession?.question ?? "").trim();
 				const researchScope = String(params.scope ?? priorSession?.scope ?? "unspecified");
 				const researchKind = String(params.research_kind ?? priorSession?.research_kind ?? params.research_problem?.kind ?? "capability");
 				const interactionMode = (alreadyActive ? "non_blocking" : String(params.interaction_mode ?? priorSession?.interaction_mode ?? "blocking")) as ResearchInteractionMode;
 				if (!["blocking", "non_blocking"].includes(interactionMode)) throw new Error(`unsupported interaction_mode: ${interactionMode}`);
 				if (!question) throw new Error("start requires question; resume may inherit it from session_ref");
+				const requestSignature = priorSession?.request_signature ?? researchRequestIdentity(root, {
+					...params, question, scope: researchScope, research_kind: researchKind, research_line_ref: requestTopicRef });
+				if (action === "start" && !openAllocation && !boundPlan && !params.review_reason?.trim()) {
+					const reusable = readResearchRecords(root, "auto-research-runs.jsonl")
+						.filter(r => r.status === "completed" && r.request_signature === requestSignature).at(-1);
+					if (reusable) {
+						const existing = readResearchRecords(root, "auto-research-reports.jsonl").find(r => r.run_id === reusable.run_id);
+						const receipt = { format: "auto-research-reused-v1", status: "completed", started: false, reused: true,
+							question: reusable.question, scope: reusable.scope,
+							resource_ref: `research_run:${reusable.run_id}@v1`, report_ref: reusable.report_ref,
+							summary: String(reusable.summary ?? "").slice(0, 500), limitations: (existing?.report?.limitations ?? []).slice(0, 3),
+							continuation: existing?.report ? researchActionContinuation(existing.report, reusable.report_ref,
+								readResearchRecords(root, "execution-observations.jsonl"), existing.recordedAt) : undefined,
+							gap: "No changed question, parent premise or evidence. Supply review_reason for an independent check or new analysis method; this receipt is not new evidence." };
+						return { content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
+					}
+				}
 				openAllocation = openAllocation || priorSession?.open_allocation === true;
-				const previousAgenda = openAllocation ? latestAutoResearchAgenda(root) : undefined;
-				const historyCatalog = openAllocation
-					? buildAutoResearchHistoryCatalog(root, previousAgenda?.history_cursor ?? {}) : undefined;
+			const previousAgenda = openAllocation ? latestAutoResearchAgenda(root, String(params.research_line_ref ?? "")) : undefined;
+			const otherTopicIndex = openAllocation
+				? researchTopicIndex(root, 0, 3, String(params.research_line_ref ?? "")) : undefined;
+				// Every bounded invocation records its evidence cursor, including
+				// explicitly named questions. Only open allocation receives the catalog.
+				const historyCatalog = buildAutoResearchHistoryCatalog(root, previousAgenda?.history_cursor ?? {});
 				// Page coverage and read signatures are restored by the child runtime,
 				// not reasoning instructions. Keep them out of the provider prompt.
 				const checkpointPrompt = (checkpoint: Record<string, unknown>) => {
@@ -2114,7 +2529,9 @@ export function installTaskLocalSubagents(
 				const taskPlan = boundPlan ?? (priorSession?.plan_id
 					? latestResearchPlan(root, String(priorSession.plan_id)) : undefined);
 				const taskNode = taskPlan?.nodes.find((node) => node.node_id === (boundNodeId ?? priorSession?.plan_node_id));
-				const buildTask = (checkpoint: Record<string, unknown> | undefined, continuationAttempt: number) => continuationAttempt > 1 ? {
+			const strategyIndex = taskStrategyIndex(readTaskStrategyState(root));
+			materializeStrategyCandidates(root);
+			const buildTask = (checkpoint: Record<string, unknown> | undefined, continuationAttempt: number) => continuationAttempt > 1 ? {
 					goal: "Complete the existing research turn from the native session and call submit_research_report. Preserve uncertainty; submit unresolved or inconclusive if the existing evidence does not support a method.",
 					constraints: [
 						"Do not restart the analysis or repeat the prior workset; it remains in this native session.",
@@ -2125,6 +2542,7 @@ export function installTaskLocalSubagents(
 						completion_contract: taskNode.completion_contract,
 					} : null,
 					research_state: { scope: researchScope, research_kind: researchKind,
+						review_reason: params.review_reason ?? null,
 						research_line_ref: params.research_line_ref ?? priorSession?.research_line_ref ?? null,
 						session_id: sessionId, action, continuation_attempt: continuationAttempt,
 						open_allocation: openAllocation, ...(authoringMethodRef ? { authoring_method_ref: authoringMethodRef } : {}),
@@ -2147,14 +2565,18 @@ export function installTaskLocalSubagents(
 					} : null,
 					research_state: { scope: researchScope, research_kind: researchKind,
 						research_line_ref: params.research_line_ref ?? priorSession?.research_line_ref ?? null,
+						...((params as any).__worker ? { worker: (params as any).__worker } : {}),
 						session_id: sessionId, action, continuation_attempt: continuationAttempt,
 						open_allocation: openAllocation,
+						review_reason: params.review_reason ?? null,
+						...(otherTopicIndex ? { other_topic_count: otherTopicIndex.total } : {}),
 						current_concern: params.current_concern ?? priorSession?.current_concern ?? null,
 						completion_mode: checkpoint?.report_submission_error
 							? "repair_report_submission"
 							: continuationAttempt > 1 ? "converge_to_report" : "open_research" },
 					research_checkpoint: checkpoint ? checkpointPrompt(checkpoint) : null,
-					...(openAllocation ? { research_agenda: previousAgenda ?? null, history_catalog: historyCatalog } : {}),
+					...(openAllocation ? { research_agenda: previousAgenda ?? null,
+						competing_research_agendas: otherTopicIndex?.topics ?? [], history_catalog: historyCatalog } : {}),
 					cross_context_comparison: crossContextComparisonForChild(comparison),
 				};
 				const definition: AgentDefinition = {
@@ -2182,20 +2604,20 @@ export function installTaskLocalSubagents(
 				const selectedComparisonRefs = (comparison.selected_evidence_refs ?? []).map(String).filter(Boolean);
 				const cardsCoverSelectedEvidence = selectedComparisonRefs.length > 0
 					&& selectedComparisonRefs.every((reference: string) => comparisonCardRefs.has(reference));
-				// A complete exact-ref comparison already identifies the historical
-				// evidence boundary. Current-state and whole-trajectory adapter tools
-				// describe a later or broader boundary and invite redundant retrieval.
-				// Keep canonical observations available through task_resource; the
-				// child still decides whether a missing detail warrants paging them.
-				if (cardsCoverSelectedEvidence) definition.tools = [];
+				// Exact action cards cover the selected historical actions, not the
+				// full scene needed for goal inference. Retain already-authorized
+				// immutable state readers; only the broader trajectory is redundant.
+				if (cardsCoverSelectedEvidence) definition.tools = defaultTools.filter(
+					name => (adapter.stateSnapshotTools ?? []).includes(name));
 				append("auto-research-comparison-bundles.jsonl", {
 					...comparison, session_id: sessionId, run_id: runId,
 					adapter_tools: definition.tools,
 					adapter_tools_omitted_for_exact_comparison: cardsCoverSelectedEvidence,
+					state_reader_retained_for_scene_evidence: cardsCoverSelectedEvidence && definition.tools.length > 0,
 				});
 				const contextWindow = await withPublishedStateSnapshot(adapter, compactContextWindow(
 					root,
-					params.context_window as AutoResearchContextWindow | undefined,
+					(params.context_window ?? { include_checkpoint: true, max_chars: 2000 }) as AutoResearchContextWindow,
 				), definition.tools);
 				const resolvedContextWindow = contextWindow && typeof contextWindow === "object"
 					? contextWindow
@@ -2221,13 +2643,29 @@ export function installTaskLocalSubagents(
 							canonical_access: "task_resource",
 						},
 					} : resolvedContextWindow;
+				// Object spread above excludes the out-of-band immutable ARC cutoffs.
+				if (deduplicatedContextWindow && deduplicatedContextWindow !== resolvedContextWindow
+					&& resolvedContextWindow) {
+					for (const key of ["__publishedStateSnapshot", "__publishedTrajectoryRef"]) {
+						const descriptor = Object.getOwnPropertyDescriptor(resolvedContextWindow, key);
+						if (descriptor) Object.defineProperty(deduplicatedContextWindow, key, descriptor);
+					}
+				}
 				const contextRefs = params.context_window?.context_refs ?? [];
+				const candidateIds = new Set((strategyIndex?.candidates ?? []).map((c: Record<string, any>) => c.id));
+				const latestTests = new Map<string, Record<string, any>>();
+				for (const r of taskRecords(root, "validation")) if (r.experiment && candidateIds.has(r.source_hypothesis_id)) latestTests.set(r.validation_id, r);
+				const selectedTests = [...latestTests.values()].filter(r => r.experiment.status === "open")
+					.concat([...latestTests.values()].filter(r => r.experiment.status !== "open").slice(-2));
 				const childResourceRefs = [...new Set([
 					...inheritedRefs, ...contextRefs, ...(comparison.selected_evidence_refs ?? []),
 					...(comparison.pre_action_state_refs ?? []),
+					...(strategyIndex?.candidates ?? []).map((c: Record<string, any>) => `strategy_candidate:${c.id}@v${c.version ?? 1}`),
+					...selectedTests.flatMap(r => [`validation:${r.validation_id}@v${r.version}`,
+						...r.experiment.samples.slice(-1).map((s: Record<string, any>) => s.ref)]),
 				].map(normalizeChildResourceRef))];
 				const startedAt = new Date().toISOString();
-				let continuationCheckpoint = priorSession?.checkpoint as Record<string, unknown> | undefined;
+				let continuationCheckpoint = (priorSession?.checkpoint ?? (params as any).__worker_checkpoint) as Record<string, unknown> | undefined;
 				let activeVersion = alreadyActive ? Number(priorSession?.version ?? 1) : Number(priorSession?.version ?? 0) + 1;
 				if (!alreadyActive) {
 					if (action === "resume" && priorSession) {
@@ -2235,8 +2673,10 @@ export function installTaskLocalSubagents(
 						activeVersion = Number(claimed.version);
 					} else {
 						append("auto-research-sessions.jsonl", { session_id: sessionId, version: activeVersion, status: "active" as ResearchSessionStatus,
+							request_signature: requestSignature,
 							interaction_mode: interactionMode, question, scope: researchScope, research_kind: researchKind,
 							research_line_ref: params.research_line_ref ?? priorSession?.research_line_ref ?? null,
+							...((params as any).__worker ? { worker_id: (params as any).__worker.worker_id } : {}),
 							research_candidate_ref: params.research_candidate_ref ?? priorSession?.research_candidate_ref ?? null,
 							research_handoff_ref: params.research_handoff_ref ?? priorSession?.research_handoff_ref ?? null,
 							constraints: params.constraints ?? priorSession?.constraints ?? [], evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
@@ -2346,7 +2786,7 @@ export function installTaskLocalSubagents(
 									"No semantic checkpoint advance was observed; completed tool output and durable checkpoint state remain available by reference.",
 								],
 								validation_plan: "Replan or split the current research node before resuming; do not replay the same continuation unchanged.",
-								harness_proposals: [],
+								method_candidates: [],
 							}) };
 							break;
 						}
@@ -2437,13 +2877,13 @@ export function installTaskLocalSubagents(
 					transitionBoundNode("pending", { wait_reason: "child_pending", session_ref: `research_session:${sessionId}@v${sessionRecord.version}` });
 					return { content: [{ type: "text", text: JSON.stringify({ format: "auto-research-result-v1", resource_ref: `research_session:${sessionId}@v${sessionRecord.version}`, session_ref: `research_session:${sessionId}@v${sessionRecord.version}`, run_id: runId, status: "pending", question, checkpoint: runtimeCheckpoint, adoption: "Pending research is not complete and no proposal was applied." }) }], details: { resource_ref: `research_session:${sessionId}@v${sessionRecord.version}`, session_ref: `research_session:${sessionId}@v${sessionRecord.version}`, run_id: runId, status: "pending", question, report_summary: "Research is pending without a conclusion.", proposal_count: 0 } };
 				}
-				// submit_research_report persists the hydrated, schema-checked body.
-				// Prefer it over provider prose/compact approval-only output so the
-				// parent never has to reconstruct a delivery the child already bound.
+				// submit_research_report persists the schema-checked read-only research
+				// body. Prefer it over provider prose so the parent receives the exact
+				// findings/method candidates the child submitted.
 				const submittedReport = readJsonObject(join(root, "task-context-cache", "auto-research-child-results", `${runId}.json`));
 				const parsedReport = submittedReport && Object.keys(submittedReport).length
 					? submittedReport : parseAutoResearchReport(reportText);
-				const report = bindExperimentRequest(normalizeAutoResearchReport(parsedReport), runId, evidenceRefs);
+				const report = auditResearchConfidence(root, bindExperimentRequest(normalizeAutoResearchReport(parsedReport), runId, evidenceRefs));
 				const selectedAuditRefs = [...new Set([...evidenceRefs, ...inheritedRefs]
 					.filter((ref) => /^(memory|skill|tool|subagent|finding|context):/.test(String(ref))))];
 				const evidenceAudit = result.evidence_audit ?? (selectedAuditRefs.length ? {
@@ -2451,28 +2891,44 @@ export function installTaskLocalSubagents(
 					complete_refs: [], incomplete_refs: selectedAuditRefs, read_count: 0,
 					repeated_read_count: 0, review_checkpoint_count: 0, threshold_reached: false,
 				} : { format: "research-evidence-audit-v1", status: "no_selected_refs", required_refs: [], complete_refs: [], incomplete_refs: [], read_count: 0, repeated_read_count: 0, review_checkpoint_count: 0, threshold_reached: false });
-				const proposals = Array.isArray(report.harness_proposals) ? report.harness_proposals : [];
-				const capabilities = pi.getAllTools().map((tool) => tool.name);
-				const routePlans = proposals.filter((proposal: Record<string, any>) => proposal.delivery)
-					.map((proposal: Record<string, any>, index: number) => compileHarnessRoute({
-						runId,
-						approvalId: String(proposal.approval_id ?? proposal.candidate_ref ?? `${runId}-candidate-${index + 1}`),
-						approvalVersion: Number(proposal.approval_version ?? 1),
-						approvalStatus: String(proposal.approval_status ?? "approved"),
-					delivery: proposal.delivery,
-					capabilities,
-					implementationOutputSchemas: adapter.taskToolImplementationOutputSchemas,
-				}));
-				for (const route of routePlans) append("auto-research-harness-routes.jsonl", route);
-				// This module is the research runner. It may validate and persist a
-				// proposal route, but it cannot mutate the parent harness. A later,
-				// explicit parent change must call Self-Harness with the returned
-				// route_ref and delivery_hash.
-				const routeExecutions: Record<string, unknown>[] = [];
-				const routePlansWithExecution = routePlans;
-				const routeExecutionFailed = false;
 				const reportStatus = parsedReport.status === "unstructured_report" ? "invalid_report" : "completed";
 				const reportRef = `research_report:${runId}@v1`;
+				const authoringHandoffs = buildParentAuthoringHandoffs({ runId, reportRef,
+					researchLineRef: params.research_line_ref ?? priorSession?.research_line_ref ?? undefined, report });
+				for (const handoff of authoringHandoffs) append("parent-authoring-handoffs.jsonl", handoff);
+				// Research results must remain actionable after the completion receipt is
+				// compacted. Persist one resumable conversion intent per method candidate.
+				// This is a parent-owned queue entry, never a component mutation: the
+				// parent still authors the complete candidate, using creator details on demand,
+				// explicitly assembles its exact version, and performs the semantic trial.
+				for (const candidate of report.method_candidates ?? []) {
+					const handoff = authoringHandoffs.find((item: Record<string, any>) =>
+						String(item.source?.method_candidate_ref ?? "") === String(candidate.candidate_ref ?? ""));
+					const carrier = ({ procedure: "skill", computation: "tool", role: "subagent", plan: "system_prompt" } as Record<string, string>)[String(candidate.semantic_kind ?? "")];
+					if (!carrier) continue;
+					// Keep a stable identity separate from the human-facing operation id.
+					// The inspect path de-duplicates conversion intents by intent_id; the
+					// old research writer omitted it, so all method candidates with an
+					// undefined key collapsed into one entry and most high-order
+					// opportunities disappeared after a research turn/restart.
+					const candidateRef = String(candidate.candidate_ref ?? candidate.name ?? "candidate");
+					const intentId = `research:${runId}:${candidateRef}`;
+					append("task-harness-conversion-intents.jsonl", {
+						format: "task-harness-conversion-intent-v1",
+						intent_id: intentId,
+						operation_id: intentId,
+						status: "awaiting_parent_authoring",
+						carrier, semantic_kind: candidate.semantic_kind,
+						purpose: candidate.summary || candidate.name,
+						candidate_ref: candidate.candidate_ref, candidate_name: candidate.name,
+						method_candidate: candidate,
+						research_run_ref: `research_run:${runId}@v1`, report_ref: reportRef,
+						authoring_handoff_ref: handoff?.resource_ref ?? null,
+						next_step: handoff?.change_call_template?.required_before_execution ?? ["Author a complete candidate; creator details are available on demand", "Submit task_harness(action=change)", "Explicitly assemble and semantically trial the exact version"],
+						reconsider_when: "at the next parent turn with a reachable semantic use or when the current strategy needs this capability",
+						recordedAt: new Date().toISOString(),
+					});
+				}
 				const agendaSession = {
 					...(priorSession ?? {}), open_allocation: openAllocation,
 					history_cursor: historyCatalog?.cursor ?? priorSession?.history_cursor ?? null,
@@ -2494,13 +2950,15 @@ export function installTaskLocalSubagents(
 				};
 				const record = {
 					run_id: runId, version: 1, session_id: sessionId, status: reportStatus, question,
+					request_signature: requestSignature,
 					scope: researchScope, research_kind: researchKind,
 					research_line_ref: params.research_line_ref ?? priorSession?.research_line_ref ?? null,
 					evidence_refs: evidenceRefs, resource_refs: inheritedRefs,
 					inherited_harness_refs: params.inherit_harness_refs ?? [], context_window: contextWindow,
-					report_ref: reportRef, finding_count: report.findings.length, proposal_count: proposals.length,
-					route_execution_count: routeExecutions.length,
-					route_execution_statuses: routeExecutions.map((item) => ({ route_id: item.route_id, route_status: item.route_status, applied: item.applied })),
+					report_ref: reportRef, finding_count: report.findings.length,
+					method_candidate_count: report.method_candidates.length,
+					parent_authoring_handoff_count: authoringHandoffs.length,
+					route_execution_count: 0,
 					evidence_audit: evidenceAudit, result_summary: resultSummary,
 					experiment_request: report.experiment_request ?? null,
 					planning_implications: report.planning_implications ?? [],
@@ -2531,10 +2989,9 @@ export function installTaskLocalSubagents(
 				})) append("task-method-lifecycle.jsonl", methodRecord);
 				append("auto-research-runs.jsonl", record);
 				const sessionVersion = terminalVersion;
-				const hasReadyRoute = routePlans.some((route) => route.route_status === "ready" && route.apply_call);
-				const reconciliationStatus = routeExecutionFailed ? "failed"
-					: hasReadyRoute ? "awaiting_parent_change" : "not_applicable";
+				const reconciliationStatus = authoringHandoffs.length ? "awaiting_parent_authoring" : "not_applicable";
 				append("auto-research-sessions.jsonl", { session_id: sessionId, version: sessionVersion, status: "completed", question, run_id: runId,
+					request_signature: requestSignature,
 					interaction_mode: interactionMode, reconciliation_status: reconciliationStatus,
 					research_kind: researchKind, research_line_ref: record.research_line_ref,
 					research_candidate_ref: params.research_candidate_ref ?? priorSession?.research_candidate_ref ?? null,
@@ -2559,11 +3016,10 @@ export function installTaskLocalSubagents(
 					researchLineRef: record.research_line_ref ?? undefined,
 					researchProblem: params.research_problem,
 					reportRef, report, usage: result.usage as Record<string, any> | undefined,
-					routePlans: routePlansWithExecution,
+					parentAuthoringHandoffs: authoringHandoffs,
 				});
-				(capsule as Record<string, any>).route_executions = routeExecutions;
 				(capsule as Record<string, any>).reconciliation_status = reconciliationStatus;
-				(capsule as Record<string, any>).adoption_required = hasReadyRoute;
+				(capsule as Record<string, any>).parent_authoring_required = authoringHandoffs.length > 0;
 				const parentResult = parentAttention || !agenda
 					? capsule
 					: buildAutoResearchProgressReceipt({
@@ -2572,26 +3028,35 @@ export function installTaskLocalSubagents(
 						researchLineRef: String(record.research_line_ref),
 					});
 				return {
-					...(routeExecutionFailed ? { isError: true } : {}),
 					content: [{ type: "text", text: JSON.stringify(parentResult) }],
 					details: {
 						...resourceMetadata("research_run", record), run_id: runId,
 						status: record.status, question: record.question,
 						summary: parentAttention ? record.summary : "Cross-stage research progress was saved without an immediate parent decision.",
-						report_summary: parentAttention ? record.summary : "Cross-stage research progress was saved without an immediate parent decision.", proposal_count: proposals.length,
+						report_summary: parentAttention ? record.summary : "Cross-stage research progress was saved without an immediate parent decision.",
+						method_candidate_count: report.method_candidates.length,
 						parent_attention: parentAttention,
 						agenda_ref: record.agenda_ref,
-						route_count: routePlans.length,
-						route_execution_count: routeExecutions.length,
-						route_executions: routeExecutions,
-						adoption_required: hasReadyRoute,
+						parent_authoring_handoff_count: authoringHandoffs.length,
+						parent_authoring_required: authoringHandoffs.length > 0,
 						report_ref: reportRef,
 					},
 				};
 			},
 		};
-		pi.registerTool(autoResearchTool);
-		const reconcileCompletion = async (session: Record<string, any>): Promise<Record<string, any> | undefined> => {
+		releasePlanSchema = registerManagementTool(pi, root, autoResearchTool);
+		const completionPrefix = "AUTO-RESEARCH COMPLETION INBOX (runtime-delivered once): ";
+		let completionInboxText: string | undefined;
+		let selectedCompletion: { expectedVersion: number; next: Record<string, any> } | undefined;
+		const latestSessions = () => {
+			const latest = new Map<string, Record<string, any>>();
+			for (const item of readResearchRecords(root, "auto-research-sessions.jsonl")) {
+				const previous = latest.get(String(item.session_id));
+				if (!previous || Number(item.version) > Number(previous.version)) latest.set(String(item.session_id), item);
+			}
+			return latest;
+		};
+		const selectCompletion = (session: Record<string, any>): Record<string, any> | undefined => {
 			if (session.interaction_mode !== "non_blocking" || session.status !== "completed"
 				|| session.completion_delivery_status === "delivered") return undefined;
 			let reconciliationStatus = String(session.reconciliation_status ?? "not_applicable");
@@ -2603,32 +3068,21 @@ export function installTaskLocalSubagents(
 				? reportRecord.report as Record<string, any> : reportRecord;
 			const parentAttention = session.open_allocation !== true || researchReportNeedsParentAttention(report ?? {});
 			const experimentRequest = report?.experiment_request ?? session.experiment_request ?? null;
-			const routeVersions = new Map<string, Record<string, any>>();
-			for (const route of readResearchRecords(root, "auto-research-harness-routes.jsonl")
-				.filter((item) => String(item.route_id ?? "").startsWith(`${runId}:`))) {
-				const previous = routeVersions.get(String(route.route_id));
-				if (!previous || Number(route.version ?? 0) > Number(previous.version ?? 0)) routeVersions.set(String(route.route_id), route);
-			}
-			const readyRoutes = [...routeVersions.values()].filter((route) => route.route_status === "ready" && route.apply_call);
-			const routeResults = readyRoutes.map((route) => ({
-				delivery_id: route.delivery_id,
-				status: "awaiting_parent_change",
-				target: route.steps?.[0]?.target ?? null,
-			}));
-			if (readyRoutes.length) reconciliationStatus = "awaiting_parent_change";
-			const delivered = { ...session, version: Number(session.version) + 1,
+			const authoringHandoffs = readResearchRecords(root, "parent-authoring-handoffs.jsonl")
+				.filter((item) => item.source?.research_run_ref === `research_run:${runId}@v1`);
+			if (authoringHandoffs.length) reconciliationStatus = "awaiting_parent_authoring";
+			const next = { ...session,
 				experiment_request: experimentRequest,
 				planning_implications: report?.planning_implications ?? session.planning_implications ?? [],
 				next_research_question: report?.next_research_question ?? session.next_research_question ?? "",
 				parent_attention: parentAttention,
-				reconciliation_status: reconciliationStatus, completion_delivery_status: "delivered",
-				completion_delivered_at: new Date().toISOString(), recordedAt: new Date().toISOString() };
-			append("auto-research-sessions.jsonl", delivered);
+				reconciliation_status: reconciliationStatus };
+			selectedCompletion = { expectedVersion: Number(session.version), next };
 			const agendaRef = String(session.agenda_ref ?? reportRecord?.agenda_ref ?? "");
 			if (!parentAttention && agendaRef) {
 				return buildAutoResearchProgressReceipt({
 					runId,
-					sessionRef: `research_session:${session.session_id}@v${delivered.version}`,
+					sessionRef: `research_session:${session.session_id}@v${session.version}`,
 					reportRef: String(session.report_ref ?? `research_report:${runId}@v1`),
 					agendaRef,
 					researchLineRef: String(session.research_line_ref ?? "research_line:task-auto-research-agenda@v1"),
@@ -2636,30 +3090,109 @@ export function installTaskLocalSubagents(
 			}
 			return {
 				format: "auto-research-completion-v1",
-				session_ref: `research_session:${session.session_id}@v${delivered.version}`,
+				topic_ref: session.research_line_ref ?? null,
+				session_ref: `research_session:${session.session_id}@v${session.version}`,
 				run_id: runId, status: session.status, summary: session.summary,
 				report_ref: session.report_ref ?? null, reconciliation_status: reconciliationStatus,
 				experiment_request: experimentRequest,
 				planning_implications: report?.planning_implications ?? [],
 				next_research_question: report?.next_research_question ?? "",
-				candidate_refs: Array.isArray(report?.harness_proposals)
-					? report.harness_proposals.map((item: Record<string, any>) => item.candidate_ref).filter(Boolean)
+				method_candidate_refs: Array.isArray(report?.method_candidates)
+					? report.method_candidates.map((item: Record<string, any>) => item.candidate_ref).filter(Boolean)
 					: [],
-				route_results: routeResults,
-				adoption_call: readyRoutes.length ? {
-					name: "task_harness",
-					arguments: { action: "adopt_research", research_run_ref: `research_run:${runId}@v1` },
-				} : null,
+				parent_authoring_handoffs: authoringHandoffs.slice(-4).map(handoff => ({
+					resource_ref: handoff.resource_ref, status: handoff.status,
+					recommended_component_kind: handoff.recommended_component_kind,
+					candidate_summary: String(handoff.candidate_summary ?? "").slice(0, 400),
+					read_call: { tool: "task_resource", arguments: { action: "read", ref: handoff.resource_ref, limit: 2000 } },
+				})),
+				omitted_authoring_handoff_count: Math.max(0, authoringHandoffs.length - 4),
 			};
 		};
-		pi.on("before_agent_start", async (event) => {
-			const latest = new Map<string, Record<string, any>>();
-			for (const item of readResearchRecords(root, "auto-research-sessions.jsonl")) {
-				const previous = latest.get(String(item.session_id));
-				if (!previous || Number(item.version) > Number(previous.version)) latest.set(String(item.session_id), item);
+		const acknowledgeCompletionPayload = (payload: unknown) => {
+			if (!completionInboxText) return;
+			const seen = new Set<unknown>();
+			const contains = (value: unknown): boolean => {
+				if (typeof value === "string") return value.includes(completionInboxText!);
+				if (!value || typeof value !== "object" || seen.has(value)) return false;
+				seen.add(value);
+				return Object.values(value).some(contains);
+			};
+			if (!contains(payload)) return; // Clipped, transformed or removed cards remain undelivered.
+			if (selectedCompletion) {
+				const { expectedVersion, next } = selectedCompletion;
+				const current = latestResearchSession(root, String(next.session_id));
+				if (!current || Number(current.version) !== expectedVersion || current.status !== "completed") return;
+				if (current.completion_delivery_status !== "delivered") {
+					const now = new Date().toISOString();
+					append("auto-research-sessions.jsonl", { ...next, version: expectedVersion + 1,
+						completion_delivery_status: "delivered", completion_delivered_at: now,
+						completion_delivery_basis: "accepted_final_provider_payload", recordedAt: now });
+				}
 			}
-			const inbox: Record<string, any>[] = [];
+			completionInboxText = undefined;
+			selectedCompletion = undefined;
+		};
+		const pumpWorkers = () => advanceResearchWorkers(root, {
+				refresh: async session => { const next = await refreshDetachedSession(session); syncPlanFromSession(next); return next; },
+				session: id => latestResearchSession(root, id), execute: autoResearchTool.execute.bind(autoResearchTool),
+				integrate: row => {
+					const report = row.report; const reportRef = `research_update:${row.update_id}@v${row.version}`;
+					if (row.lifecycle === "completed") return; // Final routing already occurs in refreshDetachedSession.
+					persistWorkerCandidates(row.run_id, reportRef, row.research_line_ref, report);
+				},
+			});
+		pi.on("tool_execution_end", async event => {
+			if (event.isError || !["arc_action", "arc_actions"].includes(event.toolName)) return;
+			const env = readResearchRecords(root, "execution-observations.jsonl").at(-1)?.arc_outcome ?? {};
+			if (["WIN", "GAME_OVER"].includes(String(env.state)) || (Number(env.action_budget?.total_maximum) > 0
+				&& Number(env.action_budget?.total_used) >= Number(env.action_budget?.total_maximum))) await pumpWorkers();
+		});
+		pi.on("context", async (event) => {
+			await pumpWorkers();
+			const inbox = selectResearchIncrements(root);
+			if (selectedCompletion) {
+				const current = latestResearchSession(root, String(selectedCompletion.next.session_id));
+				if (!current || Number(current.version) !== selectedCompletion.expectedVersion) {
+					selectedCompletion = undefined;
+					const completion = current ? selectCompletion(current) : undefined;
+					completionInboxText = completion ? `${completionPrefix}${JSON.stringify([completion])}` : undefined;
+				}
+			}
+			if (!completionInboxText) {
+				for (const session of latestSessions().values()) {
+					if (session.worker_id) continue;
+					const completion = selectCompletion(session);
+					if (!completion) continue;
+					completionInboxText = `${completionPrefix}${JSON.stringify([completion])}`;
+					break;
+				}
+			}
+			const texts = [completionInboxText, ...(inbox.length ? [`${RESEARCH_INCREMENT_PREFIX}${JSON.stringify(inbox)}`] : [])]
+				.filter((text): text is string => Boolean(text));
+			if (!texts.length) return {};
+			return { messages: [...event.messages, ...texts.map(text => ({ role: "user" as const, timestamp: Date.now(),
+				content: [{ type: "text" as const, text }] }))] };
+		});
+		let preparedIncrementPayload: unknown;
+		pi.events.on(FINAL_PROVIDER_PAYLOAD_EVENT, event => { preparedIncrementPayload = (event as FinalProviderPayloadEvent).payload; });
+		pi.on("after_provider_response", event => {
+			const payload = preparedIncrementPayload;
+			preparedIncrementPayload = undefined;
+			if (event.status >= 200 && event.status < 300 && payload) {
+				acknowledgeResearchIncrementPayload(root, payload);
+				acknowledgeCompletionPayload(payload);
+			}
+		});
+		pi.on("before_agent_start", async () => {
+			completionInboxText = undefined;
+			selectedCompletion = undefined;
+			const latest = latestSessions();
+			const completions: Record<string, any>[] = [];
+			const notices: Record<string, any>[] = [];
+			const queueInbox = (item: Record<string, any>) => { if (notices.length < 1) notices.push(item); };
 			for (const original of latest.values()) {
+				if (original.worker_id) continue; // Assigned responsibilities own their continuation/delivery.
 				let session = await refreshDetachedSession(original);
 				syncPlanFromSession(session);
 				if (session.status === "pending" && session.checkpoint?.wait_for === "next_parent_evidence") {
@@ -2675,21 +3208,23 @@ export function installTaskLocalSubagents(
 								action: "resume", session_ref: `research_session:${session.session_id}@v${session.version}`,
 								__background_claimed: true,
 							}, undefined);
-							inbox.push({ format: "auto-research-resumed-v1",
+							queueInbox({ format: "auto-research-resumed-v1",
 								session_ref: `research_session:${session.session_id}@v${session.version}`,
 								run_id: runId, new_evidence_refs: newEvidenceRefs });
 						} catch (error) {
-							inbox.push({ format: "auto-research-resume-failed-v1", session_id: session.session_id,
+							queueInbox({ format: "auto-research-resume-failed-v1", session_id: session.session_id,
 								run_id: runId, error: error instanceof Error ? error.message : String(error) });
 						}
 					}
 				}
 				const current = latestResearchSession(root, String(session.session_id)) ?? session;
-				const completion = await reconcileCompletion(current);
-				if (completion) inbox.push(completion);
+				const completion = completions.length < 1 ? selectCompletion(current) : null;
+				if (completion) completions.push(completion);
 			}
+			const inbox = [...completions, ...notices].slice(0, 1);
 			if (!inbox.length) return {};
-			return { systemPrompt: `${event.systemPrompt}\n\nAUTO-RESEARCH COMPLETION INBOX (runtime-delivered once): ${JSON.stringify(inbox)}` };
+			completionInboxText = `${completionPrefix}${JSON.stringify(inbox)}`;
+			return {};
 		});
 	}
 }

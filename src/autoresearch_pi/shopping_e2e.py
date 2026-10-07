@@ -21,6 +21,7 @@ from .observation_compaction_evidence import (
     COMPACTION_METRIC,
     audit_observation_compaction_effects,
 )
+from .jev_routing import apply_jev_routing_policy
 from .pi_kernel import PiKernel
 from .project import load_project_dotenv
 from .validation_evidence import (
@@ -608,6 +609,7 @@ def _run_pi_shopping_task(
         "PI_SHOPPING_EXPERIMENT_VARIANT": experiment_variant,
         "PI_SHOPPING_CONTEXT_COMPACTION": "enabled" if context_compaction else "disabled",
     })
+    apply_jev_routing_policy(env)
     jit_root = Path(env["JIT_ROOT"]).resolve()
     system_prompt = _load_jit_shopping_system_prompt(jit_root, str(case["level"]))
     task_prompt = _compose_jit_shopping_task(system_prompt, str(case["question"]))
@@ -618,6 +620,7 @@ def _run_pi_shopping_task(
     # Keep system instructions as system instead of Pi's reasoning-model developer role.
     (agent_dir / "models.json").write_text(json.dumps({"providers": {"yibu": {"baseUrl": base_url, "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True, "compat": {"supportsDeveloperRole": False}, "models": [{"id": model, "name": model, "reasoning": True, "contextWindow": 128000, "maxTokens": 8192}]}}}), encoding="utf-8")
     command = (node, cli, "--mode", "rpc", "--provider", "yibu", "--model", model, "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--exclude-tools", "bash,edit,write,grep,find,ls,read", "--extension", str(extension))
+    command += ("--extension", str(extension.parent / "pi_final_provider_payload.ts"))
     events: list[dict[str, Any]] = []
     root.mkdir(parents=True, exist_ok=True)
     contract_source = jit_root / "benchmark" / "adapter" / "deepplanning.py"

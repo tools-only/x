@@ -1,0 +1,515 @@
+{
+  "source_run": "arc-preflight-stage47-composition-gpt-ls20-20261003",
+  "first": [
+    {
+      "operation": "create",
+      "candidate": {
+        "component": "memory",
+        "key": "ls20-check-fact",
+        "content": "The current public frame is 64x64; a provisional check is that the black mark is near (21,32), but coordinate interpretation remains to be verified.",
+        "atom": {
+          "subject": "current frame",
+          "predicate": "has provisional black-mark coordinate",
+          "value": {
+            "x": 21,
+            "y": 32
+          }
+        },
+        "validity": {
+          "scope": "task"
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "component": "system_prompt",
+        "name": "observation-check-policy",
+        "content": "When checking the frame, distinguish visible facts from hypotheses, use x=column and y=row, cite the exact snapshot, and state uncertainty. Reconsider this policy if the tool or independent check conflicts with the frame.",
+        "scope": "bounded checks of the current ARC observation"
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "skill",
+        "name": "bounded-observation-check",
+        "description": "Use for a small, evidence-linked check of the current ARC frame using the scoped memory and policy.",
+        "authoring_method_ref": "baseline_method:skill-creator@sha256:bc0f78e0c246e5cdeace218f99d7e3ddfb09b11bef6fc40484bbc3f3eeb7b20f",
+        "instructions": "Inputs: exact snapshot reference, public frame, scoped Memory, and observation-check policy. 1) Restate the memory's provisional coordinate without treating it as fact. 2) Inspect the cited cell and nearby contrasting cells using x=column,y=row. 3) Compare the result with the policy and record agreement or conflict. 4) Output the checked coordinate, observed color, evidence reference, and remaining uncertainty. Stop after this bounded comparison; if the frame or reference is unavailable, report failure rather than infer it."
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "tool",
+        "name": "check-cell-color",
+        "description": "Deterministically read one cell from the bound public frame and report its color plus whether it is black (0).",
+        "authoring_method_ref": "baseline_method:tool-creator@sha256:293cf58da166bbb905f9018b846323c8eac6d7bfd0c9782f6d5dfea4f6adeafe",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            "y": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "integer"
+            },
+            "is_black": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "color",
+            "is_black"
+          ],
+          "additionalProperties": false
+        },
+        "program": {
+          "format": "task-pure-expression-v1",
+          "limits": {},
+          "expression": {
+            "op": "let",
+            "name": "row",
+            "value": {
+              "op": "index",
+              "array": {
+                "op": "get",
+                "value": {
+                  "op": "var",
+                  "name": "grid"
+                },
+                "key": {
+                  "op": "literal",
+                  "value": "frame"
+                }
+              },
+              "index": {
+                "op": "get",
+                "value": {
+                  "op": "var",
+                  "name": "y"
+                }
+              }
+            },
+            "body": {
+              "op": "let",
+              "name": "color",
+              "value": {
+                "op": "index",
+                "array": {
+                  "op": "var",
+                  "name": "row"
+                },
+                "index": {
+                  "op": "get",
+                  "value": {
+                    "op": "var",
+                    "name": "x"
+                  }
+                }
+              },
+              "body": {
+                "op": "object",
+                "fields": [
+                  {
+                    "key": "color",
+                    "value": {
+                      "op": "var",
+                      "name": "color"
+                    }
+                  },
+                  {
+                    "key": "is_black",
+                    "value": {
+                      "op": "eq",
+                      "left": {
+                        "op": "var",
+                        "name": "color"
+                      },
+                      "right": {
+                        "op": "literal",
+                        "value": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "subagent",
+        "name": "independent-frame-checker",
+        "description": "Independently verify one concrete public-frame observation without acting or mutating state.",
+        "authoring_method_ref": "baseline_method:subagent-creator@sha256:1ccfadca755f485be205ead7ac010364d062c758acdd41e56abbb1448f2dacaa",
+        "instructions": "Given only the exact current snapshot and its complete frame, independently check whether cell (21,32) is color 0. Explain the row/column convention, cite the snapshot, give a confidence level, and mention any limitation. Do not take actions, use creators, or infer game rules. Stop after this one-cell verification.",
+        "tools": []
+      }
+    }
+  ],
+  "second": [
+    {
+      "operation": "create",
+      "candidate": {
+        "component": "memory",
+        "key": "ls20-check-fact",
+        "content": "The complete current frame is available as observation_snapshot:parent-state-1@v1; a provisional check target is the visible blue/black marker near (21,32).",
+        "atom": {
+          "subject": "current frame",
+          "predicate": "has provisional check target",
+          "value": "marker near x=21,y=32; exact color remains to be checked"
+        },
+        "validity": {
+          "scope": "task"
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "component": "system_prompt",
+        "name": "observation-check-policy",
+        "content": "For bounded observation checks, use only the exact supplied snapshot, verify coordinates as x=column and y=row, distinguish observed pixels from inference, and report uncertainty or missing evidence. Reconsider the target if the tool result conflicts with the grid.",
+        "scope": "when checking the current ARC frame before an action"
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "skill",
+        "name": "bounded-observation-check",
+        "description": "Use the retained target fact and policy to perform one coordinate check before a bounded ARC action.",
+        "authoring_method_ref": "baseline_method:skill-creator@sha256:bc0f78e0c246e5cdeace218f99d7e3ddfb09b11bef6fc40484bbc3f3eeb7b20f",
+        "instructions": "Inputs: the selected Memory fact, exact public snapshot, and a candidate coordinate. 1) Apply the policy: treat x as column and y as row. 2) Use the deterministic cell-check Tool on the exact snapshot binding. 3) Compare its color with the displayed grid at that coordinate and note agreement or conflict. 4) State the bounded action decision and a checkable prediction, retaining uncertainty. Stop after one check; on missing binding or disagreement, do not invent a result and request parent review."
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "tool",
+        "name": "check-cell-color",
+        "description": "Read one bound grid cell and report its color and whether it is black.",
+        "authoring_method_ref": "baseline_method:tool-creator@sha256:293cf58da166bbb905f9018b846323c8eac6d7bfd0c9782f6d5dfea4f6adeafe",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "grid": {
+              "type": "array"
+            },
+            "x": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            "y": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            }
+          },
+          "required": [
+            "grid",
+            "x",
+            "y"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "integer"
+            },
+            "is_black": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "color",
+            "is_black"
+          ],
+          "additionalProperties": false
+        },
+        "program": {
+          "format": "task-pure-expression-v1",
+          "limits": {},
+          "expression": {
+            "op": "let",
+            "name": "color",
+            "value": {
+              "op": "index",
+              "array": {
+                "op": "index",
+                "array": {
+                  "op": "get",
+                  "value": {
+                    "op": "input"
+                  },
+                  "key": {
+                    "op": "literal",
+                    "value": "grid"
+                  }
+                },
+                "index": {
+                  "op": "get",
+                  "value": {
+                    "op": "input"
+                  },
+                  "key": {
+                    "op": "literal",
+                    "value": "y"
+                  }
+                }
+              },
+              "index": {
+                "op": "get",
+                "value": {
+                  "op": "input"
+                },
+                "key": {
+                  "op": "literal",
+                  "value": "x"
+                }
+              }
+            },
+            "body": {
+              "op": "object",
+              "fields": [
+                {
+                  "key": "color",
+                  "value": {
+                    "op": "var",
+                    "name": "color"
+                  }
+                },
+                {
+                  "key": "is_black",
+                  "value": {
+                    "op": "eq",
+                    "left": {
+                      "op": "var",
+                      "name": "color"
+                    },
+                    "right": {
+                      "op": "literal",
+                      "value": 0
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "subagent",
+        "name": "independent-frame-checker",
+        "description": "Independently verify one concrete public observation before a bounded ARC action.",
+        "authoring_method_ref": "baseline_method:subagent-creator@sha256:1ccfadca755f485be205ead7ac010364d062c758acdd41e56abbb1448f2dacaa",
+        "instructions": "Given only observation_snapshot:parent-state-1@v1 and the coordinate (21,32), independently inspect the supplied frame. Report the exact color at x=21,y=32, whether it is black, evidence reference, and any coordinate uncertainty. Do not act, use tools, infer game rules, or claim more than the frame supports. Stop after this single check.",
+        "tools": []
+      }
+    }
+  ],
+  "third": [
+    {
+      "candidate": {
+        "component": "memory",
+        "key": "ls20-check-fact",
+        "content": "The current public frame contains a small black marker near (21,31); this is provisional and is only a diagnostic target, not a game rule.",
+        "atom": {
+          "subject": "current frame",
+          "predicate": "provisional marker coordinate",
+          "value": {
+            "x": 21,
+            "y": 31
+          }
+        },
+        "validity": {
+          "scope": "task"
+        }
+      },
+      "operation": "create"
+    },
+    {
+      "candidate": {
+        "component": "system_prompt",
+        "name": "observation-check-policy",
+        "content": "For each bounded check, use only the exact public snapshot, distinguish observed pixels from inference, verify one representative value and a contrast, and stop if evidence is missing or conflicts. Reconsider the provisional marker claim after any new frame.",
+        "scope": "before a bounded ARC action"
+      },
+      "operation": "create"
+    },
+    {
+      "candidate": {
+        "semantic_kind": "skill",
+        "name": "bounded-observation-check",
+        "description": "Use the saved provisional coordinate and policy to verify a public-frame pixel before one action.",
+        "authoring_method_ref": "baseline_method:skill-creator@sha256:bc0f78e0c246e5cdeace218f99d7e3ddfb09b11bef6fc40484bbc3f3eeb7b20f",
+        "instructions": "Inputs: the selected Memory fact, policy, and exact public snapshot. 1) Read the provisional coordinate without treating it as certain. 2) Inspect the exact frame at that coordinate and one nearby contrasting coordinate. 3) Report both colors, whether the claim is supported, and remaining uncertainty. 4) Do not infer game dynamics or take extra actions. Stop on missing or conflicting evidence; preserve the disagreement."
+      },
+      "operation": "create"
+    },
+    {
+      "candidate": {
+        "semantic_kind": "tool",
+        "name": "check-cell-color",
+        "description": "Return the color at a declared row/column and whether it is black (0), using a supplied public grid.",
+        "authoring_method_ref": "baseline_method:tool-creator@sha256:293cf58da166bbb905f9018b846323c8eac6d7bfd0c9782f6d5dfea4f6adeafe",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "grid": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            },
+            "x": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            "y": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            }
+          },
+          "required": [
+            "grid",
+            "x",
+            "y"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "integer"
+            },
+            "is_black": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "color",
+            "is_black"
+          ],
+          "additionalProperties": false
+        },
+        "program": {
+          "format": "task-pure-expression-v1",
+          "limits": {},
+          "expression": {
+            "op": "let",
+            "name": "color",
+            "value": {
+              "op": "index",
+              "array": {
+                "op": "index",
+                "array": {
+                  "op": "get",
+                  "value": {
+                    "op": "input"
+                  },
+                  "key": {
+                    "op": "literal",
+                    "value": "grid"
+                  }
+                },
+                "index": {
+                  "op": "get",
+                  "value": {
+                    "op": "input"
+                  },
+                  "key": {
+                    "op": "literal",
+                    "value": "y"
+                  }
+                }
+              },
+              "index": {
+                "op": "get",
+                "value": {
+                  "op": "input"
+                },
+                "key": {
+                  "op": "literal",
+                  "value": "x"
+                }
+              }
+            },
+            "body": {
+              "op": "object",
+              "fields": [
+                {
+                  "key": "color",
+                  "value": {
+                    "op": "var",
+                    "name": "color"
+                  }
+                },
+                {
+                  "key": "is_black",
+                  "value": {
+                    "op": "eq",
+                    "left": {
+                      "op": "var",
+                      "name": "color"
+                    },
+                    "right": {
+                      "op": "literal",
+                      "value": 0
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "operation": "create"
+      }
+    },
+    {
+      "candidate": {
+        "semantic_kind": "subagent",
+        "name": "independent-frame-checker",
+        "description": "Independently verify the concrete provisional marker observation in the exact public snapshot, without acting.",
+        "authoring_method_ref": "baseline_method:subagent-creator@sha256:1ccfadca755f485be205ead7ac010364d062c758acdd41e56abbb1448f2dacaa",
+        "instructions": "Given only the exact public snapshot and target coordinate (21,31), independently inspect the raw grid. Return the color at (21,31), compare it with nearby (20,31), state whether the provisional marker claim is supported, cite the snapshot ref, and list uncertainty. Do not use tools, mutate Harness, or take actions; stop after this bounded comparison.",
+        "tools": []
+      },
+      "operation": "create"
+    }
+  ]
+}

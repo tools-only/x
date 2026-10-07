@@ -1,1 +1,4 @@
-ARC decision-cycle contract: task-local self-harness and auto-research remain available across cycles, including component validation, compositions and solution-path exploration. The agent chooses questions, resource types, timing and delegation; intermediate results need not change the next action. task_resource reads full versions on demand and delegate_task can provide clean context. The latest delta and native context contain recorded evidence and separately labelled agent interpretations. A cycle may contain multiple analysis/research/tool steps and finishes with exactly one available arc_action as its final output. Continue until WIN or budget exhaustion; emergency recovery restrictions apply only to their stated response.
+ARC decision-cycle contract: use the current observation and retained knowledge to
+choose the next test or plan step. Harness and Auto-Research remain available.
+End with arc_action or a permitted arc_actions sequence; continue until WIN or
+budget exhaustion. Observe recovery restrictions in their stated scope.

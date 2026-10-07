@@ -31,6 +31,22 @@ def test_arc_agi_3_cli_routes_one_pi_native_game(monkeypatch, tmp_path):
     assert seen == [(root.resolve(), arc_root, "ls20", "treatment", 12, True)]
 
 
+def test_arc_cli_routes_explicit_required_review_mode(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_run(root, **kwargs):
+        seen.append(kwargs)
+        root.mkdir(parents=True)
+        summary = root / "summary.json"
+        summary.write_text(json.dumps({"passed": True}), encoding="utf-8")
+        return summary
+
+    monkeypatch.setattr(cli, "run_arc_agi_3_e2e", fake_run)
+    assert cli.main(["arc-agi-3-e2e", "--root", str(tmp_path / "run"),
+                     "--review-mode", "required"]) == 0
+    assert seen[0]["review_mode"] == "required"
+
+
 def test_terminal_bench_cli_routes_one_harbor_task(monkeypatch, tmp_path):
     paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
     monkeypatch.setattr(cli.ProjectPaths, "from_environment", lambda: paths)

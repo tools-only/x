@@ -1,0 +1,4 @@
+{
+  "tests/test_pure_publication_trial_native.py": "cd29cbff87651698c96e9cba70200d9f6317d04ceaad3801782af9767e852394",
+  "tests/test_harness_sequential_batch_native.py": "73b4a0396270671f2cab97ced9d5b89f877e5239c8ae327217ef17d9e05b8d4a"
+}

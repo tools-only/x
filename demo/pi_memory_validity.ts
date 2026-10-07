@@ -34,7 +34,9 @@ export function normalizeMemoryValidity(value: unknown, context?: MemoryValidity
 }
 
 export function memoryValidityReasons(value: unknown, context?: MemoryValidityContext): string[] {
-    if (value === undefined) return []; // Historical compatibility; never infer a scope from prose.
+    // Historical records remain readable, but must not silently become permanent
+    // guidance in a runtime that has a validity context.
+    if (value === undefined) return context ? ["validity:missing_requires_review"] : [];
     let validity: MemoryValidity;
     try { validity = normalizeMemoryValidity(value); } catch { return ["validity:invalid_requires_review"]; }
     if (!context) return ["validity:context_unavailable"];

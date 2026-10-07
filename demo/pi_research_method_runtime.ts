@@ -6,8 +6,20 @@
  */
 
 import { createHash } from "node:crypto";
+import { researchAuthoringPrerequisite } from "./pi_harness_baseline_methods.ts";
+import { assessMethodAbstraction, normalizeMethodSpecification } from "./pi_auto_research_harness_router.ts";
+import { arcActionReceiptView } from "./pi_arc_action_input.ts";
 
 type Row = Record<string, any>;
+
+/** Candidate presets supply missing fields, never overwrite parent intent. */
+export function bindResearchCandidateParameters(preset: Row, input: Row): Row {
+	return {...input, question: String(input.question ?? "").trim() || preset.question,
+		scope: input.scope ?? preset.scope, research_kind: input.research_kind ?? preset.research_kind,
+		research_line_ref: input.research_line_ref ?? preset.research_line_ref,
+		evidence_refs: [...new Set([...(preset.evidence_refs ?? []), ...(input.evidence_refs ?? [])].map(String))],
+		constraints: [...new Set([...(preset.constraints ?? []), ...(input.constraints ?? [])].map(String))]};
+}
 
 export type MethodMaturity =
 	| "experience"
@@ -201,6 +213,7 @@ function contextAnnotations(observations: Row[]): Map<string, Row> {
 function evidenceCard(row: Row, annotation: Row, sequenceIndex: number, previous?: Row): Row {
 	const state = row.arc_outcome ?? {};
 	const changedGroups = changedGroupFacts(row);
+	const input = row.tool_name === "arc_action" ? arcActionReceiptView(row.input ?? {}) : row.input ?? {};
 	return {
 		format: "auto-research-evidence-card-v1",
 		observation_ref: annotation.observation_ref,
@@ -211,8 +224,13 @@ function evidenceCard(row: Row, annotation: Row, sequenceIndex: number, previous
 		action_signature: annotation.action_signature,
 		input: {
 			...(row.input?.action !== undefined ? { action: row.input.action } : {}),
+			...(Number.isInteger(input.x) ? { x: input.x } : {}),
+			...(Number.isInteger(input.y) ? { y: input.y } : {}),
 			...(row.input?.request !== undefined ? { request: row.input.request } : {}),
 		},
+		input_projection: { complete: false,
+			omitted_fields: Object.keys(row.input ?? {}).filter(key => !["action", "request", ...("x" in input ? ["x"] : []), ...("y" in input ? ["y"] : [])].includes(key)),
+			meaning: "Action parameters above are observed values. Omitted fields are not absent from the tool contract; inspect the exact source for other parameters." },
 		public_result: {
 			is_error: Boolean(row.is_error),
 			outcome_class: annotation.outcome,
@@ -222,11 +240,15 @@ function evidenceCard(row: Row, annotation: Row, sequenceIndex: number, previous
 			...(state.public_transition ? { public_transition: state.public_transition } : {}),
 			...(state.action_budget ? { action_budget: state.action_budget } : {}),
 			observation_delta: observationDeltaFacts(row),
+			...(state.action_target_cell && (row.tool_name !== "arc_action" || row.input?.action === "ACTION6")
+				? { action_target_cell: state.action_target_cell } : {}),
 			...(changedGroups ? { changed_groups: changedGroups } : {}),
 		},
 		pre_action_condition: {
 			basis: annotation.situation_basis,
 			fingerprint: annotation.pre_action_state_fingerprint,
+			...(annotation.pre_action_state_fingerprint ? {
+				fingerprint_scope: "Complete public animation frames and metadata; a digest difference alone is not a final-grid change or level progress." } : {}),
 			...(row.arc_outcome?.pre_action_state?.resource_ref
 				? { canonical_detail_ref: row.arc_outcome.pre_action_state.resource_ref } : {}),
 			...(row.arc_outcome?.pre_action_state?.state !== undefined
@@ -359,6 +381,7 @@ export function buildCrossContextResearchCandidates(input: {
 	const grouped = new Map<string, Row[]>();
 	for (const row of observations) {
 		if (row.is_error) continue;
+		if (String(row.tool_name ?? row.tool ?? "") === "arc_state") continue;
 		// Exact harness-driven actions already belong to that method's application
 		// and feedback line. Re-indexing them as a new generic opportunity would
 		// create a competing research identity for the same use evidence.
@@ -405,8 +428,10 @@ export function buildCrossContextResearchCandidates(input: {
 			situation_context_ids: situationIds,
 			episode_context_ids: unique(boundedCases.map((item) => item.episode_context_id)),
 			research_line_ref: `research_line:${candidateId}@v1`,
+			authoring_prerequisite: researchAuthoringPrerequisite(),
 			research_call: {
 				action: "start",
+				authoring_method_ref: researchAuthoringPrerequisite().authoring_method_ref,
 				research_candidate_ref: `research_candidate:${candidateId}@v1`,
 			},
 			research_parameters: {
@@ -471,10 +496,9 @@ export function methodRecordsFromReport(input: {
 	comparison?: Row;
 	recordedAt?: string;
 }): Row[] {
-	const proposals = Array.isArray(input.report.harness_proposals) ? input.report.harness_proposals : [];
 	const standalone = Array.isArray(input.report.method_candidates) ? input.report.method_candidates : [];
-	const candidates = [
-		...standalone.map((candidate: Row) => ({
+	const legacy = Array.isArray(input.report.harness_proposals) ? input.report.harness_proposals : [];
+	const candidates = [...standalone.map((candidate: Row) => ({
 			candidate_ref: candidate.candidate_ref,
 			delivery: {
 				delivery_id: candidate.proposed_delivery_id ?? null,
@@ -484,22 +508,25 @@ export function methodRecordsFromReport(input: {
 				method: candidate.method,
 			},
 			standalone: true,
-		})),
-		...proposals.map((proposal: Row) => ({ ...proposal, standalone: false })),
-	];
+		})), ...legacy.flatMap((proposal: Row, index: number) => {
+		const delivery = proposal?.format === "auto-research-harness-delivery-v1" ? proposal : proposal?.delivery;
+		if (!delivery?.method || !METHOD_KINDS.has(String(delivery.semantic_kind))) return [];
+		return [{ candidate_ref: proposal.candidate_ref ?? `legacy-method-${index + 1}`, delivery: {
+			delivery_id: delivery.delivery_id ?? null, semantic_kind: delivery.semantic_kind,
+			name: delivery.name, basis_refs: delivery.basis_refs, method: delivery.method,
+		}, standalone: true }];
+	})];
 	const seen = new Set<string>();
-	const standaloneDeliveryIds = new Set(standalone.map((candidate: Row) => String(candidate.proposed_delivery_id ?? "")).filter(Boolean));
 	return candidates.flatMap((proposal: Row, index: number) => {
 		const delivery = proposal?.delivery;
 		if (!delivery || !METHOD_KINDS.has(String(delivery.semantic_kind))) return [];
-		if (!proposal.standalone && standaloneDeliveryIds.has(String(delivery.delivery_id ?? ""))) return [];
-		const specification = methodSpecification(delivery);
+		const rawSpecification = methodSpecification(delivery);
+		const specification = rawSpecification ? normalizeMethodSpecification(rawSpecification) : undefined;
+		const abstraction = specification ? assessMethodAbstraction(specification) : undefined;
 		const identity = String(proposal.candidate_ref ?? `proposal-${index + 1}`);
 		if (seen.has(identity)) return [];
 		seen.add(identity);
-		const methodId = proposal.standalone
-			? `method-${input.runId}-${identity}`.replace(/[^a-zA-Z0-9-]/g, "-")
-			: `method-${input.runId}-${index - standalone.length + 1}`.replace(/[^a-zA-Z0-9-]/g, "-");
+		const methodId = `method-${input.runId}-${identity}`.replace(/[^a-zA-Z0-9-]/g, "-");
 		const constructionRefs = unique(specification?.construction_evidence_refs ?? delivery.basis_refs ?? []);
 		const contrastRefs = unique(specification?.contrast_evidence_refs ?? []);
 		const selected = new Set(input.comparison?.selected_evidence_refs ?? []);
@@ -530,6 +557,8 @@ export function methodRecordsFromReport(input: {
 			source_run_ref: `research_run:${input.runId}@v1`,
 			source_report_ref: input.reportRef,
 			method: specification ?? null,
+			promotion_eligibility: specification ? "eligible" : "research_only",
+			method_abstraction: abstraction ?? null,
 			grounding_status: groundingStatus,
 			construction_evidence_refs: groundedConstructionRefs,
 			contrast_evidence_refs: contrastRefs,
@@ -541,8 +570,7 @@ export function methodRecordsFromReport(input: {
 			resource_refs: [],
 			application_refs: [],
 			validation_refs: [],
-			component_status: proposal.standalone
-				? (delivery.delivery_id ? "proposed_separately" : "method_only") : "proposal_attached",
+			component_status: "method_only",
 			maturity_reason: maturity === "candidate_method" && groundingStatus === "grounded"
 				? "Auto-Research supplied an explicit method structure grounded in selected evidence; future use is still required."
 				: maturity === "candidate_method"
@@ -561,6 +589,39 @@ export function latestMethodRecords(records: Row[]): Map<string, Row> {
 		if (id && (!previous || Number(record.version ?? 0) >= Number(previous.version ?? 0))) latest.set(id, record);
 	}
 	return latest;
+}
+
+export function methodUseRejection(records: Row[], resourceRefs: string[], assessments: Row[] = []): string | undefined {
+	const selected = new Set(resourceRefs);
+	const failed = [...latestMethodRecords(records).values()].find(method => method.maturity === "contradicted"
+		&& (method.resource_refs ?? []).some((ref: string) => selected.has(ref)));
+	if (failed) return `method_requires_revision:${failed.method_id}; the parent reported a failed actual-use expectation for this exact version. Revise or retire it before reuse.`;
+	const rejected = assessments.find(row => row.verdict === "unsupported" && row.actual_use_refs?.length
+		&& (row.resource_refs ?? []).some((ref: string) => selected.has(ref)));
+	return rejected ? `component_requires_revision:${rejected.effect_assessment_id}; revise or retire the exact version rejected by its actual-use assessment.` : undefined;
+}
+
+/** Parent-authored methods need the same trial/feedback path as research methods.
+ * This records the submitted method unchanged; it does not generate a method.
+ */
+export function parentMethodRecord(input: { resourceRef: string; name: string; method: Row; decisionId: string;
+	researchLineRef?: string; sourceMethodRef?: string; sourceReportRef?: string }): Row {
+	const methodId = `parent-${input.resourceRef}`.replace(/[^a-zA-Z0-9-]/g, "-");
+	return {
+		format: "task-method-lifecycle-v1", method_id: methodId, version: 1, status: "active",
+		maturity: "candidate_method", name: input.name,
+		semantic_kind: input.resourceRef.startsWith("tool:") ? "computation" : input.resourceRef.startsWith("subagent:") ? "role" : "procedure",
+		author: "parent", source_component_ref: input.resourceRef, source_decision_id: input.decisionId,
+		source_method_ref: input.sourceMethodRef ?? null,
+		source_run_ref: null, source_report_ref: input.sourceReportRef ?? null,
+		research_line_ref: input.researchLineRef ?? `research_line:${methodId}@v1`, method: input.method,
+		construction_evidence_refs: unique(input.method.construction_evidence_refs ?? []),
+		contrast_evidence_refs: unique(input.method.contrast_evidence_refs ?? []),
+		grounding_status: input.method.construction_evidence_refs?.length ? "cited_not_independently_verified" : "ungrounded",
+		generalization_scope: "unvalidated", resource_refs: [], application_refs: [], validation_refs: [],
+		maturity_reason: "Parent supplied creator-authored method metadata; later actual-use assessment is still required.",
+		recordedAt: new Date().toISOString(),
+	};
 }
 
 export function advanceMethodApplication(method: Row, input: {
@@ -590,7 +651,8 @@ export function advanceMethodAssessment(method: Row, input: {
 	actualUseRefs: string[];
 	recordedAt?: string;
 }): Row {
-	const actualUse = unique(input.actualUseRefs);
+	const construction = new Set(unique(method.construction_evidence_refs ?? []).map(observationReferenceId));
+	const actualUse = unique(input.actualUseRefs).filter(ref => !construction.has(observationReferenceId(ref)));
 	let maturity = String(method.maturity ?? "experience") as MethodMaturity;
 	let reason = method.maturity_reason;
 	if (input.verdict === "unsupported" && actualUse.length) {
@@ -626,7 +688,8 @@ export function buildMethodFeedbackHandoff(method: Row, assessment: Row): Row | 
 		...(method.construction_evidence_refs ?? []), ...(method.contrast_evidence_refs ?? []),
 		...(assessment.observation_refs ?? []), ...actualUseRefs,
 	]).map(exactEvidenceResourceRef);
-	const readyCall = { action: "start", research_handoff_ref: `research_handoff:${handoffId}@v1` };
+	const readyCall = { action: "start", research_handoff_ref: `research_handoff:${handoffId}@v1`,
+		authoring_method_ref: researchAuthoringPrerequisite().authoring_method_ref };
 	return {
 		format: "method-feedback-auto-research-handoff-v1",
 		handoff_id: handoffId,
@@ -639,14 +702,14 @@ export function buildMethodFeedbackHandoff(method: Row, assessment: Row): Row | 
 			prior_research_refs: unique([method.source_run_ref, method.source_report_ref]),
 		},
 		question: [
-			`Method ${method.name} was constructed in ${method.source_report_ref} and later used with evidence ${JSON.stringify(actualUseRefs)}.`,
+			`Method ${method.name} was constructed in ${method.source_report_ref ?? method.source_component_ref} and later used with evidence ${JSON.stringify(actualUseRefs)}.`,
 			`The parent assessed the result as ${assessment.verdict}: ${assessment.consequence}.`,
 			"Compare the construction cases, prior contrasts and this later use. Decide which invariants, parameters, steps, applicability limits or failure modes need confirmation, narrowing, revision or retirement. Do not treat one successful use as broad transfer proof.",
 		].join("\n\n"),
 		completion_contract: "Return a supported, contradicted or inconclusive assessment of the method within an explicit scope; compare predicted and actual semantic output, preserve counterexamples, and provide a revised method candidate only when the evidence supports a concrete change.",
 		completion_contract_kind: "method_feedback_evaluation",
 		evidence_refs: evidenceRefs,
-		resource_refs: unique([methodRef, method.source_run_ref, method.source_report_ref, assessmentRef]),
+		resource_refs: unique([methodRef, method.source_run_ref, method.source_report_ref, method.source_component_ref, assessmentRef]),
 		inherit_harness_refs: unique(method.resource_refs ?? []),
 		constraints: [
 			"Creation, exposure and reading are not validation.",
@@ -661,6 +724,7 @@ export function buildMethodFeedbackHandoff(method: Row, assessment: Row): Row | 
 		interaction_mode_policy: "parent_choice_required",
 		interaction_mode_options: ["blocking", "non_blocking"],
 		ready_call: readyCall,
+		authoring_prerequisite: researchAuthoringPrerequisite(),
 		ready_calls: {
 			blocking: { ...readyCall, interaction_mode: "blocking" },
 			non_blocking: { ...readyCall, interaction_mode: "non_blocking" },

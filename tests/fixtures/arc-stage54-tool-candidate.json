@@ -1,0 +1,155 @@
+{
+  "authoring_method_ref": "baseline_method:tool-creator@sha256:80751413cdc227336e4e3594510e32b9bd49368b6136e70f2a454fc77ca3d43a",
+  "description": "Sample specified x,y cells from the current ARC frame to resolve coordinate and color uncertainty before choosing an action.",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "coords": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "x": {
+              "maximum": 63,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "maximum": 63,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "maxItems": 8,
+        "minItems": 1,
+        "type": "array"
+      }
+    },
+    "required": [
+      "coords"
+    ],
+    "type": "object"
+  },
+  "name": "sample-grid-cells-ls20",
+  "output_schema": {
+    "items": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "value"
+      ],
+      "type": "object"
+    },
+    "type": "array"
+  },
+  "program": {
+    "expression": {
+      "array": {
+        "key": {
+          "op": "literal",
+          "value": "coords"
+        },
+        "op": "get",
+        "value": {
+          "op": "input"
+        }
+      },
+      "as": "p",
+      "body": {
+        "fields": [
+          {
+            "key": "x",
+            "value": {
+              "key": {
+                "op": "literal",
+                "value": "x"
+              },
+              "op": "get",
+              "value": {
+                "name": "p",
+                "op": "var"
+              }
+            }
+          },
+          {
+            "key": "y",
+            "value": {
+              "key": {
+                "op": "literal",
+                "value": "y"
+              },
+              "op": "get",
+              "value": {
+                "name": "p",
+                "op": "var"
+              }
+            }
+          },
+          {
+            "key": "value",
+            "value": {
+              "array": {
+                "array": {
+                  "key": {
+                    "op": "literal",
+                    "value": "grid"
+                  },
+                  "op": "get",
+                  "value": {
+                    "op": "input"
+                  }
+                },
+                "index": {
+                  "key": {
+                    "op": "literal",
+                    "value": "y"
+                  },
+                  "op": "get",
+                  "value": {
+                    "name": "p",
+                    "op": "var"
+                  }
+                },
+                "op": "index"
+              },
+              "index": {
+                "key": {
+                  "op": "literal",
+                  "value": "x"
+                },
+                "op": "get",
+                "value": {
+                  "name": "p",
+                  "op": "var"
+                }
+              },
+              "op": "index"
+            }
+          }
+        ],
+        "op": "object"
+      },
+      "op": "map"
+    },
+    "format": "task-pure-expression-v1",
+    "limits": {}
+  },
+  "semantic_kind": "tool"
+}

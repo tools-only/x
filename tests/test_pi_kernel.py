@@ -62,6 +62,8 @@ for line in sys.stdin:
  if p['type'] == 'prompt':
   print(json.dumps({'type':'tool_execution_end','toolName':'arc_action'}), flush=True)
   print(json.dumps({'type':'tool_execution_start','toolName':'arc_state'}), flush=True)
+ elif p['type'] == 'abort':
+  print(json.dumps({'type':'agent_settled'}), flush=True)
 """, encoding="utf-8")
     with PiKernel((sys.executable, str(script))) as kernel:
         kernel.prompt("start")
@@ -70,7 +72,81 @@ for line in sys.stdin:
             stop_after_progress_tools=("arc_action",),
         )
     assert any(event.get("toolName") == "arc_action" for event in events)
-    assert not any(event.get("toolName") == "arc_state" for event in events)
+    assert any(event.get("toolName") == "arc_state" for event in events)
+    assert events[-1]["type"] == "agent_settled"
+
+
+def test_action_boundary_preserves_settlement_drained_during_legacy_abort(tmp_path):
+    script = tmp_path / "drained_settlement.py"
+    script.write_text("""import sys,json
+for line in sys.stdin:
+ p=json.loads(line)
+ if p['type'] == 'abort':
+  for kind in ('settlement_detail','agent_end','agent_settled'):
+   print(json.dumps({'type':kind}), flush=True)
+ print(json.dumps({'id':p['id'],'type':'response','command':p['type']}), flush=True)
+ if p['type'] == 'prompt':
+  print(json.dumps({'type':'tool_execution_end','toolName':'arc_action'}), flush=True)
+""", encoding="utf-8")
+    with PiKernel((sys.executable, str(script))) as kernel:
+        kernel.prompt("start")
+        events = kernel.wait_for_agent_events(timeout=2, stop_after_progress_tools=("arc_action",))
+    assert [event["type"] for event in events] == [
+        "response", "tool_execution_end", "settlement_detail", "agent_end", "agent_settled", "response",
+    ]
+    assert sum(event.get("command") == "abort" for event in events) == 1
+
+
+def test_native_action_boundary_waits_past_agent_end_and_old_two_second_grace(tmp_path):
+    script = tmp_path / "delayed_settlement.py"
+    script.write_text("""import sys,json,time
+for line in sys.stdin:
+ p=json.loads(line)
+ print(json.dumps({'id':p['id'],'type':'response','command':p['type']}), flush=True)
+ if p['type'] == 'prompt':
+  print(json.dumps({'type':'tool_execution_end','toolName':'arc_action','evidence':{'arc_action_boundary':True}}), flush=True)
+  print(json.dumps({'type':'agent_end'}), flush=True)
+  time.sleep(2.1)
+  print(json.dumps({'type':'settlement_detail'}), flush=True)
+  print(json.dumps({'type':'agent_settled'}), flush=True)
+""", encoding="utf-8")
+    with PiKernel((sys.executable, str(script))) as kernel:
+        kernel.prompt("start")
+        started = time.monotonic()
+        events = kernel.wait_for_agent_events(timeout=5, stop_after_progress_tools=("arc_action",))
+        elapsed = time.monotonic() - started
+    assert elapsed >= 2
+    assert [event["type"] for event in events if event["type"] != "response"] == [
+        "tool_execution_end", "agent_end", "settlement_detail", "agent_settled",
+    ]
+    assert not any(event.get("command") == "abort" for event in events)
+
+
+@pytest.mark.parametrize("session_deadline", [False, True])
+@pytest.mark.parametrize("native_boundary", [False, True])
+def test_action_boundary_requires_true_settlement_within_deadline(tmp_path, session_deadline, native_boundary):
+    script = tmp_path / "missing_settlement.py"
+    script.write_text("""import sys,json,time
+p=json.loads(sys.stdin.readline())
+print(json.dumps({'type':'response','id':p['id']}), flush=True)
+print(json.dumps({'type':'tool_execution_end','toolName':'arc_action','evidence':{'arc_action_boundary':NATIVE_BOUNDARY}}), flush=True)
+print(json.dumps({'type':'agent_end'}), flush=True)
+time.sleep(10)
+""".replace("NATIVE_BOUNDARY", repr(native_boundary)), encoding="utf-8")
+    started = time.monotonic()
+    configured_deadline = started + 0.3 if session_deadline else None
+    with PiKernel(
+        (sys.executable, str(script)), timeout=10,
+        deadline=configured_deadline,
+    ) as kernel:
+        kernel.prompt("start")
+        with pytest.raises(TimeoutError, match="action-boundary settlement"):
+            kernel.wait_for_agent_events(
+                timeout=10 if session_deadline else 0.2,
+                stop_after_progress_tools=("arc_action",),
+            )
+        assert kernel.deadline == configured_deadline
+    assert time.monotonic() - started < 2
 
 
 def test_kernel_waits_for_settled_after_progress_boundary_abort(tmp_path: Path):

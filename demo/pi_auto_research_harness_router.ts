@@ -1,6 +1,8 @@
 /** Deterministic Auto-Research delivery -> Pi native harness call compiler. */
 import { createHash } from "node:crypto";
-import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
+import { assertTaskToolName, TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
+import { TASK_PURE_EXPRESSION_FORMAT } from "./pi_task_pure_expression.ts";
+import { validateTaskPureExpressionProgram, isTaskPureAuthoringProgram } from "./pi_task_pure_authoring.ts";
 import { normalizeMemoryValidity, type MemoryValidity } from "./pi_memory_validity.ts";
 import { baselineMethodCatalog } from "./pi_harness_baseline_methods.ts";
 import { canonicalTextBody, classifyHarnessChangeTargets, normalizeHarnessMemoryAtom,
@@ -25,19 +27,31 @@ export type SystemPromptBasis = {
 export type ActivationCondition = Record<string, unknown>;
 
 export type ResearchMethodSpecification = {
-	problem: string;
-	inputs: string[];
-	invariants: string[];
-	parameters: string[];
-	steps: string[];
-	decision_points: string[];
-	stop_conditions: string[];
-	failure_modes: string[];
-	construction_evidence_refs: string[];
-	contrast_evidence_refs: string[];
-	next_use: string;
-	predicted_semantic_result: string;
-	falsifier: string;
+	problem?: string;
+	/** The condition under which this procedure is useful, not an example trace. */
+	applicability?: string;
+	/** Explicitly preserve ambiguity rather than extrapolating past the evidence. */
+	abstain_when?: string;
+	/** Applicability scope. A narrow scope does not prevent procedural content from being a Skill. */
+	abstraction_scope?: "single_situation" | "bounded_reuse" | "cross_context";
+	inputs?: string[];
+	invariants?: string[];
+	parameters?: string[];
+	steps?: string[];
+	decision_points?: string[];
+	stop_conditions?: string[];
+	failure_modes?: string[];
+	construction_evidence_refs?: string[];
+	contrast_evidence_refs?: string[];
+	next_use?: string;
+	predicted_semantic_result?: string;
+	falsifier?: string;
+};
+
+export type MethodAbstractionAssessment = {
+	documentation_complete: boolean;
+	documentation_gaps: string[];
+	trajectory_detail_indicators: string[];
 };
 
 export type HarnessDelivery = {
@@ -75,6 +89,7 @@ export type HarnessDelivery = {
 	prompt_target_version?: number;
 	target_version?: number;
 	input_schema?: Record<string, unknown>;
+	output_schema?: Record<string, unknown>;
 	implementation_ref?: string;
 	program?: Record<string, unknown>;
 	tools?: string[];
@@ -180,6 +195,10 @@ export function normalizeComputationProgram(
 }
 
 function validateComputationProgram(program: Record<string, unknown>): void {
+	if (Object.prototype.hasOwnProperty.call(program, "format")) {
+		validateTaskPureExpressionProgram(program);
+		return;
+	}
 	const steps = program.steps;
 	if (!Array.isArray(steps) || !steps.length) throw new Error("computation program.steps must be a non-empty array");
 	for (const [index, raw] of steps.entries()) {
@@ -271,6 +290,10 @@ export function assessComputationProgramFeasibility(input: {
 	inputSchema?: Record<string, unknown>;
 	implementationOutputSchemas?: Record<string, unknown>;
 }): { status: "ready" | "pending_implementation"; reason?: string } {
+	if (isTaskPureAuthoringProgram(input.program)) {
+		validateTaskPureExpressionProgram(input.program);
+		return { status: "ready" };
+	}
 	const steps = input.program.steps as Array<Record<string, unknown>>;
 	const inputShape = valueShape(input.inputSchema ?? { type: "object" });
 	let current = inputShape;
@@ -366,34 +389,73 @@ export function normalizeMethodSpecification(value: unknown): ResearchMethodSpec
 		throw new Error("delivery.method must be an object");
 	}
 	const method = value as Record<string, unknown>;
-	const requiredStrings = ["problem", "next_use", "predicted_semantic_result", "falsifier"];
-	for (const field of requiredStrings) if (!String(method[field] ?? "").trim()) {
-		throw new Error(`delivery.method.${field} is required`);
+	const result: ResearchMethodSpecification = {};
+	const stringFields = ["problem", "applicability", "abstain_when", "next_use", "predicted_semantic_result", "falsifier"] as const;
+	for (const field of stringFields) {
+		if (method[field] === undefined) continue;
+		if (typeof method[field] !== "string") throw new Error(`delivery.method.${field} must be a string`);
+		result[field] = method[field].trim();
 	}
-	const list = (field: string, minimum = 0) => {
-		const values = Array.isArray(method[field])
-			? [...new Set((method[field] as unknown[]).map(String).map((item) => item.trim()).filter(Boolean))] : [];
-		if (values.length < minimum) throw new Error(`delivery.method.${field} requires at least ${minimum} item(s)`);
+	const list = (field: keyof ResearchMethodSpecification) => {
+		const raw = method[field];
+		// A single authored string and a one-item string array carry identical
+		// semantics. Accept the scalar spelling, but never flatten objects or other
+		// structured values into text.
+		const items = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : undefined;
+		if (!items || items.some(item => typeof item !== "string")) {
+			const actual = Array.isArray(raw)
+				? `array containing ${[...new Set(raw.map(item => Array.isArray(item) ? "array" : item === null ? "null" : typeof item))].join(", ")}`
+				: raw === null ? "null" : typeof raw;
+			throw new Error(`delivery.method.${field} must be a string or an array of authored strings; received ${actual}; objects cannot be silently dropped or string-coerced`);
+		}
+		const values = [...new Set(items.map(item => item.trim()).filter(Boolean))];
 		return values;
 	};
-	return {
-		problem: String(method.problem).trim(),
-		inputs: list("inputs", 1),
-		invariants: list("invariants"),
-		parameters: list("parameters"),
-		steps: list("steps", 1),
-		decision_points: list("decision_points"),
-		stop_conditions: list("stop_conditions", 1),
-		failure_modes: list("failure_modes"),
-		// A method can be authored from a task contract, prior knowledge, or a
-		// hypothesis before local construction evidence exists. Keep it explicitly
-		// ungrounded rather than rejecting the reusable structure at this boundary.
-		construction_evidence_refs: list("construction_evidence_refs"),
-		contrast_evidence_refs: list("contrast_evidence_refs"),
-		next_use: String(method.next_use).trim(),
-		predicted_semantic_result: String(method.predicted_semantic_result).trim(),
-		falsifier: String(method.falsifier).trim(),
-	};
+	const listFields = ["inputs", "invariants", "parameters", "steps", "decision_points", "stop_conditions",
+		"failure_modes", "construction_evidence_refs", "contrast_evidence_refs"] as const;
+	for (const field of listFields) {
+		if (method[field] !== undefined) result[field] = list(field);
+	}
+	if (method.abstraction_scope !== undefined) {
+		if (typeof method.abstraction_scope !== "string"
+			|| !["single_situation", "bounded_reuse", "cross_context"].includes(method.abstraction_scope.trim())) {
+			throw new Error("delivery.method.abstraction_scope must be single_situation, bounded_reuse or cross_context");
+		}
+		result.abstraction_scope = method.abstraction_scope.trim() as ResearchMethodSpecification["abstraction_scope"];
+	}
+	return result;
+}
+
+/** Deterministic structural admission plus non-blocking audit indicators.
+ * Lexical trace markers cannot decide whether a scoped example is procedural. */
+export function assessMethodAbstraction(method: ResearchMethodSpecification, content?: unknown): MethodAbstractionAssessment {
+	const reasons: string[] = [];
+	if (!method.problem) reasons.push("missing_problem");
+	if (!method.applicability) reasons.push("missing_applicability");
+	if (!method.abstain_when) reasons.push("missing_abstain_boundary");
+	if (!(method.inputs ?? []).length) reasons.push("missing_input");
+	if (!(method.steps ?? []).length) reasons.push("missing_step");
+	if (!(method.decision_points ?? []).length) reasons.push("missing_decision_point");
+	if (!(method.stop_conditions ?? []).length) reasons.push("missing_stop_condition");
+	if (!(method.failure_modes ?? []).length) reasons.push("missing_failure_mode");
+	if (!method.next_use) reasons.push("missing_next_use");
+	if (!method.predicted_semantic_result) reasons.push("missing_predicted_semantic_result");
+	if (!method.falsifier) reasons.push("missing_falsifier");
+	const text = [
+		content === undefined ? "" : canonicalTextBody(content, "method content"),
+		method.problem, method.applicability, method.abstain_when, ...(method.inputs ?? []),
+		...(method.invariants ?? []), ...(method.parameters ?? []), ...(method.steps ?? []), ...(method.decision_points ?? []),
+		...(method.stop_conditions ?? []), ...(method.failure_modes ?? []), method.next_use,
+		method.predicted_semantic_result, method.falsifier,
+	].join("\n");
+	const indicators: string[] = [];
+	if (/\b(?:obs(?:ervation)?|arc-action|arc_action)[-_:\s]*\d+\b/i.test(text)) indicators.push("event_identifier");
+	if (/\b(?:rows?|cols?|columns?)\s*\d+(?:\s*(?:-|to|\.\.)\s*\d+)?\b|\b[rc]\d+\s*(?:-|\.\.)\s*[rc]?\d+\b/i.test(text)) indicators.push("fixed_coordinate");
+	if (/\b\d+\s*(?:changed[\s-]*cells?|cell[\s-]*delta|cells?\s+changed)\b/i.test(text)) indicators.push("exact_delta_count");
+	if (/\b(?:palette|colour|color)\s*[:=]|\bvalue\s*\d+\s*=\s*(?:floor|wall|player|goal)\b/i.test(text)) indicators.push("fixed_encoding");
+	if (/\b(?:representative|at\s+obs|from\s+obs)\s*[-\d]/i.test(text)) indicators.push("trace_recap");
+	return { documentation_complete: reasons.length === 0, documentation_gaps: reasons,
+		trajectory_detail_indicators: indicators };
 }
 
 export function harnessDeliveryHash(delivery: HarnessDelivery): string {
@@ -414,10 +476,12 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 		: canonicalTextBody(value.content, "delivery.content");
 	if (!content) throw new Error("delivery.content is required");
 	if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(String(value.delivery_id))
-		|| !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(String(value.name))
-		|| String(value.delivery_id).includes("--") || String(value.name).includes("--")) {
-		throw new Error("delivery_id and name must use lowercase letters, digits, and single hyphens");
+		|| String(value.delivery_id).includes("--")) {
+		throw new Error("delivery_id must use lowercase letters, digits, and single hyphens");
 	}
+	if (value.semantic_kind === "computation") assertTaskToolName(String(value.name));
+	else if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(String(value.name)) || String(value.name).includes("--"))
+		throw new Error("delivery.name must use lowercase letters, digits, and single hyphens");
 	if (!["create", "update", "reuse", "retire"].includes(value.operation)) throw new Error("delivery.operation is invalid");
 	if (["update", "retire"].includes(value.operation) && !Number.isInteger(value.target_version)) {
 		throw new Error(`delivery.${value.operation} requires target_version`);
@@ -430,7 +494,7 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 	if (creatorName) {
 		const supplied = String(value.authoring_method_ref ?? "").trim();
 		const expected = baselineMethodCatalog().find((item) => item.name === creatorName)?.method_ref ?? "";
-		if (!supplied) throw new Error(`delivery.authoring_method_ref is required for ${value.semantic_kind}; child must read ${creatorName} with harness_method first`);
+		if (!supplied) throw new Error(`delivery.authoring_method_ref is required for ${value.semantic_kind}; the parent must read ${creatorName} before authoring this delivery`);
 		if (supplied !== expected) throw new Error(`delivery.authoring_method_ref does not match the current ${creatorName} baseline`);
 	}
 	// Correct only the unambiguous category-copy error.  This keeps the durable
@@ -456,7 +520,7 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 	// new claim or evidence; it repairs only a missing redundant index entry.
 	const basisRefs = [...new Set([
 		...declaredBasisRefs,
-		...(method ? [...method.construction_evidence_refs, ...method.contrast_evidence_refs] : []),
+		...(method ? [...(method.construction_evidence_refs ?? []), ...(method.contrast_evidence_refs ?? [])] : []),
 	])];
 	const systemPromptRequested = value.prompt_channel === "system_prompt";
 	const taskPromptRequested = value.prompt_channel === "task_prompt";
@@ -476,12 +540,6 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 	if (taskPromptRequested && value.context_visibility !== "always") {
 		throw new Error("task_prompt projection requires always context_visibility");
 	}
-	const systemPromptEligible = systemPromptRequested
-		&& value.context_visibility === "always"
-		&& value.scope.kind === "task_wide" && value.stability === "stable_in_scope";
-	if (systemPromptRequested && !systemPromptEligible) {
-		throw new Error("system_prompt projection requires always-visible stable task-wide delivery");
-	}
 	if (systemPromptRequested && ["assessment", "evidence"].includes(value.semantic_kind)) {
 		throw new Error("assessment and evidence deliveries are research_only and cannot become system_prompt");
 	}
@@ -494,10 +552,10 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 	if (systemPromptBasis && systemPromptBasis.evidence_refs.some((reference) => !basisRefs.includes(reference))) {
 		throw new Error("system_prompt_basis.evidence_refs must be included in delivery.basis_refs");
 	}
-	if (systemPromptEligible && !["create", "update", "reuse", "retire"].includes(value.prompt_operation)) {
+	if (systemPromptRequested && !["create", "update", "reuse", "retire"].includes(value.prompt_operation)) {
 		throw new Error("system_prompt projection requires prompt_operation");
 	}
-	if (systemPromptEligible && ["update", "retire"].includes(value.prompt_operation)
+	if (systemPromptRequested && ["update", "retire"].includes(value.prompt_operation)
 		&& !Number.isInteger(value.prompt_target_version)) {
 		throw new Error(`prompt ${value.prompt_operation} requires prompt_target_version`);
 	}
@@ -526,8 +584,11 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 	if (delivery.semantic_kind === "computation" && delivery.program) {
 		delivery.program = normalizeComputationProgram(delivery.program, delivery.input_schema);
 		validateComputationProgram(delivery.program);
-		const steps = (delivery.program as Record<string, unknown>).steps as Array<Record<string, unknown>>;
-		if (delivery.execution === "pure_computation"
+		if (isTaskPureAuthoringProgram(delivery.program) && delivery.execution !== "pure_computation") {
+			throw new Error(`${TASK_PURE_EXPRESSION_FORMAT} requires pure_computation execution`);
+		}
+		const steps = (delivery.program as Record<string, unknown>).steps as Array<Record<string, unknown>> | undefined;
+		if (Array.isArray(steps) && delivery.execution === "pure_computation"
 			&& steps.some((step) => step.kind === "adapter_call")) {
 			delivery.execution = "adapter_operation";
 		}
@@ -542,13 +603,15 @@ export function normalizeHarnessDelivery(input: unknown): HarnessDelivery {
 		throw new Error("computation delivery requires pure_computation or adapter_operation execution");
 	}
 	if (delivery.semantic_kind === "computation" && delivery.program) {
-		const steps = (delivery.program as Record<string, unknown>).steps as Array<Record<string, unknown>>;
-		const kinds = steps.map((step) => step && typeof step === "object" && !Array.isArray(step)
-			? String((step as Record<string, unknown>).kind ?? "") : "");
-		const unknown = kinds.filter((kind) => !(TASK_TOOL_PROGRAM_STEP_KINDS as readonly string[]).includes(kind));
-		if (unknown.length) throw new Error(`computation program has unsupported steps: ${[...new Set(unknown)].join(", ")}`);
-		if (delivery.execution === "pure_computation" && kinds.includes("adapter_call")) {
-			throw new Error("pure_computation program cannot contain adapter_call");
+		const steps = (delivery.program as Record<string, unknown>).steps as Array<Record<string, unknown>> | undefined;
+		if (Array.isArray(steps)) {
+			const kinds = steps.map((step) => step && typeof step === "object" && !Array.isArray(step)
+				? String((step as Record<string, unknown>).kind ?? "") : "");
+			const unknown = kinds.filter((kind) => !(TASK_TOOL_PROGRAM_STEP_KINDS as readonly string[]).includes(kind));
+			if (unknown.length) throw new Error(`computation program has unsupported steps: ${[...new Set(unknown)].join(", ")}`);
+			if (delivery.execution === "pure_computation" && kinds.includes("adapter_call")) {
+				throw new Error("pure_computation program cannot contain adapter_call");
+			}
 		}
 	}
 	if (delivery.semantic_kind === "role" && delivery.execution !== "model_delegation") {
@@ -621,6 +684,7 @@ function nativeArguments(
 		source_approval_ref: approvalRef,
 	};
 	const common = {
+		...(delivery.authoring_method_ref ? { authoring_method_ref: delivery.authoring_method_ref } : {}),
 		...(delivery.depends_on_refs !== undefined ? { depends_on_refs: delivery.depends_on_refs } : {}),
 		...(delivery.supersedes_refs !== undefined ? { supersedes_refs: delivery.supersedes_refs } : {}),
 		action: actionFor(delivery, target),
@@ -646,7 +710,8 @@ function nativeArguments(
 		description: delivery.description ?? delivery.summary, instructions: delivery.content, method: delivery.method };
 	if (target === "tool") return { ...common, name: delivery.name,
 		description: delivery.description ?? delivery.summary,
-		input_schema: delivery.input_schema ?? { type: "object" },
+		...(delivery.input_schema ? { input_schema: delivery.input_schema } : {}),
+		...(delivery.output_schema ? { output_schema: delivery.output_schema } : {}),
 		...(delivery.implementation_ref ? { implementation_ref: delivery.implementation_ref } : {}),
 		...(delivery.program ? { program: delivery.program } : {}) };
 	if (target === "subagent") return { ...common, name: delivery.name,

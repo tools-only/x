@@ -1,0 +1,105 @@
+{
+  "semantic_kind": "tool",
+  "name": "count-grid-color",
+  "description": "Count occurrences of a chosen color in the current ARC frame to distinguish movable markers from static geometry before selecting an action.",
+  "authoring_method_ref": "baseline_method:tool-creator@sha256:80751413cdc227336e4e3594510e32b9bd49368b6136e70f2a454fc77ca3d43a",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "grid": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          }
+        }
+      },
+      "color": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 15
+      }
+    },
+    "required": [
+      "grid",
+      "color"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "count"
+    ],
+    "additionalProperties": false
+  },
+  "program": {
+    "format": "task-pure-expression-v1",
+    "limits": {},
+    "expression": {
+      "op": "object",
+      "fields": [
+        {
+          "key": "count",
+          "value": {
+            "op": "length",
+            "value": {
+              "op": "filter",
+              "array": {
+                "op": "flat_map",
+                "array": {
+                  "op": "get",
+                  "value": {
+                    "op": "input"
+                  },
+                  "key": {
+                    "op": "literal",
+                    "value": "grid"
+                  }
+                },
+                "as": "row",
+                "body": {
+                  "op": "var",
+                  "name": "row"
+                }
+              },
+              "as": "cell",
+              "predicate": {
+                "op": "eq",
+                "left": {
+                  "op": "var",
+                  "name": "cell"
+                },
+                "right": {
+                  "op": "get",
+                  "value": {
+                    "op": "get",
+                    "value": {
+                      "op": "input"
+                    },
+                    "key": {
+                      "op": "literal",
+                      "value": "color"
+                    }
+                  },
+                  "key": {
+                    "op": "literal",
+                    "value": "value"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

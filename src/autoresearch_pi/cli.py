@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .jit_adapter import JitAdapter
+from .jev_routing import JEV_ROUTING_ENV
 from .meta_harness_demo import run_demo
 from .officebench_e2e import (
     run_officebench_e2e,
@@ -34,6 +35,15 @@ from .terminal_bench_e2e import run_terminal_bench_e2e
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="autoresearch-pi")
+    jev_routing = parser.add_mutually_exclusive_group()
+    jev_routing.add_argument(
+        "--jev-routing", choices=("disabled", "shadow", "active"),
+        help="route Self-Harness components with Jev (default: disabled)",
+    )
+    jev_routing.add_argument(
+        "--no-jev-routing", dest="jev_routing", action="store_const", const="disabled",
+        help="disable Jev component routing without calling Jev",
+    )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("doctor", help="check local integration prerequisites")
     meta = sub.add_parser("meta-synthetic", help="run the network-free meta regression")
@@ -110,14 +120,23 @@ def main(argv: list[str] | None = None) -> int:
     arc.add_argument("--arc-root", type=Path, default=None)
     arc.add_argument("--game", default="ls20")
     arc.add_argument("--variant", choices=("control", "treatment"), default="treatment")
-    arc.add_argument("--max-actions", type=int, default=None, help="Optional override; omitted derives baseline_actions x 5")
+    arc.add_argument("--max-actions", type=int, default=None, help="Omitted derives baseline_actions x 5; 0 disables both local total and per-level step limits")
     arc.add_argument(
         "--input-modalities", default=None,
         help="Comma-separated provider input modalities (text,image); defaults to ARC_INPUT_MODALITIES or text",
     )
     arc.add_argument("--context-compaction", action="store_true")
+    arc.add_argument("--review-mode", choices=("advisory", "required"), default=None,
+                     help="Periodic review mode; defaults to advisory (does not block actions)")
+    arc.add_argument("--reasoning-policy", choices=("provider-default", "adaptive", "adaptive-binary", "adaptive-evidence"), default=None)
+    arc.add_argument("--reasoning-levels", default=None,
+                     help="Comma-separated verified provider effort capabilities; omitted means unknown")
+    arc.add_argument("--max-output-tokens", type=int, default=None,
+                     help="Opt-in shared model output envelope (parent and children use the same registry)")
     arc.add_argument("--experiment-timeout", type=float, default=None,
                      help="Opt-in experimental Pi runtime cutoff in seconds; not an official ARC limit")
+    arc.add_argument("--max-reported-tokens", type=int, default=None,
+                     help="Shared parent/child reported usage stop threshold; in-flight unreported usage may exceed it")
     arc.add_argument(
         "--harness-validation", action="store_true",
         help="run an explicit real-ARC task-local self-harness closure probe before gameplay",
@@ -153,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     terminal.add_argument("--model", default=None)
     terminal.add_argument("--context-compaction", action="store_true")
     args = parser.parse_args(argv)
+    if args.jev_routing is not None:
+        os.environ[JEV_ROUTING_ENV] = args.jev_routing
     paths = ProjectPaths.from_environment()
     paths.assert_isolated()
     if args.command in (None, "doctor"):
@@ -295,6 +316,16 @@ def main(argv: list[str] | None = None) -> int:
             arc_kwargs["cross_situation_validation"] = True
         if args.experiment_timeout is not None:
             arc_kwargs["experiment_timeout_seconds"] = args.experiment_timeout
+        if args.max_reported_tokens is not None:
+            arc_kwargs["max_reported_tokens"] = args.max_reported_tokens
+        if args.review_mode is not None:
+            arc_kwargs["review_mode"] = args.review_mode
+        if args.reasoning_policy is not None:
+            arc_kwargs["reasoning_policy"] = args.reasoning_policy
+        if args.reasoning_levels is not None:
+            arc_kwargs["reasoning_levels"] = tuple(x.strip() for x in args.reasoning_levels.split(",") if x.strip())
+        if args.max_output_tokens is not None:
+            arc_kwargs["max_output_tokens"] = args.max_output_tokens
         summary = run_arc_agi_3_e2e(root, **arc_kwargs)
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1

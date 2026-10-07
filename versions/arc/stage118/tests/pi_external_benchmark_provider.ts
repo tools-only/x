@@ -1,0 +1,120 @@
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+export default function externalBenchmarkFixture(pi: ExtensionAPI) {
+	const root = process.env.PI_AUTORESEARCH_E2E_ROOT!;
+	const contextPath = join(root, "provider-contexts.jsonl");
+	let request = 0;
+	let toolCall = 0;
+	pi.registerTool({
+		name: "benchmark_probe",
+		label: "Benchmark Probe",
+		description: "Return one large deterministic benchmark observation.",
+		parameters: Type.Object({
+			fail: Type.Optional(Type.String()),
+			state_changed: Type.Optional(Type.Boolean()),
+			progressed: Type.Optional(Type.Boolean()),
+		}),
+		async execute(_toolCallId, params) {
+			const values = params as { fail?: string; state_changed?: boolean; progressed?: boolean };
+			const failure = values.fail;
+			if (failure) throw new Error(failure);
+			const autoresearchSignals = [
+				...(typeof values.state_changed === "boolean" ? [{
+					layer: "environment_state", outcome: values.state_changed ? "changed" : "unchanged",
+					labels: [values.state_changed ? "visible_state_changed" : "visible_state_unchanged"],
+					pattern_key: "benchmark_probe:fixture",
+				}] : []),
+				...(typeof values.progressed === "boolean" ? [{
+					layer: "task_progress", outcome: values.progressed ? "advanced" : "not_advanced",
+					labels: [values.progressed ? "public_progress_advanced" : "public_progress_not_advanced"],
+					pattern_key: "benchmark_probe:fixture",
+				}] : []),
+			];
+			return { content: [{ type: "text", text: "probe:" + "x".repeat(4096) }], details: {
+				fixture: true, ...(autoresearchSignals.length ? { autoresearch_signals: autoresearchSignals } : {}),
+			} };
+		},
+	});
+	const configuredSteps = process.env.PI_EXTERNAL_STEPS ? JSON.parse(process.env.PI_EXTERNAL_STEPS) : undefined;
+	const thinkingChars = Math.max(0, Number(process.env.PI_EXTERNAL_THINKING_CHARS ?? "0") || 0);
+	const fixtureUsage = Number(process.env.PI_EXTERNAL_USAGE_TOKENS ?? "0");
+	const steps = configuredSteps ?? (process.env.PI_AUTORESEARCH_VARIANT === "control" ? [] : [
+		{ name: "benchmark_probe", arguments: {} },
+		{ name: "research_resource", arguments: {
+			action: "record", evidence: "The probe is large and its relevant conclusion is retained.",
+			decision: "Compact the cited observation for later requests.",
+			observation_id: "execution-observation-1", assessment_refs: [],
+			expected_recurrence: "high", remaining_uses: 2,
+		} },
+		{ name: "compact_observation_context", arguments: {
+			finding_id: "finding-1", target_version: 1,
+			observation_ids: ["execution-observation-1"],
+			expected_effect: "remove the cited historical tool result from later requests",
+			reconsider_when: "the exact observation is needed",
+		} },
+		{ name: "research_resource", arguments: {
+			action: "resolve", finding_id: "finding-1", target_version: 1,
+			evidence: "The native context exposure removed the selected historical body.",
+			decision: "Retain the task-local representation change.",
+			evidence_refs: ["execution-observation-1"],
+			assessment_refs: ["effect-assessment-1"], expected_recurrence: "low",
+			remaining_uses: 0, resolution: "supported",
+		} },
+		{ name: "research_resource", arguments: {
+			action: "inspect", observation_id: "execution-observation-1",
+			evidence_refs: [], assessment_refs: [],
+		} },
+	]);
+	pi.registerProvider("offline-external-test", {
+		api: "openai-completions", apiKey: "offline", baseUrl: "http://unused.invalid",
+		models: [{ id: "scripted", name: "scripted", reasoning: false,
+			input: process.env.PI_ARC_INPUT_MODALITIES?.includes("image") ? ["text", "image"] : ["text"],
+			contextWindow: 128000, maxTokens: 1024,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+		streamSimple(model, context, options) {
+			// Honor Pi's native cancellation just like the HTTP provider. A
+			// synchronous fixture otherwise runs ahead after ctx.abort().
+			if (options?.signal?.aborted) {
+				const stream = createAssistantMessageEventStream();
+				const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider,
+					model: model.id, content: [], stopReason: "aborted", timestamp: Date.now(),
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+				stream.push({ type: "error", reason: "aborted", error: message });
+				stream.end();
+				return stream;
+			}
+			appendFileSync(contextPath, JSON.stringify({ request, context }) + "\n", "utf8");
+			const step = steps[request++];
+			const stream = createAssistantMessageEventStream();
+			const output: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider,
+				model: model.id, content: [], stopReason: step?.stop_reason ?? (step ? "toolUse" : "stop"), timestamp: Date.now(),
+				usage: { input: fixtureUsage, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: fixtureUsage,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+			stream.push({ type: "start", partial: output });
+			if (step) {
+				if (thinkingChars) output.content.push({ type: "thinking", thinking: "x".repeat(thinkingChars) } as any);
+				for (const call of Array.isArray(step) ? step : [step]) {
+					const block = { type: "toolCall" as const, id: `fixture-${++toolCall}`, name: call.name, arguments: call.arguments };
+					output.content.push(block);
+					const toolCallIndex = output.content.length - 1;
+					stream.push({ type: "toolcall_start", contentIndex: toolCallIndex, partial: output });
+					stream.push({ type: "toolcall_delta", contentIndex: toolCallIndex, delta: JSON.stringify(call.arguments), partial: output });
+					stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall: block, partial: output });
+				}
+			} else {
+				output.content.push({ type: "text", text: "fixture complete" });
+				stream.push({ type: "text_start", contentIndex: 0, partial: output });
+				stream.push({ type: "text_delta", contentIndex: 0, delta: "fixture complete", partial: output });
+				stream.push({ type: "text_end", contentIndex: 0, content: "fixture complete", partial: output });
+			}
+			stream.push({ type: "done", reason: output.stopReason as "toolUse" | "stop" | "length", message: output });
+			stream.end();
+			return stream;
+		},
+	});
+}

@@ -1,0 +1,5 @@
+{
+  "tests/pi_arc_coordinate_grid.test.ts": "c05298e446b1a05b3100cd36f310f02ca2b7cb51bf43e848811caf9280797067",
+  "tests/test_arc_initial_context_budget.py": "3c9652f1d318aa7a0a10a57286aa76e7c760231ec281655648a560c1d6e295f0",
+  "tests/test_arc_keyframe_patch_native.py": "735f35bb3a1725d084fb28ae3cdfb61f435b805eeb9461a39dc3a831340d3bdc"
+}

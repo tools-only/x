@@ -1,6 +1,7 @@
 /** Pure contracts joining periodic state-transition review to Auto-Research. */
 type Row = Record<string, any>;
 import { controlError, latestControlRecords, selectControlTarget } from "./pi_harness_control.ts";
+import { researchAuthoringPrerequisite } from "./pi_harness_baseline_methods.ts";
 
 export function researchHandoffReference(handoff: Row): string {
 	return `research_handoff:${handoff.handoff_id}@v${handoff.version}`;
@@ -11,7 +12,8 @@ function nextResearchCall(handoff: Row): Row | null {
 	if (handoff.status === "deferred") return {action:"decide_research", research_handoff_ref:reference,
 		research_decision:"reactivate", research_reason:"<why resume now>"};
 	if (handoff.status === "proposed" || handoff.status === "failed" && !handoff.session_ref) {
-		return { action: "start", research_handoff_ref: reference, interaction_mode_required: true };
+		return { action: "start", research_handoff_ref: reference, interaction_mode_required: true,
+			authoring_method_ref: researchAuthoringPrerequisite().authoring_method_ref };
 	}
 	if (["pending", "failed"].includes(String(handoff.status)) && handoff.session_ref) {
 		return {
@@ -77,11 +79,12 @@ export function buildPeriodicResearchHandoff(
 	const candidateComponents = entries
 		.filter(entry => ["create", "update", "reuse"].includes(String(entry.disposition)))
 		.map(entry => `${entry.component}:${entry.disposition}`);
-	const researchProblem = String(transition.capability_opportunities ?? "").trim()
+	const researchProblem = String(transition.limiting_uncertainty ?? "").trim()
+		|| String(transition.capability_opportunities ?? "").trim()
 		|| "Determine which mechanism, representation, capability, composition, exploration policy, plan, solution method, or recovery rule best resolves the current task uncertainty; an inconclusive result is valid.";
 	const allowedProblemKinds = new Set(["mechanism", "representation", "capability", "composition", "exploration", "planning", "solution", "recovery"]);
-	const requestedProblemKind = String(transition.research_kind ?? "capability");
-	const researchProblemKind = allowedProblemKinds.has(requestedProblemKind) ? requestedProblemKind : "capability";
+	const requestedProblemKind = String(transition.research_kind ?? "");
+	const researchProblemKind = allowedProblemKinds.has(requestedProblemKind) ? requestedProblemKind : "unspecified";
 	const question = [
 		`Unresolved task research problem (${researchProblemKind}, primary objective): ${researchProblem}`,
 		`Research line: ${researchLineRef}. Continue its supported findings, live alternatives, failed tests and unresolved questions across task stages; the line is continuity metadata, not permission to act or modify harness resources.`,
@@ -90,17 +93,19 @@ export function buildPeriodicResearchHandoff(
 		`Observed changes: ${transition.observed_changes}`,
 		`Candidate predictive rules: ${transition.predictive_rules}`,
 		`Decision-limiting uncertainty: ${transition.limiting_uncertainty}`,
+		`Parent capability opportunities (context, not a mandatory research deliverable): ${transition.capability_opportunities ?? "not supplied"}`,
 		`Parent-proposed distinguishing experiment: ${transition.next_experiment}`,
-		"Check the starting conditions, accessible evidence/tools, attainable intermediate objective and local evaluation before investigating. Name a reachable stage/input, predicted observable result, success/failure check, executor and cost/stop bound. If these are missing, identify the prerequisite or narrower check; do not invent them or attempt an unsupported whole-game solution.",
+		"Use known conditions and accessible evidence/tools to bound a useful contribution toward the task. When the objective, representation or evaluation is unclear, formulating alternatives or a discriminating test can be the contribution; do not require the investigation's answer before launch. Name an observable check when available, otherwise assess consistency and evidence coverage of the proposal. State cost/stop bounds and separate proposed experiments from executed evidence.",
 		"Use the trajectory as evidence, not as the research boundary. Depending on the problem kind, investigate mechanisms, state representations, skills, capability composition, exploration policies, plans, solution algorithms or recovery rules. Connect the result to a later task decision and preserve competing explanations.",
 		"Derive one discriminating local test from supported conclusions or explain the exact maturity/access gap. Specify prerequisites, representative input or parent probe, alternative predicted outputs, falsifier, expected information gain, cost and stop condition. You are read-only: request new evidence; non-blocking work may checkpoint pending, while blocking work returns its unresolved test for a bounded follow-up.",
 		consolidation
-			? "Use the 20-step window and accessible cross-phase contrasts to update the research line: revise or retire conflicting findings, methods and plans. A research-only conclusion, planning implication or experiment request is complete when it satisfies the contract; a HarnessDelivery is optional and requires separate support."
-			: "Return a scoped research result and next-use check. A research-only conclusion, planning implication or experiment request is valid. Submit a HarnessDelivery only when persistent reuse is supported; do not force a component from a single association.",
+			? "Use the 20-step window and accessible cross-phase contrasts to update the research line: revise or retire conflicting findings, methods and plans. A research-only conclusion, method candidate, planning implication or experiment request is complete when it satisfies the contract. Do not author a Harness component."
+			: "Return a scoped research result and next-use check. A research-only conclusion, method candidate, planning implication or experiment request is valid. Do not author or submit a Harness component.",
 	].join("\n\n");
-	const completionContract = "For one attainable task-research milestone, deliver (1) an evidence-linked problem and scope, (2) a supported, contradicted or inconclusive result about the selected mechanism/representation/capability/composition/exploration/planning/solution/recovery object, (3) expected versus actual output on a reachable local evaluation or the exact evidence/access gap, and (4) implications for the next task decision, experiment or research question with revision/stop conditions. A trajectory summary alone is incomplete. Harness proposals are optional downstream persistence candidates; negative and research-only results are valid.";
+	const completionContract = "For one attainable task-research milestone, deliver (1) an evidence-linked problem and scope, (2) a supported, contradicted or inconclusive result about the selected mechanism/representation/capability/composition/exploration/planning/solution/recovery object, (3) expected versus actual output on a reachable local evaluation or the exact evidence/access gap, and (4) implications for the next task decision, experiment or research question with revision/stop conditions. A trajectory summary alone is incomplete. Method candidates are allowed; child-authored Harness components are forbidden; negative and research-only results are valid.";
 	const readyCall = {
 		action: "start",
+		authoring_method_ref: researchAuthoringPrerequisite().authoring_method_ref,
 		research_handoff_ref: `research_handoff:${handoffId}@v1`,
 	};
 	const handoff = {
@@ -137,13 +142,13 @@ export function buildPeriodicResearchHandoff(
 		resource_refs: resourceRefs,
 		inherit_harness_refs: resourceRefs.filter(ref => /^(memory|skill|tool|subagent|system_prompt):/.test(ref)),
 		candidate_components: candidateComponents,
-		output_channels: ["research_conclusion", "planning_implication", "experiment_request", "optional_harness_proposal"],
+		output_channels: ["research_conclusion", "planning_implication", "experiment_request", "optional_method_candidate"],
 		constraints: [
-			"Research requires grounded starting material, an attainable intermediate objective and a feasible local evaluation; absent prerequisites require narrowing, evidence collection or deferral.",
+			"Bound the investigation by known material, useful intermediate progress and cost. Unknown objectives, prerequisites or evaluation designs may themselves be investigated; check formulation/proposal consistency against evidence when an environment test is not yet definable. Narrow or defer when neither useful analysis nor evidence collection is feasible.",
 			"Do not assume game-specific action meanings beyond cited transitions.",
 			"Preserve competing explanations and identify missing evidence.",
 			"The child cannot execute ARC actions; return a structured parent experiment request when needed.",
-			"A harness proposal is optional; when present it must include applicability, next use, semantic validation and reconsideration conditions.",
+			"A method candidate is optional; it must describe a reusable process, applicability, next use, semantic check, failure modes and falsifier. It is research input only, never a component body.",
 		],
 		interaction_mode_policy: "parent_choice_required",
 		interaction_mode_options: ["blocking", "non_blocking"],
@@ -159,6 +164,7 @@ export function buildPeriodicResearchHandoff(
 	};
 	return {
 		...handoff,
+		authoring_prerequisite: researchAuthoringPrerequisite(),
 		ready_call: readyCall,
 		ready_calls: {
 			blocking: { ...readyCall, interaction_mode: "blocking" },

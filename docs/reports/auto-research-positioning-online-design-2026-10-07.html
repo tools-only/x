@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Auto-Research 的定位、在线机制与重构选择｜2026-10-07</title>
+<style>
+:root{--ink:#172a36;--muted:#536672;--blue:#195d73;--paper:#fff;--line:#dce5e9;--soft:#f2f6f7;--green:#196547;--amber:#8a5914}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#edf2f4;color:var(--ink);font:16px/1.85 "Microsoft YaHei","PingFang SC",system-ui,sans-serif}
+main{max-width:1120px;margin:32px auto;background:var(--paper);padding:64px 72px;box-shadow:0 8px 40px #1735420b;border-top:6px solid var(--blue)}
+h1{font-size:38px;line-height:1.45;letter-spacing:-.5px;margin:12px 0 20px}h2{font-size:25px;line-height:1.5;margin:56px 0 22px;padding-top:18px;border-top:1px solid var(--line)}h3{font-size:19px;margin:30px 0 12px}
+p{margin:12px 0}a{color:var(--blue);text-decoration-thickness:1px;text-underline-offset:3px}strong{font-weight:700}code{font:13px/1.65 Consolas,monospace;background:#eef3f5;padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}
+.meta{color:var(--muted);font-size:14px}.eyebrow{font-size:13px;font-weight:700;letter-spacing:2px;color:var(--blue)}.lede{font-size:20px;line-height:1.9}
+.note,.decision{padding:20px 24px;margin:24px 0;background:var(--soft);border-left:4px solid var(--blue)}.decision{background:#edf6f2;border-color:var(--green)}.caution{background:#fff7e9;border-color:#bd8736}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{padding:22px;background:#f5f8f9;border:1px solid var(--line)}.card h3{margin-top:0}
+nav{padding:24px;background:#f3f7f8;margin:30px 0}nav ol{columns:2;column-gap:38px;margin:0;padding-left:24px}
+ol,ul{padding-left:25px}li{margin:7px 0}.table-wrap{overflow-x:auto;margin:22px 0}table{width:100%;border-collapse:collapse;font-size:14px;line-height:1.75}
+th,td{padding:12px 14px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf3f5;font-weight:700}tr:nth-child(even) td{background:#fbfcfd}
+.tag{display:inline-block;border-radius:3px;font-size:12px;line-height:1.6;padding:2px 7px;background:#e4eef2;color:var(--blue);white-space:nowrap}.tag.warn{background:#fff0d6;color:var(--amber)}
+.formula{background:#172e3b;color:#f3f8fa;border-radius:4px;padding:20px 24px;font:16px/1.9 "Microsoft YaHei",sans-serif}
+.diagram{margin:24px 0;border:1px solid var(--line);padding:22px;background:#fafcfd}.diagram svg{width:100%;height:auto;display:block}.caption{font-size:13px;color:var(--muted);margin-top:14px}
+.refs{font-size:14px;overflow-wrap:anywhere}.refs li{margin:12px 0}.small{font-size:14px;color:var(--muted)}footer{margin-top:50px;padding-top:24px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+@media(max-width:760px){main{margin:0;padding:30px 22px;box-shadow:none}h1{font-size:29px}h2{font-size:23px}.grid{grid-template-columns:1fr}nav ol{columns:1}table{min-width:680px}body{font-size:15px}.lede{font-size:18px}}
+@media print{body{background:#fff;font-size:11pt}main{max-width:none;margin:0;padding:0;border-top:0;box-shadow:none}h1{font-size:25pt}h2{font-size:17pt;break-after:avoid}h3{break-after:avoid}table{font-size:9pt;min-width:0}tr,.card,.note,.decision{break-inside:avoid}a{color:inherit}nav{display:none}.table-wrap{overflow:visible}.diagram{break-inside:avoid}.grid{display:block}.card{margin:12px 0}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="eyebrow">AUTO-RESEARCH · ONLINE HARNESS</div>
+<h1>Auto-Research 的定位、机制合理性<br>与在线不可回退环境中的重构选择</h1>
+<p class="meta">2026 年 10 月 7 日 · Asia/Shanghai · 架构评审与设计建议</p>
+<p class="lede"><strong>当前定位基本合理，默认使用形态仍值得收敛。</strong>建议保留持续研究、精确证据和有界 worker，把父侧交互的重心转到当前决策的不确定性、反证和可复用计算。大的重构应由真实转移断点触发，现阶段不宜再增加一层总控 Agent。</p>
+<div class="note"><strong>证据范围：</strong>依据当前源码、既有官方 ARC/Pi 接线产物与真实 provider 审计。源码材料于 2026-10-07 12:20:35（上海时间）作只读快照；工作区另有开发进行中，本文不把历史 stage142、B9 或后来修改混为同一版本。未启动新游戏、模型实验或运行时改造。提出的性能收益均为待检验假设。<a href="#sources">来源与快照</a></div>
+</header>
+<nav aria-label="报告目录"><ol>
+<li><a href="#verdict">判断与推荐</a></li><li><a href="#current">当前实际机制与证据</a></li>
+<li><a href="#diagnosis">关键张力与故障位置</a></li><li><a href="#online">不可回退环境改变了什么</a></li>
+<li><a href="#forms">三种功能形式</a></li><li><a href="#target">推荐的目标结构</a></li>
+<li><a href="#mechanisms">更有 Harness 潜力的机制</a></li><li><a href="#lifecycle">生命周期、时效与权限</a></li>
+<li><a href="#refactor">优化与重构路线</a></li><li><a href="#evaluation">有界评估与推翻条件</a></li>
+<li><a href="#record">统一设计记录与决定</a></li><li><a href="#sources">一手依据与材料索引</a></li>
+</ol></nav>
+
+<section id="verdict">
+<h2>1. 判断与推荐</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>问题</th><th>判断</th><th>建议</th></tr></thead>
+<tbody>
+<tr><td>Auto-Research 的定位是否合理？</td><td>合理。持续问题、研究职责与有界执行分开，核心结论交付父、详细分析留在研究线，适合长任务。</td><td>保留机制；把价值标准明确为减少任务决策负担、改善进展。</td></tr>
+<tr><td>当前机制是否合理？</td><td>授权、只读快照、增量交付、版本和停止机制合理；新证据触发、父侧转化和时效之间仍有成本张力。</td><td>优先检查交付到决策、候选到语义使用的转移。</td></tr>
+<tr><td>更合适的功能形式？</td><td>日常使用宜围绕“哪个选择尚不确定、什么证据会改变它”；持续研究保留为需要跨阶段跟踪的形式。</td><td>按决策组织短研究，持续职责按需承担长问题；两者复用同一后端。</td></tr>
+<tr><td>是否要整体重构？</td><td>目前缺乏收益证据支持替换成熟调度和版本体系。</td><td>采用渐进收敛；仅当父侧语义转写或过时交付持续占主导，才调整权限合同或交付架构。</td></tr>
+<tr><td>在线不可回退下最有潜力的方向？</td><td>反证与依赖连续性、当前状态上的纯计算、能区分解释的有界取证、反馈驱动的短行动程序。</td><td>先验证前两项中的一个窄循环，再进入实验请求或行动程序。</td></tr>
+</tbody></table></div>
+<p>我的核心判断是：<strong>研究机制有价值的原因，是它让父 Agent 获得更及时的证据和更便宜的判断能力。</strong>研究产物可以直接改变行动，也可以成为方法、工具或持续职责。创建组件只是其中一条路径；某些正确结论只影响一次选择，强行组件化会增加成本。</p>
+<p>此外，单次生命任务的剩余复用机会不断减少。一个完整、可复用的能力可能来不及回本；一次短反证检查却可能马上避免损失。因此，判断研究投入时应同时考虑当前决定、结果到达时间和剩余任务长度。</p>
+<div class="decision"><strong>主推荐：</strong>保留 Auto-Research 的研究线、授权、broker、证据游标、短交付与反馈基础。把它作为“按需证据与方法支持”的后端，默认由当前决策需求驱动；持续 worker 只承担确需跨阶段维护的问题。Harness 演化优先吸收参数化计算、条件性方法和有效认识，收益证据不足的管理步骤按需退出。</div>
+</section>
+
+<section id="current">
+<h2>2. 当前实际机制与证据</h2>
+<h3>2.1 已经实现了什么</h3>
+<p>2026-10-01 ADR 的最终更新和源码一致：Auto-Research 是机制，可以由多个研究 worker 承担职责。<code>research_line_ref</code> 表达持续问题，worker 表达分工和授权，session/run 表达有界执行；窗口是证据批次。不能继续用 ADR 中实施前的第 7、10 节描述今天的缺口。<a href="#s2">[S2]</a><a href="#s3">[S3]</a></p>
+<div class="table-wrap"><table>
+<thead><tr><th>环节</th><th>当前行为</th><th>边界</th></tr></thead><tbody>
+<tr><td>研究投入</td><td>父通过 start 发起短研究，或 assign 授权持续职责；可关联研究线与可选计划。</td><td>任务、证据和计算投入仍需授权；研究 worker 不递归创建任务。</td></tr>
+<tr><td>证据与调度</td><td>新行动、验证、组件使用与评估按种类入队；父 context 边界推进。默认最多 2 个 worker 并发，一批最多 32 个新 ref。</td><td>active 输入固定；新证据排入后续片段。入队、授予访问、读取和分析消费分开。</td></tr>
+<tr><td>连续性</td><td>pending 等待新证据；completed 后可创建同线后续 session。保存 checkpoint、前序报告、反例和未完成检验。</td><td>有恢复入口不等于真实模型恢复了关键认识。</td></tr>
+<tr><td>交付</td><td>active 可 publish 增量；urgent 优先；每父边界最多 2 条、合计 4000 JSON 字符，详情留精确 ref。分歧、修订、撤回分别保存。</td><td>投影成功不等于父理解、采用或改善行动；字符额度不是 token 额度。</td></tr>
+<tr><td>组件化</td><td>worker 提供方法候选与非执行 handoff；父负责完整组件 body、创建/修改、精确装配、语义试用。</td><td>当前合同仍保留父作者所有权；研究完成不会自动改 Harness。</td></tr>
+<tr><td>反馈与停止</td><td>实际使用/评估回到授权证据流；按 output/run 预算、连续无消费、complete/drop、失败、撤销、终局停止。</td><td>无消费是机械诊断，不是科学无进展的充分定义；共享预算另由 provider/runtime 约束。</td></tr>
+</tbody></table></div>
+<p>以上来自 <code>pi_auto_research_workers.ts</code>、<code>pi_auto_research_worker_runtime.ts</code> 和 <code>pi_task_local_subagents.ts</code>。这说明调度和生命周期已经有基础，重复建设新的“研究中台”会增加维护与认知成本。<a href="#s4">[S4–S6]</a></p>
+
+<h3>2.2 今天的简化必须计入现状</h3>
+<p>当前 ARC 路径已在首次研究时准备并登记方法读取，继续执行，不再要求父模型先接收手册、下一轮重试。默认工具面经 <code>registerManagementTool</code> 投影隐藏计划字段和 <code>enqueue / inspect_plan / release</code>，保留共用 <code>skip</code>；完整 canonical 参数仍在执行前校验。读取完整 TypeBox 定义中的 14 个 action，不能推断最终 provider 仍常驻全部 action。<a href="#s6">[S6]</a><a href="#s7">[S7]</a></p>
+<p>B9 的同脚本确定性测量记录 Auto-Research schema 从 3385 降到 3293 序列化字符，默认 24 个字段、11 个 action；全部工具定义 24823→24285 字符，约减少 2.17%。两版各 7 次请求、语义值 2。<strong>这是接口披露的局部证据，不是模型 token 节省或净收益结论。</strong>当前完整研究指导是按需材料；ARC 日常投影已经是短入口，不能把整份操作手册都算成常驻成本。<a href="#s9">[S9]</a></p>
+<p>一些按需文档仍写旧的 read→retry 或 creator 前置。这是合同与描述一致性的维护问题；应该纠正文档分叉，不能再加常驻提醒来补偿。本文把 B9 当作最近可恢复局部证据，未假定正在变化的全部工作区已经完成同版全矩阵验收。</p>
+
+<h3>2.3 四层证据分开判断</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>层级</th><th>现有支持</th><th>Provider / environment</th><th>结论限制</th></tr></thead><tbody>
+<tr><td>功能正确</td><td>worker 协议、恢复/取消、版本与默认披露有定向检查及运行产物。</td><td>原生 Pi 与确定性/本地协议诊断。</td><td>本文只审阅，未重跑全仓检查；历史检查不统一担保最新所有改动。</td></tr>
+<tr><td>全链路可达</td><td>20261001 accepted matrix 17 场景、419 检查；包含持续 worker、五类组件、两类 length、具体工具值和后续父轮。</td><td>官方 ARC SDK、bridge、Pi、broker/child 和运行边界真实；模型 provider 为确定性脚本。</td><td>证明该冻结版接线与生命周期。B9 另有 publication 38/38、subagents 22/22 等相关窄验收，不等于新版本完整矩阵。</td></tr>
+<tr><td>自主采用</td><td>历史有研究结论进入候选与行动；普通样本中作者组件和研究投入仍稀少。</td><td>yibu / gpt-6.1-sol 与 qwen3.8-27b；官方真实环境，普通与 guided 分开。</td><td>稳定普通自主采用未建立；显式引导样本不替代此层。</td></tr>
+<tr><td>净收益</td><td>有局部语义成功、单次过关、成本审计和大量负结果。</td><td>真实 provider 既有运行。</td><td>缺少匹配总预算的独立重复对照；不能把成功归因于 Auto-Research 或 Harness。</td></tr>
+</tbody></table></div>
+
+<h3>2.4 最有诊断价值的真实样本</h3>
+<ul>
+<li><strong>stage110，真实 GPT、引导研究：</strong>24 动作、0 关，父子已知 reported 300663，其中 child 21558；另有 3 个未知父请求。研究 completed，出现候选选择→行动，仍无作者组件/装配/组件语义使用。说明“结论从未被接入”不是完整解释，正确选题与目标判断仍可能失败。<a href="#s11">[S11]</a></li>
+<li><strong>stage78–80，普通 GPT：</strong>40/50/44 动作，作者组件与装配为 0，其中 stage80 过 1 关。任务进展可以发生在没有该机制的路径上，不能直接归因。<a href="#s12">[S12]</a></li>
+<li><strong>stage140，真实 Qwen、引导 Tool：</strong>5 个完整 HTTP、66986 reported、1 动作、0 关、0 child。final numeric grid 正确绑定，但 source/预检失败，未发布、装配或试用。它定位作者接口断点，不是 Auto-Research worker 实验，也不能代表最新 B9 仍保留同一故障。<a href="#s13">[S13]</a></li>
+<li><strong>stage118r1，真实 Qwen：</strong>2 动作、82187 known，其中新 reasoning 52486；另有取消费用未知。历史输入缩短没有阻止新生成推理昂贵，研究成本必须同时管输入、输出与恢复。<a href="#s14">[S14]</a></li>
+</ul>
+<p>这些样本支持“继续缩窄问题并量总成本”，不支持宣布机制无用，也不支持全面重写以后自然会好。</p>
+</section>
+
+<section id="diagnosis">
+<h2>3. 关键张力与故障位置</h2>
+<h3>3.1 组织研究的粒度与行动需求的粒度不同</h3>
+<p>研究线关心跨阶段的问题；父当前面对的是一个具体选择。例如“目标规则是什么”可长期追踪，“此刻操作 A 还是 B”只需要能区分这两个选择的证据。已有 <code>parent_relevance</code>、experiment_request 和 planning_implications 能表达这种关系，但一个报告、方法候选或索引不一定把父的下一步判断变得更便宜。</p>
+<p><strong>设计缺口是默认交付应如何服务选择，而非新增 topic 数据结构。</strong>可以在现有字段中优先表达“哪些判断改变、影响哪个选择、什么尚未知、需要什么证据”。不要求父另填 decision 表，也不强制每份研究即时改变行动。</p>
+
+<h3>3.2 父拥有最终判断，并不要求父重复推导全部内容</h3>
+<p>目前方法候选仍需父写完整可执行 body，再装配与试用。所有权和权限边界很清楚，代价是研究者已经理解的算法或方法，父可能还要重新理解、重新表述、重新满足接口。这是潜在成本，并非已证实的主因：当前已有 source 简化、准备默认值和合并试用，需要先测这些改进后的父侧负担。</p>
+<p>若父转写仍是主要断点，有两种层次：先让方法候选保留参数化算法说明、最小输入/预期输出和已有实现的精确引用，父继续作者化。当前研究 child 合同禁止返回 Tool 程序/实现；若需要研究者提交代码片段或隔离完整可执行草案，必须另作合同变更与验收。父选择精确草案后提交仍保留最终选择权，但作者职责已经改变，需要单独 ADR 与 scoped acceptance。异步 worker 不能直接改当前 Harness。</p>
+
+<h3>3.3 新 ref 和已消费 ref 不能代替信息价值</h3>
+<p>当前调度在有新证据时可续研，连续两片段无消费会停止。这对机械循环有用，但一个 worker 可能消耗了很多 ref，却只确认已知现象；反过来，一个旧 ref 中的关键矛盾可能值得重审。建议由获授权研究者维护待辨别问题和等待条件，runtime 只匹配确定的资源/事件条件。科学上是否值得继续仍由 Agent 判断。</p>
+<p>因此，不建议增加 runtime 的“相关性评分器”去读所有 prose，也不建议为每个新窗口再开一次研究。优先复用 checkpoint 的 pending 问题、已有 queue 与授权。</p>
+
+<h3>3.4 异步收益取决于结果的有效时间</h3>
+<p>异步可以重叠计算，不能自动减少总成本。父继续行动可能使结果失效；父等待则付出延迟。结果必须区分：绑定某帧的数值、绑定某阶段的认识、仍跨阶段有效的规则、影响尚未提交选择的反证。<strong>精确 cutoff 能证明研究看到了什么，不能单独证明今天仍适用。</strong></p>
+<p>短卡限额已存在。下一步应测当前相关结论是否在有用的决策边界到达，以及父恢复详情的费用。增加 worker 数量会放大过时队列和共享 provider 配额竞争。</p>
+
+<h3>3.5 存储连续与认识连续不同</h3>
+<p>当前保留反例、checkpoint 和精确引用已经合理。问题是恢复后模型是否仍知道“某解释为什么被排除、哪个实验尚未完成、当前计划依赖什么”。短结论与 archive marker 可能保留来源，却丢失否定理由。应检查实际后轮输入和判断，再决定是否需要额外 consolidation；无需先造第二份知识真值。</p>
+
+<h3>3.6 管理能力应按需求付费</h3>
+<p>多 worker、计划 DAG、节点 release、周期窗口 review 对某些长任务有用，默认研究不应先变成项目管理。当前默认 schema 已减少部分负担；仍应区分单次提问、持续职责、复杂依赖三类用途。评价单位是任务收益与父子成本，不能是研究启动率、完成数或组件数。</p>
+<div class="note caution"><strong>诊断边界：</strong>以上既包含源码可见的结构张力，也包含历史失败。没有新匹配实验，不能把其中任一条宣布为当前全部浪费的因果主因。下一轮应只选择最早且可观察的转移断点。</div>
+</section>
+
+<section id="online">
+<h2>4. 不可回退环境改变了什么</h2>
+<p>在线单次生命中，行动改变下一步状态、证据分布与可达机会；RESET 也可能是有成本的真实事件。撤下一个 Harness 版本只改变未来配置，不能消除已经采取的动作、损失或获得的信息。</p>
+<p><a href="https://arxiv.org/abs/2210.08863">Single-Life Reinforcement Learning</a> 为单次 episode 完成任务提供了相关问题设置；本项目没有因此使用其中的 QWALE 算法，也没有论文性能可直接迁移的依据。<a href="https://arxiv.org/abs/1711.06892">Learning to select computations</a> 则支持把有限计算的选择和停止本身当成决策问题；这里借用问题视角，不声称实现 BMPS。</p>
+
+<h3>4.1 计算、取证、能力建设有不同回报期限</h3>
+<div class="table-wrap"><table><thead><tr><th>投入</th><th>可能收益</th><th>主要成本</th><th>在线判断</th></tr></thead><tbody>
+<tr><td>读轨迹、独立分析、纯计算</td><td>当前选择更准确或更便宜</td><td>父子 token、延迟、恢复与整合</td><td>有机会在一轮内回本；需要结果及时、正确且相关。</td></tr>
+<tr><td>真实动作取证</td><td>区分解释，同时推动任务</td><td>动作、状态改变、不可逆损失与时间</td><td>尽量选择兼有进展与辨别作用的动作；不能当免费实验。</td></tr>
+<tr><td>创建 Tool/Skill/角色/策略</td><td>后续同类任务更可靠、减少重复推理</td><td>作者化、校验、装配、试用、维护与驻留</td><td>剩余复用机会足够时投入；临近终局可以只算一次。</td></tr>
+</tbody></table></div>
+<div class="formula">研究/计算的预期价值 ≈ 当前决策质量的预期改善 + 剩余任务中的复用节省<br>− 父子计算成本 − 等待与整合成本 − 信息过时造成的损失<br><br>行动取证还需计入：动作机会成本、不可逆损失和未来选择空间的变化。</div>
+<p class="small">这是设计判断框架，不是 runtime 自动估值公式。收益难以标定、目标优先级不同，不宜把几项未经校准的数字加成一个强制分数。先声明主要指标与硬预算，再比较质量和成本。</p>
+
+<h3>4.2 认知分支可比较，环境分支不可凭空存在</h3>
+<p>两个 worker 可以对同一公开历史独立解释；在冻结帧上比较两个纯函数也可重复。这些是认知或计算对照。未执行的真实动作只能保留为预测；模型想象的后续轨迹不能当环境反馈。不同 worker 的一致意见不构成新增环境证据。</p>
+<p>在无法可信估计灾难性损失、且一次错误会关闭后续任务机会时，应优先使用已有证据、只读检查或保留选择空间的行动；必要时等待或放弃该试探。这里不宣称无条件 safe exploration、no-regret 或最优在线学习保证。</p>
+
+<h3>4.3 Harness 的价值是改善后续决策过程</h3>
+<p>在这类环境中，Harness 很有潜力的部分包括：稳定获得当前状态、准确计算、保留关键反证、让旧认识正确失效、缩短后续选择路径、在变更时停止旧方法。它可以体现为原生 runtime 能力、作者化组件、已有研究职责或更短的上下文投影；不必全部生成一个新组件类型。</p>
+<p>某个机制比 Auto-Research “更适合”，通常意味着更贴近具体负担；它也可以由现有 Auto-Research 承担，无需成为竞争系统。最有价值的组合是：研究解释未知，确定性工具处理稳定计算，当前工作集承载有效认识，父决定真实行动。</p>
+</section>
+
+<section id="forms">
+<h2>5. 三种可选择的功能形式</h2>
+<div class="table-wrap"><table><thead><tr><th>路线</th><th>功能形式</th><th>适用情境</th><th>成本与局限</th><th>建议</th></tr></thead><tbody>
+<tr><td><strong>A. 保留当前机制并精简</strong></td><td>start、assign、短交付和现有父作者链继续；清理描述滞后和重复交付，量化时效。</td><td>研究量不大；问题常跨阶段；最新接口尚未做真实评估。</td><td>迁移最小，仍可能需要父组织问题和转化候选。</td><td>近期默认实施方向。B9 已做的披露等直接复用。</td></tr>
+<tr><td><strong>B. 专门化的研究职责</strong></td><td>按目标辨别、反例复核、方法评价等分配职责；各自维护同线或独立线。</td><td>一个长期问题确实反复消耗父决策，且并发分析有清楚价值。</td><td>职责重复、盲审泄漏、通知与配额竞争。固定多个常驻岗位容易净增管理。</td><td>按需使用，不能先启动一组角色再寻找工作。</td></tr>
+<tr><td><strong>C. 围绕当前选择组织证据与方法</strong></td><td>父表达待决选择/核心不确定性；短研究服务它，长问题沉入原有研究线；结果优先以判断差异、反证或可用计算交付。</td><td>在线不可回退、预算紧、行动时效明显；报告多但难以转成选择。</td><td>需要校准交付语义和过时处理；狭窄关注当前选择可能忽略长期潜在规则。</td><td>推荐目标形态。保留少量真正长期的问题，不把所有研究缩成下一动作。</td></tr>
+</tbody></table></div>
+<p><strong>推荐 A→C 的渐进迁移，B 作为已有可选能力。</strong>先用一个当前研究问题验证结论的交付与后轮使用，再决定是否改变默认接口。A 与 C 初期可以共享全部持久对象和工具名；“围绕选择”先是交付约定，不需要新增 decision database、总控 scheduler 或 mandatory review。</p>
+<p>如果任务短、没有重复不确定性、父已能低成本决定下一步，完全不研究是合理基线。如果独立计算已经足够，调用现有工具更便宜；如果问题跨阶段持续变化，assign 比反复 start 更合适。对于重大规则或长期目标，仍允许开放研究，不能只让 worker 回答父已设定的 A/B。</p>
+</section>
+
+<section id="target">
+<h2>6. 推荐的目标结构</h2>
+<h3>6.1 三类用途，复用现有对象</h3>
+<div class="grid">
+<div class="card"><h3>短研究：支持一个当前判断</h3><p>复用 start。父给可见困难、准确证据和有限预算；worker 可先纠正问题本身。达到有用中间结论即可交付，证据不足就返回辨别性请求或未知。</p></div>
+<div class="card"><h3>持续职责：维护一个长期问题</h3><p>复用 assign 与研究线。新事件机械路由；worker 保留关键反例、依赖和等待条件。没有值得分析的新材料就休眠，有界 session 延续职责。</p></div>
+</div>
+<p>第三类用途是<strong>方法改进</strong>：父或授权 worker 发现重复判断/计算值得参数化时，用现有候选、作者合同、组件版本和装配路径。它不应成为每条研究的结尾。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 900 345" role="img" aria-labelledby="diagramTitle diagramDesc">
+<title id="diagramTitle">推荐机制的责任与反馈</title><desc id="diagramDesc">公开证据进入当前工作集和授权研究；核心增量回到父的选择；可选能力经父提交与精确装配；真实行动反馈回到公开证据。</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#587c8b" stroke-width="1.5"/></marker></defs>
+<g font-family="Microsoft YaHei, sans-serif" font-size="16" text-anchor="middle">
+<rect x="20" y="27" width="225" height="66" rx="5" fill="#e7f0f4" stroke="#c2d6df"/><text x="132" y="56">当前公开 observation</text><text x="132" y="80" font-size="13">唯一 canonical 事件与精确引用</text>
+<rect x="337" y="27" width="225" height="66" rx="5" fill="#eaf4ef" stroke="#bddbc8"/><text x="449" y="56">父 Agent 的当前选择</text><text x="449" y="80" font-size="13">行动 · 计算 · 研究 · 方法投入</text>
+<rect x="653" y="27" width="225" height="66" rx="5" fill="#e7f0f4" stroke="#c2d6df"/><text x="765" y="56">真实动作边界</text><text x="765" y="80" font-size="13">授权、状态、预算、单写者</text>
+<rect x="20" y="163" width="225" height="78" rx="5" fill="#f0f4f6" stroke="#c2d6df"/><text x="132" y="191">当前认识与反证</text><text x="132" y="215" font-size="13">复用 checkpoint / memory / finding</text>
+<rect x="337" y="163" width="225" height="78" rx="5" fill="#f0f4f6" stroke="#c2d6df"/><text x="449" y="191">Auto-Research 后端</text><text x="449" y="215" font-size="13">短研究 · 持续职责 · 有界执行</text>
+<rect x="653" y="163" width="225" height="78" rx="5" fill="#f8f1e7" stroke="#e3d1b2"/><text x="765" y="191">可选 Harness 方法</text><text x="765" y="215" font-size="13">父提交 · 精确装配 · 语义试用</text>
+</g>
+<g fill="none" stroke="#587c8b" stroke-width="1.7" marker-end="url(#arrow)">
+<path d="M245 60H332"/><path d="M562 60H648"/><path d="M132 93V158"/><path d="M245 199H332"/><path d="M449 93V158"/><path d="M485 163V99"/><path d="M562 60H608V199H648"/><path d="M765 163V128H535V100"/><path d="M765 93V296H132V247"/>
+</g>
+<text x="493" y="128" font-family="Microsoft YaHei" font-size="12" fill="#536672">短增量</text>
+<text x="618" y="152" font-family="Microsoft YaHei" font-size="12" fill="#536672">父选择</text>
+<text x="449" y="327" text-anchor="middle" font-family="Microsoft YaHei" font-size="13" fill="#536672">动作结果、使用与成本回流；研究不自动接管环境或装配</text>
+</svg>
+<p class="caption">这是现有职责的收敛方式，不代表新增六个服务。完整当前 grid/native PNG 保持；派生特征与研究解释始终可追溯到原始证据。</p>
+</div>
+
+<h3>6.2 结果按用途分流，不要求组件化</h3>
+<ol>
+<li><strong>判断变化：</strong>“旧解释被哪条反证削弱，哪个选择需要重估”。直接服务后轮决策；有效内容可进入已有 checkpoint/finding。</li>
+<li><strong>证据需求：</strong>“哪些解释仍区分不了，什么观察会区分它们”。走现有 experiment_request 或只读资源请求；父选择真实取证。</li>
+<li><strong>可复用方法：</strong>确实存在重复成本时，提供适用条件、参数、预期结果与失效条件；进入父作者和装配链。</li>
+<li><strong>无当前收益：</strong>结论后续相关、问题过时、证据不够或不值得继续。保存精确详情，父无需逐项批准或补做组件。</li>
+</ol>
+<p>这些是报告语义的优先顺序，不是四类新增必填 schema。先复用 conclusion、counterevidence、planning_implications、experiment_request、method_candidates 与 research_progress。某报告不包含全部内容也可以成立。</p>
+
+<h3>6.3 什么值得转成哪类 Harness</h3>
+<div class="table-wrap"><table><thead><tr><th>内容</th><th>优先承载</th><th>避免的误用</th></tr></thead><tbody>
+<tr><td>当前状态、假设、反证与依赖</td><td>checkpoint / finding / scoped memory</td><td>未经验证的猜想直接成为常驻 system policy。</td></tr>
+<tr><td>可重复、确定性的对象/状态计算</td><td>纯 Tool，参数来自当前授权观测</td><td>每次重新推导算法、复制整个 grid，或固化旧坐标。</td></tr>
+<tr><td>依赖语义判断的条件程序</td><td>Skill：读什么、比较什么、停止/重估什么</td><td>把一次成功轨迹当跨状态通用脚本。</td></tr>
+<tr><td>持续需要独立模型判断</td><td>已有研究 assignment；若岗位本身需复用，再考虑 subagent 组件</td><td>研究 worker 的存在自动算创建了 subagent 组件。</td></tr>
+<tr><td>经验证的稳定选择策略</td><td>scoped system_prompt / policy；明确阶段与失效</td><td>存储实时数据、大量历史报告或长期未证实规则。</td></tr>
+</tbody></table></div>
+<p>纯 Tool、Skill、认识状态与研究职责可以组合，仍然复用五类现有组件与原生 runtime。真实动作授权、环境完整性和 host 指令优先级保持。</p>
+</section>
+
+<section id="mechanisms">
+<h2>7. 更有 Harness 潜力的机制</h2>
+<p>以下是按当前证据给出的优先级判断，不是已测性能排名。它们多数是现有设施的功能用法或局部优化，不需要全部开发成新模块。</p>
+<div class="table-wrap"><table><thead><tr><th>机制</th><th>Harness 潜力</th><th>主要代价</th><th>优先级</th></tr></thead><tbody>
+<tr><td>有效认识、反证与依赖连续性</td><td>防止反复探索、过时规则和跨压缩认知回退</td><td>语义维护与工作集驻留</td><td>高，先复用</td></tr>
+<tr><td>当前观测上的纯计算提取</td><td>可靠重复计算、减少视觉/几何重新推理</td><td>作者与首次正确语义使用成本</td><td>高，有重复机会才投入</td></tr>
+<tr><td>按当前选择组织短研究</td><td>更短的结论到行动路径</td><td>问题表述、结果整合与过时</td><td>高，先试交付约定</td></tr>
+<tr><td>辨别性取证与证据请求</td><td>从总结升级到可证伪的学习循环</td><td>真实动作风险、等待、实验混杂</td><td>中高，先只读/父转发</td></tr>
+<tr><td>预测差异驱动的注意与修订</td><td>让方法依据反证更新，减少空转续研</td><td>误报、错误预测、通知费用</td><td>中，先利用已有预测</td></tr>
+<tr><td>短时域、反馈驱动的行动程序</td><td>压缩成熟程序的管理轮，保持观察与停止</td><td>行动权与失效条件难以验证</td><td>中，必须后置</td></tr>
+<tr><td>独立视图的反例复核</td><td>减少共享错误解释、评估模型分歧</td><td>重复计算、证据缺口、盲审泄漏</td><td>按需，不常驻</td></tr>
+<tr><td>有界计算选择与停止</td><td>研究/推理/建能力的投入更匹配剩余任务</td><td>价值难标定、元推理自身成本</td><td>先简短语义判断</td></tr>
+</tbody></table></div>
+
+<h3>7.1 有效认识、反证与依赖连续性</h3>
+<p><strong>窄命题：</strong>在同类不确定性反复出现或发生压缩时，复用已有 checkpoint/finding 的最小认识状态，比仅恢复长报告更便宜，并减少被早期反证推翻的旧解释再次进入行动。</p>
+<p>由父或获授权研究者维护几项真正影响选择的主张：已观察事实、仍竞争的解释、排除解释的原因、当前计划依赖的前提、下一辨别点。原始证据保持一份；runtime 维护准确引用和机械版本失效，Agent 判断语义矛盾。引用同一旧证据的多个报告不能重复提高可信度。</p>
+<p>依赖关系尤其有价值：当“对象身份”被推翻时，依赖它的“目标规则”和“下一动作”要重新估计。并不需要完整知识图谱；先把几个关键依赖表达在既有文本和 <code>depends_on_refs</code> 中，测是否真正改变后轮判断。</p>
+<p><strong>不用条件与推翻：</strong>短任务、没有关键旧证据时直接保留小工作集。若新增状态重复另一份真值、每轮维护比读报告更贵，或反证在输入中仍被忽略，应修订表示与用途，不能继续扩大摘要。</p>
+
+<h3>7.2 当前观测上的纯计算提取</h3>
+<p><strong>窄命题：</strong>重复对象提取、区域计数、位移匹配或候选比较出现时，一个小的参数化纯 Tool 在后来输入上复用，可以减少总计算和错误，不依赖固定场景知识。</p>
+<p>Agent 决定算法与语义，runtime 绑定授权的准确帧、准备数据、执行限额、返回具体值并记录来源。父根据结果决定真实动作。当前 source、host/grid 内部绑定和 pure trial 已经有基础；先证明复用，避免再加新执行引擎。</p>
+<p>Tool 最好输出与选择直接有关的小结果及必要见证。例如两种候选操作影响的对象集合和可检验差异，而非永远返回完整派生图。完整当前观测保持，详细结果可按 ref 恢复。具体算法是否符合真实目标仍由任务证据验证。</p>
+<p><strong>不用条件与推翻：</strong>只需算一次、剩余预算不足、目标语义尚未明确时，可用现有计算或继续取证。若创建/修复成本大于剩余复用收益，停止建设；正确局部数值没有影响决策时，不宣称任务收益。</p>
+
+<h3>7.3 按当前选择组织短研究</h3>
+<p><strong>窄命题：</strong>对一个明确待决选择，把已有 report 优先投影为判断变化和必要反证，比要求父读完整研究再组织行动，减少管理轮与首次有效行动延迟。</p>
+<p>父不需要先写全套假设，只表达困难和可用证据。worker 可发现选项定义错误、目标本身未知或需要重新表述问题；返回“问题尚不成立”也有价值。长期价值保留在研究线，当前卡只包含当前相关变化。</p>
+<p><strong>示意交付：</strong>“当前证据排除了 H1 的某项预测；H2/H3 仍兼容。暂时无法支持原计划步骤。差异可由一次当前状态的 P 观察检验；无需创建组件。依据与 cutoff 见原 ref。”这可以用已有字段表达，不是新的固定报告表单。</p>
+<p><strong>不用条件与推翻：</strong>开放发现或长问题不强求当前 A/B。如果短卡诱导假确定性、父频繁恢复全文，或判断改善没有抵消 child 与整合成本，回到更合适的研究形式。</p>
+
+<h3>7.4 辨别性取证与证据请求</h3>
+<p><strong>窄命题：</strong>当多种解释都符合当前历史时，研究者请求一个能产生不同预测的观察，父按预算和不可逆成本选择执行，比继续总结相同轨迹更有助于更新认识。</p>
+<p>先用公开历史、准确资源读取、当前纯计算补缺；需要真实环境变化时，研究者提供候选 probe、不同解释的可见预测、适用状态和停止条件，父判断是否值得行动。取证结果按精确 ref 经 runtime 直接回到同线，父只接收当前关键变化，减少全文搬运。</p>
+<p><strong>升级顺序：</strong>只读证据请求→父选择一个真实 probe→新的 canonical 结果→同线修订。只有逐次父转发成本被证明明显时，才评估受限动作 lease。普通 delegate 已有显式 lease，Auto-Research 仍只读，不能把当前能力继承成研究动作授权。</p>
+<p><strong>不用条件与推翻：</strong>预测无法区分、目标已明确、风险不清楚且无法承受，或探测关闭重要选择时不用。若所谓实验只有多个模型同意、没有新环境证据，应保持未验证。</p>
+
+<h3>7.5 预测差异驱动的注意与修订</h3>
+<p><strong>窄命题：</strong>利用已经存在的 expected outcome 与真实结果，对当前选中方法的明确差异投影一次短事件，可减少旧方法在反证后的继续使用，避免按固定窗口重复复盘。</p>
+<p>先复用已有 validation/effect 证据。runtime 只比对已明确且可计算的预测、版本和结果；Agent 判断差异意味着假设错误、观测不足还是正常例外。没有结构化预测时，不强迫每动作补一张预测表；让 Agent 在值得检验的节点提出。</p>
+<p>注意事件默认不阻断行动，不设置“看过才可行动”的新门禁。只在具体授权、预算、版本或状态边界上硬拒绝。</p>
+<p><strong>推翻：</strong>变化太频繁、误报多、通知引发无效研究、总成本增加但没有减少错误坚持，应收窄或撤下触发。</p>
+
+<h3>7.6 短时域、反馈驱动的行动程序</h3>
+<p><strong>窄命题：</strong>某方法在多次当前状态中确证有效后，把它表达为参数化的短程序，并在每步重新观察与检查停止条件，可以减少成熟操作的父管理成本。</p>
+<p>与保存旧 action 列表不同，程序需要明确何时开始、从当前观察读取哪些变量、如何选下一步、何时停止或退回父。阶段切换、不可解释效果、状态指纹变化、预算触达和动作错误会结束程序。纯计算可重复，真实 action 不能静默重放。</p>
+<p>现有 <code>arc_actions</code> 是已计划动作的上层批量执行，不自动等于反馈闭环的 option；普通 delegate 的 lease 提供权限基础，也不证明子模型程序更好。应先做条件 Skill，父逐步使用；成熟后才测试短 lease 的收益。单个环境写者与 canonical 顺序继续保持。</p>
+<p><strong>推翻：</strong>错误状态下仍执行旧坐标、程序未读必要反馈、损失动作或收缩任务机会，即使 token 下降也拒绝晋升。这是高潜力但风险与验收成本均较高的候选。</p>
+
+<h3>7.7 独立视图的反例复核</h3>
+<p>共享父结论可能造成共享偏差。需要复核高影响解释时，可授权一个有界 worker 先读原始证据、隐藏父结论，独立提交竞争解释后再揭示分歧。复用研究线、上下文 recipe 与真实 read 权限，先确认盲审条件确实生效。</p>
+<p>它的收益是减少错误坚持，不是投票增加“置信度”。只给局部证据也可能误判；结论必须明确可见范围。没有重大解释分歧时，不常驻一个审查 Agent。</p>
+
+<h3>7.8 有界计算选择与停止</h3>
+<p>父在行动、研究、建能力之间的投入选择本身需要优化。先复用任务预算和 remaining horizon，做一次简短判断：“缺什么、能否改变当前决定、结果能否及时到达、复用能否回本”。runtime 继续强制机械预算和取消；不新增常驻计算总控。</p>
+<p>可以由授权 Agent 给持续职责设科学等待条件与停止理由，机械调度处理无新材料/预算/终局。如果最终要训练或自动估值，需要可归因的真实数据、校准与独立对照；目前没有这些证据。</p>
+
+<h3>7.9 不建议作为近期默认的机制</h3>
+<ul>
+<li>每窗口建 worker、固定全岗位研究团队、每动作强制 review 或预测报告：先支付持续管理成本，价值仍未知。</li>
+<li>用多个 LLM 一致意见自动升级规则、由 runtime 从 prose 判定科学结论：混淆独立证据与模型重复。</li>
+<li>让研究直接写并选中父 Harness，或让多个 child 同时写共享环境：破坏授权、时效和可归因性。</li>
+<li>把想象 rollout、保存帧重放、旧成功动作序列当新状态可执行收益：未真实发生的环境结果仍是假设。</li>
+<li>同时替换 scheduler、知识库、组件 DSL 和执行引擎：多因素变化无法定位收益；现有可达基础应先复用。</li>
+</ul>
+</section>
+
+<section id="lifecycle">
+<h2>8. 生命周期、时效与权限</h2>
+<p>推荐结构仍覆盖机会→识别→投入→候选→装配→语义使用→反馈→保留/修订/撤下。纯结论可跳过组件候选和装配，直接进入行动反馈；父自己创建工具也可跳过研究。每次不使用应按条件判断，不能被解释成系统失败。</p>
+<div class="table-wrap"><table><thead><tr><th>转移</th><th>推进者</th><th>证据</th><th>等待/失败/放弃</th></tr></thead><tbody>
+<tr><td>机会→识别</td><td>父或已授权研究者</td><td>重复成本、目标分歧、关键反证、明确证据缺口</td><td>低价值或剩余预算不足可忽略，不产生待办债务。</td></tr>
+<tr><td>识别→投入</td><td>父授权；runtime 启动</td><td>问题、可读范围、有限计算、需要时才关联计划</td><td>权限/预算不合格拒绝；科学范围可缩窄。</td></tr>
+<tr><td>投入→结论/候选</td><td>研究者；runtime 验结构/持久化</td><td>精确 cutoff、支持/反证、未知、下一用途</td><td>证据不足请求材料；无收益 complete/drop；length 有界续接。</td></tr>
+<tr><td>候选→装配</td><td>父语义选择和提交；runtime 机械发布/应用</td><td>完整作者内容、精确版本、scope、assembly CAS</td><td>结构错误不变成无限修复义务；已出版但装配失败如实保留部分状态。</td></tr>
+<tr><td>装配→语义使用</td><td>runtime 暴露/执行；父/授权 Agent 使用</td><td>实际工具输出、后轮输入和决定；暴露与使用分开</td><td>无适用机会可不使用；缺价值不强制调用；作用域变化重估。</td></tr>
+<tr><td>使用→反馈</td><td>runtime 绑定客观结果；Agent 判含义</td><td>真实动作、方法版本、结果、总成本与必要语义评估</td><td>不声称使用就有因果贡献；无法归因保留 uncertain。</td></tr>
+<tr><td>反馈→保留/修订/撤下</td><td>父或获授权研究者建议；父决定当前 Harness</td><td>后续反证、重复收益/成本、适用前提变化</td><td>撤下只影响未来；任务结束可保留档案，不伪称完成在线演进。</td></tr>
+</tbody></table></div>
+
+<h3>8.1 时效不能只靠版本号或固定 TTL</h3>
+<p>帧上计算绑定 observation identity 和 frame/cutoff；阶段假设绑定适用范围；跨阶段规则保留支持与反例。旧 ref 精确可读，不代表旧规则已适用于新状态。runtime 能检查机械身份和已声明的版本依赖；语义适用性仍由 Agent 判断。暂不新增“一过 N 动作全部过期”的硬策略。</p>
+<p>urgent 只能在合法父决策边界提示；已提交动作不能因后来结果被取消成没发生。仅与过去帧相关的值可进入历史索引，当前反证优先短交付。若报告需要关键详情才能改变计划，按原 ref 恢复，恢复费用计入总成本。</p>
+
+<h3>8.2 动作、研究和 Harness 作者边界</h3>
+<p>Auto-Research 当前只读；普通 delegate 的有限动作授权与研究 assignment 分开。新研究 probe 或草案权限若将来引入，必须准确表达 scope、预算、state/version、撤销与结束条件，不由职责名称暗中继承。研究 worker 的停止不代表底层请求已成功取消；取消失败与在途未知继续记录。</p>
+<p>建议继续遵循：ARC adapter 只执行公开环境合同；证据权限、lease、调度和语义选择放在 Agent runtime/Agent 一侧。派生对象、shape、motion 是 Agent 能力，不作为隐藏状态或因果真相注入。<a href="#s15">[S15]</a></p>
+
+<h3>8.3 首次获益路径与父决策负担</h3>
+<div class="table-wrap"><table><thead><tr><th>路径</th><th>必要父语义决策</th><th>可合并的机械工作</th></tr></thead><tbody>
+<tr><td>结论直接影响行动</td><td>授权研究→判断是否改变当前认识→选择真实行动</td><td>方法准备、证据绑定、队列、增量路由、结果回流；不需组件 review。</td></tr>
+<tr><td>方法变成可复用 Tool</td><td>是否值得投入→确定/作者化算法→选中版本与纯试用→如何使用结果</td><td>合法默认值、source 转换、准确数据绑定、发布/精确装配/纯 trial 的显式合并。</td></tr>
+<tr><td>持续跟踪问题</td><td>一次职责授权→必要的新语义选择或撤销</td><td>后续入队/恢复/停止由已有 worker runtime 承担，不逐窗口父管理。</td></tr>
+</tbody></table></div>
+<p>这是决策类型的分析，不把每项机械等同一轮模型调用；实际一轮可能合并多项。后续评估记录真实 management turns，而非用表格估算当观测值。</p>
+</section>
+
+<section id="refactor">
+<h2>9. 优化与重构路线</h2>
+<h3>阶段 0：冻结证据并定位最早断点</h3>
+<p>复用当前 development-workflow、已有源码快照、成本与机会漏斗。区分“没有值得研究的机会”“已识别但不投入”“研究结果过时”“父转化失败”“用后没有任务贡献”。不修改全部提示去提高调用率。</p>
+<p><strong>已有改进直接保留：</strong>ARC 首次研究准备、默认高级 schema 披露、source/准确帧绑定、取消和完整参数校验。根据当前状态修正旧按需文档。B9 已完成的项不重新排成新的重构任务。</p>
+
+<h3>阶段 1：一个低成本窄循环</h3>
+<p>优先选择实际轨迹中的一个重复负担。若是目标解释错误，试“原 report 的判断变化/反证短交付→真实后轮修订”；若是重复纯计算，试“现有最短作者路径→正确语义值→后续不同输入复用”。一次只改一个主要因素，不把两种结果混为一个优化。</p>
+<p><strong>停止点：</strong>在组件表达或基础权限完整性处失败就回到该断点；已用但无决定价值就缩窄用途；普通样本无适用机会判不确定。没有必要继续展开更复杂研究计划。</p>
+
+<h3>阶段 2：把持续研究调到合适的证据节奏</h3>
+<p>已有 worker 保持，研究者在 checkpoint 中表达等待何种证据和当前相关性。先测原有触发的费用，再决定是否引入可计算的事件过滤。通知仍用现有短卡和 exact publication；关闭不值得继续的职责。</p>
+<p>父子通信优先复用直接只读资源路由、现有 experiment_request 和反馈同线，避免大结果每次先经过父模型全文再转给 child。这属于既有延期 C 项的窄验证，不需要重新定义 ARC adapter。</p>
+
+<h3>阶段 3：条件进入的较大重构</h3>
+<div class="table-wrap"><table><thead><tr><th>升级条件</th><th>可进入的改动</th><th>必须保留/先验证</th></tr></thead><tbody>
+<tr><td>最新短路径下，父反复转写仍占主成本，合法候选经常转换失败</td><td>调整作者合同：允许明确授权 child 写隔离完整草案，父审阅精确草案后提交。</td><td>另立 ADR；当前父作者规则确实被改变。无自动采用、无直接写父 Harness；内容权限与版本验收。</td></tr>
+<tr><td>短交付频繁过时或父必须反复读全量报告</td><td>收敛为按当前选择投影的 read view，复用原报告与研究线。</td><td>原始证据、分歧、长期问题恢复；不再维护第二套认知库。</td></tr>
+<tr><td>父逐次 probe 转发形成已测成本，且动作有可验证边界</td><td>评估已有普通 lease 合同的受限研究用途。</td><td>研究动作权限的独立变更；单写者、状态绑定、不可逆成本与取消竞态。</td></tr>
+<tr><td>当前受限 source 引擎仍阻断主要纯计算，非机械合同问题</td><td>在冻结输入上比较受限执行与受约束普通代码执行。</td><td>先测表达、隔离、权限、限额和总成本；没有结果前不替换引擎。</td></tr>
+</tbody></table></div>
+<p>较大重构的本质应是减少父重做工作和错误状态传播。重命名研究平台、增加一组模式标签或统一所有对象为一个新框架，缺少任务收益理由。</p>
+
+<h3>与当前 P0–P7 方案的关系</h3>
+<p>现有 P4 已覆盖输入/生成成本与连续性，P5 已覆盖持续研究与采纳反馈，P6/P7 覆盖普通采用、对照与退休。本文补充功能定位和优先级，应并入其语义交付、时效与实验切片。无需再开第二条全面实现路线，也不能把本次方案落盘当作 P5 或延期 B/C/D 完成。</p>
+<p>新增与移除的运行负担应按候选分别核算。近期目标是<strong>不增加常驻 worker、提醒、强制字段或语义 action gate</strong>；可能增加的是按需交付的必要信息，可能减少的是重复详情、父搬运与过时研究。若引入隔离草案、lease 或新计算引擎，单独计入开发/运行/恢复成本。</p>
+</section>
+
+<section id="evaluation">
+<h2>10. 有界评估与推翻条件</h2>
+<p>以下是未来协议建议，本次不执行。现有其他 chat 的运行授权和预算不能被本文自动重复分配。模型、provider、有效配置和版本必须在执行前锁定；无法对齐的任务初态应披露比较限制。</p>
+
+<h3>10.1 先选一个可推翻命题</h3>
+<div class="table-wrap"><table><thead><tr><th>候选命题</th><th>比较器与主要变量</th><th>支持信号</th><th>推翻/不确定</th></tr></thead><tbody>
+<tr><td>判断差异短交付比原投影减少整合成本</td><td>同一研究内容：原 report 投影 vs 当前判断变化投影；其他权限、预算、工具不变。</td><td>实际后轮利用反证，首次有效决定更快；总成本和质量满足预定标准。</td><td>恢复全文变多、丢关键反证、成本不降且质量无增；缺少真实机会判不确定。</td></tr>
+<tr><td>反证/依赖状态减少认知回退</td><td>复用原 checkpoint，仅改变关键认识的投影；固定生成设置。</td><td>真实压缩/恢复后避免重采已排除解释，必要证据准确恢复。</td><td>只有文件可读而判断未变化；新增摘要造成驻留和错误固化。</td></tr>
+<tr><td>小纯 Tool 在剩余任务回本</td><td>同类计算：现有方式 vs 一个参数化 Tool；固定观测与任务语义。</td><td>至少一次后来不同输入正确复用，父子总成本下降且决策正确。</td><td>只在 guided 冻结帧成功；首次建设后没有使用机会；结果错误或无选择贡献。</td></tr>
+<tr><td>辨别性证据请求能结束重复研究</td><td>相同待辨别问题：继续读历史 vs 一个父选择的取证；动作成本计入。</td><td>真实新结果支持排除/修订，任务预算内进展改善。</td><td>预测相同、证据被污染、损失不可接受、反复请求但不更新。</td></tr>
+</tbody></table></div>
+
+<h3>10.2 分层验证顺序</h3>
+<ol>
+<li><strong>功能诊断：</strong>冻结公开输入验证版本/权限、状态绑定、短卡完整性、超时/取消、过时/重复、空结果、length 与恢复。纯函数可核对真实数值；数据来源不泄漏隐藏状态。</li>
+<li><strong>接线验收：</strong>若宣称研究→路由→任务内 self-harness 闭合，执行真实 <code>arc-harness-smoke</code>，覆盖官方 ARC bridge、Pi 父、broker/child、结构化返回、router、native mutation、五类组件、action、后续真实父轮及两类 provider length。判定语义输出，不能仅看 completed。</li>
+<li><strong>普通采用：</strong>普通任务中自主识别与投入，观察合理不使用、放弃、修订和后轮影响。显式“请用机制”样本只用于诊断。</li>
+<li><strong>净收益：</strong>独立新 run 的匹配对照；每局各自产生不可回退历史。没有真实 provider，最高只证明接线/诊断。</li>
+</ol>
+
+<h3>10.3 建议的预算与样本分配</h3>
+<p>为与当前项目最新验收口径保持可比较，未来可采用每 run 最多 50 个实际动作或 30 分钟，先到者停止；同时保留单次父子 reported 上限，例如现有 120k。预算、取消或提前终局若更早停止，明确记录，不能声称达到 50 步/30 分钟。usage 阈值是止损口径，存在供应商结算与未知在途成本，不是硬计费承诺。</p>
+<p>一个候选先做有限诊断，然后用<strong>当前冻结版 vs 单因素候选</strong>，不同时展开三臂。可先 1 对探索确认协议可判别，再预登记 6 对确认样本，两个游戏各 3 对：12 个 run、最多 1.44M known reported（若每 run 120k）。探索与确认分开计；若探索也用 2×120k，总候选预留最多 1.68M known，另保留未知费用状态。具体额度须在未来执行授权内重新核对，不能复用尚被其他实验占用的余额。</p>
+<p>模型可先选择现有 yibu / gpt-6.1-sol；确认后再独立检验 qwen3.8-27b，不把两种模型样本混成机制平均收益。API、effort/thinking、输出上限、观测模态、依赖和 Pi 版本均固定；有效 provider 请求与源码 manifest 对齐。运行顺序交错或随机化，初态/种子可对齐时配对，不能对齐时分别列限制。6 对只是小样本检查点，通常不足以证明泛化。</p>
+<p>主要质量指标按游戏预先选择：任务成功/关卡进展优先，无依据的对象接近距离不当奖励。候选若只降低 token，但显著损害任务进展，应否决。建议把“成本至少降 15%，主要质量非劣”作为效率假设的<strong>预登记候选标准</strong>；质量容忍幅度必须由任务规则给出，样本不足以确认非劣时结论是不确定。质量提升路线则在相同总预算比较成功/进展，不事后换指标。</p>
+
+<h3>10.4 必须同时测量的东西</h3>
+<ul>
+<li><strong>任务：</strong>真实动作、失败/无效动作、成功与阶段进展、固定墙钟下的进展；保持原始 canonical 历史。</li>
+<li><strong>行为：</strong>适用机会分母→识别→投入→结论/候选→装配→实际使能→语义使用→反馈；合理不使用、弃用、过时报告也进入审阅。</li>
+<li><strong>总成本：</strong>父及所有 child 的 input/cache/output、可用 reasoning、失败/取消/pending、恢复与管理调用；output 已含 reasoning 时不重复加。</li>
+<li><strong>时效：</strong>首次有效行动延迟、研究响应到父决策的间隔、过时/漏交付、CPU/模型计算时长和实际墙钟；并发重叠不按调用时长之和当墙钟。</li>
+<li><strong>连续性：</strong>关键假设、已排除解释、反证、未完成实验与决策理由是否跨压缩/阶段仍影响真实判断。</li>
+<li><strong>维护：</strong>默认常驻 schema/prompt 增减、必要父语义决定和管理轮、开发验证投入。宿主开发成本与游戏父子成本另报。</li>
+</ul>
+<p>tokens、图像计量、JSON 字符、传输 bytes 与现金费用保持不同口径。缺 reasoning 或取消账单保持 unknown。离线重放可检查工具与接口，不能替未发生的真实动作计算因果收益。</p>
+
+<h3>10.5 必须有的负例与停止规则</h3>
+<p>负例覆盖无价值机会、一次性问题、无新证据、ref 很多但无科学进展、过时阶段、独立分歧、错误/空结构化报告、预算不足、撤销竞态、length、压缩后早期反证、候选发布后装配失败，以及 Tool 正确却无任务贡献。</p>
+<p>必要完整性失败立即停止该候选并定位断点。预算到达、未知费用无法控制、关键材料缺失时停止；两个系统都无可判别进展时保留不确定，不无限扩样。收益失败时先改变一个主要因素或撤下候选，不能靠增加 worker/提醒掩盖。</p>
+</section>
+
+<section id="record">
+<h2>11. 统一设计记录与决定</h2>
+<p>本节与前述正文共同构成一份按项目模板组织的设计记录。状态为<strong>方案建议，未实施</strong>；本文不是新运行授权或替代现有活动实验协议。</p>
+<div class="table-wrap"><table><thead><tr><th>栏目</th><th>记录</th></tr></thead><tbody>
+<tr><td>真实失败/机会</td><td>既有 guided 研究被用于行动仍未取得任务收益；普通样本采用稀少；父转化、时效与认知连续性存在结构张力。源码已具持续 worker 和今日简化，避免重复建设。</td></tr>
+<tr><td>主要窄命题</td><td>对有真实判断缺口的任务，复用现有报告并优先交付判断变化/反证，比原投影减少父整合和等待，且任务质量在相近父子预算下不退化。</td></tr>
+<tr><td>减少的负担</td><td>父重读报告、重新组织选择、跨阶段重复排除错误解释、搬运中间结果；不以研究或组件数量为奖励。</td></tr>
+<tr><td>适用/不使用/推翻</td><td>适用：明确不确定性、可用证据、结果及时且有决定价值。合理不用：低价值、一次性、预算不足、任务已变。推翻：整合成本未降、恢复增加、错误坚持或主要质量下降。</td></tr>
+<tr><td>设计与成本</td><td>A→C 渐进迁移，复用现有 line/worker/report/checkpoint/组件。近期不新增常驻 worker、字段或 action gate；按需信息和恢复成本另测。隔离草案/lease 等是条件重构。</td></tr>
+<tr><td>生命周期与首次获益</td><td>责任、证据、停止及父语义决定见第 8 节。直接结论不经组件流程；可复用方法才作者化和精确装配。</td></tr>
+<tr><td>权限/版本/环境</td><td>父最终选择、Auto-Research 只读、ordinary lease 独立、精确 ref/CAS、预算/取消、canonical 环境历史保留。任何新草案/动作权限另改合同。</td></tr>
+<tr><td>实验协议</td><td>第 10 节：单因素、独立轨迹、固定 provider/配置/模态、有限预算、负例、质量与总成本预登记；本次未执行。</td></tr>
+<tr><td>实现与验证</td><td>本次仅源码/文档/既有产物评审与 HTML 生成。未修改 runtime，未重跑历史功能/完整 ARC 验收，未运行真实模型。</td></tr>
+<tr><td>四层状态</td><td>现状证据见第 2 节；本文新方案的功能正确、全链路可达、自主采用、净收益均未验证。设计可审阅不等于运行通过。</td></tr>
+<tr><td>剩余检查</td><td>在最新冻结版上验证一次普通“研究结论→后轮判断→真实行动/反馈”，记录父子总成本及过时；或先选重复 Tool 窄循环，不能同时改两因素。</td></tr>
+<tr><td>关联延期事项</td><td>B：独立目的/视图；C：证据请求与父子路由；D：跨压缩认识。本文提供下一检查与候选形式，三项仍开放；A 的 adapter 边界继续按实际合同推进。</td></tr>
+</tbody></table></div>
+<div class="decision"><strong>决定：</strong>保留 Auto-Research 的核心职责与成熟机械基础；优先收敛父侧交付、认识连续性和可复用计算，不将更多调度或常驻角色作为默认答案。较大重构以“最新短路径仍无法消除已测转移负担”为进入条件。建议方案尚无性能通过证据。</div>
+<p>若只先选一项，我建议从已有真实研究样本中选择一个目标/规则分歧，验证“关键反证及时进入当前判断，父不重读全报告也能作出正确后续决定”。它最直接检验 Auto-Research 的定位。若最新轨迹的主负担已经变成重复几何计算，则改选小纯 Tool 复用；依据现实负担选择，而非为了让研究机制被调用。</p>
+</section>
+
+<section id="sources">
+<h2>12. 一手依据与材料索引</h2>
+<p>本报告判断分为“源码可见”“既有运行观察”“设计推论/假设”。本地链接用于工作区追溯；邮件附件正文已包含必要事实与局限，离开仓库仍可阅读。本地来源若随后变化，以本文只读快照为准。</p>
+<ol class="refs">
+<li id="s1"><strong>S1 · 开发与证据标准：</strong><a href="../development-workflow.md">docs/development-workflow.md</a>，特别是四层验收、生命周期、单次生命对照与父子总成本；<a href="../templates/meta-harness-change.md">统一记录模板</a>。</li>
+<li id="s2"><strong>S2 · 定位 ADR：</strong><a href="../plans/2026-10-01-auto-research-mechanism-and-workers.md">机制与多个研究子 Agent</a>，第 1–6、11 节为定位与最终状态；第 7、10 节是历史审计。</li>
+<li id="s3"><strong>S3 · 实施与官方接线：</strong><a href="../auto-research-workers-implementation-2026-10-01.md">实现记录</a>；<a href="../../runs/arc-workers-accepted-matrix-20261001/arc-self-harness-smoke-summary.json">17/419 accepted matrix</a>。官方环境真实，provider 确定性。</li>
+<li id="s4"><strong>S4 · 授权与证据：</strong><a href="../../demo/pi_auto_research_workers.ts">pi_auto_research_workers.ts</a>，47–97 行为授权、路由与分析确认，103–117 行为短投影。</li>
+<li id="s5"><strong>S5 · 调度与交付：</strong><a href="../../demo/pi_auto_research_worker_runtime.ts">pi_auto_research_worker_runtime.ts</a>，26–124 行为有界调度/后续 session，128–151 行为交付选择；新 ref 与科学信息价值不同。</li>
+<li id="s6"><strong>S6 · 真实 Pi 接入与父作者合同：</strong><a href="../../demo/pi_task_local_subagents.ts">pi_task_local_subagents.ts</a>，2182–2201 行为 ARC 首研准备；2893–2927 行为非执行作者 handoff；3044 行注册动态披露；3093–3113 行为 context pump/inbox。</li>
+<li id="s7"><strong>S7 · 默认工具面：</strong><a href="../../demo/pi_management_schema_surface.ts">pi_management_schema_surface.ts</a>，19–43 行为字段/action 投影，85–109 行为完整参数校验。完整 schema 不是最终默认投影。</li>
+<li id="s8"><strong>S8 · 父侧入口：</strong><a href="../../demo/pi_external_benchmark_research.ts">pi_external_benchmark_research.ts</a>，197–211 行为短 Auto-Research 投影；<a href="../../demo/prompts/auto_research_main_contract.md">按需指导</a>含部分旧前置文字，按真实实现判断。</li>
+<li id="s9"><strong>S9 · 今天的方案与已实施进展：</strong><a href="../plans/2026-10-06-self-harness-simplification-and-validation.md">P0–P7 / Goal R06、R20、R08 / B9</a>；<a href="../../tmp/self-harness-goal-20261007/B9/summary.json">B9 freeze</a>；<a href="../../tmp/self-harness-goal-20261007/management-B9-measure/measurement.json">B9 同脚本 schema 测量</a>。B9 archive SHA-256 为 <code>058d021cd5d51efece3c5af202ccd39e58b074ac3423ff81f1e3ff0fd3a52d25</code>。</li>
+<li id="s10"><strong>S10 · 既有成本与负结果复盘：</strong><a href="2026-10-06-48h-optimization-review.md">48h optimization review</a>。其 stage133 当前状态只属于原记录日期，不作为今天源码版本；本文仅引用具体历史样本与口径。</li>
+<li id="s11"><strong>S11 · 真实研究被用于选择：</strong><a href="../../tmp/arc-stage110-outcome-audit-20261005.json">stage110 outcome audit</a>；<a href="../../runs/arc-stage110-guided-goal-real-gpt-ls20-60-20261005/summary.json">实际运行 summary</a>。yibu/gpt-6.1-sol、guided、官方环境；含未知请求。</li>
+<li id="s12"><strong>S12 · 普通运行与零组件：</strong><a href="../../tmp/arc-stage78-80-final-audit-20261004.json">stage78–80 audit</a>。真实 GPT 普通任务，不据零采用推断机制永远无用。</li>
+<li id="s13"><strong>S13 · 真实接口负结果：</strong><a href="../../tmp/arc-stage140-live-tool-cost-audit.json">stage140 cost</a>、<a href="../../tmp/arc-stage140-live-tool-semantic-audit.json">semantic audit</a>。yibu/qwen3.8-27b、guided，0 child；不是研究收益对照。</li>
+<li id="s14"><strong>S14 · 新生成推理成本：</strong><a href="../../tmp/arc-stage118r1-final-evaluation.json">stage118r1 evaluation</a>；与 S10 复盘交叉核查。reasoning 已计入 output。</li>
+<li id="s15"><strong>S15 · 动作与延期边界：</strong><a href="../arc-observation-action-alignment-2026-09-30.md">ordinary lease / canonical action</a>；<a href="../deferred-research-todos.md">延期 A/B/C/D</a>；<a href="../plans/2026-09-28-online-retrospective-harness-evolution.md">在线复盘与参数化方法</a>。</li>
+<li id="s16"><strong>S16 · 独立源码核查：</strong><a href="../../.scratch/auto-research-review-20261007/source-audit.md">source-audit.md</a>。已纠正原始 schema 与实际默认投影的区别；正文结论再与原始文件核对。</li>
+<li id="s17"><strong>S17 · 本次只读快照：</strong><a href="../../.scratch/auto-research-review-20261007/review-source-manifest.json">22 项来源 manifest</a>、<a href="../../.scratch/auto-research-review-20261007/review-source-snapshot.zip">来源快照</a>。捕获于 12:20:35（上海时间）；ZIP SHA-256 <code>262e3432faddbedff90d248efbe9952284172cb01836ecfc201a89fa1462ae45</code>。这是评审证据快照，不是运行发布或完整源码冻结。</li>
+<li><strong>外部概念依据：</strong><a href="https://arxiv.org/abs/2210.08863">You Only Live Once: Single-Life Reinforcement Learning</a>（2022）；<a href="https://arxiv.org/abs/1711.06892">Learning to select computations</a>（2017/2018）；<a href="https://www.anthropic.com/engineering/building-effective-agents">Building effective agents</a>（2024 工程经验）与<a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Effective context engineering</a>（工程经验）。后两者提供简单组合、按需上下文的参考，不是本项目采用或收益证明。</li>
+</ol>
+</section>
+<footer>Auto-Research 评审 · 2026-10-07 · 仅设计建议。新方案的功能、完整接线、自主采用和净收益均未验证。保留原始环境历史、权限、预算与精确版本；任务成果和父子总成本共同决定机制是否值得保留。</footer>
+</main></body></html>

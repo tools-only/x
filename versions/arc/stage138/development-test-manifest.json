@@ -1,0 +1,8 @@
+{
+  "tests/test_task_pure_python_native.py": "96cbc06848a95d5e4fda6fa5cc4e581c7cf984b44b297608e59c852eefca8516",
+  "tests/test_harness_argument_integrity_native.py": "4e83d000b4a4e70e31d6fd8dc7c165cb8e55e1ce99f0901606b93ae20aadaead",
+  "tests/test_compact_creator_native.py": "f929c9ae6d97f8669aed255534f44cd29bb189a4e04f48ca7458c8e8c0bdcabc",
+  "tests/test_task_pure_expression_native.py": "bdc289bb134e904cdc862d2dbc6b8b2212c750cab9bc1bb796f447bb25849e3e",
+  "tests/test_direct_development_intent.py": "b88f23def219930190c6c9ffccae70383588f224d1bac717a29d4096a339ec91",
+  "tests/test_harness_capability_authoring.py": "36fb434ae3a5a397144643bd70fb1d5be025755be021502f6f6ec201e278d0f8"
+}

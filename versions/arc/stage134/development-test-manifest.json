@@ -1,0 +1,6 @@
+{
+  "tests/test_pure_binding_schema_completion_native.py": "b5c05387cdfba6b7e52d909832441004b4fd889d7c65bc771bb19cc4840bff67",
+  "tests/test_pure_publication_trial_native.py": "c9f32f13b5f7db0de8045f77a12dacf7ef196d87d699022b42eac354eed55db9",
+  "tests/pi_pure_binding_schema_cancellation_fixture.ts": "9081996388aa9ec79a5acf084d977e46dbe8f0911c27d0ac3fc0e2c13ec28814",
+  "tests/test_pure_binding_schema_cancellation_native.py": "99b30308833ba03544a3bb1ea2d15c1c9f7839e9f81b7556f1e7d8bb01d6f7b8"
+}

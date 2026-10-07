@@ -3,21 +3,26 @@ import { Type } from "typebox";
 import { HARNESS_SEMANTIC_KINDS } from "./pi_auto_research_harness_router.ts";
 
 export const ResearchMethodSpecificationSchema = Type.Object({
-	problem: Type.String({ minLength: 1 }),
-	inputs: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-	invariants: Type.Array(Type.String({ minLength: 1 })),
-	parameters: Type.Array(Type.String({ minLength: 1 })),
-	steps: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-	decision_points: Type.Array(Type.String({ minLength: 1 })),
-	stop_conditions: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-	failure_modes: Type.Array(Type.String({ minLength: 1 })),
-	construction_evidence_refs: Type.Array(Type.String({ minLength: 1 }), {
+	problem: Type.Optional(Type.String()),
+	applicability: Type.Optional(Type.String({ description: "When to use the method, expressed as a condition rather than a trace example." })),
+	abstain_when: Type.Optional(Type.String({ description: "When evidence is insufficient or the method must preserve ambiguity." })),
+	abstraction_scope: Type.Optional(Type.Union([
+		Type.Literal("single_situation"), Type.Literal("bounded_reuse"), Type.Literal("cross_context"),
+	], { description: "Where the method is applicable. Scope limits use; it does not decide whether procedural content is a Skill." })),
+	inputs: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	invariants: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	parameters: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	steps: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	decision_points: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	stop_conditions: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	failure_modes: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	construction_evidence_refs: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], {
 		description: "May be empty for an explicitly untested method candidate; empty evidence never implies support.",
-	}),
-	contrast_evidence_refs: Type.Array(Type.String({ minLength: 1 })),
-	next_use: Type.String({ minLength: 1 }),
-	predicted_semantic_result: Type.String({ minLength: 1 }),
-	falsifier: Type.String({ minLength: 1 }),
+	})),
+	contrast_evidence_refs: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+	next_use: Type.Optional(Type.String()),
+	predicted_semantic_result: Type.Optional(Type.String()),
+	falsifier: Type.Optional(Type.String()),
 }, { description: "A reusable research method. It is versioned independently from any proposed Harness component." });
 
 export const ResearchMethodCandidateSchema = Type.Object({
@@ -27,10 +32,19 @@ export const ResearchMethodCandidateSchema = Type.Object({
 		Type.Literal("procedure"), Type.Literal("computation"),
 		Type.Literal("plan"), Type.Literal("role"),
 	]),
-	summary: Type.String({ minLength: 1 }),
-	basis_refs: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+	summary: Type.Optional(Type.String()),
+	basis_refs: Type.Optional(Type.Array(Type.String())),
 	method: ResearchMethodSpecificationSchema,
 	proposed_delivery_id: Type.Optional(Type.String({ minLength: 1 })),
+	program: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+		description: "For computation only: bounded task-pure-python-v1 source or task-pure-expression-v1. Research input; parent explicitly chooses publication/assembly. Runtime validates syntax and limits without executing it.",
+	})),
+	input_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+		description: "Optional canonical pure-tool input schema accompanying program.",
+	})),
+	output_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+		description: "Optional canonical pure-tool output schema accompanying program.",
+	})),
 });
 
 export const ResearchFindingAssessmentSchema = Type.Object({

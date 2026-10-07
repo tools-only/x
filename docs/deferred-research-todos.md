@@ -1,5 +1,137 @@
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-10-07 完整阶段补全（仅设计）：用户要求全部阶段都有完整方案。主记录新增 P0–P7 的目标结构、五类转化/装配/实际使能与时序、host/grid/作者合同迁移、输入与新 reasoning 双预算、研究职责/增量/反馈、ordinary 采用及净收益退休方案；票据扩为 [24 个开发切片](../.scratch/self-harness-simplification/README.md)。早期诊断只是第一验收点，最终集成必须覆盖所有阶段。当前 planned 表示规划完成，未实现或启动 paid，B/C/D 保持开放。
+
+2026-10-07 Matt Pocock skills 规格化（仅文档）：已有简化方案补充 [规格与 15 张独立票据](../.scratch/self-harness-simplification/README.md)，提前验证现有接口的真实语义复用，第一版完整接线/普通采用不再等待所有 schema、预算或研究增强。主方案继续作为唯一实验与证据记录；票据为待审阅草案，未实施或启动 paid，B/C/D 状态不提升。
+
+2026-10-06 简化实施方案（仅设计）：已将通用 SDK 拒绝的错误回显/pending 膨胀、创作债务、默认管理 schema、准确数据绑定、最终请求预算和普通自主采用拆成 S0–S9 可验证切片，见 [Self-Harness 简化与可验证迭代方案](plans/2026-10-06-self-harness-simplification-and-validation.md)。首项是已有实际 Pi 故障的下一轮回归；本次未改 runtime、未启动 paid/ARC 实验，不替代其他活动运行协议。研究到行动、父子通信、跨压缩认知连续性与父子总成本仍待真实验证，B/C/D 保持开放。
+
+2026-10-06 stage142：能力purpose补回既有decision持久化/无结果依赖时同批说明；ordinary purpose/schema不变、未新增工具/门禁/worker。actual Pi初始10项通过；official ARC SDK/Pi确定性provider首次16场景398检查通过，periodic-memory TLS启动失败（Pi前）保留，仅同freeze重试27/27，标准425跨两次执行覆盖，非一次完整矩阵全绿。paid0；source-format研究child交接专项、自主采用、父子净收益、跨压缩认知质量仍未验，B/C/D不关闭。比较141/142普通任务不暴露本次prompt变量；历史90对142是多因素对照。见统一记录142a及tmp/arc-stage142-coverage-audit.json。
+
+2026-10-06 stage140唯一真实guided负结果：5完成HTTP/66986reported（input65799/output1187/reasoning/cache0）/1action/0level，正确复用final numeric grid但Tuple预检拒绝，无工具语义贡献；第6在HTTP前被native无首关预算拒绝，本次无新增unknown，累计233479known及138第四unknown保持。完整final grid、delta0和target4→4进入后轮，错误“永久黑点”known_effects与反证共存，不作为压缩丢失归因。141下一单因素仅有界合并源码/name/limit错误反馈，离线检查不关闭B/C/D或任务净收益；未添加提醒/worker/工具。见统一记录140e/141、tmp/arc-stage140-live-tool-cost-audit.json与semantic-audit.json。
+
+2026-10-06 stage140：准确final numeric grid按需绑定＋可选较早action/level/gap locator，保持parent科学选择/权限/限额；21唯一native诊断通过、初始resident0新增、creator读1/resource读0，按需回执+151/327字符。官方17case首次16通过/1 SDK初始空frame（Pi前、0模型请求），同freeze仅复测Subagents22/22通过，425required门槛跨两次runner覆盖，原失败保留。完整diff45767字符与compact行计数523是不同查询粒度；不得冒称无损压缩/净收益。candidate140冻结，阶段paid0，source-format研究child专项、自主采用、研究/组件→真实有效行动、父子净收益及跨压缩认知质量仍未验，B/C/D开放。见统一记录140a–140d及tmp/arc-stage140-coverage-audit.json；唯一真实诊断另有事前协议，未因fixture数自动晋升。
+
+2026-10-06 stage138真实负结果/stage139：138后续Qwen/off引导live为1action/0level，3完整响应41740known，第四在途成本未知；去图像请求28385→58807字符，SDK错误在回执与pending重复，不能以初始CH合格或thinking关闭称增长已解决。139仅对齐既有空输入默认值，实际同例错误5236→407字符、schema每请求−37、creator读取1→1，21唯一诊断检查/paid0，已冻结；原失败源码仍未发布。139完整ARC接线、普通采用、研究/组件→有效行动、父子净收益与跨压缩认知质量未验证，B/C/D继续开放。下项是离线完整作者路径的数据绑定/帧选择/source/预算/后轮语义交接，不以局部green重开paid。见统一记录139a–139b及tmp/arc-stage139-defaults-representation-audit.json；下述137–138的paid0仅指其离线实施阶段。
+
+2026-10-06 stage137–138：继承creator去重并精简完整纯Tool作者接口，creator回执6253→5692→3844字符；最短source调用取代嵌套IR与重复机械字段，native正确四点值进入后轮/重启无parser与额外重读，23唯一功能/初始检查及冻结138官方真实ARC SDK/Pi确定性provider17/425通过。source-format研究child handoff未单独演练；真实普通采用、有效行动与父子成本净收益尚未验证，本轮paid0。B/C/D继续开放，尤其不能将接口表示节省当作研究→行动或跨压缩认知收益。见统一记录138a及tmp/arc-stage138-authoring-burden-audit.json。
+
+2026-10-06 stage136：移除Tool安全snake_case的纯格式拒绝，原实际合法call的AST哈希保持，native发布/装配/正确四点值/后轮及两种分隔符独立身份通过；初始内容不变，官方ARC/Pi scripted17/425通过。旧scripted approval typed schema未扩大。唯一真实Qwen窗3HTTP/27402reported、两次非法JSON、零组件，当前创作问题累计124753known；普通自主采用、关卡贡献、父子净收益与B/C/D仍未证明。见统一记录136及tmp/arc-stage136-real-evaluation.json。用户更新目标明确为meta-harness收益；成功batch仅作反馈转移证据，不硬编码游戏路线或阈值。
+
+2026-10-06 stage134–135a：134真实Qwen3HTTP/26,937reported/零动作，最早断点为非法最终JSON经partial解析后丢掉assembly/trial；135严格原始参数校验及完整错误交付通过native诊断与官方ARC/Pi17/425接线。135a仅限定Completions API，1项分派及2条真实raw原生回归通过，沿用135接线证据。初始内容与132同口径相等，没有新增压缩收益；135a真实短窗3HTTP/26928reported，一次修复再次非法JSON，零组件；完整性拒绝有效，普通采用和任务净收益未证明，B/C/D继续开放。见统一记录135及tmp/arc-stage135a-real-evaluation.json；不以更严格拒绝或通过检查数代替研究到行动与通关结果。
+
+2026-10-06 stage130c–131：唯一真实Qwen/off接口诊断2HTTP/16469reported（含5760cache）在候选preflight停止，原科学坐标算法经5项接口机械校正的native离线重放返回正确四点值，不算自主修复/普通采用。另复现successful缺usage经Pi默认0而绕过预算的真漏洞，131单因素改为unknown止损，并区分预HTTP拒绝与在途未知；35native+3Node+4initial及frozen official SDK/Pi17/425通过，paid0。1项旧terminal fixture永久返回被禁止arc的循环在冻结130亦复现，独立保留待修，不宣称全tests通过。初始CH1×、完整grid/native PNG、权限/版本保持；普通采用、父子净收益、B/C/D与≤60步至少一关仍开放。见统一记录130c/131a及tmp/arc-stage131-final-audit.json；下一增量是首次作者接口的机械负担，而非重新付费发散。
+
+2026-10-06 stage129–130：同一128公开帧的Qwen/off定向两臂8,908known均错读target，坐标标尺候选129已冻结退休，完整grid/PNG恢复128。130把父可选pure首次试用并入create+assembly，复用同一版本execute/授权snapshot/schema/限额/signal，nested失败不抹除已提交发布；新增字段/工具/worker/行动gate均0。28定向检查、frozen official SDK/Pi17/425及专项SDK9项通过，精确语义值进入后续实际provider context；初始CH1×保持。ordinary自主识别/采用、真实父子净收益与至少1关/60步仍未验证，B/C/D继续开放。见[统一记录130](plans/2026-10-02-context-tool-reasoning-design.md#130a-实现验收及证据边界同日)、tmp/arc-stage130-final-audit.json；下一窄检查是Qwen对精确计算接口的首次语义使用，不能将fixture接线当通关修复。
+
+2026-10-06 stage127–128：静态手册首续轮后exact-ref寿命与bare review/induction隐式schema latch分两个单因素冻结；恢复/pin、动态实时契约、canonical验证及初始CH1×保持，两版各自official SDK/Pi17/425通过。ordinary128 yibu/qwen3.8-27b为4完成请求/2动作/0关/50,085 known、unknown=false、reasoning0。实际输入验证手册首送/过期、六schema稳定、无resource重读及完整current/80-cell patch/两PNG；反馈→修订→下一动作到达，但第二target声称4、canonical为5，意图实验条件不成立。0研究/作者/装配，净收益及B/C/D继续未完成；下一问题是target条件与公开frame/ref对齐，不能归为压缩丢失或改写原prior。见[统一记录127–128](plans/2026-10-02-context-tool-reasoning-design.md#128c-普通真实采用失败归因及保留决定)、tmp/arc-stage128-real-evaluation.json及real-mechanism-audit.json。
+
+2026-10-06 stage124：已实现opt-in native Qwen连续length有界恢复，首次non-off截断改off、第二连续截断明确停止；46定向native/边界检查、只读评审、default SDK/Pi完整17/425及197零漂移通过。ordinary ft09真实3请求/1动作/0关/45270known/0unknown，实际38cells变化且goal未解；第三on仍8192reasoning/length，原生40000预算拒绝恢复，故普通fallback未执行、采用和净收益未验证。两窗口共81730known/2actions/0levels，无paid进程；B/C/D和60步至少一关仍开放。下一窄检查是effort投入与完整恢复预算协调，不能随机提高限额重跑；见统一记录124c、tmp/arc-stage124-real-evaluation.json。
+
+2026-10-06 stage123r1：动作边界wait把agent_end当true settlement的协议bug已原生红绿修复；另修正smoke将真正terminalreview误纳gameplay的阶段诊断，最终official SDK/Pi/scripted-provider完整17/425、197零漂移。ordinary yibu/qwen真实反馈窗2请求/1动作/0关/36460known/0unknown，第二实际gameplay请求保留原预测/反证/ref/0delta和完整PNG，但reasoning占满8192输出、124.491秒后length，无下一动作；native checkpoint拒绝第三请求。它证明反馈可达，未证明语义采纳或收益，B/C/D与60步至少一关仍开放。下一单因素为原生Qwen连续截断的有界off恢复，实施/真实采用另验；见统一记录第123–124节及tmp/arc-stage123r1-real-evaluation.json。
+
+2026-10-06 stage122r1：复现stage120的checkpoint预测字段拒绝/修正丢字段，现共用prediction/falsifier schema、原样归入已有next_decision，并修复Pi nullable union对null/空字符串的转换；36native/17Node、初始CH1×、官方SDK/Pi默认17/425及197源码零漂移通过。ordinary yibu/qwen短窗1请求/1action/11178known、0错误但changed_cells0/0关，父合理选择直接action而未触发checkpoint兼容；没有后续父轮验证负反馈利用，不能宣称字段自主采用/净收益。下一断点为负反馈→假设修订→行动；B/C/D与真实60步至少一关继续开放。见统一记录第122节和tmp/arc-stage122r1-real-evaluation.json。
+
+2026-10-06 stage116：从stage114公开记录定位零strategy_candidate却要求candidate选择的机制矛盾，导致6次decision_unassessed。现将非结构化行动证据与正式候选选择分开：无候选不投影选择义务/缺口，省略optional selection不造失败审计，显式候选保留版本与证据核对；facts/claims重放逐项保持，局部视图累计字符27825→18068。14 Node、24实际Pi/上下文/兼容检查及官方SDK/Pi确定性全17/425通过，197源码零漂移，无新增付费调用。B/C/D及真实60步至少一关继续开放；局部字符和接线不算模型自主采用/净收益。见统一记录第116节及tmp/arc-stage116-functional-audit.json、arc-stage116-matrix-audit.json。
+
+2026-10-05 stage113b–115：精确成功基线直连复现14动作/0关/108798reported；仅加当前位置事实回忆的独立变体8动作/0关/107690reported且没有适用回忆，不能称游戏收益。局部同输入决策诊断有支持，候选保留隔离实验状态。实际next_step/next_decision错层拒绝已作无新增schema的兼容修复，5 Node/9真实Pi检查及最终主工作区SDK/Pi完整17/425通过、197源码零漂移；采用与净收益未验证。本轮ARC及provider诊断244876已知reported另有未知，付费进程已退出、未安排下一次试跑；完整60步至少一关和B/C/D仍开放。见统一记录第114–115节、tmp/arc-stage115-outcome-audit.json和arc-stage115-matrix-audit.json。
+
+2026-10-05 stage113：成功基线现已完整恢复197项历史hash资产，fresh官方SDK/真实Pi/确定性provider矩阵17/425通过。唯一真实基线复现在1动作/0关/6342已知reported后因provider连续超时退出，4个失败请求用量未知；初帧、PNG、六工具schema与历史一致。基线通关重复性尚不可判断；B/C/D不关闭，不因网络失败修改玩法prompt/runtime。见统一记录第113节和tmp/arc-stage113-real-wrapper-audit.json。
+
+2026-10-05 用户纠正后停止新的付费发散：stage112人工停止于41动作/0关/262739 reported，另有中断未知费用。已恢复stage90全部191项hash精确源码到独立目录；历史17步/78066 reported首关成功的初始网格与stage112相同，但真实成功尚未复现。后续先复现基线，再以单因素对照验证，不能用接线、增加几何投影或更多推理触发替代任务收益。研究→行动、组件帮助、认知连续性和父子净收益（B/C/D）仍开放；见[统一记录第112节](plans/2026-10-02-context-tool-reasoning-design.md#112-用户纠正后的止损与成功基线恢复2026-10-05实施前及结果)、tmp/arc-stage90-recovery-audit.json及tmp/arc-success-baseline-comparison-20261005.json。
+
+2026-10-05 stage88：按用户严格≤Continual Harness首轮1×要求，对齐同公开ls20帧/空池与全部正文+六工具schema；CH28763字符/7376本地o200k估算tokens，Pi27940/6934（0.9714×/0.9401×）。PNG从512×512重复放大改为与CH一致的原生64×64，4096像素RGB保持，完整hex/state与typed参数保持；首请求预算/能力回归已加入。无付费调用，供应商图像/总usage与感知质量、自主采用及父子净收益未测；B/C/D继续开放。完整冻结接线验收与来源hash见[第87节](plans/2026-10-02-context-tool-reasoning-design.md#87-2026-10-05-continual-harness-首轮1上限stage88)。
+
+2026-10-05 stage87：精简ARC首轮system/task/index/creator与开发/机会说明；固定公开帧、实际Pi确定性诊断常驻prose11606→6066字符（47.73%），整个首请求42711→36842（13.74%），完整网格/PNG与六typed入口保持、control不广告Harness。未追加付费provider；B/C/D的真实目标判断、研究到行动、自主采用、跨压缩认知与父子净收益仍开放。功能回归通过，完整SDK/Pi最终冻结矩阵结果见[第86节](plans/2026-10-02-context-tool-reasoning-design.md#86-2026-10-05-首轮常驻说明去重stage87)；字符缩减不计作token或关卡收益。
+
+2026-10-04 stage86：用户重新授权一次真实ARC测评，官方SDK/Pi、yibu/gpt-6.1-sol普通ls20在16动作/600秒/80000reported阈值下完成5动作/0关，以83058reported预算停止（末次取消用量未证明免费），provider/环境0错误、191源码零漂移。60000字符预算和5次精确位移回执真实生效，无资源重读/永久pending；但父仍未形成可靠目标判断，0研究/作者/装配/语义使用。输入中位10187.5相对旧整体16803降低只为探索性线索，每动作16611.6并未支持净收益。B/C/D的证据→目标认识→行动、认知质量及父子净收益继续开放；本次未触发真实inspect/超时路径，不冒充该两项自主修复验收。见[第85节真实结果](plans/2026-10-02-context-tool-reasoning-design.md#85-2026-10-04-stage86-修复后的有界真实-arc-测评)、[原始summary](../runs/arc-stage86-repaired-real-gpt-ls20-20261004/summary.json)、[结果审计](../tmp/arc-stage86-outcome-audit-20261004.json)。
+
+2026-10-04 stage82/84/85：因普通真实yibu/gpt-6.1-sol样本47动作/0关/604088reported（另有未知失败用量）停止付费运行；94.8%为输入/缓存读取，0作者组件/装配/语义使用。现修复exact-ref inspect误列全目录、delegate超时永久pending、默认Harness全量展开、重复几何账本、next_decision静默丢失/跨状态stale投影，以及显式context预算被model窗口覆盖。公开轨迹重放与38 Python/45 Node检查、5实际Pi场景通过；最终官方SDK/Pi确定性provider矩阵17/425、191源码冻结零漂移。字符表示和接线改善不证明真实模型更早通关或父子token净收益；B/C/D的研究到行动、普通自主采用和跨压缩认知质量保持未完成。见[统一变更记录第84节](plans/2026-10-02-context-tool-reasoning-design.md#84-2026-10-04-stage82-成本失败后的止损修复与验收)、[真实失败审计](../tmp/arc-stage82-cost-and-failure-audit-20261004.json)及[最终矩阵](../runs/arc-stage85-cost-repair-matrix-ls20-20261004/arc-self-harness-smoke-summary.json)。
+
+2026-10-04 stage74–76：同初始公开帧的 stage74b 普通真实 yibu/`gpt-6.1-sol` 样本 44 动作/0 关/401,951 reported、0 作者组件；stage75 短对照线索在另一普通样本 19 动作/0 关/258,616 reported 中没有触发，不能评价自主采用或收益。两次轨迹均未证明 B/C/D 的研究/组件到真实行动与跨压缩认知质量。stage76 只增加父可选 `arc_actions.stop_if_changed_cells_lte`，定向真实 SDK/Pi 确定性脚本证明 52/52/2 后停批、后续父轮可见当前帧，完整五类矩阵 17/425 通过；真实模型会否主动选择、是否节省父子成本和帮助关卡仍开放。最新机制、预算与四层证据见[方案第74–76节](plans/2026-10-02-context-tool-reasoning-design.md#74-2026-10-04-当前默认版的普通真实-arc-窗口运行前)。
+
+2026-10-04 stage73：普通 stage71 末轮真实请求中，状态卡三个 `active_claims` 与同轮竞争视图候选 ID/版本一致；当前仅对逐字段同值正文去重，保留精确候选/竞争视图引用和独有反证。离线该候选区 2,297→1,163 JSON 字符，Node 19/19、最终 fresh 真实 ARC SDK/Pi 确定性矩阵 17/425 通过；首次矩阵曾因扩展解析错误在行动前失败，已修复并留证。字符节省不是 provider token/推理耗时或关卡收益；普通自主 Self-Harness 采用、跨压缩认知质量、父子净成本和 B/C/D 仍未完成。见[设计第73节](plans/2026-10-02-context-tool-reasoning-design.md#73-2026-10-04-同轮候选正文去重实施前)及[审计](../tmp/arc-stage73-context-dedup-audit-20261004.json)。
+
+2026-10-04 stage71–72：在 stage60 公开轨迹上可触发的一次“重复小变化”周期线索经 Node/实际 Pi 与 fresh ARC SDK/Pi 17/425 验证，但普通真实 yibu/gpt-6.1-sol、ls20、50动作上限的单样本在 reported 500k 响应后阈值于 21 动作/0关停止，父418,286+child85,892=504,178 reported，0线索、0作者组件/使用、0 provider/环境错误；比 stage60 的50动作/1关/373,740 reported差，独立轨迹不能归因。第一份 Auto-Research 报告被父精确引用并转成第10步对照行动，但两份报告和一次盲委派未通关。盲委派实际传入不支持的 `context_recipe.include`、`tools:[]`，旧正规化静默丢字段后 child 无帧；stage72 现拒绝未知键并在原 schema 描述合法字段及 `arc_state`/精确 snapshot 入口。53相关检查及 fresh SDK/Pi 17/425通过、60项源码冻结零差异；原调用形状在实际 Pi 零 child 失败。普通 provider 能否修复并利用场景、净成本及关卡收益未验证。stage71默认线索已撤下，运行时代码先回 stage69 后加入 stage72 修复。总账本34样本/3,037,704 reported 加未知片段；B/C/D、跨压缩认知质量与净收益仍未完成，见[设计第71–72节](plans/2026-10-02-context-tool-reasoning-design.md#71-2026-10-04-重复小变化动作的现有周期线索实施前)。
+
+2026-10-04 stage69–70：直接创建的 Tool pure program 中误嵌 `assembly/decision` 现仅在无冲突时机械归位；原 stage68 首次父作者候选未经改写在实际 Pi 一次出版/装配，41 作者测试和 fresh 真实 ARC SDK/Pi 确定性全矩阵 17/425 通过、59 项源码 freeze 零差异。该旧候选语义运行三帧均 `get.value must evaluate to an object`，出版不等于可用。stage70 独立真实 yibu/gpt-6.1-sol 显式保存帧诊断在 149 秒/48,595 reported tokens 内第 2 次创建成功、4 次 Tool 调用中后 2 次返回与公开帧核算一致的两组四方向结果；前 2 次空参数被拒，末尾没有完整父续轮。该样本 normalization=0，不能把其成功归因于 stage69；没有实时 ARC 行动、普通自主采用或关卡帮助。总账本33样本/2,533,526 reported加未知片段。B/C/D、跨压缩认知连续性、父子净收益仍未完成；下一步应验证真实语义结果能否进入 ARC 后续行动，并在普通运行中独立测机会识别，见[设计第69–70节](plans/2026-10-02-context-tool-reasoning-design.md#69-2026-10-04-直接创建的误嵌出版元数据归位实施前)。
+
+2026-10-04 stage61–63：两次有界真实 yibu/gpt-6.1-sol 显式单 Tool 诊断分别为 73,567/62,731 reported tokens，均 0 ARC 动作/0 关；父各自成功出版/精确装配一个单格读取 Tool，但首次真实调用都在预算停止时取消，无语义结果。stage61 两次漏 `decision` 被公开 schema 拦截，已将该冗余字段改为可选并复用原有父作者候选审计派生；实际 Pi 39 项及 fresh 真实 ARC SDK/Pi 确定性矩阵17/425通过，stage63 真实模型三次创建均省略该字段且可成功出版。stage63 另有封闭 schema 缺 `grid` 与把未来 ref 当已有 ref 的负例；两次工具价值均低，不能称解关帮助或净成本节省。账本30样本/2,393,463 reported加未知取消片段。下一个检查先确认有**非重复公开观察**的候选价值，再做有界语义试用/普通采用；B/C/D、跨压缩认知质量及净收益仍未完成，见[设计第61–63节](plans/2026-10-02-context-tool-reasoning-design.md#61-2026-10-04-单-tool-真实语义试用与后续-arc-行动运行前登记)。
+
+2026-10-04 stage64 只读价值检查：stage60 的 9 条 Harness 机会都是周期通知，不等于 9 个经证据确认的组件投资机会。公共第 1 关轨迹中，离线 5×5 目标 footprint 通行性计算与 14 次实际移动/受阻一致，包含 7 次受阻动作；第 43 步前即可区分 ACTION3 受阻与 ACTION2/ACTION4 可通行，但父连续尝试 ACTION3 三次。该结果来自单轨迹事后规则和非独立时间切分，不是自主 Tool 或收益证明；它为下一次 bounded footprint-clearance Tool 作者/语义试用提供了具体判别对象，见[设计第64节](plans/2026-10-02-context-tool-reasoning-design.md#64-2026-10-04-基于普通公共轨迹的组件价值筛选只读)。B/C/D 保持未完成。
+
+2026-10-04 stage60：真实 yibu/requested gpt-6.1-sol 的 fresh ls20 普通 50 动作窗口完整运行，第 36 步通过第 0 关，最终 1/7 关；26 完整父消息、373,740 reported tokens（reasoning10,047 已含 output）、0 child，0 provider/环境错误。`adaptive-evidence` 实际 medium22/low5，通关不能由单样本归因于 effort。9 Harness/27 Auto-Research 机会真实暴露，但父只有 ARC 工具调用，五类作者组件、assembly、语义使用和研究均为0；通关不是 Self-Harness 收益。账本28样本/2,257,165 reported加历史未知片段。用户要求的启动/终态邮箱报告已由 Gmail 返回 SENT 回执；运行不足30分钟。下一断点是机会→投入及目标方法复用价值，B/C/D与组件净收益仍未完成，见[设计第60节](plans/2026-10-02-context-tool-reasoning-design.md#60-2026-10-04-真实-arc-长窗口证据触发的推理分配与自主-harness-使用运行前)。
+
+2026-10-04 stage58–59：stage57 六个真实动作的 52 变化像素均分为 50 格主区域与 2 格底部指示器。曾试将精确 before/after 按区域重复投影到下一观察，每动作多 168 JSON 字符，Node18/Python11、fresh 确定性 ARC SDK/Pi 矩阵17/425通过。随后的普通真实 yibu/gpt-6.1-sol 样本同初态、240秒，5成功动作/0关、52,979 reported加未知末请求；父注意到2像素指示器，但仍无被后续检验的目标规则、0作者组件/child。复核发现原 action 回执本已提供 `sizes=[50,2]`/boxes 和逐像素差异，不能将识别归功于重复投影；现撤下 stage58 默认运行时改动，源码与 stage56 冻结 manifest 逐项相同。总账本27样本/1,883,425 reported加未知片段。研究到目标行动、跨压缩认知质量及净收益 B/C/D未完成，见[设计第58–59节](plans/2026-10-02-context-tool-reasoning-design.md#58-2026-10-04-当前动作的分区域精确差异实施前)。
+
+2026-10-04 stage57 普通真实 ARC：yibu/requested gpt-6.1-sol、ls20、low、240秒/75k reported响应后阈值，fresh 运行 6 成功动作/0关，7 请求6完整usage共61,155 reported（最后超时请求额外成本未知），0 provider/环境错误、0 child/作者组件。父探测四种控制后目标解释从迷宫路线改为双图案匹配，尚无被后续反馈检验的稳定规则；不能称研究到行动/level净收益已改善。成本账本26样本/1,830,446 reported加未知片段；旧279,709独立。见[设计第57节](plans/2026-10-02-context-tool-reasoning-design.md#57-2026-10-04-普通-arc-进展的有界真实模型检查运行前)。B/C/D继续未完成。
+
+2026-10-04 stage55–56：stage54 真实 Tool 作者程序读取 `input.grid` 而封闭 schema 未声明，现出版前拒绝该必然契约错；补齐 schema 后原程序在 Pi 输出正确采样值。另按调用回执将一个已零写入失败、被相同正文成功出版取代的旧作者正文在 provider 历史中改为精确后继引用，stage54 第六请求离线减少 934 JSON 字符。两次 fresh ARC SDK/Pi 确定性矩阵各 17/425 通过、源码冻结零差异；后者不是实测 token/时延收益。普通自主采用、研究到行动、跨压缩认知连续性、父子净收益和关卡进展仍未完成，见[设计第55–56节](plans/2026-10-02-context-tool-reasoning-design.md#55-2026-10-04-封闭-tool-输入-schema-与作者-ast-字段一致性实施前)。
+
+2026-10-04 stage53：stage51 原父作者 Tool 候选在已声明整数 `input.color` 上继续取 `.value`，现于批量预检和原生 Tool 出版前以精确 AST 路径拒绝，无版本写入；直接读取整数后的同一算法在实际 Pi 输出 count=2，合法对象输入不误拒。针对性3、相关回归39、fresh ARC SDK 确定性完整17/425通过，57项源码 freeze 零差异。无新付费样本；stage54 已预登记一个有界真实单 Tool→动作试验。普通自主采用、研究到行动、父子净收益、跨压缩认知质量 B/C/D 仍未完成，见[设计第53–54节](plans/2026-10-02-context-tool-reasoning-design.md#53-2026-10-03-出版前拒绝已声明标量上的必然对象读取实施前)。
+
+2026-10-03 stage52：stage51 真实 ACTION4 因顶层 `subgoal`/`next_step` 泄漏到 bridge 收到 400；现只将这两项归位到 Agent `decision`，原生 `/action` 使用显式 action/x/y/reasoning allowlist，冲突/未知字段触桥前拒绝。Node2/Python10、fresh 真实 ARC SDK 确定性定向 action-knowledge1/8 与默认17/425通过，57 项源码 freeze 零差异。无修复后真实 provider 样本，Tool 作者 AST 的 scalar `.value` 错误、普通自主采用、研究到行动、父子净成本和跨压缩认知质量 B/C/D 仍未完成；见[设计第52节](plans/2026-10-02-context-tool-reasoning-design.md#52-2026-10-03-决策元数据不得泄漏到原生-arc-动作实施前)。
+
+2026-10-03 stage51：真实 yibu/requested gpt-6.1-sol 单 Tool 诊断 6 父请求/4 条完整 usage，37,156 reported tokens 加未知取消片段，0 成功动作/0 关；累计 24 样本/1,706,355 reported。父读一次 creator、作者/装配 Tool，并按 stage50 契约正确绑定公开帧，证明首次调用接口被真实模型采用；作者 AST 将整数 `color` 当对象取 `.value`，无语义值。父随后尝试 ACTION4，但顶层 `subgoal`/`next_step` 泄漏到 bridge，收到 400，未执行动作。stage52 正修机械动作边界；作者程序质量、普通自主采用、研究到行动、父子净成本与跨压缩认知连续性 B/C/D 未完成。见[设计第51–52节](plans/2026-10-02-context-tool-reasoning-design.md#51-2026-10-03-单一-tool-的真实语义试用与行动运行前登记)。
+
+2026-10-03 stage50：针对 stage49 真实 Tool 调用的同名参数/绑定与显示标签误作 JSON path，装配 use entry、动态 Tool 描述及错误回执给出短正确模板；重复名/权限/路径校验未放松。19 相关检查通过；原父作者 Tool AST 与原公开 frame 在隔离实际 Pi 重放，返回 anchor=0/contrast=3/anchor_is_zero=true，纠正先前父 Memory 对 contrast=4 的错误。fresh ARC SDK 确定性 `arc-harness-smoke` 17/425 通过，57 项源码 freeze 零差异；无新付费样本，真实模型能否采纳及 level 净收益仍未验证，B/C/D 未完成。见[设计第50节](plans/2026-10-02-context-tool-reasoning-design.md#50-2026-10-03-tool-资源绑定的可行动回执实施前)。
+
+2026-10-03 stage49：真实 yibu/requested gpt-6.1-sol 显式五类诊断在一次 `change` 中发布并装配各一个版本，Skill 已读、作者 Tool 首次调用因 binding/parameters 同名被拒，第二次调用预算取消；已装配 Subagent 返回一个与 exact public grid 不符的格值（称 1、实际 0）。5 父请求+1 child，55,548 reported tokens/0 ARC 动作/0 关，另有未知取消成本；累计 23 样本/1,669,199 reported。出版断点已解除，首次语义使用与研究结果到行动仍失败；stage50 正针对即时绑定契约作无付费局部修复。普通自主采用、父子净成本和跨压缩认知质量（B/C/D）继续未完成，见[设计第49–50节](plans/2026-10-02-context-tool-reasoning-design.md#49-2026-10-03-发布兼容性后的真实模型首次语义试用运行前登记)。
+
+2026-10-03 stage48：stage47 真实父作者候选的发布兼容性修复已在实际 Pi 重放，五类各发布/装配一个版本，Tool 返回经核对的语义值；fresh 真实 ARC SDK `arc-harness-smoke` 确定性 provider 17 场景/425 检查通过，55 项源码 freeze 零差异。无新增真实 provider 样本，累计仍为 22 样本/1,613,651 reported tokens 加未知片段。普通自主采用、研究结论到行动、父子总成本净收益及跨压缩认知连续性（B/C/D）均未完成；下一步应作有界真实模型语义试用和规则证据推进检查，避免再用五类配额诊断重复消耗约 80k。见[设计第48节](plans/2026-10-02-context-tool-reasoning-design.md#48-2026-10-03-消除发布边界的冗余语法义务运行前设计)。
+
+2026-10-03 stage40：arc_action.decision增加共享typed knowledge入口，写入同一checkpoint；prepareArguments在SDK通用转换前保留/校验原始知识，current capsule不重复展开已投影知识。Python45/Node7、真实SDK确定性17/425与action-knowledge1/8通过，47项freeze零差异。普通gpt/yibu低档样本直接采用更新、0独立checkpoint，7确认动作/0关/0作者组件/0child，86153reported加未知取消成本；单样本不称净收益，累计18样本1288032reported。public-grid审计看到同形组件平移，而父在导航/变形猜想间往返，未完成判别/组件试用；没有读取hidden game代码或注入答案。B/C/D继续未完成，见[设计第40节](plans/2026-10-02-context-tool-reasoning-design.md#40-2026-10-03-动作携带认识更新减少独立管理父轮实施与验证)。
+
+2026-10-03 stage38–39：mixed checkpoint/action批次在回执完成后结束父循环，验收加强为真实新父轮/对应canonical动作边界；stage38最终SDK确定性17/425与Python49通过。普通真实样本仍4动作/0关/0作者组件、84082reported，未采用批次；父写入的顶层反证被静默忽略、简短effects/unknowns被拒绝。stage39复用同一decision_state实现明确typed字段、简短文本/实际旧写法的无损归一化、未知/冲突拒绝和写入前refs校验；Python41/Node6、真实SDK跨动作batch1/8及最终完整17/425通过，47项源码freeze零差异，provider仍确定性。schema+555 JSON字符，无本阶段新付费实验；旧279709和累计17样本1201879reported及未知片段未改写。B/C/D语义质量、普通采用和真实level帮助继续未完成；见[设计第38–39节](plans/2026-10-02-context-tool-reasoning-design.md#39-2026-10-03-checkpoint-知识接口与持久化一致性实施与验证)。
+
+2026-10-03 stage34–37：普通ARC指引按实际可用动作探索，review错误改为短精确恢复入口；未选自动probe不再自动扩大memory管理schema，精确读/选和主动作者路径保留。相关19项及验收器15项通过，SDK advisory1/12、scene1/9、repair1/8通过，默认矩阵最终结果见设计37。唯一新普通gpt/yibu/ls20样本9请求/8完整/4动作/0关/0作者组件/0child，72651reported加第9未知流；4独立checkpoint请求消耗36024，错误对象解释仍被保存。累计16样本1117797reported加未知流，原279709仍专指旧两样本。父子总成本、普通适用采用与level收益、跨压缩认知质量未闭合，B/C/D继续未完成，见[设计36–37节](plans/2026-10-02-context-tool-reasoning-design.md#36-2026-10-03-让关卡检查有可执行任务范围运行前)。
+
+stage37最终：第一默认矩阵的continuous-memory-pool依赖隐式工具激活而失败，原样保留；诊断首轮以明确enable替换冗余start，不增加父轮或削弱425断言。最终独立完整SDK17/425、Memory1/30通过，最终Python27通过，46项source hash一致。确定性provider只证明接线；普通采用和level收益仍未完成，见设计37.2–37.3。
+
+2026-10-03 advisory与机会目录整修（设计32–33节）：短周期证据索引取代到期分析/延期手续，去掉周期窗口重复开发指引和残余基础设施限定退出义务；自动action-decision probe仍可恢复/明确选择，但不逐步广告成待装配组件；研究机会可选，短目录保留精确refs/start入口，完整控制按需读取。功能48+Memory3+Node17通过；当前SDK advisory1/11通过，完整17/425及snapshot1/9最终结果见设计33.2。唯一新普通gpt/yibu/ls20样本6确认动作/0关/0作者组件/0child，76420reported tokens，未出现review/creator管理绕路，但方向解释仍不符公开像素，不能认定任务收益。child observation实际on_demand与登记published偏离，未调用child，局限已记录；累计真实账本15样本1045146加未知流。B/C/D及五类普通采用/level净收益保持未完成，见[设计32–33节](plans/2026-10-02-context-tool-reasoning-design.md#32-2026-10-03-advisory周期窗口只提供证据索引实施前)。
+
+stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44项源码hash一致，相关runner全部结束；确定性provider证明接线。stage32付费样本不能归为stage33真实模型证据，B/C/D仍未完成。下一断点还包括普通prompt把换region/color的点击启发式用于simple-only游戏，以及完整review错误契约的重复展开，见设计33.2。
+
+2026-10-03 任务投入与动作语义整修：统一常驻/按需开发指引允许父按任务价值复用现有deferred/dropped，不把creator准备变成必须无限投入的承诺；五类作者/明确装配/实际试用路径保持。真实普通gpt-6.1-sol/yibu/ls20唯一样本在reported阈值停止，5动作/0组件/0关，88144已报告tokens（阈值75000在完整usage后触发，非计费硬cap）。发现bridge忽略简单动作x/y，但父回执/工作集曾把它们称为目标格和已测试位置；现已统一API语义投影，ACTION6真实坐标保留，简单动作原始请求可审计。新SDK坐标边界1/7、scene1/9、相关Node17通过；最新完整矩阵进行中，扩展Python99/7历史旧断言失败保留。真实cost账本14样本968726加未知流。B/C/D与五类真实恰当使用/level净收益继续未完成，见[设计第30–31节](plans/2026-10-02-context-tool-reasoning-design.md#30-2026-10-03-用任务价值决定继续投入消除开发沉没成本义务实施前)。
+
+上述stage31完整矩阵最终更新：`runs/arc-simple-coordinate-stage31-matrix-ls20-20261003`默认17场景/425检查全部通过，原矩阵未削弱。配套scene1/9、坐标1/7仍通过；测试provider确定性，真实模型五类采用/组合/关卡收益仍未完成。所有本轮新runner已结束，源码manifest与四层审计见设计31.2。
+
+2026-10-03 精确scene交接修复：第28节真实saved-role诊断中父仅手抄8行、未授scene ref，child tools=[]反复找数据。现有delegate复用明确evidence/resource/inherited refs，经ARC scoped adapter取唯一不可变public snapshot，纯角色每个续轮完整text/PNG，不增环境工具或live bridge访问；creation/assembly use entry提供可编辑当前ref模板。当前真实SDK默认17/425、新historical-scene+pure-role+length 1/9通过，provider确定性；native当前17检查与原trajectory诊断通过。原279709复核为两个run/15请求/14完整消息/4动作，0新组件；这不是后来子scene故障的账目。真实provider账本仍13样本880582加未知流，本次不启动付费试验。父子通信成本、普通组件采用与level收益、跨压缩认知质量仍未证实，B/C/D保持未完成，见[设计第29节](plans/2026-10-02-context-tool-reasoning-design.md#29-2026-10-03-saved-subagent用精确显式场景引用获得完整数据实施前)。
+
+2026-10-03 当前状态整修：转换workset由实际精确selection/语义trial派生，已写/已选不再要求重创作；现有create/change支持父明确提交assembly合并创建与选择，部分失败保留已写版本。实际creator及components/assembly/development读取路径提供短完整契约，全文可恢复。最新真实SDK确定性17/425及publication 1/38通过，针对性检查覆盖失败、重启、撤下和只读恢复。真实qwen Skill诊断3请求40855/1动作；两个五组件诊断仍在创作前length/timeout，合计112439/0动作，未证明普通采用或level收益。本阶段合计153294已报告tokens、另有未知流成本，全部新run已停止，旧暂停游戏未恢复。B/C/D保持未完成，详见[设计第25–27节](plans/2026-10-02-context-tool-reasoning-design.md#25-2026-10-03-已装配的转换工作集不得要求重复创作)。
+
+2026-10-03顺序批次及短development合约整修：复用Pi原生sequential、不增schema字段；同响应失败不继续装配/动作，下一父轮恢复。默认development正文12434→2641字符，全文section=all保留，creator仍可行动。当前真实SDK确定性矩阵17/425通过。三个新qwen窄诊断合计143832已报告tokens/0动作，两个medium无候选，low有Skill/assembly但后续length、预算停止；未证实真实批次采用、五组件组合或关卡收益。B/C/D保持未完成，见[设计第22–24节](plans/2026-10-02-context-tool-reasoning-design.md#22-2026-10-03-复用原生顺序工具批次降低首次使用往返)。新run均停止，旧暂停游戏未恢复。
+
+2026-10-03持续整修：短完整creator、未完成准备恢复、初始任务目的跨length保持、父子已报告token停止阈值及默认可行动状态已接入。修正creator/装配后schema自动从六工具膨胀至十三工具，最终Skill路径六/六/六/八工具；保留真实动作后Memory记录入口。最终SDK确定性矩阵17/425通过。最新真实qwen窄诊断57356已报告tokens，创建/显式装配Skill、引用程序执行1动作/0关；无后续反馈或净收益证明。此前59330到达50000阈值取消动作及各矩阵失败保留。五组件真实组合、普通自主采用、父子总成本净收益和跨压缩认知质量仍未完成，B/C/D保持未勾选，见[设计第21节](plans/2026-10-02-context-tool-reasoning-design.md#21-2026-10-03-面向关卡求解的创作与上下文整修)。未恢复旧暂停游戏。
+
+2026-10-03五组件组合修复：Skill精确受限read替代默认单项focus，assembly短使用目录、ARC自定义reader可调用及重启首请求surface恢复；最终真实SDK确定性矩阵17场景425断言、18 Python/20 Node针对性检查通过。真实qwen显式诊断两样本零作者候选/assembly，已报告279709tokens、4动作0关，第二按剩余390秒timeout停止；length恢复丢失构造目标、creator分页resource/SHA错配仍是行为断点。接口可达不等于自主创作或收益，B/C/D保持未完成，见[设计第20节](plans/2026-10-02-context-tool-reasoning-design.md#20-2026-10-03-精简后的五类组件构造与组合使用验收)。没有恢复旧暂停游戏。
+
+2026-10-03核心管理schema精简：同名工具的常用typed字段与按需高级字段分离，contract成功加载的profile跨轮/会话保持，完整旧调用仍校验；ARC首父轮六工具完整定义20246→14265 JSON字符（29.54%）。32 Node/19 Python针对性检查、真实SDK确定性provider17场景419断言通过。普通真实模型采用、token/延迟/通关净收益未测，B/C/D继续未完成；见[设计第19节](plans/2026-10-02-context-tool-reasoning-design.md#19-2026-10-03-核心管理-schema-按需精简)。没有恢复旧游戏或追加真实游戏预算。
+
+2026-10-02 截图对照审计：修正“完整运行时方案已实施”的整体表述；基础恢复/局部去重已实现，但同候选在竞争/状态双展开、常驻schema及紧凑语义状态的有效形成仍有缺口。见[第18节落地审计](plans/2026-10-02-context-tool-reasoning-design.md#18-对照原截图的落地缺口审计与完成声明修正)。本次仅审计，没有新增runtime或provider实验，B/C/D不勾选完成。
+
+2026-10-02 290,989-token后续优化：精确帧/续轮指导去重、完整图临时user槽、报告候选关联行动后的旧提案与反馈、动作卡完整时仍保留child固定scene reader已修复。关键裁剪根因是动作卡覆盖被错误等同于整张图覆盖，导致child ARC工具被清空；真实Pi/broker/child两模式诊断通过。最终Node28/Python49针对性检查通过，真实SDK确定性provider最终17场景419断言全部通过。两个480秒普通真实样本分别4动作/85,769tokens/0关、4动作/65,094tokens/0关，第二未启child且不包含之后routing修复；最终child自主采用及通关收益未验证，不能把输入减少44.51%或接线通过当作任务优化成功。见[设计第17节](plans/2026-10-02-context-tool-reasoning-design.md#17-290989-token失败后的输入重放与目标推进优化)。无追加无限样本，B/C/D整体保持未完成。
+
+2026-10-02暂停后优化：真实31动作仅8坐标、研究证据卡丢x/y、planning别名丢建议与重复研究复用缺后续建议已定位并修复；旧原始运行保持停止。显式provider历史整理、原生Qwen开关及稀疏深推理仍为实验，固定off真实30分钟59动作/0关反驳“更快即有收益”。详见[设计第16节](plans/2026-10-02-context-tool-reasoning-design.md#16-暂停后推理驻留与研究到行动修复)。公开像素几何索引和精简任务正文默认关闭，完整网格/PNG保留；40 Node及32 Python检查、最终默认/两个实验开关的真实SDK确定性provider矩阵均17场景/419断言通过，失败矩阵完整保留。最后普通真实provider样本自主研究交付并采用局部操作候选，但30分钟14动作/0关，父子已报告290,989tokens；所有本轮真实样本均未完成level0，不宣称净收益或任务保证。目标映射与反证后修订仍是断点，B/C/D不勾选完成；下一目标研究窄能力检查只登记、未运行。
+
+2026-10-02 完整方案实施更新：最终payload覆盖/epoch、显式消费与活动依赖租期、摘要后原回执自动恢复、DecisionCard知识分层与增量更新、固定manual延期/批次索引、无plan状态与原生预算选项已实施，最终39组件检查及14预算/启动检查通过。首轮冻结矩阵出现两个bridge启动失败；改为child-owned端口和精确launch_id就绪回执后，真实SDK/Pi完整17场景/419断言及read/advisory两专项全部通过，失败与PID校验修订过程保留。真实qwen3.8-27b/yibu两个普通180秒试跑各1确认动作后超时，4096输出上限触发length后续接可达，但质量/净收益未证实；没有child/读页采用样本。详见[完整实施与分层证据](plans/2026-10-02-context-tool-reasoning-design.md#14-2026-10-02-完整运行时方案实施与分层验收)。B/C/D研究质量、主动通信和跨压缩认知连续性整体保持未完成；不能把组件/接线通过当作真实模型认知验收。
+
+2026-10-02 实施更新：按用户后续授权，已落地普通 ARC 默认 advisory 复盘、精确页直接重读恢复，以及父/child 分页读取跨工具型续轮的工作集寿命。实际 provider 请求验证两页共存及 compact 后一次恢复；真实 SDK、确定性 provider 的 17 场景矩阵和两个专项通过。见[实施与验证记录](plans/2026-10-02-context-tool-reasoning-design.md#13-2026-10-02-授权实施m1-与-c1-的第一批优化)。最终覆盖 ledger、语义消费租期、真实模型推理质量/成本与跨压缩认知质量仍未验证，B/C/D 保持未完成。
+
+2026-10-02：已将最新真实失败整合到 [上下文、工具与推理效率设计](plans/2026-10-02-context-tool-reasoning-design.md)。区分操作效果与目标规则，补充旧复盘判断复用、非阻塞模式的单因素比较、无 plan 纠偏和首次研究采用；核对延期/skip 的尝试与落盘口径，并保留读页恢复为独立问题。仅更新设计，未修改 runtime 或启动模型实验，B/C/D 保持未完成。
+
+2026-10-02：真实运行的 [路径与关键问题分析](reports/2026-10-02-arc-path-and-problem-analysis.md) 已落盘。55 个成功原生动作未过第 0 关，54 次复盘延期、21 次研究跳过，未启动持续研究或自主组件创作。记录了目标规则探索、重复旧窗口和实际研究采用的断点，以及下一可证伪检查；本轮仅诊断及文档，B/C/D 保持未完成。
+
+2026-10-02：已采用 [开发流程与证据标准](development-workflow.md)，后续 B/C/D 相关变更须分别报告接线、自主采用、父子总成本/净收益和跨压缩认知证据。首份 [流程采用记录与下一轮最小实验](reports/2026-10-02-development-workflow-adoption.md) 已落盘；本轮没有运行新模型实验，B/C/D 保持未完成，不将流程更新计作行为改善。
+
+2026-10-02：按用户要求移除父 Agent 的局部裁剪/`arc_state` 回看入口，当前完整网格与 PNG 在每次 provider 续轮自动提供；子 Agent 的获授权读取也取消裁剪。见 [多模态观测接线更新](plans/2026-09-30-multimodal-arc-observation.md)。这解决当前帧被压缩后反复回看的具体路径；D 的跨压缩认知连续性与真实 provider 总成本仍待对照，保持未完成。
+
+2026-10-01 实施更新：持续职责授权、精确增量证据路由、分析消费确认、active 阶段性交付、分歧/修订/撤回、周期历史窗口交接、有限调度与 Harness 使用/评估反馈已接入。见 [多研究职责实施与验收](auto-research-workers-implementation-2026-10-01.md)。真实 provider 的自主使用、父子总成本与跨压缩认知质量仍待对照；B/C/D 整体保持未完成。
+
+2026-10-01：用户确认 Auto-Research 定位为机制，可由多个子 Agent 承担持续追踪、分析及研究职责；父只接收即时、核心结论和需要决策的请求。见 [机制与多个研究子 Agent ADR](plans/2026-10-01-auto-research-mechanism-and-workers.md)。复用现有研究线、议程、非阻塞 session、计划/节点与精确证据；B/C/D 后续重点为授权后的持续职责调度、增量证据、研究未 complete 时的阶段性交付、分歧与反馈保留。此次只更新设计，相关运行实现、真实模型总成本与认知连续性未验收，不勾选 B/C/D 完成。
+
+2026-09-30 本轮对齐：父侧十六进制网格/PNG、动画与逐动作窗口、上层批量工具，以及普通 `delegate_task` 的显式有界动作租约已接入；Auto-Research 仍只读。确定性 harness 装配原已存在，本轮复用。详见 [实现与验收记录](arc-observation-action-alignment-2026-09-30.md)。A 的模块职责全面拆分、C 的更细在线实验通信、D 的跨压缩认知质量，以及完整旧 smoke 矩阵与真实 provider 表现仍待处理；不能据此勾选 A/C/D 完成。
+
 记录日期：2026-09-16。
 来源：本次关于 Auto-Research 输入、在线/离线研究、父 Agent 上下文及 ARC adapter 边界的讨论。
 状态：已记录，待后续讨论和排期；本记录不表示相关方案已经实现或批准立即重构。
@@ -80,6 +212,14 @@
 
 ## 后续更新
 
+2026-10-07：完整P0–P7 Goal的首个B10普通真实ARC样本（官方ls20、yibu/qwen3.8-27b、完整grid/PNG）为1动作/0level/120375 reported，约7分47秒含启动清理，预算提前停止，未达到用户50动作或30分钟验收边界。1toolUse后6连续length及5次会话恢复，无研究child/作者/装配/组件使用。历史长度实际计量已落在最终payload，恢复变短不证明认知连续性；runtime自动action memory不算自主作者。B/C/D保持开放。已将既有一次length续接保护扩至provider-default，仅开发诊断，新候选真实效果待验。见[完整方案B10终态与R24](plans/2026-10-06-self-harness-simplification-and-validation.md#goal-r24真实length循环触发的单因素修复24实施中)。下一检查是生成/恢复断点到真实后续行动，再推进研究反馈和跨压缩反证，不增加游戏管理义务。
+
+2026-10-06 stage134：B/C/D相关接口负担已在显式首次pure create＋assembly＋trial中改为按实际授权host值补漏字段根type；72功能诊断和official ARC SDK/Pi scripted17／425通过，初始resident内容同口径不变。localhost正确native值进入第三真实本地HTTP，但真实模型／普通采用／通关净收益未验；[统一记录134a](plans/2026-10-02-context-tool-reasoning-design.md#134a-实施与付费前验收同日)及[审计](../tmp/arc-stage134-final-audit.json)。不勾选B/C/D，后续检查语义结果到父判断与行动，避免把可达等同认知连续性。
+
+2026-09-30：竞争材料新增 decision_review，在父循环中暴露反证、实验结果与计划校核，记录 continue/revise/switch/test/uncertain 及下一观测检查。父侧注入、实验推进和选择回执的缺失调用已恢复；父/child 的竞争投影共用 8000 JSON 字符上限，旧视图替换、超限详情渐进读取。同候选版本保留已评估触发，正常计划执行无需重复填写选择。未新增运行验收，B/C/D 的真实模型转向、压缩后认知连续性与 ARC 收益仍未完成。
+
+2026-09-30：B/C/D 的核心竞争机制已落盘：有限实验由 validation 唯一计数，父/获授权 child 收到事实、候选预测与反证、行动分支；当前短卡在压缩中完整保留，最终 payload hook 记录其实际覆盖与 hash。child 建议不覆盖父路线，同材料的 bounded research 可复用报告并支持显式新复核理由。见 [竞争机制实现记录](plans/2026-09-30-competing-hypotheses-design.md#11-实现记录与使用入口)。组件及原生 Pi 诊断不能证明真实 ARC 策略转向质量；全自动盲审/揭盲、真实模型收益和跨压缩认知质量仍待验收，B/C/D 保持未完成。
+
 2026-09-18：B/C/D 的 guidance 层补充：Auto-Research 按有依据的问题组织跨阶段研究；parent 发起前须提供前提/材料/访问条件、可达中间目标、局部评测及成本/停止条件；child 区分候选构造与局部验证；方法后续使用证据回流到可恢复 session 或引用前序报告的后续研究。见 `docs/plans/2026-09-18-grounded-auto-research-guidance.md`。此次未新增动作权限、自动研究线调度或压缩恢复能力，尚不能据此勾选跨阶段研究质量、在线实验通信与认知连续性验收项。
 
 2026-09-18：D 的部分进展已实现：精确版本依赖与显式替换、失效的传递抑制、任务策略/动态状态分层及条件投影、组装版本回执。见 `docs/plans/2026-09-18-harness-knowledge-lifecycle.md`。真实 ARC runner 的 10 场景验收通过（确定性 provider、真实 SDK/运行链路）。这不等于已完成跨压缩的认知质量验证；历史 checkpoint/对话没有语义重写，真实模型收益仍待对照实验。C 的父子证据通信设计仍未由本次工作完成。
@@ -95,3 +235,36 @@
 2026-09-21：B/C/D 的又一部分外围机制已实现：main 可用无问题的 `auto_research(start)` 只分配一次研究机会，runtime 自动恢复版本化研究议程、提供按资源类型计数和最近引用组成的历史目录，并授予 child 精确版本的只读分页访问；child 自主选择问题并提交 `research_progress`。无当前行动价值的结果只向 main 返回短回执，完整报告和议程留在任务库；方法候选、Harness 候选、实验请求、规划影响或显式当前相关结果仍正常交付。该机制降低 main 对历史重放、目标构建和资源装配的依赖，但尚未证明真实模型的自主选题质量、ARC 表现收益或跨压缩语义质量，因此 B/C/D 仍不勾选完成。
 
 2026-09-21：Self-Harness 边界进一步拆分为组件创建/修改、精确版本组件池、main Agent 按情境选择的 assembly，以及只负责校验/投影/执行/回执的确定性 runtime。`task_prompt` 明确为来源无关的 assembly 输出通道，可引用 memory、skill/method、finding、validation、research report、plan 或 hypothesis 等精确来源；研究产物不会自动升级为指导。显式 assembly 使用独立 CAS revision，并在 skill/tool/subagent/system-prompt/context 使用边界执行选择门禁；Auto-Research 路由在任何写入前做全步骤版本预检。`runs/arc-harness-smoke-assembly-final-20260921/arc-self-harness-smoke-summary.json` 的 deterministic real-runner smoke 已通过五类组件、真实 bridge/Pi/broker/router/native mutation/action/后续父轮，以及 Auto-Research 与普通 delegate 的 provider-length continuation；provider 与环境均为 test double。该实现推进 A 中 Agent runtime/policy 边界和 D 中精确恢复语义，但不完成 ARC adapter 的全面拆分、跨压缩认知质量、真实 provider 收益或真实 SDK 游戏质量验证，相关项保持未勾选。
+
+2026-09-29：针对真实运行单次约 208k JSON 字符请求与已制定 14 步计划却停滞的现象，加入短执行卡、精确 checkpoint/工具回执资源、父 Agent 选择性移除旧结果、结构化计划的机械游标、重复资源页短回执、失效知识短摘要和高水位/无进展提示。见[ARC 执行阶段的上下文控制设计及实现记录](plans/2026-09-29-arc-execution-context-control-design.md)。这仍是未经过真实运行验收的实现；D 的跨压缩认知连续性、真实 provider 成本与 ARC 能力改善保持未完成。
+
+2026-09-30：在上述机制上加入父/child 大只读结果的“首次模型续轮完整、后续短 ref、显式恢复钉住”寿命规则，并缩短当前 validation 索引及周期复盘提示；真实 provider 的 `ft09-0d8bbf25` treatment 运行已以 60 步上限启动于 `runs/arc-ft09-context-workset-60-20260930`。机制的精确恢复、同阶段上下文收益和压缩后的认知连续性仍需结合这次运行后续轨迹评估，D 保持未完成。见[执行阶段设计记录](plans/2026-09-29-arc-execution-context-control-design.md#8-2026-09-30读取结果的工作集寿命)。
+
+
+2026-10-02：正在运行的60步真实provider样本补充B/D诊断：18:43冻结前11条完整父消息，reasoning占输出94.56%，assistant历史是主要输入增长来源；动作事实仍在，但旧规划字段与新反证未充分整合。Pi的thinkingSignature=reasoning_content实际为字段路由标志，历史处理需区分协议保护与语义连续性。见[上下文方案第15节](plans/2026-10-02-context-tool-reasoning-design.md#15-正在运行的60步样本高推理耗时只读诊断)。只读测量与候选设计，不改变活动运行，不证明质量/净收益，B/D保持未完成。
+
+2026-10-03：B/D派生观察正确性修复：旧changed-pattern签名仅用bbox/颜色histogram，却输出action_invariant_candidate，真实父据此作UI/animation解释。当前改为精确相对坐标/after-value排列和同epoch的matching_actions，移除role/causal classification；stage40/41已执行的13动作重放区分10个旧签名碰撞组件对。Python21/Node10、真实SDK确定性provider矩阵17/425及action-knowledge 1/8通过，无新付费样本。见[上下文方案第42节](plans/2026-10-02-context-tool-reasoning-design.md#42-2026-10-03-去除-changed-shape-复现的因果暗示实施与诊断)。接线与派生几何修复不证明科学解释/跨压缩认知、五类普通采用或level收益，B/C/D继续未完成。
+
+2026-10-03：B/C/D追加真实普通样本与上下文修复。stage43实际8动作/77544reported（最后取消流成本未知），仍0关/0作者组件/0研究/child；实际payload的错误标签已消失，单独修label不足以推进任务。stage44新增公共before/after稀疏证据，小变化替代历史final图而保留完整当前图、large/partial/动画；真实batch重放窗口13210→5726字符、PNG3→1，56changed pixels均可逆。single/batch共同记账及历史batch退场在实际SDK/Pi后续父轮验证；最终Python39（31+8）/Node10，真实SDK确定性矩阵17/425、action-knowledge 1/8通过。见[方案第43–44节](plans/2026-10-02-context-tool-reasoning-design.md#44-2026-10-03-可逆稀疏变化工作集实施与验证)。这里不证明普通组件创作/研究推进/跨压缩认知或level净收益，相关项继续未勾选；后续先做可判别的精确比较→能力创作/语义使用检查，不重复同类无产出高成本普通样本。
+
+2026-10-03：B/D的stage45真实显式五类创作诊断失败：80802reported、0动作/0关/0组件；父已尝试完整候选，却被Memory atom/validity及Prompt scope逐错阻断，最终Tool已修好，不能误归初稿错误。stage46补齐直接创作短契约、复用原生AST/schema校验并在任何内容写入前汇总独立indexed错误，实际Pi一次修复/不重读creator/五类发布装配/正确color输出及64 Python+6 Node诊断通过；最终实际ARC SDK确定性provider矩阵17/425通过，54项freeze不变。矩阵与分层证据见[方案第45–46节](plans/2026-10-02-context-tool-reasoning-design.md#46-2026-10-03-完整短创作契约与一次批量预检修复)。本轮无新付费请求，真实模型修复轮/普通自主采用、认知连续性及level贡献未验证，B/C/D继续未完成。
+
+2026-10-04：B/C/D 的 stage78–80 三次普通真实 yibu/`gpt-6.1-sol` ls20 轨迹分别为 40 动作/0 关/463,342 reported、50/0/267,146、44/1/457,721，均为零作者组件/装配/语义使用；第 80 次第 33 动作过第 0 关，但多区域 cue 在同批次跨关后正确失效，真实父没有收到，不能归因于 Harness。第 1 关公开帧复核发现 11/11 次局部 footprint 移动预测匹配、四次受阻；第 70 节的显式真实模型诊断已以 48,595 reported 作者、装配并取得正确 Tool 语义值。将其原样程序移入隔离 Pi task 并在 stage80 的另一独立公开轨迹 11 个前帧上脚本调用，四方向值及真实所选动作结果全部匹配；这仍不是普通父采用或因果省步。见[方案第 80–81 节](plans/2026-10-02-context-tool-reasoning-design.md#80-2026-10-04-多区域公开转换谓词的单因素扩展实施前)及[原始审计](../tmp/arc-stage78-80-final-audit-20261004.json)。普通自主采用、跨压缩认知连续性和父子总成本净收益均未验证；B/C/D 保持未完成。下一步区分普通机会识别与显式语义结果到行动的转移，再用有界实验证据决定优化因素。
+
+2026-10-05：B/D追加stage89–90真实失败/修复/重试。stage89官方ls20/yibu/gpt-6.1-sol为42动作/0关/415273reported，知识列表覆盖与归档后出现方向/对象解释回退，child120秒超时；输入/cache占94.91%。stage90复用既有公共区域offset计算，将最多16条真实位移见证驻留在当前观测，single/batch共同记录，同运行canonical事件重建，RESET/跨关失效，无新Agent语义门禁或提示。30 Node、9 Python和官方SDK/Pi确定性矩阵17/425通过；公开42动作重放末次表853字符。普通真实重试第17动作通第0关（当时78066reported），最终23动作/1关/158577reported预算停止；两轮573850已知reported及未知失败流分别审计。两轮均未满单次60，仍NOT_FINISHED；无作者组件/装配/研究采用，首delta/provider等待变化且独立轨迹/预算不同，不能勾选一般连续性、研究→组件自主采用或净收益。见[方案第89节](plans/2026-10-02-context-tool-reasoning-design.md#89-stage90保留有界公共位移证据诊断后真实重试)和`tmp/arc-stage89-90-final-evaluation-20261005.json`。B/C/D保持开放；下一相关机会核查第1关几何规划和组件语义结果到行动，并为完整60步预定义相称预算。
+
+2026-10-05 stage96–101：四个真实yibu/gpt-6.1-sol/官方SDK-Pi续跑均未达60动作/至少一关，reported合计1439218（另有取消/未知流），因此B/C/D的研究→目标规则→行动、自主组件帮助及净收益继续开放。首轮CH1×保持；原生checkpoint schema拒绝永久pending已由实际Pi回归修复，公共位移补充原颜色、固定图案前后mask及历史未移动位置见证的功能/恢复/官方SDK-Pi完整矩阵已通过。接线和字符缩减不证明模型利用或任务改善；最新普通真实验收尚需完成。见[统一记录第95–100节](plans/2026-10-02-context-tool-reasoning-design.md#100-stage101保留历史位置相关的图案未移动见证实施前)。
+
+2026-10-05 stage101终态：43动作/0关/404637reported；stage96–101五次累计1843855reported另有未知。0研究/组件/装配/使用。输入/cache95.05%，无重复资源read。几何证据与完整理由可达，但目标语义和行动纠偏未改善，B/C/D仍开放。下一stage102仅替换目标解释段，ft09迁移短窗口验证；不能称ls20已解决。见统一记录第100–101节。
+
+2026-10-05 stage102普通ft09真实探索诊断停止，19动作/0关/217588reported另有取消未知；目标匹配失败后重新校准已知控制，0研究/组件/装配/使用。源冻结无漂移，首轮CH1×及17/425接线通过未代表行为收益。下一stage103仅修订目标例子关系推断和既有batch范围文案，B/C/D继续开放；见统一记录101–102节及终态审计。
+
+2026-10-05 stage103终态19动作/0关/233526reported另有未知，0实际child/作者/装配/语义使用；模型曾识别独立目标分析机会，但delegate_task的output_contract顶层额外字段被原生拒绝并留下永久pending。不能将此算真实研究投入。stage104正修复机械归位与纯输入拒绝生命周期，功能回归已有2项通过；五类闭环及真实质量/行动帮助待验证，B/C/D仍开放。见统一记录第102–103节。
+
+2026-10-05 stage107–109：真实普通ls20分别60动作/0关/227913reported和35动作/0关/310417reported（后者另有2次未知请求）。stable allocator的low/batch真实采用，当前位移模板投影在29个实际provider输入逐像素核对正确，父保留受阻位置，但目标身份与成功条件仍错误，零研究/作者/装配/组件使用，不能声明净收益或D完成。stage108发现动作边界后的checkpoint纯拒绝被错记可修复pending；stage109复用结构化rejected_input结束无写入尝试，原生回归通过，fresh SDK/Pi矩阵进行中。下一stage110为明确研究引导的独立诊断，不冒充ordinary自主识别或通关收益。见统一记录107–109节；B/C/D仍开放。
+
+
+2026-10-06 stage117–118r1：B/C/D补充真实Qwen机制验收。stage118r1将latest已完成、具有公开decision和完整回执的可编辑reasoning字段投影为末2500chars+exact ref，原生Pi全文恢复/后续两轮驻留以及官方SDK/Pi矩阵17/425通过；ordinary ft09为2动作/0关/82187known另有取消未知，第二输入1.65×而非倍增、0资源重读、0child/作者/装配/组件采用。新的reasoning仍52486（98.58%输出），两次均无持久像素变化，不能把接线或表示缩减算研究→行动/通关净收益。相关项保持开放；下一窄问题是无反馈时的当前推理分配与有效实验推进。见[统一记录第118节](plans/2026-10-02-context-tool-reasoning-design.md#118-已完成最新工具回合的可编辑推理寿命2026-10-06实施前)和tmp/arc-stage118r1-final-evaluation.json。
+
+
+2026-10-06 stage123–126：真实Qwen三ordinary窗口共122799known/8requests/4actions/0levels，child/作者/装配均0，不能勾选B/C/D或目标完成。settlement与有界length恢复已用native HTTP及official SDK/Pi接线验证；stage125实际budget-filter把不可支付的medium降off，3请求/2actions/41069known/38.156秒/0关，ordinary全部reasoning0，但无关卡收益及fixed-off净收益。实录80-cell动画仍展开第二完整hex引发输入1.633×，stage126用同次完整current作anchor的可逆spans，独立还原4096像素并保持两PNG/全部事实，实际payload离线估算o200k10386→9127（-12.1%），无额外读取。该表示/功能证据不证明普通模型认知连续性/语义使用；完整矩阵及未来质量状态见[统一记录125–126节](plans/2026-10-02-context-tool-reasoning-design.md#126-动画关键帧的可逆差分2026-10-06实施前)。相关条目继续开放。

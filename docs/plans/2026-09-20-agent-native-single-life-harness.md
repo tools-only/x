@@ -1,5 +1,9 @@
 # Agent-native Self-Harness：单次生命在线自适应设计
 
+> 2026-10-01 更新：用户确认 Auto-Research 为机制，其研究与持续追踪职责可以由多个 sub-agent 承担；即时核心结论交付父 Agent。本文以下 `Auto-Research / Pi child` 的单 worker 表达按 [机制与多个研究子 Agent ADR](2026-10-01-auto-research-mechanism-and-workers.md) 解释。研究线、职责和 session/run 分开；新的持续调度、增量交付尚未运行验收。权限与环境边界沿用当前授权和下方更新。
+
+> 2026-09-30 更新：本文以下“main 独占逐步环境动作、普通 child 无 action lease”的限制已被用户对普通 `delegate_task` 的显式授权决定替代。当前实现允许普通委托取得有状态指纹与额度约束的短期动作租约，也允许父侧 `arc_actions` 批量推进；Auto-Research 仍只读，所有动作保留同一条不可回退 canonical 轨迹。实现、验收和剩余限制见 [ARC 观测与动作边界对齐](../arc-observation-action-alignment-2026-09-30.md)。
+
 日期：2026-09-20。
 
 状态：最终建议设计和最小迁移规范；本文落盘不表示下列运行机制已实现或验收。本轮不启动真实 FT09。

@@ -44,7 +44,7 @@ export type HarnessAssembly = {
 	assembly_id: "task-harness-assembly";
 	revision: number;
 	status: "active";
-	selection_mode: "explicit";
+	selection_mode: "explicit" | "jev";
 	selected_resource_refs: string[];
 	prompt_contributions: PromptContribution[];
 	decision: HarnessDecision;
@@ -72,6 +72,7 @@ type CreateAssemblyInput = {
 type CreateAssemblyOptions = {
 	input: CreateAssemblyInput;
 	previous?: HarnessAssembly;
+	selectionMode?: "explicit" | "jev";
 	resolveComponentRef: (reference: string) => string | undefined;
 	resolveSourceRef: (reference: string) => string | undefined;
 	recordedAt?: string;
@@ -80,14 +81,26 @@ type CreateAssemblyOptions = {
 type AssemblyConflict = {
 	format: "task-harness-assembly-version-conflict-v1";
 	applied: false;
-	requested_revision: number;
+	requested_revision: number | null;
 	current_revision: number;
 	recovery: string;
 };
 
+type AssemblyInputIssue = { path: string; message: string; allowed?: readonly string[] };
+
+type AssemblyInputError = {
+	format: "task-harness-assembly-input-error-v1";
+	applied: false;
+	retryable: true;
+	requires_parent_confirmation: true;
+	errors: AssemblyInputIssue[];
+	repair_template: Record<string, unknown>;
+	instruction: string;
+};
+
 class HarnessAssemblyConflictError extends Error {
 	readonly details: AssemblyConflict;
-	constructor(requested: number, current: number) {
+	constructor(requested: number | null, current: number) {
 		super(`assembly revision conflict: expected ${requested}, current ${current}`);
 		this.name = "HarnessAssemblyConflictError";
 		this.details = {
@@ -98,6 +111,88 @@ class HarnessAssemblyConflictError extends Error {
 			recovery: "Inspect the current component pool and assembly, merge the intended selection, then retry with the current revision. No assembly was applied.",
 		};
 	}
+}
+
+class HarnessAssemblyInputError extends Error {
+	readonly issues: AssemblyInputIssue[];
+	constructor(issues: AssemblyInputIssue[]) {
+		super(issues.map(issue => `${issue.path}: ${issue.message}`).join("; "));
+		this.name = "HarnessAssemblyInputError";
+		this.issues = issues;
+	}
+}
+
+function assemblyTextIssue(value: unknown, path: string): AssemblyInputIssue | undefined {
+	return typeof value !== "string" || !value.trim()
+		? {path,message:"Expected a nonempty string."} : undefined;
+}
+
+function validateAssemblySemanticInput(
+	input: CreateAssemblyInput,
+	previous: HarnessAssembly | undefined,
+	resolveComponentRef: (reference: string) => string | undefined,
+	resolveSourceRef: (reference: string) => string | undefined,
+) {
+	const issues: AssemblyInputIssue[] = [];
+	const selected = input.selected_resource_refs === undefined
+		? previous?.selected_resource_refs ?? [] : input.selected_resource_refs;
+	if (!Array.isArray(selected)) issues.push({path:"selected_resource_refs",message:"Expected an array of exact current component refs."});
+	else for (const [index, value] of selected.entries()) {
+		const path = `selected_resource_refs[${index}]`;
+		if (typeof value !== "string" || !value.trim()) issues.push({path,message:"Expected a nonempty exact component ref."});
+		else if (!/^[a-z_]+:[^@]+@v[1-9]\d*$/.test(value)) issues.push({path,message:"Expected an exact kind:name@vN reference."});
+		else if (!resolveComponentRef(value)) issues.push({path,message:`Resource is not a current eligible Harness component: ${value}`});
+	}
+	const decision = input.decision;
+	if (!decision || typeof decision !== "object" || Array.isArray(decision)) {
+		issues.push({path:"decision",message:"Expected an object with basis_refs, reason, and expected."});
+	} else {
+		const item = decision as Record<string,unknown>;
+		if (!Array.isArray(item.basis_refs) || item.basis_refs.some(ref => typeof ref !== "string"))
+			issues.push({path:"decision.basis_refs",message:"Expected an array of strings."});
+		for (const field of ["reason", "expected"] as const) {
+			const issue = assemblyTextIssue(item[field], `decision.${field}`);
+			if (issue) issues.push(issue);
+		}
+	}
+	const contributions = input.prompt_contributions === undefined
+		? previous?.prompt_contributions ?? [] : input.prompt_contributions;
+	if (!Array.isArray(contributions)) issues.push({path:"prompt_contributions",message:"Expected an array."});
+	else for (const [index, value] of contributions.entries()) {
+		const path = `prompt_contributions[${index}]`;
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			issues.push({path,message:"Expected an object."});
+			continue;
+		}
+		const item = value as Record<string,unknown>;
+		if (item.contribution_id !== undefined) {
+			const issue = assemblyTextIssue(item.contribution_id, `${path}.contribution_id`);
+			if (issue) issues.push(issue);
+		}
+		const sourceIssue = assemblyTextIssue(item.source_ref, `${path}.source_ref`);
+		if (sourceIssue) issues.push(sourceIssue);
+		else {
+			const source = String(item.source_ref);
+			if (!/^[a-z_]+:[^@]+@v[1-9]\d*$/.test(source)) issues.push({path:`${path}.source_ref`,message:"Expected an exact kind:name@vN reference."});
+			else if (!resolveSourceRef(source)) issues.push({path:`${path}.source_ref`,message:`Unknown prompt contribution source: ${source}`});
+		}
+		const layer = typeof item.layer === "string" ? item.layer : "";
+		if (!(TASK_PROMPT_LAYERS as readonly string[]).includes(layer)) issues.push({
+			path:`${path}.layer`, message:"Invalid task-prompt layer.", allowed:TASK_PROMPT_LAYERS,
+		});
+		const contentIssue = assemblyTextIssue(item.content, `${path}.content`);
+		if (contentIssue) issues.push(contentIssue);
+		if (item.priority !== undefined && !Number.isSafeInteger(item.priority))
+			issues.push({path:`${path}.priority`,message:"Expected an integer."});
+		for (const field of ["depends_on_refs", "basis_refs"] as const) if (item[field] !== undefined
+			&& (!Array.isArray(item[field]) || (item[field] as unknown[]).some(ref => typeof ref !== "string")))
+			issues.push({path:`${path}.${field}`,message:"Expected an array of strings."});
+		if (item.activation !== undefined && (!item.activation || typeof item.activation !== "object" || Array.isArray(item.activation)))
+			issues.push({path:`${path}.activation`,message:"Expected an object."});
+		if (item.reconsider_when !== undefined && typeof item.reconsider_when !== "string")
+			issues.push({path:`${path}.reconsider_when`,message:"Expected a string."});
+	}
+	if (issues.length) throw new HarnessAssemblyInputError(issues);
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -153,7 +248,11 @@ function normalizeContribution(
 	if (!sourceRef) throw new Error(`unknown prompt contribution source: ${source}`);
 	const layer = String(input.layer ?? "");
 	if (!(TASK_PROMPT_LAYERS as readonly string[]).includes(layer)) {
-		throw new Error(`prompt_contributions.${index}.layer is invalid`);
+		throw new HarnessAssemblyInputError([{
+			path:`prompt_contributions[${index}].layer`,
+			message:"Invalid task-prompt layer.",
+			allowed:TASK_PROMPT_LAYERS,
+		}]);
 	}
 	const priority = input.priority === undefined ? 0 : Number(input.priority);
 	if (!Number.isSafeInteger(priority)) throw new Error(`prompt_contributions.${index}.priority must be an integer`);
@@ -179,12 +278,69 @@ function normalizeContribution(
 	};
 }
 
+export function assemblyInputErrorDetails(
+	error: unknown,
+	input: CreateAssemblyInput,
+	previous?: HarnessAssembly,
+): AssemblyInputError {
+	if (!(error instanceof HarnessAssemblyInputError)) throw error;
+	return {
+		format:"task-harness-assembly-input-error-v1",
+		applied:false,
+		retryable:true,
+		requires_parent_confirmation:true,
+		errors:error.issues,
+		repair_template:{
+			action:"assemble",
+			expected_assembly_revision:input.expected_assembly_revision ?? Number(previous?.revision ?? 0),
+			selected_resource_refs:input.selected_resource_refs ?? previous?.selected_resource_refs ?? [],
+			prompt_contributions:input.prompt_contributions ?? previous?.prompt_contributions ?? [],
+			decision:input.decision,
+		},
+		instruction:"No assembly was applied. Preserve the parent-selected refs, CAS revision, decision, and every contribution exactly; the parent must choose a legal layer and confirm the complete retry. Runtime will not delete, rewrite, or auto-classify a contribution.",
+	};
+}
+
+export function assemblyInputContract(previous?: HarnessAssembly) {
+	return {
+		input_schema:{
+			required:["action", "expected_assembly_revision", "selected_resource_refs", "decision"],
+			action:"assemble",
+			expected_assembly_revision:"integer CAS revision from current_assembly, or 0 before the first assembly",
+			selected_resource_refs:"array of exact current eligible component refs chosen by main",
+			decision:{basis_refs:"array of exact evidence/resource refs",reason:"nonempty parent reason",expected:"nonempty observable expectation"},
+			prompt_contributions:"optional array; omission preserves prior contributions, [] explicitly clears them",
+			task_prompt_layers:TASK_PROMPT_LAYERS,
+		},
+		select_only_template:{
+			action:"assemble",
+			expected_assembly_revision:Number(previous?.revision ?? 0),
+			selected_resource_refs:previous?.selected_resource_refs ?? ["<exact current eligible component ref>"],
+			decision:{basis_refs:["<exact existing ref>"],reason:"<why these exact components apply now>",expected:"<observable result at the next use>"},
+		},
+		optional_prompt_contribution_template:{
+			contribution_id:"<stable-lowercase-id>",
+			source_ref:"<exact existing source ref>",
+			layer:"<choose one task_prompt_layers value>",
+			content:"<parent-authored contribution text>",
+			priority:0,
+			depends_on_refs:[],
+			basis_refs:[],
+			reconsider_when:"<when main should revisit this contribution>",
+		},
+		instruction:"Use the select-only template when exact component selection is sufficient. Add prompt_contributions only when main independently chooses source-linked task-prompt text; runtime never authors or classifies that text.",
+	};
+}
+
 export function createHarnessAssembly(options: CreateAssemblyOptions): HarnessAssembly {
 	const currentRevision = Number(options.previous?.revision ?? 0);
-	if (options.input.expected_assembly_revision !== undefined
-		&& Number(options.input.expected_assembly_revision) !== currentRevision) {
+	if (options.input.expected_assembly_revision === undefined) {
+		throw new HarnessAssemblyConflictError(null, currentRevision);
+	}
+	if (Number(options.input.expected_assembly_revision) !== currentRevision) {
 		throw new HarnessAssemblyConflictError(Number(options.input.expected_assembly_revision), currentRevision);
 	}
+	validateAssemblySemanticInput(options.input, options.previous, options.resolveComponentRef, options.resolveSourceRef);
 	const rawSelected = options.input.selected_resource_refs === undefined
 		? options.previous?.selected_resource_refs ?? []
 		: uniqueStrings(options.input.selected_resource_refs, "selected_resource_refs");
@@ -216,7 +372,7 @@ export function createHarnessAssembly(options: CreateAssemblyOptions): HarnessAs
 		assembly_id: "task-harness-assembly",
 		revision: currentRevision + 1,
 		status: "active",
-		selection_mode: "explicit",
+		selection_mode: options.selectionMode ?? "explicit",
 		selected_resource_refs: [...new Set(selected)],
 		prompt_contributions: contributions,
 		decision: normalizeDecision(options.input.decision),

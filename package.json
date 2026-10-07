@@ -1,0 +1,8 @@
+{
+  "name": "autoresearch-pi-project",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pi-jev": "0.5.0"
+  }
+}

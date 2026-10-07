@@ -1,14 +1,16 @@
-# Candidate harness delivery
+# Parent-authored Harness delivery
 
-Use the delivery schema on submit_research_report. Describe the content you actually
-validated; do not choose attributes merely to force a destination. The research
-focus does not determine the delivery type.
+This guide applies to a parent Agent authoring through `task_harness(action=change)`
+after reading the matching creator. It is not an Auto-Research child output
+contract. Research can supply evidence and a method candidate, but the parent must
+write the actual body and choose the component type.
 
 ## Classify from the work and evidence
 
 - semantic_kind: fact records knowledge; plan describes goals, order, or branches;
   procedure supplies reusable steps involving judgment; computation supplies an
-  executable transformation; role defines continuing open-ended model work;
+  executable transformation; role defines work needing a selected independent or
+  prepared model context, including a first-use context;
   assessment evaluates a claim or result; evidence supplies supporting material.
 - Every fact or plan supplies one `atom={subject,predicate,value}`. One atom may
   have structured values such as an action mapping or a route, but it cannot mix
@@ -53,15 +55,16 @@ An unsupported operation is a capability gap, not an executable delivery.
 For model_delegation, specify role instructions and the intended authorized tools.
 Use exact existing versions when referencing dependencies.
 
-Conditional plans and changing state belong in task_prompt or retrievable memory.
-Request system_prompt only for a stable, task-wide foundation needed throughout
-the task. system_prompt_basis.source is explicit_task_contract when the provided
-contract directly states the rule, goal, mechanism or constraint; it is
-validated_environment_invariant when observations support the same invariant with
-no unresolved direct counterexample. Link its evidence_refs in both basis_refs and
-the report/finding evidence. Importance alone is insufficient. Omit this field
-when not requesting system_prompt. Optional activation/prompt fields describe the
-intended projection; they must not broaden the supported applicability.
+Keep concrete facts and plan state in Memory or task_prompt as appropriate. For a
+policy changing how main explores, plans, compares or recovers across applicable
+decisions, the direct system_prompt candidate accepts parent-authored content and
+explicit scope, optionally validity and reconsider_when. A provisional level/phase
+policy is valid; it need not be a permanent environment invariant. Explicitly
+assemble the returned version to deliver it on the next parent request. Keep
+platform constraints intact and distinguish a chosen working policy from evidence
+that its assumptions are true. Compatibility prompt-projection fields describe
+their actual authored basis and scope; do not invent invariant evidence to fit a
+projection. A research report itself never becomes system authority automatically.
 
 ## Review and return
 
@@ -84,13 +87,14 @@ Use expected_effect to describe the next applicable use and the observable check
 that would distinguish useful output from mere invocation. Use reconsider_when
 for failure, changed prerequisites or contradictory evidence. These are plans for
 later evaluation, not claims of benefit. Conditional decision guidance may use
-prompt_channel=task_prompt with appropriate visibility and activation; it need
-not satisfy the stronger system_prompt invariant requirement.
+prompt_channel=task_prompt with appropriate visibility and activation; promote it
+to system_prompt only when the parent chooses it as a behavioral policy.
 
 For always-visible fact/plan deliveries, prompt_layer=task_policy carries a
 conditional decision procedure; task_state (default) carries the live state or
 plan. Use activation for executable conditions. Full evidence belongs in scoped
-resources. Keep changing strategies out of stable system overlays.
+resources. A selected system policy may change through explicit versioned revision
+as the working objective or strategy changes; it is not a store for live state.
 
 When validity relies on another harness resource, declare its exact current
 version in depends_on_refs. These are validity prerequisites, not historical
@@ -100,8 +104,7 @@ or system_prompt versions that this delivery replaces. Cite only replacements
 supported by evidence; the runtime cannot infer semantic contradictions. Keep
 content, summary and optional prompt_text coherent in the same delivery.
 
-Return the complete body and a stable candidate_ref when the proposal may be
-resumed. Parent-side code validates and later adopts the candidate through the
-single task_harness(action="change") boundary. This report never changes the
-parent Harness. An empty proposal list is valid, and a proposal is not evidence
+Return the complete body through the single `task_harness(action="change")`
+boundary. Cite exact research/method refs when they informed the work, but do not
+claim the runtime or research child authored the body. Creation is not evidence
 of correctness or benefit.

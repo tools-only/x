@@ -1,0 +1,5 @@
+{
+  "tests/pi_harness_argument_http_fixture.ts": "17ab8e38de07862a03ad29095972df32458754e8d7e8168309b713cebce06de4",
+  "tests/test_harness_argument_integrity_native.py": "6b3891fe0f843865e37297cf94e8066a0af885f8693fb202f47c9fe2325cd802",
+  "tests/fixtures/harness-stage134-malformed-arguments.json": "a2488a15d132421653e70a7c807a9ebedaca38f94f08a4c6dbad1a16615158f7"
+}

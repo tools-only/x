@@ -139,10 +139,87 @@ export function normalizeHarnessMemoryAtom(value: unknown): HarnessMemoryAtom {
  */
 export function normalizeSemanticCandidate(input: Record<string, any>): Record<string, any> {
 	const candidate = { ...input };
+	// Omission allows mechanical defaults; an explicit null is authored input,
+	// not permission to choose a different carrier or execution contract.
+	for (const field of ["semantic_kind", "component", "kind", "type", "execution", "reuse", "reasoning",
+		"context_visibility", "prompt_channel", "prompt_layer", "target_version", "current_version", "prompt_target_version"]) {
+		if (candidate[field] === null) throw new Error(`candidate.${field} cannot be null; omit it for the documented default`);
+	}
+	const carriers: Record<string, string> = {
+		memory: "memory", task_memory: "memory", task_state: "memory", fact: "memory", plan: "memory",
+		policy: "memory", task_prompt: "memory",
+		skill: "skill", task_skill: "skill", procedure: "skill",
+		tool: "tool", task_tool: "tool", computation: "tool",
+		subagent: "subagent", task_subagent: "subagent", role: "subagent",
+		system_prompt: "system_prompt", task_system_prompt: "system_prompt",
+		assessment: "research_only", evidence: "research_only",
+	};
+	const authoredKinds = ["semantic_kind", "component", "kind", "type"]
+		.filter(field => candidate[field] !== undefined)
+		.map(field => ({ field, value: String(candidate[field]).trim().toLowerCase() }));
+	const firstKind = authoredKinds[0];
+	for (const entry of authoredKinds.slice(1)) {
+		if ((carriers[entry.value] ?? entry.value) !== (carriers[firstKind.value] ?? firstKind.value))
+			throw new Error(`candidate.${entry.field} conflicts with candidate.${firstKind.field}; choose one authored carrier`);
+	}
+	let alias = String(candidate.semantic_kind ?? candidate.component ?? candidate.kind ?? candidate.type ?? "").trim().toLowerCase();
+	// This syntax can only define a pure Tool; no prose or arbitrary program
+	// is used to guess a carrier. Explicit conflicting carriers stay explicit.
+	if (!alias && candidate.program?.format === "task-pure-python-v1"
+		&& !["atom", "instructions", "tools", "prompt_text", "layer"].some(key => candidate[key] !== undefined))
+		alias = "tool";
+	// A complete atom with a stable key and declared validity has only the
+	// native Memory interpretation. Accept that compact spelling when no
+	// component or prompt-routing fields suggest a different destination.
+	const memoryOnlyShape = !alias && candidate.layer === undefined
+		&& typeof candidate.key === "string" && candidate.key.trim()
+		&& (candidate.name === undefined || candidate.name === candidate.key)
+		&& candidate.validity && ["task", "episode", "level", "state"].includes(candidate.validity.scope)
+		&& candidate.atom && typeof candidate.atom === "object" && !Array.isArray(candidate.atom)
+		&& typeof candidate.atom.subject === "string" && candidate.atom.subject.trim()
+		&& typeof candidate.atom.predicate === "string" && candidate.atom.predicate.trim()
+		&& Object.prototype.hasOwnProperty.call(candidate.atom, "value")
+		&& !["instructions", "procedures", "program", "tools", "input_schema", "implementation_ref",
+			"prompt_channel", "prompt_text", "prompt_layer", "system_prompt_basis", "activation",
+			"context_recipe", "method", "execution", "reasoning"].some(field => candidate[field] !== undefined);
+	if (memoryOnlyShape) {
+		candidate.semantic_kind = "fact";
+		candidate.execution = "text";
+	}
+	if (candidate.target_version === undefined && Number.isInteger(candidate.current_version)) {
+		candidate.target_version = candidate.current_version;
+	}
+	// Providers sometimes author every method field correctly but place them on
+	// the candidate rather than under `method`. Nest that already-authored data
+	// without interpreting prose or supplying defaults. Validation remains in
+	// normalizeMethodSpecification. Only procedure candidates use this compact
+	// spelling: applicability/scope on memories and prompt components retain
+	// their ordinary component meaning and must not silently become a method.
+	const methodFields = ["problem", "applicability", "abstain_when", "abstraction_scope",
+		"inputs", "invariants", "parameters", "steps", "decision_points", "stop_conditions",
+		"failure_modes", "construction_evidence_refs", "contrast_evidence_refs", "next_use",
+		"predicted_semantic_result", "falsifier"];
+	const procedureAlias = ["skill", "task_skill", "procedure"].includes(alias);
+	if (procedureAlias && candidate.method === undefined) {
+		const authored = Object.fromEntries(methodFields
+			.filter(field => candidate[field] !== undefined)
+			.map(field => [field, candidate[field]]));
+		if (Object.keys(authored).length) {
+			candidate.method = authored;
+			for (const field of Object.keys(authored)) delete candidate[field];
+		}
+	} else if (procedureAlias && candidate.method && typeof candidate.method === "object" && !Array.isArray(candidate.method)) {
+		for (const field of methodFields.filter(name => candidate[name] !== undefined)) {
+			const nested = candidate.method[field];
+			if (nested === undefined || JSON.stringify(nested) !== JSON.stringify(candidate[field])) {
+				throw new Error(`candidate.${field} conflicts with canonical candidate.method.${field}; keep one nested authored value`);
+			}
+			delete candidate[field];
+		}
+	}
 	// Periodic reviews use `candidate.kind` because the outer review entry owns
 	// `component`. Direct changes and research deliveries use
 	// `component`/`semantic_kind`. They are spelling aliases for one router.
-	const alias = String(candidate.semantic_kind ?? candidate.component ?? candidate.kind ?? "").trim().toLowerCase();
 	// Accept the five component words shown by task_harness.inspect as spelling
 	// aliases. Routing is still decided here from the component's behavior.
 	if (["skill", "task_skill", "procedure"].includes(alias)) {
@@ -162,15 +239,26 @@ export function normalizeSemanticCandidate(input: Record<string, any>): Record<s
 			}).filter(Boolean).join("\n\n");
 		}
 	}
-	if (alias === "tool") {
+	if (["tool", "task_tool"].includes(alias)) {
 		candidate.semantic_kind = "computation";
 		candidate.execution ??= candidate.program ? "pure_computation" : "adapter_operation";
 	}
-	if (["subagent", "role"].includes(alias)) {
+	if (["subagent", "task_subagent", "role"].includes(alias)) {
 		candidate.semantic_kind = "role";
 		candidate.execution ??= "model_delegation";
 		candidate.reuse ??= "expected_reuse";
 		candidate.reasoning ??= "open_ended";
+	}
+	if (["system_prompt", "task_system_prompt"].includes(alias)) {
+		candidate.semantic_kind = "system_prompt";
+		candidate.execution ??= "text";
+		if (candidate.prompt_target_version === undefined && candidate.target_version !== undefined) {
+			candidate.prompt_target_version = candidate.target_version;
+		}
+		if (candidate.prompt_target_version !== undefined && candidate.target_version !== undefined
+			&& Number(candidate.prompt_target_version) !== Number(candidate.target_version)) {
+			throw new Error("candidate.target_version conflicts with candidate.prompt_target_version for standalone system_prompt");
+		}
 	}
 	if (!alias && candidate.layer === "task_state") {
 		candidate.semantic_kind = "fact";
@@ -200,9 +288,6 @@ export function normalizeSemanticCandidate(input: Record<string, any>): Record<s
 		candidate.prompt_layer ??= "task_policy";
 		candidate.content ??= candidate.prompt_text ?? candidate.summary;
 	}
-	if (candidate.target_version === undefined && Number.isInteger(candidate.current_version)) {
-		candidate.target_version = candidate.current_version;
-	}
 	if (["fact", "plan"].includes(String(candidate.semantic_kind)) && candidate.atom !== undefined) {
 		candidate.atom = normalizeHarnessMemoryAtom(candidate.atom);
 		// The structured atom is authoritative. Native memory keeps its existing
@@ -217,12 +302,9 @@ export function normalizeSemanticCandidate(input: Record<string, any>): Record<s
 function validateSystemPromptProjection(candidate: Record<string, any>, base: HarnessRouteTarget): void {
 	if (base === "research_only") throw new Error("assessment and evidence deliveries are research_only and cannot become system_prompt");
 	const evidenceRefs = candidate.system_prompt_basis?.evidence_refs;
-	if (candidate.context_visibility !== "always"
-		|| candidate.scope?.kind !== "task_wide"
-		|| candidate.stability !== "stable_in_scope"
-		|| !Array.isArray(evidenceRefs) || !evidenceRefs.length
+	if (!Array.isArray(evidenceRefs) || !evidenceRefs.length
 		|| evidenceRefs.some((ref: unknown) => !candidate.basis_refs?.includes(ref))) {
-		throw new Error("system_prompt requires an always-visible stable task-wide delivery with evidence-bound system_prompt_basis");
+		throw new Error("system_prompt requires evidence-bound system_prompt_basis");
 	}
 }
 
@@ -233,6 +315,7 @@ export function classifyHarnessChangeTargets(candidate: Record<string, any>): Ha
 	candidate = normalizeSemanticCandidate(candidate);
 	const base = classifySemanticKind(candidate);
 	if (base === "memory") normalizeHarnessMemoryAtom(candidate.atom);
+	if (base === "system_prompt") return ["system_prompt"];
 	if (candidate.prompt_channel === "system_prompt") {
 		validateSystemPromptProjection(candidate, base);
 		return [base, "system_prompt"];
@@ -273,9 +356,23 @@ export function normalizeCapabilityRequest(input: unknown): CapabilityRequest {
 	if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("capability request must be an object");
 	const value = input as Record<string, any>;
 	const action = value.action;
-	const decision = value.decision;
 	if (action !== "research" && action !== "change") throw new Error("capability request.action must be research or change");
-	if (!decision || typeof decision !== "object" || Array.isArray(decision)) throw new Error("capability request.decision is required");
+	const decision = value.decision;
+	// Change candidates are already parent-authored semantic decisions. Requiring
+	// a second wrapper object caused complete Tool/Subagent candidates from real
+	// providers to be rejected before routing. Research remains explicit because
+	// its question and scope are otherwise ambiguous. For change, derive only a
+	// mechanical audit envelope; runtime still does not choose a carrier or invent
+	// candidate content.
+	if (action === "change" && (!decision || typeof decision !== "object" || Array.isArray(decision))) {
+		const changes = Array.isArray(value.changes) ? value.changes : [];
+		const candidates = changes.map((change: any) => change?.candidate).filter((candidate: any) => candidate && typeof candidate === "object");
+		const basis_refs = [...new Set(candidates.flatMap((candidate: any) => Array.isArray(candidate.basis_refs) ? candidate.basis_refs.map(String) : []))];
+		const reason = String(candidates.map((candidate: any) => candidate.reason ?? candidate.description ?? candidate.summary ?? "").find(Boolean) ?? "Parent-authored Harness component change").trim();
+		const expected = String(candidates.map((candidate: any) => candidate.expected_effect ?? candidate.expected ?? "").find(Boolean) ?? "Apply the complete parent-authored component candidate").trim();
+		return { action, changes: changes.map(normalizeHarnessChange), decision: { basis_refs, reason, expected } };
+	}
+	if (!decision || typeof decision !== "object" || Array.isArray(decision)) throw new Error("capability request.decision is required for research");
 	const normalizedDecision: DecisionBasis = {
 		basis_refs: Array.isArray(decision.basis_refs) ? [...new Set(decision.basis_refs.map(String).map((item: string) => item.trim()).filter(Boolean))] : [],
 		reason: requiredText(decision.reason, "decision.reason"),
@@ -310,7 +407,28 @@ export function normalizeCapabilityRequest(input: unknown): CapabilityRequest {
 
 export function normalizeHarnessChange(input: unknown): HarnessChange {
 	if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("harness change must be an object");
-	const value = input as Record<string, any>;
+	let value = input as Record<string, any>;
+	if (value.candidate && typeof value.candidate === "object" && !Array.isArray(value.candidate)
+		&& Object.prototype.hasOwnProperty.call(value.candidate, "operation")) {
+		// A duplicate create is publication metadata, not component content.
+		if (value.candidate.operation !== "create" || (value.operation !== undefined && value.operation !== "create"))
+			throw new Error("candidate.operation may only repeat create consistently with change.operation; specify other operations on the change");
+		if (["target_ref", "candidate_ref", "target_version", "prompt_target_version", "current_version", "update"]
+			.some(field => field in value || field in value.candidate))
+			throw new Error("redundant candidate.operation=create cannot include target/update references");
+		const { operation: _redundantCreate, ...candidate } = value.candidate;
+		value = { ...value, operation: "create", candidate };
+	}
+	if (value.operation === undefined) {
+		const candidate = value.candidate;
+		const updateFields = ["target_ref", "candidate_ref", "target_version", "prompt_target_version", "update"];
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
+			|| updateFields.some(field => field in value || field in candidate)
+			|| "operation" in candidate) {
+			throw new Error("harness change.operation is required unless a complete new candidate has no target/update references");
+		}
+		return { operation: "create", candidate };
+	}
 	if (!["create", "update", "retire", "reuse"].includes(value.operation)) throw new Error("harness change.operation is invalid");
 	if (["retire", "reuse"].includes(value.operation)) {
 		const targetRef = requiredText(value.target_ref, "harness change.target_ref");
@@ -345,10 +463,16 @@ export function classifySemanticKind(candidate: Record<string, any>): HarnessRou
 			if (candidate.execution !== "model_delegation") throw new Error("role must use model_delegation execution");
 			if (!Array.isArray(candidate.tools)) throw new Error("role requires an explicit tool set (empty is valid for pure reasoning)");
 			return "subagent";
+		case "system_prompt":
+			if (candidate.execution !== "text") throw new Error("system_prompt must use text execution");
+			return "system_prompt";
 		case "assessment":
 		case "evidence":
 			return "research_only";
 		default:
+			if (candidate.semantic_kind === undefined && candidate.atom !== undefined) {
+				throw new Error("ambiguous atom candidate: set candidate.semantic_kind to fact or plan explicitly, or remove conflicting component fields");
+			}
 			throw new Error(`unsupported semantic_kind: ${String(candidate.semantic_kind)}`);
 	}
 }

@@ -1,0 +1,35 @@
+{
+  "model": "gpt-6.1-sol",
+  "provider": "yibu",
+  "pi_api": "openai-completions",
+  "context_window": 175000,
+  "max_output_tokens": 4096,
+  "review_configuration": {
+    "requested_review_mode": "advisory",
+    "review_mode": "advisory",
+    "periodic_review_enabled": true,
+    "reasoning_policy": "adaptive-evidence",
+    "reasoning_levels": [
+      "low",
+      "medium"
+    ],
+    "max_reported_tokens": 150000,
+    "parent_max_output_tokens": 4096,
+    "child_max_output_tokens": 4096,
+    "output_envelope_scope": "shared_model_registry",
+    "parent_output_reserve": "4096",
+    "child_thinking": "provider-default",
+    "provider_thinking_format": "openai",
+    "reasoning_history_policy": "preserve",
+    "editable_reasoning_providers": "",
+    "exact_region_table": false,
+    "concise_arc_guidance": false,
+    "tool_disclosure": "on_demand",
+    "child_observation": "on_demand"
+  },
+  "game": "ls20",
+  "max_actions": 60,
+  "experiment_timeout_seconds": 1800,
+  "context_max_chars": 60000,
+  "source": "Actual stage90 summary and launcher; credentials excluded"
+}

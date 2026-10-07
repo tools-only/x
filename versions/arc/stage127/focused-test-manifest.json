@@ -1,0 +1,4 @@
+{
+  "tests/pi_parent_static_contract_lifetime.test.ts": "cb2fea5c7d8148da5cc97a78f251572aa08287dfc2305573af7df5b34e50d5e7",
+  "tests/test_harness_contract_lifetime_native.py": "410d831602888bae584d9679d96e0189dd5a7661a6cd6f985e1398e133ced1ec"
+}

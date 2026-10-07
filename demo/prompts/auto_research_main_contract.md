@@ -1,13 +1,51 @@
 # Auto-Research: parent guide
 
+Auto-Research organizes research; several independent workers may carry ongoing
+rule/goal exploration, competing explanations, plan checks or method assessment.
+When tracking repeatedly consumes your current decision turn, authorize a durable
+responsibility with `auto_research(action="assign")`; read its contract for bounds.
+Use the same research_line_ref for one problem, and distinct worker_id values for
+independent responsibilities. A window adds evidence to existing work. You may
+authorize before you have solved the framing or collected a full retrospective.
+Workers deliver current core increments while keeping analysis and counterexamples
+outside your transcript. Act from live observations; inspect details only when a
+conclusion, disagreement, experiment or component decision needs them. For ongoing
+historical periodic review, explicitly set handle_periodic_reviews=true. Authorize
+finite max_runs/max_output_tokens and stop_when; inspect workers or revoke by exact
+worker_ref. Research never adopts a component: read the matching creator, use
+task_harness_create/change, assemble an exact version, invoke/trial it, assess the
+actual result and let evidence return to the same responsibilities.
+
 You own environment actions and the task-local harness. Use auto_research either
-for a targeted bounded question or to allocate one open research turn. An open
-call is `auto_research(action="start")`, optionally with `current_concern`; runtime
-restores the durable research agenda, publishes a metadata-only history catalog
+for a targeted bounded question or to allocate one open research turn. First read
+`task_harness(action="read_method", method_name="research-orchestration")`;
+reuse a matching prior read. After that read, runtime can resolve an omitted
+`authoring_method_ref`; an explicit ref must match the current method. Starting
+without a prior read returns the full creator and your preserved request as
+`retry`, without starting research. Read it, revise if needed, and resubmit. An open
+call is `auto_research(action="start", authoring_method_ref=...)`, optionally with `current_concern`; runtime
+creates one bounded child session. Reuse `research_line_ref` to continue a durable
+topic; without an exact topic or prior report ref, a new topic is created. Use
+`auto_research(action="topics")` for a paged index and `action="topic"` with an
+exact line ref for detail. The runtime restores that topic's agenda and history catalog
 and grants paged read access, while the read-only child chooses the question and
 evidence. Research can span task phases and examine environment mechanisms, your
 reasoning, representations and repeated work. You obtain environment evidence and
 own harness changes.
+
+Track uncertainty across the task's reasoning, not only component quality. A
+tentative identification can support a proposed mechanism, which can support a
+goal interpretation, constraints and a plan. Keep the assumptions and exact
+evidence connecting these claims visible in existing question, hypothesis,
+research_progress and checkpoint text. These are suggested reasoning roles, not
+mandatory stages or new fields. Revisit dependent claims when evidence changes;
+a successful action does not establish every assumption behind a plan. Use the
+existing research line/session and prior report references to continue a question
+with new evidence rather than restart an unrelated trajectory summary. Research
+may return revised hypotheses, competing explanations, a requested discriminating
+experiment or planning implications without producing a component. Parent still
+chooses experiments and authors/selects components; no research completion is
+required for trying a scoped Skill or Tool.
 
 Open research returns a full capsule only when it requests a current decision,
 proposes a method/Harness change, asks for an experiment, or supplies a planning
@@ -22,23 +60,25 @@ and, for a plan node, completion_contract:
   task/resource/trajectory references, relevant counterexamples when available,
   and the tools or parent-mediated probes actually available. A supplied task
   contract or artifact can ground research before an interaction history exists.
-- Attainable objective: one useful uncertainty, method or intermediate capability
-  that can plausibly be resolved within the available evidence and budget. Explain
-  its next use. Replace "solve the whole task" with a bounded milestone; decompose
-  objectives whose prerequisites are still separate unresolved research problems.
+- Attainable objective: a bounded contribution toward the task, such as a goal
+  interpretation, representation, candidate strategy or useful test design. Explain
+  its intended use and open prerequisites without requiring their resolution before
+  research; deciding how to investigate them may itself be the contribution.
 - Local evaluation: a reachable stage/state or representative input, an observable
   expected result, a check that can distinguish success from failure, and a cost
   limit/stop condition. Identify who can perform the check. Seek a decisive result
   within stated conditions, not guaranteed success or a universal mechanism proof.
 
-If these are missing, gather prerequisite evidence, narrow the objective or defer;
-do not delegate an empty abstraction. Inconclusive remains a valid research outcome.
+If a decisive environment check is unavailable, consider a formulation, consistency
+analysis or proposed discriminating experiment as the deliverable. Check its evidence
+and assumptions without claiming it was tried. Defer only when useful investigation
+or evidence collection is not worthwhile now. Inconclusive remains a valid outcome.
 
 Before every start, assess complexity: one independently verifiable completion
 contract is simple; multiple deliverables, evidence domains or dependent decisions
-are compound. Unless a prior research_run/research_report bounds the question,
-enqueue a decomposed research plan with completion contracts, dependencies,
-activation policies and a justified concurrency limit before starting a compound goal.
+are compound. Use a decomposed research plan when dependencies or parallel questions
+benefit from it; prior research and multiple plan nodes are not launch prerequisites.
+One bounded investigation may address a compound question while retaining unknowns.
 
 Use after_dependencies only when predecessor completion is mechanically sufficient.
 Use parent_release when a predecessor's meaning determines whether to proceed:
@@ -71,7 +111,7 @@ Do not make the parent collect these references manually. The child must still
 decide which cases are semantically comparable and construct the abstraction;
 code grouping alone is never a finding.
 
-When `task_harness(action=inspect)` exposes a
+When `task_harness(action=inspect, section=cross_context_research_candidates)` exposes a
 `cross_context_research_candidates` entry, code has found exact observations of
 one action signature in distinct runtime situations. This is a research option,
 not an interrupt or a mechanism claim. Decide whether its possible value exceeds
@@ -88,15 +128,15 @@ body remains pending_candidate_body. Use task_harness(action=change) for a
 separate direct change. A review commit, child completion or context exposure
 alone is not application evidence.
 
-For a completed Auto-Research result, decide only whether to adopt it. Call
-`task_harness(action=adopt_research, research_run_ref=...)`; omit the run ref
-when there is exactly one adoptable result. The runtime resolves route refs,
-delivery hashes, component versions, execution order, receipts, and session
-status. Before adopting any skill/tool/subagent delivery, read the corresponding
-fixed creator with `task_harness(action=read_method, method_name=...)` and pass
-its exact `method_ref` as `authoring_method_ref`; the runtime rejects adoption
-without that creator read. Do not copy or orchestrate individual `apply_route`
-calls.
+For a completed Auto-Research result, decide whether any method candidate is worth
+turning into a capability. A `parent_authoring_handoff` is research input and may
+carry bounded pure computation source and schemas in `computation_candidate`.
+Compare its evidence cutoff and scope with the current task. Choose, revise, or
+reject the candidate; a conclusion alone may suffice. To operationalize it,
+supply a complete candidate through the canonical authoring tools and explicitly
+assemble/use its returned exact version. Creator details are optional references.
+The handoff's change template remains non-executable. The runtime validates,
+versions and records; it never automatically publishes or activates research.
 
 When repeated manual analysis, similar delegations, capability failures, stagnation
 or a completed task phase reveal a method question, conduct a bounded harness
@@ -139,8 +179,8 @@ when a later evaluation or milestone is warranted. For a duplicate periodic cue,
 explicitly defer/skip its handoff and carry relevant evidence to existing research;
 do not assume sessions or handoffs merge automatically. Also defer/skip when cost,
 terminal state or unavailable prerequisites make investigation inappropriate.
-Runtime binds omitted refs only for unique eligible targets; ambiguity returns
-complete candidates. Use task_harness(action=inspect) for review templates and
+Provide `research_handoff_ref` when starting from a periodic handoff; an open
+start remains open research. Use task_harness(action=inspect, section=review_contract) for review templates and
 current decisions. Supply semantic reasons and validation proposals; runtime
 owns mechanical IDs, default component deferrals and legal state transitions.
 Infrastructure failures and exhausted review budgets release the parent action
@@ -148,7 +188,7 @@ boundary; inspect the degraded state and continue useful task work.
 Consume the returned structured `experiment_request` rather than guessing an
 action from prose. Blocking results expose it in the capsule; non-blocking
 results are delivered in the next parent-turn completion inbox and remain
-available through `task_harness(action='inspect').research_experiment_candidates`. The
+available through `task_harness(action='inspect', section='research_experiment_candidates')`. The
 request is only a candidate: compare `as_of_event` with current state and either
 discard it with a recorded reason or accept the unique pending request in the
 native `arc_action` decision with `approve_research_experiment=true`. If several
@@ -160,9 +200,10 @@ leaves confidence unchanged.
 
 Ask for a usable candidate with applicability, next use, local validation and
 reconsideration conditions, or an explicit evidence/capability gap. Keep facts in
-memory; project conditional strategy into task_prompt when subsequent decisions
-need it. Reserve system_prompt for the stable task-wide foundation defined by the
-delivery contract. A knowledge-only result is valid, but a method-extraction goal
+memory. A parent-authored system_prompt may reorganize the working approach for a
+task, level or phase, even provisionally; author its scope and reconsideration,
+then explicitly assemble it. Concrete plans may instead be task_prompt contributions.
+No report automatically becomes a system directive. A knowledge-only result is valid, but a method-extraction goal
 must explain whether a reusable method was found. Record this in existing report
 or checkpoint text, not invented schema fields. Inspect receipts, exercise applied
 resources when applicable, and distinguish exposure, invocation, semantic success

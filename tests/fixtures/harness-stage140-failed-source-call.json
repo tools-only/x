@@ -1,0 +1,38 @@
+{
+  "source_run": "runs\\arc-stage140-qwen-live-tool-ft09-20261006",
+  "source_event": "tool_execution_start",
+  "call": {
+    "name": "task_harness_create",
+    "arguments": {
+      "candidate": {
+        "name": "slot_pattern_checker",
+        "description": "Extract the 6x6 pattern at a given slot origin (x,y) from the current grid, and compare it against one of the six sample tile patterns. Returns the extracted pattern as a list of hex rows plus a match index (0-5) or -1 if no match. Samples are at fixed positions: row0 y2 (x4,12,20), row1 y10 (x4,12,20), row2 y18 (x4,12,20). Each sample is 6x6 starting at its anchor.",
+        "program": {
+          "format": "task-pure-python-v1",
+          "source": "[[input['grid'][y+dy][x+dx] for dx in range(6)] for dy in range(6)], [s for s in range(6) if [[input['grid'][sy[s]+dy][sx[s]+dx] for dx in range(6)] for dy in range(6)] == [[input['grid'][y+dy][x+dx] for dx in range(6)] for dy in range(6)]]",
+          "limits": {
+            "max_list_length": 100
+          }
+        }
+      },
+      "assembly": true,
+      "trial": {
+        "parameters": {
+          "x": 32,
+          "y": 32
+        },
+        "bindings": [
+          {
+            "name": "grid",
+            "ref": "observation_snapshot:parent-state-2@v1",
+            "path": [
+              "public_state",
+              "frames",
+              "4"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

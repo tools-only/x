@@ -12,7 +12,35 @@ import pytest
 
 from autoresearch_pi.task_scope import seal_task_scope
 from autoresearch_pi.subagent_broker import SubagentBroker
-from test_pi_external_benchmark_native import _pi_cli, _run_fixture
+from test_pi_external_benchmark_native import _pi_cli, _run_fixture as _run_raw_fixture
+
+
+def _run_fixture(root, variant, **kwargs):
+    """Protocol fixtures opt into authoring prerequisites, not production bypasses.
+
+    Missing-creator/scope tests use the raw fixture in capability_authoring.
+    These context/continuation tests need real read_method calls before research.
+    """
+    import copy
+    steps = copy.deepcopy(kwargs.get("steps") or [])
+    creator = Path(__file__).resolve().parents[1] / "demo/harness-methods/research-orchestration/SKILL.md"
+    ref = "baseline_method:research-orchestration@sha256:" + hashlib.sha256(creator.read_text(encoding="utf-8").encode()).hexdigest()
+    needs_research = False
+    for step in steps:
+        args = step.get("arguments", {})
+        if step.get("name") == "auto_research" and args.get("action", "start") in {"start", "enqueue"}:
+            args.setdefault("authoring_method_ref", ref)
+            needs_research = True
+        if step.get("name") == "task_memory" and args.get("action") == "upsert":
+            args.setdefault("validity", {"scope": "task"})
+    if needs_research:
+        steps.insert(0, {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "research-orchestration"}})
+    if any(step.get("name") == "task_harness" and step.get("arguments", {}).get("action") in {"apply_route", "adopt_research"} for step in steps):
+        steps[0:0] = [{"name": "task_harness", "arguments": {"action": "read_method", "method_name": creator}}
+                      for creator in ["skill-creator", "tool-creator", "subagent-creator"]]
+    if kwargs.get("steps") is not None:
+        kwargs["steps"] = steps
+    return _run_raw_fixture(root, variant, **kwargs)
 
 
 def records(root, name):
@@ -22,6 +50,15 @@ def records(root, name):
 
 def results(events, name):
     return [e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == name]
+
+
+def current_decision_card(context):
+    for message in context['messages']:
+        for part in message.get('content', []):
+            text = part.get('text', '')
+            if text.startswith('CURRENT TASK STATE'):
+                return json.loads(text.split(': ', 1)[1])
+    raise AssertionError('No current decision card reached the provider')
 
 
 def wait_for_broker_job(root, run_id, timeout=10):
@@ -66,10 +103,24 @@ def harness_delivery(delivery_id, semantic_kind, name, content, **overrides):
             "value": content,
         }
     if semantic_kind in {"procedure", "computation", "role"}:
+        defaults["method"] = {
+            "problem": "Inspect a bounded fixture input while retaining uncertainty",
+            "applicability": "Use when the declared fixture inputs match the bounded comparison contract.",
+            "abstain_when": "Report an explicit gap when a required fixture field is missing or contradictory.",
+            "abstraction_scope": "bounded_reuse",
+            "inputs": ["current fixture state"],
+            "invariants": [], "parameters": [], "steps": ["Read the supplied state", "Compare it with the declared fixture expectation"],
+            "decision_points": ["If a required field is missing, report uncertainty"], "stop_conditions": ["one bounded comparison"],
+            "failure_modes": ["missing or contradictory input"], "construction_evidence_refs": [], "contrast_evidence_refs": [],
+            "next_use": "next fixture invocation", "predicted_semantic_result": "bounded result or explicit uncertainty",
+            "falsifier": "a missing field is treated as a verified observation",
+        }
+    if semantic_kind in {"procedure", "computation", "role"}:
         creator = {"procedure": "skill-creator", "computation": "tool-creator", "role": "subagent-creator"}[semantic_kind]
         creator_dir = Path(__file__).resolve().parents[1] / "demo" / "harness-methods" / creator
-        method_text = ((creator_dir / "PI_ADAPTATION.md").read_text(encoding="utf-8") + "\n\n---\n\n"
-                       + (creator_dir / "SKILL.md").read_text(encoding="utf-8")) if creator == "skill-creator" else (creator_dir / "SKILL.md").read_text(encoding="utf-8")
+        # The runtime hashes SKILL.md bytes as its creator ref. Text-mode reads
+        # normalize CRLF on Windows, and PI_ADAPTATION.md is a separate resource.
+        method_text = (creator_dir / "SKILL.md").read_bytes().decode("utf-8")
         defaults["authoring_method_ref"] = f"baseline_method:{creator}@sha256:{hashlib.sha256(method_text.encode('utf-8')).hexdigest()}"
     defaults.update(overrides)
     if (defaults["context_visibility"] == "always" and "prompt_operation" not in defaults):
@@ -116,7 +167,7 @@ def test_open_research_parent_attention_is_limited_to_actionable_delivery():
     quiet = run_agenda_helper(
         "agenda.researchReportNeedsParentAttention(JSON.parse(process.env.AUTORESEARCH_AGENDA_TEST_INPUT))",
         input_value={"research_progress": {"parent_relevance": "later"}, "planning_implications": [],
-                     "method_candidates": [], "harness_proposals": []},
+                     "method_candidates": []},
     )
     actionable = run_agenda_helper(
         "agenda.researchReportNeedsParentAttention(JSON.parse(process.env.AUTORESEARCH_AGENDA_TEST_INPUT))",
@@ -313,7 +364,10 @@ def test_router_unions_method_evidence_into_delivery_basis_refs_without_inventin
     delivery = harness_delivery(
         "bounded-method", "procedure", "bounded-method", "Use a bounded method.",
         method={
-            "problem": "Decide a bounded case.", "inputs": ["case"],
+            "problem": "Decide a bounded case.",
+            "applicability": "Use when the declared bounded case supplies the required comparison inputs.",
+            "abstain_when": "Return unresolved when the case does not distinguish the available alternatives.",
+            "abstraction_scope": "bounded_reuse", "inputs": ["case"],
             "invariants": ["shape is stable"], "parameters": ["case"],
             "steps": ["inspect", "decide"], "decision_points": ["branch"],
             "stop_conditions": ["decision returned"], "failure_modes": ["unknown case"],
@@ -499,7 +553,10 @@ def test_cross_context_comparison_distinguishes_situations_inside_one_online_lif
     proposal = harness_delivery(
         "d-online", "procedure", "online-probe", "Compare a move with a refusal.",
         basis_refs=["o1", "o2"],
-        method={"problem": "Choose a probe under irreversible state transitions", "inputs": ["two situations"],
+        method={"problem": "Choose a probe under irreversible state transitions",
+                "applicability": "Use when two bounded situations yield competing observable predictions.",
+                "abstain_when": "Do not act when no available probe distinguishes the alternatives.",
+                "abstraction_scope": "bounded_reuse", "inputs": ["two situations"],
                 "invariants": ["same action signature"], "parameters": ["effect shape"],
                 "steps": ["compare predicted and observed effects"],
                 "decision_points": ["whether the action changes state"], "stop_conditions": ["a contrast is observed"],
@@ -555,6 +612,7 @@ def test_runtime_discovers_cross_context_research_only_after_distinct_situations
     assert len(candidate["situation_context_ids"]) == 2
     assert candidate["research_call"] == {
         "action": "start",
+        "authoring_method_ref": candidate["authoring_prerequisite"]["authoring_method_ref"],
         "research_candidate_ref": f"research_candidate:{candidate['candidate_id']}@v1",
     }
     assert candidate["research_parameters"]["scope"] == "research_method"
@@ -687,23 +745,27 @@ def test_method_lifecycle_requires_actual_use_for_validation():
     assert used["maturity"] == "validated_within_scope"
 
 
-def test_method_report_without_explicit_abstraction_remains_experience():
+def test_legacy_delivery_without_explicit_method_does_not_enter_method_lifecycle():
     proposal = harness_delivery("d1", "procedure", "probe", "Use the observed sequence.",
                                 basis_refs=["o1"])
+    proposal.pop("method")  # Deliberately model a historical unstructured delivery.
     result = run_method_runtime_helper(
-        "runtime.methodRecordsFromReport(JSON.parse(process.env.AUTORESEARCH_METHOD_RUNTIME_TEST_INPUT))[0]",
+        "runtime.methodRecordsFromReport(JSON.parse(process.env.AUTORESEARCH_METHOD_RUNTIME_TEST_INPUT))",
         input_value={"runId": "r1", "reportRef": "research_report:r1@v1",
                      "researchLineRef": "research_line:r@v1",
                      "report": {"evidence_refs": ["o1"], "harness_proposals": [{"delivery": proposal}]},
                      "comparison": {"selected_evidence_refs": ["o1"], "context_ids": ["level:0:attempt:1"]}},
     )
-    assert result["maturity"] == "experience"
+    assert result == []
 
 
 def test_explicit_grounded_method_becomes_candidate_not_validated():
     proposal = harness_delivery(
         "d1", "procedure", "probe", "Compare predictions before acting.", basis_refs=["o1", "o2"],
-        method={"problem": "Choose a discriminating probe", "inputs": ["two hypotheses"],
+        method={"problem": "Choose a discriminating probe",
+                "applicability": "Use when two hypotheses imply different observable outcomes.",
+                "abstain_when": "Defer when no reachable state can distinguish the hypotheses.",
+                "abstraction_scope": "bounded_reuse", "inputs": ["two hypotheses"],
                 "invariants": ["predictions are written before action"], "parameters": ["action budget"],
                 "steps": ["list alternatives", "select a differing prediction"],
                 "decision_points": ["whether predictions differ"], "stop_conditions": ["budget exhausted"],
@@ -731,7 +793,10 @@ def test_explicit_grounded_method_becomes_candidate_not_validated():
 def test_method_contexts_are_limited_to_the_cases_the_method_cites():
     proposal = harness_delivery(
         "d1", "procedure", "probe", "Compare matching cases.", basis_refs=["o1"],
-        method={"problem": "Compare matching cases", "inputs": ["case"],
+        method={"problem": "Compare matching cases",
+                "applicability": "Use when cases share the declared comparison fields.",
+                "abstain_when": "Keep cases separate when required comparison fields differ or are missing.",
+                "abstraction_scope": "bounded_reuse", "inputs": ["case"],
                 "invariants": ["same action"], "parameters": ["attempt"],
                 "steps": ["compare"], "decision_points": [], "stop_conditions": ["compared"],
                 "failure_modes": [], "construction_evidence_refs": ["o1"],
@@ -978,7 +1043,7 @@ def test_child_provider_prompt_uses_one_total_budget_and_preserves_required_work
         "format": "auto-research-report-v1", "status": "inconclusive",
         "conclusion": "The bounded input was sufficient.", "findings": [], "evidence_refs": [],
         "alternatives": [], "limitations": [], "validation_plan": "Return to parent.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     events = _run_fixture(
         root,
@@ -1026,13 +1091,33 @@ def test_research_progress_requires_semantic_checkpoint_change():
     assert advanced["reason"] == "semantic_checkpoint_advanced"
 
 
-def test_auto_research_rejects_an_unplanned_compound_goal_without_prior_research(tmp_path):
+def test_compound_auto_research_starts_without_a_prior_report_or_decomposition(tmp_path):
+    _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "compound-goal-admission"
+    report = {
+        "format": "auto-research-report-v1",
+        "status": "inconclusive",
+        "conclusion": "The initial compound question is admitted; more evidence is needed.",
+        "findings": [], "evidence_refs": [], "alternatives": ["Several mechanisms remain possible."],
+        "limitations": ["No earlier report was available."],
+        "validation_plan": "Collect one discriminating observation before choosing a strategy.",
+        "method_candidates": [],
+    }
     events = _run_fixture(
         root,
         "treatment",
         extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+        extra_env={
+            "PI_AUTORESEARCH_PI_CLI": cli,
+            "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+            "PI_AUTORESEARCH_MODEL": "scripted",
+            "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+            "PI_SUBAGENT_REPORT": json.dumps(report),
+            "PI_SUBAGENT_STEPS": json.dumps([
+                {"name": "submit_research_report", "arguments": {"report": report}},
+            ]),
+        },
         steps=[{"name": "auto_research", "arguments": {
             "action": "start",
             "question": "Reconstruct the map, infer every object, derive the rules, and plan the complete route.",
@@ -1043,9 +1128,9 @@ def test_auto_research_rejects_an_unplanned_compound_goal_without_prior_research
         }}],
     )
     result = results(events, "auto_research")[0]
-    assert result.get("isError") is True
-    assert "enqueue a decomposed research plan" in result["result"]["content"][0]["text"]
-    assert not records(root, "auto-research-sessions.jsonl")
+    assert result.get("isError") is not True, result
+    assert records(root, "auto-research-sessions.jsonl")
+    assert records(root, "auto-research-runs.jsonl")[-1]["status"] == "completed"
 
 
 def test_auto_research_plan_mounts_dependent_work_as_pending_without_starting_a_child(tmp_path):
@@ -1118,7 +1203,7 @@ def test_completed_planned_research_releases_structural_dependents_but_not_seman
         "format": "auto-research-report-v1", "status": "supported_within_scope",
         "conclusion": "A is established.", "findings": [], "evidence_refs": [],
         "alternatives": [], "limitations": [], "validation_plan": "Use A in dependent work.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     plan = {
         "goal": "Establish A, then evaluate two dependent questions.",
@@ -1174,7 +1259,7 @@ def test_non_blocking_planned_node_completion_updates_the_durable_plan(tmp_path)
     report = {
         "format": "auto-research-report-v1", "status": "supported_within_scope",
         "conclusion": "Background A completed.", "findings": [], "evidence_refs": [],
-        "alternatives": [], "limitations": [], "validation_plan": "Use A.", "harness_proposals": [],
+        "alternatives": [], "limitations": [], "validation_plan": "Use A.", "method_candidates": [],
     }
     plan = {
         "goal": "Complete A in the background.",
@@ -1256,6 +1341,8 @@ def test_code_router_compiles_semantics_and_prompt_overlay_to_native_pi_calls():
         assert plan["route_status"] == "ready"
         assert plan["steps"][0]["native_tool"] == expected_tool
         assert plan["steps"][0]["native_call"]["arguments"]["routing_id"] == plan["route_id"]
+        if kind in {"procedure", "computation", "role"}:
+            assert plan["steps"][0]["native_call"]["arguments"]["authoring_method_ref"] == delivery["authoring_method_ref"]
         if kind == "plan":
             assert len(plan["steps"]) == 1
         else:
@@ -1342,9 +1429,12 @@ def test_router_keeps_arc_program_pending_when_declared_adapter_output_lacks_req
     assert "apply_call" not in plan
 
 
-def test_standalone_method_survives_an_invalid_component_proposal():
+def test_standalone_method_survives_a_forbidden_child_component_proposal():
     method = {
         "problem": "Predict a bounded transition from contrasting situations.",
+        "applicability": "Use when contrasting situations expose a bounded action-conditioned prediction.",
+        "abstain_when": "Do not predict when a new situation lacks the compared conditions.",
+        "abstraction_scope": "cross_context",
         "inputs": ["current situation"], "invariants": ["same action signature"],
         "parameters": ["destination terrain"], "steps": ["compare exact cases", "predict"],
         "decision_points": ["whether the situations differ"], "stop_conditions": ["prediction emitted"],
@@ -1373,8 +1463,12 @@ def test_standalone_method_survives_an_invalid_component_proposal():
         "outputPolicy.normalizeAutoResearchReport(JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT))",
         input_value=report,
     )
-    assert normalized["harness_proposals"][0]["proposal_status"] == "pending_implementation"
-    assert "unsupported or unnormalized kind" in normalized["harness_proposals"][0]["proposal_error"]
+    assert normalized["harness_proposals"] == []
+    assert normalized["boundary_violations"] == [{
+        "code": "child_component_authoring_forbidden",
+        "count": 1,
+        "disposition": "method_metadata_migrated_when_present; component_body_discarded",
+    }]
     assert normalized["method_candidates"][0]["candidate_ref"] == "cross-situation-method"
 
     result = run_method_runtime_helper(
@@ -1390,15 +1484,18 @@ def test_standalone_method_survives_an_invalid_component_proposal():
     )
     assert result["maturity"] == "candidate_method"
     assert result["generalization_basis"] == "cross_context"
-    assert result["component_status"] == "proposed_separately"
+    assert result["component_status"] == "method_only"
     assert result["delivery_id"] == "broken-tool"
 
 
 def test_invalid_legacy_tool_migrates_its_valid_method_without_making_a_route():
     method = {
-        "problem": "Predict a transition from two situations.", "inputs": ["situation"],
-        "invariants": ["same action"], "parameters": ["terrain"], "steps": ["compare", "predict"],
-        "decision_points": [], "stop_conditions": ["prediction"], "failure_modes": ["unknown terrain"],
+        "problem": "Predict a transition from two situations.",
+        "applicability": "Use when two declared situations permit an outcome comparison.",
+        "abstain_when": "Return an evidence gap when the current situation is outside the compared scope.",
+        "abstraction_scope": "bounded_reuse", "inputs": ["situation"],
+            "invariants": ["same action"], "parameters": ["terrain"], "steps": ["compare", "predict"],
+            "decision_points": ["whether the current situation matches the compared conditions"], "stop_conditions": ["prediction"], "failure_modes": ["unknown terrain"],
         "construction_evidence_refs": ["o1", "o2"], "contrast_evidence_refs": [],
         "next_use": "next situation", "predicted_semantic_result": "one class", "falsifier": "mismatch",
     }
@@ -1416,8 +1513,8 @@ def test_invalid_legacy_tool_migrates_its_valid_method_without_making_a_route():
         },
     )
     assert normalized["method_candidates"][0]["candidate_ref"] == "legacy-method"
-    assert normalized["harness_proposals"][0]["proposal_status"] == "pending_implementation"
-    assert "delivery" not in normalized["harness_proposals"][0]
+    assert normalized["harness_proposals"] == []
+    assert normalized["boundary_violations"][0]["code"] == "child_component_authoring_forbidden"
 
 
 def test_code_router_never_materializes_unapproved_or_research_only_delivery():
@@ -1448,7 +1545,7 @@ def test_auto_research_report_request_does_not_inject_or_lower_token_limits():
 	assert "max_tokens" not in without_limit
 
 
-def test_auto_research_report_normalization_preserves_complete_structured_delivery():
+def test_auto_research_report_normalization_preserves_research_but_discards_child_components():
     report = {
         "format": "auto-research-report-v1",
         "status": "supported_within_scope",
@@ -1478,17 +1575,17 @@ def test_auto_research_report_normalization_preserves_complete_structured_delive
         input_value=report,
     )
 
-    # The durable report is canonical research output, not a UI capsule.  It
-    # must not silently discard findings or delivery bodies to satisfy a local
-    # character/item quota.  buildAutoResearchCapsule owns the separate compact
-    # parent-facing projection.
+    # The durable report is canonical research output, not a UI capsule. It
+    # preserves epistemic content without allowing component bodies to cross
+    # the read-only child boundary.
     assert normalized["conclusion"] == report["conclusion"]
     assert normalized["findings"] == report["findings"]
     assert normalized["evidence_refs"] == report["evidence_refs"]
     assert normalized["alternatives"] == report["alternatives"]
     assert normalized["limitations"] == report["limitations"]
-    assert len(normalized["harness_proposals"]) == len(report["harness_proposals"])
-    assert normalized["harness_proposals"][0]["delivery"]["content"] == "must enter the canonical delivery"
+    assert normalized["harness_proposals"] == []
+    assert normalized["boundary_violations"][0]["count"] == len(report["harness_proposals"])
+    assert "must enter the canonical delivery" not in json.dumps(normalized)
 
 
 def test_auto_research_report_preserves_structured_probe_and_guards_confidence_increase():
@@ -1520,7 +1617,7 @@ def test_auto_research_report_preserves_structured_probe_and_guards_confidence_i
             "reason": "The alternatives made different predictions and the parent completed the probe.",
             "evidence_refs": ["execution-observation-9"],
         },
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     result = run_output_policy_helper(
         "(()=>{const report=outputPolicy.normalizeAutoResearchReport(JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT));"
@@ -1539,14 +1636,21 @@ def test_auto_research_report_preserves_structured_probe_and_guards_confidence_i
         **report["confidence_update"], "basis": "analysis_only",
     }}
     message = run_output_policy_helper(
-        "(()=>{try{const report=outputPolicy.normalizeAutoResearchReport(JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT));"
-        "outputPolicy.assertResearchConfidenceUpdate(report);return null}catch(error){return String(error.message)}})()",
+        "(()=>{try{outputPolicy.assertResearchConfidenceUpdate(JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT));"
+        "return null}catch(error){return String(error.message)}})()",
         input_value=invalid,
     )
     assert "cannot increase" in message
+    normalized_invalid = run_output_policy_helper(
+        "outputPolicy.normalizeAutoResearchReport(JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT))",
+        input_value=invalid,
+    )
+    assert "confidence_update" not in normalized_invalid
+    assert normalized_invalid["confidence_update_unparsed"]["raw"] == invalid["confidence_update"]
+    assert normalized_invalid["warnings"][0]["code"] == "confidence_update_not_applied"
 
 
-def test_auto_research_report_wraps_direct_harness_delivery():
+def test_auto_research_report_rejects_direct_harness_delivery_body():
     delivery = harness_delivery(
         "direct-computation", "computation", "direct-computation", "Count enabled items.",
         input_schema={"items": {"type": "array", "items": {"enabled": "boolean"}}},
@@ -1567,92 +1671,78 @@ def test_auto_research_report_wraps_direct_harness_delivery():
         "outputPolicy.normalizeAutoResearchReport(JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT))",
         input_value=report,
     )
-    assert normalized["harness_proposals"][0]["delivery"]["delivery_id"] == "direct-computation"
+    assert normalized["harness_proposals"] == []
+    assert normalized["boundary_violations"][0]["code"] == "child_component_authoring_forbidden"
+    # The method metadata is retained as research input, while the child-owned
+    # body/program never crosses the boundary into parent component authoring.
+    assert normalized["method_candidates"][0]["name"] == "direct-computation"
+    rendered = json.dumps(normalized)
+    assert "Count enabled items." not in rendered and "invented_host_operation" not in rendered
 
 
-def test_capsule_route_projection_omits_native_arguments_but_keeps_recovery_identity():
-    delivery = harness_delivery(
-        "compact-route", "procedure", "compact-route",
-        "CANONICAL-INSTRUCTIONS-MUST-STAY-OUT-OF-THE-CAPSULE",
-    )
+def test_capsule_exposes_non_executable_parent_authoring_handoff():
+    method = {
+        "problem": "Locate the controlled object without relying on a fixed color.",
+        "applicability": "Use when before/after observations and an intervening action are available.",
+        "abstain_when": "Preserve multiple candidates when motion evidence does not identify one object.",
+        "abstraction_scope": "bounded_reuse",
+        "inputs": ["two exact before/after observations"],
+        "invariants": ["one action occurred between observations"],
+        "parameters": ["changed connected components"],
+        "steps": ["compare deltas", "rank coherent translated components"],
+        "decision_points": ["whether one component moves coherently"],
+        "stop_conditions": ["one candidate remains or evidence is insufficient"],
+        "failure_modes": ["multiple objects translate identically"],
+        "construction_evidence_refs": [], "contrast_evidence_refs": [],
+        "next_use": "when the parent must identify its controlled object",
+        "predicted_semantic_result": "one bounded object candidate",
+        "falsifier": "the selected component does not follow the next action",
+    }
     report = {
         "format": "auto-research-report-v1",
         "status": "supported_within_scope",
-        "conclusion": "The route is ready.",
+        "conclusion": "A reusable identification method is worth parent review.",
         "findings": [],
         "evidence_refs": [],
         "alternatives": [],
         "limitations": [],
-        "validation_plan": "Use the materialized skill.",
-        "harness_proposals": [{
-            "approval_id": "auto-research-1:proposal-1",
-            "approval_version": 2,
-            "approval_status": "approved",
-            "approval_tag": "approved",
-            "delivery": delivery,
+        "validation_plan": "Let the parent decide whether to author and test a skill.",
+        "method_candidates": [{
+            "candidate_ref": "controlled-object-identification",
+            "name": "controlled-object-identification",
+            "semantic_kind": "procedure",
+            "summary": "Identify a controlled object from coherent action-conditioned motion.",
+            "basis_refs": [],
+            "method": method,
         }],
-    }
-    route = {
-        "format": "auto-research-harness-route-v1",
-        "route_id": "auto-research-1:route-compact-route",
-        "route_ref": "harness_route:auto-research-1:route-compact-route@v1",
-        "version": 1,
-        "run_id": "auto-research-1",
-        "delivery_id": "compact-route",
-        "delivery_hash": "sha256:canonical-delivery",
-        "approval_ref": "proposal:auto-research-1:proposal-1@v2",
-        "review_status": "approved",
-        "disposition": "materialize",
-        "route_status": "ready",
-        "execution_status": "fulfilled",
-        "execution_applied": True,
-        "base_target": "skill",
-        "steps": [{
-            "step_id": "auto-research-1:route-compact-route:step-1",
-            "order": 1,
-            "target": "skill",
-            "native_tool": "task_skill",
-            "native_call": {"name": "task_skill", "arguments": {
-                "instructions": "CANONICAL-INSTRUCTIONS-MUST-STAY-OUT-OF-THE-CAPSULE",
-            }},
-            "depends_on": [],
-            "status": "ready",
-        }],
-        "apply_call": {"name": "task_harness", "arguments": {
-            "action": "apply_route",
-            "route_ref": "harness_route:auto-research-1:route-compact-route@v1",
-            "expected_delivery_hash": "sha256:canonical-delivery",
-        }},
-        "router": {"implementation": "code", "policy_version": "harness-router-v1"},
     }
     value = run_output_policy_helper(
         "(()=>{const input=JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT);"
-        "const before=JSON.stringify(input.routePlans);"
         "const capsule=outputPolicy.buildAutoResearchCapsule(input);"
-        "return {capsule,routePlansUnchanged:before===JSON.stringify(input.routePlans)}})()",
+        "return {capsule}})()",
         input_value={
             "runId": "auto-research-1",
             "sessionRef": "research_session:auto-research-1@v1",
             "status": "completed",
             "scope": "harness_component",
             "reportRef": "research_report:auto-research-1@v1",
+            "researchLineRef": "research_line:object-control@v1",
             "report": report,
-            "routePlans": [route],
         },
     )
 
     capsule = value["capsule"]
-    projected = capsule["harness_outputs"][0]
-    assert value["routePlansUnchanged"] is True
-    assert projected == {"delivery_id": "compact-route", "disposition": "materialize",
-                         "status": "ready", "target": "skill"}
-    assert capsule["adoption_call"]["arguments"] == {
-        "action": "adopt_research", "research_run_ref": "research_run:auto-research-1@v1",
-    }
-    serialized = json.dumps(capsule)
-    assert "native_call" not in serialized
-    assert "apply_call" not in serialized
-    assert "CANONICAL-INSTRUCTIONS-MUST-STAY-OUT-OF-THE-CAPSULE" not in serialized
+    handoff = capsule["parent_authoring_handoffs"][0]
+    assert handoff["status"] == "awaiting_parent_authoring"
+    assert handoff["recommended_component_kind"] == "skill"
+    assert handoff["source"]["method_candidate_ref"] == "controlled-object-identification"
+    assert handoff["creator"]["name"] == "skill-creator"
+    assert handoff["change_call_template"]["executable"] is False
+    assert "candidate_seed" in handoff["change_call_template"]["arguments"]["changes"][0]
+    assert "candidate" not in handoff["change_call_template"]["arguments"]["changes"][0]
+    handoff_serialized = json.dumps(handoff)
+    assert "rank coherent translated components" not in handoff_serialized
+    assert "adopt_research" not in json.dumps(capsule)
 
 
 def test_code_router_does_not_apply_a_project_local_name_length_quota():
@@ -1666,20 +1756,29 @@ def test_code_router_does_not_apply_a_project_local_name_length_quota():
     assert plan["steps"][0]["native_call"]["arguments"]["key"] == long_name
 
 
-def test_report_rejects_system_prompt_basis_not_linked_to_findings_or_report_evidence():
-    delivery = harness_delivery(
-        "prompt-rule", "fact", "prompt-rule", "Stable rule.",
-        scope={"kind": "task_wide", "statement": "this task"},
-        stability="stable_in_scope", context_visibility="always",
-        prompt_channel="system_prompt", prompt_operation="create",
-        basis_refs=["context:task-contract@v1"],
-        system_prompt_basis={"source": "explicit_task_contract", "evidence_refs": ["context:task-contract@v1"]},
-    )
+def test_report_rejects_method_basis_not_linked_to_findings_or_report_evidence():
+    method = {
+        "problem": "Choose a stable rule.",
+        "applicability": "Use when an explicit task contract governs the current decision.",
+        "abstain_when": "Recheck rather than apply the rule when the contract is absent or changed.",
+        "abstraction_scope": "bounded_reuse", "inputs": ["task context"],
+            "invariants": ["same task contract"], "parameters": ["current decision"],
+            "steps": ["read the contract", "apply the rule"], "decision_points": ["whether the current contract still applies"],
+        "stop_conditions": ["decision made"], "failure_modes": ["contract changed"],
+        "construction_evidence_refs": ["context:task-contract@v1"],
+        "contrast_evidence_refs": [], "next_use": "the next matching decision",
+        "predicted_semantic_result": "one contract-consistent decision",
+        "falsifier": "the contract contradicts the decision",
+    }
     report = {
         "format": "auto-research-report-v1", "status": "supported_within_scope",
         "conclusion": "rule", "findings": [], "evidence_refs": [],
         "alternatives": [], "limitations": [], "validation_plan": "recheck",
-        "harness_proposals": [{"approval_id": "proposal-1", "delivery": delivery}],
+        "method_candidates": [{
+            "candidate_ref": "contract-rule", "name": "contract-rule",
+            "semantic_kind": "procedure", "summary": "Apply a stable task contract.",
+            "basis_refs": ["context:task-contract@v1"], "method": method,
+        }],
     }
     error = run_output_policy_helper(
         "(()=>{try{const report=outputPolicy.normalizeAutoResearchReport(JSON.parse(process.env.AUTORESEARCH_OUTPUT_POLICY_TEST_INPUT));outputPolicy.assertHarnessProposalEvidenceLinks(report);return null}catch(error){return String(error.message)}})()",
@@ -1781,7 +1880,9 @@ def test_archive_has_exact_source_and_protects_checkpoint_under_pressure(tmp_pat
     contexts = [r["context"] for r in records(root, "provider-contexts.jsonl")]
     assert all(len(json.dumps(c["messages"], ensure_ascii=False, separators=(",", ":"))) <= 18000 for c in contexts)
     assert "retain-subgoal" in json.dumps(contexts[-1])
-    assert "agent_interpretation_not_runtime_fact" in json.dumps(contexts[-1])
+    card = current_decision_card(contexts[-1])
+    assert card["interpretation_status"] == "agent_authored_not_runtime_fact"
+    assert card["working_summary"] == "Agent summary, not fact."
     archives = records(root, "task-context-cache/messages.jsonl")
     assert archives
     first = next(r for r in archives if r.get("message_refs"))
@@ -1805,6 +1906,7 @@ def test_ephemeral_validation_child_has_only_selected_resources_and_clean_contex
         "PI_SUBAGENT_STEPS": json.dumps([
             {"name": "task_resource", "arguments": {"action": "read", "ref": "memory:chosen@v1", "limit": 8000}},
             {"name": "task_resource", "arguments": {"action": "read", "ref": "memory:unselected@v1"}},
+            {"name": "child_context", "arguments": {"action": "tools", "enabled_tools": ["task_checkpoint"]}},
         ]),
     }, steps=[
         {"name": "task_memory", "arguments": {"action": "upsert", "key": "chosen", "content": "selected-full-body", "summary": "Selected summary"}},
@@ -1816,11 +1918,12 @@ def test_ephemeral_validation_child_has_only_selected_resources_and_clean_contex
     invocation = records(root, "subagent-invocations.jsonl")[0]
     assert invocation["ephemeral"] and invocation["status"] == "completed"
     contexts = [r["context"] for r in records(root, "subagent-provider-contexts.jsonl")]
-    assert {t["name"] for t in contexts[0]["tools"]} == {"fixture_state", "task_resource"}
+    assert {t["name"] for t in contexts[0]["tools"]} == {"fixture_state", "task_resource", "child_context"}
     assert "PARENT-ONLY-SECRET" not in json.dumps(contexts)
     assert "selected-full-body" not in json.dumps(contexts[0])
     assert "selected-full-body" in json.dumps(contexts[1])
     assert "resource was not granted" in json.dumps(contexts[-1])
+    assert "unknown or unauthorized child read tools: task_checkpoint" in json.dumps(contexts[-1])
     assert all(r["count"] == 0 for r in records(root, "subagent-native-skills.jsonl"))
 
 
@@ -1852,6 +1955,13 @@ def test_delegate_task_uses_generic_read_only_role_when_only_task_is_supplied(tm
     assert not records(root, "task-operation-failures.jsonl")
     invocation = records(root, "subagent-invocations.jsonl")[0]
     assert invocation['ephemeral'] and invocation['status'] == 'completed'
+    assert invocation["invocation_kind"] == "one_off_delegation"
+    assert invocation["component_ref"] is None and invocation["component_created"] is False
+    receipt = json.loads(delegate_results[0]["result"]["content"][0]["text"])
+    assert receipt["invocation_kind"] == "one_off_delegation"
+    assert receipt["optional_persistence"]["automatic"] is False
+    assert receipt["optional_persistence"]["creator_call"] == {
+        "tool": "task_harness", "arguments": {"action": "read_method", "method_name": "subagent-creator"}}
 
 
 def test_delegate_task_provider_schema_has_a_single_object_parameters_root(tmp_path):
@@ -1887,7 +1997,7 @@ def test_auto_research_child_drops_completed_tool_reasoning_from_provider_projec
         "alternatives": ["Collect another independent observation."],
         "limitations": ["Only one fixture observation was available."],
         "validation_plan": "Collect one discriminating observation.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
         "PI_AUTORESEARCH_PI_CLI": cli,
@@ -1929,10 +2039,27 @@ def test_auto_research_child_drops_completed_tool_reasoning_from_provider_projec
     assert "child-completed-tool-reasoning:" in json.dumps(archived_context)
 
 
-def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_path):
+def test_auto_research_method_handoff_requires_parent_creator_authoring_and_assembly(tmp_path):
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "auto-research"
+    method = {
+        "problem": "Inspect a fixture state without turning one observation into a rule.",
+        "applicability": "Use when a bounded fixture state can inform one next decision without claiming a global rule.",
+        "abstain_when": "Report uncertainty when the current state lacks the fields needed for the bounded conclusion.",
+        "abstraction_scope": "bounded_reuse",
+        "inputs": ["current fixture state"],
+        "invariants": ["the state comes from the read-only fixture tool"],
+        "parameters": ["visible state fields"],
+        "steps": ["read the current state", "separate observation from inference", "record uncertainty"],
+        "decision_points": ["whether the state supports a bounded conclusion"],
+        "stop_conditions": ["one bounded conclusion or explicit abstention is recorded"],
+        "failure_modes": ["a single state is generalized into a stable rule"],
+        "construction_evidence_refs": [], "contrast_evidence_refs": [],
+        "next_use": "the next fixture-state interpretation",
+        "predicted_semantic_result": "a bounded conclusion with uncertainty",
+        "falsifier": "the procedure asserts an uncited environment fact",
+    }
     report = {
         "format": "auto-research-report-v1",
         "status": "provisional",
@@ -1941,53 +2068,82 @@ def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_pat
             "subject_kind": "component",
             "question": "Would the procedure reduce repeated narration?",
             "conclusion": "It may reduce repeated narration if validated on a later state.",
-            "evidence_refs": [],
+            "evidence_refs": ["memory:fixture-review-need@v1"],
             "uncertainty": "No environment evidence yet.",
         }],
-        "evidence_refs": [],
+        "evidence_refs": ["memory:fixture-review-need@v1"],
         "alternatives": ["Keep the parent procedure unchanged."],
         "limitations": ["The child has no write or environment-action capability."],
         "validation_plan": "Create the skill explicitly, then run it on a later fixture state.",
-        "harness_proposals": [{
-            "approval_id": "auto-research-1:proposal-1",
-            "delivery": harness_delivery(
-                "fixture-state-review", "procedure", "fixture-state-review",
-                "Read fixture_state, state the observation, and record uncertainty.",
-                summary="Inspect the fixture state and record a bounded conclusion.",
-                expected_effect="reduce repeated parent narration",
-                reconsider_when="the procedure does not change a later decision",
-            ),
+        "method_candidates": [{
+            "candidate_ref": "fixture-state-review", "name": "fixture-state-review",
+            "semantic_kind": "procedure",
+            "summary": "Inspect the fixture state and record a bounded conclusion.",
+            "basis_refs": ["memory:fixture-review-need@v1"], "method": method,
         }],
     }
-    compact_report = {
-        **report,
-        "harness_proposals": [{"approval_id": "auto-research-1:proposal-1"}],
-    }
-    delivery_hash = run_router_helper("router.harnessDeliveryHash(JSON.parse(process.env.AUTORESEARCH_ROUTER_TEST_INPUT))", input_value=report["harness_proposals"][0]["delivery"])
+    skill_creator = project / "demo" / "harness-methods" / "skill-creator" / "SKILL.md"
+    skill_adaptation = project / "demo" / "harness-methods" / "skill-creator" / "PI_ADAPTATION.md"
+    skill_creator_body = (
+        skill_adaptation.read_bytes().decode("utf-8") + "\n\n---\n\n" +
+        skill_creator.read_bytes().decode("utf-8")
+    )
+    skill_creator_ref = "baseline_method:skill-creator@sha256:" + hashlib.sha256(
+        skill_creator_body.encode()).hexdigest()
+    research_method_ref = "method:method-auto-research-1-fixture-state-review@v1"
+    report_ref = "research_report:auto-research-1@v1"
+    parent_instructions = (
+        "When a fixture state needs interpretation, read the current state, distinguish direct fields from "
+        "inference, preserve alternatives, and abstain when the evidence is insufficient."
+    )
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
         "PI_AUTORESEARCH_PI_CLI": cli,
         "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
         "PI_AUTORESEARCH_MODEL": "scripted",
         "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
-        "PI_SUBAGENT_REPORT": json.dumps(compact_report),
+        "PI_SUBAGENT_REPORT": json.dumps(report),
         "PI_SUBAGENT_STEPS": json.dumps([
-            {"name": "research_approval", "arguments": {
-                "action": "propose", "approval_id": "auto-research-1:proposal-1",
-                "delivery": report["harness_proposals"][0]["delivery"],
+            {"name": "task_resource", "arguments": {
+                "action": "read", "ref": "memory:fixture-review-need@v1", "offset": 0, "limit": 8000,
             }},
-            {"name": "research_approval", "arguments": {
-                "action": "approve", "approval_id": "auto-research-1:proposal-1", "target_version": 1,
-            }},
-            {"name": "submit_research_report", "arguments": {"report": compact_report}},
+            {"name": "submit_research_report", "arguments": {"report": report}},
         ]),
     }, steps=[
+        {"name": "task_memory", "arguments": {
+            "action": "upsert", "key": "fixture-review-need",
+            "content": "The parent needs a bounded procedure for interpreting fixture state without overgeneralizing.",
+            "summary": "Capability-design input for fixture-state review.",
+        }},
         {"name": "auto_research", "arguments": {
             "question": "Should a fixture-state review skill be created for this task?",
             "scope": "harness_component",
+            "resource_refs": ["memory:fixture-review-need@v1"],
         }},
         {"name": "task_harness", "arguments": {
-            "action": "adopt_research",
-            "research_run_ref": "research_run:auto-research-1@v1",
+            "action": "read_method", "method_name": "skill-creator",
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "procedure", "execution": "text", "reuse": "expected_reuse",
+                "reasoning": "bounded_judgment", "name": "fixture-state-review",
+                "description": "Interpret a read-only fixture state while preserving uncertainty.",
+                "instructions": parent_instructions,
+                "scope": {"kind": "task_wide", "statement": "this fixture task"},
+                "context_visibility": "on_demand", "stability": "stable_in_scope",
+                "basis_refs": [report_ref, research_method_ref], "method": method,
+                "authoring_method_ref": skill_creator_ref,
+            }}],
+            "decision": {"basis_refs": [report_ref, research_method_ref],
+                         "reason": "The parent selected the bounded procedure after reading skill-creator.",
+                         "expected": "A later state review separates observation from inference."},
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:fixture-state-review@v1"],
+            "prompt_contributions": [],
+            "decision": {"basis_refs": [report_ref, research_method_ref],
+                         "reason": "Select the exact parent-authored skill for its next applicable use.",
+                         "expected": "Only skill v1 is projected."},
         }},
         {"name": "task_resource", "arguments": {
             "action": "read", "ref": "research_report:auto-research-1@v1", "offset": 0, "limit": 8000,
@@ -2004,14 +2160,13 @@ def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_pat
     assert capsule["detail_ref"] == "research_report:auto-research-1@v1"
     assert "apply_call" not in compact
     assert "native_call" not in compact
-    assert "Read fixture_state" not in compact
-    assert capsule["harness_outputs"][0] == {
-        "delivery_id": "fixture-state-review", "disposition": "materialize",
-        "status": "ready", "target": "skill",
-    }
-    assert capsule["adoption_call"]["arguments"] == {
-        "action": "adopt_research", "research_run_ref": "research_run:auto-research-1@v1",
-    }
+    assert parent_instructions not in compact
+    assert capsule["method_candidates"][0]["candidate_ref"] == "fixture-state-review"
+    handoff = capsule["parent_authoring_handoffs"][0]
+    assert handoff["status"] == "awaiting_parent_authoring"
+    assert handoff["creator"]["name"] == "skill-creator"
+    assert handoff["change_call_template"]["executable"] is False
+    assert "adoption_call" not in capsule and "harness_outputs" not in capsule
     assert "question" not in capsule
     assert "alternatives" not in capsule
 
@@ -2020,13 +2175,15 @@ def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_pat
     assert runs[0]["status"] == "completed"
     assert runs[0]["report_ref"] == "research_report:auto-research-1@v1"
     assert runs[0]["finding_count"] == 1
-    assert runs[0]["proposal_count"] == 1
+    assert runs[0]["method_candidate_count"] == 1
+    assert runs[0]["parent_authoring_handoff_count"] == 1
     assert "report" not in runs[0]
     assert "result" not in runs[0]
     assert "findings" not in runs[0]
     assert "harness_proposals" not in runs[0]
     assert runs[0]["evidence_audit"]["format"] == "research-evidence-audit-v1"
-    assert runs[0]["evidence_audit"]["status"] == "no_selected_refs"
+    assert runs[0]["evidence_audit"]["status"] == "complete"
+    assert runs[0]["evidence_audit"]["complete_refs"] == ["memory:fixture-review-need@v1"]
     progress = records(root, "subagent-progress.jsonl")
     assert progress[0]["event"] == "spawned"
     assert any(item["event"] == "event" and item["last_event_type"] == "tool_execution_start" for item in progress)
@@ -2036,36 +2193,28 @@ def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_pat
     reports = records(root, "auto-research-reports.jsonl")
     assert len(reports) == 1
     assert reports[0]["report"]["findings"][0]["subject_kind"] == "component"
-    assert reports[0]["report"]["harness_proposals"][0]["delivery"]["semantic_kind"] == "procedure"
-    assert reports[0]["report"]["harness_proposals"][0]["delivery"] == report["harness_proposals"][0]["delivery"]
+    assert reports[0]["report"]["harness_proposals"] == []
+    assert reports[0]["report"]["method_candidates"][0]["method"] == method
     checkpoint = json.loads((root / "task-checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["latest_research_run_ref"] == "research_run:auto-research-1@v1"
     assert checkpoint["research_status"] == "completed"
     assert checkpoint["research_question"] == "Should a fixture-state review skill be created for this task?"
-    assert checkpoint["harness_proposal_count"] == 1
     full_read = results(events, "task_resource")[0]
     assert not full_read.get("isError")
     assert "A compact fixture-state inspection skill is worth testing." in full_read["result"]["details"]["text"]
-    assert "Read fixture_state" in full_read["result"]["details"]["text"]
+    assert parent_instructions not in full_read["result"]["details"]["text"]
 
-    # Auto-Research did not mutate the harness. The next parent call executed
-    # the code-compiled route through Pi's native task_skill tool.
+    # Auto-Research did not mutate the harness. The parent read the creator,
+    # authored the full body, and selected the exact immutable version.
     skills = records(root, "task-skills.jsonl")
-    assert skills[0]["routing_id"] == "auto-research-1:route-fixture-state-review"
-    assert skills[0]["source_approval_ref"] == "proposal:auto-research-1:proposal-1@v2"
-    assert skills[0]["instructions"] == report["harness_proposals"][0]["delivery"]["content"]
-    receipts = records(root, "auto-research-harness-route-receipts.jsonl")
-    assert receipts[0]["status"] == "applied"
-    assert receipts[0]["route_id"] == "auto-research-1:route-fixture-state-review"
-    assert receipts[0]["resource_ref"] == "skill:fixture-state-review@v1"
-    routes = records(root, "auto-research-harness-routes.jsonl")
-    assert routes[-1]["route_status"] == "fulfilled"
-    assert routes[-1]["delivery_hash"] == delivery_hash
-    assert routes[-1]["steps"][0]["native_call"]["arguments"]["instructions"] == report["harness_proposals"][0]["delivery"]["content"]
-    adoption = results(events, "task_harness")[0]
-    assert json.loads(adoption["result"]["content"][0]["text"])["status"] == "adopted"
-    sessions = records(root, "auto-research-sessions.jsonl")
-    assert sessions[-1]["reconciliation_status"] == "adopted"
+    assert skills[0]["instructions"] == parent_instructions
+    assert skills[0]["authoring_method_ref"] == skill_creator_ref
+    assert research_method_ref in skills[0]["basis_refs"]
+    handoffs = records(root, "parent-authoring-handoffs.jsonl")
+    assert [item["status"] for item in handoffs] == ["awaiting_parent_authoring", "authored"]
+    assert handoffs[-1]["component_ref"] == "skill:fixture-state-review@v1"
+    assembly = records(root, "task-harness-assemblies.jsonl")[-1]
+    assert assembly["selected_resource_refs"] == ["skill:fixture-state-review@v1"]
     parent_contexts = records(root, "provider-contexts.jsonl")
     assert all(item["count"] == 0 for item in records(root, "subagent-native-skills.jsonl"))
     child_contexts = records(root, "subagent-provider-contexts.jsonl")
@@ -2078,10 +2227,11 @@ def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_pat
         for tool in context["context"]["tools"]
         if tool["name"] == "submit_research_report"
     )
-    # The child may return a complete immutable candidate, including a method
-    # abstraction.  Adoption and native mutation remain parent-only.
+    # The child may return a method abstraction, never a component candidate.
     submit_schema = json.dumps(submit_tool)
-    assert "auto-research-harness-delivery-v1" in submit_schema
+    assert "method_candidates" in submit_schema
+    assert "harness_proposals" not in submit_schema
+    assert "auto-research-harness-delivery-v1" not in submit_schema
     assert "adopt_research" not in submit_schema
     assert "apply_route" not in submit_schema
     child_tool_names = {
@@ -2091,17 +2241,21 @@ def test_auto_research_runs_in_clean_child_and_returns_adoption_proposal(tmp_pat
     }
     assert not ({"task_harness", "task_memory", "task_skill", "task_tool",
                  "task_subagent", "task_system_prompt"} & child_tool_names)
+    assert not ({"harness_method", "research_approval"} & child_tool_names)
     assert "Research objects and agent choices" not in json.dumps(parent_contexts)
     assert "child_report_not_automatically_adopted" in json.dumps(parent_contexts[-1])
 
 
-def test_pi_child_preserves_cross_context_method_when_component_is_not_executable(tmp_path):
-    """A method is durable even when its first component implementation cannot be adopted."""
+def test_pi_child_preserves_cross_context_method_without_authoring_a_component(tmp_path):
+    """A method is durable while all component implementation remains parent-owned."""
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "cross-context-method-pending-component"
     method = {
         "problem": "Separate a successful probe situation from an error situation before choosing a follow-up.",
+        "applicability": "Use when success and error cases have declared observable distinctions.",
+        "abstain_when": "Do not classify a case outside the observed outcome boundary.",
+        "abstraction_scope": "cross_context",
         "inputs": ["two exact probe observations from different situations"],
         "invariants": ["the same benchmark_probe interface produced both observations"],
         "parameters": ["whether the probe completed or returned an error"],
@@ -2115,17 +2269,6 @@ def test_pi_child_preserves_cross_context_method_when_component_is_not_executabl
         "predicted_semantic_result": "one of two bounded probe situation classes",
         "falsifier": "a later probe matches neither observed outcome class",
     }
-    delivery = harness_delivery(
-        "probe-situation-classifier", "computation", "probe-situation-classifier",
-        "Classify a probe situation using a declared adapter result.",
-        basis_refs=["execution-observation-1", "execution-observation-2"],
-        execution="adapter_operation",
-        input_schema={"type": "object", "properties": {}},
-        program={"steps": [
-            {"kind": "adapter_call", "implementation_ref": "fixture.echo"},
-            {"kind": "select", "fields": ["probe_outcome_class"]},
-        ]},
-    )
     report = {
         "format": "auto-research-report-v1", "status": "supported_within_scope",
         "conclusion": "The two probe situations support a bounded comparison method, but the proposed component lacks a declared executable result shape.",
@@ -2146,7 +2289,6 @@ def test_pi_child_preserves_cross_context_method_when_component_is_not_executabl
             "basis_refs": ["execution-observation-1", "execution-observation-2"],
             "method": method, "proposed_delivery_id": "probe-situation-classifier",
         }],
-        "harness_proposals": [{"candidate_ref": "probe-situation-component", "delivery": delivery}],
     }
     events = _run_fixture(
         root,
@@ -2185,22 +2327,15 @@ def test_pi_child_preserves_cross_context_method_when_component_is_not_executabl
     assert not auto_result.get("isError")
     capsule = json.loads(auto_result["result"]["content"][0]["text"])
     assert capsule["method_candidates"][0]["candidate_ref"] == "probe-situation-method"
-    assert capsule["harness_outputs"] == [{
-        "delivery_id": "probe-situation-classifier", "disposition": "materialize",
-        "status": "partial", "target": "tool",
-    }]
-    assert capsule["reconciliation_status"] == "not_applicable"
-    assert capsule["adoption_required"] is False
+    assert capsule["parent_authoring_handoffs"][0]["recommended_component_kind"] == "tool"
+    assert capsule["parent_authoring_handoffs"][0]["change_call_template"]["executable"] is False
+    assert capsule["reconciliation_status"] == "awaiting_parent_authoring"
     assert "adoption_call" not in capsule
 
     stored = records(root, "auto-research-reports.jsonl")[0]["report"]
     assert stored["method_candidates"][0]["method"] == method
-    assert stored["harness_proposals"][0]["delivery"]["delivery_id"] == "probe-situation-classifier"
-    routes = records(root, "auto-research-harness-routes.jsonl")
-    assert len(routes) == 1
-    assert routes[0]["route_status"] == "partial"
-    assert routes[0]["steps"][0]["status"] == "pending_implementation"
-    assert "apply_call" not in routes[0]
+    assert stored["harness_proposals"] == []
+    assert records(root, "auto-research-harness-routes.jsonl") == []
 
     lifecycle = records(root, "task-method-lifecycle.jsonl")
     assert len(lifecycle) == 1
@@ -2208,10 +2343,10 @@ def test_pi_child_preserves_cross_context_method_when_component_is_not_executabl
     # These generic probe fixtures do not expose canonical pre-action state.
     # Different results alone must not be promoted to a cross-context claim.
     assert lifecycle[0]["generalization_basis"] == "single_context"
-    assert lifecycle[0]["component_status"] == "proposed_separately"
+    assert lifecycle[0]["component_status"] == "method_only"
     assert lifecycle[0]["delivery_id"] == "probe-situation-classifier"
     sessions = records(root, "auto-research-sessions.jsonl")
-    assert sessions[-1]["reconciliation_status"] == "not_applicable"
+    assert sessions[-1]["reconciliation_status"] == "awaiting_parent_authoring"
     assert records(root, "task-tools.jsonl") == []
     assert records(root, "auto-research-harness-route-receipts.jsonl") == []
 
@@ -2252,7 +2387,7 @@ def test_parent_can_start_cross_context_research_from_one_candidate_reference(tm
         "alternatives": ["The observed difference may depend on an unmeasured state feature."],
         "limitations": ["Only two construction situations exist."],
         "validation_plan": "Collect a later situation before proposing a method.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     child_env = {
         "PI_AUTORESEARCH_PI_CLI": cli,
@@ -2297,7 +2432,7 @@ def test_cross_context_cards_replace_duplicate_prompt_excerpts_but_keep_canonica
         "findings": [], "evidence_refs": ["execution-observation-1", "execution-observation-2"],
         "alternatives": [], "limitations": ["No semantic comparison was attempted."],
         "validation_plan": "Inspect canonical evidence only if a card omits a needed fact.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     events = _run_fixture(
         root, "treatment",
@@ -2359,107 +2494,88 @@ def test_cross_context_cards_replace_duplicate_prompt_excerpts_but_keep_canonica
     assert budget["selected_resource_index_omitted_for_evidence_cards"] is True
 
 
-def test_auto_research_child_reviews_proposal_metadata_without_parent_approval_tool(tmp_path):
+def test_auto_research_child_component_submission_is_rejected_then_repaired_as_research(tmp_path):
+    from test_harness_capability_authoring import module_eval
+    method_ref = module_eval("pi_harness_baseline_methods.ts", "m.researchAuthoringPrerequisite().authoring_method_ref")
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "auto-research-approval"
-    report = {
+    invalid_report = {
         "format": "auto-research-report-v1",
         "status": "supported_within_scope",
-        "conclusion": "The proposed review skill is ready for explicit parent adoption.",
+        "conclusion": "The child incorrectly attempted to author a component.",
         "findings": [],
         "evidence_refs": [],
         "alternatives": [],
         "limitations": [],
-        "validation_plan": "Use the approved skill on the next state.",
+        "validation_plan": "Remove the component body and return research only.",
         "harness_proposals": [{
             "approval_id": "auto-research-1:proposal-1",
             "delivery": harness_delivery(
                 "fixture-review", "procedure", "fixture-review",
                 "Review fixture state before choosing the next action.",
             ),
-        }, {
-            "approval_id": "auto-research-1:proposal-2",
-            "delivery": harness_delivery(
-                "fixture-facts", "fact", "fixture-facts", "Retain the bounded fixture conclusion.",
-                operation="update", target_version=1,
-            ),
         }],
+    }
+    repaired_report = {
+        "format": "auto-research-report-v1", "status": "inconclusive",
+        "conclusion": "No component was authored; the parent may investigate the capability need later.",
+        "findings": [], "evidence_refs": [], "alternatives": [],
+        "limitations": ["No reusable method was established."],
+        "validation_plan": "Collect evidence before proposing a method candidate.",
+        "method_candidates": [],
     }
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
         "PI_AUTORESEARCH_PI_CLI": cli,
         "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
         "PI_AUTORESEARCH_MODEL": "scripted",
         "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+        "PI_SUBAGENT_REPORT": json.dumps(repaired_report),
         "PI_SUBAGENT_STEPS": json.dumps([
-            {"name": "research_approval", "arguments": {
-                "action": "propose", "approval_id": "auto-research-1:proposal-1",
-                "delivery": report["harness_proposals"][0]["delivery"],
-            }},
-            {"name": "research_approval", "arguments": {
-                "action": "inspect", "approval_id": "auto-research-1:proposal-1",
-            }},
-            {"name": "research_approval", "arguments": {
-                "action": "defer", "approval_id": "auto-research-1:proposal-1",
-                "target_version": 1, "decision_note": "Defer until the next state supplies a stronger check.",
-            }},
-            {"name": "research_approval", "arguments": {
-                "action": "approve", "approval_id": "auto-research-1:proposal-1",
-                "target_version": 2, "decision_note": "The bounded evidence supports trying it now.",
-            }},
-            {"name": "research_approval", "arguments": {
-                "action": "propose", "approval_id": "auto-research-1:proposal-2",
-                "delivery": report["harness_proposals"][1]["delivery"],
-            }},
-            {"name": "research_approval", "arguments": {
-                "action": "reject", "approval_id": "auto-research-1:proposal-2",
-                "target_version": 1, "decision_note": "The memory is not needed for this task.",
-            }},
-            {"name": "submit_research_report", "arguments": {"report": report}},
+            {"name": "submit_research_report", "arguments": {"report": invalid_report}},
+            {"name": "submit_research_report", "arguments": {"report": repaired_report}},
         ]),
     }, steps=[
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "research-orchestration"}},
         {"name": "auto_research", "arguments": {
-            "question": "Should the fixture review skill be tested?", "scope": "harness_component",
+            "question": "Should the fixture review skill be tested?", "scope": "harness_component", "authoring_method_ref": method_ref,
         }},
     ])
 
     auto_result = results(events, "auto_research")[0]
     assert not auto_result.get("isError")
     capsule = json.loads(auto_result["result"]["content"][0]["text"])
-    assert capsule["proposal_index"][0]["approval_status"] == "approved"
-    assert capsule["proposal_index"][0]["approval_tag"] == "approved"
-    assert capsule["proposal_index"][1]["approval_status"] == "rejected"
-    assert capsule["harness_outputs"][0] == {
-        "delivery_id": "fixture-review", "disposition": "materialize", "status": "ready", "target": "skill",
-    }
-    assert capsule["harness_outputs"][1]["disposition"] == "closed"
-    assert capsule["adoption_call"]["arguments"]["action"] == "adopt_research"
+    assert capsule["summary"] == repaired_report["conclusion"]
+    assert capsule["method_candidates"] == []
+    assert capsule["parent_authoring_handoffs"] == []
+    assert "adoption_call" not in capsule and "harness_outputs" not in capsule
 
-    approvals = records(root, "task-harness-proposals.jsonl")
-    assert [(item["version"], item["status"], item["tag"]) for item in approvals] == [
-        (1, "pending", "pending_review"), (2, "deferred", "deferred"),
-        (3, "approved", "approved"), (1, "pending", "pending_review"), (2, "rejected", "rejected"),
-    ]
-    # Approval is research metadata.  Auto-Research returns a ready proposal
-    # but cannot cross the parent change boundary by itself.
+    # The invalid attempt never becomes research metadata or a Harness route.
+    stored = records(root, "auto-research-reports.jsonl")[0]["report"]
+    assert stored["harness_proposals"] == []
     assert records(root, "task-skills.jsonl") == []
+    assert records(root, "task-harness-proposals.jsonl") == []
     assert records(root, "auto-research-harness-route-receipts.jsonl") == []
-    routes = records(root, "auto-research-harness-routes.jsonl")
-    assert [item["router"]["implementation"] for item in routes] == ["code"] * len(routes)
-    assert routes[0]["route_status"] == "ready"
-    assert routes[-1]["route_status"] == "no_change"
+    assert records(root, "auto-research-harness-routes.jsonl") == []
 
-    parent_contexts = records(root, "provider-contexts.jsonl")
-    assert "research_approval" not in json.dumps(parent_contexts)
     child_contexts = records(root, "subagent-provider-contexts.jsonl")
-    assert "research_approval" in json.dumps(child_contexts[0])
+    child_serialized = json.dumps(child_contexts)
+    assert "Auto-Research cannot author Harness components" in child_serialized
+    child_tool_names = {tool["name"] for item in child_contexts for tool in item["context"]["tools"]}
+    assert "research_approval" not in child_tool_names
+    assert "harness_method" not in child_tool_names
 
 
-def test_research_method_is_validated_only_after_adoption_actual_use_and_assessment(tmp_path):
+def test_research_method_is_validated_only_after_parent_authoring_actual_use_and_assessment(tmp_path):
     """Exercise the durable method loop through native parent-facing tools."""
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "method-use-feedback"
+    from test_harness_capability_authoring import module_eval
+    tool_creator_ref = module_eval(
+        "pi_harness_baseline_methods.ts",
+        "m.baselineMethodCatalog().find(x=>x.name==='tool-creator').method_ref",
+    )
     delivery = harness_delivery(
         "state-selector", "computation", "state-selector",
         "Select the decision-relevant state field from a bounded observation.",
@@ -2468,6 +2584,9 @@ def test_research_method_is_validated_only_after_adoption_actual_use_and_assessm
         program={"steps": [{"kind": "select", "source": "input", "fields": ["state"]}]},
         method={
             "problem": "Remove irrelevant fields before comparing task states.",
+            "applicability": "Use when a bounded observation declares the state field needed for comparison.",
+            "abstain_when": "Reject rather than infer when the requested state field is absent.",
+            "abstraction_scope": "bounded_reuse",
             "inputs": ["a bounded observation with a state field"],
             "invariants": ["the source observation remains immutable"],
             "parameters": ["selected field names"],
@@ -2493,7 +2612,13 @@ def test_research_method_is_validated_only_after_adoption_actual_use_and_assessm
         "alternatives": ["Keep passing the complete observation."],
         "limitations": ["The method has not yet been used after adoption."],
         "validation_plan": "Adopt it, invoke it on a later input, then assess the semantic output.",
-        "harness_proposals": [{"candidate_ref": "candidate-state-selector", "delivery": delivery}],
+        "method_candidates": [{
+            "candidate_ref": "state-selector-method", "name": "state-selector",
+            "semantic_kind": "computation",
+            "summary": "Select the decision-relevant state field from a bounded observation.",
+            "basis_refs": ["execution-observation-1"], "method": delivery["method"],
+            "proposed_delivery_id": "state-selector",
+        }],
     }
     events = _run_fixture(
         root,
@@ -2522,8 +2647,24 @@ def test_research_method_is_validated_only_after_adoption_actual_use_and_assessm
                 "evidence_refs": ["execution-observation-1"],
             }},
             {"name": "task_harness", "arguments": {
-                "action": "adopt_research",
-                "research_run_ref": "research_run:auto-research-1@v1",
+                "action": "read_method", "method_name": "tool-creator",
+            }},
+            {"name": "task_harness", "arguments": {
+                "action": "change", "changes": [{"operation": "create", "candidate": {
+                    **delivery,
+                    "basis_refs": [
+                        "research_report:auto-research-1@v1",
+                        "method:method-auto-research-1-state-selector-method@v1",
+                        "execution-observation-1",
+                    ],
+                    "authoring_method_ref": tool_creator_ref,
+                }}],
+                "decision": {
+                    "basis_refs": ["research_report:auto-research-1@v1",
+                                   "method:method-auto-research-1-state-selector-method@v1"],
+                    "reason": "The parent authored a bounded selector after reading tool-creator.",
+                    "expected": "The selected tool retains state and omits unrelated input.",
+                },
             }},
             {"name": "task_harness", "arguments": {
                 "action": "assemble", "expected_assembly_revision": 0,
@@ -2551,16 +2692,23 @@ def test_research_method_is_validated_only_after_adoption_actual_use_and_assessm
     assert json.loads(invocation["result"]["content"][0]["text"]) == {"state": "RUNNING"}
 
     lifecycle = records(root, "task-method-lifecycle.jsonl")
-    assert [item["maturity"] for item in lifecycle] == [
+    parent_lifecycle = [item for item in lifecycle if item.get("author") == "parent"]
+    assert [item["maturity"] for item in parent_lifecycle] == [
         "candidate_method", "trial", "validated_within_scope",
     ]
-    assert lifecycle[-1]["resource_refs"] == ["tool:state-selector@v1"]
-    assert lifecycle[-1]["actual_use_observation_refs"] == [
+    assert parent_lifecycle[-1]["source_method_ref"] == \
+        "method:method-auto-research-1-state-selector-method@v1"
+    assert parent_lifecycle[-1]["resource_refs"] == ["tool:state-selector@v1"]
+    assert parent_lifecycle[-1]["actual_use_observation_refs"] == [
         "task-tool-use-task-tool-invocation-1",
     ]
-    assert lifecycle[-1]["latest_assessment"]["actual_use_refs"] == [
+    assert parent_lifecycle[-1]["latest_assessment"]["actual_use_refs"] == [
         "task-tool-use-task-tool-invocation-1",
     ]
+
+    authoring = records(root, "parent-authoring-handoffs.jsonl")
+    assert authoring[-1]["status"] == "authored"
+    assert authoring[-1]["component_ref"] == "tool:state-selector@v1"
 
     handoffs = records(root, "auto-research-handoffs.jsonl")
     feedback = next(item for item in handoffs if item["handoff_id"] == "method-feedback-effect-assessment-1")
@@ -2569,20 +2717,25 @@ def test_research_method_is_validated_only_after_adoption_actual_use_and_assessm
     assert feedback["completion_contract_kind"] == "method_feedback_evaluation"
     assert feedback["ready_call"] == {
         "action": "start",
+        "authoring_method_ref": feedback["authoring_prerequisite"]["authoring_method_ref"],
         "research_handoff_ref": "research_handoff:method-feedback-effect-assessment-1@v1",
     }
 
 
-def test_auto_research_routes_all_native_components_and_next_context_exposes_them(tmp_path):
-    """The compiled route must reach every PI-native mutation surface, not just skills."""
+def test_parent_can_author_all_native_components_without_research_and_assemble_them(tmp_path):
+    """Research is optional; parent authoring reaches every native component pool."""
+    from test_harness_capability_authoring import module_eval
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "all-native-components"
+    task_id = "root-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
     deliveries = [
         harness_delivery("route-fact", "fact", "route-fact", "Remember the verified fixture fact.",
+                         validity={"scope": "task", "task_ref": task_id, "instance_ref": task_id},
                          scope={"kind": "task_wide", "statement": "this fixture task"},
                          stability="stable_in_scope", context_visibility="on_demand"),
         harness_delivery("route-plan", "plan", "route-plan", "Keep the verified fixture fact in view.",
+                         validity={"scope": "task", "task_ref": task_id, "instance_ref": task_id},
                          scope={"kind": "task_wide", "statement": "this fixture task"},
                          stability="stable_in_scope", context_visibility="always",
                          prompt_channel="system_prompt", prompt_operation="create",
@@ -2596,48 +2749,68 @@ def test_auto_research_routes_all_native_components_and_next_context_exposes_the
         harness_delivery("route-role", "role", "route-role", "Independently inspect fixture_state and return uncertainty.",
                          tools=["fixture_state"]),
     ]
-    report = {
-        "format": "auto-research-report-v1", "status": "supported_within_scope",
-        "conclusion": "Each native component has a distinct structured delivery.",
-        "findings": [], "evidence_refs": ["context:task-contract@v1"], "alternatives": [], "limitations": [],
-        "validation_plan": "Use each materialized component on the next request.",
-        "harness_proposals": [{"approval_id": f"auto-research-1:proposal-{i + 1}", "delivery": delivery}
-                              for i, delivery in enumerate(deliveries)],
+    creator_refs = {
+        kind: module_eval("pi_harness_baseline_methods.ts",
+                          f"m.baselineMethodCatalog().find(x=>x.name==='{name}').method_ref")
+        for kind, name in {
+            "procedure": "skill-creator", "computation": "tool-creator", "role": "subagent-creator",
+        }.items()
     }
-    approval_steps = []
-    for index, delivery in enumerate(deliveries, 1):
-        approval_steps.extend([
-            {"name": "research_approval", "arguments": {"action": "propose", "approval_id": f"auto-research-1:proposal-{index}", "delivery": delivery}},
-            {"name": "research_approval", "arguments": {"action": "approve", "approval_id": f"auto-research-1:proposal-{index}", "target_version": 1}},
-        ])
-    route_refs = [f"harness_route:auto-research-1:route-{delivery['delivery_id']}@v1" for delivery in deliveries]
+    for delivery in deliveries:
+        if delivery["semantic_kind"] in creator_refs:
+            delivery["authoring_method_ref"] = creator_refs[delivery["semantic_kind"]]
     events = _run_fixture(root, "treatment", extra_extensions=[
         project / "tests" / "pi_non_arc_task_subagents.ts", project / "tests" / "pi_task_tool_fixture.ts",
     ], extra_env={
-        "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+        "PI_AUTORESEARCH_PI_CLI": cli,
+        "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
         "PI_AUTORESEARCH_MODEL": "scripted",
         "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
-        "PI_SUBAGENT_REPORT": json.dumps(report),
-        "PI_SUBAGENT_STEPS": json.dumps(approval_steps + [{"name": "submit_research_report", "arguments": {"report": report}}]),
     }, steps=[
-        {"name": "auto_research", "arguments": {"question": "Which native surfaces should be materialized?", "scope": "harness_component"}},
-        *[{"name": "task_harness", "arguments": {"action": "apply_route", "route_ref": ref,
-                                                      "expected_delivery_hash": run_router_helper(
-                                                          "router.harnessDeliveryHash(JSON.parse(process.env.AUTORESEARCH_ROUTER_TEST_INPUT))",
-                                                          input_value=delivery)}}
-          for ref, delivery in zip(route_refs, deliveries)],
+        *[{"name": "task_harness", "arguments": {"action": "read_method", "method_name": name}}
+          for name in ["skill-creator", "tool-creator", "subagent-creator"]],
+        {"name": "task_harness", "arguments": {
+            "action": "change",
+            "changes": [{"operation": "create", "candidate": delivery} for delivery in deliveries],
+            "decision": {"basis_refs": ["context:task-contract@v1"],
+                         "reason": "The parent authored five distinct task-local capabilities.",
+                         "expected": "Each exact version reaches only its selected native surface."},
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": [
+                "memory:route-fact@v1", "memory:route-plan@v1", "system_prompt:route-plan@v1",
+                "skill:route-procedure@v1", "tool:route-computation@v1", "subagent:route-role@v1",
+            ],
+            "prompt_contributions": [],
+            "decision": {"basis_refs": ["context:task-contract@v1"],
+                         "reason": "Select the exact parent-authored portfolio for the next request.",
+                         "expected": "Only these six resource versions are active in the assembly."},
+        }},
         {"name": "task_tool_route-computation_v1", "arguments": {"input": {"state": "RUNNING"}}},
         {"name": "delegate_task", "arguments": {"agent_name": "route-role", "task": "Inspect fixture state independently."}},
     ])
-    assert not [event for event in results(events, "auto_research") if event.get("isError")]
     assert not [event for event in results(events, "task_harness") if event.get("isError")]
     assert records(root, "task-memory.jsonl")[0]["key"] == "route-fact"
     assert records(root, "task-system-prompt.jsonl")[0]["name"] == "route-plan"
     assert records(root, "task-skills.jsonl")[0]["name"] == "route-procedure"
     assert records(root, "task-tools.jsonl")[0]["name"] == "route-computation"
     assert records(root, "task-subagents.jsonl")[0]["name"] == "route-role"
-    assert all(item["route_status"] == "fulfilled" for item in records(root, "auto-research-harness-routes.jsonl") if item.get("route_status") == "fulfilled")
-    assert {item["status"] for item in records(root, "auto-research-harness-route-receipts.jsonl")} == {"applied"}
+    assert records(root, "auto-research-harness-routes.jsonl") == []
+    assert records(root, "auto-research-harness-route-receipts.jsonl") == []
+    assembly = records(root, "task-harness-assemblies.jsonl")[-1]
+    assert assembly["selected_resource_refs"] == [
+        "memory:route-fact@v1", "memory:route-plan@v1", "system_prompt:route-plan@v1",
+        "skill:route-procedure@v1", "tool:route-computation@v1", "subagent:route-role@v1",
+    ]
+    tool_result = results(events, "task_tool_route-computation_v1")[0]
+    assert json.loads(tool_result["result"]["content"][0]["text"]) == {"state": "RUNNING"}
+    assert not results(events, "delegate_task")[0].get("isError")
+    saved_receipt = json.loads(results(events, "delegate_task")[0]["result"]["content"][0]["text"])
+    assert saved_receipt["invocation_kind"] == "assembled_subagent_component_use"
+    assert saved_receipt["component_ref"] == "subagent:route-role@v1"
+    assert saved_receipt["component_created"] is False
+    assert "optional_persistence" not in saved_receipt
     assert any("route-fact" in json.dumps(item) for item in records(root, "provider-contexts.jsonl"))
     assert any("route-plan" in json.dumps(item) for item in records(root, "provider-contexts.jsonl"))
     assert any("task_tool_route-computation_v1" in json.dumps(item) for item in records(root, "provider-contexts.jsonl"))
@@ -2689,7 +2862,7 @@ def test_auto_research_inherits_only_selected_harness_versions_and_context_windo
         "alternatives": [],
         "limitations": ["Only explicitly inherited resources were available."],
         "validation_plan": "Compare the next real observation with the selected hypothesis.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
         "PI_AUTORESEARCH_PI_CLI": cli,
@@ -2737,6 +2910,56 @@ def test_auto_research_inherits_only_selected_harness_versions_and_context_windo
     assert all(item["count"] == 0 for item in records(root, "subagent-native-skills.jsonl"))
 
 
+def test_auto_research_default_context_window_includes_cumulative_goal_state(tmp_path):
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "auto-research-default-goal-context"
+    report = {
+        "format": "auto-research-report-v1", "status": "inconclusive",
+        "conclusion": "The constraints imply a lateral approach is worth testing, but no route is established.",
+        "findings": [], "evidence_refs": [],
+        "alternatives": ["Probe a lateral opening", "Check whether the upper route is passable"],
+        "limitations": ["No new environment experiment was performed."],
+        "validation_plan": "Ask the parent to test one discriminating move before committing to a route.",
+        "method_candidates": [],
+    }
+    events = _run_fixture(root, "treatment",
+        extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
+        extra_env={
+            "PI_AUTORESEARCH_PI_CLI": cli,
+            "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+            "PI_AUTORESEARCH_MODEL": "scripted",
+            "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+            "PI_SUBAGENT_REPORT": json.dumps(report),
+            "PI_SUBAGENT_STEPS": json.dumps([
+                {"name": "submit_research_report", "arguments": {"report": report}},
+            ]),
+        }, steps=[
+            {"name": "task_checkpoint", "arguments": {"action": "update",
+                "task_goal": "Reach the target cell beyond the observed barrier.",
+                "success_conditions": ["The controlled marker occupies the target cell."],
+                "task_constraints": ["The direct vertical route is blocked by terrain."],
+                "strategy_alternatives": ["Test a lateral opening", "Check whether the upper path is passable"],
+                "current_strategy": "Keep both route alternatives live until a discriminating move is tried.",
+                "planning_gap": "The object locator does not determine which route can reach the target."}},
+            {"name": "auto_research", "arguments": {"action": "start",
+                "question": "Which public observation could distinguish the two feasible route hypotheses?"}},
+        ])
+    assert not results(events, "auto_research")[0].get("isError"), results(events, "auto_research")[0]
+    run = records(root, "auto-research-runs.jsonl")[-1]
+    checkpoint = run["context_window"]["checkpoint"]
+    assert checkpoint["task_goal"] == "Reach the target cell beyond the observed barrier."
+    assert checkpoint["success_conditions"] == ["The controlled marker occupies the target cell."]
+    assert checkpoint["task_constraints"] == ["The direct vertical route is blocked by terrain."]
+    assert checkpoint["planning_gap"] == "The object locator does not determine which route can reach the target."
+    child_contexts = records(root, "subagent-provider-contexts.jsonl")
+    payload = json.dumps(child_contexts, ensure_ascii=False)
+    assert "Reach the target cell beyond the observed barrier." in payload
+    assert "The controlled marker occupies the target cell." in payload
+    assert "The direct vertical route is blocked by terrain." in payload
+    assert "The object locator does not determine which route can reach the target." in payload
+
+
 def test_auto_research_child_keeps_read_surface_until_agent_submits(tmp_path):
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
@@ -2750,7 +2973,7 @@ def test_auto_research_child_keeps_read_surface_until_agent_submits(tmp_path):
         "alternatives": ["Either candidate remains possible."],
         "limitations": ["No new evidence is available from an identical read."],
         "validation_plan": "Collect one discriminating environment observation.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
         "PI_AUTORESEARCH_PI_CLI": cli,
@@ -2846,7 +3069,7 @@ def test_open_auto_research_owns_question_history_agenda_and_parent_delivery(tmp
             "hypothesis": "A compact state relation may predict useful transitions.",
             "evidence_refs": [], "next_step": "Compare the next distinct transition.",
         },
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     first_events = _run_fixture(
         root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
@@ -2888,7 +3111,7 @@ def test_open_auto_research_owns_question_history_agenda_and_parent_delivery(tmp
             "evidence_refs": ["research_report:auto-research-1@v1"],
             "next_step": "Assess the next actual use.",
         },
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     second_events = _run_fixture(
         root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
@@ -2899,7 +3122,7 @@ def test_open_auto_research_owns_question_history_agenda_and_parent_delivery(tmp
                 {"name": "submit_research_report", "arguments": {"report": second_report}},
             ]),
         },
-        steps=[{"name": "auto_research", "arguments": {"action": "start"}}],
+        steps=[{"name": "auto_research", "arguments": {"action": "start", "research_line_ref": first_agenda["research_line_ref"]}}],
     )
     second_payload = json.loads(results(second_events, "auto_research")[0]["result"]["content"][0]["text"])
     assert second_payload["format"] == "auto-research-capsule-v1"
@@ -2938,7 +3161,7 @@ def test_auto_research_resume_reuses_the_same_session(tmp_path):
         wait_for_broker_job(root, "auto-research-1")
         # Startup harvests the pending checkpoint before the explicit resume.
         report = {"format": "auto-research-report-v1", "status": "inconclusive", "conclusion": "Resume retained the cursor.",
-                  "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [], "validation_plan": "observe next state", "harness_proposals": []}
+                  "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [], "validation_plan": "observe next state", "method_candidates": []}
         events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
             **base_env, "PI_SUBAGENT_REPORT": json.dumps(report),
             "PI_SUBAGENT_STEPS": json.dumps([{"name": "submit_research_report", "arguments": {"report": report}}]),
@@ -2965,7 +3188,7 @@ def test_blocking_auto_research_yields_pending_for_future_parent_evidence(tmp_pa
     root = tmp_path / "auto-research-blocking-pending"
     report = {"format": "auto-research-report-v1", "status": "unresolved", "conclusion": "Future parent evidence is required.",
               "findings": [], "evidence_refs": [], "alternatives": [], "limitations": ["No later observation exists yet."],
-              "validation_plan": "Continue the parent task and research again after new evidence.", "harness_proposals": []}
+              "validation_plan": "Continue the parent task and research again after new evidence.", "method_candidates": []}
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
         "PI_AUTORESEARCH_PI_CLI": cli, "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
         "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
@@ -3045,10 +3268,15 @@ def test_active_session_is_failed_when_the_current_broker_does_not_own_its_job(t
         replacement_broker.close()
 
 
-def test_non_blocking_completion_waits_for_one_explicit_parent_change(tmp_path):
+def test_non_blocking_completion_waits_for_parent_creator_authoring(tmp_path):
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "auto-research-background-route"
+    from test_harness_capability_authoring import module_eval
+    skill_creator_ref = module_eval(
+        "pi_harness_baseline_methods.ts",
+        "m.baselineMethodCatalog().find(x=>x.name==='skill-creator').method_ref",
+    )
     delivery = harness_delivery(
         "background-review", "procedure", "background-review",
         "Inspect the selected observation and preserve uncertainty.",
@@ -3056,9 +3284,14 @@ def test_non_blocking_completion_waits_for_one_explicit_parent_change(tmp_path):
     report = {
         "format": "auto-research-report-v1", "status": "provisional",
         "conclusion": "The procedure is a candidate for the next parent turn.",
-        "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-        "validation_plan": "Apply at a parent-owned safe point.",
-        "harness_proposals": [{"approval_id": "auto-research-1:proposal-1"}],
+        "findings": [], "evidence_refs": ["memory:background-capability-need@v1"],
+        "alternatives": [], "limitations": [],
+        "validation_plan": "Let the parent decide whether to author and assemble the skill.",
+        "method_candidates": [{
+            "candidate_ref": "background-review", "name": "background-review",
+            "semantic_kind": "procedure", "summary": "Inspect selected evidence and preserve uncertainty.",
+            "basis_refs": ["memory:background-capability-need@v1"], "method": delivery["method"],
+        }],
     }
     broker = SubagentBroker()
     broker.start()
@@ -3068,39 +3301,70 @@ def test_non_blocking_completion_waits_for_one_explicit_parent_change(tmp_path):
             "PI_AUTORESEARCH_MODEL": "scripted", "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
             "PI_AUTORESEARCH_SUBAGENT_BROKER_URL": broker.url, "PI_SUBAGENT_REPORT": json.dumps(report),
             "PI_SUBAGENT_STEPS": json.dumps([
-                {"name": "research_approval", "arguments": {"action": "propose", "approval_id": "auto-research-1:proposal-1", "delivery": delivery}},
-                {"name": "research_approval", "arguments": {"action": "approve", "approval_id": "auto-research-1:proposal-1", "target_version": 1}},
+                {"name": "task_resource", "arguments": {
+                    "action": "read", "ref": "memory:background-capability-need@v1", "limit": 8000,
+                }},
                 {"name": "submit_research_report", "arguments": {"report": report}},
             ]),
         }
         events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=child_env,
-                              steps=[{"name": "auto_research", "arguments": {
-                                  "question": "Should this procedure be retained?", "interaction_mode": "non_blocking",
-                              }}])
+                              steps=[
+                                  {"name": "task_memory", "arguments": {
+                                      "action": "upsert", "key": "background-capability-need",
+                                      "content": "The parent may need a bounded evidence-review procedure.",
+                                      "summary": "Input for a background capability investigation.",
+                                  }},
+                                  {"name": "auto_research", "arguments": {
+                                      "question": "Should this procedure be retained?", "interaction_mode": "non_blocking",
+                                      "resource_refs": ["memory:background-capability-need@v1"],
+                                  }},
+                              ])
         accepted = json.loads(results(events, "auto_research")[0]["result"]["content"][0]["text"])
         wait_for_broker_job(root, "auto-research-1")
         inspect_events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=child_env,
                                       steps=[{"name": "auto_research", "arguments": {"action": "inspect", "session_ref": accepted["session_ref"]}}])
         inspected = json.loads(results(inspect_events, "auto_research")[0]["result"]["content"][0]["text"])
         assert inspected["status"] == "completed"
-        assert inspected["reconciliation_status"] == "awaiting_parent_change"
-        route = records(root, "auto-research-harness-routes.jsonl")[-1]
-        assert route["route_status"] == "ready"
+        assert inspected["reconciliation_status"] == "awaiting_parent_authoring"
+        handoff = inspected["parent_authoring_handoffs"][0]
+        assert handoff["status"] == "awaiting_parent_authoring"
+        assert handoff["creator"]["name"] == "skill-creator"
+        assert handoff["change_call_template"]["executable"] is False
         assert records(root, "task-skills.jsonl") == []
         assert records(root, "auto-research-harness-route-receipts.jsonl") == []
         assert "AUTO-RESEARCH COMPLETION INBOX" in json.dumps(records(root, "provider-contexts.jsonl")[-1])
 
-        delivery_hash = run_router_helper(
-            "router.harnessDeliveryHash(JSON.parse(process.env.AUTORESEARCH_ROUTER_TEST_INPUT))",
-            input_value=delivery,
-        )
         _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=child_env,
-                     steps=[{"name": "task_harness", "arguments": {
-                         "action": "apply_route", "route_ref": route["route_ref"],
-                         "expected_delivery_hash": delivery_hash,
-                     }}])
+                     steps=[
+                         {"name": "task_harness", "arguments": {
+                             "action": "read_method", "method_name": "skill-creator",
+                         }},
+                         {"name": "task_harness", "arguments": {
+                             "action": "change", "changes": [{"operation": "create", "candidate": {
+                                 **delivery,
+                                 "basis_refs": ["research_report:auto-research-1@v1",
+                                                "method:method-auto-research-1-background-review@v1"],
+                                 "authoring_method_ref": skill_creator_ref,
+                             }}],
+                             "decision": {"basis_refs": ["research_report:auto-research-1@v1",
+                                                          "method:method-auto-research-1-background-review@v1"],
+                                          "reason": "The parent authored the complete skill after reading skill-creator.",
+                                          "expected": "The exact skill preserves uncertainty during a later review."},
+                         }},
+                         {"name": "task_harness", "arguments": {
+                             "action": "assemble", "expected_assembly_revision": 0,
+                             "selected_resource_refs": ["skill:background-review@v1"],
+                             "prompt_contributions": [],
+                             "decision": {"basis_refs": ["research_report:auto-research-1@v1"],
+                                          "reason": "Select the exact parent-authored skill.",
+                                          "expected": "Skill v1 is available for later use."},
+                         }},
+                     ])
         assert len(records(root, "task-skills.jsonl")) == 1
-        assert len(records(root, "auto-research-harness-route-receipts.jsonl")) == 1
+        assert records(root, "auto-research-harness-route-receipts.jsonl") == []
+        authoring = records(root, "parent-authoring-handoffs.jsonl")
+        assert authoring[-1]["status"] == "authored"
+        assert authoring[-1]["component_ref"] == "skill:background-review@v1"
         assert "AUTO-RESEARCH COMPLETION INBOX" not in json.dumps(records(root, "provider-contexts.jsonl")[-1])
     finally:
         broker.close()
@@ -3133,7 +3397,7 @@ def test_pending_non_blocking_session_resumes_once_with_new_canonical_evidence(t
         report = {"format": "auto-research-report-v1", "status": "supported_within_scope",
                   "conclusion": "The new evidence resolved the pending question.", "findings": [],
                   "evidence_refs": ["memory:new-evidence@v1"], "alternatives": [], "limitations": [],
-                  "validation_plan": "Use the result on the next parent turn.", "harness_proposals": []}
+                  "validation_plan": "Use the result on the next parent turn.", "method_candidates": []}
         resume_env = {**base_env, "PI_SUBAGENT_REPORT": json.dumps(report),
                       "PI_SUBAGENT_STEPS": json.dumps([{"name": "submit_research_report", "arguments": {"report": report}}])}
         _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env=resume_env,
@@ -3158,7 +3422,7 @@ def test_non_blocking_provider_length_continues_to_a_structured_report(tmp_path)
     root = tmp_path / "auto-research-background-length"
     report = {"format": "auto-research-report-v1", "status": "inconclusive", "conclusion": "Continuation completed.",
               "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-              "validation_plan": "Return to the parent.", "harness_proposals": []}
+              "validation_plan": "Return to the parent.", "method_candidates": []}
     broker = SubagentBroker()
     broker.start()
     try:
@@ -3190,7 +3454,7 @@ def test_length_continuation_prompt_uses_native_session_without_reinjecting_full
     report = {"format": "auto-research-report-v1", "status": "inconclusive",
               "conclusion": "Continuation completed without replaying the original workset.",
               "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-              "validation_plan": "Return to the parent.", "harness_proposals": []}
+              "validation_plan": "Return to the parent.", "method_candidates": []}
     events = _run_fixture(
         root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
         extra_env={
@@ -3234,7 +3498,7 @@ def test_auto_research_child_inherits_parent_provider_model_and_registry(tmp_pat
     }}), encoding="utf-8")
     report = {"format": "auto-research-report-v1", "status": "inconclusive", "conclusion": "Bounded report.",
               "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-              "validation_plan": "Return to parent.", "harness_proposals": []}
+              "validation_plan": "Return to parent.", "method_candidates": []}
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
                           extra_env={
                               "PI_AUTORESEARCH_PI_CLI": cli,
@@ -3256,13 +3520,17 @@ def test_auto_research_child_inherits_parent_provider_model_and_registry(tmp_pat
     assert parent_config["providers"]["offline-subagent-test"]["models"][0]["maxTokens"] == 65536
 
 
-def test_followup_research_inherits_line_from_one_selected_prior_report(tmp_path):
+@pytest.mark.parametrize("selection", [
+    {"question": "Narrow follow-up to research_report:auto-research-1@v1.", "resource_refs": ["research_report:auto-research-1@v1"]},
+    {"question": "Continue on THIS line (research_line:movement-method@v1)."},
+])
+def test_followup_research_inherits_line_from_one_selected_prior_report(tmp_path, selection):
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "followup-line-inheritance"
     report = {"format": "auto-research-report-v1", "status": "inconclusive", "conclusion": "One bounded result.",
               "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-              "validation_plan": "Continue on the same line.", "harness_proposals": []}
+              "validation_plan": "Continue on the same line.", "method_candidates": []}
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
                           extra_env={
                               "PI_AUTORESEARCH_PI_CLI": cli,
@@ -3276,10 +3544,7 @@ def test_followup_research_inherits_line_from_one_selected_prior_report(tmp_path
                                   "question": "Establish the method line.",
                                   "research_line_ref": "research_line:movement-method@v1",
                               }},
-                              {"name": "auto_research", "arguments": {
-                                  "question": "Narrow follow-up to research_report:auto-research-1@v1.",
-                                  "resource_refs": ["research_report:auto-research-1@v1"],
-                              }},
+                              {"name": "auto_research", "arguments": selection},
                           ])
     assert not [item for item in results(events, "auto_research") if item.get("isError")]
     sessions = records(root, "auto-research-sessions.jsonl")
@@ -3295,7 +3560,7 @@ def test_blocking_length_continuation_stops_after_repeated_semantic_stagnation(t
         "format": "auto-research-report-v1", "status": "supported_within_scope",
         "conclusion": "This report should not require five identical length retries.",
         "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-        "validation_plan": "Return to parent.", "harness_proposals": [],
+        "validation_plan": "Return to parent.", "method_candidates": [],
     }
     events = _run_fixture(
         root,
@@ -3370,7 +3635,7 @@ def test_rejected_report_is_checkpointed_then_corrected_in_same_child_session(tm
         "format": "auto-research-report-v1", "status": "supported_within_scope",
         "conclusion": "The corrected report preserves the bounded conclusion.",
         "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-        "validation_plan": "Return to the parent.", "harness_proposals": [],
+        "validation_plan": "Return to the parent.", "method_candidates": [],
     }
     events = _run_fixture(
         root,
@@ -3400,7 +3665,8 @@ def test_rejected_report_is_checkpointed_then_corrected_in_same_child_session(tm
     controls = records(root, "auto-research-child-control.jsonl")
     rejected = [item for item in controls if item["event"] == "report_submission_rejected"]
     assert len(rejected) == 1
-    assert "not-a-valid-mode" in rejected[0]["error"]
+    assert "method_candidates.0" in rejected[0]["error"]
+    assert "basis_refs" in rejected[0]["error"] or "steps" in rejected[0]["error"]
     assert controls[-1]["event"] == "report_submitted"
 
 
@@ -3514,7 +3780,7 @@ def test_auto_research_does_not_close_reads_for_incomplete_selected_evidence(tmp
         "alternatives": ["The remaining page may change the conclusion."],
         "limitations": ["Only the first page was read."],
         "validation_plan": "Read the remaining page before deciding.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     events = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"], extra_env={
         "PI_AUTORESEARCH_PI_CLI": cli,
@@ -3624,12 +3890,22 @@ def test_closed_scope_rejects_reuse_but_allows_explicit_same_task_resume(tmp_pat
     assert check().returncode == 0
 
 
-def test_arc_runtime_supplies_current_frame_without_a_model_state_read(tmp_path):
+@pytest.mark.parametrize("modalities", ["text", "text,image"])
+def test_arc_runtime_supplies_current_frame_without_a_model_state_read(tmp_path, modalities):
+    requests = {"state": 0, "events": 0, "action": 0}
     class State(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = json.dumps({"state": "NOT_FINISHED", "levels_completed": 0,
+            if self.path.startswith("/events"):
+                requests["events"] += 1
+                value = {"events": [], "next": 0}
+            else:
+                requests["state"] += 1
+                value = {"state": "NOT_FINISHED", "levels_completed": 0,
                                "frames": [[[1, 2], [3, 4]]], "agent_available_actions": ["ACTION1"],
-                               "action_budget": {"used": 0, "maximum": 110}}).encode()
+                               "action_budget": {"used": 0, "maximum": 110,
+                                                 "evaluator_secret": "nested-secret"},
+                               "private_state": "top-secret"}
+            body = json.dumps(value).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -3648,13 +3924,16 @@ def test_arc_runtime_supplies_current_frame_without_a_model_state_read(tmp_path)
         node, cli = _pi_cli()
         root = tmp_path / "frame"
         root.mkdir()
-        steps = [{"name": "task_harness", "arguments": {"action": "start"}}]
+        steps = [{"name": "task_harness", "arguments": {"action": "start"}},
+                 {"name": "task_checkpoint", "arguments": {"action": "update",
+                  "next_step": "Compare the complete supplied grid before choosing an action"}}]
         with PiKernel([node, cli, "--mode", "rpc", "--provider", "offline-external-test", "--model", "scripted",
                        "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
                        "--extension", str(project / "demo/pi_arc_agi_3_extension.ts"),
                        "--extension", str(project / "tests/pi_external_benchmark_provider.ts")], cwd=str(root), env={
                            "PI_AUTORESEARCH_E2E_ROOT": str(root), "PI_CODING_AGENT_DIR": str(root / ".pi-agent"),
                            "PI_AUTORESEARCH_VARIANT": "treatment", "PI_ARC_EXECUTION_GATE": "enabled",
+                           "PI_ARC_INPUT_MODALITIES": modalities,
                            "PI_ARC_BRIDGE_URL": f"http://127.0.0.1:{server.server_port}", "PI_EXTERNAL_STEPS": json.dumps(steps),
                        }, timeout=60) as kernel:
             try:
@@ -3668,6 +3947,39 @@ def test_arc_runtime_supplies_current_frame_without_a_model_state_read(tmp_path)
         thread.join(timeout=2)
     assert not results(events, "arc_state")
     contexts = [json.loads(line)["context"] for line in (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert "# Current public ARC state (automatically supplied)" in contexts[0]["systemPrompt"]
-    assert "Lossless coordinate runs (inclusive columns), size=2x2:" in contexts[0]["systemPrompt"]
-    assert "arc_state" not in {tool["name"] for tool in contexts[0]["tools"]}
+    assert "CURRENT PUBLIC ARC OBSERVATION" in json.dumps(contexts[0]["messages"])
+    assert len(contexts) == 3
+    images = []
+    for context in contexts:
+        assert "arc_state" not in {tool["name"] for tool in context["tools"]}
+        texts = [part["text"] for message in context["messages"]
+                 for part in message.get("content", []) if part.get("type") == "text"]
+        observation_slots = [text for text in texts if text.startswith("CURRENT PUBLIC ARC OBSERVATION")]
+        assert len(observation_slots) == 1
+        assert "Grid current_state_frame (2x2)" in observation_slots[0]
+        assert "12\n34" in observation_slots[0]
+        assert "Grid current_state_frame" not in context["systemPrompt"]
+        assert "crop:" not in context["systemPrompt"] + "\n".join(texts)
+        current_images = [part for message in context["messages"]
+                          for part in message.get("content", []) if part.get("type") == "image"]
+        assert len(current_images) == (1 if "image" in modalities else 0)
+        images.extend(current_images)
+    if images:
+        import base64
+        assert len({image["data"] for image in images}) == 1
+        png = base64.b64decode(images[0]["data"])
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert int.from_bytes(png[16:20], "big") == 16
+        assert int.from_bytes(png[20:24], "big") == 16
+    assert requests == {"state": 1, "events": 1, "action": 0}
+    snapshots = records(root, "observation-snapshots.jsonl")
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert snapshot["public_state"]["frames"] == [[[1, 2], [3, 4]]]
+    assert "private_state" not in snapshot["public_state"]
+    assert "evaluator_secret" not in snapshot["public_state"]["action_budget"]
+    canonical = json.dumps(snapshot["public_state"], ensure_ascii=False,
+                           separators=(",", ":"))
+    assert hashlib.sha256(canonical.encode()).hexdigest() == snapshot["source_digest"]
+    assert any(f"Immutable exact resource for this same observed state: observation_snapshot:{snapshot['snapshot_id']}@v1" in part.get("text", "")
+               for message in contexts[0]["messages"] for part in message.get("content", []))

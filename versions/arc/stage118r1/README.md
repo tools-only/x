@@ -1,0 +1,1 @@
+Frozen stage118r1: stage117 plus scoped latest completed plain OpenAI reasoning projection. Includes conservative orphan-receipt and redacted-block guards from review. 197 runtime assets; prior stage118 preliminary snapshot preserved. Experimental policy summarize_completed_openai_field with explicit operator allowlist. Game benefit unverified. Never edit frozen assets.

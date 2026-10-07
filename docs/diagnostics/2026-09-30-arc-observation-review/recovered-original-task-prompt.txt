@@ -1,0 +1,38 @@
+Play ARC-AGI-3 game ft09-0d8bbf25 and improve your task-solving process: develop and use task-local capabilities when they help current or anticipated task work. Aim to WIN, avoid GAME_OVER and conserve actions. Evaluate value over the remaining task, not only the next action. Development is not a prerequisite for arc_action.
+
+Use the public frame to infer objectives and mechanics. Separate observation,
+hypothesis and prediction. Predict an action's result, compare it with the next
+observation and revise contradicted strategies. Visible change is not progress.
+Recheck live conditions and coordinates before reuse.
+For repeated visual structures, compare relations across examples, including scale,
+orientation and color. A rule must explain visible examples and unchanged cells;
+record conflicts. For a target configuration, calculate the mismatch set,
+test at a relevant editable location and recalculate after acting.
+Distinguish an observed source from controllable output; a no-op warrants a new
+prediction, not blind retries on adjacent pixels.
+
+Choose when to act, investigate, delegate or improve methods. Memory, skills,
+tools, subagents and system-prompt policies start empty. Use task_harness for
+development and task_checkpoint for the current goal, strategy and next step.
+Use Auto-Research for a grounded uncertainty or missing capability; provide accessible
+evidence, bounded read-only deliverable and evaluation/stop conditions. Research
+offers evidence and candidates; you author and select components. Creation,
+selection, use and demonstrated benefit are distinct. Check proposals against
+the live frame; parent action outcomes, not child confidence, validate them.
+When competing rule, goal or strategy candidates matter, update their short
+task_checkpoint ledger; select a candidate and track a bounded plan when actionable.
+For a multi-action plan, use structured steps with observable checks; identify the
+plan and step in each arc_action so the runtime can track progress without guessing.
+Reconcile an interrupted plan against new evidence before changing routes.
+After choosing development, finish authoring, assembly and a semantic trial; only
+defer for a concrete infrastructure blocker with a retry condition.
+
+Read task_harness(action="contract") or auto_research(action="contract") when
+needed. Follow version references and recovery receipts. Preserve
+evidence and unfinished work in task resources, updating changed interpretations.
+Large historical reads remain visible through one model continuation, then use
+short recoverable refs. Preserve decision-relevant rules, counterevidence and
+plans in the checkpoint; restore a result to keep its full text in context.
+When a context high-water cue appears, inspect costs and compact other old results.
+Finish each decision cycle with one arc_action and observe the result. Continue until
+WIN or actions end. A requested terminal review is read-only.

@@ -1,42 +1,17 @@
 ---
 name: tool-creator
-description: Design or revise an executable task-local Pi tool when a repeated analysis or bounded operation should become a callable capability. Use for pi.registerTool contracts and this runtime's declarative programs or approved adapter operations; not for storing observations or claiming unavailable host code.
+description: Author an executable bounded computation or check using the supported Pi task-local substrate.
 ---
+# Pi Tool creator
 
-# Pi task-local tool creator
+Author name, description and program={"format":"task-pure-python-v1","source":"<expression>"}. Use the returned authoring_call for publication and first computation. Reading this template is optional. If supplied, authoring_method_ref must match the current creator_ref; omit a stale citation when submitting complete content. Example source: {"height":len(input["grid"])}.
 
-Create a tool only when execution is more useful than another explanation: the
-operation is repeatable, its inputs and semantic result can be stated, and a
-supported implementation can actually run inside the current Pi task.
+Source is parsed into bounded JSON operations, never executed as Python. Supported: input["field"], constants/lists/objects, integer array indexing, + - *, == < <=, boolean and/or/not, conditional expressions, len, range(stop) or range(start,stop), one-generator list comprehensions with optional if predicate, and immediately called lambdas for local bindings. No attributes, arbitrary calls, imports, eval, shell, filesystem or network. Boolean conditions are strict, indices nonnegative, equality follows strict JSON types, and len accepts string/array. Optional program.limits tightens bounded defaults.
 
-1. Define the next useful call. State the operation, constrained input, semantic
-   output, failure behavior, bounded cost, permissions, and why main should call
-   it instead of reasoning manually. Prefer one composable capability over a
-   large workflow hidden behind one call.
-2. Inspect `task_harness`, `task_tool`, and the available adapter implementations.
-   Choose either an approved `implementation_ref` or a declarative `program` made
-   only from supported steps: `adapter_call`, `select`, `count`, `pick`, `filter`,
-   `map`, `group_by`, `diff`, `summarize`, `assert`, and `emit_observation`.
-   Missing primitives mean `pending_implementation`, not an executable tool.
-3. Specify the Pi contract. Use a provider-compatible TypeBox object schema,
-   an action-oriented description, and stable structured `content`/`details`.
-   Errors must be actionable and must throw. Preserve source identity and version
-   in derived observations. Support cancellation and progress only when the
-   operation can actually honor them.
-4. Test actual execution: one representative input, an empty or invalid input,
-   and a contrast capable of exposing a false assumption. Assert semantic output,
-   provenance and failures—not merely registration or `status=completed`.
-5. Publish through `task_tool`, then let main select the exact `tool:name@vN`
-   with `task_harness(action="assemble", ...)`. Invocation before selection must
-   fail. Treat the first successful call as use evidence, not proof of utility;
-   assess the downstream result and revise or retire on evidence.
+input merges parameters and read-only bindings. The prepared ARC trial binds the snapshot's final numeric grid as input["grid"]: index [y][x], never copy hex rows. Edit/remove bindings for your expression. Optional earlier_input locates a captured final grid at the listed action boundary, possibly across a batch/level; it is not necessarily the previous action. Snapshots stay immutable.
 
-The runtime—not the creator—enforces schema, exact versions, assembly selection,
-adapter allowlists, permissions, and the main-only ARC action boundary. The task
-tool substrate does not load arbitrary TypeScript, shell code, packages, or Pi
-extensions. A full extension may use `pi.registerTool`, but authoring one requires
-normal project implementation and verification outside the dynamic component API.
+input_schema and output_schema are optional for this format: defaults are open object and bounded strict JSON. Supply stronger contracts when useful: type/properties/required/additionalProperties/items and scalar/length bounds. With additionalProperties:false, declare accessed fields. No $ref/oneOf or prototype-related keys.
 
-For exact Pi and project contracts, read
-`references/pi-task-local-tool-contract.md` with `task_harness(action="read_method",
-method_name="tool-creator", method_resource="references/pi-task-local-tool-contract.md")`.
+Call task_harness_create with {"candidate":{"name":"<name>","description":"<when useful>","program":{"format":"task-pure-python-v1","source":"<expression>"}},"assembly":true,"trial":{"parameters":{},"bindings":[]}}. Fill authored text and the authorized inputs. assembly=true adds the new exact version to the current selection; trial returns its first value. Omit assembly/trial for pool-only publication. Omit optional fields for defaults; explicit null and conflicting values are rejected. Trial failure preserves the published version. Verify a value and contrast; keep only useful components. Creation is not task benefit; this computation performs no environment actions.
+
+For advanced operations, grid_reachability, JSON AST, legacy steps or implementation_ref, read references/pi-task-local-tool-contract.md. Never mix source/AST/steps. Unsupported operations need a Skill, decomposition or a recorded gap. Optional background: references/authoring-background.md.

@@ -25,6 +25,54 @@ def control(expression):
     return json.loads(result.stdout)
 
 
+def test_level_review_failure_identity_survives_changed_credit_body():
+    first = control("h.controlOperationKey('task_harness',{action:'level_review',window_id:'level-outcome:o3',level_review:{credits:[{kind:'harness'}]}},'task')")
+    corrected = control("h.controlOperationKey('task_harness',{action:'level_review',window_id:'level-outcome:o3',level_review:{credits:[]}},'task')")
+    other = control("h.controlOperationKey('task_harness',{action:'level_review',window_id:'level-outcome:o4',level_review:{credits:[]}},'task')")
+    assert first == corrected
+    assert first != other
+
+
+def test_corrected_level_review_clears_same_window_failure(tmp_path):
+    root = tmp_path / "level-review-repair"
+    root.mkdir()
+    observation = {
+        "observation_id": "execution-observation-1", "tool_name": "arc_action",
+        "input": {"action": "RESET"}, "recordedAt": "2026-09-25T00:00:01Z",
+        "arc_outcome": {"state": "NOT_FINISHED", "levels_completed": 0,
+            "public_transition": {"level_before": 0, "level_after": 0, "level_changed": False}},
+    }
+    memory = {"memory_id": "memory-1", "key": "inert-probes", "version": 1,
+              "status": "active", "content": "Two clicks were inert", "recordedAt": "2026-09-25T00:00:00Z"}
+    (root / "execution-observations.jsonl").write_text(json.dumps(observation) + "\n", encoding="utf-8")
+    (root / "task-memory.jsonl").write_text(json.dumps(memory) + "\n", encoding="utf-8")
+    credit = {"kind": "harness", "target_ref": "memory:inert-probes@v1", "verdict": "uncertain",
+              "evidence_refs": ["execution-observation-1"], "reason": "Use was not observed",
+              "counterfactual": "It may have helped if selected", "next_use": "Review after a trial"}
+    review = {"summary": "RESET ended the attempt", "mechanisms": "Clicks were inert",
+              "shortcomings": "No method applied", "lessons": "Test outer tiles",
+              "next_attempt": "Try a bounded outer-tile click", "credits": [{**credit, "use_stage": "invalid-stage"}]}
+    steps = [
+        {"name": "task_harness", "arguments": {"action": "level_review",
+            "window_id": "level-outcome:execution-observation-1", "level_review": review}},
+        {"name": "task_harness", "arguments": {"action": "level_review",
+            "window_id": "level-outcome:execution-observation-1",
+            "level_review": {**review, "credits": [credit]}}},
+    ]
+    events = _run_fixture(root, "treatment", steps=steps)
+    reviews = records(root, "task-level-reviews.jsonl")
+    assert len(reviews) == 1
+    assert reviews[0]["credits"][0]["attribution_status"] == "use_stage_unverified"
+    assert "use_stage" not in reviews[0]["credits"][0]
+    assert results(events, "task_harness")[0].get("isError") is True
+    assert not results(events, "task_harness")[1].get("isError")
+    resolutions = records(root, "task-operation-resolutions.jsonl")
+    assert len(resolutions) == 1
+    assert resolutions[0]["resolved_operation_key"] == resolutions[0]["operation_key"]
+    checkpoint = json.loads((root / "task-checkpoint.json").read_text(encoding="utf-8"))
+    assert not checkpoint.get("pending_operations")
+
+
 def test_partial_review_retains_semantics_and_marks_runtime_defaults():
     value = helper("""h.normalizeHarnessReview([{component:'skill', disposition:'create', reason:'Repeated comparison',
       patterns:[{pattern:'compare', evidence_refs:['o1'], applicability:'same level', counterexamples:'unknown',
@@ -55,6 +103,160 @@ def test_review_errors_are_aggregated_and_do_not_invent_semantic_content():
     assert value['applied'] is False
     assert {'review[0].reason', 'review[0].next_use', 'review[0].validation', 'review[1].disposition'} <= {e['path'] for e in value['errors']}
     assert value['repair_template']['action'] == 'review'
+
+
+def test_expired_review_returns_parent_authored_direct_change_fallback(tmp_path):
+    (tmp_path / 'task-harness-opportunities.jsonl').write_text(json.dumps({
+        'opportunity_id': 'expired', 'window': {'window_id': 'w-expired'},
+    }) + '\n', encoding='utf-8')
+    (tmp_path / 'task-harness-review-events.jsonl').write_text(json.dumps({
+        'window_id': 'w-expired', 'status': 'failed',
+    }) + '\n', encoding='utf-8')
+    submitted = {'semantic_kind': 'skill', 'name': 'still-useful',
+                 'instructions': 'Compare inputs and report uncertainty.'}
+    events = _run_fixture(tmp_path, 'treatment', steps=[{
+        'name': 'task_harness', 'arguments': {'action': 'review', 'opportunity_id': 'expired', 'review': [{
+            'component': 'skill', 'disposition': 'create', 'reason': 'Useful operation',
+            'next_use': 'Next input', 'validation': 'Compare expected and actual',
+            'candidate': submitted,
+        }]},
+    }])
+    result = results(events, 'task_harness')[-1]
+    assert result.get('isError')
+    payload = json.loads(result['result']['content'][0]['text'])
+    assert payload['code'] == 'review_window_unavailable'
+    fallback = payload['direct_change_fallback']
+    assert fallback['action'] == 'change'
+    # The outer authored carrier is preserved as routing metadata; the body is
+    # still exactly the parent's candidate, not a runtime-generated procedure.
+    assert fallback['changes'] == [{'operation': 'create', 'candidate': {
+        'component': 'skill', **submitted,
+    }}]
+    assert not (tmp_path / 'task-skills.jsonl').exists()
+    assert 'Runtime will not apply it automatically' in fallback['instruction']
+
+
+def test_duplicate_component_review_returns_lossless_change_fallback_and_can_recover(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    candidates = [
+        {
+            'semantic_kind': 'memory', 'name': 'ls20-action2-down5',
+            'content': 'ACTION2 moved the controlled object down by five cells.',
+            'atom': {'subject': 'ACTION2', 'predicate': 'observed_displacement', 'value': 'down-5'},
+            'validity': {'scope': 'level'},
+        },
+        {
+            'semantic_kind': 'memory', 'name': 'ls20-action3-left-blocked',
+            'content': 'ACTION3 attempted left movement but the object was blocked.',
+            'atom': {'subject': 'ACTION3', 'predicate': 'observed_displacement', 'value': 'left-blocked'},
+            'validity': {'scope': 'level'},
+        },
+        {
+            'semantic_kind': 'memory', 'name': 'ls20-hud-action-column',
+            'content': 'The HUD action indicator occupies the observed right-side column.',
+            'atom': {'subject': 'HUD', 'predicate': 'action_indicator_region', 'value': 'right-column'},
+            'validity': {'scope': 'level'},
+        },
+    ]
+    review = [{
+        'component': 'memory', 'disposition': 'create',
+        'reason': f'Keep independently selectable observation {index}.',
+        'next_use': 'Compare the next action outcome.',
+        'validation': 'Check the next public observation.',
+        'candidate': candidate,
+    } for index, candidate in enumerate(candidates, 1)]
+    transition = {
+        'observed_changes': 'The five-action window contains distinct action outcomes.',
+        'predictive_rules': 'Unknown; preserve the observations separately.',
+        'limiting_uncertainty': 'Future action effects remain untested.',
+        'next_experiment': 'Compare the next public transition.',
+        'capability_opportunities': 'Scoped factual memory may avoid re-reading the window.',
+        'evidence_refs': ['execution-observation-1'],
+    }
+    events = _run_fixture(
+        tmp_path, 'treatment',
+        extra_extensions=[project / 'tests/pi_periodic_review_fixture.ts'],
+        steps=[*[{'name': 'arc_action', 'arguments': {}} for _ in range(5)], {
+            'name': 'task_harness', 'arguments': {
+                'action': 'review', 'review': review, 'transition_analysis': transition,
+            },
+        }],
+    )
+    failed = results(events, 'task_harness')[-1]
+    assert failed.get('isError')
+    payload = json.loads(failed['result']['content'][0]['text'])
+    assert payload['code'] == 'invalid_review'
+    duplicate_errors = [error for error in payload['errors'] if error['path'].endswith('.component')]
+    assert len(duplicate_errors) == 2
+    assert all('Duplicate component' in error['message'] for error in duplicate_errors)
+    fallback = payload['direct_change_fallback']
+    assert fallback['action'] == 'change'
+    assert fallback['changes'] == [
+        {'operation': 'create', 'candidate': candidate} for candidate in candidates
+    ]
+    assert [entry['review_index'] for entry in fallback['source_entries']] == [0, 1, 2]
+    assert fallback['current_applicability_required'] is True
+    assert not records(tmp_path, 'task-memory.jsonl')
+    assert not records(tmp_path, 'task-harness-review-commits.jsonl')
+    assert not records(tmp_path, 'task-harness-change-requests.jsonl')
+
+    direct_change = {
+        'action': fallback['action'], 'changes': fallback['changes'],
+        'decision': {
+            'basis_refs': fallback['decision']['basis_refs'],
+            'reason': 'All three scoped observations remain independently useful for the next comparison.',
+            'expected': 'Create three separately selectable level-scoped memory resources.',
+        },
+    }
+    resource_refs = [f"memory:{candidate['name']}@v1" for candidate in candidates]
+    recovery_events = _run_fixture(
+        tmp_path, 'treatment',
+        extra_extensions=[project / 'tests/pi_periodic_review_fixture.ts'],
+        steps=[
+            {'name': 'task_harness', 'arguments': direct_change},
+            {'name': 'task_harness', 'arguments': {
+                'action': 'review', 'review': [{
+                    'component': 'memory', 'disposition': 'reuse',
+                    'reason': 'Reuse the three exact independently selectable memories.',
+                    'resource_refs': resource_refs,
+                }], 'transition_analysis': transition,
+            }},
+        ],
+    )
+    recovery_results = results(recovery_events, 'task_harness')
+    assert all(not result.get('isError') for result in recovery_results), recovery_results
+    assert [row['key'] for row in records(tmp_path, 'task-memory.jsonl')] == [
+        candidate['name'] for candidate in candidates
+    ]
+    committed = records(tmp_path, 'task-harness-reviews.jsonl')[-1]
+    memory_entry = next(entry for entry in committed['entries'] if entry['component'] == 'memory')
+    assert memory_entry['disposition'] == 'reuse'
+    assert memory_entry['resource_refs'] == resource_refs
+    assert len([entry for entry in committed['entries'] if entry['component'] == 'memory']) == 1
+
+
+def test_duplicate_update_fallback_preserves_authored_candidates_and_target_versions():
+    candidates = [
+        {'semantic_kind': 'memory', 'name': 'mapping-a', 'target_version': 2,
+         'content': 'Updated A', 'atom': {'subject': 'A', 'predicate': 'mapping', 'value': 'left'},
+         'validity': {'scope': 'level'}},
+        {'semantic_kind': 'memory', 'name': 'mapping-b', 'target_version': 4,
+         'content': 'Updated B', 'atom': {'subject': 'B', 'predicate': 'mapping', 'value': 'right'},
+         'validity': {'scope': 'level'}},
+    ]
+    entries = [{
+        'component': 'memory', 'disposition': 'update', 'reason': f'Update {index}',
+        'next_use': 'Next action', 'validation': 'Compare next delta',
+        'candidate': candidate,
+    } for index, candidate in enumerate(candidates)]
+    value = helper(f"""(() => {{ try {{
+      h.normalizeHarnessReview({json.dumps(entries)}, new Set());
+    }} catch(e) {{ return JSON.parse(e.message); }} }})()""")
+    fallback = value['direct_change_fallback']
+    assert fallback['changes'] == [
+        {'operation': 'update', 'candidate': candidate} for candidate in candidates
+    ]
+    assert [change['candidate']['target_version'] for change in fallback['changes']] == [2, 4]
 
 
 def test_runtime_selection_never_guesses_between_candidates_or_rebinds_bad_id():
@@ -175,6 +377,40 @@ def test_startup_retires_stale_pending_harness_operations(tmp_path):
     assert all(item['resolved_by'] == 'runtime_reconciliation' for item in resolutions)
 
 
+def test_startup_retires_legacy_level_review_failure_only_for_completed_window(tmp_path):
+    checkpoint = {
+        'format': 'task-local-checkpoint-v1', 'revision': 1, 'patch_sequence': 0,
+        'harness_started': True, 'recent_observations': [], 'decision_refs': [],
+        'pending_operations': [
+            {'failure_id': 'failure-1', 'resource_ref': 'failure:failure-1@v1',
+             'tool': 'task_harness', 'action': 'level_review',
+             'operation_key': json.dumps({'action': 'level_review',
+                 'target': {'unbound_input_hash': 'legacy'}, 'tool': 'task_harness'}),
+             'retryable': True},
+            {'failure_id': 'failure-2', 'resource_ref': 'failure:failure-2@v1',
+             'tool': 'task_harness', 'action': 'level_review',
+             'operation_key': json.dumps({'action': 'level_review',
+                 'target': {'unbound_input_hash': 'other'}, 'tool': 'task_harness'}),
+             'retryable': True},
+        ],
+        'recordedAt': '2026-09-25T00:00:00.000Z',
+    }
+    (tmp_path / 'task-checkpoint.json').write_text(json.dumps(checkpoint) + '\n', encoding='utf-8')
+    (tmp_path / 'task-operation-failures.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in [
+        {'failure_id': 'failure-1', 'attempted_input': {'window_id': 'completed'}},
+        {'failure_id': 'failure-2', 'attempted_input': {'window_id': 'still-open'}},
+    ]), encoding='utf-8')
+    (tmp_path / 'task-level-reviews.jsonl').write_text(
+        json.dumps({'window_id': 'completed'}) + '\n', encoding='utf-8')
+    _run_fixture(tmp_path, 'treatment', steps=[
+        {'name': 'task_checkpoint', 'arguments': {'action': 'inspect'}},
+    ])
+    repaired = json.loads((tmp_path / 'task-checkpoint.json').read_text(encoding='utf-8'))
+    assert [item['failure_id'] for item in repaired['pending_operations']] == ['failure-2']
+    assert [row['failure_ref'] for row in records(tmp_path, 'task-operation-resolutions.jsonl')] == [
+        'failure:failure-1@v1']
+
+
 def test_legacy_review_pattern_without_pattern_uses_candidate_text():
     value = helper("""h.normalizeHarnessReview([{component:'skill', disposition:'create', reason:'Reusable method',
       patterns:[{evidence_refs:['o1'], applicability:'same level', counterexamples:'none',
@@ -201,20 +437,116 @@ def test_review_candidate_kind_is_normalized_by_the_shared_router():
     assert memory["prompt_channel"] == "task_prompt"
 
 
+def test_complete_atom_shape_defaults_only_to_memory():
+    from test_harness_capability_authoring import module_eval
+    atom = {'subject': 'click effect', 'predicate': 'toggles', 'value': '9 and 12'}
+    compact = {'key': 'click-toggle', 'validity': {'scope': 'task'}, 'atom': atom,
+               'content': 'A parent-authored task fact.'}
+    normalized = module_eval('pi_harness_protocol.ts',
+        'm.normalizeSemanticCandidate(' + json.dumps(compact) + ')')
+    assert normalized['semantic_kind'] == 'fact'
+    assert normalized['execution'] == 'text'
+    assert normalized['content'] == atom['value']
+    assert module_eval('pi_harness_protocol.ts',
+        'm.classifySemanticKind(' + json.dumps(compact) + ')') == 'memory'
+    ambiguous = {**compact, 'instructions': 'A procedure could use this atom.'}
+    error = module_eval('pi_harness_protocol.ts',
+        '(()=>{try{m.classifySemanticKind(' + json.dumps(ambiguous)
+        + ');return null}catch(e){return e.message}})()')
+    assert 'set candidate.semantic_kind to fact or plan explicitly' in error
+
+
+def test_native_batch_retires_old_memory_and_creates_complete_atom_memory(tmp_path):
+    atom = {'subject': 'click effect', 'predicate': 'toggles', 'value': '9 and 12'}
+    decision = {'basis_refs': [], 'reason': 'Record a scoped observed fact.',
+                'expected': 'The exact Memory is available to select.'}
+    events = _run_fixture(tmp_path, 'treatment', steps=[
+        {'name': 'task_harness', 'arguments': {'action': 'change', 'changes': [
+            {'operation': 'create', 'candidate': {'semantic_kind': 'fact', 'key': 'old-click',
+                'validity': {'scope': 'task'}, 'atom': atom}}], 'decision': decision}},
+        {'name': 'task_harness', 'arguments': {'action': 'change', 'changes': [
+            {'operation': 'retire', 'target_ref': 'memory:old-click@v1'},
+            {'operation': 'create', 'candidate': {'key': 'new-click',
+                'validity': {'scope': 'task'}, 'atom': atom,
+                'content': 'A parent-authored task fact.'}}], 'decision': decision}},
+    ])
+    assert not any(result.get('isError') for result in results(events, 'task_harness'))
+    memory = records(tmp_path, 'task-memory.jsonl')
+    assert [(row['key'], row['version'], row['status']) for row in memory] == [
+        ('old-click', 1, 'active'), ('old-click', 2, 'retired'), ('new-click', 1, 'active')]
+
+
 def test_review_contract_describes_pattern_shape():
     value = helper("h.reviewInputContract()")
     assert 'pattern_template' in value
     assert 'pattern' in value['pattern_template']
+    rules = ' '.join(value['rules'])
+    assert 'at most one review entry per component' in rules
+    assert 'task_harness(action=change, changes=[...])' in rules
+
+
+def test_review_prompts_distinguish_patterns_from_same_type_component_creation():
+    project = Path(__file__).resolve().parents[1]
+    instructions = ' '.join((project / 'demo/prompts/harness_review_operations.md').read_text(encoding='utf-8').split())
+    assert '`patterns` may describe multiple research or method patterns' in instructions
+    assert 'task_harness(action=change, changes=[...])' in instructions
+    assert 'one review `reuse` entry may cite all exact created resource refs' in instructions
+
+
+def test_capability_process_separates_trial_publication_from_conclusion_truth(tmp_path):
+    from test_harness_capability_authoring import module_eval
+    creator = module_eval('pi_harness_baseline_methods.ts',
+                          "m.baselineMethodCatalog().find(x=>x.name==='skill-creator').method_ref")
+    instructions = ('Provisional procedure: inspect the supplied input; compare the two '
+                    'explanations; if neither is distinguishable, retain both and stop. '
+                    'Reconsider the procedure when a later trial contradicts its prediction.')
+    events = _run_fixture(tmp_path, 'treatment', steps=[
+        {'name': 'task_harness', 'arguments': {'action': 'read_method', 'method_name': 'skill-creator'}},
+        {'name': 'task_harness', 'arguments': {'action': 'change', 'changes': [
+            {'operation': 'create', 'candidate': {'component': 'skill', 'name': 'provisional-comparison',
+             'description': 'Use when choosing between two explanations in this situation.',
+             'instructions': instructions, 'authoring_method_ref': creator,
+             'validity': {'scope': 'level'}}}],
+         'decision': {'basis_refs': [], 'reason': 'Try a bounded procedure before its utility is known.',
+                      'expected': 'A candidate exists; no claim of a validated conclusion.'}}},
+    ])
+    assert not any(e.get('isError') for e in results(events, 'task_harness'))
+    published = records(tmp_path, 'task-skills.jsonl')[-1]
+    assert published['instructions'] == instructions
+    assert published['authoring_status'] == 'creator_authored_untested_candidate'
+    assert published['validity']['scope'] == 'level'
+    assert published['basis_refs'] == []
+    assert not published.get('method')  # A complete nested dossier is not required.
+    assert not records(tmp_path, 'effect-assessments.jsonl')
+    assert not records(tmp_path, 'auto-research-sessions.jsonl')
+
+
+def test_capability_process_is_delivered_without_forcing_creation(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    process = (project / 'demo/prompts/capability_extraction_process.md').read_text(encoding='utf-8')
+    events = _run_fixture(tmp_path, 'treatment', steps=[{'name': 'benchmark_probe', 'arguments': {}}])
+    assert not results(events, 'benchmark_probe')[-1].get('isError')
+    initial = records(tmp_path, 'provider-contexts.jsonl')[0]['context']
+    texts = [part['text'] for message in initial['messages']
+             for part in message.get('content', []) if part.get('type') == 'text']
+    assert process in texts
+    for filename in ('task-skills.jsonl', 'task-memory.jsonl', 'task-system-prompt.jsonl',
+                     'task-tools.jsonl', 'task-subagents.jsonl', 'task-baseline-method-reads.jsonl',
+                     'auto-research-sessions.jsonl'):
+        assert not records(tmp_path, filename)
 
 
 def test_review_prompts_require_parent_application_and_version_verification():
     project = Path(__file__).resolve().parents[1]
     prompts = "\n".join((project / "demo" / "prompts" / name).read_text(encoding="utf-8")
                            for name in ("arc_decision_cycle.md", "auto_research_main_contract.md",
-                                        "self_harness_opportunity.md", "self_harness_index.md"))
-    assert prompts.count("component_application_plan") >= 4
+                                        "self_harness_opportunity.md", "self_harness_index.md",
+                                        "harness_assembly_operations.md", "harness_review_operations.md",
+                                        "harness_components_operations.md"))
+    assert "application_receipt" in prompts
     assert "task_harness(action=change)" in prompts
-    assert "exact current target_version" in prompts
+    assert "exact-version selection" in prompts
+    assert "authoring_method_ref" in prompts and "put it INSIDE the candidate" in prompts
     assert "review commit" in prompts.lower()
     source = (project / "demo" / "pi_task_local_self_harness.ts").read_text(encoding="utf-8")
     assert 'next_tool: "task_harness"' in source
@@ -243,6 +575,8 @@ def test_native_partial_review_binds_pending_opportunity_and_handoff(tmp_path):
 
 
 def test_native_review_infers_components_and_materializes_complete_candidates(tmp_path):
+    from test_harness_capability_authoring import module_eval, procedure
+    method_ref = module_eval("pi_harness_baseline_methods.ts", "m.baselineMethodCatalog().find(x=>x.name==='skill-creator').method_ref")
     project = Path(__file__).resolve().parents[1]
     actions = [{'name':'arc_action','arguments':{}} for _ in range(5)]
     transition = {
@@ -257,17 +591,21 @@ def test_native_review_infers_components_and_materializes_complete_candidates(tm
         {'disposition':'create','reason':'Repeated route calculation','next_use':'Before the next action',
          'validation':'The predicted delta matches the next observation',
          'candidate':{'type':'task_skill','name':'decode-plan-verify','summary':'Decode, plan, verify',
+                          'authoring_method_ref':method_ref,
+                          'method':procedure(),
                       'content':'Decode the board, plan a route, and compare the next delta.'}},
         {'disposition':'create','reason':'Keep current map facts','next_use':'Plan the next action',
          'validation':'The next observation is consistent with the map',
-         'candidate':{'semantic_kind':'task_state','name':'current-map','summary':'Current map',
+             'candidate':{'semantic_kind':'task_state','name':'current-map','summary':'Current map',
+                          'validity':{'scope':'level'},
                       'content':'The current fixture map has two observed outcome classes.',
                       'atom':{'subject':'current fixture map','predicate':'outcome_class_count','value':2}}},
     ]
     events = _run_fixture(tmp_path,'treatment',extra_extensions=[project/'tests/pi_periodic_review_fixture.ts'],
-        extra_env={'PI_HARNESS_PERIODIC_REVIEW':'enabled'},steps=actions+[
+        extra_env={'PI_HARNESS_PERIODIC_REVIEW':'enabled'},steps=[
+            {'name':'task_harness','arguments':{'action':'read_method','method_name':'skill-creator'}}]+actions+[
             {'name':'task_harness','arguments':{'action':'review','review':review,'transition_analysis':transition}}])
-    result = results(events,'task_harness')[0]
+    result = results(events,'task_harness')[-1]
     assert not result.get('isError'), result
     assert records(tmp_path,'task-skills.jsonl')[0]['name'] == 'decode-plan-verify'
     assert records(tmp_path,'task-memory.jsonl')[0]['key'] == 'current-map'
@@ -277,17 +615,20 @@ def test_native_review_infers_components_and_materializes_complete_candidates(tm
 
 
 def test_native_handoff_start_reaches_child_without_model_copied_refs(tmp_path):
+    from test_harness_capability_authoring import module_eval
+    method_ref = module_eval("pi_harness_baseline_methods.ts", "m.researchAuthoringPrerequisite().authoring_method_ref")
     from test_auto_research_self_harness_smoke import _child_env
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     report = {'format':'auto-research-report-v1','status':'inconclusive','conclusion':'Need canonical state',
         'findings':[],'evidence_refs':[],'alternatives':[],'limitations':[],
-        'validation_plan':'Read state','harness_proposals':[]}
+        'validation_plan':'Read state','method_candidates':[]}
     events = _run_fixture(tmp_path,'treatment',
         extra_extensions=[project/'tests/pi_periodic_review_fixture.ts',project/'tests/pi_non_arc_task_subagents.ts'],
         extra_env=_child_env(project,cli,report,[{'name':'submit_research_report','arguments':{'report':report}}]),
         steps=periodic_steps()+[
-            {'name':'auto_research','arguments':{'action':'start','interaction_mode':'blocking'}},
+            {'name':'task_harness','arguments':{'action':'read_method','method_name':'research-orchestration'}},
+            {'name':'auto_research','arguments':{'action':'start','interaction_mode':'blocking','authoring_method_ref':method_ref}},
             {'name':'task_harness','arguments':{'action':'inspect'}},
             {'name':'arc_action','arguments':{}}])
     result = results(events,'auto_research')[0]
@@ -390,7 +731,7 @@ def test_explicit_stale_cancel_is_rejected_but_omitted_ref_binds_current(tmp_pat
     assert [s['version'] for s in sessions] == [2,3]
 
 
-def test_review_escape_still_checks_pending_handoff(tmp_path):
+def test_reactivated_handoff_remains_available_without_forcing_research(tmp_path):
     project = Path(__file__).resolve().parents[1]
     action = {'name':'arc_action','arguments':{}}
     events = _run_fixture(tmp_path,'treatment',extra_extensions=[project/'tests/pi_periodic_review_fixture.ts'],steps=[
@@ -400,8 +741,10 @@ def test_review_escape_still_checks_pending_handoff(tmp_path):
         {'name':'task_harness','arguments':{'action':'decide_research','research_decision':'reactivate','research_reason':'Samples ready'}},
         *[action for _ in range(5)]])
     attempts = results(events,'arc_action')[-5:]
-    assert [bool(result.get('isError')) for result in attempts] == [True,True,True,True,False]
-    assert records(tmp_path,'auto-research-handoffs.jsonl')[-1]['parent_reason'] == 'action_delay_budget'
+    assert all(not result.get('isError') for result in attempts)
+    handoff = records(tmp_path,'auto-research-handoffs.jsonl')[-1]
+    assert handoff['status'] == 'proposed'
+    assert handoff['parent_reason'] == 'Samples ready'
 
 
 def test_registered_arc_tool_does_not_enable_periodic_policy_implicitly(tmp_path):
@@ -425,6 +768,7 @@ def test_inspection_loop_exhausts_review_call_budget(tmp_path):
 
 
 def test_plan_and_node_refs_are_bound_for_unique_skip_target(tmp_path):
+    from test_task_research_context import _run_fixture
     project = Path(__file__).resolve().parents[1]
     events = _run_fixture(tmp_path,'treatment',extra_extensions=[project/'tests/pi_non_arc_task_subagents.ts'],steps=[
         {'name':'auto_research','arguments':{'action':'enqueue','plan':{'goal':'Check one hypothesis',
@@ -438,7 +782,7 @@ def test_plan_and_node_refs_are_bound_for_unique_skip_target(tmp_path):
 
 def test_effect_assessment_binds_unique_decision_without_inventing_verdict(tmp_path):
     events = _run_fixture(tmp_path,'treatment',steps=[
-        {'name':'task_memory','arguments':{'action':'upsert','key':'claim','content':'Unverified claim'}},
+        {'name':'task_memory','arguments':{'action':'upsert','key':'claim','content':'Unverified claim','validity':{'scope':'task'}}},
         {'name':'task_harness','arguments':{'action':'assemble','expected_assembly_revision':0,
             'selected_resource_refs':['memory:claim@v1'],'prompt_contributions':[],
             'decision':{'basis_refs':[],'reason':'Select the claim for this evaluation.',
@@ -452,13 +796,77 @@ def test_effect_assessment_binds_unique_decision_without_inventing_verdict(tmp_p
     assert assessment['verdict'] == 'inconclusive'
 
 
-def test_exhausting_one_handoff_does_not_bypass_another(tmp_path):
+def _seed_assessment_targets(root):
+    root.mkdir(parents=True, exist_ok=True)
+    decisions = [
+        {'decision_id': f'decision-{index}', 'operation': {'component': 'task_memory'},
+         'recordedAt': f'2026-09-25T00:00:0{index}Z'} for index in (1, 2)
+    ]
+    observations = [
+        {'observation_id': f'exposure-{index}', 'decision_id': f'decision-{index}',
+         'observation_kind': 'pi_task_memory_context', 'effect_observed': True}
+        for index in (1, 2)
+    ]
+    (root / 'harness-decisions.jsonl').write_text(
+        ''.join(json.dumps(row) + '\n' for row in decisions), encoding='utf-8')
+    (root / 'harness-observations.jsonl').write_text(
+        ''.join(json.dumps(row) + '\n' for row in observations), encoding='utf-8')
+
+
+def test_assessment_can_refer_to_observation_of_already_assessed_decision(tmp_path):
+    _seed_assessment_targets(tmp_path)
+    (tmp_path / 'effect-assessments.jsonl').write_text(json.dumps({
+        'effect_assessment_id': 'assessment-1', 'decision_id': 'decision-1',
+        'observation_refs': ['exposure-1'], 'verdict': 'inconclusive',
+    }) + '\n', encoding='utf-8')
+    events = _run_fixture(tmp_path, 'treatment', steps=[
+        {'name': 'task_harness', 'arguments': {'action': 'assess_effect',
+            'observation_refs': ['exposure-1'], 'verdict': 'supported',
+            'consequence': 'A later review explicitly revisits the first observation.'}},
+    ])
+    assessments = records(tmp_path, 'effect-assessments.jsonl')
+    assert len(assessments) == 2
+    assert assessments[-1]['decision_id'] == 'decision-1'
+    assert assessments[-1]['observation_refs'] == ['exposure-1']
+    assert not results(events, 'task_harness')[-1].get('isError')
+
+
+def test_explicit_assessment_decision_id_wins_over_other_observation_match(tmp_path):
+    _seed_assessment_targets(tmp_path)
+    events = _run_fixture(tmp_path, 'treatment', steps=[
+        {'name': 'task_harness', 'arguments': {'action': 'assess_effect', 'decision_id': 'decision-1',
+            'observation_refs': ['exposure-2'], 'verdict': 'inconclusive',
+            'consequence': 'The caller explicitly assesses decision one using the cited later observation.'}},
+    ])
+    assessment = records(tmp_path, 'effect-assessments.jsonl')[-1]
+    assert assessment['decision_id'] == 'decision-1'
+    assert assessment['observation_refs'] == ['exposure-2']
+    assert not results(events, 'task_harness')[-1].get('isError')
+
+
+def test_ambiguous_assessment_observation_refs_require_selection(tmp_path):
+    _seed_assessment_targets(tmp_path)
+    events = _run_fixture(tmp_path, 'treatment', steps=[
+        {'name': 'task_harness', 'arguments': {'action': 'assess_effect',
+            'observation_refs': ['exposure-1', 'exposure-2'],
+            'verdict': 'inconclusive', 'consequence': 'The two cited observations have different decisions.'}},
+    ])
+    result = results(events, 'task_harness')[-1]
+    payload = json.loads(result['result']['content'][0]['text'])
+    assert payload['status'] == 'selection_required'
+    assert payload['applied'] is False
+    assert {item['decision_id'] for item in payload['candidates']} == {'decision-1', 'decision-2'}
+    assert not records(tmp_path, 'effect-assessments.jsonl')
+
+
+def test_multiple_optional_handoffs_do_not_force_action_deferrals(tmp_path):
     project = Path(__file__).resolve().parents[1]
     (tmp_path/'auto-research-handoffs.jsonl').write_text(''.join(json.dumps({
         'handoff_id':name,'review_id':name,'version':1,'status':'proposed','recordedAt':'2026-09-17T00:00:00.000Z'
     })+'\n' for name in ['h1','h2']))
     events = _run_fixture(tmp_path,'treatment',extra_extensions=[project/'tests/pi_periodic_review_fixture.ts'],
         steps=[{'name':'arc_action','arguments':{}} for _ in range(5)])
-    assert [bool(r.get('isError')) for r in results(events,'arc_action')] == [True,True,True,True,False]
+    assert all(not r.get('isError') for r in results(events,'arc_action'))
     handoffs = records(tmp_path,'auto-research-handoffs.jsonl')
-    assert [row['handoff_id'] for row in handoffs if row['status'] == 'deferred'] == ['h1','h2']
+    assert [row['handoff_id'] for row in handoffs if row['status'] == 'proposed'] == ['h1','h2']
+    assert not [row for row in handoffs if row['status'] == 'deferred']

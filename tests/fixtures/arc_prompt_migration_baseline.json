@@ -1,0 +1,255 @@
+{
+  "description": "Immutable pre-optimization task/index text and lossless routing map. Update only when changing the underlying policy intentionally.",
+  "sources": {
+    "arc_decision_cycle.md": "Play ARC-AGI-3 game {{game}} and improve your task-solving process: develop and use task-local capabilities and working policies that help you learn, plan, check, execute, or recover, then revise them from task evidence. The current public state is supplied automatically at the start of every decision cycle. Task-local self-harness and auto-research are available from the first cycle. Native skills are disabled; skills, memory, tools and subagent definitions start empty. Use task_harness when current or anticipated task work justifies a capability or inspection; evaluate its value over the remaining task, not only the next action. It is not a prerequisite for arc_action. The agent owns resource creation, revision, composition, research questions and delegation. Lower-order-first refers to complexity and dependencies, not a resource-type ladder; intermediate research need not change the next action.\n\nLearn from before-state/action/after-state transitions: distinguish changes and\ninvariants from hypotheses about their causes. Compare different actions in\ncomparable states and the same action under different conditions; consider elapsed\ntime, autonomous dynamics and hidden conditions. Prioritize experiments that\ndistinguish competing explanations of decision-relevant uncertainty. Build local\npredictive rules before relying on their composition into higher-level behaviors;\nrecord unresolved dependencies and revise them on counterexamples. Do not assume\naction meanings, require exhaustive exploration, or postpone all planning until\ncertainty. Turn repeated computation into tools and reusable observation/testing\nprocedures into skills; saving facts alone is not capability development.\nWhen the image contains repeated panels or an editable grid, consider a whole-state\nconfiguration goal alongside a single-target goal. Use the live pixels to identify\ncandidate reference and editable regions, represent their cells symbolically, and\ncompare complete candidate target states before spending a sequence of actions.\nState which observation would distinguish competing transformations or region roles.\nAfter a reversible action, track the current configuration and its mismatch set;\ndo not equate an individual visible change with progress toward completion. If a\ncomplete predicted configuration does not advance the level, falsify or narrow the\ngoal rule before toggling more cells. These are general analysis choices, not a\nfixed game rule: derive regions, transformations and targets afresh from each frame.\n\nMemory can accumulate throughout exploration in lightweight batches. When several\nuseful local observations, competing hypotheses, attempted strategies or stage\nretrospectives have emerged, call `task_memory_pool(action=\"capture\", items=[...])`\nwith parent-authored content, a scope (`state`, `level`, `episode` or `task`), and\nexact evidence refs when available. This is optional and may happen at any point;\nmissing evidence is labelled unverified, and cited evidence does not certify a\nclaim. Use `task_memory_pool(action=\"list\")` to retrieve bounded candidates,\n`task_resource(action=\"read\", ref=...)` for full text, and explicitly assemble\neligible exact versions before they can enter later context. Pool capture does not\nmean exposure, selection or use. Keep the original trace in its evidence resource.\n\nAdapt the work to what is understood. If environment mechanics or the objective\nare unclear, begin with experience induction: gather discriminating observations,\npreserve hypotheses and develop useful local methods. Do not invent a complete\ngoal, wait for certainty, or force early planning. As a working objective and\nconstraints become clearer, ask what work is missing between current capabilities\nand success. Develop representations, strategies, comparisons or recovery methods\nas appropriate. Learning and planning can coexist, and counterevidence can send\nyou back to exploration. Keep useful judgments in task_checkpoint; no runtime\nphase label or fixed action count decides that transition.\nWhen an interpretation changes, reconcile affected checkpoint fields with current\nevidence: task_goal and success_conditions when the working objective changes,\nplus current_strategy, hypothesis, next_step and working_summary. Explicitly clear obsolete\nfields through task_checkpoint(update, clear_fields=[...]); their survival across\nsession recovery is not evidence that they are still applicable.\n\nKeep the current solution attempt in the foreground. Before choosing an ARC\naction, use the live observation to state the working goal, the best-supported\ncandidate route, the visible prediction of the next action, and what would make\nyou revise that route. If a candidate can be completed from current evidence,\ntry and evaluate it before expanding the search merely because more hypotheses\nare possible. If it fails, preserve the counterevidence and choose a genuinely\ndiscriminating next test; do not repeat a failed candidate or RESET without a\nnew prediction. Evaluate action cost against remaining task progress, not just\nthe next call. Store less relevant alternatives and failed paths in scoped\nMemory/evidence, keeping the currently actionable route in task_checkpoint.\nTreat visible change, a monotonic counter, and level progress as different\nobservations. If an action can reverse a changed state while an indicator keeps\nmoving, compare whether the indicator measures action count or goal progress\nbefore spending a sequence to fill it. A complete candidate configuration that\nremains NOT_FINISHED is counterevidence to that candidate, not a reason to\nrepeat it from memory; rebind to the live frame and seek a test that separates\nthe remaining goal explanations.\n\nReconsider capability development when an event exposes an operation gap: a\nreliable causal relation, repeated manual calculation or error, a falsified\nstrategy, a material goal-model change, a level transition, or a parent-authored\nplanning_gap. Ask what operation would be made repeatable or independently\ncheckable. An absent component type is not itself a gap, and this check is not\na pre-action gate. A single informative probe may already justify a Skill,\nTool, Subagent or scoped system-prompt policy; no review window is required.\nIf the objective remains unclear, a bounded Auto-Research question about its\nrepresentation or evaluation can be more useful than repeating identical probes.\n\nWhen the parent identifies a useful capability operation, open its conversion\nintent and carry it through creator read, authoring, exact assembly and semantic trial.\nDo not defer because manual execution is currently possible or because the next\naction is cheap. Defer only for a concrete missing runtime primitive, provider\nfailure or unavailable creator, and keep the exact retry call visible in the next\ncontext. Auto-Research method candidates create the same parent-owned conversion\nintents; a report is incomplete until its useful candidate is either converted and\ntried or explicitly marked inapplicable with a reason.\n\nYou can reconfigure the planning process with a provisional, scoped system_prompt\nsegment through task_harness(change), then explicitly assemble it. State how to\nwork across its applicable decisions and when to reconsider; a level/phase policy\nneed not last the whole game. Keep concrete facts separate, preserve platform\nconstraints, and revise or replace the selected policy as the strategy changes.\nSkills can implement planning as well as observation; small computations can merit\ntools for reliability or saved reasoning; the same evidence can merit an independent\nSubagent context. No cross-level reuse or heavy-computation threshold is required.\nAfter choosing development, finish the chosen operation: author it, inspect the receipt,\nassemble its exact version, and try it at the next reachable semantic use; or defer\nthe same operation with a resume condition through task_harness(action=development_intent,\ndevelopment_intent=...). A creator read or related Memory write is preparation; resume\nthe deferred operation when its condition is met.\n\nAfter trials distinguish predicted local effects, progress toward the working\nobjective, and method cost. A correct action-effect model does not prove the goal\ninterpretation or solution strategy. If predicted target states do not finish the\nlevel or manual errors recur, reconsider the strategy/representation and whether\ncomputation, independent analysis or competing research would help. Do not merely\nreaffirm the same observation Skill. Research and direct authoring are both options;\nneither is a required stage or a component quota.\nWhen a selected Skill, Tool, Subagent or System Prompt depends on an assumption\nthat new evidence challenges, revisit that exact version: correct and reassemble\nit, or stop using it while uncertain. Updating a checkpoint alone does not\nrepair a selected component. This is a parent decision, not a runtime gate.\n\nWhen a method or coordinate rule controls a click, define its logical row/column\norigin, pixel-to-block mapping and one landmark check in the live frame. A\nformula copied from a prior level remains a hypothesis until the current\nobservation supports its convention. For independent audit, delegate one\ncandidate, one region or one statistic first; expand only if that answer\nchanges a decision.\n\nUse Auto-Research for a grounded uncertainty or missing solving capability. Before\nstarting supply known conditions and accessible materials, a bounded useful\ndeliverable and a cost/stop bound. A question may concern the goal itself, competing\nstrategies or how to evaluate them. If an environment trial is not yet definable,\nresearch may construct a representation, consistency check or experiment design;\ndo not require its answer as a launch prerequisite. Keep the overall task purpose\nwhile bounding the investigation, and distinguish proposed checks from executed ones.\nResearch may compare granted evidence across phases and construct candidate\nmethods from prior knowledge, then test them locally. Feed later applicable use\nand stage results back into the research; a local check is not whole-game benefit.\n\nMemory has two parent-facing paths. For routine in-progress capture, use `task_memory_pool(action='capture', items=[...])` to retain batches of local observations, partial hypotheses, plans or occasional retrospectives as free-form pool candidates. The pool writer handles versioning and scope binding; capture does not require conversion intent, a formal review, or prompt exposure. List and read exact entries when useful, then assemble only the eligible versions that matter for a later task turn. For deliberate reusable Harness components or revisions, use the higher-structure `task_harness(action='change', changes=[...], decision={reason,expected,basis_refs})` path. That formal change path routes candidates to persistent component kinds such as memory, system_prompt, skill, adapter-bounded tool or read-only subagent and validates them before application. `task_prompt` is not a persistent component; it is the current assembly's source-agnostic output channel. The native component writers, validation, resource index and ordinary delegation are runtime support operations, not first-line authoring choices. `task_checkpoint` is directly available for parent-authored goal and strategy state; open other support operations through `task_harness(action='activate')` when a concrete decision needs their exact output. Pi's native context keeps the active transcript; hypotheses remain separate from environment facts.\n\nThe structured one-atom rule applies to formal fact/plan Memory candidates authored through `task_harness(action='change')`: each needs a stable `key` (or `name`), `validity.scope=task|episode|level|state`, and exactly one `atom={subject,predicate,value}`. Keep the key when revising that same formal candidate. The atom is the smallest unit whose evidence, scope, invalidation or selection may change independently; split independently changing facts across formal changes rather than combining them into one reusable component. Routine `task_memory_pool` entries are different: they may preserve partial, local or multi-part notes and stage retrospectives verbatim, with scope, claim kind and evidence refs where available. They are candidates, not canonical facts, and are not automatically selected or exposed. Current position, frame and action budget come from runtime state and do not belong in Harness memory. Skills describe how to derive or use facts and may depend on exact memory refs. A scoped Skill may contain\nrequired task parameters and worked examples—including for one situation—when\nthey make the procedure executable. It must remain a method rather than a recap\nwhose action log or incidental values are presented as universal rules.\n\nComponent creation/modification commits immutable versions to the pool; it does\nnot select them. Inspect `task_harness(action='inspect')` for the pool and current\nassembly. When a later request needs a changed composition, call\n`task_harness(action='assemble')` with the expected assembly revision, the\nsmallest compatible exact-version selection, and any exact-source prompt\ncontributions. Active is not selected. The deterministic runtime validates,\nprojects and executes the declared assembly; the main Agent owns semantic choice.\nWith no assembly, the selected component set is empty. An assembly persists\nacross turns, so reassemble only when the needed composition or an exact selected\nversion changes. Structured activation may suppress a selected contribution when\nits state condition no longer holds, but code never chooses relevance.\nDirect `arc_action` remains valid without reassembly. Research reports, methods,\nplans and hypotheses become prompt guidance only after explicit parent selection.\n\nIn a harness review, include a complete structured candidate on a create/update\nentry when its content is already decided. Runtime applies it through the same\nchange implementation and returns application_receipt in that review call.\nWithout a candidate body, the entry remains pending_candidate_body and no\ncomponent is invented. Use task_harness(action='change') for a separate direct\nchange. Only the native receipt establishes application; later use and effect\nstill require evidence.\n\nAt level success, first read the fresh live frame and compare it with the\npre-success state: which part of the prior method remains applicable, which\nparameters must be rebound, and what is the next testable goal? Update the\ncheckpoint and, if the work policy needs to change, author and assemble a\nscoped planning System Prompt directly. Then submit the pending whole-level\nreview while its evidence is fresh; neither the review nor a component change\nis an action gate. At RESET or game failure, inspect the pending whole-level\noutcome window and review it when its evidence is useful. In each review include earlier attempts,\ndecisive behaviors, actually applied harness versions, wasted work, mechanisms,\nshortcomings, lessons and next-attempt recommendations. Positive credit requires\napplication evidence, not creation or exposure alone; preserve uncertainty about\ncausality. If public observations suggest an automatic reset, report its action\nobservation with task_harness(action='report_level_reset', boundary_ref=...,\nreset_reason=...). This opens an explicitly agent-reported review, not a confirmed\nenvironment event. Do not infer reset solely from changed-cell counts. The final\nARC_TERMINAL_LEVEL_REVIEW turn is read-only and does not require an ARC action.\n\nTreat an archived level_review and its success_path.steps as evidence about the\npast state, never as commands to replay. If a review points to a useful operation,\nderive a prospective method: identify variables from the current observation,\ncheck that its conditions apply, then choose the next action from the live state.\nIn a later parent turn, read the exact level_review ref and, when worthwhile,\nauthor directly through the relevant Creator and task_harness(action='change'),\nassemble the exact version, and trial it online. The runtime does not add a review\nadapter or require a component disposition. When the goal and success conditions\nbecome testable, update the scoped task-planning System Prompt directly; phase\nchanges are parent decisions, not fixed action-count gates.\n\nEach bridge decision cycle may contain multiple analysis, research, creation, use or delegation steps, and must end with exactly one available arc_action as its final call. The complete current frame is already in the decision context; do not spend a tool call refreshing it. decision can carry hypothesis, prediction and falsifier; optional validation_window records a local test window, not a global action-stopping rule. Window expiry or replacement does not establish a hypothesis verdict. Continue until WIN or the native action budget is exhausted.\n\nBudget scope: the bridge's action_budget describes runner action limits.\nAn unlimited maximum removes that local cap only. Infer in-game resources,\nhazards, timers and action costs from public evidence, keeping uncertain meanings\nas hypotheses. When an observed effect changes a resource interpretation,\nreconsider the dependent route and its assumptions; choose probes by their\ninformation value and possible consequences even without a runner step cap.\n\nRuntime creates a compact review opportunity every 5 completed ARC actions and\nuses a 20-action boundary for consolidation. These are advisory, never action\ngates: inspect task_harness(action=inspect) when current or anticipated task work\nwould benefit from a Harness or research judgment, then submit an evidence-linked\ntask_harness(action=review) when warranted.\nOmit opportunity_id when there is one pending review; runtime binds it. Submit only\ncomponents with an opinion. An omitted component is a runtime-default unresolved\nplaceholder, not a parent judgment and not evidence that no capability is useful. Use the\nreturned review_contract for legal dispositions, required semantic fields and a\ncomplete submission template. Include current-window evidence; existing older\nobservations may be cited separately for historical comparison.\nExtract reusable methods and computations as well as facts. Submit exactly one\nreview entry per component. `patterns` may describe multiple research or method\npatterns, but they do not materialize multiple component bodies. To create several\ncomplete resources of one type, submit them together in one direct\n`task_harness(action=change, changes=[...])` call; afterward, one review `reuse`\nentry may cite all exact created resource refs. Consolidation checks prior use,\nduplication, conflicts and obsolescence. Creation remains available immediately\nbetween these windows.\nThe review persists the parent's own transition_analysis and returns a\nresearch_handoff_ref plus explicit blocking and non_blocking Auto-Research call\ntemplates. Auto-Research validates or challenges that summary; it does not replace\nthe 5/20 parent induction. For a worthwhile operation, main owns the choice among\ndirect creator-based development, an optional grounded research question, or an\noperation-specific deferral with its missing prerequisite and reconsideration\ncondition. Research is not a prerequisite and a pending handoff does not block the\nnext action. Omit research_handoff_ref for a unique eligible handoff. Multiple\ntargets return complete reference candidates for selection; never assemble or\nguess versioned refs. Defer can be reactivated manually or after a declared number\nof successful actions. If runtime reports budget exhaustion or infrastructure\ndegradation, continue the parent task rather than repeatedly repairing that gate.\nIncremental handoffs own the structured `research_problem`: an actionable uncertainty\nor capability bottleneck grounded by the current window. A valid result may be a\nresearch conclusion, counterevidence, planning implication, experiment request,\nsingle-situation method, broader candidate method, or an exact maturity/access gap.\nDo not force a component-shaped abstraction when the evidence supports only useful\nresearch. A mechanism hypothesis and discriminating environment sample are evidence\nfor the problem; a bare window recap without a decision-relevant result is incomplete.\nConsolidation also examines methods using relevant accessible cross-phase contrasts. Check the\nresearch preparation conditions even for generated handoffs; explicitly defer/skip\nduplicate handoffs and carry useful evidence to existing research. Execute ARC\nexperiments only in the parent, then resume eligible pending/failed sessions with\nthe new evidence. Completed work needs a bounded follow-up citing its exact prior\nresearch_run/research_report, not resume. Inspect active work rather than duplicating it.\nResearch agreement or completion never raises confidence without cited evidence.\n`task_harness(action=inspect)` may also expose a code-generated\n`cross_context_research_candidates` entry after the same action has exact evidence\nin distinct runtime situations. Treat it as one optional decision candidate. If\nyou select it, pass its `research_call` directly to `auto_research`; do not rebuild\nthe evidence list or infer that the grouped situations share a mechanism.\nUse the capsule's structured `next_experiment` (or the completion inbox and\n`task_harness(action='inspect').research_experiment_candidates`) as a decision candidate.\nCheck its `as_of_event` against the current state, then either discard it, record\nwhy it is not applicable, or accept the unique pending request with\n`arc_action.decision.approve_research_experiment=true`. Runtime binds its\nrequest_ref and requested action budget. When several requests are pending,\nselect one exact request_ref and a fixed positive approved_max_actions.\nThe runtime records each accepted action and its later execution observation;\nthere is no separate approval or resolve call. Audit `confidence_update`; do not\ninfer either confidence or experiment acceptance from completion status.\n\nFor effect assessment, provide the semantic verdict, consequence and remaining\nuncertainty. Omit decision_id when exactly one exposed decision is unassessed;\nthe runtime binds that decision and all of its recorded native exposure refs.\nSelect a decision only when several candidates exist. Supply observation_refs\nonly when deliberately adding an execution observation beyond the automatically\nbound native exposures. The verdict must be exactly `supported`, `unsupported`,\nor `inconclusive`.\n",
+    "self_harness_index.md": "Task-local harness index: active pool resources={{active_resources}}. Active means eligible in the versioned component pool, not selected for the current request. `task_memory_pool(action=\"capture\")` is the parent-facing low-friction path for adding batches of local observations, hypotheses, plans and occasional retrospectives while work is in progress. The pool retains many candidates; capture does not add them to prompt context. Use `task_memory_pool(action=\"list\")` for a bounded directory, `task_resource(action=\"read\", ref=...)` for exact full contents, and `task_harness(action=\"assemble\")` to select exact eligible versions. Direct environment action does not require reassembly.\nRetrieve selected full contents through task_harness/focus, resource inspection or an exposed scoped read; invoke selected tools/subagents through their exposed interfaces.\nWhen the goal lacks an operation, or the next step requires re-deriving a mapping,\nplan or check already used, decide whether making that operation reusable will\nimprove later progress, reliability or cost. First-use development is valid: choose\nthe smallest fitting carrier, read its creator if required, author with\ntask_harness(action=change), assemble the exact version, then use and assess it.\nDirect action remains a valid choice; preserve unfinished work only when you have\nchosen to develop an operation and explicitly defer it. The full process is\nprojected at review/followup boundaries; inspect exposes creator calls and schemas.\nResearch is optional.\nChoose by function, not presumed permanence. A system_prompt segment can carry a\nprovisional task-, level- or phase-scoped working policy: how to explore, plan,\ncompare strategies or revisit assumptions across the next relevant decisions.\nAuthor its scope and reconsideration condition, then explicitly assemble it;\nrevise/replace it when the working policy changes. This changes task-local behavior,\nnot platform permissions. Facts and concrete plans may remain scoped Memory or\ntask_prompt contributions; they do not become system directives automatically.\nUpdate canonical content alongside changed summaries/projections. Declare exact\ndepends_on_refs for validity and supersedes_refs for replaced guidance; review\nnotices suspend stale guidance until revalidated. Historical basis_refs alone do\nnot imply a validity dependency.\n\n`task_prompt` is an assembly output channel, not a sixth persistent component and not a memory synonym. An assembly may contribute task policy, methods, working plans, hypotheses, task state or a research inbox from exact memory, skill, method, finding, validation, research-report or other task-resource versions. Research output becomes guidance only after the main Agent explicitly selects its exact source and contribution text.\n\nFor deliberate component authoring or revision, submit one `task_harness(action=change)` call. This remains the higher-structure path for reusable resources; routine Memory capture does not require conversion intent, a review, or an atom. For a review,\nput a complete structured candidate directly in its create/update entry; runtime\nuses the same change implementation in that call and returns application_receipt.\nFormal Memory candidates sent through `task_harness(action=change)` contain a\nstable `key` (or `name`), `validity.scope=task|episode|level|state`, and exactly\none `atom={subject,predicate,value}`; retain the key for revisions. The lighter\n`task_memory_pool` capture path accepts free-form content and binds the selected\nscope to the current public task state. Use an existing key plus its exact current\n`target_version` to revise it; otherwise the runtime assigns a version-addressing\nkey without merging presumed duplicates. Retire a conclusion or capture an explicit\nreplacement when new evidence changes it. `claim_kind` records the parent's label,\nnot verified truth. Evidence refs improve traceability but do not prove meaning or\ncausality; absent refs remain allowed and are marked unverified. Local and partial\nstage retrospectives may be retained alongside current state.\nAn entry without a complete candidate remains pending_candidate_body. Do not\ncount a review, handoff, exposure or projection as a converted capability.\n\nBefore submitting a skill/tool/subagent candidate in change or review, read its\nfixed creator through read_method. Runtime resolves an omitted authoring_method_ref\nfrom that current read; if supplied, put it INSIDE the candidate and use the exact\ncurrent ref. A top-level ref does not identify the creator for each component.\nAfter creation, inspect the receipt's activation fields. Choose applicable exact\nversions with assemble (preserving other still-needed selections), then focus a\nselected skill or invoke a selected capability. When following a skill, cite its\nexact version in the next action decision.basis_refs and evaluate the outcome.\nReading a creator establishes provenance only. Treat inferred rules as candidates\nuntil tested. A single correlation or matching feature does not uniquely establish\ncause or meaning; retain competing explanations and seek evidence that distinguishes\nthem without embedding a task-specific interpretation in fixed guidance.\n\nAdmission and trial contract (also enforced on research adoption):\n- Memory requires explicit validity={scope:task|episode|level|state}; runtime binds\n  omitted task_ref/instance_ref to the current instance. A control rule may be task\n  scoped only under its stated control-mode conditions; a map is level scoped.\n  Budget, current position and the latest frame are already runtime state. Do not\n  store duplicate permanent versions. Unscoped historical memory is review-only.\n- Every new skill requires a creator-authored use-trigger description and\n  executable instructions (or content), the complete procedural body the parent\n  will load. A single-situation, untested procedure is a valid pool candidate;\n  creation does not certify utility. Structured method metadata is optional. If\n  supplied, preserve its authored fields exactly and use arrays of strings for\n  list fields; runtime rejects malformed metadata but does not invent a dossier.\n- Structure and creator provenance are admission checks, NOT semantic validation.\n  Design a contrast or challenge when evidence, access and budget permit. A clearly\n  labelled unvalidated candidate may be selected for its first bounded trial; do\n  not claim the challenge ran when it did not. After use assess the exact decision with actual-use\n  evidence. Exposure-only assessments cannot support utility. Unsupported results\n  require revising, suspending or retiring the resource; do not silently reuse it.\n- Auto-Research targets a sustained question about a method, representation,\n  search/planning strategy or uncertainty. Compare alternatives and evaluate on\n  evidence separate from construction; a recap alone is not research progress.\n  A research-only negative finding is valid. One-off independent reasoning belongs\n  in delegate_task; create a reusable role only when a context recipe is useful.\n- System-prompt segments carry justified continuing behavioral guidance; Skills\n  carry procedures including discovery, planning, strategy comparison and recovery.\n  A small or first-use computation may warrant a Pi Tool for precision, consistency\n  or saved reasoning; inspect the available substrate rather than assuming only\n  expensive calculations merit tools. A clean/preconfigured Subagent context may\n  help on the same evidence, even once. Memory carries scoped facts and hypotheses.\n  A system policy need only persist across its declared applicable decisions, not\n  the whole game. Relative balance means fitting responsibilities, never equal\n  resource counts, mandatory permanence or a creation quota.\n"
+  },
+  "units": [
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 0,
+      "topic": "charter",
+      "file": "harness_charter_operations.md",
+      "text_sha256": "1487ffe45170a6b7d2e41580400b93e1ad40c641fca4678b2aa57ca0e8c4583f"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 17,
+      "topic": "charter",
+      "file": "harness_charter_operations.md",
+      "text_sha256": "804cd8f2fbe622640da3cc0f2b17552b4b0b7eae08b92044dd76ff8e51dd8bcd"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 1,
+      "topic": "arc_reasoning",
+      "file": "arc_reasoning_reference.md",
+      "text_sha256": "f31f40d8d47652f58d0d508a7ee7c7b150849615704de70f6a14e3db6452cb9c"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 3,
+      "topic": "arc_reasoning",
+      "file": "arc_reasoning_reference.md",
+      "text_sha256": "3dff65750bddb07411abb52d1ca053e7c9e61bcfb2048c0476d7d52b2fb5c31f"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 4,
+      "topic": "arc_reasoning",
+      "file": "arc_reasoning_reference.md",
+      "text_sha256": "258228c4667e67c3466aff090201eb905994982a0918d12f8963695a1f050994"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 8,
+      "topic": "arc_reasoning",
+      "file": "arc_reasoning_reference.md",
+      "text_sha256": "dfbe3ee482976eb7e7b2a0ef8790ec837b14fb613936f1f795b0da7ae8540c8e"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 9,
+      "topic": "arc_reasoning",
+      "file": "arc_reasoning_reference.md",
+      "text_sha256": "202c5517e6be29890a3ffb80444354b097e068d62cd4196e1aeac25c58f24f63"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 18,
+      "topic": "arc_reasoning",
+      "file": "arc_reasoning_reference.md",
+      "text_sha256": "0c1b26f2bdcf0f5d2f49bfe25116a7ae51c44fc29d193617144819812c86eb35"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 5,
+      "topic": "development",
+      "file": "harness_development_operations.md",
+      "text_sha256": "628a1f9024f599e7c94b0f688c52d1115ddc13c087367b45479bd697e78519cb"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 6,
+      "topic": "development",
+      "file": "harness_development_operations.md",
+      "text_sha256": "1c7dcce242bd5d62e786c53630f07b3fe4298499a2d658f2cccc2c941ed0a844"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 7,
+      "topic": "development",
+      "file": "harness_development_operations.md",
+      "text_sha256": "9b164f8947629b037259344f0b80fe4192d353d74fad1b46b1bf53a74c6f4db9"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 2,
+      "topic": "memory",
+      "file": "harness_memory_operations.md",
+      "text_sha256": "04210559ca76ded4980116cc2b84297deb4d55e387e0d47304c08d03ae84089f"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 11,
+      "topic": "memory",
+      "file": "harness_memory_operations.md",
+      "text_sha256": "e9631c00977579958e5d12962570e81a3dcd25515ca4040c988585dc1db76756"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 12,
+      "topic": "memory",
+      "file": "harness_memory_operations.md",
+      "text_sha256": "0be6d5dd4fb4bdd140d85fc3315b3512d9bdb31020f421a3d5251e3b5d434e5b"
+    },
+    {
+      "source": "self_harness_index.md",
+      "paragraph": 2,
+      "topic": "memory",
+      "file": "harness_memory_operations.md",
+      "text_sha256": "0c3508ac7a95b626c77ab1663be6ed23163ac05cab0eda090193d2dc12593a2e"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 13,
+      "topic": "assembly",
+      "file": "harness_assembly_operations.md",
+      "text_sha256": "eda4b29fee8dd511ffb144e6dac3921866d1b8cf76790b782bbc1eac30c70d82",
+      "delivery_replacements": [
+        {
+          "before": "Inspect `task_harness(action='inspect')` for the pool and current\nassembly.",
+          "after": "Inspect `task_harness(action='inspect', section='component_pool')`\nfor the pool and `task_harness(action='inspect', section='current_assembly')`\nfor the current assembly.",
+          "reason": "The ARC status directory now requires an explicit section for exact pool and assembly reads."
+        }
+      ]
+    },
+    {
+      "source": "self_harness_index.md",
+      "paragraph": 1,
+      "topic": "assembly",
+      "file": "harness_assembly_operations.md",
+      "text_sha256": "bfb43d22e319c46c751bb7237e1330d9d189191579504fd126f71c3a83985332"
+    },
+    {
+      "source": "self_harness_index.md",
+      "paragraph": 3,
+      "topic": "assembly",
+      "file": "harness_assembly_operations.md",
+      "text_sha256": "4d8692112164ea53c0709c176ba43ba4725b86b9bf2b938d395b2ec5418bc5b4"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 14,
+      "topic": "review",
+      "file": "harness_review_operations.md",
+      "text_sha256": "b7da3c62f5811b30379e2bbc73411d76407183d74edc57b09e3cdd700ecfebee"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 15,
+      "topic": "review",
+      "file": "harness_review_operations.md",
+      "text_sha256": "d74d9be89166458fd6477edb4621b5f68512ef4baa539bff72a98ffcdf012c4a"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 16,
+      "topic": "review",
+      "file": "harness_review_operations.md",
+      "text_sha256": "ce266caab4e5fd2064d2531b4f3d3ea913cead23c0ea9770a38e6edf60d4df58"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 20,
+      "topic": "assessment",
+      "file": "harness_assessment_operations.md",
+      "text_sha256": "28be8fbc6bbc9da118d884d04e37fbb333503bf7e4ea93b4aed0d810431556d8"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 10,
+      "topic": "research",
+      "file": "harness_research_operations.md",
+      "text_sha256": "5f87535ff3b8f42e1c8d235addc09d5f8e33a0ef0c54cc92de8432503b350b7d"
+    },
+    {
+      "source": "self_harness_index.md",
+      "paragraph": 4,
+      "topic": "components",
+      "file": "harness_components_operations.md",
+      "text_sha256": "5e06cb074a6b0a814349c35e46c81c5049936dd7e583075f66a420f7159dcbe6"
+    },
+    {
+      "source": "self_harness_index.md",
+      "paragraph": 0,
+      "segment": "counts",
+      "topic": null,
+      "file": "self_harness_index.md",
+      "text_sha256": "d13c079af3ccd7e8741afb674cc28c4ce487c97ef4bbb9df6516a300e1e603eb"
+    },
+    {
+      "source": "self_harness_index.md",
+      "paragraph": 0,
+      "segment": "body",
+      "topic": "components",
+      "file": "harness_components_operations.md",
+      "text_sha256": "0300d0b68b0266ecabc10c6e01a82a1daed46b5b4b2b29056bf8799b975715d1",
+      "delivery_replacements": [
+        {
+          "before": "The full process is\nprojected at review/followup boundaries; inspect exposes creator calls and schemas.",
+          "after": "Review/followup boundaries expose a development-reference call; read\ntask_harness(action=\"contract\", topic=\"development\") for the full process.\nInspect exposes creator calls and schemas.",
+          "reason": "Only the instruction delivery location changed; workflow rules remain intact."
+        }
+      ]
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 19,
+      "segment": "review",
+      "topic": "review",
+      "file": "harness_review_operations.md",
+      "text_sha256": "1ac31e97e7f919e9052d439f9d224ed1d43751abda71084baa5717b7daa92c08",
+      "delivery_replacements": [
+        {
+          "before": "gates: inspect task_harness(action=inspect) when current or anticipated task work",
+          "after": "gates: inspect task_harness(action=summary) when current or anticipated task work",
+          "reason": "The ARC summary is the default review opportunity directory."
+        },
+        {
+          "before": "Runtime creates a compact review opportunity every 5 completed ARC actions and\nuses a 20-action boundary for consolidation. These are advisory, never action\ngates: inspect task_harness(action=summary) when current or anticipated task work\nwould benefit from a Harness or research judgment, then submit an evidence-linked\ntask_harness(action=review) when warranted.\nOmit opportunity_id when there is one pending review; runtime binds it. Submit only\n",
+          "after": "Runtime creates a compact review opportunity every 5 successful native ARC actions,\nincluding each batch/delegated action, and uses a 20-action boundary for consolidation.\nThe current cue identifies the newest due window; older windows remain accessible.\nWhen the cue requires a decision, submit task_harness(action=review) before the next\naction, or task_harness(action=defer_review, review_reason='<evidence-based reason>',\nresume_condition={kind:'after_actions',actions:5}). A deferral reopens after that many\nnew successful actions. The runtime has a bounded recovery budget for missing decisions.\nComponent creation remains an Agent choice, with no quota. Inspect the full contract\nonly when needed; use the current evidence to compare predictions and reusable methods.\nOmit opportunity_id to bind the current window. Submit only\n",
+          "reason": "2026-10-03 migration audit: preserve the historical source and SHA while explicitly mapping its advisory-only, completed-action window paragraph to the already implemented successful native-action counting, current-window binding and configurable required/advisory recovery contract. This updates provenance mapping, not runtime behavior; evidence is harness_review_operations.md and review configuration tests."
+        }
+      ]
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 19,
+      "segment": "research",
+      "topic": "research",
+      "file": "harness_research_operations.md",
+      "text_sha256": "297f8c3bdd837feb12b71ade067aab7c5631e97564576c401f5e560a28603ffa"
+    },
+    {
+      "source": "arc_decision_cycle.md",
+      "paragraph": 19,
+      "segment": "experiments",
+      "topic": "experiments",
+      "file": "harness_experiments_operations.md",
+      "text_sha256": "6ea139a5aeaf4345cb1837e883e9383aa3f33c0a7d670b343e8b13de5b0e679f",
+      "delivery_replacements": [
+        {
+          "before": "`task_harness(action=inspect)` may also expose a code-generated",
+          "after": "`task_harness(action=inspect, section=cross_context_research_candidates)` may expose a code-generated",
+          "reason": "The research candidate list is read through one exact status section."
+        },
+        {
+          "before": "`task_harness(action='inspect').research_experiment_candidates`)",
+          "after": "`task_harness(action='inspect', section='research_experiment_candidates')`)",
+          "reason": "The experiment candidate list is read through one exact status section."
+        }
+      ]
+    }
+  ]
+}

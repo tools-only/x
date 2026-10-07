@@ -1,5 +1,18 @@
 /** Shared contract for agent-authored declarative task tools. */
 
+/** Names are literal registry identities, never normalized between separators. */
+export function assertTaskToolName(name: string): void {
+	if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(name))
+		throw new Error("task tool name must use lowercase letters, digits, or single hyphens/underscores");
+}
+
+export {
+	PURE_EXPRESSION_DEFAULT_LIMITS,
+	PURE_EXPRESSION_HARD_LIMITS,
+	TASK_PURE_EXPRESSION_FORMAT,
+	TASK_PURE_EXPRESSION_OPERATORS,
+} from "./pi_task_pure_expression.ts";
+
 export const TASK_TOOL_PROGRAM_STEP_KINDS = [
 	"adapter_call",
 	"select",
@@ -15,4 +28,3 @@ export const TASK_TOOL_PROGRAM_STEP_KINDS = [
 ] as const;
 
 export type TaskToolProgramStepKind = typeof TASK_TOOL_PROGRAM_STEP_KINDS[number];
-

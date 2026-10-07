@@ -1,11 +1,84 @@
 """Exercise the actual Pi loop without fixture-injected capability activation."""
+import copy
 import json
 from hashlib import sha256
 from pathlib import Path
 
 from autoresearch_pi.pi_kernel import PiKernel
-from test_pi_external_benchmark_native import _pi_cli, _run_fixture
-from test_task_research_context import results
+from test_pi_external_benchmark_native import _pi_cli, _run_fixture as _run_raw_fixture
+from test_task_research_context import harness_delivery, results
+
+
+_SKILL_AUTHORING = harness_delivery(
+    "entry-fixture-skill", "procedure", "entry-fixture-skill",
+    "Inspect the supplied state and preserve uncertainty.",
+)
+_TOOL_AUTHORING = harness_delivery(
+    "entry-fixture-tool", "computation", "entry-fixture-tool",
+    "Apply the declared bounded fixture computation.",
+)
+_SUBAGENT_AUTHORING = harness_delivery(
+    "entry-fixture-subagent", "role", "entry-fixture-subagent",
+    "Analyze the supplied bounded fixture context independently.",
+)
+
+
+def _run_fixture(root, variant, **kwargs):
+    """Make positive entry fixtures obey the current parent-authoring contract.
+
+    Native component calls in this file are lower-level executor fixtures. They
+    still carry complete parent-authored metadata. Public facade changes also
+    perform the observable creator read that production parents must perform.
+    Negative tests retain their malformed semantic body and therefore still
+    exercise runtime validation rather than a fixture-only bypass.
+    """
+    steps = copy.deepcopy(kwargs.get("steps") or [])
+    creator_reads = []
+    for step in steps:
+        name = step.get("name")
+        args = step.setdefault("arguments", {})
+        action = args.get("action")
+        if name == "task_memory" and action == "upsert":
+            args.setdefault("validity", {"scope": "task"})
+        elif name == "task_skill" and action in {"create", "update"}:
+            args.setdefault("description", "Use for the fixture's bounded state check.")
+            args.setdefault("method", copy.deepcopy(_SKILL_AUTHORING["method"]))
+            args.setdefault("authoring_method_ref", _SKILL_AUTHORING["authoring_method_ref"])
+        elif name == "task_tool" and action in {"create", "update"}:
+            args.setdefault("authoring_method_ref", _TOOL_AUTHORING["authoring_method_ref"])
+        elif name == "task_subagent" and action in {"create", "update"}:
+            args.setdefault("authoring_method_ref", _SUBAGENT_AUTHORING["authoring_method_ref"])
+        if name != "task_harness" or action != "change":
+            continue
+        for change in args.get("changes") or []:
+            candidate = change.get("candidate") or {}
+            semantic = str(candidate.get("semantic_kind") or candidate.get("component") or candidate.get("type") or "")
+            if semantic in {"memory", "fact", "plan"}:
+                candidate.setdefault("validity", {"scope": "task"})
+            if semantic in {"skill", "procedure"}:
+                candidate.setdefault("description", "Use for the fixture's bounded state check.")
+                candidate.setdefault("method", copy.deepcopy(_SKILL_AUTHORING["method"]))
+                candidate.setdefault("authoring_method_ref", _SKILL_AUTHORING["authoring_method_ref"])
+                creator_reads.append("skill-creator")
+            elif semantic in {"tool", "computation"}:
+                candidate.setdefault("authoring_method_ref", _TOOL_AUTHORING["authoring_method_ref"])
+                creator_reads.append("tool-creator")
+            elif semantic in {"subagent", "role"}:
+                candidate.setdefault("authoring_method_ref", _SUBAGENT_AUTHORING["authoring_method_ref"])
+                creator_reads.append("subagent-creator")
+    existing_reads = {
+        step.get("arguments", {}).get("method_name")
+        for step in steps
+        if step.get("name") == "task_harness" and step.get("arguments", {}).get("action") == "read_method"
+    }
+    reads = [
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": name}}
+        for name in dict.fromkeys(creator_reads)
+        if name not in existing_reads
+    ]
+    if kwargs.get("steps") is not None:
+        kwargs["steps"] = reads + steps
+    return _run_raw_fixture(root, variant, **kwargs)
 
 
 def records(root, name):
@@ -13,18 +86,131 @@ def records(root, name):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
 
 
+def test_harness_summary_and_section_keep_full_status_recoverable(tmp_path):
+    root = tmp_path / "status-views"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {"action": "summary"}},
+        {"name": "task_harness", "arguments": {"action": "inspect", "section": "review_contract"}},
+        {"name": "task_harness", "arguments": {"action": "inspect"}},
+        {"name": "task_harness_status", "arguments": {"request": "current"}},
+    ])
+    calls = results(events, "task_harness")
+    assert len(calls) == 3 and not any(call.get("isError") for call in calls)
+    summary, section, full = [json.loads(call["result"]["content"][0]["text"]) for call in calls]
+    assert summary["format"] == "task-harness-status-summary-v1"
+    assert "review_contract" in summary["available_sections"]
+    assert summary["full_status_call"]["arguments"] == {"action": "inspect"}
+    assert section["format"] == "task-harness-status-section-v1"
+    assert section["value"] == full["review_contract"]
+    assert len(json.dumps(summary)) < len(json.dumps(full)) // 2
+    assert calls[-1]["result"]["details"] == full
+
+    contexts = records(root, "provider-contexts.jsonl")
+    projected = [message for row in contexts for message in row["context"]["messages"]
+                 if message.get("role") == "toolResult" and message.get("toolName") == "task_harness"]
+    assert any(message.get("details") == {"same_as_content": True}
+               and json.loads(message["content"][0]["text"]).get("format") == "task-local-harness-status-v1"
+               for message in projected)
+    assert any(message.get("details") == {"same_as_content": True}
+               for row in contexts for message in row["context"]["messages"]
+               if message.get("role") == "toolResult" and message.get("toolName") == "task_harness_status")
+
+
+def test_used_creator_history_is_compact_but_exact_method_can_be_reread(tmp_path):
+    root = tmp_path / "used-creator-history"
+    events = _run_fixture(root, "treatment", steps=[{
+        "name": "task_harness", "arguments": {
+            "action": "change", "changes": [{"operation": "create", "candidate": {
+                "semantic_kind": "skill", "name": "check-state", "content": "Inspect the state.",
+            }}],
+            "decision": {"basis_refs": [], "reason": "Keep a reusable state check.",
+                         "expected": "The next state can be checked."},
+        },
+    }])
+    calls = results(events, "task_harness")
+    read = json.loads(calls[0]["result"]["content"][0]["text"])
+    changed = json.loads(calls[-1]["result"]["content"][0]["text"])
+    assert changed["status"] == "applied"
+    canonical = (Path(__file__).resolve().parents[1] / "demo/harness-methods/skill-creator/SKILL.md").read_text(encoding="utf-8")
+    assert read["content"].replace("\r\n", "\n") == canonical
+    contexts = records(root, "provider-contexts.jsonl")
+    histories = [json.loads(message["content"][0]["text"])
+                 for row in contexts for message in row["context"]["messages"]
+                 if message.get("role") == "toolResult" and message.get("toolName") == "task_harness"
+                 and "baseline-method-history-receipt-v1" in message["content"][0]["text"]]
+    assert histories
+    assert histories[-1]["method_ref"] == read["method_ref"]
+    assert histories[-1]["read_call"]["arguments"] == {
+        "action": "read_method", "method_name": "skill-creator",
+        "method_resource": "SKILL.md", "expected_sha256": read["sha256"],
+    }
+
+    untouched = tmp_path / "unconsumed-creator"
+    _run_fixture(untouched, "treatment", steps=[
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "skill-creator"}},
+    ])
+    messages = [message for row in records(untouched, "provider-contexts.jsonl")
+                for message in row["context"]["messages"]
+                if message.get("role") == "toolResult" and message.get("toolName") == "task_harness"]
+    assert any(json.loads(message["content"][0]["text"]).get("format") == "baseline-method-read-v1"
+               for message in messages)
+    assert not any("baseline-method-history-receipt-v1" in message["content"][0]["text"]
+                   for message in messages)
+
+
+def test_large_creator_is_projected_as_exact_progressive_pages(tmp_path):
+    root = tmp_path / "progressive-creator"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "skill-creator",
+                                                "method_resource": "references/authoring-background.md"}},
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "skill-creator",
+                                                "method_resource": "references/authoring-background.md",
+                                                "method_offset": 8192, "method_limit": 8192}},
+    ])
+    calls = results(events, "task_harness")
+    full = json.loads(calls[0]["result"]["content"][0]["text"])
+    second = json.loads(calls[1]["result"]["content"][0]["text"])
+    assert len(full["content"]) > 30_000
+    assert second["content"] == full["content"][8192:16384]
+    assert second["method_ref"] == full["method_ref"]
+    assert second["sha256"] == full["sha256"]
+    assert second["next_content_offset"] == 16384
+
+    contexts = records(root, "provider-contexts.jsonl")
+    first_pages = [json.loads(message["content"][0]["text"])
+                   for row in contexts for message in row["context"]["messages"]
+                   if message.get("role") == "toolResult" and message.get("toolCallId") == calls[0]["toolCallId"]]
+    assert first_pages
+    page = first_pages[-1]
+    assert page["content"] == full["content"][:8192]
+    assert page["total_content_chars"] == len(full["content"])
+    assert page["content_complete"] is False
+    assert page["sections"]
+    assert page["continue_read_call"]["arguments"]["method_offset"] == 8192
+    projected_first = [message for row in contexts for message in row["context"]["messages"]
+                       if message.get("role") == "toolResult" and message.get("toolCallId") == calls[0]["toolCallId"]]
+    assert projected_first[-1]["details"]["same_as_content_fields"]
+
+
 def test_empty_task_has_direct_creation_and_method_at_first_request(tmp_path):
     root = tmp_path / "entry"
     _run_fixture(root, "treatment", steps=[], extra_extensions=[Path(__file__).resolve().parents[1] / 'tests/pi_non_arc_task_subagents.ts'])
     context = records(root, "provider-contexts.jsonl")[0]["context"]
     names = {tool["name"] for tool in context["tools"]}
-    assert {"research_resource", "task_harness", "task_harness_status", "task_skill", "task_memory", "task_system_prompt", "read", "assess_harness_effect"} <= names
+    assert {"research_resource", "task_harness", "task_harness_status", "task_memory_pool", "task_skill", "task_memory", "task_system_prompt", "read", "assess_harness_effect"} <= names
+    harness_schema = next(tool for tool in context["tools"] if tool["name"] == "task_harness")["parameters"]
+    assert "level_review" not in harness_schema["properties"]
+    assert "schema_action" in harness_schema["properties"]
+    assert "level_review" in json.dumps(harness_schema["properties"]["topic"])
+
+
     assert not any(name.startswith("task_") and ("guid" + "ance") in name for name in names)
     assert "task_subagent" in names  # the research contract requires a configured adapter
     assert "auto_research" in names
     assert "AUTO-RESEARCH:" in context["systemPrompt"]
     research = next(tool for tool in context['tools'] if tool['name'] == 'auto_research')
-    assert 'composition' in {choice['const'] for choice in research['parameters']['properties']['scope']['anyOf']}
+    assert research['parameters']['properties']['scope']['type'] == 'string'
+    assert research['parameters']['properties']['scope']['maxLength'] == 120
     method = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "auto_research_method.md").read_text(encoding="utf-8")
     main_contract = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "auto_research_main_contract.md").read_text(encoding="utf-8")
     assert main_contract not in context["systemPrompt"]
@@ -41,13 +227,157 @@ def test_empty_task_has_direct_creation_and_method_at_first_request(tmp_path):
     assert opportunities[0]["observation_count"] == 0
 
 
+def test_tool_description_compaction_preserves_exact_operation_schemas(tmp_path):
+    _run_fixture(tmp_path, "treatment", steps=[], extra_env={"PI_ARC_EXECUTION_GATE": "enabled", "PI_MANAGEMENT_SCHEMA": "full"},
+                 extra_extensions=[Path(__file__).resolve().parent / "pi_non_arc_task_subagents.ts"])
+    tools = records(tmp_path, "provider-contexts.jsonl")[0]["context"]["tools"]
+    # Compare the current complete API with ARC's description projection;
+    # progressive disclosure is checked separately at its actual load boundary.
+    baseline = tmp_path / "complete-api"
+    _run_fixture(baseline, "treatment", steps=[], extra_env={"PI_MANAGEMENT_SCHEMA": "full"},
+                 extra_extensions=[Path(__file__).resolve().parent / "pi_non_arc_task_subagents.ts"])
+    baseline_tools = records(baseline, "provider-contexts.jsonl")[0]["context"]["tools"]
+    checked_names = {"task_harness", "task_checkpoint", "task_resource", "task_memory", "task_memory_pool",
+                     "task_system_prompt", "task_skill", "task_subagent", "delegate_task", "auto_research"}
+
+    def without_descriptions(value):
+        if isinstance(value, dict):
+            result = {key: without_descriptions(item) for key, item in value.items() if key != "description"}
+            # Canonicalize equivalent pure string enums for the API contract hash.
+            if result.get("type") == "string" and isinstance(result.get("enum"), list):
+                options = result.pop("enum")
+                result.pop("type")
+                result["anyOf"] = [{"const": item, "type": "string"} for item in options]
+            return result
+        if isinstance(value, list):
+            return [without_descriptions(item) for item in value]
+        return value
+
+    expected = {
+        tool["name"]: sha256(json.dumps(without_descriptions(tool), sort_keys=True,
+                                  separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        for tool in baseline_tools if tool["name"] in checked_names
+    }
+    assert set(expected) == checked_names
+    actual = {
+        tool["name"]: sha256(json.dumps(without_descriptions(tool), sort_keys=True,
+                                  separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        for tool in tools if tool["name"] in expected
+    }
+    assert actual == expected
+    method_schema = next(tool for tool in tools if tool["name"] == "task_harness")["parameters"]["properties"]
+    assert method_schema["method_offset"]["minimum"] == 0
+    assert method_schema["method_limit"]["maximum"] == 65536
+
+
 def test_real_provider_surface_exposes_facade_without_native_mutation_tools(tmp_path):
     root = tmp_path / "facade-surface"
     _run_fixture(root, "treatment")
     context = records(root, "provider-contexts.jsonl")[0]["context"]
     names = {tool["name"] for tool in context["tools"]}
     assert "task_harness" in names
+    assert "task_memory_pool" in names
     assert not names.intersection({"task_memory", "task_system_prompt", "task_skill", "task_tool", "task_subagent"})
+
+
+def test_memory_pool_capture_is_low_friction_idempotent_and_not_projected(tmp_path):
+    root = tmp_path / "memory-pool-capture"
+    steps = [{"name": "task_memory_pool", "arguments": {
+        "action": "capture", "capture_id": "two-probes",
+        "items": [
+            {"content": "LOCAL-OBSERVATION-SECRET", "scope": "level", "claim_kind": "observation"},
+            {"content": "UNVERIFIED-HYPOTHESIS-SECRET", "scope": "task", "claim_kind": "hypothesis"},
+        ],
+    }}, {"name": "task_memory_pool", "arguments": {
+        "action": "capture", "capture_id": "two-probes",
+        "items": [
+            {"content": "LOCAL-OBSERVATION-SECRET", "scope": "level", "claim_kind": "observation"},
+            {"content": "UNVERIFIED-HYPOTHESIS-SECRET", "scope": "task", "claim_kind": "hypothesis"},
+        ],
+    }}, {"name": "task_memory_pool", "arguments": {"action": "list", "limit": 1}}]
+    events = _run_fixture(root, "treatment", steps=steps)
+    outputs = results(events, "task_memory_pool")
+    assert len(outputs) == 3 and all(not item.get("isError") for item in outputs)
+    receipt = json.loads(outputs[0]["result"]["content"][0]["text"])
+    replay = json.loads(outputs[1]["result"]["content"][0]["text"])
+    directory = json.loads(outputs[2]["result"]["content"][0]["text"])
+    assert receipt["applied"] == 2 and receipt["complete"] is True and receipt["atomic"] is False
+    assert replay["applied"] == 2 and all(item.get("idempotent") for item in replay["items"])
+    assert len(records(root, "task-memory.jsonl")) == 2
+    memories = records(root, "task-memory.jsonl")
+    assert {item["claim_kind"] for item in memories} == {"observation", "hypothesis"}
+    assert next(item for item in memories if item["claim_kind"] == "hypothesis")["claim_status"] == "unverified_hypothesis"
+    assert all(item["decision_path"] == "memory_capture" and item["effect_metric"] == "memory_available_for_selection"
+               for item in records(root, "harness-decisions.jsonl"))
+    assert not records(root, "task-harness-conversion-intents.jsonl")
+    assert directory["total"] == 2 and len(directory["resources"]) == 1 and directory["next_after"]
+    assert "LOCAL-OBSERVATION-SECRET" not in json.dumps(records(root, "provider-contexts.jsonl")[1]["context"])
+    assert "UNVERIFIED-HYPOTHESIS-SECRET" not in json.dumps(records(root, "provider-contexts.jsonl")[1]["context"])
+    later_context = records(root, "provider-contexts.jsonl")[-1]["context"]
+    cards = [part["text"] for message in later_context["messages"]
+             for part in message.get("content", []) if part.get("type") == "text"
+             and part["text"].startswith("MEMORY SELECTION CANDIDATES")]
+    assert len(cards) == 1
+    assert '"eligible":true' in cards[0]
+    assert '"scope":"level"' in cards[0]
+
+
+def test_memory_pool_capture_updates_latest_implicitly_but_rejects_explicit_stale_version(tmp_path):
+    root = tmp_path / "memory-pool-cas"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_memory_pool", "arguments": {"action": "capture", "capture_id": "first",
+         "items": [{"key": "fixed", "content": "v1", "scope": "task"}]}},
+        {"name": "task_memory_pool", "arguments": {"action": "capture", "capture_id": "conflict",
+         "items": [{"key": "fixed", "content": "v2", "scope": "task"},
+                   {"key": "new", "content": "must-not-apply", "scope": "task"}]}},
+        {"name": "task_memory_pool", "arguments": {"action": "capture", "capture_id": "stale",
+         "items": [{"key": "fixed", "content": "v3", "scope": "task", "target_version": 1}]}},
+    ])
+    outputs = results(events, "task_memory_pool")
+    assert outputs[0].get("isError") is not True and outputs[1].get("isError") is not True
+    assert outputs[2].get("isError") is True
+    memories = records(root, "task-memory.jsonl")
+    assert [(item["key"], item["version"], item["content"]) for item in memories] == [
+        ("fixed", 1, "v1"), ("fixed", 2, "v2"), ("new", 1, "must-not-apply")]
+
+
+def test_arc_action_decision_memory_binds_pre_action_level_and_keeps_outcome_separate(tmp_path):
+    root = tmp_path / "action-decision-memory"
+    action_fixture = Path(__file__).resolve().parent / "pi_arc_action_capture_fixture.ts"
+    events = _run_fixture(root, "treatment", extra_extensions=[action_fixture], steps=[
+        {"name": "arc_action", "arguments": {"action": "no-decision"}},
+        {"name": "arc_action", "arguments": {"action": "cross", "decision": {
+            "hypothesis": "Parent wording A", "prediction": "Parent wording B",
+            "falsifier": "Parent wording C", "subgoal": "Parent wording D", "next_step": "Parent wording E",
+        }}},
+        {"name": "arc_action", "arguments": {"action": "noop", "decision": {
+            "hypothesis": "A second local test", "prediction": "It stays in level 1",
+        }}},
+        {"name": "arc_action", "arguments": {"action": "RESET", "decision": {
+            "hypothesis": "Reset tests the earlier state", "prediction": "Public state returns to start",
+        }}},
+    ])
+    assert len(results(events, "arc_action")) == 4
+    memories = records(root, "task-memory.jsonl")
+    assert len(memories) == 3
+    observations = {row["observation_id"]: row for row in records(root, "execution-observations.jsonl")}
+    for memory in memories:
+        source = memory["basis_refs"][0]
+        assert source in observations
+        assert memory["key"] == f"action-decision:{source}"
+        assert memory["validity"]["scope"] == "level"
+        assert memory["probe_record"]["decision_capsule"]["hypothesis"] == observations[source]["input"]["decision"]["hypothesis"]
+        assert "verdict" not in memory["probe_record"]
+        assert memory["probe_record"]["decision_capsule"]["hypothesis"] in memory["content"]
+        assert memory["probe_record"]["observed_outcome"]["delta_status"] in {"available_as_returned", "unavailable"}
+    assert memories[0]["validity"]["instance_ref"].endswith(":level-initial")
+    assert memories[1]["validity"]["instance_ref"].endswith(f":level:{memories[0]['basis_refs'][0]}")
+    assert memories[2]["validity"]["instance_ref"] == memories[1]["validity"]["instance_ref"]
+    assert memories[0]["probe_record"]["observed_outcome"]["level_changed"] is True
+    assert memories[2]["probe_record"]["observed_outcome"]["full_reset"] is True
+    decisions = records(root, "harness-decisions.jsonl")
+    assert all(row["decision_path"] == "action_decision_capture" for row in decisions)
+    assert all(row["effect_metric"] == "memory_available_for_selection" for row in decisions)
 
 
 def test_harness_status_alias_and_review_schema_expose_legal_values(tmp_path):
@@ -55,7 +385,7 @@ def test_harness_status_alias_and_review_schema_expose_legal_values(tmp_path):
     events = _run_fixture(root, "treatment", steps=[
         {"name":"task_harness","arguments":{"action":"status"}},
         {"name":"task_harness","arguments":{"action":"inspect"}},
-    ])
+    ], extra_env={"PI_MANAGEMENT_SCHEMA": "full"})
     tools = {
         tool["name"]: tool
         for tool in records(root, "provider-contexts.jsonl")[0]["context"]["tools"]
@@ -68,7 +398,7 @@ def test_harness_status_alias_and_review_schema_expose_legal_values(tmp_path):
     outputs = [e for e in events if e.get('type') == 'tool_execution_end' and e.get('toolName') == 'task_harness']
     assert len(outputs) == 2 and all(not e.get('isError') for e in outputs)
     disposition = harness_schema['properties']['review']['items']['properties']['disposition']
-    assert {choice['const'] for choice in disposition['anyOf']} == {'create','update','reuse','defer','not_applicable','keep'}
+    assert set(disposition['enum']) == {'create','update','reuse','defer','not_applicable','keep'}
     status = json.loads(outputs[0]['result']['content'][0]['text'])
     assert status['review_contract']['repair_template']['action'] == 'review'
 
@@ -143,6 +473,8 @@ def test_task_system_prompt_overlay_uses_native_before_agent_start_on_next_agent
     assert "Keep observed state separate from inferred cause." not in contexts[0]["systemPrompt"]
     assert "# Task-local system-prompt overlay" in contexts[-1]["systemPrompt"]
     assert "Keep observed state separate from inferred cause." in contexts[-1]["systemPrompt"]
+    assert contexts[-1]["systemPrompt"].count("# Task-local system-prompt overlay") == 1
+    assert contexts[-1]["systemPrompt"].count("Keep observed state separate from inferred cause.") == 1
     assert records(root, "task-system-prompt.jsonl")[0]["status"] == "active"
 
 
@@ -454,7 +786,7 @@ def test_atomic_memory_revision_does_not_rewrite_other_atoms(tmp_path):
     ]
 
 
-def test_atomic_memory_revision_keeps_subject_and_predicate_identity(tmp_path):
+def test_atomic_memory_revision_can_refine_wording_without_erasing_history(tmp_path):
     root = tmp_path / "atomic-memory-identity"
     events = _run_fixture(root, "treatment", steps=[
         {"name": "task_harness", "arguments": {
@@ -466,15 +798,19 @@ def test_atomic_memory_revision_keeps_subject_and_predicate_identity(tmp_path):
         {"name": "task_harness", "arguments": {
             "action": "change", "changes": [{"operation": "update", "candidate": {
                 "semantic_kind": "fact", "name": "controls",
-                "atom": {"subject": "goal", "predicate": "target", "value": "vault"}}}],
-            "decision": {"basis_refs": [], "reason": "Attempt to reuse the key for another subject.",
-                         "expected": "The write is rejected before a new version is stored."}}},
+                "atom": {"subject": "controllable token", "predicate": "confirmed action mapping",
+                         "value": {"ACTION1": "up", "ACTION2": "down"}}}}],
+            "decision": {"basis_refs": [], "reason": "Refine the description after another observation.",
+                         "expected": "Store an authored revision while retaining the original atom."}}},
     ])
     output = results(events, "task_harness")[-1]
     receipt = json.loads(output["result"]["content"][0]["text"])
-    assert receipt["status"] == "failed"
-    assert "cannot change subject or predicate" in json.dumps(receipt)
-    assert [(item["key"], item["version"]) for item in records(root, "task-memory.jsonl")] == [("controls", 1)]
+    assert receipt["status"] == "applied"
+    history = records(root, "task-memory.jsonl")
+    assert [(item["key"], item["version"]) for item in history] == [("controls", 1), ("controls", 2)]
+    assert history[0]["atom"] == {"subject": "controls", "predicate": "action_mapping", "value": {"ACTION1": "up"}}
+    assert history[1]["atom"] == {"subject": "controllable token", "predicate": "confirmed action mapping",
+                                  "value": {"ACTION1": "up", "ACTION2": "down"}}
 
 
 def test_facade_rejects_non_atomic_fact_memory(tmp_path):
@@ -511,6 +847,87 @@ def test_prompt_contribution_cannot_bypass_component_selection(tmp_path):
     assert "must also be selected" in output["result"]["content"][0]["text"]
 
 
+def test_invalid_assembly_layer_returns_lossless_parent_confirmed_repair(tmp_path):
+    root = tmp_path / "assembly-invalid-layer-repair"
+    contribution = {
+        "contribution_id": "route-policy", "source_ref": "skill:route-check@v1",
+        "layer": "strategy", "content": "Use the selected route policy.",
+        "priority": 4, "reconsider_when": "the map changes",
+    }
+    decision = {
+        "basis_refs": ["skill:route-check@v1"],
+        "reason": "Select the route skill and project its current policy.",
+        "expected": "The next request contains the selected policy.",
+    }
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_skill", "arguments": {
+            "action": "create", "name": "route-check", "instructions": "Check the route before moving.",
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:route-check@v1"],
+            "prompt_contributions": [contribution], "decision": decision,
+        }},
+        {"name": "task_harness", "arguments": {"action": "inspect"}},
+    ])
+    output = results(events, "task_harness")[0]
+    assert output.get("isError")
+    body = json.loads(output["result"]["content"][0]["text"])
+    assert body["format"] == "task-harness-assembly-input-error-v1"
+    assert body["errors"] == [{
+        "path": "prompt_contributions[0].layer",
+        "message": "Invalid task-prompt layer.",
+        "allowed": ["task_policy", "method", "working_plan", "hypothesis", "task_state", "research_inbox"],
+    }]
+    assert body["applied"] is False
+    assert body["requires_parent_confirmation"] is True
+    assert body["repair_template"] == {
+        "action": "assemble", "expected_assembly_revision": 0,
+        "selected_resource_refs": ["skill:route-check@v1"],
+        "prompt_contributions": [contribution], "decision": decision,
+    }
+    assert not records(root, "task-harness-assemblies.jsonl")
+    failure = records(root, "task-operation-failures.jsonl")[-1]
+    assert failure["attempted_input"]["prompt_contributions"] == [contribution]
+    assert json.loads(failure["error"])["format"] == "task-harness-assembly-input-error-v1"
+
+    status = json.loads(results(events, "task_harness")[-1]["result"]["content"][0]["text"])
+    contract = status["assembly_contract"]
+    assert contract["input_schema"]["task_prompt_layers"] == body["errors"][0]["allowed"]
+    assert contract["select_only_template"]["action"] == "assemble"
+    assert "prompt_contributions" not in contract["select_only_template"]
+    assert contract["optional_prompt_contribution_template"]["layer"] == "<choose one task_prompt_layers value>"
+
+
+def test_assembly_aggregates_missing_layer_and_non_string_content_without_rewriting_alias_fields(tmp_path):
+    root = tmp_path / "assembly-aggregate-repair"
+    contribution = {
+        "contribution_id": "route-policy", "source_ref": "skill:route-check@v1",
+        "role": "policy", "text": {"instruction": "Use the route."},
+    }
+    decision = {"basis_refs": [], "reason": "Attempt the authored contribution.",
+                "expected": "Reject invalid fields before applying."}
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_skill", "arguments": {
+            "action": "create", "name": "route-check", "instructions": "Check the route before moving.",
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:route-check@v1"],
+            "prompt_contributions": [contribution], "decision": decision,
+        }},
+    ])
+    output = results(events, "task_harness")[0]
+    assert output.get("isError")
+    body = json.loads(output["result"]["content"][0]["text"])
+    assert {error["path"] for error in body["errors"]} == {
+        "prompt_contributions[0].layer", "prompt_contributions[0].content",
+    }
+    assert body["repair_template"]["prompt_contributions"] == [contribution]
+    assert body["repair_template"]["decision"] == decision
+    assert not records(root, "task-harness-assemblies.jsonl")
+
+
 def test_assembly_revision_conflict_does_not_replace_current_selection(tmp_path):
     root = tmp_path / "assembly-version-conflict"
     events = _run_fixture(root, "treatment", steps=[
@@ -534,6 +951,33 @@ def test_assembly_revision_conflict_does_not_replace_current_selection(tmp_path)
     assert body["format"] == "task-harness-assembly-version-conflict-v1"
     assert body["current_revision"] == 1
     assert len(records(root, "task-harness-assemblies.jsonl")) == 1
+
+
+def test_assembly_requires_cas_and_structures_unknown_ref_without_partial_write(tmp_path):
+    root = tmp_path / "assembly-required-cas"
+    decision = {"basis_refs": [], "reason": "Attempt an exact selection.",
+                "expected": "Invalid input is rejected before persistence."}
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "selected_resource_refs": [],
+            "prompt_contributions": [], "decision": decision,
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["skill:missing@v1"],
+            "prompt_contributions": [], "decision": decision,
+        }},
+    ])
+    outputs = results(events, "task_harness")
+    assert [item.get("isError") for item in outputs] == [True, True]
+    bodies = [json.loads(item["result"]["content"][0]["text"]) for item in outputs]
+    assert bodies[0]["format"] == "task-harness-assembly-version-conflict-v1"
+    assert bodies[0]["requested_revision"] is None
+    assert bodies[0]["current_revision"] == 0
+    assert bodies[1]["format"] == "task-harness-assembly-input-error-v1"
+    assert bodies[1]["errors"][0]["path"] == "selected_resource_refs[0]"
+    assert bodies[1]["repair_template"]["selected_resource_refs"] == ["skill:missing@v1"]
+    assert not records(root, "task-harness-assemblies.jsonl")
 
 
 def test_task_prompt_accepts_exact_research_plan_source(tmp_path):
@@ -713,7 +1157,7 @@ def test_effect_assessment_binds_unique_exposed_decision_and_observations(tmp_pa
     assert assessment["observation_refs"] == ["skill-projection-decision-1", "skill-read-decision-1"]
 
 
-def test_adopt_research_applies_all_ready_routes_without_parent_route_fields(tmp_path):
+def test_public_task_harness_rejects_retired_adopt_research_without_mutation(tmp_path):
     root = tmp_path / "adopt-research"
     root.mkdir()
     route = {
@@ -749,15 +1193,14 @@ def test_adopt_research_applies_all_ready_routes_without_parent_route_fields(tmp
         },
     }])
     result = next(e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == "task_harness")
-    assert result.get("isError") is not True
-    body = json.loads(result["result"]["content"][0]["text"])
-    assert body["status"] == "adopted"
-    assert records(root, "task-memory.jsonl")[-1]["key"] == "research-fact"
-    assert records(root, "auto-research-harness-routes.jsonl")[-1]["route_status"] == "fulfilled"
-    assert records(root, "auto-research-sessions.jsonl")[-1]["reconciliation_status"] == "adopted"
+    assert result.get("isError") is True
+    assert "adopt_research" in result["result"]["content"][0]["text"]
+    assert records(root, "task-memory.jsonl") == []
+    assert records(root, "auto-research-harness-routes.jsonl")[-1]["route_status"] == "ready"
+    assert records(root, "auto-research-sessions.jsonl")[-1]["reconciliation_status"] == "awaiting_parent_change"
 
 
-def test_adopt_research_preflights_all_route_versions_before_any_mutation(tmp_path):
+def test_retired_adopt_research_cannot_partially_apply_a_legacy_route(tmp_path):
     root = tmp_path / "adopt-research-preflight"
     _run_fixture(root, "treatment", steps=[
         {"name": "task_memory", "arguments": {"action": "upsert", "key": "state", "content": "v1"}},
@@ -815,9 +1258,8 @@ def test_adopt_research_preflights_all_route_versions_before_any_mutation(tmp_pa
     memories = records(root, "task-memory.jsonl")
     assert len(memories) == 2 and memories[-1]["content"] == "v2"
     latest_route = records(root, "auto-research-harness-routes.jsonl")[-1]
-    assert latest_route["route_status"] == "failed"
-    assert latest_route["step_results"][0]["reason"] == "component_version_conflict"
-    assert latest_route["step_results"][0]["current_version"] == 2
+    assert latest_route["route_status"] == "ready"
+    assert "step_results" not in latest_route
 
 
 def test_task_harness_restores_an_authorized_tool_without_granting_host_tools(tmp_path):
@@ -836,7 +1278,7 @@ def test_task_harness_restores_an_authorized_tool_without_granting_host_tools(tm
     assert not [event for event in events if event.get("type") == "tool_execution_end" and event.get("isError")]
     contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
     assert {tool["name"] for tool in contexts[1]["tools"]} == {
-        "task_harness", "task_tool_policy", "research_resource",
+        "task_harness", "task_harness_create", "task_tool_policy", "task_memory_pool", "research_resource",
     }
     assert {tool["name"] for tool in contexts[2]["tools"]} >= {
         "task_harness", "task_tool_policy", "research_resource", "benchmark_probe",
@@ -985,10 +1427,16 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
     skill_path = root / "task-harness" / "skills" / "probe" / "SKILL.md"
     steps = [
         {"name": "task_harness", "arguments": {
+            "action": "read_method", "method_name": "skill-creator",
+        }},
+        {"name": "task_harness", "arguments": {
             "action": "change",
             "changes": [{"operation": "create", "candidate": {
                 "semantic_kind": "skill", "name": "probe",
+                "description": "Use after a settled observation before choosing an ARC action.",
                 "content": "Use the settled observation before choosing the next action.",
+                "method": _SKILL_AUTHORING["method"],
+                "authoring_method_ref": _SKILL_AUTHORING["authoring_method_ref"],
             }}],
             "decision": {
                 "basis_refs": [], "reason": "Create a reusable observation procedure.",
@@ -1005,6 +1453,10 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
             "action": "enable", "enabled_tools": ["skill"],
         }},
         {"name": "read", "arguments": {"path": str(skill_path)}},
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update", "task_goal": "Reach the target using the observation procedure.",
+            "planning_gap": "Localization alone does not determine a feasible route.",
+        }},
     ]
     command = [
         node, cli, "--mode", "rpc", "--provider", "offline-external-test", "--model", "scripted",
@@ -1032,16 +1484,20 @@ def test_actual_arc_skill_creation_has_a_reachable_read_use_boundary(tmp_path):
               if event.get("type") == "tool_execution_end" and event.get("isError")]
     assert not errors
     contexts = [item["context"] for item in records(root, "provider-contexts.jsonl")]
-    # The initial ARC surface is only action, Harness and Auto-Research.
+    # The compact surface includes writable task state, not just environment
+    # action and Harness/Auto-Research controls. Check actual provider tools.
     # Creation goes through the Harness facade; enabling the selected skill
     # then exposes the scoped reader before its explicit read.
     initial_tools = {tool["name"] for tool in contexts[0]["tools"]}
-    assert initial_tools >= {"arc_action", "task_harness", "auto_research"}
+    assert initial_tools == {"arc_action", "arc_actions", "task_harness", "task_harness_create", "auto_research", "task_checkpoint"}
     assert not initial_tools.intersection({
-        "arc_state", "inspect_arc_trajectory", "task_harness_status", "task_checkpoint",
+        "arc_state", "inspect_arc_trajectory", "task_harness_status",
         "task_resource", "task_validation", "research_resource", "delegate_task", "task_skill",
     })
-    assert "read" in {tool["name"] for tool in contexts[3]["tools"]}
+    assert "read" in {tool["name"] for tool in contexts[4]["tools"]}
+    checkpoint = json.loads((root / "task-checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["task_goal"] == "Reach the target using the observation procedure."
+    assert checkpoint["planning_gap"] == "Localization alone does not determine a feasible route."
     assert any(
         event.get("event") == "read_by_agent" and event.get("name") == "probe"
         for event in records(root, "task-skill-events.jsonl")
@@ -1078,7 +1534,6 @@ def test_repeated_real_operations_surface_a_neutral_self_harness_opportunity(tmp
     assert any(
         "Self-harness review opportunity" in json.dumps(message)
         and "benchmark_probe" in json.dumps(message)
-        and "Resource types with no active instance" in json.dumps(message)
         for context in contexts
         for message in context["messages"]
     )

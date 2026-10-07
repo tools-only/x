@@ -1,0 +1,1 @@
+The native ARC game is GAME_OVER, but RESET is available and the total action budget is not exhausted. Immediately call arc_action with action='RESET' to start a new attempt, then use the strongest route supported by your current memory and research findings. Do not explain first.

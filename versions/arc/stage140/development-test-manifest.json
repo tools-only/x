@@ -1,0 +1,5 @@
+{
+  "tests/test_arc_creator_grid_handoff_native.py": "bee77d68969ebf0f5182836a0ccf562269866b290a6d62dda41af8dbcabd8916",
+  "tests/test_harness_argument_integrity_native.py": "49641b815caf513e1c9a3763bee51440776f31647d384ede59413877c4b3273b",
+  "tests/pi_harness_argument_http_fixture.ts": "160b63091cb3218fd1bc16020e9d839ed4bfd0036c7e0632624ff5518b1c6141"
+}

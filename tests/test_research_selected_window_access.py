@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 
 from test_auto_research_self_harness_smoke import _child_env
-from test_pi_external_benchmark_native import _pi_cli, _run_fixture
-from test_task_research_context import records, results
+from test_pi_external_benchmark_native import _pi_cli
+from test_task_research_context import _run_fixture, records, results
 
 
 def test_selected_recent_observation_can_be_paged_but_unselected_resources_cannot(tmp_path):
@@ -13,7 +13,7 @@ def test_selected_recent_observation_can_be_paged_but_unselected_resources_canno
     report = {"format": "auto-research-report-v1", "status": "inconclusive",
               "conclusion": "Check selected observation access, not game quality.",
               "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-              "validation_plan": "No semantic capability claim.", "harness_proposals": []}
+              "validation_plan": "No semantic capability claim.", "method_candidates": []}
     events = _run_fixture(tmp_path, "treatment",
         extra_extensions=[project / "tests/pi_non_arc_task_subagents.ts"],
         extra_env=_child_env(project, cli, report, [

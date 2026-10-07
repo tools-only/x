@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Self-Harness 当前架构、机制与转化规则</title>
+<style>body{font:16px/1.8 system-ui,"Microsoft YaHei",sans-serif;color:#203047;background:#f3f5f8;margin:0}main{max-width:1120px;margin:auto;background:white;padding:48px}h1,h2,h3{line-height:1.35;color:#123454}h1{font-size:32px}h2{border-bottom:2px solid #dbe7f1;padding-bottom:10px;margin-top:42px}table{border-collapse:collapse;width:100%;font-size:14px;margin:18px 0}th,td{border:1px solid #d7e0e8;padding:12px;vertical-align:top}th{background:#edf3f8;text-align:left}code{background:#edf1f5;padding:2px 5px;overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#152b41;color:#edf5fc;padding:20px;border-radius:8px}.note{background:#fff4dc;border-left:4px solid #d39a31;padding:16px}.good{background:#eaf5f0;padding:16px}small,.muted{color:#586b7d}a{color:#1264a1}li{margin:7px 0}@media print{body{background:white}main{padding:0}table{font-size:11px}h2{break-after:avoid}tr{break-inside:avoid}}</style></head><body><main>
+<h1>Self-Harness 当前架构、机制与转化／准入规则</h1>
+<p>代码与证据快照：2026-09-25，约 11:00（Asia/Shanghai）。项目：autoresearch_pi_project。</p>
+<p class="muted">分支：codex/jev-harness-routing-phase1；HEAD：18460e0dc30756e1d428e333496cb03afd0b35ad。本文描述当前含未提交修改的工作树，不等于该提交单独包含的实现。运行中进程加载的代码可能早于当前工作树。</p>
+<div class="note"><strong>阅读边界：</strong>“设计定位”“代码已实现”“真实运行已观察”是三个不同层次。本文报告现有条件，不表示新增准入限制。组件入池不等于装配，装配不等于使用，使用不等于正确，更不等于提高通关成绩。</div>
+<h2>目录</h2><ol><li><a href="#architecture">模块职责与边界</a></li><li><a href="#components">五类组件与 task_prompt</a></li><li><a href="#conversion">从观察到能力的转化</a></li><li><a href="#admission">现行准入与结构要求</a></li><li><a href="#assembly">版本、候选池与装配</a></li><li><a href="#research">Auto-Research 生命周期</a></li><li><a href="#memory">Memory 生命周期</a></li><li><a href="#evaluation">使用、效果与持续复评</a></li><li><a href="#arc">ARC 执行和复盘边界</a></li><li><a href="#example">三层推理实例</a></li><li><a href="#evidence">真实证据与已知差距</a></li><li><a href="#sources">源码与证据索引</a></li></ol>
+
+<h2 id="architecture">1. 模块职责与边界</h2>
+<pre>公开环境证据 → Pi 主 Agent：推理／计划／研究问题／组件内容／选择
+                     ├─ task_harness → 确定性校验、路由、版本池、装配、回执
+                     ├─ auto_research → broker／child → 结构化研究结果 → 主 Agent
+                     ├─ delegate_task → 独立或预配置上下文 → 返回结果
+                     └─ arc_action → ARC bridge／adapter → SDK 环境 → 新证据
+组件使用与环境结果 → 主 Agent 评估／修订；需要时继续研究</pre>
+<table><tr><th>主体</th><th>承担什么</th><th>不承担什么</th></tr>
+<tr><td>主 Agent</td><td>决定问题、解释证据、提炼方法；读取 creator 并撰写组件；选择装配；决定研究启动、实验动作与结果采纳。</td><td>不能把读取、写入成功或 child 完成状态当作正确性证明。</td></tr>
+<tr><td>Self-Harness runtime</td><td>非 LLM 机制。规范化请求、检查结构与来源、调用原生写入器、保存版本、检查生命周期、投影装配内容、记录实际使用和评估。</td><td>不从轨迹自动编造 Skill、工具程序、角色指令或研究结论；不替主 Agent 决定语义相关性。</td></tr>
+<tr><td>组件 pool</td><td>任务局部的版本化资源集合，包括历史、当前版本及状态。读历史与当前可用性分开。</td><td>不是本轮已启用配置；pool 中 active 不意味着被选中。</td></tr>
+<tr><td>装配</td><td>主 Agent 声明精确组件版本和 prompt contributions；runtime 按声明投影或允许调用。</td><td>不负责创造组件，也不自动把所有新组件启用。</td></tr>
+<tr><td>Auto-Research child</td><td>在授权的只读证据与工具上研究机制、表示、规划、方法或未决猜想，返回结果、反例、候选方法和实验请求。</td><td>不直接写父任务组件，不执行 ARC 动作。研究不是创建组件的必经步骤。</td></tr>
+<tr><td>Bridge／adapter／runner</td><td>环境交互、执行编排与进程生命周期；公开状态与动作回执由环境边界提供。</td><td>狭义 adapter 不应决定研究目标或编写组件。现有 Pi extension 仍混合部分 runtime 职责，全面拆分尚未完成。</td></tr></table>
+
+<h2 id="components">2. 五类持久组件与 task_prompt</h2>
+<table><tr><th>类型</th><th>定位与适用内容</th><th>载入／执行</th><th>不应混同</th></tr>
+<tr><td>system_prompt</td><td>有明确作用范围、值得持续暴露的行为指导，例如对推断与观察的处理原则。</td><td>父 Agent 撰写 segment，选入装配后进入系统指导投影。</td><td>不是长期事实仓库，不宜保存当前坐标、关卡地图或单次路线。</td></tr>
+<tr><td>Skill</td><td>由 Agent 执行的流程：何时使用、读取什么、如何判断和操作、怎样停止或应对失败。单场景、未验证方法也有效。</td><td>通过 skill-creator 撰写完整正文；入池、装配、focus/read 后由主 Agent 执行。实际遵循时引用精确版本。</td><td>不是轨迹复述；不要求跨任务普适，也不要求先成功通关。</td></tr>
+<tr><td>Pi Tool</td><td>可执行计算或授权操作，把重复计算交给程序。</td><td>tool-creator 撰写结构／程序；注册 Pi tool，通过支持的声明式程序或授权 implementation_ref 执行。</td><td>不是 MCP。文字描述不能替代实现；不是任意 shell／任意代码执行授权。</td></tr>
+<tr><td>Subagent</td><td>可复用的独立推理角色、干净上下文或准备好的上下文配置。</td><td>subagent-creator 撰写 instructions、tools、可选 context_recipe；装配后经委派路径执行。</td><td>定义角色不等于启动进程；一次性独立推理可以直接 delegate_task，不必先造组件。</td></tr>
+<tr><td>Memory</td><td>有范围的事实、假设、计划内容及证据归属。真假与适用性允许后续修订。</td><td>版本化 atom、作用域、可选 task_state／task_policy 投影与 activation。</td><td>不是所有知识的唯一归宿；当前位置、最新 frame、剩余预算已有 runtime 状态，不宜重复固化为长期知识。</td></tr>
+<tr><td>task_prompt（输出通道）</td><td>当前任务上下文的装配结果，可来自 Memory、Skill、method、finding、validation、research report 等来源的精确版本。</td><td>父 Agent 选择来源并给出 contribution 内容，runtime 投影。</td><td><strong>不是第六类持久组件，也不是 Memory 的同义词。</strong>review 中仍保留 task_prompt 分类用于兼容表达。</td></tr></table>
+<p>组件类型按执行需要选择，不按推理高低级排列。识别对象、解释目标、规划路径三个层次，都可能同时产生 Memory、Skill、Tool、研究问题或临时计划。</p>
+
+<h2 id="conversion">3. 从观察到能力：当前指导流程</h2>
+<ol><li><strong>识别操作机会：</strong>分析输入、操作、判断与结果，找出值得降低成本或提高可靠性的工作；成功、失败、新需求、重复工作都可能触发。</li>
+<li><strong>分离实例与方法：</strong>实例值和观察结果保留为证据或 scoped Memory；方法说明如何消费输入、转换、判断和产出。把不确定性绑定到受影响的步骤或条件。</li>
+<li><strong>形成可执行契约：</strong>表达触发条件、输入、操作、输出、停止及失败处理。未知可以成为显式测试分支，不必等全部机制查明。</li>
+<li><strong>选择载体：</strong>Agent 操作流程→Skill；已实现计算→Tool；独立上下文→Subagent；持续行为→system_prompt；事实或假设→Memory。先比较现有覆盖，再决定复用、修改或新建。</li>
+<li><strong>作者创建并使能：</strong>读取匹配 creator，提交完整候选；检查 native receipt；选择版本装配；读取或调用。</li>
+<li><strong>使用后修订：</strong>对比预期与实际结果，记录反例、成本、边界和后续检查；保留、改版、暂停适用或退役。</li></ol>
+<div class="good">上述是面向 Agent 的工作流程，不是要求填满所有 method 字段的硬性入池表。没有“每关必须产出几个 Skill”、没有各类组件数量配额，也没有“必须先做研究”的条件。</div>
+<h3>两个可达创建入口</h3>
+<p><code>task_harness(action="change", changes=[...], decision={reason, expected, basis_refs})</code> 是主写入入口。语义候选经确定性分类落到原生 Memory／Skill／Tool／Subagent／system_prompt 写入器。create、update、reuse、retire 等操作的具体参数由当前接口披露。</p>
+<p><code>task_harness(action="review")</code> 的 create/update 条目若附完整 candidate，会在同次调用应用相同 change 实现并返回 application_receipt；只有意向而没有正文则为 <code>pending_candidate_body</code>，runtime 不补写内容。一个 review 每类型最多一个条目；同类型多资源可在一次 direct change 的 changes 数组提交，随后 review 用 reuse 引用多个结果。</p>
+
+<h2 id="admission">4. 当前准入、结构与执行限制</h2>
+<p>下表区分当前硬性检查与方法指导。现有约束并非已经全部证明必要；本文不把它们描述为用户新增的要求。</p>
+<table><tr><th>位置</th><th>当前规则</th><th>性质／影响</th></tr>
+<tr><td>通用写入</td><td>主 Agent 写入边界；请求结构、名称、引用和版本需合法。先做 creator／内容预检，再执行 native mutation。</td><td>来源与结构检查；不能据此声称整个多步骤执行具备任意故障下的事务回滚。</td></tr>
+<tr><td>Creator</td><td>Skill／Tool／Subagent 创建或更新前，父侧须读当前匹配 creator。method_ref 使用内容 SHA256，读日志记录内容哈希和 actor。若当前已读而候选省略 ref，可由 runtime 绑定；若明确提供旧 ref，仍会拒绝。</td><td>确定来源，不验证作品质量。ref 放 candidate 内。子 Agent 读取不替代父侧作者读取。</td></tr>
+<tr><td>Memory</td><td>稳定 key 或 name；结构化 atom={subject,predicate,value}；显式 validity.scope；绑定当前 task／scope instance。</td><td>身份、原子记录和生命周期检查。旧无作用域记录可读但不能默认为永久有效指导。</td></tr>
+<tr><td>Skill</td><td>安全 name、非空使用说明 description（或接受的 summary）、可载入 instructions/content 正文。</td><td>完整 method 元数据可选；对象 method 单独存在不能代替 SKILL.md 正文。单场景且未验证可入池。</td></tr>
+<tr><td>Tool</td><td>安全 name、说明、program 或授权 implementation_ref。提供的 input_schema/output_schema 必须是 JSON 对象；执行仍受程序格式、操作集、输入类型和 adapter 授权限制。</td><td>可执行性与权限边界，不是语义成功证明。支持纯表达式与受限流水线；后者包含 adapter_call、select、count、pick、filter、map、group_by、diff、summarize、assert、emit_observation。</td></tr>
+<tr><td>Subagent</td><td>安全 name、用途、完整 instructions；显式 tools 字符串数组，[] 对纯推理有效；可选 context_recipe 必须合规。</td><td>recipe 支持 checkpoint、最近 observation/action 数量、精确 inherit_harness_refs、output_contract、max_chars。当前数量范围0–100，字符上限80000，默认12000；这些是当前结构边界，不是质量门槛。</td></tr>
+<tr><td>system_prompt</td><td>安全 name、父侧非空内容、显式 scope 文本或 scope.statement。</td><td>持续指导的范围声明；没有强制 creator 对应项。</td></tr>
+<tr><td>可选 method</td><td>如果提交，就规范化已提供字段；列表字段须符合规范，不能用任意对象冒充字符串列表。</td><td>不要求完整档案；runtime 不补造方法论。creator 模板中的丰富示例不是全部必填。</td></tr>
+<tr><td>Review</td><td>合法 component／disposition、reason；create/update 要 next_use 与 validation；引用须存在。未提交类型被补为 runtime_default unresolved/defer。</td><td>validation 文本只是拟做检查，不代表检查已经通过。默认占位不是主 Agent 主动拒绝创建。</td></tr>
+<tr><td>装配与调用</td><td>精确版本、当前 eligible、assembly CAS revision、必要依赖和调用权限。</td><td>入池后的使能规则，与创建内容的语义价值判断分开。</td></tr>
+<tr><td>支持性效果评估</td><td>supported 需要关联精确组件版本的实际使用证据；单纯曝光不能支持 utility。</td><td>评价声明规则，不应成为首次创建与试用门槛。复评目标自动绑定目前存在缺陷，见第8节。</td></tr></table>
+
+<h2 id="assembly">5. 版本、候选池、装配与 runtime</h2>
+<p>资源引用形式为 <code>kind:name@vN</code>；creator 则使用 baseline_method 的 SHA256 引用。组件改版保留历史，更新需面向当前版本；历史可读不等于当前可选。依赖失效、作用域过期、退役等会影响 eligibility。</p>
+<pre>候选内容 → native 写入回执 → pool 中的精确版本
+                               ↓ 主 Agent 选择
+assemble(expected_assembly_revision, selected_resource_refs,
+         prompt_contributions, decision)
+                               ↓
+系统／任务上下文投影；Skill 按需载入；Tool／Subagent 调用
+                               ↓
+真实执行证据 → 评估 → 新版本或退役 → 必要时重新装配</pre>
+<ul><li>装配 revision 独立于组件 version。CAS 冲突应读取当前 assembly 后重新判断，不应猜版本或盲目覆盖。</li>
+<li>没有装配时选择集合为空；装配跨轮保持，变化时才需重新装配。直接 arc_action 不要求先调用 harness。</li>
+<li>prompt contribution 带可解析的 source_ref、正文及可选 priority、activation、depends_on_refs；如果来源是组件，也须在 selected 集合中。</li>
+<li><code>basis_refs</code> 记录历史依据；<code>depends_on_refs</code> 表示有效性依赖；<code>supersedes_refs</code> 表示显式替换。三者不能互换。</li>
+<li>选择仍有效但 activation 条件不满足时，可抑制投影。runtime 只执行声明的条件，不替主 Agent 判断“哪个知识最有用”。</li>
+<li>创建 Tool／Subagent 只是定义，尚需选择与实际调用。Skill 正文写入的是文本，不能把 [object Object] 当成可载入流程。</li></ul>
+
+<h2 id="research">6. Auto-Research：问题持续性与父子边界</h2>
+<p><strong>研究对象：</strong>对象控制、因果机制、目标条件、状态表示、约束解释、探索策略、规划算法、恢复规则、方法有效性等。轨迹是证据来源，不是研究目标的上限。结果可以是否定结论、未决问题、计划影响或实验请求，不必产出组件。</p>
+<ol><li>父 Agent 直接发起问题，或 review 形成 handoff。当前 handoff 优先采用 limiting_uncertainty，而非把 capability_opportunities 自动当成必造组件任务；未明确 kind 时可为 unspecified。</li>
+<li>读取／使用 research-orchestration；说明可访问材料、可达阶段目标、预期可观测结果、局部检查和成本／停止条件。缺少信息可以缩小问题或说明证据缺口。</li>
+<li>父 Agent 选择 blocking／non_blocking 路径启动，broker 负责子进程和结构化返回。<strong>proposed handoff 不会自己变成正在运行的研究。</strong></li>
+<li>Child 在只读权限内提出并检验解释，报告证据、反例、不确定性、下一次区分实验。环境新动作仍由主 Agent 决定和执行。</li>
+<li>父 Agent 对 next_experiment 检查当前状态与 as_of_event；唯一请求可通过 action decision 的 approve_research_experiment 接受；多个请求需选择精确 request_ref 与正的 approved_max_actions。</li>
+<li>新动作和 observation 回流研究记录。eligible pending/failed 会话可 resume；已完成工作采用引用先前 run/report 的有界 follow-up，而不是把 completed 当成任意可 resume。</li>
+<li>研究结果若值得转化，由父 Agent 读取对应 creator 并撰写候选。代码 router／adoption 处理结构化来源与原生应用，不授权 child 直接修改父组件。</li></ol>
+<p>研究完成或研究者同意主观点，都不会自动提高置信度；需要新的相关证据、反例处理或区分实验。持续研究与一次性 delegate_task 不同；保存的 Subagent 是上下文／角色配置，Auto-Research 是持续研究协议，两者也不等价。</p>
+
+<h2 id="memory">7. Memory 的生命周期</h2>
+<table><tr><th>scope</th><th>当前绑定</th><th>适合内容</th></tr><tr><td>task</td><td>本次任务</td><td>带控制模式条件的方向规则；不能据此声称跨任务 long-term memory 已实现。</td></tr><tr><td>episode</td><td>当前 episode；公开 RESET 等边界改变实例</td><td>当前尝试有效、重置后需重查的假设或约束。</td></tr><tr><td>level</td><td>当前关卡实例；换关／重置改变绑定</td><td>地图、当前关卡目标候选、地形信息。</td></tr><tr><td>state</td><td>当前观测实例</td><td>非常局部的知识；优先避免与 runtime 状态重复。</td></tr></table>
+<p>runtime 从公开执行边界机械绑定 task_ref／instance_ref，而不是从自然语言猜是否换关。scope 过期影响可用性／投影；日志中某条旧记录仍写 active，不代表当前投影仍有效。主动 retire 会留下新版本退役记录。失败模式、适用范围、成功模式可以通过组件内容、method 元数据、assessment 与 trace 记录，但不能声称已有自动完善所有这些字段的语义管理器。</p>
+
+<h2 id="evaluation">8. 实际使用、评价与已知复评缺陷</h2>
+<p>trace 的主要连接是：观察引用 → 作者决策 → 组件精确版本 → 装配 → 曝光／调用／行动引用 → assessment。Skill 使用可在后续 arc_action.decision.basis_refs 标注版本；Tool／Subagent 调用有执行结果。效果结论为 supported、unsupported 或 inconclusive；结论范围是已观察使用，而非普遍真理或因果性能证明。</p>
+<div class="note"><strong>尚未修复的目标选择缺陷：</strong>assessHarnessEffect 的隐式候选只包含未评估过的 decision。新运行第20步引用了方向 Memory v1，但 direction 的 decision-1 已评估；省略 decision_id 的复评无法选中原目标，出现 supported 缺实际使用证据的错误。这不是第20步未引用版本。显式选择原 decision 是现有接口路径；自动选择仍需修复与回归测试。退役的“内容不再出现”也应与“组件被使用”分开评估，尚需专门核对。</div>
+<p>因此当前不是可靠的自动持续调优系统：主 Agent 仍须提出评估与修订；有轨迹文件不代表语义反思已经执行，也不能把未来计划写成已实现能力。</p>
+
+<h2 id="arc">9. ARC 运行、观察与复盘</h2>
+<ul><li>每个决策周期可包含分析、创建、研究和委派，最后以一个可用 arc_action 结束；当前公开 frame 已注入上下文。</li>
+<li>每5次成功环境动作生成增量 review 机会，每20次为 consolidation。两者是建议，不是阻挡行动的闸门；创建无需等窗口。</li>
+<li>换关、RESET、失败触发 whole-level review 相关流程；最终 terminal review 为只读。复盘应覆盖具体应用、浪费、机制、失败与下一次建议。</li>
+<li>validation_window 是局部假设检查窗口；到期或被替换并不证明假设成立或失败，也不是全局动作上限。</li>
+<li>max-actions=0 移除本地 runner 上限，不移除游戏内燃料、危险、计时器或原生终止条件。</li>
+<li>观察投影近期修复为保留紧凑 changed_cells、bbox、frame_available；不携带巨大 cells 数组。窗口省略重复声明时也保存 progress。旧进程不会自动热加载这些修改。</li></ul>
+
+<h2 id="example">10. 用户提出的三层推理如何映射</h2>
+<p>以下为设计解释，不是声称这些组件已经全部由运行生成。</p>
+<table><tr><th>推理层次</th><th>Memory／证据</th><th>Skill／Tool／Subagent</th><th>研究问题</th></tr>
+<tr><td>定位可控对象与动作</td><td>某动作造成某位移，条件与反例；方向映射是候选事实。</td><td>Skill：如何选择探测、比较前后帧、排除非对象变化。Tool：已支持的差分与统计。Subagent：独立检查对象归因。</td><td>变化是否来自控制、动画、计时器或隐含条件？哪些实验能区分？</td></tr>
+<tr><td>目标与限制</td><td>目标候选、门／开关条件、资源消耗假设，保留证据和作用域。</td><td>Skill：提出竞争解释并选择区分实验。Tool：资源计数／可达性计算。Subagent：反例搜索。</td><td>覆盖标记是否必要／充分？阻挡是几何、状态门还是动作无效？</td></tr>
+<tr><td>约束下规划</td><td>当前计划及依赖假设；关卡变化后重新判断。</td><td>Skill：建模、选择算法、检验计划与重规划。Tool：在已实现运算面上求路／预算校验。Subagent：独立可行性审查。</td><td>计划为何失败？补给、状态变化、模型遗漏还是搜索策略不足？</td></tr></table>
+<p>各层可以交替推进：允许用暂定假设规划，通过实验修订，再更新方法。没有“先把所有低层规律证实，才能规划”或“Memory 转化完才能创建 Skill”的阶段锁。</p>
+
+<h2 id="evidence">11. 当前证据、变化与未完成项</h2>
+<h3>最新真实运行快照</h3>
+<p>2026-09-25 约10:57核对：新运行 <code>arc-hypothesis-current-20260924</code> 的 PID89352 存活；最近核对到动作347，完成2关，NOT_FINISHED。凌晨“没有 Skill、没有研究启动”已经过时。</p>
+<ul><li>已生成 <code>skill:grid-delta-probe@v1</code>，北京时间00:21:32创建。流程包括识别候选对象、单步探测、判断位移或拒绝、排除固定计数器、记录控制映射、测试通行性和停止／失败处理。</li>
+<li>内容仍有待验证假设：最大紧凑非地板区域就是可控对象、变化区域约为对象两倍、固定50-cell级别，以及“每种颜色探测一次”的充分性。它已经是流程而非纯轨迹，但不等于普适正确。</li>
+<li>最新读取的 assembly revision3 选择该 Skill 与三条关卡 Memory。装配存在不等于最新关卡下这些 Memory 均仍 eligible，也不自动证明每步正确使用。</li>
+<li>research-session-1、2 各有 completed 最新版本；session-3 的最后记录为 active。active 日志不是子进程仍存活的证明；本次未对该 child 做进程核验，也未完成两份报告的逐项质量审计。</li>
+<li>未在本次该运行检查中发现 task-tools／task-subagents 产物文件。旧运行原PID33472已不在查询结果中，末条 bridge 是 environment_call_started；不能据此推断正常结束或具体退出原因。</li></ul>
+<h3>验证范围</h3>
+<p>最新 <code>arc-delta-full-smoke-20260925</code>：15场景通过，真实ARC SDK／bridge／Pi／broker和runtime边界，<strong>provider为确定性替身</strong>。覆盖五类组件、结构化返回、创建、装配、使用、后续父轮，以及 research／普通delegate 的 length continuation；增强了 delta／窗口连续性检查。它证明线路可达，不证明真实模型自主选择正确、研究收益或通关质量。</p>
+<p>最新已完成全量 pytest：621通过、51失败。存在历史预期、契约／生命周期／fixture／其他benchmark等不同类别，不能一概宣称无害或过时。未完成全部失败审计与修复。</p>
+<h3>与目标仍有差距</h3>
+<ol><li>真实运行现在已经出现方法转化和研究执行，但是否及时、内容是否符合定位、后续是否有效采用，需要沿具体报告和行动继续验证。</li><li>复评自动目标绑定仍有缺陷；不能用一次评估替代持续检验。</li><li>Tool／Subagent 线路烟测可达，但本次自主运行尚未证明相应能力转化；不应强制数量配额来制造“成功”。</li><li>研究跨阶段连续性、父子实验反馈和压缩后认知保持仍是未完成验收项；相关待办不是授权一次性扩大架构。</li><li>当前还存在 creator／schema／精确引用等操作摩擦。优先修复指导、默认选择与真实连接，不叠加更高质量的入池门槛。</li></ol>
+
+<h2 id="sources">12. 核对入口与证据索引</h2>
+<p>以下均为项目相对路径，供在仓库内追溯；附件不依赖外部脚本、字体、网络资源或这些文件才能阅读。</p>
+<table><tr><th>内容</th><th>文件</th></tr>
+<tr><td>父入口、预检、native路由、效果评价</td><td>demo/pi_task_local_self_harness.ts</td></tr>
+<tr><td>组件装配与CAS</td><td>demo/pi_task_harness_assembly.ts</td></tr>
+<tr><td>Review规范化、默认占位、5／20窗口</td><td>demo/pi_harness_review.ts</td></tr>
+<tr><td>Creator目录、哈希、模板</td><td>demo/pi_harness_baseline_methods.ts；demo/harness-methods/</td></tr>
+<tr><td>父Agent执行指导与转化流程</td><td>demo/prompts/arc_decision_cycle.md；self_harness_index.md；capability_extraction_process.md</td></tr>
+<tr><td>工具／角色与上下文</td><td>demo/pi_task_local_tools.ts；pi_task_tool_contract.ts；pi_task_local_subagents.ts；pi_subagent_context_recipe.ts</td></tr>
+<tr><td>Memory作用域</td><td>demo/pi_memory_validity.ts</td></tr>
+<tr><td>研究handoff／输出／router</td><td>demo/pi_auto_research_handoff.ts；pi_auto_research_output.ts；pi_auto_research_harness_router.ts</td></tr>
+<tr><td>真实运行</td><td>runs/arc-hypothesis-current-20260924/run/：task-skills.jsonl、task-harness-assemblies.jsonl、auto-research-sessions.jsonl、execution-observations.jsonl</td></tr>
+<tr><td>验证与未完成项</td><td>runs/arc-delta-full-smoke-20260925/arc-self-harness-smoke-summary.json；runs/test-delta-projection-audit-20260925.xml；docs/plans/2026-09-25-arc-followup.md；docs/deferred-research-todos.md</td></tr></table>
+<p class="muted">结论：当前是“主 Agent 作者与选择 + 确定性版本／装配／执行 + 可选持续研究”的架构。已有真实转化与研究启动证据，但持续有效性与质量闭环仍未全面验证。本报告本身未修改runtime、未重启ARC，也未新增准入规则。</p>
+</main></body></html>

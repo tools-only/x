@@ -1,0 +1,7 @@
+{
+  "tests/test_pure_source_diagnostics_native.py": "c77317482a2e335d15d0124c6533844f5e4bb6c63b669783978ed2f6dfe5c610",
+  "tests/test_task_pure_python_native.py": "96cbc06848a95d5e4fda6fa5cc4e581c7cf984b44b297608e59c852eefca8516",
+  "tests/test_harness_argument_integrity_native.py": "49641b815caf513e1c9a3763bee51440776f31647d384ede59413877c4b3273b",
+  "tests/pi_harness_argument_http_fixture.ts": "160b63091cb3218fd1bc16020e9d839ed4bfd0036c7e0632624ff5518b1c6141",
+  "tests/fixtures/harness-stage140-failed-source-call.json": "5958e7d99761e779ad0922227fc1bceaa5d33bca0849a0c0603f9de0732a0661"
+}

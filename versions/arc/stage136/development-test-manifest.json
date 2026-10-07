@@ -1,0 +1,9 @@
+{
+  "tests/pi_harness_argument_http_fixture.ts": "713d60fbec137d930e233df59c4fb6c9a97f69e13fa2860e331157790926218c",
+  "tests/test_harness_argument_integrity_native.py": "6b3891fe0f843865e37297cf94e8066a0af885f8693fb202f47c9fe2325cd802",
+  "tests/fixtures/harness-stage134-malformed-arguments.json": "a2488a15d132421653e70a7c807a9ebedaca38f94f08a4c6dbad1a16615158f7",
+  "tests/pi_harness_argument_api.test.ts": "871fcb8ebcefba1af23e5523bf7162964511381e1850f268e58c86e42f077cfa",
+  "tests/pi_task_tool_literal_name.test.ts": "0d8c14ef71ce5142fde0d95b995cf861495baeb08d6157014d137195a3fdcb84",
+  "tests/test_task_tool_literal_name_native.py": "7f73799a1e2f53cfc7ec7dc3c7e0ee2c7b73c639331a10eef153cf761696cf90",
+  "tests/fixtures/harness-stage135a-original-compute-call.json": "f8a1f0100da065635b72f03fe4faec4dae31be993ab761b2e88e093cf58f9fb1"
+}

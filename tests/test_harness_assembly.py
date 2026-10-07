@@ -27,6 +27,7 @@ def run_assembly_helper(expression, *, input_value=None):
 
 def test_task_prompt_contributions_accept_non_memory_sources_and_order_layers():
     value = {
+        "expected_assembly_revision": 0,
         "selected_resource_refs": ["skill:route-check@v2"],
         "prompt_contributions": [
             {
@@ -72,6 +73,7 @@ def test_task_prompt_contributions_accept_non_memory_sources_and_order_layers():
 
 def test_prompt_contribution_activation_and_stale_dependency_are_suppressed():
     value = {
+        "expected_assembly_revision": 0,
         "selected_resource_refs": [],
         "prompt_contributions": [
             {
@@ -106,8 +108,9 @@ def test_prompt_contribution_activation_and_stale_dependency_are_suppressed():
     }
 
 
-def test_assembly_revision_is_compare_and_swap_but_omission_binds_current():
+def test_assembly_revision_is_required_compare_and_swap():
     value = {
+        "expected_assembly_revision": 0,
         "selected_resource_refs": [], "prompt_contributions": [],
         "decision": {"basis_refs": [], "reason": "Refresh selection.", "expected": "Use the new selection."},
     }
@@ -115,14 +118,19 @@ def test_assembly_revision_is_compare_and_swap_but_omission_binds_current():
         "(()=>{const i=JSON.parse(process.env.HARNESS_ASSEMBLY_TEST_INPUT);"
         "const base=assembly.createHarnessAssembly({input:i,previous:undefined,resolveComponentRef:r=>r,"
         "resolveSourceRef:r=>r,recordedAt:'2026-09-21T00:00:00.000Z'});"
-        "const next=assembly.createHarnessAssembly({input:i,previous:base,resolveComponentRef:r=>r,"
+        "const next=assembly.createHarnessAssembly({input:{...i,expected_assembly_revision:1},previous:base,resolveComponentRef:r=>r,"
         "resolveSourceRef:r=>r,recordedAt:'2026-09-21T00:01:00.000Z'});"
-        "let conflict;try{assembly.createHarnessAssembly({input:{...i,expected_assembly_revision:1},previous:next,"
+        "let stale,missing;try{assembly.createHarnessAssembly({input:{...i,expected_assembly_revision:1},previous:next,"
         "resolveComponentRef:r=>r,resolveSourceRef:r=>r,recordedAt:'2026-09-21T00:02:00.000Z'});}"
-        "catch(e){conflict=assembly.assemblyConflictDetails(e);}return {base:base.revision,next:next.revision,conflict};})()",
+        "catch(e){stale=assembly.assemblyConflictDetails(e);}"
+        "const {expected_assembly_revision,...withoutCas}=i;try{assembly.createHarnessAssembly({input:withoutCas,previous:next,"
+        "resolveComponentRef:r=>r,resolveSourceRef:r=>r,recordedAt:'2026-09-21T00:03:00.000Z'});}"
+        "catch(e){missing=assembly.assemblyConflictDetails(e);}return {base:base.revision,next:next.revision,stale,missing};})()",
         input_value=value,
     )
     assert result["base"] == 1 and result["next"] == 2
-    assert result["conflict"]["format"] == "task-harness-assembly-version-conflict-v1"
-    assert result["conflict"]["requested_revision"] == 1
-    assert result["conflict"]["current_revision"] == 2
+    assert result["stale"]["format"] == "task-harness-assembly-version-conflict-v1"
+    assert result["stale"]["requested_revision"] == 1
+    assert result["stale"]["current_revision"] == 2
+    assert result["missing"]["requested_revision"] is None
+    assert result["missing"]["current_revision"] == 2

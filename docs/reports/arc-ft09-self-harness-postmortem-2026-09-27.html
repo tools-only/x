@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ARC ft09 实际运行复盘｜2026-09-27</title>
+  <style>
+    :root{--ink:#192433;--muted:#5c6b7b;--line:#d8e1ea;--paper:#fff;--canvas:#f2f5f8;--blue:#2355a6;--pale:#eaf1fb;--green:#1d7048;--green-bg:#e8f5ee;--amber:#805600;--amber-bg:#fff4d9;--red:#9b3131;--red-bg:#fcebea;--violet:#624b91;--violet-bg:#f1ecfa}
+    *{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.72 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+    main{max-width:1120px;margin:32px auto;padding:0 20px 60px}.hero{background:linear-gradient(135deg,#142b4b,#285da3);color:#fff;border-radius:18px;padding:34px 38px;box-shadow:0 14px 36px #1c365522}.eyebrow{opacity:.8;letter-spacing:.08em;font-size:12px;text-transform:uppercase}.hero h1{font-size:clamp(26px,4vw,40px);line-height:1.2;margin:10px 0}.hero p{max-width:850px;color:#e2ebf7;margin:10px 0 0}.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.chip{border:1px solid #ffffff66;border-radius:999px;padding:3px 10px;font-size:12px;color:#f2f6fc}
+    nav,.card,.section{background:var(--paper);border:1px solid var(--line);border-radius:14px;margin-top:18px;padding:22px 26px;box-shadow:0 3px 12px #17324b08}nav ol{columns:2;margin:6px 0 0;padding-left:20px}nav a{color:var(--blue);text-decoration:none}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:18px}.kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}.kpi b{display:block;font-size:26px;line-height:1.2}.kpi span{font-size:12px;color:var(--muted)}
+    h2{font-size:23px;line-height:1.3;margin:0 0 14px}h3{font-size:17px;margin:20px 0 8px}h4{font-size:14px;margin:14px 0 5px;color:#294361}p{margin:8px 0}ul,ol{padding-left:22px;margin:7px 0}li{margin:4px 0}.lead{font-size:17px;color:#34465a}.muted,.source{color:var(--muted);font-size:13px}.status{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:650;white-space:nowrap}.ok{color:var(--green);background:var(--green-bg)}.partial{color:var(--amber);background:var(--amber-bg)}.fail{color:var(--red);background:var(--red-bg)}.info{color:var(--blue);background:var(--pale)}.research{color:var(--violet);background:var(--violet-bg)}
+    .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin:12px 0}table{border-collapse:collapse;width:100%;min-width:760px;background:#fff}th,td{padding:10px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{background:#f5f8fb;font-size:13px;color:#354960}tr:last-child td{border-bottom:0}.component{border-top:1px solid var(--line);padding-top:10px;margin-top:12px}.component:first-of-type{border-top:0}.callout{padding:12px 15px;border-left:4px solid var(--blue);background:var(--pale);border-radius:7px;margin:12px 0}.callout.warn{border-left-color:#c38a12;background:var(--amber-bg)}.callout.bad{border-left-color:#bd4a42;background:var(--red-bg)}.code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;background:#f3f5f7;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}.steps{counter-reset:step;list-style:none;padding:0}.steps li{counter-increment:step;position:relative;padding:0 0 0 38px;margin:12px 0}.steps li:before{content:counter(step);position:absolute;left:0;top:0;background:var(--pale);color:var(--blue);font-weight:700;border-radius:50%;width:26px;height:26px;text-align:center;line-height:26px}
+    details{border:1px solid var(--line);border-radius:10px;margin:10px 0;background:#fff}summary{cursor:pointer;padding:12px 15px;font-weight:700;color:#294361}details .inside{padding:0 16px 16px}.tag{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--muted)}footer{margin-top:22px;padding:18px 4px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}
+    @media(max-width:760px){main{margin:12px auto;padding:0 10px 35px}.hero{padding:25px 22px}.section,.card,nav{padding:18px}.kpis{grid-template-columns:repeat(2,1fr)}nav ol{columns:1}}
+    @media print{body{background:#fff;font-size:11pt}main{max-width:none;margin:0;padding:0}.hero,.card,.section,nav{box-shadow:none;break-inside:avoid}.section{break-before:auto}a{color:inherit;text-decoration:none}.table-wrap{overflow:visible}table{min-width:0;font-size:9pt}.kpis{grid-template-columns:repeat(4,1fr)}}
+  </style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <div class="eyebrow">真实 ARC 运行复盘 · Self-Harness</div>
+    <h1>ft09 六关任务：组件转化、策略演进与第三关停滞原因</h1>
+    <p>这次运行展示了从最初的环境探索到两关成功、再到第三关候选答案搜索的完整片段。五类 Harness 均进入候选池并被装配，但第三关未解决，运行在 163 次 agent action 后因 runner 超时终止。</p>
+    <div class="meta"><span class="chip">游戏 ft09-0d8bbf25</span><span class="chip">Treatment</span><span class="chip">Jev 路由关闭</span><span class="chip">max-actions=0</span><span class="chip">provider yibu / deepseek-v4-flash</span><span class="chip">2026-09-27（上海时间）</span></div>
+  </header>
+
+  <section class="kpis" aria-label="运行指标">
+    <div class="kpi"><b>2 / 6</b><span>完成关卡；第三关未完成</span></div>
+    <div class="kpi"><b>163</b><span>runner 记录的 agent actions</span></div>
+    <div class="kpi"><b>5 / 5</b><span>Harness 类型均有候选并进入最终装配</span></div>
+    <div class="kpi"><b>1</b><span>Auto-Research 方法候选，尚未被父 agent 接纳</span></div>
+  </section>
+
+  <nav aria-label="目录"><strong>目录</strong><ol>
+    <li><a href="#verdict">结论与预期对照</a></li><li><a href="#components">Harness 组件明细</a></li>
+    <li><a href="#evolution">方法演进审计中文解读</a></li><li><a href="#levels">逐关复盘中文翻译</a></li>
+    <li><a href="#failures">失败模式与第三关难点</a></li><li><a href="#next">下一步优化方向</a></li><li><a href="#evidence">证据来源与口径</a></li>
+  </ol></nav>
+
+  <section class="section" id="verdict">
+    <h2>1. 结论：哪些预期实现了，哪些仍未闭环</h2>
+    <p class="lead">本次比“只积累 Memory”前进了一步：Skill、Tool、Subagent 和 System Prompt 都由主 agent 创建并参与装配；主 agent 也在两关成功后写出了步骤化成功路径。核心缺口出现在实际质量与延续上：一个 Tool 是恒等透传，Auto-Research 方法停在候选，第三关策略搜索耗时过长并被 runner 超时截断。</p>
+    <div class="table-wrap"><table><thead><tr><th>设计预期</th><th>本次实际证据</th><th>判断</th></tr></thead><tbody>
+      <tr><td>早期允许主 agent 探索，并在需要时自由创建组件，不被“只能写 Memory”卡住</td><td>最终资源池含 System Prompt 1、Memory 4 条记录、Skill 1、Tool 1、Subagent 1；assembly 到 revision 5 时选择了五类组件。</td><td><span class="status ok">转化路径已出现</span></td></tr>
+      <tr><td>环境与目标逐渐明确后，形成任务级模型并识别能力瓶颈</td><td>完成前两关，第三关提出多种候选答案集合；一次 Auto-Research 写出“按区域类别覆盖探测并记录完整状态差分”的方法候选。第三关仍未形成可验证的最终规则。</td><td><span class="status partial">部分实现</span></td></tr>
+      <tr><td>不同路径/假设竞争，尝试后积累证据并演进高阶能力</td><td>Level 2 尝试 C0、180°、全环、并集等候选；第 9 次 subagent 审核发现 180° 候选差分应为 12 而非 10，并指出全局 180° 在重叠区无法判定。</td><td><span class="status partial">有竞争与审计，收敛效率不足</span></td></tr>
+      <tr><td>真实产出并使用各类组件</td><td>五类都有候选并在最终 assembly 被选中；但 Tool 5 次完成调用全部标记为“输出未偏离输入”，另有 26 次因资源扫描超限失败。Subagent 7 次调用，4 完成、3 超时。</td><td><span class="status fail">池与装配闭环；语义使用质量不平衡</span></td></tr>
+      <tr><td>成功之后提炼可执行路径，并保留失败条件、恢复方案</td><td>Level 0 与 Level 1 各有一份 4 步 `success_path`；Level 0 首次 RESET 与 Level 2 RESET 均有失败模式记录。路径按步骤和检查条件描述，不是纯轨迹抄录。</td><td><span class="status ok">关卡级机制已运行</span></td></tr>
+      <tr><td>完成整场 ARC，并验证组件/研究闭环</td><td>运行在 163 次 agent action 后超时退出；2/6 关完成。Research 方法审计在 adoption 处中断，尚无该方法的 Harness 资源、后续应用、效果评估和反馈研究。</td><td><span class="status fail">整场任务与方法生命周期未闭环</span></td></tr>
+    </tbody></table></div>
+    <div class="callout warn"><strong>运行终止口径：</strong>命令设置 <span class="code">--max-actions 0</span>，本地步数限制被关闭；但这不等于没有运行时期限。本次 runner 写出 <span class="code">TimeoutError: timed out</span>，且 action-200 检查文件记录目标 200、runner 退出前只观察到 163 次 agent action。没有活跃的 ARC runner、bridge 或 Pi 进程。</div>
+  </section>
+
+  <section class="section" id="components">
+    <h2>2. 实际 Harness 组件明细</h2>
+    <p>最终 assembly revision 5 精确选中了：<span class="code">system_prompt:induction-policy-phase1@v1</span>、两条 Memory、<span class="code">tool:frame-cell-query@v1</span>、<span class="code">subagent:level1-completion-audit@v1</span> 和 <span class="code">skill:mosaic-answer-set-computation@v1</span>。Research report、方法候选与复盘记录仍是各自的研究/证据数据，不是第六种 Harness 组件。</p>
+    <div class="component"><h3>System Prompt：induction-policy-phase1@v1</h3>
+      <p><strong>承载能力：</strong>早期探索规则。要求以当前画面和确定性差分为准；维护 2–3 个关于 ACTION6 与目标的竞争假设；每次动作只变化一个区分条件，记录预测与反证；从灰色边框、彩色区域、画布/答案区、状态条、图案格等类别覆盖探测；证据未支持时不臆造完整目标；目标明确后替换本阶段策略。</p>
+      <p><strong>观察：</strong>这条 prompt 与早期探索阶段匹配，也被后续 assembly 选中。但运行一直只有这一版 phase 1 prompt；在 Level 0/1 规则已逐渐清晰、进入 Level 2 候选答案规划后，没有看到对应的 phase 2 任务级计划 prompt。阶段切换条件写在 prompt 里，未成为实际的自适应切换闭环。</p>
+    </div>
+    <div class="component"><h3>Memory：4 条版本记录，当前 3 个 key</h3>
+      <ol>
+        <li><strong>action6_requires_coordinates@v1，active，task scope：</strong>“x、y 必须是 0–63 的整数；不带坐标会收到复杂 ARC action 的 400 错误。”依据 execution-observation-1。这是有明确接口证据的事实。</li>
+        <li><strong>action6-probe-0000-noop@v1，active，task scope：</strong>对最初位置的 ACTION6 探测没有可见格子变化，依据 observation-2、3。随后同 key 的 v2 被退休。</li>
+        <li><strong>action6-probe-0000-noop@v2，retired：</strong>保留版本历史，退休原因字段为“父级判断被反证或过时后重新考虑”。</li>
+        <li><strong>action6-probe-series@v1，active，task scope：</strong>“所有已探测区域均无变化”。这条总结缺少 <span class="code">basis_refs</span>，且表述比证据范围更广；后续答案区点击确实改变了 6×6 区块。因此它应按关卡/探测条件限定或更新，不能作为当前全任务事实继续使用。</li>
+      </ol>
+      <p><strong>生命周期判断：</strong>所有这些事实都标为当前 task scope，没有清晰区分跨关卡长期接口知识、Level 0/1 规则和单次尝试状态。版本退休机制存在，但被反证的宽泛 Memory 没有同步退休。</p>
+    </div>
+    <div class="component"><h3>Skill：mosaic-answer-set-computation@v1</h3>
+      <p><strong>用途：</strong>从当前帧 RLE 解析 ft09 马赛克格，计算候选答案 12 色集合并规划 ACTION6 点击，避免手工块索引和中心坐标错误。它是具体的计算流程，而非观察日志。</p>
+      <h4>Skill 正文的中文要点</h4>
+      <ul>
+        <li>每个块为 6×6 像素，间距/步长为 8；块中心使用当前帧重新计算。均匀块与混色图案块分开识别，灰色边框/分隔线不可当成答案块。</li>
+        <li>每关先从当前帧读取中心图案，枚举身份、翻转、旋转等变换，将图案值映射为目标颜色；遇到重叠面板时显式处理所有权与优先规则。</li>
+        <li>把候选集合与当前目标色集合做差，按最小差异优先试验。每次点击前重读当前块颜色；点击后核对 36 格变化、差分包围盒和 <span class="code">level_changed</span>。候选完整但未通关时淘汰该假设并重新规划。</li>
+      </ul>
+      <p><strong>作用边界：</strong>适用范围写为 ft09 同类 6×6 块马赛克关卡，色彩映射需逐关重验。该 Skill 在 Level 2 创建并装配，但它所支持的 Level 2 候选规则没有得到通关验证，不能把 Skill 创建/投影算成效果已证实。</p>
+      <div class="callout warn"><strong>坐标公式存在待核对差异：</strong>Skill 正文写块中心 <span class="code">x=8c+6, y=8b+6</span>；Level 2 复盘的 next_attempt 则写 <span class="code">x=8c+14, y=8b+6</span>。这可能来自两套不同的列索引基准，但日志中没有把坐标原点统一解释。下一轮应在 Creator/Skill 中明确“逻辑块坐标”与“64×64 像素坐标”的转换，并以真实 observation 验证。</div>
+    </div>
+    <div class="component"><h3>Tool：frame-cell-query@v1</h3>
+      <p><strong>预期用途：</strong>从 64×64 当前帧返回给定坐标颜色及每种颜色计数，减少反复手工解码 RLE。</p>
+      <p><strong>实际实现与效果：</strong>程序表达式是 <span class="code">{ "op": "input" }</span>，即把输入原样返回；五次 completed 调用的日志均为 <span class="code">semantic_effect_observed=false</span>、<span class="code">output_not_input=false</span>。另有 26 次 failed，均因绑定快照扫描量超过准备上限（日志例值约 1.2–1.7 MB；其中一次报 1,536,551 bytes）。因此它虽然入池且被 assembly 选中，但没有实现其说明中的查询功能。</p>
+      <p><strong>结论：</strong>本次最明确的组件实现缺陷。状态“completed”不能当作语义成功；应重新用 Tool Creator 作者化真正的 cell lookup / color-count 变换，并让 Runtime 只绑定当前帧的精简视图，避免每次扫描全量日志。</p>
+    </div>
+    <div class="component"><h3>Saved Subagent：level1-completion-audit@v1</h3>
+      <p><strong>用途：</strong>只读、盲审候选完成条件；接收结构化证据后输出排序结论、区分性试验和风险，不拥有 ARC action 权限。7 次委派中 4 次完成、3 次失败；失败的 3 次均报告 300 秒 runtime budget exceeded，任务包含整帧/大量矩阵的穷举审计。</p>
+      <p><strong>有效贡献：</strong>一个独立算术审查指出 180° 候选集差分应为 12 而不是原先写的 10；全局 180° 因重叠面板冲突无法从给定信息验证。它为 Level 1 的 M1 结论提供过审查，但第 3 关审计超时率表明委派必须拆成单面板/单候选/单统计量的短任务。</p>
+    </div>
+  </section>
+
+  <section class="section" id="evolution">
+    <h2>3. 方法演进审计：中文翻译</h2>
+    <p>审计文件：<span class="code">method-evolution-audit.json</span>。结论为 <strong>complete=false</strong>；共有 1 个方法候选，完整链条为 0。首个未通过阶段是 Adoption（父 agent 接纳）。</p>
+    <div class="table-wrap"><table><thead><tr><th>阶段</th><th>审计结果</th><th>中文说明</th></tr></thead><tbody>
+      <tr><td>跨情境归纳</td><td><span class="status fail">未通过</span></td><td>研究报告没有保留至少两条精确的构造观察，并把它们映射到来源比较中的不同情境。相关材料被审计标为“可供准备”，但有效跨情境归纳证据尚未形成。</td></tr>
+      <tr><td>方法候选</td><td><span class="status ok">通过</span></td><td>候选方法包含输入、判断、停止/失败边界和可反证条件。方法名为“ARC bridge 类别覆盖探测”，来源是 <span class="code">research_report:auto-research-1@v1</span>。</td></tr>
+      <tr><td>父 agent 接纳</td><td><span class="status fail">未通过</span></td><td>没有父 agent 把该方法转成某个精确版本的 Harness 资源。方法生命周期记录的 <span class="code">resource_refs=[]</span>。</td></tr>
+      <tr><td>后续 ARC 实际使用</td><td><span class="status fail">未通过</span></td><td>没有后续成功 ARC action 同时满足：先读取精确 Harness 版本、action 引用该版本、并记录预测与反证条件。单纯暴露、读取或调用工具均不算方法应用。</td></tr>
+      <tr><td>效果评估</td><td><span class="status fail">未通过</span></td><td>没有一个效果评估和方法生命周期版本同时引用同一条实际使用 action。</td></tr>
+      <tr><td>反馈研究</td><td><span class="status fail">未通过</span></td><td>没有同一研究线上的后续报告同时读取效果评估并引用被评估的 action。</td></tr>
+    </tbody></table></div>
+    <h3>Auto-Research 报告的中文翻译</h3>
+    <p>三条 ACTION6 观察不足以推断游戏规则，但支持一个有边界的可复用流程：先用一次缺参调用澄清 action 契约（错误明确指出必须提供整数 x、y），再按区域类别设计探测，并逐次比较完整状态差分。两个有效调用分别点在灰色边框与均匀色块上，格子均无变化，但预算递增；首个有效动作后可用动作集合还出现了 RESET。因此，“没有像素变化”不能简化成“没有状态变化”。报告保留了区域条件、顺序状态和目标检测等竞争假设，并提出以底部状态条位置作下一项区分性试验。</p>
+    <p><strong>审计解释：</strong>这份研究不是单纯轨迹摘要，而是提炼了探测方法；问题是该方法停在研究报告/候选层，父 agent 没有通过对应 Creator 将它接纳为 Skill、Tool 或 System Prompt，再装配并验证。handoff 状态为 proposed，没有路由回执。</p>
+  </section>
+
+  <section class="section" id="levels">
+    <h2>4. 关卡复盘记录：中文翻译与证据边界</h2>
+    <p>以下是 <span class="code">task-level-reviews.jsonl</span> 四条记录的译文摘要。Level 编号按日志内部索引：日志 level=0 对应第 1 关；level=2 对应第 3 关。</p>
+    <details open><summary>第 1 关（level 0）· 第一次尝试后 RESET：未通关</summary><div class="inside">
+      <h4>复盘摘要译文</h4><p>第一次尝试共 6 次 ARC action，屏幕格子没有变化。缺参调用在零预算代价下揭示 ACTION6 需要 0–63 的整数坐标。随后测试灰边、棕红色内容块、底部色条和图案格，均为 changed_cells=0、bbox 为空、关卡未变化。RESET 也没有可见像素变化，但被消耗，之后可用 action 集合只剩 ACTION6。镜像规则与 BR 答案区异常格仍是未验证假设。</p>
+      <h4>不足与经验译文</h4><ul><li>3 次 validation assessment 因 target_version/evidence 引用契约失败，未完成验证账本。</li><li>两次 Tool 创作失败（名称格式、表达式解析）；手工读 RLE 曾把 (44,44) 错当环格，实际是图案格中的 0。</li><li>一个坐标的 no-op 只能支持该条件；需要跨区域类别覆盖，不能推出全局 no-op。RESET 在本游戏的每次尝试中是一次性的，应把每个动作按信息价值排序。</li></ul>
+      <h4>记录的下一步</h4><p>装配并调用 frame-inspector 查询工具，核实镜像规则和蓝框 BR 真实违规格；再检查答案面板中心。如果仍无变化，再检验坐标是否映射到逻辑网格而非像素网格。</p>
+    </div></details>
+    <details open><summary>第 1 关（level 0）· 成功：产生 success_path 候选</summary><div class="inside">
+      <h4>复盘摘要译文</h4><p>64×64 画面由 6×6 像素块构成四个 3×3 面板。蓝框 BR 面板是答案区，环绕块需镜像其中心图案：0→8、2→9。发现四个环块为 9，但规则要求 8；依次点击 (39,39)、(39,46)、(54,46)、(39,54) 后通关。</p>
+      <h4>成功路径四步译文</h4><ol><li>把当前帧解析为 6×6 块，识别四个面板与蓝框答案面板，读取其 3×3 中心图案。</li><li>对 8 个环块按中心镜像映射计算目标色，并列出块坐标、当前色与目标色。</li><li>对每个违规块点击其中心坐标，检查该块变化 36 格及进度条变化。</li><li>每次点击后读公开状态；最后一个正确修复应使 <span class="code">level_changed=true</span>。</li></ol>
+      <p><strong>适用范围与不确定性：</strong>适用于同样布局形式，但每关都必须重新识别答案面板和中心图案；不能把 Level 0 的 0→8/2→9 规则直接套到 Level 1。</p>
+      <h4>失败模式译文</h4><p>“任意有颜色的格子都可编辑”被证据推翻；可编辑性取决于格子在面板中的区域角色，不是是否非灰色。四次 no-op 探测与一次 RESET 消耗了动作，但之后建立的区域分类方法改善了探测。</p>
+    </div></details>
+    <details open><summary>第 2 关（level 1）· 成功：产生第二份 success_path 候选</summary><div class="inside">
+      <h4>复盘摘要译文</h4><p>共使用 31 次本关 action，累计 40 次。最终规则 M1 是两个重叠的 12 中心面板 A、B 的环镜像并集：0→12、2→9、12 保持 12，答案共 13 个位置（7 个 12、6 个 9）。最初按相反映射 M2 涂了 13 块，之后整体撤销并重做；盲审 subagent 的 M1 建议帮助收敛。每次点击都会自动判定，不存在单独提交动作。</p>
+      <h4>成功路径四步译文</h4><ol><li>从当前帧恢复块网格、面板中心，以及每个环块属于哪个面板。</li><li>按每个所属面板中心镜像值计算目标色，生成一致的目标表。</li><li>按目标表逐块执行 ACTION6，并检查 36 格变化；最终正确块到来前 <span class="code">level_changed</span> 应保持 false。</li><li>点击后读取公开转移；最后一个正确环块应触发关卡推进。</li></ol>
+      <h4>不足与经验译文</h4><ul><li>在独立审计之前先执行了错误的 M2 补集方案，造成整组撤销重涂。</li><li>多次低信息 no-op 探测发生在重新解析帧和委派审计之前。</li><li>重叠面板所有权规则直到 M1 确认后才被整理为可复用条件。</li><li>下关应先验证唯一归属块，再碰重叠区，并在关卡切换时重读中心图案。</li></ul>
+      <p><strong>适用范围：</strong>适用于两个重叠的 12 中心面板；未知后续关卡中 8 中心面板是否会成为答案参与者，复盘建议在批量点击前用唯一归属块确认。</p>
+    </div></details>
+    <details open><summary>第 3 关（level 2）· RESET 后仍未通关：失败模式记录</summary><div class="inside">
+      <h4>复盘摘要译文</h4><p>第一次尝试约 90 次本关动作。ACTION6 的块切换语义已确认：点击会在基础色与 12 之间切换整块；Level 2 的基础色为 8；环境每次点击后自动判定。没有单独提交动作。由于 bbox 同时带上右侧空白与第 63 行进度条，单看包围盒会高估格子范围。多组候选集合没有触发通关，最后 RESET 恢复了干净画面。</p>
+      <p><strong>已否定集合：</strong>C0 的 A/D 镜像 10 集；A/D 的 180° 10 集；四面板 180° 及其补充集合；复制规则在四面板上的并集；底部条作为提交按钮等假设。准确集合达到 12 或 17 个目标后仍没有 <span class="code">level_changed</span>，说明规则至少有一处不匹配。</p>
+      <p><strong>RESET 与清洁状态：</strong>RESET 产生 416 格对称差，约对应 10 个块加进度条带，恢复了干净实例；但复盘明确指出旧值到新值的方向仍未由单独试验确认。运行随后在干净状态继续探索，但未能在超时前完成 Level 2。</p>
+      <h4>失败模式译文</h4><p><strong>症状：</strong>按完整候选集合涂色后仍未推进关卡。<br><strong>触发：</strong>假设集合被完整组装，环境却未触发 level_changed。<br><strong>已反证：</strong>C0、180° A/D、180°全局及复制并集候选。<br><strong>恢复/下一试验：</strong>RESET 后从干净帧重新定位中心，枚举镜像/翻转族，按候选与当前集合的最小差异排序逐一试验；每次动作验证 changed_cells 与 level_changed。<br><strong>适用范围：</strong>Level 2 及同类马赛克关卡；置信度 high，边界来源为环境确认。</p>
+      <h4>复盘指出的短板</h4><ul><li>在被反复 toggle 污染的帧上测试大集合，没有及时回到干净基线。</li><li>后续确定性 delta 与手工帧解码发生矛盾，提交候选前没有再次交叉核对。</li><li>frame-cell-query 因绑定快照准备大小限制不可用；全帧委派又触发 300 秒超时，迫使父 agent 手工解码 RLE。</li><li>3 次块索引计算滑移；复盘要求固定转换公式、每次点击前复读目标块，并按最小 delta 排序。</li></ul>
+    </div></details>
+  </section>
+
+  <section class="section" id="failures">
+    <h2>5. 失败汇总与第 3 关的难点分析</h2>
+    <h3>本轮可核实的故障</h3>
+    <ul>
+      <li><strong>运行时限：</strong>runner 写出 <span class="code">TimeoutError: timed out</span>；Pi return code 1、timed_out=true、run_complete=false。action-200-stop 记录 163 次 agent action，未达到 200 检查点。provider_error_count 和 summary environment_error_count 均为 0，但最后一条动作观察含 <span class="code">UND_ERR_HEADERS_TIMEOUT</span>；遥测汇总未体现该条错误，计数口径需要校验。</li>
+      <li><strong>Harness 操作失败：</strong><span class="code">task-operation-failures.jsonl</span> 共 21 条：11 条 contract_error、7 条 operation_failure、3 条 version_conflict。包括 System Prompt 名称曾使用下划线而不符合小写连字符命名规则，以及 validation assess 漏传当前 target_version 等。</li>
+      <li><strong>Tool 调用失败：</strong>26 次输入绑定扫描超限；工具虽有 5 次完成，但 5 次都没有语义变换。工具的声明能力与实际程序实现不一致。</li>
+      <li><strong>Subagent 不稳定：</strong>7 次调用中 3 次超过 300 秒委派预算，通常因为要求整帧分析、枚举大量候选或读取大量记录；4 次返回结果。</li>
+      <li><strong>第 3 关模型空间更大：</strong>四个面板，两类中心，多个重叠区域和变换候选；错误候选每次都需要反复 toggle 才能还原。若不固定清洁基线，下一轮 delta 计算会在污染状态上继续漂移。</li>
+    </ul>
+    <h3>为何第 3 关特别难</h3>
+    <ol class="steps">
+      <li><strong>规则从单答案面板扩展成重叠面板集合推断。</strong>Level 0/1 的成功经验提供“中心图案映射到环块”的先验，但 Level 2 有 12 中心和 8 中心面板；哪些面板参与、重叠区谁优先、使用哪种旋转/镜像变换都需要实验证据。直接复用上关公式会误导。</li>
+      <li><strong>界面差分不等于目标规则。</strong>ACTION6 确认会整块在 8 与 12 间切换，环境逐次点击自动判定；然而候选集合全量完成后仍未通关。每个候选都必须由精确集合和逐步证据支持，不能把涂色动作成功当成假设验证成功。</li>
+      <li><strong>集合试错代价高且状态易污染。</strong>候选集合中常有 10–17 个块；一次错误答案要逐块撤销/重涂。约 90 次本关动作后才 RESET，清洁基线恢复较晚。下一候选前应先计算对称差，选一个或少数能区分假设的块，别先执行整套集合。</li>
+      <li><strong>辅助组件没有按设计提供足够的计算能力。</strong>frame-cell-query 把输入原样返回，无法替代 RLE 解析；大帧绑定还连续失败 26 次。整帧 Subagent 任务超时，实际只靠一次短算术审计发现了 delta 算错和重叠冲突。</li>
+      <li><strong>方法出现但 adoption 没跟上。</strong>Auto-Research 总结出类别覆盖探测方法，Skill 也包含候选枚举流程；不过 Research 方法链没有父 agent 接纳记录，方法和高阶 Skill 之间缺少可追踪的来源/效果闭环。</li>
+    </ol>
+    <div class="callout bad"><strong>关键区分：</strong>第三关不是“完全没有策略”。存在竞争假设、集合排序、subagent 审计、RESET 恢复和 Level 2 Skill；失败在于策略候选没有在剩余运行时间内收敛出可通关集合，工具与委派又没有稳定降低每次试验的解码成本。</div>
+  </section>
+
+  <section class="section" id="next">
+    <h2>6. 下一步优化方向（按优先级）</h2>
+    <ol class="steps">
+      <li><strong>先修复真实运行期限与恢复路径。</strong>定位 runner 超时来自哪一层，分别记录 Pi turn、ARC bridge request 和全局 runtime 时限；保存可恢复 checkpoint，使 163-action 超时后能从最新干净状态续跑，而不是把 <span class="code">max-actions=0</span>误认为没有任何期限。</li>
+      <li><strong>重做 frame-cell-query 的 Tool 程序。</strong>在 Tool Creator 指导下实现真实点查询与颜色直方图，并验证输出和输入不同；解析路径只取精确 observation snapshot 的 frame 节点，不扫描整个 run 目录。验收要断言语义输出、绑定字节数、超限后的有界错误和实际调用成功。</li>
+      <li><strong>把第三关从“枚举并执行整套”改成“候选集合＋最小区分试验”。</strong>状态表记录每个候选集合、当前目标色集合、对称差、唯一归属块、预测格数、反证条件。只先执行能区分候选的最小块；候选失败后 RESET 并重算，不在未知污染状态继续。</li>
+      <li><strong>把坐标系单一化。</strong>Skill 的 <span class="code">8c+6</span> 与 Level 2 复盘的 <span class="code">8c+14</span> 必须用同一组逻辑块索引/物理帧坐标例子逐项验证，再决定唯一公式，避免让已创建 Skill 固化新的坐标错误。</li>
+      <li><strong>让阶段升级实际发生。</strong>System Prompt v1 是探索阶段策略。达到“动作语义已证实、成功条件已有至少一个可检验模型、约束范围可表述”时，主 agent 应重构到任务级规划 prompt：保留竞争性目标模型、选择试验策略、明确预算、维护回退点，并在每次关卡切换时更新。</li>
+      <li><strong>建立 Research→Harness adoption 闭环。</strong>父 agent 读完 Auto-Research 方法候选后，判断它该变成 Skill、Tool 或 System Prompt；使用各自 Creator 作者化，创建入池，精确 assembly，后续 ARC action 引用版本，随后评估同一预测/反证，最后把效果反馈给同一 Research line。</li>
+      <li><strong>提升 Memory 的生命周期和证据粒度。</strong>把通用 ACTION6 参数契约标为 task 级；把面板映射、目标集合标为 level/attempt 级。所有 Memory 必须引用 observation；一个坐标的 no-op 保留精确坐标、区域类别和当前状态，出现反证时自动进入退休/修订候选。</li>
+      <li><strong>缩小委派任务并给出可判定输出。</strong>拆成“核对一个变换的镜像索引”“检查一个重叠区冲突”“审核一个候选集合 delta”这类任务，输入用结构化矩阵而非整帧长日志；300 秒超时后立即重试缩小任务，并把研究结果保留为候选证据。</li>
+      <li><strong>验证成功路径真的减少后续工作。</strong>Level 0/1 路径现在是有证据的候选方法。后续同格式实例应读取相应路径、执行并记录动作/工具/Token 成本；只有可比条件下复用成功，才能把 proposed omissions 记为实际节省。</li>
+    </ol>
+  </section>
+
+  <section class="section" id="evidence">
+    <h2>7. 证据来源与统计口径</h2>
+    <ul>
+      <li>运行根目录：<span class="code">runs/arc-ft09-manual-20260927-new</span>。</li>
+      <li>终态、模型、关卡数、动作数：<span class="code">summary.json</span>、<span class="code">arc-scorecard.json</span>、<span class="code">action-200-stop.json</span>、<span class="code">runner-error.json</span>。</li>
+      <li>组件正文与版本：<span class="code">task-memory.jsonl</span>、<span class="code">task-system-prompt.jsonl</span>、<span class="code">task-skills.jsonl</span>、<span class="code">task-tools.jsonl</span>、<span class="code">task-subagents.jsonl</span>；装配记录为 <span class="code">task-harness-assemblies.jsonl</span>。</li>
+      <li>工具语义、绑定与失败：<span class="code">task-tool-events.jsonl</span>；Creator/Assembly 等逻辑错误：<span class="code">task-operation-failures.jsonl</span>；委派状态：<span class="code">subagent-invocations.jsonl</span>。</li>
+      <li>研究来源：<span class="code">auto-research-runs.jsonl</span>、<span class="code">auto-research-reports.jsonl</span>、<span class="code">task-method-lifecycle.jsonl</span>、<span class="code">method-evolution-audit.json</span>。</li>
+      <li>关卡复盘与动作证据：<span class="code">task-level-reviews.jsonl</span>、<span class="code">execution-observations.jsonl</span>、<span class="code">observation-snapshots.jsonl</span>、<span class="code">bridge-events.jsonl</span>。</li>
+    </ul>
+    <p class="source">`status=completed` 只代表调用正常结束；Tool 的语义标记仍显示五次输出等同输入。`candidate` 的 success_path 是主 agent 对成功轨迹的可复用解释，并非跨任务因果证明。全局 runner 超时、关卡失败、子任务超时和工具准入失败是不同层级事件，本报告分别列示。</p>
+  </section>
+  <footer>ARC ft09 真实 provider 运行复盘｜报告基于 run artifact 翻译与归纳｜生成于 2026-09-27</footer>
+</main>
+</body>
+</html>

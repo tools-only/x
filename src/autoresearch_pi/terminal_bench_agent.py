@@ -11,6 +11,8 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from .jev_routing import apply_jev_routing_policy
+
 from harbor.agents.installed.pi import Pi
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -38,6 +40,7 @@ class AutoResearchPiAgent(Pi):
             "pi_task_execution_signals.ts",
             "pi_task_pattern_candidates.ts",
             "pi_task_research_graph.ts",
+            "pi_jev_harness_routing.ts",
             "pi_task_local_self_harness.ts",
             "pi_task_local_tools.ts", "pi_task_execution_admission.ts",
             "pi_task_scope.ts", "pi_task_local_context_lifecycle.ts",
@@ -83,12 +86,17 @@ class AutoResearchPiAgent(Pi):
             "PI_AUTORESEARCH_VARIANT": self.experiment_variant,
             "PI_AUTORESEARCH_CONTEXT_COMPACTION": "enabled" if self.context_compaction else "disabled",
         }
+        env["PI_AUTORESEARCH_JEV_ROUTING"] = self._get_env(
+            "PI_AUTORESEARCH_JEV_ROUTING"
+        ) or "disabled"
+        apply_jev_routing_policy(env)
         prompt = shlex.quote(self.render_instruction(instruction))
         command = (
             ". ~/.nvm/nvm.sh; "
             "pi --print --mode json --no-session --no-extensions --no-skills "
             "--no-prompt-templates --no-context-files "
             "--extension /installed-agent/demo/pi_terminal_bench_extension.ts "
+            "--extension /installed-agent/demo/pi_final_provider_payload.ts "
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} {prompt} "
             "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | stdbuf -oL tee /logs/agent/pi-events.jsonl"
         )

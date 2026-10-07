@@ -36,7 +36,7 @@ export function stableControlJSON(value: any): string {
 }
 
 export function controlOperationKey(tool: string, input: Row, task: string): string {
-	const fields = ["opportunity_id", "research_handoff_ref", "decision_id", "plan_ref", "node_id", "session_ref", "route_ref",
+	const fields = ["window_id", "opportunity_id", "research_handoff_ref", "decision_id", "plan_ref", "node_id", "session_ref", "route_ref",
 		"key", "name", "finding_id", "validation_id", "agent_name", "target_version", "research_decision"];
 	const target = Object.fromEntries(fields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 	// Without a bound identity, only an exact retry can resolve this failure.
@@ -50,18 +50,37 @@ export function eligibleResearchHandoffStatuses(decision: unknown): string[] {
 	return ["proposed", "failed"];
 }
 
-export function failureClassification(error: string): Row {
+export function failureClassification(error: string, executionStage?: "before_tool_call"): Row {
+	// The SDK rejected preparation before validated dispatch. This evidence
+	// comes from native lifecycle events, never from words in an error message.
+	if (executionStage === "before_tool_call") {
+		return { failure_class: "contract_error", applied: false, retryable: false,
+			recovery_hint: "This attempt ended before execution. Correct the input in a new submission if useful, or continue the task." };
+	}
+	// This bounded invocation has ended. A smaller task is a new investment,
+	// not an exact-input repair obligation or a reason to inspect Harness pools.
+	if (/^delegate_task runtime budget exceeded \(\d+ms\)/i.test(error)) {
+		return { failure_class: "budget_exhausted", retryable: false, applied: "unknown",
+			recovery_hint: "This delegation attempt ended at its runtime budget. Use a smaller new task only if useful, or abandon it and continue from current evidence." };
+	}
 	try {
 		const parsed = JSON.parse(error);
+		if (parsed.format === "task-harness-preflight-error-v1" && parsed.no_component_written === true) {
+			return { failure_class: "contract_error", applied: false, retryable: false,
+				recovery_hint: "This input was rejected before component writes. Correct the reported fields in a new submission; reuse the creator refs already read." };
+		}
 		if (parsed.format === "task-control-error-v1") {
 			const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
-			const terminal = parsed.code === "already_reviewed"
+			const terminal = (parsed.code === "rejected_input" && parsed.applied === false)
+				|| parsed.code === "already_reviewed"
 				|| parsed.code === "required_selection" && candidates.length === 0;
 			return {
 				...parsed,
 				failure_class: "contract_error",
 				retryable: !terminal,
-				recovery_hint: terminal ? "The requested target is no longer repairable; inspect current state and submit a new bound operation." : parsed.recovery_hint,
+				recovery_hint: terminal && parsed.code !== "rejected_input"
+					? "The requested target is no longer repairable; inspect current state and submit a new bound operation."
+					: parsed.recovery_hint,
 			};
 		}
 		if (parsed.format === "task-resource-version-conflict-v1" && parsed.applied === false)
@@ -75,6 +94,50 @@ export function failureClassification(error: string): Row {
 		retryable:!runtime && !requiredField, applied:/was not executed|task-resource-version-conflict-v1|research runtime cannot read/.test(error) ? false : "unknown",
 		recovery_hint:runtime ? "Research is degraded; inspect current state, then choose the next parent environment action. Do not retry unchanged infrastructure failures." : "Inspect legal targets and correct the reported fields.",
 		required_next_call:{tool:"task_harness", arguments:{action:"inspect"}}};
+}
+
+/** Model-facing receipt; the exact error and attempted input stay at the ref. */
+export function failureReceipt(failure: Row): Row {
+	const error = String(failure.error ?? "");
+	let summary = error.split(/\n\s*Received arguments:\s*\n/, 1)[0];
+    let contract: Row = {};
+	try {
+		const parsed = JSON.parse(error);
+		const issues = parsed.errors ?? parsed.issues;
+        contract = { ...(typeof parsed.code === "string" ? { code: parsed.code.slice(0, 120) } : {}),
+            ...(typeof parsed.phase === "string" ? { phase: parsed.phase.slice(0, 120) } : {}),
+            ...(parsed.no_component_written === true ? { no_component_written: true } : {}),
+            ...(Array.isArray(issues) ? { issue_count: issues.length } : {}) };
+		if (parsed.format === "task-harness-change-receipt-v1" && parsed.status === "failed") {
+			const applied = Array.isArray(parsed.applied_resource_refs) ? parsed.applied_resource_refs
+				: (Array.isArray(parsed.results) ? parsed.results : []).filter((row: Row) => row.status === "applied")
+					.map((row: Row) => row.resource?.resource_ref).filter(Boolean);
+			const remaining = Array.isArray(parsed.remaining_changes) ? parsed.remaining_changes : null;
+			contract = { ...contract, partial_applied: typeof parsed.partial_applied === "boolean"
+				? parsed.partial_applied : applied.length ? true : "unknown",
+				applied_resource_count: applied.length, applied_resource_refs: applied.slice(0, 12),
+				remaining_change_count: remaining?.length ?? null,
+				remaining_change_targets: (remaining ?? []).slice(0, 12).map((change: Row) => ({
+					operation: change.operation, component: change.candidate?.semantic_kind ?? change.candidate?.component,
+					name: change.candidate?.key ?? change.candidate?.name, target_ref: change.target_ref })),
+				recovery_read: { tool: "task_resource", arguments: { action: "read", ref: failure.resource_ref } } };
+		}
+		if (Array.isArray(issues)) summary = JSON.stringify({ code: parsed.code ?? parsed.format,
+			issue_count: issues.length, issues: issues.slice(0, 3).map((issue: Row) => ({
+				path: String(issue.path ?? "").slice(0, 120), message: String(issue.message ?? "").slice(0, 160) })) });
+	} catch { /* SDK and execution text */ }
+    return { format: "task-operation-error-v1", ...contract, failure_ref: failure.resource_ref,
+		tool: failure.tool, applied: failure.applied ?? "unknown", retryable: failure.retryable,
+		status: failure.retryable === false ? "terminal" : "pending",
+		error_summary: summary.slice(0, 600), recovery_hint: String(failure.recovery_hint ?? "").slice(0, 200) };
+}
+
+/** Current recovery identities, not another copy of errors or author inputs. */
+export function pendingFailureProjection(record: Row): Row {
+	return { failure_ref: record.resource_ref ?? record.failure_ref, tool: record.tool, action: record.action,
+		failure_class: record.failure_class, applied: record.applied ?? "unknown", retryable: record.retryable,
+		required_next_call: record.required_next_call,
+		recovery_hint: String(record.recovery_hint ?? "").slice(0, 240) };
 }
 
 /** Capture an omitted control target before execution, so unrelated success cannot clear it. */

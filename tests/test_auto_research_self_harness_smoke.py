@@ -2,8 +2,8 @@
 
 These deliberately use the offline scripted providers.  They still launch a
 real Pi parent and a real Pi child through the loopback broker, so failures in
-child transport, report parsing, route application, or the next-turn context
-surface are observable without depending on a remote model.
+child transport, report parsing, parent authoring, assembly, or the next-turn
+context surface are observable without depending on a remote model.
 """
 
 import json
@@ -11,8 +11,8 @@ import os
 from urllib.request import Request, urlopen
 from pathlib import Path
 
-from test_pi_external_benchmark_native import _pi_cli, _run_fixture
-from test_task_research_context import harness_delivery, records, results, run_router_helper, wait_for_broker_job
+from test_pi_external_benchmark_native import _pi_cli
+from test_task_research_context import _run_fixture, harness_delivery, records, results, wait_for_broker_job
 from autoresearch_pi.subagent_broker import SubagentBroker
 
 
@@ -38,7 +38,7 @@ def test_smoke_parent_auto_research_starts_real_child(tmp_path):
         "conclusion": "The fixture requires another observation.",
         "findings": [], "evidence_refs": [], "alternatives": [],
         "limitations": [], "validation_plan": "Collect the next observation.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     events = _run_fixture(
         root, "treatment",
@@ -89,7 +89,7 @@ def test_non_blocking_experiment_request_reaches_parent_inbox_and_status(tmp_pat
             "stop_condition": "Stop after the first discriminating transition.",
             "evidence_refs": [],
         },
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     broker = SubagentBroker()
     broker.start()
@@ -105,15 +105,18 @@ def test_non_blocking_experiment_request_reaches_parent_inbox_and_status(tmp_pat
                              }}])
         accepted = json.loads(results(first, "auto_research")[0]["result"]["content"][0]["text"])
         wait_for_broker_job(root, "auto-research-1")
+        first_context_count = len(records(root, "provider-contexts.jsonl"))
         second = _run_fixture(root, "treatment", extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
                               extra_env=env, steps=[{"name": "task_harness_status", "arguments": {"request": "current"}}])
         status = json.loads(results(second, "task_harness_status")[0]["result"]["content"][0]["text"])
         candidates = status["research_experiment_candidates"]
         assert candidates and candidates[0]["request"]["request_ref"].startswith("research-experiment:auto-research-1")
         assert candidates[0]["request"]["parent_action"] == report["experiment_request"]["parent_action"]
-        context_text = json.dumps(records(root, "provider-contexts.jsonl")[-1])
+        later_contexts = records(root, "provider-contexts.jsonl")[first_context_count:]
+        context_text = json.dumps(later_contexts[0])
         assert "AUTO-RESEARCH COMPLETION INBOX" in context_text
         assert report["experiment_request"]["objective"] in context_text
+        assert all("AUTO-RESEARCH COMPLETION INBOX" not in json.dumps(row) for row in later_contexts[1:])
         assert accepted["accepted"] is True and accepted["status"] == "active"
         persisted = records(root, "auto-research-reports.jsonl")[-1]
         assert persisted["experiment_request"]["request_ref"].startswith("research-experiment:auto-research-1")
@@ -121,8 +124,8 @@ def test_non_blocking_experiment_request_reaches_parent_inbox_and_status(tmp_pat
         broker.close()
 
 
-def test_smoke_next_turn_uses_skill_materialized_by_previous_route(tmp_path):
-    """A route applied in turn one is loadable and usable in turn two."""
+def test_smoke_next_turn_loads_skill_authored_by_parent_after_research(tmp_path):
+    """Research hands off a method; only the parent authors and assembles the skill."""
     _, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
     root = tmp_path / "next-turn-skill"
@@ -135,51 +138,63 @@ def test_smoke_next_turn_uses_skill_materialized_by_previous_route(tmp_path):
     report = {
         "format": "auto-research-report-v1", "status": "supported_within_scope",
         "conclusion": "The procedure is ready for the next turn.", "findings": [],
-        "evidence_refs": [], "alternatives": [], "limitations": [],
-        "validation_plan": "Use the procedure on the next fixture state.",
-        "harness_proposals": [{"approval_id": "auto-research-1:proposal-1", "delivery": delivery}],
+        "evidence_refs": ["execution-observation-1"], "alternatives": [], "limitations": [],
+        "validation_plan": "Let the parent author it, then use it on the next fixture state.",
+        "method_candidates": [{
+            "candidate_ref": "next-turn-review",
+            "name": "next-turn-review",
+            "semantic_kind": "procedure",
+            "summary": "Inspect fixture state before choosing the next action.",
+            "basis_refs": ["execution-observation-1"],
+            "method": delivery["method"],
+            "proposed_delivery_id": "next-turn-review",
+        }],
     }
-    child_steps = [
-        {"name": "research_approval", "arguments": {
-            "action": "propose", "approval_id": "auto-research-1:proposal-1", "delivery": delivery,
-        }},
-        {"name": "research_approval", "arguments": {
-            "action": "approve", "approval_id": "auto-research-1:proposal-1", "target_version": 1,
-        }},
-        {"name": "submit_research_report", "arguments": {"report": report}},
-    ]
-    route_hash = run_router_helper(
-        "router.harnessDeliveryHash(JSON.parse(process.env.AUTORESEARCH_ROUTER_TEST_INPUT))",
-        input_value=delivery,
-    )
+    child_steps = [{"name": "submit_research_report", "arguments": {"report": report}}]
     first_events = _run_fixture(
         root, "treatment",
         extra_extensions=[project / "tests" / "pi_non_arc_task_subagents.ts"],
         extra_env=_child_env(project, cli, report, child_steps),
         steps=[
+            {"name": "benchmark_probe", "arguments": {}},
             {"name": "auto_research", "arguments": {
                 "question": "Should the next turn use a reusable review procedure?",
                 "scope": "harness_component",
             }},
-                {"name": "task_harness", "arguments": {
-                    "action": "apply_route",
-                    "route_ref": "harness_route:auto-research-1:route-next-turn-review@v1",
-                    "expected_delivery_hash": route_hash,
-                }},
-                {"name": "task_harness", "arguments": {
-                    "action": "assemble", "expected_assembly_revision": 0,
-                    "selected_resource_refs": ["skill:next-turn-review@v1"],
-                    "prompt_contributions": [],
-                    "decision": {"basis_refs": ["research_run:auto-research-1@v1"],
-                                 "reason": "Select the adopted review procedure for the next turn.",
-                                 "expected": "The next parent request can use the exact selected skill."},
-                }},
+            {"name": "task_harness", "arguments": {
+                "action": "read_method", "method_name": "skill-creator",
+            }},
+            {"name": "task_harness", "arguments": {
+                "action": "change", "changes": [{"operation": "create", "candidate": {
+                    **delivery,
+                    "basis_refs": ["research_report:auto-research-1@v1",
+                                   "method:method-auto-research-1-next-turn-review@v1"],
+                    "authoring_method_ref": delivery["authoring_method_ref"],
+                }}],
+                "decision": {
+                    "basis_refs": ["research_report:auto-research-1@v1",
+                                   "method:method-auto-research-1-next-turn-review@v1"],
+                    "reason": "The parent authored the complete procedure after reading skill-creator.",
+                    "expected": "The exact skill is available on the next parent turn.",
+                },
+            }},
+            {"name": "task_harness", "arguments": {
+                "action": "assemble", "expected_assembly_revision": 0,
+                "selected_resource_refs": ["skill:next-turn-review@v1"],
+                "prompt_contributions": [],
+                "decision": {"basis_refs": ["research_run:auto-research-1@v1"],
+                             "reason": "Select the parent-authored review procedure for the next turn.",
+                             "expected": "The next parent request can load the exact selected skill."},
+            }},
         ],
     )
     assert not results(first_events, "auto_research")[0].get("isError")
-    assert not results(first_events, "task_harness")[0].get("isError")
-    assert records(root, "auto-research-harness-route-receipts.jsonl")[0]["status"] == "applied"
+    assert not [event for event in results(first_events, "task_harness") if event.get("isError")]
+    assert records(root, "auto-research-harness-route-receipts.jsonl") == []
     assert records(root, "task-skills.jsonl")[0]["name"] == "next-turn-review"
+    authoring = records(root, "parent-authoring-handoffs.jsonl")
+    assert [item["status"] for item in authoring] == ["awaiting_parent_authoring", "authored"]
+    assert authoring[-1]["component_ref"] == "skill:next-turn-review@v1"
 
     # A fresh parent process is the next Pi turn.  Its provider context must
     # expose the persisted skill, and the explicit inspect call must return the
@@ -238,7 +253,7 @@ def test_child_context_projection_fits_requested_budget_and_keeps_page_reference
         "format": "auto-research-report-v1", "status": "inconclusive",
         "conclusion": "The selected observations require a follow-up probe.",
         "findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-        "validation_plan": "Collect one more observation.", "harness_proposals": [],
+        "validation_plan": "Collect one more observation.", "method_candidates": [],
     }
     events = _run_fixture(
         root, "treatment",
@@ -290,7 +305,7 @@ def test_provider_length_boundary_is_resumed_inside_one_parent_tool_call(tmp_pat
 		"format": "auto-research-report-v1", "status": "inconclusive",
 		"conclusion": "The internally resumed child completed the structured report.",
 		"findings": [], "evidence_refs": [], "alternatives": [], "limitations": [],
-		"validation_plan": "Collect a discriminating observation.", "harness_proposals": [],
+		"validation_plan": "Collect a discriminating observation.", "method_candidates": [],
 	}
 	events = _run_fixture(
 		root, "treatment",

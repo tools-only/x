@@ -20,13 +20,30 @@ collection with an abstract slogan. Observations are cases, not the research goa
 Inspect the existing agenda and prior reports before opening a duplicate line.
 Either provide a bounded question and relevant exact evidence, or allocate an open
 research turn so the child selects from the durable agenda/history. A broader goal
-needs a reachable milestone; it need not immediately change the next action.
+can be pursued through a bounded milestone without losing its task-level purpose.
+When the objective itself is unclear, a useful milestone can be alternative goal
+interpretations, a representation or a test design. Do not require a known winning
+condition or a ready environment experiment before investigating those questions.
 
 ## Decide whether and how to allocate
 
+If the parent is repeatedly maintaining research history while choosing actions,
+assign a durable responsibility with auto_research(assign). Choose a problem and
+role, finite run/output bounds, evidence kinds and a stop condition. Several roles
+may share one research line to preserve independent explanations; do not create
+one worker per window. handle_periodic_reviews=true explicitly transfers historical
+window analysis within the assignment. Current publications are short parent
+increments; long analysis stays with the worker. Inspect current implications and
+exact refs, then adopt through creator/create or change/assembly/semantic trial.
+New use and assessment versions route back within the evidence authorization.
+
 Compare likely information/capability value with model cost, latency and scarce
-environment actions. Continue direct execution if the answer is already known or
-research has no reachable test. Defer when missing evidence is the actual blocker;
+environment actions. Include repeated reasoning, transcription errors and stalled
+task progress in that comparison. Shared evidence does not remove the value of
+independent strategies or a clean context. Continue direct execution when it has
+better expected value. Without a decisive environment test, consider whether a
+checkable formulation, consistency analysis or experiment proposal can still help.
+Defer when neither useful analysis nor evidence collection is currently feasible;
 record what would make research worthwhile. Counts and empty component slots are
 reminders to inspect, not reasons to generate a child or component.
 
@@ -37,8 +54,11 @@ one research child per component by default.
 
 ## Construct an informative workset
 
-State the problem, competing hypotheses/methods, available evidence, constraints,
-criterion, stopping condition and next discriminating test. Choose raw evidence
+State the known problem or uncertainty about its framing, available evidence,
+constraints and a bounded deliverable. Include competing hypotheses/methods and a
+discriminating test when known; otherwise their construction may be the deliverable.
+Evaluate that deliverable for consistency, evidence coverage and actionable gaps,
+without claiming an unexecuted environment trial. Choose raw evidence
 instead of parent conclusions when an independent view matters. Explain missing
 access. Maintain problem/alternatives/next test in the agenda or checkpoint so
 continuation does not become another recap.

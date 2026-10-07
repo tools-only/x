@@ -55,6 +55,69 @@ def test_periodic_windows_count_only_successful_actions_and_replace_twentieth():
     assert result[4]["baseline_ref"] == "action-20"
 
 
+def test_periodic_windows_count_native_receipts_across_batches_and_child_calls():
+    result = helper("""(() => {
+      const observations = [];
+      for (let i=1; i<=60; i++) observations.push({tool_name:'arc_action',
+        observation_id:'action-'+i, toolCallId:'batch-'+Math.floor((i-1)/8),
+        actor:i>40?'child':'parent', arc_outcome:{action_budget:{total_used:i}}});
+      observations.push({...observations[3], observation_id:'reloaded-action-4'});
+      observations.push({tool_name:'arc_action',observation_id:'not-executed',is_error:true});
+      return h.periodicReviewWindows(observations);
+    })()""")
+    assert [w["end_step"] for w in result] == list(range(5, 61, 5))
+    assert result[-1]["action_refs"] == [f"action-{i}" for i in range(41, 61)]
+
+
+def test_periodic_queue_exposes_latest_evidence_and_resumes_parent_deferral():
+    result = helper("""(() => {
+      const observations = Array.from({length:15},(_,i)=>({tool_name:'arc_action',observation_id:'a'+i}));
+      const events = [{window_id:'arc-pattern-10',status:'deferred',parent_reason:'need a contrast',resume_after_action_count:15}];
+      return [h.periodicReviewQueue(observations.slice(0,10),[],[]),
+        h.periodicReviewQueue(observations.slice(0,10),[],events),
+        h.periodicReviewQueue(observations,[{window_id:'arc-pattern-15'}],events)];
+    })()""")
+    assert result[0]["current"]["window_id"] == "arc-pattern-10"
+    assert [w["window_id"] for w in result[0]["due"]] == ["arc-pattern-5", "arc-pattern-10"]
+    assert result[1]["current"]["window_id"] == "arc-pattern-5"
+    assert result[1]["deferred"][0]["parent_reason"] == "need a contrast"
+    assert result[2]["current"]["window_id"] == "arc-pattern-10"
+    assert result[2]["current"]["resumed_from"]["status"] == "deferred"
+
+
+def test_native_due_window_requires_parent_review_or_bounded_deferral(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    events = _run_fixture(tmp_path, "treatment", extra_extensions=[project / "tests/pi_periodic_review_fixture.ts"],
+        extra_env={"PI_HARNESS_REVIEW_DECISION_REQUIRED": "enabled"}, steps=[
+            *[{"name": "arc_action", "arguments": {}} for _ in range(6)],
+            {"name": "task_harness", "arguments": {"action": "defer_review", "review_reason": "Collect a contrasting action before extracting a rule",
+                "resume_condition": {"kind": "after_actions", "actions": 5}}},
+            {"name": "arc_action", "arguments": {}},
+        ])
+    outputs = [e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == "arc_action"]
+    assert sum(bool(e.get("isError")) for e in outputs) == 1
+    observations = [json.loads(line) for line in (tmp_path / "execution-observations.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(r["tool_name"] == "arc_action" and not r["is_error"] for r in observations) == 6
+    decisions = [json.loads(line) for line in (tmp_path / "task-harness-review-events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert decisions[-1]["status"] == "deferred" and decisions[-1]["decided_by"] == "parent"
+    assert decisions[-1]["resume_after_action_count"] == 10
+
+
+def test_native_missing_review_exhausts_bounded_action_deferrals_without_faking_parent_decision(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    events = _run_fixture(tmp_path, "treatment", extra_extensions=[project / "tests/pi_periodic_review_fixture.ts"],
+                         extra_env={"PI_HARNESS_REVIEW_DECISION_REQUIRED": "enabled"},
+                         steps=[{"name": "arc_action", "arguments": {}}] * 8)
+    outputs = [e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == "arc_action"]
+    assert sum(bool(e.get("isError")) for e in outputs) == 2
+    observations = [json.loads(line) for line in (tmp_path / "execution-observations.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(row["tool_name"] == "arc_action" and not row["is_error"] for row in observations) == 6
+    decisions = [json.loads(line) for line in (tmp_path / "task-harness-review-events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert decisions[-1]["status"] == "failed" and decisions[-1]["decided_by"] == "runtime"
+    assert decisions[-1]["reason"] == "parent_review_decision_not_recorded_within_control_budget"
+    assert not (tmp_path / "task-harness-reviews.jsonl").exists()
+
+
 def test_periodic_handoff_changes_lane_at_twenty_and_inherits_exact_window_material():
     result = handoff_helper("""(() => {
       const transition = {observed_changes:'sprite moved', predictive_rules:'action A may move it',
@@ -123,9 +186,9 @@ def test_periodic_handoff_makes_task_research_problem_primary_and_carries_prior_
         start_step:6, end_step:10, evidence_refs:['obs-5']}, transition, [], prior);
     })()""")
     assert result["research_problem"] == {
-        "kind": "capability",
+        "kind": "unspecified",
         "status": "unresolved",
-        "statement": "construct and test a parameterized expected-delta calculator",
+        "statement": "whether the procedure transfers after a level change",
         "evidence_entry_window": "arc-pattern-10",
         "prior_research_refs": ["research_report:auto-research-1@v1", "research_run:auto-research-1@v1",
                                 "research_session:research-session-2@v1"],
@@ -135,8 +198,22 @@ def test_periodic_handoff_makes_task_research_problem_primary_and_carries_prior_
     assert result["completion_contract_kind"] == "task_research_evaluation"
     assert result["research_line_ref"] == "research_line:line-1@v1"
     assert result["output_channels"] == ["research_conclusion", "planning_implication",
-                                           "experiment_request", "optional_harness_proposal"]
+                                           "experiment_request", "optional_method_candidate"]
     assert result["continuity_policy"] == "continue_or_distinguish_before_starting_new_work"
+
+
+def test_handoff_does_not_promote_deferred_capability_over_blocking_uncertainty():
+    result = handoff_helper("""h.buildPeriodicResearchHandoff('blocked',
+      {window_id:'w35',mode:'incremental',start_step:31,end_step:35,evidence_refs:['obs-35']},
+      {observed_changes:'Entering the presumed goal produced no change',
+       predictive_rules:'Previous level accepted entry',
+       limiting_uncertainty:'Does entry require a key, different alignment, or another goal?',
+       next_experiment:'Compare another direction before repeating entry',
+       capability_opportunities:'Defer route planner: path search does not explain the no-op'}, [])""")
+    assert result['research_problem']['statement'] == 'Does entry require a key, different alignment, or another goal?'
+    assert result['research_problem']['kind'] == 'unspecified'
+    assert 'Defer route planner: path search does not explain the no-op' in result['question']
+    assert result['parent_transition_analysis']['next_experiment'] == 'Compare another direction before repeating entry'
 
 
 def test_periodic_handoff_can_route_planning_research_without_requiring_harness_output():
@@ -150,7 +227,8 @@ def test_periodic_handoff_can_route_planning_research_without_requiring_harness_
     assert result["research_problem"]["kind"] == "planning"
     assert result["candidate_components"] == []
     assert "research-only conclusion" in result["question"]
-    assert "Harness proposals are optional" in result["completion_contract"]
+    assert "Method candidates are allowed" in result["completion_contract"]
+    assert "child-authored Harness components are forbidden" in result["completion_contract"]
 
 
 def test_handoff_reconciliation_tracks_background_session_and_keeps_exact_versions():
@@ -234,6 +312,147 @@ def test_periodic_review_is_advisory_and_does_not_interrupt_parent_actions(tmp_p
     status = next(e for e in resumed if e.get("type") == "tool_execution_end" and e.get("toolName") == "task_harness_status")
     assert json.loads(status["result"]["content"][0]["text"])["pending_pattern_extraction"] is None
     assert len((tmp_path / "task-harness-opportunities.jsonl").read_text().splitlines()) == 1
+
+
+def test_arc_periodic_review_defaults_to_short_receipt_with_exact_full_reads(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    transition = {
+        "observed_changes": "Five action outcomes were recorded",
+        "predictive_rules": "The current evidence does not establish a causal rule",
+        "limiting_uncertainty": "Which action changes the public state",
+        "next_experiment": "Compare one bounded alternative",
+        "capability_opportunities": "unknown",
+        "evidence_refs": ["execution-observation-1"],
+    }
+    steps = ([{"name": "arc_action", "arguments": {}}] * 5 + [
+        {"name": "task_harness", "arguments": {
+            "action": "review", "review": [], "transition_analysis": transition}},
+        {"name": "task_harness", "arguments": {"action": "summary"}},
+        {"name": "task_harness", "arguments": {"action": "inspect", "section": "review_contract"}},
+        {"name": "task_harness", "arguments": {"action": "status", "section": "all"}},
+        {"name": "task_resource", "arguments": {"action": "read", "ref": "harness_review:harness-review-1@v1", "limit": 50000}},
+        {"name": "task_resource", "arguments": {"action": "read", "ref": "research_handoff:research-handoff-harness-review-1@v1", "limit": 50000}},
+    ])
+    events = _run_fixture(tmp_path, "treatment", arc_compact=True,
+                          extra_extensions=[project / "tests/pi_periodic_review_fixture.ts"], steps=steps)
+    results = [event for event in events if event.get("type") == "tool_execution_end"]
+    assert not any(event.get("isError") for event in results), [
+        (event.get("toolName"), event.get("args"), event.get("result", {}).get("content"))
+        for event in results if event.get("isError")]
+    harness = [json.loads(event["result"]["content"][0]["text"])
+               for event in results if event.get("toolName") == "task_harness"]
+    receipt, summary, section, full = harness
+    assert receipt["format"] == "task-harness-review-receipt-v1"
+    assert receipt["review_ref"] == "harness_review:harness-review-1@v1"
+    assert receipt["research_handoff_ref"] == "research_handoff:research-handoff-harness-review-1@v1"
+    assert "method_research_contract" not in receipt and "handoff" not in receipt
+    assert set(receipt["ready_auto_research_calls"]) == {"blocking", "non_blocking"}
+    assert summary["format"] == "task-harness-status-summary-v1"
+    assert summary["full_status_call"]["arguments"] == {"action": "status", "section": "all"}
+    assert section["section"] == "review_contract"
+    assert full["format"] == "task-local-harness-status-v1"
+    reads = [json.loads(event["result"]["content"][0]["text"])
+             for event in results if event.get("toolName") == "task_resource"]
+    assert len(reads) == 2 and all(row["complete"] for row in reads)
+    stored_review = json.loads(reads[0]["text"])
+    stored_handoff = json.loads(reads[1]["text"])
+    assert all(stored_review["transition_analysis"][key] == value
+               for key, value in transition.items())
+    assert "induction_guidance" in stored_review["method_research_contract"]
+    assert stored_handoff["research_problem"]["statement"] == transition["limiting_uncertainty"]
+
+
+def test_periodic_review_merges_two_pure_memory_reuses_and_keeps_transition(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    memories = [{"memory_id": f"memory-{index}", "key": name, "version": 1,
+                 "status": "active", "content": reason}
+                for index, name, reason in ((1, "click-toggle", "Bottom tiles toggle"),
+                                            (2, "board-geometry", "Grid uses an eight-pixel pitch"))]
+    (tmp_path / "task-memory.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in memories), encoding="utf-8")
+    transition = {"observed_changes": "Five clicks distinguished bottom tiles from top labels",
+                  "predictive_rules": "Bottom tiles toggle; top labels are static",
+                  "limiting_uncertainty": "The win condition is still unknown",
+                  "next_experiment": "Match the lower board to a top pattern",
+                  "capability_opportunities": "A board-state reader could reduce manual pixel parsing",
+                  "evidence_refs": [f"execution-observation-{index}" for index in range(1, 6)]}
+    entries = [
+        {"component": "memory", "disposition": "reuse", "reason": "Toggle rule repeated in later clicks",
+         "next_use": "Predict the next bottom-tile click", "resource_refs": ["memory:memory-1@v1"]},
+        {"component": "memory", "disposition": "reuse", "reason": "Geometry still maps clicks to cells",
+         "next_use": "Choose coordinates for the next cell", "resource_refs": ["memory:memory-2@v1"]},
+    ]
+    events = _run_fixture(tmp_path, "treatment",
+        extra_extensions=[project / "tests/pi_periodic_review_fixture.ts"],
+        steps=[{"name": "arc_action", "arguments": {}}] * 5 + [
+            {"name": "task_harness", "arguments": {"action": "review", "review": entries,
+                                                   "transition_analysis": transition}}])
+    review_call = next(event for event in events if event.get("type") == "tool_execution_end"
+                       and event.get("toolName") == "task_harness")
+    assert not review_call.get("isError"), review_call
+    review = json.loads((tmp_path / "task-harness-reviews.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    merged = next(entry for entry in review["entries"] if entry["component"] == "memory")
+    assert merged["disposition"] == "reuse"
+    assert merged["resource_refs"] == ["memory:memory-1@v1", "memory:memory-2@v1"]
+    assert "Toggle rule repeated" in merged["reason"] and "Geometry still maps" in merged["reason"]
+    assert "Predict the next" in merged["next_use"] and "Choose coordinates" in merged["next_use"]
+    assert all(review["transition_analysis"][key] == value for key, value in transition.items())
+    assert review["transition_analysis"]["capability_opportunities"] == "A board-state reader could reduce manual pixel parsing"
+
+
+def test_review_still_rejects_mixed_or_write_bearing_same_kind_entries():
+    value = helper("""(() => { try { h.normalizeHarnessReview([
+      {component:'memory',disposition:'reuse',reason:'keep',resource_refs:['memory:m1@v1']},
+      {component:'memory',disposition:'defer',reason:'wait for more evidence',resource_refs:['memory:m2@v1']}],
+      new Set(['memory:m1@v1','memory:m2@v1'])); return null; }
+      catch(e) { return e.message; } })()""")
+    assert "Duplicate component" in value
+    write_bearing = helper("""(() => { try { h.normalizeHarnessReview([
+      {component:'memory',disposition:'reuse',reason:'keep',resource_refs:['memory:m1@v1']},
+      {component:'memory',disposition:'reuse',reason:'keep too',resource_refs:['memory:m2@v1'],
+       candidate:{name:'ambiguous-write'}}],
+      new Set(['memory:m1@v1','memory:m2@v1'])); return null; }
+      catch(e) { return e.message; } })()""")
+    assert "Duplicate component" in write_bearing
+
+
+def test_periodic_provider_excerpts_bound_huge_deltas_but_exact_evidence_remains_readable(tmp_path):
+    project = Path(__file__).resolve().parents[1]
+    delta = "WIN_PIXEL_" + "Z" * 30000 + "_DELTA_END"
+    observations = [{
+        "observation_id": f"execution-observation-{index}", "tool_name": "arc_action",
+        "toolCallId": f"seed-call-{index}", "is_error": False, "version": 1,
+        "result_text": f"action {index}: {delta}",
+    } for index in range(1, 6)]
+    (tmp_path / "execution-observations.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in observations), encoding="utf-8")
+    ref = "observation:execution-observation-1@v1"
+    events = _run_fixture(tmp_path, "treatment",
+        extra_extensions=[project / "tests/pi_periodic_review_fixture.ts"],
+        steps=[{"name": "task_resource", "arguments": {
+            "action": "read", "ref": ref, "offset": 0, "limit": 50000}}])
+
+    contexts = [json.loads(line)["context"] for line in
+                (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    periodic = next(part["text"] for message in contexts[0]["messages"]
+                    for part in message.get("content", [])
+                    if part.get("type") == "text" and part["text"].startswith(
+                        "Periodic pattern extraction due:"))
+    card, _ = json.JSONDecoder().raw_decode(periodic.split(": ", 1)[1])
+    assert card["window_id"] == "arc-pattern-5"
+    assert card["action_count"] == 5
+    assert "execution-observation-1" in card["evidence_refs"]
+    assert len(card["evidence_refs"]) <= 8
+    assert "_DELTA_END" not in periodic
+    assert len(periodic) < 15000
+    read_event = next(event for event in events if event.get("type") == "tool_execution_end"
+                      and event.get("toolName") == "task_resource")
+    read = json.loads(read_event["result"]["content"][0]["text"])
+    assert read["ref"] == ref
+    assert delta in read["text"]
+    assert [json.loads(line)["result_text"] for line in
+            (tmp_path / "execution-observations.jsonl").read_text(encoding="utf-8").splitlines()[:5]] == [
+                row["result_text"] for row in observations]
 
 
 def test_parent_status_reconciles_a_linked_background_session_without_child_process(tmp_path):
@@ -359,17 +578,96 @@ def test_review_persists_once_and_returns_method_contract(tmp_path):
 
 
 def test_review_applies_complete_structured_candidate_in_same_call(tmp_path):
+    from test_harness_capability_authoring import module_eval, procedure
+    method_ref = module_eval("pi_harness_baseline_methods.ts", "m.baselineMethodCatalog().find(x=>x.name==='skill-creator').method_ref")
     entries = [{"component": "skill", "disposition": "create", "reason": "A repeatable check is ready.",
                 "next_use": "Next fixture observation", "validation": "Compare stated result with fixture output",
                 "candidate": {"component": "skill", "name": "review-fixture", "summary": "Review fixture state",
                               "instructions": "Inspect the fixture state and report uncertainty.",
-                              "basis_refs": []}}]
+                              "method": procedure(),
+                              "basis_refs": [], "authoring_method_ref": method_ref}}]
     events = _run_fixture(tmp_path, "treatment", steps=[
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "skill-creator"}},
         {"name": "task_harness", "arguments": {"action": "review", "review": entries}},
     ])
-    result = next(e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == "task_harness")
+    result = next(e for e in events if e.get("type") == "tool_execution_end" and e.get("toolName") == "task_harness" and e.get("args", {}).get("action") == "review")
     assert result.get("isError") is not True
     body = json.loads(result["result"]["content"][0]["text"])
     assert body["application_receipt"]["status"] == "applied"
     skills = [json.loads(line) for line in (tmp_path / "task-skills.jsonl").read_text().splitlines()]
     assert skills[-1]["name"] == "review-fixture"
+
+
+def test_review_normalization_keeps_nested_candidate_without_forwarding_outer_fields():
+    result = helper("""(() => {
+      const raw = [{component:'skill', disposition:'create', reason:'Ready to author',
+        target_version:2, evidence_refs:['observation-1'], authoring_method_ref:'method:skill-creator@v1',
+        candidate:{name:'bounded-check', instructions:'Check the bounded input.', untouched:{nested:true}}}];
+      const errors = [];
+      const entries = h.normalizeHarnessReview(raw, new Set(), errors);
+      return {entry:entries.find(item => item.component === 'skill'), errors};
+    })()""")
+    assert result["entry"]["candidate"] == {
+        "name": "bounded-check",
+        "instructions": "Check the bounded input.",
+        "untouched": {"nested": True},
+    }
+    assert result["entry"]["component"] == "skill"
+    assert result["entry"]["target_version"] == 2
+    assert result["entry"]["authoring_method_ref"] == "method:skill-creator@v1"
+    assert [item["path"] for item in result["errors"]] == [
+        "review[0].next_use", "review[0].validation",
+    ]
+
+
+def test_review_normalization_reports_candidate_conflicts_without_guessing():
+    result = helper("""(() => {
+      const errors = [];
+      h.normalizeHarnessReview([{component:'skill', disposition:'create', reason:'conflict',
+        target_version:2, candidate:{component:'tool', target_version:1}}], new Set(), errors);
+      return errors;
+    })()""")
+    assert [item["path"] for item in result] == [
+        "review[0].candidate.component",
+        "review[0].candidate.target_version",
+        "review[0].next_use",
+        "review[0].validation",
+    ]
+
+
+def test_invalid_review_retry_uses_full_candidate_and_preserves_intent(tmp_path):
+    from test_harness_capability_authoring import module_eval
+    method_ref = module_eval("pi_harness_baseline_methods.ts",
+        "m.baselineMethodCatalog().find(x=>x.name==='skill-creator').method_ref")
+    authored = {"component": "skill", "name": "bounded-check", "description": "Check a bounded input",
+                "instructions": "Inspect the input and report uncertainty.", "authoring_method_ref": method_ref,
+                "untouched": {"nested": True}}
+    intent = {"operation_id": "op-bounded-check", "purpose": "Preserve a reusable bounded check",
+              "status": "open", "next_step": "Trial on another input"}
+    review = {"component": "skill", "disposition": "create", "reason": "Repeated comparison is useful",
+              "next_use": "Next bounded input", "validation": "Compare answer with source input"}
+    events = _run_fixture(tmp_path, "treatment", steps=[
+        {"name": "task_harness", "arguments": {"action": "read_method", "method_name": "skill-creator"}},
+        {"name": "task_harness", "arguments": {"action": "review", "opportunity_id": "harness-opportunity-1", "review": [
+            {**review, "candidate": {**authored, "component": "tool"}}],
+            "development_intent": intent}},
+        {"name": "task_harness", "arguments": {"action": "review", "opportunity_id": "harness-opportunity-1", "review": [
+            {**review, "candidate": authored}], "development_intent": intent}},
+    ])
+    reviews = [event for event in events if event.get("type") == "tool_execution_end"
+               and event.get("toolName") == "task_harness" and event.get("args", {}).get("action") == "review"]
+    assert reviews[0].get("isError") and "review[0].candidate.component" in json.dumps(reviews[0])
+    assert not reviews[1].get("isError"), reviews[1]
+    drafts = [json.loads(line) for line in
+              (tmp_path / "task-harness-review-drafts.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert drafts[0]["entries"][0]["candidate"]["untouched"] == {"nested": True}
+    saved = [json.loads(line) for line in
+             (tmp_path / "task-harness-reviews.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert saved[0]["entries"][3]["candidate"] == authored
+    assert saved[0]["development_intents"] == [intent]
+    assert not (tmp_path / "task-tools.jsonl").exists()
+    skills = [json.loads(line) for line in
+              (tmp_path / "task-skills.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(skills) == 1
+    assert skills[0]["name"] == "bounded-check"
+    assert skills[0]["instructions"] == authored["instructions"]

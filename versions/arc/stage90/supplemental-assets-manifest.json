@@ -1,0 +1,74 @@
+{
+  "demo/prompts/research_profiles/component.md": {
+    "sha256": "60f2d79c2a717bd15c6c670fc57cca13f6f3b5ecf35b92cf019622b49c8c7a3a",
+    "source": "current workspace; omitted by historical frozen glob",
+    "historical_hash_verified": true,
+    "historical_evidence": [
+      {
+        "artifact": "runs\\arc-stage90-offset-witness-matrix-ls20-20261005\\continuous-memory-pool\\auto-research-prompt-loads.jsonl",
+        "run_id": "auto-research-1",
+        "recordedAt": "2026-10-04T17:35:31.321Z"
+      }
+    ]
+  },
+  "demo/prompts/research_profiles/composition.md": {
+    "sha256": "c2bec300d5fd336ead69724566c8330fb452a1f8bab233dbf0974b6cb371c787",
+    "source": "current workspace; omitted by historical frozen glob",
+    "historical_hash_verified": true,
+    "historical_evidence": [
+      {
+        "artifact": "runs\\arc-stage90-offset-witness-matrix-ls20-20261005\\skills\\auto-research-prompt-loads.jsonl",
+        "run_id": "auto-research-1",
+        "recordedAt": "2026-10-04T17:34:33.142Z"
+      }
+    ]
+  },
+  "demo/prompts/research_profiles/research_method.md": {
+    "sha256": "4cc5d3c25b3db2ac9c4a9402f33f4aa8fdc26215f0f4473303b3a542462535ea",
+    "source": "current workspace; omitted by historical frozen glob",
+    "historical_hash_verified": true,
+    "historical_evidence": [
+      {
+        "artifact": "runs\\arc-stage90-offset-witness-matrix-ls20-20261005\\continuous-workers\\auto-research-prompt-loads.jsonl",
+        "run_id": "auto-research-1",
+        "recordedAt": "2026-10-04T17:38:27.239Z"
+      }
+    ]
+  },
+  "demo/prompts/research_profiles/solution_path.md": {
+    "sha256": "8af17fff89ac1c24cdd996a074f59f79ea509a977049460144358b7228672417",
+    "source": "current workspace; omitted by historical frozen glob",
+    "historical_hash_verified": true,
+    "historical_evidence": [
+      {
+        "artifact": "runs\\arc-stage90-offset-witness-matrix-ls20-20261005\\subagents\\auto-research-prompt-loads.jsonl",
+        "run_id": "auto-research-1",
+        "recordedAt": "2026-10-04T17:34:59.915Z"
+      }
+    ]
+  },
+  "demo/prompts/research_profiles/strategy.md": {
+    "sha256": "7b33907a20662e1f23778cfddd138716e6ef4bbf9712ee5e663920f3034a67e9",
+    "source": "current workspace; omitted by historical frozen glob",
+    "historical_hash_verified": true,
+    "historical_evidence": [
+      {
+        "artifact": "runs\\arc-stage90-offset-witness-matrix-ls20-20261005\\system_prompt\\auto-research-prompt-loads.jsonl",
+        "run_id": "auto-research-1",
+        "recordedAt": "2026-10-04T17:35:17.283Z"
+      }
+    ]
+  },
+  "demo/prompts/research_profiles/task_decomposition.md": {
+    "sha256": "ae871c2894cb59520f35a6293762c5343e99b7be4dfeb4284b3991c6f2e7ae8f",
+    "source": "current workspace; omitted by historical frozen glob",
+    "historical_hash_verified": true,
+    "historical_evidence": [
+      {
+        "artifact": "runs\\arc-stage90-offset-witness-matrix-ls20-20261005\\tools\\auto-research-prompt-loads.jsonl",
+        "run_id": "auto-research-1",
+        "recordedAt": "2026-10-04T17:34:46.424Z"
+      }
+    ]
+  }
+}

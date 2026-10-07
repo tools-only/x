@@ -41,8 +41,10 @@ export async function bridge(path: string, body?: Record<string, unknown>) {
 	if (!base) throw new Error("PI_ARC_BRIDGE_URL is not configured");
 	let response: Response;
 	try {
+		const actionToken = process.env.PI_ARC_ACTION_TOKEN;
 		response = await fetch(`${base}${path}`, body ? {
-			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+			method: "POST", headers: { "content-type": "application/json",
+				...(actionToken ? { "X-ARC-Action-Token": actionToken } : {}) }, body: JSON.stringify(body),
 		} : undefined);
 	} catch (error) {
 		throw new Error(JSON.stringify({

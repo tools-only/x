@@ -1,14 +1,14 @@
 /** Version validity and coherent views. No inference from free-form evidence text. */
 import { createHash } from "node:crypto";
-import { memoryValidityReasons, type MemoryValidityContext } from "./pi_memory_validity.ts";
+import { memoryValidityReasons, normalizeMemoryValidity, type MemoryValidityContext } from "./pi_memory_validity.ts";
 
 export type KnowledgeLinks = { depends_on_refs?: string[]; supersedes_refs?: string[] };
 export type KnowledgeAvailability = "loaded" | "unloaded" | "suspended" | "retired";
 export type KnowledgeEvidenceStatus = "untested" | "supported" | "contested" | "refuted";
 type RecordValue = Record<string, any>;
 export type KnowledgeEntry = { kind: string; record: RecordValue };
-const identities: Record<string, string> = { memory: "key", skill: "name", system_prompt: "name" };
-const ids: Record<string, string> = { memory: "memory_id", skill: "skill_id", system_prompt: "segment_id" };
+const identities: Record<string, string> = { memory: "key", skill: "name", system_prompt: "name", tool: "name", subagent: "name" };
+const ids: Record<string, string> = { memory: "memory_id", skill: "skill_id", system_prompt: "segment_id", tool: "tool_id", subagent: "agent_id" };
 export function knowledgeRef(kind: string, record: RecordValue): string {
     return `${kind}:${record[identities[kind]]}@v${record.version}`;
 }
@@ -101,7 +101,13 @@ export function knowledgeState(entries: KnowledgeEntry[], context?: MemoryValidi
         if (record.status !== "active") why.push(`status:${record.status}`);
         if (record.availability && record.availability !== "loaded") why.push(`availability:${record.availability}`);
         if (knowledgeEvidenceStatus(record) === "refuted") why.push("evidence:refuted");
-        if (kind === "memory") why.push(...memoryValidityReasons(record.validity, context));
+        if (kind === "skill" && record.authoring_status === "unstructured_requires_review")
+            why.push("method:missing_requires_review");
+        // Memory keeps its historical explicit-binding rule. Other components
+        // may opt into the same public-boundary lifecycle without invalidating
+        // existing records that predate the optional field.
+        if (kind === "memory" || record.validity !== undefined)
+            why.push(...memoryValidityReasons(record.validity, context));
         if (latest.get(`${kind}:${record[identities[kind]]}`)?.record.version !== record.version) why.push("version_replaced");
         if (replaced.has(ref)) why.push(`superseded_by:${replaced.get(ref)}`);
         const path = new Set([...visiting, ref]);
@@ -141,16 +147,26 @@ export function normalizeKnowledgeLinks(input: RecordValue, previous: RecordValu
                 throw new Error(`${field}: reference must identify a current eligible resource: ${ref}`);
             }
             if (target.kind === kind && target.record[identities[kind]] === name) {
+                // A parent frequently carries the old exact ref while revising the
+                // same resource. That is the intended replacement edge, not a
+                // dependency cycle: the new version is already an update of the
+                // current version. Drop this redundant self-edge so a later
+                // component in the same facade batch is not lost to a repairable
+                // metadata error. Other self references remain invalid.
+                const previousRef = previous ? knowledgeRef(kind, previous) : undefined;
+                if (field === "supersedes_refs" && previousRef === ref) return undefined;
                 throw new Error(`${field}: self-reference is invalid; update the current version instead`);
             }
             return knowledgeRef(target.kind, target.record);
-        });
+        }).filter((ref): ref is string => Boolean(ref));
     }
     if ((result.depends_on_refs ?? []).some(ref => result.supersedes_refs?.includes(ref))) {
         throw new Error("a resource cannot depend on a version it supersedes");
     }
     // Evaluate the proposed graph to reject indirect cycles or self-invalidating replacement.
     const candidate = { ...previous, ...result, [identities[kind]]: name,
+        ...(input.validity !== undefined ? { validity: normalizeMemoryValidity(input.validity, context) } : {}),
+        ...(kind === "skill" && input.method ? { authoring_status: "structured_untested_candidate" } : {}),
         version: (previous?.version ?? 0) + 1, status: "active" };
     const trial = knowledgeState([...entries, { kind, record: candidate }], context);
     if ((input.depends_on_refs !== undefined || input.supersedes_refs !== undefined) && !trial.eligible(kind, candidate)) {

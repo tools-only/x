@@ -1,0 +1,213 @@
+{
+  "research_date": "2026-10-07",
+  "timezone": "Asia/Shanghai",
+  "actual_pi_version": "0.80.6",
+  "locked_pi_version": "0.87.0",
+  "sources": [
+    {
+      "path": "package.json",
+      "bytes": 126,
+      "sha256": "8ca5b5945be55c7e183820be13618e471e68248545311843b0dd902bca84eff7"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 45662,
+      "sha256": "6634e8d9bed1eadcde7ca9e16f374a26a18f57da33642c86dff17b8b4084b36d"
+    },
+    {
+      "path": "docs/development-workflow.md",
+      "bytes": 12560,
+      "sha256": "3f669002712808d10d429febbae79ba40a5099505c105c684aae559c532fb923"
+    },
+    {
+      "path": "docs/deferred-research-todos.md",
+      "bytes": 75215,
+      "sha256": "9cb9dbced6cbfc0ca0e9f8df45502e4e791fa66e3983090ade79cd20385d9fe6"
+    },
+    {
+      "path": "docs/plans/2026-10-01-auto-research-mechanism-and-workers.md",
+      "bytes": 13251,
+      "sha256": "346658ead587400d3625d0c57eec4e694cfa839359625ff655c6866501d488bc"
+    },
+    {
+      "path": "docs/auto-research-workers-implementation-2026-10-01.md",
+      "bytes": 6043,
+      "sha256": "20cdbd8ca64c10e68cf6b293b67987413e10bd80d03114d9ab319d19bd66faa9"
+    },
+    {
+      "path": "demo/pi_task_local_context_lifecycle.ts",
+      "bytes": 31300,
+      "sha256": "1b4aff95940bcc2247a0133a32656a0f1dfffde845d756279b7100710f4350ed"
+    },
+    {
+      "path": "demo/pi_parent_context_control.ts",
+      "bytes": 10796,
+      "sha256": "a5090dd2fd2c799e6da4b8763d2db6dd8e5fb0330b540d0d6dfd095b016573d1"
+    },
+    {
+      "path": "demo/pi_child_context_control.ts",
+      "bytes": 17042,
+      "sha256": "080a18a680d133e0796018465ec405d7c7e8697e3c6f8ab7ccc471dfacd70d48"
+    },
+    {
+      "path": "demo/pi_read_workset.ts",
+      "bytes": 10882,
+      "sha256": "896f7f46d1125781183f5c35f512e2fd9240118dd2f7add8ecad3efa61d0f770"
+    },
+    {
+      "path": "demo/pi_read_workset_lifetime.ts",
+      "bytes": 989,
+      "sha256": "315f1cb20f5324900447ed4fee24670b8ed56356bf92b9235d0613d4b0b7841d"
+    },
+    {
+      "path": "demo/pi_memory_validity.ts",
+      "bytes": 2905,
+      "sha256": "7520d630ffa96c3a0376abd55cf2b5e3cdd42981d5629e050d3342671eb873e8"
+    },
+    {
+      "path": "demo/pi_task_knowledge_lifecycle.ts",
+      "bytes": 12245,
+      "sha256": "1cd137b1a29785608160566a7de980b6ef1242001da2aad3298ad090dd8da78c"
+    },
+    {
+      "path": "demo/pi_task_local_self_harness.ts",
+      "bytes": 317278,
+      "sha256": "01d7f2b30bb0be99fa87cce72bc5a5154cb2b8480ab1d7e85f96b760e479074f"
+    },
+    {
+      "path": "demo/pi_task_harness_assembly.ts",
+      "bytes": 21106,
+      "sha256": "69fb8de7d7c798fecc5f80d01a9a1fe19e6443b2759730be528da102fbe8ce1e"
+    },
+    {
+      "path": "demo/pi_task_local_tools.ts",
+      "bytes": 40966,
+      "sha256": "c2f29d0ec466ebdd88b2f78a67cfb22afbd7606da39bdea8b22563efadc47bba"
+    },
+    {
+      "path": "demo/pi_task_resource_store.ts",
+      "bytes": 20689,
+      "sha256": "1d0b08d99cc4ff86ab7946e7bd56036b84a70aa61e04aa528c6cffb532faa2e5"
+    },
+    {
+      "path": "demo/pi_harness_method_history_projection.ts",
+      "bytes": 4237,
+      "sha256": "3b45fde767750965d991f2758e8117856a80b61db5fcf4c80493f2db5c03beeb"
+    },
+    {
+      "path": "demo/pi_harness_candidate_history_projection.ts",
+      "bytes": 3716,
+      "sha256": "7ec8d66045af4436375c8a5b2628cf6338aa332fbd623e32ac86e75d9a7111dc"
+    },
+    {
+      "path": "demo/pi_subagent_context_recipe.ts",
+      "bytes": 3417,
+      "sha256": "b74aadd6b9d5bfef4806415c6180e5297131b2083ce6448995dfac840fc21e1a"
+    },
+    {
+      "path": "demo/pi_task_local_subagents.ts",
+      "bytes": 188107,
+      "sha256": "a17344fbc9fa9a068438491e35678a08ef1facea2b9a699c761b43cded5f75ec"
+    },
+    {
+      "path": "demo/pi_task_validation_child.ts",
+      "bytes": 26758,
+      "sha256": "79c1590494e291a2ee590a3a89d1d459f1559411d7d9233cbab2a2e52229d6d3"
+    },
+    {
+      "path": "demo/pi_arc_readonly_subagent_extension.ts",
+      "bytes": 9309,
+      "sha256": "03bfd786e66c93167e1aa862d297f5300c50174f3ee3d1dbe6dc299871a2feab"
+    },
+    {
+      "path": "demo/pi_auto_research_worker_runtime.ts",
+      "bytes": 10236,
+      "sha256": "15cc33c2308107de46126229d8f8c0263446ccf1cac44bb4613103101202bd5f"
+    },
+    {
+      "path": "demo/pi_auto_research_workers.ts",
+      "bytes": 8747,
+      "sha256": "d40ed5a076ec8244fd223da99f403a115dd35fb43d0511167e5b06cb417c1d1d"
+    },
+    {
+      "path": "demo/pi_auto_research_output.ts",
+      "bytes": 27091,
+      "sha256": "7ec90507d0e74e9af74506d476a6c9a02fc863098cce774ff0d3dcb2d29b78ee"
+    },
+    {
+      "path": "demo/pi_auto_research_profiles.ts",
+      "bytes": 1178,
+      "sha256": "f3297c464ade531970b1bec2da59fe532744fefbc34a5fdd836aaba9df246b56"
+    },
+    {
+      "path": "demo/pi_arc_context_projection.ts",
+      "bytes": 14287,
+      "sha256": "349ea9fb548f81b1307e5c9f3588f81d8ae2d713f0661bffaa952a719aaf5b94"
+    },
+    {
+      "path": "demo/pi_arc_agi_3_extension.ts",
+      "bytes": 36842,
+      "sha256": "1e9ab2c01bf291bf3e3220177f59ec284f0d2f00e44f212fc9501cee4d914620"
+    },
+    {
+      "path": "demo/pi_external_benchmark_research.ts",
+      "bytes": 97015,
+      "sha256": "c36970dee026034b2c5d59dcc74a71ed624cc85d6a1031f162c0f5a871abe5d3"
+    },
+    {
+      "path": "demo/pi_provider_telemetry.ts",
+      "bytes": 36508,
+      "sha256": "50323bfd9992321bf9dc8775630a8b46ab0bcbac304f0ccb32661ef6009c45b2"
+    },
+    {
+      "path": "demo/pi_provider_request_admission.ts",
+      "bytes": 4640,
+      "sha256": "7718c2991bc196d0fcfec9b26eb7931acaf44718149b077cb1ed8769ab90ae0c"
+    },
+    {
+      "path": "demo/pi_reported_token_budget.ts",
+      "bytes": 10982,
+      "sha256": "ee4b84178c5f78c7812ff104c937796d428e65c62aef00a1934c4bcf66c152d7"
+    },
+    {
+      "path": "demo/pi_task_execution_admission.ts",
+      "bytes": 1138,
+      "sha256": "299676c8a870221fbec3a35ed617d111c6778622340fe15d38a46475ab0fa482"
+    },
+    {
+      "path": "src/autoresearch_pi/arc_agi_3_e2e.py",
+      "bytes": 150643,
+      "sha256": "87e787c644d6bebeec26b80a08435a7b78db87c5e03c16aae5a068fae257d95b"
+    },
+    {
+      "path": "src/autoresearch_pi/subagent_broker.py",
+      "bytes": 17348,
+      "sha256": "b8a3e5bcc59f877dcf034f1154dd45e033357f4821a77407322752ee3c8eed3e"
+    },
+    {
+      "path": "src/autoresearch_pi/pi_kernel.py",
+      "bytes": 22701,
+      "sha256": "69d655cabcb6bbe7e7e5502575abc69a7d6a69817794fe56c6ad575fe7255642"
+    },
+    {
+      "path": "docs/reports/2026-10-07-pi-context-management.md",
+      "bytes": 39768,
+      "sha256": "3c913b16d19391640b4de39728c8a397c5569407a616c33024308277a960ecd9"
+    },
+    {
+      "path": "docs/reports/2026-10-07-pi-context-upstream-research.md",
+      "bytes": 36443,
+      "sha256": "a2f82e4009dbccb847a74f3afce743cd933c1c8c9ae8fc09e6ad7ce578c7a141"
+    },
+    {
+      "path": "docs/reports/2026-10-07-project-context-components-audit.md",
+      "bytes": 30664,
+      "sha256": "c542c240d2e41ead0bc8a27006997136b87396ec6f77d6cb6a96ccc5056af4f4"
+    }
+  ],
+  "html": {
+    "path": "docs/reports/pi-agent-context-management-2026-10-07.html",
+    "bytes": 142174,
+    "sha256": "34ce9e1feec20a3a591b5e3d9bd8aa4357a87d7ca1c705ec9c49d964395b9448"
+  }
+}

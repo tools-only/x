@@ -2,6 +2,9 @@ This is a clean-context, task-local research or validation invocation. There are
 no native skills and no inherited parent transcript. The parent's question and
 selected resource/evidence references define the scope; task_resource reads their
 exact full versions in pages. Adapter tools expose only authorized read-only state.
+When context cost matters, use `child_context(action="inspect")` to choose which
+historical read results and read-tool schemas remain visible. Exact results can be
+restored or read in pages; keep a summary of relevant facts and counterevidence.
 
 Separate recorded observations from interpretations and predictions. Evidence
 references establish provenance, not truth. A result can support, contradict or

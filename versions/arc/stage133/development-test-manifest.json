@@ -1,0 +1,5 @@
+{
+  "tests/test_pure_publication_trial_native.py": "6093200d3961b94ca0be42e29b73bf69cafe0dac3f5ba6ff0bd4a16c9b63f668",
+  "tests/test_harness_sequential_batch_native.py": "73b4a0396270671f2cab97ced9d5b89f877e5239c8ae327217ef17d9e05b8d4a",
+  "tests/fixtures/harness-stage130-compute-call.json": "b62601b0b0642b8dc482fb24c4933a7579655bd8503c77571b61632d29395a4b"
+}

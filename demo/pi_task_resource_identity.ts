@@ -7,7 +7,7 @@ export function taskResourceName(record: Record<string, any>): string {
 		?? record.effect_assessment_id ?? record.approval_id ?? record.proposal_id ?? record.review_id
 		?? record.plan_id ?? record.handoff_id ?? record.candidate_id ?? record.receipt_id
 		?? record.route_id ?? record.observation_id ?? record.validation_id
-		?? record.state_id
+		?? record.state_id ?? record.snapshot_id
 		?? record.invocation_id ?? record.failure_id ?? record.run_id
-		?? record.session_id ?? record.agenda_id ?? record.assembly_id ?? record.archive_id ?? record.window_id ?? "");
+		?? record.update_id ?? record.worker_id ?? record.session_id ?? record.agenda_id ?? record.assembly_id ?? record.archive_id ?? record.window_id ?? "");
 }

@@ -1,0 +1,61 @@
+*** Begin Patch
+*** Update File: D:/autoresearch_pi_project/demo/pi_external_benchmark_research.ts
+@@
+ import { readTaskStrategyState, recordTaskStrategyAction, taskStrategyIndex, updateTaskStrategyState } from "./pi_task_strategy_state.ts";
++import { buildCompetitionView, persistCompetitionView, recordCompetitionChoice, competitionProjection } from "./pi_task_competition.ts";
+@@
+-		if (decision?.plan_id === undefined && decision?.plan_step === undefined) return;
++		if (decision?.plan_id === undefined && decision?.plan_step === undefined) {
++			try { if (decision) validationLedger.prepareDecision(decision); }
++			catch (error) { return { block: true, reason: String(error) }; }
++			return;
++		}
+@@
+ 			return { block: true, reason: "Planned ARC action does not match the Agent-authored structured step. Revise the plan or submit the intended step." };
+ 		}
++		try { if (decision) validationLedger.prepareDecision(decision); }
++		catch (error) { return { block: true, reason: String(error) }; }
+@@
+-		if (decisionCapsule && !event.isError) validationLedger.observeDecision(observationId, decisionCapsule);
+@@
+ 		if (actionInput && !event.isError) {
+@@
+ 			}
++			recordCompetitionChoice(root, decisionCapsule, `observation:${observationId}@v1`);
+ 		}
++		if (actionInput) validationLedger.observeAction(observationId, decisionCapsule, actionInput, details ?? {}, Boolean(event.isError));
+@@
+ 			selected_candidate_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
++			selection: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "view_ref,candidate_id,candidate_version,evidence_refs,rationale,branches,disposition,addressed_trigger_refs,next_check." })),
+@@
+ 			saveCheckpoint(patch);
++			const selectionReceipt = input.selection ? recordCompetitionChoice(root, { selection: input.selection }, checkpointRef()) : undefined;
+ 			const receipt = { checkpoint_revision: checkpoint.revision, checkpoint_ref: checkpointRef(),
+ 				updated_fields: Object.keys(patch), strategy: taskStrategyIndex(strategyState),
++				...(selectionReceipt ? { selection_review: { status: selectionReceipt.status,
++					review_gaps: selectionReceipt.review_gaps,
++					choice_ref: `competition_view:${selectionReceipt.view_id}@v${selectionReceipt.version}` } } : {}),
+@@
+-				["state", "levels_completed", "pre_action_state", "public_transition", "action_budget", "full_reset"]
++				["state", "levels_completed", "pre_action_state", "public_transition", "action_budget", "full_reset", "observation_delta", "action_target_cell"]
+@@
+ 	pi.on("context", async (event) => {
+ 		const resources: any[] = [];
++		event.messages = event.messages.filter((message: any) => !Array.isArray(message.content)
++			|| !message.content.some((item: any) => item.type === "text" && item.text?.startsWith("CURRENT COMPETITION VIEW:")));
+@@
+ 		const strategyIndex = taskStrategyIndex(readTaskStrategyState(root));
++		const competition = buildCompetitionView(root);
++		if (competition) {
++			persistCompetitionView(root, competition);
++			resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
++				text: `CURRENT COMPETITION VIEW: ${JSON.stringify(competitionProjection(competition))}` }] });
++			append("task-competition-exposure.jsonl", { event: "intended_exposure", view_ref: competition.view_ref,
++				sha256: competition.sha256, recordedAt: new Date().toISOString() });
++		}
+@@
+-			...(strategyIndex ? { strategy_state: strategyIndex } : {}),
++			...(strategyIndex ? { strategy_state: competition ? { revision: strategyIndex.revision,
++				selected_candidate_id: strategyIndex.selected_candidate_id, plan: strategyIndex.plan } : strategyIndex } : {}),
+*** End Patch
+

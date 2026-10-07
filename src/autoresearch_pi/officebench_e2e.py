@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from .jev_routing import apply_jev_routing_policy
 from .pi_kernel import PiKernel
 from .project import ProjectPaths
 from .validation_evidence import (
@@ -1214,6 +1215,7 @@ def run_pi_officebench_task(
         "--exclude-tools",
         "bash,edit,write,grep,find,ls,read",
         "--extension", str(extension),
+        "--extension", str(extension.parent / "pi_final_provider_payload.ts"),
     )
     python_path = str(paths.root / "src")
     if env.get("PYTHONPATH"):
@@ -1229,6 +1231,7 @@ def run_pi_officebench_task(
         "JIT_PYTHON": os.getenv("JIT_PYTHON", r"D:\anaconda\envs\jit\python.exe"),
         "PYTHONPATH": python_path,
     })
+    apply_jev_routing_policy(env)
     trace = root / "pi-events.jsonl"
     with trace.open("x", encoding="utf-8") as stream:
         def persist(event: dict[str, Any]) -> None:

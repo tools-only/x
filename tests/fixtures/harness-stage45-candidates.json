@@ -1,0 +1,286 @@
+{
+  "source_run": "arc-capability-stage45-composition-gpt-ls20-20261003",
+  "first": [
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "memory",
+        "name": "ls20-check-fact",
+        "description": "Scoped provisional fact for this diagnostic.",
+        "content": "The current 64x64 frame uses background color 4; a prominent green structure is color 3. This is an observation, not a confirmed game rule.",
+        "validity_bindings": {
+          "task": "arc-agi-3:ls20:arc-capability-stage45-composition-gpt-ls20-20261003",
+          "episode": "arc-agi-3:ls20:arc-capability-stage45-composition-gpt-ls20-20261003:initial",
+          "level": "arc-agi-3:ls20:arc-capability-stage45-composition-gpt-ls20-20261003:initial:level-initial",
+          "state": "arc-agi-3:ls20:arc-capability-stage45-composition-gpt-ls20-20261003:initial"
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "system_prompt",
+        "name": "observation-check-policy",
+        "description": "Policy for cautious public-state checks.",
+        "content": "Before any action, identify one exact visible fact, distinguish it from an inferred rule, and state a falsifier. Prefer bounded checks and preserve uncertainty; never treat a component receipt as evidence of gameplay improvement."
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "skill",
+        "name": "bounded-color-check",
+        "description": "Use the scoped fact and policy to check one visible grid cell before acting.",
+        "authoring_method_ref": "baseline_method:skill-creator@sha256:bc0f78e0c246e5cdeace218f99d7e3ddfb09b11bef6fc40484bbc3f3eeb7b20f",
+        "instructions": "Use Memory's provisional color fact and the observation-check policy. Choose one coordinate from the supplied public frame, state the expected color, and compare the Tool result. Report match or mismatch, retain uncertainty about game rules, and stop after one check; do not infer a winning action from this diagnostic."
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "tool",
+        "name": "read-cell-color",
+        "description": "Deterministically read one cell from the authorized public frame and return its color.",
+        "authoring_method_ref": "baseline_method:tool-creator@sha256:293cf58da166bbb905f9018b846323c8eac6d7bfd0c9782f6d5dfea4f6adeafe",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "row": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            "col": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            }
+          },
+          "required": [
+            "row",
+            "col"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color"
+          ],
+          "additionalProperties": false
+        },
+        "program": {
+          "format": "task-pure-expression-v1",
+          "limits": {},
+          "expression": {
+            "op": "object",
+            "fields": [
+              {
+                "key": "color",
+                "value": {
+                  "op": "index",
+                  "array": {
+                    "op": "index",
+                    "array": {
+                      "op": "var",
+                      "name": "grid"
+                    },
+                    "index": {
+                      "op": "get",
+                      "value": {
+                        "op": "var",
+                        "name": "input"
+                      },
+                      "key": {
+                        "op": "literal",
+                        "value": "row"
+                      }
+                    }
+                  },
+                  "index": {
+                    "op": "get",
+                    "value": {
+                      "op": "var",
+                      "name": "input"
+                    },
+                    "key": {
+                      "op": "literal",
+                      "value": "col"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "subagent",
+        "name": "independent-cell-reviewer",
+        "description": "Bounded independent check of a concrete public observation.",
+        "authoring_method_ref": "baseline_method:subagent-creator@sha256:1ccfadca755f485be205ead7ac010364d062c758acdd41e56abbb1448f2dacaa",
+        "instructions": "Independently inspect the authorized current frame and check whether cell (9,44) is color 3. Return the observed coordinate, color, evidence reference, and one limitation. Do not act, infer game rules, or request more than this one bounded check.",
+        "tools": []
+      }
+    }
+  ],
+  "last": [
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "memory",
+        "name": "ls20-check-fact",
+        "description": "Scoped provisional fact for this diagnostic.",
+        "content": "The current frame visibly contains a structured multicolor scene; exact transformation rule remains unknown.",
+        "atom": {
+          "subject": "current frame",
+          "predicate": "has_structured_multicolor_scene",
+          "value": true
+        },
+        "validity": {
+          "scope": "task"
+        },
+        "validity_bindings": {
+          "task": "arc-agi-3:ls20:arc-capability-stage45-composition-gpt-ls20-20261003"
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "system_prompt",
+        "name": "observation-check-policy",
+        "description": "Policy for bounded observation checking.",
+        "content": "Check exact public evidence before acting. Separate observed pixels from inferred rules, state uncertainty, and prefer one reversible bounded test. Never claim a transformation from a single frame."
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "skill",
+        "name": "bounded-color-check",
+        "description": "Use the scoped fact and policy to check one representative cell and a contrasting cell before a bounded action.",
+        "authoring_method_ref": "baseline_method:skill-creator@sha256:bc0f78e0c246e5cdeace218f99d7e3ddfb09b11bef6fc40484bbc3f3eeb7b20f",
+        "instructions": "Use Memory as a provisional observation, and follow the policy: inspect exact public evidence, distinguish fact from inference, and preserve uncertainty. Choose one representative coordinate plus a nearby contrast, check them, then report the observed values, what remains unknown, and one bounded next action. Stop if evidence is missing or coordinate conventions are unclear."
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "tool",
+        "name": "read-cell-color",
+        "description": "Deterministically return the color at a requested row and column in a supplied grid.",
+        "authoring_method_ref": "baseline_method:tool-creator@sha256:293cf58da166bbb905f9018b846323c8eac6d7bfd0c9782f6d5dfea4f6adeafe",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "grid": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            },
+            "row": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            "col": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            }
+          },
+          "required": [
+            "grid",
+            "row",
+            "col"
+          ],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "color": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color"
+          ],
+          "additionalProperties": false
+        },
+        "program": {
+          "format": "task-pure-expression-v1",
+          "limits": {},
+          "expression": {
+            "op": "object",
+            "fields": [
+              {
+                "key": "color",
+                "value": {
+                  "op": "index",
+                  "array": {
+                    "op": "index",
+                    "array": {
+                      "op": "get",
+                      "value": {
+                        "op": "input"
+                      },
+                      "key": {
+                        "op": "literal",
+                        "value": "grid"
+                      }
+                    },
+                    "index": {
+                      "op": "get",
+                      "value": {
+                        "op": "input"
+                      },
+                      "key": {
+                        "op": "literal",
+                        "value": "row"
+                      }
+                    }
+                  },
+                  "index": {
+                    "op": "get",
+                    "value": {
+                      "op": "input"
+                    },
+                    "key": {
+                      "op": "literal",
+                      "value": "col"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "operation": "create",
+      "candidate": {
+        "semantic_kind": "subagent",
+        "name": "independent-cell-reviewer",
+        "description": "Bounded independent review of two public grid cells.",
+        "authoring_method_ref": "baseline_method:subagent-creator@sha256:1ccfadca755f485be205ead7ac010364d062c758acdd41e56abbb1448f2dacaa",
+        "instructions": "Independently inspect only the supplied exact public observation. Compare cells (31,31) and (32,31) using row,column convention. Report each observed color, whether they differ, and one uncertainty about the broader game rule. Do not act, infer a full solution, or request hidden evidence. Stop after this bounded answer.",
+        "tools": []
+      }
+    }
+  ]
+}

@@ -289,15 +289,170 @@ def test_arc_frame_delta_reports_only_changed_cells_and_bounds():
         "frame_available": True,
         "bbox": {"top": 0, "left": 1, "bottom": 1, "right": 2},
         "cells": [
-            {"row": 0, "col": 1, "value": 1},
-            {"row": 1, "col": 2, "value": 2},
+            {"row": 0, "col": 1, "before": 0, "value": 1},
+            {"row": 1, "col": 2, "before": 0, "value": 2},
         ],
         "cells_truncated": False,
     }
 
 
+def test_arc_action_target_cell_uses_x_column_y_row_and_records_both_values():
+    from autoresearch_pi.arc_agi_3_bridge import action_target_cell
+
+    before = {"frames": [[[1, 2, 3], [4, 5, 6]]]}
+    after = {"frames": [[[1, 2, 3], [4, 5, 9]]]}
+    assert action_target_cell(before, after, x=2, y=1) == {
+        "x": 2, "y": 1, "before": 6, "after": 9,
+    }
+    assert action_target_cell(before, after, x=9, y=1) is None
+
+
 def test_arc_action_budget_matches_official_baseline_multiplier():
     assert derive_action_budget([22, 123, 73, 84, 96, 192, 186]) == 3880
+
+
+def test_arc_unlimited_budget_does_not_stop_runner_or_limit_level():
+    from autoresearch_pi.arc_agi_3_bridge import ArcBridge
+    import threading
+
+    bridge = object.__new__(ArcBridge)
+    bridge._lock = threading.Lock()
+    bridge.max_actions = None
+    bridge.actions = 1000000
+    bridge.level_action_counts = [1000000]
+    bridge.baseline_actions = [1]
+    bridge.action_budget_multiplier = 5
+    bridge._frame = lambda: {"state": "PLAYING", "levels_completed": 0}
+    state = bridge.state()
+    assert state["action_budget"]["maximum"] is None
+    assert state["action_budget"]["total_maximum"] is None
+    assert not _arc_terminal_or_budget_exhausted(state)
+    assert _arc_terminal_or_budget_exhausted({**state, "state": "WIN"})
+    # Reaching action validation proves both total and per-level guards permit
+    # execution even after the old derived limits would have been exhausted.
+    bridge.closed = False
+    bridge._frame = lambda: {"state": "PLAYING", "levels_completed": 0,
+                             "agent_available_actions": ["ACTION1"], "frames": []}
+    class Actions:
+        @staticmethod
+        def from_name(name):
+            raise RuntimeError("reached action dispatch")
+    bridge.game_action = Actions
+    with pytest.raises(RuntimeError, match="reached action dispatch"):
+        bridge.step({"action": "ACTION1"})
+
+
+def test_arc_current_frame_adds_bounded_layout_without_losing_exact_pixels():
+    from test_harness_capability_authoring import module_eval
+    text = module_eval("arc_agi_3_official_adapter.ts", "m.renderArcLatestFrameRuns({state:'PLAYING',levels_completed:0,frames:[Array.from({length:16},(_,r)=>Array.from({length:16},(_,c)=>r<8&&c<8?((r===0&&c===0)?3:1):2))]})")
+    assert "Coarse color layout (derived, non-semantic; blocks=2x2" in text
+    assert "B00(y=0-1): 1~2" in text
+    assert "Lossless coordinate runs (inclusive columns), size=16x16:" in text
+    assert "x is column, y is row; (x,y) addresses current frame[y][x]" in text
+    assert "r00: c00=3 c01-07=1 c08-15=2" in text
+
+
+def test_arc_large_uniform_pixels_get_coordinate_preserving_symbolic_map():
+    from test_harness_capability_authoring import module_eval
+
+    text = module_eval("arc_agi_3_official_adapter.ts", "m.renderArcLatestFrameRuns({state:'PLAYING',levels_completed:0,frames:[Array.from({length:64},(_,r)=>Array.from({length:64},(_,c)=>(r===63?12:(c<32?8:9))))]})")
+    assert "Uniform 2x2 pixel map" in text
+    assert "x=2c..2c+1 and y=2r..2r+1" in text
+    assert "t00(y=0-1):" in text
+    assert "t31(y=62-63):" in text
+    assert "* means mixed pixels" in text
+    assert "Lossless coordinate runs" in text
+
+
+def test_arc_decision_feedback_distinguishes_visible_effect_from_progress():
+    from test_harness_capability_authoring import module_eval
+    zeros = module_eval("pi_arc_decision_feedback.ts", "m.arcDecisionFeedback([{action:'ACTION6',observation_id:'o1',changed_cells:0},{action:'ACTION6',observation_id:'o2',changed_cells:0}])")
+    assert zeros["signature"] == "zero-visual-streak:o1:2"
+    assert "compare tested and visually distinct untested regions" in zeros["text"]
+    assert "unchanged final public pixels" in zeros["text"]
+    visible = module_eval("pi_arc_decision_feedback.ts", "m.arcDecisionFeedback([{action:'ACTION6',observation_id:'o1',changed_cells:0},{action:'ACTION6',observation_id:'o2',changed_cells:38}])")
+    assert visible["signature"] == "first-visible:o2"
+    assert "not goal progress" in visible["text"]
+    assert module_eval("pi_arc_decision_feedback.ts", "m.arcDecisionFeedback([{action:'RESET',changed_cells:0},{action:'ACTION6',changed_cells:0}])") is None
+
+
+def test_arc_zero_delta_feedback_renews_with_bounded_coordinate_evidence():
+    from test_harness_capability_authoring import module_eval
+
+    actions = [
+        {"action": "ACTION6", "observation_id": f"o{index}", "changed_cells": 0,
+         "x": 12 if index < 4 else 31, "y": 7 if index < 4 else 29}
+        for index in range(1, 9)
+    ]
+    feedback = [module_eval("pi_arc_decision_feedback.ts",
+                            f"m.arcDecisionFeedback({json.dumps(actions[:count])})")
+                for count in (2, 3, 4, 7, 8)]
+    assert feedback[0]["signature"] == feedback[1]["signature"]
+    assert feedback[1]["signature"] != feedback[2]["signature"]
+    assert feedback[2]["signature"] == feedback[3]["signature"]
+    assert feedback[3]["signature"] != feedback[4]["signature"]
+    assert "(12,7)" in feedback[4]["text"]
+    assert "(31,29)" in feedback[4]["text"]
+    assert "repeated" in feedback[4]["text"].lower()
+
+
+def test_arc_visible_effects_without_level_progress_prompt_strategy_reassessment():
+    from test_harness_capability_authoring import module_eval
+
+    actions = [
+        {"action": "ACTION6", "observation_id": f"o{index}", "changed_cells": 38,
+         "level_after": 0, "level_changed": False}
+        for index in range(1, 9)
+    ]
+    feedback = [module_eval("pi_arc_decision_feedback.ts",
+                            f"m.arcDecisionFeedback({json.dumps(actions[:count])})")
+                for count in (1, 3, 4, 5, 8)]
+    assert feedback[0]["signature"] == "first-visible:o1"
+    assert feedback[1] is None
+    assert feedback[2]["signature"] == feedback[3]["signature"]
+    assert feedback[2]["signature"] != feedback[4]["signature"]
+    assert "not evidence of level progress" in feedback[4]["text"]
+    assert "task_checkpoint" in feedback[4]["text"]
+    assert "system_prompt" in feedback[4]["text"]
+    assert "No component or action is required" in feedback[4]["text"]
+    after_reset = actions[:4] + [{"action": "RESET", "changed_cells": 250}] + actions[4:5]
+    assert module_eval("pi_arc_decision_feedback.ts",
+                       f"m.arcDecisionFeedback({json.dumps(after_reset)})")["signature"].startswith("first-visible:")
+
+
+def test_arc_repeated_effect_at_same_coordinate_questions_one_way_progress_claim():
+    from test_harness_capability_authoring import module_eval
+
+    actions = [
+        {"action": "ACTION6", "observation_id": "o1", "changed_cells": 38,
+         "x": 3, "y": 7, "target_cell": {"before": 9, "after": 8}},
+        {"action": "ACTION6", "observation_id": "o2", "changed_cells": 38,
+         "x": 3, "y": 7, "target_cell": {"before": 8, "after": 9}},
+    ]
+    feedback = module_eval("pi_arc_decision_feedback.ts",
+                           f"m.arcDecisionFeedback({json.dumps(actions)})")
+    assert "o1" in feedback["text"] and "o2" in feedback["text"]
+    assert "9->8->9" in feedback["text"]
+    assert "one-way" in feedback["text"]
+    assert "counter" in feedback["text"]
+
+
+def test_arc_coarse_layout_gives_exact_axis_ranges_without_semantic_targets():
+    from test_harness_capability_authoring import module_eval
+
+    text = module_eval("pi_arc_observation_layout.ts",
+                       "m.renderArcCoarseLayout(Array.from({length:16},()=>Array(16).fill(5))).join('\\n')")
+    assert "x ranges: B00=0-1" in text
+    assert "B07=14-15" in text
+    assert "B00(y=0-1):" in text
+    assert "B07(y=14-15):" in text
+
+
+def test_unlimited_budget_survives_parent_and_research_snapshot():
+    from test_harness_capability_authoring import module_eval
+    value = module_eval("pi_arc_observation_snapshot.ts", "m.canonicalArcPublicState({state:'NOT_FINISHED',levels_completed:0,frames:[[[0]]],action_budget:{used:10000,maximum:null,total_used:10000,total_maximum:null}})")
+    assert value["action_budget"]["maximum"] is None
+    assert value["action_budget"]["total_maximum"] is None
 
 
 def test_arc_model_settings_do_not_add_a_local_output_token_limit():
@@ -340,7 +495,7 @@ def test_arc_recovery_preserves_progress_intervention_and_reset_epoch_policy():
     decision_prompt = (prompt_root / "arc_decision_cycle.md").read_text(encoding="utf-8")
     length_prompt = (prompt_root / "arc_length_recovery.md").read_text(encoding="utf-8")
     liveness_prompt = (prompt_root / "arc_liveness_recovery.md").read_text(encoding="utf-8")
-    assert "not a global action-stopping rule" in decision_prompt
+    assert "one arc_action and observe the result" in decision_prompt
     assert "validation_window" in source
     assert "auto_research" in length_prompt
     assert "A completed research or harness operation is recovery progress" in length_prompt
@@ -350,6 +505,61 @@ def test_arc_recovery_preserves_progress_intervention_and_reset_epoch_policy():
     assert '"type": "arc_recovery_phase"' in source
     assert "recovery_turn_without_arc_action" not in source
     assert "consecutive_no_action_turns >= 2" not in source
+
+
+def test_arc_capability_value_includes_remaining_task_work():
+    prompt_root = Path(__file__).resolve().parents[1] / "demo" / "prompts"
+    prompt = (prompt_root / "arc_decision_cycle.md").read_text(encoding="utf-8")
+    assert "current or anticipated task work" in prompt
+    assert "remaining task, not only the next action" in prompt
+    assert "only when the current decision" not in prompt
+    assert "not a prerequisite for arc_action" in prompt
+
+
+def test_arc_decision_charter_makes_task_local_development_part_of_solving():
+    prompt = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "arc_decision_cycle.md").read_text(encoding="utf-8")
+    opening = prompt.split("\n\n", 1)[0]
+    assert opening.startswith("Play ARC-AGI-3 game {{game}} and improve your task-solving process")
+    assert "develop and use task-local capabilities" in opening
+    assert "current or anticipated task work" in opening
+    assert "not a prerequisite for arc_action" in opening
+
+
+def test_arc_prompt_distinguishes_routine_memory_capture_from_formal_change():
+    prompt_root = Path(__file__).resolve().parents[1] / "demo" / "prompts"
+    arc = (prompt_root / "arc_decision_cycle.md").read_text(encoding="utf-8")
+    index = (prompt_root / "self_harness_index.md").read_text(encoding="utf-8")
+    memory = " ".join((prompt_root / "harness_memory_operations.md").read_text(encoding="utf-8").split())
+    assert 'task_harness(action="contract")' in arc
+    assert "free-form scoped notes" in index
+    assert "routine Memory capture does not require conversion intent, a review, or an atom" in memory
+    assert "exactly one `atom={subject,predicate,value}`" in memory
+    assert len(arc.split()) <= 300
+    assert len(index.split()) <= 160
+
+
+def test_chosen_development_has_author_or_explicit_resume_outcome():
+    prompt_root = Path(__file__).resolve().parents[1] / "demo" / "prompts"
+    arc = (prompt_root / "arc_decision_cycle.md").read_text(encoding="utf-8")
+    process = (prompt_root / "capability_extraction_process.md").read_text(encoding="utf-8")
+    assert 'task_harness(action="contract")' in arc
+    development = " ".join((prompt_root / "harness_development_operations.md").read_text(encoding="utf-8").split())
+    assert "finish the chosen operation: author it, inspect the receipt" in development
+    assert "task_harness(action=development_intent" in development
+    assert "completion criterion" in process
+    assert "operation_id, purpose" in process
+    assert "reason and reconsider_when" in process
+    assert 'status:"deferred"' in process
+    assert "without a review" in process
+
+
+def test_goal_reinterpretation_names_checkpoint_goal_and_success_fields():
+    prompt_root = Path(__file__).resolve().parents[1] / "demo" / "prompts"
+    arc = (prompt_root / "arc_reasoning_reference.md").read_text(encoding="utf-8")
+    process = (prompt_root / "capability_extraction_process.md").read_text(encoding="utf-8")
+    assert "task_goal and success_conditions when the working objective changes" in arc
+    assert "current_strategy, hypothesis, next_step and working_summary" in arc
+    assert "task_goal, success_conditions" in process
 
 
 def test_arc_recovery_accepts_research_before_the_final_action():
@@ -486,13 +696,12 @@ def test_arc_action_marks_exhausted_budget_as_terminal_without_followup_reads():
 
 def test_arc_state_is_internal_and_current_frame_is_injected_per_decision_cycle():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_arc_agi_3_extension.ts").read_text(encoding="utf-8")
-    assert "repeatedFullRequest" in source
-    assert "request='full' retrieves it again" in source
-    assert 'const full = request === "full"' in source
+    assert 'name: "arc_state"' not in source
+    assert "crop:" not in source
     assert "before_agent_start" in source
     assert 'const currentState = await bridge("/state");' in source
     assert "# Current public ARC state (automatically supplied)" in source
-    assert "The current complete public ARC frame is automatically supplied" in source
+    assert "The current PNG remains available on every model continuation" in source
     assert "${ARC_SYSTEM_PROMPT}\\n\\n${event.systemPrompt}" in source
     assert "SELF-HARNESS PRELUDE STATUS: completed for this task" not in source
     assert "durableSelfHarnessPreludeCompleted()" in source
@@ -500,16 +709,8 @@ def test_arc_state_is_internal_and_current_frame_is_injected_per_decision_cycle(
 
 def test_arc_adapter_requests_only_arc_tools_as_benchmark_base_tools():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_arc_agi_3_extension.ts").read_text(encoding="utf-8")
-    assert 'baseTools: ["arc_action"]' in source
-    assert 'pi.setActiveTools(["arc_action"])' in source
-
-
-def test_arc_uses_a_thin_initial_control_surface_with_on_demand_support_tools():
-    source = (Path(__file__).resolve().parents[1] / "demo" / "pi_external_benchmark_research.ts").read_text(encoding="utf-8")
-    assert 'const core = compactArc ? ["task_harness", "auto_research"]' in source
-    assert 'const initialManagement = (compactArc' in source
-    assert '"task_checkpoint"' in source
-    assert "initial_resource_counts" in source
+    assert 'baseTools: ["arc_action", "arc_actions"]' in source
+    assert 'pi.setActiveTools(["arc_action", "arc_actions"])' in source
 
 
 def test_arc_action_can_persist_a_bounded_decision_capsule():
@@ -519,13 +720,6 @@ def test_arc_action_can_persist_a_bounded_decision_capsule():
     assert 'falsifier' in source
     research_source = (Path(__file__).resolve().parents[1] / "demo" / "pi_external_benchmark_research.ts").read_text(encoding="utf-8")
     assert "decision_capsule" in research_source
-
-
-def test_arc_effect_ledger_preserves_common_mode_and_action_specific_candidates():
-    source = (Path(__file__).resolve().parents[1] / "demo" / "pi_arc_agi_3_extension.ts").read_text(encoding="utf-8")
-    assert 'action_invariant_candidate' in source
-    assert 'action_conditioned_candidate' in source
-    assert 'distinct_effects' in source
 
 
 def test_arc_extension_stops_the_pi_turn_at_the_action_result_boundary():
@@ -553,7 +747,9 @@ def test_arc_adapter_does_not_prescribe_harness_lifecycle():
 def test_arc_runner_starts_with_clean_pi_capabilities():
     source = (Path(__file__).resolve().parents[1] / "src" / "autoresearch_pi" / "arc_agi_3_e2e.py").read_text(encoding="utf-8")
     assert '"--no-skills"' in source
-    assert '"--exclude-tools", "bash,edit,write,grep,find,ls,read"' in source
+    assert '"--no-builtin-tools"' in source
+    assert '"--exclude-tools", "bash,edit,write,grep,find,ls"' in source
+    assert '"--exclude-tools", "bash,edit,write,grep,find,ls,read"' not in source
 
 
 def test_arc_allows_bounded_harness_work_without_counting_it_as_game_progress():
@@ -983,7 +1179,7 @@ def test_method_evolution_audit_requires_one_reference_consistent_online_chain()
     assert all(stage["passed"] for stage in audit["chains"][0]["stages"].values())
 
 
-def test_method_evolution_audit_requires_action_to_match_the_read_procedure_contract():
+def test_method_evolution_audit_accepts_dynamic_online_method_application():
     from autoresearch_pi.arc_agi_3_e2e import _method_evolution_audit
 
     candidate = {
@@ -1011,10 +1207,10 @@ def test_method_evolution_audit_requires_action_to_match_the_read_procedure_cont
         "instructions": "NEXT_ACTION: ACTION2\nPREDICTION: visible change\nFALSIFIER: no change",
     }}
 
-    for action, prediction, expected in (
-        ("ACTION1", "visible change", False),
-        ("ACTION2", "different prediction", False),
-        ("ACTION2", "visible change", True),
+    for action, prediction in (
+        ("ACTION1", "visible change"),
+        ("ACTION2", "different prediction"),
+        ("ACTION2", "visible change"),
     ):
         audit = _method_evolution_audit(
             methods=[candidate, adopted], comparisons=[{
@@ -1029,7 +1225,8 @@ def test_method_evolution_audit_requires_action_to_match_the_read_procedure_cont
                     "prediction": prediction, "falsifier": "no change"}}}],
             resource_accesses=access, harness_resources=resources,
         )
-        assert audit["chains"][0]["stages"]["actual_arc_use"]["passed"] is expected
+        assert audit["chains"][0]["stages"]["actual_arc_use"]["passed"] is True
+        assert audit["chains"][0]["stages"]["actual_arc_use"]["use_contracts"]["observation-3"]["application_basis"] == "exact_read_plus_action_citation_and_testable_prediction"
 
 
 def test_method_evolution_audit_does_not_count_standalone_tool_use_as_arc_use():
@@ -1094,7 +1291,7 @@ def test_method_evolution_audit_does_not_mistake_prepared_comparison_for_inducti
     assert audit["cross_situation_material_ready"] is True
     assert audit["cross_situation_induction_observed"] is False
     assert audit["cross_situation_evidence_observed"] is False
-    assert audit["first_incomplete_stage"] == "cross_situation_induction"
+    assert audit["first_incomplete_stage"] == "method_candidate"
     assert audit["orphan_cross_situation_evidence"][0]["evidence_refs"] == [
         "observation-1", "observation-2",
     ]
@@ -1129,6 +1326,39 @@ def test_method_evolution_audit_counts_supported_cross_situation_report_before_m
     assert audit["cross_situation_inductions"][0]["report_ref"] == "research_report:research-1@v1"
 
 
+def test_method_evolution_audit_accepts_procedural_single_situation_candidate_without_cross_situation_gate():
+    from autoresearch_pi.arc_agi_3_e2e import _method_evolution_audit
+
+    audit = _method_evolution_audit(
+        methods=[{
+            "method_id": "method-current-level-probe", "version": 1,
+            "maturity": "candidate_method", "candidate_ref": "current-level-probe",
+            "generalization_basis": "single_context", "generalization_scope": "single_situation",
+            "construction_evidence_refs": ["observation-1"], "context_ids": ["situation-a"],
+            "method": {
+                "applicability": "Use while the current level requires identifying its controlled object.",
+                "abstain_when": "Keep multiple candidates if the observed transition is ambiguous.",
+                "inputs": ["before frame", "after frame", "action"],
+                "invariants": ["Candidate identity remains uncertain until an action-conditioned response repeats"],
+                "parameters": ["available actions", "candidate objects"],
+                "steps": ["Compare action-conditioned displacement", "retain viable candidates"],
+                "decision_points": ["If several objects move, preserve ambiguity"],
+                "stop_conditions": ["A repeatable controlled object candidate is identified"],
+                "failure_modes": ["Animation creates unrelated deltas"],
+                "falsifier": "The chosen candidate does not respond on the next probe",
+            },
+        }],
+        comparisons=[], assessments=[], handoffs=[], reports=[],
+        observations=[{"observation_id": "observation-1", "tool_name": "arc_action"}],
+    )
+
+    chain = audit["chains"][0]
+    assert audit["stage_order"][0] == "method_candidate"
+    assert chain["stages"]["method_candidate"]["passed"] is True
+    assert chain["first_incomplete_stage"] == "adoption"
+    assert audit["cross_situation_induction_observed"] is False
+
+
 def test_write_arc_method_evolution_audit_handles_interrupted_comparison_only_run(tmp_path):
     (tmp_path / "execution-observations.jsonl").write_text(
         "{\"observation_id\":\"observation-1\"}\n{\"observation_id\":\"observation-2\"}\n",
@@ -1148,7 +1378,7 @@ def test_write_arc_method_evolution_audit_handles_interrupted_comparison_only_ru
     assert audit["cross_situation_material_ready"] is True
     assert audit["cross_situation_induction_observed"] is False
     assert audit["cross_situation_evidence_observed"] is False
-    assert audit["first_incomplete_stage"] == "cross_situation_induction"
+    assert audit["first_incomplete_stage"] == "method_candidate"
 
 
 def test_method_evolution_audit_explains_rejected_delivery_without_promoting_it(tmp_path):
@@ -1171,7 +1401,7 @@ def test_method_evolution_audit_explains_rejected_delivery_without_promoting_it(
 
     audit = json.loads(write_arc_method_evolution_audit(tmp_path).read_text(encoding="utf-8"))
 
-    assert audit["first_incomplete_stage"] == "cross_situation_induction"
+    assert audit["first_incomplete_stage"] == "method_candidate"
     assert audit["cross_situation_material_ready"] is True
     assert audit["cross_situation_induction_observed"] is False
     assert audit["delivery_diagnostics"]["rejected_report_submission_count"] == 1
@@ -1183,7 +1413,8 @@ def test_real_arc_auto_research_validation_prompt_requires_evidence_backed_five_
     prompt = (Path(__file__).resolve().parents[1] / "demo" / "prompts" / "arc_auto_research_validation.md").read_text(encoding="utf-8")
     for token in ("system_prompt", "skills", "memory", "tools", "subagents"):
         assert token in prompt
-    assert "route receipt" in prompt
+    assert "creator read where required (Skill/Tool/Subagent)" in prompt
+    assert "change receipt and exact pool version" in prompt
     assert "next parent turn" in prompt
     assert "Do not invent evidence" in prompt
 
@@ -1240,7 +1471,15 @@ def test_arc_provider_error_is_a_fail_fast_turn_boundary():
     }]) is None
 
 
-def test_arc_runner_stops_after_one_provider_error_without_reprompting(tmp_path, monkeypatch):
+@pytest.mark.parametrize("review_kwargs,expected_mode", [
+    ({}, "advisory"),
+    ({"review_mode": "required"}, "required"),
+    ({"review_mode": "advisory", "environment_overrides": {
+        "PI_HARNESS_REVIEW_DECISION_REQUIRED": "enabled"}}, "required"),
+])
+def test_arc_runner_stops_after_one_provider_error_without_reprompting(
+    tmp_path, monkeypatch, review_kwargs, expected_mode,
+):
     from autoresearch_pi import arc_agi_3_e2e as runner
 
     monkeypatch.setattr(runner, "load_project_dotenv", lambda _: {
@@ -1249,10 +1488,12 @@ def test_arc_runner_stops_after_one_provider_error_without_reprompting(tmp_path,
         "ARC_MODEL": "fixture-model",
     })
     prompts = []
+    environments = []
 
     class ErrorKernel:
         def __init__(self, *args, **kwargs):
             self.event_sink = kwargs["event_sink"]
+            environments.append(kwargs["env"])
 
         def __enter__(self):
             return self
@@ -1283,13 +1524,103 @@ def test_arc_runner_stops_after_one_provider_error_without_reprompting(tmp_path,
     assert runner._run_pi(
         tmp_path, bridge_url="http://unused.invalid", game="test",
         variant="treatment", context_compaction=False,
+        **review_kwargs,
     ) == 1
     assert len(prompts) == 1
+    assert environments[0]["PI_HARNESS_REVIEW_DECISION_REQUIRED"] == (
+        "enabled" if expected_mode == "required" else "disabled"
+    )
+    configuration = json.loads((tmp_path / "arc-runtime-config.json").read_text(encoding="utf-8"))
+    assert configuration["review_mode"] == expected_mode
+    assert configuration["requested_review_mode"] == review_kwargs.get("review_mode", "advisory")
     events = [json.loads(line) for line in (tmp_path / "pi-events.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert events[-1] == {
+    assert {key: value for key, value in events[-1].items() if key != "recordedAt"} == {
         "type": "arc_provider_failure", "error": "quota exhausted",
         "arc_action_committed": False,
     }
+
+
+def test_invalid_review_mode_cannot_create_a_run_or_start_pi(tmp_path, monkeypatch):
+    from autoresearch_pi import arc_agi_3_e2e as runner
+
+    monkeypatch.setattr(runner, "_resolve_pi_cli", lambda: pytest.fail("must validate before starting Pi"))
+    root = tmp_path / "invalid-run"
+    with pytest.raises(ValueError, match="review_mode"):
+        runner.run_arc_agi_3_e2e(root, arc_root=tmp_path, game="test", review_mode="invalid")
+    assert not root.exists()
+    with pytest.raises(ValueError, match="review_mode"):
+        runner._run_pi(root, bridge_url="unused", game="test", variant="treatment",
+                       context_compaction=False, review_mode="invalid")
+    assert not root.exists()
+
+
+def test_arc_runner_persists_window_progress_without_repeated_declaration(tmp_path, monkeypatch):
+    from autoresearch_pi import arc_agi_3_e2e as runner
+
+    monkeypatch.setattr(runner, "load_project_dotenv", lambda _: {
+        "ARC_OPENAI_API_BASE": "https://provider.invalid/v1",
+        "ARC_OPENAI_API_KEY": "test-only", "ARC_MODEL": "fixture-model",
+    })
+
+    class WindowKernel:
+        def __init__(self, *args, **kwargs):
+            self.action = 0
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def send(self, *args, **kwargs):
+            return {"success": True}
+        def prompt(self, prompt):
+            return {"success": True}
+        def wait_for_event(self, *args, **kwargs):
+            return {"type": "turn_start"}
+        def wait_for_agent_events(self, **kwargs):
+            self.action += 1
+            if self.action > 2:
+                return []  # terminal read-only review
+            decision = {"hypothesis_id": "route", "hypothesis": "route is reachable"}
+            if self.action == 1:
+                decision["validation_window"] = {"actions": 5}
+            return [{
+                "type": "tool_execution_end", "toolName": "arc_action", "isError": False,
+                "args": {"action": "ACTION1", "decision": decision},
+                "evidence": {"arc_action_boundary": True,
+                    "action_budget": {"total_used": self.action},
+                    "public_transition": {"level_changed": False},
+                    "observation_delta": {"changed_cells": 54}},
+            }]
+
+    states = iter([
+        {"state": "NOT_FINISHED", "levels_completed": 0, "available_actions": ["ACTION1"]},
+        {"state": "WIN", "levels_completed": 1},
+    ])
+    monkeypatch.setattr(runner, "PiKernel", WindowKernel)
+    monkeypatch.setattr(runner, "_sync_bridge_events", lambda _root, _url, cursor: cursor)
+    monkeypatch.setattr(runner, "_get_json", lambda *_: next(states))
+    assert runner._run_pi(tmp_path, bridge_url="http://unused.invalid", game="test",
+                          variant="treatment", context_compaction=False) == 0
+    rows = runner._read_jsonl(tmp_path / "research-validation-windows.jsonl")
+    assert rows[-1]["status"] == "progress"
+    assert rows[-1]["actions_used"] == 2
+    assert rows[-1]["last_action_index"] == 2
+    assert [item["action_index"] for item in rows[-1]["evidence"]] == [1, 2]
+    assert "outcome" not in rows[-1]  # persistence must not invent a verdict
+
+
+@pytest.mark.parametrize("changed_cells,bbox", [(52, {"top": 25, "left": 26, "bottom": 62, "right": 38}), (0, None)])
+def test_arc_kernel_projection_preserves_small_delta_evidence(changed_cells, bbox):
+    projected = _project_arc_kernel_event({
+        "type": "tool_execution_end", "toolName": "arc_action", "isError": False,
+        "result": {"details": {"arc_action_boundary": True, "observation_delta": {
+            "changed_cells": changed_cells, "bbox": bbox, "frame_available": True,
+            "cells": ["large-cell-payload"] * 10000,
+        }}},
+    })
+    assert projected["evidence"]["observation_delta"] == {
+        "changed_cells": changed_cells, "bbox": bbox, "frame_available": True,
+    }
+    assert len(json.dumps(projected)) < 500
 
 
 def test_arc_kernel_projection_drops_stream_fragments_and_large_tool_results():

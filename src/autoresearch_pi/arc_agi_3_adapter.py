@@ -65,6 +65,11 @@ def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
     max_output = int(declared_output) if declared_output else None
     if max_output is not None and max_output <= 0:
         raise ValueError("ARC_MODEL_MAX_OUTPUT_TOKENS must be a positive provider-supported value")
+    thinking_format = environment.get("ARC_PI_THINKING_FORMAT")
+    if thinking_format and thinking_format not in {"openai", "qwen", "qwen-chat-template"}:
+        raise ValueError("ARC_PI_THINKING_FORMAT must be openai, qwen or qwen-chat-template")
+    if thinking_format and (environment.get("ARC_PI_API") or "openai-responses") != "openai-completions":
+        raise ValueError("ARC_PI_THINKING_FORMAT requires openai-completions")
     settings = {
         "base_url": environment.get("ARC_OPENAI_API_BASE") or environment.get("OPENAI_API_BASE"),
         "api_key": environment.get("ARC_OPENAI_API_KEY") or environment.get("OPENAI_API_KEY"),
@@ -73,6 +78,7 @@ def resolve_model_settings(environment: Mapping[str, str]) -> dict[str, Any]:
         "official_runtime": "openai-python/responses",
         "pi_api": environment.get("ARC_PI_API") or "openai-responses",
         "input_modalities": list(resolve_input_modalities(environment.get("ARC_INPUT_MODALITIES"))),
+        **({"thinking_format": thinking_format} if thinking_format else {}),
     }
     if max_output is not None:
         settings["max_tokens"] = max_output

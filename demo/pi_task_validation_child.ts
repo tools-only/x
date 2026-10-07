@@ -5,34 +5,25 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertHarnessProposalEvidenceLinks, assertResearchAssessmentReferences, assertResearchConfidenceUpdate, normalizeAutoResearchReport } from "./pi_auto_research_output.ts";
 import { ResearchMethodCandidateSchema } from "./pi_auto_research_harness_schema.ts";
-import { AutoResearchApprovalStore, installAutoResearchApprovalTool } from "./pi_auto_research_approvals.ts";
-import { harnessDeliveryHash } from "./pi_auto_research_harness_router.ts";
 import { installTaskResourceReader } from "./pi_task_resource_store.ts";
 import { installTaskLocalContextLifecycle } from "./pi_task_local_context_lifecycle.ts";
+import { installChildContextControl } from "./pi_child_context_control.ts";
+import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
+import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
 import { loadPrompt } from "./prompt_loader.ts";
 import { createHash } from "node:crypto";
 import { loadResearchProfile } from "./pi_auto_research_profiles.ts";
 import { canonicalEvidenceSnapshot } from "./pi_auto_research_evidence.ts";
-import { baselineMethodCatalog, readBaselineMethod, BASELINE_AUTHORING_GUIDANCE } from "./pi_harness_baseline_methods.ts";
+import { appendWorkerRecord, workerOwnUpdates } from "./pi_auto_research_workers.ts";
 
 export default function taskValidationChild(pi: ExtensionAPI) {
 	if (process.env.PI_TASK_CHILD !== "1") throw new Error("this extension is only for isolated task children");
 	const root = process.env.PI_AUTORESEARCH_E2E_ROOT!;
-	pi.registerTool({ name: "harness_method", label: "Read baseline authoring method",
-		description: "Discover or read fixed skill/tool/subagent creators and research-orchestration. Read-only; no task mutation or environment access.",
-		parameters: Type.Object({ action: Type.Union([Type.Literal("list"), Type.Literal("read")]),
-			name: Type.Optional(Type.String()), resource: Type.Optional(Type.String()), expected_sha256: Type.Optional(Type.String()) }),
-		async execute(_id, p) {
-			if (p.action === "list") return { content: [{ type: "text", text: JSON.stringify(baselineMethodCatalog()) }] };
-			const method = readBaselineMethod(p.name ?? "", p.resource ?? "SKILL.md", p.expected_sha256);
-			const { content, ...receipt } = method;
-			appendFileSync(join(root, "task-baseline-method-reads.jsonl"), JSON.stringify({ ...receipt, actor: "child", recordedAt: new Date().toISOString() }) + "\n", "utf8");
-			return { content: [{ type: "text", text: JSON.stringify({ format: "baseline-method-read-v1", ...receipt, content }) }], details: receipt };
-		} });
-	pi.on("before_agent_start", event => ({ systemPrompt: `${event.systemPrompt}\n\nBaseline methods (read with harness_method): ${JSON.stringify(baselineMethodCatalog())}. ${BASELINE_AUTHORING_GUIDANCE.replaceAll('task_harness(action=read_method, method_name=...)', 'harness_method(action=read, name=...)')}` }));
+	installReportedTokenBudget(pi, root);
 	const refs = JSON.parse(process.env.PI_TASK_CHILD_RESOURCE_REFS ?? "[]");
 	if (!Array.isArray(refs) || refs.some((ref) => typeof ref !== "string")) throw new Error("invalid child resource grants");
 	installTaskResourceReader(pi, root, refs);
+	installChildContextControl(pi, root);
 	installTaskLocalContextLifecycle(pi, {
 		root,
 		keepRecentMessages: 12,
@@ -45,17 +36,18 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 		const runId = String(process.env.PI_AUTO_RESEARCH_RUN_ID ?? "");
 		if (!/^auto-research-[1-9]\d*$/.test(runId)) throw new Error("invalid Auto-Research run id");
 		const sessionId = String(process.env.PI_AUTO_RESEARCH_SESSION_ID ?? runId);
+		const worker = process.env.PI_AUTO_RESEARCH_WORKER ? JSON.parse(process.env.PI_AUTO_RESEARCH_WORKER) : undefined;
+		const consumedEvidence = new Set<string>();
+		const consumeEvidence = (supplied: unknown) => {
+			const selected = Array.isArray(supplied) ? supplied.map(String) : [];
+			if (!worker && selected.length) throw new Error("consumption receipts require an assigned worker");
+			if (selected.some(ref => !worker.offered_refs.includes(ref))) throw new Error("consumption exceeds this worker's immutable evidence cutoff");
+			for (const ref of selected) consumedEvidence.add(ref);
+		};
 		const interactionMode = process.env.PI_AUTO_RESEARCH_INTERACTION_MODE === "non_blocking"
 			? "non_blocking" : "blocking";
 		const profile = loadResearchProfile(process.env.PI_AUTO_RESEARCH_SCOPE ?? "unspecified");
 		const commonInstructions = loadPrompt("auto_research_child_contract.md");
-		const approvalStore = new AutoResearchApprovalStore(root, runId, sessionId);
-		// The child returns immutable candidate bodies directly. Keep the approval
-		// ledger readable for old reports, but do not expose a child-side
-		// propose/approve workflow in the native tool surface.
-		if (process.env.PI_AUTO_RESEARCH_LEGACY_APPROVALS === "1") {
-			installAutoResearchApprovalTool(pi, approvalStore);
-		}
 		const controlPath = join(root, "auto-research-child-control.jsonl");
 		// Evidence volume is not governed by a runtime count. The child model owns
 		// the stopping decision: it may read more pages, change representation, or
@@ -149,6 +141,8 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			mkdirSync(join(root, "task-context-cache", "auto-research-checkpoints"), { recursive: true });
 			const checkpoint = {
 				...savedCheckpoint,
+				...(worker ? { consumed_evidence_refs: [...new Set([...(savedCheckpoint.consumed_evidence_refs ?? []), ...consumedEvidence])],
+					worker_id: worker.worker_id, evidence_cutoff: worker.evidence_cutoff } : {}),
 				format: "auto-research-checkpoint-v1", session_id: sessionId,
 				status: paused ? "pending" : "active", cursor: String(params.cursor ?? ""),
 				evidence_refs: [...new Set(Array.isArray(params.evidence_refs) ? params.evidence_refs.map(String) : [])],
@@ -182,6 +176,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 				action: Type.Union([Type.Literal("save"), Type.Literal("pause")]),
 				cursor: Type.Optional(Type.String()),
 				evidence_refs: Type.Optional(Type.Array(Type.String())),
+				consumed_evidence_refs: Type.Optional(Type.Array(Type.String(), { description: "Exact offered refs actually analyzed; read/render grants do not imply consumption." })),
 				resource_refs: Type.Optional(Type.Array(Type.String())),
 				unresolved_questions: Type.Optional(Type.Array(Type.String())),
 				draft_findings: Type.Optional(Type.Array(Type.Any())),
@@ -192,6 +187,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 				])),
 			}),
 			async execute(_id, params) {
+				consumeEvidence(params.consumed_evidence_refs);
 				const paused = params.action === "pause";
 				if (paused && (!String(params.reason ?? "").trim() || !String(params.next_step ?? "").trim() || !params.wait_for)) {
 					throw new Error("non-blocking pause requires reason, next_step, and wait_for");
@@ -205,7 +201,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 					...(params.action === "pause" ? { terminate: true } : {}) };
 			},
 		});
-		pi.registerTool({
+		const submitResearchTool = {
 			name: "submit_research_report",
 			label: "Submit Auto-Research report",
 			description: "Submit one auto-research-report-v1 and end this run. Optional extension objects are validated by the runtime after the call. A report does not mutate parent resources.",
@@ -227,13 +223,23 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 							description: "Optional finding assessment; runtime validates its canonical fields.",
 						})),
 					}),),
-					evidence_refs: Type.Array(Type.String()),
+					evidence_refs: Type.Optional(Type.Array(Type.String(), {
+						description: "Optional report-level evidence refs; omitted means none. Finding and method refs remain independently linked and validated.",
+					})),
 					alternatives: Type.Array(Type.String()),
 					limitations: Type.Array(Type.String()),
 					validation_plan: Type.String(),
 					planning_implications: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Unknown()), {
 						description: "Optional decision implications; runtime validates and normalizes canonical fields.",
 					})),
+					candidate_updates: Type.Optional(Type.Array(Type.Object({
+						id: Type.String({ minLength: 1 }),
+						kind: Type.Union([Type.Literal("rule"), Type.Literal("goal"), Type.Literal("strategy")]),
+						status: Type.Union([Type.Literal("proposed"), Type.Literal("supported"), Type.Literal("challenged"), Type.Literal("rejected")]),
+						claim: Type.Optional(Type.String()), prediction: Type.Optional(Type.String()),
+						falsifier: Type.Optional(Type.String()), next_test: Type.Optional(Type.String()),
+						evidence_refs: Type.Optional(Type.Array(Type.String())),
+					}))),
 					next_research_question: Type.Optional(Type.String()),
 					research_progress: Type.Optional(Type.Object({
 						topic: Type.String({ minLength: 1 }),
@@ -252,9 +258,6 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 						description: "Optional confidence change; runtime rejects unsupported increases.",
 					})),
 					method_candidates: Type.Optional(Type.Array(ResearchMethodCandidateSchema)),
-					harness_proposals: Type.Array(Type.Record(Type.String(), Type.Unknown()), {
-						description: "Optional complete auto-research-harness-delivery-v1 candidates. Runtime validates, routes, and keeps invalid implementations pending without discarding a valid method.",
-					}),
 				}),
 			}),
 			async execute(_id, params) {
@@ -262,24 +265,11 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 				if (!suppliedReport || Array.isArray(suppliedReport) || suppliedReport.format !== "auto-research-report-v1") {
 					throw new Error("report must be one auto-research-report-v1 object");
 				}
-				// Hydrate approval-only proposals from the child-local ledger before
-				// normalization. This is not a shortcut around approval: the ledger
-				// contains the exact canonical body and its SHA-256 binding.
-				const hydratedInput = {
-					...suppliedReport,
-					harness_proposals: Array.isArray(suppliedReport.harness_proposals)
-						? suppliedReport.harness_proposals.map((item: any) => {
-							if (item?.format === "auto-research-harness-delivery-v1") {
-								return { ...(item.candidate_ref ? { candidate_ref: item.candidate_ref } : {}), delivery: item };
-							}
-							if (item?.delivery) return item;
-							const approval = item?.approval_id ? approvalStore.get(String(item.approval_id)) : undefined;
-							if (!approval) return item;
-							return { ...item, delivery: approval.proposal.delivery };
-						})
-						: suppliedReport.harness_proposals,
-				};
-				const report = normalizeAutoResearchReport(hydratedInput);
+				if (Object.prototype.hasOwnProperty.call(suppliedReport, "harness_proposals")
+					&& (!Array.isArray(suppliedReport.harness_proposals) || suppliedReport.harness_proposals.length > 0)) {
+					throw new Error("Auto-Research cannot author Harness components. Return method_candidates/findings/experiment_request only; the parent Agent may later read the matching creator and author a component.");
+				}
+				const report = normalizeAutoResearchReport(suppliedReport);
 				if (process.env.PI_AUTO_RESEARCH_OPEN_ALLOCATION === "1" && !report.research_progress) {
 					throw new Error("open Auto-Research requires research_progress so the runtime can preserve its agenda");
 				}
@@ -295,26 +285,6 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 						} catch { return []; }
 					}).at(-1);
 				});
-				const reviewedProposals = report.harness_proposals.map((proposal: Record<string, any>, index: number) => {
-					const approval = proposal.approval_id ? approvalStore.get(String(proposal.approval_id)) : undefined;
-					if (!approval && !proposal.delivery) {
-						if (proposal.proposal_status === "pending_implementation" && proposal.proposal_error) {
-							return { ...proposal, candidate_ref: String(proposal.candidate_ref ?? `${runId}:pending-candidate-${index + 1}`) };
-						}
-						throw new Error(`proposal ${index + 1} requires delivery or a known approval_id`);
-					}
-					if (!approval) {
-						const candidateRef = String(proposal.candidate_ref ?? `${runId}:candidate-${index + 1}:${harnessDeliveryHash(proposal.delivery)}`);
-						return { ...proposal, candidate_ref: candidateRef };
-					}
-					if (approval.proposal.delivery_hash !== harnessDeliveryHash(proposal.delivery)) {
-						throw new Error(`report proposal does not match approval object: ${approval.approval_id}`);
-					}
-					if (approval.status === "pending") throw new Error(`approval must be decided before report submission: ${approval.approval_id}`);
-					return { ...proposal, approval_id: approval.approval_id,
-						approval_version: approval.version, approval_status: approval.status, approval_tag: approval.tag };
-				});
-				const reviewedReport = { ...report, harness_proposals: reviewedProposals };
 				// Keep the model-authored report byte-for-byte semantically separate
 				// from runtime metadata. The audit describes read coverage only; it does
 				// not decide whether the report's conclusion is true. Writing it as a
@@ -325,7 +295,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 				mkdirSync(directory, { recursive: true });
 				const target = join(directory, `${runId}.json`);
 				const temporary = `${target}.tmp`;
-				writeFileSync(temporary, JSON.stringify(reviewedReport) + "\n", "utf8");
+				writeFileSync(temporary, JSON.stringify(report) + "\n", "utf8");
 				renameSync(temporary, target);
 				const auditTarget = join(directory, `${runId}.audit.json`);
 				const auditTemporary = `${auditTarget}.tmp`;
@@ -337,10 +307,81 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 					input_form: "structured_report", session_id: sessionId,
 				});
 				return {
-					content: [{ type: "text", text: JSON.stringify({ accepted: true, run_id: runId }) }],
-					details: { accepted: true, run_id: runId },
+					content: [{ type: "text", text: JSON.stringify({ accepted: true, run_id: runId,
+						...(report.warnings?.length ? { warnings: report.warnings } : {}) }) }],
+					details: { accepted: true, run_id: runId,
+						...(report.warnings?.length ? { warnings: report.warnings } : {}) },
 					terminate: true,
 				};
+			},
+		};
+		pi.registerTool(submitResearchTool);
+		if (worker) {
+			const tokensSpent = () => {
+				const path = join(root, "subagent-provider-telemetry.jsonl");
+				return existsSync(path) ? readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean)
+					.flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } })
+					.filter(row => row.event === "assistant_message" && (worker.run_ids ?? []).includes(row.run_id))
+					.reduce((sum, row) => sum + Number(row.usage?.output ?? 0), 0) : 0;
+			};
+			pi.on("before_provider_request", (event) => {
+				const remaining = worker.max_output_tokens - tokensSpent();
+				const payload = event.payload as Record<string, any>;
+				const key = "max_completion_tokens" in payload ? "max_completion_tokens" : "max_tokens";
+				return { ...payload, [key]: Math.max(1, Math.min(Number(payload[key] ?? remaining), remaining)) };
+			});
+			pi.on("message_end", (event, ctx) => {
+				if ((event.message as any)?.role !== "assistant" || reportSubmitted) return;
+				// Telemetry is installed last, so include this message before its log exists.
+				if (tokensSpent() + Number((event.message as any).usage?.output ?? 0) < worker.max_output_tokens) return;
+				saveResearchCheckpoint({ reason: "assigned_output_budget_exhausted", next_step: "Parent must grant a new bounded assignment to continue.",
+					wait_for: "manual_resume" }, true);
+				ctx.abort();
+			});
+		}
+		if (worker) pi.registerTool({
+			name: "publish_research_update", label: "Publish research increment",
+			description: "Publish a validated report while research remains active. Preserve alternatives and limits. The parent receives a bounded current increment; full details stay addressable. This does not change or assemble Harness.",
+			parameters: Type.Object({
+				report: submitResearchTool.parameters.properties.report,
+				priority: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("later"), Type.Literal("urgent")])),
+				consumed_evidence_refs: Type.Optional(Type.Array(Type.String())),
+				revises_ref: Type.Optional(Type.String()), withdraws_ref: Type.Optional(Type.String()),
+			}),
+			async execute(_id, params) {
+				const supplied = params.report as Record<string, any>;
+				if (supplied.harness_proposals?.length) throw new Error("research workers cannot author Harness components");
+				const report = normalizeAutoResearchReport(supplied);
+				assertResearchConfidenceUpdate(report);
+				assertHarnessProposalEvidenceLinks(report);
+				assertResearchAssessmentReferences(report, ref => {
+					const path = join(root, "effect-assessments.jsonl");
+					return existsSync(path) ? readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean)
+						.map(line => JSON.parse(line)).filter(row => row.effect_assessment_id === ref).at(-1) : undefined;
+				});
+				const previous = workerOwnUpdates(root, worker.worker_id);
+				for (const ref of [params.revises_ref, params.withdraws_ref].filter(Boolean))
+					if (!previous.some(row => `research_update:${row.update_id}@v${row.version}` === ref))
+						throw new Error("revision/withdrawal must reference this worker's exact prior publication");
+				consumeEvidence(params.consumed_evidence_refs);
+				const fingerprint = createHash("sha256").update(JSON.stringify([report, worker.evidence_cutoff,
+					params.revises_ref ?? null, params.withdraws_ref ?? null, params.priority ?? null])).digest("hex");
+				const repeated = previous.find(row => row.publication_fingerprint === fingerprint);
+				if (repeated) {
+					saveResearchCheckpoint({ cursor: `published:${repeated.update_id}` }, false);
+					const receipt = { accepted: true, reused: true, update_ref: `research_update:${repeated.update_id}@v${repeated.version}`, lifecycle: "active" };
+					return { content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
+				}
+				const updateId = `${runId}-update-${previous.length + 1}`;
+				appendWorkerRecord(root, "update", { format: "auto-research-update-v1", update_id: updateId, version: 1,
+					worker_id: worker.worker_id, research_line_ref: worker.research_line_ref, session_id: sessionId,
+					publication_fingerprint: fingerprint,
+					run_id: runId, lifecycle: "active", priority: params.priority ?? (report.research_progress?.parent_relevance === "now" ? "current" : "later"),
+					revises_ref: params.revises_ref ?? null, withdraws_ref: params.withdraws_ref ?? null,
+					consumed_evidence_refs: [...consumedEvidence], evidence_cutoff: worker.evidence_cutoff, report });
+				saveResearchCheckpoint({ cursor: `published:${updateId}` }, false);
+				const receipt = { accepted: true, update_ref: `research_update:${updateId}@v1`, lifecycle: "active" };
+				return { content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
 			},
 		});
 		pi.on("tool_execution_start", (event) => {
@@ -389,4 +430,10 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			return { systemPrompt: `${event.systemPrompt}\n\n${instructions}${convergence}` };
 		});
 	}
+	// Installed last so fallback telemetry sees the child's final context projection.
+	installProviderTelemetry(pi, {
+		root, fileName: "subagent-provider-telemetry.jsonl",
+		contextTokenFileName: "subagent-context-token-debug.jsonl",
+		scope: process.env.PI_TASK_CHILD_CONTEXT_SCOPE ?? "task-child",
+	});
 }

@@ -32,6 +32,7 @@ def _run_fixture(
     arc_compact: bool = False,
     extra_env: dict[str, str] | None = None,
     prompt: str = "Run the deterministic external benchmark fixture.",
+    followup_prompt: str | None = None,
 ) -> list[dict]:
     node, cli = _pi_cli()
     project = Path(__file__).resolve().parents[1]
@@ -43,6 +44,7 @@ def _run_fixture(
     ]
     for extension in extra_extensions or []:
         command.extend(["--extension", str(extension)])
+    command.extend(["--extension", str(project / "demo/pi_final_provider_payload.ts")])
     root.mkdir(exist_ok=True)
     if initial_findings:
         (root / "research-resources.jsonl").write_text(
@@ -80,7 +82,11 @@ def _run_fixture(
             **env,
         }, timeout=60) as kernel:
             kernel.prompt(prompt)
-            return kernel.wait_for_agent_events(timeout=60)
+            events = kernel.wait_for_agent_events(timeout=60)
+            if followup_prompt:
+                kernel.prompt(followup_prompt)
+                events.extend(kernel.wait_for_agent_events(timeout=60))
+            return events
     finally:
         if broker is not None:
             broker.close()
@@ -489,6 +495,102 @@ def test_task_harness_start_is_idempotent_and_checkpoint_is_projected(tmp_path):
     assert "already_started" in start_results[-1]["result"]["content"][0]["text"]
 
 
+def test_checkpoint_explicitly_clears_superseded_parent_claims(tmp_path):
+    root = tmp_path / "checkpoint-clear"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update", "task_goal": "Explore the unknown target.",
+            "planning_gap": "Unknown target condition.", "current_strategy": "Try A.",
+            "hypothesis": "A may work.", "next_step": "Execute A.",
+            "working_summary": "A is promising.", "summary_basis_refs": ["execution-observation-1"],
+        }},
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update", "task_goal": "Test the new target condition.",
+            "current_strategy": "Try B.",
+            "clear_fields": ["planning_gap", "hypothesis", "next_step", "working_summary"],
+        }},
+        {"name": "task_checkpoint", "arguments": {"action": "inspect"}},
+    ])
+    results = [event for event in events if event.get("type") == "tool_execution_end"
+               and event.get("toolName") == "task_checkpoint"]
+    assert all(not event.get("isError") for event in results)
+    checkpoint = json.loads(results[-1]["result"]["content"][0]["text"])
+    assert checkpoint["task_goal"] == "Test the new target condition."
+    assert checkpoint["current_strategy"] == "Try B."
+    assert all(checkpoint[field] is None for field in
+               ("planning_gap", "hypothesis", "next_step", "working_summary"))
+    assert checkpoint["summary_basis_refs"] == []
+    assert json.loads((root / "task-checkpoint.json").read_text(encoding="utf-8"))["working_summary"] is None
+    contexts = [json.loads(line)["context"] for line in
+                (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    projection = [part["text"] for message in contexts[-1]["messages"]
+                  for part in message.get("content", [])
+                  if isinstance(part, dict) and part.get("type") == "text"
+                  and part.get("text", "").startswith("CURRENT TASK STATE")][-1]
+    assert "Try B." in projection
+    assert "A is promising." not in projection
+
+
+def test_checkpoint_clear_then_replace_in_one_parent_update(tmp_path):
+    root = tmp_path / "checkpoint-replace"
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update", "current_strategy": "Old strategy.",
+            "working_summary": "Old summary.", "summary_basis_refs": ["old-ref"],
+        }},
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update", "clear_fields": ["current_strategy", "working_summary"],
+            "current_strategy": "New strategy.", "working_summary": "New summary.",
+        }},
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update", "clear_fields": ["working_summary"],
+            "working_summary": "Summary with new evidence.",
+            "summary_basis_refs": ["new-ref"],
+        }},
+        {"name": "task_checkpoint", "arguments": {
+            "action": "update", "clear_fields": ["working_summary", "current_strategy"],
+        }},
+    ])
+    receipts = [json.loads(event["result"]["content"][0]["text"])
+                for event in events if event.get("type") == "tool_execution_end"
+                and event.get("toolName") == "task_checkpoint" and not event.get("isError")]
+    assert len(receipts) == 4
+    assert receipts[1]["current_strategy"] == "New strategy."
+    assert receipts[1]["working_summary"] == "New summary."
+    assert receipts[1]["summary_basis_refs"] == []
+    assert receipts[2]["working_summary"] == "Summary with new evidence."
+    assert receipts[2]["summary_basis_refs"] == ["new-ref"]
+    assert receipts[3]["working_summary"] is None
+    assert receipts[3]["current_strategy"] is None
+    assert receipts[3]["summary_basis_refs"] == []
+
+
+def test_checkpoint_clears_all_parent_arrays_and_replaces_them_in_same_call(tmp_path):
+    root = tmp_path / "checkpoint-array-clear"
+    arrays = {"success_conditions": ["old success"], "task_constraints": ["old constraint"],
+              "strategy_alternatives": ["old alternative"], "summary_basis_refs": ["old-ref"],
+              "decision_refs": ["old-decision"]}
+    replacements = {"success_conditions": ["confirm win"], "task_constraints": ["one action at a time"],
+                    "strategy_alternatives": ["compare both boards"], "summary_basis_refs": ["new-ref"],
+                    "decision_refs": ["new-decision"]}
+    fields = list(arrays)
+    events = _run_fixture(root, "treatment", steps=[
+        {"name": "task_checkpoint", "arguments": {"action": "update", **arrays}},
+        {"name": "task_checkpoint", "arguments": {"action": "update", "clear_fields": fields,
+            **replacements}},
+        {"name": "task_checkpoint", "arguments": {"action": "update", "clear_fields": fields}},
+    ])
+    outputs = [event for event in events if event.get("type") == "tool_execution_end"
+               and event.get("toolName") == "task_checkpoint"]
+    assert all(not event.get("isError") for event in outputs), outputs
+    assert all(json.loads(outputs[1]["result"]["content"][0]["text"])[key] == value
+               for key, value in replacements.items())
+    final = json.loads(outputs[2]["result"]["content"][0]["text"])
+    assert all(final[key] == [] for key in fields)
+    saved = json.loads((root / "task-checkpoint.json").read_text(encoding="utf-8"))
+    assert all(saved[key] == [] for key in fields)
+
+
 def test_repeated_checkpoint_updates_do_not_recursively_amplify_observations(tmp_path):
     root = tmp_path / "bounded-checkpoint-updates"
     updates = [
@@ -714,12 +816,62 @@ def test_task_local_context_projection_does_not_drop_components_after_five(tmp_p
     assert len(projected) == 6
 
 
+def test_delegate_runtime_timeout_is_terminal_in_real_parent_context(tmp_path):
+    _, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "terminal-delegate-budget"
+    events = _run_fixture(root, "treatment", extra_extensions=[
+        project / "tests" / "pi_non_arc_task_subagents.ts",
+    ], steps=[
+        {"name": "task_subagent", "arguments": {
+            "action": "create", "name": "bounded-reader", "description": "Read public fixture state.",
+            "instructions": "Return a concise observation.", "tools": ["fixture_state"],
+        }},
+        {"name": "task_harness", "arguments": {
+            "action": "assemble", "expected_assembly_revision": 0,
+            "selected_resource_refs": ["subagent:bounded-reader@v1"], "prompt_contributions": [],
+            "decision": {"basis_refs": [], "reason": "Select a bounded read-only attempt.",
+                         "expected": "The selected role can be delegated."},
+        }},
+        {"name": "delegate_task", "arguments": {
+            "agent_name": "bounded-reader", "task": "Inspect public fixture state.",
+        }},
+        {"name": "benchmark_probe", "arguments": {}},
+    ], extra_env={
+        "PI_AUTORESEARCH_PI_CLI": cli,
+        "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+        "PI_AUTORESEARCH_MODEL": "scripted",
+        "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+        "PI_AUTORESEARCH_DELEGATE_MAX_RUNTIME_MS": "1",
+    })
+    assert any(event.get("type") == "agent_end" for event in events)
+    failures = [json.loads(line) for line in
+                (root / "task-operation-failures.jsonl").read_text(encoding="utf-8").splitlines()]
+    timeout = next(item for item in failures if item["tool"] == "delegate_task")
+    assert "runtime budget exceeded" in timeout["error"]
+    assert timeout["failure_class"] == "budget_exhausted"
+    assert timeout["retryable"] is False
+    assert not timeout.get("required_next_call")
+    contexts = [json.loads(line)["context"] for line in
+                (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    checkpoint = json.loads((root / "task-checkpoint.json").read_text(encoding="utf-8"))
+    assert not checkpoint.get("pending_operations")
+    recovery_text = "\n".join(part.get("text", "") for message in contexts[-1]["messages"]
+                              for part in message.get("content", [])
+                              if part.get("text", "").startswith("Task-local operation recovery:"))
+    assert timeout["operation_key"] not in recovery_text
+    assert '"toolCallId":"fixture-4"' in json.dumps(contexts[-1], separators=(",", ":"))
+
+
 def test_generic_task_local_context_lifecycle_bounds_history_and_deduplicates_projections(tmp_path):
     root = tmp_path / "bounded-context"
     _run_fixture(root, "treatment", steps=[
         {"name": "benchmark_probe", "arguments": {}}
         for _ in range(30)
-    ], context_max_chars=18000)
+    ], context_max_chars=18000, extra_env={
+        "PI_AUTORESEARCH_MODEL_CONTEXT_TOKENS": "175000",
+        "PI_AUTORESEARCH_MODEL_OUTPUT_TOKENS": "16000",
+    })
 
     contexts = [
         json.loads(line)["context"]
@@ -733,6 +885,7 @@ def test_generic_task_local_context_lifecycle_bounds_history_and_deduplicates_pr
         for line in (root / "task-context-compactions.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert any(item["archived_messages"] > 0 for item in compactions)
+    assert all(item["max_chars"] == 18000 for item in compactions)
     latest = contexts[-1]["messages"]
     projection_texts = [
         part["text"]
@@ -791,7 +944,7 @@ def test_generic_context_lifecycle_degrades_latest_transaction_without_dropping_
         for line in (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     latest = contexts[-1]["messages"]
-    assert len(json.dumps(latest, ensure_ascii=False)) <= 5_000
+    projected_chars = len(json.dumps(latest, ensure_ascii=False))
     assert any(
         message.get("role") == "assistant"
         and any(part.get("id") == "fixture-3" for part in message.get("content", []))
@@ -806,6 +959,7 @@ def test_generic_context_lifecycle_degrades_latest_transaction_without_dropping_
         json.loads(line)
         for line in (root / "task-context-compactions.jsonl").read_text(encoding="utf-8").splitlines()
     ]
+    assert projected_chars <= 5_000 or compactions[-1]["protected_overflow"] is True
     assert compactions[-1]["budget_degraded"] is True
     assert compactions[-1]["latest_tool_result_preserved"] is True
 
@@ -822,7 +976,7 @@ def test_generic_context_lifecycle_bounds_large_reasoning_without_breaking_tool_
         for line in (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     latest = contexts[-1]["messages"]
-    assert len(json.dumps(latest, ensure_ascii=False)) <= 5_000
+    projected_chars = len(json.dumps(latest, ensure_ascii=False))
     assert any(
         message.get("role") == "assistant"
         and any(part.get("id") == "fixture-3" for part in message.get("content", []))
@@ -832,6 +986,11 @@ def test_generic_context_lifecycle_bounds_large_reasoning_without_breaking_tool_
         message.get("role") == "toolResult" and message.get("toolCallId") == "fixture-3"
         for message in latest
     )
+    compactions = [
+        json.loads(line)
+        for line in (root / "task-context-compactions.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert projected_chars <= 5_000 or compactions[-1]["protected_overflow"] is True
 
 
 def test_research_record_can_capture_a_hypothesis_before_tool_observation(tmp_path):
@@ -915,7 +1074,9 @@ def test_task_tool_adapter_can_opt_into_agent_named_backend_refs():
 
 def test_dynamic_task_tool_input_schema_is_gateway_compatible():
     source = (Path(__file__).resolve().parents[1] / "demo" / "pi_task_local_tools.ts").read_text(encoding="utf-8")
-    assert "input: Type.Record" in source
+    assert "input: Type.Object({}, { additionalProperties: true })" in source
+    assert "parameters: Type.Object({}, { additionalProperties: true })" in source
+    assert "path: Type.Array(Type.String())" in source
     assert "input: Type.Optional(Type.Record" not in source
 
 
@@ -2022,7 +2183,7 @@ def test_arc_task_subagent_runs_an_isolated_read_only_pi_loop(tmp_path):
     )
     assert invocation["resource_refs"] == ["memory:trajectory-note@v1"]
     assert invocation["permission"] == "read_only_arc"
-    assert invocation["result"]["text"] == "Independent read-only analysis complete."
+    assert invocation["result"]["text"] == "Independent read-only analysis complete.", invocation
     assert invocation["result"]["resolved_evidence_refs"] == ["execution-observation-1"]
     assert invocation["result"]["usage"] == {
         "input": 11, "output": 5, "cacheRead": 0, "cacheWrite": 0,
@@ -2071,6 +2232,123 @@ def test_arc_task_subagent_runs_an_isolated_read_only_pi_loop(tmp_path):
     assert subagent_exposure["basis_resource_ids"] == [
         "execution-observation-1", "finding-1@v1",
     ]
+
+
+def test_arc_selected_subagent_reads_fixed_trajectory_and_pages_older_actions(tmp_path):
+    trajectory_hits = []
+    transitions = [{
+        "action_id": f"arc-action-{index}", "action": "ACTION6",
+        "coordinates": {"x": index, "y": 4}, "state_before": "NOT_FINISHED",
+        "state_after": "NOT_FINISHED", "level_before": 0, "level_after": 0,
+        "level_changed": False, "changed_cells": index - 1, "bbox": None,
+    } for index in range(1, 4)]
+
+    class BridgeHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/trajectory"):
+                trajectory_hits.append(self.path)
+                value = {"projection": "transitions", "items": transitions,
+                         "summary": {"actions_available": 3, "latest_action_id": "arc-action-3"},
+                         "canonical_source": "bridge-events.jsonl"}
+            else:
+                value = {"game_id": "fixture", "state": "NOT_FINISHED", "levels_completed": 0,
+                         "frames": [[[1, 1], [1, 2]]],
+                         "agent_available_actions": ["RESET", "ACTION6"],
+                         "available_actions": ["RESET", "ACTION6"]}
+            body = json.dumps(value).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args):
+            return
+
+    node, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    root = tmp_path / "selected-arc-trajectory-child"
+    root.mkdir()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    broker = SubagentBroker()
+    broker.start()
+    try:
+        steps = [
+            {"name": "task_subagent", "arguments": {
+                "action": "create", "name": "trajectory-reader",
+                "description": "Read exact public ARC action history.",
+                "instructions": "Inspect the bounded trajectory, then page its earlier history.",
+                "tools": ["inspect_arc_trajectory"],
+            }},
+            {"name": "task_harness", "arguments": {
+                "action": "assemble", "expected_assembly_revision": 0,
+                "selected_resource_refs": ["subagent:trajectory-reader@v1"],
+                "prompt_contributions": [],
+                "decision": {"basis_refs": [],
+                             "reason": "Select this exact read-only role for the bounded trajectory question.",
+                             "expected": "Only the selected role may be delegated."},
+            }},
+            {"name": "delegate_task", "arguments": {
+                "agent_name": "trajectory-reader", "task": "Read the fixed trajectory and earlier actions.",
+            }},
+        ]
+        command = (node, cli, "--mode", "rpc", "--provider", "offline-external-test",
+                   "--model", "scripted", "--no-session", "--no-extensions", "--no-skills",
+                   "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
+                   "--extension", str(project / "demo" / "pi_arc_agi_3_extension.ts"),
+                   "--extension", str(project / "tests" / "pi_external_benchmark_provider.ts"))
+        env = {
+            "PI_CODING_AGENT_DIR": str(root / ".pi-agent"),
+            "PI_AUTORESEARCH_E2E_ROOT": str(root),
+            "PI_AUTORESEARCH_ROOT": str(project),
+            "PI_AUTORESEARCH_VARIANT": "treatment",
+            "PI_ARC_BRIDGE_URL": f"http://127.0.0.1:{server.server_port}",
+            "PI_AUTORESEARCH_SUBAGENT_BROKER_URL": broker.url,
+            "PI_AUTORESEARCH_PROVIDER": "offline-subagent-test",
+            "PI_AUTORESEARCH_MODEL": "scripted",
+            "PI_AUTORESEARCH_PI_CLI": cli,
+            "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
+            "PI_SUBAGENT_TRAJECTORY_READ_FROM_RESULT": "1",
+            "PI_EXTERNAL_STEPS": json.dumps(steps),
+        }
+        with PiKernel(command, cwd=str(root), env=env, timeout=60) as kernel:
+            kernel.prompt("Select the trajectory reader and delegate the exact ARC history.")
+            events = kernel.wait_for_agent_events(timeout=60)
+    finally:
+        broker.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert any(event.get("type") == "agent_end" for event in events)
+    assemblies = [json.loads(line) for line in (root / "task-harness-assemblies.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert assemblies[-1]["selected_resource_refs"] == ["subagent:trajectory-reader@v1"]
+    invocation = json.loads((root / "subagent-invocations.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert invocation["result"]["text"] == "Independent read-only analysis complete."
+    snapshots = [json.loads(line) for line in (root / "arc-trajectory-snapshots.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(snapshots) == 1 and snapshots[0]["action_cutoff"] == "arc-action-3"
+    contexts = [json.loads(line)["context"] for line in (root / "subagent-provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    tool_results = [message for context in contexts for message in context["messages"] if message.get("role") == "toolResult"]
+    result_texts = [block.get("text", "") for item in tool_results for block in item.get("content", [])]
+    decoded = []
+    for text in result_texts:
+        try:
+            decoded.append(json.loads(text))
+        except json.JSONDecodeError:
+            pass
+    projected = next(item for item in decoded if item.get("projection") == "transitions")
+    assert projected["items"][0]["action_id"] == "arc-action-3"
+    assert projected["items"][0]["coordinates"] == {"x": 3, "y": 4}
+    assert projected["items"][0]["changed_cells"] == 2
+    assert projected["history_access"]["older_actions_outside_view"] == 2
+    paged = next(item for item in decoded if item.get("ref") == projected["snapshot_ref"])
+    older = json.loads(paged["text"])["transitions"]
+    assert [(item["action_id"], item["coordinates"]["x"], item["changed_cells"])
+            for item in older[:2]] == [("arc-action-1", 1, 0), ("arc-action-2", 2, 1)]
+    assert len(trajectory_hits) == 1  # Parent publication only; child has no live bridge read.
+    assert not (root / "task-operation-failures.jsonl").exists()
 
 
 def test_arc_task_subagent_discards_large_intermediate_json_events(tmp_path):

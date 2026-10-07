@@ -4,7 +4,10 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { validateToolArguments } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
+import { arcActionCoordinates } from "./pi_arc_action_input.ts";
+import { compactToolSchema } from "./pi_compact_tool_schema.ts";
 import { installAgentOwnedObservationCompaction, OBSERVATION_COMPACTION_TOOL } from "./pi_agent_owned_observation_compaction.ts";
 import { classifyExecutionSignals, summarizeExecutionSignals, type ExecutionSignal } from "./pi_task_execution_signals.ts";
 import {
@@ -24,14 +27,23 @@ import {
 } from "./pi_task_local_self_harness.ts";
 import type { TaskToolAdapter } from "./pi_task_local_tools.ts";
 import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
+import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
 import { installTaskLocalContextLifecycle } from "./pi_task_local_context_lifecycle.ts";
-import { installTaskResourceReader } from "./pi_task_resource_store.ts";
+import { installTaskResourceReader, resolveTaskResource } from "./pi_task_resource_store.ts";
+import { readWorkset } from "./pi_read_workset.ts";
+import { decisionCardV2 } from "./pi_decision_card.ts";
+import { checkpointDecisionPatch, decisionForecastProperties, decisionStateSchema, normalizeDecisionKnowledge, patchDecisionState } from "./pi_decision_state.ts";
+import { reviewProgress } from "./pi_harness_review.ts";
 import { installTaskValidation } from "./pi_task_validation.ts";
 import { loadPrompt } from "./prompt_loader.ts";
 import { admitTaskLocalOperation, noteArcActionCompleted } from "./pi_task_execution_admission.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
-import { bindOperationIdentity, controlOperationKey, eligibleResearchHandoffStatuses, failureClassification, latestControlRecords } from "./pi_harness_control.ts";
+import { bindOperationIdentity, controlError, controlOperationKey, eligibleResearchHandoffStatuses, failureClassification, failureReceipt, pendingFailureProjection, latestControlRecords } from "./pi_harness_control.ts";
 import { latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
+import { nativeHarnessExecutor } from "./pi_task_harness_route_runtime.ts";
+import { memoryValidityContext } from "./pi_memory_validity.ts";
+import { readTaskStrategyState, recordTaskStrategyAction, taskStrategyIndex, updateTaskStrategyState } from "./pi_task_strategy_state.ts";
+import { buildCompetitionView, persistCompetitionView, recordCompetitionChoice, competitionProjection } from "./pi_task_competition.ts";
 
 type Finding = {
 	subject_kind?: "task" | "component" | "composition" | "strategy" | "research_method";
@@ -172,6 +184,7 @@ export default function externalBenchmarkResearch(
 ): ExternalBenchmarkResearchHandle | undefined {
 	const root = resolve(process.env.PI_AUTORESEARCH_E2E_ROOT ?? ".");
 	const taskScope = ensureTaskScope(root);
+	installReportedTokenBudget(pi, root);
 	const control = process.env.PI_AUTORESEARCH_VARIANT === "control";
 	if (control) {
 		installProviderTelemetry(pi, { root, scope: "control" });
@@ -194,7 +207,7 @@ export default function externalBenchmarkResearch(
 		// is available on demand through auto_research(action='contract'), while
 		// the child receives its own complete contract when it is actually run.
 		const projectedMethod = autoResearchAvailable
-			? "AUTO-RESEARCH: use auto_research(action='start') for a bounded targeted or open read-only investigation when it can change a later decision. The child cannot act in the environment or change Harness. It returns a concise current-decision capsule only when needed; otherwise progress remains in the task store. Call auto_research(action='contract') only when its detailed lifecycle or planning rules are needed. Adopt a completed Harness proposal only through task_harness(action='adopt_research')."
+			? "AUTO-RESEARCH: start runs bounded read-only research; assign authorizes continuing workers. Runtime delivers core updates; workers retain details. They cannot act or create Harness. Check conclusions against live evidence; preserve disagreement. contract covers budgets, permissions and continuity."
 			: "";
 		if (!surfaceInitialized) {
 			surfaceInitialized = true;
@@ -216,12 +229,10 @@ export default function externalBenchmarkResearch(
 		// so compaction/session recovery cannot erase the agent's hypothesis and
 		// next experiment. Research remains lazy and is enabled through the
 		// task_harness entry when it has a concrete decision benefit.
-		// ARC starts with three semantic choices only: act, ask the Harness
-		// runtime to help, or ask Auto-Research to investigate.  Checkpointing,
-		// resource indexes, validation and detailed status are deterministic
-		// support operations.  They remain registered and can be opened through
-		// task_harness(action='activate') when a concrete decision needs them.
-		const core = compactArc ? ["task_harness", "auto_research"] : ["task_harness", "task_harness_status", "task_checkpoint", "task_resource", "task_validation"];
+		// ARC exposes action, Harness control, parent-authored checkpoint updates,
+		// and Auto-Research from the first request. Resource indexes, validation,
+		// and detailed status remain available through task_harness activation.
+			const core = compactArc ? ["task_harness", "task_harness_create", "task_checkpoint", "auto_research"] : ["task_harness", "task_harness_create", "task_harness_status", "task_checkpoint", "task_resource", "task_validation"];
 			// Only ARC uses the compact first-turn surface.  Ordinary benchmark
 			// adapters rely on the original direct task-local lifecycle and must
 			// see the registered component operations immediately; otherwise their
@@ -251,7 +262,7 @@ export default function externalBenchmarkResearch(
 				"task_validation", "assess_harness_effect", "compact_observation_context", "read",
 			]) : new Set<string>();
 			const initialManagement = (compactArc
-				? ["task_harness", "auto_research"]
+				? ["task_harness", "task_harness_create", "auto_research"]
 				: ordinaryManagement).filter((name) => !compactInitialExcluded.has(name));
 			const initialCore = core.filter((name) => !compactInitialExcluded.has(name));
 			const requested = (options.baseTools ?? pi.getActiveTools().filter((name) =>
@@ -308,7 +319,8 @@ export default function externalBenchmarkResearch(
 		"task-harness-entry-events.jsonl", "task-harness-bootstrap.jsonl", "task-harness-opportunities.jsonl",
 		"task-harness-context-exposures.jsonl", "task-skill-events.jsonl", "task-tool-events.jsonl",
 		"task-prompt-assemblies.jsonl", "task-system-prompt-assemblies.jsonl",
-		"subagent-invocations.jsonl", "harness-observations.jsonl", "auto-research-adoption-events.jsonl",
+			"subagent-invocations.jsonl", "harness-observations.jsonl", "auto-research-adoption-events.jsonl",
+			"task-checkpoint-resources.jsonl",
 	]);
 	const append = (name: string, value: unknown) => appendFileSync(
 		join(root, name),
@@ -326,14 +338,23 @@ export default function externalBenchmarkResearch(
 		latest_observation?: Record<string, unknown>;
 		recent_observations: Record<string, unknown>[];
 		latest_environment?: Record<string, unknown>;
-		current_subgoal?: string;
-		hypothesis?: string;
-		next_step?: string;
-		working_summary?: string;
+		current_subgoal?: string | null;
+		task_goal?: string | null;
+		success_conditions?: string[];
+		task_constraints?: string[];
+		planning_gap?: string | null;
+		strategy_alternatives?: string[];
+		current_strategy?: string | null;
+		hypothesis?: string | null;
+		next_step?: string | null;
+		working_summary?: string | null;
+		decision_state?: Record<string, unknown>;
+		reasoning_state?: { stale_fields: string[]; trigger_ref: string; reason: string };
 		summary_basis_refs?: string[];
 		pending_operations?: Array<Record<string, unknown>>;
 		decision_refs: string[];
 		decision_capsule?: Record<string, unknown>;
+		decision_capsule_observation_ref?: string;
 		recent_actions?: Array<Record<string, unknown>>;
 		latest_research_run_ref?: string;
 		research_session_ref?: string;
@@ -414,6 +435,19 @@ export default function externalBenchmarkResearch(
 		recordedAt: record.recordedAt,
 	});
 	let checkpoint = readCheckpoint();
+	let checkpointResourceRevision = readJsonl("task-checkpoint-resources.jsonl")
+		.reduce((latest, row) => Math.max(latest, Number(row.state?.revision ?? -1)), -1);
+	const checkpointRef = () => `checkpoint:checkpoint@v${checkpoint.revision + 1}`;
+	const persistCheckpointResource = () => {
+		if (checkpointResourceRevision >= checkpoint.revision) return;
+		append("task-checkpoint-resources.jsonl", {
+			checkpoint_id: "checkpoint", version: checkpoint.revision + 1,
+			format: "task-local-checkpoint-resource-v1",
+			summary: `Agent-authored checkpoint revision ${checkpoint.revision}`,
+			state: checkpoint, recordedAt: checkpoint.recordedAt,
+		});
+		checkpointResourceRevision = checkpoint.revision;
+	};
 	let checkpointSnapshotSequence = checkpoint.patch_sequence;
 	const startupPatches = readCheckpointPatches();
 	for (let index = checkpointSnapshotSequence; index < startupPatches.length; index += 1) {
@@ -421,6 +455,20 @@ export default function externalBenchmarkResearch(
 	}
 	let checkpointPatchSequence = startupPatches.length;
 	let checkpointWriteCounter = 0;
+	let lastDecisionProgress = "";
+	let noProgressTurns = 0;
+	let lastNoProgressCue = "";
+	const decisionProgressSignature = () => {
+		const strategy = readTaskStrategyState(root);
+		return JSON.stringify({ actions: checkpoint.recent_actions?.length ?? 0,
+			latest_observation: checkpoint.latest_observation?.observation_id,
+			strategy_revision: strategy.revision,
+			current_subgoal: checkpoint.current_subgoal,
+			next_step: checkpoint.next_step,
+			working_summary: checkpoint.working_summary,
+			decision_refs: checkpoint.decision_refs });
+	};
+	lastDecisionProgress = decisionProgressSignature();
 	const flushCheckpoint = (reason: "agent_end" | "periodic") => {
 		const patches = readCheckpointPatches();
 		let refreshed = readCheckpoint();
@@ -462,38 +510,73 @@ export default function externalBenchmarkResearch(
 			revision, patch_sequence: sequence, recordedAt,
 		};
 		checkpointPatchSequence = sequence;
+		persistCheckpointResource();
 		if (checkpointPatchSequence - checkpointSnapshotSequence >= 32) flushCheckpoint("periodic");
 	};
 	pi.on("agent_end", async () => {
 		flushCheckpoint("agent_end");
+		const signature = decisionProgressSignature();
+		noProgressTurns = signature === lastDecisionProgress
+			? noProgressTurns + 1 : 0;
+		lastDecisionProgress = signature;
+	});
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "arc_action") return;
+		const input = event.input as Record<string, any>;
+		const decision = input?.decision as Record<string, any> | undefined;
+		if (decision?.plan_id === undefined && decision?.plan_step === undefined) {
+			try { if (decision) validationLedger.prepareDecision(decision); }
+			catch (error) { return { block: true, reason: String(error) }; }
+			return;
+		}
+		const plan = readTaskStrategyState(root).plan;
+		if (!plan || plan.status !== "active" || decision?.plan_id !== plan.plan_id
+			|| decision?.plan_step !== plan.current_step || plan.needs_reconciliation || plan.needs_assessment) {
+			return { block: true, reason: "Planned ARC action has an outdated or unresolved plan step. Inspect task_checkpoint(action='inspect',detail='strategy'), revise with evidence, or omit plan identity for an explicit exploratory action." };
+		}
+		const step = plan.steps[plan.current_step];
+		if (step && typeof step === "object" && ["action", "x", "y"].some((key) =>
+			step[key] !== undefined && step[key] !== input[key])) {
+			return { block: true, reason: "Planned ARC action does not match the Agent-authored structured step. Revise the plan or submit the intended step." };
+		}
+		try { if (decision) validationLedger.prepareDecision(decision); }
+		catch (error) { return { block: true, reason: String(error) }; }
 	});
 	const trackedResourceTools = new Set<string>([...SELF_HARNESS_MANAGEMENT_TOOLS,
 		...INTERNAL_NATIVE_HARNESS_TOOLS, "research_resource", "task_validation", "task_checkpoint", "delegate_task", "auto_research"]);
 	let failureCounter = nextCounter(readJsonl("task-operation-failures.jsonl"), "failure_id");
 	const operationKey = (tool: string, input: Record<string, any>) =>
 		controlOperationKey(tool, input, taskScope.taskId);
-	const failedOperation = (tool: string, input: Record<string, any>, toolCallId: string, error: string) => {
+	const failedOperation = (tool: string, input: Record<string, any>, toolCallId: string, error: string,
+		executionStage?: "before_tool_call") => {
 		const key = operationKey(tool, input);
 		const failureId = `failure-${++failureCounter}`;
-		const classification = failureClassification(error);
+		const classification = failureClassification(error, executionStage);
 		const candidates = Array.isArray(classification.candidates) ? classification.candidates : [];
 		const recoveryOperationKeys = candidates
 			.map((candidate: Record<string, any>) => candidate.research_handoff_ref)
 			.filter(Boolean)
 			.map((research_handoff_ref: string) => operationKey(tool, {...input, research_handoff_ref}));
 		const failure = { operation_key: key, tool, action: input.action, toolCallId, error,
+			...(executionStage ? {execution_stage: executionStage} : {}),
 			...(classification.failure_class === "version_conflict" && Number.isInteger(classification.current_version)
 				? {recovery_operation_key:operationKey(tool,{...input,target_version:classification.current_version})} : {}),
 			...(recoveryOperationKeys.length ? {recovery_operation_keys: recoveryOperationKeys} : {}),
 			failure_id:failureId, recordedAt:new Date().toISOString(), resolved_by:null,
 			failure_class:classification.failure_class, retryable:classification.retryable, required_next_call:classification.required_next_call,
+			applied:classification.applied,
 			recovery_hint:classification.recovery_hint ?? null,
 			resource_ref: `failure:${failureId}@v1`,
-			note: "Follow required_next_call; only success for the same action and bound target resolves this failure." };
+			note: classification.retryable === false
+				? "This attempt is terminal; retained for evidence and cost, with no pending repair obligation."
+				: "Follow required_next_call; only success for the same action and bound target resolves this failure." };
 		append("task-operation-failures.jsonl", { ...failure, failure_id: failureId, version: 1, status: "failed",
 			error, attempted_input: input,
 			applied: classification.applied });
-		const pending = (checkpoint.pending_operations ?? []).filter((r) => r.operation_key !== key);
+		// A new no-write rejection says nothing about an older unresolved attempt,
+		// even if the operation identity is the same. Preserve that recovery.
+		const pending = classification.retryable === false ? [...(checkpoint.pending_operations ?? [])]
+			: (checkpoint.pending_operations ?? []).filter((r) => r.operation_key !== key);
 		if (classification.retryable !== false) pending.push(failure);
 		saveCheckpoint({ pending_operations: pending });
 	};
@@ -501,6 +584,8 @@ export default function externalBenchmarkResearch(
 		const pending = checkpoint.pending_operations ?? [];
 		if (!pending.length) return;
 		const reviews = readJsonl("task-harness-reviews.jsonl");
+		const levelReviews = readJsonl("task-level-reviews.jsonl");
+		const failedAttempts = readJsonl("task-operation-failures.jsonl");
 		const opportunities = readJsonl("task-harness-opportunities.jsonl");
 		const reviewEvents = readJsonl("task-harness-review-events.jsonl");
 		const handoffs = latestControlRecords(readJsonl("auto-research-handoffs.jsonl"), "handoff_id");
@@ -510,6 +595,13 @@ export default function externalBenchmarkResearch(
 			let operation: Record<string, any>;
 			try { operation = JSON.parse(String(record.operation_key)); } catch { return false; }
 			const target = operation.target ?? {};
+			if (record.tool === "task_harness" && record.action === "level_review") {
+				// Older failure keys hashed the whole input even when window_id was
+				// present. A completed review for that exact window is conclusive.
+				const windowId = target.window_id ?? failedAttempts
+					.find((item) => item.failure_id === record.failure_id)?.attempted_input?.window_id;
+				return Boolean(windowId && levelReviews.some((item) => item.window_id === windowId));
+			}
 			if (record.tool === "task_harness" && record.action === "review" && target.opportunity_id) {
 				const opportunity = opportunities.find((item) => item.opportunity_id === target.opportunity_id);
 				return reviews.some((item) => item.opportunity_id === target.opportunity_id)
@@ -539,7 +631,11 @@ export default function externalBenchmarkResearch(
 	};
 	reconcilePendingOperations();
 	const inFlightResourceInputs = new Map<string, Record<string, any>>();
+	const validatedResourceCalls = new Set<string>();
 	const handledResourceFailures = new Set<string>();
+	pi.on("tool_call", (event) => {
+		if (trackedResourceTools.has(event.toolName)) validatedResourceCalls.add(event.toolCallId);
+	});
 	pi.on("tool_execution_start", (event) => {
 		if (trackedResourceTools.has(event.toolName)) inFlightResourceInputs.set(event.toolCallId, bindOperationIdentity(event.toolName, event.args as Record<string, any>, readJsonl));
 	});
@@ -547,10 +643,12 @@ export default function externalBenchmarkResearch(
 		const input = inFlightResourceInputs.get(event.toolCallId);
 		inFlightResourceInputs.delete(event.toolCallId);
 		const handled = handledResourceFailures.delete(event.toolCallId);
-		// Pi skips execute/tool_result entirely for length-truncated arguments.
-		// Capture that failure at its actual completion boundary, without replay.
+		const validated = validatedResourceCalls.delete(event.toolCallId);
+		// SDK validation and length rejection skip validated dispatch and execute.
+		// Execution exceptions can also reach this boundary; retain unknown effects
+		// whenever dispatch occurred instead of guessing from the error's text.
 		if (input && event.isError && !handled) failedOperation(event.toolName, input, event.toolCallId,
-			textContent((event.result as any)?.content));
+			textContent((event.result as any)?.content), validated ? undefined : "before_tool_call");
 	});
 	const environmentProjection = (details: unknown): Record<string, unknown> | undefined => {
 		if (!details || typeof details !== "object") return undefined;
@@ -570,6 +668,11 @@ export default function externalBenchmarkResearch(
 				["changed_cells", "bbox", "frame_available", "cells_truncated"]
 					.filter((key) => key in value).map((key) => [key, value[key]]),
 			);
+			if (Array.isArray(value.changed_cells)) {
+				const compact = projected.observation_delta as Record<string, unknown>;
+				compact.changed_cells = value.cells_truncated || value.frame_available === false ? undefined : value.changed_cells.length;
+				if (value.cells_truncated) compact.returned_cell_count = value.changed_cells.length;
+			}
 		}
 		return Object.keys(projected).length ? projected : undefined;
 	};
@@ -588,22 +691,51 @@ export default function externalBenchmarkResearch(
 			? (event.input as Record<string, unknown> | undefined) : undefined;
 		const decisionCapsule = actionInput?.decision && typeof actionInput.decision === "object"
 			? actionInput.decision as Record<string, unknown> : undefined;
-		if (decisionCapsule && !event.isError) validationLedger.observeDecision(observationId, decisionCapsule);
 		const actionRecord = actionInput ? {
 			action: String(actionInput.action ?? "UNKNOWN"),
+			// This is the Agent's public action rationale, not inferred knowledge or
+			// hidden model reasoning. Keep the latest intent after transcript retirement.
+			...(typeof actionInput.reasoning === "string" ? { reasoning: actionInput.reasoning } : {}),
+			...arcActionCoordinates(actionInput),
+			...(arcActionCoordinates(actionInput) && details?.action_target_cell && typeof details.action_target_cell === "object"
+				? { target_cell: details.action_target_cell } : {}),
 			observation_id: observationId,
 			changed_cells: typeof delta?.changed_cells === "number" ? delta.changed_cells : undefined,
 			bbox: delta?.bbox,
+			...(Array.isArray(delta?.change_groups) ? { change_groups: delta.change_groups } : {}),
 			level_changed: transition?.level_changed,
 			level_after: transition?.level_after,
 			state: details?.state,
 		} : undefined;
+		const stateBoundary = actionInput && !event.isError
+			&& (transition?.level_changed === true || actionInput.action === "RESET");
+		const updatedDecisionFields = decisionCapsule ? [
+			"decision_capsule",
+			...Object.keys((decisionCapsule.knowledge as Record<string, unknown>) ?? {}).map(field => `decision_state.${field}`),
+			...(typeof decisionCapsule.subgoal === "string" ? ["current_subgoal"] : []),
+			...(typeof decisionCapsule.hypothesis === "string" ? ["hypothesis"] : []),
+			...(typeof decisionCapsule.next_step === "string" ? ["next_step"] : []),
+		] : [];
+		const staleFields = stateBoundary
+			? ["task_goal", "current_subgoal", "current_strategy", "hypothesis", "next_step", "working_summary",
+				"decision_capsule", "decision_state.known_effects", "decision_state.knowledge_gaps",
+				"decision_state.counterevidence", "decision_state.next_decision"]
+			: (checkpoint.reasoning_state?.stale_fields ?? []).filter(field => !updatedDecisionFields.includes(field));
 		saveCheckpoint({
 			latest_observation: item,
 			recent_observations: recent,
 			latest_environment: environmentProjection(event.details) ?? checkpoint.latest_environment,
+			...(stateBoundary ? { reasoning_state: { stale_fields: staleFields,
+				trigger_ref: `observation:${observationId}@v1`, reason: transition?.level_changed === true ? "level_changed" : "reset" } }
+				: checkpoint.reasoning_state ? { reasoning_state: { ...checkpoint.reasoning_state, stale_fields: staleFields } } : {}),
 			...(decisionCapsule ? {
 				decision_capsule: decisionCapsule,
+				decision_capsule_observation_ref: `observation:${observationId}@v1`,
+				...(!event.isError && decisionCapsule.knowledge !== undefined ? {
+					decision_state: patchDecisionState(checkpoint.decision_state,
+						normalizeDecisionKnowledge(decisionCapsule.knowledge, ref => resolveTaskResource(root, ref)),
+						ref => resolveTaskResource(root, ref)),
+				} : {}),
 				...(typeof decisionCapsule.subgoal === "string" ? { current_subgoal: decisionCapsule.subgoal } : {}),
 				...(typeof decisionCapsule.hypothesis === "string" ? { hypothesis: decisionCapsule.hypothesis } : {}),
 				...(typeof decisionCapsule.next_step === "string" ? { next_step: decisionCapsule.next_step } : {}),
@@ -611,39 +743,184 @@ export default function externalBenchmarkResearch(
 			} : {}),
 			...(actionRecord ? { recent_actions: [...(checkpoint.recent_actions ?? []), actionRecord] } : {}),
 		});
+		if (actionInput && !event.isError) {
+			const state = recordTaskStrategyAction(root, decisionCapsule, observationId, actionInput,
+				details as Record<string, unknown> | undefined);
+			if (state?.plan?.status === "active") {
+				const step = state.plan.steps[state.plan.current_step];
+				const nextStep = typeof step === "string" ? step : JSON.stringify(step);
+				if (checkpoint.next_step !== nextStep) saveCheckpoint({ next_step: nextStep });
+			}
+			recordCompetitionChoice(root, decisionCapsule, `observation:${observationId}@v1`);
+		}
+		if (actionInput) {
+			validationLedger.observeAction(observationId, decisionCapsule, actionInput, details ?? {}, Boolean(event.isError));
+			const plan = readTaskStrategyState(root).plan;
+			if (plan?.status === "active" && (plan.needs_reconciliation || plan.needs_assessment)) saveCheckpoint({
+				reasoning_state: { stale_fields: [...new Set([...(checkpoint.reasoning_state?.stale_fields ?? []), "next_step", "current_strategy"])],
+					trigger_ref: plan.experiment_outcome_ref ?? `observation:${observationId}@v1`,
+					reason: plan.needs_reconciliation ? "plan_requires_reconciliation" : "plan_requires_assessment" },
+			});
+		}
 	};
 	// The checkpoint is a native task control-plane resource.  It is deliberately
 	// separate from research findings and harness resources: compaction may
 	// project its decision-bearing fields, while the complete JSON remains
 	// durable and recoverable on disk.  Updates are agent-authored state, never
 	// environment facts, and are persisted atomically through saveCheckpoint.
-	pi.registerTool({
-		name: "task_checkpoint",
-		label: "Task-local execution checkpoint",
-		description: "Persist or inspect the current task execution checkpoint. Checkpoint fields are agent-authored planning state unless explicitly marked as runtime environment data; they are durable and projected into later provider context.",
-		parameters: Type.Object({
+	const checkpointParameters = compactToolSchema(Type.Object({
 			action: Type.Union([Type.Literal("update"), Type.Literal("inspect")]),
+				detail: Type.Optional(Type.Union([Type.Literal("strategy"), Type.Literal("full")])),
+				offset: Type.Optional(Type.Integer({ minimum: 0 })),
+				limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 65536 })),
+			candidate_id: Type.Optional(Type.String()),
+			candidate_updates: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Unknown()))),
+			selected_candidate_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+			selection: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Optional registered-candidate assessment: view_ref,candidate_id/version,evidence_refs,rationale,branches,disposition,addressed_trigger_refs,next_check." })),
+			plan_update: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "plan_id,candidate_id,status,current_step,steps:[{action,x,y,expected:{target_before,target_after,level_changed,level_after}}]. Only checked matching steps advance." })),
 			current_subgoal: Type.Optional(Type.String()),
+			task_goal: Type.Optional(Type.String()),
+			success_conditions: Type.Optional(Type.Array(Type.String())),
+			task_constraints: Type.Optional(Type.Array(Type.String())),
+			planning_gap: Type.Optional(Type.String()),
+			strategy_alternatives: Type.Optional(Type.Array(Type.String())),
+			current_strategy: Type.Optional(Type.String()),
 			hypothesis: Type.Optional(Type.String()),
+			...decisionForecastProperties(),
 			next_step: Type.Optional(Type.String()),
 			working_summary: Type.Optional(Type.Union([Type.String(), Type.Record(Type.String(), Type.Unknown())])),
 			summary_basis_refs: Type.Optional(Type.Array(Type.String())),
 			decision_refs: Type.Optional(Type.Array(Type.String())),
-		}),
+			consumed_result_refs: Type.Optional(Type.Array(Type.String(), { description: "Exact tool_result refs analyzed here; reading alone is not consumption." })),
+			decision_state: Type.Optional(decisionStateSchema()),
+			clear_fields: Type.Optional(Type.Array(Type.Union([
+				Type.Literal("current_subgoal"), Type.Literal("task_goal"), Type.Literal("planning_gap"),
+				Type.Literal("current_strategy"), Type.Literal("hypothesis"), Type.Literal("next_step"),
+				Type.Literal("working_summary"),
+				Type.Literal("success_conditions"), Type.Literal("task_constraints"),
+				Type.Literal("strategy_alternatives"), Type.Literal("summary_basis_refs"),
+				Type.Literal("decision_refs"),
+			]), { description: "Clear claims; supplied values replace clears. Clearing summary also clears refs." })),
+		}));
+	pi.registerTool({
+		name: "task_checkpoint",
+		label: "Task-local execution checkpoint",
+		description: "Persist or inspect agent-authored task planning state; projected on later turns.",
+		parameters: checkpointParameters,
+		prepareArguments(args) {
+			try {
+				// Check authored values before Pi's generic conversion can coerce them.
+				const previous = checkpoint.reasoning_state?.stale_fields.includes("decision_state.next_decision")
+					? undefined : checkpoint.decision_state;
+				const rawPatch = (args as Record<string, any>)?.action === "update"
+					? checkpointDecisionPatch(args as Record<string, any>, Object.keys(checkpointParameters.properties), previous)
+					: undefined;
+				// Reuse Pi's own pure validator so every rejected checkpoint input,
+				// including missing fields, carries conclusive no-write provenance.
+				const input = validateToolArguments({ name: "task_checkpoint", description: "", parameters: checkpointParameters },
+					{ type: "toolCall", id: "checkpoint-input", name: "task_checkpoint", arguments: args }) as Record<string, any>;
+				if (input.action !== "update") return input as any;
+				const patch = rawPatch;
+				if (patch === undefined) return input as any;
+				const decision_state = normalizeDecisionKnowledge(patch, ref => resolveTaskResource(root, ref));
+				return { ...input, decision_state } as any;
+			} catch (error) {
+				// Preparation is pure: a corrected input is a new submission, not
+				// an impossible exact-hash retry obligation resident in every turn.
+				controlError("rejected_input", [{ path: "task_checkpoint", message: String(error instanceof Error ? error.message : error) }], {
+					retryable: false, required_next_call: undefined,
+					recovery_hint: "This input was rejected before any write. Correct the reported fields in a new update; inspect only if a reference is unknown.",
+				});
+			}
+		},
 		async execute(_toolCallId, params) {
 			const input = params as Record<string, any>;
 			if (input.action === "inspect") {
-				return { content: [{ type: "text", text: JSON.stringify(checkpoint) }], details: checkpoint };
+				if (input.detail === "strategy" || input.candidate_id) {
+					const state = readTaskStrategyState(root);
+					const result = input.candidate_id
+						? { candidate: (state.candidates ?? []).find((item: Record<string, any>) => item.id === input.candidate_id) ?? null,
+							plan: state.plan?.candidate_id === input.candidate_id ? state.plan : null }
+						: state;
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+				}
+				persistCheckpointResource();
+				if (input.detail === "full") {
+					const serialized = JSON.stringify(checkpoint);
+					const offset = Math.min(serialized.length, Math.max(0, Number(input.offset ?? 0)));
+					const limit = Math.min(65536, Math.max(1, Number(input.limit ?? 2000)));
+					const result = { checkpoint_ref: checkpointRef(), revision: checkpoint.revision,
+						offset, total_chars: serialized.length, text: serialized.slice(offset, offset + limit),
+						next_offset: offset + limit < serialized.length ? offset + limit : null };
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+				}
+				const result = { checkpoint_ref: checkpointRef(), revision: checkpoint.revision,
+					latest_environment: checkpoint.latest_environment,
+					strategy: taskStrategyIndex(readTaskStrategyState(root)),
+					recent_action_count: checkpoint.recent_actions?.length ?? 0,
+					pending_operation_count: checkpoint.pending_operations?.length ?? 0,
+					read_full: { tool: "task_checkpoint", arguments: { action: "inspect", detail: "full", offset: 0, limit: 2000 } } };
+				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 			}
+			const decisionPatch = checkpointDecisionPatch(input, Object.keys(checkpointParameters.properties),
+				checkpoint.reasoning_state?.stale_fields.includes("decision_state.next_decision") ? undefined : checkpoint.decision_state);
 			const patch: Partial<TaskCheckpoint> = {};
-			for (const key of ["current_subgoal", "hypothesis", "next_step", "working_summary"] as const) {
+			const consumedIds = (input.consumed_result_refs ?? []).map((ref: string) => {
+				const match = /^tool_result:(.+)@v1$/.exec(ref);
+				if (!match) throw new Error("consumed_result_refs requires exact tool_result refs");
+				return match[1];
+			});
+			readWorkset(pi, root).validateRelease(consumedIds);
+			for (const field of input.clear_fields ?? []) {
+				patch[field as keyof TaskCheckpoint] = (["success_conditions", "task_constraints", "strategy_alternatives",
+					"summary_basis_refs", "decision_refs"].includes(field) ? [] : null) as never;
+				if (field === "working_summary" && !Object.prototype.hasOwnProperty.call(input, "summary_basis_refs")) {
+					patch.summary_basis_refs = [];
+				}
+			}
+			for (const key of ["current_subgoal", "task_goal", "planning_gap", "current_strategy", "hypothesis", "next_step", "working_summary"] as const) {
 				if (typeof input[key] === "string") patch[key] = input[key];
 				else if (key === "working_summary" && input[key] && typeof input[key] === "object") patch[key] = JSON.stringify(input[key]);
 			}
 			if (Array.isArray(input.summary_basis_refs)) patch.summary_basis_refs = input.summary_basis_refs.map(String);
+			if (Array.isArray(input.task_constraints)) patch.task_constraints = input.task_constraints.map(String);
+			if (Array.isArray(input.success_conditions)) patch.success_conditions = input.success_conditions.map(String);
+			if (Array.isArray(input.strategy_alternatives)) patch.strategy_alternatives = input.strategy_alternatives.map(String);
 			if (Array.isArray(input.decision_refs)) patch.decision_refs = input.decision_refs.map(String);
+			if (decisionPatch !== undefined) patch.decision_state = patchDecisionState(checkpoint.decision_state, decisionPatch,
+				ref => resolveTaskResource(root, ref));
+			const strategyState = updateTaskStrategyState(root, {
+				candidate_updates: input.candidate_updates,
+				selected_candidate_id: input.selected_candidate_id,
+				plan_update: input.plan_update,
+				source_ref: `task_checkpoint:${Number(checkpoint.revision ?? 0) + 1}`,
+			});
+			if (input.plan_update && strategyState.plan) {
+				if (strategyState.plan.status === "active") {
+					if (input.current_strategy === undefined) patch.current_strategy = strategyState.candidates
+						.find((item: Record<string, any>) => item.id === strategyState.plan.candidate_id)?.claim ?? null;
+					if (input.next_step === undefined) patch.next_step = typeof strategyState.plan.steps[strategyState.plan.current_step] === "string"
+						? strategyState.plan.steps[strategyState.plan.current_step]
+						: JSON.stringify(strategyState.plan.steps[strategyState.plan.current_step]);
+				} else {
+					if (input.current_strategy === undefined) patch.current_strategy = null;
+					if (input.next_step === undefined) patch.next_step = null;
+				}
+			}
+			if (checkpoint.reasoning_state) patch.reasoning_state = { ...checkpoint.reasoning_state,
+				stale_fields: checkpoint.reasoning_state.stale_fields.filter(field => !Object.prototype.hasOwnProperty.call(patch, field)
+					&& !(field.startsWith("decision_state.") && decisionPatch !== undefined
+						&& Object.hasOwn(decisionPatch, field.slice("decision_state.".length)))) };
 			saveCheckpoint(patch);
-			return { content: [{ type: "text", text: JSON.stringify(checkpoint) }], details: checkpoint };
+			if (consumedIds.length) readWorkset(pi, root).release(consumedIds, { covered_by: checkpointRef() });
+			const selectionReceipt = input.selection ? recordCompetitionChoice(root, { selection: input.selection }, checkpointRef()) : undefined;
+			const receipt = { checkpoint_revision: checkpoint.revision, checkpoint_ref: checkpointRef(),
+				updated_fields: Object.keys(patch), strategy: taskStrategyIndex(strategyState),
+				...(selectionReceipt ? { selection_review: { status: selectionReceipt.status,
+					review_gaps: selectionReceipt.review_gaps,
+					choice_ref: `competition_view:${selectionReceipt.view_id}@v${selectionReceipt.version}` } } : {}),
+				read_full: { tool: "task_checkpoint", arguments: { action: "inspect", detail: "full", offset: 0, limit: 2000 } } };
+			return { content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
 		},
 	});
 
@@ -696,7 +973,36 @@ export default function externalBenchmarkResearch(
 		if (!absorbedAssessmentIds.has(id)) pendingAssessments.set(id, assessment);
 	}
 
-	pi.on("tool_result", async (event) => {
+	const handleResearchToolResult = async (event: any): Promise<any> => {
+		if (event.toolName === "delegate_task") {
+			// The child lease writes exact receipts before the parent tool result.
+			// Absorb them through the same checkpoint/experiment path without rewriting them.
+			for (const receipt of readJsonl("execution-observations.jsonl").filter(row =>
+				row.toolCallId === event.toolCallId && row.input?.delegated_invocation_id && !row.is_error
+				&& !observations.has(row.observation_id))) {
+				await handleResearchToolResult({ toolName: "arc_action", toolCallId: `${event.toolCallId}:${receipt.observation_id}`,
+					input: receipt.input, content: [{ type: "text", text: receipt.result_text }],
+					details: receipt.arc_outcome, isError: false, observation_id: receipt.observation_id,
+					already_recorded: true, delegated_invocation_id: receipt.input.delegated_invocation_id });
+			}
+		}
+		if (event.toolName === "arc_actions" && !event.isError) {
+			const completed = (event.details as Record<string, any> | undefined)?.completed;
+			const actions = (event.input as Record<string, any> | undefined)?.actions;
+			if (Array.isArray(completed) && Array.isArray(actions)) {
+				for (const result of completed) {
+					const index = Number(result.index);
+					if (!Number.isInteger(index) || index < 0 || index >= actions.length) continue;
+					await handleResearchToolResult({
+						toolName: "arc_action", toolCallId: `${event.toolCallId}:${index}`,
+						input: actions[index], isError: false,
+						content: [{ type: "text", text: JSON.stringify(result) }],
+						details: result, batch_tool_call_id: event.toolCallId, batch_index: index,
+					});
+				}
+				return {};
+			}
+		}
 		if (event.toolName === "arc_action" && !event.isError) noteArcActionCompleted();
 		const toolInput = inFlightResourceInputs.get(event.toolCallId) ?? (event.input as Record<string, unknown> | undefined) ?? {};
 		if (event.toolName === "task_harness" && ["enable", "activate"].includes(String(toolInput.action ?? ""))) {
@@ -763,18 +1069,23 @@ export default function externalBenchmarkResearch(
 			}
 		}
 		if (taskHarnessRead || ["task_checkpoint", "task_resource", "task_validation", "research_resource", "auto_research", OBSERVATION_COMPACTION_TOOL, HARNESS_BOOTSTRAP_TOOL, ...SELF_HARNESS_MANAGEMENT_TOOLS, ...INTERNAL_NATIVE_HARNESS_TOOLS].includes(event.toolName as any)) return {};
-		const observationId = `execution-observation-${++observationCounter}`;
+		const observationId = event.observation_id ?? `execution-observation-${++observationCounter}`;
+		const preActionValidity = event.toolName === "arc_action" && !event.isError
+			? memoryValidityContext(taskScope.taskId, [...observations.values()]) : undefined;
 		const resultText = textContent(event.content);
 		const observation = {
 			observation_id: observationId,
 			event_id: observationId,
 			tool_name: event.toolName,
 			toolCallId: event.toolCallId,
+			...(event.batch_tool_call_id ? { batch_tool_call_id: event.batch_tool_call_id,
+				batch_index: event.batch_index } : {}),
+			...(event.delegated_invocation_id ? { delegated_invocation_id: event.delegated_invocation_id } : {}),
 			input: event.input,
 			result_text: resultText,
 			result: resultText,
 			...(event.toolName === "arc_action" ? { arc_outcome: Object.fromEntries(
-				["state", "levels_completed", "pre_action_state", "public_transition", "action_budget", "full_reset"]
+				["state", "levels_completed", "pre_action_state", "public_transition", "action_budget", "full_reset", "observation_delta", "action_target_cell"]
 					.filter(key => Object.prototype.hasOwnProperty.call(event.details ?? {}, key))
 					.map(key => [key, (event.details as Record<string, unknown>)[key]]),
 			) } : {}),
@@ -782,7 +1093,94 @@ export default function externalBenchmarkResearch(
 			recordedAt: new Date().toISOString(),
 		};
 		observations.set(observationId, observation);
-		append("execution-observations.jsonl", observation);
+		if (!event.already_recorded) append("execution-observations.jsonl", observation);
+		if (event.toolName === "arc_action" && !event.isError) {
+			const input = (event.input ?? {}) as Record<string, any>;
+			const parentDecision = input.decision && typeof input.decision === "object" && !Array.isArray(input.decision)
+				? input.decision as Record<string, any> : undefined;
+			const hasParentText = ["hypothesis", "prediction"].some((field) =>
+				typeof parentDecision?.[field] === "string" && parentDecision[field].trim().length > 0);
+			if (parentDecision && hasParentText) {
+				const writer = nativeHarnessExecutor(pi, "task_memory");
+				const fields = ["hypothesis", "prediction", "falsifier", "subgoal", "next_step"];
+				const decisionCapsule = Object.fromEntries(fields.filter((field) => Object.prototype.hasOwnProperty.call(parentDecision, field))
+					.map((field) => [field, parentDecision[field]]));
+				const details = (event.details ?? {}) as Record<string, any>;
+				const observedOutcome: Record<string, any> = {};
+				const smallValue = (value: unknown) => {
+					if (typeof value === "boolean" || typeof value === "number") return value;
+					if (typeof value === "string" && value.length <= 200) return value;
+					return undefined;
+				};
+				for (const field of ["state", "levels_completed", "action_budget", "full_reset", "level_before", "level_after", "level_changed"])
+					if (Object.prototype.hasOwnProperty.call(details, field) && smallValue(details[field]) !== undefined)
+						observedOutcome[field] = smallValue(details[field]);
+				if (typeof details.pre_action_state === "string" && details.pre_action_state.length <= 200)
+					observedOutcome.pre_action_state_ref = details.pre_action_state;
+				const transition = details.public_transition && typeof details.public_transition === "object"
+					? details.public_transition as Record<string, any> : {};
+				const compactTransition = Object.fromEntries(["reset", "level_changed", "level_before", "level_after", "levels_completed"]
+					.filter((field) => smallValue(transition[field]) !== undefined)
+					.map((field) => [field, smallValue(transition[field])]));
+				if (Object.keys(compactTransition).length) observedOutcome.public_transition = compactTransition;
+				const delta = details.observation_delta && typeof details.observation_delta === "object"
+					? details.observation_delta as Record<string, any> : {};
+				const changedCells = Array.isArray(details.changed_cells) ? details.changed_cells
+					: Array.isArray(delta.changed_cells) ? delta.changed_cells : undefined;
+				const changedCount = typeof delta.changed_cells === "number" ? delta.changed_cells
+					: typeof details.changed_cells === "number" ? details.changed_cells : undefined;
+				if (changedCount !== undefined && delta.frame_available !== false) observedOutcome.changed_cells = changedCount;
+				if (changedCells) {
+					const boundedCells = changedCells.slice(0, 50).filter((cell: unknown) => JSON.stringify(cell).length <= 256);
+					observedOutcome.changed_cells = boundedCells;
+					if (changedCells.length > boundedCells.length) observedOutcome.changed_cells_omitted = changedCells.length - boundedCells.length;
+				}
+			if (delta.bbox !== undefined && JSON.stringify(delta.bbox).length <= 300) observedOutcome.bbox = delta.bbox;
+				const deltaAvailable = delta.frame_available !== false && (changedCount !== undefined || changedCells !== undefined || delta.bbox !== undefined);
+				const probeRecord = {
+					format: "arc-action-probe-record-v1",
+					decision_capsule: decisionCapsule,
+					action: (() => {
+						const parameters = Object.fromEntries(Object.entries(input).filter(([name]) => name !== "decision"));
+						return JSON.stringify(parameters).length <= 2048
+							? { name: input.action ?? null, parameters }
+							: { name: input.action ?? null, parameters_omitted: true, serialized_length: JSON.stringify(parameters).length };
+					})(),
+					observed_outcome: { ...observedOutcome, delta_status: deltaAvailable ? "available_as_returned" : "unavailable" },
+				};
+				const preAction = preActionValidity!;
+				const basisRefs = [observationId,
+					...(typeof details.pre_action_state === "string" && details.pre_action_state.trim() ? [details.pre_action_state] : [])];
+				const key = `action-decision:${observationId}`;
+				const captureHash = createHash("sha256").update(JSON.stringify(probeRecord)).digest("hex");
+				try {
+					if (!writer) throw new Error("native task_memory writer unavailable");
+					const result = await writer(`action-decision:${observationId}`, {
+						action: "upsert", key, content: JSON.stringify(probeRecord),
+						summary: `Parent prediction: ${String(decisionCapsule.prediction ?? decisionCapsule.hypothesis).slice(0, 240)}; observed: ${JSON.stringify(observedOutcome).slice(0, 240)}`,
+						scope: "level", validity: { scope: "level", task_ref: preAction.task, instance_ref: preAction.level },
+						basis_refs: basisRefs, claim_kind: "probe_record", memory_capture: true,
+						action_decision_capture: true, action_decision_observation_id: observationId,
+						capture_id: `action-decision:${observationId}`, capture_item_index: 0, capture_hash: captureHash,
+						probe_record: probeRecord,
+						expected_effect: "index this parent decision and its public action receipt for later selection",
+					});
+					append("task-memory-pool-action-capture-events.jsonl", {
+						observation_id: observationId, memory_ref: (result.details as any)?.memory_id
+							? `memory:${(result.details as any).memory_id}@v${(result.details as any).version}` : null,
+						status: result.isError ? "failed" : (result.details as any)?.idempotent ? "duplicate_skipped" : "applied",
+						decision_id: (result.details as any)?.decision_id ?? null,
+						is_error: Boolean(result.isError), error: result.isError ? textContent(result.content) : null,
+						recordedAt: new Date().toISOString(),
+					});
+				} catch (error) {
+					append("task-memory-pool-action-capture-events.jsonl", {
+						observation_id: observationId, memory_ref: null, status: "failed", is_error: true,
+						error: error instanceof Error ? error.message : String(error), recordedAt: new Date().toISOString(),
+					});
+				}
+			}
+		}
 		const experimentDecision = event.toolName === "arc_action"
 			&& event.input && typeof (event.input as Record<string, unknown>).decision === "object"
 			? (event.input as Record<string, any>).decision as Record<string, any> : undefined;
@@ -849,12 +1247,13 @@ export default function externalBenchmarkResearch(
 			? { ...(event.details as Record<string, unknown>), observation: modelObservation }
 			: { observation: modelObservation };
 		return { content: [...event.content, { type: "text", text: metadata }], details };
-	});
+	};
+	pi.on("tool_result", handleResearchToolResult);
 
 	pi.registerTool({
 		name: "research_resource",
 		label: "Task-local Research Resource",
-		description: "Optional Agent-authored current-task research resource. action=open preserves a question before evidence exists; record creates a finding from an observation or an Agent hypothesis; update may revise either; resolve closes it. Observation references are optional for hypotheses and validated when supplied. inspect is read-only and supports bounded search. An update may cite later task observations in which the finding was actually used; this is an Agent-authored usage claim, not proof of benefit. No research and no change are valid.",
+		description: "Agent-authored research resource: open question, record/update finding, resolve, or inspect. Usage refs are claims, not proof; no change is valid.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("open"), Type.Literal("record"), Type.Literal("update"), Type.Literal("resolve"), Type.Literal("inspect")]),
 			finding_id: Type.Optional(Type.String()),
@@ -1095,6 +1494,22 @@ export default function externalBenchmarkResearch(
 	});
 	pi.on("context", async (event) => {
 		const resources: any[] = [];
+		// SDK preparation failures bypass tool_result hooks. Project their actual
+		// transcript results here, after preserving exact audit evidence. Match
+		// both call identity and error body because providers can reuse call IDs.
+		const failures = readJsonl("task-operation-failures.jsonl");
+		event.messages = event.messages.map((message: any) => {
+			if (message.role !== "toolResult" || !message.isError) return message;
+			const text = textContent(message.content);
+			const failure = failures.findLast((row: Record<string, any>) => row.toolCallId === message.toolCallId
+				&& row.tool === message.toolName && text.startsWith(row.error));
+            // Preserve already-short structured recovery contracts verbatim.
+            // Their commit/preflight semantics must survive context projection.
+            return failure && String(failure.error).length > 1200
+                ? { ...message, content: [{ type: "text", text: JSON.stringify(failureReceipt(failure)) }] } : message;
+		});
+		event.messages = event.messages.filter((message: any) => !Array.isArray(message.content)
+			|| !message.content.some((item: any) => item.type === "text" && item.text?.startsWith("CURRENT COMPETITION VIEW:")));
 		// A non-blocking child can finish after the tool result that originally
 		// marked it active. Refresh the projected status from the append-only
 		// session ledger so later parent turns do not keep seeing stale "active".
@@ -1112,29 +1527,65 @@ export default function externalBenchmarkResearch(
 				}
 			}
 		}
-		// Project only decision-bearing checkpoint fields. The full checkpoint is
-		// durable on disk, but replaying five 720-character observation excerpts
-		// on every context hook needlessly reintroduces the history growth that
-		// this lifecycle is meant to prevent.
+		// The checkpoint is an exact resource; the provider sees a current decision
+		// card. Plan state takes precedence over legacy free-text next_step fields.
+		persistCheckpointResource();
+		const strategyIndex = taskStrategyIndex(readTaskStrategyState(root));
+		const competition = buildCompetitionView(root);
+		if (competition) {
+			persistCompetitionView(root, competition);
+			const projectedCompetition = competitionProjection(competition);
+			resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
+				text: `CURRENT COMPETITION VIEW: ${JSON.stringify(projectedCompetition)}` }] });
+			append("task-competition-exposure.jsonl", { event: "intended_exposure", view_ref: competition.view_ref,
+				sha256: competition.sha256, recordedAt: new Date().toISOString() });
+		}
+		const activePlan = strategyIndex?.plan?.status === "active";
+		const lastAction = checkpoint.recent_actions?.at(-1);
+		const pendingOps = checkpoint.pending_operations ?? [];
+		const staleReasoning = new Set(checkpoint.reasoning_state?.stale_fields ?? []);
+		const currentReasoning = (field: keyof TaskCheckpoint, limit: number) =>
+			staleReasoning.has(field) ? undefined : boundedText(checkpoint[field], limit);
 		const checkpointProjection = {
-			format: checkpoint.format,
+			format: "task-decision-card-v1",
 			revision: checkpoint.revision,
+			checkpoint_ref: checkpointRef(),
 			harness_started: checkpoint.harness_started,
 			latest_environment: checkpoint.latest_environment,
-			recent_actions: checkpoint.recent_actions ?? [],
-			current_subgoal: checkpoint.current_subgoal,
-			hypothesis: checkpoint.hypothesis,
-			next_step: checkpoint.next_step,
-			decision_refs: checkpoint.decision_refs,
-			working_summary: checkpoint.working_summary ? {
-				text: checkpoint.working_summary, basis_refs: checkpoint.summary_basis_refs ?? [],
-				epistemic_status: "agent_interpretation_not_runtime_fact",
-			} : undefined,
-			pending_operations: checkpoint.pending_operations ?? [],
+			last_action: lastAction ?? null,
+			last_action_ref: lastAction?.observation_id
+				? `observation:${String(lastAction.observation_id)}@v1` : null,
+			action_count: checkpoint.recent_actions?.length ?? 0,
+			current_subgoal: currentReasoning("current_subgoal", 300),
+			task_goal: currentReasoning("task_goal", 350),
+			...(staleReasoning.size ? { reasoning_state_update: { ...checkpoint.reasoning_state,
+				previous_interpretations: Object.fromEntries([...staleReasoning].map(field => [field,
+					boundedText(checkpoint[field as keyof TaskCheckpoint], 180)])),
+				instruction: "Review these prior interpretations against the current environment. Persist applicable subgoal/hypothesis/next_step through arc_action.decision; use task_checkpoint for other plan edits. Preserve transferable knowledge with its evidence and scope." } } : {}),
+			success_conditions: (checkpoint.success_conditions ?? []).slice(0, 4).map(item => boundedText(item, 220)),
+			task_constraints: (checkpoint.task_constraints ?? []).slice(0, 4).map(item => boundedText(item, 160)),
+			planning_gap: boundedText(checkpoint.planning_gap, 300),
+			...(!activePlan ? {
+				current_strategy: currentReasoning("current_strategy", 350),
+				hypothesis: currentReasoning("hypothesis", 350),
+				next_step: currentReasoning("next_step", 250),
+				strategy_alternatives: (checkpoint.strategy_alternatives ?? []).slice(0, 3).map(item => boundedText(item, 180)),
+				working_summary: checkpoint.working_summary && !staleReasoning.has("working_summary") ? {
+					text: boundedText(checkpoint.working_summary, 650),
+					basis_refs: (checkpoint.summary_basis_refs ?? []).slice(-6),
+					epistemic_status: "agent_interpretation_not_runtime_fact",
+				} : undefined,
+			} : {}),
+			decision_refs: (checkpoint.decision_refs ?? []).slice(-8),
+			omitted_decision_ref_count: Math.max(0, (checkpoint.decision_refs ?? []).length - 8),
+			...(strategyIndex ? { strategy_state: competition ? { revision: strategyIndex.revision,
+				selected_candidate_id: strategyIndex.selected_candidate_id, plan: strategyIndex.plan } : strategyIndex } : {}),
+			pending_operation_count: pendingOps.length,
+			pending_operations: pendingOps.slice(-2).map(pendingFailureProjection),
 			decision_capsule: checkpoint.decision_capsule ? {
 				hypothesis_id: checkpoint.decision_capsule.hypothesis_id,
-				prediction: checkpoint.decision_capsule.prediction,
-				falsifier: checkpoint.decision_capsule.falsifier,
+				prediction: boundedText(checkpoint.decision_capsule.prediction, 240),
+				falsifier: boundedText(checkpoint.decision_capsule.falsifier, 240),
 			} : undefined,
 			latest_research_run: checkpoint.latest_research_run_ref ? {
 				resource_ref: checkpoint.latest_research_run_ref,
@@ -1143,7 +1594,7 @@ export default function externalBenchmarkResearch(
 				question: checkpoint.research_question,
 				cursor: checkpoint.research_cursor,
 				resume_condition: checkpoint.research_resume_condition,
-				report_summary: checkpoint.research_report_summary,
+				report_summary: boundedText(checkpoint.research_report_summary, 220),
 				harness_proposal_count: checkpoint.harness_proposal_count ?? 0,
 				epistemic_status: "child_report_not_automatically_adopted",
 			} : undefined,
@@ -1152,10 +1603,31 @@ export default function externalBenchmarkResearch(
 			role: "user",
 			content: [{
 				type: "text",
-				text: `CURRENT TASK STATE (environment fields are runtime facts; hypotheses, plans and summaries are agent-authored): ${JSON.stringify(checkpointProjection)}`,
+				text: `CURRENT TASK STATE (environment fields are runtime facts; hypotheses, plans and summaries are agent-authored): ${JSON.stringify(
+					process.env.PI_CONTEXT_DECISION_CARD_V2 === "disabled" ? checkpointProjection
+					: decisionCardV2(checkpoint, readTaskStrategyState(root), checkpointRef(), readWorkset(pi, root).gaps(),
+						reviewProgress(readJsonl("execution-signals.jsonl")),
+						readJsonl("auto-research-reports.jsonl").filter(row =>
+							checkpoint.latest_research_run_ref?.startsWith(`research_run:${row.run_id}@`)).at(-1), readJsonl("execution-observations.jsonl"),
+							competition ? competitionProjection(competition) : undefined))}`,
 			}],
 			timestamp: Date.now(),
 		});
+		const lastUsage = readJsonl("context-token-debug.jsonl")
+			.filter(row => row.event === "provider_response_usage" && row.scope === "treatment").at(-1);
+		const longOutputWithoutProgress = noProgressTurns >= 1
+			&& Number(lastUsage?.actual_output_tokens ?? 0) >= 20_000;
+		if (noProgressTurns >= 2 || longOutputWithoutProgress) {
+			const cue = JSON.stringify({ progress: lastDecisionProgress,
+				plan_step: strategyIndex?.plan?.current_step,
+				last_outcome: strategyIndex?.plan?.last_step_outcome,
+				long_output: longOutputWithoutProgress });
+			if (cue !== lastNoProgressCue) {
+				lastNoProgressCue = cue;
+				resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
+					text: `${activePlan ? "Active plan" : "Current investigation"} has had ${noProgressTurns} completed turns without new action or strategy evidence${longOutputWithoutProgress ? `; the latest completed response used ${Number(lastUsage?.actual_output_tokens)} output tokens` : ""}. CURRENT TASK STATE keeps goal knowledge separate from operation effects. Use the next discriminating action, revise with exact evidence, assign bounded research when useful, or read a specific missing ref. This is an advisory cue, not an action gate.` }] });
+			}
+		}
 		const activeFindings = activeFindingDigest(findings);
 		const openResearch = openResearchDigest(findings);
 		const acceptedPatternCandidateIds = new Set(
@@ -1225,7 +1697,9 @@ export default function externalBenchmarkResearch(
 	// The provider transcript is only a bounded working projection. Register
 	// this after research and harness projections so it can deduplicate their
 	// repeated messages as well as archive old tool turns.
-	installTaskLocalContextLifecycle(pi, { root });
+	installTaskLocalContextLifecycle(pi, {
+		root,
+	});
 	// Register telemetry last among the task-local context handlers. For custom
 	// providers that do not emit before_provider_request, its context fallback
 	// then sees the same final projection that the model sees.

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ft09 真实 ARC 运行：25 步中断复盘</title>
+  <style>
+    body { font: 16px/1.65 system-ui, "Microsoft YaHei", sans-serif; color: #182333; background: #f5f7fa; margin: 0; }
+    main { max-width: 980px; margin: 32px auto; padding: 36px 44px; background: white; border-radius: 12px; box-shadow: 0 4px 24px #14233b12; }
+    h1, h2, h3 { line-height: 1.3; color: #142945; }
+    h1 { margin-top: 0; } h2 { border-top: 1px solid #dce3eb; padding-top: 22px; margin-top: 32px; }
+    .lead { font-size: 1.12rem; } .warn { background: #fff3dc; border-left: 4px solid #d88b19; padding: 12px 16px; }
+    .ok { background: #e8f5ee; border-left: 4px solid #2e8958; padding: 12px 16px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; } th, td { border: 1px solid #dce3eb; padding: 9px 11px; vertical-align: top; text-align: left; }
+    th { background: #edf2f7; } code { background: #f0f3f6; padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
+    small, .muted { color: #5b6d80; } a { color: #135eb2; }
+  </style>
+</head>
+<body><main>
+  <h1>ft09 真实 ARC 运行：25 步中断复盘</h1>
+  <p class="muted">2026-09-28 · 游戏 ft09-0d8bbf25 · treatment · Jev 关闭 · 真实在线 ARC 与真实 provider</p>
+  <p class="lead">本轮已验证五类 Harness 的接线可达，并在真实 provider 下看到 Memory、Skill 与 Auto-Research 的实际流转；但求解没有取得可见进展。Luna 运行到 25 个 action、0 关完成时，provider 以账户并发限制终止，故未达到预定的“完成 Level 1 或超过 50 步”停止条件。</p>
+  <p class="warn">不要把此次中断算作 51 步验收，也不要把 Skill 已创建/装配等同于游戏能力已提升。25 次环境动作的公开帧 delta 全为 0。</p>
+
+  <h2>验证与运行口径</h2>
+  <table><thead><tr><th>检查</th><th>结果</th><th>允许结论</th></tr></thead><tbody>
+    <tr><td>真实 ARC runner 的确定性 <code>arc-harness-smoke</code></td><td>16/16 场景通过；真实 bridge、Pi parent、child broker/process、结构化返回、router、原生写入、装配、ARC action 与后续父轮；五类组件、语义 Tool 输出、Auto-Research 与普通委派的 length 续接均覆盖</td><td>接线与生命周期可达；provider 被模拟，不能证明策略质量</td></tr>
+    <tr><td>真实 provider：deepseek-v4-flash / 65,536 输出上限</td><td>首个 assistant 输出约 46,477 token，约 8 分钟后第 1 步；人工中断以调整单次输出成本</td><td>真实推理成本异常高；不是 50 步结果</td></tr>
+    <tr><td>真实 provider：deepseek-v4-flash / 8,192</td><td>5 步后连续 6 次 length 恢复无新 action，人工中断</td><td>上限过低时，当前恢复提示不能保证回到动作边界</td></tr>
+    <tr><td>真实 provider：deepseek-v4-flash / 32,768</td><td>首轮在工具调用前达到 length，人工中断</td><td>单纯调低上限不能解决该模型的长输出行为</td></tr>
+    <tr><td>真实 provider：gpt-5.6-luna / 16,384</td><td>25 步、0/6 关、0 次公开像素变化；provider 报 <code>Concurrency limit exceeded for account</code>，runner 正常归类为 provider failure 并退出</td><td>真实策略轨迹可分析；未达到原定停止条件</td></tr>
+    <tr><td>同配置 Luna 再试（约 12 分钟后）</td><td>0 步；请求先后超时，最终再次返回账户并发限制；无环境错误</td><td>阻塞并非上一进程残留；本次仍不能作为 51 步验收</td></tr>
+  </tbody></table>
+  <p>这些尝试使用不同模型/输出上限，不能当作同条件性能对照。25 步 Luna 运行无 ARC environment error；结束时 <code>pi_returncode=1</code>、<code>completion_status=runner_failed</code>、provider error 1 次。随后同配置重试也以 provider failure 结束，0 个 action、3 次 provider error 记录。</p>
+
+  <h2>Luna 的行动与组件轨迹</h2>
+  <table><thead><tr><th>阶段</th><th>环境事实</th><th>Harness / 决策事实</th></tr></thead><tbody>
+    <tr><td>第 1–3 步</td><td>依次点击 (14,4)、(14,12)、(15,10)，均零变化</td><td>持续捕获局部 Memory；开始 Auto-Research 与一次性 delegate</td></tr>
+    <tr><td>第 4–10 步</td><td>尝试右下及左上若干点，仍零变化</td><td>第 2 份研究报告提出“无效探测后只变一个因素”；主 agent 读取 creator，创建、显式装配 Skill，并在后续上下文投影</td></tr>
+    <tr><td>第 11–18 步</td><td>第 11 步 RESET 零变化；继续多处零变化点击</td><td>Skill 被引用为受控变更流程，但没有识别出响应坐标或动作前提</td></tr>
+    <tr><td>第 19–25 步</td><td>反复测试 (32,63)、(15,12)、(40,42) 等已无效坐标；依然零变化</td><td>inspect/review 后仍重复探测；再次创建同名 Skill 失败，runtime 提示应按当前版本 update；随后 provider 并发错误终止</td></tr>
+  </tbody></table>
+  <p>25 次 action 中有 1 次 RESET，24 次 ACTION6；仅 16 个不同的“动作+坐标”目标，9 次为重复。<code>ACTION6(32,63)</code> 试了 5 次，<code>(15,12)</code> 与 <code>(40,42)</code> 各 3 次。与以往 ft09 运行在 (38,38) 观察到非零 delta 的证据相比，本次没有形成一次有效点击；该对照仅说明值得审计坐标选择，不证明某个旧坐标必然在当前状态有效。</p>
+
+  <h3>组件与研究内容</h3>
+  <ul>
+    <li><b>Memory：</b>27 条版本记录，25 条 level scope、2 条 state scope；其中大量是 <code>arc-action-probe-record-v1</code>，保留父 agent 的假设、预测、反证和 action 回执，<code>claim_status=basis_cited_unverified</code>。它们多数是 trace，而不是已确证规律；本轮未被显式装配。若只读取 summary，诸如“某位置会响应”容易误读成事实，实际 delta 全为 0。</li>
+    <li><b>Skill：</b><code>controlled-action-variation-after-noop@v1</code>，提供记录坐标约定、只变一个因素、立即检查 delta、无效时停止重复的流程。它是方法而非单纯轨迹；已入池、装配、投影，并有一次父 agent 的使用效果评估。该评估称诊断纪律有所改善，但 3 个后续试验都无变化；随后的多次重复坐标也限制了这个正面判断。</li>
+    <li><b>Auto-Research：</b>2 次完成。第 1 份报告为空且 inconclusive；第 2 份指出相同无效探测只支持狭窄的诊断原则，不能推出目标选择规则，并提出单因素变更试验。它支持 Skill 形成，却没有交付可验证的“哪里、为何可点击”模型。</li>
+    <li><b>Subagent：</b>一次性 <code>delegate_task</code> 调用 120 秒超时；没有持久 Subagent 组件。一次性委派与持久组件的回执已区分，不应把前者算成入池。</li>
+    <li><b>Tool / System Prompt：</b>没有持久候选或版本；系统提示存在初始装配记录，但没有主 agent 作者化的任务级策略 segment。</li>
+  </ul>
+  <p>审计的完整方法演进链仍为 <code>complete=false</code>。虽然 Skill 从第 2 份研究报告导出并被装配，方法审计未形成一致的候选→采用→实际使用→效果评估→研究反馈链；这需要按精确 ref 检查审计归因，不能只凭“已有 Skill”宣称闭环。</p>
+
+  <h2>主要机制问题与建议（待确认）</h2>
+  <ol>
+    <li><b>动作证据没有成为下一轮的硬事实。</b>“该坐标在当前状态零变化”应作为精确的局部证据索引送到下一轮，而不是只留在未装配 Memory。对完全相同的动作、坐标、状态指纹，运行时可给出明确的重复提示；是否重试仍由主 agent 决定，不设置动作 gate。</li>
+    <li><b>Memory 的 trace 摘要混合预测与观测。</b>保留大量轻量记录符合原设计，但投影和检索应分别显示“预测/假设”与“实测 delta”；尤其不应把“预计会响应”写成事实口吻的 summary。scope 继续由证据边界决定。</li>
+    <li><b>Skill 的适用条件与效果评估需要更严格对齐。</b>该 Skill 写“至少两次相同 no-op”时触发，而早期动作并非相同坐标；后续又重复已失败坐标。建议在 creator 指导中要求操作性触发条件、一次试验后的停止条件和下一轮观测绑定，仍不增加准入门槛或 review adapter。</li>
+    <li><b>研究应服务于当前能力瓶颈。</b>在连续零变化后，下一份研究需要提出可由公开帧检验的坐标/交互表征或最小区分试验，而非重复“换个点试”。父 agent 可直接选择 Tool、Skill 或规划 System Prompt 承载方法，研究报告本身不自动升级。</li>
+    <li><b>目标级规划没有升级。</b>主 agent 直到中断仍停留在“寻找任意可响应点”，没有把成功条件、候选解释、坐标约定和反证结果综合成新的 scoped System Prompt；应在连续无进展但证据充分时提供显著的规划重估机会，是否作者化由主 agent 决定。</li>
+    <li><b>运行恢复需针对瞬时 provider 拒绝。</b>当前 runner 对首次 provider error 退出，避免无限重试是合理默认；但并发限制中断了在线状态。建议仅对明确可重试且未提交 ARC action 的错误做有限退避、保留同一 bridge/checkpoint，次数用尽再显式失败；对配额耗尽和未知错误继续立即停止。</li>
+  </ol>
+  <p class="ok">边界保持不变：ARC adapter 只返回公开状态并执行 action；主 agent 决定语义、组件创建与装配；runtime 仅提供精确证据、版本校验、提示与回执。没有新增 review adapter、固定阶段配额或自动作者化。</p>
+
+  <h2>下一次验收</h2>
+  <p>先复核第 2 份研究报告到 Skill 及方法审计的精确引用，修正预测/实测摘要和重复动作提示；再用同一真实 provider 重新运行，直到 <code>levels_completed ≥ 2</code> 或第 51 个 action，逐步记录有效 delta、关卡进度、组件创建/装配/实际使用、研究反馈与 provider 恢复。当前真实运行只支持“接线可达、局部 Skill 已形成，但解题能力和阶段升级未成立”的结论。</p>
+  <p><small>证据：<code>runs/arc-restart-smoke-20260928/arc-self-harness-smoke-summary.json</code>；<code>runs/arc-level1-luna-20260928/summary.json</code>、<code>bridge-events.jsonl</code>、<code>task-memory.jsonl</code>、<code>task-skills.jsonl</code>、<code>auto-research-reports.jsonl</code>、<code>task-harness-change-receipts.jsonl</code>、<code>effect-assessments.jsonl</code>；<code>runs/arc-level1-luna-retry-20260928/summary.json</code>。</small></p>
+</main></body></html>

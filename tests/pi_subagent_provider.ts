@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { scriptedProviderTransport } from "./pi_scripted_provider_transport.ts";
 
 export default function subagentFixtureProvider(pi: ExtensionAPI) {
 	let request = 0;
@@ -32,7 +33,7 @@ export default function subagentFixtureProvider(pi: ExtensionAPI) {
 			contextWindow: 128000, maxTokens: 1024,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}],
-		streamSimple(model, context) {
+		streamSimple: scriptedProviderTransport((model, context) => {
 			const root = process.env.PI_AUTORESEARCH_E2E_ROOT!;
 			const lengthOnceMarker = join(root, "subagent-force-length-once.marker");
 			const lengthCountMarker = join(root, "subagent-force-length-count.marker");
@@ -46,21 +47,39 @@ export default function subagentFixtureProvider(pi: ExtensionAPI) {
 			const stream = createAssistantMessageEventStream();
 			const errorThisRequest = forceErrorAfterTool && request > 0;
 			let step = lengthThisProcess || errorThisRequest ? undefined : configuredSteps[request++];
+			if (process.env.PI_SUBAGENT_TRAJECTORY_READ_FROM_RESULT === "1" && !lengthThisProcess && !errorThisRequest) {
+				const currentStep = request - 1;
+				if (currentStep === 0) step = { name: "inspect_arc_trajectory",
+					arguments: { projection: "transitions", last_n: 1 } };
+				if (currentStep === 1) {
+					const messages = Array.isArray(context.messages) ? context.messages : [];
+					const texts = messages.flatMap((message: any) =>
+						Array.isArray(message.content) ? message.content.map((block: any) => String(block.text ?? "")) : []);
+					let read: Record<string, unknown> | undefined;
+					for (const item of texts.reverse()) {
+						try {
+							const parsed = JSON.parse(item);
+							if (parsed?.history_access?.read) { read = parsed.history_access.read; break; }
+						} catch {}
+					}
+					if (!read || read.tool !== "task_resource") throw new Error("child trajectory tool did not return a paged history read call");
+					step = { name: "task_resource", arguments: { action: "read", ref: read.ref,
+						offset: read.offset, limit: read.limit } };
+				}
+			}
 			if (forceInvalidReportOnce && request === 1) {
 				step = { name: "submit_research_report", arguments: { report: {
 					format: "auto-research-report-v1", status: "provisional",
 					conclusion: "Preserve this conclusion while repairing its delivery category.",
 					findings: [], evidence_refs: [], alternatives: [], limitations: [],
 					validation_plan: "Submit the corrected report.",
-					harness_proposals: [{ candidate_ref: "invalid@v1", delivery: {
-						format: "auto-research-harness-delivery-v1", delivery_id: "invalid",
-						semantic_kind: "computation", operation: "create", name: "invalid",
-						summary: "invalid", content: "invalid", scope: { kind: "condition", statement: "test" },
-						trigger: "test", exclusions: [], stability: "conditional", reuse: "expected_reuse",
-						reasoning: "not-a-valid-mode", execution: "pure_computation", context_visibility: "on_demand",
-						basis_refs: [], expected_effect: "test", reconsider_when: "test",
-						program: { steps: [{ kind: "count" }] },
-					} }],
+					method_candidates: [{ candidate_ref: "invalid-method", name: "invalid",
+						semantic_kind: "computation", summary: "invalid", basis_refs: [], method: {
+							problem: "invalid fixture method", inputs: ["input"], invariants: [], parameters: [],
+							steps: [{ invalid: true }], decision_points: [], stop_conditions: ["stop"], failure_modes: [],
+							construction_evidence_refs: [], contrast_evidence_refs: [], next_use: "later",
+							predicted_semantic_result: "result", falsifier: "counterexample",
+						} }],
 				} } };
 			}
 			if (process.env.PI_SUBAGENT_REPEAT_READ_UNTIL_REPORT_PHASE === "1") {
@@ -94,9 +113,21 @@ export default function subagentFixtureProvider(pi: ExtensionAPI) {
 				stream.push({ type: "toolcall_delta", contentIndex: toolCallIndex, delta: JSON.stringify(step.arguments), partial: output });
 				stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall: block, partial: output });
 			} else if (!errorThisRequest) {
-				const text = lengthThisProcess
+				let text = lengthThisProcess
 					? "Partial research reasoning preserved for deterministic runtime continuation."
 					: configuredReport ?? "Independent read-only analysis complete.";
+				if (!lengthThisProcess && process.env.PI_SUBAGENT_SCENE_FROM_CONTEXT === "1") {
+					const messages = context.messages as any[];
+					const blocks = messages.flatMap(message => Array.isArray(message.content) ? message.content : []);
+					const scene = blocks.filter(block => block.type === "text").map(block => String(block.text))
+						.find(value => value.includes("PARENT-SELECTED ARC OBSERVATION")) ?? "";
+					const match = scene.match(/Grid current_state_frame \((\d+)x(\d+)\)[^\n]*\n([0-9a-f]+(?:\n[0-9a-f]+)*)/);
+					const rows = match?.[3].split("\n") ?? [];
+					text = JSON.stringify({ rows: rows.length, columns: rows[0]?.length ?? 0,
+						first_cell: rows.length ? parseInt(rows[0][0], 16) : null,
+						image_count: blocks.filter(block => block.type === "image").length,
+						tools: (context.tools ?? []).map(tool => tool.name) });
+				}
 				output.content.push({ type: "text", text });
 				stream.push({ type: "text_start", contentIndex: 0, partial: output });
 				stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: output });
@@ -105,6 +136,6 @@ export default function subagentFixtureProvider(pi: ExtensionAPI) {
 			stream.push({ type: "done", reason: finalReason, message: output });
 			stream.end();
 			return stream;
-		},
+		}),
 	});
 }

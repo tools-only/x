@@ -1,0 +1,1 @@
+Frozen stage118: stage117 plus scoped latest completed plain OpenAI reasoning projection. 197 runtime assets. Baseline preserve unchanged; experimental policy summarize_completed_openai_field with operator allowlist. Game benefit not yet verified. Never edit frozen assets.

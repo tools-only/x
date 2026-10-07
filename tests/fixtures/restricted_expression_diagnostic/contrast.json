@@ -1,0 +1,56 @@
+{
+  "resource_ref": "observation:groups-contrast@v1",
+  "version": 1,
+  "groups": [
+    {
+      "id": "group-low",
+      "rule": {"minimum": 16},
+      "records": [
+        {
+          "id": "record-low-empty",
+          "active": true,
+          "label": "no match",
+          "measurements": [{"id": "measurement-2", "value": 2}]
+        },
+        {
+          "id": "record-inactive",
+          "active": false,
+          "label": "inactive",
+          "measurements": [{"id": "measurement-100", "value": 100}]
+        },
+        {
+          "id": "record-low-match",
+          "active": true,
+          "label": "first",
+          "measurements": [
+            {"id": "measurement-14", "value": 14},
+            {"id": "measurement-10", "value": 10},
+            {"id": "measurement-9", "value": 9}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "group-high",
+      "rule": {"minimum": 60},
+      "records": [
+        {
+          "id": "record-high-empty",
+          "active": true,
+          "label": "also no match",
+          "measurements": [{"id": "measurement-30", "value": 30}]
+        },
+        {
+          "id": "record-high-match",
+          "active": true,
+          "label": "second",
+          "measurements": [
+            {"id": "measurement-80", "value": 80},
+            {"id": "measurement-50", "value": 50},
+            {"id": "measurement-49", "value": 49}
+          ]
+        }
+      ]
+    }
+  ]
+}

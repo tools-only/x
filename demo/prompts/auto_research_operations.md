@@ -3,13 +3,40 @@
 This is an operation reference, not permission to bypass the parent policy.
 All references below are returned by tools; use their current exact versions.
 
+## Continuous responsibilities
+
+After reading research-orchestration, use `action="assign"` with question,
+research_line_ref, optional scope/research_kind/constraints/resource_refs, and an
+assignment object: worker_id, responsibility, max_runs, max_output_tokens and
+stop_when. evidence_kinds selects authorized task resources (default observation,
+validation, effect_assessment, harness_observation). Runtime queues exact new
+versions at every parent model boundary, holds an active snapshot fixed, restores
+pending work only for new evidence, and creates a successor session after completion.
+For periodic historical analysis add handle_periodic_reviews=true; covered windows
+are assigned work rather than repeated parent review/defer gates. This is not a
+completed review or verified method. Multiple workers may share a line and preserve
+independent disagreements. Each receives its own prior report/checkpoint and grants.
+Plan bindings require a released runnable node; workers cannot release dependencies
+or create more workers. All ARC access remains read-only.
+
+`action="workers"` lists exact worker_refs, budgets, evidence queues and stop reasons.
+`action="revoke", worker_ref=...` cancels associated computation and preserves state.
+notification_policy=current delivers current/urgent core conclusions; index_only
+provides saved refs. Worker publication, delivery and lifecycle are separate; full
+details are `research_update:...@vN`, and consumption is explicitly acknowledged.
+No evidence, exhausted bounds, two slices without acknowledged progress, completion,
+drop, failure or task termination stop automatic computation. Scientific stop_when
+is assessed by the worker; runtime enforces mechanical bounds.
+
 ## Choose targeted or open research
 
 For a targeted investigation the parent supplies the bounded question and exact
 starting references described below. When constructing a good question would
 itself require replaying broad history, the parent may instead allocate one open
-turn with `auto_research(action="start")` and optional `current_concern`. Runtime
-provides the prior research agenda, a per-kind history cursor and read-only
+turn with `auto_research(action="start")` and optional `current_concern`. This
+creates a fresh topic unless `research_line_ref` or one exact prior report selects
+an existing one. Use `action="topics"` to find topics and `action="topic"` with
+`research_line_ref` to inspect one. Runtime provides that topic's agenda, a per-kind history cursor and read-only
 `task_resource` discovery. The child chooses one question, reads only needed exact
 versions, and updates the agenda in its report. A non-actionable update is stored
 without injecting its full reasoning into the main context.
@@ -30,8 +57,9 @@ Before launch the parent supplies:
    not themselves grant access and the child does not inherit the transcript.
 2. Objective: one attainable intermediate result and why it helps a future task
    decision. Bound it by prerequisites, scope and available research/action cost.
-   Replace "find how to win" with a locally answerable question; unresolved
-   prerequisite investigations belong in preceding plan nodes.
+   Keep the overall task purpose while bounding the work. Discovering a possible
+   objective, alternative strategy, useful representation or evaluation design can
+   be the intermediate result; unknown prerequisites may be investigated directly.
 3. Evaluation: a reachable local state/stage or representative input, the predicted
    observable output, how success and failure are distinguished, who can run the
    check, and its cost/stop limit. Define checks before seeing the result. If a
@@ -42,8 +70,10 @@ runtime readiness check. For standalone research put them in question/constraint
 and select evidence_refs/resource_refs/context_window. For plans use each node's
 question/constraints and completion_contract for its local completion criterion;
 do not duplicate the full plan in every node. No new report schema is needed.
-If no discriminating check is currently feasible, narrow to a checkable prerequisite,
-collect material or defer. Do not promise a conclusive outcome: evidence may still
+If no discriminating environment check is currently feasible, consider a bounded
+formulation, consistency analysis or experiment proposal and inspect its reasoning
+against the available evidence. Collect material or defer when that is not useful;
+do not require the investigation's answer before launch. Do not promise a conclusive outcome: evidence may still
 support a negative or inconclusive result. A locally decisive check does not prove
 a universal mechanism, overall task success or the method's causal benefit.
 
@@ -53,7 +83,9 @@ Example (replace descriptions with real accessible refs, never fabricated IDs):
   before/action/after records and current candidate prerequisites. Parent can
   afford at most two further operations in an identified reachable local stage.
 - Objective: test which supplied prerequisite explains the difference and propose
-  a pre-operation check applicable to that stage; do not ask for a complete solution.
+  a pre-operation check applicable to that stage. A solution strategy is also a
+  valid research object when the requested contribution is bounded by available
+  evidence and cost; it need not reduce to a one-step observation question.
 - Evaluation: state alternative predicted observable transitions before the probe;
   parent executes only when the named starting conditions hold and returns exact
   outcomes. Check prediction agreement and any subsequent diagnostic use. Stop
@@ -92,11 +124,12 @@ confidence increase is rejected unless it cites linked evidence from a new
 environment observation, resolved counterexample, or completed discriminating
 experiment.
 
-For a compound goal lacking a prior research_run/research_report that bounds the
-child question, enqueue a plan: goal, complexity_assessment, concurrency_limit,
-and nodes. Each node needs node_id, question, completion_contract; optionally
+For a compound goal, use a research plan when explicit dependencies or parallel
+questions will improve the work; a prior research result is not required to start
+a bounded standalone question. A plan has goal, complexity_assessment,
+concurrency_limit, and nodes. Each node needs node_id, question, completion_contract; optionally
 depends_on, activation_policy, scope, constraints, evidence_refs, resource_refs,
-and context_window. Compound plans need at least two nodes and no dependency cycle.
+and context_window. Plan dependencies must have no cycle.
 
 Use inspect_plan(plan_ref) to obtain current state. Start a runnable node with
 plan_ref and node_id within available_slots. after_dependencies means completed
@@ -106,12 +139,12 @@ Pending/blocked nodes cannot be bypassed with a standalone research call.
 
 ## Sessions and evidence
 
-Runtime owns mechanical reference selection. Omit opportunity_id for a unique
-pending review, or research_handoff_ref for a unique proposed handoff when starting
-without question/plan_ref. Choose interaction_mode explicitly. Omit session_ref
-or plan_ref only when a unique eligible object exists. Ambiguity returns candidates;
-copy one exactly. An explicit stale reference never silently selects a new target.
-`auto_research(action=contract)` lists current sessions/plans/handoffs.
+Start a periodic handoff with its exact `research_handoff_ref`; an open `start`
+does not silently consume it. Choose interaction_mode explicitly. For resume or
+inspect, omit session_ref only when a unique eligible session exists. Ambiguity
+returns candidates; copy one exactly. An explicit stale reference never silently
+selects a new target. `auto_research(action=contract)` lists live sessions, plans
+and handoffs; `action=topics` pages the durable topic index.
 
 Handoff decisions use `task_harness(action=decide_research,
 research_decision=defer|skip|reactivate, research_reason="...")`.
@@ -152,7 +185,7 @@ competing explanations, local evaluation and next unresolved test in existing
 checkpoint/report fields. Evidence-triggered wakeup is not itself research progress;
 the child must assess whether the new material bears on its question.
 
-## Recovery and adoption
+## Recovery and parent authoring
 
 Runtime continues output-length stops using durable checkpoints and detects
 unchanged semantic progress. A stalled/inconclusive result calls for replanning,
@@ -161,15 +194,16 @@ not blindly replaying the same work. Read findings, gaps and proposed next tests
 Each run receives a runtime-built cross-context comparison when evidence exists.
 It is an index of exact cases and outcome contrasts, not a semantic or causal
 conclusion. Auto-Research decides which cases are comparable and may reject the
-grouping. A method delivery uses the optional `delivery.method` structure; without
-that structure it remains concrete experience for lifecycle purposes.
+grouping. A reusable method uses `method_candidates`; a finding without that
+structure remains concrete experience for lifecycle purposes.
 
-Reviewed deliveries return as compact harness outputs; route refs, hashes,
-versions and native steps remain runtime details. Neither blocking nor background
-research applies them. The parent decides whether to adopt the completed result
-and calls the returned task_harness(action=adopt_research) interface.
-Background results arrive through the parent-owned completion inbox once. Do not
-recreate deliveries, repeat child approval, or treat a harness output as a receipt.
+Research never returns a materializable Harness delivery. When a method candidate
+could justify a skill, tool or subagent, runtime returns a non-executable parent
+authoring handoff with exact source and creator references. The parent reads the
+creator, authors the complete body through task_harness(action=change), then
+explicitly assembles the returned version. Background results arrive through the
+parent-owned completion inbox once. Do not turn the report into a body by copying
+or concatenation, and do not treat a handoff as a receipt.
 A failed/partial change receipt is not success. Use successful capabilities and assess
 their actual effects; research completion, approval and application are not proof
 of correctness or benefit. Knowledge-only and inconclusive reports are valid.
@@ -179,5 +213,11 @@ check. Feed those references to eligible ongoing work or a bounded successor.
 Revise scope, improve or retire a method on this evidence. Distinguish a passed
 local check from benefit on later cases; no component count is an evaluation target.
 Planning implications and a bounded next research question are first-class results;
-they do not require persistence through Self-Harness. Harness proposals remain an
-optional downstream channel selected only when continued reuse is supported.
+they do not require persistence through Self-Harness. A method candidate is an
+optional research output when a reusable process is supported. Any later Skill,
+Tool or Subagent remains a separate parent-authored change behind its creator gate.
+# Reusing a completed topic
+
+An identical bounded question with unchanged parent premises and evidence returns
+the existing report ref. Supply review_reason for a new analysis method or an
+independent check of the same evidence; it is passed to the child as the review goal.

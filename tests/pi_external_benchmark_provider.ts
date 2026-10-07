@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { scriptedProviderTransport } from "./pi_scripted_provider_transport.ts";
 
 export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 	const root = process.env.PI_AUTORESEARCH_E2E_ROOT!;
@@ -41,6 +42,7 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 	});
 	const configuredSteps = process.env.PI_EXTERNAL_STEPS ? JSON.parse(process.env.PI_EXTERNAL_STEPS) : undefined;
 	const thinkingChars = Math.max(0, Number(process.env.PI_EXTERNAL_THINKING_CHARS ?? "0") || 0);
+	const fixtureUsage = Number(process.env.PI_EXTERNAL_USAGE_TOKENS ?? "0");
 	const steps = configuredSteps ?? (process.env.PI_AUTORESEARCH_VARIANT === "control" ? [] : [
 		{ name: "benchmark_probe", arguments: {} },
 		{ name: "research_resource", arguments: {
@@ -70,26 +72,41 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 	]);
 	pi.registerProvider("offline-external-test", {
 		api: "openai-completions", apiKey: "offline", baseUrl: "http://unused.invalid",
-		models: [{ id: "scripted", name: "scripted", reasoning: false, input: ["text"],
+		models: [{ id: "scripted", name: "scripted", reasoning: false,
+			input: process.env.PI_ARC_INPUT_MODALITIES?.includes("image") ? ["text", "image"] : ["text"],
 			contextWindow: 128000, maxTokens: 1024,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-		streamSimple(model, context) {
+		streamSimple: scriptedProviderTransport((model, context, options) => {
+			// Honor Pi's native cancellation just like the HTTP provider. A
+			// synchronous fixture otherwise runs ahead after ctx.abort().
+			if (options?.signal?.aborted) {
+				const stream = createAssistantMessageEventStream();
+				const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider,
+					model: model.id, content: [], stopReason: "aborted", timestamp: Date.now(),
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+				stream.push({ type: "error", reason: "aborted", error: message });
+				stream.end();
+				return stream;
+			}
 			appendFileSync(contextPath, JSON.stringify({ request, context }) + "\n", "utf8");
 			const step = steps[request++];
 			const stream = createAssistantMessageEventStream();
 			const output: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider,
 				model: model.id, content: [], stopReason: step?.stop_reason ?? (step ? "toolUse" : "stop"), timestamp: Date.now(),
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				usage: { input: fixtureUsage, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: fixtureUsage,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 			stream.push({ type: "start", partial: output });
 			if (step) {
 				if (thinkingChars) output.content.push({ type: "thinking", thinking: "x".repeat(thinkingChars) } as any);
-				const block = { type: "toolCall" as const, id: `fixture-${++toolCall}`, name: step.name, arguments: step.arguments };
-				output.content.push(block);
-				const toolCallIndex = output.content.length - 1;
-				stream.push({ type: "toolcall_start", contentIndex: toolCallIndex, partial: output });
-				stream.push({ type: "toolcall_delta", contentIndex: toolCallIndex, delta: JSON.stringify(step.arguments), partial: output });
-				stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall: block, partial: output });
+				for (const call of Array.isArray(step) ? step : [step]) {
+					const block = { type: "toolCall" as const, id: `fixture-${++toolCall}`, name: call.name, arguments: call.arguments };
+					output.content.push(block);
+					const toolCallIndex = output.content.length - 1;
+					stream.push({ type: "toolcall_start", contentIndex: toolCallIndex, partial: output });
+					stream.push({ type: "toolcall_delta", contentIndex: toolCallIndex, delta: JSON.stringify(call.arguments), partial: output });
+					stream.push({ type: "toolcall_end", contentIndex: toolCallIndex, toolCall: block, partial: output });
+				}
 			} else {
 				output.content.push({ type: "text", text: "fixture complete" });
 				stream.push({ type: "text_start", contentIndex: 0, partial: output });
@@ -99,6 +116,6 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 			stream.push({ type: "done", reason: output.stopReason as "toolUse" | "stop" | "length", message: output });
 			stream.end();
 			return stream;
-		},
+		}),
 	});
 }

@@ -45,7 +45,7 @@ def test_report_preserves_scoped_explanation_assessment():
         "alternatives": ["key collection"],
         "limitations": [],
         "validation_plan": "Compare the failed and successful panel states.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     normalized = run_output(
         "output.normalizeAutoResearchReport(JSON.parse(process.env.ASSESSMENT_INPUT))",
@@ -76,7 +76,7 @@ def test_method_utility_assessment_requires_effect_reference():
         }],
         "evidence_refs": ["effect-assessment:1"],
         "alternatives": [], "limitations": [], "validation_plan": "Repeat on a held-out level.",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     result = run_output(
         "(()=>{const r=output.normalizeAutoResearchReport(JSON.parse(process.env.ASSESSMENT_INPUT));return r.findings[0].assessment})()",
@@ -102,7 +102,7 @@ def test_report_preserves_research_only_planning_outputs_without_harness_proposa
             "reconsider_when": "the alternate module is inert or terminal",
         }],
         "next_research_question": "Does the alternate module activate only at this phase boundary?",
-        "harness_proposals": [],
+        "method_candidates": [],
     }
     normalized = run_output(
         "output.normalizeAutoResearchReport(JSON.parse(process.env.ASSESSMENT_INPUT))",

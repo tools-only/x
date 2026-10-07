@@ -46,9 +46,11 @@ The command loads model credentials from this repository's `.env` (or the curren
 
 ## Shared external-benchmark lifecycle
 
-`pi_external_benchmark_research.ts` supplies the same optional, task-local research/finding/evidence lifecycle plus memory, task-local system-prompt overlays, task-local SKILL.md resources, active-tool selection, context focus, and effect assessment to ARC-AGI-3 and Terminal-Bench. The treatment surface exposes the fixed creator catalog, but creator-dependent resources are not authored directly by the runtime: the parent must read the corresponding versioned `skill-creator`, `tool-creator`, or `subagent-creator` method and pass its exact `authoring_method_ref`; Auto-Research start/enqueue likewise requires a parent read of `research-orchestration`. The runtime only validates, versions, assembles, executes and records authored candidates. It records a zero-resource `task-harness-entry.jsonl` audit and never invokes Pi's native skill loader. It also writes a causal-neutral `execution-signals.jsonl` index, derives bounded `pattern-candidates.jsonl` checkpoints from repeated or contrasting tool outcomes, and projects an on-demand multilevel research graph from parent/dependency fields already stored in versioned findings. Candidates never become findings or harness changes automatically. Auto-Research deliveries are reviewed inside the isolated child through `harness_method` (read-only creator access) and `research_approval` (legacy compatibility only); each creator-dependent delivery carries its exact method reference, which the parent must read again before adoption. Parent-side code deterministically compiles reviewed deliveries into `auto-research-harness-routes.jsonl`; the parent has no approval adapter and executes each ready route through the concrete Pi `task_*` native call. Auto-Research itself never applies the route. `pi_arc_agi_3_extension.ts` adds the native state/action surface and optional task-local read-only Pi subagents; `pi_terminal_bench_extension.ts` retains Pi's native terminal tools. Environment adapters own transport and native evaluation, not research scheduling. Control mode registers none of the treatment capabilities. Treatment mode allows direct task completion with no research and no mutation.
+`pi_external_benchmark_research.ts` supplies the same optional, task-local research/finding/evidence lifecycle plus memory, task-local system-prompt overlays, task-local SKILL.md resources, active-tool selection, context focus, and effect assessment to ARC-AGI-3 and Terminal-Bench. The parent surface exposes the fixed creator catalog: the parent must read the corresponding versioned `skill-creator`, `tool-creator`, or `subagent-creator` and author the complete candidate; Auto-Research start/enqueue likewise requires a parent read of `research-orchestration`. The isolated research child has no creator or Harness mutation tools and returns findings, method candidates, planning implications, or experiment requests only. Runtime emits a non-executable parent authoring handoff, validates/version/assembles/executes parent-authored candidates, and records actual-use evidence; it never copies research prose into a component. It records a zero-resource `task-harness-entry.jsonl` audit and never invokes Pi's native skill loader. It also writes a causal-neutral `execution-signals.jsonl` index, derives bounded `pattern-candidates.jsonl` checkpoints from repeated or contrasting tool outcomes, and projects an on-demand multilevel research graph from parent/dependency fields already stored in versioned findings. `pi_arc_agi_3_extension.ts` adds the native state/action surface and optional task-local read-only Pi subagents; `pi_terminal_bench_extension.ts` retains Pi's native terminal tools. Environment adapters own transport and native evaluation, not research scheduling. Control mode registers none of the treatment capabilities. Treatment mode allows direct task completion with no research and no mutation.
 
 Active research, memory, skill, tool, and subagent indexes are projected through Pi's `context` hook; canonical content remains in run-local JSONL or `SKILL.md`. The shared extension also installs an adapter-independent task-local context lifecycle: it deduplicates repeated projections, keeps the initial task prompt plus a recent valid suffix, archives older transcript messages behind recoverable markers, bounds oversized retained messages, and records metrics in `task-context-compactions.jsonl`. It is enabled by default for treatment and can be disabled only for an explicit ablation with `PI_AUTORESEARCH_CONTEXT_LIFECYCLE=disabled`; `PI_AUTORESEARCH_CONTEXT_COMPACTION` remains the separate Agent-selected observation-representation capability. A skill created during a run becomes usable after the Agent reads its projected path; `task_harness(action="focus", resource_refs=[...])` can narrow later context to exact task-local versions. `loaded_by_pi` is not used as a task lifecycle signal: the runner disables native skills and the extension does not register task-local skill paths with Pi's loader. ARC delegation starts an isolated Pi process with only the Agent-selected subset of `arc_state` and `inspect_arc_trajectory`; `arc_action` is never available to the child.
+
+The parent can call `task_harness(action="context")` when context cost affects a decision. It returns the latest provider-request module estimates, current focus and tool choices, and exact control calls. The parent can select assembled resource refs with `focus`, restore all assembled resource projections with `resource_refs=[]`, or change the active tool set with `task_tool_policy`. Each explicit choice records a size-only baseline in `task-context-choices.jsonl`; a later `context` call reports the observed estimate change. The comparison is diagnostic because task state may also change between requests. Exact evidence remains readable from task resources. No detailed cost report is injected on every turn.
 
 The provider telemetry extension also writes `context-token-debug.jsonl`. It records one
 size-only context snapshot per provider turn, including estimated tokens for the system
@@ -60,6 +62,31 @@ Custom providers that skip `before_provider_request` use the final Pi `context` 
 a fallback and mark the measurement basis accordingly. Prompt/resource bodies are not
 copied into this debug log. Read-only ARC subagents write the same schema to
 `subagent-context-token-debug.jsonl` so their turns remain separate from the parent.
+
+Auto-Research and ordinary delegated children share `child_context`. A child may
+call `child_context(action="inspect")` for its own provider-request costs and a
+paged index of historical read results. It can explicitly compact selected result
+refs with an authored continuity summary, restore them, page the exact saved
+output, or choose which authorized read-tool schemas remain active. Choices and
+exact result bodies are stored by native child session under
+`task-context-cache/child-context/`; telemetry also carries that session ID so
+concurrent research topics stay separate. The initial parent-selected workset
+and the child's read-only permission boundary are unchanged. No child result is
+compacted until the child calls the control tool.
+The parent `task_harness(action="context")` report includes only a short, on-demand
+index of the latest cost per child session; each child owns its detailed choices.
+
+To save the full provider request payload for inspection, set
+`PI_AUTORESEARCH_PROVIDER_PROMPT_CAPTURE=first` (or `all`) before starting a new
+run. For Git Bash: `export PI_AUTORESEARCH_PROVIDER_PROMPT_CAPTURE=first`.
+The default is off. Each captured request is written as
+`provider-prompt-<scope>-<timestamp>-<pid>-<request>.json` in that run's output
+directory, with the complete `payload` under a metadata wrapper. `first` means
+the first request in each Pi process, including separately launched subagents.
+These files can contain private prompt and tool content; keep the run directory
+local. HTTP headers and API keys from the environment are not added. Existing
+processes do not reload this setting, and prior requests cannot be recovered
+from the size-only telemetry log.
 
 ARC uses the independent `arc_agi_3_adapter.py` / `arc_agi_3_official_adapter.ts`
 contract for both arms. It mirrors the official ARC `BenchmarkingAgent` system

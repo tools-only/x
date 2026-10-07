@@ -1,0 +1,6 @@
+{
+  "tests/test_compact_creator_native.py": "84e3d1a722b87f30ddb080881d005cd6748d3777574a72e989d40b73d57ab5fe",
+  "tests/test_task_pure_expression_native.py": "17a48123a073d1b35483db6be5f22c6390b7caf23488605266fdc6804db95428",
+  "tests/test_direct_development_intent.py": "42458f89b30863885270a105a469d14cd551d40fd6f8343d11d0957edcb38381",
+  "tests/test_harness_capability_authoring.py": "0b0f330c2d174fb34fa53b11d10ef82a9ef0ac0879dee01edf5832e4abbd3b41"
+}
