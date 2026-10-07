@@ -22,6 +22,8 @@ Auto-Research method resources
 
 ## 开发
 
+首次阅读代码可先看[完整代码导读](docs/codebase-guide-zh.md)，了解 Python runner、Pi 扩展、ARC/Auto-Research 数据流及验收边界。
+
 设计、实现、评审和完成声明遵循 [开发流程与证据标准](docs/development-workflow.md)，
 由仓库 [AGENTS.md](AGENTS.md) 约束后续开发 Agent。涉及机制或运行行为的实质变更，
 使用 [变更验收模板](docs/templates/meta-harness-change.md)，也可在已有计划/报告中保留相同栏目；
