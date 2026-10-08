@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, appendFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { installTaskResourceReader } from "../demo/pi_task_resource_store.ts";
 import { ensureTaskScope, stampTaskRecord } from "../demo/pi_task_scope.ts";
 import { installParentContextControl } from "../demo/pi_parent_context_control.ts";
 import { installChildContextControl } from "../demo/pi_child_context_control.ts";
 import { installProviderTelemetry } from "../demo/pi_provider_telemetry.ts";
+import finalProviderPayload from "../demo/pi_final_provider_payload.ts";
 import { readWorkset } from "../demo/pi_read_workset.ts";
 import { installTaskLocalContextLifecycle } from "../demo/pi_task_local_context_lifecycle.ts";
 
@@ -15,6 +17,7 @@ function fixture(restricted = false) {
     const root = mkdtempSync(join(tmpdir(), "pi-read-workset-"));
     const tools = new Map<string, any>(), handlers = new Map<string, any[]>();
     const pi: any = {
+        events: new EventEmitter(),
         on(name: string, callback: any) { handlers.set(name, [...(handlers.get(name) ?? []), callback]); },
         registerTool(tool: any) { tools.set(tool.name, tool); },
         getAllTools() { return [...tools.values()]; },
@@ -48,6 +51,7 @@ function fixture(restricted = false) {
 test("final payload coverage distinguishes stored pages, exact exposure and epoch loss", async () => {
     const f = fixture();
     installProviderTelemetry(f.pi, { root: f.root });
+    finalProviderPayload(f.pi);
     const page = await f.read("coverage");
     await f.emit("before_provider_request", { payload: { messages: [
         { role: "tool", content: page.content[0].text },

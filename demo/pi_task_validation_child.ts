@@ -23,7 +23,8 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 	const refs = JSON.parse(process.env.PI_TASK_CHILD_RESOURCE_REFS ?? "[]");
 	if (!Array.isArray(refs) || refs.some((ref) => typeof ref !== "string")) throw new Error("invalid child resource grants");
 	installTaskResourceReader(pi, root, refs);
-	installChildContextControl(pi, root);
+	let pauseReadBatch: ((details: Record<string, any>) => void) | undefined;
+	installChildContextControl(pi, root, { onReadBatchPause: details => pauseReadBatch?.(details) });
 	installTaskLocalContextLifecycle(pi, {
 		root,
 		keepRecentMessages: 12,
@@ -152,6 +153,7 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 					draft_findings: Array.isArray(params.draft_findings) ? params.draft_findings : [],
 				next_step: String(params.next_step ?? ""), pause_reason: paused ? String(params.reason ?? "agent requested pause") : null,
 				...(params.report_submission_error ? { report_submission_error: String(params.report_submission_error) } : {}),
+				...(params.read_batch_boundary ? { read_batch_boundary: params.read_batch_boundary } : {}),
 				resume_condition: String(params.resume_condition ?? "new evidence or an explicit parent resume"),
 				...(paused ? { wait_for: String(params.wait_for) } : {}),
 				...(paused ? {
@@ -168,6 +170,12 @@ export default function taskValidationChild(pi: ExtensionAPI) {
 			appendControl({ event: paused ? "research_paused" : "research_checkpoint_saved", session_id: sessionId,
 				cursor: checkpoint.cursor, evidence_read_count: evidenceReadCount, resume_condition: checkpoint.resume_condition });
 			return checkpoint;
+		};
+		pauseReadBatch = details => {
+			if (reportSubmitted || savedCheckpoint.status === "pending") return;
+			saveResearchCheckpoint({ reason: details.reason,
+				next_step: savedCheckpoint.next_step || "Resume only with an authorized bounded slice; distill the preserved read batch or return the current uncertainty before retrieving more evidence.",
+				wait_for: "manual_resume", resume_condition: "manual_resume", read_batch_boundary: details }, true);
 		};
 		if (process.env.PI_AUTO_RESEARCH_CHECKPOINT_TOOL !== "0") pi.registerTool({
 			name: "research_checkpoint", label: "Auto-Research checkpoint",

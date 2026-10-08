@@ -113,7 +113,8 @@ def test_testable_goal_model_prompts_parent_phase_reassessment_before_level_succ
     text = json.dumps(records(run, "provider-contexts.jsonl"), ensure_ascii=False)
     assert "TESTABLE GOAL MODEL" in text
     assert "Public level counter increases" in text
-    assert "scoped planning System Prompt" in text
+    assert "Component choice remains with the parent" in text
+    assert "consider a scoped planning System Prompt" not in text
     assert "FRESH LEVEL TRANSITION" not in text
 
 

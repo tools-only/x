@@ -37,7 +37,7 @@ export const ResearchMethodCandidateSchema = Type.Object({
 	method: ResearchMethodSpecificationSchema,
 	proposed_delivery_id: Type.Optional(Type.String({ minLength: 1 })),
 	program: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
-		description: "For computation only: bounded task-pure-python-v1 source or task-pure-expression-v1. Research input; parent explicitly chooses publication/assembly. Runtime validates syntax and limits without executing it.",
+		description: "For computation only: task-python-v1 ordinary Python source or task-pure-expression-v1. Research input; parent explicitly chooses publication/assembly. Runtime validates syntax and limits without executing it.",
 	})),
 	input_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
 		description: "Optional canonical pure-tool input schema accompanying program.",

@@ -17,6 +17,8 @@ export const HARNESS_REFERENCE_TOPICS = {
 } as const;
 
 export function harnessOperatingReference(topic?: string, values: Record<string, string> = {}, section?: string) {
+	// The pool is the existing Memory entry, not a separate format or lifecycle.
+	if (topic === "memory_pool") topic = "memory";
 	const topics = Object.entries(HARNESS_REFERENCE_TOPICS).map(([name, entry]) => ({
 		topic: name, description: entry.description,
 		read_call: { tool: "task_harness", arguments: { action: "contract", topic: name } },

@@ -5,13 +5,15 @@ The authoritative runtime files are `demo/pi_task_local_tools.ts` and
 `demo/pi_task_tool_contract.ts`; this document is a routing summary, not a second
 schema definition.
 
-The default authoring entry uses `task-pure-python-v1`: a restricted expression
-is mechanically lowered to the bounded JSON AST below, never executed by Python.
-It accepts optional limits and schemas (open object input, strict JSON output).
-`task_harness_create(..., assembly=true, trial={parameters,bindings})` requests
-publication, addition of the new exact version to the current selection, and a
-first pure computation. CAS, resource authorization and existing trial failure
-recovery still apply. Legacy AST callers retain their explicit output contract.
+The default entry uses `task-python-v1`: ordinary Python 3.12 executed by
+CPython inside WASI. There is no source-to-expression-IR translator or syntax
+allowlist. Source takes JSON `input` and finishes with a JSON result expression
+or assigns `result`. Optional schemas default to open object input and JSON output.
+`task_harness_create(..., trial={current_grid:true})` publishes, installs and
+computes the first value. CAS, authorized resources and trial-failure recovery
+still apply; `assembly=false` stages only and cannot request a trial.
+The old `task-pure-python-v1` source spelling is a compatibility alias. Previously
+published JSON AST programs retain their own execution semantics and contracts.
 
 ## Pi-native definition
 
@@ -38,10 +40,25 @@ in `SOURCES.json`.
 
 ## Dynamic component substrate in this project
 
-`task_tool` does not accept arbitrary source code. It materializes one of three
-mutually exclusive forms:
+`task_tool` materializes one of four mutually exclusive forms:
 
-1. A pure JSON program with exactly `format`, `limits`, and `expression`:
+1. Ordinary Python with `format=task-python-v1`, `source`, and optional `limits`.
+   Functions, control flow, local mutation, dict/list/set comprehensions, slicing,
+   conversions, methods and available standard-library imports use CPython semantics.
+   The source is syntax-checked without execution before publication. Invocation
+   runs in a fresh WASI process, with the bundled library filesystem and no host
+   directories, host environment, credentials, host-call bridge or network grants.
+   The final expression is captured as the result; alternatively assign `result`.
+   Standard print output is discarded. The result must serialize to finite JSON.
+   A WASI runtime supplies neither ordinary host OS services nor external packages;
+   this is an execution-environment boundary, not a special calculation grammar.
+   Limits are input/output bytes, JSON depth, host preparation bytes
+   (`allocation_bytes`), guest linear memory (`memory_bytes`), WASM `fuel`, and
+   total invocation `timeout_ms`. Defaults are 128KiB input, 64KiB output, depth32,
+   8MiB preparation, 128MiB guest memory, 1 billion fuel and 20 seconds. The guest
+   has its own epoch/fuel limits; cancellation/total timeout kills the host runner.
+   Limits and interpreter/runner identity freeze into the exact published version.
+2. A pure JSON program with exactly `format`, `limits`, and `expression`:
 
    ```json
    {
@@ -58,20 +75,30 @@ mutually exclusive forms:
    validated at publication, and collection/allocation/step/depth/input/output
    limits are enforced. Publication freezes the resolved limit contract into the
    exact tool version; a later runtime may only apply a tighter hard ceiling.
-2. A legacy declarative program with a non-empty `steps` array. Supported kinds are
+3. A legacy declarative program with a non-empty `steps` array. Supported kinds are
    `adapter_call`, `select`, `count`, `pick`, `filter`, `map`, `group_by`, `diff`,
    `summarize`, `assert`, and `emit_observation`.
-3. An `implementation_ref` already permitted by the current task adapter.
+4. An `implementation_ref` already permitted by the current task adapter.
 
 Do not put `steps` on a pure program or `format`/`expression` on a legacy program.
-Pure programs never receive the task adapter or a host resolver. They require
-supported `input_schema` and `output_schema` objects. The accepted schema subset
+Computation programs never receive the task adapter or a host resolver. Python
+source uses open-object/strict-JSON defaults when schemas are omitted; raw IR
+requires supported `input_schema` and `output_schema` objects. The accepted schema subset
 uses exact supported keywords (`type`, `properties`, `required`,
 `additionalProperties`, `items`, `minItems`, `maxItems`, `minimum`, `maximum`,
 `minLength`, and `maxLength` as applicable); unsupported composition such
 as `$ref` or `oneOf` is rejected instead of ignored.
 
-Pure invocations use this envelope:
+For the latest already-captured ARC final frame, invoke with
+`{"current_grid":true}` (plus `parameters` for other literal fields).
+The host records the selected exact snapshot, frame index, hashes and boundary.
+It never fetches live state or performs an environment action; missing/empty final
+grids fail instead of falling back to older data. Each later call selects anew.
+The option is a strict boolean; omission/false adds no data or scan. It cannot
+coexist with a `grid` parameter or binding. Existing parent authorization and
+scan/input/preparation budgets apply, including the 64 total binding limit.
+
+For a fixed historical observation, pure invocations use this envelope instead:
 
 ```json
 {
@@ -84,10 +111,11 @@ Pure invocations use this envelope:
 }
 ```
 
-Omitted `parameters`/`bindings` default to `{}`/`[]`; no task data is inferred.
+Omitted `parameters`/`bindings` default to `{}`/`[]`; data is only added by explicit bindings or `current_grid:true`.
 Explicit null or incorrect field types are rejected by the public invocation.
 The example above has one frame. The current ARC grid is the snapshot's last
-frame, not always index 0. The creator prepares its exact numeric-grid binding;
+frame, not always index 0. The creator's ARC trial uses `current_grid:true`;
+optional `current_input.binding` provides the exact numeric-grid binding instead.
 optional `earlier_input` gives a captured final grid with its action count,
 level and gap, not necessarily the immediately preceding action.
 `parameters` and resolved bindings become one input object. Names must be unique
@@ -112,7 +140,7 @@ equally sized 64x64 integer color grids in 0..15 for this default-budget example
 
 It scans each cell once and returns bounded counts rather than a full pixel
 diff. Query coordinates or values when needed using the same immutable refs.
-Boolean conditions are explicit; arbitrary Python syntax is not supported.
+Python conditions and indexing follow CPython semantics.
 Choose other expressions, inputs or a Skill when the operation differs; the
 example does not establish component usefulness.
 
@@ -190,9 +218,9 @@ The runtime validates permissions for every adapter call. Program output can car
 derived tool version, operation, and transformations. A deterministic transform
 does not establish the semantic identity or causal meaning of its input.
 
-## Authoring checklist
+## Optional contract review
 
-Before publishing, answer:
+When an advanced contract needs review, consider:
 
 - What repeated decision becomes easier after this call?
 - Is every advertised operation implemented by a supported step or allowlisted
@@ -210,6 +238,6 @@ choose an agent-executed Skill, a composition of supported computations, or an
 explicit deferral. Do not encode the unavailable operation as prose in a Tool or
 claim that a Skill caused runtime execution.
 
-After publishing, execute the assembled version with representative and contrasting
-inputs. Assert decoded values and expected errors. A `completed` event without a
-correct semantic result is a failed tool evaluation.
+The optional creation trial or later assembled call can check representative and
+contrasting inputs. Compare decoded values and expected errors; a `completed`
+event alone does not establish semantic correctness or task benefit.

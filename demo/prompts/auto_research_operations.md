@@ -5,8 +5,9 @@ All references below are returned by tools; use their current exact versions.
 
 ## Continuous responsibilities
 
-After reading research-orchestration, use `action="assign"` with question,
-research_line_ref, optional scope/research_kind/constraints/resource_refs, and an
+Use `action="assign"` with question; ARC/open admission prepares the current
+research contract internally. Read research-orchestration when details are needed.
+Supply research_line_ref, optional scope/research_kind/constraints/resource_refs, and an
 assignment object: worker_id, responsibility, max_runs, max_output_tokens and
 stop_when. evidence_kinds selects authorized task resources (default observation,
 validation, effect_assessment, harness_observation). Runtime queues exact new
@@ -199,8 +200,8 @@ structure remains concrete experience for lifecycle purposes.
 
 Research never returns a materializable Harness delivery. When a method candidate
 could justify a skill, tool or subagent, runtime returns a non-executable parent
-authoring handoff with exact source and creator references. The parent reads the
-creator, authors the complete body through task_harness(action=change), then
+authoring handoff with exact source and creator references. The parent authors the
+complete body through task_harness(action=change), consulting creator details when needed, then
 explicitly assembles the returned version. Background results arrive through the
 parent-owned completion inbox once. Do not turn the report into a body by copying
 or concatenation, and do not treat a handoff as a receipt.

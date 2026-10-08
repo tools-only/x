@@ -1,0 +1,1170 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Pi v1.0.4原生与公开社区上下文管理的独立联网研究：Memory、Tools、Skills、Subagent、剪枝、确定性压缩和Pi Durable。"><title>Pi 原生与社区上下文管理 · 联网研究 · 2026-10-07</title><style>
+:root{--ink:#172d39;--muted:#566d79;--paper:#f7f5ef;--line:#d8e1e2;--teal:#126b6d;--navy:#153d50;--gold:#a87426}
+*{box-sizing:border-box}[hidden]{display:none!important}html{scroll-behavior:smooth;scroll-padding-top:28px}body{margin:0;color:var(--ink);background:var(--paper);font:16px/1.85 "Microsoft YaHei","PingFang SC",system-ui,sans-serif}
+a{color:var(--teal);text-underline-offset:3px}a:hover{color:#03454a}header{background:var(--navy);color:#fff;padding:50px max(6vw,24px) 42px;position:relative}
+.eyebrow{font:13px/1.6 system-ui,sans-serif;letter-spacing:2px;color:#a9d3d4}.hero-inner{max-width:1380px;margin:auto}h1{font-size:clamp(28px,3.4vw,48px);line-height:1.3;letter-spacing:-1px;margin:12px 0 14px}
+.deck{font-size:17px;color:#d5e4e7;max-width:850px;margin:0}.hero-meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:22px}.hero-meta span{font-size:12px;color:#d8e8e8;border:1px solid #587987;padding:3px 11px;border-radius:4px}
+.layout{max-width:1500px;margin:0 auto;display:grid;grid-template-columns:270px minmax(0,1fr);gap:36px;padding:34px 28px 70px}aside{position:sticky;top:22px;max-height:calc(100vh - 44px);overflow:auto;align-self:start;padding:19px;background:#eef1ed;border:1px solid var(--line);border-radius:8px;font-size:13px}
+.nav-label{font-weight:700;color:var(--navy);font-size:14px;margin-bottom:10px}nav a{display:block;padding:7px 9px;text-decoration:none;border-left:2px solid transparent;line-height:1.55;margin-bottom:3px}nav a:hover,nav a.active{background:#fff;border-color:var(--teal)}input[type=search]{width:100%;padding:9px 10px;margin:0 0 12px;border:1px solid #b9c9cd;border-radius:4px;background:#fff;color:var(--ink)}button{font:inherit;cursor:pointer;color:var(--navy);border:1px solid #a9bfc4;background:#fff;border-radius:4px;padding:7px 12px;margin-top:13px}button:hover{background:#dfecee}.nav-note{color:var(--muted);font-size:12px;line-height:1.65}
+main{background:#fff;border:1px solid var(--line);border-radius:10px;padding:38px 42px;min-width:0;overflow-wrap:anywhere}h2{font-size:25px;line-height:1.45;color:var(--navy);margin:52px 0 19px;padding-top:22px;border-top:1px solid var(--line)}h2:first-of-type{margin-top:18px;padding-top:0;border-top:0}h3{font-size:19px;line-height:1.5;margin:28px 0 12px;color:#205566}h4{font-size:18px;margin:26px 0 10px}h5,h6{font-size:16px;margin:22px 0 8px}p{margin:12px 0 17px}strong{color:#174b56}
+code{font-family:"Cascadia Code",Consolas,monospace;font-size:.85em;overflow-wrap:anywhere;background:#eef3f4;border-radius:3px;padding:2px 5px}pre{background:#102f40;color:#e7f2f2;padding:18px;border-radius:6px;overflow:auto;line-height:1.6}pre code{background:none;color:inherit;padding:0;overflow-wrap:normal}blockquote{margin:20px 0;padding:12px 20px;background:#f1f6f4;border-left:4px solid var(--teal);color:#345661}
+.table-wrap{overflow:auto;margin:23px 0;border:1px solid var(--line);border-radius:5px}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.7;min-width:680px}th{background:#e7efed;color:#174858;text-align:left;font-weight:700;padding:13px 14px}td{padding:12px 14px;vertical-align:top;border-top:1px solid var(--line)}tbody tr:nth-child(even){background:#f8faf8}td:first-child{font-weight:600}td code{font-size:12px}
+.architecture{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:24px 0}.architecture div{border-top:4px solid var(--teal);background:#eef4f2;padding:17px 13px;border-radius:4px}.architecture div:nth-child(2){border-color:var(--gold);background:#faf4e8}.architecture b{display:block;font-size:15px;margin-bottom:7px}.architecture span{display:block;font-size:12px;line-height:1.8;color:#516c73}
+.calculator{padding:23px 27px;background:#eff6f3;border:1px solid #c6ddd8;border-radius:7px;margin:28px 0}.calculator h3{margin:0 0 10px}.calculator p,.calculator label{font-size:14px}.calculator label{display:grid;grid-template-columns:240px 1fr 75px;align-items:center;gap:12px;margin:18px 0}.calculator output{text-align:right;font-family:Consolas,monospace;color:#124e58}.calculator input{width:100%;accent-color:var(--teal)}#cost-result{background:#fff;padding:13px;border-left:3px solid var(--gold);font-weight:600}.calculator small{color:var(--muted)}
+.appendix{border:1px solid #bcd0d2;border-radius:6px;margin:22px 0;background:#f9fbfa}.appendix summary{padding:17px 20px;cursor:pointer;color:var(--navy);font-weight:700}.appendix[open] summary{border-bottom:1px solid var(--line)}.appendix-content{padding:12px 25px 28px}.appendix-content h3{margin-top:20px}.local-reference code{color:#667e86;font-size:11px;background:none}.hash{min-width:270px;font-weight:normal;word-break:break-all}.hash code{font-size:10px}.footer{font-size:12px;color:var(--muted);margin-top:30px;padding-top:18px;border-top:1px solid var(--line)}.screen-only{display:block}
+@media(max-width:1120px){.layout{grid-template-columns:225px minmax(0,1fr);gap:20px;padding:24px 15px}main{padding:26px}.architecture{grid-template-columns:repeat(3,minmax(0,1fr))}.calculator label{grid-template-columns:190px 1fr 60px}}
+@media(max-width:760px){header{padding:35px 22px}.layout{display:block;padding:16px 10px}aside{position:static;max-height:none;margin-bottom:16px}nav{columns:2}nav a{break-inside:avoid}main{padding:23px 18px}h2{font-size:22px}.architecture{grid-template-columns:1fr 1fr}.calculator{padding:18px}.calculator label{grid-template-columns:1fr 65px}.calculator label input{grid-row:2;grid-column:1/3}.appendix-content{padding:10px 15px}body{font-size:15px}}
+@media print{body{background:#fff;font-size:10pt;line-height:1.6}header{background:none;color:#143d50;padding:15px 0}.eyebrow,.deck,.hero-meta span{color:#345661}.layout{display:block;padding:0}aside,.screen-only{display:none!important}main{border:0;padding:0}h1{font-size:26pt}h2{font-size:17pt;break-after:avoid;scroll-margin:0}h3,h4{break-after:avoid}.table-wrap{overflow:visible;border-radius:0}table{font-size:8pt;min-width:0}tr{break-inside:avoid}pre{white-space:pre-wrap;background:#eef3f4;color:#102f40}.appendix-content{padding:0}.appendix summary{padding:10px 0}.architecture{grid-template-columns:repeat(5,1fr)}a{color:inherit;text-decoration:none}header,main,.calculator{box-shadow:none}.hero-meta span{border-color:#c0ced0}}
+
+.reading-guide{padding:16px 20px;background:#f2f6f4;border-left:4px solid var(--teal)}.appendix summary:focus-visible,nav a:focus-visible{outline:3px solid var(--gold);outline-offset:3px}.status-note{color:#d5e4e7;font-size:13px;margin-top:16px}</style></head><body><header><div class="hero-inner"><div class="eyebrow">PI · NATIVE &amp; COMMUNITY · CONTEXT MANAGEMENT</div><h1>Pi 原生与社区上下文管理</h1><p class="deck">从会话树、长期 Memory 到 Tools 与 Subagent：机制、信息流、预算、恢复路径和取舍的独立联网研究</p><div class="hero-meta"><span>2026-10-07 · Asia/Shanghai</span><span>原生基线 v1.0.4</span><span>社区固定 commit</span><span>14 章 · 4 份完整研究附录</span></div><p class="status-note">依据公开一手文档与源码；社区兼容性、真实任务效果及净收益按证据注明。全文与附录均可离线阅读。</p></div></header><div class="layout"><aside aria-label="报告目录"><div class="nav-label">阅读导航</div><input id="toc-filter" type="search" aria-label="筛选章节" placeholder="筛选章节，如 Memory"><nav><a href="#chapter-1">1. 先看全景：哪些机制真正值得借鉴</a><a href="#chapter-2">2. 版本基线：Pi 1.0 已有新的原生上下文能力</a><a href="#chapter-3">3. 原生Session Tree：保留历史，控制当前分支</a><a href="#chapter-4">4. 原生压缩与context_edit：一个做摘要，一个改投影</a><a href="#chapter-8">5. Memory：常驻核心、续接状态与按需长期知识</a><a href="#chapter-14">6. Skills与目录上下文：程序知识应渐进展开</a><a href="#chapter-15">7. Tools：Schema、返回结果与历史是三种成本</a><a href="#chapter-19">8. 工具历史剪枝与探索投影：五个社区思路</a><a href="#chapter-25">9. 确定性压缩与观察式记忆</a><a href="#chapter-28">10. Subagent：上下文隔离、继承与交接</a><a href="#chapter-33">11. Pi Durable：官方的任务所有权与可回放会话路线</a><a href="#chapter-34">12. 按场景选择：轻量起步，保留恢复路径</a><a href="#chapter-35">13. 如何评价上下文方案是否真的优秀</a><a href="#chapter-39">14. 资料索引与完整联网研究附录</a><a href="#appendix-a">附录 A · Pi 原生机制与 Pi Durable</a><a href="#appendix-b">附录 B · 社区 Memory、事务与 Subagent</a><a href="#appendix-c">附录 C · MCP、剪枝、DCP 与连续性</a><a href="#appendix-d">附录 D · 确定性压缩与观察式记忆</a></nav><p id="nav-status" class="nav-note" aria-live="polite"></p><button id="print-report" type="button">打印 / 保存为 PDF</button><p class="nav-note">先读正文比较机制；附录展开后可查看完整版本、默认值、来源与实现边界。打印时自动展开附录。</p></aside><main><div class="reading-guide">阅读建议：第 3–4 章看原生历史与压缩；第 5–10 章比较各组件方案；第 12 章按场景选择；第 13 章检查缓存与总成本。附录提供详细证据。</div>
+<p>联网研究日期：2026-10-07（Asia/Shanghai）。官方基线为 Pi <strong>v1.0.4</strong>；社区项目按本次取得的具体版本或 commit 分别注明。</p>
+<h2 id="chapter-1">1. 先看全景：哪些机制真正值得借鉴</h2>
+<p>Pi 生态最有价值的上下文思想，是把<strong>持久历史、当前模型工作集、可检索记忆、程序知识和独立研究会话</strong>分开。长期任务不能只靠扩大窗口，也不能只靠不断把旧对话总结成更短的段落；必须回答信息存在哪里、什么时候进入请求、如何失效、需要时如何找回。</p>
+<p>这里的“优秀”指机制定位明确、可解释、具有恢复路径、能控制常驻成本，并有公开实现供核查。它不等于所有项目已经在同样任务和预算下证明优于原生 Pi。星数、下载量、作者宣称的压缩比例，不直接代表长期任务成功率。</p>
+<div class="architecture">
+<div><b>原始历史</b><span>JSONL session tree、分支、原始工具返回</span></div>
+<div><b>当前工作集</b><span>近期尾部、压缩摘要、system/tool状态</span></div>
+<div><b>长期记忆</b><span>Memory blocks、文件日志、检索、来源与更新</span></div>
+<div><b>按需能力</b><span>Skill目录、tool search、codemode、MCP gateway</span></div>
+<div><b>独立会话</b><span>Fresh/fork subagent、角色记忆、有限交接</span></div>
+</div>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>目标</th>
+<th>优先考察的机制</th>
+<th>代表实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>长会话不丢关键状态</td>
+<td>原生compaction与system/tool checkpoint；结构压缩+原文召回</td>
+<td>Pi、pi-vcc、pi-smart-compact</td>
+</tr>
+<tr>
+<td>跨会话记住事实与偏好</td>
+<td>人可编辑外部记忆、作用域、按需查找与写回</td>
+<td>pi-memory-workbench、pi-mem、memory blocks</td>
+</tr>
+<tr>
+<td>让几十/几百工具不占满窗口</td>
+<td>索引→搜索→完整契约；在代码里处理大数据</td>
+<td>原生tool_search/codemode/MCP、pi-mcp-adapter</td>
+</tr>
+<tr>
+<td>清除重复/过时工具结果</td>
+<td>provider投影剪枝、事务配对、精确原文恢复</td>
+<td>context_edit、pi-context-prune、pi-condense、DCP</td>
+</tr>
+<tr>
+<td>隔离大量探索过程</td>
+<td>子会话、可控继承、短回交与角色记忆</td>
+<td>官方subagent示例、pi-subagents、Pi Durable</td>
+</tr>
+<tr>
+<td>减少额外摘要调用</td>
+<td>确定性提取与有界检索</td>
+<td>pi-vcc、DavidEasden/pi-compact</td>
+</tr>
+<tr>
+<td>在压缩前持续提炼认识</td>
+<td>Observer/Reflector/Dropper与来源ledger</td>
+<td>pi-blackhole及observational-memory路线</td>
+</tr>
+</tbody>
+</table></div>
+<p>三个最重要的区分：<strong>原文可恢复不等于当前摘要语义无损；检索工具存在不等于模型会主动正确检索；压缩步骤不收费不等于整个记忆系统免费。</strong></p>
+<h2 id="chapter-2">2. 版本基线：Pi 1.0 已有新的原生上下文能力</h2>
+<p>本次联网核实，官方仓库为 <a href="https://github.com/earendil-works/pi" rel="noopener noreferrer" target="_blank">earendil-works/pi</a>，最新release为 <a href="https://github.com/earendil-works/pi/releases/tag/v1.0.4" rel="noopener noreferrer" target="_blank">v1.0.4</a>，发布时间为2026-10-05 22:03:50 UTC（北京时间2026-10-06 06:03:50）。研究期间main已有后续提交，因此本文优先用release固定资料说明原生行为，社区main快照另标。</p>
+<p>旧教程经常基于 <code>mariozechner/pi-mono</code> 或旧npm命名。它们可以解释历史设计，但不能直接用来断言当前Pi没有MCP、没有tool search、没有持久context edit。<strong>Pi 1.0 已有原生MCP、codemode、工具搜索以及append-only上下文编辑</strong>。社区扩展的价值应与今天的原生机制比较。</p>
+<p>另一方面，原生session、context files与skills不等于完整长期语义memory；官方subagent扩展示例也不等于每个默认会话都自动拥有多Agent编排。2026-10-01发布的Pi Durable是官方实验路线，需要单独理解，不能把它的任务/回放模型混作terminal Pi既有默认行为。</p>
+<p>来源：<a href="https://github.com/earendil-works/pi/releases/tag/v1.0.4" rel="noopener noreferrer" target="_blank">官方release</a>、<a href="https://github.com/earendil-works/pi/tree/v1.0.4/packages/coding-agent/docs" rel="noopener noreferrer" target="_blank">官方文档目录</a>、<a href="https://earendil.com/posts/pi-durable/" rel="noopener noreferrer" target="_blank">Pi Durable发布说明</a>。原生源码细节与具体API见附录A。</p>
+<h2 id="chapter-3">3. 原生Session Tree：保留历史，控制当前分支</h2>
+<p>Pi的会话是追加式JSONL树。条目的id和parentId表达路径，当前leaf决定哪条祖先链被投影为模型输入。它把“曾经发生什么”与“这次请求应该看什么”分离；失败探索可以留在树里，而新分支不用把所有旁支重新展开。</p>
+<p><code>/tree</code>用于在同一会话树内导航，<code>/fork</code>从既有位置创建新会话，<code>/clone</code>复制当前分支；branch summary可以携带离开分支的重要结论。普通扩展custom entry可以保存状态而不常驻模型输入，custom message则属于可见信息。这比把全部扩展ledger写成每轮user message更节制。</p>
+<p>一个典型用法是：A方案试过并失败，将失败条件和已排除原因形成branch summary，再从公共祖先探索B。摘要应保留“放弃”“反驳”“待验证”的区别；方案太贵而放弃，并不等于证明方案错误。</p>
+<p>需要注意：会话分支只改变对话路径，不会自动撤销文件写入、数据库修改或外部动作。独立branch也不自动产生独立环境实验。保存旧条目解决可追溯，是否能让模型精准找回仍取决于工具与策略。</p>
+<p>来源：<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/sessions.md" rel="noopener noreferrer" target="_blank">sessions</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/session-format.md" rel="noopener noreferrer" target="_blank">session格式</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/session-manager.ts" rel="noopener noreferrer" target="_blank">session manager</a>。</p>
+<h2 id="chapter-4">4. 原生压缩与context_edit：一个做摘要，一个改投影</h2>
+<h3 id="chapter-5">4.1 Compaction的价值与失真边界</h3>
+<p>原生compaction将较早历史变成摘要，保留较新的原文尾部，并追加新的compaction entry。原始session条目仍可留在磁盘。增量压缩会结合前次摘要，目标是延续任务目标、约束、进度、阻塞、决策理由和下一步。</p>
+<p>v1.0.4默认启用自动压缩，<code>reserveTokens=16384</code>，<code>keepRecentTokens=20000</code>；阈值条件是<code>contextTokens &gt; contextWindow - reserveTokens</code>。近期保留与输出预留是不同预算；触发阈值、cut point与token估算也不能混成一个“压缩到多少字符”的参数。当前Pi还会保留system/tool的checkpoint，避免动态loadout状态在重建上下文时无依据消失。摘要序列化中每个工具结果截到2000字符，这不是普通工具返回的全局额度。具体重建与v1.0.4源码证据列于附录A。</p>
+<p>摘要有额外模型调用成本，也可能忽略关键反证或尾部细节。多模态内容尤其不能假定文本摘要完整理解原图。协议上tool call/result要保持有效配对，不能只为了更短把一个结果的调用身份剪没。</p>
+<h3 id="chapter-6">4.2 context_edit：追加编辑记录，原文仍在</h3>
+<p>当前Pi的context edit能够用追加式omit/replace记录改变未来模型工作投影。它与直接覆盖session文件不同：原始历史、UI/export与既有计费仍保留，未来请求才使用修改后的表示。适合把已经完成的大结果改成短定位、去掉重复内容或替换过时工作表示。</p>
+<p><code>context_edit</code>是持久session entry类型，不是默认提供给模型的两把omit/replace工具。<code>targetId</code>定位历史中产生上下文的条目，<code>replacement:null</code>表示省略，非null表示替换content；同一分支较新的编辑优先。扩展可以在<code>turn_end</code>、<code>agent_before_settle</code>等接口返回这些条目；<code>context</code>与<code>context_with_system</code>事件则主要用于当前请求的投影变换。持久编辑与request-local transform需要分别理解。</p>
+<p>优秀之处是可审计，能够解释某段内容为何不再出现在请求里；边界是编辑后的短文本依然可能遗漏任务关键信息。context_edit也不会“退款”，更不会撤销先前根据旧信息执行的行动。上下文窗口回收和任务正确性需要分开评价。</p>
+<h3 id="chapter-7">4.3 自动压缩、主动压缩与滚动阈值</h3>
+<p>接近窗口上限才压缩，有利于少做摘要、稳定prefix；提前滚动压缩则降低长期工作集膨胀，代价是摘要次数更多、缓存失效和认识损耗可能更频繁。没有普适最优百分比。<code>pi-context-tools</code>让Agent先看context使用再主动compact；一些社区扩展把触发改为窗口比例或里程碑，但触发次数变多本身不是收益。</p>
+<p>来源：<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md" rel="noopener noreferrer" target="_blank">官方compaction</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md" rel="noopener noreferrer" target="_blank">扩展API</a>、<a href="https://github.com/theduke/pi-context-tools" rel="noopener noreferrer" target="_blank">theduke/pi-context-tools</a>。</p>
+<h2 id="chapter-8">5. Memory：常驻核心、续接状态与按需长期知识</h2>
+<h3 id="chapter-9">5.1 文件日志：可读、可编辑、能携带来源</h3>
+<p>Markdown memory最容易理解：长期事实、按日日志、scratchpad分开；启动时只注入有界核心，细节用工具检索。优点是人能审阅和修正，没有黑箱索引依赖，适合偏好、决定、项目约定和跨会话待办。主要风险是写入重复、过时事实和无出处的推断；全文常驻也会重新制造上下文膨胀。</p>
+<p><code>jo-inc/pi-mem</code>是有代表性的例子，但需以当前源码为准：仓库description写semantic search，取得的固定快照实际搜索是大小写不敏感substring，明确没有embedding/vector search。README称system prompt注入，代码已使用context事件尾部user message以保住system prefix。这样的区别会影响召回质量和缓存行为，不能仅凭名称或简介归类。</p>
+<p>它以MEMORY.md存长期事实、daily存近期日志、notes存参考、SCRATCHPAD存待办。实际每请求构造的注入包括完整MEMORY与今天/昨天daily；scratchpad没有自动加载，须按需读取。catchup目录有局部字符额度，MEMORY/daily主体却没有统一全局硬预算。压缩前只提醒保存重要内容，不自动生成可靠写回；轻量文件工具与自动记忆管理应分别看待。</p>
+<h3 id="chapter-10">5.2 Memory blocks：把核心记忆拆成有界槽位</h3>
+<p><code>gordonbrander/pi-memory-blocks</code>借鉴Letta式blocks。相比一个无限增长文件，分块让偏好、身份、当前重点等有独立边界和更新接口，也便于区别常驻核心与按需外部记录。关键是block的大小、更新方法及出处，不是把所有资料改名为block就更高效。</p>
+<p>模型自主编辑核心block会带来污染风险：临时推断可能被保存成长期事实，覆盖操作可能丢掉原有细节。选择时应关注它如何处理版本、冲突、容量与人类修正；源码核查与该项目实际能力列在附录B。</p>
+<p>固定快照首次创建user与agent两块，各默认2000字符；所有blocks在before_agent_start追加systemPrompt。updateMemory对已有block精确替换或追加，超额直接slice截尾并报告truncated，没有自动事实精炼。每块有额度，不代表总block数量和总token有额度；也没有Letta完整的archival paging能力。</p>
+<h3 id="chapter-11">5.3 Session-safe memory：把可重复恢复作为设计目标</h3>
+<p><code>nicobailon/pi-memory-workbench</code>值得研究之处是围绕durable Markdown与session生命周期设计记忆工作台，而不只增加一个记忆文本框。核心问题是并发会话、压缩和恢复时，谁更新什么、如何避免丢写与错用旧状态。它与角色专属subagent memory也有互补关系。</p>
+<p>它用sessions/<id>/progress.md和todo.md作为各会话续接权威，项目progress.md只是生成dashboard；events不可变，digests与dream是追加精炼记录，memory.md存长期事实。条件满足时在before_agent_start发隐藏custom message，提供有界resume/todo/event及memory片段；隐藏只影响界面，正文仍进模型。memory_recall按词项检索，默认8 hits、上限20，路径展开最多30000字符，返回来源路径。</id></p>
+<p>原生压缩后它额外调用模型生成focused checkpoint；owner身份校验控制写回，未知/子会话只读。Dream实际调用本地extract/apply helpers，没有额外LLM调用；不能因名称就宣称它自动执行模型反思。固定README与源码的dream/auto-continue顺序不同，报告以源码注明。设计清晰但复杂度与checkpoint费用更高，当前Pi1.x实测兼容仍未验证。具体信息流、commit和边界见附录B。</p>
+<h3 id="chapter-12">5.4 权威事件日志与模型provisional提议</h3>
+<p><code>DavidEasden/pi-compact</code>将用户确认的memory与模型提议分开：追加事件日志生成最新状态，模型提议留provisional，按需search/read，不自动把全部pinned memory注入。它还区分原始history与compaction/branch summary等derived材料，支持精确raw分页。</p>
+<p>这种设计适合必须可审计的重要长期事实；用户确认也有管理成本，不适合把每个临时认识都升级成手续。它的compaction checkpoint只是计数/hash指针，不承载完整科学认识，因此强依赖近期tail与主动召回。附录D有完整机制与来源。</p>
+<h3 id="chapter-13">5.5 真正的语义检索与“叫semantic”的区别</h3>
+<p>关键词、substring、BM25、embedding similarity、rerank与混合检索是不同机制。关键词恢复已知标识高效，语义检索适合“记得意思、不记得名字”，但会误召回相似而过时的事实。检索前最好限定project/task/role与来源范围，检索后应保留能回读原文的ID或路径。</p>
+<p>只因为项目名字是pi-memory/pi-mem，不能把另一个同名项目的qmd或向量功能算给它。报告按<strong>owner/repository/commit</strong>识别项目，分别注明实际搜索方式。记忆正确性的关键是支持、反证、时间与作用域，不是使用了向量库这个标签。</p>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>方案</th>
+<th>默认进入模型的层</th>
+<th>更深信息如何取回</th>
+<th>最显著取舍</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pi原生</td>
+<td>当前分支+摘要+context files</td>
+<td>会话导航/文件/扩展；非自动向量memory</td>
+<td>简单，但跨会话知识需显式组织</td>
+</tr>
+<tr>
+<td>pi-mem</td>
+<td>尾部user message中的MEMORY/近期daily</td>
+<td>substring search、read</td>
+<td>易编辑；常驻主体可无限增长</td>
+</tr>
+<tr>
+<td>memory-blocks</td>
+<td>system中的全部有界blocks</td>
+<td>无独立冷记忆检索</td>
+<td>核心始终可见；超限截掉尾部</td>
+</tr>
+<tr>
+<td>memory-workbench</td>
+<td>条件有界packet</td>
+<td>lexical recall→source path</td>
+<td>owner与证据清楚；checkpoint额外费用</td>
+</tr>
+<tr>
+<td>DavidEasden/pi-compact</td>
+<td>不自动注入pinned memory</td>
+<td>按需search/read、原history分页</td>
+<td>权威/提议分离；工作连续性依赖主动查找</td>
+</tr>
+<tr>
+<td>pi-subagents role memory</td>
+<td>child启动时角色MEMORY前200行且16KiB</td>
+<td>普通文件工具，没有专用memory retrieval</td>
+<td>角色积累；旧头部可能挤掉最新尾部</td>
+</tr>
+</tbody>
+</table></div>
+<p>来源：<a href="https://github.com/jo-inc/pi-mem" rel="noopener noreferrer" target="_blank">pi-mem</a>、<a href="https://github.com/gordonbrander/pi-memory-blocks" rel="noopener noreferrer" target="_blank">memory blocks</a>、<a href="https://github.com/nicobailon/pi-memory-workbench" rel="noopener noreferrer" target="_blank">memory workbench</a>、<a href="https://github.com/DavidEasden/pi-compact" rel="noopener noreferrer" target="_blank">DavidEasden/pi-compact</a>。</p>
+<h2 id="chapter-14">6. Skills与目录上下文：程序知识应渐进展开</h2>
+<p>Pi原生Skill采用目录与正文分离：先给name/description/path，需要时加载SKILL.md，再按需读取reference/scripts/assets。它让程序知识不必全部常驻。Skill回答“如何做”，memory回答“知道了什么、为何这样判断”，两者不宜随意混写。</p>
+<p>目录也有成本：几十个描述通常便宜，几百个长描述则可能显著占用输入；用途重叠使选择困难。正文读入后成为工具历史，不会因“渐进披露”就自动卸载。可以结合context_edit、工具剪枝或压缩清退已用完的手册，但仍保留恢复路径。</p>
+<p>AGENTS.md/CLAUDE.md等context files用于目录/项目规范。全量预载所有子系统规则通常太重，完全靠模型记得读局部规范也可能漏读。<code>@quartermaster-labs/pi-on-demand-context</code>公开描述根据cd或文件工具触及目录按需加载，并与原生loader去重；当前取得元数据，完整源码未取得，列为候选，不声称离开目录后会自动卸载。</p>
+<p>建议把三类内容分开：稳定权限/工具规则、当前任务状态、可复用程序手册。每次改system最前面的prefix可能影响缓存，按需context信息也可能长期累积；“不放system”并不等于零token。</p>
+<p>来源：<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/skills.md" rel="noopener noreferrer" target="_blank">Pi skills</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/resource-loader.ts" rel="noopener noreferrer" target="_blank">Pi resource loader</a>、<a href="https://pi.dev/packages/%40quartermaster-labs/pi-on-demand-context" rel="noopener noreferrer" target="_blank">on-demand-context目录</a>。</p>
+<h2 id="chapter-15">7. Tools：Schema、返回结果与历史是三种成本</h2>
+<h3 id="chapter-16">7.1 当前原生路线：MCP + codemode + tool_search</h3>
+<p>大量工具最昂贵的部分常常不是一次执行，而是每轮重复携带的完整schema。当前Pi原生MCP默认codemode exposure，将工具发现与调用分开；tool_search可以动态获取所需工具契约；codemode让模型编写有界代码在工具侧筛选、聚合数据，只把需要的结果送回模型。</p>
+<p>例如，一个服务有数十种查询能力：先搜索“查某类记录”的候选，再取所需签名；查询后用代码过滤大表，输出几个指标与原始定位，而非让模型读取所有行。这样同时减少schema与中间数据常驻。原生inline声明预算默认约3000估算token，具体策略与边界见附录A。</p>
+<p>注意codemode解决数据进入语言模型的量，不保证调用次数或计算成本一定下降；输出太少也可能隐藏异常，仍应允许有界补取原始记录。工具目录搜索和代码执行都有契约与错误处理成本。</p>
+<h3 id="chapter-17">7.2 社区pi-mcp-adapter：gateway与缓存元数据</h3>
+<p><code>nicobailon/pi-mcp-adapter</code>提供一个小mcp入口，先search/describe再调用，服务默认lazy连接，metadata cache允许无需实时连接就发现工具。也可选direct tools、控制注册集合；默认闲置10分钟关闭服务，需要有状态连续性时可keep-alive。它让几百schema不必全部一开始进入窗口。结果入口还有文本预览、临时文件offload与独立details额度；这些解决单次返回体积，不替代历史剪枝。</p>
+<p>与当前原生MCP比较，应关注配置迁移、OAuth、resource、server lifecycle、gateway的权限可观察性、cache与热加载，而不是宣称“Pi不支持MCP所以必须装”。gateway把很多后端调用折叠进同一父工具，某些权限扩展若只按顶层工具名处理，观察粒度可能不同；原生独立调用的roots/权限整合也是重要差别。</p>
+<h3 id="chapter-18">7.3 Tool output：截断必须与恢复一起设计</h3>
+<p>原生read/bash等已有行数/字节限制和继续读取入口。自定义工具应返回最相关的结果、是否truncated、完整输出在哪里，以及怎么分页。头截断适合导览，尾截断适合错误日志；如果关键证据在中间，二者都可能失败。</p>
+<p>完整数据不宜复制到content、details、summary和父回执多份。显示收起不等于provider输入缩短；UI展开按钮也不必然提供模型可调用的检索接口。还要区分一个大结果这次完整进入请求，与旧结果是否反复驻留。</p>
+<p>来源：<a href="https://github.com/earendil-works/pi/tree/v1.0.4/packages/coding-agent/docs" rel="noopener noreferrer" target="_blank">原生MCP与工具文档目录</a>、<a href="https://github.com/nicobailon/pi-mcp-adapter" rel="noopener noreferrer" target="_blank">MCP adapter</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/truncate.ts" rel="noopener noreferrer" target="_blank">原生截断源码</a>。</p>
+<h2 id="chapter-19">8. 工具历史剪枝与探索投影：五个社区思路</h2>
+<h3 id="chapter-20">8.1 pi-context-prune：完成batch摘要，按ID找回原文</h3>
+<p>它将已经完成的tool-result batches转为短摘要，未来provider投影清退大输出，原始history保留；context_tree_query提供恢复入口。固定源码默认关闭，开启后的默认模式为agentic-auto：由模型通过context_prune决定时机。summary/index/frontier等会追加到session，但原消息不覆写。</p>
+<p>取舍是它要调用摘要模型，summary仍可能失真；工具结果原文可回查但主模型需知道何时查询。当前query收ID列表，仍受行数/字节额度限制，没有offset/limit分页；pruner省略tool-result而保留assistant tool-call块，provider对缺失结果的处理需要实际验证。可按turn、checkpoint或最终回答等模式触发；设置越激进，输入越短，却可能摘要/缓存成本越大。准确默认、持久化与工具参数见附录C。</p>
+<h3 id="chapter-21">8.2 pi-condense：按工作段整理，兼顾缓存与恢复</h3>
+<p>cache-aware方法关注“缩短prompt”与“丢失缓存前缀”之间的交易。缓存热的时候改旧历史，未必比继续发送旧内容便宜。pi-condense默认关闭，开启后默认agent-message触发、turn batching；在完整工作段结束时集中整理有利于少改前缀。自动比例阈值autoBudgetThreshold默认null，不能声称默认80%触发。等待缓存自然冷却是可评估的经济策略，不作为本快照已实现自动冷缓存检测的结论。</p>
+<p>它把已摘要结果换成带ref的stub，保留tool-call/result结构；默认保留最近3条闭合链，保护Skill等路径。恢复结果有3 turn宽限，避免刚读回即剪掉；超过65536字节的结果默认spill，预览2048字节，再用sidecar路径读取。query还能尝试恢复原图片块。它的经济目标是在合适时点替换，并提供原文入口。核心机制与源码见附录C，作者假说不能当普遍benchmark结果。</p>
+<h3 id="chapter-22">8.3 DCP：去重、旧版本替代与显式drop</h3>
+<p>dynamic context pruning通常先删除重复读、成功新读取代的旧内容、重复错误等可确定冗余，再按策略减少旧结果。它更接近provider projection管理，避免增加每次LLM摘要。</p>
+<p>生态中有pi-vault/pi-dcp、PSU3D0/pi-dcp、complexthings/pi-dynamic-context-pruning等不同实现，不能只写一个“DCP”然后混合全部特性。保护规则、是否可精确restore、是否持久ledger、tool call配对与net-benefit计算分别核查，详见附录C的身份与实现表。</p>
+<h3 id="chapter-23">8.4 Agent主动管理：context-tools与checkpoint连续性</h3>
+<p>theduke/pi-context-tools给Agentcontext使用信息与compact工具，适合让Agent在自然任务边界选择；它不是自动长期memory。alpertarhan/pi-smart-compact强调continuity、checkpoint和recoverable cleanup，适合研究压缩前后如何保留关键工作状态。这里的“verified”首先是扩展检查，不能自动解释为所有真实模型都保住了认识。</p>
+<p>这些路线互补但也可能hook冲突。一般先选一个主压缩器和一个有边界的剪枝器，核对顺序、fallback与恢复；同时安装多套接管session_before_compact，难以知道最终哪份摘要生效。</p>
+<h3 id="chapter-24">8.5 pi-memento：同一Agent内的上下文事务</h3>
+<p>thebabush/pi-memento将探索片段视作可嵌套LIFO事务：先transaction_begin，再继续当前Agent的探索，结束时选择commit（全文）、compact（额外模型摘要）、squash（Agent写结论）或revert（只留非空carryforward经验）。这给出了另一种隔离思路：探索完才决定热上下文保留多少，无需为每个岔路新开子执行循环。</p>
+<p>metadata追加到session，context hook重放事务得到模型投影；session_before_compact必须用同一投影，避免已revert的死路再次从raw历史进入摘要。边界不一致时取消压缩。它不提供长期知识检索，revert不撤销文件和外部动作，begin/end也增加判断与工具往返。此项目实验性且明确pin Pi0.84.3；作为可借鉴设计，不能写成已兼容1.0.4。完整源码链见附录B。</p>
+<p>来源：<a href="https://github.com/championswimmer/pi-context-prune" rel="noopener noreferrer" target="_blank">context-prune</a>、<a href="https://github.com/jjuraszek/pi-condense" rel="noopener noreferrer" target="_blank">condense</a>、<a href="https://github.com/pi-vault/pi-dcp" rel="noopener noreferrer" target="_blank">pi-vault DCP</a>、<a href="https://github.com/theduke/pi-context-tools" rel="noopener noreferrer" target="_blank">context-tools</a>、<a href="https://github.com/alpertarhan/pi-smart-compact" rel="noopener noreferrer" target="_blank">smart-compact</a>。</p>
+<h2 id="chapter-25">9. 确定性压缩与观察式记忆</h2>
+<h3 id="chapter-26">9.1 pi-vcc：不调用模型的结构提取</h3>
+<p>pi-vcc提取目标、文件变化、commit、未解决错误、用户偏好和短transcript，再合并前次section；vcc_recall按词、entry #N、范围或文件触及记录从session找回原文。它适合想减少摘要模型调用、又希望有较稳定结构的长工程会话。</p>
+<p>确定性意味着相同输入产生相同表示，不意味着它理解了所有因果。结构提取无法保证保留图片关系、隐含反证或自定义工具语义。作者报告字符压缩/时间数据，本次未独立复现；不把97.6%等比例当作任务效果。它保留原文，但热上下文仍是有损摘取。</p>
+<h3 id="chapter-27">9.2 pi-blackhole：低成本结构摘要 + 计费的观察worker</h3>
+<p>blackhole把VCC式compile与观察记忆结合：Observer持续提取observations，Reflector综合reflections，Dropper减少低价值项；session ledger保留来源ID，压缩时注入核心记忆，recall可回到原entry。</p>
+<p>这种分工针对“反复重写摘要磨掉理由与早期澄清”的问题，比仅在满窗口时一次总结更持续。当前公开配置observeAfterTokens=15000、reflectAfterTokens=25000；每worker可选模型fallback/cooldown，memory可独立关闭。</p>
+<p>维护者明确提醒它experimental，结构压缩不调用模型，<strong>观察worker仍是计费调用</strong>；未调参或回退主模型时可能更贵。它不适合被包装成“零token长期记忆”。确切阈值、output预算和兼容边界见附录D。</p>
+<p>来源：<a href="https://github.com/sting8k/pi-vcc/blob/4cfc6bfae5a1a943dd2b4e9cabc95101bb5811bb/README.md" rel="noopener noreferrer" target="_blank">pi-vcc固定快照</a>、<a href="https://github.com/k0valik/pi-blackhole/blob/f86aa0d2edc53ea3b02fe3e9a0a130d81323178d/README.md" rel="noopener noreferrer" target="_blank">blackhole固定快照</a>。</p>
+<h2 id="chapter-28">10. Subagent：上下文隔离、继承与交接</h2>
+<h3 id="chapter-29">10.1 官方扩展示例：独立探索，核心结果返回</h3>
+<p>官方subagent示例展示single/parallel/chain等用法，用角色指令和允许工具创建新Pi执行上下文，再交回结果。优势是父不必持续携带子任务全部read/bash过程，多个独立问题可以分工。</p>
+<p>新session或进程只保证特定程度的transcript隔离，不自动保证文件、AGENTS、Skill、扩展、网络与权限隔离。链式任务若把previous全文无界传下去，也会重新膨胀。最终output应该交可用结论、条件、证据位置和未解决项，完整trace留在artifact。</p>
+<h3 id="chapter-30">10.2 pi-subagents：fresh/fork与可控继承</h3>
+<p>nicobailon/pi-subagents提供更完整的角色与会话策略。fresh从最小独立任务出发，适合独立搜索或盲审；fork沿父分支开始，适合共享复杂背景，代价是复制父输入和偏见。custom角色可配置project/global/skills继承，默认策略不能推给所有builtin角色。</p>
+<p>前台child可以是同进程独立session，后台runner另有生命周期；不是所有child都意味着独立OS进程。按需启用subagent schema和输出artifact模式，可以减少父的常驻tool和大回传成本。</p>
+<h3 id="chapter-31">10.3 角色memory与pruned fork的真实边界</h3>
+<p>该项目角色MEMORY.md提供有界常驻核心，读取限制为前200行且有16KiB硬上限。角色记忆应保存可复用认识，而非每次任务全部日志；用户/角色/项目作用域需要明确。</p>
+<p>当前固定快照支持pruned fork：将继承背景压缩并保留private sidecar。但文档明确该版本尚无child恢复命令，因此不能把“侧文件保留”写成“模型随时可自动精确恢复”。输出策略也应按当前maxOutput/outputMode说明，而非套用旧版分页接口。完整核查见附录B。</p>
+<h3 id="chapter-32">10.4 何时委派是净收益</h3>
+<p>适合：大量独立检索、竞争解释、专项review、能交小结果的长期追踪。未必适合：父直接用一个确定性工具就能解决、子任务须不断读取变化中的状态、背景重建很大、结果到达时已过时。</p>
+<p>成本至少包括父解释任务、child输入/输出/reasoning、启动/等待、结果理解、冲突修订与失败。只看到父输入变短，不能判定合计变便宜。fresh提高隔离但可能丢必要背景；fork延续背景但会复制无关历史，应该按任务选择。</p>
+<p>来源：<a href="https://github.com/earendil-works/pi/tree/v1.0.4/packages/coding-agent/examples/extensions/subagent" rel="noopener noreferrer" target="_blank">官方示例</a>、<a href="https://github.com/nicobailon/pi-subagents" rel="noopener noreferrer" target="_blank">pi-subagents</a>、<a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/docs/agents.md" rel="noopener noreferrer" target="_blank">角色文档固定快照</a>。</p>
+<h2 id="chapter-33">11. Pi Durable：官方的任务所有权与可回放会话路线</h2>
+<p>Pi Durable把conversation的所有权交给task。task可以管理子会话、工作集与持久历史，checkpoint/replay使长任务在有边界的状态上续接。它强调运行职责与会话状态，而不是让每个Agent都长期背着所有对话。</p>
+<p>system sections增量与后台task ownership有助于明确谁推进、谁暂停、谁恢复；working set与磁盘历史分离也适合长期多Agent运行。它于2026-10-01作为实验性官方项目介绍，不替代terminal Pi；应把它视作另一开发/部署模型。</p>
+<p>重要术语区别：文档里memory storage backend指内存存储后端，不等于语义长期记忆。checkpoint/replay的运行恢复也不等于模型保持所有先前推理。具体公开接口与示例见附录A。</p>
+<p>来源：<a href="https://earendil.com/posts/pi-durable/" rel="noopener noreferrer" target="_blank">官方Pi Durable介绍</a>。</p>
+<h2 id="chapter-34">12. 按场景选择：轻量起步，保留恢复路径</h2>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>使用场景</th>
+<th>建议先研究的组合</th>
+<th>主要理由</th>
+<th>要观察的退化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>普通短编码任务</td>
+<td>原生session/Skill/compaction</td>
+<td>额外组件少，默认工作集已够</td>
+<td>不为小任务增加长期记忆worker</td>
+</tr>
+<tr>
+<td>大量MCP与大表/日志</td>
+<td>原生codemode/tool_search，必要时adapter</td>
+<td>工具发现和中间数据在请求外处理</td>
+<td>搜索/描述往返、权限粒度、输出遗漏</td>
+</tr>
+<tr>
+<td>长会话大量重复文件结果</td>
+<td>一个DCP或context-prune/condense</td>
+<td>优先移除可确定冗余，保留原文入口</td>
+<td>缓存重建、tool配对、关键旧证据被删</td>
+</tr>
+<tr>
+<td>跨会话偏好/项目约定</td>
+<td>文件memory或blocks/workbench</td>
+<td>人可审阅，核心有界，作用域清楚</td>
+<td>过时条目、自动写回污染、检索不准</td>
+</tr>
+<tr>
+<td>摘要调用贵/本地小模型</td>
+<td>pi-vcc等确定性路线</td>
+<td>省掉摘要模型调用，保留entry召回</td>
+<td>结构抽取漏隐含理由与图像关系</td>
+</tr>
+<tr>
+<td>长任务规则/决定持续演化</td>
+<td>调参后观察式memory</td>
+<td>持续观察与综合，不等满窗口才总结</td>
+<td>worker总费用、fallback主模型、冲突</td>
+</tr>
+<tr>
+<td>多个独立子任务</td>
+<td>pi-subagents fresh+短回交</td>
+<td>隔离工具过程，降低父常驻细节</td>
+<td>背景不足、结果过时、子总成本</td>
+</tr>
+<tr>
+<td>强审计/用户确认长期事实</td>
+<td>DavidEasden/pi-compact</td>
+<td>authoritative/provisional分离，事件可追溯</td>
+<td>确认负担、指针摘要缺工作语义</td>
+</tr>
+<tr>
+<td>持久任务编排/恢复开发</td>
+<td>评估Pi Durable</td>
+<td>task拥有会话与有界工作集</td>
+<td>实验状态、API变化、replay语义</td>
+</tr>
+</tbody>
+</table></div>
+<p>组合原则：一套主压缩策略、一套明确的历史剪枝策略、一套有范围的memory就已足够形成可解释链路。先解决真正膨胀的层——system/Skill目录、active schema、旧result或child回传——再决定加什么。不要把所有插件都装上当作最佳方案。</p>
+<h2 id="chapter-35">13. 如何评价上下文方案是否真的优秀</h2>
+<h3 id="chapter-36">13.1 容量、恢复与任务质量分开</h3>
+<p>应测量：请求实际input token、system/schema/history分别占用、图像计量、cache hit、output/reasoning、检索和摘要调用、父子总量、墙钟等待。JSON字符、UTF-8字节、base64体积与计费token不是同口径；缺失用量应保留未知。</p>
+<p>恢复检验不能只检查文件存在：构造一个早期用户澄清、旧假说被反例推翻、尚未完成的检验，在压缩/恢复后看模型是否保持认识并做正确下一步。找回原文但重复已排除方案，说明问题在语义采用或工作集，而非存储。</p>
+<h3 id="chapter-37">13.2 缓存经济学</h3>
+<p>缩短旧prompt会改变prefix，可能损失缓存；发送更多cached token有时比发送较少uncached token便宜。反过来，持续保留巨量旧内容仍消耗窗口和注意力，不能只追cache hit。应以任务剩余轮次、预计复用量、摘要/剪枝成本和真实cache规则判断。</p>
+<p>Pi1.0.4把prompt sections/tool loadout变化作为system-message deltas追加，compaction保存完整checkpoint。能够表示中途变化的provider可保留既有prefix；不能表示的provider会收到完整checkpoint，仍可能破坏缓存。tool_search激活的工具声明留在当前branch，不自动用完卸载。</p>
+<p>原生cacheWarming默认streaming，仅在模型声明cache lifetime且预计能避免至少$0.05 cache miss成本时刷新；usage计入session，但刷新不进入模型历史。它是缓存保温，不是长期记忆或免费请求。摘要请求默认禁写prompt cache，避免低复用一次性内容增加cache-write费用。具体来源见附录A。</p>
+<h3 id="chapter-38">13.3 一组有用的负例</h3>
+<p>关键结论位于大tool result尾部；完成的写入使旧read过时；摘要把弃用与反驳混淆；图片关系没转文本；fresh child缺反例；fork child继承父错误；pruned sidecar没有调用入口；memory同名项目功能混写；两个扩展同时接管压缩；廉价worker失败回退主模型；强制记忆确认阻断普通任务。</p>
+<p>这些案例更能揭示方案边界，而不是只问“能把token减少多少”。本次报告研究公开实现，不把文档、源码与作者测试视为已复现真实任务净收益。</p>
+<h2 id="chapter-39">14. 资料索引与完整联网研究附录</h2>
+<p>以下附录全部嵌入HTML；展开可读完整机制、默认值、固定commit与一手URL。只讨论Pi官方及社区，不包含任何本地工程的组件实现或对照。</p>
+<ul>
+<li>附录A：Pi v1.0.4原生context、session、compaction、MCP/codemode/tool_search与Pi Durable。</li>
+<li>附录B：社区长期memory、memory blocks/workbench、pi-memento与pi-subagents。</li>
+<li>附录C：MCP adapter、可恢复tool剪枝、cache-aware condense、DCP、主动context管理与continuity。</li>
+<li>附录D：pi-vcc、pi-blackhole、DavidEasden/pi-compact与目录按需加载候选。</li>
+</ul>
+<p>检索方法：实际网络搜索发现项目，回到官方文档、仓库README、package和关键源码确认；优先固定release/commit。未下载成功的源码、未复现benchmark及版本兼容缺口逐项注明。项目“公开实现”与“作者声明”分开；同名仓库按owner识别。研究日之后的main变化不由本报告保证。</p><details id="appendix-a" class="appendix"><summary>附录 A · Pi 原生机制与 Pi Durable</summary><div class="appendix-content"><h3 id="appendix-a-1">Pi 原生上下文管理：联网一手资料研究</h3>
+<p>研究日期：2026-10-07。范围：Pi 本身、官方示例和实验性 Pi Durable；不使用本工程实现作为证据。本研究实际调用联网搜索、打开官方站点，并通过 GitHub API 与 raw.githubusercontent.com 读取固定发布源码。功能依据文档和源码核查，未执行 Pi 运行测试，也不将机制存在等同于质量或成本改善的实验结论。</p>
+<h4 id="appendix-a-2">1. 版本与证据基线</h4>
+<p>当前官方仓库为 <a href="https://github.com/earendil-works/pi" rel="noopener noreferrer" target="_blank">earendil-works/pi</a>，官方文档为 <a href="https://pi.dev/docs/latest" rel="noopener noreferrer" target="_blank">pi.dev</a>。联网查询时最新发布为 <a href="https://github.com/earendil-works/pi/releases/tag/v1.0.4" rel="noopener noreferrer" target="_blank">v1.0.4</a>，GitHub API 的 published_at 为 2026-10-05T22:03:50Z，即北京时间 2026-10-06 06:03:50。tag 指向 commit <code>7c10bd4337495ee613f2224843ecdf349b80d1df</code>；本报告所有默认值均以该发布源码为准。查询时 main 为 <code>2db5e359bf84c1c0be51d2c5c5c5c7cf27072c2b</code>，2026-10-07 提交，不以 main 的未来变动覆盖 release 基线。<a href="https://api.github.com/repos/earendil-works/pi/releases/latest" rel="noopener noreferrer" target="_blank">发布 API</a>、<a href="https://api.github.com/repos/earendil-works/pi/git/ref/tags/v1.0.4" rel="noopener noreferrer" target="_blank">tag API</a>、<a href="https://api.github.com/repos/earendil-works/pi/commits/main" rel="noopener noreferrer" target="_blank">main commit API</a>。</p>
+<p>2026-10-01 官方宣布 Pi 1.0，明确新增原生 MCP、Codemode、延迟工具加载、Anthropic 缓存保温以及会话中系统消息。因此“Pi 没有 MCP”“Pi 的 prompt 永远不能变化”等早期介绍不再适合描述当前发布；旧版工具链 <code>@mariozechner/*</code> 的说明需要按版本阅读。<a href="https://earendil.com/posts/pi-1-0/" rel="noopener noreferrer" target="_blank">Pi 1.0 发布说明</a>。</p>
+<h4 id="appendix-a-3">2. 核心模型：保存的历史与下一次请求的上下文分离</h4>
+<p>Pi 保存的 session 是带 <code>id</code>、<code>parentId</code> 的 JSONL 事件树。下一次模型请求只投影当前活动分支：原始历史、分支投影、系统提示与工具状态、压缩结果、扩展变换，合起来产生模型真正看到的内容。历史文件可以很大，模型不需要看到所有分支和所有历史。这样的分离让审计、分支探索、压缩和局部修改相容。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/how-pi-works.md" rel="noopener noreferrer" target="_blank">运行原理</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/session-format.md" rel="noopener noreferrer" target="_blank">Session 格式</a>。</p>
+<p>可将一次请求的信息流概括为：用户输入进入活动分支 → 重放该分支的 system prompt/tool loadout → 应用 <code>context_edit</code> 和 compaction 得到历史投影 → 扩展做请求级上下文转换 → 适配 provider 的消息格式 → 调用模型。工具原始输出、扩展内部状态、其他分支和 UI 展示数据，并不因此自动全部成为 prompt。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/session-format.md" rel="noopener noreferrer" target="_blank">Session 格式</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md" rel="noopener noreferrer" target="_blank">扩展契约</a>。</p>
+<p><strong>工程推论：</strong> 优秀的上下文管理并非把所有内容压成一段，而是先决定数据归属、能否按需找回、是否应被模型看到，再决定摘要和删除策略。Pi 的设计给出了这些边界，但不会自动替开发者做所有语义判断。</p>
+<h4 id="appendix-a-4">3. Session tree、fork、clone：用拓扑隔离探索路径</h4>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>操作</th>
+<th>v1.0.4 行为</th>
+<th>上下文意义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/tree</code></td>
+<td>在同一 session 文件内跳转到历史节点继续；保留离开的分支</td>
+<td>不把互斥方案的全文混入一个线性 prompt</td>
+</tr>
+<tr>
+<td><code>/fork</code></td>
+<td>从较早的用户消息创建新 session</td>
+<td>把一个探索路径变成独立工作</td>
+</tr>
+<tr>
+<td><code>/clone</code></td>
+<td>将当前活动分支复制为新 session</td>
+<td>以同一当前状态开始独立实验</td>
+</tr>
+<tr>
+<td><code>/new</code></td>
+<td>开新 session</td>
+<td>适用于目标或约束已发生大幅变化</td>
+</tr>
+<tr>
+<td><code>--continue</code>、<code>--resume</code></td>
+<td>恢复最近 session 或打开选择器</td>
+<td>持久化历史连续性，而非依赖常驻模型进程</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些操作改变模型后续看到的历史路径，不等同于回滚工具已经修改的文件。跳转到较早节点后，实际文件系统仍需按当前状态理解。这一点是根据“session 保存与工具执行环境分离”的架构所作的使用判断。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/sessions.md" rel="noopener noreferrer" target="_blank">Sessions 文档</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/how-pi-works.md" rel="noopener noreferrer" target="_blank">运行原理</a>。</p>
+<p>优秀之处在于既保留所有尝试的可追溯性，又只向模型展示当前路径；失效边界在于分支之间的重要结果需要主动迁移，分支切换本身不会进行全局语义合并。</p>
+<h4 id="appendix-a-5">4. Compaction：结构化任务状态与最近原文并存</h4>
+<h5 id="appendix-a-6">4.1 准确默认值</h5>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>配置/处理</th>
+<th>v1.0.4 默认或规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>compaction.enabled</code></td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td><code>compaction.reserveTokens</code></td>
+<td><code>16384</code></td>
+</tr>
+<tr>
+<td><code>compaction.keepRecentTokens</code></td>
+<td><code>20000</code></td>
+</tr>
+<tr>
+<td>自动阈值</td>
+<td><code>contextTokens &gt; contextWindow - reserveTokens</code></td>
+</tr>
+<tr>
+<td>手动入口</td>
+<td><code>/compact [instructions]</code></td>
+</tr>
+<tr>
+<td>模型专属覆盖</td>
+<td><code>compaction.modelOverrides["provider/modelId"]</code>，两个 token 字段独立回退</td>
+</tr>
+<tr>
+<td>摘要输入中的单个 tool result</td>
+<td>序列化时截到 <code>2000</code> 字符，并加截断提示</td>
+</tr>
+</tbody>
+</table></div>
+<p>最后一项是<strong>摘要生成输入</strong>的额度，不能与普通 <code>read</code>、<code>bash</code> 的模型可见结果截断混为一谈。<code>reserveTokens</code> 还影响摘要输出上限，并受模型最大输出额度限制；它不是纯粹的触发百分比。官方不使用统一“95%窗口”作为此版本的精确阈值。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md" rel="noopener noreferrer" target="_blank">Compaction 文档</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/settings.md" rel="noopener noreferrer" target="_blank">Settings 文档</a>。</p>
+<h5 id="appendix-a-7">4.2 信息流</h5>
+<p>Pi 从最新消息向前估算累计 token，寻找满足最近保留预算的切点；收集需要摘要的较早消息与上一轮摘要；调用模型生成结构化摘要；追加 <code>CompactionEntry</code>，记录 <code>firstKeptEntryId</code>；下次请求使用摘要加保留原文。被摘要的原始 entry 不从 session 文件删除。<code>CompactionEntry</code> 还可保存完整 system/tool checkpoint，避免 prompt 与工具状态依赖已被摘要移出的 system delta。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md" rel="noopener noreferrer" target="_blank">Compaction</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/session-format.md#compactionentry" rel="noopener noreferrer" target="_blank">CompactionEntry</a>。</p>
+<p>默认摘要围绕目标、约束与偏好、已完成/进行中/阻塞、关键决策、下一步、关键上下文组织，并累计记录读过和修改过的文件路径。重复压缩将旧摘要作为迭代输入，也把之前保留而本轮需要压缩的原文纳入，避免仅沿摘要不断更新而遗漏边界消息。它是任务状态记忆，而不是历史全文检索系统。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md" rel="noopener noreferrer" target="_blank">Compaction</a>。</p>
+<h5 id="appendix-a-8">4.3 工具调用完整性与运行时机</h5>
+<p>切点允许在 user/assistant 等消息处，但不会直接从 tool result 切开，因为 tool result 必须与其调用相配。当单个用户消息跨度很长、无法整体保留时，会把该跨度前缀与更早历史分别摘要后合并。多轮执行期间，在工具结果追加后、下一轮 assistant 请求前检查阈值，避免只在用户下一次说话时才发现超窗。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md" rel="noopener noreferrer" target="_blank">Compaction</a>。</p>
+<p>当前版本也有 provider context-overflow 与部分 <code>length</code> 终止的恢复：将所选失败 attempt 从未来上下文省略，尝试压缩，再按生命周期启动新的重试。若压缩失败或取消，不追加压缩、不安排内部重试，原始 attempt 仍能在历史、导出和计费中查看。含工具调用的 <code>length</code> 回复走工具/队列调度，不应一概解释为立即结束整个任务。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md#overflow-and-length-recovery-ordering" rel="noopener noreferrer" target="_blank">恢复顺序</a>。</p>
+<p><strong>优势与边界：</strong> 最近原文保留操作细节，摘要保留任务状态，原始历史保留审计线索。代价是摘要另一次模型请求，有延迟、费用和语义丢失；2000 字符的工具摘要输入可能丢掉后半段证据。文件列表只是路径，不能保证内容仍与读取时相同。大窗口模型也不意味着 should 等到极接近窗口才压缩；具体预算应结合输出空间、长工具结果和实际质量评估。</p>
+<h4 id="appendix-a-9">5. Branch summary：把离开分支的价值带走</h4>
+<p><code>/tree</code> 离开当前分支时可选择摘要：找新旧位置的最深共同祖先，收集旧叶到共同祖先之间的条目，按预算优先纳入较新信息，生成摘要，再追加到目标分支。模型因此能利用被放弃路线的结论，而不必接收其全部试错日志。它与常规 compaction 的目的不同：前者跨探索路径转移成果，后者缩短同一路径历史。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md#branch-summarization" rel="noopener noreferrer" target="_blank">Branch summarization</a>。</p>
+<p>适合保留“方案 A 因约束 X 失败”“已验证接口 Y”“不要重复某项无效实验”等信息。失效边界是把已放弃的假设包装成当前真理，或摘要遗漏分支发生时的文件状态。扩展可通过 <code>session_before_tree</code> 定制或取消导航及摘要；默认与扩展生成的 file tracking 责任不同，自定义生成者需要管理自己的 <code>details</code>。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md#session_before_tree" rel="noopener noreferrer" target="_blank">自定义分支摘要</a>。</p>
+<h4 id="appendix-a-10">6. Context edits：可审计地替换未来上下文</h4>
+<p>v1.0.4 提供 <code>ContextEditEntry</code>。它是持久化 session entry 类型，不是默认注册的两个模型工具或统一命令。其接口核心是 <code>type: "context_edit"</code>、<code>targetId</code>、<code>replacement</code>：<code>replacement: null</code> 从未来 model context 省略目标；非 null 值只替换目标 message 的 content。目标可以是 user、assistant、tool-result、custom-message；同一目标在当前路径有多次编辑时以最后一次为准；编辑是 branch-relative，跳回编辑之前可再次见到原文贡献。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/session-format.md#contexteditentry" rel="noopener noreferrer" target="_blank">ContextEditEntry</a>。</p>
+<p>原始 entry、元数据、UI、export 和 session accounting 不被该编辑覆盖。因此“删上下文”与“删证据”分离，可用于去除错误 attempt、重复读取结果、过时检索证据或巨大日志。扩展的 <code>turn_end</code>、<code>agent_before_settle</code> 能提出 <code>context_edit</code> 等 entries 并请求一次继续；更精确 TypeScript 返回类型应以同 tag 的 <code>extensions/types.ts</code> 为准，本次没有运行这类扩展。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md" rel="noopener noreferrer" target="_blank">扩展契约</a>。</p>
+<p><strong>工程推论：</strong> 确定重复或无用的内容宜省略；只有部分仍有用的大结果可替换为短摘录与可查回地址。不要只按年龄删除信息，也要保护仍支撑当前决策的证据及 tool call/result 关系。此功能给出机制，不保证任意选择删除后都语义正确。</p>
+<h4 id="appendix-a-11">7. Context files 与 memory：常驻规则、外部事实、会话状态分别处理</h4>
+<p>Pi 原生会话持久化、摘要、上下文文件与扩展状态已经支持多种“记忆”，但本次核对的 coding-agent v1.0.4 标准能力没有显示通用的自动跨会话语义记忆抽取/向量召回系统。不能把“有 session JSONL”说成“自动记住一切”，也不能把 Pi Durable 的 <code>MemoryStorage</code> 说成语义长期记忆。</p>
+<p>Pi 在 agent 目录、cwd 及祖先目录加载上下文文件，同目录候选优先顺序是 <code>AGENTS.override.md</code>、<code>AGENTS.md</code>、<code>AGENTS.MD</code>、<code>CLAUDE.md</code>、<code>CLAUDE.MD</code>，每个目录取第一个存在且可读的文件。全局文件先加入，祖先文件按远到近加入；<code>AGENTS.override.md</code> 只替代同目录候选，不会压掉其他目录。源码的祖先 walk 直到文件系统根目录，因此不要与 <code>.agents/skills</code> 遇 Git repo root 截止的规则混淆。配置加载还处理嵌套 linked worktree 的重复上下文遮蔽。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/configuration.md" rel="noopener noreferrer" target="_blank">配置</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/resource-loader.ts" rel="noopener noreferrer" target="_blank">resource-loader 源码</a>。</p>
+<p>上下文文件作为系统 prompt 的 <code>project_context</code> 段直接带入，不是一次 semantic retrieval。它适合短而稳定的规则、项目身份、真正跨任务适用的约束，不适合堆积每天变化的日志。<code>SYSTEM.md</code> 替代默认提示，<code>APPEND_SYSTEM.md</code> 添加提示；可信项目的同名文件优先于 agent 目录同名文件，不将两份同名内容自动拼接。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/configuration.md" rel="noopener noreferrer" target="_blank">配置</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/system-prompt.ts" rel="noopener noreferrer" target="_blank">system-prompt 源码</a>。</p>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>数据</th>
+<th>官方给出的合适载体</th>
+<th>自动进模型上下文吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>稳定指令</td>
+<td>context files / prompt sections</td>
+<td>会加载为 prompt</td>
+</tr>
+<tr>
+<td>当前任务进展</td>
+<td>当前分支、compaction / branch summary</td>
+<td>作为投影的一部分</td>
+</tr>
+<tr>
+<td>分支相关工具状态</td>
+<td>tool-result <code>details</code></td>
+<td>details 本身不作为工具正文发送</td>
+</tr>
+<tr>
+<td>同 session 耐久元数据</td>
+<td><code>pi.appendEntry()</code> / <code>custom</code></td>
+<td>不进入模型上下文</td>
+</tr>
+<tr>
+<td>希望模型阅读的自定义内容</td>
+<td><code>pi.sendMessage()</code> / <code>custom_message</code></td>
+<td>进入模型上下文</td>
+</tr>
+<tr>
+<td>跨 session 事实与资料</td>
+<td>外部存储</td>
+<td>需工具、文件或扩展显式检索/注入</td>
+</tr>
+</tbody>
+</table></div>
+<p>该表尤其提醒：在磁盘保存状态，不等于让模型知道；在 TUI 隐藏消息，也不等于不让模型知道。<code>custom_message.display=false</code> 可以不显示在 TUI，但正文仍参与模型上下文；其 <code>details</code> 不发送。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md#state" rel="noopener noreferrer" target="_blank">扩展 State</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/session-format.md" rel="noopener noreferrer" target="_blank">CustomEntry / CustomMessageEntry</a>。</p>
+<h4 id="appendix-a-12">8. Skills：描述常驻，正文按需加载</h4>
+<p>Pi 实现 Agent Skills 标准。启动时扫描 skill，将 name、description、path 加入 system prompt，不载入整个 SKILL.md。模型认为任务匹配后读取全文；<code>/skill:name</code> 可以显式触发，参数作为用户请求随技能进入；<code>disable-model-invocation: true</code> 从自动选用列表隐藏，保留显式命令用法。这是渐进披露：先让模型知道“有哪些能力”，再为所选能力支付详细上下文成本。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/skills.md" rel="noopener noreferrer" target="_blank">Skills</a>、<a href="https://agentskills.io/" rel="noopener noreferrer" target="_blank">Agent Skills 标准</a>。</p>
+<p>skill 可把脚本、参考文献、资源文件分开，使用相对路径继续按需读取。Pi 也支持 <code>~/.agents/skills/</code> 和项目 <code>.agents/skills/</code>，项目祖先搜索在存在 repository root 时停止。description 直接影响模型是否能正确路由，名字模糊或所有 skill 都宣称适用任何任务，会扩大常驻描述负担并降低选用可靠性。官方明确模型可能漏读相关 skill，此时显式命令更可靠。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/skills.md" rel="noopener noreferrer" target="_blank">Skills</a>。</p>
+<p>其边界是“按需加载”并不意味着“执行完自动卸载”。读进来的 skill 正文已经成为历史，之后随普通历史保留或压缩；大量短任务连续启用许多 skill 仍可能积累上下文。该判断来自 skills 读取进入消息历史及 compaction 的机制，不是官方提供的自动卸载能力。</p>
+<h4 id="appendix-a-13">9. Tools：在源头控制结果体积，并留下查回路径</h4>
+<p>默认启动工具为 <code>read</code>、<code>bash</code>、<code>edit</code>、<code>write</code>，不是默认把所有内置搜索与第三方工具都宣告给模型。v1.0.4 可选内置还包括 powershell、grep、find、ls；codemode 与 tool_search 由内置扩展注册为初始 inactive，按配置或 MCP 接入需求激活。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/settings.md#tools" rel="noopener noreferrer" target="_blank">Settings</a>。</p>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>工具/阶段</th>
+<th>固定发布行为</th>
+<th>优秀之处与注意点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>read 文本</td>
+<td>头部最多 2000 行或 50 KiB，先到者为准；offset/limit；输出下一读取位置</td>
+<td>分页读取，按需追踪；别把头部当全文</td>
+</tr>
+<tr>
+<td>bash 模型正文</td>
+<td>尾部最多 2000 行或 50 KiB；完整输出保存临时文件并返回路径</td>
+<td>日志结尾常包含错误与结论；中间证据需再查</td>
+</tr>
+<tr>
+<td>grep</td>
+<td>默认 100 matches 或 50 KiB，单行最多 500 字符</td>
+<td>搜索先定位，再 read 查看完整局部</td>
+</tr>
+<tr>
+<td>find</td>
+<td>默认 1000 results 或 50 KiB</td>
+<td>先找文件集合，避免全库正文入 prompt</td>
+</tr>
+<tr>
+<td>ls</td>
+<td>默认 500 entries 或 50 KiB</td>
+<td>目录逐步探索</td>
+</tr>
+<tr>
+<td>摘要序列化</td>
+<td>单 tool result 2000 字符</td>
+<td>限制摘要模型输入；需要提前摘录关键证据</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些不是统一的 token 截断额度；UTF-8 字节、行、字符各有用途。50 KiB 来自常量 <code>50 * 1024</code>。read 自动缩放图片默认开启，并优先采用当前模型图像 resize profile；小字/精细图像可能需要额外核验。本次不为所有 provider 宣称统一图像尺寸。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/truncate.ts" rel="noopener noreferrer" target="_blank">truncate.ts</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/read.ts" rel="noopener noreferrer" target="_blank">read.ts</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/bash.ts" rel="noopener noreferrer" target="_blank">bash.ts</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/grep.ts" rel="noopener noreferrer" target="_blank">grep.ts</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/find.ts" rel="noopener noreferrer" target="_blank">find.ts</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/ls.ts" rel="noopener noreferrer" target="_blank">ls.ts</a>。</p>
+<p><strong>使用建议（推论）：</strong> 测试先返回失败摘要、文件位置、exit code；大型 JSON 先筛选字段、过滤条目或聚合；网页先定位相关片段；精确值、关键异常与查回地址应保留。所有结果都打到硬上限才截断，比源头按语义选出真正需要的内容效果弱。</p>
+<h4 id="appendix-a-14">10. Codemode、MCP、tool_search：限制工具声明与中间数据</h4>
+<h5 id="appendix-a-15">10.1 工具描述的渐进发现</h5>
+<p>扩展工具有 direct（默认）、model-only、codemode、deferred、hidden exposure。active tools 是“向模型声明”的集合，并非一切已注册工具的集合。codemode/deferred 工具可通过脚本间接调用，deferred 不在 codemode description 展开，需 <code>searchTools()</code>、<code>describeTool()</code>、<code>describeNamespace()</code>、<code>ALL_TOOLS</code> 发现。<code>tool_search</code> 也可发现并激活它们，使其在后续模型请求直接可见。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md#tool-exposure" rel="noopener noreferrer" target="_blank">Tool exposure</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/codemode.md" rel="noopener noreferrer" target="_blank">Codemode</a>。</p>
+<p>MCP server 默认 exposure 是 <code>codemode</code>：可由脚本调用，但既不直接向模型声明，也不把每个 tool 列入 codemode 描述。server 的 <code>deferred</code> 则强调 <code>tool_search</code> 加载后直接调用；<code>direct</code> 面向小而常用的集合；<code>hidden</code> 注册但不可到达。server 配置可逐工具覆盖 exposure。MCP 的 codemode/deferred server 在 system prompt 的 <code>mcp_servers</code> 段只显示服务器级简短说明和访问方式；连接变化时更新该段，不强制铺开所有工具 schema。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/mcp.md#control-tool-exposure" rel="noopener noreferrer" target="_blank">MCP</a>。</p>
+<p>codemode 描述中列出的工具声明共享 <code>codemode.inlineBudget=3000</code> <strong>估算 token（characters / 4）</strong>，不是每个工具 3000 token，也不是按模型 tokenizer 精确计数。超预算不列出的工具仍能查找；0 仅列 namespaces。<code>codemode.mode=on</code> 为默认：当前已声明的工具继续声明；<code>only</code> 隐藏这些声明，让模型经脚本调用。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/settings.md#tools" rel="noopener noreferrer" target="_blank">Settings</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/codemode.md#call-tools" rel="noopener noreferrer" target="_blank">Codemode</a>。</p>
+<h5 id="appendix-a-16">10.2 结果在脚本里加工，只有选定输出给模型</h5>
+<p>Codemode 在 QuickJS 沙箱运行 JavaScript，通过工具调用外部系统，批量/并行结果可以先筛选再 <code>text()</code>。只有脚本输出进入模型结果；每个 nested tool 的全文不会逐条新增 transcript entry。nested calls 仍留下受限的元数据，便于事件显示、文件操作追踪和成本归集。沙箱本身不提供 Node、文件系统或网络 API；真实工具仍使用其实际授权环境。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/codemode.md" rel="noopener noreferrer" target="_blank">Codemode</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md#tools" rel="noopener noreferrer" target="_blank">Nested tools</a>。</p>
+<p>bash 的程序化 <code>structuredContent.output</code> 最多 1 MiB，长于此时保留首尾各 512 KiB 并给完整输出路径，明显高于直接给模型的 2000 行/50 KiB。这让脚本有更大数据加工空间，却仍可只返回一个很短的表格/摘要。工具定义有 <code>outputSchema</code> 时脚本取得 structuredContent；模型仍取得 content。不能拿 structuredContent 上限代替普通模型上下文上限。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/codemode.md#call-tools" rel="noopener noreferrer" target="_blank">Codemode</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/tools/bash.ts" rel="noopener noreferrer" target="_blank">bash.ts</a>。</p>
+<p>默认脚本输出预算 <code>max_output_tokens=10000</code>，长输出保留头尾并写临时文件；脚本存储 <code>store/load</code> 是小 JSON 状态，可跨调用、resume 和 branch 恢复，成功脚本才提交 store 更改。其限制为单值 JSON 262144 字符、总计 1048576，适合 ID、cursor、短摘要，不是无限资料库。VM memory 为 256 MB。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/codemode.md#store-values" rel="noopener noreferrer" target="_blank">Codemode</a>。</p>
+<p><strong>优势与边界：</strong> 工具 schema 和中间数据都按需进入 prompt，适合大量 API、搜索、表格处理。风险是模型生成脚本的复杂度、遗漏错误、加工时丢掉关键字段、实际工具已有副作用而脚本后来失败。tool_search 加载后的声明保留在该分支，不能假定每次调用后自动卸载。选择最少而足够的工具仍需要语义判断。</p>
+<h4 id="appendix-a-17">11. Extensions 与 transformContext：请求局部变换和持久修改分开</h4>
+<p>agent-core 的消息流为 <code>AgentMessage[] → transformContext() → AgentMessage[] → convertToLlm() → Message[] → LLM</code>。前者适合剪枝、检索注入等 AgentMessage 层操作；后者负责 UI-only/custom 类型向 provider 消息格式转换。开发者可把外部 memory retrieval、精简观察或成本控制放在这里，但库接口不是内建的检索策略。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/agent/README.md#message-flow" rel="noopener noreferrer" target="_blank">agent-core README</a>。</p>
+<p>coding-agent extension 的 <code>context</code> 事件变换 conversation messages，排除 prompt/tool system messages，Pi 在后续恢复 system 状态；需要完整 transcript 的 request-local 改写时使用 <code>context_with_system</code>，并保留 index zero 的 system message。要持久影响未来分支与 compaction 的内容，应考虑 <code>context_edit</code> 或 compaction entry，而不把临时 request transform 与耐久编辑混称一种机制。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md#events-and-concurrency" rel="noopener noreferrer" target="_blank">扩展</a>。</p>
+<p><code>session_before_compact</code> 可取消或生成自定义摘要（附 <code>firstKeptEntryId</code>、<code>tokensBefore</code>、<code>details</code> 与可选 usage）；<code>session_compact_failed</code> 有失败/中止终态；<code>session_before_tree</code> 可以处理跨分支总结；<code>tool_result</code> 可在入模型前改写结果，各 handler 按注册顺序组成。这些 hook 支持社区更复杂的 observation memory、检索或删除机制，同时也可能相互覆盖或累加内容。更新 content 的脱敏逻辑也需考虑 structuredContent 的契约，不应让程序化通道保留已脱敏的敏感原文。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md" rel="noopener noreferrer" target="_blank">扩展</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md#custom-summarization-via-extensions" rel="noopener noreferrer" target="_blank">自定义摘要</a>。</p>
+<h4 id="appendix-a-18">12. 系统 prompt/tool delta 与缓存：让配置变化进入历史</h4>
+<p>v1.0.4 首个请求把 prompt sections 和工具声明保存为 system message，后续变化通过命名 sections patch 与 <code>toolsAdded/toolsRemoved</code> 追加；section 的 null 表示移除。重放可恢复模型在各历史点看到的配置。compaction 用完整 checkpoint 重建当前系统状态。dynamic tools 或技能目录变化不再只存在于进程内的一个不可审计可变字符串。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/session-format.md#sessionmessageentry" rel="noopener noreferrer" target="_blank">Session system messages</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/src/core/system-prompt.ts" rel="noopener noreferrer" target="_blank">system-prompt.ts</a>。</p>
+<p>能表示中途 system/tool changes 的 provider 接收增量，利于保留已缓存前缀；不能表示的 provider 会拿到完整 transcript checkpoint，可能使缓存前缀失效。因此“追加 delta 必然不破缓存”是不准确的。<code>before_agent_start</code> 优先改变结构化 prompt sections、工具或 guidelines；强制整段 <code>systemPrompt</code> 是更强的行为替换，要理解 transcript 与 provider-facing 文本的关系。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/extensions.md" rel="noopener noreferrer" target="_blank">扩展</a>。</p>
+<p>缓存保温默认 <code>cacheWarming="streaming"</code>，可选 off/idle。仅在模型声明 cache lifetime 且估计可避免 cache miss 成本至少 $0.05 时运行；refresh usage 计入 session totals，但不进入模型上下文。它是 provider 缓存策略，不扩大上下文窗口，也不是长期记忆。压缩摘要请求禁写 prompt cache，因为这类一次性提示复用概率低。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/settings.md#model-and-thinking" rel="noopener noreferrer" target="_blank">Settings</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/compaction.md" rel="noopener noreferrer" target="_blank">Compaction</a>。</p>
+<h4 id="appendix-a-19">13. 官方 Subagent 示例：隔离阅读过程，只交付压缩成果</h4>
+<p>coding-agent 发布源码把 subagent 放在 <code>examples/extensions/subagent/</code>，需要安装或启用该 extension；不要把它写成默认启动就有的内置 <code>subagent</code> 工具。示例为每个 agent 启独立 pi process，以 <code>--mode json -p --no-session</code> 运行，附角色 system prompt、任务与工具/model 配置，不传整个 parent conversation。chain 用 <code>{previous}</code> 显式传递上一 child 的最后回复。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/examples/extensions/subagent/README.md" rel="noopener noreferrer" target="_blank">官方示例 README</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/examples/extensions/subagent/index.ts" rel="noopener noreferrer" target="_blank">index.ts</a>。</p>
+<p>示例有 single、parallel、chain 模式；parallel 最多 8 tasks、4 concurrent。模型可见 parallel 返回每个任务最终输出，单任务上限 50 KB，完整 child 结果保留在 tool details。single/chain 返回最终结果而不是其每次文件读取的全文。scout 的专门角色要求给文件路径与精确行范围、关键代码、结构关系、下一步先读哪里，使下一 worker 能按证据查回原文。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/examples/extensions/subagent/README.md" rel="noopener noreferrer" target="_blank">README</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/examples/extensions/subagent/agents/scout.md" rel="noopener noreferrer" target="_blank">scout prompt</a>。</p>
+<p>这个模式的优秀之处是“模型上下文隔离 + 结果接口”：让子 agent 吸收杂乱的搜索、试错与工具日志，父 agent 接受结论、来源和待办。它不保证总费用减少，子 agent 仍有自己的 prompt 和多轮调用；如果任务强依赖大量 parent 对话，任务 brief 不足会导致重新探查或偏离目标。<code>--no-session</code> 也意味着 child 默认不具备退出后继续同一 session 的历史连续性。</p>
+<p>隔离 context 不等于文件系统隔离：示例子进程默认使用同一任务 cwd，agent tools 和 prompt 只是能力/角色配置，不是 OS sandbox。示例默认只发现 user-level agents，project agents 需 scope 启用，并有 project trust 相应确认机制。省上下文与权限安全应分别描述。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/examples/extensions/subagent/README.md#security-model" rel="noopener noreferrer" target="_blank">示例 README</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/examples/extensions/subagent/index.ts" rel="noopener noreferrer" target="_blank">index.ts</a>。</p>
+<h4 id="appendix-a-20">14. Pi Durable：官方实验性的长生命周期路线</h4>
+<p>Pi Durable 与 Pi 1.0 同日在 2026-10-01 推出，是构建长期、多入口、多参与者 agent 应用的实验性 substrate；官方明确它不替代 terminal coding agent，README 提醒 API 可能在 release 间无预告变化。因此应列为官方实验路线，而不把其 API 写成 coding-agent 已自动具备的稳定默认能力。<a href="https://earendil.com/posts/pi-durable/" rel="noopener noreferrer" target="_blank">官方说明</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/durable/README.md" rel="noopener noreferrer" target="_blank">固定发布 README</a>。</p>
+<p>其上下文管理值得关注的机制有：immutable transcript 与旁边的 typed documents 分离；模型只见最新 reset 之后的 entries；每一步工作 checkpoint 后再展示，崩溃后从存储恢复；prompt sections 与 tool changes 在各位置记录，只发送变化；每个 conversation 选择 model、tools、extensions、cwd；持久 provider session identity 支持恢复与缓存亲和；child/fork 得到新 identity。<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/durable/README.md" rel="noopener noreferrer" target="_blank">Pi Durable README</a>。</p>
+<p>SQLite 后端只在内存维持活动 transcript、live tasks 和 pending submissions，旧历史按需留在磁盘。配合 compaction，让很长的历史不会全部占 resident working set。它支持 MemoryStorage、SQLite、JSONL storage；这里的 MemoryStorage 是<strong>进程内存存储后端</strong>，不是抽取事实、embedding、vector retrieval 的长期知识记忆。<a href="https://earendil.com/posts/pi-durable/" rel="noopener noreferrer" target="_blank">官方说明</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/durable/README.md" rel="noopener noreferrer" target="_blank">README</a>。</p>
+<p>Subagent 没有规定唯一内建协议，而是一个 tool-owned conversation：工具创建/找回 owned child conversation，给它专门模型、指令和工具，等待结果。foreground ownership 决定 parent abort/settle 行为，background task 可在当前 conversation idle 后继续。崩溃恢复时工具只有声明 <code>replay:"safe"</code> 才重跑，不安全的被告知中断；这解决生命周期与回放安全，不是单靠更大窗口能解决的问题。<a href="https://earendil.com/posts/pi-durable/" rel="noopener noreferrer" target="_blank">官方说明</a>、<a href="https://github.com/earendil-works/pi/blob/v1.0.4/packages/durable/README.md#abort-and-subagents" rel="noopener noreferrer" target="_blank">README 的 Abort and Subagents</a>。</p>
+<h4 id="appendix-a-21">15. 机制选择与已验证边界</h4>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>首选原生机制</th>
+<th>加强方向（分析建议）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工具结果巨大</td>
+<td>定位/分页/头尾截断、Codemode 聚合</td>
+<td>保留来源、精确值、异常和完整输出路径</td>
+</tr>
+<tr>
+<td>工具 schema 很多</td>
+<td>MCP codemode/deferred、tool_search、namespace</td>
+<td>控制动态激活集合与重复工具</td>
+</tr>
+<tr>
+<td>长任务连续执行</td>
+<td>结构化 compaction + 最近原文</td>
+<td>核验目标/约束/未完工作是否持续保留</td>
+</tr>
+<tr>
+<td>试错路线分叉</td>
+<td>tree/fork/clone + branch summary</td>
+<td>明确结论、失败条件与当前事实的区别</td>
+</tr>
+<tr>
+<td>历史有重复/失败垃圾</td>
+<td>context_edit omit/replace</td>
+<td>保护引用关系与未失效证据</td>
+</tr>
+<tr>
+<td>专门流程偶尔使用</td>
+<td>Skills 的描述/正文/参考分层</td>
+<td>skill 描述准确，正文短，细则按需</td>
+</tr>
+<tr>
+<td>跨任务稳定规则</td>
+<td>短 context files</td>
+<td>避免无限日志驻留 system prompt</td>
+</tr>
+<tr>
+<td>跨会话知识与偏好</td>
+<td>外部文件/存储 + 检索/注入扩展</td>
+<td>来源、时间、作用域、失效与删除规则</td>
+</tr>
+<tr>
+<td>大量独立阅读</td>
+<td>官方 scout/subagent pattern</td>
+<td>子任务 brief 与可查回证据，计 parent+child 总成本</td>
+</tr>
+<tr>
+<td>跨进程长期执行</td>
+<td>Pi Durable 实验路线</td>
+<td>版本锁定、回放策略、ownership 与恢复测试</td>
+</tr>
+</tbody>
+</table></div>
+<p>本报告确定了 v1.0.4 的默认值、官方公开接口及信息流；没有对不同模型、不同任务执行对照实验，也没有测社区插件与 v1.0.4 的实际兼容性。“优秀”表示机制解决的边界清晰、适合相应场景，并不代表所有组合都有净收益。源码路径链接均为官方上游固定发布，后续可据此验证行为，而非靠历史博客或本地安装状态猜测。</p></div></details><details id="appendix-b" class="appendix"><summary>附录 B · 社区 Memory、事务与 Subagent</summary><div class="appendix-content"><h3 id="appendix-b-1">Pi 社区 memory / subagent / 会话投影机制：公开联网调研</h3>
+<p>调研日期：2026-10-07（Asia/Shanghai）。范围：Pi 公开社区项目本身；不使用本地工程实现来推断其能力。通过公开 GitHub Search API 实际搜索 <code>pi-memory coding agent</code>、<code>pi-mem coding agent</code>、<code>pi-memento</code> 等查询，再读取固定 commit 的 README、package.json 和关键源码。下文以源码优先；README 与源码不同处单列。只读调研，没有安装、运行这些扩展或做 provider 性能实验。</p>
+<p>本文将“优秀”界定为解决明确上下文问题、具有具体实现和可解释取舍的设计，不将 star、作者描述或存在测试等同于效果证明。维护状态只表示公开默认分支最后提交日期，不保证维护承诺。固定 SHA 的内容才是本次机制结论的版本边界。</p>
+<h4 id="appendix-b-2">一、先区分五种机制</h4>
+<ol>
+<li><strong>持久记忆</strong>：把可跨会话复用的事实写入文件，后续选择性注入或检索；文件存在不等于模型已经读取。</li>
+<li><strong>工作进度记忆</strong>：恢复“正在做什么、证据是什么、下一步是什么”，与长期事实分开；不能让多个 session 互相覆盖。</li>
+<li><strong>有界常驻记忆</strong>：将少量重要内容保留在每次模型请求中；付出重复输入及修改 prompt 前缀的成本。</li>
+<li><strong>会话投影</strong>：保留完整审计历史，但给模型另一种较小视图；区别于删除历史或回滚外部世界。</li>
+<li><strong>subagent 上下文边界</strong>：按角色选择 fresh/fork、skills、指令、tools、长期记忆，并控制返回主 agent 的文本量。子 agent 独立上下文不等于全系统成本下降。</li>
+</ol>
+<h4 id="appendix-b-3">二、案例 1：nicobailon/pi-memory-workbench——会话所有权 + 分层持久记忆</h4>
+<p><strong>定位与状态。</strong> 真正 Pi extension。固定 SHA <code>92b4c9c3ad07841418d77118bf8bd02ad204f7c4</code>，最后提交 <code>2026-07-25T20:02:30Z</code>；package version <code>0.1.0</code>、<code>private: true</code>。README 明确尚无 npm release，可 GitHub 安装。公开测试是文件系统/模拟 Pi 边界检查，README 仍要求 live Pi interactive smoke，不能声称生产验证完成。</p>
+<p><strong>它解决的具体问题。</strong> 原始“所有 session 写同一个 progress.md”的做法会将并行 session 的续接状态覆盖；压缩以后，native summary 也可能缺少当下任务的恢复位置。该项目将 source of truth 按 session 隔离：</p>
+<pre><code class="language-text">~/.pi/agent/memory/&lt;project&gt;/
+  sessions/&lt;session-id&gt;/progress.md  # 本会话恢复点
+  sessions/&lt;session-id&gt;/todo.md      # 本会话任务状态
+  progress.md                       # 生成 dashboard，非权威
+  events/*.md                       # 不可变事件审计
+  event-digests/*.md                 # 增量摘要，不删除 raw event
+  memory.md                         # 精炼的长期项目事实
+  dreams/*.md                       # 精炼操作审计
+</code></pre>
+<p><strong>注入—检索—写回链。</strong> <code>before_agent_start</code> 返回隐藏 custom message（<code>display:false</code>），内容为 memory packet 和所有权提醒，<strong>并非直接扩展 systemPrompt</strong>。注入是有条件的：project/session 变化、有 todo，或 dream 非 fresh 时注入；不是无条件逐请求全部文件常驻。packet 包含 session resume（900 字符 clip）、最多五条待做/阻塞 todo、最近五个 event 简述；长期 memory 每个 active section 默认只取最近两条，条目文本 clip 180 字符。更深信息由 <code>memory_recall</code> 按需取回。</p>
+<p><code>memory_recall</code> 是有界、带来源路径的 Markdown 词项匹配/排序检索；不是向量检索。默认 8 hits，上限 20，query 上限 256 字符，单 snippet 上限约 1200 字符，精确 path expand 上限 30000 字符；可筛选 scope、kind、sessionId。多词查询要求至少两项命中，降低常见词误匹配。命中后模型通过返回的 path 扩展权威来源，构成“hot view → bounded recall → exact source”。</p>
+<p><strong>与压缩的关系。</strong> <code>session_before_compact</code> 保存当前状态和 branch；<code>session_compact</code> 使用 native summary、notable tools/files、retained tail <strong>额外调用模型生成 focused checkpoint</strong>，更新本 session progress/todo、追加 event，dashboard 仅 best effort。模型不可用或结构错误时进入 deterministic fallback；abort 时不写 checkpoint。确认 owner session 才可写，subagent/未知身份 session 只读并将值得持久化的信息交给 owner。近期 boomerang branch collapse 另有跳过规则以避免重复 handoff。</p>
+<p><strong>长期精炼。</strong> dream 将 session progress/todo、近期 events、最多三份 digest 等材料提炼入稳定 schema 的 <code>memory.md</code>；owner compaction 后仅过期时触发，阈值 24 小时；也可手动。固定源码 <code>createDream</code> 调用 <code>extractMemoryCandidates</code> 与 <code>applyDreamMemoryCandidates</code>，本函数没有模型调用；不要把“dream”名称解释为自动再运行一轮LLM反思。带稳定 ID、source citation、superseded 元数据；高风险变更进入 Deferred，不自动编辑 AGENTS.md、global memory、源文件和 raw events。digest 是附加摘要而非改写历史，旧 event 可继续追查。</p>
+<p><strong>重要源码纠错。</strong> README 说 dream 在 auto-continue 之前完成，但固定 SHA 的 <code>index.ts:452-454</code> 顺序是先 <code>maybeAutoContinueAfterCompaction</code>，再 <code>createDreamIfStale</code>；不把 README 的顺序承诺当真实执行顺序。</p>
+<p><strong>为何值得借鉴。</strong> 同一系统同时明确“谁拥有可变续接状态”“什么是长期事实”“什么只是 dashboard”“如何追查原始证据”。内存增长时用小 hot view，而非把全量 memory 注入。</p>
+<p><strong>取舍与未验证项。</strong> 组件/命令不少，session checkpoint 额外模型调用与 dream 增加 latency；文件和事件会持续增长，检索依赖词项，对语义改写的召回有限；写回质量依赖 source 信号及 checkpoint/精炼判断。现有源码只能证明机制存在，不能证明长期记忆更准确、任务更快或更便宜。当前 Pi 1.x 的 live compatibility 本次未执行。</p>
+<p><strong>一手来源：</strong></p>
+<ul>
+<li><a href="https://github.com/nicobailon/pi-memory-workbench/blob/92b4c9c3ad07841418d77118bf8bd02ad204f7c4/README.md" rel="noopener noreferrer" target="_blank">固定 README</a></li>
+<li><a href="https://github.com/nicobailon/pi-memory-workbench/blob/92b4c9c3ad07841418d77118bf8bd02ad204f7c4/index.ts#L365" rel="noopener noreferrer" target="_blank">事件/注入/压缩 index.ts</a></li>
+<li><a href="https://github.com/nicobailon/pi-memory-workbench/blob/92b4c9c3ad07841418d77118bf8bd02ad204f7c4/memory.ts#L271" rel="noopener noreferrer" target="_blank">packet 与 bounded hot view</a></li>
+<li><a href="https://github.com/nicobailon/pi-memory-workbench/blob/92b4c9c3ad07841418d77118bf8bd02ad204f7c4/memory.ts#L601" rel="noopener noreferrer" target="_blank">Dream 实际调用链</a></li>
+<li><a href="https://github.com/nicobailon/pi-memory-workbench/blob/92b4c9c3ad07841418d77118bf8bd02ad204f7c4/memory-recall.ts#L46" rel="noopener noreferrer" target="_blank">检索 memory-recall.ts</a></li>
+<li><a href="https://github.com/nicobailon/pi-memory-workbench/blob/92b4c9c3ad07841418d77118bf8bd02ad204f7c4/package.json" rel="noopener noreferrer" target="_blank">package 版本和 Pi peers</a></li>
+</ul>
+<h4 id="appendix-b-4">三、案例 2：jo-inc/pi-mem——轻量 Markdown、近期日志、按需旧记忆</h4>
+<p><strong>定位与状态。</strong> 真正 Pi extension，npm 身份 <code>@askjo/pi-mem</code>。固定 SHA <code>ffb706b8805d64e04919ceff4c82084a67504e5d</code>，最后提交 <code>2026-07-21T17:25:18Z</code>，package <code>1.2.0</code>。peer/import 仍为 <code>@mariozechner/pi-*</code>；当前 Pi 已迁移命名，不能仅凭 <code>*</code> peer range 宣称当前版本可用。</p>
+<p><strong>布局和思路。</strong> <code>MEMORY.md</code> 存精炼长期事实，<code>daily/YYYY-MM-DD.md</code> 存近期流水，<code>SCRATCHPAD.md</code> 是待办清单，<code>notes/*.md</code> 是按需参考。memory_write 可以 append/overwrite 长期、daily、note；memory_read、memory_search、scratchpad 负责查询和维护，写回主要靠 agent 选择调用，不是压缩自动写回完整摘要。</p>
+<p><strong>实际注入。</strong> 固定 SHA <code>index.ts:348-381</code> 在 <code>context</code> event 尾部增加一条 user message，封装为 <code>&lt;pi-mem-injected&gt;</code>。明确设计意图是保持稳定 system prompt，让可变 memory 放在 prompt 较后部分。每次请求重新构造 memory context，注入 configured context files、完整 MEMORY.md、今天及昨天 daily；notes 和更旧 daily 通过工具按需访问。<code>lib.ts</code> 还注入 catchup 日期目录的 INDEX.md：常态两天、低活动时扩展为七天，每天约 1024/2048 字符预算，总 catchup 8192 字符预算。变量叫 BYTES，但实际比较 JavaScript string.length，不能说严格 UTF-8 byte cap。</p>
+<p><strong>必须纠正的三处宣传/文档差异。</strong></p>
+<ul>
+<li>GitHub repository description 提到 semantic search；README 的 tools 部分和源码 <code>index.ts</code> 明确是 case-insensitive substring；文件开头写 <code>No embeddings, no vector search</code>。本次将其描述为关键词/子串检索，不称语义向量检索。</li>
+<li>README 的 Context Injection 小节说 system prompt；源码已经改为 <code>context</code> 中的 trailing user message。</li>
+<li>README 说 open scratchpad 自动加载；源码注入提示明确 <code>Scratchpad is NOT auto-loaded</code>，<code>buildMemoryContext</code> 也没有 scratchpad 注入。scratchpad 须 memory_read 按需取。</li>
+</ul>
+<p><strong>压缩前行为。</strong> <code>session_before_compact</code> 只是 UI 提醒“consider persisting important context”；不负责强制保存、不生成强制 checkpoint。它能给有纪律的 agent 文件记忆工具，不能保证每次 compaction 前都将关键未保存事实提取。</p>
+<p><strong>取舍。</strong> 简单、可 git 追踪、零数据库、人工可编辑；把 volatile memory 放到尾部可避免修改较早 system prompt，但每次重复 MEMORY.md/daily 仍占 token，尾部时间戳/内容变化也不等于自动更高 cache hit。MEMORY 和 daily 主体在已读函数里无统一全局硬预算，长期增长会扩大常驻负担；多 session 共享文件的写冲突与事实污染也不应认为已解决。适合个人少量偏好和短近期记忆；大量历史须依赖清理与按需读取。</p>
+<p><strong>一手来源：</strong></p>
+<ul>
+<li><a href="https://github.com/jo-inc/pi-mem/blob/ffb706b8805d64e04919ceff4c82084a67504e5d/README.md" rel="noopener noreferrer" target="_blank">固定 README</a></li>
+<li><a href="https://github.com/jo-inc/pi-mem/blob/ffb706b8805d64e04919ceff4c82084a67504e5d/index.ts#L348" rel="noopener noreferrer" target="_blank">真实 context 注入与 scratchpad 规则</a></li>
+<li><a href="https://github.com/jo-inc/pi-mem/blob/ffb706b8805d64e04919ceff4c82084a67504e5d/lib.ts#L411" rel="noopener noreferrer" target="_blank">实际 memoryContext 和 catchup 预算</a></li>
+<li><a href="https://github.com/jo-inc/pi-mem/blob/ffb706b8805d64e04919ceff4c82084a67504e5d/index.ts#L708" rel="noopener noreferrer" target="_blank">实际 substring search tool</a></li>
+<li><a href="https://github.com/jo-inc/pi-mem/blob/ffb706b8805d64e04919ceff4c82084a67504e5d/package.json" rel="noopener noreferrer" target="_blank">package 身份/版本</a></li>
+<li><a href="https://pradeep.md/2026/02/11/pi-mem.html" rel="noopener noreferrer" target="_blank">作者原文</a>（本次仅确认 README 引用，未独立读取，机制不依赖该文）</li>
+</ul>
+<h4 id="appendix-b-5">四、案例 3：gordonbrander/pi-memory-blocks——Letta/MemGPT 式有限核心记忆</h4>
+<p><strong>定位与状态。</strong> 真正 Pi extension，npm <code>@gordonb/pi-memory-blocks</code>，固定 SHA <code>cd3701ea6681d8d358c74565f2ca594a18050ad3</code>，最后提交 <code>2026-03-10T08:09:24Z</code>，package <code>0.3.0</code>。使用旧 <code>@mariozechner/pi-coding-agent</code> API 命名；未运行当前 Pi 兼容性测试。</p>
+<p><strong>机制。</strong> 每个块为 <code>&lt;cwd&gt;/.pi/memory-blocks/&lt;key&gt;.md</code>，frontmatter 有 description、limit。首次创建 user 与 agent 两块，各默认 2000 字符；自定义块由人创建。<code>before_agent_start</code> 读全部 blocks，追加到 systemPrompt。memory renderer 显示每块当前/上限字符数；<code>updateMemory(blockKey, oldText?, newText)</code> 提供精确文本替换或追加。只能更新已有 block，不能借 tool 任意创建新块。</p>
+<p><strong>为什么有用。</strong> 把“核心记忆一直可见”和“容量有限、要主动管理”合为一个清晰 API。agent 可替换过期事实而不是无限追加；用户偏好、角色定位、项目稳定约束适合这类小常驻层。它是 Letta 思路的 Pi 实现，<strong>不是安装了完整 Letta 服务、也不含 Letta 全部 archival memory 能力</strong>。</p>
+<p><strong>关键限制。</strong> 超额写入的行为是源码 <code>slice(0, limit)</code> 直接截掉尾部；有 truncated 回执，但没有自动事实级重排、摘要或“拒绝写入直到主动腾空间”。若只追加，很容易把最新信息截掉。每块限额不等于总 token 预算：人为无限新增 blocks 后，总注入量仍增长；字符也不等于 token。修改 blocks 每次改变 systemPrompt，可能损害前缀缓存，应结合任务/provider 测量。此项目不提供语义检索、冷记忆 paging、事件引用和并发 merge；别将它叙述为完整 memory 层级系统。</p>
+<p><strong>一手来源：</strong></p>
+<ul>
+<li><a href="https://github.com/gordonbrander/pi-memory-blocks/blob/cd3701ea6681d8d358c74565f2ca594a18050ad3/README.md" rel="noopener noreferrer" target="_blank">固定 README</a></li>
+<li><a href="https://github.com/gordonbrander/pi-memory-blocks/blob/cd3701ea6681d8d358c74565f2ca594a18050ad3/src/index.ts#L175" rel="noopener noreferrer" target="_blank">注入与 updateMemory 源码</a></li>
+<li><a href="https://github.com/gordonbrander/pi-memory-blocks/blob/cd3701ea6681d8d358c74565f2ca594a18050ad3/src/index.ts#L247" rel="noopener noreferrer" target="_blank">超限直接 truncate</a></li>
+<li><a href="https://github.com/gordonbrander/pi-memory-blocks/blob/cd3701ea6681d8d358c74565f2ca594a18050ad3/package.json" rel="noopener noreferrer" target="_blank">package</a></li>
+</ul>
+<h4 id="appendix-b-6">五、案例 4：thebabush/pi-memento——在同一 agent 内按探索片段做上下文事务</h4>
+<p><strong>定位与状态。</strong> Pi plugin/extension，实验性 v0.1，固定 SHA <code>1a879a3a5deb3e9c5437ed9251895856dc495d14</code>，最后提交 <code>2026-08-29T04:29:28Z</code>。明确 pin <code>@earendil-works/pi-coding-agent@0.84.3</code>；launcher 使用项目内独立 pin 的 Pi，不改变 global Pi。作者写明需要 contract tests 才能扩大兼容范围，因此不能把当前 1.x 当已支持。</p>
+<p><strong>它的独特想法。</strong> subagent 同时具有两种效果：分离 execution loop、隔离探索细节。memento 只取后者：当前 agent 在当前 loop 继续探索，事后决定该片段是否保留。这样对于“探索之后才知道是否有价值”的调研/调试，不必为了上下文效果额外启动一个执行进程。</p>
+<p><strong>显式工具及四种关闭方式。</strong></p>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>工具/操作</th>
+<th>模型以后看到什么</th>
+<th>额外模型调用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>transaction_begin({purpose?})</code></td>
+<td>开始嵌套片段，LIFO</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>transaction_end({disposition:'commit'})</code></td>
+<td>完整保留片段</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>compact</code></td>
+<td>扩展调用模型生成的摘要，可带 carryforward</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>squash</code></td>
+<td>agent 自己写的 result，替换整段探索</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>revert</code></td>
+<td>只留必填非空 carryforward 经验，移除探索本体</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>transaction_status()</code></td>
+<td>当前 stack</td>
+<td>否</td>
+</tr>
+</tbody>
+</table></div>
+<p>begin/end 必须为各自 assistant message 的唯一 tool call，防止边界夹杂并发调用；关闭的是最内层事务。无法在探索完成之后 retroactively 打开事务；要先 begin、之后按探索结果选 disposition。</p>
+<p><strong>实现链。</strong> begin/end 通过 <code>appendEntry</code> 追加 versioned metadata；<code>context</code> event 根据 canonical branch 与事务 replay 投影 model-visible messages；完整 JSONL 历史保留。<code>session_before_compact</code> 必須用相同投影压缩 durable prefix，调整 cut 避免切断事务，并把 open transactions 留在 retained tail。否则 native compactor 如果直接看 raw canonical history，会把已经 revert 的死路再次总结回来。边界不一致时 fail closed，取消压缩而不是 silently 回到 raw history。</p>
+<p><strong>取舍。</strong> 这是工作记忆管理，不是长期 MEMORY.md、跨会话知识库、检索或多 agent shared facts。revert <strong>不撤销</strong> 文件编辑、shell 命令、外部副作用；它不是沙箱。模型若选错 disposition 会失去还需要的细节；省 execution 不代表所有任务更快，begin/end 也新增工具调用与判断。不同投影/剪枝插件同时使用时必须检查 event 顺序和 native compaction 的一致性。本次未验证这些组合。</p>
+<p><strong>一手来源：</strong></p>
+<ul>
+<li><a href="https://github.com/thebabush/pi-memento/blob/1a879a3a5deb3e9c5437ed9251895856dc495d14/README.md" rel="noopener noreferrer" target="_blank">固定 README</a></li>
+<li><a href="https://github.com/thebabush/pi-memento/blob/1a879a3a5deb3e9c5437ed9251895856dc495d14/src/extension.ts" rel="noopener noreferrer" target="_blank">工具实现和 metadata</a></li>
+<li><a href="https://github.com/thebabush/pi-memento/blob/1a879a3a5deb3e9c5437ed9251895856dc495d14/src/project.ts" rel="noopener noreferrer" target="_blank">model-visible projection</a></li>
+<li><a href="https://github.com/thebabush/pi-memento/blob/1a879a3a5deb3e9c5437ed9251895856dc495d14/src/pi-compaction.ts" rel="noopener noreferrer" target="_blank">transaction-aware Pi compaction</a></li>
+<li><a href="https://github.com/thebabush/pi-memento/blob/1a879a3a5deb3e9c5437ed9251895856dc495d14/docs/pi-contract.md" rel="noopener noreferrer" target="_blank">Pi contract、版本限制</a></li>
+<li><a href="https://github.com/thebabush/pi-memento/blob/1a879a3a5deb3e9c5437ed9251895856dc495d14/package.json" rel="noopener noreferrer" target="_blank">package pin</a></li>
+</ul>
+<h4 id="appendix-b-7">六、案例 5：nicobailon/pi-subagents——上下文不是一个 inherit 开关，而是一组独立边界</h4>
+<p><strong>定位与状态。</strong> 真正 Pi subagent extension；固定 SHA <code>6a6675c971076ef3fc4a1ac443da938144f9a52b</code>，最后提交 <code>2026-10-07T01:56:54Z</code>，package <code>0.76.1</code>。README 安装身份 npm:pi-subagents；源包标 private 与 npm 交付流程并不应机械视为“无 release”。使用当前 <code>@earendil-works/pi-*</code> peers，pi-ai &gt;=0.86.1。本次未跑其完整生命周期/当前 host 兼容实验，不承诺部署可直接成功。</p>
+<h5 id="appendix-b-8">6.1 角色 instructions、project/global context、skills、tools 各自可控</h5>
+<p>自定义 agent 默认 clean system prompt，不自动继承 Pi 完整 base prompt、repo/global instruction、discovered skills catalog。可显式设置：</p>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>控制项</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>systemPromptMode: replace/append</code></td>
+<td>专用角色 prompt，或追加 Pi base prompt</td>
+</tr>
+<tr>
+<td><code>inheritProjectContext</code></td>
+<td>是否继承 AGENTS.md/CLAUDE.md 等 repo instructions</td>
+</tr>
+<tr>
+<td><code>inheritGlobalContext</code></td>
+<td>是否继承用户 global context，默认 false</td>
+</tr>
+<tr>
+<td><code>inheritSkills</code></td>
+<td>是否展示 Pi discovered skills catalog</td>
+</tr>
+<tr>
+<td><code>skills</code> / <code>skillPath</code></td>
+<td>指定加载的 skills 与搜寻路径</td>
+</tr>
+<tr>
+<td><code>tools</code> / <code>excludeTools</code></td>
+<td>能力 allowlist 与排除项</td>
+</tr>
+<tr>
+<td><code>extensions</code> / <code>subagentOnlyExtensions</code></td>
+<td>为本角色加载工具 provider</td>
+</tr>
+<tr>
+<td><code>defaultReads</code> / <code>output</code></td>
+<td>显式输入参考文件与输出文件</td>
+</tr>
+</tbody>
+</table></div>
+<p>built-in agents 默认继承 repo instruction；global context 仍需 opt in。delegate 采用 append，worker 默认 fresh，oracle/advisor 默认 fork。角色 prompt 是选择信息与职责的边界，不等于更改 provider 的上下文窗口。</p>
+<p>foreground child 是 parent 进程中的独立 Pi session，不加载 parent 的 ambient extensions，避免重复启动；background child 是 detached runner 内 session，可按配置加载 ambient extensions。因此同样 tools 名称必须有相应 provider 可达，allowlist 本身不安装 provider。当前版本还区分 built-in MCP 与 pi-mcp-adapter 的 direct MCP resolution；能力/环境继承应与文本继承分开评估。</p>
+<h5 id="appendix-b-9">6.2 fresh 与 fork</h5>
+<p>fresh 从新的会话开始，只拿角色、显式任务、输入文件、选择的 instructions/skills/tools/memory。优点是减少历史噪声和重复父上下文，适合窄任务、独立复核；风险是 parent 少给了关键约束。fork 则建立当前 parent leaf 的 branch session，适合第二意见与依赖历史讨论的任务；更大输入、旧假设和历史工具输出会跟着进入 child。</p>
+<p>显式 fork 要求 persisted parent JSONL 与 current leaf，缺失时 fail；隐式默认 fork 只是 preference，parent 尚无可 branch 历史时直接 fresh。明确 fresh 始终优先。signed Anthropic thinking/redacted_thinking 从 fork 中剔除，因为签名属于原会话，child 按自己 thinking level 从新 turn 推理；不能把它解释为降低 thinking level。</p>
+<h5 id="appendix-b-10">6.3 可选 pruned fork：64 KiB 继承预算，有 sidecar 但尚无 child 回查 API</h5>
+<p>默认 fork mode full。<code>forkContext.mode:'pruned'</code> 在继承体超过源码拥有的 64 KiB session budget 后，用配置模型生成按 stable item id 索引的 JSON 摘要。优先 spill tool results，再老 assistant/tool context，必要时才 user text；预算内材料保留原样。正文只剩摘要和 <code>{batchId,itemId}</code> recovery ref；raw body、digest、source ids、size/tool metadata 留在 child session 旁 private 0600 sidecar。</p>
+<p><strong>容易误写的边界：</strong> docs 明确“此版本没有恢复命令，也不把 sidecar payload 暴露给 child 模型”。所以 ref 是可审计恢复标识，不等于已实现模型随时 paging 回原文。missing auth/model、摘要 JSON 不全、预算溢出、sidecar validation 失败时 launch 停止，不能默默 fallback full fork。64 KiB 是特定 serialized session budget，不是 64K token，也不能拿来与 provider 128K context window直接对比。</p>
+<h5 id="appendix-b-11">6.4 durable role memory</h5>
+<p><code>memory:{scope:'project'|'user',path:'role-name'}</code> 与 parent/session memory 分开，namespace <code>agent-memory</code>。project 为 <code>&lt;project&gt;/.pi/agent-memory/&lt;path&gt;/MEMORY.md</code>，user 为 <code>~/.pi/agent/agent-memory/&lt;path&gt;/MEMORY.md</code>；标准 linked git worktree 指回 main checkout，让持续角色记忆免于 worktree 清理丢失。</p>
+<p>docs 说每次 child run 注入前 200 行；源码还有 <strong>16 KiB UTF-8 上限</strong>。这是热 role memory，不是全历史检索。写工具可用的 role 被提示追加简短 dated reusable facts，禁止 full transcripts、one-off task details 和 secrets；只读 role 拿只读 block，不获得新增写能力。目录 lazy 创建、路径防 traversal/symlink escape；内容 delimitation 明确是参考数据而非可覆盖 prompt/task/developer constraints 的指令。</p>
+<p><strong>注意：</strong> 这只是安全路径和 bounded read/append 指令，不能据此宣称完整多 writer merge、冲突解决、事实验证和自动过期已具备。长文件只看前 200 行，尾部新信息可能需 role 主动整理。</p>
+<h5 id="appendix-b-12">6.5 回到 parent 的边界：artifact references，而不是只隐藏 UI</h5>
+<p><code>outputMode:'file-only'</code> 保存结果，向 parent 返回路径、文件大小、行数，按需 read；failed/save-error 仍 inline 便于排错。<code>maxOutput:{bytes,lines}</code> 可设置 child final output cap；源码文档明确 child inline path <strong>无默认 cap</strong>。workflow Return/Emitted/Console 有默认 200KB/5000 行 cap，但别把这个当 child 的默认 cap。</p>
+<p>workflow 可将中间结果保持为文件、JSON state 或结果对象，后续 child 只拿需要的信息；recurring child 可 persisted JSONL + resume，保持上下文连续性而无需永久 live process。retain/resume 保留 agent/model/tool contract，权限并不自动扩大。parent 仍要阅读核心结论、验证证据，large report 才外置。</p>
+<p>FleetView、inlineToolDisplay、collapsed rich-result 等主要是 <strong>TUI display</strong>；docs 明确 <code>mainWindowRenderer</code> 不改 model-facing content。界面折叠不等于 token 压缩。此次当前固定版公开 tool-reference/schemas 未找到可证明的 output paging API，报告应讲 file-only +按需读取，不沿用未指定旧版本的分页说法。</p>
+<h5 id="appendix-b-13">6.6 schema 和指南可按需加载，也要顾及 provider 缓存</h5>
+<p>当模型支持中途添加工具时，新 parent 先暴露小 <code>subagents_enable</code> loader，下轮才加载完整 subagent schema；其他 provider/session 为缓存兼容可直接保持 full schema。agent definitions 默认不全量注入，使用 list/get/guide 获取局部知识；已装版本的 guide 读取自身 packaged docs。复杂度不自动授权 delegation；该规则与实际上下文机制都是此 extension 的当前版本设计，不必照搬所有调研场景。</p>
+<p><strong>为何值得借鉴。</strong> 把上下文来源、运行环境、能力、long-term role memory、parent 返回量拆成独立决策；针对不同职责保持不同历史，而非所有 workers 接收“父 prompt 全复制”。</p>
+<p><strong>成本与边界。</strong> fork 给每个 child 重复父输入；fresh 需要写好窄 task 与 handoff；pruned fork 额外模型调用并可能失真；role memory 常驻且需要整理；file-only 只是延迟读取，不是保证永远少读。只有比较 parent+child 总 cost、latency、cache read/write、结果正确性与管理轮次，才能判断净收益。</p>
+<p><strong>一手来源：</strong></p>
+<ul>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/README.md" rel="noopener noreferrer" target="_blank">固定 README</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/docs/agents.md#prompt-assembly" rel="noopener noreferrer" target="_blank">prompt assembly、继承和 role memory</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/docs/tool-reference.md#fork-context-details" rel="noopener noreferrer" target="_blank">fresh/fork 与 file-only API</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/docs/configuration.md#forkcontext" rel="noopener noreferrer" target="_blank">pruned fork 官方配置和恢复边界</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/src/agents/agent-memory.ts#L21" rel="noopener noreferrer" target="_blank">agent-memory 实际 200 行/16KiB 预算</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/src/shared/fork-context.ts#L164" rel="noopener noreferrer" target="_blank">fork session creation 与 thinking sanitization</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/src/shared/pruned-fork.ts" rel="noopener noreferrer" target="_blank">pruned-fork 源码</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/src/runs/shared/subagent-prompt-runtime.ts" rel="noopener noreferrer" target="_blank">child prompt runtime</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/docs/workflows.md" rel="noopener noreferrer" target="_blank">workflow 官方方案</a></li>
+<li><a href="https://github.com/nicobailon/pi-subagents/blob/6a6675c971076ef3fc4a1ac443da938144f9a52b/package.json" rel="noopener noreferrer" target="_blank">package</a></li>
+</ul>
+<h4 id="appendix-b-14">七、同名项目辨认：不要把不同 pi-memory 合成一个产品</h4>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>GitHub owner/repo</th>
+<th>实际包/身份</th>
+<th>本次确认程度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>jo-inc/pi-mem</td>
+<td><code>@askjo/pi-mem</code>，Markdown long-term/daily/scratchpad，实际 substring search</td>
+<td>README +关键源码已读</td>
+</tr>
+<tr>
+<td>tickernelz/pi-memory</td>
+<td><code>@zhafron/pi-memory</code>，IDENTITY.md/USER.md/MEMORY.md/daily，统一 memory tool</td>
+<td>README +package已读，未核关键源码</td>
+</tr>
+<tr>
+<td>nicobailon/pi-memory-workbench</td>
+<td><code>pi-memory-workbench</code>，owner session/events/dream/hot view</td>
+<td>README +关键源码已读</td>
+</tr>
+<tr>
+<td>gordonbrander/pi-memory-blocks</td>
+<td><code>@gordonb/pi-memory-blocks</code>，有限 user/agent blocks</td>
+<td>README +关键源码已读</td>
+</tr>
+<tr>
+<td>thebabush/pi-memento</td>
+<td><code>pi-memento</code>，single-context nested transaction</td>
+<td>README +关键源码已读</td>
+</tr>
+<tr>
+<td>waterdrop26651/pi-memento</td>
+<td>搜索结果为 research ledgers/controlled recall</td>
+<td>仅搜索发现，不纳入机制结论</td>
+</tr>
+</tbody>
+</table></div>
+<p>tickernelz 固定 SHA <code>e3931a27bbd74ef144dcaa2810badffc3fc4a86c</code>，日期 <code>2026-02-18T15:03:56Z</code>，package <code>1.0.2</code>、dev Pi <code>^0.52.12</code>。README 声称 MEMORY/IDENTITY/USER 自动注入，daily 按需，通过 BOOTSTRAP 引导首次建立记忆；由于没有核其注入源码，<strong>不能确定逐 session/逐 turn实际行为，也不能声称源码安全/兼容当前Pi</strong>。附链接用于辨认，不列为同证据等级精选方案。</p>
+<ul>
+<li><a href="https://github.com/tickernelz/pi-memory/blob/e3931a27bbd74ef144dcaa2810badffc3fc4a86c/README.md" rel="noopener noreferrer" target="_blank">tickernelz 固定 README</a></li>
+<li><a href="https://github.com/tickernelz/pi-memory/blob/e3931a27bbd74ef144dcaa2810badffc3fc4a86c/package.json" rel="noopener noreferrer" target="_blank">tickernelz package</a></li>
+</ul>
+<h4 id="appendix-b-15">八、方案比较与可组合原则</h4>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>实际注入位置</th>
+<th>主要预算</th>
+<th>写回方式</th>
+<th>冷信息取回</th>
+<th>最适合</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi-memory-workbench</td>
+<td>条件 before_agent_start hidden custom message</td>
+<td>分段 hot view、resume/todo/event clips</td>
+<td>owner checkpoint +events +dream</td>
+<td>bounded lexical recall →exact path</td>
+<td>多会话续接、可审计项目记忆</td>
+</tr>
+<tr>
+<td>jo-inc/pi-mem</td>
+<td>context 尾部 user message</td>
+<td>近期窗口；catchup局部字符预算；MEMORY/daily无统一全局cap</td>
+<td>agent memory_write/scratchpad</td>
+<td>keyword search +read</td>
+<td>单用户轻量偏好、近期日志</td>
+</tr>
+<tr>
+<td>memory-blocks</td>
+<td>before_agent_start systemPrompt</td>
+<td>每block默认2000字符，无总block cap</td>
+<td>updateMemory精确替换/追加，超限截尾</td>
+<td>无独立检索层</td>
+<td>少量稳定核心记忆</td>
+</tr>
+<tr>
+<td>pi-memento</td>
+<td>context 对话投影</td>
+<td>事务片段；模型或agent决定保留表示</td>
+<td>metadata记录disposition，非长期事实存储</td>
+<td>无检索；raw JSONL保留</td>
+<td>死路较多的同agent探索</td>
+</tr>
+<tr>
+<td>pi-subagents role memory</td>
+<td>child launch systemPrompt</td>
+<td>200行且16KiB</td>
+<td>role agent已有编辑工具写入</td>
+<td>无专用memory retrieval</td>
+<td>recurring specialist累计经验</td>
+</tr>
+<tr>
+<td>pi-subagents fork</td>
+<td>branch child session</td>
+<td>full默认；pruned可选64KiB</td>
+<td>child独立session</td>
+<td>sidecar有审计ref但无child recovery API</td>
+<td>依赖父历史的第二意见</td>
+</tr>
+<tr>
+<td>pi-subagents file-only</td>
+<td>parent tool result仅artifact reference</td>
+<td>可设置maxOutput，inline无默认cap</td>
+<td>runtime输出artifact</td>
+<td>parent/后续child按需read</td>
+<td>大报告、编排中间成果</td>
+</tr>
+</tbody>
+</table></div>
+<p>可以把少量核心事实常驻、详细证据放外部文件、探索过程以投影清理、窄任务 fresh child、历史相关的专家 fork、parent 只接收结论+artifact references。这是从多个项目提炼的组合设计，<strong>并非本次已经一起安装验证的发行套件</strong>。同时安装多个 memory 扩展还可能重复 MEMORY.md 注入、碰撞 tool 名称、引入互相冲突的持久化策略；多个 context handlers 的顺序和压缩一致性也需实测。</p>
+<h4 id="appendix-b-16">九、后续评估应回答什么</h4>
+<p>若要评价某方案确实“优秀于默认配置”，应分别测量：关键事实 recall precision/recall、过时事实纠正、压缩后 task resume 成功率、来源可回查率、无关/恶意 memory 被错误提升为 instructions 的次数；再统计 parent+child 总 tokens、cache hit/read/write、额外 summarizer 调用、latency、额外管理 turns。负例至少包括：多会话并发写、全新或缺 session 的 fork、长memory超预算、新事实在文件尾部、摘要错误、缺API key、不同Pi版本，以及UI折叠但model context不变。现有调研支持机制设计比较，不支持“减少X%成本/提高Y%任务成功率”的数值结论。</p>
+<h4 id="appendix-b-17">附：本次公开原文快照</h4>
+<p>联网成功取得的源文本保存于 <code>_community_memory_evidence.json</code>（固定SHA、日期、README和file tree）与 <code>_community_memory_sources.json</code>（关键源码和docs）。它们只是公开上游数据缓存，不含本地工程实现或用户私有数据。最终给用户的HTML应保留上游永久URL和上述版本/未验证边界，不能将缓存位置当上游证据。</p></div></details><details id="appendix-c" class="appendix"><summary>附录 C · MCP、剪枝、DCP 与连续性</summary><div class="appendix-content"><h3 id="appendix-c-1">Pi 社区：工具定义、工具结果与会话连续性的上下文管理</h3>
+<p>研究日期：2026-10-07（Asia/Shanghai）。范围是公开 Pi 本身及其社区扩展；本文不评价本地工程。已实际执行联网搜索，并读取 GitHub 第一方 README、架构文档和以下固定提交的关键源码。未安装扩展，未执行真实模型任务；源码可解释机制，不能证明模型会正确采用、供应商兼容性或净成本收益。</p>
+<h4 id="appendix-c-2">1. 值得区分的五种问题</h4>
+<p>工具 schema 是“尚未做事就支付”的上下文成本；工具结果是“做完事以后反复携带”的上下文成本；摘要调用又会产生新的输入、输出、时延和缓存失效成本。优秀方案不是统一地删消息，而是分别治理这些成本。</p>
+<ol>
+<li><strong>工具能力延迟披露</strong>：先暴露小型入口，按需搜索、读取定义，再调用具体能力。</li>
+<li><strong>可恢复的结果剪枝</strong>：原始证据保留，工作上下文只携带摘要或引用。</li>
+<li><strong>围绕 prompt cache 安排剪枝</strong>：让前缀在工作段内稳定，在合理边界集中更换。</li>
+<li><strong>由 Agent 决定何时整理</strong>：让模型看到使用量，并能在任务阶段边界请求压缩。</li>
+<li><strong>压缩前后校验连续性</strong>：不仅检查变短，还检查目标、约束、决策、未完成事项和检索路径是否仍成立。</li>
+</ol>
+<p>这些机制是不同维度；大量安装同类扩展，可能使多个 <code>context</code> hook 反复改写同一消息，或发生工具名称、状态与压缩生命周期冲突。这里的“优秀”指可取的机制设计，并非社区排行榜或已证明的最优组合。</p>
+<h4 id="appendix-c-3">2. 已核查的项目与版本身份</h4>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>固定提交</th>
+<th>核心机制</th>
+<th>核查深度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/nicobailon/pi-mcp-adapter/tree/5d2b583f91dc9e52d2a7112bd5268202dbafa20e" rel="noopener noreferrer" target="_blank">nicobailon/pi-mcp-adapter</a></td>
+<td><code>5d2b583f91dc9e52d2a7112bd5268202dbafa20e</code></td>
+<td>小型 MCP gateway、按需发现、输出 offload、懒进程</td>
+<td>README、proxy、output guard、lifecycle</td>
+</tr>
+<tr>
+<td><a href="https://github.com/championswimmer/pi-context-prune/tree/7f27beea965438ba1e045ef962b78561577cd0be" rel="noopener noreferrer" target="_blank">championswimmer/pi-context-prune</a></td>
+<td><code>7f27beea965438ba1e045ef962b78561577cd0be</code></td>
+<td>批次摘要、会话索引、原文恢复</td>
+<td>README、types、pruner、query、summarizer</td>
+</tr>
+<tr>
+<td><a href="https://github.com/jjuraszek/pi-condense/tree/069628aaef5ef6879739102dd4f5db1a8f6c7470" rel="noopener noreferrer" target="_blank">jjuraszek/pi-condense</a></td>
+<td><code>069628aaef5ef6879739102dd4f5db1a8f6c7470</code></td>
+<td>缓存友好批次、stub、链压缩、保护路径、恢复宽限</td>
+<td>README、PRUNING、types、pruner、query</td>
+</tr>
+<tr>
+<td><a href="https://github.com/pi-vault/pi-dcp/tree/ff8c6dddd3160a532e622cbc7d35e411afdea2df" rel="noopener noreferrer" target="_blank">pi-vault/pi-dcp</a></td>
+<td><code>ff8c6dddd3160a532e622cbc7d35e411afdea2df</code></td>
+<td>规则去重、失败输入剪枝、模型主动压缩</td>
+<td>README、index、pipeline、config/schema</td>
+</tr>
+<tr>
+<td><a href="https://github.com/theduke/pi-context-tools/tree/d565066e1b7ebe8556d23437abd4532bd5ae12bd" rel="noopener noreferrer" target="_blank">theduke/pi-context-tools</a></td>
+<td><code>d565066e1b7ebe8556d23437abd4532bd5ae12bd</code></td>
+<td>Agent 自查上下文并调用 Pi 原生压缩</td>
+<td>README、全部 extension 源码</td>
+</tr>
+<tr>
+<td><a href="https://github.com/alpertarhan/pi-smart-compact/tree/cb3c143aa69290ff6f9df346c3461d75562d481c" rel="noopener noreferrer" target="_blank">alpertarhan/pi-smart-compact / Pi Continuity</a></td>
+<td><code>cb3c143aa69290ff6f9df346c3461d75562d481c</code></td>
+<td>压力优先清理、checkpoint/rewind、验证型压缩</td>
+<td>README、ARCHITECTURE、配置、constants、context operations、verify</td>
+</tr>
+<tr>
+<td><a href="https://github.com/PSU3D0/pi-dcp/tree/8d15a3331c51f3551ccd20583ac0f5ba499a13c3" rel="noopener noreferrer" target="_blank">PSU3D0/pi-dcp</a></td>
+<td><code>8d15a3331c51f3551ccd20583ac0f5ba499a13c3</code></td>
+<td>保守窗口、替换大输出、规则剪枝</td>
+<td>README、index/config；transform 内部未完整核查</td>
+</tr>
+<tr>
+<td><a href="https://github.com/complexthings/pi-dynamic-context-pruning/tree/75e04cb03fe7e7484ce61a3c684dda19b2bc41f7" rel="noopener noreferrer" target="_blank">complexthings/pi-dynamic-context-pruning</a></td>
+<td><code>75e04cb03fe7e7484ce61a3c684dda19b2bc41f7</code></td>
+<td>去重与 compress 的另一实现</td>
+<td>README、index、config、pruner、compress-tool</td>
+</tr>
+</tbody>
+</table></div>
+<p>GitHub 公共 API 后来发生限流；剩余版本由 <code>git ls-remote</code> 获取 commit 后，使用固定 commit 的 <code>raw.githubusercontent.com</code> 下载。后续网络/工具不可用时停止补采。未取得或未完整读取的文件不作为实现结论依据。</p>
+<p>特别注意：多个项目叫 <code>pi-dcp</code>，但作者、包名、默认行为、恢复语义并不一致；不能把某项目的配置阈值写成所有 DCP 的默认值。</p>
+<h4 id="appendix-c-4">3. pi-mcp-adapter：把工具 schema 从常驻目录改为按需获取</h4>
+<h5 id="appendix-c-5">实际机制</h5>
+<p>默认入口是一个 <code>mcp</code> proxy。模型先检索工具，必要时读取具体定义，再以 server/tool/args 调用；所有 MCP 工具的大型 schema 不必一开始就常驻。<code>proxy-modes.ts</code> 实现 search、describe、调用匹配和参数校验，可按 server 消除同名工具歧义。schema 仍存在于扩展的元数据中，“不进入当前模型上下文”并不等于“服务器没有定义”。<a href="https://github.com/nicobailon/pi-mcp-adapter/blob/5d2b583f91dc9e52d2a7112bd5268202dbafa20e/proxy-modes.ts" rel="noopener noreferrer" target="_blank">固定源码：proxy-modes.ts</a></p>
+<p>它也控制结果大小。<code>guardMcpOutput</code> 用 Pi 的行数/字节限制截取文本，将完整文本存入临时文件，向模型返回预览、截断通知和路径；图片仍按原生图片块传递。这里解决的是 tool result 的单次入口，而不是已经累积的会话历史。超大原始 MCP <code>details</code> 也被单独限制，默认上限为 16 KiB。若持久化失败，代码报告写入错误；因此不能无条件声称每次都能恢复全部原文。<a href="https://github.com/nicobailon/pi-mcp-adapter/blob/5d2b583f91dc9e52d2a7112bd5268202dbafa20e/mcp-output-guard.ts" rel="noopener noreferrer" target="_blank">固定源码：mcp-output-guard.ts</a></p>
+<p>MCP 进程默认按需启动，闲置 10 分钟关闭。工具元数据可在进程关闭后继续检索，实际调用再启动；需要跨调用状态的服务器可采用 keep-alive 生命周期。这主要节省进程资源，不能直接计为模型 token 节省。<a href="https://github.com/nicobailon/pi-mcp-adapter/blob/5d2b583f91dc9e52d2a7112bd5268202dbafa20e/README.md" rel="noopener noreferrer" target="_blank">固定版本 README</a></p>
+<h5 id="appendix-c-6">与当前 Pi 原生 MCP 的关系</h5>
+<p>该 README 已明确 Pi 0.99 开始有原生 MCP，也避免把全部工具定义送入上下文；因此不能继续采用“Pi 无 MCP，所以 adapter 填补空白”的旧叙述。社区 adapter 提供的是不同交互策略：默认小 JSON proxy、脚本 opt-in、懒服务器生命周期、扩展搜索和界面支持。原生与 adapter 的具体差异应结合所用 Pi 版本复核；仓库对比明确以 Pi 0.99.2 为其快照，并非保证后来每个版本仍相同。维护者宣称的小型 lookup token 优势和大批量脚本优势有特定 workload，本文未复跑，不外推为通用任务质量或成本收益。</p>
+<h5 id="appendix-c-7">可取之处与代价</h5>
+<p>能力目录大、每任务使用工具少时，按需披露价值明显；但它多出搜索/describe 往返，模型可能选错工具。大量逐条调用时，小 proxy 不一定胜过脚本批处理。临时 offload 文件的寿命、范围和读取能力也需要纳入恢复设计。</p>
+<h4 id="appendix-c-8">4. pi-context-prune：证据留在 session，工作上下文只携带摘要</h4>
+<p>该扩展捕获完成的 tool-result 批次，调用摘要模型，写入摘要与索引；在 Pi 的 <code>context</code> 事件里移除已被接受摘要覆盖的原始 <code>toolResult</code>，不删除原始 session 消息。summary/index/frontier/stats 本身会追加到会话，因此正确表述是“保留原始日志，改变未来请求的投影”，而不是“会话文件完全未改动”。<a href="https://github.com/championswimmer/pi-context-prune/blob/7f27beea965438ba1e045ef962b78561577cd0be/README.md" rel="noopener noreferrer" target="_blank">README</a>，<a href="https://github.com/championswimmer/pi-context-prune/blob/7f27beea965438ba1e045ef962b78561577cd0be/src/pruner.ts" rel="noopener noreferrer" target="_blank">pruner.ts</a></p>
+<p>固定源码默认 <code>enabled=false</code>；启用后的默认策略为 <code>pruneOn=agentic-auto</code>，模型通过 <code>context_prune</code> 决定时机，并收到未剪枝数量提醒；默认 batch 是一个用户消息到最终 Agent 回答之间的跨度。其他模式包括每 turn、checkpoint/context tag、按需、最终 Agent 消息时触发。不要把“安装即自动每回合剪枝”当默认。<a href="https://github.com/championswimmer/pi-context-prune/blob/7f27beea965438ba1e045ef962b78561577cd0be/src/types.ts#L197" rel="noopener noreferrer" target="_blank">types.ts</a></p>
+<p>摘要携带短 ref，模型可用 <code>context_tree_query</code> 找回原结果。恢复入口确实存在，但所核查 query 工具只收一组 ID，每条返回文本仍经过 Pi 默认行数/字节限制；没有 offset/limit 参数。所以“原文被保存”与“一个工具调用把任意大原文完整送回模型”应分开理解。索引 <code>details</code> 不是模型可读正文的替代。该简版 pruner 只删除 tool-result，保留 assistant tool-call 块；各 provider 如何规范化缺失结果需做运行验证。<a href="https://github.com/championswimmer/pi-context-prune/blob/7f27beea965438ba1e045ef962b78561577cd0be/src/query-tool.ts" rel="noopener noreferrer" target="_blank">query-tool.ts</a></p>
+<p>值得借鉴的原则是：摘要是默认工作集，原始证据是可寻址的后备集。其不足是摘要调用要支付成本，ref 需要被模型保留和实际使用，恢复结果也可能再次膨胀。未知将来需要哪些细节时，“保留检索路径”比不可逆地截去旧证据更稳妥。</p>
+<h4 id="appendix-c-9">5. pi-condense：考虑缓存和收益门槛的可恢复剪枝</h4>
+<p>pi-condense 明确继承 pi-context-prune 的思路，但在固定源码上已经不是相同实现。默认仍关闭；开启后默认 <code>pruneOn=agent-message</code>、<code>batchingMode=turn</code>，在完整工作段收束时处理，而不是每个工具调用后改前缀。小于 1000 字符的批次默认跳过摘要；自动上下文比例阈值 <code>autoBudgetThreshold=null</code>，因此不能把 80% 描述为它的默认自动触发。<a href="https://github.com/jjuraszek/pi-condense/blob/069628aaef5ef6879739102dd4f5db1a8f6c7470/src/types.ts#L562" rel="noopener noreferrer" target="_blank">types.ts</a></p>
+<p>它将已摘要结果替换为带 ref 的小 stub，保留工具调用/结果的结构。默认保持最近 3 条闭合链，旧链可做范围压缩；默认保护 skills Markdown 等路径，防止读入的程序指导被无差别摘要掉。结果恢复默认有 3 turn 宽限，避免刚取回证据立即被再次剪掉。结果索引采用 provider tool ID 与时间戳区分发生次数，减少重复 ID 错误覆盖的问题。<a href="https://github.com/jjuraszek/pi-condense/blob/069628aaef5ef6879739102dd4f5db1a8f6c7470/src/pruner.ts" rel="noopener noreferrer" target="_blank">pruner.ts</a></p>
+<p>大于 65536 字节的输出默认 spill，预览 2048 字节；模型可读取 sidecar 文件，或用 <code>context_tree_query</code>。query 还尝试从当前分支恢复原始图片块；同一个原始 ID 被复用时返回不同 occurrence。普通 query 文本仍有限制，大文件深入读取依赖文件路径。原始 JSONL 消息保留，而索引与自定义记录会追加；README 中“session untouched”应按“不覆写/删除原始消息”理解。<a href="https://github.com/jjuraszek/pi-condense/blob/069628aaef5ef6879739102dd4f5db1a8f6c7470/src/query-tool.ts" rel="noopener noreferrer" target="_blank">query-tool.ts</a></p>
+<p>它体现的是缓存权衡，不是绝对最小上下文：稳定一段前缀，尽量把重写集中到工作单元边界。已有 cached input 的价格可能远低于摘要生成及重新写入缓存的价格；若任务马上结束，摘要可能没有机会回本。保护路径和链滚动窗口也说明语义对象需要不同保留期。<a href="https://github.com/jjuraszek/pi-condense/blob/069628aaef5ef6879739102dd4f5db1a8f6c7470/PRUNING.md" rel="noopener noreferrer" target="_blank">PRUNING.md</a></p>
+<h4 id="appendix-c-10">6. pi-vault/pi-dcp：先机械去重，再把语义压缩交给 Agent</h4>
+<p>该实现默认开启。<code>context</code> hook 运行 pipeline：清理旧标记、重建稳定 refs 与工具缓存、机械策略、消息 ID、压缩提醒、最终 projection。剪枝标记/压缩状态可持久化，但原始消息不在该 hook 里直接删除。去重和过时错误处理是规则层；模型通过 <code>compress</code> 工具提供 range/message 级摘要，语义选择由模型承担。<a href="https://github.com/pi-vault/pi-dcp/blob/ff8c6dddd3160a532e622cbc7d35e411afdea2df/src/index.ts#L617" rel="noopener noreferrer" target="_blank">index.ts</a>，<a href="https://github.com/pi-vault/pi-dcp/blob/ff8c6dddd3160a532e622cbc7d35e411afdea2df/src/pipeline.ts" rel="noopener noreferrer" target="_blank">pipeline.ts</a></p>
+<p>默认 compress 权限是 allow、mode 是 range，提醒频率 5 个 turn，连续 assistant iteration 提醒阈值 15；过时失败输入门槛 4 个用户 turn。失败的诊断输出保留，清理的是历史参数。compress/write/edit/subagent 默认受到保护。提醒与保护计数采用用户消息 turn，不能误写为每个工具调用或 assistant step。<a href="https://github.com/pi-vault/pi-dcp/blob/ff8c6dddd3160a532e622cbc7d35e411afdea2df/src/config-schema.ts" rel="noopener noreferrer" target="_blank">config-schema.ts</a>，<a href="https://github.com/pi-vault/pi-dcp/blob/ff8c6dddd3160a532e622cbc7d35e411afdea2df/README.md" rel="noopener noreferrer" target="_blank">README</a></p>
+<p>配置展示有 legacy 80%/50% 阈值，但初始化同时设置 <code>maxContextLimit=200000</code>、<code>minContextLimit=100000</code>，且支持模型覆盖。不能仅截取 80% 并称当前所有模型固定在此自动压缩；需看实际生效 limits 和模型上下文窗口。<code>experimental.allowSubAgents=false</code> 默认关闭子会话应用。query 原文恢复不是所读公开 API 的主张；不要把它与 context_tree_query 系列视为同一种归档恢复能力。<a href="https://github.com/pi-vault/pi-dcp/blob/ff8c6dddd3160a532e622cbc7d35e411afdea2df/src/config.ts" rel="noopener noreferrer" target="_blank">config.ts</a></p>
+<p>维护者公开了确定性 pipeline 基准，包含无可剪内容时标记增加 token 的负例。这比只报节省比例更有解释力；但其重复工具 fixture 的约 94.7% 估算下降不是实际 provider 账单、长任务成功率或缓存净收益。<a href="https://github.com/pi-vault/pi-dcp/blob/ff8c6dddd3160a532e622cbc7d35e411afdea2df/README.md#benchmarks" rel="noopener noreferrer" target="_blank">README 基准说明</a></p>
+<h4 id="appendix-c-11">7. pi-context-tools：最小的 Agent 自管接口</h4>
+<p>该扩展只有两个工具。<code>context_info</code> 通过 Pi <code>getContextUsage()</code> 返回 tokens、window 和 percent；<code>compact_context</code> 设置请求标志，在 <code>agent_end</code> 后异步调用原生 <code>ctx.compact()</code>。工具返回的是“已安排压缩”，并不表示压缩已完成。<a href="https://github.com/theduke/pi-context-tools/blob/d565066e1b7ebe8556d23437abd4532bd5ae12bd/extensions/index.ts" rel="noopener noreferrer" target="_blank">完整源码</a></p>
+<p>它没有独立摘要算法、归档索引、固定触发比例或长期 memory store。它的优点是把现有原生能力以小工具交给模型，在阶段交接时主动使用；代价是模型需要知道该看什么、何时调用。源码明确处理 usage unavailable 与压缩后 tokens 暂未知的情况：数字要等下一次模型回复更新，不应把滞后使用量理解为“压缩失败”。<a href="https://github.com/theduke/pi-context-tools/blob/d565066e1b7ebe8556d23437abd4532bd5ae12bd/README.md" rel="noopener noreferrer" target="_blank">README</a></p>
+<p>对协调多个子任务的父 Agent，这可以成为阶段边界操作：先归纳当前结论与待办，再请求压缩；但工具本身不会保证模型做这一步，也不等于默认自动管理。</p>
+<h4 id="appendix-c-12">8. Pi Continuity：让压缩、checkpoint 与恢复遵守连续性契约</h4>
+<h5 id="appendix-c-13">压力优先与稳定工具前缀</h5>
+<p>固定源码默认 <code>contextPressureOnly=true</code>、<code>autoTrigger=true</code>、<code>autoTriggerStrategy=settled</code>、<code>minContextPercent=80</code>；默认需要批准应用，备份开启。工具默认 eager 暴露，减少中途新增 schema 改变 cached prefix；操作才受压力门槛控制。<code>artifactOffloadEnabled=false</code>，所以不能把它的早期 spill 当安装即启用。默认 memory backend 为 local；Hindsight/Mnemopi 为可选后端。<a href="https://github.com/alpertarhan/pi-smart-compact/blob/cb3c143aa69290ff6f9df346c3461d75562d481c/src/constants.ts#L133" rel="noopener noreferrer" target="_blank">constants.ts</a></p>
+<h5 id="appendix-c-14">检查点与可验证回退</h5>
+<p>checkpoint 保存 session/origin 标识与投影前缀 fingerprint。rewind 前核查 session/branch、checkpoint 后有无 compaction 或 branch navigation、有无新 user 指令、旧前缀的数量/hash 是否变化。新用户指令到达时拒绝使用旧 checkpoint，防止把新的目标丢掉。它可以结束一次研究绕行，把过程替换为报告并保留证据引用；这是上下文回退，不会回滚文件、进程或外部副作用。<a href="https://github.com/alpertarhan/pi-smart-compact/blob/cb3c143aa69290ff6f9df346c3461d75562d481c/src/app/context-operations.ts#L115" rel="noopener noreferrer" target="_blank">context-operations.ts</a></p>
+<h5 id="appendix-c-15">验证型压缩</h5>
+<p>EESV 将工作拆为 Extract → Explore → Synthesize → Verify。所读 verify 代码拿源消息、用户 steering、预算与 extraction 一起检查摘要，先确定性修补已知缺口；允许的模式才调用 LLM patch。检查对象包括事实、文件、约束、错误和 open loops，而不是单纯目标压缩率。该检查能发现已建模的遗漏，不能证明语义事实绝对正确或后续任务必然成功。<a href="https://github.com/alpertarhan/pi-smart-compact/blob/cb3c143aa69290ff6f9df346c3461d75562d481c/src/app/steps/verify.ts" rel="noopener noreferrer" target="_blank">verify.ts</a></p>
+<p>架构文档区分原始归档、session 工作状态、备份和长期 project memory；归档检索具有分支范围、hash 和引用授权边界。清理保护近期工作、指令与错误；持久化应用等待相应宿主生命周期确认。与简单 summarize-all 相比，它的价值在于显式记录“哪些连续性对象必须保留”和“如何证明本次修改确实应用”。相应代价是更多配置、工具、文件和验证/摘要调用。<a href="https://github.com/alpertarhan/pi-smart-compact/blob/cb3c143aa69290ff6f9df346c3461d75562d481c/ARCHITECTURE.md" rel="noopener noreferrer" target="_blank">ARCHITECTURE.md</a></p>
+<h4 id="appendix-c-16">9. 同名 DCP 的关键区别</h4>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>当前默认策略或已核查行为</th>
+<th>恢复语义与边界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi-vault/pi-dcp</td>
+<td>默认开启；规则去重与失败参数清理；compress 可用</td>
+<td>原会话与状态保留；本文未核查到 context_tree_query 等价入口</td>
+</tr>
+<tr>
+<td>PSU3D0/pi-dcp</td>
+<td>config：safe；保护 8 个用户 turn 与 2 step；nudge/autoPrune/forceCompact 比例为 .7/.8/.9；advanced autonomy 默认关闭</td>
+<td>README 大输出 placeholder 指导重跑工具；重跑读取现态，不保证恢复历史原文；具体 threshold 执行因 transform 文件未完整读而未确认</td>
+</tr>
+<tr>
+<td>complexthings/pi-dynamic-context-pruning</td>
+<td>独立的配置/pruner/compress-tool 实现；默认 compress/write/edit 保护，失败年龄 4 turn</td>
+<td>不可借用其他 DCP 的恢复入口、会话持久化或保护窗口结论</td>
+</tr>
+</tbody>
+</table></div>
+<p>来源：<a href="https://github.com/PSU3D0/pi-dcp/blob/8d15a3331c51f3551ccd20583ac0f5ba499a13c3/config.ts" rel="noopener noreferrer" target="_blank">PSU config</a>，<a href="https://github.com/PSU3D0/pi-dcp/blob/8d15a3331c51f3551ccd20583ac0f5ba499a13c3/README.md" rel="noopener noreferrer" target="_blank">PSU README</a>，<a href="https://github.com/complexthings/pi-dynamic-context-pruning/blob/75e04cb03fe7e7484ce61a3c684dda19b2bc41f7/config.ts" rel="noopener noreferrer" target="_blank">complexthings config</a>。配置值只证明配置存在；执行路径未读全时不能当功能验收。</p>
+<h4 id="appendix-c-17">10. 对 Pi 用户真正有用的选择原则</h4>
+<div aria-label="可横向滚动的数据表" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>主要压力</th>
+<th>优先研究的机制</th>
+<th>关键代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工具很多、每次只用少数</td>
+<td>原生 tool search/codemode，或 adapter proxy 按需披露</td>
+<td>发现与 schema 往返，批量操作策略</td>
+</tr>
+<tr>
+<td>输出非常大</td>
+<td>工具侧 offload + preview + 分段文件读取</td>
+<td>档案寿命、写入失败、图片与结构化结果</td>
+</tr>
+<tr>
+<td>长会话大量重复读/失败调用</td>
+<td>机械去重、失败参数剪枝</td>
+<td>是否仍需要历史版本与诊断</td>
+</tr>
+<tr>
+<td>已完成工具段仍长期携带</td>
+<td>可恢复摘要 + stub + 查询入口</td>
+<td>摘要调用、缓存失效、恢复再膨胀</td>
+</tr>
+<tr>
+<td>父 Agent 协调长任务</td>
+<td>context_info + 阶段边界主动 compact</td>
+<td>模型是否能判断时机、原生摘要是否漏待办</td>
+</tr>
+<tr>
+<td>研究绕行与多次续接</td>
+<td>checkpoint/report/rewind、验证型 compaction</td>
+<td>额外状态和验证成本，不能回滚副作用</td>
+</tr>
+</tbody>
+</table></div>
+<p>不要只计删去的输入 token。一个可解释评估应同时计入父/子 Agent 输入输出、缓存命中与写入、摘要/修补调用、模型请求数、端到端时延、恢复次数、错检/漏检、任务成功和人工管理。负例至少包括：短任务、无重复小输出、刚被恢复的证据、历史版本必须保留、新用户指令、切分支、被截断后无法重取、大批量 MCP 操作。本文没有执行这样的真实 provider 评估，所有净收益与兼容性均未验证。</p>
+<h4 id="appendix-c-18">11. 证据结论</h4>
+<p>功能设计层：上述机制与默认值有已读一手代码支持。完整链路层：没有在 Pi CLI 中安装并跑通，未验证。自主采用层：没有观测真实模型会主动搜索、恢复或合理压缩，未验证。净收益层：没有进行相同任务/模型/provider 的账单与质量对照，未验证。社区宣传数据只按其原始 workload 和证据范围介绍，不提升为通用结论。</p></div></details><details id="appendix-d" class="appendix"><summary>附录 D · 确定性压缩与观察式记忆</summary><div class="appendix-content"><h3 id="appendix-d-1">社区补充：确定性压缩、观察式记忆与权威记忆日志</h3>
+<p>联网研究日期：2026-10-07（Asia/Shanghai）。以下资料来自公开仓库固定 commit 的 README、配置及架构文档；它们是机制研究，不代表独立复现性能或验证所有 Pi 版本兼容性。</p>
+<h4 id="appendix-d-2">1. sting8k/pi-vcc：结构提取 + 原始 session 检索</h4>
+<p>固定 commit：<code>4cfc6bfae5a1a943dd2b4e9cabc95101bb5811bb</code>；该快照 package 为 <code>@sting8k/pi-vcc 0.10.0</code>，peer Pi <code>&gt;=0.74.0 &lt;2.0.0</code>。来源：<a href="https://github.com/sting8k/pi-vcc/blob/4cfc6bfae5a1a943dd2b4e9cabc95101bb5811bb/README.md" rel="noopener noreferrer" target="_blank">README</a>、<a href="https://github.com/sting8k/pi-vcc/blob/4cfc6bfae5a1a943dd2b4e9cabc95101bb5811bb/package.json" rel="noopener noreferrer" target="_blank">package</a>。</p>
+<p>它替换自由文本模型摘要，用确定性提取生成 Session Goal、Files and Changes、Commits、Outstanding Context、User Preferences、可选Tracked Commands和短transcript。根据实际内容决定出现哪些section，合并前次摘要并限制section大小。保留tail；默认keep:1，在tail低于5k估算token时smartKeepTail扩到20k范围；显式keep:N优先。overrideDefaultCompaction默认true；关闭后只使用专属命令，不接管原生压缩。</p>
+<p><code>vcc_recall</code>从原始session读取，默认当前lineage，scope:all涵盖其它分支，限当前session。支持关键词OR排序、regex、page、#N entry展开、range以及touched files。压缩摘要中保留entry定位，能够先用短信息继续，再定点恢复原文。算法压缩本身不调用模型，召回后模型处理新增内容仍消耗token。</p>
+<p>设计优点是结构可预测、无额外摘要模型调用、原文可定位；短transcript兼顾时间顺序。边界是确定性提取不能理解所有隐含因果、图像或特殊工具语义；section cap与摘录仍删掉模型默认可见内容，所以它是“原文可恢复”的方案，不能称热上下文语义完全无损。</p>
+<p>作者README报告1884份session的字符压缩中位数97.6%及运行时间，但本次未完整读取关联benchmark数据或独立复现，不能将这些数字当作任务成功率或总计费收益。README关于Pi原生压缩“历史永久消失”的对照文案不准确：原生JSONL条目仍在，区别在于默认投影和扩展提供的模型召回接口。</p>
+<h4 id="appendix-d-3">2. k0valik/pi-blackhole：算法压缩与观察式记忆互补</h4>
+<p>固定 commit：<code>f86aa0d2edc53ea3b02fe3e9a0a130d81323178d</code>；package <code>pi-blackhole 0.5.11</code>。来源：<a href="https://github.com/k0valik/pi-blackhole/blob/f86aa0d2edc53ea3b02fe3e9a0a130d81323178d/README.md" rel="noopener noreferrer" target="_blank">README</a>、<a href="https://github.com/k0valik/pi-blackhole/blob/f86aa0d2edc53ea3b02fe3e9a0a130d81323178d/docs/architecture.md" rel="noopener noreferrer" target="_blank">架构</a>、<a href="https://github.com/k0valik/pi-blackhole/blob/f86aa0d2edc53ea3b02fe3e9a0a130d81323178d/docs/CONFIG.md" rel="noopener noreferrer" target="_blank">配置</a>。</p>
+<p>VCC风格compile生成结构摘要；Observer从新历史提取有时间戳/来源的observations，Reflector综合reflections，Dropper减少低价值observations。状态保存在session ledger；压缩时把结构摘要与记忆一起交付。每条观察/反思有短ID，对应原session entry，recall能恢复来源。不是把所有模型过程无界塞入主会话。</p>
+<p>架构记录agent_start/turn_end检查研究worker，agent_end评估压缩阈值，session_before_compact合并VCC与OM；当前配置还包含mid-run机制和非持久session特殊处理。因此单一“只有回合结束才压缩”的说法不覆盖全部模式。具体行为以配置和host版本为准。</p>
+<p>配置默认observeAfterTokens=15000，reflectAfterTokens=25000；这些是worker触发阈值，不是允许记忆总大小或硬模型窗口。历史tool output另有默认20000估算token预算，尚未被assistant消费的尾部结果受保护；非文本块保留且不计入这个文本预算，不能据此认定图像免费。recall有默认48000字符预算，字符/4仍是估算。</p>
+<p>压缩时机当前可按固定token、窗口比例、reserve或preset曲线决定，不应沿用旧81000固定默认。memory=false关闭worker及OM注入，压缩仍可独立进行。配置提供每worker模型fallback及cooldown，sessionFallback默认true；便宜worker失败后回退主模型，可能意外增加成本。</p>
+<p>这个方案的设计价值是把“高频观察”“较慢综合”“记忆清退”分层，又与原始来源相连。维护者明确称experimental，并说明<strong>结构压缩无模型调用不等于整个记忆系统免费</strong>；后台worker是实际计费调用，未经调参甚至更贵。未看到本次可独立复现的任务质量净收益证据。不要与独立pi-vcc/pi-observational-memory同时默认接管同一压缩hook，文档列出冲突。</p>
+<h4 id="appendix-d-4">3. DavidEasden/pi-compact：事件日志作为权威记忆，模型按需查询</h4>
+<p>固定 commit：<code>f2717fbd4a297bf7670d153e8ffa3706e3fbbcf3</code>；package <code>pi-compact 0.4.0</code>，peer Pi&gt;=0.87.1，开发集成测试固定0.87.1，不能把peer范围视为当前1.0.4实跑证明。来源：<a href="https://github.com/DavidEasden/pi-compact/blob/f2717fbd4a297bf7670d153e8ffa3706e3fbbcf3/README.md" rel="noopener noreferrer" target="_blank">README</a>、<a href="https://github.com/DavidEasden/pi-compact/blob/f2717fbd4a297bf7670d153e8ffa3706e3fbbcf3/package.json" rel="noopener noreferrer" target="_blank">package</a>。</p>
+<p>核心是项目<code>.pi/pi-compact/memory.jsonl</code>追加事件日志，由pure projector恢复最新状态。用户/remember写入权威记忆；模型提议留provisional，不能自动变active/pinned；模型只能改/resolve自己的provisional提议。seq/prevHash/hash维护事件链，损坏时停止在可信前缀、拒绝掩盖式续写。文件锁用于并发进程完整性。这是审计和状态完整性机制，不证明记忆语义正确。</p>
+<p>当前版本没有context注入hook，不自动注入pinned记忆或history hints；旧pinnedInjection/autoRecall字段仍可解析但不再生效。模型通过pi_memory_search/read/propose/update按需工作，历史通过pi_compact_recall的list/search/read、entry ID、file/kind/sourceClass过滤与raw分页恢复。工具默认仅当前分支；用户UI命令可选scope:all。关键词检索不是向量语义搜索；raw保留thinking，默认搜索text排除它。</p>
+<p>压缩接管使用Pi边界与投影预览，校验tool call/result配对，必要时尝试更早安全boundary。产生的checkpoint仅compactor/sourceCount/sourceHash，不复制历史正文，也不是primary memory。完整历史依赖原Pi session磁盘记录。默认recallMaxChars=16000，长entry用offset/rawLimit继续；工具JSON在完整结果边界截断，不切坏JSON。</p>
+<p>可取之处是authority/provisional/sourceClass分离、完整原文回查和不常驻大记忆。明显取舍是：指针型checkpoint极短，无法自行承载工作语义；持续任务更依赖保留tail与主动检索。用户确认带来管理成本，适合重要长期事实，不一定适合高频临时认识。原文仍在并不保证模型会回查或遵守memory；文档也明确此点。</p>
+<p>同名注意：<code>williamleong/pi-compact</code>是另一项目，为agent提供compact_context与使用授权skill；不能将它与DavidEasden的事件日志/recall设计混写。参见<a href="https://github.com/williamleong/pi-compact" rel="noopener noreferrer" target="_blank">另一项目README</a>。</p>
+<h4 id="appendix-d-5">4. 按目录按需加载：pi-on-demand-context候选</h4>
+<p>公开npm元数据确认<code>@quartermaster-labs/pi-on-demand-context 0.3.2</code>，repository为Quartermaster-Labs/pi-on-demand-context；git HEAD固定<code>7c08537fda7762b2277549231ccd48f78b2aa208</code>。官方package页面与registry描述它根据bash cd或文件工具触及的目录加载CLAUDE.md/AGENTS.md，并与Pi自身loader去重，已加载内容一次性持久注入。来源：<a href="https://pi.dev/packages/%40quartermaster-labs/pi-on-demand-context" rel="noopener noreferrer" target="_blank">package目录</a>、<a href="https://github.com/Quartermaster-Labs/pi-on-demand-context" rel="noopener noreferrer" target="_blank">仓库</a>、<a href="https://registry.npmjs.org/@quartermaster-labs/pi-on-demand-context/latest" rel="noopener noreferrer" target="_blank">registry</a>。</p>
+<p>这是解决monorepo“只预载上层规范，实际进入子目录才补局部指引”的合理思路；比全量加载所有子系统规则更贴近当时任务。当前未成功取得完整README/源码（后续连接失败），所以只能列为候选：卸载规则、精确目录边界、去重身份、是否处理规范更新及Pi1.0兼容仍未核。不能声称模型离开目录后规则自动退场。</p>
+<h4 id="appendix-d-6">5. 检索证据边界</h4>
+<p>已实际进行联网搜索，并从固定commit完整取得前3项目README/package及blackhole架构/配置；未把失败下载片段当完整证据。部分后续源码、benchmark和on-demand文档未成功下载，以上均分别说明。不安装、不调用社区worker、不执行用户任务benchmark；“值得借鉴”表示机制清晰、定位具体，不表示已证明普遍收益。</p></div></details><p class="footer">研究截止日：2026-10-07。原生使用固定 v1.0.4，社区按 owner/repository/commit 区分。公开机制、作者测试与独立复现实验分别表述；不将未执行的兼容性或收益实验写成已验证。</p></main></div><script>
+const navLinks=[...document.querySelectorAll('nav a')];
+document.getElementById('toc-filter').addEventListener('input',e=>{
+  const q=e.target.value.trim().toLowerCase();
+  navLinks.forEach(a=>a.hidden=!a.textContent.toLowerCase().includes(q));
+  document.getElementById('nav-status').textContent=`显示 ${navLinks.filter(a=>!a.hidden).length} / ${navLinks.length} 项`;
+});
+function openTarget(){
+  let id;try{id=decodeURIComponent(location.hash.slice(1));}catch{return;}
+  const el=document.getElementById(id);if(!el)return;
+  if(el.tagName==='DETAILS')el.open=true;
+  let parent=el.parentElement;while(parent){if(parent.tagName==='DETAILS')parent.open=true;parent=parent.parentElement;}
+}
+navLinks.forEach(a=>a.addEventListener('click',()=>{const el=document.getElementById(a.hash.slice(1));if(el&&el.tagName==='DETAILS')el.open=true;}));
+window.addEventListener('hashchange',openTarget);openTarget();
+let beforePrint=[];
+window.addEventListener('beforeprint',()=>{beforePrint=[...document.querySelectorAll('.appendix')].map(d=>d.open);document.querySelectorAll('.appendix').forEach(d=>d.open=true);});
+window.addEventListener('afterprint',()=>{document.querySelectorAll('.appendix').forEach((d,i)=>d.open=beforePrint[i]??true);});
+document.getElementById('print-report').addEventListener('click',()=>window.print());
+if('IntersectionObserver' in window){
+ const o=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting)navLinks.forEach(a=>a.classList.toggle('active',a.hash==='#'+e.target.id));}),{rootMargin:'0px 0px -75% 0px'});
+ document.querySelectorAll('main>h2').forEach(h=>o.observe(h));
+}
+</script></body></html>

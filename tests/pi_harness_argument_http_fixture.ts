@@ -86,6 +86,14 @@ export default async function fixture(pi: ExtensionAPI) {
                     type: "image" as const, mimeType: "image/png",
                     data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
                 }] : [])] }; } });
+    if (process.env.PI_ARGUMENT_DIRECT_USE === "1") pi.registerTool({
+        name: "advance_test_level", label: "Advance diagnostic scope", description: "Record a synthetic level transition; no environment action.",
+        parameters: Type.Object({}), async execute() {
+            append("execution-observations.jsonl", { observation_id: "direct-use-level-change", tool_name: "arc_action",
+                input: { action: "ACTION1" }, arc_outcome: { levels_completed: 1, public_transition: { level_changed: true } } });
+            return { content: [{ type: "text", text: "Synthetic level changed" }] };
+        },
+    });
     pi.registerProvider("argument-http-test", {
         api: "openai-completions", apiKey: "offline", baseUrl: process.env.PI_ARGUMENT_HTTP_BASE_URL!,
         models: [{ id: "scripted", name: "scripted", reasoning: false,
@@ -104,8 +112,9 @@ export default async function fixture(pi: ExtensionAPI) {
             ? JSON.parse(readFileSync(process.env.PI_ARGUMENT_PUBLIC_SNAPSHOTS, "utf8")) : [state];
         for (const captured of states) registerArcObservationSnapshot(root, captured);
         pi.setActiveTools(["task_harness", "task_harness_create", "ingress_probe",
+            ...(process.env.PI_ARGUMENT_DIRECT_USE === "1" && process.env.PI_ARGUMENT_COMPACT_ENTRY !== "1" ? ["task_memory_pool", "advance_test_level"] : []),
             ...(process.env.PI_ARGUMENT_COMPLETION_SOURCE === "1" ? ["task_resource"] : []),
-            ...(process.env.PI_ARGUMENT_RESEARCH_RUNTIME === "1" ? ["auto_research", "delegate_task"] : [])]);
+            ...(process.env.PI_ARGUMENT_RESEARCH_RUNTIME === "1" && process.env.PI_ARGUMENT_COMPACT_ENTRY !== "1" ? ["auto_research", "delegate_task"] : [])]);
     });
     pi.on("message_end", event => {
         if (event.message.role === "assistant") append("native-provider-messages.jsonl", event.message);

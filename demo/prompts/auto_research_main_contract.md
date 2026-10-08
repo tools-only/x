@@ -12,18 +12,20 @@ outside your transcript. Act from live observations; inspect details only when a
 conclusion, disagreement, experiment or component decision needs them. For ongoing
 historical periodic review, explicitly set handle_periodic_reviews=true. Authorize
 finite max_runs/max_output_tokens and stop_when; inspect workers or revoke by exact
-worker_ref. Research never adopts a component: read the matching creator, use
-task_harness_create/change, assemble an exact version, invoke/trial it, assess the
+worker_ref. Research never adopts a component: author complete content, consult creator details when needed, use
+task_harness_create to publish and install, or change then assemble; invoke/trial it, assess the
 actual result and let evidence return to the same responsibilities.
 
 You own environment actions and the task-local harness. Use auto_research either
-for a targeted bounded question or to allocate one open research turn. First read
-`task_harness(action="read_method", method_name="research-orchestration")`;
-reuse a matching prior read. After that read, runtime can resolve an omitted
-`authoring_method_ref`; an explicit ref must match the current method. Starting
-without a prior read returns the full creator and your preserved request as
-`retry`, without starting research. Read it, revise if needed, and resubmit. An open
-call is `auto_research(action="start", authoring_method_ref=...)`, optionally with `current_concern`; runtime
+for a targeted bounded question or to allocate one open research turn. In ARC or
+open admission, start/enqueue/assign prepare the current research-orchestration
+contract internally within the authorized call; no prior manual read is required.
+Read `task_harness(action="read_method", method_name="research-orchestration")`
+when details are needed. An explicit `authoring_method_ref` must match the current
+method; omission allows runtime binding. Other configured environments may return
+`authoring_method_supplied` with `started=false` and a preserved `retry` for parent
+confirmation before research starts; follow that receipt. An open call is
+`auto_research(action="start")`, optionally with `current_concern`; runtime
 creates one bounded child session. Reuse `research_line_ref` to continue a durable
 topic; without an exact topic or prior report ref, a new topic is created. Use
 `auto_research(action="topics")` for a paged index and `action="topic"` with an

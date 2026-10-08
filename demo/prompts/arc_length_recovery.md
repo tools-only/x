@@ -4,13 +4,13 @@ Recover from the durable checkpoint and latest evidence; reconcile obsolete
 strategy/summary fields with task_checkpoint(update, clear_fields=[...]) when
 needed. Begin with one useful tool call and no preceding prose. Choose the
 operation that advances the task: arc_action when its evidence suffices, an exact
-resource read, creator-guided authoring/assembly, or bounded auto_research on the
+resource read, direct component authoring/use{{#auto_research}}, or bounded auto_research on the
 unresolved representation, goal, strategy or test. A known complete objective or
 ready environment experiment is not a prerequisite for investigating it. State
 available material, the useful deliverable and cost/stop bound. Existing research
-plans still respect dependency/parent-release gates. Use the capability queue to
+plans still respect dependency/parent-release gates{{/auto_research}}. Use the capability queue to
 continue a chosen development operation rather than restarting its deliberation.
-A completed research or harness operation is recovery progress and may be
-followed in a later parent turn. Research completion is not truth,
-proven benefit, or an environment action. End this decision cycle with one
+A completed{{#auto_research}} research or{{/auto_research}} harness operation is recovery progress and may be
+followed in a later parent turn.{{#auto_research}} Research completion is not truth,
+proven benefit, or an environment action.{{/auto_research}} End this decision cycle with one
 arc_action when ready.

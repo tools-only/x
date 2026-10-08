@@ -1,7 +1,9 @@
 /** Opt-in shared parent/child stop threshold on reported provider usage. */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { providerWindowRequestDeclined } from "./pi_provider_request_admission.ts";
-import { dirname, join, resolve } from "node:path";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { providerWindowRequestDeclined, takeReportedRequestReservation } from "./pi_provider_request_admission.ts";
+import { readReportedTokenBudget, appendReportedTokenBudget } from "./pi_reported_token_ledger.ts";
+export { readReportedTokenBudget } from "./pi_reported_token_ledger.ts";
+import { join, resolve } from "node:path";
 import { get } from "node:http";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -24,35 +26,6 @@ export function reportedUsageTokens(usage: Record<string, any> | undefined): num
 	return Number.isSafeInteger(computed) ? computed : undefined;
 }
 
-export function readReportedTokenBudget(path: string, limit: number) {
-	let reported = 0, unmeasured = false;
-	let stopped = existsSync(join(dirname(path), "provider-token-budget-stop.json"));
-	if (existsSync(path)) {
-		try {
-			for (const line of readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean)) {
-				try {
-					const row = JSON.parse(line);
-					if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("invalid budget record");
-					if (row.event === "unmeasured_usage") unmeasured = true;
-					// A declared evaluation stop survives a new parent or child
-					// process. Historical numeric-limit stops retain their semantics.
-					if (row.event === "budget_stop" && row.evaluation_stopped === true) stopped = true;
-					if (row.event === "reported_usage") {
-						if (!Number.isSafeInteger(row.tokens) || row.tokens < 0) unmeasured = true;
-						else {
-							reported += row.tokens;
-							if (!Number.isSafeInteger(reported)) unmeasured = true;
-						}
-					}
-				} catch { unmeasured = true; }
-			}
-		} catch { unmeasured = true; }
-	}
-	// A concurrent partial write or unreadable ledger must not throw from a
-	// host-swallowed hook and silently leave the provider loop unbounded.
-	return { limit, reported, unmeasured, stopped, exhausted: reported >= limit || unmeasured || stopped };
-}
-
 export function installReportedTokenBudget(pi: ExtensionAPI, root: string) {
 	const checkpointScope = process.env.PI_ARC_NO_LEVEL_CHECKPOINT_SCOPE ?? "outer_prompt_dispatch";
 	if (!["outer_prompt_dispatch", "parent_provider_requests"].includes(checkpointScope)) throw new Error("invalid PI_ARC_NO_LEVEL_CHECKPOINT_SCOPE");
@@ -66,9 +39,9 @@ export function installReportedTokenBudget(pi: ExtensionAPI, root: string) {
 	const sharedRoot = resolve(process.env.PI_PROVIDER_TOKEN_BUDGET_ROOT ?? root);
 	mkdirSync(sharedRoot, { recursive: true });
 	const path = join(sharedRoot, "provider-token-budget.jsonl");
-	const append = (row: Record<string, any>) => appendFileSync(path, JSON.stringify({ ...row,
+	const append = (row: Record<string, any>) => appendReportedTokenBudget(path, { ...row,
 		process_id: process.pid, scope: process.env.PI_TASK_CHILD === "1" ? "child" : "parent",
-		recordedAt: new Date().toISOString() }) + "\n", "utf8");
+		recordedAt: new Date().toISOString() });
 	const writeFirstStop = (stopPath: string, row: Record<string, any>) => {
 		try { writeFileSync(stopPath, JSON.stringify(row, null, 2) + "\n", { flag: "wx" }); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
@@ -190,17 +163,23 @@ export function installReportedTokenBudget(pi: ExtensionAPI, root: string) {
 		const message = event.message as any;
 		if (message.role !== "assistant") return;
 		const tokens = reportedUsageTokens(message.usage);
+		const reservationId = takeReportedRequestReservation(pi);
+		const reservation = reservationId ? { reservation_id: reservationId } : {};
 		// Pi emits a synthetic aborted message for a declined request. This is
 		// distinct from a request whose accepted HTTP response omitted usage.
 		if ((reportedBudgetRequestDeclined(pi) || providerWindowRequestDeclined(pi)) && message.stopReason === "aborted" && (tokens === undefined || tokens === 0)) {
-			append({ event: "request_declined", stop_reason: message.stopReason, provider_request_admitted: false });
+			try { append({ ...reservation, event: "request_declined", stop_reason: message.stopReason, provider_request_admitted: false }); }
+			catch {
+				ctx.abort();
+				persistStop({ reason: "declined request settlement write failed" }, true);
+			}
 			return;
 		}
 		// Native providers initialize usage to zero; even normal completion can
 		// retain that default. Nonempty requests with all-zero usage are unmeasured.
 		try {
-			append(tokens === undefined || tokens === 0 ? { event: "unmeasured_usage", stop_reason: message.stopReason }
-				: { event: "reported_usage", tokens, stop_reason: message.stopReason });
+			append(tokens === undefined || tokens === 0 ? { ...reservation, event: "unmeasured_usage", stop_reason: message.stopReason }
+				: { ...reservation, event: "reported_usage", tokens, stop_reason: message.stopReason });
 		} catch {
 			ctx.abort();
 			persistStop({ reason: "reported usage ledger write failed", stop_reason: message.stopReason }, true);

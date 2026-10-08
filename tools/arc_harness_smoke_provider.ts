@@ -11,6 +11,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { baselineMethodCatalog } from "../demo/pi_harness_baseline_methods.ts";
 import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transport.ts";
+import { directUseStep } from "./arc_direct_use_smoke.ts";
 
 type Step =
 	| { kind: "tool"; name: string; arguments: Record<string, unknown> }
@@ -34,6 +35,8 @@ const onlineRetrospectiveScenario = scenario === "online_retrospective";
 const actionAlignmentScenario = scenario === "action_alignment";
 const continuousWorkers = process.env.PI_ARC_SMOKE_WORKERS === "1";
 let workerParentPhase = 0;
+let crossContextReads = 0;
+const compactedCrossResults = new Set<string>();
 
 function continuousWorkerStep(request: number): Step {
 	const worker = JSON.parse(process.env.PI_AUTO_RESEARCH_WORKER || "{}");
@@ -104,6 +107,7 @@ function continuousWorkerStep(request: number): Step {
 		const candidate = parentCandidate("tools");
 		candidate.basis_refs = [evidenceRef, rule.last_report_ref];
 		return { kind: "tool", name: "task_harness_create", arguments: { candidate,
+			assembly: false,
 			decision: { basis_refs: [rule.last_report_ref], reason: "Parent adopts the worker method through the real tool creator.", expected: "Exact counter version ready for explicit assembly." } } };
 	}
 	if (workerParentPhase === 3) { workerParentPhase++; return assemble("tool:smoke-counter@v1"); }
@@ -742,6 +746,7 @@ function selectedSceneEvidence(context: any) {
 }
 
 function providerStep(request: number, context: any): Step {
+	if (scenario === "direct_use") return directUseStep(request, context, selectedSceneEvidence);
 	if (continuousWorkers) return continuousWorkerStep(request);
 	const isChild = process.env.PI_TASK_CHILD === "1";
 	if (scenario === "source_handoff") {
@@ -875,6 +880,18 @@ function providerStep(request: number, context: any): Step {
 	if (isChild && process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1") {
 		const runId = String(process.env.PI_AUTO_RESEARCH_RUN_ID ?? "auto-research-1");
 		if (crossContextMethod) {
+			// Exercise the production read-batch boundary instead of asking for
+			// another page while capacity is exhausted. Keep the diagnostic's
+			// exact evidence/contrast and unresolved interpretation in continuity.
+			const encodedContext = JSON.stringify(context.messages ?? []);
+			const batchRefs = [...encodedContext.matchAll(/child_result:arc-smoke-\d+/g)]
+				.map(match => match[0]).filter(ref => !compactedCrossResults.has(ref));
+			if (encodedContext.includes("Research read batch capacity:") && batchRefs.length) {
+				const refs = [...new Set(batchRefs)];
+				refs.forEach(ref => compactedCrossResults.add(ref));
+				return {kind:"tool",name:"child_context",arguments:{action:"compact",refs,
+					summary:"Diagnostic continuity: compare ACTION1 evidence 1 and 4 across reset-separated attempts; observation 3 is the explicit contrast. Public pre-state refs ground both situations. Grouping alone proves no mechanism. Preserve alternatives and abstain outside the observed cases; next check is the remaining exact evidence, then a bounded report. No gameplay benefit is established."}};
+			}
 			const reads = runId === "auto-research-1"
 				? [...constructionPreActionStateRefs(),
 					"observation:execution-observation-1@v1", "observation:execution-observation-3@v1",
@@ -883,8 +900,8 @@ function providerStep(request: number, context: any): Step {
 					"observation:execution-observation-4@v1",
 					`observation:${resourceRefForUse("smoke-action-method") ?? "execution-observation-5"}@v1`,
 					"effect_assessment:effect-assessment-1@v1"];
-			if (request < reads.length) return { kind: "tool", name: "task_resource", arguments: {
-				action: "read", ref: reads[request], offset: 0, limit: 65536,
+			if (crossContextReads < reads.length) return { kind: "tool", name: "task_resource", arguments: {
+				action: "read", ref: reads[crossContextReads++], offset: 0, limit: 65536,
 			} };
 			return { kind: "tool", name: "submit_research_report", arguments: {
 				report: runId === "auto-research-1" ? reportFor(deliveryFor(scenario)) : feedbackReport(),
@@ -1383,6 +1400,10 @@ function contextEvidence(request: number, context: any, terminalReview: boolean)
 	const submitTool = tools.find((tool: any) => String(tool.name) === "submit_research_report");
 	const submitSchema = JSON.stringify(submitTool?.parameters ?? {});
 	return {
+		...(scenario === "direct_use" ? { direct_policy_v1: system.includes("DIRECT_POLICY_V1"),
+			direct_policy_v2: system.includes("DIRECT_POLICY_V2"),
+			direct_fact: projected("Active dynamic task/user prompt knowledge:").includes("DIRECT_SELECTED_FACT"),
+			direct_unused: projected("Active dynamic task/user prompt knowledge:").includes("DIRECT_UNUSED_FACT") } : {}),
 		format: "arc-real-runner-provider-context-v1",
 		...(["multi_region_cue", "multi_region_broad_cue"].includes(scenario) ? {
 			multi_region_cue_count: encoded.split("MULTI-REGION PUBLIC CHANGE").length - 1,
@@ -1443,7 +1464,7 @@ function contextEvidence(request: number, context: any, terminalReview: boolean)
 		parent_decision_contract_present: system.includes("AUTO-RESEARCH:")
 			&& system.includes("bounded") && system.includes("read-only")
 			&& /live (evidence|environment)/.test(encoded)
-			&& /Choose (direct )?action, Auto-Research|Use Auto-Research for a grounded uncertainty/.test(encoded),
+			&& /Choose (direct )?action, Auto-Research|Use Auto-Research for a grounded uncertainty|Use bounded Auto-Research for unresolved rules/.test(encoded),
 		child_guide_present: system.includes("# Auto-Research: child instructions"),
 		profile_headings: [...system.matchAll(/^# Research focus: (.+)$/gm)].map((match) => match[1]),
 		delivery_guide_in_system: system.includes("# Parent-authored Harness delivery"),

@@ -101,3 +101,24 @@ def test_scan_charges_actual_file_reads_and_record_hashing_is_cached_per_ref(tmp
     assert value["cached"]["parsed_resource_records"] == 1
     assert value["cached"]["work_bytes"] < 100_000
     assert "work budget exhausted" in value["workError"]
+
+
+def test_current_grid_reuses_exact_binding_integrity_and_cost_without_implicit_context(tmp_path):
+    value = scenario(tmp_path, 'current_grid')
+    assert value['direct'] == value['explicit']
+    assert value['direct']['input'] == {'bias': 1, 'grid': [[8]]}
+    assert value['request_unchanged'] is True
+    assert value['noContext']['input'] == {}
+    assert value['noContext']['preparation']['resource_scan_bytes'] == 0
+    assert value['disabled']['input'] == {'grid': [[5]]}
+    assert value['disabled']['preparation']['resource_scan_bytes'] == 0
+    assert 'nonempty final grid' in value['absent'] and 'nonempty final grid' in value['empty']
+    assert 'not exposed to child' in value['childDenied']
+    negative = value['negative']
+    assert all(msg != 'NOT_REJECTED' for msg in negative.values())
+    assert 'fills input.grid' in negative['conflict'] and 'fills input.grid' in negative['bindingConflict']
+    assert 'boolean' in negative['type'] and '64' in negative['capacity']
+    assert 'scan exceeds' in negative['scan'] and 'byte limit' in negative['input']
+    assert 'work budget exhausted' in negative['work']
+    assert 'uninitialized' in negative['uninitialized']
+    assert 'root' in negative['crossRoot']

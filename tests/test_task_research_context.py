@@ -2005,6 +2005,7 @@ def test_auto_research_child_drops_completed_tool_reasoning_from_provider_projec
         "PI_AUTORESEARCH_MODEL": "scripted",
         "PI_AUTORESEARCH_SUBAGENT_PROVIDER_EXTENSION": str(project / "tests" / "pi_subagent_provider.ts"),
         "PI_SUBAGENT_THINKING_CHARS": "24000",
+        "PI_PROVIDER_REASONING_HISTORY_POLICY": "discard_unsigned_thinking",
         "PI_SUBAGENT_REPORT": json.dumps(report),
         "PI_SUBAGENT_STEPS": json.dumps([
             {"name": "fixture_state", "arguments": {}},

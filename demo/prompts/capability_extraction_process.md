@@ -87,27 +87,32 @@ do not follow a fixed progression or wait for a category quota.
    evaluation is not required. For a Pi Tool inspect the real substrate; if an
    operation cannot run, name the missing primitive and use an honest Skill or
    decomposition instead of pretending unavailable code executed.
-   Main reads the matching creator for Skill/Tool/Subagent, authors the body and
-   publishes through task_harness(change/review). A system_prompt uses the public
+   Main authors complete Skill/Tool/Subagent content using the current contract,
+   consults creator details when needed, and
+   publishes through task_harness_create (default selection), or change/review
+   with explicit assembly. A system_prompt uses the public
    content/scope contract without an invented creator requirement. A strategy
    policy can state the working approach and when to revisit it without claiming
    its assumptions are established facts. Main may author a selected operation
    directly without a review; review is evidence and feedback, not an additional
    admission layer.
    Once main chooses development, its completion criterion is an authored change
-   with a checked receipt, an explicit exact-version assembly and a semantic trial
+   with a checked receipt, the desired exact-version selection and a semantic trial
    at the next reachable use. If a candidate is incomplete, the runtime preserves
    the conversion intent before reporting the repair error; resubmit the same
-   operation after reading the creator or fixing the missing primitive if the work
+   operation after repairing the content, consulting creator details when needed,
+   or fixing the missing primitive if the work
    still merits its remaining cost. A deferred development_intent retains a reason
    and actionable retry condition; a dropped intent is abandoned, not completed.
    Memory may preserve related facts but does
    not finish the chosen operation.
 
 5. Select and exercise, not merely cite the candidate.
-   Check the native receipt, explicitly assemble applicable exact versions while
-   preserving other needed components, then read the selected Skill or invoke the
-   Tool/Subagent. A selected system_prompt is delivered on the next parent request.
+   Check the native receipt; assemble only if the desired exact selection is not
+   already installed, preserving other needed components. Apply Skill steps already in context
+   (read only to recover missing instructions) or invoke the
+   Tool/Subagent. A selected system_prompt refreshes on the next provider request
+   in the same run. Descriptive scope alone does not expire it.
    Use the result in the next appropriate decision. Version citations alone do not
    select resources. A review, creator read or published body is not actual use.
    Inspect existing capabilities for reuse, revision or composition; development

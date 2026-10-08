@@ -11,8 +11,13 @@ import { readWorkset } from "./pi_read_workset.ts";
 type Source = { ref: string; tool_name: string; result: unknown; chars: number; transient?: boolean };
 const TRANSIENT_RESULT_MIN_CHARS = 2000;
 type Choice = { control: string; before: unknown; after: unknown; baseline: Record<string, any> | null };
+type ReadBatchPause = { reason: string; resident_read_bytes: number; read_batch_max_bytes: number; result_refs: string[] };
+type ChildContextOptions = {
+	readBatchMaxBytes?: number;
+	onReadBatchPause?: (details: ReadBatchPause) => void;
+};
 
-export function installChildContextControl(pi: ExtensionAPI, rootPath: string): void {
+export function installChildContextControl(pi: ExtensionAPI, rootPath: string, options: ChildContextOptions = {}): void {
 	const root = resolve(rootPath);
 	const workset = readWorkset(pi, root);
 	const contextId = process.env.PI_TASK_CHILD_CONTEXT_ID ?? `pid-${process.pid}`;
@@ -38,6 +43,26 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 	let lastTransientProjection = { result_count: 0, saved_chars: 0 };
 	let lastChoice: Choice | undefined;
 	let selectedReadTools: string[] | undefined;
+	const research = process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1";
+	const readBatchMaxBytes = research ? Number(options.readBatchMaxBytes
+		?? process.env.PI_AUTORESEARCH_CHILD_READ_BATCH_MAX_BYTES ?? 32768) : 0;
+	if (!Number.isSafeInteger(readBatchMaxBytes) || readBatchMaxBytes < 0)
+		throw new Error("PI_AUTORESEARCH_CHILD_READ_BATCH_MAX_BYTES must be a non-negative safe integer");
+	// This is a read-result working set, not a tokenizer or a provider window.
+	// Keep an atomic result complete; stop additional retrieval at the boundary.
+	const residentReads = new Map<string, number>();
+	let analysisOffered = false, analysisAnswered = false, batchPaused = false;
+	const liveReadEntries = () => [...residentReads].filter(([ref]) => {
+		const source = sources.get(ref);
+		return source && !compacted.has(ref) && (source.tool_name !== "task_resource"
+			|| (!workset.superseded(ref.slice("child_result:".length))
+				&& (pinned.has(ref) || workset.required(ref.slice("child_result:".length)))));
+	});
+	const residentReadBytes = () => liveReadEntries().reduce((sum, [, bytes]) => sum + bytes, 0);
+	const atReadBoundary = () => readBatchMaxBytes > 0 && residentReadBytes() >= readBatchMaxBytes;
+	const clearReadBoundary = () => {
+		if (!atReadBoundary()) { analysisOffered = false; analysisAnswered = false; }
+	};
 	const records = existsSync(ledgerPath) ? readFileSync(ledgerPath, "utf8").split(/\r?\n/).filter(Boolean) : [];
 	for (const line of records) {
 		let row: Record<string, any>;
@@ -104,10 +129,34 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 		const allowed = new Set(allowedReadTools());
 		pi.setActiveTools([...new Set([...selectedReadTools.filter((name) => allowed.has(name)), ...protectedTools()])]);
 	});
+	if (readBatchMaxBytes > 0) {
+		pi.on("tool_call", (event) => {
+			if (!atReadBoundary()) return;
+			const action = (event.input as any)?.action;
+			const retrieving = event.toolName === "child_context" ? ["read", "restore"].includes(action)
+				: ![...protectedTools(), "publish_research_update"].includes(event.toolName) && allowedReadTools().includes(event.toolName);
+			if (!retrieving) return;
+			return { block: true, reason: "Research read batch capacity reached. Preserve findings, alternatives, counterevidence and next test with child_context(action='compact', refs=..., summary=...), or submit/pause this slice. Exact evidence remains recoverable; no further retrieval until capacity is released." };
+		});
+		pi.on("message_end", (event) => {
+			if (analysisOffered && (event.message as any)?.role === "assistant") analysisAnswered = true;
+		});
+		pi.on("turn_end", (_event, ctx) => {
+			clearReadBoundary();
+			if (batchPaused || !analysisAnswered || !atReadBoundary()) return;
+			batchPaused = true;
+			const details = { reason: "research_read_batch_capacity", resident_read_bytes: residentReadBytes(),
+				read_batch_max_bytes: readBatchMaxBytes, result_refs: liveReadEntries().map(([ref]) => ref) };
+			try {
+				options.onReadBatchPause?.(details);
+				append({ event: "read_batch_paused", ...details });
+			} finally { ctx.abort(); }
+		});
+	}
 
 	pi.registerTool({
 		name: "child_context", label: "Child context control",
-		description: "Inspect request costs; task_resource pages remain until explicit consumption or compact, and while the active plan depends on them. Other large reads expire after one continuation. Restore pins results; read pages saved output; tools selects schemas. No parent mutation.",
+		description: "Inspect request costs; compact saves Agent continuity and releases selected pages. Research batches pause at capacity if not distilled; exact evidence stays recoverable. Other large reads expire after one continuation. Restore pins results; read pages saved output; tools selects schemas. No parent mutation.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("inspect"), Type.Literal("compact"), Type.Literal("restore"), Type.Literal("read"), Type.Literal("tools")]),
 			refs: Type.Optional(Type.Array(Type.String())),
@@ -161,7 +210,7 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 					compacted_refs_preview:[...compacted].slice(-12),
 					continuity_summary:continuitySummary || null,
 					result_candidates:{total:candidates.length, offset, next_offset:offset + page.length < candidates.length ? offset + page.length : null, items:page},
-					instruction:"task_resource pages remain until explicit consumption or compact, and while the active plan depends on them; other large reads expire after one continuation. Explicit compact requires an Agent-authored continuity summary. Restore pins a result; read retrieves its saved output. The initial workset remains immutable; cost deltas are heuristic."});
+					instruction:"Research task_resource pages remain until explicit consumption or compact; released evidence stays exactly recoverable. Ordinary delegate pages also retain active-plan dependency protection. Other large reads expire after one continuation. Compact requires Agent-authored continuity; restore preserves that interpretation and pins evidence. The initial workset is immutable; cost deltas are heuristic."});
 			}
 			if (params.action === "read") {
 				const source = sources.get(String(params.ref ?? ""));
@@ -186,6 +235,7 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 				}
 				continuitySummary = summary;
 				recordChoice("compact", before, [...compacted], {compact_refs:refs});
+				clearReadBoundary();
 				return output({applied:true, compacted_refs:[...compacted],
 					effective_at:"next_provider_request", restore_call:{tool:"child_context",arguments:{action:"restore",refs}}});
 			}
@@ -193,7 +243,7 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 				const refs = params.refs?.length ? [...new Set(params.refs.map(String))] : [...compacted];
 				const before = [...compacted];
 				for (const ref of refs) { compacted.delete(ref); pinned.add(ref); }
-				if (!compacted.size) continuitySummary = "";
+				// Restoring exact evidence does not revoke the Agent's interpretation.
 				recordChoice("restore", before, [...compacted], {restore_refs:refs});
 				return output({applied:true, compacted_refs:[...compacted],effective_at:"next_provider_request"});
 			}
@@ -211,7 +261,10 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 	});
 
 	pi.on("tool_execution_end", (event) => {
-		if (!allowedReadTools().includes(event.toolName) || !event.result || event.isError) return;
+		if (!event.isError && (event.result as any)?.terminate === true) batchPaused = true;
+		if ((!(event.toolName !== "child_context" && allowedReadTools().includes(event.toolName))
+			&& !(event.toolName === "child_context" && (event.result as any)?.details?.format === "child-context-result-page-v1"))
+			|| !event.result || event.isError) return;
 		const ref = `child_result:${event.toolCallId}`;
 		if (sources.has(ref)) return;
 		let raw: string;
@@ -219,6 +272,7 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 		const source = {event:"source",ref,tool_name:event.toolName,result:event.result,chars:raw.length,
 			transient:raw.length >= TRANSIENT_RESULT_MIN_CHARS};
 		sources.set(ref, source);
+		residentReads.set(ref, Buffer.byteLength(JSON.stringify(event.result.content ?? []), "utf8"));
 		append(source);
 	});
 	pi.on("context", (event) => {
@@ -235,12 +289,13 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 			const value = message as any;
 			if (value?.role === "assistant") laterAssistant = true;
 			if (readWorksetConsumer(value)) laterConsumer = true;
-			const ref = value?.role === "toolResult" ? `child_result:${String(value.toolCallId ?? value.tool_call_id ?? "")}` : "";
+			const resultId = value?.role === "toolResult" ? value.toolCallId ?? value.tool_call_id : value?.read_workset_result_id;
+			const ref = resultId ? `child_result:${String(resultId)}` : "";
 			const source = sources.get(ref);
 			const leased = source?.tool_name === "task_resource" && workset.required(ref.slice("child_result:".length));
 			const duplicatePage = source?.tool_name === "task_resource" && workset.superseded(ref.slice("child_result:".length));
 			const expired = Boolean(!pinned.has(ref) && (duplicatePage || (source?.transient && !leased
-				&& (source.tool_name === "task_resource" ? laterConsumer : laterAssistant))));
+				&& (source.tool_name === "task_resource" ? (laterConsumer || (research && !workset.required(ref.slice("child_result:".length)))) : laterAssistant))));
 			if (!compacted.has(ref) && !expired) {
 				const wasCompacted = value?.content?.some?.((part: any) => part?.type === "text"
 					&& typeof part.text === "string" && part.text.startsWith(`[Child result ${ref} `));
@@ -251,7 +306,7 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 				}
 				return leased ? { ...value, read_workset_required: true } : message;
 			}
-			const replacement = {...value, content:[{type:"text",text:`[Child result ${ref} ${expired && !compacted.has(ref) ? (source?.tool_name === "task_resource" ? "released after response or action" : "expired after one model continuation") : "compacted by child Agent"}. Read exact output with child_context(action='read',ref='${ref}',offset=0,limit=2000); child_context(action='restore',refs=['${ref}']) pins it in context.]`}],
+			const replacement = {...value, read_workset_required:false, content:[{type:"text",text:`[Child result ${ref} ${expired && !compacted.has(ref) ? (source?.tool_name === "task_resource" ? "released after response or action" : "expired after one model continuation") : "compacted by child Agent"}. Read exact output with child_context(action='read',ref='${ref}',offset=0,limit=2000); child_context(action='restore',refs=['${ref}']) pins it in context.]`}],
 				details:{child_context_ref:ref,transient_expired:expired}};
 			if (expired && !compacted.has(ref)) {
 				transientCount += 1;
@@ -262,8 +317,22 @@ export function installChildContextControl(pi: ExtensionAPI, rootPath: string): 
 		messages = workset.restore(messages as any[], [...sources.entries()]
 			.filter(([ref, source]) => source.tool_name === "task_resource" && !compacted.has(ref))
 			.map(([ref, source]) => ({ id: ref.slice("child_result:".length), result: source.result }))) as any;
+		residentReads.clear();
+		for (const message of messages as any[]) {
+			const id = message.role === "toolResult" ? message.toolCallId ?? message.tool_call_id : message.read_workset_result_id;
+			const ref = `child_result:${String(id ?? "")}`;
+			if (!sources.has(ref) || message.content?.some((part: any) => part?.text?.startsWith(`[Child result ${ref} `))) continue;
+			residentReads.set(ref, Buffer.byteLength(JSON.stringify(message.content ?? []), "utf8"));
+		}
+		clearReadBoundary();
+		if (atReadBoundary()) {
+			analysisOffered = true;
+			const refs = liveReadEntries().sort((a, b) => b[1] - a[1]).slice(0, 8).map(([ref]) => ref);
+			messages.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
+				text: `Research read batch capacity: ${residentReadBytes()}/${readBatchMaxBytes} UTF-8 bytes of resident read text (not tokens). Further retrieval is paused. Use this turn to preserve findings, alternatives, counterevidence and next test with child_context(action='compact', refs=..., summary=...), submit a current result, or research_checkpoint(action='pause'). Otherwise this slice saves pending/manual_resume. Largest result refs: ${JSON.stringify(refs)}. Exact sources remain recoverable.` }] });
+		}
 		lastTransientProjection = { result_count: transientCount, saved_chars: savedChars };
-		if (!compacted.size) return restoredAny || messages.length !== event.messages.length || messages.some((message, index) => message !== event.messages[index])
+		if (!continuitySummary) return restoredAny || messages.length !== event.messages.length || messages.some((message, index) => message !== event.messages[index])
 			? {messages} : {};
 		return {messages:[...messages,{role:"user",timestamp:Date.now(),content:[{type:"text",
 			text:`Child context continuity: ${JSON.stringify({epistemic_status:"agent_interpretation_not_runtime_fact",

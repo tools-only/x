@@ -125,6 +125,40 @@ export default function hostFixture(pi: ExtensionAPI) {
 				const errors = bad.map((value) => { try { preparePureExpressionInput(parent, root, value, { max_input_bytes: 10_000 }); return "bad"; } catch (error) { return (error as Error).message; } });
 				let rootError = ""; try { installTaskResourceReader(parent, resolve(root, "other-task")); } catch (error) { rootError = (error as Error).message; }
 				output = { errors, rootError };
+			} else if (params.scenario === "current_grid") {
+				const parent = fakePi(); installTaskResourceReader(parent, root);
+				const limits = { max_input_bytes: 10_000 };
+				const error = (fn: () => unknown) => { try { fn(); return "NOT_REJECTED"; } catch (e) { return (e as Error).message; } };
+				const absent = error(() => preparePureExpressionInput(parent, root, { current_grid: true }, limits));
+				const noContext = preparePureExpressionInput(parent, root, {}, limits);
+				const snapshot = registerArcObservationSnapshot(root, { ...state(0), frames: [[[1]], [[8]]] });
+				const exact = { parameters: { bias: 1 }, bindings: [{ name: "grid", ref: snapshot.ref, path: ["public_state", "frames", "1"] }] };
+				const shortcut = { current_grid: true, parameters: { bias: 1 } };
+				const before = JSON.stringify(shortcut);
+				const direct = preparePureExpressionInput(parent, root, shortcut, limits);
+				const explicit = preparePureExpressionInput(parent, root, exact, limits);
+				const disabled = preparePureExpressionInput(parent, root, { current_grid: false, parameters: { grid: [[5]] } }, limits);
+				const negative = {
+					conflict: error(() => preparePureExpressionInput(parent, root, { ...shortcut, parameters: { grid: [] } }, limits)),
+					bindingConflict: error(() => preparePureExpressionInput(parent, root, { ...exact, current_grid: true }, limits)),
+					type: error(() => preparePureExpressionInput(parent, root, { current_grid: "true" }, limits)),
+					capacity: error(() => preparePureExpressionInput(parent, root, { current_grid: true, bindings: Array.from({length:64}, (_,i) => ({name:`g${i}`,ref:snapshot.ref,path:[]})) }, limits)),
+					scan: error(() => preparePureExpressionInput(parent, root, shortcut, { ...limits, max_scan_bytes: 1 })),
+					input: error(() => preparePureExpressionInput(parent, root, shortcut, { max_input_bytes: 13 })),
+					work: error(() => preparePureExpressionInput(parent, root, shortcut, { ...limits, max_preparation_bytes: 20 })),
+					uninitialized: error(() => preparePureExpressionInput(fakePi(), root, shortcut, limits)),
+					crossRoot: error(() => preparePureExpressionInput(parent, resolve(root, "other"), shortcut, limits)),
+				};
+				const child = fakePi(); process.env.PI_TASK_CHILD = "1";
+				let childDenied: string;
+				try {
+					installTaskResourceReader(child, root, [snapshot.ref]);
+					childDenied = error(() => preparePureExpressionInput(child, root, shortcut, limits));
+				} finally { delete process.env.PI_TASK_CHILD; }
+				registerArcObservationSnapshot(root, { ...state(1), frames: [[[9]], []] });
+				const empty = error(() => preparePureExpressionInput(parent, root, shortcut, limits));
+				output = { absent, noContext, direct, explicit, disabled, negative, childDenied, empty,
+					request_unchanged: before === JSON.stringify(shortcut) };
 			} else if (params.scenario === "budgets") {
 				const refs = [];
 				for (let index = 0; index < 4; index += 1) refs.push(registerArcObservationSnapshot(root, state(index)).ref);

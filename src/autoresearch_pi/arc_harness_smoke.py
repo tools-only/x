@@ -1,7 +1,8 @@
-"""Real ARC-runner acceptance suite for parent-authored self-harness.
+"""ARC-runner self-harness diagnostics and real-provider evidence capture.
 
 The model provider is deterministic, but every boundary under test is the
-production ARC/Pi path.  This is intentionally not a pytest fixture.
+production ARC/Pi path. Real-provider mode reuses the production closure probe;
+its captured evidence requires semantic review and is never a scripted pass.
 """
 
 from __future__ import annotations
@@ -88,6 +89,48 @@ def _validate_action_alignment(root: Path) -> dict[str, Any]:
     return {"scenario": "action_alignment", "research_scope": None,
             "passed": all(item["passed"] for item in checks), "checks": checks,
             "run_root": str(root)}
+
+
+def _validate_direct_use(root: Path) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+    _check(summary.get("runtime", {}).get("agent_actions") == 4, "four real ARC action boundaries completed", checks)
+    starts = [r for r in _records(root / "pi-events.jsonl") if r.get("type") == "tool_execution_start"]
+    _check(not any(r.get("toolName") == "read" or r.get("args", {}).get("action") == "read_method" for r in starts),
+           "authored Skill and complete candidates used without compulsory rereads", checks)
+    parent = [r for r in _records(root / "arc-smoke-provider-contexts.jsonl") if not r.get("child")]
+    _check(any(r.get("direct_fact") and r.get("direct_unused") for r in parent), "capture+select projected both saved memory bodies", checks)
+    _check(any(r.get("direct_fact") and not r.get("direct_unused") for r in parent)
+           and not parent[-1].get("direct_unused"), "custom memory subset persists into later parent turns", checks)
+    _check(any(r.get("direct_policy_v1") and not r.get("direct_policy_v2") for r in parent), "Prompt creation reached the next request", checks)
+    _check(any(r.get("direct_policy_v2") and not r.get("direct_policy_v1") for r in parent), "Prompt update replaced the old overlay in the same run", checks)
+    _check(not parent[-1].get("direct_policy_v1") and not parent[-1].get("direct_policy_v2"), "retired Prompt absent from later parent request", checks)
+    invocations = _records(root / "subagent-invocations.jsonl")
+    invocation = invocations[-1] if invocations else {}
+    _check(len(invocations) == 1 and invocation.get("status") == "completed" and invocation.get("ephemeral")
+           and invocation.get("component_ref") is None and not _records(root / "task-subagents.jsonl"),
+           "one-off delegation delivered without creating a saved role", checks)
+    child_result = json.loads(invocation.get("result", {}).get("text", "{}"))
+    trials = _records(root / "task-harness-initial-trials.jsonl")
+    trial = trials[-1] if trials else {}
+    text = trial.get("result", {}).get("content", [{}])[0].get("text", "{}")
+    tool_result = json.loads(text)
+    snapshots = _records(root / "observation-snapshots.jsonl")
+    ref = child_result.get("selected_ref")
+    snapshot = next((r for r in snapshots if _snapshot_ref(r) == ref), {})
+    frame = snapshot.get("public_state", {}).get("frames", [[]])[-1]
+    expected = {"rows": len(frame), "columns": len(frame[0]) if frame else 0, "first": frame[0][0] if frame else None}
+    _check(bool(frame) and trial.get("status") == "completed" and tool_result == expected
+           and {"rows": child_result.get("rows"), "columns": child_result.get("columns"), "first": child_result.get("first_cell")} == expected,
+           "native Tool and actual child report match the selected canonical ARC frame", checks)
+    resumes = _records(root / "subagent-continuations.jsonl")
+    _check(len(resumes) == 2 and resumes[0].get("stop_reason") == "length"
+           and invocation.get("budget", {}).get("tool_calls") == 1,
+           "one-off length resume retains one invocation and its budget", checks)
+    _check(any(r.get("input", {}).get("decision", {}).get("used_resource_refs") for r in _records(root / "execution-observations.jsonl")),
+           "later native ARC decision carries selected procedure/evidence references", checks)
+    return {"scenario": "direct_use", "run_root": str(root), "checks": checks,
+            "passed": all(item["passed"] for item in checks)}
 
 
 def _observation_ids(refs: list[Any]) -> set[str]:
@@ -975,10 +1018,10 @@ def _validate_minimal_five_pool(root: Path, *, publication: bool = False) -> dic
     readiness = receipts[-1].get("activation", {}).get("created_resources", []) if receipts else []
     skill_entry = next((item for item in readiness if item.get("resource_ref") == "skill:pool-skill@v1"), {})
     skill_use = skill_entry.get("use_after_selection", {})
-    _check(skill_use.get("tool") == "read"
-           and Path(skill_use.get("arguments", {}).get("path", "")).resolve()
+    _check(skill_use.get("load_if_needed", {}).get("tool") == "read"
+           and Path(skill_use.get("load_if_needed", {}).get("arguments", {}).get("path", "")).resolve()
            == (root / "task-harness/skills/pool-skill/SKILL.md").resolve(),
-           "creation receipt supplied the exact confined Skill read entry", checks)
+           "creation receipt supplied the exact confined optional Skill load entry", checks)
 
     materialization = {
         "memory": ("task-memory.jsonl", "key", "pool-memory", "memory:pool-memory@v1"),
@@ -1729,6 +1772,62 @@ def _validate_simple_coordinate_input(root: Path) -> dict[str, Any]:
     return {"scenario": "simple_coordinate_input", "passed": all(c["passed"] for c in checks), "checks": checks, "run_root": str(root)}
 
 
+def _capture_real_provider_smoke(
+    root: Path, *, arc_root: Path, game: str, case: str | None,
+    max_actions: int | None, experiment_timeout_seconds: float | None,
+    max_reported_tokens: int | None, max_output_tokens: int | None,
+    reasoning_policy: str, reasoning_levels: tuple[str, ...] | None,
+) -> Path:
+    """Collect real closure evidence without inferring semantics from status."""
+    selected = case or "research-closure"
+    if selected not in {"research-closure", "author-closure"}:
+        raise ValueError("real provider supports research-closure or author-closure")
+    for name, value in (("max_actions", max_actions),
+                        ("experiment_timeout_seconds", experiment_timeout_seconds),
+                        ("max_reported_tokens", max_reported_tokens),
+                        ("max_output_tokens", max_output_tokens)):
+        if value is None or value <= 0:
+            raise ValueError(f"real-provider capture requires an explicit positive {name}")
+    root = root.resolve()
+    if root.exists() and any(root.iterdir()):
+        raise ValueError("ARC harness smoke output must be an empty directory")
+    root.mkdir(parents=True, exist_ok=True)
+    run_root = root / selected
+    run_summary = run_arc_agi_3_e2e(
+        run_root, arc_root=arc_root, game=game, experiment_variant="treatment",
+        max_actions=max_actions, experiment_timeout_seconds=experiment_timeout_seconds,
+        max_reported_tokens=max_reported_tokens, max_output_tokens=max_output_tokens,
+        auto_research_validation=selected == "research-closure",
+        auto_research_enabled=selected == "research-closure",
+        harness_validation=selected == "author-closure", pi_provider="yibu",
+        input_modalities="text,image", review_mode="advisory",
+        reasoning_policy=reasoning_policy, reasoning_levels=reasoning_levels,
+        pi_environment={"PI_AUTORESEARCH_PROVIDER_PROMPT_CAPTURE": "all",
+                        "PI_PROVIDER_REPORTED_ADMISSION": "enabled"},
+    )
+    output = root / "arc-self-harness-smoke-summary.json"
+    output.write_text(json.dumps({
+        "format": "arc-real-provider-self-harness-capture-v1",
+        "provider_mocked": False, "environment_mocked": False,
+        "runtime_boundaries_mocked": False, "guided": True,
+        "passed": False, "acceptance_status": "unverified",
+        "case": selected, "run_root": str(run_root),
+        "run_summary": str(run_summary),
+        "component_matrix": {kind: {"semantic_use": "unverified"} for kind in SCENARIOS},
+        "length_matrix": {kind: "unverified" for kind in ("auto_research", "delegate_task")},
+        "evidence": [str(run_root / name) for name in (
+            "provider-telemetry.jsonl", "provider-token-budget.jsonl", "pi-events.jsonl",
+            "subagent-progress.jsonl", "subagent-invocations.jsonl", "auto-research-runs.jsonl",
+            "task-harness-decisions.jsonl", "execution-observations.jsonl", "bridge-events.jsonl")
+            if (run_root / name).is_file()],
+        "acceptance_statement": "Real-provider capture only. Review actual child returns, exact native "
+            "versions/assembly, semantic outputs, canonical actions and later response-confirmed inputs. "
+            "A successful run or completed report does not establish five-kind closure, either length "
+            "path, autonomous adoption, stage acceptance or net benefit.",
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output
+
+
 def run_arc_harness_smoke(
     root: Path,
     *,
@@ -1736,7 +1835,25 @@ def run_arc_harness_smoke(
     game: str = "ls20",
     mock_environment: bool = False,
     case: str | None = None,
+    provider_mode: str = "deterministic",
+    max_actions: int | None = None,
+    experiment_timeout_seconds: float | None = None,
+    max_reported_tokens: int | None = None,
+    max_output_tokens: int | None = None,
+    reasoning_policy: str = "provider-default",
+    reasoning_levels: tuple[str, ...] | None = None,
 ) -> Path:
+    if provider_mode == "real":
+        if mock_environment:
+            raise ValueError("real-provider capture requires the official ARC environment")
+        return _capture_real_provider_smoke(
+            root, arc_root=arc_root, game=game, case=case, max_actions=max_actions,
+            experiment_timeout_seconds=experiment_timeout_seconds,
+            max_reported_tokens=max_reported_tokens, max_output_tokens=max_output_tokens,
+            reasoning_policy=reasoning_policy, reasoning_levels=reasoning_levels,
+        )
+    if provider_mode != "deterministic":
+        raise ValueError(f"unknown ARC harness smoke provider mode: {provider_mode}")
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError("ARC harness smoke output must be an empty directory")
@@ -1758,6 +1875,7 @@ def run_arc_harness_smoke(
         ("source_handoff", "harness_component", "source-handoff-tool"),
         ("minimal_five_pool", None, "minimal-five-pool"),
         ("tools", "research_method", "continuous-workers"),
+        ("direct_use", None, "direct-use"),
     ]
     diagnostic_cases = [("action_alignment", None, "action-alignment"),
                         ("batch_guard", None, "batch-guard"),
@@ -1786,6 +1904,7 @@ def run_arc_harness_smoke(
         method_rejection = case_name == "method-rejection-tools"
         cross_context_method = case_name == "cross-context-method"
         pure_expression = case_name == "pure-expression-tool"
+        direct_use = case_name == "direct-use"
         source_handoff = case_name == "source-handoff-tool"
         minimal_five_pool = case_name in {"minimal-five-pool", "publish-five-pool"}
         round2_recovery = case_name == "round2-review-recovery-skill"
@@ -1810,16 +1929,18 @@ def run_arc_harness_smoke(
                 **({"bridge_python": Path(sys.executable), "bridge_module_paths": (project_root / "tools/mock_arc_sdk",)} if mock_environment else {}),
                 game=game,
                 experiment_variant="treatment",
-                max_actions=(49 if multi_region_broad_cue else 33 if multi_region_cue else 3 if (checkpoint_batch or action_knowledge or source_handoff) else 6 if review_input_repair else 2 if read_workset else 7 if review_advisory else 8 if continuous_workers else 4 if (online_retrospective or action_alignment or batch_guard) else 7 if (periodic or round2_recovery or cross_context_method) else 2 if (pure_expression or minimal_five_pool)
+                max_actions=(4 if direct_use else 49 if multi_region_broad_cue else 33 if multi_region_cue else 3 if (checkpoint_batch or action_knowledge or source_handoff) else 6 if review_input_repair else 2 if read_workset else 7 if review_advisory else 8 if continuous_workers else 4 if (online_retrospective or action_alignment or batch_guard) else 7 if (periodic or round2_recovery or cross_context_method) else 2 if (pure_expression or minimal_five_pool)
                              else 3 if (scenario in {"memory", "system_prompt"} or direct_development) else 2),
                 context_compaction=True,
+                auto_research_enabled=True,
                 experiment_timeout_seconds=300 if (multi_region_cue or multi_region_broad_cue) else 180,
                 pi_provider="offline-arc-harness-smoke",
                 pi_model="scripted",
                 **({"input_modalities": "text,image"} if selected_snapshot else {}),
                 pi_provider_extension=provider,
-                review_mode="advisory" if (review_advisory or read_workset or review_input_repair or checkpoint_batch or action_knowledge or batch_guard or multi_region_cue or multi_region_broad_cue) else "required",
+                review_mode="advisory" if (direct_use or review_advisory or read_workset or review_input_repair or checkpoint_batch or action_knowledge or batch_guard or multi_region_cue or multi_region_broad_cue) else "required",
                 pi_environment={
+                    **({"PI_ARC_ACTION_BATCH": "enabled"} if continuous_workers else {}),
                     "PI_ARC_SMOKE_SCENARIO": scenario,
                     "PI_ARC_SMOKE_WORKERS": "1" if continuous_workers else "0",
                     "PI_ARC_SMOKE_SCOPE": scope or "",
@@ -1832,7 +1953,8 @@ def run_arc_harness_smoke(
                     "PI_AUTORESEARCH_THINKING": "off",
                 },
             )
-            results.append(_validate_multi_region_cue(scenario_root, broad=True) if multi_region_broad_cue else
+            results.append(_validate_direct_use(scenario_root) if direct_use else
+                           _validate_multi_region_cue(scenario_root, broad=True) if multi_region_broad_cue else
                            _validate_multi_region_cue(scenario_root) if multi_region_cue else
                            _validate_batch_guard(scenario_root) if batch_guard else
                            _validate_action_knowledge(scenario_root) if action_knowledge else

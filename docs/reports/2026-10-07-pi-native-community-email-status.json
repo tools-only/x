@@ -1,0 +1,10 @@
+{
+  "recipient": "595819371@qq.com",
+  "status": "not_sent",
+  "reason": "email_connector_unavailable_in_current_toolset",
+  "artifact": "D:\\autoresearch_pi_project\\docs\\reports\\pi-native-community-context-management-2026-10-07.html",
+  "sha256": "00abcecc24046e6c20ae9186a104f996f2288b7e04414a61420facbdbc67b47e",
+  "prepared_draft": "D:\\autoresearch_pi_project\\docs\\reports\\pi-native-community-context-report-email-draft.eml",
+  "message_id": null,
+  "note": "The earlier sent report is a separate artifact. This new report has not been sent."
+}

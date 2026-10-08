@@ -37,10 +37,12 @@ def test_initial_prompt_at_real_runner_launch_seam(tmp_path, monkeypatch, enable
         assert "other actions ignore x/y" in prompt
         assert "before/action/after" in prompt and "counterevidence" in prompt
         assert "task_checkpoint" in prompt
-        assert "ordered tool batch" in prompt
+        assert ("ordered tool batch" if enabled else "task_harness(action='activate'") in prompt
         assert "material" in prompt and "automatically" in prompt
-        assert "creator" in prompt and "assembly" in prompt and "trial" in prompt
-        assert "Auto-Research" in prompt and "remaining task" in prompt
+        assert "harness index" in prompt and "optional component types" in prompt
+        assert "Choose whether any fits your work" in prompt
+        assert "For exact grid extraction" not in prompt and "author a small Tool" not in prompt
+        assert "Auto-Research" not in prompt and "remaining task" in prompt
         assert "different visual region or color" not in prompt
         assert "Compare ALL repeated structures" not in prompt
         assert "relevant editable location" not in prompt

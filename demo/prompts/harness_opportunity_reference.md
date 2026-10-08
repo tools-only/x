@@ -58,12 +58,14 @@ development is included; you need not decide every carrier in one call.
 For reuse cite exact existing resource_refs; for defer state the prerequisite and
 when to reconsider. This records your decision, not evidence of utility.
 
-For a worthwhile capability, read skill-creator/tool-creator/subagent-creator,
-author a complete candidate with task_harness(action=change), then assemble its
-exact version. Read the selected Skill or invoke the selected tool/subagent on
+For a worthwhile capability, task_harness_create saves and selects a complete
+candidate; assembly=false saves only. Apply Skill instructions already in context
+(read only to recover missing text) or invoke the selected tool/subagent on
 the next applicable input and assess the actual result. Auto-Research is optional
 and is never a prerequisite for parent authoring. A single-situation method is a
 valid Skill: explain how to perform the work, with observations as separate evidence.
+Creator templates are optional references when details are needed; valid content
+does not require a prior read, and supplied creator refs must match the current version.
 First-use, level-local and manually possible operations can merit development.
 Save a matching Subagent role when a reusable independent context is worth its
 cost; ephemeral delegation is execution evidence, not component conversion.
@@ -72,7 +74,9 @@ drop the same operation_id. Deferral keeps a reason and retry condition;
 abandonment does not claim successful creation or use.
 System-prompt guidance can be an exploratory or planning policy for its declared
 task/level/phase, including a provisional approach across the next applicable
-decisions; publish content and scope via change, then assemble its exact version.
+decisions; publish content and scope via task_harness_create for default selection.
+It refreshes on the next provider request in the same run; descriptive scope text
+alone does not cause expiry.
 It does not need a Skill/Tool/Subagent creator. Memory holds scoped facts/hypotheses.
 Relative balance means fitting responsibility,
 not equal counts. Auto-Research failure or deferral never blocks direct authoring.

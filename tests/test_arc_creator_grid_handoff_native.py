@@ -36,9 +36,10 @@ def test_current_binding_uses_final_numeric_frame_and_reaches_later_parent(tmp_p
     events, requests = run(root, [read_creator(), author], {
         'PI_ARGUMENT_PUBLIC_SNAPSHOTS': str(fixture), 'PI_ARC_EXECUTION_GATE': 'enabled'})
     template = captured['authoring_template']
-    assert template['authoring_call']['arguments']['trial']['bindings'] == [
-        {'name': 'grid', 'ref': 'observation_snapshot:parent-state-1@v1',
-         'path': ['public_state', 'frames', '1']}]
+    assert template['authoring_call']['arguments']['trial'] == {'current_grid': True}
+    assert template['current_input']['binding'] == {
+        'name': 'grid', 'ref': 'observation_snapshot:parent-state-1@v1',
+        'path': ['public_state', 'frames', '1']}
     assert 'earlier_input' not in template
     attempt = results(events, 'task_harness_create')[0]
     assert not attempt.get('isError'), attempt
@@ -65,7 +66,7 @@ def test_earlier_locator_skips_same_action_capture_and_remains_exact_on_restart(
         template = copy.deepcopy(creator['authoring_template'])
         call = template['authoring_call']
         call['name'] = call.pop('tool')
-        call['arguments']['trial']['bindings'].append(template['earlier_input']['binding'])
+        call['arguments']['trial'].setdefault('bindings', []).append(template['earlier_input']['binding'])
         call['arguments']['candidate'].update(name='two-frame-value', description='Compare captured final pixels')
         call['arguments']['candidate']['program']['source'] = "{'difference': input['grid'][0][0] - input['earlier_grid'][0][0]}"
         return [call]
@@ -91,7 +92,9 @@ def test_earlier_locator_skips_same_action_capture_and_remains_exact_on_restart(
     later, _ = run(root, [[{'name': stored['exposed_name'], 'arguments': actual_call['trial']}]], env, resume=True)
     execution = results(later, stored['exposed_name'])[0]
     assert not execution.get('isError'), execution
-    assert json.loads(execution['result']['content'][0]['text']) == {'difference': 6}
+    assert json.loads(execution['result']['content'][0]['text']) == {'difference': 12}
+    old = next(b for b in execution['result']['details']['input_provenance']['bindings'] if b['name'] == 'earlier_grid')
+    assert old['ref'] == earlier['binding']['ref'] and old['historical_or_stale'] is True
     assert len(records(root, 'task-baseline-method-reads.jsonl')) == 1
     assert not records(root, 'task-resource-access.jsonl')
 
@@ -114,7 +117,7 @@ def test_prepared_frames_execute_reusable_diff_with_default_budgets(tmp_path, ch
         template = copy.deepcopy(creator_from(request)['authoring_template'])
         call = template['authoring_call']
         call['name'] = call.pop('tool')
-        call['arguments']['trial']['bindings'].append(template['earlier_input']['binding'])
+        call['arguments']['trial'].setdefault('bindings', []).append(template['earlier_input']['binding'])
         call['arguments']['candidate'].update(name='frame-diff', description='Exact differences between captured numeric frames')
         call['arguments']['candidate']['program']['source'] = COUNT_SOURCE if compact else DIFF_SOURCE
         return [call]

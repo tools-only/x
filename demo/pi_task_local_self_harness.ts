@@ -22,9 +22,9 @@ import { arcDecisionFeedback } from "./pi_arc_decision_feedback.ts";
 import { latestArcObservationSnapshot, arcFinalFrameBinding } from "./pi_arc_observation_snapshot.ts";
 import { installTaskLocalTools, pureToolInvocationParameters, type TaskToolAdapter } from "./pi_task_local_tools.ts";
 import { assertTaskToolName } from "./pi_task_tool_contract.ts";
-import { validateTaskPureExpressionInputAccess } from "./pi_task_pure_expression.ts";
-import { validateTaskPureExpressionProgram, isTaskPureAuthoringProgram, TASK_PURE_PYTHON_FORMAT, PureAuthoringError } from "./pi_task_pure_authoring.ts";
-import { preparePureExpressionInput } from "./pi_task_pure_expression_host.ts";
+import { validateTaskPureExpressionProgram, isTaskPureAuthoringProgram, TASK_PYTHON_FORMAT, isTaskPythonAuthoringProgram, validateTaskAuthoringInputAccess, PureAuthoringError } from "./pi_task_pure_authoring.ts";
+import { assertCurrentGridOption, preparePureExpressionInput } from "./pi_task_pure_expression_host.ts";
+import { replaceTaskSystemOverlay, taskSystemOverlaySection } from "./pi_task_system_prompt_payload.ts";
 import { validateTaskJsonSchema } from "./pi_task_json_schema.ts";
 import { admitTaskLocalOperation } from "./pi_task_execution_admission.ts";
 import { assertTaskRecordsScope, ensureTaskScope, stampTaskRecord } from "./pi_task_scope.ts";
@@ -70,6 +70,7 @@ import {
 	assemblySelectsReference,
 	createHarnessAssembly,
 	latestHarnessAssembly,
+	prepareHarnessCreationAssembly,
 	renderPromptContributions,
 	TASK_PROMPT_LAYERS,
 	type HarnessAssembly,
@@ -96,7 +97,7 @@ function harnessPreflightDetails(changeRef: string, issues: HarnessPreflightIssu
 		recovery: "Repair these fields together and resubmit. Supplied creator citations must match the current version; omit stale optional citations when submitting complete content. No contract read is required." };
 }
 
-const MINIMUM_CANDIDATE_FIELDS = "Memory: component=memory,key,atom={subject,predicate,value},validity={scope:task|episode|level|state}; IDs auto-bind. System Prompt: component=system_prompt,name,content,scope text. Skill: component=skill,name,description,instructions. Tool: component=tool,name,description,program and schemas when needed. Subagent: component=subagent,name,description,instructions,tools. Creator templates are optional; supplied creator refs must match their current version.";
+const MINIMUM_CANDIDATE_FIELDS = "Tool: name,description,program={format:task-python-v1,source}. Example source: g=input['grid']; {'cells':[[g[y][x] for x in range(2)] for y in range(2)]}. Ordinary Python 3.12/stdlib; input is authorized JSON; finish with a JSON expression or result variable. Isolated execution with time/memory/output limits. Schemas optional. Skill: component=skill,name,description,instructions. Prompt: component=system_prompt,name,content,scope (task|episode|level|state expires; other text describes applicability). Subagent: component=subagent,name,description,instructions,tools. Memory: component=memory,key,atom={subject,predicate,value},validity={scope:task|episode|level|state}; IDs auto-bind. Short text: task_memory_pool capture. Creator citations optional, must match.";
 
 export const SELF_HARNESS_MANAGEMENT_TOOLS = [
 	"task_harness",
@@ -121,7 +122,7 @@ const publicationAssemblyParameters = Type.Optional(Type.Object({
 	expected_assembly_revision: Type.Integer({minimum:0}),
 	selected_resource_refs: Type.Array(Type.String()),
 	prompt_contributions: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Any()))),
-}, {additionalProperties:false, description:"create/change: select all versions written here plus these refs. Omit for pool-only publication."}));
+}, {additionalProperties:false, description:"Select all versions written here plus these refs using exact CAS. change omission stages only; create installs by default, false stages only."}));
 
 function normalizeDirectCreateProgramMetadata(params: Record<string, any>): {
 	value: Record<string, any>; movedFields: string[]; conflict?: string;
@@ -468,7 +469,18 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		name,
 		stampTaskRecord(taskScope, value as Record<string, unknown>),
 	);
-	installHarnessArgumentIntegrity(pi, record => append("task-harness-argument-errors.jsonl", record));
+	installHarnessArgumentIntegrity(pi, record => {
+		append("task-harness-argument-errors.jsonl", record);
+		const failureId = `arguments-${createHash("sha256").update(JSON.stringify([
+			record.tool_call_id, record.tool_name, record.raw_arguments_sha256, record.recordedAt,
+		])).digest("hex").slice(0, 24)}`;
+		const ref = `failure:${failureId}@v1`;
+		append("task-operation-failures.jsonl", { ...record, failure_id: failureId,
+			version: 1, resource_ref: ref, status: "failed",
+			failure_class: "rejected_input", retryable: false, applied: false, execution_stage: "preflight",
+			summary: "Rejected tool JSON; raw arguments retained for optional exact recovery." });
+		return ref;
+	});
 	const scopedDependencies: Dependencies = { ...dependencies, readJsonl, append };
 	const pendingReviewDrafts = () => {
 		const committed = new Set(readJsonl("task-harness-reviews.jsonl").map(row => row.opportunity_id));
@@ -630,7 +642,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				const value = candidate[field];
 				if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) throw new Error(`tool ${field} must be a JSON object`);
 				if (pure) {
-					if (field === "output_schema" && value === undefined && candidate.program?.format !== TASK_PURE_PYTHON_FORMAT)
+					if (field === "output_schema" && value === undefined && !isTaskPythonAuthoringProgram(candidate.program))
 						throw new Error("pure expression program requires output_schema");
 					validateTaskJsonSchema(value ?? (field === "output_schema" ? {} : { type: "object" }), `$.${field}`);
 				}
@@ -642,7 +654,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				const properties = { ...inputSchema.properties };
 				for (const name of boundFields) if (!Object.hasOwn(properties, name))
 					Object.defineProperty(properties, name, { value: {}, enumerable: true, configurable: true });
-				check("program", () => validateTaskPureExpressionInputAccess(
+				check("program", () => validateTaskAuthoringInputAccess(
 					validateTaskPureExpressionProgram(candidate.program), { ...inputSchema, properties }));
 			}
 		}
@@ -1277,20 +1289,18 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	const preparedAuthoringTemplate = (name:any,creatorRef:string) => {
 		const template=creatorCandidateTemplate(name,creatorRef);
 		if (!template) return template;
-		if (template.authoring_call.tool === "task_harness_create") {
+		if (name === "tool-creator") {
 			const inputs = preparedGridInputs(true);
 			if (!inputs) return template;
 			return {...template,authoring_call:{...template.authoring_call,
 				arguments:{...template.authoring_call.arguments,
 					candidate:{...template.authoring_call.arguments.candidate,
-						program:{format:TASK_PURE_PYTHON_FORMAT,source:"<expression>"}},
-					trial:{parameters:{},bindings:[inputs.binding]}}},
+						program:{format:TASK_PYTHON_FORMAT,source:"<Python with final JSON result>"}},
+					trial:{current_grid:true}}},
+				current_input:{binding:inputs.binding},
 				...(inputs.earlier_input ? {earlier_input:inputs.earlier_input} : {})};
 		}
-		return {...template,authoring_call:{...template.authoring_call,
-			arguments:{...template.authoring_call.arguments,
-				assembly:{expected_assembly_revision:currentAssembly()?.revision ?? 0,
-					selected_resource_refs:currentAssembly()?.selected_resource_refs ?? []}}}};
+		return template;
 	};
 	const currentConversionWorkset = () => {
 		const trials = readJsonl("harness-observations.jsonl").filter(row => row.actual_use === true)
@@ -1350,19 +1360,19 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		}));
 	};
 	const useEntrypoint = (entry: HarnessPoolEntry & { aliases: string[]; record: Record<string, any> }) => {
-		if (entry.kind === "skill" && scopedReadRegistered)
-			return {tool:"read",arguments:{path:entry.record.file}};
-		if (entry.kind === "skill") return {tool:"task_harness",arguments:{action:"focus",resource_refs:[entry.resource_ref]},
-			...(pi.getActiveTools().includes("read") ? {optional_scoped_read:{tool:"read",arguments:{path:entry.record.file}}} : {})};
+		if (entry.kind === "skill") return {
+			effect: "Apply the selected procedure directly when its authored instructions are in context. Load only when needed; creation or loading is not actual use.",
+			load_if_needed: scopedReadRegistered ? {tool:"read",arguments:{path:entry.record.file}}
+				: {tool:"task_harness",arguments:{action:"focus",resource_refs:[entry.resource_ref]}},
+		};
 		if (entry.kind === "tool") {
-			const pureGrid = entry.record.program?.format === "task-pure-expression-v1"
+			const pureGrid = isTaskPureAuthoringProgram(entry.record.program)
 				&& entry.record.adapter_id === "arc_agi_3"
 				&& Object.prototype.hasOwnProperty.call(entry.record.input_schema?.properties ?? {}, "grid");
-			const gridInput = pureGrid ? preparedGridInputs() : undefined;
-			return {tool:String(entry.record.exposed_name),arguments:gridInput
-				? {parameters:{},bindings:[gridInput.binding]}
-				: entry.record.program?.format === "task-pure-expression-v1"
-					? "Use {parameters:{<literal input fields>},bindings:[{name:'<bound input field>',ref:'<exact authorized ref>',path:[...]}]}; omit any same-named parameter and any $binding placeholder."
+			return {tool:String(entry.record.exposed_name),arguments:pureGrid
+				? {current_grid:true}
+				: isTaskPureAuthoringProgram(entry.record.program)
+					? "Use parameters for literal fields; current_grid:true fills input.grid from the latest ARC observation. For exact resources use bindings:[{name,ref,path}]; omit same-named parameters."
 					: "<supply input matching the inspected input_schema>"};
 		}
 		if (entry.kind === "subagent") {
@@ -1376,7 +1386,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				...(sceneRef ? {evidence_refs:[sceneRef]} : {})}};
 		}
 		return {effect: entry.kind === "system_prompt"
-			? "Applied to the system prompt at the next parent turn."
+			? "Selected content is projected on the next provider request."
 			: "Selected scoped knowledge is projected into the task context; no extra read is required."};
 	};
 	const lastFailureForComponent = (entry: HarnessPoolEntry & { aliases: string[]; record: Record<string, any> }) => {
@@ -1680,6 +1690,34 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				if (typeof text === "string") {
 					let receipt: Record<string, any> | undefined;
 					try { receipt = JSON.parse(text); } catch { /* Leave non-JSON results untouched. */ }
+					if (message.toolName === "task_harness_create" && !message.isError
+						&& receipt?.format === "task-harness-change-receipt-v1" && receipt.status === "applied"
+						&& receipt.assembly_receipt?.applied !== false
+						&& Array.isArray(receipt.activation?.created_resource_refs)) {
+						// Only the provider copy is shortened. Native details, integrity
+						// hooks and durable publication/trial records remain unchanged.
+						const installed = receipt.assembly_receipt?.applied === true;
+						const projection = {
+							format: receipt.format, status: receipt.status, change_ref: receipt.change_ref,
+							published: true, installed,
+							created_resource_refs: receipt.activation.created_resource_refs,
+							results: (receipt.results ?? []).map((entry: Record<string, any>) => ({
+								index: entry.index, status: entry.status,
+								resource: { resource_ref: entry.resource?.resource_ref },
+							})),
+							assembly_ref: receipt.assembly_receipt?.assembly_ref ?? null,
+							components: (receipt.activation.created_resources ?? []).map((entry: Record<string, any>) => ({
+								resource_ref: entry.resource_ref,
+								...(installed ? { use: entry.use_after_selection } : {}),
+							})),
+							...(receipt.trial ? { trial: receipt.trial } : {}),
+							...(receipt.run ? { run: receipt.run } : {}),
+							...(receipt.assembly_cleanup ? { assembly_cleanup: receipt.assembly_cleanup } : {}),
+							...(receipt.binding_input_normalization ? { binding_input_normalization: receipt.binding_input_normalization } : {}),
+						};
+						return { ...message, content: [{ type: "text", text: JSON.stringify(projection) }],
+							details: { same_as_content: true } };
+					}
 					if (message.toolName === "task_harness" && receipt?.format === "baseline-method-read-v1"
 						&& completedCreatorReads.has(callId)) {
 						const history = compactCompletedCreatorRead(receipt);
@@ -1857,6 +1895,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		}
 	};
 	recoverReviewCommits();
+	const autoResearchAvailable = () => pi.getAllTools().some(tool => tool.name === "auto_research");
 	const periodicReviewEnabled = () => process.env.PI_HARNESS_PERIODIC_REVIEW === "enabled" && pi.getAllTools().some(tool => tool.name === "arc_action");
 	const levelReviewObservations = () => {
 		const resetReports = new Map(readJsonl("task-level-reset-reports.jsonl").map(row => [row.boundary_ref, row]));
@@ -1912,8 +1951,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	const patternReviewQueue = () => {
 		const queue = periodicReviewQueue(readJsonl("execution-observations.jsonl"),
 			readJsonl("task-harness-reviews.jsonl"), readJsonl("task-harness-review-events.jsonl"));
-		for (const worker of researchWorkers(root)) if (worker.handle_periodic_reviews) routeWorkerEvidence(root, worker);
-		const assigned = queue.due.filter(window => researchWorkerWindowCoverage(root, window.evidence_refs).length);
+		if (autoResearchAvailable()) for (const worker of researchWorkers(root)) if (worker.handle_periodic_reviews) routeWorkerEvidence(root, worker);
+		const assigned = autoResearchAvailable()
+			? queue.due.filter(window => researchWorkerWindowCoverage(root, window.evidence_refs).length) : [];
 		for (const window of assigned) if (!readJsonl("task-harness-review-events.jsonl")
 			.some(row => row.window_id === window.window_id && row.status === "assigned"))
 			append("task-harness-review-events.jsonl", { window_id: window.window_id, status: "assigned",
@@ -1925,6 +1965,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	};
 	const pendingPeriodicReview = () => patternReviewQueue().current;
 	const latestResearchHandoffs = () => {
+		if (!autoResearchAvailable()) return new Map<string, Record<string, any>>();
 		const records = readJsonl("auto-research-handoffs.jsonl");
 		const updates = reconcileResearchHandoffs(
 			records,
@@ -1941,9 +1982,11 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		}
 		return latest;
 	};
-	const pendingResearchHandoff = () => [...latestResearchHandoffs().values()]
-		.find(item => item.status === "proposed");
+	const pendingResearchHandoff = () => autoResearchAvailable()
+		? [...latestResearchHandoffs().values()].find(item => item.status === "proposed") : undefined;
 	const refreshCrossContextResearchCandidates = () => {
+		// An uninstalled research lifecycle must not create dangling opportunities.
+		if (!autoResearchAvailable()) return [];
 		const existing = latestBy(readJsonl("auto-research-opportunities.jsonl"), "candidate_id");
 		for (const draft of buildCrossContextResearchCandidates({
 			observations: readJsonl("execution-observations.jsonl"),
@@ -2002,7 +2045,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		const open = (onDemand ? [...(candidateCount ? ["delegate_task"] : []), "task_resource"]
 			: ["delegate_task", "task_harness_status", "task_tool_policy", "task_resource", "task_validation", "read"])
 			.filter((name) => registered.has(name));
-		if (open.length) pi.setActiveTools([...new Set([...pi.getActiveTools(), ...open, "task_harness", "auto_research"])]);
+		if (open.length) pi.setActiveTools([...new Set([...pi.getActiveTools(), ...open,
+			...["task_harness", "auto_research"].filter(name => registered.has(name))])]);
 	};
 	// Candidate discovery is a deterministic observation-index update. Run it at
 	// the environment boundary so the parent does not have to remember to scan
@@ -2525,7 +2569,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				actualUseRefs,
 			});
 			append("task-method-lifecycle.jsonl", advanced);
-			const handoff = buildMethodFeedbackHandoff(advanced, assessment);
+			const handoff = autoResearchAvailable() ? buildMethodFeedbackHandoff(advanced, assessment) : undefined;
 			if (handoff && !readJsonl("auto-research-handoffs.jsonl").some((item) => item.handoff_id === handoff.handoff_id)) {
 				append("auto-research-handoffs.jsonl", handoff);
 			}
@@ -2596,7 +2640,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					name: item.name, version: item.version, resource_ref: `tool:${item.tool_id ?? item.name}@v${item.version}`,
 					exposed_name: item.exposed_name, description: compactText(item.description),
 					program_format: item.program?.format ?? "legacy-steps",
-					use: item.program?.format === "task-pure-expression-v1"
+					use: isTaskPureAuthoringProgram(item.program)
 						? `Call ${item.exposed_name}(parameters={...},bindings=[{name,ref,path}])`
 						: `Call ${item.exposed_name}(input={...})`,
 				}));
@@ -2616,7 +2660,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				.filter((item) => validity.eligible("system_prompt", item))
 				.map((item) => ({ name: item.name, version: item.version,
 					resource_ref: `system_prompt:${item.segment_id}@v${item.version}`,
-					use: "Appended to later Pi system prompts through before_agent_start." }));
+					use: "Selected valid overlays refresh on the next provider request." }));
 			const activeSkills = [...skills.values()]
 				.filter((item) => validity.eligible("skill", item))
 				.map((item) => ({
@@ -2778,13 +2822,23 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	pi.registerTool({
 		name: "task_harness_create", label: "Create task-local capability",
 		executionMode: "sequential",
-		description: "Create from content; templates optional. assembly selects; trial runs a pure tool.",
+		description: "Save and install a task component. Tool trial returns a value; trial.current_grid=true fills input.grid[y][x]. run invokes a saved Subagent. assembly=false saves only. Templates optional.",
 		parameters: compactToolSchema(Type.Object({
 			candidate: Type.Record(Type.String(), Type.Any(), { description: MINIMUM_CANDIDATE_FIELDS }),
 			decision: Type.Optional(Type.Object({ basis_refs: Type.Array(Type.String()), reason: Type.String(), expected: Type.String() })),
-			assembly: Type.Optional(Type.Union([Type.Literal(true), publicationAssemblyParameters])),
+			assembly: Type.Optional(Type.Union([Type.Boolean(), publicationAssemblyParameters])),
 			trial: Type.Optional(pureToolInvocationParameters()),
+			run: Type.Optional(Type.Object({ task: Type.String({ minLength: 1 }),
+				evidence_refs: Type.Optional(Type.Array(Type.String())), resource_refs: Type.Optional(Type.Array(Type.String())),
+				context_recipe: Type.Optional(Type.Object({}, { additionalProperties: true })),
+			}, { additionalProperties: false })),
 		})),
+		prepareArguments(args) {
+			const input = args as Record<string, any>;
+			assertCurrentGridOption(input?.trial);
+			assertCurrentGridOption(input?.candidate?.trial);
+			return args;
+		},
 		async execute(toolCallId, params, signal) {
 			const admission = admitTaskLocalOperation("task_harness");
 			if (admission) return admission;
@@ -2799,6 +2853,10 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			try {
 				normalized = normalizeDirectCreateMetadata(params);
 				authored = normalizeSemanticCandidate({ ...normalized.value.candidate });
+				const assembly = normalized.value.assembly;
+				if (assembly !== undefined && typeof assembly !== "boolean"
+					&& (!assembly || typeof assembly !== "object" || Array.isArray(assembly)))
+					throw new Error("assembly must be true, false, or an exact assembly object");
 			} catch (error) {
 				// Both operations above only prepare input; no native executor ran.
 				throw new Error(JSON.stringify(harnessPreflightDetails(`harness-change:${toolCallId}`, [{
@@ -2815,13 +2873,18 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			}
 			// Capture once, before compilation/await; normal CAS checks still guard
 			// publication and exact-version assembly. No refresh/retry after writes.
-			if (normalized.value.assembly === true) {
-				const previous = currentAssembly();
-				normalized.value = { ...normalized.value, assembly: {
-					expected_assembly_revision: previous?.revision ?? 0,
-					selected_resource_refs: previous?.selected_resource_refs ?? [],
-				} };
-				normalized.movedFields.push("assembly:true");
+			let assemblyCleanup: ReturnType<typeof prepareHarnessCreationAssembly>["cleanup"] | undefined;
+			if (normalized.value.assembly === undefined || normalized.value.assembly === true) {
+				const prepared = prepareHarnessCreationAssembly(currentAssembly(),
+					resolveCurrentComponentRef, resolvePromptSourceRef);
+				normalized.movedFields.push(normalized.value.assembly === undefined ? "assembly:default-install" : "assembly:true");
+				normalized.value = { ...normalized.value, assembly: prepared.selection };
+				if (prepared.cleanup.removed_resource_refs.length || prepared.cleanup.removed_prompt_contribution_ids.length)
+					assemblyCleanup = prepared.cleanup;
+			} else if (normalized.value.assembly === false) {
+				const { assembly: _stageOnly, ...staged } = normalized.value;
+				normalized.value = staged;
+				normalized.movedFields.push("assembly:false");
 			}
 			const authoredFirstCall = normalized.value.trial;
 			// The host already defaults omitted parameters/bindings to {}/[].
@@ -2833,6 +2896,29 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					bindings: authoredFirstCall.bindings === undefined ? [] : authoredFirstCall.bindings,
 				} : authoredFirstCall;
 			let bindingInputNormalization: Record<string, any> | undefined;
+			const initialRun = normalized.value.run;
+			if (initialRun !== undefined) {
+				const issues: HarnessPreflightIssue[] = [];
+				if (firstCall !== undefined) issues.push({ path: "run", message: "Choose run for a Subagent or trial for a pure Tool, not both." });
+				const targets = classifyHarnessChangeTargets(authored);
+				if (targets.length !== 1 || targets[0] !== "subagent") issues.push({ path: "run", message: "run requires one saved Subagent." });
+				if (normalized.value.assembly === undefined) issues.push({ path: "assembly", message: "run requires installation; assembly=false only stages the role." });
+				if (!initialRun || typeof initialRun !== "object" || Array.isArray(initialRun)
+					|| Object.keys(initialRun).some(key => !["task", "evidence_refs", "resource_refs", "context_recipe"].includes(key))
+					|| typeof initialRun.task !== "string" || !initialRun.task.trim())
+					issues.push({ path: "run", message: "run requires a nonempty task and optional evidence_refs, resource_refs, context_recipe." });
+				if (Array.isArray(authored.tools) && authored.tools.includes("arc_action"))
+					issues.push({ path: "run", message: "First run is read-only; use a separate delegate_task for explicit action authorization." });
+				const delegate = nativeHarnessExecutor(pi, "delegate_task");
+				if (!delegate) issues.push({ path: "run", message: "The current task has no delegate_task runtime; save the role without run." });
+				if (!issues.length) {
+					try {
+						if (initialRun.context_recipe !== undefined) normalizeContextRecipe(initialRun.context_recipe);
+						delegate!.preflight?.({ ...initialRun, agent_name: authored.name });
+					} catch (error) { issues.push({ path: "run", message: error instanceof Error ? error.message : String(error) }); }
+				}
+				if (issues.length) throw new Error(JSON.stringify(harnessPreflightDetails(`harness-change:${toolCallId}`, issues)));
+			}
 			if (firstCall !== undefined) {
 				const issues: HarnessPreflightIssue[] = [];
 				const missingBoundFields = new Set<string>();
@@ -2841,20 +2927,25 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				catch (error) { issues.push({ path: "candidate", message: error instanceof Error ? error.message : String(error) }); }
 				if (targets.length !== 1 || targets[0] !== "tool"
 					|| !isTaskPureAuthoringProgram(normalized.value.candidate?.program))
-					issues.push({ path: "trial", message: "trial requires one pure-expression Tool" });
+					issues.push({ path: "trial", message: "trial requires one Python or JSON computation Tool" });
 				if (normalized.value.assembly === undefined)
-					issues.push({ path: "assembly", message: "trial requires explicit assembly={expected_assembly_revision,selected_resource_refs}; choose the current revision and retained refs." });
+					issues.push({ path: "assembly", message: "trial requires installation; omit assembly, set true, or provide an exact assembly object. assembly=false stages only." });
 				if (!firstCall || typeof firstCall !== "object" || Array.isArray(firstCall)
-					|| Object.keys(firstCall).some(key => !["parameters", "bindings"].includes(key))
+					|| Object.keys(firstCall).some(key => !["parameters", "bindings", "current_grid"].includes(key))
+					|| (firstCall.current_grid !== undefined && typeof firstCall.current_grid !== "boolean")
 					|| !firstCall.parameters || typeof firstCall.parameters !== "object" || Array.isArray(firstCall.parameters)
 					|| !Array.isArray(firstCall.bindings))
-					issues.push({ path: "trial", message: "trial requires only parameters (object) and bindings (array)" });
+					issues.push({ path: "trial", message: "trial allows only parameters (object), bindings (array) and current_grid (boolean)" });
 				else {
+					if (firstCall.current_grid === true && (Object.hasOwn(firstCall.parameters, "grid")
+						|| firstCall.bindings.some(binding => binding?.name === "grid")))
+						issues.push({ path: "trial.current_grid", message: "current_grid fills input.grid; omit parameters.grid and any grid binding, or omit current_grid to use an explicit grid." });
 					// Caller parameters retain their authored contract. Explicit bindings
 					// may supply a root type from the authorized host preparation below.
 					const schema = normalized.value.candidate?.input_schema;
 					if (schema?.additionalProperties === false) {
 						const properties = schema.properties ?? {};
+						if (firstCall.current_grid === true && !Object.hasOwn(properties, "grid")) missingBoundFields.add("grid");
 						for (const field of Object.keys(firstCall.parameters)) if (!Object.hasOwn(properties, field))
 							issues.push({ path: `changes[0].candidate.input_schema.properties.${field}`,
 								message: `trial supplies input.${field}, which is absent from closed input_schema.properties; declare its type or remove that trial input.` });
@@ -2916,6 +3007,12 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			let publication = await publishParentChanges(toolCallId, { changes: [{ operation: "create", candidate: authored }],
 				decision: normalized.value.decision,
 				...(normalized.value.assembly !== undefined ? { assembly: normalized.value.assembly } : {}) }, signal);
+			if (assemblyCleanup) {
+				const cleanup = { ...assemblyCleanup, applied: publication.details?.assembly_receipt?.applied === true };
+				const details = { ...publication.details, assembly_cleanup: cleanup };
+				publication = { ...publication, content: [{ type: "text", text: JSON.stringify(details) }], details };
+				append("task-harness-assembly-cleanups.jsonl", { tool_call_id: toolCallId, ...cleanup, recordedAt: new Date().toISOString() });
+			}
 			if (normalized.movedFields.length || bindingInputNormalization) append("task-harness-create-normalizations.jsonl", {
 				format: "task-harness-create-normalization-v1", tool_call_id: toolCallId,
 				moved_fields: normalized.movedFields,
@@ -2934,8 +3031,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				const entry = refs.length === 1 ? componentPool().find(item => item.resource_ref === refs[0]) : undefined;
 				let result: any;
 				try {
-					if (!entry || entry.kind !== "tool" || entry.record.program?.format !== "task-pure-expression-v1")
-						throw new Error("initial trial requires this publication's exact pure Tool version");
+					if (!entry || entry.kind !== "tool" || !isTaskPureAuthoringProgram(entry.record.program))
+						throw new Error("initial trial requires this publication's exact computation Tool version");
 					const execute = nativeHarnessExecutor(pi, String(entry.record.exposed_name));
 					if (!execute) throw new Error("published pure Tool executor is unavailable");
 					result = await execute(`${toolCallId}:trial`, firstCall, signal);
@@ -2949,6 +3046,24 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				const receipt = { ...publication.details, trial };
 				return { ...publication, content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
 			}
+			if (initialRun !== undefined && !publication.isError) {
+				const refs = publication.details?.activation?.created_resource_refs ?? [];
+				const entry = refs.length === 1 ? componentPool().find(item => item.resource_ref === refs[0]) : undefined;
+				let result: any;
+				try {
+					if (signal?.aborted) throw new Error("Initial Subagent run cancelled; the saved role remains installed.");
+					if (!entry || entry.kind !== "subagent") throw new Error("Initial run requires the exact published Subagent.");
+					const delegate = nativeHarnessExecutor(pi, "delegate_task");
+					if (!delegate) throw new Error("delegate_task runtime is unavailable");
+					result = await delegate(`${toolCallId}:run`, { ...initialRun, agent_name: entry.name }, signal);
+				} catch (error) {
+					result = { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] };
+				}
+				const run = { status: result?.isError ? "failed" : "completed", subagent_ref: refs[0], result };
+				append("task-harness-initial-runs.jsonl", { ...run, toolCallId, recordedAt: new Date().toISOString() });
+				const receipt = { ...publication.details, run };
+				return { ...publication, content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
+			}
 			return publication;
 		},
 	});
@@ -2960,7 +3075,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			description: "Manage capabilities/context. contract(schema_action=review|level_review) loads typed advanced actions/fields; level_review needs window_id. Pool entry is not use.",
 			parameters: compactToolSchema(Type.Object({
 				action: Type.Union([Type.Literal("contract"), Type.Literal("methods"), Type.Literal("read_method"), Type.Literal("development_intent"), Type.Literal("start"), Type.Literal("summary"), Type.Literal("inspect"), Type.Literal("status"), Type.Literal("review"), Type.Literal("defer_review"), Type.Literal("capability_review"), Type.Literal("level_review"), Type.Literal("report_level_reset"), Type.Literal("decide_research"), Type.Literal("enable"), Type.Literal("activate"), Type.Literal("focus"), Type.Literal("context"), Type.Literal("compact_results"), Type.Literal("restore_results"), Type.Literal("assemble"), Type.Literal("change"), Type.Literal("assess_effect")]),
-				topic: Type.Optional(Type.String({ description: "Contract topic; level_review needs window_id." })),
+				topic: Type.Optional(Type.String({ description: "On-demand details: components, memory, assembly, development; level_review needs window_id." })),
 				section: Type.Optional(Type.String({ description: "One status section; all returns complete state and manuals." })),
 				method_name: Type.Optional(Type.String()),
 				method_resource: Type.Optional(Type.String()),
@@ -2971,7 +3086,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					Type.Object({ operation: Type.Union([Type.Literal("create"), Type.Literal("update")]), candidate: Type.Record(Type.String(), Type.Any(), { description: "Complete parent-authored body, not refs alone." }) }),
 					Type.Object({ candidate: Type.Record(Type.String(), Type.Any(), { description: "Complete body; default operation=create." }) }),
 					Type.Object({ operation: Type.Union([Type.Literal("retire"), Type.Literal("reuse")]), target_ref: Type.String() }),
-				]), { description: MINIMUM_CANDIDATE_FIELDS })),
+				]), { description: "Candidate fields follow task_harness_create. Updates need target_version. Without assembly, change saves only." })),
 				assembly: publicationAssemblyParameters,
 				decision: Type.Optional(Type.Object({
 					basis_refs: Type.Array(Type.String()), reason: Type.String(), expected: Type.String(),
@@ -3105,7 +3220,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				const authoringTemplate = params.method_resource && params.method_resource !== "SKILL.md"
 					? undefined : preparedAuthoringTemplate(method.name,method.method_ref);
 				const handoff = authoringTemplate ? {status:"prepared_not_published",
-					instruction:"Fill the candidate. Keep/edit the template's assembly option to explicitly select the exact versions written by this call plus its listed existing refs, or omit it to write only the pool. Await successful creation/assembly receipts, then trial. Reading is preparation, not benefit.",
+					instruction:"Fill the candidate and submit the template's task_harness_create call. Omitted assembly installs the exact written versions; assembly=false stages only. Await the publication/assembly receipts, follow their use entries and inspect semantic results. Reading is preparation, not benefit.",
 					assembly_revision: currentAssembly()?.revision ?? 0,
 					selected_resource_refs: currentAssembly()?.selected_resource_refs ?? [],
 					...(intent ? {development_intent:intent} : {}),
@@ -3357,7 +3472,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 						research_kind: item.research_kind ?? item.research_problem?.kind ?? null,
 						research_problem: item.research_problem ?? null,
 					}));
-				const researchHandoff = opportunity.window
+				const researchHandoff = autoResearchAvailable() && opportunity.window
 					? buildPeriodicResearchHandoff(reviewId, opportunity.window, transition!, entries, priorResearch) : undefined;
 				const componentApplicationPlan = entries
 					.filter((entry) => ["create", "update"].includes(String(entry.disposition)))
@@ -3458,15 +3573,15 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 					format: "task-local-self-harness-entry-v1",
 					status: "unlocked",
 					active_resources: activeResources,
-					creation_calls: ["task_harness(action=change)"],
+					creation_calls: ["task_harness_create", "task_harness(action=change)"],
 					minimal_recipes: {
-						memory: "upsert a concise task fact or control mapping; omit target_version for a new key, and use the inspected current version only when updating an existing key",
-						system_prompt: "author an explicit working directive with the appropriate task, phase, or level validity; select its exact version through assemble for later parent context",
-						skill: "create a repeatable observation or reasoning procedure",
-						tool: "create either a task-pure-expression-v1 JSON AST with explicit input/output schemas, or a legacy adapter-bounded program.steps contract; never combine both formats",
-						subagent: "create a read-only independent reviewer, then delegate a decision-relevant question",
+						memory: "capture scoped text with task_memory_pool; select=true also selects it, omission archives only; use exact target_version when updating",
+						system_prompt: "author an explicit working directive with appropriate validity; task_harness_create installs it, while change needs explicit assembly",
+						skill: "save procedural instructions with steps, decisions and stopping; apply them directly when in context",
+						tool: "author task-python-v1 ordinary Python source with optional schemas; JSON AST and adapter-bounded program.steps remain alternatives",
+						subagent: "delegate_task handles one-off independent work; save instructions/tools only for a reusable responsibility, optionally run on creation",
 					},
-					lifecycle: "Creation is agent-owned and immediate. A new skill, tool version, or subagent definition is exposed to the model on the next provider context; use it then and record the result before revising.",
+					lifecycle: "Parent chooses content and use. create selects by default; Tool trial and saved Subagent run can return a first result. Apply Skill instructions already in context; selected Memory/Prompt refresh on the next provider request. Inspect results before relying on them.",
 					safety: "Task-local resources remain confined to the current task. Adapter allowlists, read-only ARC delegation, and host/network/filesystem boundaries remain enforced.",
 				};
 				append("task-harness-entry-events.jsonl", {
@@ -3483,7 +3598,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			}
 			if (params.action === "enable" || params.action === "activate") {
 				const aliases: Record<string, string> = {
-					memory: "task_harness", skill: "read",
+					memory: "task_memory_pool", skill: "read",
 					tool: "task_harness", subagent: "delegate_task", delegate: "delegate_task",
 					research: "research_resource",
 					status: "task_harness_status", policy: "task_tool_policy",
@@ -3724,9 +3839,11 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 	const memoryPoolTool = {
 		name: "task_memory_pool",
 		label: "Task memory pool",
-		description: "Capture/list/retire scoped Memory. Read exact refs with task_resource; explicitly assemble selections.",
+		executionMode: "sequential" as const,
+		description: "Capture/list/retire scoped Memory. capture with select=true also selects the saved versions for current context; otherwise archive only.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("capture"), Type.Literal("list"), Type.Literal("retire")]),
+			select: Type.Optional(Type.Boolean()),
 			capture_id: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
 			items: Type.Optional(Type.Array(Type.Object({
 				content: Type.String({ minLength: 1 }),
@@ -3747,8 +3864,20 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			after: Type.Optional(Type.String()),
 			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
 		}),
-		async execute(toolCallId: string, params: Record<string, any>) {
+		prepareArguments(args: Record<string, any>) {
+			if (args?.select !== undefined && typeof args.select !== "boolean") throw new Error("select must be a boolean");
+			return args;
+		},
+		async execute(toolCallId: string, params: Record<string, any>, signal?: AbortSignal) {
 			assertParentTaskResourceBindingHost(pi, root);
+			if (params.select !== undefined && (typeof params.select !== "boolean" || params.action !== "capture"))
+				throw new Error("select is a boolean option for capture only");
+			if (signal?.aborted) throw new Error("memory operation cancelled before writes");
+			const selectionRevision = currentAssembly()?.revision ?? 0;
+			if (params.select) {
+				const admission = admitTaskLocalOperation("task_harness");
+				if (admission) return admission;
+			}
 			if (params.action === "list") {
 				const all = [...memories.values()].map((record) => ({ record, metadata: resourceMetadata("memory", record) }))
 					.sort((a, b) => String(a.metadata.resource_ref).localeCompare(String(b.metadata.resource_ref)));
@@ -3870,6 +3999,10 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			});
 			const results: Record<string, any>[] = [];
 			for (const item of items) {
+				if (signal?.aborted) {
+					results.push({ item_index: item.index, applied: false, error: "capture cancelled; earlier saved items remain in the pool" });
+					break;
+				}
 				const existingReceipt = prior.find((row) => Number(row.item_index) === item.index);
 				if (existingReceipt) {
 					if (existingReceipt.payload_hash !== item.hash) throw new Error(`capture_id ${captureId} was already used with different item ${item.index}`);
@@ -3905,9 +4038,47 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				results.push(result);
 			}
 			const applied = results.filter((result) => result.applied !== false).length;
+			let selection: Record<string, any> | undefined;
+			if (params.select) {
+				if (applied !== items.length || signal?.aborted) {
+					selection = { applied: false, reason: "Capture incomplete or cancelled; no selection applied. Saved items remain in the pool." };
+				} else {
+					const current = currentAssembly();
+					const prepared = prepareHarnessCreationAssembly(current, resolveCurrentComponentRef, resolvePromptSourceRef);
+					const refs = results.map(item => String(item.resource_ref));
+					const selected = [...new Set([...prepared.selection.selected_resource_refs, ...refs])];
+					const contributions = refs.flatMap(ref => {
+						const entry = componentPool().find(item => item.resource_ref === ref && item.kind === "memory" && item.eligible);
+						if (!entry) return [];
+						return [{ contribution_id: `memory-capture-${createHash("sha256").update(ref).digest("hex").slice(0, 24)}`,
+							source_ref: ref, layer: "task_state", content: entry.record.content, priority: 0,
+							depends_on_refs: [], basis_refs: entry.record.basis_refs ?? [],
+							reconsider_when: entry.record.reconsider_when ?? "The scoped memory expires or is revised." }];
+					});
+					const contributionIds = new Set(contributions.map(item => item.contribution_id));
+					const promptContributions = [...prepared.selection.prompt_contributions.filter(item => !contributionIds.has(item.contribution_id)), ...contributions];
+					// Capture retries refer to the saved exact versions, never their successors.
+					const noChange = current?.revision === selectionRevision
+						&& refs.every(ref => resolveCurrentComponentRef(ref) === ref && assemblySelectsReference(current, [ref]))
+						&& contributions.every(item => current?.prompt_contributions.some(prior => prior.contribution_id === item.contribution_id
+							&& prior.source_ref === item.source_ref && prior.content === item.content))
+						&& !prepared.cleanup.removed_resource_refs.length && !prepared.cleanup.removed_prompt_contribution_ids.length;
+					selection = noChange ? { applied: true, idempotent: true,
+						assembly_ref: `harness_assembly:${current!.assembly_id}@v${current!.revision}` }
+						: applyParentAssembly({ ...prepared.selection, expected_assembly_revision: selectionRevision,
+							selected_resource_refs: selected, prompt_contributions: promptContributions, decision: { basis_refs: refs,
+								reason: "Parent requested capture and selection of these scoped memories.",
+								expected: "Expose eligible saved knowledge in subsequent task context." } }).details;
+				}
+				append("task-memory-pool-selections.jsonl", { capture_id: captureId, ...selection, recordedAt: new Date().toISOString() });
+				for (const item of results) item.selected = Boolean(item.resource_ref
+					&& resolveCurrentComponentRef(item.resource_ref) && assemblySelectsReference(currentAssembly(), [item.resource_ref]));
+			}
 			const response = { format: "task-memory-pool-capture-receipt-v1", capture_id: captureId,
 				applied, requested: items.length, complete: applied === items.length, atomic: false, items: results,
-				note: "Pool presence is not prompt exposure, assembly selection or actual use." };
+				...(selection ? { selection } : {}),
+				note: selection?.applied ? "Saved exact versions are selected; eligible content is projected on the next request. Selection is not actual use."
+					: "Pool presence is not prompt exposure, assembly selection or actual use." };
 			return { content: [{ type: "text", text: JSON.stringify(response) }], details: response };
 		},
 	};
@@ -3979,11 +4150,17 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		},
 	});
 
-	pi.on("before_agent_start", (event) => {
+	const prepareSystemOverlay = () => {
 		const validity = currentKnowledge();
 		const active = [...systemPrompts.values()]
 			.filter((item) => validity.eligible("system_prompt", item) && resourceIsAssembled("system_prompt", item))
 			.sort((left, right) => left.name.localeCompare(right.name));
+		const assembly = currentAssembly();
+		const overlay = renderTaskSystemPromptOverlay(active, knowledgeEntries(), assembly, currentValidityContext());
+		return { active, assembly, overlay };
+	};
+	const recordSystemOverlay = ({ active, assembly, overlay }: ReturnType<typeof prepareSystemOverlay>,
+		phase: "before_agent_start" | "before_provider_request") => {
 		for (const item of active) {
 			const key = `${item.segment_id}@${item.version}`;
 			if (projectedSystemPrompts.has(key)) continue;
@@ -3992,7 +4169,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				observation_id: `system-prompt-exposure-${item.decision_id}`,
 				observation_kind: "pi_system_prompt_overlay", decision_id: item.decision_id,
 				basis_resource_ids: item.basis_refs,
-				operation: { capability: "pi.before_agent_start", component: "task_system_prompt", name: item.name, version: item.version },
+				operation: { capability: `pi.${phase}`, component: "task_system_prompt", name: item.name, version: item.version },
 				effect_observed: true, recordedAt: new Date().toISOString(),
 			});
 			append("harness-observations.jsonl", {
@@ -4003,18 +4180,37 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				effect_observed: true, recordedAt: new Date().toISOString(),
 			});
 		}
-		const assembly = currentAssembly();
-		const overlay = renderTaskSystemPromptOverlay(active, knowledgeEntries(), assembly, currentValidityContext());
 		append("task-system-prompt-assemblies.jsonl", { format: "task-system-prompt-assembly-v1",
+			phase,
 			assembly_ref: assembly ? `harness_assembly:${assembly.assembly_id}@v${assembly.revision}` : null,
 			selected: active.map(item => promptReceipt("system_overlay", knowledgeRef("system_prompt", item), item.content)),
 			...promptReceipt("system_overlay", "assembled-overlay", overlay), recordedAt: new Date().toISOString() });
-		if (!active.length) return {};
-		const overlaySection = `\n\n# Task-local system-prompt overlay\n${overlay}`;
+	};
+	let startupOverlaySection = "";
+	let previousRequestOverlaySection = "";
+	pi.on("before_agent_start", (event) => {
+		const projection = prepareSystemOverlay();
+		const overlaySection = taskSystemOverlaySection(projection.overlay);
+		recordSystemOverlay(projection, "before_agent_start");
+		startupOverlaySection = overlaySection;
+		previousRequestOverlaySection = "";
+		if (!overlaySection) return {};
 		// The shared benchmark hook may have already appended this exact section.
 		// Keep validity/assembly computation and exposure receipts above unchanged.
 		if (event.systemPrompt.endsWith(overlaySection)) return {};
 		return { systemPrompt: `${event.systemPrompt}${overlaySection}` };
+	});
+	pi.on("before_provider_request", (event, ctx) => {
+		if (!systemPrompts.size && !startupOverlaySection && !previousRequestOverlaySection) return;
+		const projection = prepareSystemOverlay();
+		const { overlay } = projection;
+		if (!overlay && !startupOverlaySection && !previousRequestOverlaySection) return;
+		const payload = replaceTaskSystemOverlay(event.payload,
+			[startupOverlaySection, previousRequestOverlaySection], overlay, ctx.model?.api);
+		// Failed provider transformation must not record a successful projection.
+		recordSystemOverlay(projection, "before_provider_request");
+		previousRequestOverlaySection = taskSystemOverlaySection(overlay);
+		return payload;
 	});
 
 	registerRoutableTool({
@@ -4278,7 +4474,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		if (freshLevelSuccess) outcomeMessages.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
 			text: `FRESH LEVEL TRANSITION (parent decision, not an action gate): ${JSON.stringify({window_id:freshLevelSuccess.window_id,
 				boundary_ref:freshLevelSuccess.boundary_ref,level_before:freshLevelSuccess.level,
-				level_after:freshLevelSuccess.outcome?.public_transition?.level_after})}. Read the current public observation before the next action. Rebind the prior successful method's state-dependent inputs to this new level, update the working goal/strategy and consider a scoped planning System Prompt or method revision only if it helps. The pending review can archive the old path now; submit its success_path nested inside level_review, not as a sibling argument. Review and component creation are optional, not an action gate. Never replay old coordinates.` }] });
+				level_after:freshLevelSuccess.outcome?.public_transition?.level_after})}. Read the current public observation before the next action. Rebind the prior successful method's state-dependent inputs to this new level, update the working goal/strategy and choose whether any prior component still applies. The pending review can archive the old path now; submit its success_path nested inside level_review, not as a sibling argument. Review and component creation are optional, not an action gate. Never replay old coordinates.` }] });
 		if (terminalReview) {
 			return { messages: [...assembledMessages, ...outcomeMessages] };
 		}
@@ -4326,27 +4522,26 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			tools: [...latestTaskToolsForPrompt.values()].filter((item) => item.status === "active").length,
 			subagents: [...latestSubagentsForPrompt.values()].filter((item) => item.status === "active").length,
 		};
-		const supportedCreation = [
-			"task_memory.upsert", "task_system_prompt.create", "task_skill.create",
-			...(dependencies.taskToolAdapter ? ["task_tool.create"] : []),
-			...(pi.getAllTools().some((tool) => tool.name === "task_subagent")
-				? ["task_subagent.create", "delegate_task"] : []),
-		];
-		const methodDiscovery = compactArc
-			? baselineMethodCatalog().map(({ name }) => name)
-			: baselineMethodCatalog();
+		const availableEntries = authorizedTools();
+		const visibleEntries = new Set(pi.getActiveTools());
+		const exposeEntry = (name: string) => visibleEntries.has(name) ? ""
+			: `First task_harness(action="activate",enabled_tools=["${name}"]); then `;
+		const componentIndex = renderPrompt("self_harness_index.md", {
+			active_resources: JSON.stringify(resourceCounts),
+			memory_entry: availableEntries.has("task_memory_pool")
+				? `Memory text: ${exposeEntry("task_memory_pool")}task_memory_pool(action="capture",items=[{content,scope}],select=true). Omit select for archive only.` : "",
+			delegate_entry: availableEntries.has("delegate_task")
+				? `One-off independent work: ${exposeEntry("delegate_task")}delegate_task(task,output_contract,stop_when,budget). No saved role needed; tools/context_recipe choose its evidence.` : "",
+		});
+		const availableMethods = baselineMethodCatalog()
+			.filter(({ name }) => name !== "research-orchestration" || autoResearchAvailable());
+		const methodDiscovery = availableMethods.map(({ name }) => name);
 		const resources: any[] = [{ role: "user", timestamp: Date.now(), content: [{ type: "text", text:
-			`Baseline authoring methods: ${JSON.stringify(methodDiscovery)}. ${compactArc
-				? 'Complete content can be authored directly. task_harness(action="read_method", method_name="<name>") returns optional creator templates; supplied creator refs must match the current version. Memory scope IDs bind automatically when omitted.'
-				: `${BASELINE_AUTHORING_GUIDANCE} Memory validity bindings: ${JSON.stringify(currentValidityContext())}.`}` }] }, {
+			`Baseline authoring methods: ${JSON.stringify(methodDiscovery)}. Optional templates: task_harness(action="read_method",method_name="<name>").` }] }, {
 			role: "user", timestamp: Date.now(),
 			content: [{ type: "text", text:
-				compactArc
-					? renderPrompt("self_harness_index.md", { active_resources: JSON.stringify(resourceCounts) })
-					: `Task-local self-harness is UNLOCKED for this treatment task. Current active resources: ${JSON.stringify(resourceCounts)}. ` +
-						`Creation is available now through ${supportedCreation.join(", ")}; complete content may be authored directly, with creator templates available on demand. Supplied authoring_method_ref citations must match the current version. Auto-Research currently requires reading research-orchestration and passing its method_ref. ` +
-						"Start with the smallest useful lower-order capability when it will help: memory for durable facts, skill for a repeatable procedure, tool for a bounded pure-JSON computation or adapter operation, or a subagent for an independent read-only question. " +
-					  "Create, actually use, inspect the result, and revise only when evidence warrants; choose freely if direct execution has higher value. task_harness provides status and context focus. Auto-Research may study the task path, a component, a composition, a strategy, or the research method itself.",
+				componentIndex + (!compactArc && autoResearchAvailable()
+					? "Auto-Research requires reading research-orchestration and passing its method_ref." : ""),
 			}],
 		}];
 		const memoryAssembly = currentAssembly();
@@ -4402,21 +4597,20 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				next_step: item.next_step ?? item.recovery ?? item.retry ?? null,
 			}));
 		if (conversionIntents.length) resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
-			text: `OPEN HARNESS CONVERSION INTENTS: ${JSON.stringify({total_count:allOpenConversionIntents.length,omitted_count:allOpenConversionIntents.length-conversionIntents.length,recent:conversionIntents,full_directory_call:{tool:"task_harness",arguments:{action:"inspect",section:"conversion_intents"}}})}. Follow each current next_step; preserve successful writes and exact selections. Main chooses trial, revision or stopping. Runtime does not infer utility or auto-apply research candidates.` }] });
+			text: `OPEN HARNESS CONVERSION INTENTS: ${JSON.stringify({total_count:allOpenConversionIntents.length,omitted_count:allOpenConversionIntents.length-conversionIntents.length,recent:conversionIntents,full_directory_call:{tool:"task_harness",arguments:{action:"inspect",section:"conversion_intents"}}})}. Resume useful work from its next_step, preserving successful writes and exact selections. Main chooses trial, revision, deferral or stopping.` }] });
 		const pendingMethodHandoffs = [...latestBy(readJsonl("parent-authoring-handoffs.jsonl"), "handoff_id").values()]
-			.filter(row => row.status === "awaiting_parent_authoring")
+			.filter(row => autoResearchAvailable() && row.status === "awaiting_parent_authoring")
 			.slice(-4).map(row => ({handoff_ref:row.resource_ref,
 				method_ref:row.source?.method_ref,report_ref:row.source?.report_ref,
 				proposed_carrier:row.recommended_component_kind,
 				candidate_summary:compactText(row.candidate_summary),
 				creator_read_call:row.creator?.read_call ?? null}));
 		if (pendingMethodHandoffs.length) resources.push({role:"user",timestamp:Date.now(),content:[{type:"text",
-			text:`RESEARCH METHOD CANDIDATES FOR PARENT DECISION: ${JSON.stringify(pendingMethodHandoffs)}. These are unadopted inputs. If relevant, read the exact method/report, author the smallest executable version through task_harness(change), assemble and trial it, then record semantic effect. Creator details are available on demand via creator_read_call. If contradicted or inapplicable, continue; do not pretend report completion is adoption. No cross-scene proof or review adapter is required.`}]});
+			text:`RESEARCH METHOD CANDIDATES FOR PARENT DECISION: ${JSON.stringify(pendingMethodHandoffs)}. Main chooses whether to adopt and which carrier fits. Missing source bodies can be read by exact ref. task_harness_create saves and selects a complete candidate; trial/run can perform its first use. Preserve uncertainty and inspect actual results. Creator details are optional via creator_read_call.`}]});
 		// A component kind being empty is not evidence of a capability gap. Surface
 		// only a gap the parent actually recorded, and only when that judgment
 		// changes; the checkpoint remains the durable source between reminders.
-		// A testable goal model can warrant planning before any level transition.
-		// The parent still chooses the policy and its exact component carrier.
+		// Preserve the parent-authored goal model without assigning it a carrier.
 		const goalModelSignature = taskSolvingContext.task_goal
 			&& taskSolvingContext.success_conditions.length
 			? JSON.stringify({goal:taskSolvingContext.task_goal,
@@ -4427,7 +4621,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		else if (goalModelSignature !== lastGoalModelReminder) {
 			lastGoalModelReminder = goalModelSignature;
 			resources.push({ role:"user", timestamp:Date.now(), content:[{type:"text",
-				text:`TESTABLE GOAL MODEL (parent reassessment, not an action gate): ${goalModelSignature}. Compare current evidence against the success conditions and constraints. If the working route is now expressible, consider a scoped planning System Prompt that maintains candidate strategies, each candidate's visible prediction and falsifier, and the smallest current-state experiment that distinguishes them. Author and assemble it through the existing Harness path only if it improves the next decisions; revise it on counterevidence. Tool and Skill candidates may implement bounded checks, while Memory keeps instance values. Runtime does not choose the phase or fill a component quota.`}]});
+				text:`TESTABLE GOAL MODEL (parent reassessment, not an action gate): ${goalModelSignature}. Compare current evidence against these parent-authored success conditions and constraints; revise them when contradicted. Component choice remains with the parent.`}]});
 		}
 		const parentGap = compactText(latestCheckpoint.planning_gap);
 		const parentGapSignature = parentGap ? JSON.stringify({goal:taskSolvingContext.task_goal,
@@ -4438,7 +4632,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
 				text: `PARENT-DECLARED OPERATION GAP: ${JSON.stringify({task_goal:taskSolvingContext.task_goal,
 					current_strategy:taskSolvingContext.current_strategy,planning_gap:parentGap,
-					next_step:taskSolvingContext.next_step})}. Continue the best-supported live solution route unless this gap changes the next decision. If a repeatable operation would improve task progress, choose and author its Skill, Tool, Subagent or scoped System Prompt through the existing Creator/change/assembly/semantic-trial path. If evidence does not yet justify development, continue a discriminating action and update the checkpoint; no component-type quota or pre-action gate exists.` }] });
+					next_step:taskSolvingContext.next_step})}. Main chooses whether this gap changes the next decision and whether component development is worthwhile. The harness index supplies types and direct entries.` }] });
 		}
 		const initialCapabilityDiscovery = !capabilityExtractionAttempted;
 		const capabilityExtractionTrigger = initialCapabilityDiscovery
@@ -4449,9 +4643,8 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		if (capabilityExtractionTrigger) {
 			capabilityExtractionAttempted = true;
 			resources.push({
-			role: "user", timestamp: Date.now(), content: [{ type: "text", text: compactArc
-					? "Capability workflow reference: task_harness(action=contract, topic=development) supplies authoring, trial and recovery guidance when needed."
-				: loadPrompt("capability_extraction_process.md") }],
+			role: "user", timestamp: Date.now(), content: [{ type: "text", text:
+				"Capability workflow reference: task_harness(action=contract, topic=development) supplies authoring, trial and recovery guidance when needed." }],
 			});
 		}
 		if (activeCapabilityQueue.length) resources.push({ role: "user", timestamp: Date.now(), content: [{ type: "text",
@@ -4477,7 +4670,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 						research_call:candidate.research_call,
 					})),omitted:Math.max(0,crossContextCandidates.length-5),
 					directory_call:{tool:"task_harness",arguments:{action:"inspect",section:"cross_context_research_candidates"}},
-				} : crossContextCandidates)}. Research when a candidate helps current or anticipated task work; otherwise continue. No start, skip or acknowledgment is required. Read research-orchestration before starting research; full evidence and controls remain in the directory.` }],
+				} : crossContextCandidates)}. Research when a candidate helps current or anticipated task work; otherwise continue. No start, skip or acknowledgment is required. ARC start prepares the current research contract internally; read research-orchestration only when you need its details. Explicit method refs still require the current version; full evidence and controls remain in the directory.` }],
 		});
 		const pendingEffects = unassessedHarnessEffects(dependencies);
 		if (pendingEffects.length) {
@@ -4757,9 +4950,9 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 				}], timestamp: Date.now() });
 			}
 		}
-		const agendas = latestControlRecords(readJsonl("auto-research-agenda.jsonl"), "agenda_id");
-		const researchSessions = latestControlRecords(readJsonl("auto-research-sessions.jsonl"), "session_id");
-		const researchReports = latestControlRecords(readJsonl("auto-research-reports.jsonl"), "run_id");
+		const agendas = autoResearchAvailable() ? latestControlRecords(readJsonl("auto-research-agenda.jsonl"), "agenda_id") : [];
+		const researchSessions = autoResearchAvailable() ? latestControlRecords(readJsonl("auto-research-sessions.jsonl"), "session_id") : [];
+		const researchReports = autoResearchAvailable() ? latestControlRecords(readJsonl("auto-research-reports.jsonl"), "run_id") : [];
 		const trackedLines = new Map(agendas.map(agenda => [String(agenda.research_line_ref), agenda]));
 		for (const session of [...researchSessions].sort((a,b) => String(a.recordedAt ?? "").localeCompare(String(b.recordedAt ?? "")))) {
 			if (session.status !== "completed" || !session.history_cursor || !session.research_line_ref) continue;
@@ -4788,7 +4981,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 		}).slice(-3);
 		if (continuationCards.length) resources.push({ role: "user", content: [{ type: "text", text:
 			`Auto-Research evidence update: ${JSON.stringify(continuationCards)}. ` +
-			"Choose whether to continue the same research line now or after a discriminating experiment. New evidence is not proof of a prior rule. Recheck goal, rule, plan and competing predictions across stage changes. Read the cited agenda/report as needed; read research-orchestration before research. For useful findings, create or update a complete component with creator details on demand, assemble its exact version, trial it on later actions and return actual use/assessment evidence to this line. No component quota."
+			"Choose whether to continue this research line. Read missing agenda/report evidence by exact ref; research-orchestration describes research execution. Findings remain provisional. Main chooses component content and carrier if adoption is worthwhile; direct creation selects by default. Return actual use/assessment evidence when available."
 		}], timestamp: Date.now() });
 		const inactiveConditionRefs = [...memories.values()].filter(item => validity.eligible("memory", item)
 			&& !activationMatches(item.projection?.activation, projectionState)).map(item => knowledgeRef("memory", item));
@@ -4796,8 +4989,7 @@ export function installTaskLocalSelfHarness(pi: ExtensionAPI, dependencies: Depe
 			{ name: "research_evidence_update", prefix: "Auto-Research evidence update:", trigger: "new_research_line_evidence" },
 			{ name: "periodic_pattern_review", prefix: compactArc && process.env.PI_HARNESS_REVIEW_DECISION_REQUIRED !== "enabled"
 				? "Periodic evidence available:" : "Periodic pattern extraction due:", trigger: "native_action_window" },
-			{ name: compactArc ? "capability_workflow_reference" : "capability_extraction_process",
-				prefix: compactArc ? "Capability workflow reference:" : loadPrompt("capability_extraction_process.md").split(/\r?\n/, 1)[0], trigger: capabilityExtractionTrigger },
+			{ name: "capability_workflow_reference", prefix: "Capability workflow reference:", trigger: capabilityExtractionTrigger },
 			{ name: "pending_parent_capability_decisions", prefix: "Pending parent capability decisions (", trigger: "pending_parent_capability_decisions" },
 			{ name: "baseline_authoring_methods", prefix: "Baseline authoring methods:", trigger: "every_treatment_context" },
 		];

@@ -29,8 +29,10 @@ def test_system_prompt_is_optional_explicit_carrier_without_creator():
     candidate = next(item for item in followup["carrier_candidates"]
                      if item["component"] == "system_prompt")
     assert "creator_read_call" not in candidate
-    assert candidate["change_call"]["tool"] == "task_harness"
-    assert candidate["assemble_call"]["tool"] == "task_harness"
+    assert candidate["create_call"]["tool"] == "task_harness_create"
+    assert candidate["create_call"]["arguments"]["candidate"]["component"] == "system_prompt"
+    assert "assemble_call" not in candidate
+    assert "next provider request" in candidate["instruction"]
     assert "skill" in followup["components"]  # old optional followups remain
 
 
@@ -41,9 +43,9 @@ def test_compact_parent_cue_allows_first_use_development_and_direct_action(tmp_p
              for part in message.get("content", []) if part.get("type") == "text"]
     index = next(text for text in texts if text.startswith("Task-local harness index:"))
     assert "task_harness_create" in index
-    assert "before its first use" in index
-    assert "development are optional" in index
-    assert "infrastructure blocker and retry condition" in index
+    assert "You may save" in index and "Choose content" in index
+    assert "assembly=false saves" in index
+    assert "Apply Skill instructions already in context" in index
 
 
 def test_capability_review_can_settle_explicit_system_prompt_without_four_carrier_table(tmp_path):
@@ -54,13 +56,14 @@ def test_capability_review_can_settle_explicit_system_prompt_without_four_carrie
                      "reason": "A short directive would help."}],
     }) + "\n", encoding="utf-8")
     events = _run_fixture(tmp_path, "treatment", steps=[
+        {"name": "task_harness", "arguments": {"action": "contract", "schema_action": "review"}},
         {"name": "task_harness", "arguments": {"action": "inspect"}},
         {"name": "task_harness", "arguments": {"action": "capability_review", "opportunity_id": "op-1",
             "review": [{"component": "system_prompt", "disposition": "defer",
                         "reason": "Wait for a discriminating level observation."}]}},
         {"name": "task_harness", "arguments": {"action": "inspect"}},
     ])
-    outputs = results(events, "task_harness")
+    outputs = [r for r in results(events, "task_harness") if r['args']['action'] != 'contract']
     assert not any(output.get("isError") for output in outputs), outputs
     before = json.loads(outputs[0]["result"]["content"][0]["text"])
     after = json.loads(outputs[2]["result"]["content"][0]["text"])

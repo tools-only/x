@@ -64,8 +64,12 @@ permissions. Carry forward still-supported findings and counterexamples instead
 of retelling the trajectory. If future environment evidence is necessary, either
 submit the current result with an `experiment_request`, or save/pause a
 `research_checkpoint` when the work itself must continue after that evidence.
-`task_resource` pages remain across tool-only gathering until a response or action;
-other large reads expire after one continuation. Preserve findings and counterevidence in `research_progress`
+`task_resource` pages remain within a bounded read batch. At a capacity event,
+use `child_context(action="compact", refs=..., summary=...)` to retain your findings,
+alternatives, counterevidence and next test while releasing processed pages, or
+submit/pause this slice. Unreleased pressure pauses the slice with exact evidence
+saved; it does not mean the evidence was understood. Other large reads expire
+after one continuation. Preserve findings and counterevidence in `research_progress`
 or the report; use `child_context(action="restore")` to keep a needed result in
 context, or page its exact output. The initial parent workset stays fixed.
 
@@ -103,8 +107,8 @@ Construction evidence makes it grounded, while only a later assessed use can
 support utility. A method candidate is the maximum capability-shaped output
 allowed here.
 
-A `computation` candidate may also include `program` in the existing bounded
-`task-pure-python-v1` source or `task-pure-expression-v1` format, with optional
+A `computation` candidate may also include `program` in
+`task-python-v1` ordinary Python source or `task-pure-expression-v1` format, with optional
 canonical `input_schema` and `output_schema`. Preserve uncertainty and describe
 the intended semantic result. Runtime validates syntax and limits without
 evaluating the candidate. This is research input, not a published or active tool.

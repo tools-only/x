@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { installTaskLocalSubagents } from "./pi_task_local_subagents.ts";
+import { arcAutoResearchDefault } from "./pi_auto_research_config.ts";
 import { canonicalArcPublicState } from "./pi_arc_observation_snapshot.ts";
 import { resolveTaskResource } from "./pi_task_resource_store.ts";
 
@@ -28,7 +29,8 @@ export function installArcTaskSubagents(
 		permission: "read_only_arc",
 		definitionLabel: "Task-local ARC subagent definition",
 		delegationLabel: "Delegate read-only ARC analysis",
-		autoResearch: true,
+		// ARC remains opt-in; ordinary delegation is independent of research.
+		autoResearch: arcAutoResearchDefault(),
 		autoResearchLabel: "Auto-Research in clean ARC context",
 		taskToolAllowedImplementations: [
 			"arc.public_state", "arc.action_sequence", "arc_state", "arc_action_sequence",

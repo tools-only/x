@@ -56,13 +56,12 @@ export function carrierPreparation(entries: Row[], creatorCatalog: Row[] = []) {
 		return {component:entry.component, disposition:entry.disposition,
 			...(creator?.read_call ? {creator_read_call:{tool:"task_harness",arguments:creator.read_call}} : {}),
 			...(entry.component === "system_prompt" ? {
-				change_call:{tool:"task_harness",arguments:{action:"change",changes:[{operation:"create",candidate:{component:"system_prompt",name:"<name>",content:"<parent-authored directive>",scope:"<explicit scope>"}}],decision:{basis_refs:[],reason:"<why this prompt applies>",expected:"<observable effect on a later parent turn>"}}},
-				assemble_call:{tool:"task_harness",arguments:{action:"assemble",expected_assembly_revision:"<current revision>",selected_resource_refs:["<retain still-applicable exact refs>","system_prompt:<name>@v1"],prompt_contributions:[],decision:{basis_refs:["system_prompt:<name>@v1"],reason:"<why select this exact version>",expected:"<observable effect on a later parent turn>"}}},
+				create_call:{tool:"task_harness_create",arguments:{candidate:{component:"system_prompt",name:"<name>",content:"<parent-authored directive>",scope:"<applicability text or exact lifetime>"}}},
 			} : {}),
 			inspect_call:{tool:"task_harness",arguments:{action:"inspect"}},
 			instruction:entry.component === "system_prompt"
-				? "No creator read is required. Parent chooses validity (task, episode, level, or state), authors the directive through change, then selects its exact eligible version through assemble while retaining other still-applicable selections and prompt contributions. This does not reopen or override the parent's carrier decision."
-				: "This exposes a callable preparation step only. It does not reopen, override, or require changing the parent's carrier decision.",
+				? "create saves and selects by default, retaining eligible selections and contributions; assembly=false saves only. Selected content refreshes on the next provider request in this run. Exact scope/validity binds expiry; descriptive scope does not. Parent chooses content and lifetime."
+				: "The creator manual is an optional reference when authoring details are needed. Valid authoring does not require a creator read. This does not reopen, override, or require changing the parent's carrier decision.",
 		};
 	});
 }
@@ -100,7 +99,7 @@ export function capabilityFollowups(reviews: Row[], decisions: Row[], creatorCat
 			evidence_refs: review.transition_analysis?.evidence_refs ?? [],
 			research_required: false,
 			next_call: { tool: "task_harness", arguments: { action: "capability_review", opportunity_id: review.opportunity_id } },
-			instruction: "Decide one operation-relevant carrier at a time; unmentioned default carriers stay visibly unresolved. An explicit development_intent remains open until the parent updates its own status, independently of carrier reuse or research scheduling. For skill/tool/subagent methods read the matching creator once; a nominated system_prompt needs no creator. Author through change, then assemble exact versions and use them. Resolve carrier selection with reuse plus exact resource_refs after creation, or defer/not_applicable with an operation-specific reason. A single-situation procedure is valid; there is no category quota or action block." }];
+			instruction: "Main chooses relevant carriers; unresolved entries are available choices. Explicit development_intents retain their parent-assigned status. task_harness_create saves and selects complete content by default; creator manuals are optional. Use receipts for application. Record reuse with exact resource_refs, or defer/not_applicable with a reason when reviewing this opportunity." }];
 	});
 }
 

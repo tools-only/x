@@ -47,23 +47,21 @@ def test_harness_references_are_read_only_and_arc_disclosure_is_lazy(tmp_path, a
                 assert len(expected) < 4000
                 assert "expected_assembly_revision" in expected and "without recreating" in expected
                 if payload["topic"] == "development":
-                    assert "exact kind:name@vN" in expected and "check its semantic value" in expected
+                    assert "task_harness_create" in expected and "check its value" in expected
+                    assert "Apply Skill" in expected or "apply Skill" in expected
                 if payload["topic"] == "components":
                     assert all(kind in expected for kind in ("Memory", "System Prompt", "Skill", "Tool", "Subagent"))
-                    assert 'atom:{subject:' in expected and 'validity:{scope:' in expected
+                    assert 'atom:{subject,predicate,value}' in expected and 'validity:{scope:' in expected
             elif payload["topic"] == "development":
                 expected += "\n\n" + (project / "demo/prompts/capability_extraction_process.md").read_bytes().decode("utf-8")
         assert payload["instructions"] == expected
     initial = records(tmp_path, "provider-contexts.jsonl")[0]["context"]
     text = json.dumps(initial)
     development = (project / "demo/prompts/capability_extraction_process.md").read_bytes().decode("utf-8")
-    if arc_compact:
-        assert json.dumps(development)[1:-1] not in text
-        assert "Capability workflow reference:" in text
-        assert "baseline_method:skill-creator@sha256:" not in text
-        assert "Skills" in text and "procedures" in text  # Keep role discovery resident.
-    else:
-        assert json.dumps(development)[1:-1] in text
+    assert json.dumps(development)[1:-1] not in text
+    assert "Capability workflow reference:" in text
+    assert "baseline_method:skill-creator@sha256:" not in text
+    assert "Skill" in text and "steps with decisions" in text
     for filename in ("task-skills.jsonl", "task-memory.jsonl", "task-system-prompt.jsonl",
                      "task-tools.jsonl", "task-subagents.jsonl", "task-baseline-method-reads.jsonl",
                      "auto-research-sessions.jsonl", "task-harness-assemblies.jsonl",

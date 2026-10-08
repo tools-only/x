@@ -11,9 +11,10 @@ FIXTURE = Path(__file__).parent / "pi_pure_binding_schema_cancellation_fixture.t
 
 
 @pytest.mark.parametrize("phase", ["before", "during_prepare"])
-def test_cancelled_binding_schema_preparation_never_publishes(tmp_path, phase):
+@pytest.mark.parametrize("current_grid", [False, True])
+def test_cancelled_binding_schema_preparation_never_publishes(tmp_path, phase, current_grid):
     events = _run_fixture(tmp_path, "treatment", extra_extensions=[FIXTURE], steps=[
-        {"name": "binding_schema_cancellation_fixture", "arguments": {"phase": phase}},
+        {"name": "binding_schema_cancellation_fixture", "arguments": {"phase": phase, "current_grid": current_grid}},
     ])
     result = results(events, "binding_schema_cancellation_fixture")[-1]
     assert not result.get("isError"), result

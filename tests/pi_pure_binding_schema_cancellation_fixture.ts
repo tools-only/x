@@ -26,7 +26,7 @@ export default function cancellationFixture(pi: ExtensionAPI) {
 		name: "binding_schema_cancellation_fixture",
 		label: "Binding schema cancellation fixture",
 		description: "Cancel an actual captured publication executor before or during host preparation.",
-		parameters: Type.Object({ phase: Type.Union([Type.Literal("before"), Type.Literal("during_prepare")]) }),
+		parameters: Type.Object({ phase: Type.Union([Type.Literal("before"), Type.Literal("during_prepare")]), current_grid: Type.Optional(Type.Boolean()) }),
 		async execute(_toolCallId, params) {
 			const root = resolve(process.env.PI_AUTORESEARCH_E2E_ROOT ?? ".", `cancel-${params.phase}`);
 			fs.mkdirSync(root, { recursive: true });
@@ -53,9 +53,10 @@ export default function cancellationFixture(pi: ExtensionAPI) {
 				candidate: { component: "tool", name: "cancel-bound-check", description: "Compare a bound observation value.",
 					input_schema: { type: "object", properties: { expected: { type: "number" } }, required: ["expected"], additionalProperties: false },
 					output_schema: { type: "boolean" },
-					program: { format: "task-pure-expression-v1", limits: {}, expression: { op: "eq", left: field("pixel"), right: field("expected") } } },
+					program: { format: "task-pure-expression-v1", limits: {}, expression: { op: "eq", left: field(params.current_grid ? "grid" : "pixel"), right: field("expected") } } },
 				assembly: { expected_assembly_revision: 0, selected_resource_refs: [], prompt_contributions: [] },
-				trial: { parameters: { expected: 2 }, bindings: [{ name: "pixel", ref: snapshot.ref, path: ["public_state", "frames", "0", "0", "1"] }] },
+				trial: params.current_grid ? { parameters: { expected: 2 }, current_grid: true }
+					: { parameters: { expected: 2 }, bindings: [{ name: "pixel", ref: snapshot.ref, path: ["public_state", "frames", "0", "0", "1"] }] },
 			};
 			const originalRequest = JSON.stringify(request);
 			const controller = new AbortController();

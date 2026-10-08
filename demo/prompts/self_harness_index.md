@@ -1,8 +1,16 @@
-Task-local harness index: active pool resources={{active_resources}}.
-Only assembled exact versions enter use. task_harness summary/inspect is compact;
-inspect(section) reads one section; status(section="all") is complete. contract(topic)
-has detailed guidance. task_harness_create publishes; assembly can select the new
-version in that call. change updates/retires; assemble selects; focus narrows selection.
-Read selected Skills through their use entries. Tools compute; Skills provide
-procedures; Subagents analyze; Memory stores scoped facts; System Prompts guide policy.
-Assess semantic trials; creation/exposure alone is not benefit.
+Task-local harness index: eligible pool resources={{active_resources}}.
+You may save scoped facts, hypotheses or plans as Memory; steps with decisions
+and stopping conditions as a Skill; executable input/output computations as a
+Tool; guidance across applicable decisions as a System Prompt; and a reusable
+responsibility with independent context as a saved Subagent. Choose content and
+investment by task value.
+task_harness_create(candidate) saves and selects by default; assembly=false saves
+only. Apply Skill instructions already in context; read only to recover them.
+Selected Memory and System Prompt refresh on the next provider request in this
+run. Descriptive scope text alone does not expire a Prompt; exact scope or
+validity controls expiry. Receipts give versions and Tool/Subagent use entries.
+{{memory_entry}}
+{{delegate_entry}}
+Selection persists. task_harness(action="assemble") selects your own exact
+subset; inspect(section="current_assembly") recovers its revision/refs when needed.
+contract(topic="components") gives details; creator templates are optional.

@@ -100,7 +100,8 @@ def test_omitted_capabilities_survive_research_deferral_and_parent_restart(tmp_p
     delivered = [part["text"] for row in records(tmp_path, "provider-contexts.jsonl")
                  for message in row["context"]["messages"]
                  for part in message.get("content", []) if part.get("type") == "text"]
-    assert expected in delivered  # Full process, not merely a heading or index.
+    assert expected not in delivered
+    assert any(text.startswith("Capability workflow reference:") for text in delivered)
     assert not (tmp_path / "task-skills.jsonl").exists()
     assert not (tmp_path / "auto-research-sessions.jsonl").exists()
 
@@ -328,8 +329,8 @@ def test_unselected_authored_capability_names_selection_use_entrypoint_and_last_
     change = json.loads(outputs[1]["result"]["content"][0]["text"])
     created = change["activation"]["created_resources"][0]
     assert created["resource_ref"] == "skill:bounded-check@v1"
-    assert created["use_after_selection"]["tool"] == "read"
-    assert created["use_after_selection"]["arguments"] == {
+    assert created["use_after_selection"]["load_if_needed"]["tool"] == "read"
+    assert created["use_after_selection"]["load_if_needed"]["arguments"] == {
         "path": str(tmp_path / "task-harness" / "skills" / "bounded-check" / "SKILL.md"),
     }
     context_rows = records(tmp_path, "provider-contexts.jsonl")

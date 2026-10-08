@@ -30,10 +30,15 @@ from .shopping_e2e import (
 from .validation_evidence import load_validation_manifest
 from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
+from .arc_thin_e2e import run_arc_thin_e2e, run_arc_thin_smoke
 from .terminal_bench_e2e import run_terminal_bench_e2e
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ARC summaries contain model-authored Unicode. Windows redirected stdout
+    # otherwise inherits GBK and can fail after a paid run has already finished.
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(prog="autoresearch-pi")
     jev_routing = parser.add_mutually_exclusive_group()
     jev_routing.add_argument(
@@ -126,6 +131,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Comma-separated provider input modalities (text,image); defaults to ARC_INPUT_MODALITIES or text",
     )
     arc.add_argument("--context-compaction", action="store_true")
+    research_switch = arc.add_mutually_exclusive_group()
+    research_switch.add_argument("--auto-research", dest="auto_research_enabled", action="store_true",
+                                 help="Enable Auto-Research for this run (overrides environment configuration)")
+    research_switch.add_argument("--no-auto-research", dest="auto_research_enabled", action="store_false",
+                                 help="Disable research tools, workers and automatic research resume for debugging")
+    arc.set_defaults(auto_research_enabled=None)
     arc.add_argument("--review-mode", choices=("advisory", "required"), default=None,
                      help="Periodic review mode; defaults to advisory (does not block actions)")
     arc.add_argument("--reasoning-policy", choices=("provider-default", "adaptive", "adaptive-binary", "adaptive-evidence"), default=None)
@@ -149,15 +160,42 @@ def main(argv: list[str] | None = None) -> int:
         "--cross-situation-validation", action="store_true",
         help="run the real-ARC cross-situation method adoption/use/assessment/feedback probe",
     )
+    arc_thin = sub.add_parser("arc-thin-e2e", help="run one ARC-AGI-3 game through the thin self-harness extension")
+    arc_thin.add_argument("--root", type=Path, default=None)
+    arc_thin.add_argument("--arc-root", type=Path, default=None)
+    arc_thin.add_argument("--game", default="ls20")
+    arc_thin.add_argument("--variant", choices=("control", "treatment"), default="treatment",
+                          help="control registers only arc_action; treatment adds memory/skills/prompt/analyst")
+    arc_thin.add_argument("--max-actions", type=int, default=None)
+    arc_thin.add_argument("--max-decisions", type=int, default=None)
+    arc_thin.add_argument("--max-reported-tokens", type=int, default=None)
+    arc_thin.add_argument("--experiment-timeout", type=float, default=None)
+    arc_thin.add_argument("--consolidate-after", type=int, default=25,
+                          help="actions between consolidation turns (also after a level change or GAME_OVER)")
+    arc_thin.add_argument("--provider", default="yibu")
+    arc_thin.add_argument("--model", default=None)
+    arc_thin.add_argument("--thinking", default=None, help="Pi thinking level, e.g. off, low, medium, high")
+    arc_thin.add_argument("--input-modalities", default=None)
+    arc_thin.add_argument("--max-output-tokens", type=int, default=None)
+    arc_thin_smoke = sub.add_parser("arc-thin-smoke",
+                                    help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
+    arc_thin_smoke.add_argument("--root", type=Path, required=True)
     arc_smoke = sub.add_parser(
         "arc-harness-smoke",
-        help="run deterministic provider scenarios through the real ARC/Pi self-harness runtime",
+        help="run ARC/Pi self-harness diagnostics or capture real-provider closure evidence",
     )
     arc_smoke.add_argument("--root", type=Path, required=True)
     arc_smoke.add_argument("--arc-root", type=Path, default=None)
     arc_smoke.add_argument("--game", default="ls20")
     arc_smoke.add_argument("--mock-environment", action="store_true", help="mock SDK environment only; keep ARC bridge, Pi and child broker real")
     arc_smoke.add_argument("--case", default=None, help="run one named acceptance case")
+    arc_smoke.add_argument("--provider-mode", choices=("deterministic", "real"), default="deterministic")
+    arc_smoke.add_argument("--max-actions", type=int, default=None)
+    arc_smoke.add_argument("--experiment-timeout", type=float, default=None)
+    arc_smoke.add_argument("--max-reported-tokens", type=int, default=None)
+    arc_smoke.add_argument("--max-output-tokens", type=int, default=None)
+    arc_smoke.add_argument("--reasoning-policy", choices=("provider-default", "adaptive", "balanced-evidence"), default="provider-default")
+    arc_smoke.add_argument("--reasoning-levels", default=None)
     arc_method_audit = sub.add_parser(
         "arc-method-audit",
         help="audit cross-situation induction through feedback from durable ARC run artifacts",
@@ -312,6 +350,8 @@ def main(argv: list[str] | None = None) -> int:
             arc_kwargs["harness_validation"] = True
         if args.auto_research_validation:
             arc_kwargs["auto_research_validation"] = True
+        if args.auto_research_enabled is not None:
+            arc_kwargs["auto_research_enabled"] = args.auto_research_enabled
         if args.cross_situation_validation:
             arc_kwargs["cross_situation_validation"] = True
         if args.experiment_timeout is not None:
@@ -329,13 +369,40 @@ def main(argv: list[str] | None = None) -> int:
         summary = run_arc_agi_3_e2e(root, **arc_kwargs)
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "arc-thin-e2e":
+        root = (args.root or paths.runs_dir / f"pi-arc-thin-{args.game}-{args.variant}").resolve()
+        summary = run_arc_thin_e2e(
+            root, arc_root=args.arc_root or paths.arc_agi_3_root, game=args.game, variant=args.variant,
+            max_actions=args.max_actions, max_decisions=args.max_decisions,
+            max_reported_tokens=args.max_reported_tokens, experiment_timeout_seconds=args.experiment_timeout,
+            consolidate_after_actions=args.consolidate_after, pi_provider=args.provider, pi_model=args.model,
+            thinking=args.thinking, input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,
+        )
+        print(summary.read_text(encoding="utf-8"), end="")
+        return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "arc-thin-smoke":
+        summary = run_arc_thin_smoke(args.root)
+        print(summary.read_text(encoding="utf-8"), end="")
+        return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
     if args.command == "arc-harness-smoke":
+        real_kwargs = {}
+        if args.provider_mode == "real":
+            real_kwargs = {
+                "provider_mode": "real", "max_actions": args.max_actions,
+                "experiment_timeout_seconds": args.experiment_timeout,
+                "max_reported_tokens": args.max_reported_tokens,
+                "max_output_tokens": args.max_output_tokens,
+                "reasoning_policy": args.reasoning_policy,
+                "reasoning_levels": tuple(x.strip() for x in args.reasoning_levels.split(",") if x.strip())
+                    if args.reasoning_levels is not None else None,
+            }
         summary = run_arc_harness_smoke(
             args.root,
             arc_root=args.arc_root or paths.arc_agi_3_root,
             game=args.game,
             mock_environment=args.mock_environment,
             case=args.case,
+            **real_kwargs,
         )
         value = json.loads(summary.read_text(encoding="utf-8"))
         print(json.dumps(value, ensure_ascii=False, indent=2))

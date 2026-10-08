@@ -17,6 +17,8 @@ import { compactToolSchema } from "./pi_compact_tool_schema.ts";
 import { registerManagementTool } from "./pi_management_schema_surface.ts";
 import { installTaskResultSemantics, resolveTaskResource, resourceMetadata, taskRecords, versionConflict } from "./pi_task_resource_store.ts";
 import { registerNativeHarnessExecutor } from "./pi_task_harness_route_runtime.ts";
+import { createDelegateBudget, delegateBudgetRemaining, resolveDelegateBudget, type DelegateBudget } from "./pi_delegate_budget.ts";
+import { reportedUsageTokens } from "./pi_reported_token_budget.ts";
 import { TASK_TOOL_PROGRAM_STEP_KINDS } from "./pi_task_tool_contract.ts";
 import { loadPrompt } from "./prompt_loader.ts";
 import { canonicalEvidenceSnapshot, parentEvidenceSnapshot, evidenceRefsAfter } from "./pi_auto_research_evidence.ts";
@@ -36,6 +38,7 @@ import {
 	buildAutoResearchAgendaRecord, buildAutoResearchProgressReceipt, researchReportNeedsParentAttention,
 } from "./pi_auto_research_agenda.ts";
 import { autoResearchHistoryGrants, buildAutoResearchHistoryCatalog } from "./pi_auto_research_history.ts";
+import { autoResearchEnabled } from "./pi_auto_research_config.ts";
 import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harness_assembly.ts";
 import { canonicalTextBody } from "./pi_harness_protocol.ts";
 import { normalizeContextRecipe, normalizeDelegateOutputContract, type SubagentContextRecipe } from "./pi_subagent_context_recipe.ts";
@@ -669,6 +672,7 @@ function runChildPi(
 	detached = false,
 	additionalResourceGrants: string[] = [],
 	arcActionLeaseToken?: string,
+	delegateBudget?: DelegateBudget,
 ): Promise<Record<string, unknown>> {
 	const cli = process.env.PI_AUTORESEARCH_PI_CLI;
 	// A subagent is another session of the same configured agent runtime. Its
@@ -770,6 +774,8 @@ function runChildPi(
 		} : {}),
 	} : {};
 	args.push("--extension", join(dirname(fileURLToPath(import.meta.url)), "pi_task_validation_child.ts"));
+	if (delegateBudget?.limits.max_reported_tokens !== undefined)
+		args.push("--extension", join(dirname(fileURLToPath(import.meta.url)), "pi_delegate_budget_child.ts"));
 	args.push("--extension", join(dirname(fileURLToPath(import.meta.url)), "pi_final_provider_payload.ts"));
 	const promptPrefix = researchProtocol ? "# Research task workset\n" : "# Delegated task workset\n";
 	const contextMarker = "\nParent-selected context window (bounded state, not the parent transcript): ";
@@ -780,7 +786,9 @@ function runChildPi(
 			? `Fixed ARC trajectory cutoff: ${contextWindow.__publishedTrajectoryRef}. inspect_arc_trajectory uses this immutable evidence. For history beyond its 256-action projection limit, page this exact resource with task_resource.\n`
 			: "")
 		+ (researchProtocol
-			? "Return findings, method candidates, planning implications, or experiment requests only; the parent owns all Harness authoring.\n" : "");
+			? "Return findings, method candidates, planning implications, or experiment requests only; the parent owns all Harness authoring.\n"
+			: "Return the requested deliverable as soon as the question is answered. If evidence is missing, return the supported conclusion and exact limitation; do not keep rereading it.\n")
+		+ (delegateBudget ? `Remaining invocation budget (shared across length resumes): ${JSON.stringify(delegateBudgetRemaining(delegateBudget))}. Return a bounded answer within this allowance.\n` : "");
 	const inputMaxChars = Math.max(1024, Math.floor(Number(
 		process.env.PI_AUTORESEARCH_CHILD_INPUT_MAX_CHARS
 			?? process.env.PI_AUTORESEARCH_CHILD_CONTEXT_MAX_CHARS
@@ -822,7 +830,8 @@ function runChildPi(
 			return { competition_view: competitionProjection(view) };
 		})(),
 		goal: researchProtocol ? (researchTask.goal ?? task)
-			: `Role: ${definition.name}\n${definition.instructions}\nCanonical role resource: subagent:${definition.name}@v${definition.version}\nDelegated task: ${task}`,
+			: `Role: ${definition.name}\n${definition.instructions}\n${definition.agent_id === "ephemeral" ? "Role lifetime: this invocation only."
+				: `Canonical role resource: subagent:${definition.name}@v${definition.version}`}\nDelegated task: ${task}`,
 		constraints: researchTask.constraints ?? [],
 		checkpoint: (baseContextWindow as Record<string, any>).checkpoint ?? null,
 		resource_refs: normalizedResourceRefs,
@@ -870,6 +879,10 @@ function runChildPi(
 	const brokerUrl = String(process.env.PI_AUTORESEARCH_SUBAGENT_BROKER_URL ?? "").trim();
 	const childEnv = {
 		...process.env,
+		// This allowance is invocation-local; the inherited global ledger still
+		// accounts for both parent and all children without being reset.
+		PI_DELEGATE_REMAINING_REPORTED_TOKENS: delegateBudget?.limits.max_reported_tokens === undefined ? ""
+			: String(delegateBudgetRemaining(delegateBudget).reported_tokens),
 		// A child receives a parent-published observation boundary, never the
 		// moving live ARC bridge. The snapshot is optional; task_resource remains
 		// the canonical fallback when no environment frame was published.
@@ -982,11 +995,11 @@ function runChildPi(
 		// forever.  Auto-Research uses its own broker/continuation policy and is
 		// intentionally unaffected by these limits.
 		const maxToolStartsRaw = Number(process.env.PI_AUTORESEARCH_DELEGATE_MAX_TOOL_CALLS ?? 24);
-		const maxToolStarts = Number.isFinite(maxToolStartsRaw) && maxToolStartsRaw > 0
-			? Math.floor(maxToolStartsRaw) : 24;
+		const maxToolStarts = delegateBudget?.limits.max_tool_calls ?? (Number.isFinite(maxToolStartsRaw) && maxToolStartsRaw > 0
+			? Math.floor(maxToolStartsRaw) : 24);
 		const maxRuntimeRaw = Number(process.env.PI_AUTORESEARCH_DELEGATE_MAX_RUNTIME_MS ?? 120_000);
-		const maxRuntimeMs = Number.isFinite(maxRuntimeRaw) && maxRuntimeRaw > 0
-			? maxRuntimeRaw : 120_000;
+		const maxRuntimeMs = delegateBudget ? Math.max(1, delegateBudgetRemaining(delegateBudget).runtime_ms)
+			: Number.isFinite(maxRuntimeRaw) && maxRuntimeRaw > 0 ? maxRuntimeRaw : 120_000;
 		let guardReason: string | undefined;
 		let guardTimer: NodeJS.Timeout | undefined;
 		const appendProgress = (event: string, extra: Record<string, unknown> = {}) => {
@@ -1049,9 +1062,10 @@ function runChildPi(
 				} else if (event.type === "tool_execution_start") {
 					progressPhase = "tool_running";
 					toolStartCount += 1;
+					if (delegateBudget) delegateBudget.tool_calls += 1;
 					lastToolName = String(event.toolName ?? event.tool_name ?? "unknown");
 					lastToolCallId = String(event.toolCallId ?? event.tool_call_id ?? "") || undefined;
-					if (!researchProtocol && toolStartCount > maxToolStarts && !guardReason) {
+					if (!researchProtocol && (delegateBudget?.tool_calls ?? toolStartCount) > maxToolStarts && !guardReason) {
 						guardReason = `delegate_task tool-call budget exceeded (${maxToolStarts})`;
 						appendProgress("budget_exceeded", { budget: "tool_calls", limit: maxToolStarts });
 						child.kill();
@@ -1065,6 +1079,16 @@ function runChildPi(
 				} else if (event.type === "message_end" && event.message?.role === "assistant") {
 					progressPhase = "provider_turn_completed";
 					assistantMessageCount += 1;
+					if (delegateBudget) {
+						delegateBudget.reported_tokens += reportedUsageTokens(event.message.usage) ?? 0;
+						const limit = delegateBudget.limits.max_reported_tokens;
+						if (limit !== undefined && !guardReason && (delegateBudget.reported_tokens > limit
+							|| delegateBudget.reported_tokens === limit && ["toolUse", "length"].includes(event.message.stopReason))) {
+							guardReason = `delegate_task reported-token budget exhausted (${limit})`;
+							appendProgress("budget_exceeded", { budget: "reported_tokens", limit, reported_tokens: delegateBudget.reported_tokens });
+							child.kill();
+						}
+					}
 					lastStopReason = event.message.stopReason ? String(event.message.stopReason) : undefined;
 					if (lastStopReason === "error") {
 						lastProviderError = String(event.message.errorMessage ?? "provider returned stopReason=error");
@@ -1320,6 +1344,8 @@ export function installTaskLocalSubagents(
 	resolveBasisRefs: (references: string[]) => string[] = (references) => references,
 ): void {
 	if (!enabled) return;
+	const researchEnabled = autoResearchEnabled(adapter.autoResearch === true)
+		&& process.env.PI_AUTORESEARCH_VARIANT !== "control";
 	installTaskResultSemantics(pi);
 	if (!adapter.adapterId.trim()) throw new Error("task-subagent adapterId is required");
 	if (!adapter.permission.trim()) throw new Error("task-subagent permission is required");
@@ -1514,24 +1540,33 @@ export function installTaskLocalSubagents(
 		},
 	}, (params) => { validateDefinitionTools(params); });
 
-	// Preserve the native object schema; the compatibility field stays unadvertised.
+	// Direct output/stop/budget fields keep a one-off task in one call.
 	const delegateParameters = Type.Object({
 			agent_name: Type.Optional(Type.String()),
 			instructions: Type.Optional(Type.String()),
 			task: Type.String(),
+			output_contract: Type.Optional(Type.String()),
+			stop_when: Type.Optional(Type.String({ minLength: 1 })),
+			budget: Type.Optional(Type.Object({
+				max_runtime_ms: Type.Optional(Type.Integer({ minimum: 1 })),
+				max_tool_calls: Type.Optional(Type.Integer({ minimum: 1 })),
+				max_continuations: Type.Optional(Type.Integer({ minimum: 1 })),
+				max_reported_tokens: Type.Optional(Type.Integer({ minimum: 1 })),
+			}, { additionalProperties: false })),
 			tools: Type.Optional(Type.Array(Type.String(), { description: "ARC scene: include arc_state or one exact observation_snapshot ref; [] alone has no frame." })),
 			context_recipe: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: CONTEXT_RECIPE_BRIEF })),
 			evidence_refs: Type.Optional(Type.Array(Type.String())),
 			resource_refs: Type.Optional(Type.Array(Type.String())),
 			action_authorization: Type.Optional(Type.Object({ max_actions: Type.Integer({ minimum: 1, maximum: 16 }) })),
 		}, { additionalProperties: false });
-	pi.registerTool({
+	const delegateTool = {
 		name: "delegate_task",
 		label: adapter.delegationLabel ?? "Delegate task-local analysis",
-		description: "Run a clean-context child. ARC evidence is read-only unless this ordinary delegate_task explicitly grants a bounded action_authorization; Auto-Research remains read-only.",
+		description: "One-off analysis without saving a role. task plus optional output_contract, stop_when and budget; limits cover length resumes. ARC is read-only unless action_authorization is explicit.",
 		parameters: delegateParameters,
-		prepareArguments(args) {
+		prepareArguments(args: unknown) {
 			try {
+				resolveDelegateBudget((args as any)?.budget);
 				const saved = typeof (args as any)?.agent_name === "string"
 					? agents.get((args as any).agent_name)?.context_recipe : undefined;
 				const normalized = normalizeDelegateOutputContract(args, saved);
@@ -1547,7 +1582,7 @@ export function installTaskLocalSubagents(
 				});
 			}
 		},
-		async execute(toolCallId, params, signal) {
+		async execute(toolCallId: string, params: Record<string, any>, signal?: AbortSignal) {
 			const admission = admitTaskLocalOperation("delegate_task");
 			if (admission) return admission;
 			if (process.env.PI_TASK_CHILD === "1") throw new Error("recursive delegation is not enabled");
@@ -1589,6 +1624,7 @@ export function installTaskLocalSubagents(
 			}
 			const startedAt = new Date().toISOString();
 			const invocationId = `subagent-invocation-${++invocationCounter}`;
+			const invocationBudget = createDelegateBudget(resolveDelegateBudget(params.budget));
 			const nativeChildSessionId = randomUUID();
 			if (params.agent_name && params.tools !== undefined) throw new Error("Revise saved agent tools through task_harness; per-call tools are for ephemeral roles");
 			if (definition.tools.some(name => !allowedTools.has(name))) throw new Error("delegate tools exceed the adapter allowlist");
@@ -1601,8 +1637,10 @@ export function installTaskLocalSubagents(
 			const actionGrant = params.action_authorization;
 			const delegatedActions: Array<Record<string, unknown>> = [];
 			const delegatedTask = (recipe?.output_contract ? `${params.task}\n\nRequired output: ${recipe.output_contract}` : params.task)
+				+ (params.stop_when ? `\n\nStop when: ${params.stop_when}` : "")
 				+ (actionGrant ? `\n\nExplicit ARC action lease: at most ${actionGrant.max_actions} native actions for this invocation. Stop on an unknown result; never retry it automatically.` : "");
 			append("subagent-context-bindings.jsonl", { invocation_id: invocationId, context_recipe: recipe ?? null,
+				stop_when: params.stop_when ?? null, budget: invocationBudget.limits,
 				evidence_refs: params.evidence_refs ?? [], resource_refs: resourceRefs, tools: definition.tools,
 				effective_tools: actionGrant ? [...new Set([...definition.tools, "arc_action"])] : definition.tools,
 				action_authorization: actionGrant ?? null,
@@ -1616,14 +1654,14 @@ export function installTaskLocalSubagents(
 			let result: Record<string, unknown>;
 			try {
 				let continuationAttempt = 0;
-				const maxContinuationsRaw = Number(process.env.PI_AUTORESEARCH_DELEGATE_MAX_CONTINUATIONS ?? 2);
-				const maxContinuations = Number.isFinite(maxContinuationsRaw) && maxContinuationsRaw > 0
-					? Math.floor(maxContinuationsRaw) : 2;
+				const maxContinuations = invocationBudget.limits.max_continuations;
 				const cumulativeUsage: Record<string, any> = {
 					input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				};
 				while (true) {
+					if (delegateBudgetRemaining(invocationBudget).runtime_ms <= 0)
+						throw new Error(`delegate_task runtime budget exceeded (${invocationBudget.limits.max_runtime_ms}ms)`);
 					continuationAttempt += 1;
 					const continuationTask = continuationAttempt === 1
 						? delegatedTask
@@ -1636,6 +1674,7 @@ export function installTaskLocalSubagents(
 						`${invocationId}:continuation-${continuationAttempt}`,
 						nativeChildSessionId,
 						"unspecified", "blocking", false, [], leaseToken,
+						invocationBudget,
 					);
 					const usage = result.usage && typeof result.usage === "object"
 						? result.usage as Record<string, any> : {};
@@ -1678,6 +1717,7 @@ export function installTaskLocalSubagents(
 					progress_id: invocationId,
 					native_session_id: nativeChildSessionId,
 					status: "failed",
+					budget: { limits: invocationBudget.limits, tool_calls: invocationBudget.tool_calls, reported_tokens: invocationBudget.reported_tokens },
 					startedAt,
 					completedAt: new Date().toISOString(),
 					error: error instanceof Error ? error.message : String(error),
@@ -1746,6 +1786,7 @@ export function installTaskLocalSubagents(
 				progress_id: String(result.progress_id ?? invocationId),
 				native_session_id: nativeChildSessionId,
 				status: "completed",
+				budget: { limits: invocationBudget.limits, tool_calls: invocationBudget.tool_calls, reported_tokens: invocationBudget.reported_tokens },
 				startedAt,
 				completedAt: new Date().toISOString(),
 				result,
@@ -1809,9 +1850,14 @@ export function installTaskLocalSubagents(
 						arc_action_receipts: delegatedActions } : {}) },
 			};
 		},
-	});
+	};
+	pi.registerTool(delegateTool);
+	// Creation's optional first run uses the same validated, budgeted delegate.
+	registerNativeHarnessExecutor(pi, "delegate_task", (id, input, signal) =>
+		delegateTool.execute(id, delegateTool.prepareArguments(input), signal),
+		input => { delegateTool.prepareArguments(input); });
 
-	if (adapter.autoResearch) {
+	if (researchEnabled) {
 		let researchRunCounter = 0;
 		for (const line of (existsSync(join(root, "auto-research-runs.jsonl"))
 			? readFileSync(join(root, "auto-research-runs.jsonl"), "utf8").split(/\r?\n/).filter(Boolean) : [])) {
@@ -2184,6 +2230,12 @@ export function installTaskLocalSubagents(
 				const action = String(params.action ?? "start");
 				if (["start", "enqueue", "assign"].includes(action)) {
 					const method = readBaselineMethod("research-orchestration");
+					// Defaulting may resolve an omitted reference, never replace an
+					// explicit stale/invalid version before the normal validator sees it.
+					if (params.authoring_method_ref !== undefined
+						&& (typeof params.authoring_method_ref !== "string"
+							|| params.authoring_method_ref.trim() !== method.method_ref))
+						throw new Error("authoring_method_ref does not match the current research-orchestration baseline; no research has started");
 					const alreadyRead = readBaselineMethodReceipts().some(row => row.method_ref === method.method_ref
 						&& row.actor !== "child" && row.sha256 === method.sha256);
 					if (!alreadyRead) {
@@ -2197,7 +2249,7 @@ export function installTaskLocalSubagents(
 								instruction: "Read this research-orchestration method, then confirm or revise the proposed research by calling start/enqueue again. No research has started. Later calls may omit authoring_method_ref." };
 							return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 						}
-						params.authoring_method_ref = method.method_ref;
+						params.authoring_method_ref ??= method.method_ref;
 					}
 				}
 				const authoringMethodRef = ["start", "enqueue", "assign"].includes(action)

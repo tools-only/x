@@ -135,6 +135,29 @@ Pi RPC bridge 只负责 session、RPC 和事件传输；harness 应由 Pi 原生
 
 Auto-Research 不再由本地代码人为设置 output-token 上限；父 Agent 仍仅接收有界 `auto-research-capsule-v1`。运行元数据写入 `auto-research-runs.jsonl`，规范化报告只写一次到 `auto-research-reports.jsonl`，并通过 `research_report:<run-id>@v1` 按页读取。provider 请求、输入/输出 token、payload 大小与 `length`/错误会持续写入遥测。provider `length` 由 Auto-Research runtime 在同一 run 和同一个 Pi 原生持久 session 内连续运行，并逐次写入 `auto-research-continuations.jsonl`；普通 `delegate_task` 也以同一 invocation/native session 写入 `subagent-continuations.jsonl`。只有 child 显式 pause、取消、官方 deadline 或硬失败才返回 parent。该机制不限制 continuation、研究调用或证据读取次数。
 
+### Auto-Research 调试开关
+
+ARC 新运行可以显式启用或关闭研究，省略参数时保持当前默认关闭：
+
+```powershell
+python -m autoresearch_pi.cli arc-agi-3-e2e --game ls20 --no-auto-research
+python -m autoresearch_pi.cli arc-agi-3-e2e --game ls20 --auto-research
+```
+
+这是启动配置，对当前已运行的进程不生效。关闭时不注册 `auto_research`，不启动研究 worker、自动续跑或投射研究交付提示；普通 `delegate_task`、作者 Subagent、Self-Harness 与已保存研究产物保留。
+
+也可在项目 `.env` 或进程环境中设置 `PI_AUTORESEARCH_ENABLED=enabled|disabled`，作用于实际安装研究能力的 adapter；不能为未提供研究入口的 adapter 添加能力。PowerShell 临时关闭及恢复环境默认值：
+
+```powershell
+$env:PI_AUTORESEARCH_ENABLED = 'disabled'
+# 启动需要调试的新运行
+Remove-Item Env:PI_AUTORESEARCH_ENABLED
+```
+
+优先级：显式 CLI 参数（Python API 为 `auto_research_enabled=True|False`）> `PI_AUTORESEARCH_ENABLED` > ARC 兼容变量 `PI_ARC_AUTO_RESEARCH` > adapter 默认。环境变量只接受 `enabled` / `disabled`；非法有效值在启动时报错。`control` variant 保持研究关闭。`--auto-research-validation` 和跨情境研究验证探针在无配置时启用研究；显式关闭与这些探针冲突时报错。`arc-harness-smoke` 的确定性矩阵显式启用所验收的研究能力。
+
+ARC 将实际值及来源写入运行目录的 `arc-runtime-config.json`（`auto_research_enabled`、`auto_research_configuration_source`），summary 中的 `runtime.review_configuration` 也保留这份配置。诊断与声明边界见 [开关变更记录](docs/plans/2026-10-08-auto-research-switch.md)。
+
 环境变量：
 
 - `JIT_ROOT`：JIT 测试宿主路径，默认 `D:\JIT`
@@ -173,6 +196,21 @@ python -m autoresearch_pi.cli --jev-routing active arc-agi-3-e2e --game ls20
 
 这两个环境复用同一组通用机制：真实工具 observation、开放 research goal 与 evidence-backed finding、task-local system-prompt overlay、skills、memory、tools、subagents、精确 evidence refs、通用 task-local context lifecycle、后续 exposure 和 effect assessment。lifecycle 默认自动去重 projection、限制 provider transcript、归档旧消息并保留可恢复引用；可用 `PI_AUTORESEARCH_CONTEXT_LIFECYCLE=disabled` 做显式 ablation。treatment 的首轮请求直接披露 `task_harness` 的发现、creator 读取、parent authoring、版本池、assembly、focus 与 assessment 入口；资源内容仍从空开始，并由 extension 的 `context` hook 投影到后续请求。Auto-Research child 是只读研究者，只能返回 findings、方法候选、规划影响或实验请求；它不读取 creator、不生成 Harness 组件正文，也不能调用 mutation。主 Agent 按需读取 `skill-creator` / `tool-creator` / `subagent-creator`，完整创作候选并显式选择精确版本；runtime 只校验、版本化、装配、执行和记录证据。ARC treatment 另提供由主 Agent 创作和调用的只读 Pi 子 Agent；子 Agent 没有环境动作权限。具体任务工具与 correctness evaluator 属于独立 adapter，不属于通用 self-harness。Agent-owned observation representation 仍由 `PI_AUTORESEARCH_CONTEXT_COMPACTION` 单独控制，默认不要求发生研究、委派或修改。
 
+ARC 中的纯计算 Tool 可以直接创建、安装并试用，无需预先读取 creator 或复制网格。例如调用 `task_harness_create`：
+
+```json
+{
+  "candidate": {
+    "name": "grid-height",
+    "description": "计算当前已观察网格的行数",
+    "program": {"format": "task-pure-python-v1", "source": "{'height': len(input['grid'])}"}
+  },
+  "trial": {"current_grid": true}
+}
+```
+
+之后向回执中的 Tool 传 `{"current_grid":true}`，每次会使用最新已捕获观测的最后一帧，注入 `input.grid`。其他输入放入 `parameters`；历史比较仍用 `bindings` 的精确引用。省略或关闭 `current_grid` 不注入网格；它不读取实时环境、不执行动作，也不覆盖显式 `grid`。首次计算失败会保留已安装版本，回执单独标记 trial 失败。功能及证据边界见[变更记录](docs/plans/2026-10-08-self-harness-current-grid.md)。
+
 ARC-AGI-3 使用本地 checkout 内的官方 Python SDK，但正式游戏和 scorecard 仍由官方在线环境提供，因此需要 `ARC_API_KEY`：
 
 ```bash
@@ -181,6 +219,19 @@ export PYTHONPATH='D:/autoresearch_pi_project/src'
   --game 'ls20-9607627b' \
   --root 'D:/autoresearch_pi_project/runs/arc-ls20-treatment'
 ```
+
+Memory、Prompt、Skill、Subagent 也有直接使用入口，同时保留 Agent 自定义组合：
+
+| 组件 | 便捷入口 | 自定义选用 |
+| --- | --- | --- |
+| Memory | `task_memory_pool({action:"capture",items:[{key:"rule",content:"…",scope:"task"}],select:true})` 保存并将精确版本正文选入后续上下文 | 省略 `select` 或设为 `false` 只归档；`list` 获取引用，再由 `task_harness(action:"assemble")` 选择子集及 `prompt_contributions` |
+| Prompt | `task_harness_create` 创建并安装 `component:"system_prompt"`，下次 provider 请求刷新；更新、撤下或失效会移除旧 overlay | `assembly:false` 仅入池；显式装配控制选中版本。`scope:"task"/"episode"/"level"/"state"` 绑定有效期，其他 scope 文字仍是说明 |
+| Skill | 新写正文已在上下文中时可直接执行，不强制重复读取 creator 或 Skill | 可以仅入池、选择组合、按需通过回执的 `load_if_needed` 恢复正文 |
+| Subagent | 临时分析优先 `delegate_task({task:"…",output_contract:"…",stop_when:"…",budget:{max_runtime_ms:60000,max_tool_calls:2,max_reported_tokens:40000}})`，无需保存角色；未披露时通过已有 `task_harness(action:"activate",enabled_tools:["delegate_task"])` 加载 | 需要复用职责时再保存；可仅入池、装配后独立调用，或用 create 的 `run` 首次执行；自定义 `context_recipe` 保留 |
+
+便捷入口写入同一组件池和 assembly。Agent 后续可以按当前 assembly revision 提交完整 `selected_resource_refs` 与 `prompt_contributions`，只选择所需 Memory，或清空选择；runtime 不自动恢复已取消的选择。取消选择保留库中内容，之后仍可重新选择。Memory 批量写入只有全部成功后才尝试选择；选择冲突保留已存内容。Subagent 首次执行失败也保留已发布角色，不自动重跑。保存、装配和上下文暴露均不等于实际利用。接口、失败恢复及当前证据边界见[变更记录](docs/plans/2026-10-08-self-harness-direct-use.md)。
+
+委派的输出要求也可写在 `context_recipe.output_contract`；同时指定时须一致。`stop_when` 是 child 应判断的语义停止条件，时间、工具调用、length 总尝试数和已报告 token 由 runtime 强制计入同一次 invocation。调用预算只可收紧操作环境上限；全局父子预算继续共同记账。`max_continuations` 包含首次尝试，默认最多 2 次；时间默认 120 秒、工具调用默认 24 次，跨续接不重新发放。已报告 token 阈值不涵盖尚未报告的在途成本，最后响应可能超额。
 
 真实 ARC runner 内的确定性 self-harness smoke 默认只 mock parent/child provider，不 mock ARC SDK environment、ARC bridge、Pi parent/child、结构化返回解析、parent creator read、semantic change classifier、原生 mutation、assembly 或下一 turn（显式 `--mock-environment` 才替换 SDK environment）。当前矩阵覆盖五类组件、方法正反反馈、跨情境闭环，并强制覆盖 Auto-Research 与普通 delegate 的 `length` 续接：
 

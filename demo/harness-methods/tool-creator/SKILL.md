@@ -1,17 +1,24 @@
 ---
 name: tool-creator
-description: Author an executable bounded computation or check using the supported Pi task-local substrate.
+description: Author an executable computation or check as a Pi task-local Tool.
 ---
 # Pi Tool creator
 
-Author name, description and program={"format":"task-pure-python-v1","source":"<expression>"}. Use the returned authoring_call for publication and first computation. Reading this template is optional. If supplied, authoring_method_ref must match the current creator_ref; omit a stale citation when submitting complete content. Example source: {"height":len(input["grid"])}.
+Submit name, description and program={"format":"task-python-v1","source":"<Python>"} through task_harness_create. It installs by default. Optional trial computes the first value in the same call; assembly=false only saves and cannot request trial. Reading this template and supplying authoring_method_ref are optional; a supplied citation must match the current creator_ref.
 
-Source is parsed into bounded JSON operations, never executed as Python. Supported: input["field"], constants/lists/objects, integer array indexing, + - *, == < <=, boolean and/or/not, conditional expressions, len, range(stop) or range(start,stop), one-generator list comprehensions with optional if predicate, and immediately called lambdas for local bindings. No attributes, arbitrary calls, imports, eval, shell, filesystem or network. Boolean conditions are strict, indices nonnegative, equality follows strict JSON types, and len accepts string/array. Optional program.limits tightens bounded defaults.
+Use ordinary Python 3.12, including functions, loops, comprehensions, slicing, methods and the available standard library. `input` is the supplied JSON object. Finish with a JSON-compatible result expression, or assign `result`. Example:
 
-input merges parameters and read-only bindings. The prepared ARC trial binds the snapshot's final numeric grid as input["grid"]: index [y][x], never copy hex rows. Edit/remove bindings for your expression. Optional earlier_input locates a captured final grid at the listed action boundary, possibly across a batch/level; it is not necessarily the previous action. Snapshots stay immutable.
+```python
+from collections import Counter
+g = input["grid"]
+counts = Counter(color for row in g for color in row)
+{"counts": {str(color): count for color, count in counts.items()}}
+```
 
-input_schema and output_schema are optional for this format: defaults are open object and bounded strict JSON. Supply stronger contracts when useful: type/properties/required/additionalProperties/items and scalar/length bounds. With additionalProperties:false, declare accessed fields. No $ref/oneOf or prototype-related keys.
+For this example supply trial={"current_grid":true}. ARC input["grid"] is the latest captured final numeric grid, indexed [y][x]. Later calls with current_grid:true refresh it. Do not also supply grid in parameters/bindings. For other inputs use trial.parameters; exact historical inputs use bindings. Omitted parameters/bindings are empty; explicit null is rejected.
 
-Call task_harness_create with {"candidate":{"name":"<name>","description":"<when useful>","program":{"format":"task-pure-python-v1","source":"<expression>"}},"assembly":true,"trial":{"parameters":{},"bindings":[]}}. Fill authored text and the authorized inputs. assembly=true adds the new exact version to the current selection; trial returns its first value. Omit assembly/trial for pool-only publication. Omit optional fields for defaults; explicit null and conflicting values are rejected. Trial failure preserves the published version. Verify a value and contrast; keep only useful components. Creation is not task benefit; this computation performs no environment actions.
+Execution is isolated CPython/WASI with time, memory and JSON output limits. It receives only supplied data, with no project files, credentials, network or environment actions. The available standard library is bundled; external packages and operating-system services require their own environment support. Local input mutation affects this computation's copy. Print output is discarded; return the value as above.
 
-For advanced operations, grid_reachability, JSON AST, legacy steps or implementation_ref, read references/pi-task-local-tool-contract.md. Never mix source/AST/steps. Unsupported operations need a Skill, decomposition or a recorded gap. Optional background: references/authoring-background.md.
+input_schema/output_schema are optional: open-object input and bounded JSON output are defaults. With additionalProperties:false declare every supplied input field. Real syntax errors report line/column and an excerpt. Runtime errors and non-JSON/oversized results fail the trial or call; a failed trial leaves the published/installed version intact. Results need task interpretation.
+
+The older task-pure-python-v1 spelling also accepts ordinary Python. Previously published JSON IR versions retain their old semantics. Advanced schemas, limits, historical bindings, JSON AST and adapter forms: references/pi-task-local-tool-contract.md. Never mix source/AST/steps. Optional background: references/authoring-background.md.

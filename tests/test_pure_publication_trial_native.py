@@ -59,7 +59,8 @@ def test_top_level_trial_is_typed_and_returns_first_value_to_later_parent(tmp_pa
     contexts = records(tmp_path,"provider-contexts.jsonl")
     create_schema = next(t["parameters"] for t in contexts[0]["context"]["tools"] if t["name"]=="task_harness_create")
     envelope = create_schema["properties"]["trial"]
-    assert envelope["type"]=="object" and set(envelope["required"])=={"parameters","bindings"}
+    assert envelope["type"]=="object" and not envelope.get("required")
+    assert envelope["properties"]["current_grid"]["type"] == "boolean"
     assert envelope["properties"]["bindings"]["items"]["properties"]["path"]["items"]["type"]=="string"
     later = contexts[-2]["context"]["messages"]
     assert any('"trial"' in p.get("text","") and '"completed"' in p.get("text","") and 'true' in p.get("text","")
@@ -153,13 +154,14 @@ def test_failed_trial_preserves_committed_publication_and_does_not_block_later_p
     assert statuses==["failed","completed"]
 
 
-@pytest.mark.parametrize("case",["missing_assembly","non_pure","malformed","executor_override","stale_assembly","batch"])
+@pytest.mark.parametrize("case",["disabled_assembly","non_pure","malformed","executor_override","stale_assembly","batch"])
 @pytest.mark.parametrize("location", ["legacy", "top"])
 def test_trial_preflight_rejects_unsafe_or_uncommittable_inputs_before_writes(tmp_path,case,location):
     if case == "batch" and location == "top":
         pytest.skip("batch has no publication-trial parameter")
     body=candidate(trial())
-    request=publication(body,assembly=case!="missing_assembly")
+    request=publication(body)
+    if case=="disabled_assembly":request["arguments"]["assembly"]=False
     if case=="non_pure":body["program"]={"steps":[{"kind":"select","source":"input","fields":["pixel"]}]}
     if case=="malformed":body["trial"]={"parameters":[],"bindings":[]}
     if case=="executor_override":body["trial"]["tool_name"]="arc_action"
@@ -181,7 +183,7 @@ def test_legacy_create_without_trial_keeps_publication_and_explicit_use(tmp_path
     assert json.loads(results(events,"task_tool_bound-check_v1")[-1]["result"]["content"][0]["text"]) is True
 
 
-def test_real_qwen_first_publication_reports_independent_repairs_together(tmp_path):
+def test_real_qwen_first_publication_reports_source_repair_without_obsolete_admin_errors(tmp_path):
     request = json.loads((Path(__file__).parent / "fixtures/harness-stage130-compute-call.json").read_text(encoding="utf-8"))
     # Creator content hash changed with132. Reuse the current read, without altering the AST/schema/trial.
     request["candidate"].pop("authoring_method_ref")
@@ -194,11 +196,11 @@ def test_real_qwen_first_publication_reports_independent_repairs_together(tmp_pa
     assert receipt["no_component_written"] is True
     assert len(text) < 3000
     paths = [issue["path"] for issue in receipt["issues"]]
-    assert "assembly" in paths
+    assert "assembly" not in paths
     # Explicit binding types are compiled mechanically once the independent
     # authoring errors are repaired; they are no longer a parent repair field.
-    for suffix in [".name", ".program.expression.value.name"]:
-        assert any(path.endswith(suffix) for path in paths), receipt
+    assert "changes[0].candidate.name" not in paths
+    assert any(path.endswith(".program.expression.value.name") for path in paths), receipt
     assert not records(tmp_path,"task-tools.jsonl") and not records(tmp_path,"task-tool-events.jsonl")
     later = json.dumps(records(tmp_path,"provider-contexts.jsonl")[-1]["context"])
     assert "no_component_written" in later and "program.expression.value.name" in later

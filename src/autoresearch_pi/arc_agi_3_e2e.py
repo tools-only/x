@@ -109,12 +109,40 @@ def _reasoning_investment_budget(*, shared_limit: int, no_level_limit: int | Non
             "fits": remaining is not None and reserve is not None and remaining >= reserve}
 
 
-def _load_prompt(name: str, **values: str) -> str:
+def _load_prompt(name: str, *, research_enabled: bool = True,
+                 batch_actions_enabled: bool = False, **values: str) -> str:
     """Load a human-readable runtime prompt and expand simple placeholders."""
     prompt = (_PROMPTS_DIR / name).read_text(encoding="utf-8").strip()
+    prompt = re.sub(r"\{\{#auto_research\}\}(.*?)\{\{/auto_research\}\}",
+                    lambda match: match.group(1) if research_enabled else "", prompt, flags=re.DOTALL)
+    prompt = re.sub(r"\{\{([#^])arc_actions\}\}(.*?)\{\{/arc_actions\}\}",
+                    lambda match: match.group(2) if (match.group(1) == "#") == batch_actions_enabled else "",
+                    prompt, flags=re.DOTALL)
     for key, value in values.items():
         prompt = prompt.replace("{{" + key + "}}", value)
     return prompt
+
+
+def _resolve_auto_research(environment: dict[str, str], explicit: bool | None = None,
+                           *, variant: str = "treatment", validation: bool = False) -> tuple[bool, str]:
+    """Resolve only the winning startup setting; preserve ARC's opt-in default."""
+    if explicit is not None:
+        if not isinstance(explicit, bool):
+            raise ValueError("auto_research_enabled must be a bool or None")
+        enabled, source = explicit, "explicit"
+    else:
+        source = next((key for key in ("PI_AUTORESEARCH_ENABLED", "PI_ARC_AUTO_RESEARCH")
+                       if key in environment), "validation_probe" if validation else "arc_default")
+        if source in {"arc_default", "validation_probe"}:
+            enabled = validation
+        else:
+            value = environment[source]
+            if value not in {"enabled", "disabled"}:
+                raise ValueError(f"{source} must be enabled or disabled")
+            enabled = value == "enabled"
+    if validation and (not enabled or variant != "treatment"):
+        raise ValueError("auto-research validation requires Auto-Research enabled and the treatment variant")
+    return (enabled, source) if variant == "treatment" else (False, "control_variant")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -178,6 +206,30 @@ def _project_arc_kernel_event(event: dict[str, Any]) -> dict[str, Any] | None:
             projected["args"] = event.get("args")
         result = event.get("result")
         details = result.get("details") if isinstance(result, dict) else None
+        # SDK tool_call blocking leaves a JSON receipt in content, not details.
+        # Preserve its authoritative no-execution fact for the host boundary;
+        # a malformed action call must not be treated as committed progress.
+        if (projected["isError"] and isinstance(result, dict)
+                and isinstance(event.get("toolCallId"), str) and event["toolCallId"]
+                and not (isinstance(details, dict) and details.get("arc_action_boundary") is True)):
+            parts = result.get("content")
+            if not isinstance(parts, list):
+                parts = []
+            for part in parts:
+                if not isinstance(part, dict) or part.get("type") != "text":
+                    continue
+                try:
+                    rejection = json.loads(part.get("text", ""))
+                except (ValueError, TypeError):
+                    continue
+                if (isinstance(rejection, dict)
+                        and rejection.get("format") in {"tool-call-arguments-error-v1", "task-harness-preflight-error-v1"}
+                        and rejection.get("status") == "failed"
+                        and rejection.get("phase") == "preflight"
+                        and rejection.get("execution_started") is False
+                        and rejection.get("tool_call_id") == event.get("toolCallId")):
+                    projected["preflight_rejected"] = True
+                    break
         if isinstance(details, dict):
             evidence = {
                 key: details[key]
@@ -1706,12 +1758,13 @@ def _arc_terminal_or_budget_exhausted(state: dict[str, Any]) -> bool:
     )
 
 
-def _arc_continuation_prompt(state: dict[str, Any], *, truncated: bool) -> str:
+def _arc_continuation_prompt(state: dict[str, Any], *, truncated: bool, research_enabled: bool = True,
+                             batch_actions_enabled: bool = False) -> str:
     """Choose the next prompt while preserving retryability after a failed life."""
     if str(state.get("state", "")) == "GAME_OVER":
         return _load_prompt("arc_game_over_recovery.md")
     if truncated:
-        return _load_prompt("arc_length_recovery.md", **{
+        return _load_prompt("arc_length_recovery.md", research_enabled=research_enabled, **{
             "state": "unknown",
             "levels_completed": "unknown",
             "action_budget": "unknown",
@@ -1719,7 +1772,8 @@ def _arc_continuation_prompt(state: dict[str, Any], *, truncated: bool) -> str:
             "latest_action_evidence": "unknown",
             "research_notice": "",
         })
-    return _load_prompt("arc_followup.md")
+    return _load_prompt("arc_followup.md", research_enabled=research_enabled,
+                        batch_actions_enabled=batch_actions_enabled)
 
 
 def _turn_has_arc_action(events: list[dict[str, Any]]) -> bool:
@@ -1977,6 +2031,7 @@ def _run_pi(
     auto_research_validation: bool = False,
     cross_situation_validation: bool = False,
     provider_name: str = "yibu",
+    auto_research_enabled: bool | None = None,
     model_name: str | None = None,
     input_modalities: str | tuple[str, ...] | list[str] | None = None,
     provider_extension: Path | None = None,
@@ -2079,6 +2134,10 @@ def _run_pi(
         env["PI_AUTORESEARCH_SUBAGENT_BROKER_URL"] = subagent_broker_url
     if environment_overrides:
         env.update({str(key): str(value) for key, value in environment_overrides.items()})
+    research_enabled, research_source = _resolve_auto_research(
+        env, auto_research_enabled, variant=variant, validation=auto_research_validation or cross_situation_validation)
+    env["PI_AUTORESEARCH_ENABLED"] = "enabled" if research_enabled else "disabled"
+    batch_actions_enabled = env.get("PI_ARC_ACTION_BATCH") == "enabled"
     if max_reported_tokens is not None:
         if not str(max_reported_tokens).isdigit() or int(max_reported_tokens) <= 0:
             raise ValueError("max_reported_tokens must be a positive integer")
@@ -2101,6 +2160,9 @@ def _run_pi(
         env["PI_ARC_ACTION_TOKEN"] = bridge_action_token
     apply_jev_routing_policy(env)
     (root / "arc-runtime-config.json").write_text(json.dumps({
+        "auto_research_enabled": research_enabled,
+        "auto_research_configuration_source": research_source,
+        "batch_actions_enabled": batch_actions_enabled,
         "requested_review_mode": review_mode,
         "review_mode": "required" if env.get("PI_HARNESS_REVIEW_DECISION_REQUIRED") == "enabled" else "advisory",
         "periodic_review_enabled": env.get("PI_HARNESS_PERIODIC_REVIEW") == "enabled",
@@ -2286,7 +2348,8 @@ def _run_pi(
             # separate, optional self-harness intervention.
             kernel.send("set_auto_compaction", enabled=True)
             prompt = _load_prompt("arc_decision_cycle_concise.md" if env.get("PI_ARC_CONCISE_GUIDANCE") == "enabled"
-                                  else "arc_decision_cycle.md", game=game)
+                                  else "arc_decision_cycle.md", game=game, research_enabled=research_enabled,
+                                  batch_actions_enabled=batch_actions_enabled)
             if harness_validation:
                 prompt = _load_prompt("arc_harness_composition_validation.md"
                                       if env.get("PI_HARNESS_COMPOSITION_VALIDATION") == "enabled"
@@ -2517,7 +2580,7 @@ def _run_pi(
                     # effort support or change the provider-default payload.
                     kernel.new_session()
                     recovery_state = _get_json(bridge_url + "/state")
-                    recovery = _load_prompt("arc_length_recovery.md", **{
+                    recovery = _load_prompt("arc_length_recovery.md", research_enabled=research_enabled, **{
                         "state": str(recovery_state.get("state")),
                         "levels_completed": str(recovery_state.get("levels_completed", 0)),
                         "action_budget": json.dumps(recovery_state.get("action_budget", {}), separators=(",", ":")),
@@ -2543,7 +2606,7 @@ def _run_pi(
                     consecutive_length_responses = 0
                 if not turn_has_action:
                     if recovery_phase != "normal":
-                        continuation = _load_prompt("arc_recovery_followup.md", **{
+                        continuation = _load_prompt("arc_recovery_followup.md", research_enabled=research_enabled, **{
                             "phase": recovery_phase,
                             "state": str(state.get("state")),
                             "levels_completed": str(state.get("levels_completed", 0)),
@@ -2553,9 +2616,11 @@ def _run_pi(
                             "research_notice": f"{pending_research_notice} " if pending_research_notice else "",
                         })
                     else:
-                        continuation = _load_prompt("arc_followup.md")
+                        continuation = _load_prompt("arc_followup.md", research_enabled=research_enabled,
+                                                    batch_actions_enabled=batch_actions_enabled)
                 else:
-                    continuation = _arc_continuation_prompt(state, truncated=truncated)
+                    continuation = _arc_continuation_prompt(state, truncated=truncated, research_enabled=research_enabled,
+                                                           batch_actions_enabled=batch_actions_enabled)
                 if pending_research_notice:
                     continuation = f"{pending_research_notice}\n{continuation}"
                 follow_up = prompt_with_policy(continuation)
@@ -2568,7 +2633,7 @@ def _run_pi(
                     # runner failure.
                     kernel.new_session()
                     recovery_state = _get_json(bridge_url + "/state")
-                    recovery = _load_prompt("arc_action_boundary_recovery.md", **{
+                    recovery = _load_prompt("arc_action_boundary_recovery.md", research_enabled=research_enabled, **{
                         "state": str(recovery_state.get("state")),
                         "levels_completed": str(recovery_state.get("levels_completed", 0)),
                         "action_budget": json.dumps(recovery_state.get("action_budget", {}), separators=(",", ":")),
@@ -2611,6 +2676,7 @@ def run_arc_agi_3_e2e(
     auto_research_validation: bool = False,
     cross_situation_validation: bool = False,
     pi_provider: str = "yibu",
+    auto_research_enabled: bool | None = None,
     pi_model: str | None = None,
     input_modalities: str | tuple[str, ...] | list[str] | None = None,
     pi_provider_extension: Path | None = None,
@@ -2645,6 +2711,10 @@ def run_arc_agi_3_e2e(
         raise ValueError("choose one task-local validation probe")
     if max_actions is not None and max_actions < 0:
         raise ValueError("max_actions must be nonnegative; 0 disables local step limits")
+    project_root = Path(__file__).resolve().parents[2]
+    env = load_project_dotenv(project_root)
+    _resolve_auto_research({**env, **(pi_environment or {})}, auto_research_enabled,
+                           variant=experiment_variant, validation=auto_research_validation or cross_situation_validation)
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError("ARC output must be an empty directory; use a new run root")
@@ -2653,8 +2723,6 @@ def run_arc_agi_3_e2e(
     arc_python = bridge_python or arc_root / ".venv" / "Scripts" / "python.exe"
     if not arc_python.is_file():
         raise FileNotFoundError(f"ARC SDK interpreter was not found: {arc_python}")
-    project_root = Path(__file__).resolve().parents[2]
-    env = load_project_dotenv(project_root)
     model_settings = resolve_model_settings(env)
     _initial_reasoning_after_feedback({**env, **(pi_environment or {})},
                                      reasoning_policy, reasoning_levels, model_settings)
@@ -2700,6 +2768,7 @@ def run_arc_agi_3_e2e(
             subagent_broker_url=subagent_broker.url,
             harness_validation=harness_validation,
             auto_research_validation=auto_research_validation,
+            **({"auto_research_enabled": auto_research_enabled} if auto_research_enabled is not None else {}),
             cross_situation_validation=cross_situation_validation,
             provider_name=pi_provider,
             model_name=pi_model,

@@ -332,6 +332,39 @@ export function assemblyInputContract(previous?: HarnessAssembly) {
 	};
 }
 
+/** Extend a parent's composition without letting obsolete selections block creation.
+ * Never choose replacements: explicit assembly inputs still use the strict validator.
+ */
+export function prepareHarnessCreationAssembly(
+	previous: HarnessAssembly | undefined,
+	resolveComponentRef: (reference: string) => string | undefined,
+	resolveSourceRef: (reference: string) => string | undefined,
+) {
+	const removed_resource_refs: string[] = [];
+	const selected_resource_refs = (previous?.selected_resource_refs ?? []).flatMap(reference => {
+		const current = resolveComponentRef(reference);
+		if (current) return [current];
+		removed_resource_refs.push(reference);
+		return [];
+	});
+	const selected = new Set(selected_resource_refs);
+	const removed_prompt_contribution_ids: string[] = [];
+	const prompt_contributions = (previous?.prompt_contributions ?? []).filter(contribution => {
+		const source = resolveSourceRef(contribution.source_ref);
+		const componentSource = (HARNESS_COMPONENT_KINDS as readonly string[])
+			.includes(contribution.source_ref.split(":", 1)[0]);
+		if (source && (!componentSource || selected.has(source))
+			&& contribution.depends_on_refs.every(reference => Boolean(resolveSourceRef(reference)))) return true;
+		removed_prompt_contribution_ids.push(contribution.contribution_id);
+		return false;
+	});
+	return {
+		selection: { expected_assembly_revision: previous?.revision ?? 0,
+			selected_resource_refs, prompt_contributions },
+		cleanup: { removed_resource_refs, removed_prompt_contribution_ids },
+	};
+}
+
 export function createHarnessAssembly(options: CreateAssemblyOptions): HarnessAssembly {
 	const currentRevision = Number(options.previous?.revision ?? 0);
 	if (options.input.expected_assembly_revision === undefined) {

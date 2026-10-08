@@ -32,7 +32,8 @@ def test_selected_skill_read_keeps_composed_memory_and_policy(tmp_path):
     assert all(not e.get("isError") for e in outputs), outputs
     creation = json.loads(outputs[1]["result"]["content"][0]["text"])
     created_skill = next(r for r in creation["activation"]["created_resources"] if r["resource_ref"] == refs[2])
-    assert created_skill["use_after_selection"] == {"tool": "read", "arguments": {"path": str(skill_path)}}
+    assert created_skill["use_after_selection"]["load_if_needed"] == {"tool": "read", "arguments": {"path": str(skill_path)}}
+    assert "directly" in created_skill["use_after_selection"]["effect"]
     assembly = json.loads(outputs[2]["result"]["content"][0]["text"])
     assert {r["resource_ref"] for r in assembly["components"]} == set(refs)
     assert outputs[3]["toolName"] == "read" and "COMPOSITION_SKILL" in outputs[3]["result"]["content"][0]["text"]
@@ -44,8 +45,8 @@ def test_selected_skill_read_keeps_composed_memory_and_policy(tmp_path):
                             if p.get("text", "").startswith("Active dynamic task/user prompt knowledge:"))
         assert "COMPOSITION_FACT" in current
     assert not (tmp_path / "task-context-choices.jsonl").exists()  # No implicit focus choice.
-    # System overlays are applied on the next parent prompt, rather than changing
-    # system directives mid tool transaction. Resume the actual Pi parent.
+    # Selection reaches the next provider request and survives parent restart.
+    assert "COMPOSITION_POLICY" in contexts[3]["systemPrompt"]
     _run_fixture(tmp_path, "treatment", arc_compact=True, steps=[])
     later = json.loads((tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()[-1])["context"]
     assert "COMPOSITION_POLICY" in later["systemPrompt"]

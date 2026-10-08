@@ -1071,6 +1071,898 @@ B15冻结619文件，archive SHA256 `338552ef2edfcdbab06f0432b9fac36ed109c137780
 
 用户随后要求总结并发送摘要。核对时Goal状态paused，宿主快照4506896 tokens/24556秒、cache/计费未知；本次不启动新实验。B15完整scripted诊断在后台，尚无终态，不能以B14r1通过替它完成验收。源码完成卡在当前native HTTP合法样例中实测15048→983chars、精确恢复通过，不能把该局部变化当总成本收益。独立[进度摘要](../reports/2026-10-07-self-harness-progress-summary.md)汇总完成范围与未证明项；B/C/D和全部阶段交付保持未完成。
 
+### 2026-10-08：用户继续授权与真实ARC唯一验证边界
+
+用户明确继续，并要求后续验证只在真实ARC上进行。此后验证使用真实provider与官方ARC环境，不再运行pytest、scripted provider、deterministic smoke或mock验证；已有诊断保留历史证据，但不代替本次验证。源码/轨迹只读定位、源码冻结与文件完整性核对是开发准备，不冒充行为验证。原预算、完整grid/PNG、授权范围、邮件通知及50动作/1800秒阶段门槛延续，不扩额。B15后台历史scripted矩阵现已终态18/18、281.5秒、源码零漂移，不再启动此类矩阵。
+
+### R06/R09：ARC常规checkpoint更新复用既有行动持久化（真实运行切片）
+
+真实失败/负担：B15显式guided真实运行6响应、82575tokens仅2动作，首轮全文status后，出现3个独立task_checkpoint(update)调用，其中2成功、最后1因预算取消；没有组件创作。checkpoint更新与后续arc_action已有hypothesis/next_step/knowledge存在重叠；这能证明管理往返存在，不证明它是唯一原因。
+
+窄命题/主因素：仅把ARC默认task_checkpoint改为按需激活，常规认识/反证继续用已有arc_action.decision自动持久化，减少独立管理请求和驻留schema。科学内容仍由父填写，task_checkpoint保持注册/授权/显式激活，独立goal/plan/复杂编辑不丢失入口；非ARC入口不变。现有普通及guided指导同步给出按需激活位置，不新增提醒、wrapper、worker或门禁。全文status和任务价值判断留作另两个候选原因，不在此轮修改。
+
+评价协议：新B16源码冻结并恢复，现有yibu/qwen3.8-27b、官方ls20、完整grid/PNG、off/output4096、advisory，沿B15显式Tool guided任务，其余条件保持。guided余额77425为本次最高reported父子阈值，12动作/600秒先到停止；只做这次改变因素后的真实运行，不原样重跑或扩额。B15较高预算与独立环境历史属于混杂，比较为探索而非严格净收益对照。反证为模型仍重复激活/管理往返、丢失关键反证/下一实验、合法独立编辑不可达或能力退化。
+
+主要观察：最终真实请求的checkpoint schema是否退出、行动decision是否真实入checkpoint并进入后轮；独立编辑如被模型选择是否实际可达；环境动作/levels、历史首末峰均及父子reported/未知usage/时延。未触发的负例明确未验证。组件创作→精确装配→语义值→行动若发生逐环节核查，未发生不能凭接口可用声称采用。只采用真实ARC结果，不运行额外离线测试。
+
+B16真实终态：655文件，SHA256 `c182f085dbc11225c5efea1d90ab9b3b7196d60857b23e86013c28380fd3bdf2`，恢复运行后零漂移；当前runtime与B15相比只改checkpoint默认暴露及对应已有指导，额外文件主要为工作区文档，未继承B15验证。官方ls20/真实yibu qwen3.8-27b、off、完整grid/PNG，实际7动作/0level，131.688秒含启动清理，Pi125预算提前停止。[审计](../../tmp/self-harness-goal-20261007/b16-guided-audit.json)父82854（input80274/output2580/reasoning0）、child0、unknown0；6响应确认请求/7组装payload，最后未发。history chars首4294/末21967/峰21967/均12947.167，UTF8末21969。实际账单未知。
+
+本真实样本证明：初始5个schema不含task_checkpoint（B15为6个且checkpoint3170 JSON chars）；全程无独立checkpoint/status调用，2次arc_actions及后续arc_action提交7真实动作，后3动作明确含父的subgoal/hypothesis/prediction/falsifier/next_step/knowledge。原生checkpoint revision7保存认识和下一实验；独立goal/plan编辑、反证撤回和跨压缩恢复未触发，保持未验证。后轮自动披露delegate_task/task_resource，未披露checkpoint。无child/作者组件/装配/语义组件使用；不能说已完成自主使能。较B15管理往返减少但2→7动作、相近82854tokens仍0level，history更长，样本预算/环境轨迹混杂，不能称能力或总成本净收益。
+
+预算：guided累计165429（82575+82854），因reported准入估算及响应后结算超160000阈值5429；全部计入，guided停止新增请求。ordinary累计240784，余额119216/最多1次；matched原上限2880000/6对未动，但共享总余额只有2993787，保留ordinary余额后matched最多2874571，不自动挪用或扩额。累计游戏reported406213/3400000、unknown0；开发成本另计。下一必要成本断点是请求前reported input预留随实际动态schema/历史增长不足，本轮仅定位，不混入checkpoint变量。
+
+下一真实协议：同一B16 freeze、新root ordinary ls20，现有真实provider、完整grid/PNG、off/output4096、advisory；普通任务无必须开发指令，实际50动作/1800秒先到停止，reported阈值最高119216，仍受响应后超出及完整性/终局止损影响。这是ordinary第3/3次，失败后不原样扩样；观测机会分母/合理不使用、checkpoint按需选择、实际研究/作者/使能/反馈、levels/历史/父子成本。既有B11较高预算及独立环境历史，比较仅探索。阶段门槛未达仍不完成；后续净收益实验另登记配对协议与全局预留。后续只真实ARC验证，不运行诊断测试。
+
+### 2026-10-08 B16 ordinary 真实终态与预算更正
+
+同一655文件 B16 freeze（SHA256 `c182f085dbc11225c5efea1d90ab9b3b7196d60857b23e86013c28380fd3bdf2`），官方ls20、真实yibu/qwen3.8-27b、off/output4096、完整grid/native PNG，普通任务无必须开发指令。实际7动作/0level，152.359秒含启动清理，预算停止/Pi125，恢复源码零漂移；未达到50动作或1800秒阶段门槛。[原始审计](../../tmp/self-harness-goal-20261007/b16-ordinary-audit.json)、[启动协议](../../tmp/self-harness-goal-20261007/b16-ordinary-protocol.json)、[真实轨迹](../../runs/self-harness-goal-b16-ordinary-ls20-20261008/pi-events.jsonl)。父121536=input116659+output4877，reasoning0、child0、unknown记录0；实际账单/cache成本未知。8响应确认请求、9组装payload（最后未发）；实际历史chars首4645/末36870/峰36870/均17455.125，UTF8末36966/均17471.125；每次实际输入保留1张图。
+
+7次arc_action成功；末次arc_actions因预算取消，未产生环境动作，不把tool completion计为8动作。没有status或独立checkpoint调用；checkpoint revision7保存父的假设、预测、证伪条件、下一实验和知识。此样本没有作者、研究child、装配或组件语义使用；周期pattern extraction记录1个机会只是runtime信号，不证明有净收益的开发机会或父已识别；合理不使用与漏用的归因仍不确定。跨压缩反证、按需复杂编辑、length和五类闭环未触发，保持未验证。不能用7动作和管理调用消失声称任务能力或净收益改善。
+
+预算账更新：guided165429，超原160000阈值5429；ordinary362320（240784+121536），3/3次，超原360000阈值2320；超额全部扣账，不扩额，两个阶段均停止新增运行。游戏累计527749/3400000，总余额2872251；matched已用0、最多6对/两游戏各3对/每臂240000，原2880000上限进一步受总余额2872251限制。开发Goal快照仍为4506896tokens/24556秒且metadata paused；当前用户继续授权不等于工具已更新metadata，也不据此完成Goal。
+
+更正上一段预算原因：当前`pi_reported_token_budget.ts`只读取已报告累计量，在响应后的message_end超阈值再停止；**没有按最终请求输入/图像/output对剩余reported额度做发送前预留**。现有final-payload admission只检查context window。此前“预留估算不足”表述过强，本次以源码和真实ledger纠正为“共享reported请求前预留缺失”。ordinary最后一条实际响应从100455累计到121536；发送时剩18761，仍发送了最终实际21081token请求，超出2320。下一因素仅修此预算断点，不同时改变历史寿命、观察或语义提示。
+
+ordinary通知已发送一次：SENT `1a1173a61cf0b705`，请求及回执在`notifications/b16-ordinary-email-{request,receipt}.json`，不重发。
+
+### 2026-10-08 B17 请求前共享预算预留：实施前命题与配对协议
+
+问题/窄命题：B16真实响应后超预算。复用final-payload admission，在发送前把文本UTF8、图像、output和已有margin形成保守预留；父/child在同一shared ledger原子预留、响应同一记录结算，可阻止“剩余估算支付能力不足仍发送”的路径。它是reported预算完整性修复，不宣称能降低解决游戏所需token。图像预留与实际tokenizer不同，不能把估算称为硬账单上界。
+
+选择与负担：不增加parent决策、提示、schema、worker或压缩重试；复用现有observer、ledger和取消分类。仅本地文件锁/在途记录属于必要预算完整性成本。相比只比较已结算总量，原子预留避免多个child各自使用同一余额；机械准入由runtime推进，科学判断和采用仍归parent。请求前reserve→provider响应→message_end原子结算；预算/未知usage/文件异常拒绝；进程崩溃的预留不自动释放，不猜测已经免费。权限、版本、完整grid/PNG和环境动作保持。实验设置下可撤下预留因子，但既有reported后结算止损保持。
+
+预登记首对（matched第1/6对，ls20第1/3对）：同一B17冻结源码，两个全新官方ARC root，真实yibu/qwen3.8-27b、openai-completions、adaptive only off/qwen/output4096、text+image/advisory、普通任务；仅`PI_PROVIDER_REPORTED_ADMISSION`为control disabled、treatment enabled。顺序control→treatment，分别50实际动作或1800秒先到停止，每臂reported阈值240000，最多480000含所有失败/取消/响应后超额，仍受总余额2872251约束；每臂未知usage即停，control超阈值从配对/全局余额扣，不从零重分配。独立canonical环境，不回退旧历史；初始公开状态指纹记录，种子无法锁定则披露，样本1对仅为可判别性探索。无引导创作/能力任务；不冒称第4次ordinary或guided。
+
+判定：主指标仍levels和实际请求history首/末/峰/均；同时审阅父子总成本、延迟、无效动作、管理轮/首次行动。功能信号为treatment每个实际发送请求均存在先于HTTP的成功预留，reported+其他在途+required<=limit；余额不足拒绝后无实际请求/动作，人工复查报表和完整输入，不用mock或pytest。负例为最后不足余额、无usage/取消/错误、并发child在途、晚payload替换；真实未触发项明确未验证。若treatment减少动作/levels，则不得声称净收益；若用量仍越界，区分估算误差、在途竞争和路径未覆盖，改一个因素。连续性与五类闭环未触发不完成P6。实施前四层均未验证；结束后按真实产物更新，首对不能支持普遍因果收益。
+
+实施入口：`demo/pi_reported_token_ledger.ts`保存既有reader与必要文件锁；`pi_provider_request_admission.ts`复用最终UTF8/图像/output/margin结果预留；`pi_reported_token_budget.ts`在同一reported_usage/unmeasured/request_declined记录原子结算精确reservation_id，reader原导出兼容保留。500ms锁等待有界，异常拒绝且不猜释放崩溃预留；这些是实现设计，尚无并发/崩溃真实验证。预留默认只在已有context admission和reported预算同时启用时生效，可用显式disabled做同源消融。沒有运行离线测试/模拟。首对是08预算安全因素的有界对照，不能绕过13→14依赖称整体P7净收益验收；14保持planned。
+
+配对480000为两臂reported止损阈值之和，不承诺provider延迟计量不会越界；所有超额实际扣全局和matched累计，下一臂启动前核对未知用量及全局余额，不能因此扩额。后续配对数与可用阈值按累计余量收缩。
+
+B17冻结656文件、SHA256 `2da1e732153ef318d9fd9a1af19ab320ad480af205ebd6b7e5b56b8e19d39ca2`；通过恢复文件逐项hash准备后，于UTC2026-10-07T16:51:08启动pair1 control。命令/协议/owner与后续终态保存在`tmp/self-harness-goal-20261007/b17-pair1-control-*`，真实root为`runs/self-harness-goal-b17-pair1-control-ls20-20261008`。两臂都采用ARC CLI既有variant=treatment以保持游戏机制相同；这里“control”仅指预算预留消融，不能误读成baseline游戏variant。源码完整性核对是准备，不算运行行为验收。
+
+pair1 control真实终态：13动作/0level、218.609秒含启动清理、reported250603=input243394+output7209，reasoning0/child0/unknown记录0，阈值超10603全扣；官方scorecard同13/0，源码零漂移。实际15响应请求/16组装payload；history chars首4645/末37165/峰37165/均22710.6，UTF8末37200/均22718.8，每次1图。13arc_action成功，1task_harness管理调用；最后arc_actions预算取消未产生动作。无作者entry/研究child；checkpoint revision13，阶段边界未达。模型实际qwen3.8-27b、enable_thinking=false、output4096。初始frame SHA256 `3529ecbab7c7f2c8e438232cabc8e542b3a2ec1918f489381e550849cc61b8e5`，待处理臂核对；[审计](../../tmp/self-harness-goal-20261007/b17-pair1-control-audit.json)。matched累计250603、游戏累计778352/3400000，余2621648；结算无未知记录，可继续原登记处理臂。首对结果邮件等两臂终态后合并一次，不重复通知control。
+
+pair1 treatment真实终态：9动作/0level、212.531秒含启动清理，reported143578=input134238+output9340，reasoning0/child0/unknown记录0，恢复源码零漂移。9响应确认/10组装payload，实际history chars首4645/末36366/峰36366/均19044.778，UTF8末36434/均19060.222，每次1图。初始frame指纹与control完全相同，实际模型/enable_thinking=false/output4096一致。9个成功原子request_reserved与9个reported_usage精确结算，9次后续真实父请求走同一准入路径；终态预留96638、余额96422、在途0，下一请求declined且无第10响应或动作，合成aborted记request_declined，不标unknown；无未结算reservation。官方scorecard同9动作/0level。无独立管理工具调用、作者entry或研究child，checkpoint revision9保存decision capsule；未达到50动作/1800秒边界。[配对审计](../../tmp/self-harness-goal-20261007/b17-pair1-comparison.json)、[真实处理臂](../../runs/self-harness-goal-b17-pair1-treatment-ls20-20261008/provider-window-admission.jsonl)。
+
+| B17证据层 | 状态 | 实际provider/environment及边界 |
+| --- | --- | --- |
+| 功能正确 | 已测正常预留/结算/不足余额拒绝通过；相关负例未验证 | 真实yibu/qwen3.8-27b+官方ls20，9次完整请求；并发child、文件失败、未知usage及崩溃没有实际触发 |
+| 全链路可达 | 父final observer→准入→真实provider→结算→后轮可达；child/五类未验证 | 当前B17恢复源码零漂移；不把父预算路径称self-harness全链闭环 |
+| 自主采用 | 预算为机械runtime行为，不适用；组件采用仍未证明 | 两臂无作者/研究/装配/组件语义使用 |
+| 净收益 | 未支持，保留实验状态 | control13动作/250603与treatment9动作/143578，均0关；处理提前留96422额度，保守估算降低执行量，较短均值混有运行长度和路线差异 |
+
+保留预算完整性修复，但不称为效率优化完成；UTF8逐byte及图像/输出/margin保守估算可能过早停止，需要继续评估。一次配对含parent随机输出差异且顺序固定，不支持泛化收益。matched累计394181、完成首对1/6（ls20第1/3）；游戏累计921930/3400000，余2478070，下一配对阈值受该余额约束。guided/ordinary账不变且不扩样。源码冻结及行为验证只用真实ARC，不运行pytest/scripted。其他票据依赖、B/C/D继续开放。
+
+下一上下文断点的只读真实证据：control最后实际输入仍有约9组旧工具call/result、5903chars assistant说明、10404chars行动参数；旧tool结果多已缩至191chars，但“已保存的判断+旧参数+新task state/当前轨迹”重复驻留。首schema约13527 JSON chars（task_harness4423、create1885、auto_research3547、arc_action2975、arc_actions697），后轮多delegate/task_resource共1795；当前grid/PNG保留。记录来自response-confirmed payload分析，不是离线重放验证。下一变量考虑复用已有事务安全归档/精确ref与checkpoint，仅缩旧事务驻留窗口，不混改schema/模型/观察/预算估算；认知质量须继续真实检查，不能由存盘替代。
+
+B17配对摘要邮件已发送一次，SENT `1a117502c3a4df9a`，原件/回执在notifications/b17-pair1-email-{request,receipt}.json。
+
+### 2026-10-08 B18 ARC旧事务驻留：实施前命题与首个上下文对照
+
+真实机会：B17实际payload的旧结果已短化，旧完整行动参数和普通assistant说明仍多轮累积；默认24条recent message在后轮驻留约9组事务。已有checkpoint/反证capsule、当前完整grid/PNG和canonical observation window可提供近期行动事实，原始事务已有精确归档。窄命题：仅把ARC默认recent message窗口24→8，复用完整call/result安全边界与精确恢复，减少历史驻留和父input成本，同时后续真实父判断仍利用有效认识/反证/未完成实验。当前约6条生成投影+最新2条事务是8的设计依据；保护投影/ leased pages/最新事务可能使实际条数超过8，不把8设为硬删字段配额。
+
+负担/生命周期：runtime机械归档旧事务、生成可恢复ref，parent仍选择恢复/推理/投入。无新schema、提示、worker、管理步骤；显式环境设置优先，非ARC默认保持。保留最新完整结果、permission/CAS/budget检查、当前grid/native PNG、checkpoint科学判断和反证；不改预算估算法、模型、动作或研究提示。科学语义只由真实后轮判定，存盘不是认知通过。不足/丢失/重新重复被否定假设作为反证，撤回更短默认或仅保留明确安全投影。
+
+matched第2/6对、ls20第2/3对预登记：B18同源源码与两个全新官方ls20 root，实际qwen3.8-27b/off/output4096、text+image/advisory、普通任务，预算预留两臂enabled；唯一factor为`PI_AUTORESEARCH_CONTEXT_KEEP_RECENT`，treatment8先运行→control24，改变顺序以披露/减少时序偏差。每臂reported止损240000，50实际动作或1800秒先到，未知usage/完整性/终局/发送前准入提前止损；共享总余额2478070，所有失败/超额扣账，matched含首对394181，不重新分配阶段额度。没有额外ordinary/guided样本，仍是独立匹配context因素对照；初始frame/有效配置/source drift审计。
+
+主要指标levels与实际history首/末/峰/均，父子input/output/reasoning、耗时、动作及每请求成本分开。支持仅限实测较短历史、语义关键事实/反证继续影响后轮且任务质量无退化；两臂都0关、动作不足/认知证据不足则净收益不确定，不能把少花钱的早停当提高能力。负例：旧反证消失、最新call/result孤立/重复、不得恢复、子在途、不完整流；实际未发生项标未验证，不运行pytest/mock。两样本同样无组件作者或研究时不能完成05/12/13；14仍待完整采用评估，不提前升级为整套self-harness净收益。
+
+B18冻结656文件、SHA256 `457d91e3fc6b49e6b2294fcb2bf695a04af9aadfeb416b146588cd641970c422`。pair2 treatment先跑真实终态：12动作/0level、184.719秒含启动清理，reported188674=input182591+output6083、reasoning0/child0/unknown记录0，恢复源码零漂移。13实际响应请求/14组装，history chars首4645/末18056/峰19042/均15269.538，UTF8末18058/峰19046，每次1图。13原子reserve/settle，下一预留62587>余额51326拒绝，未结算0；1status(all)管理调用、12arc_action，checkpoint revision12。仍未达阶段边界，作者/研究/装配/组件语义使用0。当前matched已结算582855（394181+188674）、游戏1110604、余额2289396；待同源control24，结果邮件待两臂终态合并。
+
+真实认知审阅发现：动作5的reasoning及prediction说向上，但实际参数ACTION2（下），同一decision.knowledge明确写ACTION1=up、ACTION2=down；实际发送前输入仍有该映射及完整当前grid，故这一次不能归因于归档删除映射。动作6改ACTION1，并在6–8后轮记录“向下受阻”证据；动作7/8在受阻处重复左移，后轮9记录left no-op，10才显式识别cc与9块共同上移。已观察局部认识继续传递/修正，也有当前语义判断错误；角色身份/成功条件仍未解决。早期映射在后期短输入中退出驻留，未实际恢复，不据此称全部反证/认知连续性通过。证据来自`pi-events.jsonl`、实际provider captures及`audit_real_continuity.py`落盘结果，脚本只分析真实轨迹，不重放验证；尚待control真实对照。
+
+B18 pair2 control24真实终态：11动作/0level、177.312秒含启动清理，reported171280=input164734+output6546、reasoning0/child0/unknown记录0；11实际响应请求/12组装payload，history chars首4645/末31567/峰31567/均18470，UTF8末/峰31576/均18470.818，每次1图。11原子reserve/settle，最后82086预留>68720余额，发送前declined；无未结算预留。checkpoint revision11，无管理调用。两臂有效模型/初始frame一致、源码零漂移；官方scorecard同实际动作与0关。两臂独立实际输入审阅未见孤立tool call/result、缺失current grid marker或图像；这些检查不替代游戏解释正确性。[完整配对原件](../../tmp/self-harness-goal-20261007/b18-pair2-comparison.json)。
+
+结果：短历史treatment末值31567→18056（约-42.8%）、峰值31567→19042（约-39.7%）、均值18470→15269.538（约-17.3%）。但两臂都0关、都未达50动作/1800秒；处理188674总tokens高于对照171280（约+10.2%）、184.719秒高于177.312秒，动作12 vs11。每请求input均值约14045 vs14976，仅描述；处理额外1次status(all)及多一次动作，随机路线/输出混杂，不用较小历史证明总成本或能力净收益。保留8为**实验候选**（显式24可恢复，非ARC默认不变），不称稳定默认通过；不能按已存ref/实际读取最新图推断所有反证连续性。合理不使用、精准恢复/跨关、五类闭环、child/length均未发生，未验证。
+
+| B18证据层 | 状态 | 真实材料与结论边界 |
+| --- | --- | --- |
+| 功能正确 | 已测归档/完整事务/当前grid+image和预算后轮通过；负例未覆盖 | 真实yibu/qwen3.8-27b+官方ls20，两臂实际输入；恢复/跨关/并发未触发 |
+| 全链路可达 | 父归档→最终输入→后续决策可达；恢复及五类未验证 | 当前B18冻结恢复零漂移，不继承历史scripted矩阵 |
+| 自主采用 | 部分行动判断跨归档继续传递，完整self-harness仍未证明 | 0源码作者entry、0研究child、0显式装配/组件语义用法；行为差错与合理不使用仍需分开 |
+| 净收益 | 未支持/不确定 | 实际历史缩短，总token与耗时未下降，0关，阶段门槛未达；单对不足排除能力退化 |
+
+预算终账：pair2共359954，matched累计754135，已完成2/6对（ls20第2/3）；游戏累计1281884/3400000，余额2118116。guided165429、ordinary362320/3次仍封顶，不重开；下一完整配对最高480000阈值，全部重试/超额/未知按总账处理。没有活动付费进程，B17/B18四个launcher均终态，不重启它们。尚需P1首次作者语义复用、P2真实provider五类装配/使用、P4真实精准恢复/反证、P5研究child与反馈、P6/P7完整验收/采用/退休；当前不能完成Goal。
+
+进一步分类：本记录“作者entry0”指源码创作接口和显式组件流程；行动decision已由父提供并被runtime转换写入原生memory候选版本，是真实机械转换，不是五类全闭环。必须继续区分候选写入、精确显式装配、语义使用及任务收益。下一优先断点是机会识别→投入，及实际语义错误；不在同一未变化0关条件下原样扩样，不再用输入缩减代替创作/使能证明。
+
+B18配对摘要邮件已发送一次，SENT `1a1175eda0364b01`，notifications/b18-pair2-email-{request,receipt}.json保存原件与回执，不重复。
+
+### 2026-10-08 B19 清除按需followup残留creator-read前置
+
+源码断点：`pi_harness_capability_followup.ts`的capabilityFollowups仍生成“For skill/tool/subagent methods read the matching creator once”，与R21已实现的内容/权限/精确版本准入及按需手册冲突。carrierPreparation的准备说明也没有明确可选性。这是当前源码合同矛盾，B17/B18无作者分支，不声称它解释那些真实0关/不采用结果。
+
+窄命题/负担：删除这条隐含机械阅读义务，让已知正规合同的作者无需为流程付一次读取；两个既有followup说明改为手册按需可查，不改schema、native内容校验、creator_ref版本检查、装配或semantic trial。不增加提示/worker；runtime仍处理机械检查，是否查阅与开发投入由parent判断。历史显式版本检查保留。21票据重开implementing，第一项canonical全来源一致性重新未验，旧功能/诊断结果只属于原版本。
+
+验证边界/下一检查：新文案尚无真实ARC分支触发证据；功能正确、作者全链路、自主采用、净收益四层对此新分支均未验证。没有运行pytest/scripted/mock，不追加已封顶guided/ordinary。只在下一有价值且预算内的真实ARC匹配实验出现该分支时审查最终父输入、可不读而提交/装配/后轮使用；未出现则记录未验证，不将剩余对照额度伪作guided。当前仅本地源修正，非阶段验收，预算不变。
+
+B19仅准备冻结656文件，SHA256 `6d43d022104d18868522a5b44fd2328342ecee6abb5bc9abff935b4542b0b468`，源归档逐项hash核对；未启动provider，新增paid0。B17实际输入独立call/result/current-grid审阅亦未见问题，不据此升级为作者或五类闭环。当前票据11项历史功能/窄诊断交付，10项implementing（含重开21、真实探索13），3项planned；完整阶段仍未验收。
+
+宿主Goal当前核对为active、4604532 tokens/26032秒（工具快照），未完成；较此前4506896/24556快照新增97636 tokens/1476秒，包含期间开发与续跑上下文，不与游戏1281884混算。开发input/output/reasoning/cache及实际计费分项当前不可得，不填零。后续继续从README短入口和当前直接依赖进入，不反复展开整份计划/技能/旧矩阵。
+
+### 2026-10-08 B20 最小研究准备不得覆盖显式版本
+
+源码机会：R22的ARC/open admission把首次research-orchestration准备合进已授权start/enqueue/assign，但首次未读时无条件`params.authoring_method_ref=method.method_ref`，会覆盖父显式传入的过期/错误ref，后面的精确版本校验因此看不到错误。这是源码可见版本完整性缺陷，当前真实样本均未启动研究，不谎称已出现付费失败。
+
+窄命题：省略ref可内部绑定当前合同；显式ref必须在记录准备/创建研究session前验证，不能被默认化掩盖。复用现有method catalog、native校验和terminal error路径，不增加父字段/阅读/worker。即使需要旧非ARC确认路径，也先保留并校验显式版本。实现只改首次版本准备；不改研究语义、组件采用、预算或取消。新分支四层均未验证，真实ARC显式错误ref负例没有触发；不运行pytest/mock或从封顶guided借额度。下一真实出现研究准备时审查正确省略/显式引用，不将普通采用等同故意错误版本测试。
+
+B20准备冻结656文件，SHA256 `16e87d265c0d62d4c7278ba8f3f147866cd37275c38724d103eb2de9b57b031e`；新增paid0，新显式错误ref分支未验证。
+
+### 2026-10-08 B21 实际机会提示与按需准备合同一致性
+
+真实断点：B17/B18响应确认输入的`OPEN RESEARCH OPPORTUNITIES`仍含“Read research-orchestration before starting research”，而R22的ARC/open admission已在同一次授权调用内部准备当前baseline并继续；`auto_research_main_contract.md`仍描述无先读就只返回手册/retry，不区分ARC与旧非ARC确认路径。development brief/opportunity参考仍要求读creator一次，内容正确的直接发布已不要求。角色机会→识别→投入前可见成本被旧说明夸大；尚不证明这是唯一不采用原因。
+
+窄命题/减负：统一既有说明的“阅读是按需参考、必要版本由runtime检查”含义，使ARC父可以直接用既有最小start或已知合法candidate，不误以为需要先读/确认。删除重复手册前置，不新增schema/动作/提醒/worker；保留已有明确授权、权限、预算、CAS、精确引用、科学投入及显式装配。旧非ARC authoring_method_supplied确认回执仍如实描述，手册可读，显式引用错误不得被默认化（B20两臂共用）。只改准备合同文案与实际机会投影，没有改变研究调度/策略、作者执行或当前grid/PNG。
+
+matched第3/6对、ls20第3/3对预登记：control B20冻结 vs treatment B21冻结，独立官方ls20，真实yibu/qwen3.8-27b、adaptive only off/qwen/output4096、text+image/advisory、ordinary prompt；两臂recent8及预算预留enabled。顺序control→treatment，每臂reported阈值240000、50实际动作或1800秒先到，仍受未知usage/完整性/终局/最终准入提前停止。当前游戏1281884、总余额2118116、matched754135/2对；所有失败/超额计入，不开新guided/ordinary，不借配对额度做指定必须调用的能力探针。初态frame、有效模型、源码hash/drift、实际最终输入核对。
+
+判定：实际受影响提示出现在后续输入，旧读前置消失而合法操作可直接提出；行为由真实父选择，计机会/识别/投入/研究或作者/装配/语义/反馈与合理不使用分开。指标仍levels、实际history首/末/峰/均、父子总成本、时延/管理轮；前置文案修正和调用增加都不自动算净收益。若依旧无研究/作者，结束这个因素，不在ls20原样扩样，保留语义机会适用性与当前模型判断不足等替代解释。版本负例/五类/恢复未触发则未验证；不运行pytest/mock/scripted。完整P0–P7及05/12/13/14仍未验收。
+
+B21准备冻结656文件，SHA256 `5db4344b0a5f18ead1c104dd5e8562fee53ba400563ae2bfab49e9cf578a6c45`。两候选manifest对比仅9个运行时文件变化：机会提示1个TS+8个按需准备参考，另2个开发记录文件；研究first-ref保护、预算、近期事务寿命、执行/组装/调度均相同。源码比较是准备，不是行为验证。UTC2026-10-07T17:37:23启动pair3 control B20恢复源码，root`runs/self-harness-goal-b21-pair3-control-ls20-20261008`，协议、owner、日志及终态在tmp/self-harness-goal-20261007/b21-pair3-control-*；不重复启动。
+
+### 2026-10-08 B21 pair3 真实终态与预算结算
+
+已完成预登记的control B20→treatment B21独立官方ls20真实yibu/qwen3.8-27b配对；有效请求thinking=false/output4096，recent8和共享预留两臂相同。源码冻结同上，恢复后零漂移，初始frame SHA256均为`3529ecbab7c7f2c8e438232cabc8e542b3a2ec1918f489381e550849cc61b8e5`。两个launcher终态，不重启session18051/39015。[完整配对原件](../../tmp/self-harness-goal-20261007/b21-pair3-comparison.json)。
+
+| 指标 | control B20 | treatment B21 |
+| --- | ---: | ---: |
+| 实际canonical动作 / 完成level | 12 / 0 | 16 / 0 |
+| reported父子tokens（child为0） | 182524 | 178615 |
+| input / output（reasoning含于output，本轮0） | 173301 / 9223 | 171125 / 7490 |
+| 墙钟秒（含启动/清理） | 215.797 | 209.187 |
+| 响应确认请求 / 组装请求 | 12 / 13 | 12 / 13 |
+| history chars首 / 末 / 峰 / 均 | 4645 / 16317 / 27231 / 15490.167 | 4645 / 20058 / 20668 / 15346.167 |
+| history UTF8末值 | 16321 | 20064 |
+| checkpoint revision / 机会事件 | 12 / 2 | 16 / 3 |
+
+真实输入[文案可达审阅](../../tmp/self-harness-goal-20261007/b21-pair3-guidance-reachability.json)确认：control机会提示含旧“Read research-orchestration before starting research”；treatment同一位置说明“ARC start prepares research-orchestration inside the authorized call; the manual is optional”。其它baseline作者说明两臂一致；按需八份手册本轮未读取，不能声明八份都实际到达父。完整当前grid/native PNG及tool事务审阅无缺失/孤立，官方scorecard与canonical动作/0关一致。各有一次2图，其余1图。control12次arc_action，treatment11次arc_action+1次arc_actions产生16动作；不同路线/批次/关键帧不能归因于文案。
+
+两臂均12次reserve/settle、1次下一请求declined，无未结算reservation和unknown记录。control下次required65429>remaining57476，treatment65223>61385。均预算提前停止，未达实际50动作或1800秒，故**阶段未验收**。研究run/作者entry/显式装配/组件语义使用两臂仍0；本因素结束ls20扩样，不以调用增加/峰值缩短宣称净收益。
+
+| 证据层 | 状态与边界 |
+| --- | --- |
+| 功能正确 | 受影响机会提示在真实响应确认输入已一致；未读取手册及显式ref负例未验证 |
+| 全链路可达 | 提示投影→真实父后轮可达；研究/作者/五类装配使能/child/两类length未验证 |
+| 自主采用 | 未建立：提示可见但无研究或作者投入；适用机会与合理不使用仍需语义审阅 |
+| 净收益 | 不确定/未支持：两臂0关且门槛未达；末历史处理更长，峰更短；单对不能作因果结论 |
+
+预算终账：pair3共361139，matched累计1115274，完成3/6对、ls20 3/3封顶；guided165429与ordinary362320/3次继续关闭，其既有超阈值5429/2320全额计入。游戏总1643023/3400000，余额1756977。剩余仅另一游戏3对匹配额度（每臂240000阈值，同时受总余额约束），不转成强制创作/闭环guided探针。该结果摘要已发一次至授权邮箱，SENT `1a11780520233988`，notifications/b21-pair3-email-{request,receipt}.json保存原件；旧结果不重发。
+
+当前验收工具断点：`arc-harness-smoke`只有确定性provider模式，不能用于用户最新“只真实provider+官方ARC”验证；e2e显式validation flags属于guided。guided已封顶，尚未获额度重分配；不把强制探针伪作ordinary配对。先完成可独立推进的实现/具体协议，再在既有额度内选可判别普通对照；未触发分支继续未验证。P0–P7未完成，Goal active，宿主开发快照4959829tokens/27772秒，分项/cache/实际计费未知，与gameplay分开。
+
+### 2026-10-08 B22 pair4 ft09：短历史候选的跨游戏撤回检查（预登记）
+
+真实机会/窄命题：B18在ls20的history峰下降但总成本上升、两臂0关且均预算提前止，不足以支持recent8作为稳定默认；B21提示一致也未带来研究/作者投入。停止ls20扩样。剩余另一游戏匹配额度只用于一次可判别的ft09普通对照：同一B21冻结、唯一因素recent24 vs8，判断缩短历史是否在另一公开任务中保持判断连续性且减少历史/总负担；不是五类闭环探针，不指定研究/作者/组件调用。
+
+两臂真实现有yibu/qwen3.8-27b、thinking off/output4096、text+image、review advisory、final reported预留enabled；官方ft09各自独立root，同B21源码SHA256 `5db4344b0a5f18ead1c104dd5e8562fee53ba400563ae2bfab49e9cf578a6c45`。control显式recent24→treatment显式recent8（与B18反向运行次序），初态事后核对公开frame，不强设种子。每臂240000reported阈值/50实际动作或1800秒先到；未知usage/完整性/终局/准入可提前停，提前停不算阶段验收。投入前matched1115274/3对、gameplay1643023/3400000，余额1756977；所有父子/失败/超額累计，guided/ordinary额度继续关闭。
+
+主要指标：完成levels与响应确认最终history chars首/末/峰/均；另报UTF8、system/schema/current/image、父子input/output/reasoning、总墙钟、管理往返。负例审阅实际call/result、完整current grid/native PNG、已知控制及反证是否继续影响行动、精确恢复是否发生；未发生项未验证。不因较早预算停止/少请求声称效率，也不把不同路线或批次归因于候选。
+
+预定决策：只有达到阶段边界、质量无退化且成本/连续性有支持时，才考虑在已测范围保留短默认；不足以排除退化时将recent8留作显式实验配置，恢复既有默认24，并在真实ARC检查实际生效（运行中的control24可证明配置，不能冒充后续新源码已验证）。本对若再次无作者/研究，不追加相同采用实验；五类/两类length及新源码负例仍另行未验证，不把剩余两对当强制探针。14转implementing仅表示局部单因素匹配工作已执行，13前置未满足，完整self-harness净收益仍未验收。
+
+### 2026-10-08 B23 真实研究探针合同准备与缺失验收协议
+
+源码准备断点：`arc_auto_research_validation.md`仍在研究handoff后要求先读creator，和R21/B21的已知完整内容可直接提交不一致。已改成creator按需、显式ref仍检查，ARC start内部准备如实说明。不改研究授权、五类语义门槛、router/native/预算/版本/完整观察。B22两臂继续使用同一旧B21冻结，此修改不混入正在运行的匹配变量。该探针尚未运行，新分支功能/全链路均未验证；无pytest/scripted/mock、paid新增0，不发文档邮件。
+
+12的真实模型验收方案（具体准备，不是已实施/已授权重分配）：复用现有`arc-agi-3-e2e --auto-research-validation`真实父/child链与该probe文案；`arc-harness-smoke`新增显式real模式应直接调用同一runner，拒绝mock环境、脚本provider/自定义脚本扩展、复用已有final payload/ledger，不引入游戏schema/worker/确认。验收collector读取真实产物并区分缺失、失败、未验证；不得复用硬编码SMOKE_*的确定性validator去判真实父。
+
+| 缺失层 | 可证伪验收与现有产物 |
+| --- | --- |
+| 研究→候选→父作者 | 实际child broker/process/结构化报告、原生router handoff精确refs，父在当前候选发布；仅completed报告不通过 |
+| 五类精确装配 | 同freeze各kind的原生正确内容/版本、assembly CAS、后轮实际payload暴露；候选池写入不通过 |
+| 语义使用 | Tool代表值及至少一个对照与公开帧独立oracle一致；Subagent返回具体公开证据/结论而非completed；Skill步骤/Memory事实/System Prompt政策在后续真实父decision与action有对应证据，含反证与无效用法 |
+| 动作边界后轮 | 官方bridge canonical action、完整grid/PNG、后轮真实响应确认payload；无动作/只有组装字段不通过 |
+| 两类provider length | 分开运行Auto-Research和普通delegate；现有output envelope一次有界续接，实际provider stop=length后沿同invocation/session继续，保留partial/累积usage/最终语义；未遇length就是未验证，禁止伪造或无限重试 |
+| 负例/反馈 | 显式过期creator ref不得被准备覆盖、纯输入拒绝无永久pending、失败试用可放弃；真实输入refs/后续恢复/反馈审阅，未触发保持未验证 |
+
+拟议额度变更需用户批准：从**尚未使用的匹配额度**移出至多480000reported供三个guided真实接线样本（五类研究闭环、Auto-Research length、普通delegate length），每样本160000阈值，父子共享预留，每样本12实际动作/600秒先到；总3400000不增加，失败/未知/超额累积，余款不自动回流。它们是接线诊断，仍不满足50动作/1800秒阶段验收、不证明自主采用/净收益。没有授权前不发此类请求，不修改现有guided或matched账目；最终分配需在B22两臂结算后核对余额和剩余pair数。
+
+这份协议使需要批准的变化具体可审阅；当前仍可推进B22普通对照及实现/退休准备。B/C/D保持开放，研究到行动、父子总成本与认知连续性不能由文案修正关闭。
+
+### 2026-10-08 B24 真实Windows CLI摘要输出故障
+
+真实材料：B22 control官方ft09已落盘完整summary/scorecard/ledger，11动作/0关/185639reported，预算准入declined后，CLI `print(summary.read_text(...))`发生`UnicodeEncodeError: gbk ... U+2194`。这是终态摘要传输故障，不是游戏provider未知流、不是预算提前停止的原因。保留原失败日志，不重启该付费样本，实际usage仍全额计入。
+
+窄命题/实现：Windows CLI启动时将现有可reconfigure的stdout设为UTF-8，使模型生成的非GBK字符可输出；对没有reconfigure的嵌入流保持既有行为。复用标准流，无游戏提示/schema/worker/预算/版本变化。两臂B22仍用原B21冻结，未混入该因素。新输出分支未通过真实ARC验证，不运行独立打印测试/pytest；下一新冻结真实ARC终态须检查完整输出与落盘结果一致。四层：真实缺陷已观察、修复源码已准备，修复功能未验证，self-harness采用/收益不适用。无需因字符不可打印而追加付费重试。
+
+### 2026-10-08 B25 真实provider闭环证据采集入口实现准备
+
+依据B23具体协议，在`arc_harness_smoke.py`/CLI新增显式`--provider-mode real`，支持`research-closure`和`author-closure`，直接调用现有官方ARC/e2e/Pi/provider/broker路径。real模式不加载确定性provider、不接受mock environment，要求调用者显式传入正数action/time/reported/output边界，沿现有共享最终请求预留；完整grid/native PNG保持。没有常驻游戏schema、额外worker或父确认动作。
+
+该入口仅采集证据：原始真实runner summary与实际日志保留，五类语义/两类length标`unverified`，`passed=false`，CLI退出1。未实现最终独立语义oracle/审阅判定，不能被视作12完整验收器，更不能用真实HTTP成功或completed自动关票。默认确定性入口只为历史兼容保留，本Goal不运行它。新real模式未执行，四层功能/接线/采用/收益均未验证，不跑pytest/deterministic/mock，paid新增0。
+
+待批准的首个诊断具体命令（**当前禁止执行，guided配额已耗尽**）：`python -m autoresearch_pi.cli arc-harness-smoke --provider-mode real --case research-closure --root <新的隔离目录> --arc-root D:/arc-agi-benchmark/arc-agi-3-benchmarking --game ft09 --max-actions 12 --experiment-timeout 600 --max-reported-tokens 160000 --max-output-tokens 4096 --reasoning-policy adaptive --reasoning-levels off`。后两类length仍需按B23实现具体可判别场景/真实停止证据；未实现前不启动，未遇length不算通过。三个场景最大追加480000须从现有剩余匹配额度划转并受全局余额约束，不自扩额。
+
+### 2026-10-08 B26 撤回未证实短历史默认
+
+依据B18与B22已登记判定：ls20总成本未降/0关；ft09短历史仅2动作/0关却3管理查询+6次context归档读取，对照24为11动作/0关+1次归档索引读取。6次恢复包括两个archive索引、初始任务、两个旧行动参数、一个旧回执的首2000字符；没有完整恢复全部旧证据、没有后续环境动作，不能称认知恢复通过。另有status(section=memory)未知section一次拒绝，无永久pending重放；schema/索引可发现性是候选断点，不据单次错字段扩充wrapper。
+
+源码还发现recent窗口按所有投影后的message计数，常驻投影也占尾部；短8不代表8个行动事务。这解释早期归档的结构风险，但没有真实单因素证明它是恢复链的唯一原因。当前选择最小撤回而非引入另一上下文调度：移除`pi_external_benchmark_research.ts`的ARC默认8覆盖，复用lifecycle默认24（`PI_AUTORESEARCH_CONTEXT_KEEP_RECENT=8`仍可显式实验）。归档、精确refs、预算、CAS、当前grid/native PNG均保持，无新提示/义务/worker。
+
+四层：旧冻结显式24配置的实际行为已观察；新源码默认恢复尚未真实验证，不把旧freeze的配置实验冒充新候选通过；自主采用/净收益仍未支持。15转implementing仅局部退休决定，完整清理/最终交接未完成。后续真实新冻结普通对照可核对默认24和Windows UTF8输出；强制闭环依B23/B25待额度重分配，不从现有匹配普通协议偷借。
+
+### 2026-10-08 B22 pair4 真实终态结算
+
+两臂官方ft09真实yibu/qwen3.8-27b/off/output4096均終态，B21同源零漂移，初始frame均`c203116cbbaefc4a70044c5ea4bb7605e352865e9b92fb31ae977a5e2481ad93`。control24：11动作/0关/185639reported=input181912+output3727、142.140秒；treatment8：2动作/0关/174175=input172863+output1312、101.141秒。child/reasoning/unknown记录均0。[完整对照原件](../../tmp/self-harness-goal-20261007/b22-pair4-comparison.json)。
+
+响应确认请求12/11、组装13/12；history chars首4645，末/峰28685→26977，均20190.333→17122.091，UTF8末28697→26977。control11 arc_action+1 task_resource（仅索引），treatment2 arc_action+3 task_harness+6 task_resource；恢复内容和限制见B26，不因读取成功称认知恢复。control3次双图、treatment10次双图（其余单图），长驻同一动画/不同路线混杂披露。官方scorecard一致，实际tool pairing/current grid、预算ledger未见完整性问题。
+
+均下一预留拒绝（72415>54361、76793>65825），无未结算，未达50动作/1800秒；不是阶段验收。control终态CLI另有GBK打印故障见B24，不伪作provider未知成本/重启样本。两臂研究/作者entry/显式装配/组件语义使用0；功能/父归档接线仅限实际输入，精确完整恢复/负例/五类/两length仍未验证，自主采用未建立，净收益未支持/不确定。少token、少时间伴随少9动作与更多管理，不称效率改善。
+
+终账：本对359814，matched1475088（4/6，ls20 3/3、ft09 1/3）；guided165429/ordinary362320仍关闭。游戏总2002837/3400000，余额1397163。SENT `1a1178f946d1f351`一次，notifications/b22-pair4-email-{request,receipt}.json保存；不重发。B26 freeze656文件、SHA256 `9e61bd06be66c6fceb71398730f774b221a36165903ba9bb3de61f51a50afacb`，只做源码/归档完整性准备，不当行为验证。
+
+### 2026-10-08 B26 pair5 新源码默认与退休行为检查（预登记）
+
+现有授权ft09第2/3对（总第5/6）：普通任务，treatment新B26恢复默认24先跑，再control旧B21默认8；两臂均删除launcher对recent的显式设置，检查实际lifecycle日志。首个主因素是ARC默认尾部长度覆盖的撤回，非强制研究/作者探针。新源码另外包含UTF8终态输出修复（只影响摘要输出）及未调用的real-smoke分支/显式probe文案（普通任务不加载）；逐项披露，不归因到上下文收益。
+
+两臂真实现有yibu/qwen3.8-27b/off/output4096、完整text+image/advisory、最终共享预留相同；官方ft09独立新root，每臂reported240000阈值/实际50动作或1800秒先到，初态公开frame对齐、source drift检查。预算启动前按B22终账；原guided不重开，未知usage即停，不扩总额。目标：验证新源码默认24实际到达后续provider、完整事务/grid/PNG保留、CLI终态Unicode能输出，并报告levels/history/父子总成本。不是完整P2/P5或净收益确认；不足阶段门槛仍未验收。
+
+负例/决策：本对若仍无研究/作者、0关及早预算停止，不再原条件扩样第3个ft09对；保留或撤回以B22/B26预登记为准，精确恢复/两类length及real-smoke未运行保持未验证。待用户回答的guided划转不阻塞本对，但未收到允许前不发送显式probe。
+
+### 2026-10-08 B27 实际动作纯输入拒绝被宿主误作动作边界
+
+真实失败：B26 pair5 control第三个arc_action的原始参数JSON在position1332含额外尾字符，`installHarnessArgumentIntegrity`以`tool-call-arguments-error-v1`/failed/preflight/`execution_started=false`拒绝（isError=true），bridge仍只有2动作。`PiKernel.wait_for_agent_events(stop_after_progress_tools=...)`却只检查toolName匹配就调用fallback abort；ARC投影保留isError但丢弃纯拒绝事实。旧父没有得到正常修复续轮，第四个请求已最终预留52623，随后aborted、无响应头/usage，ledger依法记unmeasured并停新请求。动作工具完成事件3不等于canonical动作2，不能计错或把该断点归于budget reserve不足。
+
+窄命题：明确没有执行的参数拒绝不会触发已提交动作的宿主abort；错误回执原样留给原生下一轮修复，沿既有共享预算/取消/length边界受控。实现仅在ARC内部event投影保留已知标准错误format+failed+execution_started=false+匹配toolCallId的事实`preflight_rejected`，kernel排除此标记；不泛化为忽略所有isError（未知执行/已提交部分动作的完整性仍保留原边界）。没有游戏schema、提示、worker、新阅读义务或新重试配额。
+
+当前仅源码修复准备，最新真实失败日志保留，不能回填unknown为0、不能用无response证明HTTP未发/未计费，不重新启动旧样本。未运行pytest/scripted/mock/replay。新分支功能/全链路/自主采用/净收益均未验证。下一可证伪真实检查是同freeze新隔离ARC中明确无执行的动作参数拒绝→没有宿主abort→真实续轮修复→canonical动作及后轮完整观察；还需覆盖已提交动作/部分batch仍正确停止。显式制造错误属于guided，需要已询问的额度划转且先解决unknown结算，不能伪作剩余ordinary。02既有task_harness_create拒绝窄交付不覆盖这条action宿主路径；24/12保持implementing，B/C/D开放。
+
+### 2026-10-08 B26 pair5 终态、真实输出与未知成本停止
+
+实际treatment B26→control B21均终态，冻结源码零漂移，初始frame同B22。两臂未设置recent，实际日志值分别24/8，证明新源码恢复默认已生效。新版本11动作/0关/166.875秒、known173444（SDK input160589+output5431+cacheRead7424；reasoning0，cache不重算）；旧版2动作/0关/42.750秒、known35994=input34996+output998，另1条unmeasured。child均0。新11次arc_action类（10 single+1 batch单动作），旧3个action工具完成事件含1次纯拒绝，canonical仅2，不计作3动作。[原件](../../tmp/self-harness-goal-20261007/b26-pair5-comparison.json)。
+
+新版本响应确认11/组装12，history chars首4645/末峰33052/均20936.727，UTF8末33094；旧响应确认3/组装4，首4645/末峰12045/均9148。新1次双图、其余1图，旧确认请求均1图。双方已确认输入call/result/current-grid无问题，官方scorecard一致；新ledger无未结算，下一预留78722>66556余额拒绝，未达阶段门槛。旧最后admitted4/response3差距对应1次aborted/unmeasured，不能用取消流的0 usage当0计费。最后请求52623是保守预留，不能当真实usage或已知成本上界。
+
+新版本stdout实际含`U+2194`（↔，GBK不可编码），UTF8输出与落盘summary JSON完全一致，未再出现UnicodeEncodeError；CLI退出1来自结果未passed而非打印故障。[源比较/实际输出审阅入口](../../tmp/self-harness-goal-20261007/inspect_b26_preparation.py)。B21→B26仅4个运行时文件差异：default尾覆盖撤回、CLI摘要UTF8、未调用real-smoke分支及未加载显式probe文案；后两者不继承本普通运行通过。
+
+| 证据层 | 当前结论 |
+| --- | --- |
+| 功能正确 | 新默认24、原非GBK字符终态输出、完整事务/current grid/PNG、正常父预留/结算真实可达；B27纯拒绝修复/并发/崩溃未验 |
+| 全链路可达 | 普通父context→provider→action→后轮已验；real-smoke新分支、研究child、五类作者/装配/反馈和两length未验 |
+| 自主采用 | 未建立：研究/作者entry/显式组件语义使用0；旧父纯拒绝→错误abort断点已定位，不是成功修复 |
+| 净收益 | 不可判/未支持：两臂0关、门槛未达，旧臂中断且成本未知，不能把历史更短/花费更少当改善 |
+
+费用终账：pair5 known209438+未知；matched known1684526，已尝试5/6对（第五组非有效收益配对；ls20 3/3、ft09尝试2/3）。guided165429、ordinary362320保持关闭。总gameplay known2212275/3400000，名义余额1187725**尚未扣未知、不得据此发新请求**；全局新付费停止，终态样本不重启，不扩额度。该结果SENT `1a1179ee186ff48f`一次，notifications/b26-pair5-email-{request,receipt}.json已保存。先前划转guided480000的问题仍待用户回复，即使允许也先要解决未知usage结算。
+
+B27准备冻结656文件SHA256 `fdf663db5655c9b37c2896d363dc46a336fd65368bb9b58291f0e52d5d9ab63b`，仅源码归档hash准备。当前无活动付费进程；B26两launcher session46374/28366终态，不重启。下一验证必须真实新隔离ARC的纯拒绝→续轮修复和已提交边界对照；需要合法实验额度和明确成本账。当前仅首次出现这项外部成本阻塞，不提前将Goal标blocked或complete，P0–P7及B/C/D未完成。
+
+开发上下文减负：README短续跑摘要3183→1339chars（缩减时快照，后续增量按最新状态更新），去掉过时预算/在途猜测并引用主§7历史；开发记录不进Pi gameplay。不用该字符缩减声称游戏净收益。宿主Goal最新工具快照active、5147436tokens/30125秒，相对本轮起点4959829/27772新增187607tokens/2353秒；开发input/output/cache/实际账单不可得，与本轮新增gameplay known569252+未知分开，不填0。
+
+### 2026-10-08 B28 纯拒绝修复的完整性收紧；成本阻塞第二轮
+
+上一轮分类为progress：真实ARC新源码默认/Unicode已观测，B27由实际动作参数拒绝→宿主误abort失败定位并改变源码。本轮重新核对B26两个launcher终态、原ledger末尾，未知reservation `e588067d-7633-4423-8b9f-55e6e8995a86`仍仅unmeasured，无新增真实usage结算；未启动/重启任何付费运行，邮件状态未变化不重复发送。guided划转仍未收到用户授权。此为同一成本阻塞连续第2轮，Goal不complete、不提前blocked。
+
+实质源码审阅机会：B27纯拒绝标记应仅代表严格已知的执行前拒绝，不能由缺失ID或与已提交动作证据矛盾的回执触发。继续同一个主要因素，在ARC内部投影补充非空string toolCallId、phase=preflight以及native arc_action_boundary=true优先；非list content保持正常事件投影而不进入解析。保留已知标准format/failed/execution_started=false/同callId检查。kernel只排除这项内部事实，不泛化为跳过所有isError。没有新增父schema、提醒、worker或管理往返，已提交/部分batch/未知副作用仍走既有边界。
+
+检查限于源码审阅、diff格式和归档hash准备，没有调用修改函数进行离线重放/fixture，也未跑pytest/scripted/mock；新分支功能、真实全链、自主采用及净收益仍全部未验证。后续真实ARC负例需覆盖纯拒绝后的合法修复、缺失/不同callId、执行阶段错误、已提交动作与错误文字并存、部分batch；显式故障探针先要合法guided额度和成本结算，不能挪用普通协议。
+
+当前预算reader遇到unmeasured会永久维持fail-closed状态，没有现成可自动清除的晚usage结算入口。未得到真实provider凭据前不设计猜测释放或删除旧记录；收到可靠凭据后需精确绑定该调用、保留原未知事件并安全结算，不能直接把52623预留当reported。已知gameplay2212275+未知维持原账，名义1187725不作为可支配余额。尚未触发的五类/研究child/两length及50动作或1800秒验收不能靠继续扩建未验证机制补齐。
+
+B28准备freeze656文件SHA256 `e9e1d93d3b03270fe9c236793811c1c216b95f48abb0df0a08f972de25c14875`，归档逐项hash一致。两个原launcher PID48884/43568当前不存在，实际终态记录一致，无本Goal活动付费进程可等待。下一轮需重新核对账与授权；若同一成本阻塞仍持续且确无可独立推进工作，按第3轮阈值将Goal设blocked，不通过空状态重述继续消耗开发上下文。
+
+### 2026-10-08 B29 Goal成本阻塞第三轮审计
+
+上一轮为progress：B28收紧同一纯拒绝修复的phase、callId和已提交边界优先，完成源码冻结；不属于等待活动进程。本轮重新读取原ledger、两launcher终态与PID状态：未知reservation `e588067d-7633-4423-8b9f-55e6e8995a86`仍无真实usage结算，原进程均不存在。没有新的guided划转授权，也没有活动作业可等待。此为同一真实成本阻塞连续第3轮（首次B26未知停止→B28→本轮），不是从首次就blocked。
+
+完成余下独立交接纠正：09/15票据更新为B26新冻结实际默认24/UTF8已观察，不能继续写该窄路径未运行；同时保留精确恢复/认知、整套采用/净收益、B28新分支未验证。23已有末位observer修复历史记录，未重复执行或冒称真实child反馈闭合。主账known2212275+未知、名义1187725及已封顶guided/ordinary不变；源码仍B28，未增加机制/付费请求/邮件。
+
+不能继续的具体条件来自Goal prompt原第82行：“缺失/取消流不填零，结算不清时停止新增付费请求”。当前没有可靠provider usage或未计费凭据，不能把预留52623/SDK取消的零usage当实际成本；没有许可将余下普通对照改成强制五类/两length/纯拒绝故障探针。预算/权限是必要边界，不能删除以绕过阻塞。独立必要局部修复/交接已完成；剩余真实修复验证、五类/child/两length/自主采用/质量门槛及相关后续实现需外部结算、合法实验额度与真实反馈，继续猜测扩建不能替代它们。
+
+blocked审计通过，Goal工具实际返回blocked、5191024开发tokens/30995秒；保持原全部P0–P7目标和24票据，不设complete、不把停止当阶段验收。解除条件：（1）该取消请求真实usage或provider未计费凭据，精确绑定原请求、保留历史未知事件安全结算；（2）显式接线诊断额度方案B23/B25获用户允许（已提出至多480000从剩余matched划转，总3400000不增加），或另有符合原协议的可判别真实实验。恢复后从B28纯拒绝→修复续轮/已提交边界检查开始，不重启旧样本。
+
+### 2026-10-08 B30 直接创作默认装配：实施前命题
+
+状态：设计/待真实验收。用户本轮授权简化或暂时 bypass 阻碍 self-harness 的高级机制，唯一任务验收仍为真实 ARC 实际 50 动作或 1800 秒。
+
+**问题与命题：** B21–B26真实官方 ARC/yibu/qwen3.8-27b记录均没有非Memory作者/语义使用，不能因此断言某一门禁是原因。当前源码可确定的负担是：`task_harness_create`省略assembly只发布候选，Agent仍需另做选择；初始工具说明没有直接给出已有纯源码格式。`assembly:true`照搬先前selected refs，已失效版本会在新写入前被严格校验拒绝。窄命题：把直接create定义为“创作并安装”，由runtime完成精确版本合并及既有失效选择清理，减少一个管理决定/往返，并使有价值的新非Memory组件在后续父轮可用。是否提高采用/解题仍待真实数据；无用组件增多、历史膨胀、level下降都可推翻收益预期。下层本来继承省略的prompt_contributions，无贡献丢失bug，不据此改动。
+
+**设计与成本：** 复用native publication、CAS assembly、动态Pi tool/skill/subagent及prompt投影，不增加worker、review、enable或action gate。直接create省略assembly与true均请求安装；false明确仅暂存。`task_harness(change)`省略assembly仍保留原pool-only语义，旧显式assembly对象仍严格拒绝错误/过时引用。安装捕获当前revision，保留所有仍有效的已选版本及有效prompt贡献，失效引用/贡献列入回执；不改选别的候选、不自动升级版本或执行环境动作。源码/内容、权限、预算、精确版本、取消、部分提交以及完整grid/native PNG合同保留。Agent选择投入和具体内容，runtime推进发布/装配/使能；语义使用、反馈、保留/修订/撤下仍由Agent基于任务效果决定，失败纯trial不重复发布。自动action Memory捕获路径不变。
+
+**运行前协议：** 唯一新增行为验证为独立官方ft09真实provider ARC运行；新源码默认安装为主要因素，普通任务不强制创建/调用或规定组件数量。记录真实动作、elapsed、level、响应确认最终history首/末/峰/均（字符与UTF8分列）、system/schema/current grid/images、父子reported及未知、管理回合和author→assembly→later use→feedback。达到50实际动作或1800秒先到才算任务验收；更早预算/终局/故障停止保持未验收。负例待真实遇到或授权真实诊断：assembly=false暂存不能执行、trial+false零写入拒绝、显式过期引用拒绝、自动合并过期引用不阻塞、仍有效prompt贡献保留、CAS竞态、取消与已提交失败、后轮正确新输入输出。最小基线/重复对照仍需同预算独立运行；单次不证明因果净收益。
+
+**预算和当前证据：** 不进行pytest、mock、scripted provider或replay新行为验证；只做源码审阅和diff/hash准备。当前known2212275/3400000+未知1条不变，52623为预留而非真实成本。新增付费运行仍受原“结算不清停止”约束；须先得到原取消请求可靠usage/未计费凭据并安全结算。本轮拟将原未用matched余额划转到一次最多900000reported、50动作/1800秒的普通验收（不增加总3400000），该划转尚未授权，不能启动。前述480000guided方案未获答复且本轮不以短探针代替用户唯一验收。功能/全链可达/自主采用/净收益均未验证；B/C/D继续开放。
+
+**交付决定：** 先完成可审阅的窄实现和合同迁移；未得到真实验收前保持候选状态，不宣称优化有效或全部阶段完成。下一可证伪检查为新组件从一次create到实际后轮schema/投影及语义结果，最终能力/效率仍按同一完整运行量化。
+
+**B30实施与授权更新：** 已实现直接create默认发布+装配、false仅暂存、自动合并时清理已不合法的旧选择及失效source/dependency贡献并给出applied回执；显式对象和change仍严格校验/保持兼容。三类creator模板统一direct create，prepared ARC grid模板只适用于Tool，避免把Skill/Subagent错误改写成Tool。初始候选说明直接披露既有task-pure-python-v1，常驻指导改写为一次创作/安装而非追加新提醒；没有新schema工具、worker或action gate。SKILL.md变更会产生新的creator精确hash，旧显式引用继续拒绝；未引用不强制读手册。源码/diff检查不等于功能或接线通过。
+
+用户本轮异步答复“允许”，已授权将未用matched额度划转到本次最多900000reported普通验收，总reported3400000不增。没有收到原unknown的usage证据，正在单独确认是否允许保留未知成本继续本次；该旧停止条件的豁免尚未获答复，不启动付费。历史ordinary三次仍如实计数，本次标记为新授权的普通验收，不伪装matched第六对或guided。旧五对不能与本次不等预算样本作净收益比较。
+
+随后用户明确答复“允许保留未知并继续本次验收”，豁免仅适用于B26旧reservation `e588067d-7633-4423-8b9f-55e6e8995a86`及这一次B30验收。保留原unknown事件，不制造usage、不删账、不把52623当实际成本或成本上界；本次新的unknown仍停止。运行前known总2212275、名义remaining1187725未扣旧未知；900000阈值可容于已知reported余额，不能声称包含旧未知的实际计费成本已受3400000验证约束。CLI/source冻结后按普通ft09/text+image/qwen/off/4096/advisory执行，不注入强制组件任务、Goal或开发模板。
+
+B30冻结656文件，archive SHA256 `14d8878692cdd5d7f0ff16c130f29ab273aa7f0b1ad1142727e4dd8879eb3932`，源归档核对通过仅代表准备。首次新root `self-harness-goal-b30-installed-create-ft09-20261008`在bridge_readiness失败：官方SDK make返回None后.info AttributeError，20.438秒、0模型请求/0动作，无reported ledger；不得当0成本完整游戏样本。官方只读metadata返回ft09-0d8bbf25可用，另一次ls20请求SSLError，不能确定首次网络错误的具体类型。依原Goal同freeze一次有界基础设施重试，在全新root `self-harness-goal-b30-installed-create-retry1-ft09-20261008`启动；不重启旧root、不改TLS/认证/环境、不扩额。两次protocol/launcher/log在tmp/self-harness-goal-20261007，首次失败保留，后续结果在此增量记录。
+
+### 2026-10-08 B30 真实重试终态与直接路径断点
+
+官方 ft09-0d8bbf25 / yibu/qwen3.8-27b / off / text+image，冻结源码无漂移。新隔离 root `runs/self-harness-goal-b30-installed-create-retry1-ft09-20261008` 已终态，不重启。含启动/清理 elapsed 253.641 秒，canonical 实际动作 **10**，completed levels **0**；提前预算准入停止，未达到 50 动作或 1800 秒，**任务未验收**。父 11 次响应、181430 reported，child 15 次响应、605955 reported；合计 **787385** = input 669498 + output 7807 + cache_read 110080（reasoning 0，不重复相加），本次 unknown 0。父自主一次 Auto-Research，child 持续读证据页而无 report；作者 create/change、非 Memory 组件、装配、非 Memory 语义使用均 0。自动 action Memory 的 10 个版本不计为父创作组件。
+
+响应确认的 11 个父请求 history chars 首 4648、末/峰 **38233**、均 23028.363636；UTF8 bytes 首 4648、末/峰 38315、均 23041.272727。口径排除 system/developer、当前临时 ARC 文本和 typed image，schema 单列；每请求 1–2 图。第 12 个 prepared history 39749 未发送，不能计为最终请求效率。child 最后 prepared history 89964 chars、tool results 72215 chars，尚不能当响应确认输入；真实调用记录表明分页读取 pre_action_state 原始证据，包含动画全帧，未完成语义交付。
+
+预算拒绝保留：父准入时 known 713011、child 在途预留 124970、剩 62019 < 父需 82602；child 最后结算后 known 787385、剩 112615 < 下一需 125428。研究开销及预留挤占父行动，不能据此删除必要预算检查。总账现为 **known 2999660/3400000 + 历史 unknown 1**，名义余额 400340 未扣未知。B30 一次性 900000 划转及保留旧 unknown 的豁免已使用，不自动授权另一付费样本。
+
+产物：[响应确认审计](../../tmp/self-harness-goal-20261007/b30-installed-create-retry1-audit.json)、[成本拆分](../../tmp/self-harness-goal-20261007/b30-real-cost-audit.json)、[生命周期](../../tmp/self-harness-goal-20261007/self-harness-goal-b30-installed-create-retry1-ft09-20261008-lifecycle-audit.json)、[child 实际调用](../../tmp/self-harness-goal-20261007/b30-child-calls.json)。结果已一次邮件发送到 595819371@qq.com，SENT `1a119304c10961c7`，notifications/b30-real-email-{request,receipt}.json 保存回执，勿重发。
+
+四层分开：真实父行动链与预算结算有观察；B30 默认 create/清理新分支未被调用，功能与组件全链未验证；自主作者采用未建立；任务净收益不支持。本样本直接断点在投入研究→证据读取→未交付，不能推断直接作者链不存在。用户最新要求暂时 bypass Auto-Research、保留模块供后续开发；下一因素改为隔离研究与直接 Self-Harness。
+
+### 2026-10-08 B31 可恢复 bypass 与直接 Self-Harness 分析：实施前
+
+**问题与命题：** B30 的研究 child 占 reported 约 77%，无报告/作者/装配/语义使用。ARC adapter 当前硬编码 autoResearch=true；Self-Harness 机会刷新及自动工具暴露还会独立投影研究入口。窄命题：仅在 ARC 安装入口暂时不安装 Auto-Research，并以真实注册可用性约束研究机会/续跑/交接投影，使父可以直接创作、装配和使用组件，且不再承担这条研究启动/读页链。若绕开后仍暴露不可执行研究工具/强制研究前置，命题被推翻；若没有作者或任务改善，则采用/收益仍未支持。
+
+**设计与成本：** 复用 installTaskLocalSubagents 的 autoResearch 选项，ARC 暂时默认 bypass，`PI_ARC_AUTO_RESEARCH=enabled` 在新进程恢复原功能。保留 Auto-Research 源码、worker/session/report、历史资源及普通 delegate_task/作者 Subagent；不修改 child 读页 lease 或研究内部架构。研究提示与机会以 getAllTools 中实际注册 auto_research 为准，不重复分散读取配置。移除这次实验的研究 schema/自动机会/续跑提示；不新增 worker、管理回合、阅读义务或行动门禁。版本/CAS、权限、共享预算、取消及完整 current grid/native PNG 保留。旧终态运行不迁移/重启，模块恢复只适用于新的隔离进程。
+
+**生命周期与首次获益：** 父判断重复计算/策略/独立问题是否值得投入→直接 task_harness_create 写原生组件→runtime 合并精确装配并使能→父后轮读 Skill/调用 Tool 或 delegate_task/按 scoped prompt 决策→真实结果/行动反馈→父保留、修订或撤下。Memory 自动记录不等于作者创作。研究不再是任何直接转移的前置；机械装配由 runtime 执行，内容和价值判断仍由父负责。源码审阅逐类标明真实入口、执行主体与尚缺证据，发现新断点先记录再独立改变因素。
+
+**运行前协议：** 行为验证仅真实官方 ARC/Pi/真实 provider；不跑 pytest、mock、scripted provider、deterministic smoke 或行为 replay。拟新隔离普通 ft09，保持 B30 模型/off/text+image/4096/advisory 和观察合同；主要变量为 Auto-Research bypass，不强制组件类型/调用数量。唯一任务验收仍实际 50 动作或 1800 秒先到；提前预算/故障停止即未验收。主要指标 completed levels 与响应确认最终 history chars/UTF8 首末峰均，另报父子总 reported/未知/管理轮。B30 仅探索性比较，单次且动作/预算不齐不能声称因果净收益；完整 Auto-Research 五类及两 length 矩阵仍另待验收，不能以 bypass 声称研究链闭合。
+
+**预算与负例：** 本轮先完成可审阅代码/分析；没有新付费授权，不复用 B30 一次豁免或余下 112615 作为新样本额度。新真实运行需核对明确授权与 unknown 规则。负例包括 bypass 下未注册 auto_research 的 enable 拒绝、普通 delegate/已装配 Subagent 可达、恢复 enabled 后研究注册/机会/worker 生命周期仍在、旧研究记录不触发不可用入口；直接作者链包含暂存无使能、CAS 错误拒绝、过期引用、trial 失败已提交保存与后轮动态工具。
+
+**当前证据与交付决定：** 源码/diff/hash 是准备，四层行为均保持未验证，B/C/D 不关闭。本轮交付可恢复 bypass 和直接转化/装配现状分析；待真实验收才判断保留及任务净收益，不增加研究内部修复。
+
+#### B31 当前直接转化/装配链：待真实 ARC 验证的源码假设
+
+**2026-10-08 用户再次明确验收口径：唯一依据是 ARC 真实运行的观察结论。** 本节只列源码提出的检查方向，不是已验收的功能、运行发现或优化结果；语法、diff、接口说明和 exposure 日志均不能替代真实 ARC 中的执行和后续请求。B31 尚未产生真实运行，全部行为结论保持未验证。先运行当前候选，再按真实观察决定是否修复下一假设，不以继续源码分析代替运行。
+
+当前不是“所有组件最终只能变成 Memory”。[semantic router](../../demo/pi_harness_protocol.ts) 将 fact/plan 存 Memory，procedure→Skill、computation→Tool、role→Subagent，显式 component=system_prompt→独立原生 overlay。五类 component 别名会补齐机械 execution/reuse/reasoning 默认值；作者无需先学完整研究 delivery schema。若把策略只写成 plan/task_policy，当前仍会落为 Memory 的 task_prompt 投影，这是既有路由语义；想产生独立 System Prompt 要明确 carrier。纯 Python source 被编译为有界表达式 IR，由原生动态 Pi Tool 执行，不是仅保存代码文本，也不是执行任意 Python/新加载任意扩展文件。
+
+| Carrier | 父作者内容和原生转化 | 装配后的真实执行入口 | 成功证据及当前缺口 |
+| --- | --- | --- | --- |
+| Tool | name/description/program 的 source 经 compiler/preflight，task_tool 写版本并 pi.registerTool | assembly 选精确版本→applyAssemblyToolSurface 激活动态 exposed_name；可在 create 中 trial 原生 executor，后轮继续调用 | 必须审实际语义 input/output、task-tool-events 与后轮动作；B30 未调用，新默认未验证 |
+| Skill | component=skill + instructions→task_skill，写 task-local SKILL.md/记录 | assembly→ARC scoped read 工具激活→索引给精确路径→父读取并按流程决策 | 读取事件和语义采用分开；ARC 默认索引不展开正文，读取仍需一次父决定。未证明净收益 |
+| Subagent | component=subagent + instructions/tools→task_subagent，存 native 定义 | assembly→delegate_task 激活；agent_name 命中定义，校验精确版本/许可，普通 broker/process 执行并返回结果 | 普通 delegation 不在 adapter.autoResearch guard 内，bypass 保留；需真实语义返回及父下一行动，不能以 completed 代替。新 bypass 未运行 |
+| System Prompt | component=system_prompt + content/scope→task_system_prompt，独立版本 | 源码通过 before_agent_start 渲染 selected/eligible overlay 加入 systemPrompt | **时序假设，非真实发现：**同一 prompt 内先 create 再工具续轮可能不会刷新 overlay；下一 ARC action boundary 后新 prompt 才重建。必须审真实最终请求验证是否发生，不能把 exposure=true 当即时生效 |
+| Memory | 明确 fact/plan/atom，scope 自动绑定→task_memory | selected/eligible 的知识、task_prompt 投影进入 context；自动 action 捕获仍只落池 | 存池/索引/注入≠实际利用；必须与父创作非 Memory 分开计量 |
+
+主要公共入口在 [Self-Harness](../../demo/pi_task_local_self_harness.ts)：normalize direct create→normalizeSemanticCandidate→preflight→publishParentChanges→applyFacadeChanges→nativeHarnessExecutor→applyParentAssembly。发布前验证 CAS/保留引用，发布后将写出的精确 refs 合入装配；回执给 use entry。纯 Tool trial 在同一次 create 内执行，失败回执保留已提交版本，不重创。显式 false 仅暂存且 trial 被预检拒绝。create 没有强制研究/creator-read/review 前置；[admission](../../demo/pi_task_execution_admission.ts) 当前是无本地配额的兼容 hook，不能把历史调用 gate 当当前阻碍。
+
+实际安装的 Pi 源码 `C:/nvm4w/nodejs/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js` 的 _installAgentNextTurnRefresh 从 agent.state.tools 更新工具快照；setActiveToolsByName 和动态 registry rebuild 提供预期的下一轮使能实现。其 systemPrompt 沿用 _systemPromptOverride/base，before_agent_start 在 prompt 预备阶段触发。项目 runner 的行动边界会重新 prompt，因此待验证的 System Prompt 假设限定为“同一管理工具 loop 的应用延迟/曝光口径”，不能断言永不使能或已经发现真实故障。这次未触发真实路径，不能凭源码确定实际生效/失败。
+
+还有两项需要按真实失败选择下一因素：① update 仍走 change；若新 assembly 保留将被写入 supersede 的旧 selected ref，后置严格校验可能失败，回执要求保留写入、单独修复选择。新 create 清理解决的是调用前已失效引用，不自动解决本次更新产生的冲突。② active Jev routing 会在 context 重选组件；B30 明确 disabled，本轮直接路径继续 disabled，不能将自动路由问题归于 B30。它是可选路径，现无依据新增 router/worker 来提高创建次数。
+
+host/grid 暂时保留：完整 current grid/native PNG 是用户观察合同；host 将获授权数据绑定到纯计算、校验输入/输出/资源和执行上限，是 Tool 可真实运行的实现。可以删重复说明或机械必填，不能以关闭校验/删 grid 换取较短上下文。本次仅 bypass 有实际失败证据的研究投入路径，不删除这些完整性边界。
+
+#### B31 实现结果、检查与后续可验证顺序
+
+已修改 [ARC 安装入口](../../demo/pi_arc_task_subagents.ts) 默认暂时 bypass；新进程显式 `PI_ARC_AUTO_RESEARCH=enabled` 恢复，其他值或未设置均不安装研究 lifecycle。没有删除或改造 Auto-Research/worker 源模块，没有取消共享 Subagent installer。Self-Harness 根据实际注册 auto_research 决定是否刷新机会、恢复/投影交接、反馈 research handoff、研究续跑及常驻方法发现；不让已 bypass 的 worker 承接 periodic review。开放 conversion intents 时只激活 registered 控制，修复无条件加未注册 auto_research 的路径。父作者 intents/内容/装配/普通 delegate/read/反馈保留，历史研究资源仍可按精确引用手工读取。
+
+同时对齐 B30 遗漏的两处旧合同：read_method 回执不再误称省略 assembly 只入池；start 的 discovery 包含直接 create 和已有纯 source 格式。未新增提醒/字段/门禁。恢复研究完整矩阵时必须显式开启上述开关；此次 bypass 不能作为 Auto-Research 五类/两 length 接线通过的证据。
+
+2026-10-08 源码检查：git diff --check（限本次相关文件）及 node --experimental-strip-types --check 对 ARC adapter、Self-Harness、baseline methods 全部退出 0。这些仅格式/语法检查，没有执行业务函数、fixture、pytest、deterministic provider 或行为 replay。本次没有新真实 ARC、付费请求或邮件；B30 终态与账保留。
+
+| 证据层 | B31 状态 | 依据/剩余工作 |
+| --- | --- | --- |
+| 功能正确 | 未验证 | 语法/源码检查通过；注册可用性、恢复与普通 Subagent 的行为尚需真实 ARC |
+| 全链路可达 | 未验证 | 有原生执行源码入口；五类后轮/语义与完整研究矩阵未验，bypass 不代替 |
+| 自主采用 | 未验证 | B30 作者 0；新版本尚无普通运行，不以少研究/多组件计为成功 |
+| 净收益 | 未验证 | completed levels/最终历史长度仍只来自 B30 失败样本，不能报告 bypass 后提升 |
+
+后续按一个主因素迭代，开发人员接入顺序：
+
+1. **直接路径隔离验收。** 合法新预算/unknown 授权确认后，冻结 B31，在新的普通真实 ARC 跑 50 canonical 动作或 1800 秒。不要给“必须创作”的 probe。审确认请求中无 auto_research/研究机会、父作者→native→assembly→后轮 use/反馈的真实漏斗，能力/效率照原口径计量。未达到门槛或仍 0 作者如实失败，不能靠 smoke 替代。
+2. **定位最早未发生的直接转移。** 未投入先审实际可见候选/schema及任务复用机会；投入失败先审拒绝/源码/输入绑定；已写未装配先审 CAS/旧版本；已装配未用先审下一请求 tools/read/agent_name；有语义结果未推进先审是否误判任务和组件价值。仅调整那个断点，合理不使用、放弃、负收益都保留。
+3. **优先修 System Prompt 时序与证据。** 在有明确授权的真实 ARC 内捕获同 prompt create/assemble→工具续轮→最终 system payload、新 action boundary 后 prompt、update/retire/过期各状态。只有旧 override 确实滞后时，选择 Pi 每轮 system 刷新 seam 或已有 before_provider_request 的 provider 原生 system 字段投影；复用 overlay renderer，保证 base system/角色优先级/预算 observer 顺序，不用 user-message 冒充 System Prompt。先单因素修复再真实验收，避免一口气新建调度框架。
+4. **修订及长期效率。** 真实命中版本冲突时简化 update+assembly 的机械替换，保留 CAS/部分提交恢复；真实历史增长时优先压缩重复回执/恢复工作集，维持当前 grid/PNG与反证。每项独立冻结，在普通真实 50动作/1800秒样本上核查关数与响应确认历史；收益需要相近预算独立对照，不能跨不同阶段在线前后直接归因。
+5. **最后恢复研究。** 直接非 Memory 创作、装配、语义贡献有真实证据后再 enabled 接回 Auto-Research，另验 core conclusion→parent authoring 与原五类/两 length 矩阵，研究架构持续开发，不把暂时 bypass 当删除/研究完成。B/C/D 对应质量问题保持开放。
+
+#### B31 真实 ARC 唯一验收的启动准备（2026-10-08，未启动）
+
+用户再次要求只以 ARC 真实运行的观察结论验收。本次先把源码推断降为待验证假设，不再称运行发现；不执行离线行为测试，下一工作为当前 bypass 候选真实官方 ft09 普通运行。计划仍 50 canonical 动作或 1800 秒先到；能力 completed levels，效率响应确认最终 provider 历史长度；零作者/未调用分支如实未验证。
+
+全工作区冻结 `B31-arc-candidate` 源码检查发现 B30 以外还有 pi_child_context_control、pi_read_workset、pi_task_validation_child、auto_research_child_contract 的额外修改；这些不是本轮 bypass 的单因素，工作区原件保留，不从这个冻结启动。改用 `B31-direct-arc-source`：B30 完整已归档基线仅替换本轮三个运行时文件（ARC adapter、Self-Harness、baseline methods）及两份开发记录，其余运行时从 B30 保持；隔离快照不改写当前工作区或旧终态运行。源码/hash 仅保证待运行版本可追溯，不作为验收。
+
+拟 root `runs/self-harness-goal-b31-direct-no-research-ft09-20261008`，保持 yibu/qwen3.8-27b、off、text+image、output4096、advisory、Jev disabled；显式 PI_ARC_AUTO_RESEARCH=bypass，普通任务不强制组件创作。本次准备协议在 `tmp/self-harness-goal-20261007/b31-direct-no-research-proposed-protocol.json`，status 必须保持 prepared/authorization pending 直到用户回复。
+
+已知累计 2999660、原总上限 3400000、名义余额 400340，另有旧 unknown reservation e588067d-7633-4423-8b9f-55e6e8995a86，实际用量未测。原 Goal prompt 第81–82行要求共享累计、不自行扩额、结算不清停止；B30 明确豁免仅一次，现已终态。拟请求一次新普通验收最多900000 reported、总known上限3900000，并允许保留旧 unknown 继续该次；若用户保持原总上限，可改为一次400000上限，但早停仍未验收。两项均未获新授权，不发付费请求；旧unknown不填零、不当52623已结算，任何新unknown停止。未新增真实结果，所以不发邮件。
+
+#### B31 授权及真实启动（2026-10-08）
+
+用户明确答复：“允许本次最多 900000 reported token，将累计已知上限从 3400000 调整为 3900000，并允许保留历史未知继续本次验收。”仅用于当前 B31 新样本，旧 unknown 原样保留，任何新 unknown 停止，不为其他实验重新授权。启动前核对16个原ledger，known2999660、仅原unknown1；B31隔离656文件逐项hash无漂移，archive SHA256 `daf4a9fbd46708269a8076cb4ef417994cd06e33e9f9a49f7930bc7a5f7fc893`。
+
+首次 root `self-harness-goal-b31-direct-no-research-ft09-20261008` 实际在 bridge_readiness 失败，官方SDK环境None后.info AttributeError；19.156秒、0模型请求/0动作，无provider budget ledger，不算Self-Harness运行或验收。原件bridge-error/runner-error/summary保留，源码漂移[]。按原一次有界基础设施重试，用相同freeze在新root `self-harness-goal-b31-direct-no-research-retry1-ft09-20261008` 启动，不重启旧root、不改TLS/认证。实际结果在本记录增量补入；启动配置与hash均非验收结论。
+
+#### B31 启动重试终态与真实连接诊断（未进入验收）
+
+第二root `self-harness-goal-b31-direct-no-research-retry1-ft09-20261008` 已终态，22.953秒，0模型请求、0动作，无provider budget ledger，source_drift=[]。与首次None不同，本次原始bridge-error明示 **opening_scorecard 阶段 ReadTimeout**：官方 arcprize.org:443 经proxy的TLS握手超时，SDK timeout10秒。不是Self-Harness执行错误，不能报告bypass、五类作者/装配、关数或上下文改善。
+
+两次启动没有真实游戏轨迹；关数和响应确认历史长度标记 **未测量/null**，不使用summary初始化0冒称真实0关质量结果。新增reported0，旧known2999660及unknown1不变。原件保存在两root；[启动观察汇总](../../tmp/self-harness-goal-20261007/b31-real-startup-observations.json)保留各失败阶段/类型/时长/请求数，未验收。
+
+2026-10-08 02:18:05 UTC 的一次官方只读 GET /api/games/ft09（保留TLS验证、不创建游戏或scorecard）实际返回HTTP200、ft09-0d8bbf25，3.391秒。[连接诊断](../../tmp/self-harness-goal-20261007/b31-arc-connection-diagnostic.json)只证明元数据读取恢复，不证明scorecard写入/游戏启动/父Agent运行或验收。未修改代理/TLS/凭据或换成离线环境。
+
+原Goal prompt第84行“同一freeze的基础设施失败最多一次有界重试”已耗尽，所以没有自行第三次启动。已准备新root recovery1及launch入口；其开关需要额外一次启动的显式授权文件，原900000/累计3900000与旧unknown豁免继续，不重新请求费用权限、不增加模型额度。用户选择允许则继续同一个尚未开始gameplay的B31验收；选择停止则保留未验证结论。此时没有新的阶段真实游戏结果，尚不发送结果邮件。
+
+用户随后明确“允许这一次额外启动；不增加 token 额度”。已落盘 `b31-recovery-retry-authorization.json`，额外一次 recovery1 在同freeze新root启动，原两失败不删除、不重启。该次已进入实际Pi parent loop（初次观察2 canonical动作、reported21115），不把在途状态当验收；只到终态后审真实响应确认请求/关数/生命周期。额度仍单次900000、累计known3900000，旧unknown仍未测，后续没有再增加重试许可。
+
+#### B31 recovery1 真实终态（2026-10-08）
+
+官方 ft09-0d8bbf25 / Pi 原生父循环 / yibu/qwen3.8-27b，thinking off、text+image、output4096。用户额外启动授权仅使用一次，源码冻结 SHA256 `daf4a9fbd46708269a8076cb4ef417994cd06e33e9f9a49f7930bc7a5f7fc893`，终态 source_drift=[]。两次前置基础设施失败保留，均无模型请求；第三 root [recovery1](../../runs/self-harness-goal-b31-direct-no-research-recovery1-ft09-20261008/summary.json) 实际运行 744.766 秒（launcher，含启动/清理）、50 canonical 动作，官方 scorecard 同样为50动作、0 completed levels、7 resets、NOT_FINISHED。达到用户评估窗口，**未证明 Self-Harness 优化有效**。
+
+完成动作工具调用22次 arc_action、4次 arc_actions，后者展开后合计50个真实动作。父26个成功工具响应、1个超时错误，无 child。作者 create/change、非 Memory 原生版本、显式装配、语义使用、反馈均0；22个 Memory 版本来自自动 action capture，不能算作者转化。研究机会/会话0、请求无 auto_research schema，支持本次注册/调度 bypass 实际生效；仍不能证明普通委派和五类作者链可达或自主采用。
+
+响应确认的最终请求26个，历史 serialized messages 排除 system/developer、当前临时 ARC 文本和 typed image transport，schema另列：chars首4621、末55841、峰64516、均43423.076923；UTF8 bytes首4621、末55909、峰64590、均43468.461538。总文本含system/schema/current首21982、末76016、峰89017、均63977.5；22个请求1图、4个请求2图，keep_recent=24。prepared28个，末两个无响应确认，不能以prepared末66440冒充最终效率值。
+
+known reported566899（父input537861/output29038，child0）；实际账单不可读，注册表货币值不是结算。第27请求在50动作之后由 runner 发起终态 whole-level review，10282ms后错误 `Request timed out.`，无首模型delta/响应确认。新unknown reservation `4c3b07c3-535a-47a5-8031-c89744fd9afd` 的107096只是预留，实际usage未知；SDK零usage不当结算。随后第28 prepared请求被 `reported_usage_unknown` 拒绝，无新reservation/付费准入。运行已停止，不新增付费请求。累计known3566559/3900000，旧unknown `e588067d-7633-4423-8b9f-55e6e8995a86` 与新unknown均保留；名义余额333441未扣unknown，不当可花额度。终态复盘未产出报告，后续应单独审其必要性/边界，不能把provider超时解释为作者接口失败。
+
+真实输入发现可用性矛盾：Auto-Research已关闭，provider任务提示仍有“Use bounded Auto-Research…”、“Choose action, Auto-Research or development…”、“Harness and Auto-Research remain available.”。这是实际输入缺陷；没有调用research或创作，不能归因其导致零作者。当前工作区已有用户开关及条件提示改动（见 [开关记录](2026-10-08-auto-research-switch.md)），不在B31旧冻结中，保留复用，真实采用/收益仍未测。System Prompt时序和版本替换仍仅源码假设。
+
+| 证据层 | B31真实状态 | 边界 |
+| --- | --- | --- |
+| 功能正确 | 部分观察支持 | bypass无研究schema/会话/child；未执行五类创作、更新、普通委派分支 |
+| 全链路可达 | 未验证 | 作者投入至后轮语义使用未发生，完整矩阵未运行 |
+| 自主采用 | 本样本未达目标 | 非Memory作者/装配/使用0，机会适用性与不采用原因仍需审阅 |
+| 净收益 | 未支持 | 0关，历史仍增长，无匹配独立重复对照 |
+
+[用量/历史审计](../../tmp/self-harness-goal-20261007/b31-direct-no-research-recovery1-audit.json)、[生命周期审计](../../tmp/self-harness-goal-20261007/self-harness-goal-b31-direct-no-research-recovery1-ft09-20261008-lifecycle-audit.json)、[官方scorecard](../../runs/self-harness-goal-b31-direct-no-research-recovery1-ft09-20261008/arc-scorecard.json)、[启动终态](../../tmp/self-harness-goal-20261007/b31-direct-no-research-recovery1-launch-result.json)保留。B30为10动作/0关/787385 reported，B31为50动作/0关/566899 known+unknown，不同horizon且B31用量不完整，只能探索性描述，不支持效率因果改善。B/C/D保持开放。
+
+[最终真实观察/全局账](../../tmp/self-harness-goal-20261007/b31-final-real-observations.json)已核对17个ledger及第27实际终态复盘输入。B31结果通过已连接Gmail发送至授权邮箱595819371@qq.com一次，SENT `1a119682ef4381d2`；notifications/b31-real-email-{request,receipt}.json保存请求/回执，不重发。邮件仅报告本次真实结果，没有将B32源码变化当成新验收结果。
+
+#### B32 单动作观察入口：实施前协议（2026-10-08）
+
+- 真实机会：B31四次arc_actions跨过多个canonical状态、26个动作工具调用完成50动作，作者/装配0。用户要求先bypass批量接口，便于逐动作审Self-Harness；没有证据证明批量导致零作者。
+- 窄命题：默认新ARC进程只注册/暴露arc_action，每个已提交动作结束当前响应，下一父决策获得完整当前观测；无arc_actions可经activate重新暴露。研究由用户已有 `--no-auto-research` / `--auto-research` 控制。
+- 设计：按启动配置跳过arc_actions注册，复用现有action boundary与单动作回执；保留批量实现和历史审计兼容。默认仅arc_action，显式 `PI_ARC_ACTION_BATCH=enabled` 在新运行恢复批量。无新CLI、worker、创作义务或语义门禁；减少一个常驻工具schema和批量指导。单动作可能增加模型请求/总成本，不能预先称效率优化。
+- 生命周期：用户选择观察模式，runtime注册工具和提交后边界；父判断投入/作者候选及价值，runtime机械发布/装配，父后轮使用/反馈。无价值时允许不创作；不以调用次数奖励。
+- 验证协议：当前只做源码/语法/格式检查，按用户约束不运行fixture/mock/replay。下一真实官方ft09样本用yibu/qwen3.8-27b/off/text+image/output4096及显式关闭研究，50 canonical动作或1800秒先到；实际关数与响应确认历史首末峰均为验收指标，父子成本/超时/unknown共同披露。无强制创作引导。因B31新unknown，当前停止新增付费，**没有授权新样本**；必须有可结算用量或明确覆盖新unknown及新样本预算的授权后才可执行。
+- 推翻条件/负例：默认请求仍含arc_actions，activate可恢复它，同一响应提交多个动作，或后轮观测未更新；恢复批量时工具集/提示须一致。保留权限、预算、CAS/版本、环境完整性和完整grid/PNG。
+- 四层状态：功能、全链、自主采用、净收益均未验证；B31的真实结果不替代B32。保持实验状态；只调整批量暴露这个主因素，不同时修终态复盘或作者时序。B/C/D仍开放。
+
+#### B32 实现与当前检查
+
+`demo/pi_arc_agi_3_extension.ts` 在默认新进程跳过arc_actions注册，treatment的baseTools和control初始工具集复用同一actionTools列表，只包含arc_action；批量处理源码及旧日志识别保留。`PI_ARC_ACTION_BATCH=enabled` 才注册批量接口，新进程生效。既有tool_call/action boundary阻止当前响应提交动作之后的后续操作；未增加新的动作门禁。纯工具adapter的arc.action_sequence仍只构造计划、live_execution=false，不执行批量环境动作；普通委派/作者Subagent保留其既有权限与显式lease合同，本次未改其行为。
+
+runner从同一个启动env解析batch_actions_enabled并写入arc-runtime-config.json；初始、concise与普通后续提示按该值展示批量指导，关闭时只指导一动作后观察。用户已有研究开关/条件提示和其他工作区修改保留，没有改写B31冻结或终态root。
+
+仅检查：`node --experimental-strip-types --check demo/pi_arc_agi_3_extension.ts`、Python AST解析runner、限定改动文件`git diff --check`均退出0，[检查记录](../../tmp/self-harness-goal-20261007/b32-source-checks.json)。这些未执行业务函数/模型/环境，不作为功能或ARC验收；未运行pytest、fixture、mock、行为replay或新付费请求。功能、全链、自主采用、净收益仍未验证。下一可证伪检查为新版本真实ARC实际单动作边界与后轮组件语义使用，评估窗口和unknown停止约束照B32协议，不重启旧root。
+
+#### B32 真实验收准备（2026-10-08，授权待回复）
+
+用户要求“真实ARC验收”。已准备 [协议](../../tmp/self-harness-goal-20261007/b32-single-action-proposed-protocol.json)及 [启动入口](../../tmp/self-harness-goal-20261007/run_b32_acceptance.py)，尚未启动、不自动复用B31授权。隔离freeze `B32-single-action-arc-source` 以B31的656文件完整基线为基础，只加入单动作入口、用户研究开关与匹配提示，共657文件；其他child/context工作区修改不纳入，旧roots不变。archive SHA256 `7ab230c178d4df7884aad3828a4452f3946a7a3fa895c9c2c988be8e4b84521a`。manifest及语法检查只保证准备完整，不构成验收。
+
+拟官方ft09/真实yibu/qwen3.8-27b/off/text+image/output4096/advisory/Jev disabled，显式CLI `--no-auto-research`、`PI_ARC_ACTION_BATCH=disabled`、原生action boundary enabled；不注入强制创作probe。新root `runs/self-harness-goal-b32-single-action-ft09-20261008`，50 canonical动作或1800秒先到，能力completed levels、效率响应确认final history首末峰均，父子用量和unknown完整记录。新unknown立即停止，同freeze仅在零模型请求/零动作的基础设施失败时允许一次有界重试。
+
+已再次核对17个ledger：known3566559、旧unknown2，现累计cap3900000，名义余额333441不能视作已结算可用额度。B31用566899获得26个成功决策请求，据此50个单动作决策约1.1M只是规划估计；提出本次最多1200000、累计known cap4800000并保留两条历史unknown继续，需明确授权，不自行扩额。保持累计cap时可提出单次333000，但可能提前预算止而无法验收。已一次异步询问，等待用户选择；启动入口要求该次授权文件及完全匹配历史unknown集合，任何新unknown拒绝准入。当前没有新模型请求或新验收结果，因此不发送新阶段邮件。
+
+#### B32 授权与启动（2026-10-08）
+
+用户明确答复“允许本次1,200,000 / 累计4,800,000，并保留历史未知继续”。已保存 `b32-real-authorization.json`，仅用于当前一次B32样本及协议的零请求基础设施重试，不授权其他实验。启动前known3566559、unknown2、freeze657文件hash一致，run_b32_acceptance.py在新root启动，原B31与工作区均不覆盖。过程观察不当验收；终态后核对官方scorecard、实际单动作边界、作者/装配/语义后轮漏斗、响应确认历史及失败/unknown账。
+
+#### B32 首次基础设施失败与一次重试（2026-10-08，在途）
+
+首次root bridge_readiness失败：真实官方环境未返回初始frame，`ValueError: ARC environment returned no frame`，19.531秒，0模型请求/0动作，无provider ledger，source_drift=[]。初始化summary里的0关不是已测游戏质量；该次不算Self-Harness验收。保留runner-error/bridge-error及log，不修改TLS/SDK或改成离线环境。
+
+按已准备协议仅一次零请求基础设施重试，使用同freeze新root `runs/self-harness-goal-b32-single-action-retry1-ft09-20261008`，未重启失败root。该次已进入真实Pi父循环，实际runtime_config研究false、batchfalse、1200000限额；首批真实请求工具列表只有task_harness/task_harness_create/arc_action。初次观察1 canonical动作、known9012，无新增unknown。在途不当成功验收，终态后补实际窗口及完整账。
+
+#### B32 真实 ARC 终态观察（2026-10-08）
+
+**达到50实际动作评估窗口，但未证明Self-Harness优化有效。** 官方ft09-0d8bbf25、Pi原生父循环、真实yibu/qwen3.8-27b/off/text+image/output4096、研究关闭及单动作入口，retry1终态为50 canonical动作、0 completed levels、2 resets、NOT_FINISHED，官方scorecard一致（`7fd1b811-33ff-4b40-97dc-9b6602a672fe`）。launcher耗时1195.359秒，含启动/清理；源码漂移[]，freeze SHA256 `7ab230c178d4df7884aad3828a4452f3946a7a3fa895c9c2c988be8e4b84521a`。CLI exit1反映未通关，runtime completed、scorecard evaluation_complete=true；不是Pi启动失败。首次19.531秒零请求基础设施失败保留，不重启。
+
+**单动作入口和提示一致性有实际观察。** 50次成功arc_action，各实际模型响应请求最多一个arc_action；54个捕获的prepared请求均无arc_actions/auto_research schema，没有B31的三处误导研究文案或未展开模板。真实当前观测中的total_used在前50个请求依次为0–49，后4个终态请求均为50；逐动作刷新实际到达provider。首次工具列表task_harness/task_harness_create/arc_action，终态另开放task_resource。未发生批量动作或研究child，不据此宣称开启研究、批量恢复、ordinary delegate或五类作者分支已验证。
+
+**直接转化依然未发生。** 作者create/change0，system_prompt/skill/tool/subagent原生版本0，显式装配0、非Memory语义使用0、child0；50 Memory版本均自动action capture。50次实际动作提供了更细的观察，但本样本没有作者投入或候选，最早可观察的缺口仍在进入创作之前；无法据此归因于编译/装配阻断，也无法仅凭工具存在判断组件本应有价值。机会适用性、合理不采用和投资判断仍待窄问题审阅，不强制制造组件来满足计数。
+
+**效率主口径（含终态只读复盘的全部53个响应确认final请求）：** history chars首4396、末51788、峰56618、均36015.584906；UTF8 bytes首4396、末52164、峰57038、均36243.547170。排除system/developer、当前临时ARC文本及typed image transport，schema另列。总文本含system/schema/current首21051、末71966、峰76796、均55479.433962；51个请求1图、2个请求2图。第50个游戏动作请求的history为41982 chars/42362 bytes，单列与完整运行末值区分。54个prepared的末57742 chars未经响应确认，不作为最终效率值。
+
+**全账与停止原因：** reported1118442=input1069165+output49277，child0，已报告reasoning/cache0，实际货币账单不可读；未知历史不当零。游戏至第50动作known1034698；其后3个只读复盘请求83744，完成pending_level_reviews检查、一次归档index读取及level_review合同查询，但level_review提交0。随后第54 prepared请求因remaining81558 < conservative reserve98251在付费准入前拒绝（reported_request_reserve_exceeded），没有新reservation或新增unknown。50动作边界已在该拒绝前达到；不能把复盘阅读成功当成语义组件反馈或认知连续性证明。终态review事件error=null仅表示无provider传输错误，不等于提交完成。复盘的额外管理成本是本次真实观察，发生在动作窗口之后，不能解释此前零作者。
+
+累计known4685001/4800000，历史unknown仍2条，本次新增unknown0；名义remaining114999未扣未知，不自行授权后续付费样本。单次实际低于1200000。全部B32样本终态，不重启。
+
+| 证据层 | B32状态 | 实际结论边界 |
+| --- | --- | --- |
+| 功能正确 | 部分通过 | 默认单动作暴露、实际后轮观测、研究提示一致性有真实证据；恢复开关/委派/创作未执行 |
+| 全链路可达 | 未验证 | 作者候选/装配/工具语义与完整五类矩阵未触发 |
+| 自主采用 | 本样本未达目标 | 非Memory作者、装配、使用0，50自动Memory不计作者 |
+| 净收益 | 未支持 | 0关；没有匹配独立重复对照，无法证明能力或效率因果提升 |
+
+B31同为50动作/0关，history末55841/峰64516/均43423.076923 chars，known566899+unknown；B32末51788/峰56618/均36015.584906，known1118442。仅描述本次历史较短、请求及known成本较高：两者含不同终态处理、研究提示修正、初态/时延混杂且B31usage不完整，不据此声称净收益。保留单动作模式作为用户要求的观察方式；Self-Harness完整目标/P0–P7/B/C/D仍未完成。下一可证伪检查应定位有价值机会是否被父识别并决定投入，然后才检验候选至装配/语义后轮；不要扩大未调用高级机制或再添mandatory review掩盖零投入。
+
+证据：[最终真实观察/全局账](../../tmp/self-harness-goal-20261007/b32-final-real-observations.json)、[响应确认审计](../../tmp/self-harness-goal-20261007/b32-single-action-retry1-audit.json)、[生命周期审计](../../tmp/self-harness-goal-20261007/self-harness-goal-b32-single-action-retry1-ft09-20261008-lifecycle-audit.json)、[官方scorecard](../../runs/self-harness-goal-b32-single-action-retry1-ft09-20261008/arc-scorecard.json)、[终态/源码完整性](../../tmp/self-harness-goal-20261007/b32-single-action-retry1-launch-result.json)。以上仅分析真实产物，没有执行fixture/mock/scripted provider/行为replay；首次基础设施失败和复盘未交付均计入记录。
+
+B32真实结果已发至595819371@qq.com一次，SENT `1a1198b79db7c87b`。首次邮件调用遇到MCP transport错误，失败回执保留；已检查Sent相同收件人/主题返回空，再执行一次发送并收到SENT回执。notifications/b32-real-email-request.json、原失败receipt、delivery-check及retry1-receipt均保留，不再次发送。
+
+#### B32 为什么未转化：真实入口补充诊断（2026-10-08）
+
+用户追问为何没有Self-Harness转化。[真实入口观察](../../tmp/self-harness-goal-20261007/b32-conversion-entry-observations.json)区分以下三层：
+
+1. **实际入口存在。** 首请求即含task_harness_create，说明明确“Create and install ... for later turns”，candidate为必需字段、assembly默认安装、trial可同次试纯Tool；完整candidate仍需父作者提供。首请求同时提供五类含义、可选creator名称和“Choose action or development by value...”提示。未发生调用，因此不是已观测到的工具注册缺失或创建错误；也不能因此认定这些说明足以让父识别实际收益。
+2. **证据发现没有变成作者投入。** 实际task-harness-opportunities有9个周期窗口，pattern-candidates有18个版本；请求10/25/40/50确实包含changed/unchanged、not_advanced的通用统计模式。请求25的周期提示是“Continue task work; no review, deferral or acknowledgment is required... evidence index, not a task milestone”，供按需取证，不是可执行组件候选或作者工作分派。task-development-intents、task-harness-conversion-intents、task-harness-review-events均0；没有直接候选、编译或CAS拒绝记录。最早可观察断点是机会/证据到父识别与投入，父内部是否认定无价值未知。不能把9个窗口当成9个已证明应创作的机会。
+3. **Memory统计来自独立机械路径。** harness-decisions的50条decision_path全部为action_decision_capture，intervention=memory_pool_write；由arc_action.decision持久化产生，并未执行五类父作者转化。它的数量不反映组件投资、装配或语义使用。
+
+解释性假设是当前交互把“发现重复工作→判断组件价值→选载体→作者完整内容”留给游戏父自行发起，提示偏通用的能力目录和证据索引，实际父始终沿更新假设/arc_action的短路径推进。该假设来自真实输入/行为对照，但没有消融证明父不创作的具体心理或原因；模型能力、价值不足、接口理解/认知成本仍不可区分。关闭研究和批量后仍无作者，说明这两项bypass在本样本不足以触发转化，不证明host/grid/装配是根因。下一可证伪目标应是针对一次真实重复计算，把既有证据明确映射到有即时可试收益的候选作者路径，保留Agent语义判断和放弃权，不新增强制review或组件配额。是否改善仍需另次合法预算内真实ARC，不能把分析称已修复。
+
+#### B32 创作未触发与研究开关耦合审计（2026-10-08）
+
+**范围与窄命题。** 用户要求先分析真实父未创作的原因，再检查关闭研究是否切断 Self-Harness 基础功能或成为转化前置条件。本次仅源码/真实产物只读审计及记录，不修改 runtime、不重放行为、不运行 fixture/pytest、不新增付费请求。命题为：在 treatment、关闭研究、单动作的 B32 中，直接父创作与装配路径没有研究使能/完成前置条件，最早可观察断点在候选提交之前。若发现关闭配置切断 creator 注册、作者调用被研究状态拒绝、或编译/装配必须引用研究报告，该命题被推翻。减少的负担是先定位实际断点，避免恢复高成本研究、删除保护或增加强制 review 来试探未执行分支。
+
+**证据与方法。** 沿用 Matt Pocock diagnosing-bugs 的分层排查；此次以已有真实负样本为观察对象，静态检查用于寻找机制，不能作为新行为验收。执行 `python tmp/self-harness-goal-20261007/audit_b30_lifecycle.py runs/self-harness-goal-b32-single-action-retry1-ft09-20261008` 与新增只读 `audit_b32_research_coupling.py`；后者保存 [耦合审计](../../tmp/self-harness-goal-20261007/b32-research-coupling-audit.json)，包含实际首轮 schema、53 个响应确认请求的提示计数、作者/错误/研究记录、决策与前轮公开文本样本、当前源码与 B32 freeze 的 SHA256 对比。它不调用 provider、ARC 或运行游戏行为；每个计数对应已执行实录。provider 为真实 yibu/qwen3.8-27b，环境为官方 ft09-0d8bbf25，沿用已终态 50 动作/0 关、1118442 reported、历史末 51788/峰 56618 chars 的 B32，没有新的实验变量/运行/预算。阶段授权已消费，本次不是新验收。
+
+**为什么入口存在仍未触发——已观察与未确定因素分开。**
+
+- 实际首轮工具为 task_harness、task_harness_create、arc_action；create 的唯一顶层必填为 candidate，提供五类最小内容说明，模板可选，默认安装，trial 可同次执行纯 Tool。task_harness 有 28 个顶层参数。所有动作之前没有 create/change，也没有创作参数错误或 operation failure；不能把未尝试的创作 schema、编译、host、grid 或 CAS 分支称为已观察阻断。schema 被 provider 接受不等于模型易于理解其内容合同。
+- 50 个 gameplay 输入有作者目录与五类说明，45 个响应确认输入包含周期证据索引；实际只有 9 个窗口，45 是重复投射次数，不能算 45 次独立开发机会。没有公开作者投入/候选/显式放弃记录。机会窗口与 changed/unchanged/not_advanced 统计并未自动产生父作者程序或工作指派。
+- 重复工作具有实际样本：请求 25、40、50 中上一轮父公开文本反复手工从 hex 行抽取大结构九个格子、重述小示例、比较差异；50 动作中 35 次 ACTION6(46,39)，两次 RESET 也有独立真实成本。50 次 decision 都写知识缺口，49 次 counterevidence 显式为空。它说明父持续沿同类分析/点击路径推进，值得检验抽取计算与目标纠偏；坐标重复本身不证明所有点击无效，也不证明 Tool 就能解决目标规则。
+- 更具体的识别入口没有生效：实际输入中 PARENT-DECLARED OPERATION GAP、TESTABLE GOAL MODEL、OPEN HARNESS CONVERSION INTENTS 均 0；最终 checkpoint 无 task_goal、success_conditions、planning_gap。50 个 decision 都经 action 自动保存 subgoal/hypothesis/prediction/falsifier/next_step/knowledge，但该保存分支不把 knowledge_gaps 或普通 hypothesis 自动提升为 planning_gap、development_intent 或候选。这是确定的合同区别，不应把游戏知识缺口等同于组件缺口。
+- 因而当前存在“有工具与证据，但识别可复用工作、判断回本、选择载体、作者完整内容仍须同一父主动承担”的链路缺口。源码中的 conversion workset 推进的是已提交意图/已写组件；不会替尚未投入的父生成意图。当前证据没有说明父明确评估后拒绝，也没有说明其内部从未考虑创作；价值不足、接口理解成本、决策惯性与模型能力仍无法因果区分。最早可定位边界是识别/投入未产生可观察作者行为，不是装配失败。
+
+**研究开关与逻辑先后关系。**
+
+| 路径 | 当前源码及实际边界 | 关闭研究的影响 / B32 状态 |
+| --- | --- | --- |
+| 共享 task-local 初始化 | `pi_arc_agi_3_extension.ts` 调用 `externalBenchmarkResearch`，后者在 treatment 内独立安装 Self-Harness；研究布尔值没有包住此安装 | 名称含 research，但不能把整个 installer bypass；现有开关只关闭研究分支。B32 首轮作者入口可见 |
+| 父直接转化 | `task_harness_create` → normalize/preflight → `publishParentChanges` → native executor；完整候选即可，creator citation 可省略 | 不要求 auto_research、review、method 研究完成、报告/候选引用；创建未调用，真实执行仍未验证 |
+| 精确装配 / 后续使能 | create 默认准备 CAS selection；change 省略 assembly 只入池；assembly 验证版本、scope、权限、数据；Pi context/tool surface 投射选择 | 没有研究完成门禁；B32 0 组件/装配，后续语义使用仍未验证 |
+| 保存 Subagent / ordinary delegate | `installTaskLocalSubagents` 先注册 task_subagent 和 delegate_task，之后才 `if (researchEnabled)` 注册研究工具/worker/pump/inbox | 研究关闭不会源码上关闭这两项。B32 无委派，不以本次证明其真实语义运行 |
+| 观测 / Memory / 周期窗口 | checkpoint/action capture、pattern 索引独立执行；periodicReviewEnabled 取独立环境开关与 arc_action 注册状态 | B32 50 自动 Memory、18 pattern 版本、9 窗口继续产生；自动 Memory 不是父作者转化 |
+| 研究衍生的机会/交付/续研 | cross-context research candidates、研究 sessions/reports、worker assignment、handoff continuation 受 autoResearchAvailable 控制 | 关闭会停止研究提供的语义候选来源；这是研究旁路的真实影响，不能说对所有 Self-Harness 输入完全无影响 |
+| 现有研究候选提示 | `pendingMethodHandoffs` 筛选还要求 autoResearchAvailable；已有 durable parent-authoring handoff 的专项提示会被关闭开关隐藏 | 是生命周期呈现耦合，关闭生产研究与隐藏已交付材料并非同一需求；B32 handoff 为 0，此分支不能解释它的零作者 |
+| 本地效果反馈 | assessment 和 parent method lifecycle 不要求研究启用；只有生成后续研究 handoff 为条件分支 | 直接父仍可评估/修订；methodUseRejection 只拦被真实使用反证的精确版本，不要求先完成研究来获准首次使用 |
+
+源码上的正常顺序是“当前观测 → 父判断/完整创作 → 校验和原生版本 → 精确装配 → later loop 使能/使用 → 本地效果判断”；研究是可选的候选/结论输入与后续复查分支，不能成为其全局前序。可选 creator 手册中的 research-orchestration 前置只用于研究 start/enqueue；`validateCreatorCitation` 对未提供引用直接返回。共享 `pi_auto_research_harness_router` 的类型/规范化函数与 method lifecycle 文件名表示实现代码依赖，不等于执行时必须有研究 session。`admitTaskLocalOperation` 无本地额度或序列门禁；同批 integrity gate 只处理实际变更失败，B32 没有这类失败。
+
+**发现的具体合同问题与局限。**
+
+1. `harness_development_brief.md:11` 在同时介绍 create/change 后笼统说省略 assembly 是 pool-only，与 create 默认安装的 schema、index、assembly/components brief 不一致。该 brief 在 B32 未被父读取，不能冒充它已导致失败。
+2. `arc_decision_cycle_concise.md` 仍写“select exact versions through explicit assembly”；但 B32 的实际配置是 concise_arc_guidance=false，使用普通 prompt，其原文为“Publish complete components, assemble exact versions and trial semantics”。不能把简洁版的明确措辞误报为 B32 实际输入。两种文案均没有一致解释 create 的一次调用短路径；实际初始提示与工具/index 的负担呈现不同，是否抑制选择仍需真实消融。
+3. 恢复已有研究成果时，pendingMethodHandoffs 的投射以“研究工具当前已注册”代替“材料仍可用且值得父审阅”。建议以后将停止新的研究计算与保留已交付材料的创作入口解耦；只读材料恢复和父作者权限仍需各自检查。此为静态呈现问题，未有真实关闭/恢复样本。
+4. 当前 `pi_task_local_self_harness.ts` 与 B32 freeze hash 不同（current_grid/Memory selection 等其他授权改动）；B32 实际 create trial 没有 current_grid 字段。上述直接入口、研究条件分支与识别提示逻辑在 diff 中没有改变，但不能把当前快捷输入或其他未在该 freeze 的功能说成 B32 已验收。审计列出各文件 hash；adapter、subagent、shared installer、assembly、相关提示与 B32 一致。
+
+**下一可证伪路径与成本。** 本次不增加常驻提示/schema/必填/worker/action gate，也不做 runtime 修复声明。下一因素优先检验“具体可重复计算到一次父作者投入”的交互：从真实手工取格/比较工作提炼输入、输出、证据引用和下一动作可用性，复用 existing create/default assembly/pure trial；计算先核对真实格子，目标模式保留不确定，允许判断无价值或放弃。先统一 create/change 的合同文案，恢复场景另检验已交付候选不随研究开关消失；不要一次把候选生成、worker、schema 与策略都改掉。普通样本仍用真实 ARC/真实 provider、50 实际动作或 1800 秒先到，按关数与响应确认历史末/峰长度验收，父子总成本与创作漏斗作解释指标，不把组件数量设成奖励。另次付费实验需要新的适用预算授权，不能复用已消费 B32 额度。
+
+| 证据层级 | 本次状态 | 结论边界 |
+| --- | --- | --- |
+| 功能正确 | 只读源码诊断；入口/周期观测有真实证据 | 未调用的 create/assembly/delegate 不升级为通过 |
+| 全链路可达 | 未验证 | 本次没有完整五类真实闭环 |
+| 自主采用 | B32 未观察到父作者转化 | 可定位提交前断点；内部价值判断与因果原因不确定 |
+| 净收益 | 未验证 | B32 0 关；无新运行/独立对照，不宣称优化有效 |
+
+**交付决定。** 排除了已检查直接路径中的研究使能/完成硬前置，确认研究来源/交付呈现耦合及不一致的创作说明，保留各自证据层和未测执行分支。B/C/D 仍开放：当前结果不能完成研究到行动、父子总成本或跨压缩连续性验收；避免把恢复研究当作直接 Self-Harness 的修复前提。
+
+#### 让创作具有即时用途：候选设计（2026-10-08，未实施/未验收）
+
+用户进一步询问怎样让创作路径具体、容易选择。以下为基于 B32 重复手工取格/比较、零作者行为的候选建议，未确认其为因果根因，不新增 runtime 行为或付费运行。
+
+**问题与命题。** 现有入口使用 capability、creator、assembly 等机制词，父仍要自行推导它能替代哪一段眼前工作。窄命题：在相同执行能力下，把现有创作说明改为“为当前问题作者一个小计算并立即取得结果”，清楚展示输入和一次调用路径，能降低父从当前求解转入创作的理解成本。首次计算可以有价值，不以重复次数/已有 planning_gap/组件种类为空作为创作前提。组件调用数不是成功标准。
+
+**三种选择与成本。**
+
+| 选择 | 做法与职责 | 新增成本与取舍 |
+| --- | --- | --- |
+| 优先：让现有入口直接描述求解用途 | 父决定所需计算及程序；runtime 复用 create/default assembly/trial/current_grid；说明强调本次返回具体值、后续可复用 | 替换现有泛化说明，不增加工具、worker、必填意图或常驻 checklist；仍可能因模型能力/价值判断不采用 |
+| 次选：变化时的一条具体证据提示 | 复用可核查的调用/观测事实及精确引用，只在相关证据变化时投射；父决定是否存在可计算问题 | 需要记录实际字符和决策成本；相同坐标/未通关只能提示重新审视，不能由 runtime 判定应创建 Tool，更不能生成游戏规则 |
+| 后续备选：独立作者辅助职责 | 经另定权限和预算，由 Agent 识别、提出/作者候选，父判断采用 | 增加模型、交付、过时与管理成本；暂不引入，避免重新依赖 Auto-Research 才能启动直接 Self-Harness |
+
+**推荐的具体交互。** 将“Choose action or development; publish/assemble/trial”收敛为能回答当前问题的短说明，例如：“需要精确读取、计数或比较当前网格时，可写一个小 Tool 并在本次创建中试用；current_grid:true 提供 input.grid，默认安装，返回计算结果后再选择下一动作。完整内容可直接提交；模板按需读取。”这只是拟议文案，不是本次已生效 prompt。具体源码和适用区域仍由父根据当前观测作者；不预置 ft09 解题函数或把小示例等同于目标答案。
+
+首次获益路径为：父表达计算/程序与必要参数 → runtime 输入绑定、验证、写版本、精确装配、试用 → 父看到语义结果并决定下一次 arc_action。无须先创建 planning_gap/development_intent 或完成研究/review；intent 可由既有实际作者调用留痕。当前工作区已经有 create 默认安装、纯 Tool trial 和 current_grid 捷径，应先复用；current_grid 不在 B32 冻结版，不能据此声明它已改善真实行为。
+
+**结果与后续复用。** 回执优先呈现与问题对应的有界语义结果、输入来源、错误/未知及可再次使用的确切入口；长源码、版本事务明细保留按需引用。需要同时清楚区分已创建/已安装/试用失败，以免失败后重建。后续常驻的是已选 Tool 的简短用途与输入合同，程序/旧回执不反复全文投射。以上是建议，现有回执/上下文是否已经满足需实施前逐项检查。Tool 只计算观察事实；它算对格子不证明目标假设正确，父仍需用真实环境验证目标。Skill/System Prompt 用于父已经需要执行的步骤或决策规则，保留适用与撤回条件；不能把未证实假设升级成硬指令。Subagent 适用于有独立交付物的分析，先计入额外上下文/成本，不按类别配额创建。
+
+**先清除合同冲突。** 开发 brief 的省略 assembly/pool-only 说法应明确区分 create 与 change；components brief 中 Skill/Tool/Subagent 的“Read … once”仍与 optional creator 合同不一致。这些文案问题由当前源码审阅发现，不声称 B32 读过它们或已证明它们导致零作者。应在独立维护切片统一，不通过新增必读步骤来弥补。
+
+**验证与停止。** 下一真实实验先冻结共同执行能力，只改变入口的用途表达，保留无该表达的同能力比较器；不要把当前工作区多项变化与 B32 的差异全部归因于文案。若为定位输入/编译问题而明确要求计算某区域，标记为引导诊断，不能冒充自主识别。验收仍仅为官方 ARC/真实 provider 的 50 实际动作或 1800 秒先到，主要结果为关数和响应确认历史长度；父子总用量、管理轮、首次有用结果、后续是否复用只解释原因。若仍零作者，入口表达假设未获支持；若创作增加但结果不用/成本上升，也不能称优化有效。合理不使用、试用错误、撤下均保留，不增加组件配额或动作门禁。本次 paid=0，无执行层/全链路/自主采用/净收益状态提升；B/C/D 仍开放。
+
+#### B33 用当前求解用途表达创作入口：实施前协议（2026-10-08）
+
+用户同意上述候选设计并要求开始优化。本切片的主要因素为作者 Interface 的用途表达及一致性：父直接为当前需要提交完整内容，runtime 复用已实现的默认安装、当前网格绑定与试用。保留非 Tool 类型、合理不使用和放弃；不新增作者 worker、提示调度器、schema 字段、必填规划/意图或 action gate，不引入任何 ft09 目标/区域/答案。
+
+- **真实机会与窄命题：** B32 父多轮手工取格/比较但零作者。入口若明确“当前可取得的计算结果、完整内容的最短提交方式、后续复用”，父更容易在值得精确计算时直接创作并应用；若仍无作者/首次结果不被使用，或任务/历史指标未改善，本次假设未获支持。不能从零调用推断某段文案就是确定根因。
+- **负担与职责：** 父选择问题、程序/规则/角色内容、输入、结果的任务用途及保留/修订；runtime 已负责绑定、权限/预算/版本、写入、安装与所选 trial。替换现有 resident 提示而非新增提示；按需参考同步去除强制 creator-read、额外先开意图和 create 默认只入池的旧说法。记录改前/改后字符，不能换算成真实 token 节约。
+- **首次路径与恢复：** 完整 candidate + 可选 trial/run → 原生发布及安装 → 实际结果/已有使用入口 → 后续父决策。支持首次/局部用途，无须跨关卡收益证明。写入与安装/试用回执分别检查，已写版本保留，失败不能重建重复资源或消除真实环境历史。
+- **比较器与隔离：** 以 B32 源码为稳定底座，公共执行层纳入当前 Self-Harness 当前输入/直接使用改动；保留其未验收状态，排除 child read-workset 等无关工作区变化。冻结共同执行能力的原文案与候选文案两个源码包；只有用途说明/参考合同不同。B32 实测结果仅作历史参考，不能把公共执行层变化归因于本轮文案。第一份拟执行样本为候选 ordinary ARC；相同执行层对照若未获授权/未运行，则不得声明单因素因果或净收益。
+- **实验条件：** 官方 ft09、真实 yibu/qwen3.8-27b、Pi parent、thinking off、text+image、output4096、关闭 Auto-Research、仅 arc_action、advisory、Jev disabled。50 canonical 动作或 1800 秒先到，保留完整当前 grid/native PNG。任何更早预算/异常停止不算达到验收窗口。主指标为 levels 和 response-confirmed 最后/峰值/均值 history chars/bytes；作者投入、语义输出与后续行动、父子 reported、延迟和管理轮作诊断，不以组件数为奖励。
+- **预算/授权：** 既有 B32 单次授权已终态。本次开发与冻结已获授权；新付费样本待最终冻结后提交具体额度与历史 unknown 保留请求。不得将“同意优化”解释为自行提高累计 4800000 上限或抹去两条 unknown。候选拟单次1200000，出现新unknown停止；最终提案以实时账本重算。没有授权文件时 launcher 必须拒绝启动。
+- **检查与负例：** 仅源码阅读、语法/格式与 hash 检查，遵循用户真实 ARC 唯一验证要求，不运行 pytest、scripted/mock provider、smoke、行为重放。保留同名/CAS、权限、输入冲突、预算与取消原有实现。观测合理不使用、局部计算正确但目标错误、试用失败、无后续复用和管理成本增长。
+- **四层状态：** 改动待完成；执行分支的功能、全链路、自主采用、净收益均待相应真实证据，不从文本一致性或 syntax check 提升状态。B/C/D 保持开放。实现清单、增量与最终冻结信息在本节续记。
+
+#### B33 实现与冻结（2026-10-08，真实验收待预算授权）
+
+- 已完成本切片 8 个文件的用途/合同修改：普通与 concise ARC 初始说明、self_harness_index、create 工具 description、development/components 的 brief 与 operations。用“精确提取/计数/比较 → 作者小 Tool → 当前 grid → 同次返回结果”替换通用开发/装配说明；保留父作者、目标假设的真实检验及五类入口。删除按需参考中的强制 creator-read、先开意图、仅少数技术失败允许延期、create 省略 assembly 只入池等不一致义务。TS 本切片仅修改 description 字符串，没有增加工具/字段/worker/动作门禁，没有硬编码 ft09 规则/区域。
+- 当前工作区已有的当前网格、Memory select、Prompt request 刷新、Skill 直接应用、Subagent run 作为两份冻结的**共同执行能力**，不是本切片新实现，也不继承其离线结果为真实 ARC 验收；新 Prompt helper 与 native delegate 注册/Prompt scope 合同依赖一起纳入。child read-workset、研究调度及其他未列工作区改动保持 B32 源码。完整 overlay/差异见[源码审计](../../tmp/self-harness-goal-20261007/b33-source-change-audit.json)和[限定补丁](../../tmp/self-harness-goal-20261007/b33-implementation.diff)。
+- 文本成本（LF 源字符，非 actual payload/token）：普通初始 +68、concise -134、每轮索引 -199、create description +82；普通组合 **-49 chars**，concise 组合 **-251 chars**。按需 development brief/operations +237/+74，components brief/operations +56/+91；这些仅在读取时进入上下文，不伪称实际上下文已缩短。
+- 已完成格式、Python AST、Node strip-types syntax、相对 TS import 存在性及冻结 hash 检查；两份源码均 658 文件、source drift 为空。未运行 pytest、fixtures、scripted/mock、deterministic smoke 或行为重放；未调用真实模型/ARC。语法记录见[检查产物](../../tmp/self-harness-goal-20261007/b33-source-checks.json)，不是功能/采用/收益验收。
+- 候选 `B33-immediate-use-arc-source` SHA256：`a9c171f4e08136394127568b5828f34c0f7ec78ddb6d2c8e37a30025a965177b`；同执行能力旧文案 `B33-common-runtime-arc-source` SHA256：`c6511419bf9ad2fcb990a97067e5ee112fca61051eb51d13ee88f25d55c690ed`。比较版本未获付费授权、未运行。旧 B32 功能层不同，不能用它隔离本次文案作用。
+- [具体验收提案](../../tmp/self-harness-goal-20261007/b33-immediate-use-proposed-protocol.json)与[启动脚本](../../tmp/self-harness-goal-20261007/run_b33_acceptance.py)已准备；新 root 为 `runs/self-harness-goal-b33-immediate-use-ft09-20261008`，不存在时才可启动。脚本要求新 B33 授权匹配 freeze，核对累计已知和 unknown ID，使用独占启动记录，禁止自动重试/重用终态根。没有新授权文件，未启动。
+- 当前真实总账仍 **4685001/4800000 known + 两条历史 unknown**。提案为单次上限 **1200000 reported**、累计已知上限 **5900000**，保留历史未知、出现新未知立即停；50 动作/1800 秒、关闭研究、仅单动作、完整 grid/PNG。额度参考 B32 实际1118442，不保证达到验收窗口。授权仅拟覆盖候选一次，比较版本和基础设施重试均不自动包含。
+- 交付状态：入口/合同修改和候选冻结完成；真实功能执行、完整链路、自主采用与净收益均待验证。没有阶段真实结果，按既有规则不发送邮件；B/C/D 保持开放。
+
+#### B33 真实验收启动授权（2026-10-08）
+
+用户在具体验收提案后指令“开始a'r'c真实验收”，按所提 B33 候选一次运行范围启动，原文保存在 [授权记录](../../tmp/self-harness-goal-20261007/b33-real-authorization.json)。单次1200000 reported、累计已知5900000，保留原两条 unknown，出现新 unknown 停止；50实际动作或1800秒先到。关闭 Auto-Research、仅 arc_action，不强制创作；冻结不变。此次授权不包含比较版本、基础设施重试或自动重启。结果待终态实录审计，不提升四层证据状态。
+
+#### B33 真实终态：首次自主作者被源码合同拒绝，未达到验收窗口（2026-10-08）
+
+**真实产物与条件。** [运行目录](../../runs/self-harness-goal-b33-immediate-use-ft09-20261008)、[终态审计v2](../../tmp/self-harness-goal-20261007/b33-final-real-observations-v2.json)、[失败回执审计](../../tmp/self-harness-goal-20261007/b33-real-failure-observations.json)。官方 `ft09`，真实 `yibu/qwen3.8-27b`，scorecard `13fabb92-d0d1-4662-b8ba-6973b672f3eb`，Pi parent、text+image、thinking off、output4096、Auto-Research关闭、仅arc_action、ordinary不强制作者。658文件冻结无漂移；无child、无脚本引导、未注入开发流程，未重试。v2仅纠正衍生审计的“最后请求动作”与“最后实际执行动作”的区分，保留v1和所有原始轨迹不变。
+
+| 指标 | 真实结果 |
+| --- | --- |
+| ARC动作 / 完成关卡 / RESET | **18 / 0 / 0** |
+| 启动器墙钟（包含启动/退出） | **532.594秒**；runtime timed_out=false |
+| 验收窗口 | **未达到**50实际动作或1800秒，不能判通过 |
+| 本次父 / child reported | **428736 / 0**，另有**新增unknown1** |
+| 用量构成 | input397587、output23725、cache_read7424；reported reasoning0，不能把工具参数中长解释当成没有推理负担 |
+| 响应确认请求历史 chars（22请求） | 首4301 / 末60862 / 峰60862 / 均33877.954545 |
+| 对应历史UTF8 bytes | 首4301 / 末60960 / 峰60960 / 均33885.772727 |
+| 最后实际动作的请求 | provider19；其history39763 chars；截至该请求的历史峰44371，均31302.105263（19请求） |
+| 请求准备但无响应确认 | provider23；history67118 chars，**不纳入**响应确认主指标 |
+| 实际作者 / 成功非Memory版本 / 装配 / trial / 语义使用 | **1 / 0 / 0 / 0 / 0** |
+| Memory版本 | 18版，为自动动作capture，不能算作者转化 |
+
+历史口径：实际最终provider请求的serialized messages，排除system/developer、当前ephemeral ARC文本、typed image transport，schema单列；全部确认请求含1张PNG，当前完整grid/native PNG保留。包含system/schema/current的文本首21545/末81629/峰81629/均54063.136364 chars，与历史主指标分别报告。
+
+**生命周期断点。** 父在12个实际动作后自主提交 `analyze_arc_grid`，要求 `trial={current_grid:true}`，意图提取当前面板颜色与标记并判断目标。说明此次已到达识别→投入→候选提交；不是接口仅暴露或研究未结束。然而实际candidate.source包含`def`、赋值、for循环，违反实际schema所写的restricted Python expression合同。原生preflight返回`source is not a valid expression`、`no_component_written=true`，没有任何组件写入、装配或grid trial。该拒绝针对确实不符合合同的源代码，不能称合法源码被错误拒绝；同时揭示Agent对“写小Tool”与受限表达式执行的匹配尚未完成。后续未修复重交，也未读取creator/resource；恢复回执只要求修字段、未解释语句/表达式差异。价值识别内部原因、为何放弃仍不确定。
+
+**动作和上下文摩擦。** 21次arc_action尝试只有18次到达真实环境：其后2次完整toolUse回应生成无效JSON，原生拒绝且execution_started=false；第3次provider22以length结束，被原生拒绝执行可能截断的参数。前两份JSON错误回执分别4071/8190文本字符，包含3504/7527字符raw_arguments；两份完整错误回显共12261字符进入后续真实provider22。说明存在可测的错误材料驻留成本，不代表它解释全部60862历史字符。provider22输出达到4096token；不要把前两次非length JSON错误都归因为截断，也不要把这三次失败算ARC动作。截止最后实际动作history39763，三轮未执行后最终历史60862；不能与不同执行能力、50动作的B32直接作收益对照。
+
+**停止与账本。** provider23于05:13:34.744Z预留104943，05:13:34.762Z记录aborted/unmeasured；没有response或first-delta证据，不能推定已经计费或零计费。上游取消原因未验证。unknown触发exhausted并令runner终态标记reported_budget_exhausted，**不是428736达到1200000数值上限**。原两条unknown仍保留，新unknown reservation `2f9a7c92-0a3f-47f1-8805-ea0fb98a6362`另记，actual_tokens=null；104943为预留而非结算。总known **5113737/5900000 + unknown3**，名义剩余786263未扣未知且不能作为新运行授权。本次独占尝试已消费；没有基础设施重试/比较授权，不新增付费请求。
+
+| 证据层 | 本次结果与边界 |
+| --- | --- |
+| 功能正确 | 实际单动作/完整观测可达；作者preflight正确拒绝非表达式，未写入；成功创作、安装、trial及未调用组件分支未验证 |
+| 全链路可达 | **未闭合**：提交后即被拒，未到装配/语义输出/后续利用；五类及child/router矩阵未完成 |
+| 自主采用 | 真实普通运行观察到**一次自主投入/提交**；未观察到成功组件采用。不是净收益，也不证明文案因果 |
+| 净收益 | **未验证，验收未通过**：0关、窗口提前停止、无同能力独立对照；未证实效率改善 |
+
+**决定与下一可证伪检查。** B33保持实验状态，不把首次调用称优化成功。下一主因素应针对已观测的作者源码合同摩擦：比较保留受限表达式并提供具体可执行结构/错误恢复，与在保留权限、输入绑定、预算、版本、隔离及输出限制下支持有界多语句程序；不能直接取消host保护或预置ft09答案。候选应复用create/default assembly/current_grid/trial，检验首次提交→安装→真实计算→后续有效动作，而非强制创作数量。原始参数全文回显/归档按需恢复与length后立即取消是独立待查问题，分别缩小因素，不能一次叠加修复后声称因果。当前请求只启动并审计B33，未实现上述下一因素；再次付费前需处理新增unknown及独立授权。B/C/D继续开放；本次新真实结果按既有邮件授权发送一次并保存回执。
+
+B33新真实结果已向用户授权地址595819371@qq.com发送一次，SENT `1a119f2b0bd44811`；[请求](../../tmp/self-harness-goal-20261007/notifications/b33-real-email-request.json)、[回执](../../tmp/self-harness-goal-20261007/notifications/b33-real-email-receipt.json)已保存，不重复发送。owner进程已退出、启动器终态exit1、source_drift=[]；不自动启动新样本。
+
+#### B34 修复 B33 作者与失败恢复：实施前记录（2026-10-08）
+
+用户要求“修复关键发现中的问题”。范围是代码修复与审计准备，不包含已消费B33授权的重用或新的付费样本。真实失败依据为B33原始Pi/provider/bridge记录；继续保留unknown3、完整grid/PNG、权限/CAS、预算、取消和host隔离。本次使用已安装Matt Pocock diagnosing-bugs/codebase-design；用户仅真实ARC验证覆盖skill中的离线测试/行为重放建议，不执行这些建议。
+
+**问题、窄命题和负担。** 三个独立切片，不把它们混成单因素收益：A，受限Python仅eval模式使常见分步计算无法提交，新增纯局部赋值/返回和纯helper、嵌套列表推导，仍编译为既有bounded JSON IR；精确拒绝有副作用的语句，提供对应恢复提示。命题是父能用自然的分步源码表达当前计算，而不需用立即调用lambda嵌套全部局部变量。B，JSON拒绝完整回显原参数，改为有界定位/长度/hash/现有failure资源精确引用；完整raw留在durable日志供按需恢复。命题是同类拒绝不再将raw全文驻留在错误回执。C，PiKernel把length后失败arc_action当progress tool，旧式abort在新provider开始时到达；只让成功工具触发action-boundary，失败不计进展/重置watchdog。命题是失败回执不触发此处abort，允许既有正常loop/length恢复处理；不声称这解释所有取消。
+
+**选择与生命周期。** A复用原IR/编译/限额，优于直接exec不受限Python或删host；不承诺支持任意def/for/append/可变字典。本切片不引入新的executor/worker/必填schema。父仍选择计算/候选、核对结果及行动；runtime负责编译、权限、精确发布/装配和可选trial。B复用task_resource与failure版本/权限，不要求读取完整诊断；没有新增强制读取/提醒。C保留成功真实动作后的原生terminate与旧版兼容abort，保留真正取消、未知和预算停止。
+
+**运行前协议与负例。** 不运行pytest、scripted/mock/smoke或行为重放；本次paid=0，允许源码/AST/Node syntax/依赖/hash检查，不能据此宣称功能/自主改善。下一真实候选仍官方ft09/真实Qwen、研究off/单动作、50canonical动作或1800秒、父子预算和unknown规则另授权；主指标关数及响应确认history chars/bytes。A/B/C各自冻结和标注，未分别真实对照时只能组合探索，不能因果归因。负例保留非法名字、import/属性/任意调用/循环突变、深度与扩展大小、重复tool ID、无效JSON、length与isError失败、真正成功旧版action、取消/unknown和不值得作者/修复的情况。A不自动改写旧候选或猜游戏目标，B不自动修复/执行坏JSON，C不将无观测变化视为失败动作。
+
+**四层状态和决定。** 实施前：功能、全链路、自主采用、净收益均未验证；B33只证明一次作者提交/失败和错误驻留，未到验收窗口。本次待完成源码后逐项记录静态检查与尚缺的真实证据，不发文档/代码状态邮件。B/C/D保持开放。下一验收必须同时审阅真实语义值与后续动作，不把创作次数设为奖励。
+
+#### B34 实现交付与静态检查（2026-10-08，真实复验未运行）
+
+**A：作者计算语法与恢复。** `demo/pi_task_pure_python_lower.py`改用exec模式读取AST，但**不执行作者Python**。局部赋值转为fresh lexical let；仅纯位置参数helper、局部赋值和最终return，helper捕获定义时的早期绑定并静态展开，递归/后续未声明函数不解析；嵌套列表推导转为map/flat_map/filter，元组转JSON array、数组membership转bounded all、!=转not(eq)。补齐IR遍历和free-variable处理，沿用全部source/AST/IR深度、字节、节点、编译超时及native运行限额。没有新增IR操作、executor、worker或host能力。`pi_task_pure_authoring.ts`将compiler的错误行/列带入父回执；schema说明和按需creator/ref同步提供分步计算结构。支持的是受限计算语法：**B33原有for/append、字典突变和f-string程序不会被直接执行**，仍需父依提示改写为comprehensions/纯JSON结果；不把这个限制隐藏为“任意Python支持”。
+
+**B：拒绝回执驻留。** `pi_harness_tool_batch.ts`保留strict final JSON与duplicate-ID拒绝，返回最多240字符的解析诊断、原长度/hash及diagnostic_ref，不再返回raw_arguments全文。完整raw仍保存至原诊断日志，并由现有task-operation-failures及task_resource恢复；引用ID由call ID/name/hash/time生成合法稳定摘要，task scope/version/child grants保持。诊断作为terminal rejected_input、applied=false、不创建pending修复义务，不自动修坏JSON或重试。父可选择短参数重交或按需读取。此修改只删除**错误回执中的**第二份原文；先前assistant调用正文仍在历史，不能声称全部重复/长推理已消除。
+
+**C：失败动作后的错误取消。** 新增证据：B33 `pi-events.jsonl:228`实际记录id40的abort RPC成功，时间05:13:34.773060Z；紧邻length失败动作与provider23即时取消。冻结PiKernel stop_after_progress_tools分支只过滤特定JSON预拒绝标记，没有检查isError；length错误是普通文本、没有该标记，因此进入无native boundary的旧式abort。当前`src/autoresearch_pi/pi_kernel.py`仅在非isError动作工具完成时才进入该边界；watchdog同样不把失败progress调用计成功。正常完成但像素未变的动作仍是成功真实动作，native terminate与旧版成功fallback abort保留；真正permission/budget/unknown/取消不绕过。此处源码原因已定位，**新代码是否消除真实取消仍未复验**；不能追溯填零旧unknown。
+
+**改动和成本。** 7文件有本次限定补丁；[改前快照](../../tmp/self-harness-goal-20261007/b34-before/manifest.json)、[补丁](../../tmp/self-harness-goal-20261007/b34-repairs.diff)、[检查产物](../../tmp/self-harness-goal-20261007/b34-source-checks.json)、[开发检查入口](../../tmp/self-harness-goal-20261007/check_b34_sources.py)。前5个runtime文件的改前hash与B33一致；2份creator参考在工作区此前已更新，保持其他授权内容，本次diff以改前快照为准，不能把全文差异当本轮因素。常驻candidate字段说明增加具体计算合同和一个短例；其他计算说明按需读取，成本仅有source字符/hash，**尚无实测新请求token/history缩减**。新增必填字段/工具/worker/作者门禁0；增加内部语法处理和diagnostic归档职责，移除错误回执raw驻留及失败动作误abort。
+
+**检查与分层结论。** 执行`D:/conda/python.exe tmp/self-harness-goal-20261007/check_b34_sources.py`退出0：2个Python源码AST语法、3个TS Node strip-types syntax、相对import存在、改前hash校验；B33原658文件source drift=[]。检查脚本不执行作者源码或候选函数，也不重放B33动作/工具；未跑pytest/fixture/mock/scripted/smoke。行为和负例目前属于源码审阅，不能记为执行通过。本次新provider/ARC请求0、未发送代码状态邮件，总账仍known5113737/5900000+unknown3。
+
+| 层级 | 本次状态 | Provider/environment及边界 |
+| --- | --- | --- |
+| 功能正确 | 新实现未验证 | 仅静态检查通过；旧B33真实失败用于诊断，不能替代新代码运行 |
+| 全链路可达 | 未验证 | 成功创作/安装/grid trial/后续语义利用及五类矩阵仍缺 |
+| 自主采用 | 未验证 | B33旧版的一次自主提交不继承为B34成功采用 |
+| 净收益 | 未验证 | 新50动作/1800秒样本未运行，不称关数/效率改善 |
+
+**交付决定与下一开发入口。** 三个修复切片实现完成、保持候选状态；没有新runtime冻结或启动授权文件，不复用B33 root。下一样本先以B33冻结为基底纳入指定A/B/C差异，再冻结实际hash/config，并处理新增unknown/额度授权；仅组合样本时按组合探索报告，不分配单因素因果。仍关闭研究、仅单动作、完整grid/PNG、50实际动作/1800秒先到，主指标关数与响应确认history首末峰均chars/bytes，记录父子成本。检查作者是否把loop改写成受限计算并获得真实值、值是否影响后续行动、诊断ref是否真能恢复、length失败之后是否再次出现该runner abort及新unknown。失败或无收益保留原轨迹，不追加强制创作或额外worker。B/C/D仍开放。
+
+#### B34 真实验收冻结与启动协议（2026-10-08，待额度/第三条未知用量授权）
+
+用户要求“真实ARC测试”。可审阅准备完成，尚未发起本次provider/ARC请求。以B33的658文件为基底，覆盖已审阅7文件，其他runtime逐字保留；前5个runtime改前hash一致，2份creator文档包含此前授权的current_grid合同同步，另见`b34-inherited-*.diff`，不算本次runtime修复。冻结`tmp/self-harness-goal-20261007/B34-repairs-arc-source`，archive SHA256 `197d4005921319d85e8a15753befb6ad9793f07051055feca3d87064914a4215`，source drift=[]。准备入口`prepare_b34_acceptance.py`、审计`b34-freeze-audit.json`、完整差异`b34-frozen-vs-b33.diff`。`run_b34_acceptance.py`要求对应hash的新授权、复查全部累计账本/unknown集合，独占创建protocol；拒绝重试和复用root。仅准备脚本运行及launcher AST检查，没有执行工具、fixtures、重放或smoke。
+
+**命题、生命周期与负担。** 一次普通组合探索：A支持的分步计算能否获得真实值并帮助后续决策；B若发生JSON拒绝，回执能否排除完整raw且提供可恢复引用；C若发生失败action，是否不再触发成功progress边界abort。三因素同测，只作断点观察，不分配单因素因果。无对应机会/错误时该因素未验证；仍拒绝for/append突变，不支持任意Python。父负责识别机会、投资/创作、语义采用与反馈；现有runtime负责校验、版本、安装、trial、日志和回执。无强制创作、新worker、组件配额、管理门禁，不注入开发流程。真实权限/预算/CAS/host/环境取消规则、完整当前grid/native PNG保持；预算不足或无价值机会允许放弃。
+
+**运行前协议。** 新root `runs/self-harness-goal-b34-repairs-ft09-20261008`，官方ARC `D:/arc-agi-benchmark/arc-agi-3-benchmarking`/ft09、真实yibu/qwen3.8-27b、Pi父loop、text/image、adaptive reasoning且levels仅off、output4096、advisory、ordinary treatment。关闭Auto-Research与Jev、仅arc_action；50 canonical动作或1800秒先到停止。准确command/environment见`b34-repairs-proposed-protocol.json`；单次独立样本，不恢复B33，不追加启动，不运行中指导作者或修改冻结。
+
+**测量和判定。** 唯一验收依据是真实ARC观察：完成level数，响应确认的最终provider历史chars/UTF8 bytes首/末/峰/均；system/schema/当前观测/images另列，prepared无响应请求不计入。另报父子reported、失败/未知、墙钟、作者→版本→装配→trial语义值→后轮使用→反馈漏斗。旧B33为18动作/0关/532.594秒、history末峰60862，仅历史参照；轨迹/窗口不齐且无独立匹配样本，不证明净收益。预算/取消/错误/提前终局单列，不伪称满50/1800。支持计算仍拒绝或错误值、诊断丢失、失败动作再次误abort为相应反例；合理不使用不是组件配额失败。
+
+**账本与授权缺口。** 全部B* ledger重查known5113737，既有上限5900000，remaining786263；unknown3保持actual_tokens=null。第三条为B33 `2f9a7c92-0a3f-47f1-8805-ea0fb98a6362`；前次单次授权仅覆盖两条历史unknown且已消耗。提案本次最多1200000、累计已知上限6400000（known+run cap6313737），保留三条历史unknown、新unknown立即停、重试0。不是已获授权或完成保证。原Goal prompt要求“结算不清时停止新增付费请求。禁止自行扩额”，因此具体准备后需确认第三条unknown例外及额度。本次paid/ARC请求0，四证据层未验证，B/C/D开放；不发代码状态邮件，真实结果产生后按既有授权发一次摘要并留回执。
+
+#### B34 真实验收启动授权（2026-10-08）
+
+用户在上述具体提案后回复“确认，开始执行”；精确原文保存在`tmp/self-harness-goal-20261007/b34-real-authorization.json`。授权一次1200000 reported、累计已知6400000，保留三条历史unknown、新unknown立即停，50 canonical动作或1800秒先到停止，重试/重启0。`run_b34_acceptance.py`重查known5113737及三条reservation集合、658文件/hash后已独占启动；protocol/owner/log在同目录的`b34-repairs-*`，run root为`runs/self-harness-goal-b34-repairs-ft09-20261008`。执行会话35422只作当前宿主句柄，恢复时需核对owner/实际产物，不假定跨会话有效。冻结不改、研究off、单arc_action，真实效果等待终态，不将启动提升为四层验收或收益。
+
+#### B34 运行中创作失败诊断（2026-10-08，仍待终态）
+
+用户在运行中要求分析“agent尝试自主创建harness组件失败”。按实际B34证据，不修改活动冻结：截至prepared request40，22真实动作/0关、known762043、新unknown0；7次作者中1成功、已安装`task_tool_panel_reader_v1`实际后轮调用4次。以下为阶段快照，终态不得复用为最终指标。检查入口`tmp/self-harness-goal-20261007/audit_b34_authoring.py`只读真实JSON/AST和实际回执，不执行作者源码、不重放工具或动作。
+
+1. **首次失败：原始JSON缺外层闭括号。** provider6/call_9662b88b7ca041cfa6ad5340原raw838字符，解析位置恰为EOF，provider以toolUse正常结束、output311，不是4096截断。Pi流式SDK的正常路径逐片append并发toolcall_delta，未看到collector丢片的证据；没有独立wire捕获，不能给网络层最终归因。strict guard拒绝部分参数执行是必要完整性保护，不应直接删除。
+2. **实际反馈矛盾。** provider7历史内该作者arguments已是补全后的有效JSON，错误却引用无效raw。安装的Pi AI `api/openai-completions.js`finalize通过parseStreamingJson修补并删除partialArgs，后续`JSON.stringify(tc.arguments)`投影修补对象；项目guard另存原raw并拒绝。两者的“原始/展示/执行”合同未对齐，父无法从显示的有效调用看到少了哪个括号。此次trial放candidate内有既有normalizeDirectCreateMetadata处理，不是失败原因。
+3. **源码诊断丢失具体错误。** 下一三次调用的source末行均为`res}`，真实AST的SyntaxError.msg是`unmatched '}'`（line23→18→18,column4）。compiler catch却替换为“source is not a valid bounded Python calculation”，仅保留行列；回执泛称修复字段。第二、三次仍保留同一多余括号，其中后两份source相同。支持子集之外的for/append/import/set/sorted及首次最后仅assignment属于被更早拒绝掩盖的合同问题，不能冒称已经由runtime实际判过。
+4. **后续已实际暴露调用子集摩擦。** active_panel_full两次source用`.join()`/`str()`生成hex strings，真正返回line2,column3“only len, range, pure local helpers…”；父把generator改list却仍保留join。当前candidate是Type.Record(Any)，strict=false，source子合同主要靠字符串说明，实际常驻说明没有完整callable边界。白名单本身有隔离用途；具体callee/源码token、可接受数据表示及错误分类未直接表达，恢复成本偏高，不能靠任意执行Python解决。
+5. **正例确定断点。** 第5次`panel_reader`改用局部assign/nested comprehensions/final dict expression，native tool:panel_reader@v1发布、assembly revision1、current_grid trial返回四个3x3数值矩阵，后轮schema真实增加native工具并实际调用。没有Auto-Research前置、host权限拒绝、CAS冲突或高级review门禁阻断证据。本样本已走通纯Tool直接父创作局部路径，但五类/研究链路、自主选点语义正确与任务收益尚不能宣布通过。
+
+**下一修复建议（尚未实施）。** 优先一个诊断因素：保留bounded SyntaxError.msg、具体失败callee/node和小源码行片段，附机械位置，不自动修改候选；消除raw拒绝与SDK修补历史的无标记矛盾，保留原始参数及非可执行预览的身份。随后按真实采用决定是否将compact typed Tool/source字段与最短可运行网格提取例代替Any合同；不要加必读creator/强制重交义务，也不要直接移除JSON/host/CAS检查或逐错扩大成任意Python。只用下一独立真实ARC观察检验修复轮成本、值→行动、level/history，不把当前成功次数当效用奖励。活动B34按原授权继续，其冻结未改；负例与完整终态另报。
+
+#### B34 真实终态：纯Tool自主创建/装配/后轮使用已观察，验收窗口未达（2026-10-08）
+
+**终态与环境。** 官方ARC ft09、真实yibu/qwen3.8-27b、Pi父、关闭研究/仅arc_action、普通无强制作者运行；scorecard `b99ec16f-82f0-4f67-8076-79b50630e06a`。32 canonical动作、0关、官方reset2，launcher1187.406秒、exit1，runtime request_admission_declined、NOT_FINISHED、无timeout。下一请求需reserve83467而剩余80459，付费前停止；不是新增unknown或硬数值超支。未达50动作/1800秒，**不算用户验收通过，也不宣称优化有效**。parent known1119541、child0、newunknown0；全Goal累计known6233278/6400000，剩余166722（排除原三条unknown）。source drift=[]，owner已退出，不重试/继续启动。输入1061202、cache_read22272、output36067、reasoning0，合计reported1119541；保留历史unknown的actual=null，不以保留量或SDK零值结算。
+
+**唯一主指标。** 56个响应确认最终payload，history chars首4301/末42634/峰54520/均35354.875；UTF8 bytes首4301/末42644/峰54686/均35383.142857。history排除system/developer、当前ephemeral完整ARC观察、typed图片，schema另列。全部文字含system/schema/current的chars首21897/末64485/峰74930/均56662.214286；50次1图、6次2图，当前grid/native PNG保持。第57个prepared请求未入响应确认指标。最后成功动作在最后确认请求，无额外终态复盘费用。历史B33为18动作/0关、末峰60862/均33877.954545；B34另有恢复、轨迹/reset和组合差异，不以较小末值/峰值证明净收益，且均值未低于B33。
+
+**真实创作漏斗与语义。** 8次父自主作者尝试：首次JSON缺括号、3次source末行res}、2次join/str、1次Slice拒绝，共7次失败；1次成功panel_reader，tool:panel_reader@v1、assembly revision1、current_grid trial完成。成功前父按需read_method(tool-creator)，随后自主改用assign/nested comprehensions/final dict；没有必读门禁或forced quota。安装后真实后轮schema暴露task_tool_panel_reader_v1，父以current_grid:true调用7次、均返回四个3x3数值矩阵；input provenance分别随17/18/20/21/23/26/31动作边界刷新。后续父行动理由引用all9→TL8等数值状态并选实际点击，观察到语义进入行动判断，未观察level完成；父仍混淆坐标和目标解释，不将数值计算有效等同游戏方法正确。32 Memory为自动capture，不算作者Memory；无作者Skill/Prompt/Subagent、无child、无已提交效果assessment，保留版本但效用未确认。
+
+**A/B/C修复证据。** A的局部assign及nested comprehensions在真实发布/trial/7调用有功能与普通采用证据；纯helper/其他新语法未完整覆盖。B的5次JSON拒绝回执700/700/700/700/698 chars，共3498，均无raw全文，完整原文与failure引用保留；父未读取diagnostic ref，按需恢复路径仍未由此次自主行为证明。最后请求已无这些旧错误回执，原assistant调用正文是否缩减不能由此推断。C实际request21一次output4096/length动作拒绝后继续至真实动作17，整个运行abort RPC0/newunknown0，旧误abort现象未复现。失败不是真实动作：arc_action attempts37/canonical32。其他权限、预算、取消规则没有绕过。
+
+**未修复诊断。** JSON原raw与SDK修补后history不一致、SyntaxError具体msg被丢弃、源码子集恢复提示不够具体，均保留上节证据。源码实际最后一行res}应回传unmatched '}'及小行片段，而不是generic invalid；join应指明callee，Slice应指明操作/可接受数值数组表示，不能盲目扩大任意Python。7个失败作者响应reported合计118308、全部作者响应134863，包含输入，属于请求组成本而非独立因果失败成本。恢复后同process101468计数从1重起，57个请求中22个bare request_id重复，是新增遥测身份缺陷；这次采用实际顺序＋started_at_ms/captured_at配对重新审计，主指标不变。不能把同名provider21分别在前/后恢复段的length与source拒绝误合并；request_id单独不足以作关联键。
+
+**产物和审计修订。** `tmp/self-harness-goal-20261007/b34-final-real-observations-v2.json`、`b34-real-authoring-diagnosis-v2.json`、`b34-real-failure-observations-v2.json`为最新依据；v1保留历史，v2明确时间/顺序配对，未改runtime。原始产物在新run root；`b34-repairs-audit.json`及root名-lifecycle-audit作分项依据。本轮全部核查只读真实产物/源码AST，没有pytest、fixture、mock、scripted/smoke或工具重放。
+
+| 证据层级 | 状态 | 真实证据与限制 |
+| --- | --- | --- |
+| 功能正确 | 局部支持；完整覆盖未验证 | 一种assign/嵌套推导工具正确返回JSON数值，5短JSON回执，length失败后续动作；未测所有新语法/diagnostic恢复负例 |
+| 全链路可达 | 直接父纯Tool局部路径已观察；完整五类/研究链路未验证 | native创建→精确装配→grid trial→后轮schema→真实调用→行动；无child/router及其余四类矩阵 |
+| 自主采用 | 本样本一种Tool已观察，创作恢复摩擦明显 | 8尝试/1成功及7后轮调用，不泛化为稳定采用，也不把次数当收益 |
+| 净收益/用户ARC验收 | 未支持/窗口未达 | 32动作/0关/1187.406秒，预留预算止；无匹配独立重复，不能称提升能力或净效率 |
+
+**决定与下一因素。** 保留B34为局部可达候选，未宣布全阶段完成；不新增高级门禁/worker/强制作者，不删除研究/host模块。下一开发切片优先精确源码错误与raw/history身份一致性；随后改善源码最短合同，遥测ID唯一化单列维护。真实下一样本需要独立新授权/预算并保持原失败记录，不自动续跑本次。B/C/D开放，父知识反证/跨压缩连续性、工具语义到level收益仍未完成。结果邮件沿用授权发一次到595819371@qq.com并保存回执，不发送代码状态邮件。
+
+**B34结果邮件状态。** 已按既有授权向595819371@qq.com发送一次真实结果摘要；Gmail返回403/Quota exceeded/非retryable，无SENT message ID，不能声明送达。完整请求及回执保存在`tmp/self-harness-goal-20261007/notifications/b34-real-email-request.json`和`b34-real-email-receipt.json`。未盲目重发；后续若补发先查sent避免重复。B33旧邮件SENT不等于B34送达。
+
+#### B35 完整修复路径提案（2026-10-08，设计记录，未实施/未启动）
+
+**历史提案：下方六阶段顺序已被“B35轻量化修订”覆盖。用户明确拒绝增加ID匹配等复杂机制，不再将其作为Self-Harness前置。**
+
+用户问“如何能够彻底修复这些问题”。目标是使生成错误可定位、低成本恢复，实际接受/执行/历史/计量具有一致含义，而不是保证模型永不生成错误或所有工具都带来level。真实依据为B34的7作者拒绝、SDK修补投影、22重复request ID以及1个真实Tool发布/装配/使用正例。沿用同一变更记录；以下六阶段覆盖全部已观察缺陷，按阶段冻结，一个主要因素一个真实行为检查，不把组合样本当因果证明。
+
+**总设计与负担。** 复用task_harness_create现有单次创建/默认精确装配/trial路径，把参数规范化、语法检查、版本及失败分类集中在已有authoring/runtime模块中。父仍决定机会、载体、源码语义、是否重交/使用/保留；runtime处理已授权的机械步骤。新增父必填字段/必读creator/确认门禁/worker/独立validate工具均0。开发元数据由runtime生成；降低重复全文和无针对性修复往返，保留raw、编译源码/hash、版本、CAS、budget及host输入隔离。Memory自动capture继续单独计数，其他四类不被强制创作。
+
+| 阶段 | 狭义命题、实现入口与开发动作 | 对应真实ARC可证伪检查 |
+| --- | --- | --- |
+| 1：统一调用事实并修复身份 | 在pi_provider_telemetry/已有provider事件通道分配不可复用request UID，保留ordinal只作展示；prepared→admitted/sent→headers→completed/declined/unknown沿用同一请求对象，关联budget reservation和tool call。SDK reload/recovery不重用UID；无payload fallback不虚构已发送HTTP。审计旧记录用实际顺序/时间，禁止仅按bare request_id去重。 | 真实发生恢复/失败时，输入、usage、历史、工具回执一一对应；无恢复情境只验证本窗口唯一性，不称恢复完整通过。新未知仍停，不因补ID填零旧unknown。 |
+| 2：保真且可操作的诊断 | pi_task_pure_python_lower保留bounded SyntaxError.msg、line/column及小行片段；unsupported节点保留操作/callee，如Slice、join，而不是泛称invalid source。pi_task_pure_authoring与self_harness路由传递已有分类，保留JSON/源码/不支持操作/版本/输入/执行不同阶段。语法未通过时只报真实语法问题，AST通过后可一次收集互不依赖的不支持特性，避免产生虚假的undeclared连锁错。 | 若真实父再写res}，收到unmatched '}'和对应行；join/Slice指出实际节点；重交是否修改真实断点、失败请求/轮次成本是否下降。没出现相应错误则该分支未验证。 |
+| 3：原始参数与历史一致 | pi_harness_tool_batch及现有provider payload投影共用同一最终参数事实。流式补全可用于预览，但明确其非可执行身份；最终有效raw才授权执行，原raw哈希/错误位置/小尾片段可恢复。被拒绝调用在后轮历史保留原参数或清楚标记修补预览，不能把未提交的修补对象冒作原始调用。拒绝仍是terminal/no execution，不生成pending义务。 | 真实无效JSON仍零写入/零动作，后续父实际输入可辨认被拒绝原文和展示对象，不再出现无解释的有效调用＋invalid错误。正常调用、duplicate-ID及length保护不绕过；不自动补括号并执行。 |
+| 4：固定一种默认作者合同 | 在pure authoring/lowerer/原schema和creator文档使用同一能力定义及版本/hash，生成精简说明。首选复用已成功的bounded calculation：明确assign、嵌套推导、len/range、final JSON值及数值数组输出；默认Tool candidate用有限字段而非纯Any，保留其他载体兼容。typed schema约束外层，不能验证source字符串语法。若需要扩大Python子集，先定义一组有限纯操作的完整语义/限额再分批实现；不能逐错加任意函数、假称完整Python，或机械改写join为矩阵而更改作者输出合同。 | 普通真实父选择短计算后，能凭实际入口提交合法结构并获得值；未支持操作有准确反馈。程序/schema/按需文档同版本，默认路径不要求读手册或知道IR/host路径。若父仍持续以普通Python预期重试，则合同设计未成功。 |
+| 5：保持首次获益路径短并管理失败生命周期 | 复用create的规范化→preflight→版本写入→精确装配→可选trial→后轮暴露。高级装配/resource/CAS字段留内部或按需；取消/权限/预算保持。区分published/assembled/trial各实际状态，trial失败保留已发布版本，不假称整个创建未写入。成功回执压缩为版本ref、装配状态、真实结果/错误及按需诊断ref，全文一次durable保存；同一source hash同一错误可短报未变化，父自主改写/放弃，不自动重试/强制修复。 | 新Tool真实安装、后轮schema存在、同版本调用返回正确语义，当前grid provenance随动作刷新；真实trial失败或环境变化时状态诚实可恢复。失败不触发ARC progress abort，不留虚假pending。对照实际provider历史和管理成本，完整current grid/native PNG不删。 |
+| 6：真实任务验收、决定与泛化 | 每阶段独立freeze并记主要因素；最终冻结完整候选做普通官方ARC/真实provider，保持研究off、单arc_action、相同推理/输出/模态，50 canonical动作或1800秒先到。追踪机会→识别→投资→候选→装配→语义使用→反馈→保留/修订/退休及合理不使用。主指标level和响应确认history首/末/峰/均，父子reported/失败/未知/时延另列；判断净收益需要匹配独立重复样本。 | 达到窗口只是实验完整性；实际level/history及真实值→后续行动决定是否支持收益，不能奖励组件数量或只凭注册/调用通过。预算提前止、错误/取消/终局提前止均报告未达窗口；其他四类和Auto-Research五类完整链路按各自真实证据扩展，Tool成功不替代。 |
+
+**作者语言的完整选择。** 当前优先保留已有bounded IR实现，发布诚实的计算子集合同，利用JSON数值矩阵而不是要求作者重编码hex字符串。如果真实需求持续集中在for/append/slice/string转换，可另开纯计算语义扩展切片，先约定返回、循环、局部突变、集合/字符串及异常语义的完整范围与限额；更换执行substrate属于独立架构实验，不能把直接exec作者Python当此次缺陷修复。host输入绑定、资源权限和计算限额藏在implementation；agent只选输入与语义，不管理host协议。Provider若真实支持strict schema可独立验证采用，但不得为了strict化把现有可选字段改成mandatory null，也不能把schema约束夸成源码正确保证。
+
+**优先顺序与归因。** 先阶段1使后续比较可信，接阶段2解决已经证实的具体诊断缺失，阶段3消除raw/SDK矛盾，再阶段4统一合同；阶段5以复用B34成功路径和缩短回执为主，完整候选在阶段6验证。每个切片记录新增resident字符/schema/token实测、减少的父决策和管理往返；身份元数据不上游戏prompt，指南不增加必读义务。阶段1/2/3均不需要新的model worker；语言语义扩展或其他载体用途呈现不得混入同一单因素净收益样本。
+
+**预算、证据与交付。** 本条仅设计，未改runtime或启动真实请求。B34授权单次已耗用、现有累计known6233278/6400000+unknown3，不能将余166722自动当完整新验收授权，也不能虚构模型usage或把独立其他chat账本归入本Goal。真实实验按用户已有“只真实ARC”要求，不使用pytest/fixture/scripted/smoke充当新验收。新增完整运行需先准备具体冻结/协议，再按当前授权缺口处理预算；本地实施可独立推进。功能正确、全链路可达、自主采用、净收益分别更新；未测场景保留未验证。B/C/D未完成项是研究到行动、父子总成本与跨压缩认知连续性，这六阶段降低其基础协议摩擦，不能直接勾选完成。
+
+#### B35 轻量化修订（2026-10-08，用户偏好覆盖上一提案；后续实施见下文）
+
+用户明确“我认为不应该增加额外、复杂的机制（如ID匹配等）；我期望是往轻量化、简便的方向优化”。撤回上一提案的ID关联扩展/事件生命周期作为第一阶段，不建request matcher、修复调度器、额外worker、自动重试队列、contract registry或新的创作门禁。已有权限、预算、CAS及隔离保持原实现；不把现有必要引用和账本扩成父管理职责。重复ID属于已观察遥测缺陷，仍记录；本次复用已有实际时序/时间戳审计，局部编号维护可另行处理，不阻塞组件创建。不能通过删计量或把未知填零来省事。
+
+**真实问题与窄命题。** B34已经成功走通一个Tool创建/装配/trial/后轮调用，证明无需先建新身份关联系统。7次作者失败主要是输入/源码错误、丢失具体原因及子集合同误解。命题是直接改善现有入口和回执，减少同错重交、找手册和安装管理往返，而非提高创作数量。支持的计算仍无法完成首次值、错误重复未减少、历史或管理开销上升，均不能称轻量化有效。
+
+**当前实施路径仅三个切片。**
+
+1. **直接修现有错误提示与反馈矛盾。** 在现有compiler catch保留SyntaxError.msg、行列和一个短源码片段；unsupported操作指出实际callee/节点。沿用现有issues/message，不新建分类平台。现有JSON guard保留最终严格校验；拒绝回执明确原raw在哪个位置/EOF失败、SDK展示对象已修补而未执行，先利用已有短回执解决歧义，避免引入跨事件匹配系统。不得静默执行修补JSON。没有执行的拒绝结束本次尝试，父自主改写/放弃，不追加强制任务。
+2. **缩短并澄清现有作者接口。** 保持同一个task_harness_create；默认作者提供名称、用途、内容/程序，沿用可选trial/current_grid，版本和默认装配使用已有实现。程序说明清楚给出实际支持的最短assign/推导/final JSON例子与len/range范围；不要求父理解IR/host/resource绑定细节。先删矛盾/过时说明和默认无必要的高级字段展示，不扩充一套schema平台或新的Python方言；文档与源码直接同步，不加runtime合同注册机制。若语言子集仍是主要失败来源，用后续真实证据决定替换/扩展，不逐错无边界加规则。
+3. **复用一次调用的首次收益路径、减少重复回显。** 保留已有效的create→默认安装→trial返回值→下一轮调用。高级装配仍按需可选，默认父不额外确认。回执只展示已有版本引用、安装结果及值/具体错误；深层重复的activation/current_assembly/assembly_receipt全文按现有资源恢复，不新增存储/索引系统。trial失败诚实报告已写入/已安装状态，保留恢复入口；不强制读creator、修复、review或feedback，不自动从Memory推断作者成功。
+
+**生命周期与成本。** 父推进机会识别、投入、候选语义、使用和价值判断；runtime复用校验、发布、默认精确装配、执行与短回执。新增工具/父必填字段/模型worker/匹配协议/动作门禁/管理回合目标均0，实际schema/常驻文本以替换和缩减为主。只将必要机械职责放现有implementation，并删除重复内容，不能以“藏在内部”代替降低实现复杂度。host当前grid输入与计算限额保持；Auto-Research继续bypass且保留模块，单arc_action与完整grid/native PNG延续。
+
+**验证与决定。** 每次一个切片，真实官方ARC/真实provider观察错误→父改写→发布/装配→真实值→后续行动，合理不使用允许。用户验收仍50实际动作或30分钟先到，关数/响应确认history首末峰均为主，父子reported/失败/时延补充；提前预算止单列，不能用提示更短或调用更多宣布成功。无新增实验授权或运行，本轮仅修订开发方案，四层证据不提升。研究到行动与跨压缩连续性的B/C/D仍开放，身份维护不作为它们的创作前置。
+
+#### B35 轻量化实施协议（2026-10-08，用户已授权实施）
+
+**问题与命题。** 沿用B34官方ft09/真实yibu qwen3.8-27b的8次作者提交、7次失败/1次成功实录和三份v2审计；失败断点为最终raw JSON与SDK预览歧义、源码诊断具体msg丢失、子集预期不清。窄命题：改善现有反馈/契约/回执后，父能修改实际错误，复用一次create默认安装/trial获取正确值，减少同错重交与重复历史。数量增加本身不支持命题；错误持续、关数无进展或历史/管理成本上升均不支持收益。真实错误已是红证据，用户“只真实ARC”覆盖技能的离线复现建议；本次不执行pytest、fixture、mock、scripted smoke或轨迹行为重放。
+
+**设计与成本。** 三个顺序切片：保留具体语法/callee/切片错误及短源码位置、明确最终raw与修补预览；用已有schema说明/按需creator说明最短数值计算契约；只精简成功create的父模型回执，失败回执及原生details/持久记录保留完整，仍靠已有精确component/assembly资源恢复。不新建存储、匹配器、worker、工具、必填字段、强制读/修复/反馈或动作门禁。父负责识别、投入、候选语义、实际使用及价值判断；runtime复用校验→发布→默认精确安装→可选trial。合理不使用/放弃允许，trial失败不撤销已提交版本；权限、预算、版本CAS、取消、host数据隔离/限额和完整ARC grid/native PNG保持。Auto-Research保持模块/验收bypass，单arc_action。与本轮无关的其他chat改动保留。
+
+**有界检查与运行前协议。** 本轮范围是实现和AST/Node语法、相对import存在性、差异/hash检查；预改快照见tmp/self-harness-goal-20261007/b35-before/manifest.json。功能/接线/自主采用/净收益在新版本均未验证。下一普通真实官方ARC探索候选保持B34 provider/模型、ft09、reasoning off、output4096及模态，其余实际生效差异须由冻结manifest披露；50 canonical动作或1800秒先到。主指标level数量及响应确认history字符/UTF8字节首末峰均，辅以父子reported（失败/缓存/未知包括在内）、延迟、管理轮及错误→修订→装配→语义值→后续行动。不强制创作、不奖励调用次数；无相应错误则对应恢复分支未验证，提前预算止不算完整窗口。负例包括无效raw拒绝零执行、unsupported调用/slice、闭合schema/限额独立错误、stage-only、trial失败已安装、取消/版本冲突和合理放弃。最终组合样本有多个切片混杂，只作探索，净收益需匹配独立重复对照。
+
+**预算与边界。** B34单次授权已耗用，known6233278/6400000，余166722不含历史unknown3；不把旧unknown填零或自动复用旧启动授权。本地实施paid0；未获得新具体运行授权前不启动付费验收。B/C/D研究到行动、父子总成本、跨压缩认知连续性仍开放。
+
+#### B35 实现交付与隔离候选（2026-10-08，真实行为待验）
+
+**实现入口。** `demo/pi_task_pure_python_lower.py`保留SyntaxError原msg；unsupported调用指出实际callee，切片指出对应提取写法，语言能力和计算权限没有扩展。`demo/pi_task_pure_authoring.ts`沿已有issues/message加错误行/列附近最多120字符源码（原错误消息最多240字符，仍最多8项诊断）；原生IR验证和独立limits诊断保持。`demo/pi_harness_tool_batch.ts`沿已有拒绝回执明确“最终raw拒绝、SDK历史可能是修补预览”，最多120字符raw尾片段帮助发现EOF/闭合问题，全文仍用已有failure资源恢复；无效raw不修补执行，duplicate-ID防护保留且不误称JSON语法错误。
+
+`demo/pi_task_local_self_harness.ts`的现有candidate说明使用一个短数值矩阵例子，说明最短assign/推导/final JSON，其他四类字段保持。creator入口手册缩短，高级能力/历史绑定/限额留原按需reference；没有强制读/修复义务。成功create的provider上下文副本只保留publication/installed状态、精确版本和assembly ref、短use入口及原样trial/run语义结果/错误/输入provenance；重复activation/current_assembly/requested_assembly深层正文移出副本。完整原生content/details、持久publication/assembly/trial日志和现有完整性hook未改；失败/部分提交/装配失败回执保持完整。trial失败仍诚实保留已发布/已安装状态，不变成mutation失败；stage-only显示installed=false。没有新增工具、字段要求、worker、ID matcher、重试或调度。
+
+**成本与检查。** 当前工作区candidate说明758→718字符，create工具说明178→187，合计936→905（−31）；按需Tool入口手册−1314字符，advanced reference+582字符。相对B34隔离版本两个schema说明合计930→905（−25）；这两者比较口径不同，不能混称全部schema/provider token节省。错误消息在实际失败时增加短上下文，不常驻；成功receipt具体历史节省量留真实provider确认，未行为重放估算。源代码增加是局部消息/投影实现，不是新runtime决策组件。
+
+已执行当前工作区及独立冻结的Python AST/Node语法、相对TS导入存在性、来源hash/差异核对（共10个语法检查，含准备器/未启动launcher）；B34/B35各658文件无漂移。审计和reviewable diff：`tmp/self-harness-goal-20261007/b35-source-checks.json`、`b35-lightweight.diff`、`b35-frozen-vs-b34.diff`。未执行pytest/fixture/mock/scripted smoke/行为重放；本轮provider请求0、ARC请求0。这些检查只证明源码可解析和来源完整，不证明功能正确或收益。冻结准备曾因非唯一文本锚点在任何写入前停止；缩窄到原两行上下文后完成，未影响历史运行。
+
+**冻结与下一真实检查。** 新候选`tmp/self-harness-goal-20261007/B35-lightweight-arc-source`，658文件，archive SHA256 `794c749c5513e422e5dc58d7dccc32d4188785b60fe018ba59fcdd6b775b365b`。以B34精确冻结为底，只叠本次6文件切片；当前工作区其他chat已有self-harness变更继续保留，不混入该候选，差异见`b35-inherited-self-harness.diff`。这不是当前整个工作区的验收；未来整合需另核对实际生效路径。研究off、单arc_action、真实官方ft09/Qwen/off/output4096配置与完整grid/native PNG继承B34。协议`b35-lightweight-proposed-protocol.json`和已有守护逻辑复用的`run_b35_acceptance.py`均已准备但未启动；launcher需要新本次授权、准确freeze、账本/unknown集合一致性检查，不能使用B34授权或自动重试。下一观察仍50 canonical动作或1800秒先到，以level/history首末峰均决定效果；组合探索有混杂，不能单因素归因。
+
+| 证据层级 | B35状态 | Provider / environment | 证据与边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 未验证 | 本地Python AST/Node只读源码检查，无provider/ARC请求 | 语法/导入/hash通过；负例和功能行为仍待真实ARC |
+| 全链路可达 | 未验证 | B35真实ARC/Pi尚未启动 | B34单Tool路径为历史依据，非新版本或五类闭合 |
+| 自主采用 | 未验证 | B35普通真实Qwen尚未启动 | 不强制创作，不把Memory自动capture计作作者 |
+| 净收益 | 未验证 | 无B35真实任务或独立对照 | 字符减少不等于token、关数或总成本改善 |
+
+**交付决定与预算。** 用户授权的轻量化代码/文档修改完成，保留实验状态，真实采用/收益不作成功声明。known6233278/6400000、剩166722+unknown3，B34单次已消耗；已准备下一具体提案：本次最多1200000 reported、累计known上限7500000、仅一次且新unknown立即停，保留历史unknown3。该提案尚无授权、未启动、不增加旧额度；预算不足/取消/终局提前止单独报告，仍不能算达到验收窗口。B/C/D继续开放；无新真实结果，不发送code-only邮件。
+
+#### B35 真实验收启动授权（2026-10-08）
+
+用户在具体B35额度/历史未知例外问题之后明确“开始真实ARC执行”，授权按该提案启动，不重复索要确认。一次普通官方ft09/真实yibu qwen3.8-27b/Pi，reasoning off、output4096、text/image、研究off、单arc_action；50 canonical动作或1800秒先到，本次1200000 reported/累计known7500000，保留历史unknown3，新unknown立即停，no retry。授权文件`tmp/self-harness-goal-20261007/b35-real-authorization.json`引用精确freeze SHA256 `794c749c5513e422e5dc58d7dccc32d4188785b60fe018ba59fcdd6b775b365b`。请求前known6233278（不含unknown），若账本/freeze变化则已有launcher拒绝付费准入；不修改运行中源码或人工引导作者。真实终态前四层不提升，B/C/D仍开放。实际protocol/owner/launch-result在同目录，正式run为`runs/self-harness-goal-b35-lightweight-ft09-20261008`。
+
+#### B35 真实终态与作者断点（2026-10-08）
+
+官方 ft09 / yibu qwen3.8-27b / Pi 父 loop，研究关闭、单 arc_action。41 canonical 动作、0 level、6 RESET、1165.985 秒；parent reported 1,118,098、child 0、新 unknown 0。下一请求预留 92,683 > 剩余 81,902，付费前停止；未到 50 动作或 1800 秒，验收窗口不完整。响应确认的 51 个请求 history chars 首 4301 / 末 52165 / 峰 52710 / 均 42059.5098；UTF8 bytes 首 4301 / 末 52186 / 峰 52742 / 均 42090.0980。source drift=[]。详见 `tmp/self-harness-goal-20261007/b35-final-real-observations-v2.json`。
+
+7 次作者尝试，5 拒绝、2 发布装配和初次 trial 成功；后续 native tool 调用 3 次。两次失败是原样非法 Python（分号后 def），三次是合法 Python 的 DictComp/str 被子集拒绝。失败位于 candidate 校验到发布之前，没有观察到 research、ID 匹配或高级装配门禁导致这些拒绝。准确诊断没有防止旧失败源码重交；两工具的采用不证明正确目标推断或通关收益。作者/失败逐条证据见同目录 b35-real-authoring-diagnosis-v2.json、b35-real-failure-observations-v2.json。累计 known 7,351,376 / 7,500,000，历史 unknown 3 保留；本次授权已耗用、不重试。
+
+#### B36 普通 Python 执行替换协议（2026-10-08，用户明确要求移除专用方言）
+
+**真实问题与窄命题。** B35 的合法 Python 创建失败来自专用 lowerer，不是语言错误。移除 source 到受限 IR 的默认转译，直接使用普通 CPython。命题：普通 Python 的函数、循环、局部突变、字典推导、切片、str/sorted/标准库不再因自制方言拒绝，正常源程序能经同一 create→默认装配→trial→后续 native call 计算授权公开输入。真实语法错误、非 JSON 结果、资源超限仍如实失败。这样减少学习/改写方言、查作者手册、反复修复的父决策及历史错误负担；不能预先承诺 level 或净收益。
+
+**方案与撤回。** 已撤下未验收的自定义 Python AST 解释器（源码/hash/旧协议存于 b36-withdrawn-ast）；恢复仅本轮改过的两文件，保留 B35 和其他 chat 改动。用户明确要求避免 Docker；采用固定 CPython 3.12 WASI 模块 + Wasmtime 49.0.0，按调用启动进程，无容器/daemon、无 host preopen/环境/网络/桥接，内存/fuel/墙钟/输出限额。标准库 filesystem 已嵌入 WASM，仅此 bundled 内容可见。解析只检查 CPython 本身语法，不加 AST 操作/方法/导入 allowlist。保留旧 JSON IR 的旧执行语义；source 旧拼写作为兼容入口，新 task-python-v1 不增加必填。相比继续增添语法糖，这会多一项开发环境依赖和每次 WASM 编译与启动延迟，但删除自制语言实现与作者限制。WASI 依赖不可用时报告执行环境问题，不在 host 回退 exec 或把无执行能力的发布说成成功。
+
+**生命周期、权限与恢复。** Agent 判断机会、价值和修订/放弃；runtime 机械解析/存储/默认安装/授权输入准备/隔离计算并提供结构化结果和反馈。name/description/source 与可选 trial 足够，无新 worker、matcher、管理轮或 action gate。版本/CAS、budget/cancellation、assembly 选择、授权 exact resource 和 current_grid snapshot 保持；输入仅由原 host preparation 传入 JSON 副本，不传 root/adapter/token。WASM/runner hash 固定到具体工具版本；超时/取消停止该运行进程（guest 不能生成 host 子进程）。失败 trial 保留已发布事实，旧版本仍可退役。WASI 中可用标准库属于普通 Python；OS 服务/外部包并非该执行环境默认能力，host 文件/网络/隐藏状态不授予。
+
+**运行前实验协议。** 只以真实官方 ARC + yibu/Qwen + Pi 的观察验收，本地只语法/import/hash/环境只读检查，不做 pytest、fixture、行为重放或 scripted smoke。主变量 source 执行 substrate；与 B35 比较需披露其未满窗口及独立轨迹。新候选冻结后普通运行研究 off、仅 arc_action、完整 grid/native PNG，50 canonical 动作或 1800 秒先到；付费额度、累计上限与历史 unknown 延续须新具体授权，不复用 B35。主指标 level、响应确认 history 首末峰均 chars/UTF8 bytes；辅以父子 reported/unknown、时延、机会→投入→创建拒绝/成功→装配→实际语义值→后续行动。实际出现非法源码、非 JSON、超时/OOM/取消、越权输入/host 访问、旧 IR、trial 已发布失败、stage-only、合理不使用均保留。没有自主创建或没有正常语言需求则不足判定；正常 Python 仍被方言拒绝即推翻修复命题，level/上下文不改善则不能称净收益。净收益需同预算独立重复比较，不以创建数量奖励。Auto-Research 功能保留，语法格式识别仅同步兼容，不改研究调度。
+
+**证据与交付。** 目前 B36 功能正确、全链路、自主采用、净收益四层均未验证；环境准备与源码检查不作验收。B35 支持断点诊断与局部两工具采用，未支持窗口验收、level 提升或净收益。B/C/D 延后项保持开放，下一可证伪检查为新冻结真实普通源代码的创建/计算/后续 parent 行动；未获新 paid 授权前不启动模型请求。
+
+**B36 实现与静态交付。** 普通 source 已经接入 `pi_task_pure_authoring.ts` → `pi_task_local_tools.ts` 的 immutable 版本存储 → Pi native Tool → `pi_task_python.ts`/`pi_task_python_runtime.py` WASI 执行；self-harness 默认装配/初次 trial/后续 use 回执及格式路由同步。原 lowerer 从专用语法转译缩为 CPython parse/compile（不执行作者）；JSON IR evaluator 恢复原样。无 Docker、自定义 AST 解释器、修复 worker 或新增作者必填。旧 source 拼写兼容，已发布 IR 不变；真实 Python 语法错误仍拒绝，OS 服务/第三方包须由执行环境支持，不承诺通用 host Python 环境。创建只读核对依赖可用性，执行前按既有版本完整性机制核对固定 WASM/runner；权限及 canonical 数据不授予 guest。
+
+依赖准备：host Python 3.12+，`npm install` 安装固定 @antonz/python-wasi 3.12.0（26,267,204-byte module），`python -m pip install -e ".[self-harness-python]"` 安装固定 Wasmtime 49.0.0。WASM 与 upstream release SHA256 一致 `e5dc5a398b07b54ea8fdb503bf68fb583d533f10ec3f930963e02b9505f7a763`；只编译/读取 imports，43 项均属 wasi_snapshot_preview1，没有实例化或执行 guest。逐调用编译/启动的墙钟成本未测；总 runtime timeout、fuel/epoch、linear-memory 和输出上限保留。npm 的既有 Pi shrinkwrap 展开已归档并从提交用 lock 移除，只增加 WASM 条目，现有 package 版本无变化。静态 TypeScript 使用当前解析到的本地 Pi0.87 类型；既有 ARC launcher 仍使用 global Pi0.80.6，不能拿前者当后者接线验收。
+
+workspace 与独立 candidate 的 Python AST/guest-wrapper AST/Node syntax/相对 import/hash/JSON 检查通过；没有行为检查、fixture、replay、mock 或新 provider/ARC 请求。完整 tsc 未通过：B35 同环境 139 项、当前 130 项，按文件/诊断文字归一无新增诊断；新 Python runtime/authoring/native tools 三个核心文件均零诊断。这仍不是功能或真实链路通过。产物 `b36-source-checks.json`、`b36-typecheck-comparison.json`、`b36-wasi/imports.json`，四层仍未验证。
+
+独立 candidate 只在 B35 上叠 15 文件改动，保留 workspace 中其他 chat 的 direct-use/child-context 改动但不混入验收；未改文件与 B35 字节一致。660 文件 freeze `B36-normal-python-arc-source`，archive SHA256 `4d9f866548e1d59b53ba79840e7eeb8ef4d107e55b57bb01c56645e844ef1997`；协议 `b36-normal-python-proposed-protocol.json` 与独占 launcher `run_b36_acceptance.py` 已准备，不存在 B36 授权/付费/运行目录。提案一次1,600,000 reported、累计已知上限9,000,000，保留历史unknown3、新unknown停、重试0、50 canonical 动作或1800秒先到。此额度按 B35 的41动作/1,118,098并留请求预留空间提出，不是已授权；原 Goal §4 要求不能自行扩额（当前余148,624）。下一步必须取得新具体额度/未知保留授权，再运行真实 ARC；代码实现不是验收通过。B35真实结果邮件已通过Gmail发送一次，SENT `1a11acb2daabe598`，请求/回执保存于 notifications，不重发。
+
+**B36 真实运行已启动（2026-10-08）。** 用户明确授权本次1,600,000 reported / 累计9,000,000、保留历史unknown3继续；新unknown立即停、零retry。账本7351376与unknown3、660文件freeze/hash/drift=[]及依赖校验通过；授权记录 b36-real-authorization.json、独占 protocol/owner/log 已保存。真实 root `runs/self-harness-goal-b36-normal-python-ft09-20261008`，owner PID260320、exec session67416；恢复前先核对终态/owner，绝不重复启动。配置维持研究 off、单arc_action、真实官方ft09/真实yibu-Qwen、完整grid/native PNG、50动作或1800秒，观察结果在途；静态/依赖检查不代替实际验收。前段“尚未授权/启动”是历史准备状态。
+
+#### B36 真实终态、语义审查与重复创建诊断（2026-10-08）
+
+**真实窗口与主要指标。** 官方 ft09 / 真实 yibu qwen3.8-27b / Pi0.80.6，普通父自主运行，研究关闭、仅 arc_action、reasoning off、output4096，无 Docker，无运行中代码修改。达到1800秒截止，launcher含清理1819.422秒，exit1/runtime timed_out=true；32条已确认canonical动作、最后已确认0关。第33次环境step出现约300秒HeadersTimeoutError，最终官方scorecard文件缺失且summary.native_scorecard=null，不能把32/0说成完整官方终态对账，也不能把未确认动作填零或重放。1800秒观察边界已到，任务未完成、净收益不支持；最终环境结果有缺口。
+
+71个响应确认请求的history chars首4301 / 末48687 / 峰51436 / 均37139.295775；UTF8 bytes首4301 / 末48746 / 峰51498 / 均37179.183099。口径排除system/developer、当前临时ARC文本、图像transport，schema另计。到最后成功动作的67请求history chars首4301 / 末41132 / 峰51436 / 均36535.582090。全输入文本（含system/schema/current）末73296、峰76045、均60067.563380字符。B35是不同轨迹且未满窗口，不能将历史均值差异当因果效率收益。
+
+**实际转化与断点。** 12次create，3次发布/默认装配/初次trial成功，9次拒绝：1次raw JSON unterminated string（复制长网格到trial，尚未进入Python执行），8次同名create冲突（ft09_panels7次、ft09_blocks1次）。本轮未观察自制Python方言拒绝或成功工具的执行失败。后续真实native21次：panels4、blocks13、full_analysis4；初次trial3次另计，32 Memory版本是自动capture，不算自主创作。普通函数、循环、append、列表推导及顶层import json实际执行得到JSON；其他语言/资源/隔离负例仍未验证。
+
+8次冲突中，panels首次重交与已成功源完全一致，随后6次使用同一修改稿；blocks冲突也是修改稿。真实provider输入含成功published/installed/resource_ref和冲突消息，不能归因为成功回执完全不可见或研究开关。创建tool描述为“Save and install”，实际仅create；更新须切换task_harness(action=change,changes=[operation=update,...])，change默认仅stage，create默认install并可trial。当前错误仅“use update with the current version”，无具体下一调用。代码实际上允许update省略target_version并在内部解析current，但回执没有说明。8次确定在pre-write阶段拒绝还被通用failure记录为operation_failure/applied=unknown/retryable=true、required_next_call=inspect，误导恢复状态并增加管理负担。以上是接口/恢复缺陷与行为相符的诊断，Agent内在原因及各因素因果贡献未由单次轨迹确定。
+
+**语义与成本。** panels的rx+6采到分隔颜色5；blocks将small3起点设为row18，跨到背景/大面板，输出[5,5,5]。full_analysis定义提取函数但不调用，最终返回硬编码旧矩阵；第27/29动作边界的输入hash不同而输出hash相同，其semantic_effect_observed=true仅表示runtime非恒等输出，不能证明任务正确性或收益。另有3次同工具/同动作边界/同输入输出hash的重复后续调用。21次native完整Pi工具时延平均2.087891秒（1.876059–2.356822），guest execution平均156.857毫秒；不能只以guest字段报总调用成本。9次失败作者响应reported161172，包含该请求全部输入/输出，不能当纯拒绝增量成本。
+
+parent已知reported1457408（input1399356、output50628、cache_read7424，reasoning0），child0、新provider unknown0。累计known8808784/9000000，名义余额191216未扣历史unknown3；原3条unknown保持未结算。账单货币值未获得，registry cost非真实账单。授权的一次运行已消耗，owner结束，source drift=[]，无基础设施retry或新付费请求。
+
+**四层证据与决定。** 功能正确：已测普通源样例可运行，语义坐标/固定输出有缺陷，未测负例未验证；全链路：直接Tool→发布→装配→trial→后续父轮native路径已观察，五类/child/research closure未验证；自主采用：3个父自创Tool及21次后续调用已观察，修订入口失败、一般采用和任务帮助未证明；净收益：0已确认关、缺最终scorecard、无matched独立对照，不支持优化有效。暂保留普通CPython实验实现，不为修订失败重新加方言、worker或action gate。下一轻量单因素检查是统一保存/修订路径并复用内部版本/CAS：相同已发布内容可复用，修改稿沿现有update默认装配/试用；同名不同kind及并发变化仍需完整性检查。纯pre-write拒绝应明确applied=false，不要求盲目inspect。此为后续候选方向，本轮未实现或付费验收。
+
+证据：`tmp/self-harness-goal-20261007/b36-final-real-observations-v2.json`、`b36-real-authoring-diagnosis-v2.json`、`b36-real-failure-observations-v2.json`、`b36-real-semantic-observations.json`及真实root的summary/Pi/provider/bridge日志。审计仅读取真实产物及检查记录源码，没有执行作者代码或行为重放。B/C/D继续开放。结果邮件按既有授权发送一次，具体状态以notifications内独立回执为准。
+
+#### B36验收版本与已优化prompt不一致：结论修正（2026-10-08）
+
+用户指出其他聊天已经优化五类组件提示。当前会话没有可调用read_thread工具，未核实引用聊天内容；以下仅以仓库实施记录、当前文件、B36协议及真实provider输入为证据。`docs/plans/2026-10-08-self-harness-direct-use.md`的“组件性质与直接入口：实现及验证结果”记载标准/简洁ARC提示、索引/schema等已清理具体任务→指定Tool的推荐。当前`demo/prompts/arc_decision_cycle.md:17`和concise版:15确为中立的“The task-local harness index describes optional component types…”；两个文件mtime均为2026-10-08北京时间15:24:53（mtime只是辅助证据，不独立证明修改时刻）。
+
+B36于北京时间17:27:22启动，实际从B35冻结继承并仅叠普通Python的15文件切片，source_changes不含上述两份ARC任务prompt；冻结中的相应行仍是“For exact grid extraction, counts or comparisons…author a small Tool with trial={current_grid:true}”。B36首轮真实HTTP payload已确认包含旧推荐，先前审阅的实际schema也保留旧Tool优先说明。两份文件workspace与freeze hash不同。由此可以确定：B36没有验收工作区的全部五类提示优化，旧文案通过候选继承进入实际请求，而非新中立prompt已生效后又由模型自行复述。
+
+这是验收候选集成遗漏，不能以“隔离单因素”替代核对用户已经授权的当前基线，也不能将B36只创建Tool归因于当前工作区prompt仍缺Skill说明。前文有关入口偏置的诊断限定于B36旧冻结；当前新prompt的真实自主选择/效果仍未验证。保留B36所有冻结、日志与用量，不改写历史或启动新付费运行。下一候选应先审阅合并已完成的提示/入口优化与普通Python改动，逐项解决交叉文件差异，再核对拟运行payload与源码清单；无需新增runtime门禁/Agent义务。是否创建Skill等仍以该候选真实ARC观察判定，B36不能充作它的验收。
+
+#### B37 当前工作区完整冻结（2026-10-08，用户授权仅创建快照）
+
+**问题与窄命题。** B36继承旧冻结而遗漏工作区已经优化的ARC提示和五类入口。本次按用户“冻结为B37”将当前工作区源码、提示、开发文档和依赖声明一并保存，不再按B36白名单拼接。可证伪命题仅为版本完整性：两份中立ARC prompt、五类索引/当前入口及普通CPython执行必须同时出现在一个字节可核对的B37快照，恢复副本与归档/manifest一致；缺任何项或冻结期间发生源文件变化即不能宣布冻结完成。
+
+**范围与成本。** 复用既有source.zip/source-manifest/restored结构，包含已跟踪及未跟踪的项目源码，不修改runtime行为、不新增Agent手续/门禁/worker，不读取或复制provider凭据、node_modules、运行历史、缓存和本地连接器配置。B36及其他历史快照不变；B37是当前工作区组合版本，不能称只有prompt一个变量。相对B36的added/modified/removed清单及文本diff均保留，未经验证的工作区变更不变成通过项。
+
+**推进者与恢复。** 开发Agent收集同一工作区字节、验证归档与恢复副本、生成差异和静态入口检查；任务Agent的机会识别、投资、创建、语义使用与反馈不在本次冻结中执行。首次获益路径仍由已有runtime实现决定。快照目录独占创建，失败保留证据且不覆盖B36；未来修改需另一个版本，不回写历史源码。机械核对不构成ARC验收。
+
+**产物与验证协议。** 目录`tmp/self-harness-goal-20261007/B37-current-workspace-arc-source`；`source.zip`、`source-manifest.json`、`restored/`、`summary.json`、`verification.json`、`changes-vs-b36.json`、`changes-vs-b36.diff`。summary保存最终hash、文件数和快照时间；verification核对归档/manifest/restored、工作区稳定性、提示旧推荐已移除、五类索引与真实源码加载点、普通Python执行与依赖声明。只做字节/JSON/Python语法及入口文本诊断，不实例化guest、不执行测试/fixture/replay、不发provider/ARC请求。冻结是否完成以summary及verification的实际产物为准。
+
+**证据层级与后续。** 本次只交付冻结完整性。B37功能正确、全链路、自主采用、净收益均未验证，provider/environment本次未运行；B36只作历史局部证据。下一真实验收仍以官方ARC真实provider、50 canonical动作或1800秒先到、level和响应确认history为标准；沿用研究off/单动作/无Docker偏好。本次无启动/扩额/重试授权，不能复用B36；known8808784/9000000及历史unknown3是B36后已知账本，未来请求前重新核对。B/C/D保持开放，纯冻结不发结果邮件。
+
+#### B37 真实ARC运行准备（2026-10-08，预算授权待确认）
+
+用户要求“B37真实ARC运行”。已为准确B37快照准备一次普通官方ft09/yibu-qwen3.8-27b/Pi parent验收，关闭Auto-Research（保留模块）、仅arc_action、完整grid/native PNG、reasoning off、output4096、advisory、无Docker。50已确认canonical动作或1800秒先到，level及响应确认history首末峰均为主指标；直接创作/修订/装配/后轮语义使用、合理不使用、父子成本及失败作为诊断。既有702文件归档hash `3d38b1a809d62308129b71cb195a26498c546196436a9f732966abe400d59ebe`，manifest/hash/源码漂移=[]、两份中立prompt、Wasmtime49与固定WASM字节核对通过；只读准备未执行guest、fixture、replay或ARC/provider请求。
+
+协议`tmp/self-harness-goal-20261007/b37-current-workspace-proposed-protocol.json`，launcher `run_b37_acceptance.py`，monitor `monitor_b37_real.py`，准备审计`b37-prelaunch-checks.json`；拟全新root `runs/self-harness-goal-b37-current-workspace-ft09-20261008`。launcher复用已有独占、预算/历史unknown集合、准确freeze与依赖检查，仅从B37/restored运行，不重用B36授权或旧root、不自动基础设施重试。真实HTTP中的prompt/index生效仍待实际运行核对；当前workspace组合变化不冒称prompt单因素。B/C/D继续开放。
+
+真实账本重新确认known8808784/9000000，余额191216，历史unknown3未结算。B36单次授权已消耗，原Goal要求禁止自行扩额及未知结算不清停止；因此提出B37一次最多1600000 reported、累计known上限10500000、明确保留历史unknown3继续、本次新增unknown立即停、retry0。用户要求运行尚未给这组数值/未知例外授权；授权文件、正式launch protocol、运行目录均不存在，paid=0。额度按B36同配置30分钟reported1457408参考，不保证关卡收益。批准前保持未启动，不把预留量或SDK零usage当未知结算，不发仅代码状态邮件。
+
+沙箱exec helper本轮出现setup refresh错误；外部执行权限经工具审批后完成源码/账本/依赖本地核对，未因此扩大付费或运行授权。冻结与实际四层证据分开：B37四层仍未验证，准备仅证明版本和启动配置可审阅。
+
+#### B37 用户确认、真实终态与证据边界（2026-10-08）
+
+**授权与真实版本。** 用户“确认”接受已提出的本次1600000 reported、累计known10500000以及保留历史unknown3继续；授权落盘 `tmp/self-harness-goal-20261007/b37-real-authorization.json`，没有重复询问。只启动一次，owner PID47232 / exec session71815，2026-10-08T12:55:44Z 左右启动、13:16:59Z收尾；准确时间以protocol/launch-result为准。官方ft09 / 真实yibu qwen3.8-27b / Pi0.80.6父loop，研究off、单arc_action、reasoning off、output4096、完整grid/native PNG、无Docker、retry0。准确B37归档SHA256 `3d38b1a809d62308129b71cb195a26498c546196436a9f732966abe400d59ebe`，source drift=[]；不修改活动freeze、无作者引导、无fixture/mock/重放。
+
+**版本命题得到真实确认。** `b37-actual-prompt-check.json`引用已收到响应的第一份HTTP payload：中立“optional component types”段和Memory/Skill/Tool/System Prompt/Subagent五类索引均生效，旧“提取/计数/比较→小Tool”推荐不在该payload。初始可见工具为task_harness/task_harness_create/arc_action，研究和批量动作均关闭。与B36相比是完整工作区组合版本，不能作prompt单因素归因。
+
+**唯一验收窗口与指标。** 官方scorecard与canonical事件一致：50已确认动作、0 level、5 RESET、NOT_FINISHED；达到50动作窗口，launcher1275.485秒，Pi returncode0、run_complete=true、无provider/environment错误。顶层exit1表示游戏未通过，不能叫连接失败。57个响应确认历史（排除1个未确认prepared请求）：chars首5042 / 末107504 / 峰107504 / 均41556.807018；UTF8 bytes首5042 / 末107618 / 峰107618 / 均41641.228070。仅至最后成功ARC动作的52个确认请求：chars首5042 / 末46525 / 峰51558 / 均39201；UTF8首5042 / 末46671 / 峰51756 / 均39279.423077。历史定义为序列化消息、排除system/developer/当前临时ARC文本、typed image transport及schema；不冒充provider输入token。
+
+**生命周期和实际失败。** 9个runtime opportunity只作诊断，没有独立机会分母；第7动作后父用task_harness inspect引用harness-opportunity-1，得到4231字符状态回执，之后继续游戏。没有create/change候选投入，作者组件0/装配0/语义使用0；Memory50均为自动动作capture。两次level_review是终态后档案，非Skill/Prompt转化。未提交候选，所以无创建拒绝，也无法验收B36的重复create、更新或普通Python执行问题。首轮含无效plan身份导致action门禁拒绝，后续自行恢复；50步后的另一次arc_action因终态边界正确拒绝。最多每响应1个arc_action；两次拒绝均不算canonical动作。不将“不创作”推断为接口隐藏、研究耦合或合理弃用，具体投入判断原因仍不确定。
+
+**上下文断点。** 50动作后查询第15窗口和第50窗口的level_review合同，回执分别12985 / 50476字符，完整进入实际后续provider输入；同一终态请求同时保留两份。终态反馈增加历史峰值，不是游戏阶段单次grid增长。源码 `demo/pi_task_local_self_harness.ts` 的level_review contract返回完整window/input_contract；B37记录只读，不在验收途中修复。父先回顾旧窗口，仍曾请求第51动作，随后完成当前复盘；这种额外管理与历史扩张没有产生新的关卡进展。
+
+**真实成本及新增未结算项。** 已知parent1230853 / child0 reported；input1177237、output53616、reasoning0，cache_read/write reported0；实际账单未取得。累计known10039637 / 10500000，名义余460363不含未知。ledger显式新增unmeasured_usage行0，但最后一笔 `7d991b9f-05cc-4a4c-a30d-eae01695e23b` reserve144795无usage/declined/取消结算，第58请求只有prepared/provider_request记录，无响应头/assistant_end；是否送达provider未确认，actual_tokens=null。这不是零成本，也不能把reserve记账单。历史unknown3继续保留，新增未结算风险另存 `b37-terminal-evidence-supplement.json`，不篡改原运行账本；禁止追加付费或自动重启。此前只按显式unknown行计数的摘要必须与此补充一并阅读。50动作以后的确认reported63619；至最后成功动作的真实游戏成本仍以最终审计gameplay关联字段为准，不用“最后请求动作”口径混称成功动作成本。
+
+| 证据层级 | B37结论 | Provider / environment及局限 |
+| --- | --- | --- |
+| 功能正确 | 部分真实观察，其余未验证 | 官方ARC/真实Qwen证明提示暴露、单动作边界及两次拒绝后继续；没有候选，作者/更新/执行负例未测 |
+| 全链路可达 | 未验证 | 本轮无create→assembly→semantic use；研究关闭，不宣称五类研究全链路闭合 |
+| 自主采用 | 本样本未达到 | 一次opportunity inspect、0候选/作者/使用；既不计自动Memory，也不把未提交当格式成功 |
+| 净收益 | 不支持有效声明 | 0关；B36只有32动作且组合版本/终态不同，无匹配重复对照，不宣称prompt收益或能力退化因果 |
+
+**产物与下一检查。** 同一tmp目录 `b37-final-real-observations-v2.json`、`b37-real-authoring-diagnosis-v2.json`、`b37-real-failure-observations-v2.json`、`b37-real-semantic-observations.json`、`b37-real-boundary-diagnosis.json`和terminal supplement；官方 `runs/self-harness-goal-b37-current-workspace-ft09-20261008/arc-scorecard.json`。下一窄修订应优先将复盘合同改为短概览+已有分页ref，并消除终态续发/未结算缝隙，再在单独授权真实ARC中验证后续payload和完整费用；这是候选建议，本轮未实现。创作投入环节仍待分析，不能通过强制配额或更重机制掩盖。B/C/D研究到行动、父子成本与跨压缩认知连续性继续开放。
+
 ## 8. 交付决定与关联 backlog
 
 当前决定：完整规划 P0–P7，包括错误与管理减负、五类转化/精确装配/runtime 使能/反馈、Interface 与 host/data/执行、上下文和本轮生成、Auto-Research、ordinary 采用与净收益退休。早期可复用 Tool 是第一个检查点，最终交付需要全阶段覆盖。host 的确定性保护职责与完整观测保留在内部；是否替换受限源码执行需另有证据。
@@ -1078,3 +1970,4 @@ B15冻结619文件，archive SHA256 `338552ef2edfcdbab06f0432b9fac36ed109c137780
 本方案涉及 [延后待办](../deferred-research-todos.md) 的 B/C/D：研究到行动、父子通信、跨压缩认知连续性和父子总成本。它们仍开放。下一最小可证伪检查是 S1 的实际下一轮回归，不是又一次无差别长时间 goal。
 
 技能安装见 [安装记录](../reports/2026-10-06-mattpocock-skills-installation.md)。技能只用于开发流程；不得把安装的技能全集、本文或仓库 AGENTS 注入 Pi 游戏上下文。
+B37新真实结果摘要已通过Gmail发送至595819371@qq.com，SENT 1a11bbcf8bfe3e7a；request/receipt在tmp/self-harness-goal-20261007/notifications/b37-real-email-*.json，不重发。

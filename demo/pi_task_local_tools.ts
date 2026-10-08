@@ -16,11 +16,12 @@ import { assemblySelectsReference, latestHarnessAssembly } from "./pi_task_harne
 import { methodUseRejection } from "./pi_research_method_runtime.ts";
 import {
 	evaluateTaskPureExpression, TASK_PURE_EXPRESSION_FORMAT,
-	validateTaskPureExpressionInputAccess,
 	type PureExpressionLimitRequest,
 } from "./pi_task_pure_expression.ts";
-import { validateTaskPureExpressionProgram, TASK_PURE_PYTHON_FORMAT, type PureSourceEvidence } from "./pi_task_pure_authoring.ts";
-import { preparePureExpressionInput } from "./pi_task_pure_expression_host.ts";
+import { validateTaskPureExpressionProgram, validateTaskAuthoringInputAccess, isTaskPythonAuthoringProgram, type PureSourceEvidence } from "./pi_task_pure_authoring.ts";
+import { TASK_PYTHON_FORMAT, evaluateTaskPython, assertTaskPythonRuntimeAvailable,
+	type ValidatedTaskPythonProgram } from "./pi_task_python.ts";
+import { assertCurrentGridOption, preparePureExpressionInput } from "./pi_task_pure_expression_host.ts";
 import { assertTaskJsonSchemaValue, TaskJsonSchemaError, validateTaskJsonSchema } from "./pi_task_json_schema.ts";
 
 export type TaskToolResult = {
@@ -31,6 +32,7 @@ export type TaskToolResult = {
 /** Fresh schema instances for both ordinary pure calls and publication trials. */
 export function pureToolInvocationParameters() {
 	return Type.Object({
+		current_grid: Type.Optional(Type.Boolean({ description: "Bind the latest captured ARC final frame to input.grid; omit grid from parameters/bindings." })),
 		parameters: Type.Optional(Type.Object({}, { additionalProperties: true })),
 		bindings: Type.Optional(Type.Array(Type.Object({
 			name: Type.String(), ref: Type.String(),
@@ -46,7 +48,7 @@ export type TaskToolProgram = {
 	format: typeof TASK_PURE_EXPRESSION_FORMAT;
 	expression: Record<string, unknown>;
 	limits: PureExpressionLimitRequest;
-};
+} | Pick<ValidatedTaskPythonProgram, "format" | "source" | "limits" | "runtime">;
 
 export type TaskToolAdapter = {
 	adapterId: string;
@@ -145,7 +147,7 @@ function normalizeInput(value: unknown): Record<string, unknown> {
 }
 
 function pureProgram(program: TaskToolProgram | undefined): program is Extract<TaskToolProgram, { format: string }> {
-	return Boolean(program && "format" in program && program.format === TASK_PURE_EXPRESSION_FORMAT);
+	return Boolean(program && "format" in program && [TASK_PURE_EXPRESSION_FORMAT, TASK_PYTHON_FORMAT].includes(program.format as any));
 }
 
 function structuredPureFailure(error: unknown): Record<string, unknown> {
@@ -201,7 +203,7 @@ async function executeTaskProgram(
 	context: { root: string; name: string; version: number },
 ): Promise<TaskToolResult> {
 	if (pureProgram(program)) throw new Error("pure expression programs require the host input boundary");
-	if (!Array.isArray(program.steps) || !program.steps.length) throw new Error("task tool program requires at least one step");
+	if (!Array.isArray((program as any).steps) || !(program as any).steps.length) throw new Error("task tool program requires at least one step");
 	let value: unknown = input;
 	let analysisOperation = "task_program";
 	const transformations: string[] = [];
@@ -409,7 +411,7 @@ export function installTaskLocalTools(
 					`Input schema: ${JSON.stringify(record.input_schema)}. Output schema: ${JSON.stringify(record.output_schema)}. ` +
 					"A binding fills its same-named input field: omit that field from parameters (no $binding placeholder). " +
 					(record.adapter_id === "arc_agi_3"
-						? "Use the snapshot's last frame index for the current numeric grid; creator/inspect prepares exact bindings. "
+						? "current_grid=true supplies input.grid from the latest captured ARC final frame; exact bindings select historical inputs. "
 						: "") + "Bindings are parent-only and never grant access."
 				: `${record.description} Adapter implementation ${record.implementation_ref} under ${record.permission}; adapter-owned refs are resolved by the adapter. ` +
 					`Input object schema: ${JSON.stringify(record.input_schema)}. This task-local tool only accesses the adapter-provided backend.`,
@@ -425,6 +427,10 @@ export function installTaskLocalTools(
 				// performs the strict, richer validation after the call arrives.
 				? pureToolInvocationParameters()
 				: Type.Object({ input: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),
+			prepareArguments(args: Record<string, unknown>) {
+				if (pureProgram(record.program)) assertCurrentGridOption(args);
+				return args;
+			},
 			async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
 				const invocationId = `task-tool-invocation-${++invocationCounter}`;
 				const invocation = params as Record<string, unknown>;
@@ -471,14 +477,16 @@ export function installTaskLocalTools(
 							const schemaOptions = { is_cancelled: () => signal?.aborted === true };
 							const inputSchemaUsage = assertTaskJsonSchemaValue(record.input_schema, input, "invalid_input", "$input", schemaOptions);
 							failureEvidence = { ...failureEvidence, schema_validation: { input: inputSchemaUsage } };
-							const evaluated = evaluateTaskPureExpression(record.program, input, { is_cancelled: schemaOptions.is_cancelled });
+							const evaluated = validatedProgram.format === TASK_PYTHON_FORMAT
+								? await evaluateTaskPython(validatedProgram, input, signal)
+								: evaluateTaskPureExpression(record.program, input, { is_cancelled: schemaOptions.is_cancelled });
 							failureEvidence = { ...failureEvidence, effective_limits: evaluated.effective_limits, consumed: evaluated.consumed };
 							const outputSchemaUsage = assertTaskJsonSchemaValue(record.output_schema!, evaluated.value, "invalid_output", "$output", schemaOptions);
 							const outputSha256 = createHash("sha256").update(evaluated.output_json).digest("hex");
 							result = {
 								content: [{ type: "text", text: evaluated.output_json }],
 									details: {
-									representation: TASK_PURE_EXPRESSION_FORMAT,
+									representation: validatedProgram.format,
 									tool_ref: `tool:${record.name}@v${record.version}`,
 										program_sha256: record.program_sha256,
 										program_authored_sha256: record.program_authored_sha256,
@@ -487,7 +495,8 @@ export function installTaskLocalTools(
 										program_limits_requested: record.program_limits_requested,
 										program_limits_effective: record.program_limits_effective,
 									output_sha256: outputSha256,
-									program_format: TASK_PURE_EXPRESSION_FORMAT,
+									program_format: validatedProgram.format,
+									...(validatedProgram.format === TASK_PYTHON_FORMAT ? { runtime: validatedProgram.runtime } : {}),
 									input_provenance: prepared.provenance,
 									preparation: prepared.preparation,
 									effective_limits: evaluated.effective_limits,
@@ -614,7 +623,7 @@ export function installTaskLocalTools(
 	registerRoutableTool({
 		name: "task_tool",
 		label: "Task-local tool portfolio",
-		description: `Task-local Tool CRUD. Creator template optional. Use program.steps (${TASK_TOOL_PROGRAM_STEP_KINDS.join(", ")}) OR ${TASK_PURE_EXPRESSION_FORMAT}; adapter permissions remain enforced.`,
+		description: `Task-local Tool CRUD. Creator template optional. Use program.steps (${TASK_TOOL_PROGRAM_STEP_KINDS.join(", ")}) OR ${TASK_PYTHON_FORMAT} ordinary Python, or ${TASK_PURE_EXPRESSION_FORMAT}; adapter permissions remain enforced.`,
 		parameters: Type.Object({
 			validity: Type.Optional(Type.Object({ scope: Type.Union([Type.Literal("task"), Type.Literal("episode"), Type.Literal("level"), Type.Literal("state")]), task_ref: Type.Optional(Type.String()), instance_ref: Type.Optional(Type.String()) })),
 			action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("retire"), Type.Literal("inspect")]),
@@ -663,9 +672,9 @@ export function installTaskLocalTools(
 				: objectSchema(p.program);
 			const isPure = Boolean(program && Object.prototype.hasOwnProperty.call(program, "format"));
 			if (signal?.aborted) throw new Error("tool publication cancelled; no component was written");
-			const isSource = (program as any)?.format === TASK_PURE_PYTHON_FORMAT;
+			const isSource = isTaskPythonAuthoringProgram(program);
 			const validatedPureProgram = program && isPure ? validateTaskPureExpressionProgram(program) : undefined;
-			if (program && !isPure && (!Array.isArray(program.steps) || !program.steps.length)) throw new Error("program.steps must be a non-empty array");
+			if (program && !isPure && (!Array.isArray((program as any).steps) || !(program as any).steps.length)) throw new Error("program.steps must be a non-empty array");
 			const implementationRef = String(p.implementation_ref ?? previous?.implementation_ref
 				?? (isPure ? "task.local.pure_expression" : program ? "task.local.program" : "")).trim();
 			if (!program && !implementationAllowed(implementationRef)) {
@@ -683,7 +692,9 @@ export function installTaskLocalTools(
 				validateTaskJsonSchema(schema, "$.input_schema");
 				if (!outputSchema) throw new Error("pure expression program requires output_schema");
 				validateTaskJsonSchema(outputSchema, "$.output_schema");
-				validateTaskPureExpressionInputAccess(validatedPureProgram!, schema);
+				validateTaskAuthoringInputAccess(validatedPureProgram!, schema);
+				if (validatedPureProgram!.format === TASK_PYTHON_FORMAT)
+					assertTaskPythonRuntimeAvailable(validatedPureProgram!.runtime);
 			}
 			const authoredProgramSha256 = program
 				? (!programWasProvided && previous?.program_authored_sha256
@@ -698,8 +709,11 @@ export function installTaskLocalTools(
 			// later runtime may enforce a tighter hard ceiling, but changing defaults
 			// alone must never alter an already-published tool's budget contract.
 			const frozenProgram = validatedPureProgram && programWasProvided
-				? { format: validatedPureProgram.format, expression: validatedPureProgram.expression,
-					limits: { ...validatedPureProgram.effective_limits } }
+				? validatedPureProgram.format === TASK_PYTHON_FORMAT
+					? { format: validatedPureProgram.format, source: validatedPureProgram.source,
+						runtime: validatedPureProgram.runtime, limits: { ...validatedPureProgram.effective_limits } }
+					: { format: validatedPureProgram.format, expression: validatedPureProgram.expression,
+						limits: { ...validatedPureProgram.effective_limits } }
 				: program;
 			const storedProgram = frozenProgram ? immutableJson(frozenProgram) as TaskToolProgram : undefined;
 			const storedInputSchema = immutableJson(schema);

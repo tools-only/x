@@ -101,6 +101,10 @@ function publicToolDetails(value: Record<string, unknown>,
 
 export default function arcAgi3Extension(pi: ExtensionAPI) {
 	const treatment = process.env.PI_AUTORESEARCH_VARIANT !== "control";
+	// Temporarily use single-action decisions for self-harness observation.
+	// Keep the batch implementation available for an explicit new-run opt-in.
+	const batchActionsEnabled = process.env.PI_ARC_ACTION_BATCH === "enabled";
+	const actionTools = batchActionsEnabled ? ["arc_action", "arc_actions"] : ["arc_action"];
 	const imageInput = String(process.env.PI_ARC_INPUT_MODALITIES ?? "text").split(",").map((item) => item.trim()).includes("image");
 	let currentImage: ReturnType<typeof renderArcFrameImage> | undefined;
 	let observationImages: Array<ReturnType<typeof renderArcFrameImage>> = [];
@@ -360,7 +364,7 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 			};
 		},
 	});
-	pi.registerTool({
+	if (batchActionsEnabled) pi.registerTool({
 		name: "arc_actions", label: "ARC action sequence",
 		description: "Execute 1-8 actions, recording each. Stop on level/terminal/budget/error boundaries. stop_if_changed_cells_lte stops when changed cells <= threshold or count is missing. Never retry an unknown action.",
 		parameters: Type.Object({ actions: Type.Array(Type.Object({
@@ -433,7 +437,7 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 	});
 	installArcTrajectoryResource(pi, treatment);
 	const research = externalBenchmarkResearch(pi, treatment
-		? { baseTools: ["arc_action", "arc_actions"], taskToolAdapter: createArcTaskToolAdapter(() => bridge("/state")) }
+		? { baseTools: actionTools, taskToolAdapter: createArcTaskToolAdapter(() => bridge("/state")) }
 		: {});
 	installArcTaskSubagents(pi, treatment, research?.resolveBasisRefs, () => bridge("/state"),
 		() => {
@@ -568,11 +572,13 @@ export default function arcAgi3Extension(pi: ExtensionAPI) {
 					: "The bridge returned no current frame; use the public state below and do not infer hidden pixels. ") +
 			(treatment
 				? "Act from CURRENT PUBLIC ARC OBSERVATION. Candidate selection is optional and applies only to registered candidates."
-				: "End with arc_action or bounded arc_actions; use CURRENT PUBLIC ARC OBSERVATION."),
+				: batchActionsEnabled
+					? "End with arc_action or bounded arc_actions; use CURRENT PUBLIC ARC OBSERVATION."
+					: "End with one arc_action; use CURRENT PUBLIC ARC OBSERVATION."),
 		};
 	});
 	if (!treatment) pi.on("before_agent_start", () => {
-		pi.setActiveTools(["arc_action", "arc_actions"]);
+		pi.setActiveTools(actionTools);
 		return {};
 	});
 }

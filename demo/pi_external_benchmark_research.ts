@@ -224,15 +224,10 @@ export default function externalBenchmarkResearch(
 			// registered task-local entry callable on ARC so the advertised surface
 			// cannot diverge from the executable surface; execution admission and
 			// the compact method still bound unnecessary management work.
-		// The execution checkpoint is part of the task control plane, not a
-		// preloaded task resource. Keep it available from the first ARC request
-		// so compaction/session recovery cannot erase the agent's hypothesis and
-		// next experiment. Research remains lazy and is enabled through the
-		// task_harness entry when it has a concrete decision benefit.
-		// ARC exposes action, Harness control, parent-authored checkpoint updates,
-		// and Auto-Research from the first request. Resource indexes, validation,
-		// and detailed status remain available through task_harness activation.
-			const core = compactArc ? ["task_harness", "task_harness_create", "task_checkpoint", "auto_research"] : ["task_harness", "task_harness_create", "task_harness_status", "task_checkpoint", "task_resource", "task_validation"];
+		// ARC action decisions already persist hypotheses, counterevidence and
+		// the next experiment. Standalone checkpoint edits remain registered
+		// and authorized, disclosed through the existing Harness activation.
+			const core = compactArc ? ["task_harness", "task_harness_create", "auto_research"] : ["task_harness", "task_harness_create", "task_harness_status", "task_checkpoint", "task_resource", "task_validation"];
 			// Only ARC uses the compact first-turn surface.  Ordinary benchmark
 			// adapters rely on the original direct task-local lifecycle and must
 			// see the registered component operations immediately; otherwise their
@@ -1699,6 +1694,8 @@ export default function externalBenchmarkResearch(
 	// repeated messages as well as archive old tool turns.
 	installTaskLocalContextLifecycle(pi, {
 		root,
+		// Use the established lifecycle default. A shorter tail remains an
+		// explicit operator experiment; ARC comparisons did not support promotion.
 	});
 	// Register telemetry last among the task-local context handlers. For custom
 	// providers that do not emit before_provider_request, its context fallback

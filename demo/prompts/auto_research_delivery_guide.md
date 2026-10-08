@@ -1,7 +1,7 @@
 # Parent-authored Harness delivery
 
 This guide applies to a parent Agent authoring through `task_harness(action=change)`
-after reading the matching creator. It is not an Auto-Research child output
+using the current contract; reading the creator is optional. It is not an Auto-Research child output
 contract. Research can supply evidence and a method candidate, but the parent must
 write the actual body and choose the component type.
 

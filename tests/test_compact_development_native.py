@@ -8,10 +8,12 @@ from test_harness_sequential_batch_native import _create, _assemble
 
 def test_actual_arc_development_read_keeps_creator_and_can_publish(tmp_path):
     project = Path(__file__).resolve().parents[1]
+    candidate = _create("brief-trial")
+    candidate["arguments"]["assembly"] = False  # Exercise the explicit staged path.
     events = _run_arc_parent(tmp_path, [
         [{"name": "task_harness", "arguments": {"action": "read_method", "method_name": "skill-creator"}},
          {"name": "task_harness", "arguments": {"action": "contract", "topic": "development"}}],
-        [_create("brief-trial"), _assemble("brief-trial")],
+        [candidate, _assemble("brief-trial")],
         {"name": "read", "arguments": {"path": str(tmp_path / "task-harness/skills/brief-trial/SKILL.md")}},
     ])
     calls = [e for e in events if e.get("type") == "tool_execution_end"]

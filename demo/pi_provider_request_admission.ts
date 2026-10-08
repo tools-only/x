@@ -1,11 +1,18 @@
 /** Final native provider window admission; reported spending stays separate. */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { reportedRequestAdmissionEnabled, reserveReportedTokenBudget } from "./pi_reported_token_ledger.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { FINAL_PROVIDER_PAYLOAD_EVENT, FINAL_PROVIDER_OBSERVER_INSTALLED_EVENT,
 	type FinalProviderPayloadEvent } from "./pi_final_provider_payload.ts";
 
-const states = new WeakMap<object, { declined: boolean; responseSeen: boolean }>();
+const states = new WeakMap<object, { declined: boolean; responseSeen: boolean; reservationId?: string }>();
+export function takeReportedRequestReservation(pi: ExtensionAPI): string | undefined {
+	const state = states.get(pi);
+	const id = state?.reservationId;
+	if (state) state.reservationId = undefined;
+	return id;
+}
 export function providerWindowRequestDeclined(pi: ExtensionAPI): boolean {
 	const state = states.get(pi);
 	return state?.declined === true && !state.responseSeen;
@@ -14,7 +21,10 @@ export function providerWindowRequestDeclined(pi: ExtensionAPI): boolean {
 export function installProviderRequestAdmission(pi: ExtensionAPI, root: string, scope: string,
 	measure: (payload: unknown) => Record<string, unknown>): void {
 	if (process.env.PI_PROVIDER_CONTEXT_ADMISSION !== "enabled" || states.has(pi)) return;
-	const state = { declined: false, responseSeen: false };
+	const state: { declined: boolean; responseSeen: boolean; reservationId?: string } = { declined: false, responseSeen: false };
+	const reserveReported = reportedRequestAdmissionEnabled();
+	const sharedRoot = resolve(process.env.PI_PROVIDER_TOKEN_BUDGET_ROOT ?? root);
+	if (reserveReported) mkdirSync(sharedRoot, { recursive: true });
 	states.set(pi, state);
 	mkdirSync(root, { recursive: true });
 	const path = join(root, "provider-window-admission.jsonl");
@@ -74,6 +84,21 @@ export function installProviderRequestAdmission(pi: ExtensionAPI, root: string, 
 				image_estimate_method: imageCount ? "explicit configured reserve; actual image cost unmeasured" : "no typed images",
 				tokenizer: "conservative provider-independent estimate; not actual provider usage",
 				tool_definition_count: stats.tool_definition_count, message_count: stats.message_count };
+			if (!reason && reserveReported) {
+				if (state.reservationId) reason = "previous_request_unsettled";
+				else {
+					const spending = reserveReportedTokenBudget(join(sharedRoot, "provider-token-budget.jsonl"),
+						Number(process.env.PI_PROVIDER_MAX_REPORTED_TOKENS), required!);
+					state.reservationId = spending.reservation_id;
+					reason = spending.reason ?? undefined;
+					Object.assign(row, { reported_budget_limit: spending.limit,
+						reported_tokens_before_request: spending.reported, in_flight_token_reserve: spending.reserved,
+						reported_remaining_before_request: spending.remaining,
+						reported_request_reserve: required, reservation_id: spending.reservation_id ?? null });
+				}
+			}
+			row.status = reason ? "declined" : "admitted";
+			row.reason = reason ?? null;
 			if (reason) { state.declined = true; ctx.abort(); }
 			appendFileSync(path, JSON.stringify({ ...row, scope, process_id: process.pid, recordedAt: new Date().toISOString() }) + "\n");
 		} catch (error) {

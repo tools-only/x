@@ -4,7 +4,7 @@ import { controlError } from "./pi_harness_control.ts";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TASK_PURE_PYTHON_FORMAT } from "./pi_task_pure_authoring.ts";
+import { TASK_PYTHON_FORMAT } from "./pi_task_pure_authoring.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "harness-methods");
 export const BASELINE_METHOD_NAMES = ["skill-creator", "tool-creator", "subagent-creator", "research-orchestration"] as const;
@@ -57,7 +57,7 @@ export function baselineMethodCatalog() {
             read_call: { action: "read_method", method_name: name, expected_sha256: sha256 } };
     });
 }
-export const BASELINE_AUTHORING_GUIDANCE = "At an evidenced useful operation, choose a fitting carrier and next use. Author complete content through task_harness_create or task_harness(action=change), explicitly assemble exact versions, then use and assess them. Creator templates are optional; supplied creator citations must match their current version. Memory stores scoped facts/hypotheses; System Prompts add scoped behavior; Skills teach procedures; Tools run disclosed operations; Subagents provide a separate authorized context. Auto-Research is optional and separately requires research-orchestration. Runtime validates and executes authored content; creation, exposure, reading, application and utility remain distinct.";
+export const BASELINE_AUTHORING_GUIDANCE = "When an operation would help the task, author a Tool, Skill, Subagent or scoped System Prompt through task_harness_create. It publishes and installs exact versions in one call; assembly=false stages only. trial can return a pure Tool's first value. Follow receipt use entries, apply results to a task decision and revise or retire ineffective components. Memory stores scoped facts. Creator details are available on demand; installation alone proves no utility.";
 
 /** Shape-only progressive disclosure. Placeholder text is not authored semantics. */
 export function creatorCandidateTemplate(name: BaselineMethodName, creatorRef?: string) {
@@ -68,16 +68,13 @@ export function creatorCandidateTemplate(name: BaselineMethodName, creatorRef?: 
 	if (name === "skill-creator") candidate = { semantic_kind: "skill", ...common,
 		instructions: "<complete parent-authored procedural body>" };
 	if (name === "tool-creator") candidate = { name: common.name, description: common.description,
-		program: { format: TASK_PURE_PYTHON_FORMAT, source: "input" } };
+		program: { format: TASK_PYTHON_FORMAT, source: "input" } };
 	if (name === "subagent-creator") candidate = { semantic_kind: "subagent", ...common,
 		instructions: "<bounded role, required output, stop and failure behavior>", tools: [] };
 	if (!candidate) return undefined;
 	return { template_requires_parent_content: true,
-		authoring_call: name === "tool-creator"
-			? { tool: "task_harness_create", arguments: { candidate, assembly: true, trial: { parameters: {}, bindings: [] } } }
-			: { tool: "task_harness", arguments: { action: "change", changes: [{ operation: "create", candidate }],
-				decision: { basis_refs: ["<exact-existing-ref>"], reason: "<why this operation and carrier now>",
-					expected: "<observable result at the declared next use>" } } },
+		authoring_call: { tool: "task_harness_create", arguments: { candidate,
+			...(name === "tool-creator" ? { trial: { parameters: {}, bindings: [] } } : {}) } },
 		optional_method_metadata: "Not required; supply only fields useful to the authored method.",
 		...(name === "tool-creator" ? { program_choice: {
 			alternatives: "task-pure-expression-v1 or program.steps; read references/pi-task-local-tool-contract.md when needed. Never mix shapes.",

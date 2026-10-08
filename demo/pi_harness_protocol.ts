@@ -165,7 +165,7 @@ export function normalizeSemanticCandidate(input: Record<string, any>): Record<s
 	let alias = String(candidate.semantic_kind ?? candidate.component ?? candidate.kind ?? candidate.type ?? "").trim().toLowerCase();
 	// This syntax can only define a pure Tool; no prose or arbitrary program
 	// is used to guess a carrier. Explicit conflicting carriers stay explicit.
-	if (!alias && candidate.program?.format === "task-pure-python-v1"
+	if (!alias && ["task-python-v1", "task-pure-python-v1"].includes(candidate.program?.format)
 		&& !["atom", "instructions", "tools", "prompt_text", "layer"].some(key => candidate[key] !== undefined))
 		alias = "tool";
 	// A complete atom with a stable key and declared validity has only the
@@ -252,6 +252,13 @@ export function normalizeSemanticCandidate(input: Record<string, any>): Record<s
 	if (["system_prompt", "task_system_prompt"].includes(alias)) {
 		candidate.semantic_kind = "system_prompt";
 		candidate.execution ??= "text";
+		// An exact scope keyword is an opt-in shorthand for mechanical lifetime.
+		// Descriptive scope text retains its existing meaning.
+		if (["task", "episode", "level", "state"].includes(candidate.scope)) {
+			if (candidate.validity !== undefined && candidate.validity?.scope !== candidate.scope)
+				throw new Error("candidate.scope conflicts with candidate.validity.scope");
+			candidate.validity ??= { scope: candidate.scope };
+		}
 		if (candidate.prompt_target_version === undefined && candidate.target_version !== undefined) {
 			candidate.prompt_target_version = candidate.target_version;
 		}

@@ -26,6 +26,10 @@ function createWorkset(rootInput: string) {
     const scope = ensureTaskScope(resolve(rootInput)), path = join(scope.root, "task-read-workset-events.jsonl");
     const reader = process.env.PI_TASK_CHILD_CONTEXT_ID ?? (process.env.PI_TASK_CHILD === "1" ? `child-${process.pid}` : "parent");
     const pages = new Map<string, Row>();
+    // The parent plan belongs to the parent. In a research child an explicit
+    // distillation releases residency, not evidence availability or provenance.
+    // Unacknowledged pages still survive; parent/ordinary delegate rules stay intact.
+    const researchChild = process.env.PI_TASK_CHILD_RESEARCH_PROTOCOL === "1";
     let epoch = 0;
     let dependencyStamp = "", cachedDependencies = new Set<string>();
     const append = (row: Row) => appendFileSync(path, JSON.stringify(stampTaskRecord(scope, {
@@ -49,6 +53,7 @@ function createWorkset(rootInput: string) {
     }
     function dependencies(): Set<string> {
         const refs = new Set<string>();
+        if (researchChild) return refs;
         const strategyPath = join(scope.root, "task-strategy-state.json");
         if (!existsSync(strategyPath)) return refs;
         const stat = statSync(strategyPath), stamp = `${stat.ino}:${stat.mtimeMs}:${stat.size}`;

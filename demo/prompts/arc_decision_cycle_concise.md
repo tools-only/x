@@ -12,14 +12,13 @@ for standalone or complex plan edits; put a needed update before the action in o
 ordered tool batch when no intermediate result is needed.
 Use known controls to test goals and plans.
 
-Choose action, Auto-Research or development for value over the remaining task.
-Research can clarify goals, rules, plans or methods; check its implications live.
-Read the matching creator when useful, publish a complete component, select exact
-versions through explicit assembly, and trial its semantic result. Tools, skills,
-subagents, memory and system prompts can support local or reusable work.
-Revise, defer or drop work when value changes, preserving recovery conditions.
-Read detailed contracts on demand and restore exact historical references as needed.
+The task-local harness index describes optional component types and their entry
+points. Choose whether any fits your work and remaining task budget; check adopted
+results against live evidence.
+{{#auto_research}}Research can clarify goals, rules, plans or methods; check its implications live.{{/auto_research}}
+Restore exact historical references when needed.
 
-Finish each decision cycle with arc_action, or arc_actions for a permitted bounded
-well-tested sequence. Observe results; continue until WIN or the budget ends.
+Finish each decision cycle with one arc_action{{#arc_actions}}, or arc_actions for a permitted bounded
+well-tested sequence{{/arc_actions}}. Observe results before choosing the next action;
+continue until WIN or the budget ends.
 A requested terminal review is read-only.

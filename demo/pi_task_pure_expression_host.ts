@@ -1,7 +1,7 @@
 /** Trusted host preparation for pure-expression inputs; never imported by the evaluator. */
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { latestArcObservationSnapshot } from "./pi_arc_observation_snapshot.ts";
+import { arcFinalFrameBinding, latestArcObservationSnapshot } from "./pi_arc_observation_snapshot.ts";
 import { assertParentTaskResourceBindingHost, resolveAuthorizedTaskResourceForBinding } from "./pi_task_resource_store.ts";
 
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -25,6 +25,7 @@ export class PureExpressionHostError extends Error {
 export type PureExpressionInvocationEnvelope = {
 	parameters: Record<string, unknown>;
 	bindings: Array<{ name: string; ref: string; path: Array<string | number> }>;
+	current_grid?: boolean;
 };
 
 export type PreparedPureExpressionInput = {
@@ -118,16 +119,28 @@ function strictJsonText(value: unknown, path: string, maxBytes: number): string 
 
 function hash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 
+/** Also called before Pi's schema conversion, which otherwise coerces booleans. */
+export function assertCurrentGridOption(value: unknown): void {
+	if (isRecord(value) && value.current_grid !== undefined && typeof value.current_grid !== "boolean")
+		fail("current_grid must be a boolean", "$invocation.current_grid");
+}
+
 function validateEnvelope(value: unknown): PureExpressionInvocationEnvelope {
 	if (!isRecord(value)) fail("invocation must be an object", "$invocation");
 	const keys = Object.keys(value);
-	if (keys.some((key) => !["parameters", "bindings"].includes(key))) fail("invocation allows only parameters and bindings", "$invocation");
+	if (keys.some((key) => !["parameters", "bindings", "current_grid"].includes(key))) fail("invocation allows only parameters, bindings and current_grid", "$invocation");
+	assertCurrentGridOption(value);
 	const parameters = value.parameters ?? {};
 	const bindings = value.bindings ?? [];
 	if (!isRecord(parameters)) fail("parameters must be a JSON object", "$invocation.parameters");
 	for (const key of Object.keys(parameters)) if (FORBIDDEN_KEYS.has(key)) fail("forbidden parameter key", `$invocation.parameters.${key}`);
 	if (!Array.isArray(bindings) || bindings.length > MAX_BINDINGS) fail(`bindings must be an array of at most ${MAX_BINDINGS} items`, "$invocation.bindings");
 	const names = new Set(Object.keys(parameters));
+	if (value.current_grid === true) {
+		if (names.has("grid") || bindings.some(binding => isRecord(binding) && binding.name === "grid"))
+			fail("current_grid fills input.grid; omit parameters.grid and any grid binding, or omit current_grid to use an explicit grid", "$invocation.current_grid");
+		if (bindings.length >= MAX_BINDINGS) fail(`current_grid and bindings allow at most ${MAX_BINDINGS} total bindings`, "$invocation.bindings");
+	}
 	const validated = bindings.map((binding, index) => {
 		const bindingPath = `$invocation.bindings[${index}]`;
 		if (!isRecord(binding) || Object.keys(binding).some((key) => !["name", "ref", "path"].includes(key))
@@ -156,7 +169,7 @@ function validateEnvelope(value: unknown): PureExpressionInvocationEnvelope {
 		});
 		return { name: binding.name, ref: binding.ref, path };
 	});
-	return { parameters, bindings: validated };
+	return { parameters, bindings: validated, current_grid: value.current_grid as boolean | undefined };
 }
 
 function atOwnPath(record: unknown, segments: Array<string | number>, basePath: string): unknown {
@@ -213,13 +226,19 @@ export function preparePureExpressionInput(
 	let resolvedValueBytes = 0;
 	const prepared: Record<string, unknown> = JSON.parse(parameterText);
 	const bindingProvenance: Array<Record<string, unknown>> = [];
-	// This metadata scan does not resolve or bind a value. It identifies the
-	// latest already-captured parent observation for an explicit stale marker.
-	const latest = envelope.bindings.length
+	// Reuse the bounded metadata scan for the explicitly requested current grid.
+	// It reads only an already-captured parent observation, never the live bridge.
+	const latest = envelope.bindings.length || envelope.current_grid
 		? latestArcObservationSnapshot(root, Math.max(1, maxScanBytes - resourceScanBytes))
 		: undefined;
 	resourceScanBytes += latest?.scanned_bytes ?? 0;
 	chargeWork(latest?.scanned_bytes ?? 0, "$invocation.bindings");
+	if (envelope.current_grid) {
+		const binding = latest && arcFinalFrameBinding(latest);
+		if (!binding) fail("current_grid requires a captured ARC observation with a nonempty final grid", "$invocation.current_grid");
+		// From this point the shortcut is an ordinary exact, authorized binding.
+		envelope.bindings.push(binding);
+	}
 	for (let index = 0; index < envelope.bindings.length; index += 1) {
 		const binding = envelope.bindings[index];
 		const bindingPath = `$invocation.bindings[${index}]`;

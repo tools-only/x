@@ -302,8 +302,13 @@ class PiKernel:
             if (
                 event.get("type") == "tool_execution_end"
                 and str(event.get("toolName") or "") in stop_tools
+                and event.get("isError") is not True
+                and not event.get("preflight_rejected", False)
             ):
-                # The progress result is authoritative; terminate only the
+                # Failed/truncated calls have no committed environment action.
+                # Aborting them races Pi's repair continuation and can produce
+                # an unmeasured cancellation of a new provider request.
+                # The successful progress result is authoritative; terminate only the
                 # model deliberation that follows it.  This boundary is
                 # independent of the optional read-loop watchdog.
                 evidence = event.get("evidence")
@@ -346,7 +351,7 @@ class PiKernel:
                 raise TimeoutError("timed out waiting for Pi action-boundary settlement")
             if watchdog and event.get("type") == "tool_execution_end":
                 tool_name = str(event.get("toolName") or "")
-                if tool_name in (watchdog.progress_tools | watchdog.task_progress_tools):
+                if tool_name in (watchdog.progress_tools | watchdog.task_progress_tools) and event.get("isError") is not True:
                     read_only_calls = 0
                     state.reset_after_progress()
                 elif tool_name in watchdog.auxiliary_progress_tools:

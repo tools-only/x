@@ -218,15 +218,19 @@ def _telemetry_run(tmp_path: Path, *, payload: dict | None,
     script = f"""
 import {{ readFileSync }} from 'node:fs';
 import {{ installProviderTelemetry }} from {json.dumps(TELEMETRY_MODULE)};
+import {{ EventEmitter }} from 'node:events';
+import finalProviderPayload from {json.dumps((PROJECT / 'demo/pi_final_provider_payload.ts').as_uri())};
 const input = JSON.parse(readFileSync(process.argv[1], 'utf8'));
 const handlers = {{}};
 const pi = {{
+  events: new EventEmitter(),
   on(name, handler) {{ (handlers[name] ??= []).push(handler); }},
   getActiveTools() {{ return []; }}, getAllTools() {{ return []; }},
 }};
 installProviderTelemetry(pi, {{ root: process.argv[2], scope: 'continuity-test' }});
+finalProviderPayload(pi);
 if (input.payload) {{
-  await handlers.before_provider_request[0]({{ payload: input.payload }});
+  for (const handler of handlers.before_provider_request) await handler({{ payload: input.payload }});
 }} else {{
   await handlers.context[0]({{ messages: [{{role:'user',content:[{{type:'text',text:'fallback'}}]}}] }}, {{ getSystemPrompt() {{ return ''; }} }});
   await handlers.message_end[0]({{ message: {{ role:'assistant', content:[], usage:{{}} }} }});
@@ -315,7 +319,7 @@ def test_runtime_exposure_describes_guidance_and_hashes_exact_text(tmp_path):
     }
 
 
-def test_first_self_harness_context_attempts_full_capability_process(tmp_path):
+def test_first_self_harness_context_exposes_on_demand_capability_reference(tmp_path):
     from test_pi_external_benchmark_native import _run_fixture
 
     _run_fixture(tmp_path, "treatment", steps=[])
@@ -333,9 +337,10 @@ def test_first_self_harness_context_attempts_full_capability_process(tmp_path):
         (tmp_path / "task-harness-context-exposures.jsonl").read_text(encoding="utf-8").splitlines()[0]
     )
     process = next(item for item in first_exposure["guidance_exposures"]
-                   if item["name"] == "capability_extraction_process")
+                   if item["name"] == "capability_workflow_reference")
 
-    assert expected in texts
+    assert expected not in texts
+    assert any(text.startswith("Capability workflow reference:") for text in texts)
     assert process["trigger"] == "initial_discovery"
 
 
@@ -354,9 +359,9 @@ def test_guidance_descriptor_change_participates_in_exposure_signature(tmp_path)
         for exposure in exposures
     ]
 
-    assert guidance_names[0] == {"baseline_authoring_methods", "capability_extraction_process"}
+    assert guidance_names[0] == {"baseline_authoring_methods", "capability_workflow_reference"}
     assert any(names == {"baseline_authoring_methods"} for names in guidance_names[1:])
-    assert guidance_names[-1] == {"baseline_authoring_methods", "capability_extraction_process", "periodic_pattern_review"}
+    assert guidance_names[-1] == {"baseline_authoring_methods", "capability_workflow_reference", "periodic_pattern_review"}
     cue = next(item for item in exposures[-1]["guidance_exposures"] if item["name"] == "periodic_pattern_review")
     assert cue["window_ids"] == ["arc-pattern-5"]
     provider_rows = [json.loads(line) for line in

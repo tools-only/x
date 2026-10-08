@@ -1,10 +1,11 @@
 /** Failure dependencies within one native sequential parent tool response. */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 
 const argumentIntegrityInstalled = new WeakSet<ExtensionAPI>();
 
 /** Streaming repair is useful for display; it cannot authorize a partial final call. */
-export function installHarnessArgumentIntegrity(pi: ExtensionAPI, report: (record: Record<string, unknown>) => void) {
+export function installHarnessArgumentIntegrity(pi: ExtensionAPI, report: (record: Record<string, unknown>) => unknown) {
     if (argumentIntegrityInstalled.has(pi)) return;
     argumentIntegrityInstalled.add(pi);
     const fragments = new Map<number, string>();
@@ -46,12 +47,17 @@ export function installHarnessArgumentIntegrity(pi: ExtensionAPI, report: (recor
             const failure = {
                 format: event.toolName === "task_harness_create" ? "task-harness-preflight-error-v1" : "tool-call-arguments-error-v1",
                 status: "failed", phase: "preflight", tool_call_id: event.toolCallId,
-                issues: [{ path: "arguments", message: `Final tool arguments are invalid JSON: ${(error as Error).message}` }],
-                no_component_written: true, execution_started: false, raw_arguments: source.raw,
-                recovery: "Resend the complete call as valid JSON, preserving its intended fields. No tool executed; no creator reread is required.",
+                issues: [{ path: "arguments", message: `${source.duplicate ? "Final tool arguments rejected" : "Final raw tool arguments are invalid JSON"}: ${(error as Error).message.slice(0, 240)}` }],
+                no_component_written: true, execution_started: false,
+                raw_arguments_chars: source.raw.length,
+                raw_arguments_sha256: createHash("sha256").update(source.raw, "utf8").digest("hex"),
+                ...(source.duplicate ? {} : { raw_arguments_tail: source.raw.slice(-120) }),
+                recovery: "No tool executed. SDK history may display repaired arguments; that preview was not accepted. Resubmit complete JSON or abandon the call. Full original: task_resource(action=read, ref=diagnostic_ref).",
             };
-            report({ ...failure, tool_name: event.toolName, recordedAt: new Date().toISOString() });
-            return { block: true, reason: JSON.stringify(failure) };
+            const diagnosticRef = report({ ...failure, raw_arguments: source.raw,
+                tool_name: event.toolName, recordedAt: new Date().toISOString() });
+            return { block: true, reason: JSON.stringify({ ...failure,
+                ...(typeof diagnosticRef === "string" ? { diagnostic_ref: diagnosticRef } : {}) }) };
         }
     });
 }

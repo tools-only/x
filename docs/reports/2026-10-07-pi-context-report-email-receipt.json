@@ -1,0 +1,17 @@
+{
+  "report_date": "2026-10-07",
+  "timezone": "Asia/Shanghai",
+  "sender": "isq.zhou@gmail.com",
+  "recipient": "595819371@qq.com",
+  "subject": "Pi Agent 上下文管理研究与本工程逐组件对照（HTML报告，2026-10-07）",
+  "transport": "Gmail connector",
+  "message_id": "1a114ae44b82f5ea",
+  "thread_id": "1a114ae44b82f5ea",
+  "labels": [
+    "SENT"
+  ],
+  "status": "sent; recipient delivery not independently verified",
+  "attachment": "pi-agent-context-management-2026-10-07.html",
+  "attachment_bytes": 142174,
+  "verification_artifact": ".scratch/pi-context-report/verification.json"
+}
