@@ -126,6 +126,12 @@ export async function evaluateTaskPython(program: ValidatedTaskPythonProgram, in
 		else child.stdin.end(JSON.stringify({ source: program.source, input, limits, runtime: program.runtime }));
 	});
 	if (signal?.aborted) throw new TaskPythonError("cancelled", "Python calculation cancelled");
+	return taskPythonResult(program, response);
+}
+
+/** Shared trusted-boundary checks for one guest response. */
+export function taskPythonResult(program: ValidatedTaskPythonProgram, response: any) {
+	const limits = program.effective_limits;
 	if (!response?.ok) throw new TaskPythonError("runtime_error", String(response?.error ?? "Python execution failed"),
 		"$program", response?.consumed, limits);
 	if (JSON.stringify(response.runtime) !== JSON.stringify(program.runtime))
@@ -137,3 +143,5 @@ export async function evaluateTaskPython(program: ValidatedTaskPythonProgram, in
 	return { value: response.value, output_json: output, consumed: response.consumed,
 		effective_limits: limits, runtime: response.runtime };
 }
+
+export function taskPythonModulePath(): string { return modulePath(); }

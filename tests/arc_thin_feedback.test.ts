@@ -93,7 +93,8 @@ test("latest feedback survives restart in both variants, preserves the frame and
             const handlers = new Map<string, any>(), tools = new Map<string, any>();
             arcThinExtension({ on(name: string, fn: any) { handlers.set(name,fn); },
                 registerTool(tool: any) { tools.set(tool.name,tool); }, setActiveTools() {} } as any);
-            assert.equal(tools.size,variant==="control" ? 1 : 6);
+            // run_skill is registered only once a skill is saved (arc_thin_skill_surface.test.ts).
+            assert.equal(tools.size,variant==="control" ? 1 : 5);
             let used = 1;
             globalThis.fetch = async () => new Response(JSON.stringify({ state: "NOT_FINISHED",
                 frames: [[[1,0],[0,9]]], levels_completed: 0, action_budget: { total_used: used } }));

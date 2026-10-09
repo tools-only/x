@@ -113,6 +113,8 @@ pi.registerTool({
 });
 
 // 2. Memory — upsert by key.
+// Superseded 2026-10-09: memory is now an atomic batch (set / delete with "prefix*" / hypotheses with
+// appended, condition-scoped evidence). See docs/plans/2026-10-09-thin-hypothesis-memory.md.
 pi.registerTool({
   name: "memory", label: "Memory",
   description: "Save (upsert by key), delete or list short facts, rules, hypotheses and plans. " +
@@ -184,7 +186,7 @@ All under `<run root>/harness/`. Append-only JSONL; the in-memory map is rebuilt
 
 | File | Record |
 |---|---|
-| `memory.jsonl` | `{t, key, text, confidence, deleted?}` |
+| `memory.jsonl` | `{t, key, text, confidence, deleted?}`; since 2026-10-09 also `{t, key: "hyp.<name>", hyp: {claim, predicts?, status, next_test?, evidence[]}}` (full hypothesis per row, last write wins) |
 | `skills.jsonl` | `{t, name, version, description, source, deleted?}` |
 | `prompt.jsonl` | `{t, text}` (empty text = cleared) |
 | `trajectory.jsonl` | `{t, n, action, x, y, note, changed_cells, level_changed, state, levels_completed, budget}` — one per `arc_action` |

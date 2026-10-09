@@ -1,7 +1,7 @@
 # Meta-harness change record: Self-Harness evidence board and maintainer layer (Auto-Research repositioned)
 
-Date: 2026-10-08 (Asia/Shanghai). Status: design, not approved for implementation. The authority changes in §5 need explicit user confirmation, and the go/no-go checks in §10 come before any P0 code.
-This record follows the [development workflow](../development-workflow.md) and the [change template](../templates/meta-harness-change.md). Nothing below is implemented or measured. The code observations in §4 come from reading the source on 2026-10-08, not from running it.
+Date: 2026-10-08 (Asia/Shanghai). Status: P0–P2 implemented on the thin ARC path on 2026-10-09, opt-in and off by default. Functional and wiring checks pass; autonomous use and net benefit are unverified. See §15 for what changed from this design and the evidence. Sections 1–14 are the design as written on 2026-10-08.
+This record follows the [development workflow](../development-workflow.md) and the [change template](../templates/meta-harness-change.md). The code observations in §4 come from reading the legacy-path source on 2026-10-08.
 
 ## 1. Problem and claim
 
@@ -404,3 +404,110 @@ Each stage reports its own evidence level.
   - D: hypothesis state kept outside the actor's context.
 
   All stay open until the evidence above exists.
+
+## 15. Implementation record (2026-10-09)
+
+The user asked to implement the design and granted the authority changes A1–A3 ("I give you all the permissions"). The board is opt-in: `arc-thin-e2e --harness-board` (environment `ARC_HARNESS_BOARD=enabled`). Without the flag, the thin harness behaves exactly as before.
+
+### 15.1 Deviations from the design, and why
+
+| Design | Implemented | Reason |
+|---|---|---|
+| Integrate into the legacy path (`pi_arc_agi_3_extension.ts`, Tool records, assembly) | Integrated into the thin path (`arc_thin_extension.ts`); the legacy path is untouched | The branch's active path is the thin extension. Its plan keeps the legacy path frozen as the comparison arm. On the thin path, saved means active, with no assembly, eligibility or CAS. That removes the §4.1 hazards #1, #3, #4, #5, #7 and #8 by construction. |
+| Predictor = pure Tool with `predicts` | Predictor = thin skill `run(state, args)` with an optional `predicts` field on the `skill` tool. `args={'actions':[...]}` predicts a list; `args={}` observes. A separate lens is given as `lens: "<skill name>"` and pinned to its exact version at registration. | It reuses the thin skill guest and store. The field is added to the schema only when the board is enabled. |
+| Analyst namespace `board.*` | `board_<name>` | Thin skill names allow only `[a-z0-9_]`. |
+| A3 standing authorization by actor call or user config | Actor: `predicts.repair=true` on the same `skill` call (no extra call or tool). User: `--board-analyst all\|contract\|disabled`, default `contract`. | This adds zero management turns. |
+| Triggers on falsified, all_predictors_dead, level_changed, game_over, actor_query | Only `falsified` is implemented. `all_predictors_dead` is covered, because each falsified predictor is a trigger. | `level_changed`/`game_over` would generate new predictors, not repair one; that is not designed. `actor_query` already exists as `ask_analyst`. |
+| Analyst length continuation (one) | Not implemented. A `length` stop is recorded as `failed`. | This keeps the analyst one-shot. |
+| Service-output staleness (planned paths) | Not implemented. Board predictions are recomputed for each state, so they are never stale. | The thin path has no planner output to track. Tracking actor-called skill outputs needs a new interception, which the design did not specify. |
+| `basis_refs` notes | Not applicable | Thin memory and skills have no `basis_refs`. |
+| Ledger with task-scope stamps | `harness/board.jsonl`, plain rows | The thin path does not use the legacy task-scope marker. |
+
+### 15.2 Files
+
+- `demo/pi_harness_board.ts`: environment-agnostic core. It contains the transition source from bridge events (with a fetcher for `/events`, a pre-action-state fallback and an initial-state seed), contract validation, replay and live scoring, status, current predictions and comparable-feature disagreement, and the digest.
+- `demo/arc_thin_board.ts`: the thin integration. It contains the skill catalog, the guest evaluator, background work with a 5 s pre-decision wait, the bounded analyst repair (budget preflight, at most 2 repairs per lineage per level, one per action boundary, 120 s wall cap, output cap), and the skill-tool receipt.
+- `demo/arc_thin_extension.ts`: an optional `predicts` field, a shared `saveSkill`, a board kick after each action, `prepare` in `before_agent_start`, and the digest section in the working set. All board failures are caught, logged non-fatally and leave the decision unchanged.
+- `demo/arc_thin_skill_guest.ts`: the skill guest moved out of the extension, unchanged.
+- `demo/pi_task_python_server.py` and `demo/pi_task_python_pool.ts`: a persistent WASI host. Each request still runs in a fresh instance, store, fuel, memory and epoch deadline. It imports the pinned runner rather than modifying it, so saved runtime identities are unchanged. `pi_task_python.ts` exports its result checks unchanged.
+- `src/autoresearch_pi/arc_thin_e2e.py` and `cli.py`: flags, `board` stats in the summary, and `arc-thin-smoke --board`.
+- `tools/arc_thin_smoke_provider.ts`: a board script and a scripted repair analyst.
+
+### 15.3 Evidence
+
+**Go/no-go latency**, Windows, `tmp/board-latency-measure.ts`:
+
+| Mode | Cold | Warm median |
+|---|---|---|
+| Spawn per call | 2066 ms | 1713 ms |
+| Persistent host | 1643 ms | 129 ms |
+
+**Functional** (`tests/pi_harness_board.test.ts`, 10/10 pass, real WASI guest):
+- stage80 public trajectory: a footprint predictor written by the development agent from the stage64/stage80 audit hypothesis scores 11/11 on level 1, including blocked steps 36, 37, 39 and 43. This is not the model-authored stage70 program the design named.
+- stage60: 14/14.
+- The always-move variant is falsified at action 36 (predicted [24,40], observed [29,40]). The digest shows the details once, then a compact line.
+- A 200 ms timeout predictor ends `erroring` with 0 wrong.
+- Comparable-feature disagreement is reported.
+- A missing lens rejects only the contract.
+- The lens is pinned to its exact version.
+- An expired deadline leaves the predictor `replaying` with no scores.
+- The board writes only its ledger.
+
+**Wiring**, real bridge, Pi, thin extension and WASI; scripted provider; mock ARC SDK (`tools/mock_arc_sdk`):
+- Thin smoke regression: 14/14 (`tmp/thin-smoke-regression-20261009/summary.json`).
+- Board smoke: 13/13 (`tmp/thin-board-smoke-20261009/summary.json`):
+  - contracts accepted, and the receipt appears;
+  - the digest appears in the working set;
+  - `Disagreement [pos] on ACTION2/ACTION3` appears before any falsification;
+  - the falsification at action 3 is delivered once, then compact;
+  - one board-analyst call is logged in `usage.jsonl`;
+  - the repair is saved as `board_pos_naive v1` and replayed 3/3 within the same pre-decision slice;
+  - the repair note is shown;
+  - the agent's skills are untouched;
+  - all 5 scripted actions are executed;
+  - 0 harness errors.
+
+**Other regressions:** `arc_thin_feedback.test.ts` 5/5; `test_cli.py` + `test_external_benchmark_cli.py` 13/13.
+
+**Not run:**
+- the legacy `arc-harness-smoke` matrix, which is unaffected because the legacy path is untouched;
+- the official ARC SDK;
+- any real provider.
+
+| Evidence level | Status | Provider / environment | Notes |
+| --- | --- | --- | --- |
+| Functional correctness | Pass | Node + real WASI sandbox; saved public stage60/stage80 trajectories | Predictors are development-agent written |
+| End-to-end reachability (thin path) | Pass | Real bridge/Pi/thin extension/WASI; scripted provider; mock ARC SDK | Not the official SDK; the analyst is scripted |
+| Autonomous use | Not verified | — | Needs P3 (§12) with a real provider |
+| Net benefit | Not verified | — | Needs P3 confirmatory pairs |
+
+### 15.4 Next falsifiable check
+
+Run P3 (§12) on the thin path: `arc-thin-e2e --harness-board` against the same runner without the flag, with qwen3.8-27b on ft09 and ls20. The first exploratory pair answers the earliest open transition: does a real model declare `predicts` without being prompted? If it does not, the next single factor is discoverability (the skill-tool description or the system prompt), not more mechanism. Budget and token caps need the user's authorization before launch.
+
+### 15.5 Real ARC runs (2026-10-09, user-requested)
+
+Setup for both runs: official ARC SDK through the real bridge, game ls20, qwen3.8-27b via yibu, thin treatment, `--harness-board`, analyst `contract`, caps of 1.5M reported tokens and 3600 s, and no action cap (the setup of the user's preceding uncapped thin run).
+
+| Run | Change | Actions / levels | Reported tokens | Skills saved | Skills declaring `predicts` | Board ledger | Stop |
+|---|---|---|---|---|---|---|---|
+| r1 (`runs/pi-arc-thin-ls20-board-real-20261009`) | Board enabled; the contract appears only in the `skill` tool schema | 47 / 0 | 860,164 | `analyze` v1 (region summary) | 0 | empty | `decision_timeout` |
+| r2 (`runs/pi-arc-thin-ls20-board-real-r2-20261009`) | Plus a 6-line "Predictions" paragraph in the system prompt, shown only when the board is on | 44 / 0 | 677,499 | `strip_status` v1–v3 (bottom-strip counter) | 0 | empty | `decision_timeout` |
+
+**Findings:**
+- **The earliest missing step is recognition.** In 91 real decisions the model wrote 4 skill versions, all descriptive or measuring, and never declared a predictor. The board was never exercised by a real model, so its mechanics have no real-model evidence yet.
+- **The stops were not caused by the board.** Both runs stopped because the ARC environment stopped answering:
+  - r1: 24 `arc_action ... aborted due to timeout` results from decision 49;
+  - r2: 16 such results;
+  - in both runs every retry waited 120 s until the 900 s decision timeout, and the bridge close also timed out.
+
+  The user's earlier uncapped thin run without the board (319 actions) ended with the same signature. Neither board run logged a harness error.
+- **r2 is not a clean single-factor comparison.** Another session edited `arc_thin_extension.ts` and `prompts/arc_thin_system.md` during these runs (competing-hypothesis memory). The prompt file is re-read at every decision, so part of r2 saw that session's prompt. The board paragraph was present throughout, because both prompt versions keep the `{{board}}` placeholder.
+
+**Evidence status:**
+- Autonomous use: **failed at recognition** (0/2 runs, ls20, qwen3.8-27b).
+- Net benefit: not testable until a model declares predictors.
+
+**Next single factor** (not run):
+1. Freeze one commit per arm, as the other session's note also requires.
+2. Then test whether a predictor is created when its value is concrete, without forcing it. The candidate is to make the board's first output useful without any declaration: the runtime offers the agent's existing skills as predictor candidates when a skill's output for the after-state equals a value it could have computed from the before-state. Alternatively, accept this negative result for qwen-27B and run one stronger model, separating "mechanism unused" from "model too weak".

@@ -30,7 +30,7 @@ from .shopping_e2e import (
 from .validation_evidence import load_validation_manifest
 from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
-from .arc_thin_e2e import run_arc_thin_e2e, run_arc_thin_smoke
+from .arc_thin_e2e import run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_ledger_smoke, run_arc_thin_smoke
 from .terminal_bench_e2e import run_terminal_bench_e2e
 
 
@@ -177,9 +177,16 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--thinking", default=None, help="Pi thinking level, e.g. off, low, medium, high")
     arc_thin.add_argument("--input-modalities", default=None)
     arc_thin.add_argument("--max-output-tokens", type=int, default=None)
+    arc_thin.add_argument("--ledger", action="store_true",
+                          help="track the agent's optional idea/expect, effort per idea and its skills' measurements")
+    arc_thin.add_argument("--critic", action="store_true",
+                          help="ledger plus an external critic triggered at critical steps (advisory)")
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)
+    arc_thin_smoke.add_argument("--ledger", action="store_true", help="run the ledger + critic scenario instead")
+    arc_thin_smoke.add_argument("--environment", action="store_true",
+                                help="run the environment-failure scenario instead (mock steps return no frame)")
     arc_smoke = sub.add_parser(
         "arc-harness-smoke",
         help="run ARC/Pi self-harness diagnostics or capture real-provider closure evidence",
@@ -377,11 +384,13 @@ def main(argv: list[str] | None = None) -> int:
             max_reported_tokens=args.max_reported_tokens, experiment_timeout_seconds=args.experiment_timeout,
             consolidate_after_actions=args.consolidate_after, pi_provider=args.provider, pi_model=args.model,
             thinking=args.thinking, input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,
+            ledger=args.ledger, critic=args.critic,
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
     if args.command == "arc-thin-smoke":
-        summary = run_arc_thin_smoke(args.root)
+        summary = (run_arc_thin_ledger_smoke(args.root) if args.ledger
+                   else run_arc_thin_environment_smoke(args.root) if args.environment else run_arc_thin_smoke(args.root))
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
     if args.command == "arc-harness-smoke":

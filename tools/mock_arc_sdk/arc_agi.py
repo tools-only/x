@@ -1,5 +1,10 @@
 """Mock only ARC SDK environment calls; production bridge/runner remain real."""
+import os
 from types import SimpleNamespace
+
+# MOCK_ARC_FAIL_AFTER=N: every step after the first N returns None, as the remote
+# SDK wrapper did in real runs (the bridge reports EnvironmentReturnedNoFrame).
+FAIL_AFTER = int(os.environ.get("MOCK_ARC_FAIL_AFTER") or 0)
 
 
 class OperationMode:
@@ -24,6 +29,8 @@ class Environment:
         return self.observation_space
 
     def step(self, action, data, reasoning):
+        if FAIL_AFTER and self.actions >= FAIL_AFTER:
+            return None
         self.actions += 1
         self.position = (self.position + (1 if action.name in {'ACTION1','ACTION4'} else -1)) % 8
         return self._observe()

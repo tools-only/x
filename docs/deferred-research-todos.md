@@ -1,5 +1,7 @@
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-10-09 证据板（Evidence board）P0–P2实现于thin路径（`ARC_HARNESS_BOARD=enabled` / `arc-thin-e2e --harness-board`，默认关闭）：声明`predicts`的skill被runtime在规范转移上回放/逐动作打分，单一digest进入工作集，被证伪且授权的预测器由一次性analyst修复为`board_`名下新skill；从不改写/隐藏/阻断组件或动作。持久WASI主机将单次Python调用从中位1713ms降到129ms。功能：10项Node（stage80公开轨迹11/11含4次受阻、stage60 14/14、错误变体在第36步精确证伪、超时记erroring非证伪）；接线：thin smoke回归14/14及board smoke 13/13（真实bridge/Pi/thin扩展/WASI，scripted provider，mock ARC SDK）。自主采用与净收益未验证，未运行真实provider/官方SDK；B/C/D保持开放。见[证据板设计与实现记录§15](plans/2026-10-08-self-harness-evidence-board.md#15-implementation-record-2026-10-09)。真实验证（同日，官方SDK/ls20/真实qwen3.8-27b，各1.5M/3600秒上限）：r1 47动作/0关/860164 reported、r2（加系统提示Predictions段）44动作/0关/677499 reported；共4个skill版本均未声明`predicts`，board账本为空，最早断点在识别；两次均因ARC环境`/action`超时进入decision_timeout，与此前无board的thin运行同一签名，无harness错误。r2期间另一会话修改了thin扩展/系统提示，非干净单因素对照。见§15.5。
+
 2026-10-08 B36真实终态：官方ft09/真实Qwen/普通CPython-WASI、研究off/单动作，1800秒截止（含清理1819.422），32已确认动作/0关/1457408reported，新provider unknown0、历史unknown3保留。3个Tool发布装配/trial、后续21次native；9次作者拒绝为raw JSON1/同名create8，非Python方言拒绝。修订入口切换和确定pre-write失败被记applied=unknown/retryable=true仍有摩擦，另有采样坐标错误/硬编码旧矩阵/重复调用，不能按执行成功认定帮助解题。71确认请求history均37139.295775、末48687字符；缺官方最终scorecard、环境step33超时，无matched对照，B/C/D的任务帮助、总成本收益及连续性仍开放。下一轻量因素为统一保存/修订与真实失败状态，非新worker/门禁；见[主记录§7 B36真实终态](plans/2026-10-06-self-harness-simplification-and-validation.md#7-开发入口与验收命令)。
 
 2026-10-08 B35轻量化已实施：直接改善实际语法/callee/slice错误及raw/SDK预览拒绝说明，精简既有作者契约和成功create的provider回执，复用默认安装/trial，保留完整native/details/持久记录及失败恢复；无新matcher/worker/门禁。AST/Node/import/hash检查通过，独立B34底版658文件freeze已准备、未启动；工作区其他chat改动保留且不混入该候选。没有新provider/ARC请求，功能/接线/采用/净收益均待真实B35验证；B/C/D研究到行动、父子总成本、跨压缩认知仍开放。见主记录“B35实现交付与隔离候选”，不得把文本缩短当任务验收。
@@ -212,6 +214,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 - `demo/pi_arc_trajectory_resource.ts`
 - `src/autoresearch_pi/arc_agi_3_e2e.py`
 
+2026-10-09 thin 路径：12 个真实 thin 运行中 4 个因环境停止返回帧（HTTP 502/超时）而在同一决策内被模型反复重试直至决策超时。已按 bridge 的 HTTP 状态区分环境故障（5xx/超时，结束决策，连续两次以 `environment_error` 停止）与 Agent 的无效动作（4xx，仍由 Agent 修正）；这是 adapter/runtime 契约的一部分，只经 mock 全链路验证，未在真实远端故障下验证。见 [变更记录](plans/2026-10-09-thin-decision-loop-efficiency.md)。本节其他事项状态不变。
+
 ## B. 离线研究目的与可观测条件
 
 用户提出：父 Agent 可把全局或局部轨迹交给隔离 child，按猜想验证、double check、开放探索等目的发起研究，平衡归纳能力与自发探索能力。
@@ -240,6 +244,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 ## D. 压缩后的认知连续性
 
+2026-10-09 thin 当前机制说明：Self-Harness、上下文重建、定期整理、Analyst 及可选 Ledger/Critic 的关系见 [当前架构与完整流程](plans/2026-10-09-thin-current-architecture.md)。历史先例附原始条件、持久 Critic 研究笔记、证据截止点与实际交付分离的 revision 2 设计仍见 [主设计记录](plans/2026-10-09-lightweight-hypothesis-loop-with-critic.md)，不能视作当前 thin 已用机制。这是文档核对，不是 runtime 或真实 provider 验收；相关 B/C/D 状态不变。
+
 已讨论的风险：原文落盘可恢复，不代表后续模型输入仍保有旧推理；只保留 archive marker 不能保证关键认识延续。已有 task checkpoint、memory、findings 和 context lifecycle，具体运行是否启用及其阈值需重新核实。
 
 - [ ] 联合检查通用 lifecycle、ARC frame projection、Pi 原生 auto-compaction 和 session rotation 的作用顺序及实际 provider 输入；不能只检查一个字符上限。
@@ -249,6 +255,10 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 - [ ] 验证关键历史证据可检索、可恢复，且结论始终区分 observation、假设和已验证认识。
 
 定位入口：`demo/pi_task_local_context_lifecycle.ts`、`demo/pi_agent_owned_observation_compaction.ts`、`demo/pi_external_benchmark_research.ts`、`src/autoresearch_pi/arc_agi_3_e2e.py`。
+
+2026-10-09 thin 路径：319 动作真实运行显示条件性反证丢失、逐条删除被调用上限拒绝（[诊断](../runs/pi-arc-thin-ls20-treatment-p1-uncapped-real-20261009/diagnostics/level0-diagnosis.md)）。已实现“复用 memory 保存少量竞争假设及带条件的检验结果、单次原子批量修订”，仅功能与离线全链路通过，自主采用和收益未验证；见 [变更记录](plans/2026-10-09-thin-hypothesis-memory.md)。上述各项状态不变。
+
+2026-10-09 thin 路径（续）：7 个 thin-hyp 真实运行中 24 次假设删除有 19 次没有任何反证记录（ls20 A #5 支持一个关于计数条的假设时删掉了正确的移动假设），计划事实未关联任何假设。已实现竞争假设与依赖策略的统一维护：按 question 分组对手、一次检验记录多个对手的判定、未处理反证标记 contested、删除未检验对手保留一行、前提被否定时挂起依赖策略并记录修订及后续动作分布。仅功能与离线全链路通过，自主采用和收益未验证；这为 C（假设 → 检验 → 修订）和 D（已排除解释、未完成实验跨重建保留）提供载体，不改变其状态。见 [变更记录](plans/2026-10-09-thin-hypothesis-strategy-lifecycle.md)。
 
 ## 后续更新
 
@@ -319,3 +329,13 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 2026-10-08 B37真实官方ft09/Qwen验收：50动作/0关/1230853 known reported、0作者/装配/语义使用，新中立prompt及五类索引在实际HTTP生效。游戏历史峰51558 chars、终态展开复盘合同后107504；新增未结算预留送达未确认，不填零。B/C/D保持开放，下一候选为短复盘合同与关停结算，而非研究到行动或一般认知连续性完成。见[主记录§7](plans/2026-10-06-self-harness-simplification-and-validation.md#7-开发入口与验收命令)及b37-terminal-evidence-supplement.json；本轮未实施新runtime机制。
 
 2026-10-08 thin P1：真实 ls20/Qwen 50动作/0关轨迹发现中间标记后的左下图案变化被误判为收集，第12步失败被父记成成功并重复。现仅复用已有公共 delta 的四连通几何，将颜色转换/坐标/小区域像素供给动作回执与最新父工作集，旧详情随下一动作退场，无新工具/worker/语义门禁。6 Node检查、已存真实50动作重放及真实Pi/production bridge/mock SDK/scripted provider smoke 14检查通过，摘要平均341.16字符；无新付费请求。五类完整闭环、新真实模型利用、认知连续性及父子总成本/通关净收益未验证，B/C/D继续开放。见[变更记录](plans/2026-10-08-thin-arc-action-feedback.md)及其原始产物链接。
+
+2026-10-09 thin P1真实普通复验终态：官方SDK ONLINE/真实yibu qwen3.8-27b，50动作/1关/1100614reported/4606.9秒。P1公共摘要50动作计数及语义准确、0遗漏；父#6正确纠错、#13注意左下变化却误解为计数器。第二关入口#37零变化后改判目标sealed/decoy，没有检验当前图案与目标不一致；分析员错误解释、未执行pathcheck却声称验证、#40 RESET恢复总预算误解（后纠正）暴露B/C/D仍有断点。对旧单样本关数0→1、reported−2.73%、墙钟+5.54%，不支持净因果收益；五类完整闭环未测。第二关剩30动作，候选乐观几何标记→目标路线37步，预算也可能不足，但非引擎下界。无运行中干预，217个受监测源码无漂移；后续准确图案比较及有界反事实诊断未执行。见[唯一P1变更记录](plans/2026-10-08-thin-arc-action-feedback.md#真实终态与-level-1-诊断2026-10-09)及其公共证据产物；下述较早“无新付费”仅为实施阶段。
+
+2026-10-09 00:53用户明确要求取消上限并启动：已用thin普通ls20/treatment/真实Qwen新独立后台运行，`--max-actions 0`关闭bridge派生的总/每关动作上限，token/decision总额度均null；环境原生规则和原有时限保持。首个真实动作及provider响应已核查，终态/规则修订/净收益待测，无解题注入或P2–P4修改。B/C/D保持开放，增加预算不是质量证明。协议、PID和原始启动验证见[同一变更记录](plans/2026-10-08-thin-arc-action-feedback.md#无人为动作上限的真实运行启动协议2026-10-09)。
+
+2026-10-09无动作上限样本终态：05:36停止，319已记录动作/0关/7777869reported/16980.5秒，环境无帧及timeout后Pi decision_timeout、bridge.close亦超时；原PID结束，无付费重试。2技能5版本/183执行、1prompt、284memory日志不等于正确规则；183输出未在本次状态查询逐一语义复算，130工具isError不能被harness.errors=0掩盖。当前工作区4源码相对启动漂移，时刻/运行影响未知，不能称冻结净收益对照。B/C/D保持开放；下一窄问题为环境无帧故障定位和图案→规则→WIN证据修订。原始summary和来源限制见[唯一P1记录](plans/2026-10-08-thin-arc-action-feedback.md#无人为动作上限的真实运行启动协议2026-10-09)，上段“进行中”保留为启动历史。
+
+2026-10-09 level0只读诊断：78个动作后状态图案匹配，却0次匹配后到顶部入口；4次入口向上失败全部在不匹配状态。父#185明确匹配仍继续清条，analyst沿用条件缺失的入口反例，技能自动化局部计数而未推进正确实验。断点为关系识别→实验→反例修订；更多预算及183调用未证明收益，B/C/D继续开放。下一另行有界检查是匹配后返回同一入口的真实条件对照；本轮无新provider/动作/runtime修改，完整规则及五类闭环未验。见[同一P1记录](plans/2026-10-08-thin-arc-action-feedback.md#无上限样本-level-0-行为诊断2026-10-09)与其公共证据链接。
+
+同日反思/竞争假设补充：确认父#45反思、#132淘汰旧策略，亦有顶部/0/1/匹配等候选及analyst A–E比较。失败是持续竞争/条件化否证/实验分配，不是完全没有反思。启动匹配源码每决策丢弃旧对话，选择性memory混合状态/解释/计划；114memory拒绝及#257/#282未完成旧策略删除揭示真实修订摩擦。#223/#224已失败的匹配+条空条件在#309/#310重复。B/C/D仍开放；候选为简化逐state/删除义务、复用短竞争与反例摘要，其自主效果需有界对照。本轮未实施，见[唯一P1记录](plans/2026-10-08-thin-arc-action-feedback.md#无上限样本-level-0-行为诊断2026-10-09)及[详细诊断](../runs/pi-arc-thin-ls20-treatment-p1-uncapped-real-20261009/diagnostics/level0-diagnosis.md#补充为何反思与竞争假设没能持续纠偏)。

@@ -9,6 +9,7 @@ docs/plans/2026-10-08-thin-arc-self-harness-extension.md
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -42,10 +43,11 @@ NO_ACTION_PROMPT = (
     "end this one with exactly one arc_action."
 )
 CONSOLIDATE_PROMPT = (
-    "CONSOLIDATE: no action this turn. Review RECENT ACTIONS and MEMORY. Update memory "
-    "(merge duplicates, raise/lower confidence, delete what the evidence refuted, record the "
-    "current goal hypothesis and the next test). If you repeated a calculation by hand, write "
-    "it as a skill. Then stop."
+    "CONSOLIDATE: no action this turn. Review RECENT ACTIONS, HYPOTHESES, STRATEGY and MEMORY. In one memory "
+    "call: record each test you have not recorded, with the condition it was tested under and a verdict for "
+    "every rival it bears on; settle contested hypotheses; keep 2-4 competing hypotheses per open question "
+    "with a next_test that tells them apart; make the active strategy name the hypotheses it depends on; "
+    "and delete per-step and obsolete entries. If you repeated a calculation by hand, write it as a skill. Then stop."
 )
 # Streaming deltas repeat the whole partial message per token; keep lifecycle only.
 PERSISTED_EVENTS = frozenset({
@@ -77,13 +79,41 @@ def _fatal_errors(harness: Path) -> int:
     return sum(1 for row in _read_jsonl(harness / "errors.jsonl") if row.get("fatal"))
 
 
+def _environment_errors(harness: Path) -> int:
+    """arc_action calls the extension ended because the environment failed (timeout, 5xx)."""
+    return sum(1 for row in _read_jsonl(harness / "errors.jsonl") if row.get("environment"))
+
+
+def _tool_errors(events: Path) -> dict[str, int]:
+    """Error results per tool (refusals and argument validation failures included)."""
+    counts: dict[str, int] = {}
+    if not events.exists():
+        return counts
+    with events.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if '"tool_execution_end"' not in line or '"isError":true' not in line:
+                continue
+            try:
+                name = str(json.loads(line).get("toolName"))
+            except ValueError:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
 def _harness_stats(harness: Path) -> dict[str, Any]:
     memory: dict[str, Any] = {}
-    for row in _read_jsonl(harness / "memory.jsonl"):
+    memory_rows = _read_jsonl(harness / "memory.jsonl")
+    for row in memory_rows:
+        if row.get("rev"):
+            continue
         if row.get("deleted"):
             memory.pop(row.get("key"), None)
         else:
             memory[row.get("key")] = row
+    hypotheses = {key: row["hyp"] for key, row in memory.items() if isinstance(row.get("hyp"), dict)}
+    strategies = {key: row["strat"] for key, row in memory.items() if isinstance(row.get("strat"), dict)}
+    evidence = [item for hyp in hypotheses.values() for item in hyp.get("evidence") or []]
     skills: dict[str, Any] = {}
     skill_rows = _read_jsonl(harness / "skills.jsonl")
     for row in skill_rows:
@@ -96,8 +126,18 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
     prompts = _read_jsonl(harness / "prompt.jsonl")
     errors = _read_jsonl(harness / "errors.jsonl")
     return {
-        "memory_entries": len(memory),
-        "memory_writes": len(_read_jsonl(harness / "memory.jsonl")),
+        "memory_entries": len(memory) - len(hypotheses) - len(strategies),
+        "memory_writes": len(memory_rows),
+        "memory_deletes": sum(1 for row in memory_rows if row.get("deleted")),
+        "hypotheses": {
+            "final": {key: hyp.get("status") for key, hyp in hypotheses.items()},
+            "writes": sum(1 for row in memory_rows if isinstance(row.get("hyp"), dict)),
+            "evidence": len(evidence),
+            "refutations": sum(1 for item in evidence if item.get("verdict") == "refutes"),
+            "questions": sorted({str(hyp.get("question")) for hyp in hypotheses.values() if hyp.get("question")}),
+        },
+        "lifecycle": _lifecycle_stats(memory_rows, _read_jsonl(harness / "trajectory.jsonl"), strategies),
+        "tool_errors": _tool_errors(harness.parent / "pi-events.jsonl"),
         "skills": sorted(f"{name} v{row.get('version')}" for name, row in skills.items()),
         "skill_versions_saved": sum(1 for row in skill_rows if not row.get("deleted")),
         "skill_runs": len(runs),
@@ -107,6 +147,151 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
         "analyst_calls": sum(1 for row in usage if row.get("kind") == "analyst"),
         "errors": len(errors),
         "fatal_errors": sum(1 for row in errors if row.get("fatal")),
+        "environment_errors": sum(1 for row in errors if row.get("environment")),
+        "decision_loop": _decision_loop_stats(usage, _read_jsonl(harness / "trajectory.jsonl"),
+                                              _read_jsonl(harness / "batch_results.jsonl")),
+        "ledger": _ledger_stats(harness),
+    }
+
+
+def _decision_loop_stats(usage: list[dict[str, Any]], trajectory: list[dict[str, Any]],
+                         batched: list[dict[str, Any]]) -> dict[str, Any]:
+    """Model messages per action decision and what they cost (agent calls only, side calls excluded)."""
+    acted = {row.get("decision") for row in trajectory}
+    per_decision: dict[Any, list[dict[str, Any]]] = {}
+    for row in usage:
+        if row.get("kind") == "agent" and row.get("decision") in acted:
+            per_decision.setdefault(row.get("decision"), []).append(row)
+    messages = [len(rows) for rows in per_decision.values()]
+    later = sum(int(row.get("input") or 0) + int(row.get("cache_read") or 0) + int(row.get("output") or 0)
+                for rows in per_decision.values() for row in rows[1:])
+    every = sum(int(row.get("input") or 0) + int(row.get("cache_read") or 0) + int(row.get("output") or 0)
+                for rows in per_decision.values() for row in rows)
+    return {
+        "action_decisions": len(messages),
+        "messages_per_action_decision": round(sum(messages) / len(messages), 2) if messages else None,
+        "single_message_decisions": sum(1 for count in messages if count == 1),
+        "tokens_after_first_message_pct": round(100 * later / every, 1) if every else None,
+        "batched_tool_results": len(batched),
+        "batched_tool_failures": sum(1 for row in batched if row.get("failed")),
+    }
+
+
+def _lifecycle_stats(memory_rows: list[dict[str, Any]], trajectory: list[dict[str, Any]],
+                     strategies: dict[str, Any]) -> dict[str, Any]:
+    """Hypothesis-strategy lifecycle counts and what followed each revision. Mechanical only:
+    whether later actions served the revised conclusion is a judgement left to the audit."""
+    labels = [str(row.get("action")) + (f"({row.get('x')},{row.get('y')})" if row.get("x") is not None
+                                        and row.get("y") is not None else "") for row in trajectory]
+    times = [str(row.get("t") or "") for row in trajectory]
+
+    def action_at(row: dict[str, Any]) -> int:
+        return sum(1 for t in times if t and t <= str(row.get("t") or ""))
+
+    deleted = [row for row in memory_rows if row.get("deleted") and str(row.get("key", "")).startswith("hyp.")]
+    revisions = []
+    for index, row in enumerate(memory_rows):
+        rev = row.get("rev")
+        if not isinstance(rev, dict):
+            continue
+        at = int(rev.get("at") or 0)
+        after = labels[at:at + 8]
+        before = labels[max(0, at - max(len(after), 1)):at]
+        before_key = rev.get("active_before")
+        activated = rev.get("active_after") if rev.get("active_after") not in (None, before_key) else None
+        new_strategy_at = at if activated else next(
+            (action_at(later) for later in memory_rows[index + 1:] if isinstance(later.get("strat"), dict)
+             and later["strat"].get("status") == "active" and later.get("key") != before_key), None)
+        revisions.append({
+            "at": at, "causes": rev.get("causes"), "active_before": before_key, "active_after": rev.get("active_after"),
+            "next_actions": after, "previous_actions": before,
+            "same_action_set": bool(after) and set(after) <= set(before),
+            "new_strategy_at": new_strategy_at, "linked": sorted(rev.get("linked") or {}),
+        })
+    strategy_rows = [row for row in memory_rows if isinstance(row.get("strat"), dict)]
+    return {
+        "hypotheses_deleted": len(deleted),
+        "deleted_without_refutation": sum(1 for row in deleted if row.get("dropped")),
+        **_refutation_responses(memory_rows),
+        "strategies": {
+            "final": {key: strat.get("status") for key, strat in strategies.items()},
+            "writes": len(strategy_rows),
+            "with_premises": len({row.get("key") for row in strategy_rows if row["strat"].get("depends_on")}),
+            "with_components": len({row.get("key") for row in strategy_rows if row["strat"].get("uses")}),
+        },
+        "revisions": revisions,
+    }
+
+
+def _refutation_responses(memory_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """How hypotheses responded to refutations, from consecutive versions of each key.
+    contested_outcomes: what a contested hypothesis became next (rejected, narrowed = claim
+    rewritten, status_only = status restated with the same claim). restated_with_refutation:
+    a refutation recorded in the same call that rewrote the claim, which never shows as
+    contested; whether the rewrite was a fair narrowing is left to the audit."""
+    previous: dict[str, dict[str, Any]] = {}
+    outcomes = {"rejected": 0, "narrowed": 0, "status_only": 0}
+    restated = 0
+
+    def refutations(hyp: dict[str, Any]) -> int:
+        return sum(1 for item in hyp.get("evidence") or [] if item.get("verdict") == "refutes")
+
+    for row in memory_rows:
+        key = row.get("key")
+        if row.get("deleted"):
+            previous.pop(key, None)
+            continue
+        hyp = row.get("hyp")
+        if not isinstance(hyp, dict):
+            continue
+        before = previous.get(key)
+        if before is not None:
+            claim_changed = hyp.get("claim") != before.get("claim")
+            if before.get("status") == "contested" and hyp.get("status") != "contested":
+                outcome = "rejected" if hyp.get("status") == "rejected" else "narrowed" if claim_changed else "status_only"
+                outcomes[outcome] += 1
+            elif claim_changed and hyp.get("status") != "rejected" and refutations(hyp) > refutations(before):
+                restated += 1
+        previous[key] = hyp
+    return {"contested_outcomes": outcomes, "restated_with_refutation": restated}
+
+
+def _ledger_stats(harness: Path) -> dict[str, Any] | None:
+    """Counts from the ledger and critic stores; None when the ledger was off."""
+    observations = _read_jsonl(harness / "observations.jsonl")
+    states = _read_jsonl(harness / "states.jsonl")
+    if not states and not observations:
+        return None
+    trajectory = _read_jsonl(harness / "trajectory.jsonl")
+    critic = _read_jsonl(harness / "critic.jsonl")
+    usage = _read_jsonl(harness / "usage.jsonl")
+    notes = [row for row in critic if row.get("kind") == "note"]
+    ideas = [str(row.get("idea") or "") for row in trajectory]
+    longest = current = 0
+    previous = None
+    for idea in ideas:
+        key = idea.lower() or None
+        current = current + 1 if key is not None and key == previous else (1 if key is not None else 0)
+        longest = max(longest, current)
+        previous = key
+    return {
+        "actions_with_idea": sum(1 for idea in ideas if idea),
+        "actions_with_expect": sum(1 for row in trajectory if row.get("expect")),
+        "distinct_ideas": len({idea.lower() for idea in ideas if idea}),
+        "longest_idea_run": longest,
+        "states_recorded": len(states),
+        "observations": {"ok": sum(1 for row in observations if row.get("ok")),
+                         "error": sum(1 for row in observations if not row.get("ok"))},
+        "observed_skills": sorted({f"{row.get('skill')} v{row.get('version')}" for row in observations if row.get("ok")}),
+        "critic": {
+            "notes": len(notes),
+            "notes_shown": sum(1 for row in notes if row.get("lines") or row.get("suggest")),
+            "lines_kept": sum(len(row.get("lines") or []) for row in notes),
+            "lines_dropped": sum(len(row.get("dropped") or []) for row in notes),
+            "suppressed": sum(1 for row in critic if row.get("kind") == "suppressed"),
+            "failed": sum(1 for row in critic if row.get("kind") == "failed"),
+            "tokens": sum(int(row.get("total") or 0) for row in usage if row.get("kind") == "critic"),
+        } if critic else None,
     }
 
 
@@ -139,6 +324,7 @@ def run_arc_thin_e2e(
     experiment_timeout_seconds: float | None = None,
     consolidate_after_actions: int = 25,
     max_no_action_decisions: int = 3,
+    max_environment_failures: int = 2,
     decision_timeout_seconds: float = 900.0,
     pi_provider: str = "yibu",
     pi_model: str | None = None,
@@ -148,6 +334,9 @@ def run_arc_thin_e2e(
     pi_provider_extension: Path | None = None,
     bridge_python: Path | None = None,
     bridge_module_paths: tuple[Path, ...] = (),
+    ledger: bool = False,
+    critic: bool = False,
+    extension_env: dict[str, str] | None = None,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``."""
     if variant not in {"treatment", "control"}:
@@ -228,17 +417,27 @@ def run_arc_thin_e2e(
             "ARC_GAME": game,
             "ARC_THIN_VARIANT": variant,
         })
+        ledger_enabled = (ledger or critic) and variant == "treatment"
+        critic_enabled = critic and variant == "treatment"
+        if ledger_enabled:
+            pi_env["ARC_HARNESS_LEDGER"] = "enabled"
+        if critic_enabled:
+            pi_env["ARC_HARNESS_CRITIC"] = "enabled"
+        pi_env.update(extension_env or {})
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
                    "--no-context-files", "--no-builtin-tools", "--extension", str(EXTENSION)]
         if pi_provider_extension is not None:
             command.extend(["--extension", str(pi_provider_extension.resolve())])
+        sources = sorted(EXTENSION.parent.glob("arc_thin_*.ts")) + [EXTENSION.parent / "prompts" / "arc_thin_system.md"]
         (root / "run-config.json").write_text(json.dumps({
             **{key: summary[key] for key in ("format", "game", "variant", "provider", "model", "thinking")},
             "max_actions": max_actions, "max_decisions": max_decisions,
             "max_reported_tokens": max_reported_tokens, "experiment_timeout_seconds": experiment_timeout_seconds,
             "consolidate_after_actions": consolidate_after_actions, "input_modalities": settings["input_modalities"],
             "max_output_tokens": settings.get("max_tokens"), "command": command,
+            "ledger": ledger_enabled, "critic": critic_enabled,
+            "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 
         trace = (root / "pi-events.jsonl").open("a", encoding="utf-8")
@@ -265,6 +464,7 @@ def run_arc_thin_e2e(
         consolidated_at = 0
         level_changed_since_consolidation = False
         no_action_streak = 0
+        environment_streak = 0
 
         def turn(message: str) -> None:
             response = kernel.prompt(message)
@@ -304,6 +504,7 @@ def run_arc_thin_e2e(
                 or action_count - consolidated_at >= consolidate_after_actions
             )
             fatal_before = _fatal_errors(harness)
+            environment_before = _environment_errors(harness)
             errors_before = len(extension_errors)
             try:
                 if consolidate:
@@ -341,6 +542,16 @@ def run_arc_thin_e2e(
             if _fatal_errors(harness) > fatal_before:
                 summary["stop_reason"] = "harness_fatal"
                 break
+            # The extension ends a decision when the environment fails; stop instead of
+            # spending further model turns once it fails in consecutive decisions.
+            if _environment_errors(harness) > environment_before and len(_read_jsonl(harness / "trajectory.jsonl")) == action_count:
+                environment_streak += 1
+                if environment_streak >= max_environment_failures:
+                    summary["stop_reason"] = "environment_error"
+                    summary["error"] = str((_read_jsonl(harness / "errors.jsonl") or [{}])[-1].get("message"))
+                    break
+            else:
+                environment_streak = 0
 
         latest = _bridge_state(bridge_url, attempts=1)
         if latest is not None:
@@ -399,6 +610,18 @@ def run_arc_thin_e2e(
     return path
 
 
+def _tool_names(row: dict[str, Any]) -> list[str]:
+    return [str(tool.get("name") if isinstance(tool, dict) else tool) for tool in row.get("tools", [])]
+
+
+def _run_skill_names(row: dict[str, Any]) -> list[str] | None:
+    """The name enum of run_skill in one recorded request, or None when run_skill was not offered."""
+    for tool in row.get("tools", []):
+        if isinstance(tool, dict) and tool.get("name") == "run_skill":
+            return list(((tool.get("parameters") or {}).get("properties") or {}).get("name", {}).get("enum") or [])
+    return None
+
+
 def _smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
     harness = root / "harness"
     requests = _read_jsonl(root / "smoke-requests.jsonl")
@@ -406,6 +629,8 @@ def _smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
     results = [result for row in requests for result in row.get("last_tool_results", [])]
     def result_text(tool: str) -> list[str]:
         return [str(result.get("text") or "") for result in results if result.get("tool") == tool]
+    def last_result(row: dict[str, Any]) -> str:
+        return str((row.get("last_tool_results") or [{}])[-1].get("text") or "")
     skill_rows = _read_jsonl(harness / "skills.jsonl")
     trajectory = _read_jsonl(harness / "trajectory.jsonl")
     decision_heads = [row for row in agent if not row.get("consolidating")]
@@ -414,15 +639,44 @@ def _smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
                             and "count_color v1" in str(row.get("head"))), None)
     consolidation = [row for row in agent if row.get("consolidating")]
     memory_keys = {row.get("key") for row in _read_jsonl(harness / "memory.jsonl")}
+    memory_results = list(dict.fromkeys(result_text("memory")))
+    # Decision 3 is the first decision after consolidation.
+    after_consolidation = next((str(row.get("head")) for row in decision_heads
+                                if row.get("message_count") == 1 and "hyp.static" in str(row.get("head"))), "")
+    fourth_decision = next((row for row in decision_heads if row.get("message_count") == 1
+                            and "strat.probe [active" in str(row.get("head"))), None)
+    lifecycle = (summary.get("harness") or {}).get("lifecycle") or {}
+    # Skill call binding: run_skill is offered only for saved names.
+    first_save = next((index for index, row in enumerate(agent)
+                       if last_result(row).startswith("skill set count_color v1")), None)
+    unbound = next((row for row in agent if any(result.get("tool") == "run_skill" and result.get("is_error")
+                                                and 'Validation failed for tool "run_skill"' in str(result.get("text"))
+                                                for result in row.get("last_tool_results", [])[-1:])), None)
+    widened = next((row for row in agent if last_result(row).startswith("skill set scratch v1")), None)
+    narrowed = next((row for row in agent if last_result(row).startswith("skill deleted scratch")), None)
     checks = [
         ("run_completed", summary.get("stop_reason") == "max_decisions", summary.get("stop_reason")),
         ("skill_syntax_error_reported", any("not saved" in text and "SyntaxError" in text for text in result_text("skill")),
          result_text("skill")[:2]),
-        ("skill_saved_v1", [(row.get("name"), row.get("version")) for row in skill_rows] == [("count_color", 1)],
-         [(row.get("name"), row.get("version")) for row in skill_rows]),
+        ("skill_saved_v1", [(row.get("name"), row.get("version"), bool(row.get("deleted"))) for row in skill_rows]
+         == [("count_color", 1, False), ("scratch", 1, False), ("scratch", 1, True)],
+         [(row.get("name"), row.get("version"), bool(row.get("deleted"))) for row in skill_rows]),
+        ("run_skill_hidden_before_save", first_save is not None and all(_run_skill_names(row) is None for row in agent[:first_save]),
+         [_tool_names(row) for row in agent[:1]]),
+        ("run_skill_bound_after_save", first_save is not None and _run_skill_names(agent[first_save]) == ["count_color"]
+         and "run_skill(name=\"count_color\") is callable from your next step" in last_result(agent[first_save]),
+         None if first_save is None else [_run_skill_names(agent[first_save]), last_result(agent[first_save])]),
+        ("unregistered_name_schema_error", unbound is not None and unbound.get("message_count", 0) > 1
+         and not unbound.get("consolidating") and bool((unbound.get("planned") or {}).get("calls"))
+         and not any(row.get("name") == "bottom_row" for row in _read_jsonl(harness / "skill_runs.jsonl")),
+         None if unbound is None else last_result(unbound)[:300]),
+        ("delete_removes_name", widened is not None and _run_skill_names(widened) == ["count_color", "scratch"]
+         and narrowed is not None and _run_skill_names(narrowed) == ["count_color"]
+         and "run_skill(name=\"scratch\") is no longer callable" in last_result(narrowed),
+         [None if widened is None else _run_skill_names(widened), None if narrowed is None else _run_skill_names(narrowed)]),
         ("run_skill_error_has_line", any("KeyError" in text and "line 3 in" in text for text in result_text("run_skill")),
          result_text("run_skill")[:1]),
-        ("run_skill_ok", any('"count":' in text for text in result_text("run_skill")), result_text("run_skill")[-1:]),
+        ("run_skill_ok", any('"count":' in text for text in result_text("run_skill")), result_text("run_skill")[1:2]),
         ("history_pruned_and_memory_shown", second_decision is not None and "controls.action1" in str(second_decision.get("head")),
          None if second_decision is None else str(second_decision.get("head"))[:400]),
         ("latest_pixel_changes_in_parent", second_decision is not None
@@ -435,12 +689,59 @@ def _smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
         ("overlay_in_system_prompt", any("SMOKE-OVERLAY" in str(row.get("system_prompt")) for row in agent), None),
         ("analyst_answered", any(row.get("analyst") for row in requests)
          and any("ANALYST:" in text for text in result_text("ask_analyst")), result_text("ask_analyst")[:1]),
-        ("one_action_per_decision", [row.get("action") for row in trajectory] == ["ACTION1", "ACTION4", "ACTION3"],
+        ("one_action_per_decision", [row.get("action") for row in trajectory] == ["ACTION1", "ACTION4", "ACTION3", "ACTION2"],
          [row.get("action") for row in trajectory]),
         ("bridge_matches_trajectory", summary.get("actions_on_bridge") == len(trajectory),
          [summary.get("actions_on_bridge"), len(trajectory)]),
-        ("consolidation_ran", bool(consolidation) and all("arc_action" not in row.get("tools", []) for row in consolidation)
+        ("consolidation_ran", bool(consolidation) and all("arc_action" not in _tool_names(row) for row in consolidation)
          and "plan" in memory_keys and summary.get("consolidations") == 1, summary.get("consolidations")),
+        ("memory_batch_without_op", any("set state_1, state_2" in text and "hyp.counter (new)" in text
+                                        for text in memory_results), memory_results),
+        ("memory_batch_atomic_refusal", any("memory NOT changed" in text and 'verdict "refutes"' in text
+                                            for text in memory_results) and "atomic_probe" not in memory_keys,
+         sorted(key for key in memory_keys if key)),
+        ("memory_prefix_delete_in_one_call", any("deleted 2 (state_1, state_2)" in text and "hyp.static (new +evidence #1 refutes)" in text
+                                                 for text in memory_results), None),
+        ("hypotheses_keep_scoped_evidence", all(part in after_consolidation for part in (
+            "hyp.counter [open]", '#2 supports when "after ACTION1"', "hyp.static [rejected]",
+            '#1 refutes when "first action of the game"', "last tested: #2 (0 actions ago) · next test: ACTION3"))
+         and "state_1" not in after_consolidation, after_consolidation[:900]),
+        # Hypothesis-strategy lifecycle (docs/plans/2026-10-09-thin-hypothesis-strategy-lifecycle.md).
+        ("strategy_premise_rivals_on_commit", any("strat.track active; premises: hyp.mover [open] (rivals: hyp.counter [open], hyp.paint [open])"
+                                                  in text and "skill:nope" in text for text in memory_results),
+         [text for text in memory_results if "strat.track" in text][:1]),
+        ("one_test_reports_unassessed_rival", any("tests #1 → hyp.counter supports" in text and "rivals not assessed by #1: hyp.mover" in text
+                                                  and "no refutation was recorded: hyp.paint" in text for text in memory_results),
+         [text for text in memory_results if "tests #1" in text][:1]),
+        ("rejection_suspends_dependent_strategy", any("strat.track suspended; it uses skill:count_color, prompt" in text
+                                                      and '"controls" still has hyp.counter [open] — rejecting hyp.mover does not confirm them' in text
+                                                      for text in memory_results),
+         [text for text in memory_results if "hyp.mover (" in text and "rejected" in text][:1]),
+        ("revision_in_next_decision", all(part in after_consolidation for part in (
+            "strat.track [suspended (hyp.mover rejected after #2), 2 actions spent]",
+            "- after #2: hyp.mover rejected; strat.track suspended (hyp.mover rejected after #2). Active now: none. no action since.",
+            "Linked, unchanged since: skill:count_color v1, prompt.",
+            '- hyp.paint at #1 ("controls"), 0 result(s)', "[used by strat.track (suspended)]")), after_consolidation[:2400]),
+        ("behaviour_after_revision_shown", fourth_decision is not None
+         and "Active now: strat.probe. next 1: ACTION3×1 | 1 before: ACTION4×1." in str(fourth_decision.get("head")),
+         None if fourth_decision is None else str(fourth_decision.get("head"))[:2400]),
+        ("lifecycle_in_summary", (lifecycle.get("deleted_without_refutation") == 1
+                                  and [(rev.get("at"), rev.get("next_actions"), rev.get("new_strategy_at")) for rev in lifecycle.get("revisions", [])]
+                                  == [(2, ["ACTION3", "ACTION2"], 2)]), lifecycle),
+        # Decision loop (docs/plans/2026-10-09-thin-decision-loop-efficiency.md): repaired arguments pass Pi's
+        # schema, and results of tools batched with arc_action reach the next decision once.
+        ("boundary_repairs_pass_schema", not any('Validation failed for tool "memory"' in text or 'Validation failed for tool "skill"' in text
+                                                 for text in result_text("memory") + result_text("skill"))
+         and any("+evidence #1 supports +evidence #1 supports" in text for text in memory_results),
+         [text for text in memory_results if "tests #1" in text][:1]),
+        ("batched_results_carried_once", fourth_decision is not None and all(part in str(fourth_decision.get("head")) for part in (
+            "RESULTS OF THE TOOLS YOU CALLED TOGETHER WITH YOUR LAST ACTION:", "- memory: memory:", "strat.probe",
+            "- memory FAILED: memory NOT changed", "hyp.nope does not exist", "hyp.probe2 [open] ACTION3 repeats"))
+         and "RESULTS OF THE TOOLS" not in after_consolidation,
+         None if fourth_decision is None else str(fourth_decision.get("head"))[:1800]),
+        ("decision_loop_in_summary", ((summary.get("harness") or {}).get("decision_loop") or {}).get("batched_tool_results") == 3
+         and ((summary.get("harness") or {}).get("decision_loop") or {}).get("batched_tool_failures") == 1,
+         (summary.get("harness") or {}).get("decision_loop")),
         ("no_harness_errors", not _read_jsonl(harness / "errors.jsonl"), _read_jsonl(harness / "errors.jsonl")[:3]),
     ]
     return [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
@@ -450,13 +751,115 @@ def run_arc_thin_smoke(root: Path) -> Path:
     """Offline end-to-end check: mock ARC SDK, real bridge, real Pi, scripted provider."""
     path = run_arc_thin_e2e(
         root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
-        max_decisions=3, consolidate_after_actions=2, experiment_timeout_seconds=600.0,
+        max_decisions=4, consolidate_after_actions=2, experiment_timeout_seconds=600.0,
         decision_timeout_seconds=180.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
         bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
     )
     summary = json.loads(path.read_text(encoding="utf-8"))
     checks = _smoke_checks(root.resolve(), summary)
+    summary["checks"] = checks
+    summary["passed"] = all(check["ok"] for check in checks)
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _ledger_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    harness = root / "harness"
+    requests = _read_jsonl(root / "smoke-requests.jsonl")
+    agent = [row for row in requests if not row.get("analyst") and not row.get("critic")]
+    heads = [str(row.get("head")) for row in agent if row.get("message_count") == 1]
+    trajectory = _read_jsonl(harness / "trajectory.jsonl")
+    observations = _read_jsonl(harness / "observations.jsonl")
+    notes = [row for row in _read_jsonl(harness / "critic.jsonl") if row.get("kind") == "note"]
+    shown = [head for head in heads if "CRITIC (independent review at #4" in head]
+    checks = [
+        ("run_completed", summary.get("stop_reason") == "max_decisions", summary.get("stop_reason")),
+        ("ideas_recorded", [row.get("idea") for row in trajectory] == ["move right"] * 3 + ["move left"] * 2,
+         [row.get("idea") for row in trajectory]),
+        ("long_expect_clipped_not_rejected", len(str(trajectory[1].get("expect") if len(trajectory) > 1 else "")) == 300,
+         len(str(trajectory[1].get("expect") if len(trajectory) > 1 else ""))),
+        ("states_and_skill_observed", len(_read_jsonl(harness / "states.jsonl")) >= 5
+         and sum(1 for row in observations if row.get("skill") == "pos" and row.get("ok")) >= 5,
+         [len(_read_jsonl(harness / "states.jsonl")), len(observations)]),
+        ("effort_line_shown", any("IDEAS: move right — 3 in a row (#1–#3)" in head for head in heads), None),
+        ("expected_vs_observed_shown", any('LAST EXPERIMENT move right #1–#3: expected "the 9 moves right by one"' in head
+                                           and "pos.value 2→5" in head for head in heads), None),
+        ("critic_called_once", sum(1 for row in requests if row.get("critic")) == 1
+         and any(row.get("kind") == "critic" for row in _read_jsonl(harness / "usage.jsonl")), None),
+        ("critic_citations_filtered", len(notes) == 1 and len(notes[0].get("lines") or []) == 1
+         and any("#99" in line for line in notes[0].get("dropped") or [])
+         and (notes[0].get("suggest") or {}).get("action") == "ACTION2", notes[:1]),
+        ("critic_shown_once", len(shown) == 1 and "#99" not in shown[0] and "suggest: ACTION2" in shown[0],
+         [head[-700:] for head in shown]),
+        ("actions_not_blocked", [row.get("action") for row in trajectory] == ["ACTION1", "ACTION4", "ACTION1", "ACTION3", "ACTION2"],
+         [row.get("action") for row in trajectory]),
+        ("no_harness_errors", not _read_jsonl(harness / "errors.jsonl"), _read_jsonl(harness / "errors.jsonl")[:3]),
+    ]
+    return [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
+
+
+def run_arc_thin_ledger_smoke(root: Path) -> Path:
+    """Offline ledger + critic wiring check: mock ARC SDK, real bridge, Pi, thin extension and WASI sandbox."""
+    path = run_arc_thin_e2e(
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+        max_decisions=5, consolidate_after_actions=100, experiment_timeout_seconds=900.0,
+        decision_timeout_seconds=240.0,
+        pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
+        bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
+        ledger=True, critic=True,
+        extension_env={"ARC_THIN_SMOKE_SCRIPT": "ledger", "ARC_CRITIC_EXPERIMENT_MIN": "3", "ARC_CRITIC_MIN_GAP": "1"},
+    )
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    checks = _ledger_smoke_checks(root.resolve(), summary)
+    summary["checks"] = checks
+    summary["passed"] = all(check["ok"] for check in checks)
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _environment_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    harness = root / "harness"
+    requests = [row for row in _read_jsonl(root / "smoke-requests.jsonl") if not row.get("analyst") and not row.get("critic")]
+    planned_notes = [str(((row.get("planned") or {}).get("calls") or [[None, {}]])[-1][1].get("note")) for row in requests]
+    environment = [row for row in _read_jsonl(harness / "errors.jsonl") if row.get("environment")]
+    third = next((str(row.get("head")) for row in requests if "environment fails again" in str(row.get("planned"))), "")
+    checks = [
+        ("stopped_as_environment_error", summary.get("stop_reason") == "environment_error", summary.get("stop_reason")),
+        ("only_the_working_action_recorded", [row.get("action") for row in _read_jsonl(harness / "trajectory.jsonl")] == ["ACTION1"]
+         and summary.get("actions_on_bridge") == 1, summary.get("actions_on_bridge")),
+        # A failed decision ends at once: one model request per decision, and the spare step is never reached.
+        ("no_retry_inside_a_decision", len(requests) == 3 and all(row.get("message_count") == 1 for row in requests)
+         and "must never be requested" not in planned_notes, [(row.get("message_count"), note) for row, note in zip(requests, planned_notes)]),
+        ("environment_errors_logged", len(environment) == 2 and summary.get("harness", {}).get("environment_errors") == 2
+         and all("EnvironmentReturnedNoFrame" in str(row.get("message")) for row in environment)
+         and not any(row.get("fatal") for row in _read_jsonl(harness / "errors.jsonl")), environment[:2]),
+        ("batched_update_survives_failed_action", "RESULTS OF THE TOOLS YOU CALLED TOGETHER WITH YOUR LAST ACTION:" in third
+         and "- memory: memory: set plan" in third, third[:600]),
+    ]
+    return [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
+
+
+def run_arc_thin_environment_smoke(root: Path) -> Path:
+    """Offline check that an environment failure ends the decision and stops the run without model retries."""
+    previous = os.environ.get("MOCK_ARC_FAIL_AFTER")
+    os.environ["MOCK_ARC_FAIL_AFTER"] = "1"  # read by tools/mock_arc_sdk in the bridge process
+    try:
+        path = run_arc_thin_e2e(
+            root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+            max_decisions=6, consolidate_after_actions=100, experiment_timeout_seconds=600.0,
+            decision_timeout_seconds=180.0,
+            pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
+            bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
+            extension_env={"ARC_THIN_SMOKE_SCRIPT": "environment"},
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("MOCK_ARC_FAIL_AFTER", None)
+        else:
+            os.environ["MOCK_ARC_FAIL_AFTER"] = previous
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    checks = _environment_smoke_checks(root.resolve(), summary)
     summary["checks"] = checks
     summary["passed"] = all(check["ok"] for check in checks)
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
