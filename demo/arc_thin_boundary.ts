@@ -30,14 +30,68 @@ function clipFields(item: Record<string, any>, fields: Array<keyof typeof LIMITS
 }
 
 /**
- * Memory arguments: JSON-string repair (prepareMemoryArguments), then
+ * Parse a JSON array/object string; when it is only missing its closing
+ * brackets (a model stopped early, as in the 2026-10-09 ls20 run), close them.
+ * Returns undefined when the text is not repairable JSON.
+ */
+export function parseLooseJson(text: string): unknown {
+	const trimmed = text.trim();
+	if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return undefined;
+	try { return JSON.parse(trimmed); } catch { /* try closing it */ }
+	const stack: string[] = [];
+	let inString = false, escaped = false;
+	for (const ch of trimmed) {
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === "\\") escaped = true;
+			else if (ch === "\"") inString = false;
+			continue;
+		}
+		if (ch === "\"") inString = true;
+		else if (ch === "[" || ch === "{") stack.push(ch === "[" ? "]" : "}");
+		else if (ch === "]" || ch === "}") { if (stack.pop() !== ch) return undefined; }
+	}
+	if (!stack.length && !inString) return undefined;
+	try { return JSON.parse(trimmed + (inString ? "\"" : "") + stack.reverse().join("")); } catch { return undefined; }
+}
+
+/** Optional fields sent as null mean "not given": drop them instead of failing the schema. */
+const dropNulls = (item: unknown) => isObject(item)
+	? Object.fromEntries(Object.entries(item).filter(([, value]) => value !== null)) : item;
+
+/** Close truncated JSON strings and drop nulls before the memory module's own repair. */
+function preRepair(raw: any): any {
+	if (!isObject(raw)) return raw;
+	const out: Record<string, any> = dropNulls(raw) as Record<string, any>;
+	for (const field of ["set", "delete", "hypotheses", "tests", "strategies"]) {
+		if (typeof out[field] === "string") {
+			const parsed = parseLooseJson(out[field]);
+			if (parsed !== undefined) out[field] = parsed;
+		}
+		if (Array.isArray(out[field])) out[field] = out[field].map((item: unknown) => {
+			const clean = dropNulls(item);
+			if (!isObject(clean)) return clean;
+			for (const nested of ["evidence", "verdicts", "depends_on", "uses"])
+				if (typeof clean[nested] === "string") {
+					const parsed = parseLooseJson(clean[nested]);
+					if (parsed !== undefined) clean[nested] = parsed;
+				}
+			return clean;
+		});
+	}
+	return out;
+}
+
+/**
+ * Memory arguments: truncated-JSON and null repair (preRepair), JSON-string repair
+ * (prepareMemoryArguments), then
  * - an unknown op is dropped when batch fields are present (inferred instead);
  * - set/key entries whose key starts with hyp. or strat. become hypotheses or strategies;
  * - an evidence list becomes one hypothesis entry per result;
  * - over-long strings are clipped.
  */
 export function repairMemoryArguments(raw: any): any {
-	const args = prepareMemoryArguments(raw);
+	const args = prepareMemoryArguments(preRepair(raw));
 	if (!isObject(args)) return args;
 	const out: Record<string, any> = { ...args };
 	if (out.op !== undefined && !MEMORY_OPS.has(out.op)) {

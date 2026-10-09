@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { LIMITS, isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments } from "../demo/arc_thin_boundary.ts";
+import { LIMITS, isEnvironmentFailure, parseLooseJson, repairActionArguments, repairMemoryArguments, repairSkillArguments } from "../demo/arc_thin_boundary.ts";
 import { applyRows, emptyMemory, planMemoryUpdate } from "../demo/arc_thin_memory.ts";
 
 // Shapes taken from refused memory calls in the 2026-10-09 thin-hyp runs (pi-events.jsonl).
@@ -56,6 +56,22 @@ test("an unknown memory op is dropped when batch fields say what to do", () => {
 	assert.deepEqual(repairMemoryArguments({ op: "update", key: "hyp.goal", text: "the goal is X", confidence: 4 }),
 		{ confidence: 4, hypotheses: [{ key: "hyp.goal", claim: "the goal is X" }] });
 	assert.equal(repairMemoryArguments(null), null);
+});
+
+test("a JSON string missing its closing brackets is completed; nulls mean not given", () => {
+	// thin-final-ls20-20261009: strategies arrived as "\n[{...}\n" (no closing bracket) and was refused.
+	const truncated = "\n[{\"key\": \"strat.s\", \"plan\": \"p [x]\", \"status\": \"active\", \"depends_on\": [\"hyp.a\"], \"uses\": [\"prompt\"]}\n";
+	assert.deepEqual(parseLooseJson(truncated), [{ key: "strat.s", plan: "p [x]", status: "active", depends_on: ["hyp.a"], uses: ["prompt"] }]);
+	assert.deepEqual(parseLooseJson("[{\"key\": \"a\", \"text\": \"unterminated"), [{ key: "a", text: "unterminated" }]);
+	assert.equal(parseLooseJson("[{\"a\": 1}}"), undefined);                  // mismatched: not repaired
+	assert.equal(parseLooseJson("plain text"), undefined);
+	const repaired = repairMemoryArguments({ set: [{ key: "k", text: "t" }], strategies: truncated });
+	assert.equal(repaired.strategies[0].key, "strat.s");
+	assert.deepEqual(repaired.strategies[0].depends_on, ["hyp.a"]);
+	// Same run: evidence: null alongside a status change.
+	const nulls = repairMemoryArguments({ hypotheses: [{ key: "hyp.a", claim: "c", status: "supported", evidence: null }], tests: null });
+	assert.deepEqual(nulls, { hypotheses: [{ key: "hyp.a", claim: "c", status: "supported" }] });
+	assert.ok(planMemoryUpdate(emptyMemory(), nulls, 0).ok);
 });
 
 test("skill op is inferred from the fields present; arc_action notes are clipped", () => {
