@@ -119,6 +119,8 @@ export function repairMemoryArguments(raw: any): any {
 	for (const item of hypotheses) {
 		if (!isObject(item)) { expanded.push(item); continue; }
 		const fixed = clipFields(item, ["claim", "predicts", "next_test", "question"]);
+		// A check is code: never clipped, and unescaped once when it arrives on one line with literal "\n".
+		if (typeof fixed.check === "string") fixed.check = unescapeSource(fixed.check);
 		const evidence = Array.isArray(fixed.evidence) ? fixed.evidence : fixed.evidence === undefined ? [] : [fixed.evidence];
 		const [first, ...rest] = evidence.map((e: any) => isObject(e) ? clipFields(e, ["condition", "observed"]) : e);
 		expanded.push({ ...fixed, ...(first !== undefined ? { evidence: first } : {}) });

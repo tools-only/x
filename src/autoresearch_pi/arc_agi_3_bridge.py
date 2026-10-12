@@ -14,10 +14,12 @@ import json
 import math
 import os
 import secrets
+import sys
 import threading
 import time
 import traceback
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -352,6 +354,10 @@ class ArcBridge:
         self.scorecard: dict[str, Any] | None = None
         self._close_result: dict[str, Any] | None = None
         self._lock = threading.RLock()
+        self._sdk_call: dict[str, Any] | None = None
+        self._uncertain: dict[str, Any] | None = None
+        self.sdk_timeout_seconds = 90.0
+        self.close_timeout_seconds = 20.0
         self.action_token = os.environ.get("ARC_BRIDGE_ACTION_TOKEN", "")
         self._leases: dict[str, dict[str, Any]] = {}
         self._events: list[dict[str, Any]] = []
@@ -364,6 +370,54 @@ class ArcBridge:
             "action_budget": self.max_actions,
         })
         self._normalize_initial_state()
+
+    def health(self) -> dict[str, Any]:
+        """Never read the SDK or wait for its lock. Counts are confirmed only."""
+        uncertain = getattr(self, "_uncertain", None)
+        call = getattr(self, "_sdk_call", None)
+        return {"status": "uncertain" if uncertain else "busy" if call else "closed" if self.closed else "ready",
+                "confirmed_actions": self.actions, "call": call, "error": uncertain}
+
+    @contextmanager
+    def _access(self):
+        # RLock permits authorized_step -> step; unrelated requests never queue
+        # behind a network call or receive a stale frame as current state.
+        if not self._lock.acquire(blocking=False):
+            raise ArcEnvironmentError("access", {"type": "EnvironmentBusy", "message": "SDK operation in progress"})
+        try:
+            if getattr(self, "_uncertain", None):
+                raise ArcEnvironmentError("access", self._uncertain)
+            yield
+        finally:
+            self._lock.release()
+
+    def _sdk(self, operation: str, fn: Callable[[], Any], *, timeout: float) -> Any:
+        done = threading.Event()
+        result: dict[str, Any] = {}
+        self._sdk_call = {"operation": operation, "started_at": time.time(), "timeout_seconds": timeout,
+                          "attempted_index": self.actions + 1 if operation == "step" else None}
+
+        def invoke() -> None:
+            try:
+                result["value"] = fn()
+            except BaseException as exc:
+                result["error"] = exc
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=invoke, name=f"arc-sdk-{operation}", daemon=True)
+        worker.start()
+        if not done.wait(timeout):
+            frame = sys._current_frames().get(worker.ident)
+            details = {"type": "EnvironmentCallTimeout", "message": f"SDK {operation} exceeded {timeout}s; outcome unknown; do not replay",
+                       "call": dict(self._sdk_call), "traceback": "".join(traceback.format_stack(frame)) if frame else ""}
+            self._uncertain = details
+            # A late SDK result remains private to the worker, never committed.
+            raise ArcEnvironmentError(operation, details)
+        self._sdk_call = None
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
 
     def _append(self, event: dict[str, Any]) -> None:
         # The bridge may run under the ARC SDK interpreter, whose sandbox
@@ -428,7 +482,7 @@ class ArcBridge:
             raise PermissionError("owner action token required")
         if not 1 <= max_actions <= 16:
             raise ValueError("max_actions must be between 1 and 16")
-        with self._lock:
+        with self._access():
             current = public_state_fingerprint(self._frame())["fingerprint"]
             if current != expected_fingerprint:
                 raise ValueError("ARC state changed before child action lease was issued")
@@ -446,7 +500,7 @@ class ArcBridge:
             self._leases.pop(lease_token, None)
 
     def authorized_step(self, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
-        with self._lock:
+        with self._access():
             if self.action_token:
                 if secrets.compare_digest(token, self.action_token):
                     if any(item["remaining"] > 0 for item in self._leases.values()):
@@ -495,7 +549,8 @@ class ArcBridge:
             "state_before": frame["state"], "reason": "initial_not_played",
         })
         try:
-            raw = self.environment.step(action, data=action_data, reasoning={})
+            raw = self._sdk("step", lambda: self.environment.step(action, data=action_data, reasoning={}),
+                            timeout=getattr(self, "sdk_timeout_seconds", 90.0))
         except Exception as exc:
             details = exception_details(exc)
             self._append({
@@ -529,7 +584,7 @@ class ArcBridge:
         self._append({"event": "forced_action", "reason": "initial_not_played", "action": "RESET", "frame": after})
 
     def state(self) -> dict[str, Any]:
-        with self._lock:
+        with self._access():
             frame = self._frame()
             frame["state_fingerprint"] = public_state_fingerprint(frame)["fingerprint"]
             level = int(frame["levels_completed"])
@@ -549,13 +604,12 @@ class ArcBridge:
             return frame
 
     def trajectory(self, *, projection: str, last_n: int) -> dict[str, Any]:
-        with self._lock:
-            with self._events_lock:
-                events = list(self._events)
-            return project_trajectory(events, projection=projection, last_n=last_n)
+        with self._events_lock:
+            events = list(self._events)
+        return project_trajectory(events, projection=projection, last_n=last_n)
 
     def step(self, payload: dict[str, Any]) -> dict[str, Any]:
-        with self._lock:
+        with self._access():
             if self.closed:
                 raise ValueError("ARC scorecard is already closed")
             if self.max_actions is not None and self.actions >= self.max_actions:
@@ -590,9 +644,11 @@ class ArcBridge:
                 "pre_action_state": pre_action_state,
             })
             try:
-                raw = self.environment.step(action, data=action_data, reasoning=reasoning)
+                raw = self._sdk("step", lambda: self.environment.step(action, data=action_data, reasoning=reasoning),
+                                timeout=getattr(self, "sdk_timeout_seconds", 90.0))
             except Exception as exc:
-                details = exception_details(exc)
+                details = exc.details if isinstance(exc, ArcEnvironmentError) else exception_details(exc)
+                self._uncertain = details
                 self._append({
                     "event": "environment_error", "operation": "step",
                     "attempted_index": self.actions + 1, "action": action.name,
@@ -612,6 +668,7 @@ class ArcBridge:
                     "repr": "None",
                     "traceback": "",
                 }
+                self._uncertain = details
                 self._append({
                     "event": "environment_error", "operation": "step",
                     "attempted_index": self.actions + 1, "action": action.name,
@@ -667,9 +724,10 @@ class ArcBridge:
             return after
 
     def close(self) -> dict[str, Any]:
-        with self._lock:
+        with self._access():
             if not self.closed:
-                native = self.arcade.close_scorecard(self.card_id)
+                native = self._sdk("close", lambda: self.arcade.close_scorecard(self.card_id),
+                                   timeout=getattr(self, "close_timeout_seconds", 20.0))
                 self.scorecard = native.model_dump(mode="json") if native is not None else None
                 self.closed = True
                 try:
@@ -725,10 +783,13 @@ def _make_handler(bridge: ArcBridge):
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path not in {"/state", "/trajectory", "/events"}:
+            if parsed.path not in {"/state", "/trajectory", "/events", "/health"}:
                 self._json(404, {"error": "not found"})
                 return
             try:
+                if parsed.path == "/health":
+                    self._json(200, bridge.health())
+                    return
                 if parsed.path == "/state":
                     self._json(200, bridge.state())
                     return

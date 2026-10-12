@@ -43,6 +43,8 @@ export type Hypothesis = {
 	claim: string; question?: string; predicts?: string; status: Status; next_test?: string; evidence: Evidence[];
 	/** Action of the refutation that made it contested. */
 	contested_at?: number;
+	/** Optional Python check(t) the runtime runs on every recorded transition (arc_thin_claims.ts). */
+	check?: string;
 };
 /** since: action count when it last became active; spent: actions while active before that. */
 /** steps: the action sequence the agent planned after action #steps_from; the runtime only matches it against the moves taken. */
@@ -57,11 +59,13 @@ export type MemoryState = {
 	facts: Map<string, Fact>; hypotheses: Map<string, Hypothesis>; strategies: Map<string, Strategy>;
 	dropped: Dropped[]; revisions: Revision[];
 };
-/** Harness components outside memory that a strategy can use. */
-export type ComponentContext = { skills?: Record<string, number>; overlay?: string };
+/** Harness components outside memory that a strategy can use; checks: the rendered check line per hypothesis key. */
+export type ComponentContext = { skills?: Record<string, number>; overlay?: string; checks?: Record<string, string> };
 
 export type HypothesisInput = {
 	key: string; claim?: string; question?: string; predicts?: string; status?: Status; next_test?: string; evidence?: Partial<Evidence>;
+	/** Python source defining check(t); "" removes the check. */
+	check?: string;
 };
 export type TestInput = { action?: number; condition?: string; observed?: string; verdicts?: Record<string, Verdict> };
 export type StrategyInput = { key: string; plan?: string; depends_on?: string[]; uses?: string[]; status?: StrategyStatus; steps?: string[] | string };
@@ -380,9 +384,13 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 			...(nonEmpty(item.next_test) ? { next_test: item.next_test.trim() } : existing?.next_test ? { next_test: existing.next_test } : {}),
 			evidence: [...(existing?.evidence ?? [])],
 			...(existing?.contested_at !== undefined ? { contested_at: existing.contested_at } : {}),
+			...(typeof item.check === "string" ? (item.check.trim() ? { check: item.check.replace(/\s+$/, "") + "\n" } : {})
+				: existing?.check ? { check: existing.check } : {}),
 		};
 		hypotheses.set(key, next);
-		touch(changedHyps, key, existing ? undefined : "new");
+		touch(changedHyps, key, existing ? (typeof item.check === "string" && item.check.trim() !== (existing.check ?? "").trim()
+			? (item.check.trim() ? "check updated" : "check removed") : undefined)
+			: item.check?.trim() ? "new, with check" : "new");
 		const e = item.evidence;
 		if (e !== undefined) {
 			const problems: string[] = [];
@@ -685,7 +693,7 @@ function evidenceLines(h: Hypothesis): string[] {
 	return [...(hidden > 0 ? [`  (${hidden} earlier result(s) not shown; state.hypotheses has all)`] : []), ...shown.map(line)];
 }
 
-export function renderHypotheses(state: MemoryState, actionCount: number): string {
+export function renderHypotheses(state: MemoryState, actionCount: number, checks: Record<string, string> = {}): string {
 	const all = [...state.hypotheses];
 	const count = (status: Status) => all.filter(([, h]) => h.status === status).length;
 	const lines = [all.length
@@ -717,6 +725,7 @@ export function renderHypotheses(state: MemoryState, actionCount: number): strin
 			} else {
 				lines.push(`- ${key} [${h.status}] ${h.claim}`);
 				if (h.predicts) lines.push(`  predicts: ${h.predicts}`);
+				if (h.check) lines.push(`  ${checks[key] ?? "check: not run yet"}`);
 				for (const line of evidenceLines(h)) lines.push(line);
 			}
 			const last = lastTested(h);
@@ -804,7 +813,7 @@ export function renderRevisions(state: MemoryState, actions: string[], ctx: Comp
 
 /** The whole memory as shown in the working set (revisions need the action labels). */
 export function renderMemory(state: MemoryState, actionCount: number, actions: string[] = [], ctx: ComponentContext = {}): string {
-	return [renderHypotheses(state, actionCount), renderStrategies(state, actionCount, ctx, actions), renderRevisions(state, actions, ctx), renderFacts(state)]
+	return [renderHypotheses(state, actionCount, ctx.checks), renderStrategies(state, actionCount, ctx, actions), renderRevisions(state, actions, ctx), renderFacts(state)]
 		.filter(Boolean).join("\n\n");
 }
 

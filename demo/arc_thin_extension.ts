@@ -43,22 +43,23 @@ import {
 	MAX_EVIDENCE, MAX_HYPOTHESES, MAX_STEPS, MAX_STRATEGIES, STATUSES, STRATEGY_STATUSES, VERDICTS, applyRow, applyRows, emptyMemory, memoryForSkills,
 	planMemoryUpdate, renderFactsCompact, renderMemory, resetMemory, type ComponentContext, type MemoryParams,
 } from "./arc_thin_memory.ts";
-import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments } from "./arc_thin_boundary.ts";
+import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments, unescapeSource } from "./arc_thin_boundary.ts";
 import {
 	normalizePrediction, predictionSchema, renderScore, scorePrediction, type Outcome, type Prediction, type ScoredPrediction,
 } from "./arc_thin_prediction.ts";
 import { buildHistory, type CellChange } from "./arc_thin_history.ts";
 import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } from "./arc_thin_analyst.ts";
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
+import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue } from "./arc_thin_claims.ts";
 
 /** run_skill is added to these while at least one skill is saved (refreshSkillSurface). */
 // Keep action requests small. Prompt editing and the one-shot analyst remain
 // available on the existing consolidation turn, where there is no action
 // boundary to compete with and their schemas are not resident on every move.
-const DECISION_TOOLS = ["arc_action", "memory", "skill"];
+const DECISION_TOOLS = ["arc_action", "memory", "skill", "python"];
 const LOW_FREQUENCY_TOOLS = ["prompt", "ask_analyst"];
 const EXPANDED_DECISION_TOOLS = [...DECISION_TOOLS, ...LOW_FREQUENCY_TOOLS];
-const CONSOLIDATION_TOOLS = ["memory", "skill", "prompt", "ask_analyst"];
+const CONSOLIDATION_TOOLS = ["memory", "skill", "python", "prompt", "ask_analyst"];
 // A tool-only chain is a new provider request with the whole projected context.
 // Keep the escape hatch for a short repair, but stop before a model can spend a
 // dozen requests measuring the same frame instead of submitting an action.
@@ -98,8 +99,8 @@ const clipJson = (value: unknown, max: number) => {
 const CRITIC_WAIT_MS = Number(process.env.ARC_CRITIC_WAIT_MS) > 0 ? Number(process.env.ARC_CRITIC_WAIT_MS) : 30_000;
 const ANALYST_MAX_OUTPUT_TOKENS = 512;
 
-/** saved_at: actions taken when this version was saved; saved_level: levels completed then. */
-type Skill = { version: number; description: string; source: string; saved_at?: number; saved_level?: number };
+/** saved_at: actions taken when this version was saved; saved_level: levels completed then; observe: false = not run automatically. */
+type Skill = { version: number; description: string; source: string; saved_at?: number; saved_level?: number; observe?: boolean };
 /** A skill named as the predictor of one action: its scored prediction, or why there was none. */
 type SkillPrediction = { name: string; version?: number; error?: string } & Partial<ScoredPrediction>;
 /**
@@ -169,6 +170,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let modelChecks: ModelCheck[] = [];
 	/** Values skills returned under "artifacts" (artifacts.jsonl); see arc_thin_artifacts.ts. */
 	let artifactLog: ArtifactRecord[] = [];
+	/** Results of the agent's hypothesis checks on recorded transitions (claim_checks.jsonl); see arc_thin_claims.ts. */
+	let claimRows: ClaimRow[] = [];
+	/** "key@version" → why that check could not be used (it is not run again). */
+	const claimCompileErrors = new Map<string, string>();
+	/** Transitions whose grids are not available: never checked, so not asked for again. */
+	const claimGridsMissing = new Set<number>();
 	/** Memory keys written, with the action count at the time: the critic's notes are followed up by key. */
 	let memoryTouches: Array<{ key: string; at: number }> = [];
 	/** Wall-clock time of each action (actionTimes[n-1] for action n) and the previous decision's cost, for RESOURCES. */
@@ -214,10 +221,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (row.deleted) skills.delete(row.name);
 			else skills.set(row.name, { version: row.version, description: row.description ?? "", source: row.source,
 				...(row.saved_at !== undefined ? { saved_at: Number(row.saved_at) } : {}),
-				...(row.saved_level !== undefined ? { saved_level: Number(row.saved_level) } : {}) });
+				...(row.saved_level !== undefined ? { saved_level: Number(row.saved_level) } : {}),
+				...(row.observe === false ? { observe: false } : {}) });
 		}
 		modelChecks = readRows("model_checks.jsonl");
 		artifactLog = readRows("artifacts.jsonl");
+		claimRows = [];
+		claimCompileErrors.clear();
+		for (const row of readRows("claim_checks.jsonl")) {
+			if (row.compile_error) claimCompileErrors.set(`${row.key}@${row.version}`, String(row.compile_error));
+			else if (row.key && row.version && Number.isInteger(row.n)) claimRows.push(row as ClaimRow);
+		}
 		overlay = readRows("prompt.jsonl").at(-1)?.text ?? "";
 		trajectory = readRows("trajectory.jsonl");
 		actionTimes = trajectory.map((row: any) => Date.parse(row.t) || 0);
@@ -338,9 +352,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** ARC_THIN_CARRY_REASONING: the end of the previous decision's reasoning, shown for one decision. */
 	let carriedReasoning = "";
 
-	/** Skills and the overlay, as strategies reference them (uses: "skill:<name>", "prompt"). */
+	/** Skills and the overlay, as strategies reference them (uses: "skill:<name>", "prompt"), and each check's record. */
 	const components = (): ComponentContext => ({
-		skills: Object.fromEntries([...skills].map(([name, skill]) => [name, skill.version])), overlay,
+		skills: Object.fromEntries([...skills].map(([name, skill]) => [name, skill.version])), overlay, checks: claimLines(),
 	});
 	const memoryText = () => {
 		const full = renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components());
@@ -367,6 +381,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			...[...skills].map(([name, skill]) => {
 				const score = skillScore(name, skill.version);
 				return `- ${name} v${skill.version} — ${skill.description || "(no description)"}${levelFlag(skill)}` +
+					(skill.observe === false ? " [not run automatically]" : "") +
 					(usedBy(name).length ? ` [used by ${usedBy(name).join(", ")}]` : "") +
 					(score.scored ? ` [as predictor: ${score.hits}/${score.scored} fields right]` : "");
 			})].join("\n");
@@ -521,14 +536,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Syntax-check and save one skill version. */
 	async function saveSkill(name: string, description: string, source: string,
-		signal?: AbortSignal): Promise<{ ok: true; version: number } | { ok: false; reason: string }> {
+		signal?: AbortSignal, observe?: boolean): Promise<{ ok: true; version: number } | { ok: false; reason: string }> {
 		if (!/\bdef\s+run\s*\(/.test(source)) return { ok: false, reason: "source must define run(state, args)" };
 		if (!skills.has(name) && skills.size >= MAX_SKILLS)
 			return { ok: false, reason: `skill limit (${MAX_SKILLS}) reached; delete a skill first` };
 		const check = await runGuest({ mode: "check", source }, signal);
 		if (!check.ok) return { ok: false, reason: guestFailure(check) };
 		const version = (skillVersions.get(name) ?? 0) + 1;
-		const skill: Skill = { version, description, source, saved_at: trajectory.length, saved_level: currentLevel() };
+		// Whether it runs after every action carries over from the previous version unless the save says otherwise.
+		const keepObserve = observe ?? skills.get(name)?.observe;
+		const skill: Skill = { version, description, source, saved_at: trajectory.length, saved_level: currentLevel(),
+			...(keepObserve === false ? { observe: false } : {}) };
 		skillVersions.set(name, version);
 		skills.set(name, skill);
 		append("skills.jsonl", { name, ...skill });
@@ -564,6 +582,71 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const [name, skill] of skills) if (isModel(skill)) {
 			try { await checkModel(name, skill, trajectory.length); } catch (error) { logError("model:check", error); }
 		}
+	}
+
+	// ---------------------------------------------------------------- claims (arc_thin_claims.ts)
+
+	/** The current hypotheses that carry a check, with the version their results are kept under. */
+	const claimChecks = () => [...memory.hypotheses].filter(([, h]) => h.check)
+		.map(([key, h]) => ({ key, source: h.check!, version: claimVersion(h.check!) }));
+
+	/**
+	 * Run the checks of `keys` (default: every hypothesis with a check) on the recorded transitions they have no result
+	 * for yet. One sandbox call per batch of grids; a check that does not compile is recorded once and skipped.
+	 */
+	async function refreshClaimChecks(keys?: string[], signal?: AbortSignal): Promise<void> {
+		const claims = claimChecks().filter((claim) => !keys || keys.includes(claim.key))
+			.filter((claim) => !claimCompileErrors.has(`${claim.key}@${claim.version}`));
+		if (!claims.length || !trajectory.length) return;
+		const done = new Set(claimRows.map((row) => `${row.key}@${row.version}#${row.n}`));
+		const wanted = new Set<number>();
+		for (const claim of claims) for (const row of trajectory)
+			if (!done.has(`${claim.key}@${claim.version}#${row.n}`) && !claimGridsMissing.has(row.n)) wanted.add(row.n);
+		if (!wanted.size) return;
+		const { batches, missing } = claimSegments([...wanted], grids);
+		for (const n of missing) claimGridsMissing.add(n);
+		if (missing.length) logError("claims:grids", new Error(`no grids for transitions ${missing.slice(0, 8).join(", ")}`));
+		const meta = Object.fromEntries(trajectory.map((row) => [String(row.n), {
+			action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
+			level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed,
+		}]));
+		const byN = new Map(trajectory.map((row) => [row.n, row]));
+		for (const segments of batches) {
+			const ns = new Set(segments.flatMap((segment) => segment.steps.map((step) => step.n)));
+			const result = await runGuest({
+				mode: "claims", claims: claims.map(({ key, source }) => ({ key, source })), segments,
+				transitions: Object.fromEntries([...ns].map((n) => [String(n), meta[String(n)]])),
+			}, signal);
+			if (!result.ok) { logError("claims:run", new Error(guestFailure(result))); return; }
+			const value = result.value as Record<string, { results: Array<[number, ClaimValue, string?]>; error: string | null }>;
+			for (const claim of claims) {
+				const out = value[claim.key];
+				if (!out) continue;
+				if (out.error) {
+					claimCompileErrors.set(`${claim.key}@${claim.version}`, out.error);
+					append("claim_checks.jsonl", { key: claim.key, version: claim.version, compile_error: out.error });
+					continue;
+				}
+				for (const [n, verdict, error] of out.results) {
+					if (done.has(`${claim.key}@${claim.version}#${n}`)) continue;
+					const row: ClaimRow = { key: claim.key, version: claim.version, n, level: levelOf(byN.get(n)!), result: verdict,
+						...(error ? { error } : {}) };
+					claimRows.push(row);
+					done.add(`${claim.key}@${claim.version}#${n}`);
+					append("claim_checks.jsonl", row);
+				}
+			}
+		}
+	}
+
+	/** The rendered check line per hypothesis key, for the memory view and receipts. */
+	function claimLines(): Record<string, string> {
+		const level = currentLevel();
+		return Object.fromEntries(claimChecks().map(({ key, version }) => {
+			const compileError = claimCompileErrors.get(`${key}@${version}`);
+			const rows = claimRows.filter((row) => row.key === key && row.version === version);
+			return [key, renderClaimSummary(rows.length ? summarizeClaim(rows, level) : undefined, compileError)];
+		}));
 	}
 
 	const explorationText = () => explorationLine(trajectory, grids, trajectory.length, availableActions(observation));
@@ -676,6 +759,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (stats.ok === 0 && stats.error >= 3) return;
 		// A predictor reads state["proposed_action"], which exists only when an action names it: it is not an observer.
 		if (/\bproposed_action\b/.test(skill.source)) return;
+		// The agent turned automatic runs off for this skill (observe=false); run_skill and python still call it.
+		if (skill.observe === false) return;
 		if (observations.some((row) => row.n === n && row.skill === name && row.version === skill.version)) return;
 		let row: Observation;
 		try {
@@ -740,6 +825,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const lines: string[] = [];
 		let room = SKILL_OUTPUTS_CHARS;
 		for (const [name, skill] of skills) {
+			if (skill.observe === false) continue;
 			// Backfill appends older states after the immediate save receipt. Select
 			// by state number, rather than append order, so a late historical result
 			// cannot make the current standing perception look stale.
@@ -1172,6 +1258,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					predicts: Type.Optional(line(300, "Test prediction.")),
 					status: Type.Optional(StringEnum(STATUSES)),
 					next_test: Type.Optional(line(300, "Cheapest separating action.")),
+					check: Type.Optional(Type.String({ maxLength: 4000, description:
+						"Optional Python: def check(t) -> True/False/None (holds/fails/does not apply) for one transition t " +
+						"(t.n, t.action, t.x, t.y, t.before, t.after grids [y][x], t.level_changed, t.state, t.levels_completed). " +
+						"Run on every recorded and later move; results are shown with the hypothesis. \"\" removes it." })),
 					evidence: Type.Optional(Type.Object({
 						action: Type.Optional(Type.Integer({ minimum: 1, description: "Test action number." })),
 						condition: line(200, "Condition."),
@@ -1201,9 +1291,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}), { maxItems: MAX_STRATEGIES }), Type.String({ maxLength: 12000, description: "JSON array accepted" })])),
 			}),
 			prepareArguments: repairMemoryArguments,
-			execute: guardTool("memory", (params: MemoryParams) => {
+			execute: guardTool("memory", async (params: MemoryParams, signal) => {
 				const plan = planMemoryUpdate(memory, params, trajectory.length, components());
 				if (!plan.ok) throw new Refusal(plan.error);
+				const checksBefore = new Map([...memory.hypotheses].map(([key, h]) => [key, h.check ? claimVersion(h.check) : ""]));
 				for (const row of plan.rows) {
 					append("memory.jsonl", { ...row, at: trajectory.length });
 					memoryTouches.push({ key: row.key, at: trajectory.length });
@@ -1213,7 +1304,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				// Ending the decision here (2026-10-11) turned 5 ordinary tu93 decisions into memory-only turns
 				// although the reasoning planned the action next, each followed by a forced action-only decision.
 				run.memoryCommitted = true;
-				return text(plan.receipt, undefined, endsBatch());
+				// A new or changed check is run over the whole recorded history now, so its record comes with the receipt.
+				// A broken check is reported and never undoes the committed update.
+				const changed = [...memory.hypotheses].filter(([key, h]) => h.check && claimVersion(h.check) !== checksBefore.get(key))
+					.map(([key]) => key);
+				let checkLines: string[] = [];
+				if (changed.length) {
+					try { await refreshClaimChecks(changed, signal); }
+					catch (error) { logError("claims:save", error); }
+					const lines = claimLines();
+					checkLines = changed.map((key) => `${key} ${lines[key] ?? "check: not run yet"}`);
+				}
+				return text([plan.receipt, ...checkLines].join("\n"), undefined, endsBatch());
 			}),
 		});
 
@@ -1229,9 +1331,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),
 				description: Type.Optional(Type.String({ maxLength: 200 })),
 				source: Type.Optional(Type.String({ maxLength: 16384 })),
+				observe: Type.Optional(Type.Boolean({ description: "Run it with args={} after every action and show the output (default true). " +
+					"set with observe and no source changes only this." })),
 			}),
 			prepareArguments: repairSkillArguments,
-			execute: guardTool("skill", async (params: { op: string; name: string; description?: string; source?: string }, signal) => {
+			execute: guardTool("skill", async (params: { op: string; name: string; description?: string; source?: string; observe?: boolean }, signal) => {
 				const names = () => skills.size ? [...skills.keys()].join(", ") : "(none)";
 				const existing = skills.get(params.name);
 				if (params.op === "get") {
@@ -1249,8 +1353,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}
 				const notSaved = (reason: string) => new Refusal(
 					`skill '${params.name}' not saved: ${reason}\nResubmit the whole source with skill(op="set", ...)`);
+				// Turning automatic runs on or off is a flag change on the current version, not a new version.
+				if (!params.source && existing && typeof params.observe === "boolean") {
+					if (params.observe) delete existing.observe; else existing.observe = false;
+					append("skills.jsonl", { name: params.name, ...existing, observe: params.observe });
+					return text(`skill ${params.name} v${existing.version}: ${params.observe ? "runs" : "no longer runs"} automatically after every action` +
+						(params.observe ? "" : `; run_skill(name="${params.name}") and python still call it`), undefined, endsBatch());
+				}
 				if (!params.source) throw notSaved("source is required");
-				const saved = await saveSkill(params.name, params.description ?? existing?.description ?? "", params.source, signal);
+				const saved = await saveSkill(params.name, params.description ?? existing?.description ?? "", params.source, signal, params.observe);
 				if (!saved.ok) throw saved.reason.startsWith("skill limit")
 					? new Refusal(`${saved.reason}. Skills: ${names()}`) : notSaved(saved.reason);
 				// Saving also tries the new version once on the current state with args={}.
@@ -1258,13 +1369,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				// missing proposed_action and cancellation leave the saved version intact.
 				let trial: GuestResult | undefined;
 				let trialError: string | undefined;
+				// Bind provenance before yielding: a batched arc_action may finish
+				// while the guest is running. Completion time is not input state.
+				const stateN = trajectory.length;
+				const trialLevel = currentLevel();
+				const trialState = skillState(false);
 				const predictor = /\bproposed_action\b/.test(params.source);
 				if (!predictor) {
-					try { trial = await runGuest({ mode: "run", source: params.source, state: skillState(false), args: {} }, signal); }
+					try { trial = await runGuest({ mode: "run", source: params.source, state: trialState, args: {} }, signal); }
 					catch (error) { trialError = errorText(error).slice(0, 600); }
-					if (trial?.ok) trial = keepArtifacts(trial, { n: trajectory.length, level: currentLevel(), skill: params.name, version: saved.version });
+					if (trial?.ok) trial = keepArtifacts(trial, { n: stateN, level: trialLevel, skill: params.name, version: saved.version });
 				}
-				const stateN = trajectory.length;
 				if (predictor) {
 					append("skill_runs.jsonl", { decision, name: params.name, version: saved.version, automatic: "save", deferred: true, reason: "requires proposed_action" });
 				} else if (trial) {
@@ -1289,13 +1404,49 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 						modelText = `\n${renderBacktest(params.name, saved.version, modelChecks.filter((check) => check.name === params.name && check.version === saved.version))}`;
 					} catch (error) { modelText = `\nreplay on recorded moves failed: ${errorText(error).slice(0, 200)}`; }
 				}
+				const trialWhere = trajectory.length === stateN ? "the current state" : `input state ${stateN}`;
+				const provenance = trajectory.length !== stateN ? `\nEvaluation used state ${stateN}; current state is ${trajectory.length}.` : "";
 				const trialText = predictor ? modelText : trial
 					? trial.ok
-						? `\non the current state with args={} it returns: ${clipJson(trial.value, SKILL_OUTPUT_CHARS)}${trial.warnings?.length ? ` (warning: ${trial.warnings.join("; ")})` : ""}`
-						: `\non the current state with args={} it fails: ${guestFailure(trial)}`
+						? `\non ${trialWhere} with args={} it returns: ${clipJson(trial.value, SKILL_OUTPUT_CHARS)}${trial.warnings?.length ? ` (warning: ${trial.warnings.join("; ")})` : ""}`
+						: `\non ${trialWhere} with args={} it fails: ${guestFailure(trial)}`
 					: trialError ? `\ninitial run deferred: ${trialError}` : "";
 				return text(`skill set ${params.name} v${saved.version} (syntax ok); run_skill(name="${params.name}") is callable ` +
-					`from your next step${trialText}`, undefined, endsBatch());
+					`from your next step${provenance}${trialText}`, undefined, endsBatch());
+			}),
+		});
+
+		/**
+		 * One-off computation: run code once and get the answer, with nothing to name or save. Computation had to go
+		 * through creating a skill (2026-10-12 review: 28-38% of reasoning was coordinate work done by hand, and a route
+		 * search was done "in my head" because a skill felt like a commitment). Saved skills remain callable from here.
+		 */
+		pi.registerTool({
+			name: "python",
+			label: "Python",
+			description: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
+				"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
+				"Returns what you print and the value of a final expression. Standard library only; no files or network.",
+			parameters: Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }) }),
+			prepareArguments: (args: any) => args && typeof args === "object" && typeof args.code === "string"
+				? { ...args, code: unescapeSource(args.code) } : args,
+			execute: guardTool("python", async (params: { code: string }, signal) => {
+				const started = Date.now();
+				const result = await runGuest({
+					mode: "exec", code: params.code, state: skillState(false, true),
+					skills: Object.fromEntries([...skills].map(([name, skill]) => [name, skill.source])),
+				}, signal);
+				if (!result.ok) {
+					append("python_runs.jsonl", { decision, ok: false, ms: Date.now() - started, code_chars: params.code.length, error: guestFailure(result).slice(0, 300) });
+					throw new Refusal(`python failed: ${guestFailure(result)}`);
+				}
+				const value = result.value as { stdout: string; value: unknown; has_value: boolean };
+				const printed = value.stdout.length > SKILL_RESULT_CHARS
+					? `${value.stdout.slice(0, SKILL_RESULT_CHARS)}\n…(output cut at ${SKILL_RESULT_CHARS} of ${value.stdout.length} chars)` : value.stdout;
+				const shown = [printed.trimEnd(), value.has_value ? `→ ${clipJson(value.value, SKILL_RESULT_CHARS)}` : ""].filter(Boolean).join("\n");
+				append("python_runs.jsonl", { decision, ok: true, ms: Date.now() - started, code_chars: params.code.length,
+					stdout_chars: value.stdout.length, has_value: value.has_value });
+				return text(shown || "(no output; print something or end with an expression)", undefined, endsBatch());
 			}),
 		});
 
@@ -1381,13 +1532,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				run.skillCalls += 1;
 				run.skillSignatures.add(signature);
 				const started = Date.now();
+				const stateN = trajectory.length;
+				const inputLevel = currentLevel();
 				const result = keepArtifacts(await runGuest({
 					mode: "run", source: skill.source, state: skillState(Boolean(params.include_frames)), args: params.args ?? {},
-				}, signal), { n: trajectory.length, level: currentLevel(), skill: params.name, version: skill.version });
+				}, signal), { n: stateN, level: inputLevel, skill: params.name, version: skill.version });
 				const notStored = result.ok ? (result.warnings ?? []).filter((warning) => /\bartifact/.test(warning)) : [];
 				const output = result.ok ? JSON.stringify(result.value ?? null) + (notStored.length ? `\n(${notStored.join("; ")})` : "") : undefined;
 				if (!result.ok) {
-					append("skill_runs.jsonl", { decision, name: params.name, version: skill.version,
+					append("skill_runs.jsonl", { decision, name: params.name, version: skill.version, state_n: stateN,
 						ok: false, ms: Date.now() - started, error: guestFailure(result) });
 					throw new Refusal(`skill '${params.name}' v${skill.version} failed: ${guestFailure(result)}\n` +
 						`Fix it with skill(op="set", name="${params.name}", source=...). Line numbers refer to your source as saved.`);
@@ -1398,10 +1551,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 						`call run_skill(..., include_full=true) if the omitted cells are needed)`
 					: output!;
 				append("skill_runs.jsonl", {
-					decision, name: params.name, version: skill.version, ok: true, ms: Date.now() - started,
+					decision, name: params.name, version: skill.version, state_n: stateN, ok: true, ms: Date.now() - started,
 					result_chars: output!.length, shown_chars: shown.length, preview: !full,
 				});
-				return text(`${params.name} v${skill.version} →\n${shown}`, undefined, endsBatch());
+				return text(`${params.name} v${skill.version}${trajectory.length !== stateN ? `\nEvaluation used state ${stateN}; current state is ${trajectory.length}.` : ""} →\n${shown}`, undefined, endsBatch());
 			}),
 		});
 	}
@@ -1498,6 +1651,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		recordState(trajectory.length, gridOf(observation));
 		// Model skills are checked on the transition just recorded (incremental; failures leave the decision unchanged).
 		if (!control) await refreshModelChecks();
+		// So are the hypotheses' checks: each new transition is one more test of every claim.
+		if (!control) { try { await refreshClaimChecks(); } catch (error) { logError("claims:refresh", error); } }
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
 		const systemPrompt = control

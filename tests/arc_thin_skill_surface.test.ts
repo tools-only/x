@@ -54,19 +54,19 @@ test("empty store: no run_skill until a skill is saved", async () => {
 	assert.equal(h.tools.has("run_skill"), false);
 	await h.start();
 	await h.decide();
-	assert.deepEqual(h.active(), ["arc_action", "memory", "skill"]);
+	assert.deepEqual(h.active(), ["arc_action", "memory", "skill", "python"]);
 	await h.decide("CONSOLIDATE: review");
-	assert.deepEqual(h.active(), ["memory", "skill", "prompt", "ask_analyst"]);
+	assert.deepEqual(h.active(), ["memory", "skill", "python", "prompt", "ask_analyst"]);
 });
 
 test("low-frequency schemas load on review, while the ordinary action surface stays core-only", async () => {
 	const h = load(mkdtempSync(join(tmpdir(), "thin-staged-surface-")));
 	await h.start();
 	await h.decide();
-	assert.deepEqual(h.active(), ["arc_action", "memory", "skill"]);
+	assert.deepEqual(h.active(), ["arc_action", "memory", "skill", "python"]);
 	assert.ok(!h.active().includes("prompt") && !h.active().includes("ask_analyst"));
 	await h.decide("CONSOLIDATE: review");
-	assert.deepEqual(h.active(), ["memory", "skill", "prompt", "ask_analyst"]);
+	assert.deepEqual(h.active(), ["memory", "skill", "python", "prompt", "ask_analyst"]);
 });
 
 test("save, re-save and delete keep run_skill bound to exactly the saved names", async () => {
@@ -101,7 +101,7 @@ test("save, re-save and delete keep run_skill bound to exactly the saved names",
 	assert.deepEqual(h.enumOf(), ["count_color"]);
 	assert.ok(h.active().includes("run_skill"));
 	await h.decide("CONSOLIDATE: review");
-	assert.deepEqual(h.active(), ["memory", "skill", "prompt", "ask_analyst", "run_skill"]);
+	assert.deepEqual(h.active(), ["memory", "skill", "python", "prompt", "ask_analyst", "run_skill"]);
 
 	const surface = readFileSync(join(root, "harness", "skill_surface.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 	assert.deepEqual(surface.map((row) => row.names), [[], ["count_color"], ["a_probe", "count_color"], ["count_color"], [], ["count_color"]]);
@@ -121,7 +121,7 @@ test("replay binds run_skill to the stored names", async () => {
 	await again.start();
 	assert.ok(again.active().includes("run_skill"));
 	await again.decide();
-	assert.deepEqual(again.active(), ["arc_action", "memory", "skill", "run_skill"]);
+	assert.deepEqual(again.active(), ["arc_action", "memory", "skill", "python", "run_skill"]);
 });
 
 test("control variant never exposes skills", async () => {

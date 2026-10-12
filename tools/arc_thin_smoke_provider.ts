@@ -168,10 +168,29 @@ const CONTINUITY_SCRIPT: Step[] = [
 	{ kind: "decide", say: "SMOKE-CONTINUITY-2: it moved; now left.", calls: [["arc_action", { action: "ACTION3", note: "second move" }]] },
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", note: "third move" }]] },
 ];
+// Claims checked against history and one-off python (docs/plans/2026-10-12-falsifiable-self-harness-plan.md). In the
+// mock game the 9 on row 3 starts at x=2 and moves right on ACTION1/4, left on ACTION2/3. hyp.right's check holds on
+// #1, hyp.wrong's fails there, and hyp.broken's check does not compile: it is reported and the update still commits.
+const RIGHT_CHECK = "def check(t):\n    if t.action != 'ACTION1':\n        return None\n" +
+	"    return t.after[3].index(9) == t.before[3].index(9) + 1\n";
+const WRONG_CHECK = "def check(t):\n    if t.action != 'ACTION1':\n        return None\n" +
+	"    return t.after[3].index(9) == t.before[3].index(9) - 1\n";
+const CLAIMS_SCRIPT: Step[] = [
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "probe" }]] },
+	{ kind: "decide", calls: [["memory", { hypotheses: [
+		{ key: "hyp.right", question: "controls", claim: "ACTION1 moves the 9 one cell right", check: RIGHT_CHECK },
+		{ key: "hyp.wrong", question: "controls", claim: "ACTION1 moves the 9 one cell left", check: WRONG_CHECK },
+		{ key: "hyp.broken", question: "goal", claim: "a check that does not compile", check: "def check(t)\n    return True\n" },
+	] }]] },
+	{ kind: "decide", calls: [["python", { code: "x = history.grid(1)[3].index(9)\nprint('nine at', x)\nx + 1" }]] },
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", note: "second move" }]] },
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "third move" }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "selfharness" ? SELF_HARNESS_SCRIPT
-	: process.env.ARC_THIN_SMOKE_SCRIPT === "continuity" ? CONTINUITY_SCRIPT : DEFAULT_SCRIPT;
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "continuity" ? CONTINUITY_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "claims" ? CLAIMS_SCRIPT : DEFAULT_SCRIPT;
 
 const textOf = (message: any): string => typeof message?.content === "string"
 	? message.content

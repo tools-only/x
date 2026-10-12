@@ -168,6 +168,35 @@ test("session continuity carries one native compaction checkpoint ahead of retai
 	} finally { server.close(); }
 });
 
+test("hypothesis checks run over history at save and on later moves; python runs once; observe can be turned off", async () => {
+	const { server, url } = await startBridge();
+	try {
+		const h = load(mkdtempSync(join(tmpdir(), "thin-claims-")), url);
+		await h.start();
+		await h.decide(); await h.act({ action: "ACTION1" });
+		await h.decide(); await h.act({ action: "ACTION2" });
+		await h.decide();
+		const find = "def block(g):\n    for y, row in enumerate(g):\n        for x, v in enumerate(row):\n            if v == 4:\n                return x, y\n";
+		const receipt = await h.call("memory", { hypotheses: [
+			{ key: "hyp.right", question: "controls", claim: "ACTION1 moves the block right",
+				check: `${find}def check(t):\n    if t.action != 'ACTION1':\n        return None\n    (x0, y0), (x1, y1) = block(t.before), block(t.after)\n    return x1 == x0 + 1 and y1 == y0\n` },
+			{ key: "hyp.crash", claim: "a check that raises", check: "def check(t):\n    return 1 / 0\n" },
+		] });
+		assert.match(receipt, /hyp\.right check on 2 recorded move\(s\): holds 1 · fails 0 · n\/a 1/);
+		assert.match(receipt, /hyp\.crash check on 2 recorded move\(s\): holds 0 · fails 0 · errors 2 · first error: ZeroDivisionError/);
+		await h.act({ action: "ACTION1" });
+		const view = await h.decide();
+		assert.match(view, /- hyp\.right \[open\] ACTION1 moves the block right\n  check on 3 recorded move\(s\): holds 2 · fails 0 · n\/a 1/);
+		// One-off code: printed output and the final expression; saved skills are callable; nothing is saved.
+		await h.call("skill", { op: "set", name: "probe", description: "echo", source: "def run(state, args):\n    return {'x': args.get('x', 0)}\n" });
+		const out = await h.call("python", { code: "print('moves', len(history))\nskill('probe', x=len(history))['x'] * 10" });
+		assert.equal(out, "moves 3\n→ 30");
+		await assert.rejects(h.call("python", { code: "1 / 0" }), /python failed: ZeroDivisionError/);
+		assert.match(await h.call("skill", { op: "set", name: "probe", observe: false }), /probe v1: no longer runs automatically/);
+		assert.match(await h.decide(), /- probe v1 — echo \[not run automatically\]/);
+	} finally { server.close(); }
+});
+
 test("memory rejection without evidence commits through the native tool and reaches the next decision", async () => {
 	const bridge = await startBridge();
 	try {

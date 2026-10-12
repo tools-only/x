@@ -114,12 +114,105 @@ def _jsonable(value, depth=0):
 
 _warnings = []
 
+
+def _frozen(grid):
+    return tuple(tuple(row) for row in grid) if grid is not None else None
+
+
+def _claims(req):
+    """Run each claim's check(t) on the transitions given. t holds what the environment reported for one action and
+    the grids before and after it (read-only tuples). A check returns True (holds), False (fails) or None (does not
+    apply); anything else, or an exception, is an error for that transition. Nothing else is interpreted."""
+    checks = []
+    for claim in req.get("claims") or []:
+        ns = {"__name__": "claim"}
+        if _foundation == "${ARC_SKILL_FOUNDATION_VERSION}":
+            exec(_req.get("_foundation_source") or "", ns)
+        try:
+            exec(compile(claim["source"], "<skill>", "exec"), ns)
+            if not callable(ns.get("check")):
+                raise ValueError("a check must define check(t)")
+            checks.append((claim, ns["check"], None))
+        except BaseException as error:
+            checks.append((claim, None, (type(error).__name__ + ": " + str(error))[:300] + " " + _where(error, claim["source"])))
+    meta = req.get("transitions") or {}
+    out = {claim["key"]: {"results": [], "error": error} for claim, _fn, error in checks}
+    for segment in req.get("segments") or []:
+        prev = segment["grid"]
+        for step in segment["steps"]:
+            if step.get("grid") is not None:
+                cur = step["grid"]
+            else:
+                cur = [row[:] for row in prev]
+                for x, y, _before, after in step.get("delta") or []:
+                    cur[y][x] = after
+            t = _Transition(dict(meta.get(str(step["n"])) or {}, n=step["n"], before=_frozen(prev), after=_frozen(cur)))
+            for claim, fn, _error in checks:
+                if fn is None:
+                    continue
+                try:
+                    value = fn(t)
+                    if value is True or value is False or value is None:
+                        out[claim["key"]]["results"].append([step["n"], value])
+                    else:
+                        out[claim["key"]]["results"].append([step["n"], "error", "check returned %s, not True/False/None" % type(value).__name__])
+                except BaseException as error:
+                    out[claim["key"]]["results"].append([step["n"], "error", ((type(error).__name__ + ": " + str(error))[:160] + " " + _where(error, claim["source"])).strip()])
+            prev = cur
+    return out
+
+
+def _exec(req):
+    """One-off code: runs once and is not saved. Available names: state, history, grid, prev_grid, artifacts and
+    skill(name, **args) for saved skills. Returns what was printed and the value of a final expression."""
+    import ast, io, contextlib
+    state = req.get("state") or {}
+    if isinstance(state.get("history"), dict):
+        state["history"] = _History(state["history"])
+    sources = req.get("skills") or {}
+    loaded = {}
+
+    def skill(name, **args):
+        if name not in sources:
+            raise KeyError("no saved skill %r; saved: %s" % (name, ", ".join(sorted(sources)) or "none"))
+        if name not in loaded:
+            ns = {"__name__": "skill_" + name}
+            if _foundation == "${ARC_SKILL_FOUNDATION_VERSION}":
+                exec(_req.get("_foundation_source") or "", ns)
+            exec(compile(sources[name], "<saved skill %s>" % name, "exec"), ns)
+            loaded[name] = ns["run"]
+        return loaded[name](state, args)
+
+    ns = dict(_ns)
+    ns.update({"state": state, "history": state.get("history"), "grid": state.get("grid"), "prev_grid": state.get("prev_grid"),
+               "artifacts": state.get("artifacts") or {}, "skill": skill})
+    tree = ast.parse(req["code"], "<skill>", "exec")
+    last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
+    buffer = io.StringIO()
+    value = None
+    with contextlib.redirect_stdout(buffer):
+        exec(compile(tree, "<skill>", "exec"), ns)
+        if last is not None:
+            value = eval(compile(ast.Expression(last.value), "<skill>", "eval"), ns)
+    return {"stdout": buffer.getvalue(), "value": _jsonable(value), "has_value": last is not None}
+
+
+_src = _req.get("source") or _req.get("code") or ""
 try:
-    _code = compile(_req["source"], "<skill>", "exec")
-    exec(_code, _ns)
-    if not callable(_ns.get("run")):
-        raise ValueError("source must define run(state, args)")
-    if _req["mode"] == "check":
+    if _req["mode"] == "claims":
+        result = {"ok": True, "value": _claims(_req)}
+    elif _req["mode"] == "exec":
+        result = {"ok": True, "value": _exec(_req)}
+        if _warnings:
+            result["warnings"] = list(dict.fromkeys(_warnings))
+    else:
+        _code = compile(_req["source"], "<skill>", "exec")
+        exec(_code, _ns)
+        if not callable(_ns.get("run")):
+            raise ValueError("source must define run(state, args)")
+    if _req["mode"] in ("claims", "exec"):
+        pass
+    elif _req["mode"] == "check":
         result = {"ok": True}
     elif _req["mode"] == "backtest":
         # Replay a model skill on recorded transitions. Each case sees only what existed before its action:
@@ -164,7 +257,7 @@ try:
         if _warnings:
             result["warnings"] = list(dict.fromkeys(_warnings))
 except BaseException as _error:
-    result = {"ok": False, "error": (type(_error).__name__ + ": " + str(_error))[:600], "where": _where(_error, _req["source"])}
+    result = {"ok": False, "error": (type(_error).__name__ + ": " + str(_error))[:600], "where": _where(_error, _src)}
 `;
 
 export const SKILL_LIMITS = { input_bytes: 384 * 1024, output_bytes: 64 * 1024, fuel: 4_000_000_000, timeout_ms: 20_000 };

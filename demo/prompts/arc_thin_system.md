@@ -34,10 +34,10 @@ args={} after every action and its output is shown at each decision, so you
 choose what its default reports (objects, the last change, ...). A result's
 "artifacts" dict (a parsed board, a route) is kept with the skill, state and
 level that made it, and every skill reads it as state['artifacts'].
-A skill that reads state['proposed_action'] is a model: it predicts that
-action's result (cells, level_changed, state). Models are replayed on every
-recorded move, seeing only what existed before it, and their right/wrong
-counts and counterexamples are shown. Use run_skill for other arguments.
+python runs code once with the same data and your skills, nothing saved.
+A hypothesis may carry check(t), True/False/None on one transition; the
+runtime runs it on every recorded and later move and shows where it holds or
+fails. Use run_skill for other arguments.
 
 arc_action.predict checks post-action cells/level/state; predict_skill uses
 your own predictor. ask_analyst gives a second reading of the grid.
