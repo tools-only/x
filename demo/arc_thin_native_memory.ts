@@ -25,7 +25,7 @@ export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams,
       applyRows(working, plan.rows); rows.push(...plan.rows); receipts.push(plan.receipt); return true;
     } catch (error) { skipped.push(`${name}: ${String(error)}`); return false; }
   };
-  if (params.key !== undefined || params.text !== undefined || params.op === 'delete')
+  if (params.key !== undefined || params.text !== undefined || (params.op === 'delete' && !params.delete?.length))
     apply('entry', { op: params.op, key: params.key, text: params.text, confidence: params.confidence });
   for (const [index, key] of (params.delete ?? []).entries()) apply(`delete[${index}]`, { delete: [key] });
   for (const [index, item] of (params.set ?? []).entries()) apply(`set[${index}]`, { set: [item] });
