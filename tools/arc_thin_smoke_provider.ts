@@ -186,7 +186,20 @@ const CLAIMS_SCRIPT: Step[] = [
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", note: "second move" }]] },
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "third move" }]] },
 ];
-const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
+const FOUNDATION_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['write', { path: 'notes/evidence.md', content: 'FOUNDATION_EXACT_NOTE\nCOUNTEREXAMPLE' }]] },
+  { kind: 'decide', calls: [['edit', { path: 'notes/evidence.md', edits: [{ oldText: 'EXACT_NOTE', newText: 'EDITED_NOTE' }] }]] },
+  { kind: 'decide', calls: [['read', { path: 'notes/evidence.md', offset: 2, limit: 1 }], ['grep', { pattern: 'EDITED_NOTE' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'workspace smoke' }]] },
+  { kind: 'decide', calls: [['read', { path: 'data/current.json' }], ['write', { path: 'data/forbidden.json', content: 'forbidden' }],
+    ['read', { path: '../run-config.json' }], ['python', { code: "import os\nprint(os.environ.get('PI_ARC_ACTION_TOKEN', 'NO_TOKEN'))" }],
+    ['python', { code: "open('/host-secret')" }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'isolation smoke' }]] },
+  { kind: 'decide', calls: [['read', { path: 'data/frames/1.json' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'later parent' }]] },
+];
+const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "selfharness" ? SELF_HARNESS_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "continuity" ? CONTINUITY_SCRIPT

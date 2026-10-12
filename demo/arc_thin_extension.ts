@@ -24,6 +24,7 @@
  */
 import { createHash } from "node:crypto";
 import { projectNativeHistory } from "./arc_thin_native_context.ts";
+import { Workspace } from "./arc_thin_workspace.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -154,6 +155,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
+  const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd()) : undefined;
 
 	// ---------------------------------------------------------------- stores
 
@@ -684,6 +686,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!toolsReady) return;
 		const tools = (base ?? pi.getActiveTools()).filter((name) => name !== "run_skill");
 		if (names.length) tools.push("run_skill");
+    if (workspace) for (const name of ['read', 'write', 'edit', 'ls', 'grep']) if (!tools.includes(name)) tools.push(name);
 		pi.setActiveTools(tools);
 		const surface = JSON.stringify([tools.includes("run_skill"), names]);
 		if (surface === lastSurface) return;
@@ -733,6 +736,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Every state the agent sees is kept: skills read it as state.history, and the ledger reads it when enabled. */
 	function recordState(n: number, grid: number[][] | undefined): void {
+    if (workspace && grid) {
+      workspace.runtimeWrite(`data/frames/${n}.json`, JSON.stringify({ n, grid }) + '\n');
+      workspace.runtimeWrite('data/current.json', JSON.stringify({ n, grid, state: observation?.state,
+        levels_completed: observation?.levels_completed, available_actions: availableActions(observation) }) + '\n');
+      workspace.runtimeWrite('data/trajectory.jsonl', trajectory.map(row => JSON.stringify(reportedAction(row))).join('\n') + '\n');
+    }
 		if (!grid || grids.has(n)) return;
 		grids.set(n, grid);
 		append("states.jsonl", { n, grid });
@@ -1216,6 +1225,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}),
 		});
 	}
+  if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
+    execute: guardTool(tool.name, async (params, signal, ctx) => {
+      try { return await tool.execute('workspace', params as any, signal, undefined, ctx); }
+      catch (error) { throw new Refusal(errorText(error)); }
+    }) });
 	// No action vocabulary is invented before the environment has supplied its scope.
 	registerArcAction([]);
 	let boundActionScope = "[]";
