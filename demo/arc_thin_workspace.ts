@@ -1,6 +1,7 @@
 /** Confined backends for Pi file tools. No host path reaches an agent receipt. */
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition,
   createGrepToolDefinition, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 
@@ -53,6 +54,13 @@ export class Workspace {
     return out;
   }
   read(path: string): string { return readFileSync(this.path(path), 'utf8'); }
+  receipt(body: string, status = 'ok', keyLines: string[] = []): string {
+    if (body.length <= 1500) return body;
+    const hash = createHash('sha256').update(body).digest('hex'); const ref = `results/${hash}.txt`;
+    if (!existsSync(this.path(ref))) this.runtimeWrite(ref, body);
+    const keys = [...keyLines, ...body.split('\n').filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);
+    return `Result ${status}; ${body.length} chars; sha256=${hash}\n${body.slice(0, 450)}\n${keys ? keys + '\n' : ''}ref: ${ref}\nread ${ref} with offset/limit for exact lines.`;
+  }
   fileTools(): ToolDefinition[] {
     const safe = (p: string, write = false) => this.path(p, write, false, true);
     const readFile = async (p: string) => readFileSync(safe(p));

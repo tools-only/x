@@ -223,7 +223,15 @@ const COMPONENT_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['compare', { x: 40 }], ['read', { path: 'skills/probe/SKILL.md' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
-const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
+const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
+  { kind: 'decide', calls: [['read', { path: '$last_result', offset: 41, limit: 1 }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+] : [
+  { kind: 'decide', calls: [['python', { code: "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(80)))\n1" }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+];
+const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT
@@ -270,6 +278,13 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// context.systemPrompt and context.tools), so the runner's prompt is the first user message, not messages[0].
 			const systemPrompt = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
 			const tools: any[] = (context.tools?.length ? context.tools : getCurrentTools(messages as any)) ?? [];
+      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' && systemPrompt.includes('context summarization assistant')) {
+        const evidence = messages.map(textOf).join('\n');
+        appendFileSync(join(process.env.ARC_RUN_ROOT!, 'native-summary-input.jsonl'), JSON.stringify({ systemPrompt, messages }) + '\n');
+        const refs = [...new Set(evidence.match(/results\/[a-f0-9]{64}\.txt/g) ?? [])];
+        output.content = [{ type: 'text', text: 'Native checkpoint: exact evidence is retained behind receipts.\n' + refs.map(ref => 'ref: ' + ref).join('\n') }];
+        stream.push({ type: 'start', partial: output }); stream.push({ type: 'done', reason: 'stop', message: output }); stream.end(); return stream;
+      }
 			if (process.env.ARC_THIN_COMPACTION_PROBE) {
 				const summary = systemPrompt.includes("context summarization assistant");
 				const transcript = messages.map((message) => ({ role: message?.role, text: textOf(message),
@@ -350,6 +365,8 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 					? { kind: "consolidate", text: "Script exhausted or out of order during consolidation." }
 					: { kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "fallback after script" }]] };
 			}
+      if (planned?.calls) planned = { ...planned, calls: planned.calls.map(([name, args]) => [name,
+        args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/[a-f0-9]{64}\.txt/)?.[0] ?? 'missing' } : args]) };
 			appendFileSync(log, JSON.stringify({
 				t: new Date().toISOString(), analyst, critic, consolidating, step,
 				// message_count excludes Pi's leading system message so the runner's checks keep the 0.80.6 meaning

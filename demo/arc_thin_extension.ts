@@ -1604,6 +1604,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       if (native) {
         event.preparation.messagesToSummarize = projectNativeHistory(event.preparation.messagesToSummarize, replayReasoning);
         event.preparation.turnPrefixMessages = projectNativeHistory(event.preparation.turnPrefixMessages, replayReasoning);
+        for (const message of [...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages])
+          if (message.role === 'toolResult') message.content = message.content.map((block: any) =>
+            block.type === 'text' ? { ...block, text: workspace!.receipt(block.text, message.isError ? 'error' : 'ok') } : block);
+        append('compaction_probe.jsonl', { native: true, messages: event.preparation.messagesToSummarize,
+          turnPrefixMessages: event.preparation.turnPrefixMessages, tokensBefore: event.preparation.tokensBefore });
+        return;
       }
 			const receiptsDir = join(storeDir, "compaction-receipts");
 			for (const message of event.preparation.messagesToSummarize) {
@@ -1630,6 +1636,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}));
 		pi.on("session_compact", guard("session_compact", (event: any) => {
 			const entry = event.compactionEntry;
+      if (native && entry.usage) appendUsage('compaction', { usage: entry.usage, stopReason: 'stop' });
 			append("context_budget.jsonl", { compaction_event: true, reason: event.reason,
 				tokensBefore: entry.tokensBefore, summary_chars: entry.summary.length,
 				usage: { input_tokens: entry.usage?.input ?? null, output_tokens: entry.usage?.output ?? null },
@@ -1646,6 +1653,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   if (workspace && binder && !control) {
     nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => skillState(false, true),
       level: currentLevel, actionCount: () => trajectory.length, log: append, usage: appendUsage,
+      receipt: body => workspace.receipt(body),
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
       }) });
@@ -1856,4 +1864,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// Refusals returned as terminating results are still errors to the model.
 	pi.on("tool_result", guard("tool_result", (event: any) =>
 		(event.details as { refused?: boolean } | undefined)?.refused ? { isError: true } : undefined));
+  if (workspace) pi.on('tool_result', (event: any) => {
+    // Exact readback is already explicitly ranged by the caller; do not replace it with another receipt.
+    if (event.toolName === 'read') return;
+    const content = event.content.map((block: any) => block.type === 'text'
+      ? { ...block, text: workspace.receipt(block.text, event.isError ? 'error' : 'ok') } : block);
+    return { content };
+  });
 }
