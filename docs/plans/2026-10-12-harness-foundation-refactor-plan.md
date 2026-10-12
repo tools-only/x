@@ -1,6 +1,8 @@
 # Harness foundation refactor: final plan (2026-10-12)
 
-Status: plan for approval. No implementation yet.
+Status: recommendations accepted by “开始实现”; R0–R6 implemented on `codex/harness-foundation-20261012` from frozen base `737e07e903bcdc5a09a2e08d8cfbd447ea464ecf`. Acceptance evidence and limitations are maintained in the [implementation record](../reports/2026-10-12-harness-foundation-implementation.md). Autonomous adoption and legacy/native game benefit remain unverified; no paid comparison started.
+
+Latest user decision (2026-10-12): Auto-Research is deprecated in this design; use the ledger + critic. Its development and acceptance runs are paused. It is not a prerequisite for this foundation's acceptance. `consult` remains an explicit one-shot role request, distinct from ongoing Auto-Research.
 
 Scope: the basic harness design discussed with Codex on 2026-10-12. Its main parts are:
 - Pi-native continuity;
@@ -233,7 +235,9 @@ Each step has a failing check first, a minimal implementation, focused tests, th
 | Active prompt files | ≤ 1,500 total (beyond that, the receipt warns) |
 | Tool schemas | Measured per request and reported in `context_budget.jsonl`; no fixed cap, but each agent tool's schema is ≤ 400 chars from annotations |
 
-## 10. Decisions needed from you
+## 10. Accepted decisions
+
+D1–D5 were accepted on 2026-10-12. Native defaults: observers on, level-change review off, reasoning replay off, automatic compaction off (explicit opt-in after inspecting its adapted input). Original checkout preserved; isolated worktree `D:/autoresearch_pi_foundation_20261012`. The table below preserves the recommendations at approval time.
 
 | # | Decision | My recommendation |
 |---|---|---|

@@ -1,5 +1,7 @@
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-10-12 最新决定：当前方案弃用 Auto-Research，转为台账 + critic；暂停 Auto-Research 开发及验收运行，历史条目不再视为当前路线或实施授权。Foundation R0–R6 的 workspace、版本回执、实际 Pi 压缩/重启和旧存储迁移已有脚本接线证据；B/C/D 的语义帮助、父子总成本与跨压缩认知质量仍开放，不能用精确读回或组件调用计数代替。下一步是另行预算下的 legacy/native ls20/lp85 对照。见[唯一实现记录](reports/2026-10-12-harness-foundation-implementation.md)。
+
 2026-10-10 ARC 动作接口修复：P040 实际 provider 已收到正确 scope，但静态工具枚举仍暴露 ACTION5/6；当前 workspace 改为 observation 驱动的动态 schema/激活状态，覆盖 RESET、scope 变化、空/失败/恢复和旧调用执行边界。54 Node、32 thin scripted/mock smoke 通过，installed Pi 的实际 7 请求语义检查及 18 smoke 请求 scope 一致性审计通过。未修改独立 checkout/冻结实验，无新付费；完整闭环、自主采用、净收益及 B/C/D 保持未验证。见[唯一变更记录](plans/2026-10-10-arc-action-live-scope.md)。
 
 2026-10-10 两路 round-2 实验已按用户要求关闭（ka59/ls20 runner、bridge、Pi 子进程均确认退出）。针对 ka59 真实 memory 撤销被拒绝的修订摩擦，已将“rejected 必须附 refutes”从硬门槛改成非阻塞缺证据提示，保留原子性、真实动作编号和已提交证据校验；真实失败参数及 native 后轮视图回归通过，thin Node 52/52、pytest 4/4、scripted/mock ARC smoke 通过。仅支持功能修复，不提升完整链路、自主采用、净收益或 B/C/D 质量状态；见[唯一变更记录](plans/2026-10-10-memory-rejection-friction.md)。

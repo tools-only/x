@@ -1,6 +1,6 @@
 /** Confined backends for Pi file tools. No host path reaches an agent receipt. */
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition,
   createGrepToolDefinition, type ToolDefinition } from '@earendil-works/pi-coding-agent';
@@ -40,6 +40,20 @@ export class Workspace {
   runtimeWrite(path: string, content: string) {
     const target = this.path(path, true, true); mkdirSync(resolve(target, '..'), { recursive: true });
     writeFileSync(this.path(path, true, true), content, 'utf8');
+  }
+  mutate(op: { op: string; path: string; content?: string; destination?: string }) {
+    const source = this.path(op.path, true);
+    if (source === this.root) throw Error('workspace root cannot be changed');
+    if (op.op === 'write') this.runtimeWrite(op.path, op.content!);
+    else if (op.op === 'delete') {
+      if (!lstatSync(source).isFile()) throw Error('only workspace files can be removed');
+      unlinkSync(source);
+    } else if (op.op === 'move') {
+      const target = this.path(op.destination!, true);
+      if (target === this.root) throw Error('workspace root cannot be changed');
+      mkdirSync(dirname(target), { recursive: true });
+      renameSync(this.path(op.path, true), this.path(op.destination!, true));
+    } else throw Error('invalid workspace mutation');
   }
   files(path = '.'): string[] {
     const target = this.path(path);

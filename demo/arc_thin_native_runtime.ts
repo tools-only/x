@@ -9,6 +9,7 @@ import { TaskPythonPool } from './pi_task_python_pool.ts';
 type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): Record<string, unknown>;
   level(): number; actionCount(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
+  artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
   receipt?(body: string): string };
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
   : typeof result.value === 'object' && result.value !== null && 'stdout' in result.value
@@ -51,32 +52,75 @@ export class NativeRuntime {
       if (/^skills\/.+\.py$/.test(path)) sources[path] = this.host.workspace.read(path);
       else files[path] = this.host.workspace.read(path);
     }
-    const versions = Object.fromEntries(this.host.binder.active().map(c => [c.path, c.version]));
-    return { sources, files, state: this.host.state(), versions };
+    const versions = this.host.binder.versionMap();
+    for (const c of this.host.binder.active()) versions[c.path] = c.version;
+    const artifacts = { ...(this.host.state().artifacts as Record<string, unknown> ?? {}) };
+    for (const [path, body] of Object.entries(files)) if (/^artifacts\/[^/]+\.json$/.test(path)) {
+      try { artifacts[path.slice(10, -5)] = JSON.parse(body); } catch { /* Non-JSON artifacts remain readable files. */ }
+    }
+    return { sources, files, state: { ...this.host.state(), artifacts }, versions };
   }
   private async applyWrites(result: NativeResult) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
-    for (const path of Object.keys(result.writes ?? {})) this.host.workspace.path(path, true);
-    for (const [path, body] of Object.entries(result.writes ?? {})) {
-      this.host.workspace.runtimeWrite(path, body);
-      await this.host.binder.save(path, this.host.level());
+    for (const op of result.ops ?? []) {
+      this.host.workspace.path(op.path, true);
+      if (op.destination) this.host.workspace.path(op.destination, true);
     }
-    if (Object.keys(result.writes ?? {}).length) this.register();
+    const receipts: string[] = [];
+    for (const op of result.ops ?? []) {
+      this.host.workspace.mutate(op);
+      if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level()); if (receipt) receipts.push(receipt); }
+      else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
+    }
+    if (result.ops?.length) {
+      await this.host.binder.scan(this.host.level()); this.register();
+      const names = new Set(this.toolNames());
+      this.host.pi.setActiveTools([...this.host.pi.getActiveTools().filter(n => !this.registered.has(n) || names.has(n)), ...names]);
+    }
+    return receipts;
+  }
+  private async execute(input: ReturnType<NativeRuntime['snapshot']> & Record<string, any>, signal?: AbortSignal, pool?: TaskPythonPool) {
+    // Store growth must not consume every call's WASI allowance. Reads fetch only exact confined snapshot files.
+    const all = input.files; const files: Record<string, string> = {};
+    const source = input.code ?? input.sources[input.path] ?? '';
+    for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    const controller = new AbortController(); const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
+    const timer = setTimeout(abort, 20000);
+    try {
+      for (let reads = 0; reads <= 32; reads++) {
+        const result = await executeNative({ ...input, files, file_names: Object.keys(all) }, controller.signal, pool);
+        if (!result.need_file) return result;
+        this.host.workspace.path(result.need_file);
+        if (!Object.hasOwn(all, result.need_file) || Object.hasOwn(files, result.need_file)) throw Error('invalid workspace read request');
+        files[result.need_file] = all[result.need_file];
+      }
+      throw Error('workspace read retry budget exceeded; use read with exact refs');
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   async python(code: string, signal?: AbortSignal, readonly = false) {
     const snap = this.snapshot(); const started = Date.now();
-    const result = await executeNative({ ...snap, mode: 'exec', code, allow_writes: !readonly }, signal);
-    if (result.ok) await this.applyWrites(result);
+    const result = await this.execute({ ...snap, mode: 'exec', code, allow_writes: !readonly }, signal);
+    const receipts = result.ok ? await this.applyWrites(result) : [];
     this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started });
-    return text(this.host.receipt?.(shown(result)) ?? shown(result), !result.ok);
+    const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
+    const body = [shown(result), ...receipts, ...failed.map(s => 'bindings: ' + s)].join('\n');
+    return text(this.host.receipt?.(body) ?? body, !result.ok);
+  }
+  async legacyAlias(name: string, args: any, signal?: AbortSignal) {
+    const component = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name);
+    if (!component) throw Error(`legacy alias ${name}: tool retired or unavailable`);
+    return this.call(component, { args }, signal);
   }
   private async call(c: Component, args: any, signal?: AbortSignal, readonly = false) {
     const snap = this.snapshot(); const started = Date.now(); const label = this.host.binder.label(c.path);
-    const result = await executeNative({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal);
-    if (result.ok) await this.applyWrites(result);
+    let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal);
+    const receipts = result.ok ? await this.applyWrites(result) : [];
+    if (!readonly && this.host.artifacts) result = this.host.artifacts(result, c, this.host.actionCount());
     this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, n: this.host.actionCount(), version: c.version,
       versions: snap.versions, ok: result.ok, ms: Date.now() - started });
-    const body = `${label} →\n${shown(result)}`;
+    const fallback = this.host.binder.active().filter(x => x.path !== c.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
+    const body = [`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n');
     return text(this.host.receipt?.(body) ?? body, !result.ok);
   }
   observe(n: number) {
@@ -85,9 +129,11 @@ export class NativeRuntime {
       const key = `${c.path}@${c.version}@${n}`; if (this.observed.has(key)) continue; this.observed.add(key);
       const work = async () => {
         const started = Date.now(); let result: NativeResult;
-        try { result = await executeNative({ ...snap, mode: 'observe', path: c.path }, undefined, this.observers); }
+        try { result = await this.execute({ ...snap, mode: 'observe', path: c.path }, undefined, this.observers); }
         catch (error) { result = { ok: false, error: String(error) }; }
-        const body = `${this.host.binder.label(c.path)} state #${n}: ${shown(result)}`;
+        if (this.host.artifacts) result = this.host.artifacts(result, c, n);
+        const liveLabel = this.host.binder.label(c.path);
+        const body = `${c.name} v${c.version}${liveLabel.startsWith(`${c.name} v${c.version}`) ? liveLabel.slice(`${c.name} v${c.version}`.length) : ''} state #${n}: ${shown(result)}`;
         this.outputs.set(c.path, this.host.receipt?.(body) ?? body);
         this.host.log('observer_runs.jsonl', { key, n, name: c.name, version: c.version, versions: snap.versions,
           ok: result.ok, value: result.ok ? result.value : undefined, error: result.ok ? undefined : result.error, ms: Date.now() - started });

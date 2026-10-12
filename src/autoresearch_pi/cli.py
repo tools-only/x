@@ -170,8 +170,12 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--root", type=Path, default=None)
     arc_thin.add_argument("--arc-root", type=Path, default=None)
     arc_thin.add_argument("--game", default="ls20")
+    arc_thin.add_argument("--foundation", choices=("legacy", "native"), default="native",
+                          help="native: workspace files and full Pi session; legacy: frozen comparator")
+    arc_thin.add_argument("--replay-reasoning", action="store_true", help="native comparison: retain thinking blocks in replay")
+    arc_thin.add_argument("--auto-compaction", action="store_true", help="opt into native Pi compaction after input probe acceptance")
     arc_thin.add_argument("--variant", choices=("control", "treatment"), default="treatment",
-                          help="control registers only arc_action; treatment adds memory/skills/prompt/analyst")
+                          help="control registers only arc_action; treatment adds the selected foundation and ledger/critic")
     arc_thin.add_argument("--max-actions", type=int, default=None)
     arc_thin.add_argument("--max-decisions", type=int, default=None)
     arc_thin.add_argument("--max-reported-tokens", type=int, default=None)
@@ -203,9 +207,9 @@ def main(argv: list[str] | None = None) -> int:
                           help="rebuild: each decision sees only the rebuilt working set; session: the agent's last "
                                "decisions from Pi's session (text, tool calls, results; no reasoning) stay in view")
     arc_thin.add_argument("--continuity-decisions", type=int, default=8, metavar="N",
-                          help="with --continuity session, how many earlier decisions stay in view")
-    arc_thin.add_argument("--level-change-review", action=argparse.BooleanOptionalAction, default=True,
-                          help="force a review turn after a level change (default on; --no-level-change-review drops it)")
+                          help="legacy session window size; native retains all Pi history")
+    arc_thin.add_argument("--level-change-review", action=argparse.BooleanOptionalAction, default=None,
+                          help="force a review after a level change (native default off, legacy default on)")
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)
@@ -434,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
             ledger=args.ledger, critic=args.critic, carry_reasoning_chars=args.carry_reasoning,
             continuity=args.continuity, continuity_decisions=args.continuity_decisions,
             review_at_level_change=args.level_change_review,
+            foundation=args.foundation, replay_reasoning=args.replay_reasoning,
+            extension_env={"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"},
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1

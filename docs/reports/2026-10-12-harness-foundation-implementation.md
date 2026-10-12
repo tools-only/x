@@ -1,12 +1,12 @@
 # Harness foundation implementation record
 
-Date: 2026-10-12 (Asia/Shanghai). Status: implementation in progress.
+Date: 2026-10-12 (Asia/Shanghai). Status: R0–R6 implemented; scripted acceptance passed. Retained as an experimental foundation; autonomous adoption and net benefit unverified.
 
 ## Problem and claim
 
 The final [plan](../plans/2026-10-12-harness-foundation-refactor-plan.md) responds to lost conversation continuity, rejected memory batches and separate skill creation/use procedures observed in the overnight and uncapped runs linked there. Narrow claim: an authorized workspace write produces a versioned, explicit activation receipt and makes a valid component callable in the next real Pi request, while invalid edits retain a visibly labelled working version. This removes publish/revise decisions and hand-maintained capability lists. Autonomous recognition and task improvement require separate real-provider evidence.
 
-Scope: R0–R6 foundation; no Auto-Research or paid game comparison. The claims engine remains. Ordinary notes need no ledger upkeep. Reasonable non-use: a one-off computation or an irrelevant component. Falsification: silent fallback, missing next-request activation, context loss, escape or secret exposure.
+Scope: R0–R6 foundation; no paid game comparison. The latest user instruction deprecates Auto-Research in favor of ledger + critic and pauses its work and acceptance runs. The native surface has no Auto-Research tool; explicit bounded `consult` remains. The claims engine remains. Ordinary notes need no ledger upkeep. Reasonable non-use: a one-off computation or an irrelevant component. Falsification: silent fallback, missing next-request activation, context loss, escape or secret exposure.
 
 ## Design and cost
 
@@ -20,15 +20,48 @@ Target evidence: functional correctness and explicitly bounded wiring. Pi pinned
 
 ## Implementation and verification
 
-R0 in progress. Built-in grep's backend does not own traversal: installed implementation still spawns host ripgrep. Adopt confined search with the same public interface. Full canonical session and structured sections are tested over real Pi RPC.
+The installed-Pi probes exposed three assumptions needing adaptation: forced `systemPrompt` omits Pi's skill listing; grep still spawns host ripgrep despite custom operations; raw compaction includes reasoning and loses the middle counterexample. The implementation uses structured prompt sections, confined search with Pi's schema, and a compaction-input projection with exact result references. Auto-compaction remains explicit opt-in.
+
+| Step | Implementation | Scripted evidence |
+| --- | --- | --- |
+| R0 (`aed7e26e`) | Six installed-Pi RPC contracts, limitations and chosen workarounds | [probe summary](../../runs/foundation-r0-20261012/summary.json); raw compaction 12,990 chars / 1,679 ms, reasoning present, middle evidence missing |
+| R1 (`3541a110`) | Per-run canonical session, full retained history, thinking excluded by default; newest grid injected only at projection | [native continuity](../../runs/foundation-r1-native/summary.json), plus final actual compact/restart below |
+| R2 (`8477794f`) | Workspace-only Pi file operations, confined grep; protected data/results; public frames and trajectory | [final defaults smoke](../../runs/foundation-final-defaults/summary.json): reads/edits, escape/protected-write refusals, sandbox secret absence, later ARC actions |
+| R3 (`c896b8cd`) | Content-hash versions, serialized validation, last-good bindings, activation receipts, next-request index | Binder create/fail/fix/off/delete/restart and overlapping-write tests; final lifecycle smoke |
+| R4 (`f078ce86`) | Typed native tools, observers, Agent Skills frontmatter and scripts, prompt sections, roles and bounded consult | [final lifecycle](../../runs/foundation-final-components-lazy/summary.json): 42 → labelled failed fallback → 43 → 53; five types revised/withdrawn, denied child action, observer state/version semantics |
+| R5 (`7d43f407`) | Full long outputs saved, concise references, exact ranged reads; adapted compaction input and usage accounting | [real Pi compact/restart/readback](../../runs/foundation-final-receipts/summary.json), [compact RPC](../../runs/foundation-final-receipts/native-compaction-rpc.json), [actual summarizer input](../../runs/foundation-final-receipts/native-summary-input.jsonl) |
+| R6 | Partial memory ledger, ordinary notes, idempotent old-store migration, native defaults, explicit legacy comparator | [migration through production extension](../../runs/foundation-final-migration-r2/summary.json): old alias 42, producer artifact update, later reader 52, overlay/note recovery and provenance; partial memory/fabricated-action cases in lifecycle smoke |
+
+Native defaults are the accepted observer/review/reasoning settings. Default ledger + critic resident system prompt measured 2,928 chars, index bounded to 1,200 chars, observer text to 2,400 chars. Active prompts warn above 1,500 chars; derived individual tool schema is limited to 400 chars. [Actual request budgets](../../runs/foundation-final-defaults/harness/context_budget.jsonl) include schemas and retained history. These are characters, not model input-token savings.
+
+Workspace growth initially made unrelated Python calls exceed the existing 384 KiB WASI allowance. A failing 500,000-character unrelated-result test drove on-demand snapshot reads: only referenced bodies enter each guest input; dynamic opens request an exact confined snapshot file and rerun in fresh WASI, with staged writes committed only after success. A call keeps the 20-second deadline and at most 32 read retries. Existing WASI fuel/input/output/memory bounds remain. A deliberately large set of files actually used in one call can still hit those bounds; file `read` with offset/limit remains the exact retrieval path. This avoids increasing sandbox permissions or quotas, but retry latency and full-workspace snapshot cost need real-run measurement.
+
+Functional checks: [thin Node regression log](../../runs/foundation-final-node-tests.log), 100/100 passing with sequential test-file scheduling; 23 focused Python checks passed (CLI routing/defaults, lifecycle statistics, bridge deadlines and blind policy). Individual new tests cover isolation, invalid Python/YAML, typed schema/semantic WASI results, native history pairing, concurrent version order, partial memory, migration and artifact globals. `git diff --check` passes.
+
+After the final migration/provenance and ordinary-file versioning changes, five focused binder/migration/runtime checks passed and the 23 focused Python checks passed again. All agent-written files, including artifacts and skill scripts, are archived/versioned; ordinary files keep normal receipts and do not add capability-index entries. Actual execution logs include those file versions plus the active component versions. Final source ran all four native acceptance modes successfully: [default ledger + critic and isolation](../../runs/foundation-delivery-defaults/summary.json), [component lifecycle](../../runs/foundation-delivery-components/summary.json), [compaction/restart/exact receipt read](../../runs/foundation-delivery-receipts/summary.json), [old-store replay/migration/provenance](../../runs/foundation-delivery-migration/summary.json). All used installed Pi 0.87.0, production bridge and WASI with scripted provider/mock SDK; zero paid model cost.
+
+All six existing thin legacy smokes passed: [base](../../runs/foundation-r6-legacy-default-final/summary.json), [claims](../../runs/foundation-legacy-run_arc_thin_claims_smoke/summary.json), [continuity](../../runs/foundation-legacy-run_arc_thin_continuity_smoke/summary.json), [environment](../../runs/foundation-legacy-run_arc_thin_environment_smoke/summary.json), [self-harness](../../runs/foundation-legacy-run_arc_thin_self_harness_smoke/summary.json), [ledger + critic](../../runs/foundation-legacy-run_arc_thin_ledger_smoke/summary.json). The legacy smoke wrappers select `legacy` explicitly. Ordinary legacy tool limits and behavior remain; the original checkout was not edited.
+
+Protocol deviations and failures retained:
+
+- The frozen original default thin smoke already failed 13 checks because its script exceeded the existing 6/8 tool-call budget before its first action ([original evidence](../../../autoresearch_pi_project/runs/frozen-original-default-smoke/summary.json)). Its wrapper now explicitly requests a diagnostic-only budget of 40, honored only for the expanded-tools scripted provider. This is not a gameplay limit change or evidence of runtime improvement.
+- The broad parallel Node suite initially passed 97/98; action-surface Pi startup timed out. Its standalone real-Pi rerun and the sequential 100-test suite passed. The broad Python run passed 44/46; two subsecond process-start deadlines failed under load. A focused rerun passed 22/23 with the remaining 0.3-second startup timeout; the same test passed alone in the original checkout. PiKernel was unchanged. These timing-sensitive results are not erased or counted as complete broad-Python acceptance.
+- Before the latest pause instruction, an extra general `arc-harness-smoke` Auto-Research matrix failed at its scripted provider's `(m.content ?? []).filter` on string content, before any action/research. The original checkout reproduced the same failure in the memory case. [Matrix artifact](../../runs/foundation-final-arc-matrix/arc-self-harness-smoke-summary.json). No general Auto-Research closure is claimed. Its further work is paused and is outside this foundation's ledger + critic acceptance.
+- The first compact smoke had nothing eligible to summarize; isolated probe settings and three real checkpoint user turns made the target tool turn eligible. The resulting evidence establishes receipt continuity and exact readback, not semantic retention by a real model. The first migration probe inadvertently reseeded stores on each `start()` call; its setup was corrected to seed once, preserving subsequent artifact records.
+
+Opportunity/recognition/investment were prescribed by the script, not autonomously observed. Candidate → assembly → semantic tool use → failed-edit feedback → revise/retire was exercised through actual Pi requests and later actions. The script includes intentional withdrawal and unsupported memory fields; it supplies no game-solving evidence. No opportunity denominator, autonomous abandonment rate, real provider cost/quality or benchmark improvement is established.
 
 | Evidence | Status | Provider / environment | Artifacts and limit |
 | --- | --- | --- | --- |
-| Functional correctness | Pending | installed Pi 0.87.0 / scripted provider | `tools/pi_foundation_spike.ts`, targeted tests |
-| Full-chain reachability | Unverified | real bridge/Pi/sandbox scripted smoke planned | R0 RPC alone is not ARC closure |
+| Functional correctness | Passed within tested cases | installed Pi 0.87.0 / WASI / scripted provider | Node regression, focused Python checks and negative cases above; broad timing failures disclosed |
+| Full-chain reachability | Passed for scoped foundation lifecycle | production ARC bridge + real Pi parent/consult + WASI; scripted provider/mock SDK | Workspace write → receipt → next request → semantic result → ARC action → later parent; compact/restart/readback and migration; no Auto-Research closure claim |
 | Autonomous adoption | Unverified | no paid model run authorized | Explicit script only |
 | Net benefit | Unverified | no legacy/native real comparison | Parent/child tokens, latency, repair turns and levels require budgeted comparison |
 
 ## Delivery decision
 
-Retain as experimental until step acceptance; native becomes default only after scripted acceptance. Missing evidence and next falsifiable checks remain here. Relevant [deferred backlog](../deferred-research-todos.md): parent/child semantic delivery, compaction continuity and total-cost benefit remain open; implementing storage and references does not complete those items.
+Retain the implemented foundation as experimental; native is the thin runner default after scripted acceptance, legacy remains an explicit comparator. Further Auto-Research work and its acceptance are paused by the user; no such jobs remain running from this implementation. The next authorized implementation check is ledger + critic/native regression, not research routing.
+
+The next separate, budget-requiring experiment is the plan's frozen legacy/native comparison on ls20 and lp85: same provider/model/reasoning, one hour per arm/game, primary measure levels, plus parent + all child tokens, latency, repair turns, management turns, memory upkeep, repeated refuted tests and stale uses. Stop or revise on extra turns without progress, components never used, or lost counterevidence. Actual paid budget and runs remain unapproved/unstarted. Automatic compaction stays off unless separately selected after inspecting its actual adapted input. Full CLI resume of a nonempty run directory is not added; actual Pi process/session restart and store migration are tested through the runtime.
+
+Relevant [deferred backlog](../deferred-research-todos.md): parent/child semantic delivery, compaction cognitive continuity and total-cost benefit remain open; storage, exact references and deterministic wiring do not close those quality questions.

@@ -36,6 +36,23 @@ Auto-Research method resources
 
 首份 [流程采用记录](docs/reports/2026-10-02-development-workflow-adoption.md) 已说明当前证据边界和下一轮最小实验。
 
+## 当前 thin ARC foundation
+
+`arc-thin-e2e` 默认使用 `--foundation native`：每次运行一个 Pi session 文件，完整保留历史，通过 workspace 文件创建、编辑和使用组件。文件工具只访问 workspace；`data/`、`results/` 只读。写入组件的回执报告版本、下一请求激活或失败后的工作版本。普通笔记写入 `notes/`；长输出保存完整结果并提供精确读取引用。
+
+当前方案使用台账 + critic；Auto-Research 已弃用并暂停其开发、验收。`consult` 是显式请求的有界角色咨询。native 默认不回放 reasoning、不强制关卡切换复盘、不自动压缩；比较时可使用 `--replay-reasoning`、`--level-change-review`、`--auto-compaction`。`--foundation legacy` 保留旧运行行为。真实 ls20/lp85 对照尚未启动，采用和收益未验证；详见[最终方案](docs/plans/2026-10-12-harness-foundation-refactor-plan.md)及[实现验收记录](docs/reports/2026-10-12-harness-foundation-implementation.md)。
+
+零模型费用的 native 验收入口：
+
+```powershell
+python tools/run_foundation_smoke.py runs/foundation-workspace foundation defaults
+python tools/run_foundation_smoke.py runs/foundation-components components
+python tools/run_foundation_smoke.py runs/foundation-receipts receipts
+python tools/run_foundation_smoke.py runs/foundation-migration migration
+```
+
+这些检查使用生产 bridge、实际 Pi 和 WASI，ARC SDK 与 provider 为脚本替身；每次使用新输出目录。它们验证功能和接线，不证明模型会自主采用或改善关卡表现。
+
 诊断高 token、推理延迟、重复取证或研究／组件未推进任务时，按需查阅 [优化经验手册](docs/optimization-handbook.md)。
 
 ```bash

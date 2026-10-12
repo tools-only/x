@@ -562,9 +562,9 @@ def run_arc_thin_e2e(
     carry_reasoning_chars: int = 0,
     continuity: str = "rebuild",
     continuity_decisions: int = 8,
-    review_at_level_change: bool = True,
+    review_at_level_change: bool | None = None,
     extension_env: dict[str, str] | None = None,
-    foundation: str = "legacy",
+    foundation: str = "native",
     replay_reasoning: bool = False,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
@@ -582,6 +582,8 @@ def run_arc_thin_e2e(
         raise ValueError("foundation must be legacy or native")
     if foundation == "native":
         continuity = "session"
+    if review_at_level_change is None:
+        review_at_level_change = foundation == "legacy"
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError(f"run root must be new or empty: {root}")
@@ -676,7 +678,7 @@ def run_arc_thin_e2e(
                    "--no-context-files", "--no-builtin-tools", "--extension", str(EXTENSION)]
         if pi_provider_extension is not None:
             command.extend(["--extension", str(pi_provider_extension.resolve())])
-        sources = sorted(EXTENSION.parent.glob("arc_thin_*.ts")) + [EXTENSION.parent / "prompts" / "arc_thin_system.md"]
+        sources = sorted(EXTENSION.parent.glob("arc_thin_*.ts")) + sorted((EXTENSION.parent / "prompts").glob("arc_thin_*.md"))
         (root / "run-config.json").write_text(json.dumps({
             **{key: summary[key] for key in ("format", "game", "variant", "provider", "model", "thinking",
                                              "thinking_format", "thinking_reaches_provider")},
@@ -1094,12 +1096,12 @@ def run_arc_thin_smoke(root: Path) -> Path:
     """Offline end-to-end check: mock ARC SDK, real bridge, real Pi, scripted provider.
     The ledger and critic are switched off here: this scenario checks the base path against exact text."""
     path = run_arc_thin_e2e(
-        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="legacy",
         max_decisions=4, consolidate_after_actions=2, experiment_timeout_seconds=600.0,
         decision_timeout_seconds=180.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
         bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
-        ledger=False, critic=False, extension_env={"ARC_THIN_EXPANDED_TOOLS": "enabled"},
+        ledger=False, critic=False, extension_env={"ARC_THIN_EXPANDED_TOOLS": "enabled", "ARC_THIN_SCRIPTED_TOOL_BUDGET": "40"},
     )
     summary = json.loads(path.read_text(encoding="utf-8"))
     checks = _smoke_checks(root.resolve(), summary)
@@ -1160,7 +1162,7 @@ def run_arc_thin_ledger_smoke(root: Path) -> Path:
     """Offline ledger + critic wiring check: mock ARC SDK, real bridge, Pi, thin extension and WASI sandbox.
     No ledger or critic argument is passed: this is the default configuration."""
     path = run_arc_thin_e2e(
-        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="legacy",
         max_decisions=5, consolidate_after_actions=100, experiment_timeout_seconds=900.0,
         decision_timeout_seconds=240.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
@@ -1204,7 +1206,7 @@ def run_arc_thin_environment_smoke(root: Path) -> Path:
     os.environ["MOCK_ARC_FAIL_AFTER"] = "1"  # read by tools/mock_arc_sdk in the bridge process
     try:
         path = run_arc_thin_e2e(
-            root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+            root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="legacy",
             max_decisions=6, consolidate_after_actions=100, experiment_timeout_seconds=600.0,
             decision_timeout_seconds=180.0,
             pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
@@ -1316,7 +1318,7 @@ def run_arc_thin_self_harness_smoke(root: Path) -> Path:
     log, the separating-test counts, the review window and the opt-in carried reasoning: mock ARC SDK, real bridge,
     Pi, thin extension and sandbox."""
     path = run_arc_thin_e2e(
-        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="legacy",
         max_decisions=4, consolidate_after_actions=3, experiment_timeout_seconds=600.0,
         decision_timeout_seconds=180.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
@@ -1376,7 +1378,7 @@ def _continuity_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[s
 def run_arc_thin_continuity_smoke(root: Path) -> Path:
     """Offline check of session continuity: mock ARC SDK, real bridge, Pi, thin extension, scripted provider."""
     path = run_arc_thin_e2e(
-        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="legacy",
         max_decisions=3, consolidate_after_actions=100, experiment_timeout_seconds=600.0,
         decision_timeout_seconds=180.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
@@ -1430,7 +1432,7 @@ def _claims_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, 
 def run_arc_thin_claims_smoke(root: Path) -> Path:
     """Offline check of hypothesis checks and one-off python: mock ARC SDK, real bridge, Pi, extension and sandbox."""
     path = run_arc_thin_e2e(
-        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="legacy",
         max_decisions=3, consolidate_after_actions=100, experiment_timeout_seconds=600.0,
         decision_timeout_seconds=180.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,

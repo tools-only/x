@@ -24,6 +24,8 @@ def _inspect(req):
     name = path.split('/')[-1][:-3]
     tree = ast.parse(req['source'], path)
     kind = {'tools': 'tool', 'observers': 'observer', 'lib': 'library'}[path.split('/')[0]]
+    if kind == 'tool' and name in ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'run_skill'):
+        raise ValueError('tool name is reserved by the foundation')
     spec = {'name': name, 'kind': kind, 'description': (ast.get_docstring(tree) or name).splitlines()[0][:120],
             'enabled': not (kind == 'observer' and any(line.strip() == '# observe: off' for line in req['source'].splitlines()[:10]))}
     if kind == 'library':
@@ -56,6 +58,10 @@ def _inspect(req):
 _sources = _req.get('sources') or {}
 _files = dict(_req.get('files') or {})
 _writes = {}
+_ops = []
+_available = set(_req.get('file_names') or [])
+class _NeedFile(BaseException):
+    pass
 _state = _req.get('state') or {}
 if isinstance(_state.get('history'), dict):
     _state['history'] = _History(_state['history'])
@@ -74,14 +80,19 @@ class _Writer(io.StringIO):
         if not self.closed:
             _writes[self.path] = self.getvalue()
             _files[self.path] = self.getvalue()
+            _available.add(self.path)
+            _ops.append({'op': 'write', 'path': self.path, 'content': self.getvalue()})
         super().close()
 
 def _open(path, mode='r', *args, **kwargs):
     path = _path(path)
+    if path in _available and path not in _files and path not in _sources and ('a' in mode or 'r' in mode):
+        raise _NeedFile(path)
     if any(c in mode for c in 'wax+'):
         if not _req.get('allow_writes') or path.split('/')[0] in ('data', 'results'):
             raise PermissionError('workspace path is read-only in this execution')
         if 'b' in mode: raise ValueError('workspace writes must be text')
+        if 'x' in mode and (path in _available or path in _files or path in _sources): raise FileExistsError(path)
         stream = _Writer(path, _files.get(path, '') if 'a' in mode else '')
         if 'a' in mode: stream.seek(0, 2)
         return stream
@@ -101,11 +112,38 @@ class _Loader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
                                 'prev_grid': _state.get('prev_grid'), 'artifacts': _state.get('artifacts') or {}})
         if rel in _sources: exec(compile(_sources[rel], rel, 'exec'), module.__dict__)
 
+def _remove(path):
+    path = _path(path)
+    if not _req.get('allow_writes') or path.split('/')[0] in ('data', 'results'):
+        raise PermissionError('workspace path is read-only in this execution')
+    if path not in _files and path not in _sources and path not in _available: raise FileNotFoundError(path)
+    _files.pop(path, None)
+    _sources.pop(path, None)
+    _available.discard(path)
+    _ops.append({'op': 'delete', 'path': path})
+
+def _rename(src, dst):
+    src, dst = _path(src), _path(dst)
+    if not _req.get('allow_writes') or any(p.split('/')[0] in ('data', 'results') for p in (src, dst)):
+        raise PermissionError('workspace path is read-only in this execution')
+    if src in _available and src not in _files and src not in _sources: raise _NeedFile(src)
+    if src not in _files and src not in _sources: raise FileNotFoundError(src)
+    _files[dst] = _files.get(src, _sources.get(src, ''))
+    _files.pop(src, None)
+    _sources.pop(src, None)
+    _sources.pop(dst, None)
+    _available.discard(src)
+    _available.add(dst)
+    _ops.append({'op': 'move', 'path': src, 'destination': dst})
+
 try:
     if _req['mode'] == 'inspect':
         result = {'ok': True, 'value': _inspect(_req)}
     else:
         builtins.open = _open
+        import os
+        os.remove = os.unlink = _remove
+        os.rename = os.replace = _rename
         sys.meta_path.insert(0, _Loader())
         if _req['mode'] == 'exec':
             _req['state'] = _state
@@ -114,7 +152,9 @@ try:
             module = __import__(_req['path'][:-3].replace('/', '.'), fromlist=['*'])
             value = module.observe(_state) if _req['mode'] == 'observe' else module.run(**(_req.get('args') or {}))
             result = {'ok': True, 'value': _jsonable(value)}
-        if _writes: result['writes'] = _writes
+        if _ops: result['ops'] = _ops
+except _NeedFile as error:
+    result = {'ok': False, 'error': 'workspace file requested', 'need_file': str(error)}
 except BaseException as error:
     result = {'ok': False, 'error': type(error).__name__ + ': ' + str(error),
               'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('source') or _req.get('code') or '')}
@@ -122,7 +162,7 @@ except BaseException as error:
 
 const base = arcSkillGuestProgram(SKILL_LIMITS);
 const program = { ...base, source: base.source.split('\n_src =')[0] + NATIVE };
-export type NativeResult = GuestResult & { writes?: Record<string, string> };
+export type NativeResult = GuestResult & { need_file?: string; ops?: Array<{ op: 'write' | 'move' | 'delete'; path: string; content?: string; destination?: string }> };
 export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool): Promise<NativeResult> {
   const reply = pool ? await pool.evaluate(program, input, signal) : await evaluateTaskPython(program, input, signal);
   return reply.value as NativeResult;

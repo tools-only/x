@@ -28,6 +28,8 @@ import { Workspace } from "./arc_thin_workspace.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
+import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
+import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum, getCurrentSystemMessage } from "@earendil-works/pi-ai";
@@ -144,6 +146,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// can exercise low-frequency tools in scripted ordinary turns. Real runs
 	// default to the phase-specific surface below.
 	const expandedDecisionTools = process.env.ARC_THIN_EXPANDED_TOOLS === "enabled";
+  // The historical default smoke has >8 tool calls before its first action. Its explicit
+  // scripted-only budget keeps that diagnostic valid; ordinary legacy/native limits stay 6/8.
+  const scriptedBudget = Math.min(40, Math.max(0, Number(process.env.ARC_THIN_SCRIPTED_TOOL_BUDGET) || 0));
+  const scriptedConfig = join(process.env.ARC_RUN_ROOT ?? process.cwd(), 'run-config.json');
+  const diagnosticBudget = expandedDecisionTools && scriptedBudget && existsSync(scriptedConfig)
+    && JSON.parse(readFileSync(scriptedConfig, 'utf8')).provider === 'offline-arc-thin-smoke' ? scriptedBudget : 0;
 	// The ledger and the critic are services to the agent's self-harness and run by default in the treatment
 	// variant. ARC_HARNESS_LEDGER / ARC_HARNESS_CRITIC = "disabled" turns one off; the critic needs the ledger.
 	const criticOn = !control && process.env.ARC_HARNESS_CRITIC !== "disabled";
@@ -685,7 +693,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (control) return;
     if (nativeRuntime && toolsReady) {
       nativeRuntime.register();
-      pi.setActiveTools(['arc_action', 'memory', 'python', 'read', 'write', 'edit', 'ls', 'grep', 'consult', ...nativeRuntime.toolNames()]);
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', 'ls', 'grep', 'consult',
+        ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
     }
 		const names = [...skills.keys()].sort();
@@ -1096,7 +1105,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
-		if (run.toolCalls > HARD_TOOL_CALLS)
+		if (run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
 			return { reason: `hard tool-call limit (${HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
 		if (name === "arc_action") {
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
@@ -1107,7 +1116,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		if (run.actionDone && !endsBatch())
 			return { reason: "this decision already ended with arc_action", terminate: true };
-		if (run.toolCalls > SOFT_TOOL_CALLS)
+		if (run.toolCalls > (diagnosticBudget || SOFT_TOOL_CALLS))
 			return run.consolidating
 				? { reason: `tool-call limit (${SOFT_TOOL_CALLS}) for consolidation reached; the review ends`, terminate: true }
 				: { reason: `tool-call limit (${SOFT_TOOL_CALLS}) for this decision reached; submit arc_action in the next decision`, terminate: true };
@@ -1265,8 +1274,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "memory",
 			label: "Memory",
-			description: "Atomic facts/hypotheses/tests/strategies update. Invalid batches do not apply; evidence is appended.",
-			parameters: Type.Object({
+			description: native ? 'Record beliefs, hypotheses with optional checks, tests and strategies. Partial entries apply valid fields; fabricated action evidence is refused.'
+        : "Atomic facts/hypotheses/tests/strategies update. Invalid batches do not apply; evidence is appended.",
+			parameters: native ? Type.Object({
+        op: Type.Optional(StringEnum(['set', 'delete', 'list', 'update'])),
+        key: Type.Optional(Type.String({ maxLength: 48 })), text: Type.Optional(Type.String({ maxLength: 600 })), confidence: Type.Optional(Type.Number()),
+        set: Type.Optional(Type.Array(Type.Any(), { maxItems: 40 })), delete: Type.Optional(Type.Array(Type.String(), { maxItems: 40 })),
+        hypotheses: Type.Optional(Type.Array(Type.Any(), { maxItems: 16 })), tests: Type.Optional(Type.Array(Type.Any(), { maxItems: 4 })),
+        strategies: Type.Optional(Type.Array(Type.Any(), { maxItems: 4 })),
+      }) : Type.Object({
 				op: Type.Optional(StringEnum(["set", "delete", "list", "update"] as const)),
 				key: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
 				text: Type.Optional(text600),
@@ -1321,7 +1337,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}),
 			prepareArguments: repairMemoryArguments,
 			execute: guardTool("memory", async (params: MemoryParams, signal) => {
-				const plan = planMemoryUpdate(memory, params, trajectory.length, components());
+		const plan = (native ? planNativeMemoryUpdate : planMemoryUpdate)(memory, params, trajectory.length, components());
 				if (!plan.ok) throw new Refusal(plan.error);
 				const checksBefore = new Map([...memory.hypotheses].map(([key, h]) => [key, h.check ? claimVersion(h.check) : ""]));
 				for (const row of plan.rows) {
@@ -1546,6 +1562,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				include_full: Type.Optional(Type.Boolean({ description: "Return the complete JSON result; default is a short context-safe preview." })),
 			}),
 			execute: guardTool("run_skill", async (params: { name: string; args?: Record<string, unknown>; include_frames?: boolean; include_full?: boolean }, signal) => {
+        if (nativeRuntime) {
+          append('legacy_alias.jsonl', { name: params.name, decision });
+          return nativeRuntime.legacyAlias(params.name, params.args ?? {}, signal);
+        }
 				// The schema already restricts name; this covers a call validated before a delete.
 				const skill = skills.get(params.name);
 				if (!skill) throw new Refusal(`no skill '${params.name}'. Skills: ${skills.size ? [...skills.keys()].join(", ") : "(none)"}`);
@@ -1609,7 +1629,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
             block.type === 'text' ? { ...block, text: workspace!.receipt(block.text, message.isError ? 'error' : 'ok') } : block);
         append('compaction_probe.jsonl', { native: true, messages: event.preparation.messagesToSummarize,
           turnPrefixMessages: event.preparation.turnPrefixMessages, tokensBefore: event.preparation.tokensBefore });
-        return;
+        return { customInstructions: [event.customInstructions, 'Preserve controls, hypotheses with check records, refuted claims and their test conditions, open questions, active strategy and planned steps, what the last actions were testing, and exact workspace result references. Do not infer success from component creation.'].filter(Boolean).join('\n') };
       }
 			const receiptsDir = join(storeDir, "compaction-receipts");
 			for (const message of event.preparation.messagesToSummarize) {
@@ -1651,8 +1671,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	replay();
   if (workspace && binder && !control) {
+    const migrationMarker = join(storeDir, '..', '.harness', 'migration.json');
+    if (!existsSync(migrationMarker)) {
+      const migrated = migrateWorkspace(workspace, { skills, overlay, notes: memory.facts,
+        artifacts: (artifactInputs(artifactLog) as any).artifacts ?? {} });
+      writeFileSync(migrationMarker, JSON.stringify({ migrated, at: new Date().toISOString() }) + '\n');
+    }
     nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => skillState(false, true),
       level: currentLevel, actionCount: () => trajectory.length, log: append, usage: appendUsage,
+      artifacts: (result, component, n) => {
+        const count = artifactLog.length;
+        const kept = keepArtifacts(result, { n, level: levelAt(n), skill: component.name, version: component.version });
+        const current = artifactInputs(artifactLog).artifacts;
+        for (const record of artifactLog.slice(count)) workspace.runtimeWrite(`artifacts/${record.name}.json`, JSON.stringify(current[record.name]) + '\n');
+        return kept;
+      },
       receipt: body => workspace.receipt(body),
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
@@ -1660,7 +1693,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     workspace.onWrite = async path => {
       const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
       if (toolsReady) refreshSkillSurface();
-      return receipt;
+      if (path.startsWith('notes/')) return undefined;
+      const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
+      return receipt ? receipt + (promptChars > 1500 ? `\nwarning: active prompts ${promptChars} chars exceed the 1500-char budget` : '') : undefined;
     };
   }
 	if (ledgerOn) loadLedgerStores();
@@ -1710,7 +1745,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!control) { try { await refreshClaimChecks(); } catch (error) { logError("claims:refresh", error); } }
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
-		const systemPrompt = control
+		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
+      board: ledgerOn ? LEDGER_PROMPT + (criticOn ? CRITIC_PROMPT : '') : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -1723,6 +1759,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		systemChars = rendered.length;
     if (native) {
       event.systemPromptOptions.customPrompt = rendered;
+      event.systemPromptOptions.cwd = workspace!.root;
       for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
         event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
       return;
@@ -1811,7 +1848,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const tools = pi.getAllTools?.().filter((tool) => active.has(tool.name))
 				.map(({ name, description, parameters }) => ({ name, description, parameters }));
 			append("context_budget.jsonl", {
-				decision, system_chars: systemChars,
+				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy',
+        capability_index_chars: binder?.index(currentLevel()).length ?? 0,
+        active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
+        agent_tool_schemas: binder?.active().filter(c => c.kind === 'tool').map(c => ({ name: c.name, chars: JSON.stringify(c.parameters).length })) ?? [],
 				tools_json_chars: tools ? JSON.stringify(tools).length : null,
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
 				history_text_chars: history.reduce((n, message) => n + messageText(message).length, 0),

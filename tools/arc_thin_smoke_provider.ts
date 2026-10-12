@@ -222,6 +222,19 @@ const COMPONENT_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'lib/offset.py', content: 'def plus(x, y):\n    return x + y + 10\n' }]] },
   { kind: 'decide', calls: [['compare', { x: 40 }], ['read', { path: 'skills/probe/SKILL.md' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['write', { path: 'skills/probe/SKILL.md', content: '---\nname: probe\ndescription: REVISED_SKILL_DESCRIPTION\n---\nREVISED_SKILL_BODY' }],
+    ['write', { path: 'roles/check.md', content: '---\ndescription: REVISED_ROLE\ntools: [compare]\n---\nReturn the updated computed value.' }],
+    ['write', { path: 'observers/position.py', content: 'def observe(state):\n    return 777\n' }]] },
+  { kind: 'decide', calls: [['consult', { role: 'check', question: 'Compute compare(x=40).' }],
+    ['memory', { set: [{ key: 'accepted', text: 'VALID_IN_PARTIAL_BATCH' }, { key: 'unfinished' }],
+      hypotheses: [{ key: 'partial', claim: 'PARTIAL_CLAIM', evidence: { verdict: 'supports' } }] }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', calls: [['read', { path: 'skills/probe/SKILL.md' }],
+    ['memory', { set: [{ key: 'corrupt_batch', text: 'NEVER_APPLIED' }], tests: [{ action: 999, verdicts: { partial: 'supports' } }] }]] },
+  { kind: 'decide', calls: [['python', { code: "import os\nos.rename('tools/compare.py', 'tools/_off/compare.py')\nos.remove('tools/_off/compare.py')\nos.rename('observers/position.py', 'observers/_off/position.py')\nos.remove('roles/check.md')\nos.remove('skills/probe/SKILL.md')\nos.remove('prompts/probe.md')" }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION3' }]] },
+  { kind: 'decide', calls: [['compare', { x: 40 }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
 const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
   { kind: 'decide', calls: [['read', { path: '$last_result', offset: 41, limit: 1 }]] },
@@ -230,7 +243,16 @@ const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
   { kind: 'decide', calls: [['python', { code: "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(80)))\n1" }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
-const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
+const MIGRATION_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['run_skill', { name: 'old', args: { extra: 2 } }], ['read', { path: 'notes/controls.md' }]] },
+  { kind: 'decide', calls: [['producer', { args: {} }]] },
+  { kind: 'decide', calls: [['old', { args: { extra: 2 } }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['read', { path: 'artifacts/route.json' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+];
+const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
