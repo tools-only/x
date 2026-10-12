@@ -647,6 +647,7 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_CONTINUITY"] = continuity
         pi_env["ARC_THIN_CONTINUITY_DECISIONS"] = str(max(1, int(continuity_decisions)))
         pi_env.update(extension_env or {})
+        auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "0") == "1"
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
                    "--no-context-files", "--no-builtin-tools", "--extension", str(EXTENSION)]
@@ -665,6 +666,7 @@ def run_arc_thin_e2e(
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
+            "auto_compaction": auto_compaction,
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 
@@ -683,7 +685,7 @@ def run_arc_thin_e2e(
             command, cwd=str(root), env=pi_env, timeout=120.0, deadline=deadline, event_sink=persist,
             event_projector=lambda event: None if event.get("type") == "message_update" else event,
         ).start()
-        kernel.send("set_auto_compaction", enabled=False)
+        kernel.send("set_auto_compaction", enabled=auto_compaction)
         if thinking:
             kernel.send("set_thinking_level", level=thinking)
 

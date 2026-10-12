@@ -182,6 +182,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 	const log = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "smoke-requests.jsonl");
 	let step = 0;
 	let toolCall = 0;
+	let probeOrdinary = 0;
 
 	pi.registerProvider("offline-arc-thin-smoke", {
 		api: "openai-completions",
@@ -211,6 +212,65 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// context.systemPrompt and context.tools), so the runner's prompt is the first user message, not messages[0].
 			const systemPrompt = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
 			const tools: any[] = (context.tools?.length ? context.tools : getCurrentTools(messages as any)) ?? [];
+			if (process.env.ARC_THIN_COMPACTION_PROBE) {
+				const summary = systemPrompt.includes("context summarization assistant");
+				const transcript = messages.map((message) => ({ role: message?.role, text: textOf(message),
+					calls: (Array.isArray(message?.content) ? message.content : []).filter((block: any) => block?.type === "toolCall")
+						.map((block: any) => ({ name: block.name, arguments: block.arguments })) }));
+				appendFileSync(join(process.env.ARC_RUN_ROOT ?? process.cwd(), "probe-provider.jsonl"),
+					JSON.stringify({ summary, systemPrompt, transcript }) + "\n", "utf8");
+				const evidence = transcript.map((item) => item.text).join("\n");
+				if (summary) {
+					const answer = [evidence.includes("REFUTED_HYPOTHESIS")
+						? "Native checkpoint: hypothesis MOVES_RIGHT was refuted; prefer ACTION4."
+						: "Native checkpoint: no refutation in input.",
+						evidence.includes("DECISIVE_COUNTEREXAMPLE_AFTER_2000") ? "DECISIVE_COUNTEREXAMPLE_AFTER_2000" : "COUNTEREXAMPLE_NOT_IN_INPUT",
+						evidence.includes("REFUTED_HYPOTHESIS") ? "REFUTED_HYPOTHESIS" : "REFUTATION_NOT_IN_INPUT"].join("\n");
+					if (process.env.ARC_THIN_COMPACTION_PROBE === "V6") {
+						const signal = options?.signal;
+						const finish = () => {
+							output.stopReason = "aborted";
+							stream.push({ type: "error", reason: "aborted", error: output });
+							stream.end();
+						};
+						if (signal?.aborted) finish();
+						else signal?.addEventListener("abort", finish, { once: true });
+						return stream;
+					}
+					if (process.env.ARC_THIN_COMPACTION_PROBE === "V7") {
+						output.stopReason = "length";
+						output.content.push({ type: "text", text: answer.slice(0, 20) });
+						stream.push({ type: "start", partial: output });
+						stream.push({ type: "done", reason: "length", message: output });
+						stream.end();
+						return stream;
+					}
+					output.content.push({ type: "text", text: answer });
+					stream.push({ type: "start", partial: output });
+					stream.push({ type: "text_start", contentIndex: 0, partial: output });
+					stream.push({ type: "text_delta", contentIndex: 0, delta: answer, partial: output });
+					stream.push({ type: "text_end", contentIndex: 0, content: answer, partial: output });
+					stream.push({ type: "done", reason: "stop", message: output });
+				} else if (probeOrdinary++ > 0) {
+					output.content.push({ type: "text", text: "Scripted probe action recorded." });
+					stream.push({ type: "start", partial: output });
+					stream.push({ type: "done", reason: "stop", message: output });
+				} else {
+					const action = evidence.includes("REFUTED_HYPOTHESIS") && evidence.includes("DECISIVE_COUNTEREXAMPLE_AFTER_2000")
+						? "ACTION4" : "ACTION1";
+					const block = { type: "toolCall" as const, id: `compaction-probe-${++toolCall}`,
+						name: "arc_action", arguments: { action, note: "scripted compaction evidence check" } };
+					output.content.push(block);
+					output.stopReason = "toolUse";
+					stream.push({ type: "start", partial: output });
+					stream.push({ type: "toolcall_start", contentIndex: 0, partial: output });
+					stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(block.arguments), partial: output });
+					stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: block, partial: output });
+					stream.push({ type: "done", reason: "toolUse", message: output });
+				}
+				stream.end();
+				return stream;
+			}
 			const analyst = systemPrompt.includes("careful visual analyst");
 			const critic = systemPrompt.includes("You review an agent");
 			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);

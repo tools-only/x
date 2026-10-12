@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from .arc_thin_e2e import (
     run_arc_thin_self_harness_smoke, run_arc_thin_smoke,
 )
 from .arc_blind_policy import run_arc_blind_policy
+from .arc_agi_3_e2e import _pi_cli_version, _resolve_pi_cli
 from .terminal_bench_e2e import run_terminal_bench_e2e
 
 
@@ -212,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
                                 help="run the predictions / history / working-set / carried-reasoning scenario instead")
     arc_thin_smoke.add_argument("--continuity", action="store_true",
                                 help="run the session-continuity scenario instead (earlier decisions kept in view)")
+    arc_compaction_probe = sub.add_parser("arc-thin-compaction-probe",
+                                           help="offline Pi 0.87.0 native-compaction boundary probe")
+    arc_compaction_probe.add_argument("--root", type=Path, default=None)
     blind = sub.add_parser("arc-blind-policy",
                            help="play one ARC game with a scripted policy that never looks at the frame (evaluation floor)")
     blind.add_argument("--root", type=Path, default=None)
@@ -434,6 +439,14 @@ def main(argv: list[str] | None = None) -> int:
                    else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "arc-thin-compaction-probe":
+        node, pi_cli = _resolve_pi_cli()
+        if _pi_cli_version(Path(pi_cli)) != "0.87.0":
+            raise RuntimeError(f"compaction probe requires project Pi 0.87.0, not {pi_cli}")
+        root = (args.root or paths.runs_dir / f"arc-thin-compaction-probe-{time.strftime('%Y%m%d-%H%M%S')}").resolve()
+        script = Path(__file__).resolve().parents[2] / "tools" / "arc_thin_compaction_probe.ts"
+        return subprocess.run([node, "--experimental-transform-types", str(script), str(root), pi_cli],
+                              cwd=script.parent.parent, check=False).returncode
     if args.command == "arc-blind-policy":
         root = (args.root or paths.runs_dir / f"arc-blind-{args.policy}-{args.game}-s{args.seed}").resolve()
         summary = run_arc_blind_policy(

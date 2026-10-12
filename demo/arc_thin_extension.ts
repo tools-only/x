@@ -23,7 +23,7 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -1414,6 +1414,46 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			catch (error) { logError(hook, error); throw error; }
 		};
 	}
+	let compactStarted = 0;
+	if (continuity === "session") {
+		pi.on("session_before_compact", guard("session_before_compact", (event: any) => {
+			compactStarted = Date.now();
+			const receiptsDir = join(storeDir, "compaction-receipts");
+			for (const message of event.preparation.messagesToSummarize) {
+				if (message.role !== "toolResult" || !Array.isArray(message.content)) continue;
+				for (const block of message.content) {
+					if (block.type !== "text" || block.text.length <= 1800) continue;
+					mkdirSync(receiptsDir, { recursive: true });
+					const original = block.text;
+					const digest = createHash("sha256").update(original).digest("hex");
+					const path = join(receiptsDir, `${digest}.txt`);
+					if (!existsSync(path)) writeFileSync(path, original, { encoding: "utf8", flag: "wx" });
+					const compressed = original.replace(/(.)\1{39,}/gs,
+						(match: string, character: string) => `${character} [repeated ${match.length} times]`);
+					const complete = compressed.length <= 1400;
+					const excerpt = complete ? compressed : `${compressed.slice(0, 650)}\n[omitted middle; consult artifact]\n${compressed.slice(-650)}`;
+					block.text = `Compaction receipt: tool=${message.toolName}; error=${Boolean(message.isError)}; ` +
+						`original_chars=${original.length}; sha256=${digest}; coverage=${complete ? "complete run-length encoding" : "partial excerpt"}; ` +
+						`artifact=${path}\n${excerpt}`;
+					append("compaction_receipts.jsonl", { tool: message.toolName, is_error: Boolean(message.isError),
+						original_chars: original.length, replacement_chars: block.text.length, coverage: complete ? "complete" : "partial",
+						artifact: path, sha256: digest });
+				}
+			}
+		}));
+		pi.on("session_compact", guard("session_compact", (event: any) => {
+			const entry = event.compactionEntry;
+			append("context_budget.jsonl", { compaction_event: true, reason: event.reason,
+				tokensBefore: entry.tokensBefore, summary_chars: entry.summary.length,
+				usage: { input_tokens: entry.usage?.input ?? null, output_tokens: entry.usage?.output ?? null },
+				wall_ms: compactStarted ? Date.now() - compactStarted : null });
+		}));
+		pi.on("session_compact_failed", guard("session_compact_failed", (event: any) => {
+			append("context_budget.jsonl", { compaction_event: true, reason: event.reason,
+				aborted: event.aborted, error: event.errorMessage,
+				wall_ms: compactStarted ? Date.now() - compactStarted : null });
+		}));
+	}
 
 	replay();
 	if (ledgerOn) loadLedgerStores();
@@ -1494,8 +1534,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const starts = messages.slice(0, lastUser).map((message, index) => message?.role === "user" ? index : -1).filter((index) => index >= 0);
 		const kept = starts.slice(-continuityDecisions);
 		const dropped = starts.length - kept.length;
-		if (!kept.length) return [];
-		const out: any[] = [];
+		const checkpoint = messages.slice(0, lastUser).findLastIndex((message) => message?.role === "compactionSummary");
+		const out: any[] = checkpoint >= 0 ? [messages[checkpoint]] : [];
+		if (!kept.length) return out;
 		// A tool call is kept only with its result (an aborted reply can leave calls that never ran): providers refuse
 		// a call without a result, and a result without its call.
 		const answered = new Set(messages.slice(kept[0], lastUser).filter((message) => message?.role === "toolResult" && message.toolCallId)

@@ -141,6 +141,33 @@ test("session continuity keeps earlier decisions without reasoning, large argume
 	} finally { server.close(); }
 });
 
+test("session continuity carries one native compaction checkpoint ahead of retained decisions", async () => {
+	const { server, url } = await startBridge();
+	try {
+		const h = load(mkdtempSync(join(tmpdir(), "thin-compaction-projection-")), url,
+			{ ARC_THIN_CONTINUITY: "session", ARC_THIN_CONTINUITY_DECISIONS: "1" });
+		await h.start();
+		await h.decide();
+		const summary = { role: "compactionSummary", summary: "REFUTED_HYPOTHESIS: do not repeat ACTION1",
+			tokensBefore: 9000, timestamp: Date.now() };
+		const projected = (await h.project([summary,
+			{ role: "user", content: [{ type: "text", text: "Retained decision." }] },
+			{ role: "assistant", content: [{ type: "text", text: "Try ACTION4." }] },
+			{ role: "user", content: [{ type: "text", text: "Current decision." }] },
+		])).messages;
+		assert.deepEqual(projected.map((message: any) => message.role),
+			["compactionSummary", "user", "assistant", "user"]);
+		assert.equal(projected[0].summary, summary.summary);
+		assert.match(projected.at(-1).content[0].text, /CURRENT STATE/);
+		const rebuild = load(mkdtempSync(join(tmpdir(), "thin-compaction-rebuild-")), url);
+		await rebuild.start();
+		await rebuild.decide();
+		assert.deepEqual((await rebuild.project([summary,
+			{ role: "user", content: [{ type: "text", text: "Current decision." }] },
+		])).messages.map((message: any) => message.role), ["user"]);
+	} finally { server.close(); }
+});
+
 test("memory rejection without evidence commits through the native tool and reaches the next decision", async () => {
 	const bridge = await startBridge();
 	try {
