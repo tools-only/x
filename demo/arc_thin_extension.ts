@@ -26,9 +26,11 @@ import { createHash } from "node:crypto";
 import { projectNativeHistory } from "./arc_thin_native_context.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { Binder } from "./arc_thin_binder.ts";
+import { validatePythonComponent } from "./arc_thin_components.ts";
+import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderArcLatestFrameRuns } from "./arc_agi_3_official_adapter.ts";
@@ -157,8 +159,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd()) : undefined;
-  const binder = workspace ? new Binder(workspace) : undefined;
-  if (workspace && binder) workspace.onWrite = path => binder.save(path, currentLevel());
+  const binder = workspace ? new Binder(workspace, validatePythonComponent) : undefined;
+  let nativeRuntime: NativeRuntime | undefined;
 
 	// ---------------------------------------------------------------- stores
 
@@ -467,9 +469,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	function buildWorkingSet(ctx: ExtensionContext): Run["workingSet"] {
 		const sections: Array<[string, string]> = control ? [["recent", recentText()]]
-			: [["memory", memoryText()], ["skills", skillsText()], ["recent", recentText()]];
+			: native ? [["memory", memoryText()], ["recent", recentText()]]
+      : [["memory", memoryText()], ["skills", skillsText()], ["recent", recentText()]];
 		if (!control) {
-      if (binder) sections.push(['capabilities', binder.index(currentLevel())]);
 			const skillOutputs = latestSkillOutputsText();
 			if (skillOutputs) sections.splice(2, 0, ["skill_outputs", skillOutputs]);
 			const models = modelChecksText();
@@ -681,6 +683,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let lastSurface = "";
 	function refreshSkillSurface(base?: string[]): void {
 		if (control) return;
+    if (nativeRuntime && toolsReady) {
+      nativeRuntime.register();
+      pi.setActiveTools(['arc_action', 'memory', 'python', 'read', 'write', 'edit', 'ls', 'grep', 'consult', ...nativeRuntime.toolNames()]);
+      return;
+    }
 		const names = [...skills.keys()].sort();
 		if (names.length && names.join(",") !== boundNames) {
 			registerRunSkill(names);
@@ -1223,6 +1230,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				actionTimes.push(Date.now());
 				append("trajectory.jsonl", row);
 				recordState(row.n, afterGrid);
+        if (nativeRuntime) nativeRuntime.observe(row.n);
 				refreshActionSurface();
 				return text(`${actionLine(row)}${predictionClause(row)}`,
 					{ ...reportedAction(row), prediction: row.prediction, skill_prediction: row.skill_prediction }, true);
@@ -1452,6 +1460,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			prepareArguments: (args: any) => args && typeof args === "object" && typeof args.code === "string"
 				? { ...args, code: unescapeSource(args.code) } : args,
 			execute: guardTool("python", async (params: { code: string }, signal) => {
+        if (nativeRuntime) return nativeRuntime.python(params.code, signal);
 				const started = Date.now();
 				const result = await runGuest({
 					mode: "exec", code: params.code, state: skillState(false, true),
@@ -1634,6 +1643,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	replay();
+  if (workspace && binder && !control) {
+    nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => skillState(false, true),
+      level: currentLevel, actionCount: () => trajectory.length, log: append, usage: appendUsage,
+      wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
+        try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
+      }) });
+    workspace.onWrite = async path => {
+      const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
+      if (toolsReady) refreshSkillSurface();
+      return receipt;
+    };
+  }
 	if (ledgerOn) loadLedgerStores();
 	refreshSkillSurface();
 
@@ -1646,7 +1667,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}));
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
-    if (binder) { await binder.scan(currentLevel()); binder.boundary(); }
+    if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
 		carriedResults = run.batchResults;
 		// Keep the end of the reasoning: conclusions come last.
 		const reasoning = carryChars ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
@@ -1667,7 +1688,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			reviewedThrough = trajectory.length;
 		}
 		toolsReady = true;
-		if (control || run.forceAction) pi.setActiveTools(["arc_action"]);
+		if (control || run.forceAction && !native) pi.setActiveTools(["arc_action"]);
 		else refreshSkillSurface(run.consolidating
 			? CONSOLIDATION_TOOLS
 			: (expandedDecisionTools ? EXPANDED_DECISION_TOOLS : DECISION_TOOLS));
@@ -1757,7 +1778,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return out;
 	}
 
-	pi.on("context", guard("context", (event: any, ctx: ExtensionContext) => {
+	pi.on("context", guard("context", async (event: any, ctx: ExtensionContext) => {
+    if (binder) binder.boundary();
 		const messages: any[] = event.messages ?? [];
 		const lastUser = messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
@@ -1766,7 +1788,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const head = {
 			...user,
 			content: [
-				{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}` },
+				{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${binder ? '\n\n' + binder.index(currentLevel()) : ''}${nativeRuntime ? '\n\n' + await nativeRuntime.observerText() : ''}` },
 				...(run.workingSet!.image ? [run.workingSet!.image] : []),
 			],
 		};
@@ -1793,6 +1815,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return { messages: projected };
 	}));
 
+  if (binder) pi.on('context_with_system', (event: any) => {
+    const current = getCurrentSystemMessage(event.messages)?.sections ?? {};
+    const desired = Object.fromEntries(binder.active().filter(c => c.kind === 'prompt').map(c =>
+      [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+    const patch: Record<string, string | null> = {};
+    for (const key of new Set([...Object.keys(current).filter(k => k.startsWith('prompt_')), ...Object.keys(desired)]))
+      if (current[key] !== desired[key]) patch[key] = desired[key] ?? null;
+    return Object.keys(patch).length ? { messages: [...event.messages, { role: 'system', content: '', sections: patch, timestamp: Date.now() }] } : undefined;
+  });
+  if (nativeRuntime) pi.on('session_shutdown', () => nativeRuntime?.close());
 	pi.on("before_provider_request", guard("before_provider_request", (event: any) => {
 		// Audit the actual wire policy without credentials, model content or image data.
 		const payload = event.payload ?? {};

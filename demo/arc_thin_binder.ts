@@ -95,6 +95,9 @@ export class Binder {
     for (const [path, entry] of this.entries) if (!entry.retired && entry.good?.enabled) this.bindings.set(path, entry.good);
   }
   active(): Component[] { return [...this.bindings.values()].sort((a, b) => a.path.localeCompare(b.path)); }
+  candidates(): Component[] {
+    return [...this.entries.values()].filter(e => !e.retired && e.good?.enabled).map(e => e.good!);
+  }
   label(path: string): string {
     const active = this.bindings.get(path); const entry = this.entries.get(path);
     return `${active?.name ?? path} v${active?.version ?? 'none'}${entry?.error ? ` (v${entry.version} failed)` : ''}`;

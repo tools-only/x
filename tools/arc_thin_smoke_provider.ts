@@ -198,7 +198,33 @@ const FOUNDATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'data/frames/1.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'later parent' }]] },
 ];
-const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
+const NATIVE_COMPARE = '"""Compare measured values."""\ndef run(x: int, bias: int = 2):\n    from lib.offset import plus\n    return plus(x, bias)\n';
+const COMPONENT_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['write', { path: 'lib/offset.py', content: 'def plus(x, y):\n    return x + y\n' }],
+    ['write', { path: 'tools/compare.py', content: NATIVE_COMPARE }]] },
+  { kind: 'decide', calls: [['compare', { x: 40 }]] },
+  { kind: 'decide', calls: [['write', { path: 'prompts/probe.md', content: '---\nactive: true\n---\nNATIVE_STANDING_RULE' }],
+    ['write', { path: 'skills/probe/SKILL.md', content: '---\nname: probe\ndescription: NATIVE_SKILL_DESCRIPTION\n---\nNATIVE_SKILL_BODY_READ_ON_DEMAND' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['write', { path: 'observers/position.py', content: 'def observe(state):\n    return state["grid"][3].index(9)\n' }],
+    ['write', { path: 'roles/check.md', content: '---\ndescription: check measurements\ntools: [read, python, compare]\n---\nReturn exact computed value.' }],
+    ['write', { path: 'skills/probe/scripts/helper.py', content: 'def answer():\n    return 42\n' }]] },
+  { kind: 'decide', calls: [['python', { code: 'from skills.probe.scripts.helper import answer\nanswer()' }]] },
+  { kind: 'decide', calls: [['consult', { role: 'check', question: 'Compute compare(x=40).', refs: ['data/current.json'] }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', calls: [['write', { path: 'tools/compare.py', content: 'def run(x: int)\n    return x\n' }]] },
+  { kind: 'decide', calls: [['compare', { x: 40 }]] },
+  { kind: 'decide', calls: [['write', { path: 'prompts/probe.md', content: '---\nactive: false\n---\nNATIVE_STANDING_RULE' }],
+    ['write', { path: 'observers/position.py', content: '# observe: off\ndef observe(state):\n    return 999\n' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION3' }]] },
+  { kind: 'decide', calls: [['write', { path: 'tools/compare.py', content: NATIVE_COMPARE.replace('= 2', '= 3') }]] },
+  { kind: 'decide', calls: [['compare', { x: 40 }]] },
+  { kind: 'decide', calls: [['write', { path: 'lib/offset.py', content: 'def plus(x, y):\n    return x + y + 10\n' }]] },
+  { kind: 'decide', calls: [['compare', { x: 40 }], ['read', { path: 'skills/probe/SKILL.md' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+];
+const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "selfharness" ? SELF_HARNESS_SCRIPT
@@ -303,13 +329,19 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				stream.end();
 				return stream;
 			}
-			const analyst = systemPrompt.includes("careful visual analyst");
+      const consult = systemPrompt.startsWith('CONSULT_ROLE');
+			const analyst = systemPrompt.includes("careful visual analyst") || consult;
 			const critic = systemPrompt.includes("You review an agent");
 			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
 			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(head.trimStart());
 			let planned: Step | undefined;
-			if (analyst) planned = { kind: "decide", text: "ANALYST: only cell (0,0) is non-zero; it counts actions." };
+      if (consult) {
+        const result = messages.find((m: any) => m.role === 'toolResult' && m.toolName === 'compare');
+        planned = result ? { kind: 'decide', text: 'CONSULT_SEMANTIC: ' + textOf(result) }
+          : { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }], ['compare', { x: 40 }]] };
+      }
+			else if (analyst) planned = { kind: "decide", text: "ANALYST: only cell (0,0) is non-zero; it counts actions." };
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
 			else {
 				planned = SCRIPT[step];
