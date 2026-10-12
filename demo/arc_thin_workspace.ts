@@ -68,12 +68,33 @@ export class Workspace {
     return out;
   }
   read(path: string): string { return readFileSync(this.path(path), 'utf8'); }
+  /**
+   * Long results are saved once under a short sequential name (results/r7.txt). 64-hex names were mistyped by the
+   * agent (two failed reads in foundation-native-ls20-real-20261012-02); identical bodies still share one file.
+   */
+  private resultRefs?: Map<string, string>;
+  resultRef(body: string, prefix = 'r'): string {
+    if (!this.resultRefs) {
+      this.resultRefs = new Map();
+      for (const name of readdirSync(this.path('results'))) if (/^[a-z]\d+\.txt$/.test(name))
+        this.resultRefs.set(createHash('sha256').update(readFileSync(join(this.path('results'), name), 'utf8')).digest('hex'), `results/${name}`);
+    }
+    const hash = createHash('sha256').update(body).digest('hex');
+    let ref = this.resultRefs.get(hash);
+    if (!ref) {
+      let n = this.resultRefs.size + 1;
+      while (existsSync(this.path(`results/${prefix}${n}.txt`))) n += 1;
+      ref = `results/${prefix}${n}.txt`;
+      this.runtimeWrite(ref, body); this.resultRefs.set(hash, ref);
+    }
+    return ref;
+  }
   receipt(body: string, status = 'ok', keyLines: string[] = []): string {
     if (body.length <= 1500) return body;
-    const hash = createHash('sha256').update(body).digest('hex'); const ref = `results/${hash}.txt`;
-    if (!existsSync(this.path(ref))) this.runtimeWrite(ref, body);
+    const ref = this.resultRef(body);
     const keys = [...keyLines, ...body.split('\n').filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);
-    return `Result ${status}; ${body.length} chars; sha256=${hash}\n${body.slice(0, 450)}\n${keys ? keys + '\n' : ''}ref: ${ref}\nread ${ref} with offset/limit for exact lines.`;
+    return `Result ${status}; ${body.length} chars, saved as ${ref}; its first 450 shown:\n${body.slice(0, 450)}\n${keys ? keys + '\n' : ''}` +
+      `read ${ref} with offset/limit for exact lines.`;
   }
   fileTools(): ToolDefinition[] {
     const safe = (p: string, write = false) => this.path(p, write, false, true);

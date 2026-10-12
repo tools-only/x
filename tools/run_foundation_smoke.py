@@ -11,6 +11,8 @@ root = Path(sys.argv[1])
 script = sys.argv[2] if len(sys.argv) > 2 else "foundation"
 defaults = len(sys.argv) > 3 and sys.argv[3] == 'defaults'
 uncapped = len(sys.argv) > 3 and sys.argv[3] == 'uncapped'
+# 'banded' narrows the native history bands so a short smoke crosses all three (verbatim, condensed, dropped).
+banded = len(sys.argv) > 3 and sys.argv[3] == 'banded'
 if script == 'migration':
     class MigrationKernel(PiKernel):
         def start(self):
@@ -63,12 +65,20 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     ledger=defaults, critic=defaults, review_at_level_change=False,
-    extension_env={"ARC_THIN_SMOKE_SCRIPT": script})
+    extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
+                   **({"ARC_THIN_NATIVE_VERBATIM": "2", "ARC_THIN_NATIVE_CONDENSED": "2"} if banded else {})})
 summary = json.loads(path.read_text(encoding="utf-8"))
 requests = [json.loads(s) for s in (root / "smoke-requests.jsonl").read_text(encoding="utf-8").splitlines()]
 results = [r for request in requests for r in request.get("last_tool_results", [])]
 text = json.dumps(results)
 assert summary["passed"], summary
+if banded:
+    parent_requests = [r for r in requests if not r.get("analyst") and not r.get("critic")]
+    shown = [json.dumps(r.get("transcript", [])) for r in parent_requests]
+    assert any("earlier decision" in s and "not shown" in s for s in shown), "the oldest band must be dropped with a note"
+    assert any("are condensed" in s for s in shown), "the middle band must be condensed"
+    config = json.loads((root / "run-config.json").read_text(encoding="utf-8"))
+    assert config["native_history"] == {"verbatim": 2, "condensed": 2}, config["native_history"]
 if uncapped:
     assert 'of run time left' not in json.dumps(requests), 'zero must remove the run deadline, including from actual parent input'
 if script == 'migration':
@@ -83,8 +93,19 @@ elif script == "receipts":
     refs = list((root / "workspace/results").glob("*.txt"))
     assert any("COUNTEREXAMPLE_MIDDLE_EXACT" in ref.read_text(encoding="utf-8") for ref in refs)
     inputs = (root / "native-summary-input.jsonl").read_text(encoding="utf-8")
-    assert "ref: results/" in inputs and '"thinking"' not in inputs
+    assert "results/r" in inputs and '"thinking"' not in inputs
     assert (root / "native-compaction-rpc.json").is_file()
+elif script == "budget":
+    parent = [r for r in requests if not r.get("analyst") and not r.get("critic")]
+    assert "budget of 10 calls is used" in text and "last look-up or compute call" in text, text[:2000]
+    assert sum("cell" in r["text"] for r in results if r["tool"] == "python") >= 10
+    names = [[t["name"] for t in r["tools"]] for r in parent]
+    after = next(i for i, r in enumerate(parent) if "budget of 10 calls is used" in json.dumps(r.get("last_tool_results", [])))
+    assert "python" not in names[after] and "memory" in names[after] and "arc_action" in names[after], names[after]
+    assert "python" in names[-1], names[-1]
+    assert summary["no_action_decisions"] == 0, summary
+    assert any("REPEATED WORK: 9 of your last 10 python calls" in r.get("current", "") for r in parent)
+    assert "BUDGET_RECORDED" in (root / "harness/memory.jsonl").read_text(encoding="utf-8")
 elif script == "components":
     for expected in ["compare v1", "42", "v2: saved", "NOT loaded", "v1 (v2 failed)", "compare v3", "43", "53", "CONSULT_SEMANTIC", "NATIVE_SKILL_BODY_READ_ON_DEMAND"]:
         assert expected in text, expected

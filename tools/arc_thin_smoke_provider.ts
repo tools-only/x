@@ -243,6 +243,15 @@ const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
   { kind: 'decide', calls: [['python', { code: "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(80)))\n1" }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
+// Native look-up budget: eleven same-shape python calls in one message (the tenth is the last allowed, the
+// eleventh is refused without ending the decision), then memory and an action in the same decision; the next
+// decision gets python back and is shown the repetition.
+const BUDGET_SCRIPT: Step[] = [
+  { kind: 'decide', calls: Array.from({ length: 11 }, (_, n) => ['python', { code: `cell = history.grid(0)[0][${n}]\nprint('cell', ${n}, cell)` }] as [string, any]) },
+  { kind: 'decide', calls: [['memory', { set: [{ key: 'budget', text: 'BUDGET_RECORDED' }] }], ['arc_action', { action: 'ACTION1', note: 'after budget' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(len(grid))' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'budget reset' }]] },
+];
 const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['run_skill', { name: 'old', args: { extra: 2 } }], ['read', { path: 'notes/controls.md' }]] },
   { kind: 'decide', calls: [['producer', { args: {} }]] },
@@ -252,6 +261,7 @@ const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
@@ -303,7 +313,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
       if (process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' && systemPrompt.includes('context summarization assistant')) {
         const evidence = messages.map(textOf).join('\n');
         appendFileSync(join(process.env.ARC_RUN_ROOT!, 'native-summary-input.jsonl'), JSON.stringify({ systemPrompt, messages }) + '\n');
-        const refs = [...new Set(evidence.match(/results\/[a-f0-9]{64}\.txt/g) ?? [])];
+        const refs = [...new Set(evidence.match(/results\/[a-z]\d+\.txt/g) ?? [])];
         output.content = [{ type: 'text', text: 'Native checkpoint: exact evidence is retained behind receipts.\n' + refs.map(ref => 'ref: ' + ref).join('\n') }];
         stream.push({ type: 'start', partial: output }); stream.push({ type: 'done', reason: 'stop', message: output }); stream.end(); return stream;
       }
@@ -388,9 +398,11 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 					: { kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "fallback after script" }]] };
 			}
       if (planned?.calls) planned = { ...planned, calls: planned.calls.map(([name, args]) => [name,
-        args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/[a-f0-9]{64}\.txt/)?.[0] ?? 'missing' } : args]) };
+        args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/[a-z]\d+\.txt/)?.[0] ?? 'missing' } : args]) };
 			appendFileSync(log, JSON.stringify({
 				t: new Date().toISOString(), analyst, critic, consolidating, step,
+				// With retained history the first user message is an old decision; the current one is the last.
+				current: textOf([...messages].reverse().find((message) => message?.role === "user") ?? messages[0]),
 				// message_count excludes Pi's leading system message so the runner's checks keep the 0.80.6 meaning
 				// (1 = the first request of a decision).
 				message_count: messages.filter((message) => message?.role !== "system").length, roles: messages.map((message) => message?.role),

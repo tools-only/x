@@ -1,4 +1,5 @@
 import { validateToolArguments } from '@earendil-works/pi-ai';
+import { createHash } from 'node:crypto';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Binder, type Component } from './arc_thin_binder.ts';
@@ -17,12 +18,55 @@ const shown = (result: NativeResult) => !result.ok ? [result.error, result.where
     : JSON.stringify(result.value ?? null);
 const text = (value: string, isError = false) => ({ content: [{ type: 'text' as const, text: value }], isError });
 
+/**
+ * A python call's code with comments, blank lines and number literals normalised, so calls that differ only in
+ * numbers (history.grid(1) vs history.grid(2)) share a shape. `lines` are hashes of the normalised lines, for
+ * calls that share most of their code.
+ */
+export function codeShape(code: string): { shape: string; lines: string[]; gist: string } {
+  const raw = code.split(/\r?\n/).map(line => line.replace(/(^|\s)#.*$/, '').trim()).filter(Boolean);
+  const norm = raw.map(line => line.replace(/\b\d+(\.\d+)?\b/g, '0').replace(/\s+/g, ' '));
+  const hash = (s: string, n: number) => createHash('sha256').update(s).digest('hex').slice(0, n);
+  const gist = raw.find(line => !/^(import|from)\s/.test(line)) ?? raw[0] ?? '';
+  return { shape: hash(norm.join('\n'), 12), lines: [...new Set(norm.map(line => hash(line, 8)))], gist: gist.length > 60 ? gist.slice(0, 59) + '…' : gist };
+}
+export type PythonRun = { level: number; shape: string; lines: string[]; gist: string; kit: string };
+/** The saved tools, observers and libraries (path@version): repetition is counted only since this last changed. */
+export const kitOf = (versions: Record<string, number>) =>
+  Object.entries(versions).filter(([path]) => /^(tools|observers|lib)\//.test(path)).map(([path, v]) => `${path}@${v}`).sort().join(',');
+const REPETITION_WINDOW = 12;
+
+/**
+ * Groups of recent python calls (one level, after the latest saved tool/observer/library) that redid one
+ * computation: same shape, or most lines shared. Factual input for the agent's own choice to make it a component.
+ */
+export function repetitionText(runs: PythonRun[]): string {
+  const recent = runs.slice(-REPETITION_WINDOW);
+  const families: Array<{ gist: string; size: number; shape: string; lines: Set<string> }> = [];
+  for (const run of recent) {
+    const family = families.find(f => f.shape === run.shape || overlap(f.lines, run.lines) >= 0.6);
+    if (family) family.size += 1;
+    else families.push({ gist: run.gist, size: 1, shape: run.shape, lines: new Set(run.lines) });
+  }
+  const repeated = families.filter(f => f.size > 1).sort((a, b) => b.size - a.size);
+  if (!repeated.length) return '';
+  const redone = repeated.reduce((n, f) => n + f.size - 1, 0);
+  return `REPEATED WORK: ${redone} of your last ${recent.length} python calls on this level redid an earlier computation with small changes ` +
+    `(${repeated.slice(0, 3).map(f => `\`${f.gist}\` ×${f.size}`).join(', ')}). As tools/<name>.py that computation is one exact call ` +
+    `with arguments; as observers/<name>.py its result is shown here after every move without a call.`;
+}
+function overlap(a: Set<string>, b: string[]): number {
+  const shared = b.filter(line => a.has(line)).length;
+  return shared / Math.max(1, new Set([...a, ...b]).size);
+}
+
 export class NativeRuntime {
   private registered = new Map<string, string>();
   private observers = new TaskPythonPool();
   private pending: Promise<unknown> = Promise.resolve();
   private observed = new Set<string>();
   private outputs = new Map<string, string>();
+  private pythonRuns: PythonRun[] = [];
   constructor(private host: Host) {
     host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a saved role with exact workspace refs. No game action access.',
       parameters: Type.Object({ role: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
@@ -43,6 +87,15 @@ export class NativeRuntime {
     }
   }
   toolNames() { return this.host.binder.candidates().filter(c => c.kind === 'tool' && this.registered.has(c.name)).map(c => c.name); }
+  /** Earlier python runs of this run (component_runs.jsonl), after a restart. */
+  seedPython(rows: any[]) {
+    for (const r of rows) if (r?.kind === 'python' && !r.readonly && typeof r.shape === 'string')
+      this.pythonRuns.push({ level: Number(r.level) || 0, shape: r.shape, lines: r.lines ?? [], gist: String(r.gist ?? ''), kit: String(r.kit ?? '') });
+  }
+  repetitionText(level: number) {
+    const kit = kitOf(this.host.binder.versionMap());
+    return repetitionText(this.pythonRuns.filter(r => r.level === level && r.kit === kit));
+  }
   private snapshot() {
     const sources: Record<string, string> = {};
     const files: Record<string, string> = {};
@@ -100,9 +153,14 @@ export class NativeRuntime {
   }
   async python(code: string, signal?: AbortSignal, readonly = false) {
     const snap = this.snapshot(); const started = Date.now();
+    const kit = kitOf(this.host.binder.versionMap());
     const result = await this.execute({ ...snap, mode: 'exec', code, allow_writes: !readonly }, signal);
     const receipts = result.ok ? await this.applyWrites(result) : [];
-    this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started });
+    const shape = codeShape(code);
+    // A consult role's read-only python is not the parent's own work.
+    if (!readonly) this.pythonRuns.push({ level: this.host.level(), ...shape, kit });
+    this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started,
+      ...(readonly ? { readonly } : { level: this.host.level(), ...shape, kit }) });
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
     const body = [shown(result), ...receipts, ...failed.map(s => 'bindings: ' + s)].join('\n');
     return text(this.host.receipt?.(body) ?? body, !result.ok);
@@ -192,7 +250,7 @@ export class NativeRuntime {
         const calls = (reply.content ?? []).filter((b: any) => b.type === 'toolCall');
         if (!calls.length) {
           this.host.log('consult_runs.jsonl', { role: role.name, version: role.version, refs, tools: allowed, answer, ms: Date.now() - started });
-          const ref = `results/consult-${started}.txt`; this.host.workspace.runtimeWrite(ref, answer);
+          const ref = this.host.workspace.resultRef(answer, 'c');
           return text(`${this.host.binder.label(role.path)} →\n${answer}\nref: ${ref}`);
         }
         for (const call of calls) {

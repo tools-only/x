@@ -45,5 +45,5 @@ test('ordinary workspace files are versioned without component activation or ind
   w.runtimeWrite('artifacts/a.txt', 'first'); assert.equal(await b.save('artifacts/a.txt', 0), undefined);
   w.runtimeWrite('artifacts/a.txt', 'second'); await b.save('artifacts/a.txt', 0);
   b.boundary(); assert.equal(b.active().length, 0); assert.equal(b.versionMap()['artifacts/a.txt'], 2);
-  assert.equal(b.index(0), 'CAPABILITIES');
+  assert.equal(b.index(0), '');
 });

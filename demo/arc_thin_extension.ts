@@ -23,7 +23,7 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
-import { projectNativeHistory } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, visibleActions } from "./arc_thin_native_context.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
@@ -72,6 +72,17 @@ const CONSOLIDATION_TOOLS = ["memory", "skill", "python", "prompt", "ask_analyst
 // dozen requests measuring the same frame instead of submitting an action.
 const SOFT_TOOL_CALLS = 6;
 const HARD_TOOL_CALLS = 8;
+/**
+ * Native decisions budget looking up and computing separately from recording. One shared limit of 6 ended two
+ * decisions of foundation-native-ls20-real-20261012-02 in the middle of an analysis (each then cost a whole extra
+ * decision to restate it). Over budget, the call is refused without ending the decision, and the exhausted kind of
+ * tool leaves the surface so the next request can still record and act.
+ */
+const NATIVE_LOOK_CALLS = 10;
+const NATIVE_RECORD_CALLS = 6;
+const NATIVE_HARD_TOOL_CALLS = NATIVE_LOOK_CALLS + NATIVE_RECORD_CALLS + 2;
+/** Tools that change what the agent keeps; every other non-action tool looks something up or computes. */
+const NATIVE_RECORD_TOOLS = new Set(["memory", "write", "edit"]);
 const MAX_EXPLICIT_SKILL_CALLS = 4;
 const MAX_SKILLS = 40;
 const RECENT_ACTIONS = 8;
@@ -164,6 +175,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// since 2026-10-08) shows only the rebuilt working set. docs/reports/2026-10-12-memory-mechanism-review.md.
 	const continuity = native || process.env.ARC_THIN_CONTINUITY === "session" ? "session" : "rebuild";
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
+	// Native history bands (arc_thin_native_context.ts): ARC_THIN_NATIVE_VERBATIM=0 shows every decision verbatim.
+	const nativeVerbatim = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_VERBATIM ?? 4)));
+	const nativeHistory = nativeVerbatim ? { verbatim: nativeVerbatim,
+		condensed: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_CONDENSED ?? 16))) } : {};
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd()) : undefined;
@@ -346,6 +361,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	type Run = {
 		consolidating: boolean; forceAction: boolean; assistantMessages: number; toolCalls: number; arcSeenInMessage: number;
+		/** Native decisions: calls that look things up or compute, and calls that record (see gate). */
+		lookCalls: number; recordCalls: number; budgetNote?: string;
 		endBatchAt: number; actionDone: boolean;
 		memoryCommitted: boolean; skillCalls: number; skillSignatures: Set<string>;
 		/** Results of tools that shared the message with arc_action: the agent never sees them in this decision. */
@@ -359,7 +376,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		workingSet?: { text: string; image?: { type: "image"; data: string; mimeType: string } };
 	};
 	const freshRun = (): Run => ({
-		consolidating: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
+		consolidating: false, forceAction: false, assistantMessages: 0, toolCalls: 0, lookCalls: 0, recordCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0,
 	});
@@ -416,16 +433,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** One action as shown on later decisions: the facts, the agent's note, and how its predictions scored. */
 	const recentLine = (row: ActionRow) => actionLine(row) + (row.note ? ` | note: ${row.note}` : "") + predictionClause(row);
 
-	function recentText(): string {
-		if (trajectory.length === 0) return "RECENT ACTIONS: none yet.";
+	/** `shown`: actions whose receipts are already in the history in view (native mode); they are not listed again. */
+	function recentText(shown?: Set<number>): string {
+		if (trajectory.length === 0) return shown ? "" : "RECENT ACTIONS: none yet.";
 		// A consolidation turn reviews every action since the previous one, not only the last few.
 		if (run.consolidating) {
 			const rows = trajectory.slice(run.reviewFrom).slice(-REVIEW_ACTIONS);
 			return [`ACTIONS SINCE YOUR LAST REVIEW (#${rows[0]?.n ?? trajectory.length}–#${trajectory.length}, ${rows.length} of ${trajectory.length}):`,
 				...rows.map(recentLine)].join("\n");
 		}
-		const recent = trajectory.slice(-RECENT_ACTIONS);
-		return [`RECENT ACTIONS (last ${recent.length} of ${trajectory.length}):`, ...recent.map(recentLine)].join("\n");
+		const recent = trajectory.slice(-RECENT_ACTIONS).filter((row) => !shown?.has(row.n));
+		if (shown && !recent.length) return "";
+		return [shown ? `RECENT ACTIONS not in the conversation above (${recent.length} of the last ${RECENT_ACTIONS}; ${trajectory.length} in total):`
+			: `RECENT ACTIONS (last ${recent.length} of ${trajectory.length}):`, ...recent.map(recentLine)].join("\n");
 	}
 
 	/**
@@ -475,10 +495,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return parts.length ? `RESOURCES: ${parts.join("; ")}. Reasoning and tool calls cost time, not actions.` : "";
 	}
 
-	function buildWorkingSet(ctx: ExtensionContext): Run["workingSet"] {
-		const sections: Array<[string, string]> = control ? [["recent", recentText()]]
-			: native ? [["memory", memoryText()], ["recent", recentText()]]
-      : [["memory", memoryText()], ["skills", skillsText()], ["recent", recentText()]];
+	function buildWorkingSet(ctx: ExtensionContext, shownActions?: Set<number>): Run["workingSet"] {
+		const recent = recentText(shownActions);
+		const sections: Array<[string, string]> = control ? [["recent", recent]]
+			: native ? [["memory", memoryText()], ...(recent ? [["recent", recent] as [string, string]] : [])]
+      : [["memory", memoryText()], ["skills", skillsText()], ["recent", recent]];
 		if (!control) {
 			const skillOutputs = latestSkillOutputsText();
 			if (skillOutputs) sections.splice(2, 0, ["skill_outputs", skillOutputs]);
@@ -693,8 +714,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (control) return;
     if (nativeRuntime && toolsReady) {
       nativeRuntime.register();
+      const lookSpent = !run.consolidating && run.lookCalls >= NATIVE_LOOK_CALLS && !diagnosticBudget;
+      const recordSpent = !run.consolidating && run.recordCalls >= NATIVE_RECORD_CALLS && !diagnosticBudget;
       pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', 'ls', 'grep', 'consult',
-        ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
+        ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]
+        .filter(name => name === 'arc_action' || (NATIVE_RECORD_TOOLS.has(name) ? !recordSpent : !lookSpent)));
       return;
     }
 		const names = [...skills.keys()].sort();
@@ -1105,8 +1129,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
-		if (run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
-			return { reason: `hard tool-call limit (${HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
+		const nativeBudget = native && !run.consolidating && !diagnosticBudget;
+		const hard = nativeBudget ? NATIVE_HARD_TOOL_CALLS : diagnosticBudget || HARD_TOOL_CALLS;
+		if (run.toolCalls > hard)
+			return { reason: `hard tool-call limit (${hard}) for this decision reached; the decision ends`, terminate: true };
 		if (name === "arc_action") {
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
 			if (run.actionDone || run.arcSeenInMessage === run.assistantMessages)
@@ -1116,6 +1142,22 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		if (run.actionDone && !endsBatch())
 			return { reason: "this decision already ended with arc_action", terminate: true };
+		if (nativeBudget) {
+			const record = NATIVE_RECORD_TOOLS.has(name);
+			const used = record ? ++run.recordCalls : ++run.lookCalls;
+			const limit = record ? NATIVE_RECORD_CALLS : NATIVE_LOOK_CALLS;
+			if (used < limit) return undefined;
+			refreshSkillSurface();
+			if (used === limit) {
+				run.budgetNote = `(This was the decision's last ${record ? "record (memory/write/edit)" : "look-up or compute"} call; ` +
+					`those tools are off until the next decision${record ? "" : ", memory still records"}.)`;
+				return undefined;
+			}
+			return { reason: `this decision's ${record ? "record (memory/write/edit)" : "look-up and compute"} budget of ${limit} calls is used; ` +
+				`this call was NOT run and those tools are off until the next decision. ` +
+				(record ? "End the decision with arc_action." : "Record what you found if it must last, then end the decision with arc_action."),
+				terminate: false };
+		}
 		if (run.toolCalls > (diagnosticBudget || SOFT_TOOL_CALLS))
 			return run.consolidating
 				? { reason: `tool-call limit (${SOFT_TOOL_CALLS}) for consolidation reached; the review ends`, terminate: true }
@@ -1142,7 +1184,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				if (verdict.terminate || (name !== "arc_action" && endsBatch())) return carry(refused(verdict.reason), true);
 				throw new Refusal(verdict.reason);
 			}
-			try { return carry(await fn(params, signal, ctx), false); }
+			try {
+				const result = carry(await fn(params, signal, ctx), false);
+				const note = run.budgetNote; run.budgetNote = undefined;
+				return note && Array.isArray(result?.content)
+					? { ...result, content: [...result.content, { type: "text" as const, text: note }] } : result;
+			}
 			catch (error) {
 				if (!(error instanceof Refusal)) logError(`tool:${name}`, error);
 				if (name !== "arc_action" && endsBatch()) return carry(refused(errorText(error)), true);
@@ -1690,6 +1737,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
       }) });
+    nativeRuntime.seedPython(readRows('component_runs.jsonl'));
     workspace.onWrite = async path => {
       const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
       if (toolsReady) refreshSkillSurface();
@@ -1746,6 +1794,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
 		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
+      // The PNG is attached only for a model declared with image input (buildWorkingSet); say so only then.
+      image: ctx.model?.input?.includes("image") ? " and its PNG" : "",
       board: ledgerOn ? LEDGER_PROMPT + (criticOn ? CRITIC_PROMPT : '') : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
@@ -1828,16 +1878,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const messages: any[] = event.messages ?? [];
 		const lastUser = messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
-		run.workingSet ??= buildWorkingSet(ctx);
 		const user = messages[lastUser];
+		// Native mode shows its history in bands (arc_thin_native_context.ts); the working set then lists only the
+		// recent actions whose receipts are not already in that history.
+		const nativeShown = native ? projectNativeHistory(messages.slice(0, lastUser + 1), replayReasoning, nativeHistory) : [];
+		run.workingSet ??= buildWorkingSet(ctx, native ? visibleActions(nativeShown) : undefined);
+		const capabilities = binder ? [binder.index(currentLevel()), nativeRuntime?.repetitionText(currentLevel()) ?? '',
+			nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
 		const head = {
 			...user,
 			content: [
-				{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${binder ? '\n\n' + binder.index(currentLevel()) : ''}${nativeRuntime ? '\n\n' + await nativeRuntime.observerText() : ''}` },
+				{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
 				...(run.workingSet!.image ? [run.workingSet!.image] : []),
 			],
 		};
-		const history = native ? projectNativeHistory(messages.slice(0, lastUser), replayReasoning)
+		const history = native ? nativeShown.slice(0, -1)
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		const projected = native ? projectNativeHistory([...history, head, ...messages.slice(lastUser + 1)], replayReasoning)
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];

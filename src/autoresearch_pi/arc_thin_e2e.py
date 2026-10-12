@@ -698,6 +698,9 @@ def run_arc_thin_e2e(
             "review_at_level_change": review_at_level_change,
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
+            # Native history bands (demo/arc_thin_native_context.ts); verbatim 0 keeps every decision verbatim.
+            "native_history": {"verbatim": int(pi_env.get("ARC_THIN_NATIVE_VERBATIM", "4")),
+                               "condensed": int(pi_env.get("ARC_THIN_NATIVE_CONDENSED", "16"))} if foundation == "native" else None,
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 
