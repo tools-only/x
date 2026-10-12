@@ -23,6 +23,7 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
+import { projectNativeHistory } from "./arc_thin_native_context.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -132,6 +133,8 @@ const duration = (ms: number) => {
 const tokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
 export default function arcThinExtension(pi: ExtensionAPI) {
+  const native = process.env.ARC_THIN_FOUNDATION === "native";
+  const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";
 	const control = process.env.ARC_THIN_VARIANT === "control";
 	// Diagnostic smoke suites can request the legacy all-tools surface so they
 	// can exercise low-frequency tools in scripted ordinary turns. Real runs
@@ -147,7 +150,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// ARC_THIN_CONTINUITY=session keeps the agent's earlier decisions in Pi's session in front of the model (their text,
 	// tool calls and results, without reasoning), up to ARC_THIN_CONTINUITY_DECISIONS of them; "rebuild" (the default
 	// since 2026-10-08) shows only the rebuilt working set. docs/reports/2026-10-12-memory-mechanism-review.md.
-	const continuity = process.env.ARC_THIN_CONTINUITY === "session" ? "session" : "rebuild";
+	const continuity = native || process.env.ARC_THIN_CONTINUITY === "session" ? "session" : "rebuild";
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
@@ -1571,6 +1574,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	if (continuity === "session") {
 		pi.on("session_before_compact", guard("session_before_compact", (event: any) => {
 			compactStarted = Date.now();
+      if (native) {
+        event.preparation.messagesToSummarize = projectNativeHistory(event.preparation.messagesToSummarize, replayReasoning);
+        event.preparation.turnPrefixMessages = projectNativeHistory(event.preparation.turnPrefixMessages, replayReasoning);
+      }
 			const receiptsDir = join(storeDir, "compaction-receipts");
 			for (const message of event.preparation.messagesToSummarize) {
 				if (message.role !== "toolResult" || !Array.isArray(message.content)) continue;
@@ -1666,6 +1673,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			});
 		const rendered = systemPrompt.trimEnd() + "\n";
 		systemChars = rendered.length;
+    if (native) {
+      event.systemPromptOptions.customPrompt = rendered;
+      return;
+    }
 		return { systemPrompt: rendered };
 	}));
 
@@ -1738,8 +1749,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				...(run.workingSet!.image ? [run.workingSet!.image] : []),
 			],
 		};
-		const history = continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
-		const projected = [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
+		const history = native ? projectNativeHistory(messages.slice(0, lastUser), replayReasoning)
+      : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
+		const projected = native ? projectNativeHistory([...history, head, ...messages.slice(lastUser + 1)], replayReasoning)
+      : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		// Developer-only accounting, never added to the model context.
 		// JSON characters exclude image bytes and are not a tokenizer estimate.
 		try {

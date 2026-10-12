@@ -564,6 +564,8 @@ def run_arc_thin_e2e(
     continuity_decisions: int = 8,
     review_at_level_change: bool = True,
     extension_env: dict[str, str] | None = None,
+    foundation: str = "legacy",
+    replay_reasoning: bool = False,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
 
@@ -576,6 +578,10 @@ def run_arc_thin_e2e(
     (docs/plans/2026-10-12-falsifiable-self-harness-plan.md)."""
     if variant not in {"treatment", "control"}:
         raise ValueError("variant must be treatment or control")
+    if foundation not in {"legacy", "native"}:
+        raise ValueError("foundation must be legacy or native")
+    if foundation == "native":
+        continuity = "session"
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError(f"run root must be new or empty: {root}")
@@ -660,10 +666,13 @@ def run_arc_thin_e2e(
             raise ValueError(f"continuity must be one of {sorted(CONTINUITY_MODES)}")
         pi_env["ARC_THIN_CONTINUITY"] = continuity
         pi_env["ARC_THIN_CONTINUITY_DECISIONS"] = str(max(1, int(continuity_decisions)))
+        pi_env["ARC_THIN_FOUNDATION"] = foundation
+        pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
         pi_env.update(extension_env or {})
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "0") == "1"
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
-                   "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
+                   *(["--session", str(root / "session.jsonl")] if foundation == "native" else ["--no-session"]),
+                   "--no-extensions", "--no-skills", "--no-prompt-templates",
                    "--no-context-files", "--no-builtin-tools", "--extension", str(EXTENSION)]
         if pi_provider_extension is not None:
             command.extend(["--extension", str(pi_provider_extension.resolve())])
@@ -682,6 +691,7 @@ def run_arc_thin_e2e(
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
             "review_at_level_change": review_at_level_change,
             "auto_compaction": auto_compaction,
+            "foundation": foundation, "replay_reasoning": replay_reasoning,
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 
