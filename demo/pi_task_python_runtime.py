@@ -70,7 +70,9 @@ def execute(module_path: Path, request: dict) -> dict:
     config.consume_fuel = True
     config.epoch_interruption = True
     engine = wasmtime.Engine(config)
+    compile_started = time.monotonic()
     module = wasmtime.Module.from_file(engine, str(module_path))
+    compile_ms = round((time.monotonic() - compile_started) * 1000)
     # Only WASI capabilities. No Python/JS host bridge, HTTP, or arbitrary imports.
     if any(item.module != "wasi_snapshot_preview1" for item in module.imports):
         raise RuntimeError("Unexpected host imports in the Python interpreter")
@@ -111,8 +113,12 @@ def execute(module_path: Path, request: dict) -> dict:
     timer.daemon = True
     timer.start()
     error = None
+    instantiate_ms = guest_ms = None
+    guest_started = None
     try:
         instance = linker.instantiate(store, module)
+        instantiate_ms = round((time.monotonic() - started) * 1000)
+        guest_started = time.monotonic()
         instance.exports(store)["_start"](store)
     except wasmtime.ExitTrap as trap:
         if trap.code != 0:
@@ -121,9 +127,12 @@ def execute(module_path: Path, request: dict) -> dict:
         error = str(trap)[:1200]
     finally:
         timer.cancel()
+        if guest_started is not None:
+            guest_ms = round((time.monotonic() - guest_started) * 1000)
     consumed = {"fuel": limits["fuel"] - store.get_fuel(),
                 "input_bytes": len(json.dumps(request["input"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
-                "output_bytes": len(output), "execution_ms": round((time.monotonic() - started) * 1000)}
+                "output_bytes": len(output), "execution_ms": round((time.monotonic() - started) * 1000),
+                "compile_ms": compile_ms, "instantiate_ms": instantiate_ms, "guest_ms": guest_ms}
     if overflow[0]:
         error = "Python output exceeds output_bytes"
     if error:

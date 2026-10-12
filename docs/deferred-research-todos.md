@@ -1,5 +1,13 @@
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-10-13 后续授权实施：最终方案的恢复/对账、原生压缩生效、短引用、调查配额减负、来源提示、critic条件证据及推理offload原则已实现，WASI阶段计量已接入。工程产物和一次100动作、无整场时间/token/decision上限、compaction开启的普通真实运行状态统一记录在[同一实现报告](reports/2026-10-12-harness-foundation-implementation.md#optimization-implementation-and-restart-2026-10-13)。B/C/D的真实自主采用、总成本净收益和压缩后认知连续性仍开放；Auto-Research继续关闭。以下“仅方案/未实现”段落保留为此前阶段记录。
+
+2026-10-13 self-harness目标补充：推理效率与offload是核心决策目标；优先复用适用组件、沉淀可摊销方法，减少重复基础推导，保持对当前条件和新解释的判断。已纳入[同一最终方案](plans/2026-10-12-harness-foundation-final-optimization-plan.md)的O14/O15及验收。与B/C/D的证据到使用、总成本和跨压缩方法连续性相关，仍未验证；本次未改生产提示或启动实验。
+
+2026-10-13最终优化路线已设计：[实施方案](plans/2026-10-12-harness-foundation-final-optimization-plan.md)将O01–O20按可靠性、读回/原生减负、条件化修订、自主复用与独立验收排列，状态与产物仍维护在[同一实现报告](reports/2026-10-12-harness-foundation-implementation.md#ordinary-ls20-failure-and-optimization-backlog-2026-10-12)。额外确认native批量memory删除矛盾回执，提前修；已有check即时回放和compaction优先集成验证。B/C/D未关闭，Auto-Research继续弃用；主视图隐藏网格和自动计划动作不进入默认路线。本轮仅方案，无新runtime或付费运行。
+
+2026-10-12 side conversation终态诊断与优化记录：真实官方ls20/yibu/qwen3.8-27b/原生Pi样本37动作、0关、3,239,113已报告token，第三次180秒空闲超时因全运行2次恢复额度直接终止；最后未完成请求与2次取消的完整成本未知。左下图案变化被父分析按颜色误分类，长结果引用抄错及6次工具限使进一步取证中断，后来没有及时修订实验。20项O01–O20待办集中在[同一实现报告](reports/2026-10-12-harness-foundation-implementation.md#ordinary-ls20-failure-and-optimization-backlog-2026-10-12)，分恢复/可观测性、压缩集成、结算、结果读回、语义利用/自主复用及真实质量验收；仅记录，无新runtime改动或付费启动。B/C/D保持开放，Auto-Research继续弃用；部分原生compaction代码修复已在独立分支完成，但本次冻结样本未采用。
+
 2026-10-12 最新决定：当前方案弃用 Auto-Research，转为台账 + critic；暂停 Auto-Research 开发及验收运行，历史条目不再视为当前路线或实施授权。Foundation R0–R6 的 workspace、版本回执、实际 Pi 压缩/重启和旧存储迁移已有脚本接线证据；B/C/D 的语义帮助、父子总成本与跨压缩认知质量仍开放，不能用精确读回或组件调用计数代替。下一步是另行预算下的 legacy/native ls20/lp85 对照。见[唯一实现记录](reports/2026-10-12-harness-foundation-implementation.md)。
 
 2026-10-10 ARC 动作接口修复：P040 实际 provider 已收到正确 scope，但静态工具枚举仍暴露 ACTION5/6；当前 workspace 改为 observation 驱动的动态 schema/激活状态，覆盖 RESET、scope 变化、空/失败/恢复和旧调用执行边界。54 Node、32 thin scripted/mock smoke 通过，installed Pi 的实际 7 请求语义检查及 18 smoke 请求 scope 一致性审计通过。未修改独立 checkout/冻结实验，无新付费；完整闭环、自主采用、净收益及 B/C/D 保持未验证。见[唯一变更记录](plans/2026-10-10-arc-action-live-scope.md)。

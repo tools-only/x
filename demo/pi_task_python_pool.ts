@@ -74,17 +74,22 @@ export class TaskPythonPool {
 
 	/** Evaluate one validated Python program. Calls are serialized. */
 	evaluate(program: ValidatedTaskPythonProgram, input: Record<string, unknown>, signal?: AbortSignal) {
+		const queuedAt=performance.now();
 		const run = async () => {
+			const began=performance.now(), queueMs=began-queuedAt;
 			if (signal?.aborted) throw new TaskPythonError("cancelled", "Python calculation cancelled");
 			assertTaskPythonRuntimeAvailable(program.runtime);
 			const limits = program.effective_limits;
 			if (Buffer.byteLength(JSON.stringify(input)) > limits.input_bytes)
 				throw new TaskPythonError("invalid_input", "Input exceeds input_bytes", "$input");
-			await this.start();
+			const startupAt=performance.now(); await this.start(); const startupMs=performance.now()-startupAt;
 			const child = this.child!;
 			this.busy();
 			const id = this.nextId++;
-			const response = await new Promise<any>((resolve, reject) => {
+			const abort = () => { child.kill(); };
+			signal?.addEventListener("abort", abort, { once: true });
+			let response:any;
+			try { response = await new Promise<any>((resolve, reject) => {
 				// The guest epoch deadline enforces timeout_ms; this host deadline only
 				// recovers from a wedged host process.
 				const timer = setTimeout(() => {
@@ -93,13 +98,11 @@ export class TaskPythonPool {
 					child.kill();
 				}, limits.timeout_ms + 10_000);
 				this.pending.set(id, { id, resolve, reject, timer });
-				const abort = () => { child.kill(); };
-				signal?.addEventListener("abort", abort, { once: true });
 				child.stdin!.write(JSON.stringify({ id, request: { source: program.source, input, limits,
 					runtime: program.runtime } }) + "\n");
-			});
+			}); } finally {signal?.removeEventListener('abort',abort);}
 			if (signal?.aborted) throw new TaskPythonError("cancelled", "Python calculation cancelled");
-			return taskPythonResult(program, response);
+			return {...taskPythonResult(program, response),transport:{queue_ms:queueMs,startup_ms:startupMs,host_wall_ms:performance.now()-began}};
 		};
 		const result = this.chain.then(run, run);
 		this.chain = result.catch(() => undefined);

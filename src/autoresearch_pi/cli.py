@@ -184,8 +184,8 @@ def main(argv: list[str] | None = None) -> int:
                           help="run deadline in seconds; 0 disables the experiment deadline, None retains the official default")
     arc_thin.add_argument("--turn-idle-timeout", type=float, default=180.0,
                           help="seconds without a native Pi event before one bounded turn recovery")
-    arc_thin.add_argument("--consolidate-after", type=int, default=25,
-                          help="actions between consolidation turns (also after a level change or GAME_OVER)")
+    arc_thin.add_argument("--consolidate-after", type=int, default=None,
+                          help="periodic review interval: native defaults off (0), legacy defaults 25")
     arc_thin.add_argument("--review-on-miss", action="store_true",
                           help="also make a review due after a scored prediction miss (at most every 4 actions)")
     arc_thin.add_argument("--provider", default="yibu")

@@ -8,7 +8,7 @@ export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams,
     if (action !== undefined && !(Number.isInteger(Number(action)) && Number(action) >= 1 && Number(action) <= actionCount))
       return { ok: false, error: `memory NOT changed: action #${action} does not exist (actions so far: ${actionCount})` };
   }
-  if (params.op === 'list') return planMemoryUpdate(state, params, actionCount, ctx);
+  if (params.op === 'list') return planMemoryUpdate(state, params, actionCount, {...ctx, factProvenance:true});
   const working = emptyMemory(); working.facts = new Map(state.facts); working.hypotheses = new Map(state.hypotheses);
   working.strategies = new Map(state.strategies); working.dropped = [...state.dropped]; working.revisions = [...state.revisions];
   const rows: MemoryRow[] = []; const receipts: string[] = []; const skipped: string[] = [];
@@ -38,5 +38,5 @@ export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams,
   for (const [index, item] of (params.tests ?? []).entries()) apply(`tests[${index}]`, { tests: [item] });
   for (const [index, item] of (params.strategies ?? []).entries()) apply(`strategies[${index}]`, { strategies: [item] });
   if (!rows.length && !skipped.length) return { ok: false, error: 'memory call had nothing to change' };
-  return { ok: true, rows, receipt: [...receipts, ...skipped.map(s => 'not applied: ' + s)].join('\n') };
+  return { ok: true, rows: rows.map(row => ({...row, at:actionCount})), receipt: [...receipts, ...skipped.map(s => 'not applied: ' + s)].join('\n') };
 }

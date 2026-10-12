@@ -163,8 +163,10 @@ except BaseException as error:
 const base = arcSkillGuestProgram(SKILL_LIMITS);
 const program = { ...base, source: base.source.split('\n_src =')[0] + NATIVE };
 export type NativeResult = GuestResult & { need_file?: string; ops?: Array<{ op: 'write' | 'move' | 'delete'; path: string; content?: string; destination?: string }> };
-export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool): Promise<NativeResult> {
+export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool,
+  onMetrics?: (metrics:Record<string,unknown>)=>void): Promise<NativeResult> {
   const reply = pool ? await pool.evaluate(program, input, signal) : await evaluateTaskPython(program, input, signal);
+  onMetrics?.({...reply.consumed, ...(reply as any).transport});
   return reply.value as NativeResult;
 }
 export async function validatePythonComponent(path: string, source: string): Promise<ComponentSpec> {

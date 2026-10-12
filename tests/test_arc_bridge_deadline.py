@@ -135,3 +135,33 @@ def test_close_sdk_hang_has_total_deadline(tmp_path):
         assert not bridge.closed
     finally:
         release.set()
+
+
+def test_close_404_is_explicit_unknown_and_is_not_replayed_on_shutdown(tmp_path):
+    calls=[]
+    class NotFound(OSError):
+        response=SimpleNamespace(status_code=404)
+    def close(_):
+        calls.append('close'); raise NotFound('scorecard missing')
+    bridge=make_bridge(tmp_path, lambda *a, **kw: object())
+    bridge.arcade.close_scorecard=close
+    bridge.arcade.get_scorecard=lambda card: None
+    result=bridge.close()
+    assert result['close_status']=='failed'
+    assert result['scorecard_verified'] is False
+    assert result['close_http_status']==404
+    assert bridge.closed is False
+    assert bridge.close()==result
+    assert calls==['close']
+
+
+def test_close_network_failure_has_a_finite_retry_and_a_verified_result(tmp_path):
+    calls=[]
+    def close(_):
+        calls.append(1)
+        if len(calls)==1: raise OSError('temporary connection failure')
+        return SimpleNamespace(model_dump=lambda **kw: {'score':1})
+    bridge=make_bridge(tmp_path, lambda *a, **kw: object())
+    bridge.arcade.close_scorecard=close
+    result=bridge.close()
+    assert len(calls)==2 and result['close_status']=='closed' and result['scorecard_verified']

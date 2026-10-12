@@ -8,7 +8,7 @@
  * <ARC_RUN_ROOT>/smoke-requests.jsonl so the runner can check what the model
  * actually saw.
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -198,6 +198,10 @@ const FOUNDATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'data/frames/1.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'later parent' }]] },
 ];
+const NATIVE_CLAIMS_SCRIPT: Step[] = CLAIMS_SCRIPT.map(step => ({...step, calls:step.calls?.map(([name,args]) =>
+  name==='python' ? ['read',{path:'data/frames/1.json'}] : [name,args]) as Step['calls']}));
+NATIVE_CLAIMS_SCRIPT[2] = {kind:'decide',calls:Array.from({length:8},(_,i)=>['read',{
+  path:'data/frames/1.json',offset:1,limit:i+1}]) as Step['calls']};
 const NATIVE_COMPARE = '"""Compare measured values."""\ndef run(x: int, bias: int = 2):\n    from lib.offset import plus\n    return plus(x, bias)\n';
 const COMPONENT_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'lib/offset.py', content: 'def plus(x, y):\n    return x + y\n' }],
@@ -251,7 +255,8 @@ const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'artifacts/route.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ];
-const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
+const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
@@ -271,6 +276,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 	let step = 0;
 	let toolCall = 0;
 	let probeOrdinary = 0;
+	const idleFaults=new Set<number>();
 
 	pi.registerProvider("offline-arc-thin-smoke", {
 		api: "openai-completions",
@@ -303,7 +309,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
       if (process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' && systemPrompt.includes('context summarization assistant')) {
         const evidence = messages.map(textOf).join('\n');
         appendFileSync(join(process.env.ARC_RUN_ROOT!, 'native-summary-input.jsonl'), JSON.stringify({ systemPrompt, messages }) + '\n');
-        const refs = [...new Set(evidence.match(/results\/[a-f0-9]{64}\.txt/g) ?? [])];
+        const refs = [...new Set(evidence.match(/results\/(?:r\d+|[a-f0-9]{64})\.txt/g) ?? [])];
         output.content = [{ type: 'text', text: 'Native checkpoint: exact evidence is retained behind receipts.\n' + refs.map(ref => 'ref: ' + ref).join('\n') }];
         stream.push({ type: 'start', partial: output }); stream.push({ type: 'done', reason: 'stop', message: output }); stream.end(); return stream;
       }
@@ -374,6 +380,28 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				return stream;
 			}
       const consult = systemPrompt.startsWith('CONSULT_ROLE');
+      if (process.env.ARC_THIN_SMOKE_SCRIPT==='length' && !idleFaults.has(-1)) {
+        idleFaults.add(-1);output.content=[{type:'text',text:'Unfinished investigation.'}];output.stopReason='length';
+        stream.push({type:'start',partial:output});stream.push({type:'done',reason:'length',message:output});stream.end();return stream;
+      }
+      if (consult && process.env.ARC_THIN_SMOKE_CONSULT_LENGTH==='1' && !messages.some((m:any)=>m.role==='assistant')) {
+        appendFileSync(join(process.env.ARC_RUN_ROOT!,'consult-length.jsonl'),JSON.stringify({role:systemPrompt.split('\n')[0],continuation:false})+'\n');
+        output.content=[{type:'text',text:'Incomplete measurement; continue.'}]; output.stopReason='length';
+        stream.push({type:'start',partial:output});stream.push({type:'done',reason:'length',message:output});stream.end();return stream;
+      }
+			if (process.env.ARC_THIN_SMOKE_SCRIPT === 'recovery') {
+				const path=join(process.env.ARC_RUN_ROOT!, 'harness', 'trajectory.jsonl');
+				const n=existsSync(path) ? readFileSync(path,'utf8').split('\n').filter(Boolean).length : 0;
+				if (n<3 && !idleFaults.has(n)) {
+					idleFaults.add(n); stream.push({type:'start',partial:output});
+					const cancelled=() => {
+						output.usage={input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}};
+						output.stopReason='aborted'; stream.push({type:'error',reason:'aborted',error:output}); stream.end();
+					};
+					options.signal?.addEventListener('abort',cancelled,{once:true});
+					return stream;
+				}
+			}
 			const analyst = systemPrompt.includes("careful visual analyst") || consult;
 			const critic = systemPrompt.includes("You review an agent");
 			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);
@@ -387,6 +415,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
       }
 			else if (analyst) planned = { kind: "decide", text: "ANALYST: only cell (0,0) is non-zero; it counts actions." };
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
+			else if (['recovery','death','length'].includes(process.env.ARC_THIN_SMOKE_SCRIPT!)) planned={kind:'decide',calls:[['arc_action',{action:'ACTION1'}]]};
 			else {
 				planned = SCRIPT[step];
 				if (planned && (planned.kind === "consolidate") === consolidating) step += 1;
@@ -395,7 +424,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 					: { kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "fallback after script" }]] };
 			}
       if (planned?.calls) planned = { ...planned, calls: planned.calls.map(([name, args]) => [name,
-        args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/[a-f0-9]{64}\.txt/)?.[0] ?? 'missing' } : args]) };
+        args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/(?:r\d+|[a-f0-9]{64})\.txt/)?.[0] ?? 'missing' } : args]) };
 			appendFileSync(log, JSON.stringify({
 				t: new Date().toISOString(), analyst, critic, consolidating, step,
 				// message_count excludes Pi's leading system message so the runner's checks keep the 0.80.6 meaning
@@ -403,6 +432,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				message_count: messages.filter((message) => message?.role !== "system").length, roles: messages.map((message) => message?.role),
 				tools: tools.map((tool: any) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
 				system_prompt: systemPrompt, head,
+        ...(process.env.ARC_THIN_SMOKE_SCRIPT==='nativeclaims' ? {latest_user:textOf(messages.findLast((m:any)=>m.role==='user'))} : {}),
 				last_tool_results: messages.filter((message) => message?.role === "toolResult")
 					.map((message) => ({ tool: message.toolName, is_error: message.isError, text: textOf(message).slice(0, 1200) })),
 				// What earlier messages the request carried (continuity checks): user prompts, assistant text and calls.

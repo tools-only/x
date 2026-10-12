@@ -16,6 +16,33 @@ def test_rpc_kernel_sends_ids_and_captures_events(tmp_path: Path):
         assert kernel.events[0].payload["type"] == "response"
 
 
+def test_rpc_control_diagnostics_exclude_prompt_and_capture_acknowledgement(tmp_path: Path):
+    script = tmp_path / 'control.py'
+    script.write_text("import sys,json\nfor line in sys.stdin:\n p=json.loads(line); print(json.dumps({'id':p['id'],'type':'response','success':True}),flush=True)\n")
+    rows=[]
+    with PiKernel((sys.executable,str(script)),event_sink=rows.append) as kernel:
+        kernel.prompt('PRIVATE_PROMPT')
+        kernel.abort()
+    control=[row for row in rows if row.get('type')=='rpc_control']
+    assert [(row['command'],row['stage']) for row in control]==[
+        ('prompt','sent'),('prompt','acknowledged'),('abort','sent'),('abort','acknowledged')]
+    assert all(row['monotonic_ms']>=0 for row in control)
+    assert 'PRIVATE_PROMPT' not in json.dumps(control)
+
+
+def test_restart_after_closed_stdin_preserves_command_and_rejects_live_process(tmp_path: Path):
+    script=tmp_path/'restart.py'
+    script.write_text("import sys,json\nfor line in sys.stdin:\n p=json.loads(line);print(json.dumps({'id':p['id'],'type':'response'}),flush=True)\n")
+    with PiKernel((sys.executable,str(script))) as kernel:
+        with pytest.raises(RuntimeError,match='live'):kernel.restart()
+        command=list(kernel.command)
+        kernel.process.kill();kernel.process.wait(timeout=5)
+        with pytest.raises((OSError,RuntimeError)):kernel.prompt('uncommitted')
+        kernel.restart()
+        assert kernel.command==command
+        assert kernel.prompt('later')['type']=='response'
+
+
 def test_rpc_kernel_native_steer_and_follow_up(tmp_path: Path):
     script = tmp_path / "fake_pi_mutation.py"
     script.write_text("""import sys,json
@@ -297,7 +324,8 @@ time.sleep(10)
                 kernel.wait_for_agent_events(timeout=0.5)
             # Already readable while both the process and trace stream are open.
             events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
-            assert [event["type"] for event in events] == ["response", "tool_execution_end"]
+            assert [event["type"] for event in events if event['type']!='rpc_control'] == ["response", "tool_execution_end"]
+            assert [event['stage'] for event in events if event['type']=='rpc_control']==['sent','acknowledged']
 
 
 def test_kernel_session_deadline_caps_later_event_waits(tmp_path):

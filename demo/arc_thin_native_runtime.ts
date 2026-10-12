@@ -10,7 +10,7 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   level(): number; actionCount(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
-  receipt?(body: string): string };
+  receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any> };
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
   : typeof result.value === 'object' && result.value !== null && 'stdout' in result.value
     ? [(result.value as any).stdout, (result.value as any).has_value ? '→ ' + JSON.stringify((result.value as any).value) : ''].filter(Boolean).join('\n')
@@ -44,13 +44,17 @@ export class NativeRuntime {
   }
   toolNames() { return this.host.binder.candidates().filter(c => c.kind === 'tool' && this.registered.has(c.name)).map(c => c.name); }
   private snapshot() {
+    const started=performance.now(); let readBytes=0;
     const sources: Record<string, string> = {};
     const files: Record<string, string> = {};
     for (const c of this.host.binder.active()) if (c.path.endsWith('.py')) sources[c.path] = c.source;
-    for (const path of this.host.workspace.files()) {
+    const scanStarted=performance.now(), paths=this.host.workspace.files(), scanMs=performance.now()-scanStarted;
+    const readStarted=performance.now();
+    for (const path of paths) {
       if (/^(lib|tools|observers)\/.+\.py$/.test(path)) continue; // failed source never hides behind a working import
-      if (/^skills\/.+\.py$/.test(path)) sources[path] = this.host.workspace.read(path);
-      else files[path] = this.host.workspace.read(path);
+      const body=this.host.workspace.read(path); readBytes+=Buffer.byteLength(body);
+      if (/^skills\/.+\.py$/.test(path)) sources[path] = body;
+      else files[path] = body;
     }
     const versions = this.host.binder.versionMap();
     for (const c of this.host.binder.active()) versions[c.path] = c.version;
@@ -58,7 +62,9 @@ export class NativeRuntime {
     for (const [path, body] of Object.entries(files)) if (/^artifacts\/[^/]+\.json$/.test(path)) {
       try { artifacts[path.slice(10, -5)] = JSON.parse(body); } catch { /* Non-JSON artifacts remain readable files. */ }
     }
-    return { sources, files, state: { ...this.host.state(), artifacts }, versions };
+    return { sources, files, state: { ...this.host.state(), artifacts }, versions,
+      snapshotMetrics:{snapshot_ms:performance.now()-started, scan_ms:scanMs, read_ms:performance.now()-readStarted,
+        snapshot_read_bytes:readBytes, scanned_files:paths.length} };
   }
   private async applyWrites(result: NativeResult) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
@@ -80,6 +86,7 @@ export class NativeRuntime {
     return receipts;
   }
   private async execute(input: ReturnType<NativeRuntime['snapshot']> & Record<string, any>, signal?: AbortSignal, pool?: TaskPythonPool) {
+    const started=performance.now(); const attempts:any[]=[];
     // Store growth must not consume every call's WASI allowance. Reads fetch only exact confined snapshot files.
     const all = input.files; const files: Record<string, string> = {};
     const source = input.code ?? input.sources[input.path] ?? '';
@@ -89,14 +96,26 @@ export class NativeRuntime {
     const timer = setTimeout(abort, 20000);
     try {
       for (let reads = 0; reads <= 32; reads++) {
-        const result = await executeNative({ ...input, files, file_names: Object.keys(all) }, controller.signal, pool);
+        const {snapshotMetrics, ...request}=input;
+        const payload={...request,files,file_names:Object.keys(all)};
+        const at=performance.now();
+        let result:NativeResult, metrics:Record<string,unknown>={};
+        try { result=await executeNative(payload,controller.signal,pool, value=>{metrics=value;}); }
+        catch (error) { attempts.push({ms:performance.now()-at,input_bytes:Buffer.byteLength(JSON.stringify(payload)),
+          ...((error as any).consumed ?? {}),ok:false}); throw error; }
+        attempts.push({ms:performance.now()-at,input_bytes:Buffer.byteLength(JSON.stringify(payload)),...metrics,ok:result.ok});
         if (!result.need_file) return result;
         this.host.workspace.path(result.need_file);
         if (!Object.hasOwn(all, result.need_file) || Object.hasOwn(files, result.need_file)) throw Error('invalid workspace read request');
         files[result.need_file] = all[result.need_file];
       }
       throw Error('workspace read retry budget exceeded; use read with exact refs');
-    } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+    } finally {
+      clearTimeout(timer); signal?.removeEventListener('abort', abort);
+      this.host.log('wasi_runs.jsonl',{mode:input.mode,n:this.host.actionCount(),...input.snapshotMetrics,
+        lazy_restarts:Math.max(0,attempts.length-1),attempts,total_ms:performance.now()-started,
+        timing_note:'execution_ms includes instantiate/guest; attempt ms includes host/compile/transport; do not sum overlapping phases'});
+    }
   }
   async python(code: string, signal?: AbortSignal, readonly = false) {
     const snap = this.snapshot(); const started = Date.now();
@@ -179,9 +198,9 @@ export class NativeRuntime {
     try {
       for (let round = 0; round < 6 && Date.now() < deadline; round++) {
         if (signal?.aborted) throw Error('consult aborted');
-        const stream = ctx.modelRegistry.streamSimple(ctx.model, { systemPrompt: `CONSULT_ROLE ${role.name}\n${role.body}`, messages, tools } as any,
-          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: 1024 } as any);
-        const reply: any = await stream.result();
+        const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt: `CONSULT_ROLE ${role.name}\n${role.body}`, messages, tools } as any,
+          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: 1024,...(onResponse?{onResponse}:{}) } as any);
+        const reply: any = this.host.modelResult ? await this.host.modelResult(create) : await create().result();
         this.host.usage('consult', reply); messages.push(reply);
         if (['error', 'aborted'].includes(reply.stopReason)) throw Error(`consult ${reply.stopReason}: ${reply.errorMessage ?? ''}`);
         answer = (reply.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
@@ -192,8 +211,8 @@ export class NativeRuntime {
         const calls = (reply.content ?? []).filter((b: any) => b.type === 'toolCall');
         if (!calls.length) {
           this.host.log('consult_runs.jsonl', { role: role.name, version: role.version, refs, tools: allowed, answer, ms: Date.now() - started });
-          const ref = `results/consult-${started}.txt`; this.host.workspace.runtimeWrite(ref, answer);
-          return text(`${this.host.binder.label(role.path)} →\n${answer}\nref: ${ref}`);
+          const {ref}=this.host.workspace.saveResult(answer);
+          return text(`${this.host.binder.label(role.path)} →\n${this.host.workspace.receipt(answer)}\nref: ${ref}`);
         }
         for (const call of calls) {
           let result: any;

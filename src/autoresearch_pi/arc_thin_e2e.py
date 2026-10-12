@@ -533,6 +533,84 @@ def _stop_bridge(bridge: subprocess.Popen[str], bridge_stderr: Any, closed: bool
     bridge_stderr.close()
 
 
+def _request_accounting(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    starts = {row['request_id']: row for row in rows if row.get('stage') == 'request_prepared' and row.get('request_id')}
+    ends = {row['request_id']: row for row in rows if row.get('stage') == 'request_settlement' and row.get('request_id')}
+    by_kind: dict[str, Any] = {}
+    known = unknown = 0
+    for key, start in starts.items():
+        end = ends.get(key, {})
+        kind = start.get('kind', 'unknown')
+        counts = by_kind.setdefault(kind, dict(attempts=0, completed=0, aborted=0, unsettled=0, failed=0))
+        counts['attempts'] += 1
+        status = end.get('status', 'unsettled')
+        counts[status if status in counts else 'failed'] += 1
+        value = end.get('total')
+        if isinstance(value, (int, float)) and value >= 0:
+            known += value
+        if end.get('cost_status') != 'reported':
+            unknown += 1
+    return dict(attempts=len(starts), by_kind=by_kind, known_tokens_lower_bound=known,
+                unknown_cost_attempts=unknown, complete_cost_known=unknown == 0,
+                cost_scope='provider-reported tokens, not verified billing')
+
+
+def _consolidation_interval(foundation: str, explicit: int | None) -> int:
+    if explicit is not None and explicit < 0:
+        raise ValueError('consolidation interval must be nonnegative')
+    return (0 if foundation == 'native' else 25) if explicit is None else explicit
+
+
+def _reconciled_action(before: int, health: dict | None, state: dict | None, trajectory_count: int) -> bool:
+    total = ((state or {}).get('action_budget') or {}).get('total_used')
+    if not health or health.get('status') not in {'ready', 'closed'} or total != trajectory_count or trajectory_count < before:
+        raise RuntimeError('environment outcome unknown: recovery action/state reconciliation failed')
+    if trajectory_count > before + 1:
+        raise RuntimeError('environment outcome conflict: more than one action submitted during a decision')
+    return trajectory_count > before
+
+
+def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *, max_recoveries: int = 2,
+                         settlement_timeout: float = 30.0, restart=None) -> list[dict[str, Any]]:
+    """A local fault group. Abort, settle and reconcile before considering another paid request."""
+    for attempt in range(max_recoveries + 1):
+        try:
+            return turn(message)
+        except (PiTurnIdleTimeout, RuntimeError, OSError) as exc:
+            dead = (not isinstance(exc, PiTurnIdleTimeout) and restart is not None
+                    and (isinstance(exc,OSError) or 'Pi RPC process exited' in str(exc)) and kernel.process is not None
+                    and kernel.process.poll() is not None)
+            if not isinstance(exc, PiTurnIdleTimeout) and not dead:
+                raise
+            if not dead:
+                summary['idle_timeouts'] += 1
+            try:
+                if dead:
+                    settled = [{'type':'agent_settled', 'recovery':'committed_action'}]
+                else:
+                    kernel.abort()
+                    settled = kernel.wait_for_agent_events(timeout=settlement_timeout)
+                    if not any(e.get('type') == 'agent_settled' for e in settled):
+                        raise RuntimeError('abort did not settle; recovery refused')
+                committed = reconcile()
+                if not committed and attempt >= max_recoveries:
+                    raise RuntimeError('continuous idle recovery allowance exhausted') from exc
+                if dead:
+                    restart()
+                    summary['pi_process_restarts'] = summary.get('pi_process_restarts', 0) + 1
+            except Exception:
+                summary['idle_recovery_failures'] += 1
+                raise
+            if committed:
+                return settled
+            summary['idle_recoveries'] += 1
+            message = CONSOLIDATE_RECOVERY_PROMPT if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT} else (
+                       'RECOVER TURN. The previous request stopped; the environment confirms no action was committed. '
+                       'Continue the unfinished investigation using available tools and the current observation, '
+                       'then submit one arc_action. Do not repeat completed writes or earlier actions.')
+    raise AssertionError('unreachable')
+
+
 def run_arc_thin_e2e(
     root: Path,
     *,
@@ -543,7 +621,7 @@ def run_arc_thin_e2e(
     max_decisions: int | None = None,
     max_reported_tokens: int | None = None,
     experiment_timeout_seconds: float | None = None,
-    consolidate_after_actions: int = 25,
+    consolidate_after_actions: int | None = None,
     review_on_miss: bool = False,
     max_no_action_decisions: int = 3,
     max_environment_failures: int = 2,
@@ -585,6 +663,9 @@ def run_arc_thin_e2e(
         continuity = "session"
     if review_at_level_change is None:
         review_at_level_change = foundation == "legacy"
+    consolidate_after_actions = _consolidation_interval(foundation, consolidate_after_actions)
+    if decision_timeout_seconds < 0 or turn_idle_timeout_seconds < 0:
+        raise ValueError('request fault timeouts must be nonnegative; 0 disables them')
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError(f"run root must be new or empty: {root}")
@@ -693,6 +774,8 @@ def run_arc_thin_e2e(
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
             "ledger": ledger_enabled, "critic": critic_enabled,
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
+            "decision_timeout_seconds": decision_timeout_seconds,
+            "max_continuous_idle_recoveries": 2,
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
             "review_at_level_change": review_at_level_change,
@@ -706,6 +789,10 @@ def run_arc_thin_e2e(
 
         def persist(event: dict[str, Any]) -> None:
             kind = event.get("type")
+            if foundation == 'native' and kind in {'rpc_control','agent_settled'}:
+                with (root/'request-control.jsonl').open('a',encoding='utf-8') as control:
+                    row = event if kind=='rpc_control' else dict(type=kind,monotonic_ms=time.monotonic()*1000)
+                    control.write(json.dumps(dict(t=time.time(),**row))+'\n')
             if kind == "extension_error":
                 extension_errors.append(event)
             if kind in PERSISTED_EVENTS:
@@ -717,6 +804,14 @@ def run_arc_thin_e2e(
             event_projector=lambda event: None if event.get("type") == "message_update" else event,
         ).start()
         kernel.send("set_auto_compaction", enabled=auto_compaction)
+        if foundation == 'native':
+            pi_state = kernel.send('get_state').get('data', {})
+            if pi_state.get('autoCompactionEnabled') is not auto_compaction:
+                raise RuntimeError('Pi effective automatic compaction does not match requested configuration')
+            effective = json.loads((root / 'run-config.json').read_text(encoding='utf-8'))
+            effective['pi_auto_compaction_enabled'] = pi_state['autoCompactionEnabled']
+            effective['pi_context_window'] = (pi_state.get('model') or {}).get('contextWindow')
+            (root / 'run-config.json').write_text(json.dumps(effective, ensure_ascii=False, indent=2), encoding='utf-8')
         if thinking:
             kernel.send("set_thinking_level", level=thinking)
 
@@ -732,17 +827,35 @@ def run_arc_thin_e2e(
             if response.get("success") is False:
                 raise RuntimeError(f"Pi rejected the prompt: {response.get('error')}")
             return kernel.wait_for_agent_events(
-                timeout=min(decision_timeout_seconds, max(1.0, deadline - time.monotonic())),
-                idle_timeout=min(turn_idle_timeout_seconds, decision_timeout_seconds),
+                timeout=min(decision_timeout_seconds or math.inf, max(1.0, deadline - time.monotonic())),
+                idle_timeout=(min(turn_idle_timeout_seconds, decision_timeout_seconds or math.inf)
+                              if turn_idle_timeout_seconds else None),
             )
 
         def safe_turn(message: str, *, allow_idle_recovery: bool = True) -> list[dict[str, Any]]:
             """Bound a provider/Pi turn that stops emitting events before settlement.
 
-            A recovery is permitted once per call. Durable harness files and the bridge
-            remain authoritative; a fresh Pi session prevents an unfinished model turn
-            from replaying an already committed action.
+            Native retries are local to this call; the retained session and bridge
+            remain authoritative. A dead Pi process reopens the same session file.
             """
+            if foundation == 'native':
+                before = len(_read_jsonl(harness / 'trajectory.jsonl'))
+                def reconcile():
+                    nonlocal bridge_after
+                    health = _bridge_health(bridge_url)
+                    if not health or health.get('status') not in {'ready', 'closed'}:
+                        raise RuntimeError('environment outcome unknown: bridge is not ready after cancellation')
+                    bridge_after = _sync_bridge_events(root, bridge_url, bridge_after)
+                    return _reconciled_action(before, health, _bridge_state(bridge_url),
+                                              len(_read_jsonl(harness / 'trajectory.jsonl')))
+                def restart():
+                    kernel.restart()
+                    kernel.send('set_auto_compaction', enabled=auto_compaction)
+                    if thinking:
+                        kernel.send('set_thinking_level', level=thinking)
+                return _recover_native_turn(turn, message, kernel, summary, reconcile,
+                    max_recoveries=2 if allow_idle_recovery else 0,
+                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart)
             try:
                 return turn(message)
             except PiTurnIdleTimeout as exc:
@@ -781,12 +894,17 @@ def run_arc_thin_e2e(
             if not length_stopped(events):
                 return events
             summary["length_stops"] += 1
+            if foundation == 'native' and len(_read_jsonl(harness / 'trajectory.jsonl')) > action_count:
+                return events
             if time.monotonic() >= deadline - 5:
                 return events
             if continuity != "session":
                 kernel.new_session()
             summary["length_recoveries"] += 1
-            recovery = CONSOLIDATE_RECOVERY_PROMPT if message == CONSOLIDATE_PROMPT else DECIDE_RECOVERY_PROMPT
+            recovery = CONSOLIDATE_RECOVERY_PROMPT if message == CONSOLIDATE_PROMPT else (
+                'RECOVER ACTION. The previous reply reached the provider output limit. Continue the unfinished '
+                'step using the available tools and current observation; reuse suitable components. '
+                'Do not repeat completed operations. End with one arc_action.' if foundation == 'native' else DECIDE_RECOVERY_PROMPT)
             resumed = safe_turn(recovery)
             if length_stopped(resumed):
                 summary["length_recovery_failures"] += 1
@@ -832,7 +950,7 @@ def run_arc_thin_e2e(
                 (level_changed_since_consolidation and review_at_level_change)
                 or str(state.get("state")) == "GAME_OVER"
                 or miss_due
-                or action_count - consolidated_at >= consolidate_after_actions
+                or (consolidate_after_actions > 0 and action_count - consolidated_at >= consolidate_after_actions)
             )
             fatal_before = _fatal_errors(harness)
             environment_before = _environment_errors(harness)
@@ -859,7 +977,7 @@ def run_arc_thin_e2e(
                 summary["error"] = str(exc)
                 break
             except RuntimeError as exc:
-                summary["stop_reason"] = "pi_failed"
+                summary["stop_reason"] = "environment_outcome_unknown" if 'environment outcome' in str(exc) else "pi_failed"
                 summary["error"] = str(exc)
                 break
             finally:
@@ -896,6 +1014,8 @@ def run_arc_thin_e2e(
             if isinstance(events, list):
                 _append_bridge_event_batch(root, events)
             summary["bridge_close"] = closed
+            summary['bridge_close_status'] = closed.get('close_status','closed')
+            summary['scorecard_verified'] = closed.get('scorecard_verified',False)
             bridge_closed = True
         except (OSError, RuntimeError, ValueError) as exc:
             summary["bridge_close_error"] = str(exc)
@@ -939,7 +1059,13 @@ def _write_summary(root: Path, summary: dict[str, Any], final_state: dict[str, A
         "reported_tokens": _reported_tokens(harness),
         "elapsed_seconds": round(time.monotonic() - started, 1),
         "harness": _harness_stats(harness),
+        "updated_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     })
+    requests = _read_jsonl(harness / 'request-events.jsonl')
+    if requests:
+        out['request_accounting'] = _request_accounting(requests)
+        out['reported_tokens'] = out['request_accounting']['known_tokens_lower_bound']
+        out['cost_status'] = 'reported' if out['request_accounting']['complete_cost_known'] else 'partial'
     if partial:
         out["partial"] = True
         out["stop_reason"] = out.get("stop_reason") or "running"

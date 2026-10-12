@@ -89,6 +89,7 @@ function checkJson(value: unknown, depth: number, maximum: number): void {
 }
 export async function evaluateTaskPython(program: ValidatedTaskPythonProgram, input: Record<string, unknown>,
 	signal?: AbortSignal) {
+	const started=performance.now();
 	if (signal?.aborted) throw new TaskPythonError("cancelled", "Python calculation cancelled");
 	assertTaskPythonRuntimeAvailable(program.runtime);
 	const limits = program.effective_limits;
@@ -126,7 +127,8 @@ export async function evaluateTaskPython(program: ValidatedTaskPythonProgram, in
 		else child.stdin.end(JSON.stringify({ source: program.source, input, limits, runtime: program.runtime }));
 	});
 	if (signal?.aborted) throw new TaskPythonError("cancelled", "Python calculation cancelled");
-	return taskPythonResult(program, response);
+	return {...taskPythonResult(program, response),transport:{queue_ms:0,host_wall_ms:performance.now()-started,
+		startup_ms:null, timing_note:'fresh-host startup included in host_wall_ms; no separate ready event'}};
 }
 
 /** Shared trusted-boundary checks for one guest response. */

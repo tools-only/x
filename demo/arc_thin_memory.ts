@@ -37,7 +37,7 @@ export const STRATEGY_STATUSES = ["active", "suspended", "done", "abandoned"] as
 export type Verdict = typeof VERDICTS[number];
 export type Status = typeof STATUSES[number];
 export type StrategyStatus = typeof STRATEGY_STATUSES[number];
-export type Fact = { text: string; confidence: number };
+export type Fact = { text: string; confidence: number; at?: number };
 export type Evidence = { action?: number; condition: string; observed: string; verdict: Verdict };
 export type Hypothesis = {
 	claim: string; question?: string; predicts?: string; status: Status; next_test?: string; evidence: Evidence[];
@@ -60,7 +60,7 @@ export type MemoryState = {
 	dropped: Dropped[]; revisions: Revision[];
 };
 /** Harness components outside memory that a strategy can use; checks: the rendered check line per hypothesis key. */
-export type ComponentContext = { skills?: Record<string, number>; overlay?: string; checks?: Record<string, string> };
+export type ComponentContext = { skills?: Record<string, number>; overlay?: string; checks?: Record<string, string>; factProvenance?: boolean };
 
 export type HypothesisInput = {
 	key: string; claim?: string; question?: string; predicts?: string; status?: Status; next_test?: string; evidence?: Partial<Evidence>;
@@ -153,7 +153,8 @@ export function applyRow(state: MemoryState, row: any): void {
 		return;
 	}
 	if (row.strat && typeof row.strat === "object") { state.strategies.set(key, row.strat as Strategy); return; }
-	if (typeof row.text === "string") state.facts.set(key, { text: row.text, confidence: Number(row.confidence) || 3 });
+	if (typeof row.text === "string") state.facts.set(key, { text: row.text, confidence: Number(row.confidence) || 3,
+		...(Number.isInteger(row.at) && row.at >= 0 ? {at:row.at} : {}) });
 }
 
 const prefixed = (prefix: string) => (key: string) => {
@@ -623,11 +624,12 @@ export function applyRows(state: MemoryState, rows: MemoryRow[]): void {
 	for (const row of rows) applyRow(state, row);
 }
 
-export function renderFacts(state: MemoryState): string {
+export function renderFacts(state: MemoryState, provenance = false): string {
 	if (state.facts.size === 0) return `MEMORY: empty — save what you learn with memory(set=[{key, text}]).`;
 	return [`MEMORY (${state.facts.size}):`,
-		...[...state.facts].map(([key, entry]) => `- ${key}: ${JSON.stringify(entry.text)} (conf ${entry.confidence})`)].join("\n");
+		...[...state.facts].map(([key, entry]) => `- ${key}: ${JSON.stringify(entry.text)} (conf ${entry.confidence})${provenance ? factSource(entry) : ''}`)].join("\n");
 }
+const factSource = (entry: Fact) => entry.at !== undefined ? ` [recorded at #${entry.at}; check current applicability]` : ' [source unknown]';
 
 /**
  * A bounded parent-facing memory view. Durable memory remains lossless in
@@ -636,13 +638,13 @@ export function renderFacts(state: MemoryState): string {
  * strategy. Keys remain visible so the Agent can request the full view when a
  * detail matters.
  */
-export function renderFactsCompact(state: MemoryState, maxChars = 2200): string {
+export function renderFactsCompact(state: MemoryState, maxChars = 2200, provenance = false): string {
 	if (state.facts.size === 0) return `MEMORY: empty — save what you learn with memory(set=[{key, text}]).`;
 	const entries = [...state.facts];
 	const lines = [`MEMORY (${state.facts.size}; compact parent view):`];
 	let room = Math.max(320, maxChars - lines[0].length);
 	for (const [key, entry] of entries) {
-		const prefix = `- ${key} (conf ${entry.confidence}): `;
+		const prefix = `- ${key} (conf ${entry.confidence})${provenance ? factSource(entry) : ''}: `;
 		const budget = Math.max(40, Math.min(220, room - prefix.length - 1));
 		const text = entry.text.length > budget ? `${entry.text.slice(0, Math.max(0, budget - 1))}…` : entry.text;
 		const line = `${prefix}${JSON.stringify(text)}`;
@@ -813,7 +815,7 @@ export function renderRevisions(state: MemoryState, actions: string[], ctx: Comp
 
 /** The whole memory as shown in the working set (revisions need the action labels). */
 export function renderMemory(state: MemoryState, actionCount: number, actions: string[] = [], ctx: ComponentContext = {}): string {
-	return [renderHypotheses(state, actionCount, ctx.checks), renderStrategies(state, actionCount, ctx, actions), renderRevisions(state, actions, ctx), renderFacts(state)]
+	return [renderHypotheses(state, actionCount, ctx.checks), renderStrategies(state, actionCount, ctx, actions), renderRevisions(state, actions, ctx), renderFacts(state,ctx.factProvenance)]
 		.filter(Boolean).join("\n\n");
 }
 

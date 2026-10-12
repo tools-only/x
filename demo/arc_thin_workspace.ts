@@ -1,5 +1,5 @@
 /** Confined backends for Pi file tools. No host path reaches an agent receipt. */
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition,
@@ -7,9 +7,15 @@ import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefi
 
 export class Workspace {
   readonly root: string;
+  private resultIndex: string;
+  private inlineChars: number;
   onWrite?: (path: string) => Promise<string | undefined>;
-  constructor(runRoot: string) {
+  constructor(runRoot: string, options: { inlineChars?: number } = {}) {
     this.root = resolve(runRoot, 'workspace');
+    this.inlineChars = options.inlineChars ?? 1500;
+    if (!Number.isInteger(this.inlineChars) || this.inlineChars < 0) throw Error('invalid inline result threshold');
+    const privateRoot = resolve(runRoot, '.harness'); mkdirSync(privateRoot, {recursive:true});
+    this.resultIndex = join(privateRoot, 'result-index.jsonl');
     mkdirSync(this.root, { recursive: true });
     if (lstatSync(this.root).isSymbolicLink()) throw Error('workspace root cannot be a link');
     for (const dir of ['data/frames', 'notes', 'prompts', 'lib', 'tools', 'observers', 'skills', 'roles', 'artifacts', 'results'])
@@ -68,12 +74,60 @@ export class Workspace {
     return out;
   }
   read(path: string): string { return readFileSync(this.path(path), 'utf8'); }
+  saveResult(body: string): { ref: string; hash: string } {
+    const hash = createHash('sha256').update(body).digest('hex');
+    const records = new Map<string, string>(); const mapped = new Set<string>();
+    if (existsSync(this.resultIndex)) for (const line of readFileSync(this.resultIndex, 'utf8').split('\n')) {
+      try { const row = JSON.parse(line);
+        if (/^[a-f0-9]{64}$/.test(row.hash) && /^results\/r\d+\.txt$/.test(row.ref)) {
+          records.set(row.hash, row.ref); mapped.add(row.ref);
+        }
+      } catch { /* Torn index entries are repaired from immutable evidence. */ }
+    }
+    const old = `results/${hash}.txt`;
+    if (existsSync(this.path(old)) && this.read(old) === body) return {ref:old, hash};
+    const known = records.get(hash);
+    if (known && existsSync(this.path(known)) && this.read(known) === body) return {ref:known, hash};
+    const names = readdirSync(this.path('results')).filter(n => /^r\d+\.txt$/.test(n));
+    let next = 1;
+    for (const name of names) {
+      next = Math.max(next, Number(name.slice(1, -4)) + 1);
+      const ref = `results/${name}`;
+      if (mapped.has(ref)) continue;
+      const saved = this.read(ref), savedHash = createHash('sha256').update(saved).digest('hex');
+      appendFileSync(this.resultIndex, '\n' + JSON.stringify({hash:savedHash, ref}) + '\n');
+      if (savedHash === hash && saved === body) return {ref, hash};
+    }
+    while (true) {
+      const ref = `results/r${String(next++).padStart(6, '0')}.txt`;
+      try { writeFileSync(this.path(ref, true, true), body, {encoding:'utf8', flag:'wx'}); }
+      catch (error) { if ((error as any).code === 'EEXIST') continue; throw error; }
+      appendFileSync(this.resultIndex, '\n' + JSON.stringify({hash, ref}) + '\n');
+      return {ref, hash};
+    }
+  }
   receipt(body: string, status = 'ok', keyLines: string[] = []): string {
-    if (body.length <= 1500) return body;
-    const hash = createHash('sha256').update(body).digest('hex'); const ref = `results/${hash}.txt`;
-    if (!existsSync(this.path(ref))) this.runtimeWrite(ref, body);
+    if (body.length <= this.inlineChars) return body;
+    const {hash, ref} = this.saveResult(body);
     const keys = [...keyLines, ...body.split('\n').filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);
-    return `Result ${status}; ${body.length} chars; sha256=${hash}\n${body.slice(0, 450)}\n${keys ? keys + '\n' : ''}ref: ${ref}\nread ${ref} with offset/limit for exact lines.`;
+    const lines = body.split('\n'); const shown = new Map<number, string>();
+    const sample = (indices: number[]) => {
+      let room = 240;
+      for (const i of indices) {
+        if (shown.has(i)) continue;
+        const value = lines[i];
+        if (value.length + 1 > room) {
+          if (!shown.has(i) && room === 240) shown.set(i, value.slice(0, 210) + ' [partial line]');
+          break;
+        }
+        shown.set(i, value); room -= value.length + 1;
+      }
+    };
+    sample(lines.map((_,i) => i)); sample(lines.map((_,i) => lines.length - 1 - i));
+    const preview = [...shown].sort(([a],[b]) => a-b).map(([i,line]) => `L${i+1}: ${line}`).join('\n');
+    const omitted = lines.map((_,i) => i+1).filter(n => !shown.has(n-1));
+    const omittedText = omitted.length ? `omitted lines ${omitted[0]}–${omitted.at(-1)}` : 'partial lines marked above';
+    return `Result ${status}; ${body.length} chars; ${lines.length} lines; sha256=${hash}\nPreview partial; ${omittedText}\n${preview}\n${keys ? keys + '\n' : ''}ref: ${ref}\nread ${ref} with offset/limit for exact lines.`;
   }
   fileTools(): ToolDefinition[] {
     const safe = (p: string, write = false) => this.path(p, write, false, true);

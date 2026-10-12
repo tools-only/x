@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import threading
@@ -183,6 +184,9 @@ class PiKernel:
             payload = {"id": request_id, "type": command, **params}
             self.process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
             self.process.stdin.flush()
+            if self.event_sink:
+                self.event_sink(dict(type='rpc_control', stage='sent', command=command,
+                    rpc_id=request_id, pid=self.process.pid, monotonic_ms=time.monotonic()*1000))
             while True:
                 wait_timeout = self._remaining_timeout(self.timeout)
                 try:
@@ -203,6 +207,10 @@ class PiKernel:
                     or event.get("request_id") == request_id
                     or (event.get("type") == "response" and event.get("command") == command)
                 ):
+                    if self.event_sink:
+                        self.event_sink(dict(type='rpc_control', stage='acknowledged', command=command,
+                            rpc_id=request_id, pid=self.process.pid, success=event.get('success'),
+                            monotonic_ms=time.monotonic()*1000))
                     return event
 
     def drain_events(self) -> List[Dict[str, Any]]:
@@ -308,7 +316,7 @@ class PiKernel:
             wait_for = deadline - time.monotonic()
             if idle_timeout is not None:
                 wait_for = min(wait_for, max(0.0, last_event_at + idle_timeout - time.monotonic()))
-            event = self._receive_event(wait_for)
+            event = self._receive_event(min(wait_for, 1.0) if not math.isfinite(wait_for) else wait_for)
             if event is None:
                 if idle_timeout is not None and time.monotonic() - last_event_at >= idle_timeout:
                     raise PiTurnIdleTimeout(
@@ -507,7 +515,12 @@ class PiKernel:
                 thread.join(timeout=1)
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream:
-                stream.close()
+                try:
+                    stream.close()
+                except OSError:
+                    # A dead child's buffered stdin may fail to flush on close.
+                    # It cannot receive more data; still close the other handles.
+                    pass
         # Session rotation is intentionally excluded: only the owning task
         # runtime closes this scope. Child Pi processes never own the parent.
         if (self.env or {}).get("PI_AUTORESEARCH_OWNS_TASK") == "enabled":
@@ -516,6 +529,22 @@ class PiKernel:
             task_root = (self.env or {}).get("PI_AUTORESEARCH_E2E_ROOT")
             if task_root:
                 seal_task_scope(Path(task_root))
+
+    def restart(self) -> "PiKernel":
+        """Reopen this command/session only after its previous process has died."""
+        if self.process is None or self.process.poll() is None:
+            raise RuntimeError('refusing to restart a live or unstarted Pi process')
+        if (self.env or {}).get('PI_AUTORESEARCH_OWNS_TASK') == 'enabled':
+            raise RuntimeError('same-session restart is not supported for an owned research task scope')
+        options = dict(command=self.command, cwd=self.cwd, env=self.env, timeout=self.timeout,
+                       deadline=self.deadline, event_sink=self.event_sink, event_projector=self.event_projector)
+        # Native ARC does not own an Auto-Research task scope. Keep its exact --session argument.
+        self.close()
+        if any(t and t.is_alive() for t in (self._reader_thread, self._stderr_thread)):
+            raise RuntimeError('old Pi readers have not settled; restart refused')
+        replacement = PiKernel(**options).start()
+        self.__dict__.update(replacement.__dict__)
+        return self
 
     def __enter__(self) -> "PiKernel":
         return self.start()

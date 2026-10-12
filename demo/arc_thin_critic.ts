@@ -26,6 +26,11 @@ export const CRITIC_SYSTEM = "You review an agent that is playing an ARC-AGI-3 g
 	"cheapest test names the observation that would separate the claim from a rival, not an action sequence. " +
 	"Do not correct counts or positions unless that changes a status. Do not repeat an earlier review unless new evidence changed it. No other text.";
 
+export const NATIVE_CRITIC_SYSTEM = CRITIC_SYSTEM +
+  ' Separate intended action effects from recorded effects. A conditional claim is contradicted only when its precondition actually held and the consequence failed. ' +
+  'A blocked attempt to reach a position leaves the claim about reaching it untested. Do not substitute a different object or condition for the one named by the claim. ' +
+  'Use actual changes, prediction scores and check results to bound the conclusion; zero applicable checks and check errors are not refutations.';
+
 export type CriticConfig = {
 	minGap: number; effortRun: number; experimentMin: number; stall: number; perLevel: number;
 	maxOutputTokens: number; timeoutMs: number;
@@ -143,6 +148,7 @@ const clip = (text: string, max: number) => text.length > max ? `${text.slice(0,
 export function buildDossier(input: {
 	state: LedgerState; triggers: string[]; memoryText: string; skills: string[]; notes: CriticNote[];
 	recentLines: string[]; currentState: string; goalHypotheses?: GoalHypothesisRef[];
+	evidenceLines?: string[];
 }): string {
 	const { state } = input;
 	const completions = state.completions.slice(-4).map(item => `#${item.n} ${item.kind === "level" ? `level ${item.from}→${item.to}` : "GAME_OVER"}: ` +
@@ -165,6 +171,7 @@ export function buildDossier(input: {
 		`REPEATED RESULTS: ${repeats.join("; ") || "(none)"}`,
 		`EARLIER REVIEWS:\n${notes.join("\n") || "(none)"}`,
 		`LAST ACTIONS (with how their predictions scored):\n${input.recentLines.join("\n")}`,
+		...(input.evidenceLines?.length ? [`PUBLIC TRANSITION EVIDENCE (actual, not intended; partial coordinates labelled):\n${input.evidenceLines.join('\n')}`] : []),
 		`CURRENT STATE (summary):\n${clip(input.currentState, 2400)}`,
 	].join("\n\n");
 }

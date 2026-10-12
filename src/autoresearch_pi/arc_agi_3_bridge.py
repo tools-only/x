@@ -725,9 +725,40 @@ class ArcBridge:
 
     def close(self) -> dict[str, Any]:
         with self._access():
+            if self._close_result and self._close_result.get('close_status') == 'failed':
+                return {**self._close_result, 'events':self.events()['events']}
             if not self.closed:
-                native = self._sdk("close", lambda: self.arcade.close_scorecard(self.card_id),
-                                   timeout=getattr(self, "close_timeout_seconds", 20.0))
+                native = None
+                for attempt in range(2):
+                    try:
+                        native = self._sdk("close", lambda: self.arcade.close_scorecard(self.card_id),
+                                           timeout=getattr(self, "close_timeout_seconds", 20.0))
+                        break
+                    except ArcEnvironmentError:
+                        raise  # In-flight outcome unknown: never issue another SDK operation.
+                    except Exception as exc:
+                        status = getattr(getattr(exc,'response',None),'status_code',None)
+                        if attempt == 0 and isinstance(exc,OSError) and (status is None or status >= 500):
+                            continue
+                        result = dict(close_status='failed', close_http_status=status,
+                                      close_error=f'{type(exc).__name__}: {exc}'[:500],
+                                      scorecard_id=self.card_id, scorecard_verified=False,
+                                      actions=self.actions, levels_completed=self._frame()['levels_completed'])
+                        getter = getattr(self.arcade,'get_scorecard',None)
+                        if status == 404 and callable(getter):
+                            try:
+                                snapshot = self._sdk('get_scorecard',lambda:getter(self.card_id),
+                                    timeout=getattr(self,'close_timeout_seconds',20.0))
+                                if snapshot is not None:
+                                    (self.root/'arc-scorecard-snapshot.json').write_text(
+                                        json.dumps(snapshot.model_dump(mode='json'),ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+                                    result['scorecard_snapshot_available']=True
+                            except Exception:
+                                result['scorecard_snapshot_available']=False
+                        self._close_result=result
+                        self._append({'event':'scorecard_close_failed',**result})
+                        (self.root/'bridge-close-status.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+                        return {**result,'events':self.events()['events']}
                 self.scorecard = native.model_dump(mode="json") if native is not None else None
                 self.closed = True
                 try:
@@ -738,6 +769,7 @@ class ArcBridge:
                     pass
                 frame = self._frame()
                 result = {
+                    'close_status':'closed', 'scorecard_verified':native is not None,
                     "terminal_state": frame["state"], "levels_completed": frame["levels_completed"],
                     "actions": self.actions, "forced_actions": self.forced_actions,
                     "scorecard_id": self.card_id, "baseline_actions": self.baseline_actions,

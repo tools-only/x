@@ -29,6 +29,8 @@ import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
+import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
+import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
 import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -44,7 +46,7 @@ import { backtestCases, renderBacktest, scoreBacktest, type GuestCaseResult, typ
 import { sharedTaskPythonPool } from "./pi_task_python_pool.ts";
 import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
 import {
-	CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
+	CRITIC_SYSTEM, NATIVE_CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
 } from "./arc_thin_critic.ts";
 import {
 	MAX_EVIDENCE, MAX_HYPOTHESES, MAX_STEPS, MAX_STRATEGIES, STATUSES, STRATEGY_STATUSES, VERDICTS, applyRow, applyRows, emptyMemory, memoryForSkills,
@@ -54,7 +56,7 @@ import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, rep
 import {
 	normalizePrediction, predictionSchema, renderScore, scorePrediction, type Outcome, type Prediction, type ScoredPrediction,
 } from "./arc_thin_prediction.ts";
-import { buildHistory, type CellChange } from "./arc_thin_history.ts";
+import { buildHistory, gridChanges, type CellChange } from "./arc_thin_history.ts";
 import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } from "./arc_thin_analyst.ts";
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
 import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue } from "./arc_thin_claims.ts";
@@ -166,7 +168,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
-  const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd()) : undefined;
+  const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
+    inlineChars: Number(process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 1500) }) : undefined;
   const binder = workspace ? new Binder(workspace, validatePythonComponent) : undefined;
   let nativeRuntime: NativeRuntime | undefined;
 
@@ -262,9 +265,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		decision = Math.max(0, ...decisions);
 	}
 
+	const requestTrace = new RequestTrace(row => append('request-events.jsonl', row));
+	let parentRequest: string | undefined;
 	function appendUsage(kind: string, message: any): void {
 		const usage = message?.usage ?? {};
 		if (kind === "agent") { run.output += Number(usage.output) || 0; run.reasoningTokens += Number(usage.reasoning) || 0; }
+		if (native) {
+			if (kind === 'agent' && parentRequest) { requestTrace.finish(parentRequest,message); parentRequest=undefined; }
+			append('usage.jsonl',{decision,kind,...usageRecord(message),request_id:requestTrace.idFor(message) ?? null});
+			return;
+		}
 		append("usage.jsonl", {
 			decision, kind, input: usage.input ?? 0, output: usage.output ?? 0, cache_read: usage.cacheRead ?? 0,
 			cache_write: usage.cacheWrite ?? 0, reasoning: usage.reasoning ?? 0, total: usage.totalTokens ?? 0,
@@ -373,6 +383,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Skills and the overlay, as strategies reference them (uses: "skill:<name>", "prompt"), and each check's record. */
 	const components = (): ComponentContext => ({
 		skills: Object.fromEntries([...skills].map(([name, skill]) => [name, skill.version])), overlay, checks: claimLines(),
+		...(native ? {factProvenance:true} : {}),
 	});
 	const memoryText = () => {
 		const full = renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components());
@@ -382,7 +393,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const index = full.indexOf(marker);
 		if (index < 0) return full;
 		const head = full.slice(0, index).trimEnd();
-		return `${head}\n\n${renderFactsCompact(memory)}`;
+		return `${head}\n\n${renderFactsCompact(memory, 2200, native)}`;
 	};
 
 	const currentLevel = () => Number(observation?.levels_completed ?? trajectory.at(-1)?.levels_completed ?? 0) || 0;
@@ -941,16 +952,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * pi-ai/compat's completeSimple, used until 2026-10-12, could not see those registrations.
 	 */
 	async function sideCall(ctx: ExtensionContext, systemPrompt: string, content: any[], options: { signal?: AbortSignal; maxTokens: number }): Promise<any> {
-		const stream: any = ctx.modelRegistry.streamSimple(ctx.model!, {
+		const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, {
 			systemPrompt, messages: [{ role: "user", content, timestamp: Date.now() }],
-		} as any, { signal: options.signal, maxTokens: options.maxTokens } as any);
-		return await stream.result();
+		} as any, { signal: options.signal, maxTokens: options.maxTokens,...(onResponse?{onResponse}:{}) } as any);
+		return native ? await requestTrace.run(systemPrompt === CRITIC_SYSTEM || systemPrompt === NATIVE_CRITIC_SYSTEM ? 'critic' : 'analyst', decision, create) : await create().result();
 	}
 
 	async function askCritic(ctx: ExtensionContext, dossier: string): Promise<{ reply: any; answer: string }> {
 		// No reasoning for this short side call: with the parent's level passed on (round 5, "high"), every critic
 		// call spent its whole output budget on reasoning and stopped at length with no text (4 of 4 in tu93).
-		const reply: any = await sideCall(ctx, CRITIC_SYSTEM, [{ type: "text", text: dossier }],
+		const reply: any = await sideCall(ctx, native ? NATIVE_CRITIC_SYSTEM : CRITIC_SYSTEM, [{ type: "text", text: dossier }],
 			{ signal: AbortSignal.timeout(criticConfig.timeoutMs), maxTokens: criticConfig.maxOutputTokens });
 		appendUsage("critic", reply);
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
@@ -961,6 +972,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!ctx?.model) return;
 		const dossierFor = (recent: number, withState: boolean) => buildDossier({
 			state, triggers, memoryText: memoryText(),
+			...(native ? {evidenceLines:trajectory.slice(-2).map(row => {
+				const before=grids.get(row.n-1), after=grids.get(row.n);
+				const changes=before && after ? gridChanges(before,after) : undefined;
+				return `#${row.n}: actual changed_cells=${row.changed_cells ?? '?'}; ` +
+					(changes ? JSON.stringify(changes.slice(0,40)) + (changes.length>40 ? ' [partial; omitted changes]' : '') : 'grids unavailable') +
+					`; exact frames data/frames/${row.n-1}.json and data/frames/${row.n}.json`;
+			})} : {}),
 			skills: [...skills].map(([name, skill]) => `${name} v${skill.version} — ${skill.description || "(no description)"}`),
 			notes: criticNotes, recentLines: trajectory.slice(-recent).map(decisionLine),
 			currentState: withState ? criticStateText() : "(left out)", goalHypotheses: goalHypothesisRefs(),
@@ -1105,7 +1123,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
-		if (run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
+		if (!native && run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
 			return { reason: `hard tool-call limit (${HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
 		if (name === "arc_action") {
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
@@ -1116,7 +1134,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		if (run.actionDone && !endsBatch())
 			return { reason: "this decision already ended with arc_action", terminate: true };
-		if (run.toolCalls > (diagnosticBudget || SOFT_TOOL_CALLS))
+		if (!native && run.toolCalls > (diagnosticBudget || SOFT_TOOL_CALLS))
 			return run.consolidating
 				? { reason: `tool-call limit (${SOFT_TOOL_CALLS}) for consolidation reached; the review ends`, terminate: true }
 				: { reason: `tool-call limit (${SOFT_TOOL_CALLS}) for this decision reached; submit arc_action in the next decision`, terminate: true };
@@ -1124,6 +1142,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	const refused = (reason: string) => text(reason, { refused: true }, true);
+	const nativeLoop = new NativeLoopGuard();
+	const loopEpoch = () => JSON.stringify([decision, trajectory.length, binder?.versionMap(),
+		[...memory.facts], [...memory.hypotheses], [...memory.strategies]]);
 
 	function guardTool<P>(name: string, fn: (params: P, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any> | any) {
 		/** A result produced alongside arc_action is carried into the next decision; the agent cannot see it now. */
@@ -1142,8 +1163,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				if (verdict.terminate || (name !== "arc_action" && endsBatch())) return carry(refused(verdict.reason), true);
 				throw new Refusal(verdict.reason);
 			}
-			try { return carry(await fn(params, signal, ctx), false); }
+			const epoch = native ? loopEpoch() : '';
+			try {
+				const result = await fn(params, signal, ctx);
+				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError)))
+					return carry({...result, terminate:true, details:{...result.details, no_progress:true},
+						content:[...(result.content ?? []), {type:'text', text:'Three identical observations/errors without a state or workspace change; this decision ends. Use the recorded evidence or change the investigation.'}]}, Boolean(result?.isError));
+				return carry(result, Boolean(result?.isError));
+			}
 			catch (error) {
+				if (native && nativeLoop.record(name, params, epoch, true))
+					return carry({...refused('Repeated unchanged error; decision ends: ' + errorText(error)), isError:true}, true);
 				if (!(error instanceof Refusal)) logError(`tool:${name}`, error);
 				if (name !== "arc_action" && endsBatch()) return carry(refused(errorText(error)), true);
 				throw error;
@@ -1641,7 +1671,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         // Use Pi's native engine; Pi still schedules, persists and restores the checkpoint.
         return { compaction: await piCompact(event.preparation, ctx.model, auth.apiKey, auth.headers,
           instructions, event.signal, pi.getThinkingLevel(),
-          (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options), auth.env) };
+          (model, context, options) => {
+            return {result:() => requestTrace.run('compaction', decision, onResponse =>
+              ctx.modelRegistry.streamSimple(model, context, {...options,onResponse:async(response,m)=>{
+                onResponse(response);await options?.onResponse?.(response,m);
+              }}))} as any;
+          }, auth.env) };
       }
 			const receiptsDir = join(storeDir, "compaction-receipts");
 			for (const message of event.preparation.messagesToSummarize) {
@@ -1691,6 +1726,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     }
     nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => skillState(false, true),
       level: currentLevel, actionCount: () => trajectory.length, log: append, usage: appendUsage,
+      modelResult:create => requestTrace.run('consult', decision, create),
       artifacts: (result, component, n) => {
         const count = artifactLog.length;
         const kept = keepArtifacts(result, { n, level: levelAt(n), skill: component.name, version: component.version });
@@ -1886,6 +1922,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   });
   if (nativeRuntime) pi.on('session_shutdown', () => nativeRuntime?.close());
 	pi.on("before_provider_request", guard("before_provider_request", (event: any) => {
+		if (native) {
+			if (parentRequest) requestTrace.finish(parentRequest);
+			parentRequest=requestTrace.start('parent',decision);
+		}
 		// Audit the actual wire policy without credentials, model content or image data.
 		const payload = event.payload ?? {};
 		append("provider_policy.jsonl", {
@@ -1894,6 +1934,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			reasoning_effort: payload.reasoning_effort ?? null,
 		});
 	}));
+	if (native) {
+    pi.on('before_provider_headers',()=>{
+      if(parentRequest)requestTrace.note(parentRequest,'provider_headers_ready');
+    });
+    pi.on('after_provider_response',(event:any)=>{
+      if(parentRequest)requestTrace.headers(parentRequest,event.status);
+    });
+		pi.on('message_update', (event:any) => {
+			if (parentRequest) requestTrace.chunk(parentRequest, typeof event.assistantMessageEvent?.delta==='string' ? event.assistantMessageEvent.delta.length : 0);
+		});
+		pi.on('message_start', (event:any) => {
+			if (parentRequest && event.message?.role==='assistant') requestTrace.note(parentRequest,'pi_message_start');
+		});
+	}
 
 	pi.on("message_end", guard("message_end", (event: any) => {
 		const message = event.message;

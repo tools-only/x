@@ -63,5 +63,9 @@ def test_utf8_requests_survive_legacy_stdio_and_guest_failure(legacy_stdio):
         expected_bytes = len(json.dumps({"note": note}, ensure_ascii=False,
                                        separators=(",", ":")).encode("utf-8"))
         assert result["consumed"]["input_bytes"] == expected_bytes
+        assert result['consumed']['compile_ms'] >= 0
+        assert result['consumed']['instantiate_ms'] >= 0
+        assert result['consumed']['guest_ms'] >= 0
+        assert result['consumed']['execution_ms'] >= result['consumed']['guest_ms']
     assert replies[3]["ok"] is False
     assert "tuple" in replies[3]["error"]

@@ -13,6 +13,14 @@ defaults = len(sys.argv) > 3 and sys.argv[3] == 'defaults'
 uncapped = len(sys.argv) > 3 and sys.argv[3] == 'uncapped'
 automatic = len(sys.argv) > 3 and sys.argv[3] == 'automatic'
 split = len(sys.argv) > 3 and sys.argv[3] == 'split'
+if defaults:
+    class AuditKernel(PiKernel):
+        def start(self):
+            audit = str(PROJECT_ROOT/'tools/arc_foundation_runtime_audit.ts')
+            if audit not in self.command:
+                self.command = [*self.command,'--extension',audit]
+            return super().start()
+    arc_thin_e2e.PiKernel=AuditKernel
 if script == 'migration':
     class MigrationKernel(PiKernel):
         def start(self):
@@ -75,20 +83,34 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=7 if script == "components" else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=7 if script == "components" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     ledger=defaults, critic=defaults, review_at_level_change=False,
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
-        **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {'ARC_THIN_AUTO_COMPACTION': '0'})})
+        **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
+        **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {} if defaults else {'ARC_THIN_AUTO_COMPACTION': '0'})})
 summary = json.loads(path.read_text(encoding="utf-8"))
 requests = [json.loads(s) for s in (root / "smoke-requests.jsonl").read_text(encoding="utf-8").splitlines()]
 results = [r for request in requests for r in request.get("last_tool_results", [])]
 text = json.dumps(results)
 assert summary["passed"], summary
+if defaults:
+    assert json.loads((root/'run-config.json').read_text())['auto_compaction'] is True, 'native default compaction must reach installed Pi'
+    config=json.loads((root/'run-config.json').read_text())
+    policy=json.loads((root/'runtime-audit/compaction-policy.json').read_text())
+    assert config['pi_auto_compaction_enabled'] is True and policy['settings']['enabled'] is True
+    assert 'Treat reasoning time and tokens as a task resource' in (root/'runtime-audit/provider-inputs.jsonl').read_text(encoding='utf-8')
 if uncapped:
     assert 'of run time left' not in json.dumps(requests), 'zero must remove the run deadline, including from actual parent input'
-if script == 'migration':
+if script == 'nativeclaims':
+    claims=[json.loads(line) for line in (root/'harness/claim_checks.jsonl').read_text().splitlines()]
+    assert [(row['n'],row['result']) for row in claims if row['key']=='hyp.right']==[(1,True),(2,None),(3,True)],claims
+    assert [(row['n'],row['result']) for row in claims if row['key']=='hyp.wrong']==[(1,False),(2,None),(3,False)],claims
+    assert 'SyntaxError' in text and any('holds 2' in r.get('latest_user','') for r in requests),text
+    assert summary['actions']==summary['actions_on_bridge']==4
+    assert not any('Tool budget' in json.dumps(r) or 'Soft tool-call' in json.dumps(r) for r in results)
+elif script == 'migration':
     assert 'old v1' in text and '42' in text and '52' in text and 'LEGACY_NOTE_EXACT' in text
     assert all('LEGACY_STANDING_RULE' in r['system_prompt'] for r in requests if not r.get('analyst') and not r.get('critic'))
     assert json.loads((root / 'workspace/artifacts/route.json').read_text()) == 50
@@ -112,6 +134,7 @@ elif script == "receipts":
         assert any(row['turnPrefixMessages'] for row in probes), 'split-turn path must be exercised'
         assert len(inputs.splitlines()) >= 2, 'Pi must summarize history and the split turn'
 elif script == "components":
+    assert (root/'consult-length.jsonl').is_file(), 'consult length continuation must reach semantic result'
     for expected in ["compare v1", "42", "v2: saved", "NOT loaded", "v1 (v2 failed)", "compare v3", "43", "53", "CONSULT_SEMANTIC", "NATIVE_SKILL_BODY_READ_ON_DEMAND"]:
         assert expected in text, expected
     parent = [r for r in requests if not r.get("analyst") and not r.get("critic")]
