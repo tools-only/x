@@ -1610,14 +1610,39 @@ def _get_json(url: str, timeout: float = 10.0) -> dict[str, Any]:
     return value
 
 
+_PI_CLI_RELATIVE = Path("node_modules") / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
+
+
+def _pi_cli_version(cli: Path) -> str | None:
+    """The version field of the package the CLI belongs to, when readable."""
+    try:
+        return str(json.loads((cli.parent.parent / "package.json").read_text(encoding="utf-8")).get("version"))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def _resolve_pi_cli() -> tuple[str, str]:
+    """The node executable and the Pi CLI to run.
+
+    Order: an explicit PI_AUTORESEARCH_PI_CLI path; the project's own pinned install (package.json);
+    the global install next to node. Until 2026-10-12 only the global one was used, so real runs
+    were on Pi 0.80.6 while the extension sources and Node tests resolved the project's 0.87.0: the
+    two installs disagreed on hooks (context_edit, agent_before_settle) and tests proved little about
+    the runtime. The project install is now the default so that tests and runs share one version.
+    """
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Pi runtime unsupported: node executable was not found")
-    cli = Path(node).resolve().parent / "node_modules" / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
-    if not cli.is_file():
-        raise RuntimeError(f"Pi runtime unsupported: installed CLI was not found at {cli}")
-    return node, str(cli)
+    override = os.environ.get("PI_AUTORESEARCH_PI_CLI")
+    candidates = [Path(override)] if override else []
+    candidates.append(Path(__file__).resolve().parents[2] / _PI_CLI_RELATIVE)
+    candidates.append(Path(node).resolve().parent / _PI_CLI_RELATIVE)
+    for cli in candidates:
+        if cli.is_file():
+            return node, str(cli)
+    if override:
+        raise RuntimeError(f"Pi runtime unsupported: PI_AUTORESEARCH_PI_CLI points to a missing file: {override}")
+    raise RuntimeError(f"Pi runtime unsupported: no Pi CLI found at {' or '.join(str(c) for c in candidates)}")
 
 
 def _wait_for_bridge(

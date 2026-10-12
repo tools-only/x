@@ -9,10 +9,15 @@ import { createHash } from "node:crypto";
 
 export type LedgerRow = {
 	n: number; action: string; x?: number; y?: number; idea?: string; expect?: string;
+	/** The agent's structured action prediction; only level/WIN fields are used by goal coverage. */
+	predict?: { level_changed?: boolean; state?: string };
+	prediction?: { fields?: Array<{ field: string; hit: boolean | null }> };
 	changed_cells: number | null; level_changed: boolean; state: string; levels_completed: number;
 	before_hash?: string; after_hash?: string;
+	/** As the bridge reports it after the action: used/maximum for the level, total_used/total_maximum for the run. */
+	budget?: { used?: number; maximum?: number | null; total_used?: number; total_maximum?: number | null } | null;
 };
-export type Observation = { n: number; skill: string; version: number; ok: boolean; value?: unknown; error?: string };
+export type Observation = { n: number; skill: string; version: number; ok: boolean; value?: unknown; error?: string; warnings?: string[] };
 export type Experiment = {
 	label: string; labelled: boolean; start: number; end: number; actions: number;
 	open: boolean; close_reason?: "idea_changed" | "level_changed" | "game_over" | "reset"; expect?: string;
@@ -20,6 +25,15 @@ export type Experiment = {
 export type IdeaEffort = { label: string; actions: number; last: number; longest: number };
 export type Repetition = { n: number; earlier: number[]; key: string };
 export type Completion = { n: number; kind: "level" | "game_over"; from: number; to: number; idea?: string; leaves: Record<string, string> };
+export type GoalHypothesisRef = { key: string; evidence?: Array<{ action?: number }> };
+
+/**
+ * Whether a hypothesis is about the goal, by the words of its own question or key. A compatibility heuristic,
+ * not recognition: coverage used to require the question to be exactly "goal", so a run whose agent asked
+ * "what is the goal?" was told there were no untested goal hypotheses for 68 actions (hypstrategy ls20, 2026-10-11).
+ */
+export const isGoalHypothesis = (key: string, question?: string) =>
+	/\b(goal|win|wins|winning|objective|level change|complete|completion)\b/i.test(`${question ?? ""} ${key.replace(/[._]/g, " ")}`);
 
 export const gridHash = (grid: unknown) => createHash("sha256").update(JSON.stringify(grid ?? null)).digest("hex").slice(0, 16);
 export const actionKey = (row: { action: string; x?: number; y?: number }) =>
@@ -196,6 +210,85 @@ export function buildLedger(rows: LedgerRow[], observations: Observation[], grid
 
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 
+/**
+ * Counts over exact grids (no masking): where the current grid was seen before, what was tried from it with how
+ * many distinct results, which available actions were never tried from it, and how many grids in the last 10
+ * actions were new. Counting only; broader "same situation" is the agent's to define in a skill.
+ * Real failure: hypstrategy ls20 (2026-10-11) reset to the same start grid 15 times and tried the same action
+ * from it again and again ("move up" at #23, #34, #40, #51, #57).
+ */
+export function explorationLine(rows: Array<{ n: number; action: string; x?: number; y?: number }>, grids: Map<number, unknown>,
+	current: number, available: string[], window = 10): string {
+	const grid = grids.get(current);
+	if (grid === undefined || rows.length < 3) return "";
+	const hashes = new Map<number, string>();
+	for (const [n, g] of grids) hashes.set(n, gridHash(g));
+	const here = hashes.get(current)!;
+	const seen = [...hashes].filter(([n, h]) => h === here && n !== current).map(([n]) => n).sort((a, b) => a - b);
+	const tried = new Map<string, Set<string>>();
+	const counts = new Map<string, number>();
+	for (const row of rows) {
+		if (hashes.get(row.n - 1) !== here || !hashes.has(row.n)) continue;
+		const key = actionKey(row);
+		counts.set(key, (counts.get(key) ?? 0) + 1);
+		tried.set(key, (tried.get(key) ?? new Set()).add(hashes.get(row.n)!));
+	}
+	const firstSeen = new Map<string, number>();
+	for (const n of [...hashes.keys()].sort((a, b) => a - b)) if (!firstSeen.has(hashes.get(n)!)) firstSeen.set(hashes.get(n)!, n);
+	const recent = [...hashes].filter(([n]) => n > current - window && n <= current);
+	const fresh = recent.filter(([n, h]) => firstSeen.get(h) === n).length;
+	const never = available.filter((action) => action !== "ACTION6" && ![...counts.keys()].some((key) => key === action));
+	const parts = [seen.length ? `this exact grid was also seen at ${seen.slice(-6).map((n) => n === 0 ? "the start" : `#${n}`).join(", ")}` : "this exact grid is new"];
+	if (counts.size) parts.push(`from it: ${[...counts].map(([key, count]) => `${key} ${count}× (${tried.get(key)!.size} distinct result${tried.get(key)!.size === 1 ? "" : "s"})`).join(", ")}`);
+	if (counts.size && never.length) parts.push(`never tried from it: ${never.join(", ")}`);
+	parts.push(`new grids in the last ${Math.min(window, recent.length)} states: ${fresh}`);
+	return `EXPLORATION (exact grids): ${parts.join("; ")}`;
+}
+
+/** Actions left before the tighter of the level and run budgets is spent, as last reported; null when unbounded or unknown. */
+export function budgetLeft(state: LedgerState): number | null {
+	const budget = state.rows.at(-1)?.budget;
+	if (!budget) return null;
+	const left = [
+		typeof budget.maximum === "number" && typeof budget.used === "number" ? budget.maximum - budget.used : null,
+		typeof budget.total_maximum === "number" && typeof budget.total_used === "number" ? budget.total_maximum - budget.total_used : null,
+	].filter((value): value is number => value !== null);
+	return left.length ? Math.max(0, Math.min(...left)) : null;
+}
+
+/** A goal check is counted only when the agent supplied a structured level/WIN prediction. */
+export function goalPredictionRows(state: LedgerState): Array<{ row: LedgerRow; result: "hit" | "MISS" | "unscored" }> {
+	return state.rows.flatMap(row => {
+		const prediction = row.predict;
+		const field = prediction?.level_changed === true ? "level_changed"
+			: prediction?.state?.toUpperCase() === "WIN" ? "state" : undefined;
+		if (!field) return [];
+		const score = row.prediction?.fields?.find(item => item.field === field);
+		return [{ row, result: score?.hit === true ? "hit" : score?.hit === false ? "MISS" : "unscored" }];
+	});
+}
+
+/**
+ * Mechanical coverage line for the parent and critic. It reports explicit
+ * level/WIN checks and effort spans that contain no such check; it never
+ * decides whether an idea or hypothesis is correct.
+ */
+export function goalCoverageLine(state: LedgerState, hypotheses: GoalHypothesisRef[] = []): string {
+	const checks = goalPredictionRows(state);
+	const checkedActions = new Set(checks.map(item => item.row.n));
+	const checked = checks.length
+		? checks.slice(-6).map(item => `#${item.row.n} ${item.result}`).join(", ")
+		: "none";
+	const untestedHypotheses = hypotheses.filter(item =>
+		!(item.evidence ?? []).some(evidence => evidence.action !== undefined && checkedActions.has(Number(evidence.action))))
+		.map(item => item.key).slice(0, 4);
+	const untestedEffort = state.experiments.filter(experiment =>
+		!checks.some(item => item.row.n >= experiment.start && item.row.n <= experiment.end))
+		.slice(-4).map(experiment => `${experiment.label}(${experiment.actions})`).join(", ") || "none";
+	return `GOAL CHECKS: ${checked}; goal hypotheses without a matching level/WIN prediction: ${untestedHypotheses.join(", ") || "none"}; ` +
+		`effort without a level/WIN check: ${untestedEffort}`;
+}
+
 export function observedSummary(state: LedgerState, e: Experiment): string {
 	const span = state.rows.filter(row => row.n >= e.start && row.n <= e.end);
 	const first = span[0], last = span.at(-1);
@@ -211,9 +304,11 @@ export function observedSummary(state: LedgerState, e: Experiment): string {
 }
 
 /** Read-only working-set lines; each omitted when empty. */
-export function renderLedgerView(state: LedgerState, hypothesisKeys: string[], maxChars = 900): string {
+export function renderLedgerView(state: LedgerState, hypothesisKeys: string[], maxChars = 900,
+	goalHypotheses: GoalHypothesisRef[] = []): string {
 	const lines: string[] = [];
 	const current = state.experiments.at(-1);
+	if (state.rows.length || goalHypotheses.length) lines.push(goalCoverageLine(state, goalHypotheses));
 	if (state.effort.length) {
 		const parts = state.effort.slice(0, 5).map(item => {
 			const now = current && current.open && current.label.toLowerCase() === item.label.toLowerCase();
@@ -222,7 +317,9 @@ export function renderLedgerView(state: LedgerState, hypothesisKeys: string[], m
 		});
 		const labels = new Set(state.effort.map(item => item.label.toLowerCase()));
 		const unpursued = hypothesisKeys.filter(key => !labels.has(key.toLowerCase()) && !labels.has(key.replace(/^hyp\./, "").toLowerCase()));
-		lines.push(`IDEAS: ${parts.join("; ")}${unpursued.length ? `; not pursued by idea label: ${unpursued.slice(0, 4).join(", ")}` : ""}`);
+		const left = budgetLeft(state);
+		lines.push(`IDEAS: ${parts.join("; ")}${unpursued.length ? `; not pursued by idea label: ${unpursued.slice(0, 4).join(", ")}` : ""}` +
+			(left !== null ? `; actions left in budget: ${left}` : ""));
 	}
 	const shown = [...state.experiments].reverse().find(e => !e.open || e.actions >= 3);
 	if (shown && (shown.labelled || shown.expect)) {

@@ -5,6 +5,15 @@ import { applyRows, emptyMemory, planMemoryUpdate } from "../demo/arc_thin_memor
 
 // Shapes taken from refused memory calls in the 2026-10-09 thin-hyp runs (pi-events.jsonl).
 
+test("a skill source sent with escaped line breaks is unescaped once; a source with real line breaks is left alone", () => {
+	const escaped = String.raw`def run(state, args):\n    return {"s": "a\\nb", "q": \"x\"}\n`;
+	assert.equal(repairSkillArguments({ op: "set", name: "s", source: escaped }).source,
+		'def run(state, args):\n    return {"s": "a\\nb", "q": "x"}\n');
+	const real = 'def run(state, args):\n    return "a\\nb"\n';
+	assert.equal(repairSkillArguments({ op: "set", name: "s", source: real }).source, real);
+	assert.equal(repairSkillArguments({ name: "s", source: escaped }).op, "set");
+});
+
 test("an evidence list becomes one appended result per entry", () => {
 	const args = repairMemoryArguments({ hypotheses: [{ key: "hyp.a", claim: "c", evidence: [
 		{ action: 1, condition: "first", observed: "o1", verdict: "supports" },

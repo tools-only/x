@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import {
 	DROPPED_CALLS, MAX_EVIDENCE, MAX_FACTS, MAX_HYPOTHESES, applyRow, applyRows, emptyMemory, planMemoryUpdate, prepareMemoryArguments,
-	renderHypotheses, renderMemory, renderRevisions, renderStrategies, visibleDropped, type MemoryState,
+	questionTests, renderFactsCompact, renderHypotheses, renderMemory, renderRevisions, renderStrategies, testsToldApart, toldApart, visibleDropped, type MemoryState,
 } from "../demo/arc_thin_memory.ts";
 
 const commit = (state: MemoryState, params: any, actions = 10) => {
@@ -11,6 +12,25 @@ const commit = (state: MemoryState, params: any, actions = 10) => {
 	applyRows(state, plan.rows);
 	return plan;
 };
+
+test("a strategy's planned steps are matched against the moves taken, and tracking stops at the first difference", () => {
+	const state = emptyMemory();
+	commit(state, prepareMemoryArguments({ hypotheses: [{ key: "hyp.route", claim: "the corridor leads to the exit" }],
+		strategies: [{ key: "strat.walk", plan: "follow the corridor", depends_on: ["hyp.route"], steps: "a4, ACTION4 action6(3, 7) RESET" }] }), 7);
+	assert.deepEqual(state.strategies.get("strat.walk")?.steps, ["ACTION4", "ACTION4", "ACTION6(3,7)", "RESET"]);
+	assert.equal(state.strategies.get("strat.walk")?.steps_from, 7);
+	const labels = (after: string[]) => [...Array.from({ length: 7 }, () => "ACTION1"), ...after];
+	assert.match(renderStrategies(state, 7, {}, labels([])), /steps planned after #7: 0\/4 followed; next ACTION4, ACTION4, ACTION6\(3,7\), RESET/);
+	assert.match(renderStrategies(state, 9, {}, labels(["ACTION4", "ACTION4"])), /2\/4 followed; next ACTION6\(3,7\), RESET$/);
+	assert.match(renderStrategies(state, 9, {}, labels(["ACTION4", "ACTION2"])),
+		/1\/4 followed; #9 was ACTION2 where step 2 is ACTION4, so the steps are no longer tracked/);
+	assert.match(renderStrategies(state, 11, {}, labels(["ACTION4", "ACTION4", "ACTION6(3,7)", "RESET"])), /4\/4 followed \(#8–#11\); all done/);
+	// An invalid label refuses the call; [] clears the steps.
+	assert.equal(planMemoryUpdate(state, { strategies: [{ key: "strat.walk", steps: ["ACTION4", "jump"] }] }, 9).ok, false);
+	commit(state, { strategies: [{ key: "strat.walk", steps: [] }] }, 9);
+	assert.equal(state.strategies.get("strat.walk")?.steps, undefined);
+	assert.doesNotMatch(renderStrategies(state, 9, {}, labels(["ACTION4", "ACTION4"])), /steps planned/);
+});
 
 test("legacy single-entry calls still work and old memory.jsonl rows replay as facts", () => {
 	const state = emptyMemory();
@@ -25,6 +45,16 @@ test("legacy single-entry calls still work and old memory.jsonl rows replay as f
 	assert.ok(list.ok && /HYPOTHESES: none[\s\S]*- controls: "ACTION1 moves up"/.test(list.receipt));
 	const missingOp = planMemoryUpdate(state, { key: "plan" } as any, 0);
 	assert.equal(missingOp.ok, false);
+});
+
+test("compact parent memory keeps every key visible while bounding old fact prose", () => {
+	const state = emptyMemory();
+	for (let i = 0; i < 20; i += 1) commit(state, { key: `fact_${i}`, text: "old detail ".repeat(80), confidence: 3 });
+	const view = renderFactsCompact(state, 900);
+	assert.ok(view.length <= 900);
+	assert.match(view, /fact_0/);
+	assert.match(view, /older\/longer entries retained/);
+	assert.equal(state.facts.size, 20);
 });
 
 test("one call removes accumulated per-step entries by prefix and saves the replacement", () => {
@@ -60,8 +90,8 @@ test("a rejection keeps the condition it was tested under", () => {
 		predicts: "ACTION1 at the entrance moves the player inside", next_test: "match the pattern, then ACTION1 at the entrance" }] }, 150);
 	// The #157 failure: "top box inaccessible" without saying the pattern did not match.
 	const bare = planMemoryUpdate(state, { hypotheses: [{ key: "top_box", status: "rejected" }] }, 157);
-	assert.equal(bare.ok, false);
-	assert.match(bare.ok ? "" : bare.error, /needs evidence with verdict "refutes"/);
+	assert.ok(bare.ok, bare.ok ? "" : bare.error);
+	assert.match(bare.receipt, /rejected without a recorded refutation/);
 	const noCondition = planMemoryUpdate(state, { hypotheses: [{ key: "top_box", status: "rejected",
 		evidence: { action: 157, observed: "blocked", verdict: "refutes" } }] }, 157);
 	assert.match(noCondition.ok ? "" : noCondition.error, /condition/);
@@ -77,6 +107,67 @@ test("a rejection keeps the condition it was tested under", () => {
 	assert.match(text, /a refutation only covers the condition it was tested under/);
 });
 
+test("ka59 rejected-hypothesis call commits its cleanup and replacement strategy without inventing evidence", () => {
+	const fixture = JSON.parse(readFileSync(new URL("./fixtures/arc_thin_memory_rejection_ka59.json", import.meta.url), "utf8"));
+	const state = emptyMemory();
+	applyRows(state, fixture.before);
+	const priorEvidence = state.hypotheses.get("hyp.bar_removable")!.evidence;
+	const plan = planMemoryUpdate(state, fixture.params, fixture.action_count, { skills: { diff_grids: 1 } });
+	assert.ok(plan.ok, plan.ok ? "" : plan.error);
+	// Planning remains atomic; all side effects belong to the commit.
+	assert.notEqual(state.hypotheses.get("hyp.bar_removable")!.status, "rejected");
+	applyRows(state, plan.rows);
+	assert.equal(state.hypotheses.get("hyp.bar_removable")!.status, "rejected");
+	assert.deepEqual(state.hypotheses.get("hyp.bar_removable")!.evidence, priorEvidence);
+	assert.equal(state.facts.get("state.current_pos")!.text, fixture.params.set[0].text);
+	for (const key of fixture.params.delete) assert.ok(!state.facts.has(key));
+	assert.equal(state.strategies.get("strat.reach_target")!.plan, fixture.params.strategies[0].plan);
+	assert.equal(state.strategies.get("strat.reach_target")!.status, "active");
+	assert.match(plan.receipt, /hyp\.bar_removable rejected without a recorded refutation/);
+	assert.match(renderHypotheses(state, 16), /rejected without a recorded refutation/);
+	const restored = emptyMemory();
+	applyRows(restored, [...fixture.before, ...plan.rows]);
+	assert.deepEqual(restored, state);
+});
+
+test("a bare rejection suspends its dependent strategy unless the agent explicitly reactivates it", () => {
+	const state = emptyMemory();
+	commit(state, { hypotheses: [{ key: "goal", claim: "entering the box wins" }],
+		strategies: [{ key: "enter", plan: "enter the box", depends_on: ["goal"] }] }, 0);
+	const plan = commit(state, { hypotheses: [{ key: "goal", status: "rejected" }] }, 2);
+	assert.equal(state.strategies.get("strat.enter")!.status, "suspended");
+	assert.deepEqual(state.hypotheses.get("hyp.goal")!.evidence, []);
+	assert.match(plan.receipt, /rejected without a recorded refutation/);
+	assert.ok(state.revisions.some((rev) => rev.causes.includes("hyp.goal rejected")));
+});
+
+test("rejecting with only supporting or inconclusive evidence preserves the recorded verdict", () => {
+	for (const verdict of ["supports", "inconclusive"] as const) {
+		const state = emptyMemory();
+		const plan = commit(state, { hypotheses: [{ key: "goal", claim: "the box is the goal", status: "rejected",
+			evidence: { action: 1, condition: "at the box", observed: "no level change", verdict } }] }, 1);
+		assert.equal(state.hypotheses.get("hyp.goal")!.status, "rejected");
+		assert.deepEqual(state.hypotheses.get("hyp.goal")!.evidence, [
+			{ action: 1, condition: "at the box", observed: "no level change", verdict },
+		]);
+		assert.match(plan.receipt, /rejected without a recorded refutation/);
+	}
+});
+
+test("allowing a bare rejection does not partially commit a batch with invalid evidence", () => {
+	const state = emptyMemory();
+	commit(state, { hypotheses: [{ key: "goal", claim: "the box is the goal" }], set: [{ key: "old", text: "keep" }] }, 0);
+	const plan = planMemoryUpdate(state, { delete: ["old"], set: [{ key: "new", text: "must not land" }],
+		hypotheses: [{ key: "goal", status: "rejected" }, { key: "other", claim: "another goal",
+			evidence: { action: 2, condition: "c", observed: "o", verdict: "refutes" } }] }, 1);
+	assert.ok(!plan.ok);
+	assert.match(plan.error, /action #2 does not exist/);
+	assert.equal(state.hypotheses.get("hyp.goal")!.status, "open");
+	assert.equal(state.facts.get("old")!.text, "keep");
+	assert.ok(!state.facts.has("new"));
+	assert.ok(!state.hypotheses.has("hyp.other"));
+});
+
 test("evidence is appended; refutations outlive older supporting results", () => {
 	const state = emptyMemory();
 	commit(state, { hypotheses: [{ key: "bar", claim: "emptying the bar wins" }] });
@@ -88,6 +179,24 @@ test("evidence is appended; refutations outlive older supporting results", () =>
 	assert.equal(evidence[0].verdict, "refutes");
 	assert.equal(evidence.at(-1)!.action, MAX_EVIDENCE + 3);
 	assert.equal(state.hypotheses.get("hyp.bar")!.claim, "emptying the bar wins");
+});
+
+test("the view shows each live hypothesis's latest results and its refutation once; a rejected one is one record", () => {
+	const state = emptyMemory();
+	commit(state, { hypotheses: [{ key: "bar", question: "goal", claim: "emptying the bar wins" }, { key: "box", question: "goal", claim: "the box wins" }] });
+	commit(state, { hypotheses: [{ key: "bar", evidence: { action: 1, condition: "pattern unmatched", observed: "no win", verdict: "refutes" } }] });
+	for (let n = 2; n <= 5; n += 1)
+		commit(state, { hypotheses: [{ key: "bar", evidence: { action: n, condition: "c", observed: "bar shrank", verdict: "supports" } }] });
+	// The same record sent twice is shown once.
+	commit(state, { hypotheses: [{ key: "bar", evidence: { action: 5, condition: "c", observed: "bar shrank", verdict: "supports" } }] });
+	let text = renderHypotheses(state, 6);
+	assert.match(text, /- hyp\.bar \[[a-z]+\] emptying the bar wins\n(  predicts[^\n]*\n)?  \(2 earlier result\(s\) not shown; state\.hypotheses has all\)\n  #1 refutes when "pattern unmatched": no win\n  #4 supports when "c": bar shrank\n  #5 supports when "c": bar shrank\n/);
+	assert.equal(text.match(/#5 supports/g)!.length, 1);
+	assert.equal(state.hypotheses.get("hyp.bar")!.evidence.length, 6, "the store keeps every result");
+	commit(state, { hypotheses: [{ key: "box", status: "rejected", evidence: { action: 6, condition: "box entered", observed: "no level change", verdict: "refutes" } }] });
+	text = renderHypotheses(state, 7);
+	assert.match(text, /- hyp\.box \[rejected\] the box wins\n  #6 refutes when "box entered": no level change\n  last tested: #6[^\n]*rejected without a test that told it apart from a rival/);
+	assert.doesNotMatch(text, /hyp\.box[^\n]*\n  predicts/);
 });
 
 test("hypothesis keys and fact keys stay apart; caps hold", () => {
@@ -153,6 +262,13 @@ test("ls20 #5: supporting a bar hypothesis does not erase untested control hypot
 	const before = state.dropped.length;
 	step({ delete: ["hyp.colour"] }, 11);
 	assert.equal(state.dropped.length, before);
+	// Neither is a contested one: it has a recorded refutation, so "dropped without a recorded refutation" would be false.
+	step({ hypotheses: [{ key: "shade", question: "controls", claim: "actions shade" }] }, 11);
+	step({ hypotheses: [{ key: "shade", evidence: { action: 4, condition: "c", observed: "o", verdict: "refutes" } }] }, 11);
+	assert.equal(state.hypotheses.get("hyp.shade")!.status, "contested");
+	const deleted = step({ delete: ["hyp.shade"] }, 11);
+	assert.equal(state.dropped.length, before);
+	assert.doesNotMatch(deleted.receipt, /kept as one-line notes/);
 });
 
 test("a batch of untested alternatives dropped in one call stays visible as a whole", () => {
@@ -292,4 +408,57 @@ test("an explicit re-activation in the same call keeps a strategy whose premise 
 	assert.equal(state.strategies.get("strat.s")!.status, "suspended");
 	assert.match(renderStrategies(state, 2), /depends on: hyp\.a \(deleted\)/);
 	assert.match(state.revisions.at(-1)!.causes.join("; "), /hyp\.a deleted/);
+});
+
+// ---------------------------------------------------------------- which recorded tests told rivals apart
+// docs/plans/2026-10-10-self-harness-priority-plan.md (H1, H2)
+
+test("a question shows how many of its recorded tests gave rivals different verdicts", () => {
+	const state = emptyMemory();
+	commit(state, { hypotheses: [
+		{ key: "a", question: "rule", claim: "rule a" }, { key: "b", question: "rule", claim: "rule b" },
+		{ key: "c", question: "rule", claim: "rule c" }, { key: "solo", question: "other", claim: "alone" },
+	] }, 0);
+	assert.match(renderHypotheses(state, 0), /question "rule":\n/);                       // nothing recorded yet: no count
+	// #3 agrees with every rival it was recorded against; it separates nothing.
+	commit(state, { tests: [{ action: 3, condition: "start", observed: "o", verdicts: { a: "supports", b: "supports" } }] }, 3);
+	assert.deepEqual(questionTests(state.hypotheses, "rule").map((t) => [t.id, toldApart(t)]), [["#3", false]]);
+	assert.match(renderHypotheses(state, 3), /question "rule": 1 test\(s\) recorded, none told rivals apart\n/);
+	// #5 and a test without an action number each give two rivals different verdicts.
+	commit(state, { tests: [
+		{ action: 5, condition: "after x", observed: "o", verdicts: { a: "supports", b: "refutes" } },
+		{ condition: "by inspection", observed: "seen", verdicts: { b: "inconclusive", c: "supports" } },
+	], hypotheses: [{ key: "solo", evidence: { action: 5, condition: "after x", observed: "o", verdict: "supports" } }] }, 5);
+	const text = renderHypotheses(state, 6);
+	assert.match(text, /question "rule": 3 test\(s\) recorded, 2 told rivals apart \(#5, \(no action\)\)\n/);
+	assert.match(text, /question "other":\n/);                                             // a lone hypothesis has no rival to be told apart from
+	assert.deepEqual(testsToldApart(state.hypotheses, "hyp.a").map((t) => t.id), ["#5"]);
+	assert.deepEqual(testsToldApart(state.hypotheses, "hyp.c").map((t) => t.id), ["by inspection|seen"]);
+	assert.deepEqual(testsToldApart(state.hypotheses, "hyp.solo"), []);
+});
+
+test("supported or rejected without a separating test is shown; deleting reports what the records held", () => {
+	const state = emptyMemory();
+	commit(state, { hypotheses: [
+		{ key: "a", question: "rule", claim: "rule a" }, { key: "b", question: "rule", claim: "rule b" },
+		{ key: "c", question: "rule", claim: "rule c" }, { key: "d", question: "rule", claim: "rule d" },
+	] }, 0);
+	// Support recorded for one hypothesis only: no rival got a verdict from the same test.
+	commit(state, { hypotheses: [{ key: "a", status: "supported", evidence: { action: 2, condition: "start", observed: "o", verdict: "supports" } }] }, 2);
+	assert.match(renderHypotheses(state, 2), /last tested: #2 \(0 actions ago\) · supported without a test that told it apart from a rival/);
+	// Rejecting on a result that no rival was assessed against is reported in the receipt, not refused.
+	const rejected = commit(state, { hypotheses: [{ key: "b", status: "rejected", evidence: { action: 3, condition: "start", observed: "o", verdict: "refutes" } }] }, 3);
+	assert.match(rejected.receipt, /hyp\.b rejected; no recorded test gave it a different verdict than a rival/);
+	assert.equal(state.hypotheses.get("hyp.b")!.status, "rejected");
+	// One joint test gives a and c different verdicts: the notes go away for both.
+	const joint = commit(state, { hypotheses: [{ key: "c", status: "rejected" }],
+		tests: [{ action: 4, condition: "start", observed: "o", verdicts: { a: "supports", c: "refutes" } }] }, 4);
+	assert.doesNotMatch(joint.receipt, /hyp\.c rejected; no recorded test/);
+	const text = renderHypotheses(state, 4);
+	assert.doesNotMatch(text, /- hyp\.a \[supported\][^-]*without a test that told it apart/);
+	assert.match(text, /- hyp\.b \[rejected\][^-]*rejected without a test that told it apart from a rival/);
+	// The deletion receipt counts what is being dropped; the deletion itself goes through.
+	const plan = commit(state, { delete: ["hyp.a", "hyp.d"] }, 5);
+	assert.match(plan.receipt, /deleted with: hyp\.a 2 result\(s\), 0 refuting, 1 that told it apart from a rival; hyp\.d 0 result\(s\), 0 refuting, 0 that told it apart from a rival/);
+	assert.ok(!state.hypotheses.has("hyp.a") && !state.hypotheses.has("hyp.d"));
 });

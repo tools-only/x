@@ -1,0 +1,82 @@
+{
+  "source": "runs/thin-sh-r2-ka59-20261010/pi-events.jsonl:409",
+  "action_count": 16,
+  "before": [
+    {
+      "key": "hyp.bar_removable",
+      "hyp": {
+        "claim": "Bar cannot be removed. Must go around it (above row 21 or below row 41).",
+        "question": "controls",
+        "predicts": "Player can move above row 21 (outside rectangle) to bypass bar",
+        "status": "open",
+        "next_test": "ACTION1 (UP) 4 times, then ACTION4 to test if player can cross bar's columns above row 21",
+        "evidence": []
+      }
+    },
+    {
+      "key": "state.plan",
+      "text": "Go around bar: UP×4 (31→19, above rect), RIGHT×4 (31→43), DOWN×4 (19→31). Total 12 moves. Player currently center (31,31).",
+      "confidence": 4
+    },
+    {
+      "key": "state.player_pos",
+      "text": "Player center at (31,31), cols 30-32, rows 30-32. Last ACTION1 (UP) at step 12 did NOT move player (still at rows 30-32). Investigating why. Target at (43,31), same row, 12 cols to the right. Bar at cols33-38 blocks direct path.",
+      "confidence": 4
+    },
+    {
+      "key": "state.win_strategy",
+      "text": "THEORY: Press ACTION3 (LEFT) 6 times. Player moves left 2 times (31→28→25), then blocked by left wall at col 23 (cols 21-23 = left wall). Target moves left all 6 times (43→40→37→34→31→28→25). After 6 LEFTs: both at col 25, same row 31. MATCH = WIN? Need to verify if player actually gets blocked by left wall (it was INSIDE the wall before).",
+      "confidence": 2
+    },
+    {
+      "key": "strat.reach_target",
+      "strat": {
+        "plan": "Go around bar: UP×4 to rows 18-20 (above rect), RIGHT×4 to col 43, DOWN×4 to row 31. 12 moves total. If player can't exit rectangle, try going below (DOWN×4).",
+        "status": "active",
+        "depends_on": [
+          "hyp.bar_removable"
+        ],
+        "uses": [
+          "skill:diff_grids"
+        ],
+        "since": 4,
+        "spent": 0
+      }
+    }
+  ],
+  "params": {
+    "hypotheses": [
+      {
+        "key": "hyp.bar_removable",
+        "status": "rejected",
+        "question": "controls",
+        "claim": "Bar cannot be removed. Player can only move LEFT/RIGHT, cannot move UP/DOWN. Strategy: press LEFT 14 times so player gets blocked at left edge (col 1) and target continues moving left until it also reaches col 1. Both at (1,31) = WIN."
+      }
+    ],
+    "strategies": [
+      {
+        "key": "strat.reach_target",
+        "plan": "Press ACTION3 (LEFT) 14 times. Player at col 28 gets blocked at col 1 after 9 presses. Target at col 43 continues moving left for 5 more presses after player is blocked, reaching col 1. Both at center (1,31) = WIN. 14 actions remaining. Budget: 15/100, will use 29/100.",
+        "depends_on": [
+          "hyp.bar_removable"
+        ],
+        "uses": [
+          "skill:diff_grids"
+        ],
+        "status": "active"
+      }
+    ],
+    "delete": [
+      "state.player_pos",
+      "state.plan",
+      "state.win_strategy"
+    ],
+    "set": [
+      {
+        "key": "state.current_pos",
+        "text": "Player center (28,31), target center (43,31). 15 cols apart. Player can ONLY move LEFT/RIGHT (UP/DOWN confirmed not to work). Color1 walls don't block player. Target moves with horizontal presses through everything.",
+        "confidence": 4
+      }
+    ]
+  }
+}

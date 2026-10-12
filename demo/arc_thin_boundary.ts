@@ -8,6 +8,7 @@
  * Design: docs/plans/2026-10-09-thin-decision-loop-efficiency.md
  */
 import { prepareMemoryArguments } from "./arc_thin_memory.ts";
+import { normalizePrediction } from "./arc_thin_prediction.ts";
 
 /** Field limits the tools document; longer values are clipped, never refused. */
 export const LIMITS = { text: 600, claim: 300, predicts: 300, next_test: 300, condition: 200, observed: 300, plan: 300, question: 40, note: 300 } as const;
@@ -130,18 +131,51 @@ export function repairMemoryArguments(raw: any): any {
 	return out;
 }
 
-/** Skill arguments: infer a missing or unknown op from the fields present. */
+/**
+ * Skill arguments: infer a missing or unknown op from the fields present, and undo one level of string escaping
+ * when the whole source arrives on one line with literal "\n" sequences (tu93, 2026-10-11: the first save failed
+ * as a syntax error and cost a decision). A source with a real line break is never changed.
+ */
 export function repairSkillArguments(args: any): any {
 	if (!isObject(args)) return args;
-	if (["set", "delete", "get"].includes(args.op)) return args;
-	const { op: _ignored, ...rest } = args;
-	return { ...rest, op: typeof args.source === "string" && args.source.trim() ? "set" : "get" };
+	const out = typeof args.source === "string" ? { ...args, source: unescapeSource(args.source) } : args;
+	if (["set", "delete", "get"].includes(out.op)) return out;
+	const { op: _ignored, ...rest } = out;
+	return { ...rest, op: typeof out.source === "string" && out.source.trim() ? "set" : "get" };
 }
 
-/** arc_action arguments: an over-long note is clipped rather than refusing the action. */
+export function unescapeSource(source: string): string {
+	if (/[\r\n]/.test(source) || !source.includes("\\n")) return source;
+	return source.replace(/\\(\\|n|t|r|"|')/g, (_match, c: string) => ({ n: "\n", t: "\t", r: "" } as Record<string, string>)[c] ?? c);
+}
+
+/**
+ * arc_action arguments: an over-long note is clipped rather than refusing the
+ * action, and an optional prediction keeps its well-formed fields only. A
+ * prediction is never a reason to reject the action. The former separate
+ * `expect` field is folded into `predict.text`, its single replacement.
+ */
 export function repairActionArguments(args: any): any {
-	if (!isObject(args) || typeof args.note !== "string") return args;
-	return { ...args, note: clip(args.note.replace(/\s+/g, " ").trim(), LIMITS.note) };
+	if (!isObject(args)) return args;
+	const out: Record<string, any> = { ...args };
+	if (typeof out.note === "string") out.note = clip(out.note.replace(/\s+/g, " ").trim(), LIMITS.note);
+	if ("expect" in out) {
+		const expect = typeof out.expect === "string" ? out.expect.trim() : "";
+		delete out.expect;
+		if (expect) {
+			const given = normalizePrediction(out.predict) ?? {};
+			out.predict = { ...given, text: given.text ?? expect };
+		}
+	}
+	if ("predict" in out) {
+		const predict = normalizePrediction(out.predict);
+		if (predict) out.predict = predict; else delete out.predict;
+	}
+	if ("predict_skill" in out) {
+		if (typeof out.predict_skill === "string" && out.predict_skill.trim()) out.predict_skill = out.predict_skill.trim().slice(0, 40);
+		else delete out.predict_skill;
+	}
+	return out;
 }
 
 /**

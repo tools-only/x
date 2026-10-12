@@ -1,5 +1,9 @@
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-10-10 ARC 动作接口修复：P040 实际 provider 已收到正确 scope，但静态工具枚举仍暴露 ACTION5/6；当前 workspace 改为 observation 驱动的动态 schema/激活状态，覆盖 RESET、scope 变化、空/失败/恢复和旧调用执行边界。54 Node、32 thin scripted/mock smoke 通过，installed Pi 的实际 7 请求语义检查及 18 smoke 请求 scope 一致性审计通过。未修改独立 checkout/冻结实验，无新付费；完整闭环、自主采用、净收益及 B/C/D 保持未验证。见[唯一变更记录](plans/2026-10-10-arc-action-live-scope.md)。
+
+2026-10-10 两路 round-2 实验已按用户要求关闭（ka59/ls20 runner、bridge、Pi 子进程均确认退出）。针对 ka59 真实 memory 撤销被拒绝的修订摩擦，已将“rejected 必须附 refutes”从硬门槛改成非阻塞缺证据提示，保留原子性、真实动作编号和已提交证据校验；真实失败参数及 native 后轮视图回归通过，thin Node 52/52、pytest 4/4、scripted/mock ARC smoke 通过。仅支持功能修复，不提升完整链路、自主采用、净收益或 B/C/D 质量状态；见[唯一变更记录](plans/2026-10-10-memory-rejection-friction.md)。
+
 2026-10-09 证据板（Evidence board）P0–P2实现于thin路径（`ARC_HARNESS_BOARD=enabled` / `arc-thin-e2e --harness-board`，默认关闭）：声明`predicts`的skill被runtime在规范转移上回放/逐动作打分，单一digest进入工作集，被证伪且授权的预测器由一次性analyst修复为`board_`名下新skill；从不改写/隐藏/阻断组件或动作。持久WASI主机将单次Python调用从中位1713ms降到129ms。功能：10项Node（stage80公开轨迹11/11含4次受阻、stage60 14/14、错误变体在第36步精确证伪、超时记erroring非证伪）；接线：thin smoke回归14/14及board smoke 13/13（真实bridge/Pi/thin扩展/WASI，scripted provider，mock ARC SDK）。自主采用与净收益未验证，未运行真实provider/官方SDK；B/C/D保持开放。见[证据板设计与实现记录§15](plans/2026-10-08-self-harness-evidence-board.md#15-implementation-record-2026-10-09)。真实验证（同日，官方SDK/ls20/真实qwen3.8-27b，各1.5M/3600秒上限）：r1 47动作/0关/860164 reported、r2（加系统提示Predictions段）44动作/0关/677499 reported；共4个skill版本均未声明`predicts`，board账本为空，最早断点在识别；两次均因ARC环境`/action`超时进入decision_timeout，与此前无board的thin运行同一签名，无harness错误。r2期间另一会话修改了thin扩展/系统提示，非干净单因素对照。见§15.5。
 
 2026-10-08 B36真实终态：官方ft09/真实Qwen/普通CPython-WASI、研究off/单动作，1800秒截止（含清理1819.422），32已确认动作/0关/1457408reported，新provider unknown0、历史unknown3保留。3个Tool发布装配/trial、后续21次native；9次作者拒绝为raw JSON1/同名create8，非Python方言拒绝。修订入口切换和确定pre-write失败被记applied=unknown/retryable=true仍有摩擦，另有采样坐标错误/硬编码旧矩阵/重复调用，不能按执行成功认定帮助解题。71确认请求history均37139.295775、末48687字符；缺官方最终scorecard、环境step33超时，无matched对照，B/C/D的任务帮助、总成本收益及连续性仍开放。下一轻量因素为统一保存/修订与真实失败状态，非新worker/门禁；见[主记录§7 B36真实终态](plans/2026-10-06-self-harness-simplification-and-validation.md#7-开发入口与验收命令)。
@@ -261,6 +265,19 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 2026-10-09 thin 路径（续）：7 个 thin-hyp 真实运行中 24 次假设删除有 19 次没有任何反证记录（ls20 A #5 支持一个关于计数条的假设时删掉了正确的移动假设），计划事实未关联任何假设。已实现竞争假设与依赖策略的统一维护：按 question 分组对手、一次检验记录多个对手的判定、未处理反证标记 contested、删除未检验对手保留一行、前提被否定时挂起依赖策略并记录修订及后续动作分布。仅功能与离线全链路通过，自主采用和收益未验证；这为 C（假设 → 检验 → 修订）和 D（已排除解释、未完成实验跨重建保留）提供载体，不改变其状态。见 [变更记录](plans/2026-10-09-thin-hypothesis-strategy-lifecycle.md)。
 
 ## 后续更新
+
+2026-10-12 thin 路径：依据 tu93 round-5 真实轨迹诊断（[报告与变更记录](reports/2026-10-12-tu93-new-design-analysis.md)），实现了以下改动：
+- skill 产物（artifacts）存储，记录产出者、状态与关卡，并作为 `state["artifacts"]` 供后续 skill 读取；
+- skill 写于旧关卡时给出标记；
+- 复盘轮可修订 skill；
+- RESOURCES 时间/token 事实行；
+- 策略 `steps` 计划进度（只做机械比对，动作接口不变）；
+- 撤销“memory 提交即结束决策”；
+- critic 改为仅失败触发、结构化证伪回复、按 key 判断是否被采纳、等待 ≤30 s、dossier 约 6–9k。
+
+这与 C（评审 → 修订按 key 跟踪）和 D（产物与计划进度跨上下文重建保留，不再靠逐步事实）相关。验证范围：Node 82/82、pytest 8/8，scripted 全链路 self-harness / ledger / environment smoke 通过；default smoke 因 6/8 工具调用上限另有既存失败。未运行真实 provider，自主采用与收益未验证，B/C/D 状态不变。
+
+2026-10-10 thin 路径：按[自我 harness 优先级方案](plans/2026-10-10-self-harness-priority-plan.md)实现了一组只读/计分型通用能力：`arc_action.predict` 逐字段计分、以 skill 作预测器（`predict_skill`）、skill 可查询的完整转移历史（`state.history`）、记录中“哪些检验区分了对手”的计数与删除回执、复盘轮看到上次复盘以来全部动作；另有两个默认关闭的对照变量（上一决策推理末尾 `--carry-reasoning`、同形同色区域位移 `--moved`）、每决策工作集日志及盲策略下限运行器。这与 C（假设 → 检验 → 修订：预测被环境逐项计分）和 D（跨重建连续性：工作集日志、历史可查询）相关。D1 对 12 个既有真实运行的词面审计：各运行中位约 17–26% 的推理句重述上一决策，低于预先定的 40% 阈值。仅功能、真实链路 smoke 通过；未运行真实 provider，自主采用与收益未验证，B/C/D 状态不变。
 
 2026-10-08：新增 Auto-Research 启动开关，供用户 debug 隔离及未来 B/C/D 消融使用。ARC `--auto-research` / `--no-auto-research` 和 `PI_AUTORESEARCH_ENABLED=enabled|disabled` 控制工具注册、worker 调度/自动恢复与研究提示；当前 ARC 默认关闭，普通委派保留。74 Python / 2 Node 及本地 native Pi/broker 诊断通过，没有真实 provider 或 ARC 完整矩阵/净收益实验，B/C/D 保持开放。见[开关变更记录](plans/2026-10-08-auto-research-switch.md)。
 

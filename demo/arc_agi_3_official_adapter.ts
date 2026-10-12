@@ -11,6 +11,91 @@ import { renderArcCoarseLayout, renderArcUniformTileMap } from "./pi_arc_observa
 
 export const ARC_SYSTEM_PROMPT = loadPrompt("arc_system_prompt.md");
 
+/**
+ * Optional foundation exposed only to ARC-authored Skills.  It deliberately
+ * accepts explicit coordinate sets and has no grid, colour, frame, object, or
+ * goal knowledge.  Cross-frame comparison and semantic movement remain the
+ * Skill's responsibility over state["history"].
+ */
+export const ARC_SKILL_FOUNDATION_VERSION = "arc-agi-3-foundation-v1";
+export const ARC_SKILL_FOUNDATION_PYTHON = String.raw`
+class _ArcFoundation:
+    version = "${ARC_SKILL_FOUNDATION_VERSION}"
+
+    @staticmethod
+    def _coords(raw):
+        if not isinstance(raw, (list, tuple, set, frozenset)):
+            raise TypeError("arc coordinates must be an explicit iterable of [x, y] pairs")
+        out = set()
+        for item in raw:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError("arc coordinates must contain [x, y] pairs")
+            x, y = item
+            if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, int) or not isinstance(y, int):
+                raise ValueError("arc coordinates must use integer x and y")
+            out.add((x, y))
+        return sorted(out, key=lambda p: (p[1], p[0]))
+
+    @staticmethod
+    def _steps(connectivity):
+        if connectivity == 4:
+            return ((1, 0), (-1, 0), (0, 1), (0, -1))
+        if connectivity == 8:
+            return tuple((dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dx, dy) != (0, 0))
+        raise ValueError("connectivity must be 4 or 8")
+
+    def bbox(self, coords):
+        points = self._coords(coords)
+        if not points:
+            return None
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        return {"min_x": min(xs), "min_y": min(ys), "max_x": max(xs), "max_y": max(ys),
+                "width": max(xs) - min(xs) + 1, "height": max(ys) - min(ys) + 1, "count": len(points)}
+
+    def translate(self, coords, dx, dy):
+        if isinstance(dx, bool) or isinstance(dy, bool) or not isinstance(dx, int) or not isinstance(dy, int):
+            raise ValueError("translation dx and dy must be integers")
+        return [[x + dx, y + dy] for x, y in self._coords(coords)]
+
+    def normalize(self, coords):
+        points = self._coords(coords)
+        if not points:
+            return []
+        box = self.bbox(points)
+        return self.translate(points, -box["min_x"], -box["min_y"])
+
+    def neighbors(self, coords, connectivity=4):
+        points = self._coords(coords)
+        present = set(map(tuple, points))
+        steps = self._steps(connectivity)
+        return [{"coord": [x, y], "neighbors": [[x + dx, y + dy] for dx, dy in steps if (x + dx, y + dy) in present]}
+                for x, y in points]
+
+    def components(self, coords, connectivity=4):
+        points = self._coords(coords)
+        present = set(map(tuple, points))
+        steps = self._steps(connectivity)
+        out = []
+        while present:
+            start = min(present, key=lambda p: (p[1], p[0]))
+            present.remove(start)
+            queue = [start]
+            component = [start]
+            while queue:
+                x, y = queue.pop(0)
+                for dx, dy in steps:
+                    nxt = (x + dx, y + dy)
+                    if nxt in present:
+                        present.remove(nxt)
+                        queue.append(nxt)
+                        component.append(nxt)
+            out.append([[x, y] for x, y in sorted(component, key=lambda p: (p[1], p[0]))])
+        return out
+
+arc = _ArcFoundation()
+`;
+
 function rowText(row: unknown): string {
 	if (!Array.isArray(row)) return String(row);
 	return `[${row.map((value) => String(value)).join(", ")}]`;

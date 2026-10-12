@@ -1,27 +1,12 @@
 # Self-harness 12-hour goal prompt
 
-日期：2026-10-10。用途：复制下方英文执行正文到新的 `\goal` 请求中。本文编写不启动 goal、不修改运行代码、不授权当前聊天立即运行实验；用户在执行聊天中提交该正文时，才开始本合同的12小时计时与执行。
+Copy the execution prompt below into a new goal request. Editing this document does not start a goal or launch experiments.
 
-## 中文执行合同
-
-- 目标同时包含：五类 self-harness 组件的适用生命周期与真实链路通过；普通最终验收运行集合中至少两种组件自主转化；Qwen 的 ARC 任务进展达到同条件比较门槛。
-- 执行顺序固定为：先完成详细优化方案全部14模块的初始实现、集成和本地检查，再启动真实 ARC 基线、诊断、验收及 Astra 复盘调优循环。初始阶段冻结旧版基线但不运行 ARC；本地检查通过不代表真实验收通过。12小时仍覆盖两个阶段。
-- 五类为 system_prompt、skills、memory、tools、subagents。普通单局不要求五类全触发；同一个 `run_skill` 函数不能重复计为 skill 和 tool；预置 analyst 调用不自动算自主子代理转化。
-- 从目标首次激活起12小时，包括实现、诊断、实验、Astra复盘与交付。无额外金额/token总额度，但每次运行需有明确限制；最多两个本目标的 ARC 实例并行，禁止无限子调用扩张。
-- 主力 yibu/qwen3.8-27b；偶尔用 yibu/gpt-6-sol 诊断。游戏内 critic/子代理跟随当次父模型。每次真实 ARC 结束或中断后，必须由 GPT-6 Astra 开发侧 sub-agent 复盘；它不参与解题，不向 Qwen 注入具体游戏答案。
-- 默认完整网格与图像；验证实际模型接收，支持不足时明确记录并统一回退，不用“配置允许”冒充图像已生效。
-- 最终每游戏一次新基线、一次冻结候选。ls20、lp85 各至少多完成1关；另一个未用于调优的游戏不退化。基线已WIN时，在比较前锁定等质量成本条件。称“单次同条件验收”，不宣称稳定性或统计显著。
-- 允许受引导真实诊断验证组件生命周期；普通自主转化和最终任务成绩另行验收。本轮不要求消融，不作超出证据的组件因果收益声明。
-- 主 Agent 负责全部决策，只按需调用开发 sub-agent，不预先组织固定多 Agent 流程。Astra每次运行后的复盘是明确要求的专项职责，不构成常驻角色流水线。
-- 授权隔离工作区内实现、依赖环境、本地提交、预算内付费运行及所属进程管理；不自动 push/merge、不修改账户/计费/凭据、不干预他人进程或工作。
-- 从具体日志症状出发，分类为 bug、流程/机制缺口、模型行为限制、基础设施故障或未知；核对证据后做最小可验证修复或通用机制调整，禁止游戏特例补丁和无证据堆提示。
-- 未达标必须继续在剩余时间内解决；截止未达标交付最好已验证版本和未完成项，不降低标准、不延期、不把实现完成当目标完成。
-
-## English execution prompt — copy everything below
+## Execution prompt
 
 You are executing a time-bounded engineering and empirical improvement goal in `D:\autoresearch_pi_project`.
 
-Your job is to implement the self-harness optimization plan, exercise it in genuine ARC runs, diagnose observed failures, repair bugs, improve the responsible mechanisms, and repeat implementation–run–review–adjust cycles until the acceptance contract is satisfied or the 12-hour deadline is reached.
+Your job is to improve the current self-harness implementation through evidence-driven iteration: analyze real ARC behavior, diagnose failures, repair bugs, improve the responsible mechanisms, and repeat implementation–run–review–adjust cycles until the acceptance contract is satisfied or the 12-hour deadline is reached.
 
 This is an instruction to perform the work, not merely propose a plan. Start by establishing the deadline, isolation, and authoritative instructions. Proceed autonomously within the permissions below. Preserve progress across context compaction and recoverable interruptions.
 
@@ -31,31 +16,18 @@ Read before designing or changing runtime behavior:
 
 - `D:\autoresearch_pi_project\AGENTS.md` and applicable instructions in the actual worktree.
 - `D:\autoresearch_pi_project\docs\development-workflow.md`.
-- `D:\autoresearch_pi_project\docs\plans\2026-10-10-self-harness-optimization-and-real-arc-acceptance.md`.
+- `D:\autoresearch_pi_project\docs\arc-optimization-runbook.md` for diagnosis, iteration methods, evaluation design, and acceptance metrics.
 - `D:\autoresearch_pi_project\docs\templates\meta-harness-change.md` for the evidence structure.
 - `D:\autoresearch_pi_project\docs\deferred-research-todos.md` when handling adapter boundaries, research communication, context continuity, or roadmap decisions.
 - When changing research workers or Auto-Research, also read `docs/plans/2026-10-01-auto-research-mechanism-and-workers.md` and `docs/auto-research-workers-implementation-2026-10-01.md`.
 
-The optimization plan provides the module map, evidence baseline, and candidate designs. The user's referenced copy is `C:\Users\qi\Documents\Codex\2026-10-09\fe\outputs\2026-10-10-self-harness-optimization-and-real-arc-acceptance.md`; inspect it alongside the repository copy and reconcile any differences before implementation. This prompt supplies the user's later, explicit execution and acceptance decisions. Where it changes earlier proposed experiment counts, ablation requirements, budget limits, success criteria, or implementation/run ordering, use this prompt. Higher-priority system instructions still apply.
+Start from the current code, effective configuration, and available real-run evidence. Consult existing optimization plans only for relevant design context and prior evidence; they do not impose a preliminary implementation checklist. This prompt defines the execution and acceptance contract, subject to later explicit user amendments and higher-priority instructions.
 
-**Binding two-phase order:** first implement the detailed optimization plan as an integrated initial candidate; only then begin real ARC execution, acceptance, and iterative Astra-guided optimization. This supersedes the plan's original requirement to interleave real ARC runs between initial implementation batches and any instruction below that could otherwise imply starting ARC after implementing only one initial module.
+**Method integration.** Use `docs/arc-optimization-runbook.md` as the operating method for this goal. Read it at startup; during each iteration consult the relevant diagnostic, evaluation, and decision sections rather than copying the whole manual into the record. The development workflow remains the evidence authority; this goal contract defines its specific deliverables, budget, mandatory Astra review, sample counts, and Gates A–D. The manual's metric menu and repeat-run guidance do not add component quotas, mandatory ablations, or extra final runs. Apply later explicit user amendments when present and record the effective contract. Method integration alone neither starts a goal nor resets an existing deadline. Keep the manual and review procedures entirely on the development side.
 
-#### Phase I — complete the initial implementation before running ARC
+**Direct entry into iteration.** Preserve the current baseline source, dependencies, and configuration, inspect existing evidence and production paths, and enter Section 7. Choose a targeted diagnostic, repair, or real experiment based on the earliest supported bottleneck. Before each experiment, complete the checks relevant to that experiment and freeze its code/configuration. There is no separate initial implementation phase or requirement to finish a module inventory before real ARC work.
 
-1. Preserve the pre-change baseline source, dependencies, and configuration in isolation. Capture its identity now; execute its new matched baseline runs in Phase II.
-2. Map all 14 modules (S1–S4, K1–K2, E1–E4, L1, C1, V1–V2) to existing code, required changes, local checks, and pending real acceptance. Include E3a and E3b. Already implemented behavior may be reused only after checking the actual production entry points.
-3. Implement all planned module responsibilities in dependency-aware batches, prioritizing self-harness. Use narrow change records and coherent commits so defects remain diagnosable. Equivalent simpler implementations are allowed with an explicit mapping to the original objective; do not silently defer a module to the later iteration phase.
-4. Integrate the five component categories and applicable lifecycle operations. Implement the evaluation, accounting, review-artifact, and experiment-support paths required for Phase II. V2's implementation means the evaluation machinery and protocol are ready, not that its real experiments have already passed.
-5. Run proportionate local tests, static/type checks, offline historical-log checks, and integration checks that do not start a real ARC environment. Fix detected implementation and integration bugs. Do not launch real ARC baseline, guided, development, diagnostic, or acceptance runs during Phase I, including real-environment `arc-harness-smoke`.
-6. Record an initial implementation readiness checkpoint: every module has a concrete implementation or verified existing equivalent; relevant local checks pass; no known blocking integration defect remains; the baseline is preserved; the integrated candidate is frozen; real-run protocols and budgets are prepared. Mark real-chain reachability, autonomous adoption, and task benefit unverified at this point.
-
-If a required module cannot be implemented, report the specific gap and continue feasible implementation within the deadline. Do not bypass this phase boundary by calling partial implementation complete. If time expires here, deliver partial implementation honestly without claiming ARC acceptance.
-
-#### Phase II — real ARC acceptance and evidence-driven refinement
-
-After the Phase I checkpoint, begin the real-chain diagnostics, compatible fresh baseline runs, ordinary candidate runs, and final comparisons required by Gates A–D. Every real ARC run receives the mandatory Astra review. Use the loop in Section 7 to repair bugs and refine mechanisms based on observed failures, changing one main factor per subsequent iteration.
-
-The initial candidate intentionally combines the planned implementation modules. Its comparison measures the combined candidate; it does not establish individual module causality. Preserve module boundaries and evidence to localize failures without requiring ablations. The same 12-hour clock covers both phases; implementation completion does not reset or extend it.
+Use real-chain diagnostics, compatible fresh baselines, ordinary candidate runs, and final comparisons to close Gates A–D. Every real ARC run receives the mandatory Astra review. Changes and checks proceed within the same 12-hour deadline; an implementation milestone does not reset or extend it.
 
 In particular:
 
@@ -188,7 +160,7 @@ Use matched concurrency conditions for speed comparisons. When provider contenti
 
 Use soft time checkpoints:
 
-- Complete Phase I first. Use any remaining portion of roughly the first eight hours for Phase II targeted iteration cycles, continuously checking whether the final gates are reachable. The time checkpoint never authorizes skipping initial implementation coverage.
+- Use the early portion of the time budget for evidence-driven diagnosis and targeted iterations, continuously checking whether the final gates are reachable.
 - Around four hours before the deadline, prioritize final-candidate freezing and confirmation. Move this earlier if measured runtimes require more time.
 - Reserve review time after every final run; mandatory Astra review is part of the budget.
 - During the final thirty minutes, avoid new long runs and major unverified changes. Reconcile evidence, stop owned work safely, commit the verified state, and prepare handoff.
@@ -259,61 +231,37 @@ Use public observations and actual interaction logs as gameplay evidence. Framew
 
 A major refactor is allowed when a documented mechanism problem cannot be addressed cleanly by a smaller change. Before doing it, record the failure, rejected smaller options, replacement boundary, migration/rollback behavior, and feasible verification within the remaining time. Avoid speculative infrastructure expansion.
 
-### 6. Implementation priorities and module responsibilities
+### 6. Optimization priorities
 
-Use the detailed optimization plan for module definitions. Preserve the priority order below, while pulling forward minimal supporting pieces when necessary.
+Use the runbook's diagnostic branches to prioritize the current bottleneck. These are investigation directions, not an up-front implementation checklist:
 
-**Priority 1 — self-harness formation and use**
+- **Execution integrity and stability:** reconcile environment actions, actual provider requests, usable responses, recovery, and known/unknown costs. Repair blockers before broad performance comparisons.
+- **Learning and correction:** preserve observations, conditions, counterexamples, competing explanations, and their effect on later strategy. Reduce the time and management work between evidence and an informative experiment.
+- **Self-harness formation and use:** simplify authoring, trial, assembly, semantic use, revision, and retirement across the required five capabilities. Preserve selective use and justified non-use.
+- **Context and interface burden:** separate durable knowledge from resident views, tool availability from schema exposure, and reasoning budget from report length. Reduce repeated work without removing useful capability or continuity.
+- **Ledger and critic:** derive mechanical records from real events; verify effective review delivery and evidence-based judgments about hypotheses, strategies, and goals. Gameplay decisions remain with the gameplay Agent.
+- **Evaluation:** collect the minimum instrumentation needed to test the current claim and acceptance gates. Choose metrics and comparison conditions before inspecting outcomes.
 
-- S1: identify actual burdens, shorten authoring/assembly paths, and obtain the first useful component result with fewer management turns.
-- S2: convert suitable repeated calculations into executable checks; verify outputs and inferred transformations against actual recorded and later public transitions.
-- S3: enforce component scope, exact versions, revision, retirement, and safe restoration; keep transient state out of permanent guidance.
-- S4: complete the five-category capability paths, including real tools and task-local subagents; reuse native routing/assembly and existing research responsibilities.
-
-**Priority 2 — knowledge foundations**
-
-- K1: preserve hypothesis identity while versioning claims and scoping evidence. Carry candidates across levels but gather current-level evidence before declaring current-level support.
-- K2: separate raw observations from interpretations, manage stale state, and retain important unresolved observations beyond a short recent-action window.
-
-**Priority 3 — execution, resources, and interface burden**
-
-- E1: when an explicitly required premise receives a recorded refutation, suspend continued reliance on that premise. Do not let renaming or an `active=true` write automatically resolve the invalidation.
-- E2: preserve strategy-free exploration. Distinguish an experiment on an uncertain claim from executing a plan that assumes the claim; bound sustained investment.
-- E3: show effective remaining budgets and control current-decision/context costs without destroying useful continuity.
-- E4: reduce unambiguous format/transaction recovery burden while preserving evidence integrity, version checks, and atomicity.
-
-**Priority 4 — ledger and critic**
-
-- L1: derive factual exposure, invocation, result, cost, and follow-up records from existing events. Do not equate declared `uses` with actual use.
-- C1: use a critic only where its evidence access and cost justify it; distinguish findings, interpretations, suggested checks, and unknowns. The gameplay critic follows the parent model.
-
-**Priority 5 — evaluation and accounting**
-
-- V1: trustworthy identity, known/unknown usage, failure accounting, action reconciliation, and cancellation status.
-- V2: real diagnostics, ordinary adoption checks, final matched comparison, and honest acceptance disposition.
-
-Implement V1's minimum instrumentation and V2's experiment records from the outset. They are prerequisites for learning, not reasons to postpone self-harness work indefinitely.
-
-Do not turn this list into mandatory gameplay paperwork. Runtime performs mechanical routing/version/budget work; the gameplay Agent makes semantic choices. Do not add a required review, reminder, worker, or field without explaining the burden removed and the new cost introduced.
+Reuse verified existing capabilities. Implement missing or defective behavior as justified by diagnosis or an open acceptance requirement, and validate the affected production path. Keep development procedures out of the gameplay context.
 
 ### 7. Required outer iteration loop
 
-Enter this loop only after the Phase I implementation readiness checkpoint. Repeat it while the goal remains incomplete and time remains:
+Enter this loop after restoring the current state and preserving the baseline. Execute it using runbook Sections 3–7 while the goal remains incomplete and time remains:
 
-1. **Read the current checkpoint.** Verify deadline, current stable/candidate versions, owned processes, pending reviews, and open acceptance gaps.
-2. **Select one concrete problem.** Use an observed run event or a missing required capability. Avoid starting with a preferred architecture and searching for justification.
-3. **Form a falsifiable explanation.** Identify the suspected transition or responsibility, competing explanations, and the cheapest discriminating check.
-4. **Choose the smallest sufficient change.** Prefer removing duplicate work, fixing existing paths, or revising a contract before adding prompts, gates, or model roles.
-5. **Implement and check locally.** Use appropriate focused checks, including negative cases. Local tests qualify the candidate for real testing; they do not satisfy real ARC acceptance.
-6. **Freeze the experiment.** Record code, source hashes, runtime dependencies, model, modalities, budgets, comparator, expected observation, failure criterion, and run identity.
-7. **Run actual ARC.** Monitor without steering the gameplay Agent. You may read logs and prepare the next candidate elsewhere, but never mutate a running instance's implementation.
-8. **Collect and reconcile artifacts.** Preserve raw events, known/unknown usage, final public state, scorecard, failures, and process status.
-9. **Invoke GPT-6 Astra.** Obtain the mandatory evidence-based review for this run.
-10. **Adjudicate the review.** Check important citations/calculations in the raw evidence, distinguish confirmed causes from hypotheses, and record agreements/disagreements.
-11. **Decide:** retain, repair a bug, investigate an unknown, revise a mechanism, narrow scope, retire the change, or proceed to confirmation.
-12. **Update the checkpoint and user.** Name what was learned, what changed, what remains unverified, and why the next step is justified.
+1. **Restore the checkpoint.** Verify the effective contract, deadline, stable/candidate identities, owned runs, pending reviews, and acceptance gaps. Reuse completed evidence and in-flight work.
+2. **Reconstruct one concrete failure or opportunity.** Reconcile canonical events and what the Agent actually received. Separate observations, interpretations, unknown outcomes, and missing evidence.
+3. **Locate the earliest supported break.** Trace cognition, capability formation/use, and feedback delivery using runbook Section 4. Compare competing causes, including restrictions imposed by the harness itself; choose the cheapest discriminating check if the cause is uncertain.
+4. **Define one falsifiable change.** State the burden removed, expected downstream behavior, task metric, failure condition, and a relevant negative case. Prefer simplification/reuse to new prompts, mandatory fields, gates, or roles. Repair integrity or execution blockers before broad performance comparisons.
+5. **Implement and check proportionately.** Protect other work. Use focused functional, replay, and recovery checks appropriate to the failure; these qualify the candidate for real evaluation, not real acceptance.
+6. **Freeze and preregister the experiment.** Record source/configuration identity, actual provider reasoning and modalities, comparator, budget, stopping rules, the smallest relevant metric set, and acceptable regressions. Select the evaluation method under runbook Section 6.
+7. **Run actual ARC and monitor.** Track task progress, semantic component use, belief revision, effective critic delivery, stability, and total cost. Record anomalies; let the frozen run finish unless a predefined stopping condition or user instruction applies. Prepare later candidates only in isolation.
+8. **Reconcile the outcome.** Preserve raw events, public state, scorecard, failures, process status, and known/unknown usage. Include failed and truncated samples; distinguish an unfinished revision from refusal to revise.
+9. **Obtain GPT-6 Astra review.** Supply the relevant runbook method and this run's evidence, predictions, and metrics under Section 8. Every real run retains its mandatory review.
+10. **Adjudicate findings and assess evidence layers.** Verify citations and calculations. Report functional correctness, full-chain reachability, autonomous adoption, and net benefit separately; component counts, invocation success, or shorter context alone do not establish task improvement.
+11. **Retain, revise, retire, or investigate.** Apply runbook Section 7.3 and Section 12 below against the preregistered criteria. If behavior misses the claim, revisit the broken transition rather than automatically increasing budgets or adding instructions.
+12. **Persist and continue.** Update the existing change record and checkpoint with the result, rejected explanation, remaining budget, and next justified check. Continue authorized work; stop under this contract's goal and deadline conditions.
 
-A completed run is not merely a score. Its component lifecycle, failure modes, resource use, and post-run Astra disposition all belong to the iteration record.
+Diagnostic priority follows the observed bottleneck. Resolving stability or context failures can be a prerequisite for meaningful self-harness evaluation; the required capabilities and acceptance gates remain the final completion criteria.
 
 ### 8. Astra review: required inputs and output contract
 
@@ -322,7 +270,8 @@ Provide the reviewer:
 - Run ID and absolute artifact paths.
 - The exact frozen source location and relevant configuration.
 - Run type: guided diagnostic, ordinary development, baseline, advanced-model diagnostic, or final acceptance.
-- The change under test and the pre-run hypothesis/prediction.
+- The change under test, pre-run hypothesis/prediction, selected metrics, acceptable regressions, and falsification condition.
+- `docs/arc-optimization-runbook.md` from the working checkout: use Sections 4, 6, and 7 to review the earliest broken transition, mechanism-imposed burden, and evidence level. Treat it as a method, not a checklist requiring a finding in every category.
 - Public observations, trajectory, component writes/versions, tool calls/results, provider-visible context where available, usage, errors, and final scorecard.
 - Comparator information, previous relevant findings, and already-tested explanations.
 - Remaining time and the questions the main Agent needs answered.
@@ -380,39 +329,15 @@ The main Agent must not blindly implement Astra's suggestions. Validate the high
 
 ### 9. From observed symptom to a general mechanism change
 
-Use the following reasoning discipline for every substantive optimization:
+Apply runbook Sections 4–5 as the detailed diagnostic method; keep the result in the existing per-change record rather than producing another worksheet.
 
-**A. Describe the symptom without interpretation.**
-
-Name the exact observation and consequence. For example: an invalidated component revision appeared in the next request; a tool returned a value inconsistent with the public grid; a creation succeeded but no callable name was exposed. “The model is bad at planning” is not a sufficiently specific symptom.
-
-**B. Locate the responsible transition.**
-
-Use the lifecycle: opportunity → recognition → investment → candidate → assembly → semantic use → feedback → retain/revise/retire. Also examine evidence scope, version validity, execution dependency, budget, and measurement where relevant.
-
-**C. Separate implementation failure from design failure.**
-
-- A bug violates a defined contract: repair that contract, add a meaningful regression check, and verify the actual real path.
-- A workflow defect imposes unnecessary steps or confusing recovery: simplify the path and measure the removed burden.
-- A mechanism gap means every local function may be working, but required responsibility or feedback is missing: define the smallest general contract that fills it.
-- A model limitation is a supported possibility only after checking actual exposure, input, interface, and feedback. Use occasional advanced-model diagnosis to distinguish causes, not to excuse failure.
-- An unknown requires a discriminating check, not immediate architectural expansion.
-
-**D. Identify the invariant or reusable responsibility.**
-
-State the rule without game IDs, coordinate literals, specific colors, fixed solution sequences, or assumptions about a particular puzzle. For example, evidence belongs to a claim revision and observation scope; a component's current version must be the invoked version; a retired scope must not remain active.
-
-**E. Compare alternatives.**
-
-Consider, in order where suitable: remove duplicate work; reuse an existing mechanism; repair the interface/representation; add a small deterministic state transition; use an existing authorized research responsibility. Add a new model role or gate only when those options are insufficient and its cost is justified.
-
-**F. Define a prospective test.**
-
-Write the precise behavior expected in the next real run, what counts as failure, and a negative case where the mechanism should not intervene. A higher score alone cannot prove an unrelated interface bug was fixed; conversely, a correct interface fix does not prove task improvement.
-
-**G. Preserve the boundary between generalization and overengineering.**
-
-A correction should address a reusable failure class, but it need not create a universal framework. A small correct existing-module change is preferable to a large abstraction whose benefits cannot be tested before the deadline.
+- Trace the cognition chain (observation -> representation -> interpretation -> hypothesis -> discriminating experiment -> feedback -> revision -> action), the capability lifecycle, and critic delivery. Locate the earliest supported break and verify its downstream consequence.
+- Examine implementation bugs, interface burden, mechanism gaps, infrastructure failures, and competing explanations before assigning a model limitation. Audit hard limits, hidden tool access, forced management steps, and lost counterexamples as possible causes.
+- Separate persistent knowledge from resident display, computation budget from final-answer length, and tool capability from per-request schema exposure. Preserve required reasoning and functional access while reducing repeated work.
+- Encourage low-friction component production and revision while leaving assembly, use, and justified non-use to the Agent. A successful save or invocation does not establish semantic correctness or value.
+- Keep generic runtime responsibilities separate from domain-adapter primitives and Agent-authored derived analysis. Changes must address reusable failures rather than encode a game's colors, coordinates, rules, or solution.
+- Evaluate competing hypotheses by distinct predictions, informative experiments, and actual revision; evaluate the gameplay critic by evidence-based judgments about hypotheses, strategies, goals, and evidence. The gameplay Agent chooses concrete actions.
+- State the prospective behavior and falsifier before implementation. A small existing-module repair is preferable when sufficient; additional roles, gates, or frameworks require evidence that simpler alternatives cannot resolve the cited failure.
 
 ### 10. Diagnostic routes by failure pattern
 
@@ -451,6 +376,9 @@ specific mechanism/responsibility:
 why simpler alternatives are insufficient, if applicable:
 what remains unchanged:
 predicted observable behavior:
+evaluation method and target evidence layer (runbook Sections 6–7):
+primary task metric, relevant diagnostic metrics, denominators/unknowns:
+acceptance threshold and allowable regression:
 falsification/failure condition:
 negative case:
 added resident context, tool calls, model calls, and runtime cost:
@@ -460,6 +388,8 @@ real-run type, comparator, and fixed configuration:
 per-run budgets and remaining deadline:
 rollback/retirement plan:
 ```
+
+Reuse the existing change record/template for these fields; do not duplicate data or require irrelevant metrics. Use runbook Section 7.1 for measurement definitions, including all-participant cost, incomplete-event accounting, semantic use, and counterexample-to-revision latency. The fixed acceptance contract takes precedence over optional metrics.
 
 A single primary factor may span several files when they implement one necessary contract. Explain that coupling. Do not simultaneously change model, modality, output budget, observation encoding, and critic policy and then attribute the outcome to one of them.
 
@@ -516,12 +446,13 @@ At startup, inspect current processes and files sufficiently to avoid disturbing
 Maintain one durable goal checkpoint containing:
 
 - absolute start/deadline and time remaining at last update;
-- current phase, the 14-module implementation coverage, and the Phase I readiness checkpoint;
+- current iteration stage, the diagnosed bottleneck, and relevant implementation/validation status;
 - active branch/worktree, baseline, current candidate, and best verified candidate;
 - owned live runs and their budgets;
 - pending Astra reviews and adjudication status;
 - component lifecycle matrix and Gates A–D status;
 - current hypothesis, last rejected explanations, next smallest check;
+- runbook path and revision/hash used, the relevant diagnostic branch, and the selected evaluation metrics (by reference to the change record);
 - local/real tests completed and unresolved failures;
 - held-out contamination status;
 - known/unknown cost and outstanding requests;
@@ -530,6 +461,8 @@ Maintain one durable goal checkpoint containing:
 Use a single index/summary as the authoritative state, with linked per-run artifacts rather than repeated conflicting summaries. Write atomically where practical. Store temporary scripts in an appropriate work/scratch location and real evidence in distinct run directories.
 
 After compaction or restoration, read the checkpoint, inspect live process identities, reconcile completed runs, obtain missing Astra reviews, and continue. Do not restart baseline runs or reset the deadline without evidence they are needed.
+
+For periodic monitoring, follow the current user-agreed cadence and the content categories in runbook Section 6.4; keep sampling separate from reporting and surface material failures promptly.
 
 Keep the user informed at meaningful boundaries: implementation milestones, run completion, Astra's material finding, a causal hypothesis being rejected, entering final confirmation, and blockers. During active tool work, provide timely concise progress updates. Do not ask for confirmation for routine authorized edits or experiments.
 
@@ -570,8 +503,8 @@ At deadline, give an explicit partial-completion report if necessary: which gate
 
 ### 16. Start now
 
-Establish the absolute 12-hour deadline and persist it. Read the required instructions, inspect the current repository/runtime state, create or select appropriate isolation, and preserve the baseline. Check the available Qwen/image/official ARC path and mandatory GPT-6 Astra review capability without exposing secrets.
+Establish the absolute 12-hour deadline and persist it. Read the required instructions and the runbook, inspect the current repository/runtime state, create or select appropriate isolation, and preserve the baseline. Check the available Qwen/image/official ARC path and mandatory GPT-6 Astra review capability without exposing secrets.
 
-Create the initial 14-module implementation matrix and acceptance matrix. Complete Phase I: implement the detailed optimization plan, integrate the changes, pass the relevant local checks, and freeze the initial integrated candidate. Startup capability inspection must not launch a real ARC run before this checkpoint.
+Create or restore the acceptance matrix from existing evidence. Identify the earliest supported bottleneck or missing acceptance evidence, choose the smallest useful diagnostic or change, and enter Section 7 directly. Run real ARC diagnostics and matched comparisons when their relevant checks and frozen configuration are ready, and obtain GPT-6 Astra review after every run.
 
-Then enter Phase II: execute the real ARC diagnostics and matched comparisons, obtain GPT-6 Astra review after every run, and use the implementation–real ARC–Astra review–mechanism adjustment loop above. Continue autonomously within this contract until all gates pass or the original deadline requires an honest handoff.
+Use the runbook's diagnostic branches, evaluation methods, and metric definitions throughout. Continue autonomously within this contract until all gates pass or the original deadline requires an honest handoff.

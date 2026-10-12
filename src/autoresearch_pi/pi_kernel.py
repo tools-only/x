@@ -13,6 +13,15 @@ from queue import Empty, Queue
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 
+class PiTurnIdleTimeout(TimeoutError):
+    """A Pi turn emitted no event for the configured idle interval."""
+
+    def __init__(self, message: str, *, events: list[Dict[str, Any]], idle_seconds: float):
+        super().__init__(message)
+        self.events = events
+        self.idle_seconds = idle_seconds
+
+
 @dataclass
 class RpcEvent:
     """One decoded line emitted by Pi."""
@@ -269,6 +278,7 @@ class PiKernel:
         self,
         *,
         timeout: Optional[float] = None,
+        idle_timeout: Optional[float] = None,
         watchdog: Optional[AgentLoopWatchdog] = None,
         watchdog_state: Optional[AgentLoopWatchdogState] = None,
         stop_after_progress_tools: Optional[Iterable[str]] = None,
@@ -293,8 +303,23 @@ class PiKernel:
         stop_tools = frozenset(stop_after_progress_tools or ())
         read_only_calls = 0
         read_signatures: List[str] = []
+        last_event_at = time.monotonic()
         while time.monotonic() < deadline:
-            event = self._receive_event(deadline - time.monotonic())
+            wait_for = deadline - time.monotonic()
+            if idle_timeout is not None:
+                wait_for = min(wait_for, max(0.0, last_event_at + idle_timeout - time.monotonic()))
+            event = self._receive_event(wait_for)
+            if event is None:
+                if idle_timeout is not None and time.monotonic() - last_event_at >= idle_timeout:
+                    raise PiTurnIdleTimeout(
+                        f"timed out waiting for Pi agent turn after {idle_timeout:.1f}s without an event",
+                        events=collected, idle_seconds=time.monotonic() - last_event_at,
+                    )
+                continue
+            # Pi wrote a line: the turn is alive, even when the caller's projector drops the event
+            # (streaming message_update deltas). Counting only projected events made any response
+            # that streamed for longer than the idle interval look silent and got it aborted.
+            last_event_at = time.monotonic()
             if not event:
                 continue
             collected.append(event)

@@ -30,7 +30,11 @@ from .shopping_e2e import (
 from .validation_evidence import load_validation_manifest
 from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
-from .arc_thin_e2e import run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_ledger_smoke, run_arc_thin_smoke
+from .arc_thin_e2e import (
+    run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_ledger_smoke,
+    run_arc_thin_self_harness_smoke, run_arc_thin_smoke,
+)
+from .arc_blind_policy import run_arc_blind_policy
 from .terminal_bench_e2e import run_terminal_bench_e2e
 
 
@@ -170,23 +174,55 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--max-decisions", type=int, default=None)
     arc_thin.add_argument("--max-reported-tokens", type=int, default=None)
     arc_thin.add_argument("--experiment-timeout", type=float, default=None)
+    arc_thin.add_argument("--turn-idle-timeout", type=float, default=180.0,
+                          help="seconds without a native Pi event before one bounded turn recovery")
     arc_thin.add_argument("--consolidate-after", type=int, default=25,
                           help="actions between consolidation turns (also after a level change or GAME_OVER)")
+    arc_thin.add_argument("--review-on-miss", action="store_true",
+                          help="also make a review due after a scored prediction miss (at most every 4 actions)")
     arc_thin.add_argument("--provider", default="yibu")
     arc_thin.add_argument("--model", default=None)
-    arc_thin.add_argument("--thinking", default=None, help="Pi thinking level, e.g. off, low, medium, high")
+    arc_thin.add_argument("--thinking", default="high", help="Pi thinking level (default: high; use off to disable)")
+    arc_thin.add_argument("--thinking-format", choices=("openai", "qwen", "qwen-chat-template"), default=None,
+                          help="how the thinking level is sent to an OpenAI-Completions gateway (default: "
+                               "ARC_PI_THINKING_FORMAT, or qwen for explicit thinking on yibu/qwen3.8-27b); "
+                               "on other OpenAI-Completions routes without a format the provider's default applies")
     arc_thin.add_argument("--input-modalities", default=None)
     arc_thin.add_argument("--max-output-tokens", type=int, default=None)
-    arc_thin.add_argument("--ledger", action="store_true",
-                          help="track the agent's optional idea/expect, effort per idea and its skills' measurements")
-    arc_thin.add_argument("--critic", action="store_true",
-                          help="ledger plus an external critic triggered at critical steps (advisory)")
+    arc_thin.add_argument("--ledger", action=argparse.BooleanOptionalAction, default=True,
+                          help="ledger service, on by default: tracks the agent's optional idea/expect, effort per idea "
+                               "and its skills' measurements (--no-ledger also needs --no-critic)")
+    arc_thin.add_argument("--critic", action=argparse.BooleanOptionalAction, default=True,
+                          help="critic service, on by default: an external reviewer triggered at critical steps (advisory); "
+                               "it needs the ledger")
+    arc_thin.add_argument("--carry-reasoning", type=int, default=0, metavar="CHARS",
+                          help="comparison variable: show the end of the previous decision's reasoning (0 = off)")
+    arc_thin.add_argument("--continuity", choices=("rebuild", "session"), default="rebuild",
+                          help="rebuild: each decision sees only the rebuilt working set; session: the agent's last "
+                               "decisions from Pi's session (text, tool calls, results; no reasoning) stay in view")
+    arc_thin.add_argument("--continuity-decisions", type=int, default=8, metavar="N",
+                          help="with --continuity session, how many earlier decisions stay in view")
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)
     arc_thin_smoke.add_argument("--ledger", action="store_true", help="run the ledger + critic scenario instead")
     arc_thin_smoke.add_argument("--environment", action="store_true",
                                 help="run the environment-failure scenario instead (mock steps return no frame)")
+    arc_thin_smoke.add_argument("--self-harness", action="store_true",
+                                help="run the predictions / history / working-set / carried-reasoning scenario instead")
+    arc_thin_smoke.add_argument("--continuity", action="store_true",
+                                help="run the session-continuity scenario instead (earlier decisions kept in view)")
+    blind = sub.add_parser("arc-blind-policy",
+                           help="play one ARC game with a scripted policy that never looks at the frame (evaluation floor)")
+    blind.add_argument("--root", type=Path, default=None)
+    blind.add_argument("--arc-root", type=Path, default=None)
+    blind.add_argument("--game", default="ls20")
+    blind.add_argument("--policy", choices=("repeat_each", "probe_then_each", "uniform_random"), required=True)
+    blind.add_argument("--repeat", type=int, default=50, help="times each action is repeated (repeat policies)")
+    blind.add_argument("--seed", type=int, default=0, help="seed for click coordinates and the random policy")
+    blind.add_argument("--max-actions", type=int, default=200)
+    blind.add_argument("--experiment-timeout", type=float, default=None)
+    blind.add_argument("--mock-environment", action="store_true", help="mock ARC SDK (offline check of the policy runner)")
     arc_smoke = sub.add_parser(
         "arc-harness-smoke",
         help="run ARC/Pi self-harness diagnostics or capture real-provider closure evidence",
@@ -382,15 +418,29 @@ def main(argv: list[str] | None = None) -> int:
             root, arc_root=args.arc_root or paths.arc_agi_3_root, game=args.game, variant=args.variant,
             max_actions=args.max_actions, max_decisions=args.max_decisions,
             max_reported_tokens=args.max_reported_tokens, experiment_timeout_seconds=args.experiment_timeout,
-            consolidate_after_actions=args.consolidate_after, pi_provider=args.provider, pi_model=args.model,
-            thinking=args.thinking, input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,
-            ledger=args.ledger, critic=args.critic,
+            turn_idle_timeout_seconds=args.turn_idle_timeout,
+            consolidate_after_actions=args.consolidate_after, review_on_miss=args.review_on_miss, pi_provider=args.provider, pi_model=args.model,
+            thinking=args.thinking, thinking_format=args.thinking_format,
+            input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,
+            ledger=args.ledger, critic=args.critic, carry_reasoning_chars=args.carry_reasoning,
+            continuity=args.continuity, continuity_decisions=args.continuity_decisions,
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
     if args.command == "arc-thin-smoke":
         summary = (run_arc_thin_ledger_smoke(args.root) if args.ledger
-                   else run_arc_thin_environment_smoke(args.root) if args.environment else run_arc_thin_smoke(args.root))
+                   else run_arc_thin_environment_smoke(args.root) if args.environment
+                   else run_arc_thin_continuity_smoke(args.root) if args.continuity
+                   else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))
+        print(summary.read_text(encoding="utf-8"), end="")
+        return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "arc-blind-policy":
+        root = (args.root or paths.runs_dir / f"arc-blind-{args.policy}-{args.game}-s{args.seed}").resolve()
+        summary = run_arc_blind_policy(
+            root, arc_root=args.arc_root or paths.arc_agi_3_root, game=args.game,
+            policy=args.policy, repeat=args.repeat, seed=args.seed, max_actions=args.max_actions,
+            experiment_timeout_seconds=args.experiment_timeout, mock_environment=args.mock_environment,
+        )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
     if args.command == "arc-harness-smoke":

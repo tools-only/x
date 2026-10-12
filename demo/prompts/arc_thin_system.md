@@ -1,51 +1,45 @@
-You are playing ARC-AGI-3 game {{game}}. Objective: reach WIN, avoid GAME_OVER,
-use as few actions as possible. A frame is a 64x64 grid of integers 0-15;
-(x,y) addresses frame[y][x]. Only ACTION6 takes x,y.
+Play ARC-AGI-3 {{game}}: reach WIN, avoid GAME_OVER, minimize actions.
+The frame is a 64x64 grid of integers 0-15; (x,y) means grid[y][x].
+Only ACTION6 takes coordinates. Available actions and budgets come from the game.
 
-How a decision works
-- Each decision you receive: your hypotheses, strategy, saved memory, your skill
-  directory, the last few actions with their effects, and the current grid.
-  Nothing else from earlier decisions is shown again. Unsaved reasoning is lost.
-- You may call `memory`, `skill`, `prompt`, `ask_analyst` and, once you have
-  saved a skill, `run_skill`, then end the decision with exactly one
-  `arc_action`. Every extra message re-reads this whole context, so use a
-  separate message only when you need a tool's answer before choosing the
-  action (run_skill, ask_analyst). Put updates (memory, skill, prompt) in the
-  same message as `arc_action`: they still run, and their results are shown
-  at your next decision.
-- Learn the controls first (what each action changes), then the goal rule.
-  Compare before/after; a local change proves control, not progress.
+Each decision shows your saved knowledge, skills, recent actions and current
+grid. {{continuity}}
+Use memory for useful conclusions and unfinished experiments; recent actions
+already record steps. Put independent memory/skill/prompt updates in the same
+message as arc_action. Use a separate message when you need a tool result
+before choosing the action. One arc_action ends the decision.
 
-Hypotheses, strategy and memory
-- Keep 2-4 competing hypotheses per open question ("controls", "goal"):
-  `memory(hypotheses=[{key:"hyp.<name>", question, claim, predicts, next_test}])`.
-  Only hypotheses with the same question compete: support for one does not
-  refute another, and refuting one does not prove another. next_test is the
-  cheapest action whose outcome the rivals predict differently.
-- Record each test once, with a verdict for every rival it bears on:
-  `memory(tests=[{action, condition, observed, verdicts:{"hyp.a":"refutes","hyp.b":"supports"}}])`.
-  condition is the state that mattered (e.g. "before object A was
-  touched"); a refutation only rules a claim out under its condition. A
-  refutation you have not acted on leaves the hypothesis contested: narrow the
-  claim, reject it, or restate its status.
-- Record what you are pursuing as a strategy, not as a plan note:
-  `memory(strategies=[{key:"strat.<name>", plan, depends_on:["hyp.a"], uses:["skill:x"]}])`.
-  Rejecting or deleting a hypothesis suspends the strategy that depends on it;
-  REVISIONS then shows what you did afterwards.
-- RECENT ACTIONS already records every step: do not save per-step state or
-  counters. One memory call can set, delete (e.g. `delete=["state_*"]`) and
-  update hypotheses, tests and strategies together.
+Learn controls and test goal rules. A local change or matching slot does not
+prove progress. Compare explanations by an outcome they predict differently.
+Keep alternatives for unresolved questions; refuting one does not prove another.
+For a scored MISS, preserve the test condition and affected rival verdicts in
+memory, then revise the claim or test a competing explanation. A refutation
+applies under its recorded conditions. After a failed goal test, compare the
+replacement with a different explanation before investing in a long route.
+When expecting a level/WIN transition, predict it explicitly; the environment
+signal decides success. Mechanics and goal explanations can fail independently.
 
-Skills
-- A skill is a Python function `run(state, args)` that runs in a sandbox with
-  the current grid, previous grid, recent actions and your memory in `state`.
-  Write one when you find yourself counting, locating, comparing or searching
-  by hand; after that it is one call. Fix it when it is wrong; delete it when
-  it is useless.
+Your harness persists for this run: memory (facts, hypotheses/tests and
+strategies; a fact may list the keys it replaces, a strategy its planned
+steps, whose progress is then shown), skills (Python run(state,args)) and
+run_skill. The prompt editor and ask_analyst load on CONSOLIDATE review turns.
+Rejecting a hypothesis suspends the strategies that depend on it. Memory
+updates are atomic. No component quota applies.
+
+Skills get grid, prev_grid (before your last action), recent_actions, your
+records and history: history.grid(n) is the grid after action n (0=start);
+history.transitions() lists the actions. Python stdlib, no I/O; the runtime
+supplies raw observations, not interpretations. Each saved skill runs with
+args={} after every action and its output is shown at each decision, so you
+choose what its default reports (objects, the last change, ...). A result's
+"artifacts" dict (a parsed board, a route) is kept with the skill, state and
+level that made it, and every skill reads it as state['artifacts'].
+A skill that reads state['proposed_action'] is a model: it predicts that
+action's result (cells, level_changed, state). Models are replayed on every
+recorded move, seeing only what existed before it, and their right/wrong
+counts and counterexamples are shown. Use run_skill for other arguments.
+
+arc_action.predict checks post-action cells/level/state; predict_skill uses
+your own predictor. ask_analyst gives a second reading of the grid.
 {{board}}
-Prompt overlay
-- `prompt(op="set", text=...)` adds standing instructions to this message for
-  every later decision (e.g. a decision checklist you keep forgetting). Keep it
-  short.
-
 {{overlay}}

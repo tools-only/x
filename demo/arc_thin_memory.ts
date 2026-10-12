@@ -45,7 +45,11 @@ export type Hypothesis = {
 	contested_at?: number;
 };
 /** since: action count when it last became active; spent: actions while active before that. */
-export type Strategy = { plan: string; status: StrategyStatus; depends_on: string[]; uses: string[]; since: number; spent: number; note?: string };
+/** steps: the action sequence the agent planned after action #steps_from; the runtime only matches it against the moves taken. */
+export type Strategy = {
+	plan: string; status: StrategyStatus; depends_on: string[]; uses: string[]; since: number; spent: number; note?: string;
+	steps?: string[]; steps_from?: number;
+};
 export type Dropped = { key: string; claim: string; question?: string; at: number; results: number };
 /** linked: component ref → snapshot tag at the revision ("v2", "deleted", a text hash). */
 export type Revision = { at: number; causes: string[]; active_before?: string; active_after?: string; linked: Record<string, string> };
@@ -60,11 +64,47 @@ export type HypothesisInput = {
 	key: string; claim?: string; question?: string; predicts?: string; status?: Status; next_test?: string; evidence?: Partial<Evidence>;
 };
 export type TestInput = { action?: number; condition?: string; observed?: string; verdicts?: Record<string, Verdict> };
-export type StrategyInput = { key: string; plan?: string; depends_on?: string[]; uses?: string[]; status?: StrategyStatus };
+export type StrategyInput = { key: string; plan?: string; depends_on?: string[]; uses?: string[]; status?: StrategyStatus; steps?: string[] | string };
+export const MAX_STEPS = 64;
+
+/**
+ * Action labels as arc_action reports them (ACTION4, ACTION6(3,7), RESET). "A4", lower case, spaces and a single
+ * string of labels separated by spaces or commas are accepted; undefined when any label is not an action.
+ */
+export function normalizeSteps(raw: unknown): string[] | undefined {
+	const items = typeof raw === "string" ? raw.split(/[\s,;]+(?![^()]*\))/) : Array.isArray(raw) ? raw.map(String) : undefined;
+	if (!items) return undefined;
+	const steps: string[] = [];
+	for (const item of items) {
+		const label = item.toUpperCase().replace(/\s+/g, "").replace(/^A(\d)/, "ACTION$1");
+		if (!label) continue;
+		if (!/^(ACTION[1-7](\(\d{1,2},\d{1,2}\))?|RESET)$/.test(label)) return undefined;
+		steps.push(label);
+	}
+	return steps;
+}
+
+/**
+ * How far the moves after #steps_from follow the planned steps. Mechanical: labels are compared one by one and
+ * tracking stops at the first move that differs; whether the plan is still right is the agent's judgement.
+ */
+export function stepsProgress(s: Pick<Strategy, "steps" | "steps_from">, actions: string[]): string {
+	const steps = s.steps ?? [];
+	if (!steps.length) return "";
+	const from = s.steps_from ?? 0;
+	const taken = actions.slice(from);
+	let k = 0;
+	while (k < steps.length && k < taken.length && taken[k] === steps[k]) k += 1;
+	const head = `steps planned after #${from}: ${k}/${steps.length} followed`;
+	if (k === steps.length) return `${head} (#${from + 1}–#${from + k}); all done`;
+	if (k < taken.length) return `${head}; #${from + k + 1} was ${taken[k]} where step ${k + 1} is ${steps[k]}, so the steps are no longer tracked`;
+	const next = steps.slice(k, k + 8);
+	return `${head}; next ${next.join(", ")}${steps.length - k > next.length ? `, … (${steps.length - k} left)` : ""}`;
+}
 export type MemoryParams = {
 	op?: "set" | "delete" | "list" | "update";
 	key?: string; text?: string; confidence?: number;
-	set?: Array<{ key: string; text: string; confidence?: number }>;
+	set?: Array<{ key: string; text: string; confidence?: number; replaces?: string[] | string }>;
 	delete?: string[];
 	hypotheses?: HypothesisInput[];
 	tests?: TestInput[];
@@ -146,6 +186,42 @@ function rivalsOf(hypotheses: Map<string, Hypothesis>, key: string): string[] {
 	return [...hypotheses].filter(([other, h]) => other !== key && h.question === question && h.status !== "rejected").map(([other]) => other);
 }
 
+/** One recorded test on a question, with the verdict it gave each hypothesis it was recorded against. */
+export type QuestionTest = { id: string; action?: number; verdicts: Map<string, Verdict> };
+
+/**
+ * The tests recorded on one question, from the results the hypotheses still
+ * hold (each keeps its latest MAX_EVIDENCE). Results belong to the same test
+ * when they share an action number, or a condition and observation when they
+ * have none. Rejected hypotheses count: their refutation is often the result
+ * that separated them from a rival.
+ */
+export function questionTests(hypotheses: Map<string, Hypothesis>, question: string): QuestionTest[] {
+	const tests = new Map<string, QuestionTest>();
+	for (const [key, h] of hypotheses) {
+		if (h.question !== question) continue;
+		for (const e of h.evidence) {
+			const id = e.action !== undefined ? `#${e.action}` : `${e.condition}|${e.observed}`;
+			const test = tests.get(id) ?? { id, ...(e.action !== undefined ? { action: e.action } : {}), verdicts: new Map<string, Verdict>() };
+			test.verdicts.set(key, e.verdict);
+			tests.set(id, test);
+		}
+	}
+	return [...tests.values()];
+}
+
+/** A test told rivals apart when it gave at least two of them different verdicts. Counting only; no judgement. */
+export const toldApart = (test: QuestionTest) => new Set(test.verdicts.values()).size >= 2;
+
+/** Tests that gave `key` a different verdict than at least one hypothesis with the same question. */
+export function testsToldApart(hypotheses: Map<string, Hypothesis>, key: string): QuestionTest[] {
+	const question = hypotheses.get(key)?.question;
+	return question ? questionTests(hypotheses, question).filter((test) => test.verdicts.has(key) && toldApart(test)) : [];
+}
+
+const sameQuestion = (hypotheses: Map<string, Hypothesis>, question: string | undefined) =>
+	question ? [...hypotheses].filter(([, h]) => h.question === question).length : 0;
+
 const premiseLine = (hypotheses: Map<string, Hypothesis>, key: string) => {
 	const h = hypotheses.get(key);
 	if (!h) return `${key} (deleted)`;
@@ -169,6 +245,17 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 	const notes: string[] = [];
 	const sets = [...(params.set ?? [])];
 	const deletes = [...(params.delete ?? [])];
+	// A corrected belief retires the ones it corrects in the same call: `replaces` deletes them. At decision 77 of a
+	// real run (hypstrategy ls20, 2026-10-11) "toggles", "extends up" and the corrected "moves up" were all shown
+	// side by side, because the agent wrote each correction under a new key and never deleted the old ones.
+	const replaced: string[] = [];
+	for (const item of sets) {
+		const list = Array.isArray(item?.replaces) ? item.replaces : typeof item?.replaces === "string" ? [item.replaces] : [];
+		for (const old of list.map((key) => String(key).trim()).filter((key) => key && key !== String(item.key ?? "").trim())) {
+			if (!deletes.includes(old)) deletes.push(old);
+			replaced.push(`${String(item.key).trim()} replaces ${old}`);
+		}
+	}
 	if (op === "delete") {
 		if (params.key) deletes.push(params.key);
 		else if (!deletes.length) errors.push(`op="delete" needs key or delete=[...]`);
@@ -195,6 +282,7 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 	const missing: string[] = [];
 	const dropped: Dropped[] = [];
 	const deletedHyps: string[] = [];
+	const deletedRecords: string[] = [];
 	const causes: string[] = [];
 	for (const raw of deletes) {
 		const pattern = String(raw).trim();
@@ -212,8 +300,12 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 			let tombstone: Dropped | undefined;
 			if (h) {
 				deletedHyps.push(key);
+				// What is being dropped, counted from the records as they stood before this call.
+				if (sameQuestion(state.hypotheses, h.question) >= 2)
+					deletedRecords.push(`${key} ${h.evidence.length} result(s), ${h.evidence.filter((e) => e.verdict === "refutes").length} refuting, ` +
+						`${testsToldApart(state.hypotheses, key).length} that told it apart from a rival`);
 				// A deleted alternative that was never refuted stays visible as one line.
-				if (!(h.status === "rejected" && hasRefutation(h))) {
+				if (!hasRefutation(h)) {
 					tombstone = { key, claim: clip(h.claim, 160), ...(h.question ? { question: h.question } : {}), at: actionCount, results: h.evidence.length };
 					dropped.push(tombstone);
 				}
@@ -343,10 +435,6 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 			const { contested_at: _, ...rest } = next;
 			next = rest;
 		}
-		if (next.status === "rejected" && !hasRefutation(next)) {
-			errors.push(`${key}: status "rejected" needs evidence with verdict "refutes" and the condition it was tested under`);
-			continue;
-		}
 		hypotheses.set(key, next);
 	}
 
@@ -403,11 +491,20 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 		let next: Strategy = existing
 			? { ...existing, ...(nonEmpty(item.plan) ? { plan: item.plan.trim() } : {}), depends_on: depends, uses }
 			: { plan: item.plan!.trim(), status: "suspended", depends_on: depends, uses, since: actionCount, spent: 0 };
+		if (item.steps !== undefined) {
+			const steps = normalizeSteps(item.steps);
+			if (!steps) { errors.push(`${key}: steps must be action names such as ACTION4, ACTION6(3,7) or RESET`); continue; }
+			if (steps.length > MAX_STEPS) { errors.push(`${key}: at most ${MAX_STEPS} steps`); continue; }
+			const { steps: _steps, steps_from: _from, ...rest } = next;
+			next = steps.length ? { ...rest, steps, steps_from: actionCount } : rest;
+		}
 		const status = item.status ?? (existing ? existing.status : item.key === defaultActive ? "active" : "suspended");
 		if (item.status === "active" || (!existing && status === "active")) explicitActive.add(key);
 		next = setStatus(key, next, status);
 		strategies.set(key, next);
 		touch(changedStrats, key, existing ? (existing.status !== next.status ? `→ ${next.status}` : undefined) : `new, ${next.status}`);
+		if (item.steps !== undefined)
+			touch(changedStrats, key, next.steps ? `${next.steps.length} steps tracked from #${actionCount + 1}` : "steps cleared");
 	}
 	if (explicitActive.size > 1) errors.push(`only one strategy can be active; this call activates ${[...explicitActive].join(", ")}`);
 	// Activating one strategy suspends the one that was active.
@@ -468,11 +565,17 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 		notes.push(`contested: ${contested.join(", ")} — narrow the claim to where it held, reject it, or restate its status`);
 	for (const key of changedHyps.keys()) {
 		const h = hypotheses.get(key)!;
+		// Rejecting a hypothesis is the agent's judgment; missing evidence is a
+		// description of its record, not a reason to discard an otherwise valid batch.
+		if (h.status === "rejected" && !hasRefutation(h))
+			notes.push(`${key} rejected without a recorded refutation`);
 		if (h.status === "supported" && statusBefore.get(key) !== "supported") {
 			const rivals = rivalsOf(hypotheses, key);
 			if (rivals.length) notes.push(`${key} supported; rivals still open under "${h.question}": ${rivals.join(", ")} — support for one does not refute them`);
 		}
 		if (newlyRejected.includes(key) && h.question) {
+			if (sameQuestion(hypotheses, h.question) >= 2 && !testsToldApart(hypotheses, key).length)
+				notes.push(`${key} rejected; no recorded test gave it a different verdict than a rival`);
 			const left = rivalsOf(hypotheses, key);
 			notes.push(left.length
 				? `"${h.question}" still has ${left.map((r) => `${r} [${hypotheses.get(r)!.status}]`).join(", ")} — rejecting ${key} does not confirm them`
@@ -492,8 +595,10 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 		`${statusBefore.get(key) && statusBefore.get(key) !== hypotheses.get(key)!.status ? ` → ${hypotheses.get(key)!.status}` : ""})`);
 	const parts = [
 		setKeys.length ? `set ${names(setKeys)}` : "",
+		replaced.length ? names(replaced, 6) : "",
 		deleted.length ? `deleted ${deleted.length} (${names(deleted)})` : "",
 		dropped.length ? `kept as one-line notes because no refutation was recorded: ${names(dropped.map((d) => d.key))} (re-create one to test it)` : "",
+		deletedRecords.length ? `deleted with: ${deletedRecords.join("; ")}` : "",
 		hypNotes.length ? `hypotheses ${hypNotes.join("; ")}` : "",
 		testLines.length ? `tests ${testLines.join("; ")}` : "",
 		unassessed.length ? `rivals not assessed by ${unassessed.join("; ")}` : "",
@@ -517,6 +622,33 @@ export function renderFacts(state: MemoryState): string {
 }
 
 /**
+ * A bounded parent-facing memory view. Durable memory remains lossless in
+ * memory.jsonl and in the skill state; this view avoids charging every parent
+ * turn for old prose that is already superseded by the current hypothesis and
+ * strategy. Keys remain visible so the Agent can request the full view when a
+ * detail matters.
+ */
+export function renderFactsCompact(state: MemoryState, maxChars = 2200): string {
+	if (state.facts.size === 0) return `MEMORY: empty — save what you learn with memory(set=[{key, text}]).`;
+	const entries = [...state.facts];
+	const lines = [`MEMORY (${state.facts.size}; compact parent view):`];
+	let room = Math.max(320, maxChars - lines[0].length);
+	for (const [key, entry] of entries) {
+		const prefix = `- ${key} (conf ${entry.confidence}): `;
+		const budget = Math.max(40, Math.min(220, room - prefix.length - 1));
+		const text = entry.text.length > budget ? `${entry.text.slice(0, Math.max(0, budget - 1))}…` : entry.text;
+		const line = `${prefix}${JSON.stringify(text)}`;
+		if (lines.join("\n").length + line.length + 1 > maxChars && lines.length > 1) break;
+		lines.push(line);
+		room -= line.length + 1;
+	}
+	const shown = lines.length - 1;
+	if (shown < entries.length)
+		lines.push(`- … ${entries.length - shown} older/longer entries retained; use memory(op="list") only when a full detail is needed.`);
+	return lines.join("\n");
+}
+
+/**
  * Notes from the last DROPPED_CALLS actions that deleted untested hypotheses.
  * A batch is shown whole: one call often drops several alternatives together
  * (a real run dropped four at once, the correct one first), and a recency cut
@@ -529,6 +661,29 @@ export function visibleDropped(dropped: Dropped[]): Dropped[] {
 
 const STATUS_ORDER: Record<Status, number> = { open: 0, contested: 1, supported: 2, rejected: 3 };
 const lastTested = (h: Hypothesis) => Math.max(0, ...h.evidence.map((e) => e.action ?? 0));
+/** Evidence lines shown per live hypothesis; the rest is counted (all of it stays in memory.jsonl and state.hypotheses). */
+const SHOWN_EVIDENCE = 2;
+
+/**
+ * Hypothesis evidence as shown at every decision: identical records once, the latest SHOWN_EVIDENCE, and the
+ * latest refutation even when older (it is what keeps a claim scoped). Memory was the largest section of the
+ * working set in the 2026-10-10/11 runs (5.3-5.6k chars, more than the grid), with the same records repeated.
+ */
+function evidenceLines(h: Hypothesis): string[] {
+	const line = (e: Hypothesis["evidence"][number]) =>
+		`  ${e.action !== undefined ? `#${e.action}` : "(no action)"} ${e.verdict} when ${JSON.stringify(e.condition)}: ${e.observed}`;
+	const unique: Array<Hypothesis["evidence"][number]> = [];
+	const seen = new Set<string>();
+	for (const e of h.evidence) {
+		const id = `${e.action ?? ""}|${e.verdict}|${e.condition}|${e.observed}`;
+		if (!seen.has(id)) { seen.add(id); unique.push(e); }
+	}
+	const shown = unique.slice(-SHOWN_EVIDENCE);
+	const refutation = [...unique].reverse().find((e) => e.verdict === "refutes");
+	if (refutation && !shown.includes(refutation)) shown.unshift(refutation);
+	const hidden = unique.length - shown.length;
+	return [...(hidden > 0 ? [`  (${hidden} earlier result(s) not shown; state.hypotheses has all)`] : []), ...shown.map(line)];
+}
 
 export function renderHypotheses(state: MemoryState, actionCount: number): string {
 	const all = [...state.hypotheses];
@@ -542,16 +697,34 @@ export function renderHypotheses(state: MemoryState, actionCount: number): strin
 	for (const question of questions) {
 		const members = all.filter(([, h]) => (h.question ?? "") === question)
 			.sort((a, b) => STATUS_ORDER[a[1].status] - STATUS_ORDER[b[1].status]);
-		if (grouped) lines.push(question ? `question "${question}":` : "no question (no rivals):");
+		// Which recorded tests gave rivals different verdicts: a count of the agent's own records.
+		const tests = question && members.length >= 2 ? questionTests(state.hypotheses, question) : [];
+		const apart = tests.filter(toldApart);
+		const apartLabel = apart.slice(-4).map((test) => test.action !== undefined ? `#${test.action}` : "(no action)").join(", ");
+		if (grouped) lines.push(!question ? "no question (no rivals):" : `question "${question}":` + (tests.length
+			? ` ${tests.length} test(s) recorded, ${apart.length ? `${apart.length} told rivals apart (${apartLabel})` : "none told rivals apart"}`
+			: ""));
 		const latestRivalTest = question ? Math.max(0, ...members.map(([, h]) => lastTested(h))) : 0;
 		for (const [key, h] of members) {
-			lines.push(`- ${key} [${h.status}] ${h.claim}`);
-			if (h.predicts) lines.push(`  predicts: ${h.predicts}`);
-			for (const e of h.evidence)
-				lines.push(`  ${e.action !== undefined ? `#${e.action}` : "(no action)"} ${e.verdict} when ${JSON.stringify(e.condition)}: ${e.observed}`);
+			// A rejected hypothesis is a settled record: its claim and the refutation that scopes it (a refutation only
+			// covers the condition it was tested under). Its other evidence and its prediction stay in memory.jsonl.
+			if (h.status === "rejected") {
+				const refutation = [...h.evidence].reverse().find((e) => e.verdict === "refutes");
+				const more = h.evidence.length - (refutation ? 1 : 0);
+				lines.push(`- ${key} [rejected] ${h.claim}` + (more > 0 ? ` (${more} other result(s) kept)` : ""));
+				if (refutation) lines.push(`  ${refutation.action !== undefined ? `#${refutation.action}` : "(no action)"} refutes when ` +
+					`${JSON.stringify(refutation.condition)}: ${refutation.observed}`);
+			} else {
+				lines.push(`- ${key} [${h.status}] ${h.claim}`);
+				if (h.predicts) lines.push(`  predicts: ${h.predicts}`);
+				for (const line of evidenceLines(h)) lines.push(line);
+			}
 			const last = lastTested(h);
 			lines.push(`  last tested: ${last ? `#${last} (${actionCount - last} actions ago)` : "never"}` +
-				(h.next_test ? ` · next test: ${h.next_test}` : ""));
+				(h.next_test ? ` · next test: ${h.next_test}` : "") +
+				(h.status === "rejected" && !hasRefutation(h) ? " · rejected without a recorded refutation" : "") +
+				(members.length >= 2 && (h.status === "supported" || h.status === "rejected") && !apart.some((test) => test.verdicts.has(key))
+					? ` · ${h.status} without a test that told it apart from a rival` : ""));
 			if (h.status === "contested")
 				lines.push(`  ! refuted at #${h.contested_at ?? "?"} since its last revision: narrow the claim to where it held, reject it, or restate its status`);
 			if (h.status !== "rejected" && latestRivalTest > last && !h.evidence.some((e) => e.action === latestRivalTest))
@@ -567,7 +740,7 @@ export function renderHypotheses(state: MemoryState, actionCount: number): strin
 	return lines.join("\n");
 }
 
-export function renderStrategies(state: MemoryState, actionCount: number, ctx: ComponentContext = {}): string {
+export function renderStrategies(state: MemoryState, actionCount: number, ctx: ComponentContext = {}, actions: string[] = []): string {
 	if (state.strategies.size === 0)
 		return `STRATEGY: none — write what you are pursuing as memory(strategies=[{key:"strat.<name>", plan, depends_on:["hyp.<name>"], uses}]).`;
 	const order: Record<StrategyStatus, number> = { active: 0, suspended: 1, done: 2, abandoned: 3 };
@@ -585,6 +758,8 @@ export function renderStrategies(state: MemoryState, actionCount: number, ctx: C
 			return tag === "deleted" ? `${ref} (deleted)` : ref.startsWith("skill:") ? `${ref} ${tag}` : ref;
 		});
 		lines.push(`  depends on: ${premises.join(", ") || "(none named)"}${uses.length ? ` · uses: ${uses.join(", ")}` : ""}`);
+		const progress = s.status === "active" ? stepsProgress(s, actions) : "";
+		if (progress) lines.push(`  ${progress}`);
 	}
 	return lines.join("\n");
 }
@@ -629,7 +804,7 @@ export function renderRevisions(state: MemoryState, actions: string[], ctx: Comp
 
 /** The whole memory as shown in the working set (revisions need the action labels). */
 export function renderMemory(state: MemoryState, actionCount: number, actions: string[] = [], ctx: ComponentContext = {}): string {
-	return [renderHypotheses(state, actionCount), renderStrategies(state, actionCount, ctx), renderRevisions(state, actions, ctx), renderFacts(state)]
+	return [renderHypotheses(state, actionCount), renderStrategies(state, actionCount, ctx, actions), renderRevisions(state, actions, ctx), renderFacts(state)]
 		.filter(Boolean).join("\n\n");
 }
 
@@ -676,7 +851,8 @@ export function prepareMemoryArguments(args: any): any {
 		out.strategies = out.strategies.map((item: any) => {
 			if (!item || typeof item !== "object") return item;
 			const fix = (value: unknown) => { const parsed = parseJson(value); return typeof parsed === "string" ? [parsed] : parsed; };
-			return { ...item, ...("depends_on" in item ? { depends_on: fix(item.depends_on) } : {}), ...("uses" in item ? { uses: fix(item.uses) } : {}) };
+			return { ...item, ...("depends_on" in item ? { depends_on: fix(item.depends_on) } : {}), ...("uses" in item ? { uses: fix(item.uses) } : {}),
+				...("steps" in item ? { steps: normalizeSteps(parseJson(item.steps)) ?? item.steps } : {}) };
 		});
 	return out;
 }

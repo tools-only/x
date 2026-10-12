@@ -10,11 +10,12 @@
  */
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transport.ts";
 
-type Step = { kind: "decide" | "consolidate"; calls?: Array<[string, Record<string, unknown>]>; text?: string };
+/** say: a text block sent before the tool calls (the scripted model has no reasoning channel; text stands in for it). */
+type Step = { kind: "decide" | "consolidate"; calls?: Array<[string, Record<string, unknown>]>; text?: string; say?: string };
 
 const COUNT_COLOR = "def run(state, args):\n    g = state['grid']\n    return {'count': sum(r.count(args['color']) for r in g)}\n";
 
@@ -30,10 +31,11 @@ const DEFAULT_SCRIPT: Step[] = [
 			{ key: "hyp.paint", question: "controls", claim: "actions recolor a region" },
 		],
 	}]] },
-	// Invalid as a whole: rejecting without a refutation; the valid set must not be applied either.
+	// Invalid as a whole: evidence names a nonexistent action; the valid set must not be applied either.
 	{ kind: "decide", calls: [["memory", {
 		set: [{ key: "atomic_probe", text: "must not be saved" }],
-		hypotheses: [{ key: "counter", status: "rejected" }],
+		hypotheses: [{ key: "counter", status: "rejected",
+			evidence: { action: 999, condition: "start", observed: "not observed", verdict: "refutes" } }],
 	}]] },
 	{ kind: "decide", calls: [["skill", { op: "set", name: "count_color", description: "count cells of args['color']", source: "def run(state, args)\n    return 1\n" }]] },
 	{ kind: "decide", calls: [["skill", { op: "set", name: "count_color", description: "count cells of args['color']", source: COUNT_COLOR }]] },
@@ -90,13 +92,17 @@ const DEFAULT_SCRIPT: Step[] = [
 const POSITION = "def run(state, args):\n    return state['grid'][3].index(9)\n";
 const LEDGER_SCRIPT: Step[] = [
 	{ kind: "decide", calls: [["skill", { op: "set", name: "pos", description: "x of the 9 on row 3", source: POSITION }]] },
-	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", idea: "move right", expect: "the 9 moves right by one" }]] },
+	// What a move should do goes in predict.text (a plain string becomes text); the former expect field folds into it.
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", idea: "move right", predict: { text: "the 9 moves right by one" } }]] },
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", idea: "move right", expect: "x".repeat(400) }]] },
-	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", idea: "move right" }]] },
-	{ kind: "decide", calls: [["arc_action", { action: "ACTION3", idea: "move left", expect: "the 9 moves left" }]] },
+	// A missed level-change prediction is a failure: it calls the critic before the next decision.
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", idea: "move right", predict: { level_changed: true } }]] },
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION3", idea: "move left", predict: "the 9 moves left" }]] },
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION2", idea: "move left" }]] },
 ];
-const CRITIC_REPLY = "- #2 and #3 moved the 9 right; move left was tried only once (#4).\n- #99 shows a pattern that does not exist.\nsuggest: ACTION2";
+// One structured line that is kept, one about an unknown key citing a nonexistent action that is dropped, and a suggestion.
+const CRITIC_REPLY = "- goal | contradicted | #3 predicted a level change that did not happen; #1-#3 only moved the 9 right | " +
+	"whether the level changes when the 9 reaches an edge\n- hyp.nothing | untested | #99 shows a pattern that does not exist | none\nsuggest: ACTION2";
 // Environment failure (MOCK_ARC_FAIL_AFTER=1): the second and later steps return no frame. Each failed
 // decision must end at once; a retry inside the same decision would consume the next step.
 const ENVIRONMENT_SCRIPT: Step[] = [
@@ -105,8 +111,67 @@ const ENVIRONMENT_SCRIPT: Step[] = [
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION3", note: "environment fails again" }]] },
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", note: "must never be requested" }]] },
 ];
+// Self-harness capabilities (docs/plans/2026-10-10-self-harness-priority-plan.md), run with the carried reasoning
+// on. In the mock game the 9 on row 3 moves right on ACTION1/4, left on ACTION2/3. The project shows no frame
+// comparison, so the scripted agent writes its own (CHANGES) on state["history"].
+const STEP_PREDICTOR = "def run(state, args):\n    a = state['proposed_action']['action']\n" +
+	"    x = state['grid'][3].index(9) + (1 if a in ('ACTION1', 'ACTION4') else -1)\n    return {'cells': [[x, 3, 9]]}\n";
+const CHANGES = "def run(state, args):\n    h = state['history']\n    out = []\n    for t in h.transitions():\n" +
+	"        a, b = h.grid(t['n'] - 1), h.grid(t['n'])\n" +
+	"        out.append({'n': t['n'], 'action': t['action'], 'changed': [[x, y, a[y][x], b[y][x]] for y in range(len(b)) " +
+	"for x in range(len(b[y])) if a[y][x] != b[y][x]]})\n    return out\n";
+// A skill is the method and its product an artifact: board returns the row it parsed under "artifacts", and reader,
+// saved afterwards, reads it from state["artifacts"] without parsing the grid again.
+const BOARD = "def run(state, args):\n    row = state['grid'][3]\n    return {'x': row.index(9), 'artifacts': {'row3': row}}\n";
+const READER = "def run(state, args):\n    row = state['artifacts'].get('row3')\n    info = state['artifact_info'].get('row3', {})\n" +
+	"    return {'nine_at': row.index(9) if row else None, 'from': info.get('skill')}\n";
+const SELF_HARNESS_SCRIPT: Step[] = [
+	// Decision 1: rivals, a predictor skill and a predicted action in one message.
+	{ kind: "decide", say: "SMOKE-REASONING-1: I expect ACTION1 to move the 9 right.", calls: [
+		["memory", { hypotheses: [
+			{ key: "hyp.right", question: "controls", claim: "ACTION1 moves the 9 right" },
+			{ key: "hyp.left", question: "controls", claim: "ACTION1 moves the 9 left" },
+		] }],
+		["skill", { op: "set", name: "step", description: "predicts the next move", source: STEP_PREDICTOR }],
+		["arc_action", { action: "ACTION1", note: "test the rivals", predict: { cells: [[3, 3, 9]], level_changed: false } }],
+	] },
+	// Decision 2: one test that tells the rivals apart; a wrong prediction of the agent and a right one of the skill.
+	{ kind: "decide", calls: [
+		["memory", { tests: [{ action: 1, condition: "start", observed: "the 9 moved one cell right", verdicts: { "hyp.right": "supports", "hyp.left": "refutes" } }] }],
+		["arc_action", { action: "ACTION2", predict: { cells: [[4, 3, 9]] }, predict_skill: "step" }],
+	] },
+	// Decision 3: the agent writes its own frame-diff tool on history and an artifact producer; the refuted rival
+	// is deleted with a receipt, and the active strategy lists its planned steps.
+	{ kind: "decide", calls: [
+		["skill", { op: "set", name: "changes", description: "cells each action changed", source: CHANGES }],
+		["skill", { op: "set", name: "board", description: "row 3 as an artifact", source: BOARD }],
+	] },
+	{ kind: "decide", calls: [
+		["run_skill", { name: "changes" }],
+		["skill", { op: "set", name: "reader", description: "reads the row3 artifact", source: READER }],
+	] },
+	{ kind: "decide", calls: [
+		["memory", { delete: ["hyp.left"], hypotheses: [{ key: "hyp.right", status: "supported" }],
+			strategies: [{ key: "strat.walk", plan: "walk right, then back", depends_on: ["hyp.right"], steps: "A4 ACTION3 action1" }] }],
+		["arc_action", { action: "ACTION4", predict_skill: "step" }],
+	] },
+	{ kind: "consolidate", text: "Consolidated." },
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION3", predict: { level_changed: false, state: "PLAYING" } }]] },
+];
+// Session continuity (ARC_THIN_CONTINUITY=session, one earlier decision in view): decision 2 must see decision 1's
+// text, calls and receipts; decision 3 must see decision 2 only, with a note that one earlier decision is not shown.
+const CONTINUITY_SCRIPT: Step[] = [
+	{ kind: "decide", say: "SMOKE-CONTINUITY-1: ACTION1 should move the 9 right.", calls: [
+		["skill", { op: "set", name: "pos", description: "x of the 9 on row 3", source: POSITION }],
+		["arc_action", { action: "ACTION1", note: "first move" }],
+	] },
+	{ kind: "decide", say: "SMOKE-CONTINUITY-2: it moved; now left.", calls: [["arc_action", { action: "ACTION3", note: "second move" }]] },
+	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", note: "third move" }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
-	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT : DEFAULT_SCRIPT;
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "selfharness" ? SELF_HARNESS_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "continuity" ? CONTINUITY_SCRIPT : DEFAULT_SCRIPT;
 
 const textOf = (message: any): string => typeof message?.content === "string"
 	? message.content
@@ -142,10 +207,15 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				return stream;
 			}
 			const messages: any[] = context.messages ?? [];
-			const analyst = String(context.systemPrompt ?? "").includes("careful visual analyst");
-			const critic = String(context.systemPrompt ?? "").includes("You review an agent");
-			const head = textOf(messages[0]);
-			const consolidating = head.trimStart().startsWith("CONSOLIDATE:");
+			// Pi 0.87 carries the prompt and the tool declarations in a leading system message (0.80.6 passed
+			// context.systemPrompt and context.tools), so the runner's prompt is the first user message, not messages[0].
+			const systemPrompt = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
+			const tools: any[] = (context.tools?.length ? context.tools : getCurrentTools(messages as any)) ?? [];
+			const analyst = systemPrompt.includes("careful visual analyst");
+			const critic = systemPrompt.includes("You review an agent");
+			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);
+			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
+			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(head.trimStart());
 			let planned: Step | undefined;
 			if (analyst) planned = { kind: "decide", text: "ANALYST: only cell (0,0) is non-zero; it counts actions." };
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
@@ -158,15 +228,33 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			}
 			appendFileSync(log, JSON.stringify({
 				t: new Date().toISOString(), analyst, critic, consolidating, step,
-				message_count: messages.length, roles: messages.map((message) => message?.role),
-				tools: (context.tools ?? []).map((tool: any) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
-				system_prompt: String(context.systemPrompt ?? ""), head,
+				// message_count excludes Pi's leading system message so the runner's checks keep the 0.80.6 meaning
+				// (1 = the first request of a decision).
+				message_count: messages.filter((message) => message?.role !== "system").length, roles: messages.map((message) => message?.role),
+				tools: tools.map((tool: any) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+				system_prompt: systemPrompt, head,
 				last_tool_results: messages.filter((message) => message?.role === "toolResult")
 					.map((message) => ({ tool: message.toolName, is_error: message.isError, text: textOf(message).slice(0, 1200) })),
+				// What earlier messages the request carried (continuity checks): user prompts, assistant text and calls.
+				transcript: messages.filter((message) => message?.role !== "system").map((message) => ({
+					role: message?.role,
+					text: textOf(message).slice(0, message?.role === "user" ? 160 : 600),
+					...(message?.role === "assistant" ? {
+						blocks: (Array.isArray(message.content) ? message.content : []).map((block: any) => block?.type),
+						calls: (Array.isArray(message.content) ? message.content : []).filter((block: any) => block?.type === "toolCall")
+							.map((block: any) => ({ name: block.name, arguments: block.arguments })),
+					} : {}),
+				})),
 				planned,
 			}) + "\n", "utf8");
 
 			stream.push({ type: "start", partial: output });
+			if (planned.say) {
+				output.content.push({ type: "text", text: planned.say });
+				stream.push({ type: "text_start", contentIndex: 0, partial: output });
+				stream.push({ type: "text_delta", contentIndex: 0, delta: planned.say, partial: output });
+				stream.push({ type: "text_end", contentIndex: 0, content: planned.say, partial: output });
+			}
 			if (planned.calls?.length) {
 				output.stopReason = "toolUse";
 				for (const [name, args] of planned.calls) {

@@ -5,7 +5,7 @@
  * skill tool and syntax-checked by the real sandbox. Pi's own schema
  * validation and request assembly are covered by the arc-thin smoke.
  */
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,11 +14,19 @@ import arcThinExtension from "../demo/arc_thin_extension.ts";
 
 const SOURCE = "def run(state, args):\n    return 1\n";
 
+// These skill cases need an observed action scope; a failed /state no longer exposes arc_action.
+mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+	state: "PLAYING", agent_available_actions: ["ACTION1"],
+}), { status: 200, headers: { "content-type": "application/json" } }));
+
 function load(root: string, variant = "treatment") {
 	process.env.ARC_RUN_ROOT = root;
 	process.env.ARC_THIN_VARIANT = variant;
-	delete process.env.PI_ARC_BRIDGE_URL;
+	process.env.PI_ARC_BRIDGE_URL = "http://skill-surface-fixture.invalid";
 	delete process.env.ARC_HARNESS_BOARD;
+	// The ledger and critic are on by default; this diagnostic is about the skill surface alone.
+	process.env.ARC_HARNESS_LEDGER = "disabled";
+	process.env.ARC_HARNESS_CRITIC = "disabled";
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, (...args: any[]) => any>();
 	let active: string[] = [];
@@ -46,7 +54,17 @@ test("empty store: no run_skill until a skill is saved", async () => {
 	assert.equal(h.tools.has("run_skill"), false);
 	await h.start();
 	await h.decide();
-	assert.deepEqual(h.active(), ["arc_action", "memory", "skill", "prompt", "ask_analyst"]);
+	assert.deepEqual(h.active(), ["arc_action", "memory", "skill"]);
+	await h.decide("CONSOLIDATE: review");
+	assert.deepEqual(h.active(), ["memory", "skill", "prompt", "ask_analyst"]);
+});
+
+test("low-frequency schemas load on review, while the ordinary action surface stays core-only", async () => {
+	const h = load(mkdtempSync(join(tmpdir(), "thin-staged-surface-")));
+	await h.start();
+	await h.decide();
+	assert.deepEqual(h.active(), ["arc_action", "memory", "skill"]);
+	assert.ok(!h.active().includes("prompt") && !h.active().includes("ask_analyst"));
 	await h.decide("CONSOLIDATE: review");
 	assert.deepEqual(h.active(), ["memory", "skill", "prompt", "ask_analyst"]);
 });
@@ -57,7 +75,7 @@ test("save, re-save and delete keep run_skill bound to exactly the saved names",
 	await h.start();
 	await h.decide();
 	const first = await h.skill({ op: "set", name: "count_color", source: SOURCE });
-	assert.match(first, /^skill set count_color v1 \(syntax ok\); run_skill\(name="count_color"\) is callable from your next step$/);
+	assert.match(first, /^skill set count_color v1 \(syntax ok\); run_skill\(name="count_color"\) is callable from your next step\non the current state with args=\{\} it (returns|fails): /);
 	assert.deepEqual(h.enumOf(), ["count_color"]);
 	assert.ok(h.active().includes("run_skill") && h.active().includes("arc_action"));
 
@@ -103,7 +121,7 @@ test("replay binds run_skill to the stored names", async () => {
 	await again.start();
 	assert.ok(again.active().includes("run_skill"));
 	await again.decide();
-	assert.deepEqual(again.active(), ["arc_action", "memory", "skill", "prompt", "ask_analyst", "run_skill"]);
+	assert.deepEqual(again.active(), ["arc_action", "memory", "skill", "run_skill"]);
 });
 
 test("control variant never exposes skills", async () => {
