@@ -179,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--max-actions", type=int, default=None)
     arc_thin.add_argument("--max-decisions", type=int, default=None)
     arc_thin.add_argument("--max-reported-tokens", type=int, default=None)
-    arc_thin.add_argument("--experiment-timeout", type=float, default=None)
+    arc_thin.add_argument("--experiment-timeout", type=float, default=None,
+                          help="run deadline in seconds; 0 disables the experiment deadline, None retains the official default")
     arc_thin.add_argument("--turn-idle-timeout", type=float, default=180.0,
                           help="seconds without a native Pi event before one bounded turn recovery")
     arc_thin.add_argument("--consolidate-after", type=int, default=25,

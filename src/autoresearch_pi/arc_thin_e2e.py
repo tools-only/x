@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -590,7 +591,8 @@ def run_arc_thin_e2e(
     root.mkdir(parents=True, exist_ok=True)
     harness = root / "harness"
     started = time.monotonic()
-    deadline = started + (experiment_timeout_seconds or OFFICIAL_MAX_RUNTIME_SECONDS)
+    # Explicit zero disables the experimental run deadline; None retains the historical default.
+    deadline = math.inf if experiment_timeout_seconds == 0 else started + (experiment_timeout_seconds or OFFICIAL_MAX_RUNTIME_SECONDS)
 
     env = load_project_dotenv(PROJECT_ROOT)
     env.pop("PI_AUTORESEARCH_OWNS_TASK", None)  # never let PiKernel.close seal a legacy task scope
@@ -652,9 +654,11 @@ def run_arc_thin_e2e(
             "ARC_RUN_ROOT": str(root),
             "ARC_GAME": game,
             "ARC_THIN_VARIANT": variant,
-            # Wall-clock deadline (epoch ms) for the agent's RESOURCES line; the runner still enforces it itself.
-            "ARC_RUN_DEADLINE_MS": str(int((time.time() + max(0.0, deadline - time.monotonic())) * 1000)),
         })
+        if math.isfinite(deadline):
+            pi_env['ARC_RUN_DEADLINE_MS'] = str(int((time.time() + max(0.0, deadline - time.monotonic())) * 1000))
+        else:
+            pi_env.pop('ARC_RUN_DEADLINE_MS', None)
         # Services to the agent's self-harness, on by default in the treatment variant; the critic needs the ledger.
         # Both are always stated explicitly, because the extension also defaults to enabled.
         ledger_enabled = (ledger or critic) and variant == "treatment"
@@ -709,7 +713,7 @@ def run_arc_thin_e2e(
                 trace.flush()
 
         kernel = PiKernel(
-            command, cwd=str(root), env=pi_env, timeout=120.0, deadline=deadline, event_sink=persist,
+            command, cwd=str(root), env=pi_env, timeout=120.0, deadline=deadline if math.isfinite(deadline) else None, event_sink=persist,
             event_projector=lambda event: None if event.get("type") == "message_update" else event,
         ).start()
         kernel.send("set_auto_compaction", enabled=auto_compaction)

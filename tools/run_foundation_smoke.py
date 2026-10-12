@@ -10,6 +10,7 @@ from autoresearch_pi.pi_kernel import PiKernel
 root = Path(sys.argv[1])
 script = sys.argv[2] if len(sys.argv) > 2 else "foundation"
 defaults = len(sys.argv) > 3 and sys.argv[3] == 'defaults'
+uncapped = len(sys.argv) > 3 and sys.argv[3] == 'uncapped'
 if script == 'migration':
     class MigrationKernel(PiKernel):
         def start(self):
@@ -58,7 +59,7 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=7 if script == "components" else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=240,
+    max_decisions=7 if script == "components" else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     ledger=defaults, critic=defaults, review_at_level_change=False,
@@ -68,6 +69,8 @@ requests = [json.loads(s) for s in (root / "smoke-requests.jsonl").read_text(enc
 results = [r for request in requests for r in request.get("last_tool_results", [])]
 text = json.dumps(results)
 assert summary["passed"], summary
+if uncapped:
+    assert 'of run time left' not in json.dumps(requests), 'zero must remove the run deadline, including from actual parent input'
 if script == 'migration':
     assert 'old v1' in text and '42' in text and '52' in text and 'LEGACY_NOTE_EXACT' in text
     assert all('LEGACY_STANDING_RULE' in r['system_prompt'] for r in requests if not r.get('analyst') and not r.get('critic'))

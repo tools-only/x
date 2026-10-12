@@ -1,4 +1,4 @@
-"""One ordinary, bounded native ARC observation run. No model or SDK substitution."""
+"""One ordinary native ARC observation run, bounded by 100 actions. No substitutions."""
 from __future__ import annotations
 import hashlib
 import json
@@ -41,13 +41,13 @@ def main():
         provider='yibu', model='qwen3.8-27b', provider_mocked=False, environment_mocked=False,
         source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=PROJECT,text=True).strip(),
         runtime_base_commit='d0a76641', source_hashes_before=source_hashes(),
-        max_actions=20, max_decisions=30, max_reported_tokens=600000, experiment_timeout_seconds=1800,
-        decision_timeout_seconds=600, turn_idle_timeout_seconds=180, max_output_tokens=16384,
+        max_actions=100, max_decisions=None, max_reported_tokens=None, experiment_timeout_seconds=None,
+        runner_timeout_argument=0, decision_timeout_seconds=900, turn_idle_timeout_seconds=180, max_output_tokens=None,
         thinking='high', thinking_format='qwen', input_modalities=['text'], ledger=True, critic=True,
         auto_research=False, auto_compaction=False, replay_reasoning=False, level_change_review=False,
         claim='Ordinary real ARC observation: native lifecycle, evidence delivery and continuity; no causal benefit claim.',
         guidance='Production ordinary gameplay only; no game solution or required component-creation probe.',
-        budget_limit='Reported-token stop checked between decisions; an in-flight turn can overshoot. Wall-clock and per-turn output/deadline limits also apply.',
+        budget_limit='User requested 100 actions with no experiment time, decision or total-token cap. Native environment rules, provider output capacity, tool bounds and request fault timeouts remain.',
         acceptance=['official actions and later real parent turns', 'ledger/critic configured and trigger/delivery evidence',
                     'workspace versions/receipts and semantic use if autonomously written',
                     'reasoning excluded from replay; only latest injected grid; exact results available',
@@ -59,10 +59,10 @@ def main():
     runner.PiKernel = AuditedKernel
     try:
         result = runner.run_arc_thin_e2e(root, arc_root=Path('D:/arc-agi-benchmark/arc-agi-3-benchmarking'),
-            game='ls20', foundation='native', max_actions=20, max_decisions=30, max_reported_tokens=600000,
-            experiment_timeout_seconds=1800, decision_timeout_seconds=600, turn_idle_timeout_seconds=180,
+            game='ls20', foundation='native', max_actions=100, max_decisions=None, max_reported_tokens=None,
+            experiment_timeout_seconds=0, decision_timeout_seconds=900, turn_idle_timeout_seconds=180,
             pi_provider='yibu', pi_model='qwen3.8-27b', thinking='high', thinking_format='qwen',
-            input_modalities='text', max_output_tokens=16384, ledger=True, critic=True,
+            input_modalities='text', ledger=True, critic=True,
             review_at_level_change=False, replay_reasoning=False, extension_env={'ARC_THIN_AUTO_COMPACTION':'0'})
         protocol['source_hashes_after'] = source_hashes()
         protocol['source_unchanged'] = protocol['source_hashes_before'] == protocol['source_hashes_after']
