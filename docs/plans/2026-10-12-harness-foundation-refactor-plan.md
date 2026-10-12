@@ -237,7 +237,7 @@ Each step has a failing check first, a minimal implementation, focused tests, th
 
 ## 10. Accepted decisions
 
-D1–D5 were accepted on 2026-10-12. Native defaults: observers on, level-change review off, reasoning replay off, automatic compaction off (explicit opt-in after inspecting its adapted input). Original checkout preserved; isolated worktree `D:/autoresearch_pi_foundation_20261012`. The table below preserves the recommendations at approval time.
+D1–D5 were accepted on 2026-10-12. The initial implementation kept automatic compaction off, which did not complete D4's conditional native-feature acceptance. After the user's explicit request to fix native compaction, the correction enables it by default under native and verifies actual summary requirements, threshold scheduling, checkpoint delivery and exact readback. `--no-auto-compaction` disables it; legacy defaults stay unchanged. Correction evidence is in the implementation record. Other native defaults remain observers on, level-change review off and reasoning replay off. Original checkout and the active 100-action run are preserved. The table below preserves the recommendations at approval time.
 
 | # | Decision | My recommendation |
 |---|---|---|

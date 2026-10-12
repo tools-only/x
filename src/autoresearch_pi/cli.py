@@ -173,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--foundation", choices=("legacy", "native"), default="native",
                           help="native: workspace files and full Pi session; legacy: frozen comparator")
     arc_thin.add_argument("--replay-reasoning", action="store_true", help="native comparison: retain thinking blocks in replay")
-    arc_thin.add_argument("--auto-compaction", action="store_true", help="opt into native Pi compaction after input probe acceptance")
+    arc_thin.add_argument("--auto-compaction", action=argparse.BooleanOptionalAction, default=None,
+                          help="Pi automatic compaction: native defaults on, legacy defaults off; --no-auto-compaction disables it")
     arc_thin.add_argument("--variant", choices=("control", "treatment"), default="treatment",
                           help="control registers only arc_action; treatment adds the selected foundation and ledger/critic")
     arc_thin.add_argument("--max-actions", type=int, default=None)
@@ -440,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
             continuity=args.continuity, continuity_decisions=args.continuity_decisions,
             review_at_level_change=args.level_change_review,
             foundation=args.foundation, replay_reasoning=args.replay_reasoning,
-            extension_env={"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"},
+            extension_env={} if args.auto_compaction is None else {"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"},
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1

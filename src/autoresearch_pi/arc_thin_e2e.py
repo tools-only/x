@@ -675,7 +675,7 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_FOUNDATION"] = foundation
         pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
         pi_env.update(extension_env or {})
-        auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "0") == "1"
+        auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    *(["--session", str(root / "session.jsonl")] if foundation == "native" else ["--no-session"]),
                    "--no-extensions", "--no-skills", "--no-prompt-templates",

@@ -18,5 +18,11 @@ def test_foundation_cli_routes_native_defaults_and_explicit_legacy(monkeypatch, 
     assert seen[-1]['foundation'] == 'native'
     assert seen[-1]['replay_reasoning'] is False
     assert seen[-1]['review_at_level_change'] is None
+    assert seen[-1]['extension_env'] == {}, 'CLI must preserve native automatic-compaction defaults'
     assert cli.main(['arc-thin-e2e', '--root', str(tmp_path / 'legacy'), '--foundation', 'legacy', '--level-change-review', '--replay-reasoning']) == 0
     assert seen[-1]['foundation'] == 'legacy' and seen[-1]['review_at_level_change'] is True
+    assert seen[-1]['extension_env'] == {}, 'CLI must preserve the frozen legacy default'
+    assert cli.main(['arc-thin-e2e', '--root', str(tmp_path / 'off'), '--no-auto-compaction']) == 0
+    assert seen[-1]['extension_env'] == {'ARC_THIN_AUTO_COMPACTION': '0'}
+    assert cli.main(['arc-thin-e2e', '--root', str(tmp_path / 'on'), '--auto-compaction']) == 0
+    assert seen[-1]['extension_env'] == {'ARC_THIN_AUTO_COMPACTION': '1'}

@@ -33,7 +33,7 @@ import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum, getCurrentSystemMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { compact as piCompact, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderArcLatestFrameRuns } from "./arc_agi_3_official_adapter.ts";
 import { renderArcFrameImage } from "./pi_arc_frame_image.ts";
@@ -1619,17 +1619,29 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 	let compactStarted = 0;
 	if (continuity === "session") {
-		pi.on("session_before_compact", guard("session_before_compact", (event: any) => {
+		pi.on("session_before_compact", guard("session_before_compact", async (event: any, ctx: ExtensionContext) => {
 			compactStarted = Date.now();
       if (native) {
+        const instructions = [event.customInstructions, 'Preserve controls, hypotheses with check records, refuted claims and their test conditions, open questions, active strategy and planned steps, what the last actions were testing, and exact workspace result references. Do not infer success from component creation.'].filter(Boolean).join('\n');
         event.preparation.messagesToSummarize = projectNativeHistory(event.preparation.messagesToSummarize, replayReasoning);
         event.preparation.turnPrefixMessages = projectNativeHistory(event.preparation.turnPrefixMessages, replayReasoning);
         for (const message of [...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages])
           if (message.role === 'toolResult') message.content = message.content.map((block: any) =>
             block.type === 'text' ? { ...block, text: workspace!.receipt(block.text, message.isError ? 'error' : 'ok') } : block);
+        // Pi's split-turn generator does not accept customInstructions. Supply the requirements
+        // only to its summary input, without inserting a message into the gameplay session.
+        if (event.preparation.isSplitTurn && event.preparation.turnPrefixMessages.length)
+          event.preparation.turnPrefixMessages.push({ role: 'user', content: `Compaction checkpoint requirements:\n${instructions}`, timestamp: Date.now() });
         append('compaction_probe.jsonl', { native: true, messages: event.preparation.messagesToSummarize,
-          turnPrefixMessages: event.preparation.turnPrefixMessages, tokensBefore: event.preparation.tokensBefore });
-        return { customInstructions: [event.customInstructions, 'Preserve controls, hypotheses with check records, refuted claims and their test conditions, open questions, active strategy and planned steps, what the last actions were testing, and exact workspace result references. Do not infer success from component creation.'].filter(Boolean).join('\n') };
+          turnPrefixMessages: event.preparation.turnPrefixMessages, tokensBefore: event.preparation.tokensBefore, instructions });
+        if (!ctx.model) throw Error('Native compaction requires the current Pi model');
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+        if (!auth.ok) throw Error(auth.error);
+        // Pi 0.87.0 consumes {compaction}, not {customInstructions}, from this hook.
+        // Use Pi's native engine; Pi still schedules, persists and restores the checkpoint.
+        return { compaction: await piCompact(event.preparation, ctx.model, auth.apiKey, auth.headers,
+          instructions, event.signal, pi.getThinkingLevel(),
+          (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options), auth.env) };
       }
 			const receiptsDir = join(storeDir, "compaction-receipts");
 			for (const message of event.preparation.messagesToSummarize) {

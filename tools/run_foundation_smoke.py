@@ -11,6 +11,8 @@ root = Path(sys.argv[1])
 script = sys.argv[2] if len(sys.argv) > 2 else "foundation"
 defaults = len(sys.argv) > 3 and sys.argv[3] == 'defaults'
 uncapped = len(sys.argv) > 3 and sys.argv[3] == 'uncapped'
+automatic = len(sys.argv) > 3 and sys.argv[3] == 'automatic'
+split = len(sys.argv) > 3 and sys.argv[3] == 'split'
 if script == 'migration':
     class MigrationKernel(PiKernel):
         def start(self):
@@ -35,20 +37,34 @@ if script == 'migration':
 if script == "receipts":
     class ProbeKernel(PiKernel):
         def start(self):
+            if automatic and not getattr(self, 'captures_compaction', False):
+                self.captures_compaction = True
+                projector = self.event_projector
+                self.event_projector = lambda event: event if event.get('type') in ['compaction_start', 'compaction_end'] else projector(event) if projector else event
             settings = Path(self.env["PI_CODING_AGENT_DIR"]) / "settings.json"
-            settings.write_text(json.dumps({"compaction": {"enabled": False, "keepRecentTokens": 100, "reserveTokens": 1000}}), encoding="utf-8")
+            settings.write_text(json.dumps({"compaction": {"enabled": automatic, "keepRecentTokens": 1 if split else 100, "reserveTokens": 1000}}), encoding="utf-8")
             return super().start()
         def wait_for_agent_events(self, *args, **kwargs):
             events = super().wait_for_agent_events(*args, **kwargs)
             if not getattr(self, "probed", False):
                 self.probed = True
+                config = json.loads((root / 'run-config.json').read_text(encoding='utf-8'))
+                assert config['auto_compaction'] is automatic, 'native defaults must enable automatic compaction; explicit off must disable it'
                 # Additional canonical user entries move the completed long-output turn into the summarize range.
+                checkpoint_events = []
                 for _ in range(3):
                     self.prompt("Checkpoint before restart; retain exact result refs.")
-                    super().wait_for_agent_events(*args, **kwargs)
-                compact = self.send("compact")
-                assert compact["success"], compact
-                (root / "native-compaction-rpc.json").write_text(json.dumps(compact, ensure_ascii=False), encoding="utf-8")
+                    checkpoint_events.extend(super().wait_for_agent_events(*args, **kwargs))
+                if automatic:
+                    compact = next((event for event in checkpoint_events if event.get('type') == 'compaction_end'), None)
+                    if compact is None:
+                        compact = self.wait_for_event(['compaction_end'], timeout=30)
+                    assert compact.get('reason') == 'threshold' and compact.get('result') and not compact.get('aborted'), compact
+                    (root / "native-auto-compaction-event.json").write_text(json.dumps(compact, ensure_ascii=False), encoding="utf-8")
+                else:
+                    compact = self.send("compact")
+                    assert compact["success"], compact
+                    (root / "native-compaction-rpc.json").write_text(json.dumps(compact, ensure_ascii=False), encoding="utf-8")
                 options = dict(command=self.command, cwd=self.cwd, env=dict(self.env or {}), timeout=self.timeout,
                     deadline=self.deadline, event_sink=self.event_sink, event_projector=self.event_projector)
                 options["env"]["ARC_THIN_NATIVE_RESTART"] = "1"
@@ -63,7 +79,8 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     ledger=defaults, critic=defaults, review_at_level_change=False,
-    extension_env={"ARC_THIN_SMOKE_SCRIPT": script})
+    extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
+        **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {'ARC_THIN_AUTO_COMPACTION': '0'})})
 summary = json.loads(path.read_text(encoding="utf-8"))
 requests = [json.loads(s) for s in (root / "smoke-requests.jsonl").read_text(encoding="utf-8").splitlines()]
 results = [r for request in requests for r in request.get("last_tool_results", [])]
@@ -84,7 +101,16 @@ elif script == "receipts":
     assert any("COUNTEREXAMPLE_MIDDLE_EXACT" in ref.read_text(encoding="utf-8") for ref in refs)
     inputs = (root / "native-summary-input.jsonl").read_text(encoding="utf-8")
     assert "ref: results/" in inputs and '"thinking"' not in inputs
-    assert (root / "native-compaction-rpc.json").is_file()
+    assert all("refuted claims and their test conditions" in json.dumps(row) for row in map(json.loads, inputs.splitlines())), "ARC summary requirements must reach every actual Pi summarizer input"
+    assert any('Native checkpoint: exact evidence' in json.dumps(row.get('transcript', [])) for row in requests), 'later parent must receive the native checkpoint'
+    assert (root / ("native-auto-compaction-event.json" if automatic else "native-compaction-rpc.json")).is_file()
+    usage = [json.loads(s) for s in (root / 'harness/usage.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert any(row['kind'] == 'compaction' and row['total'] > 0 for row in usage)
+    assert any('compaction' in line for line in (root / 'session.jsonl').read_text(encoding='utf-8').splitlines())
+    if split:
+        probes = [json.loads(s) for s in (root / 'harness/compaction_probe.jsonl').read_text(encoding='utf-8').splitlines()]
+        assert any(row['turnPrefixMessages'] for row in probes), 'split-turn path must be exercised'
+        assert len(inputs.splitlines()) >= 2, 'Pi must summarize history and the split turn'
 elif script == "components":
     for expected in ["compare v1", "42", "v2: saved", "NOT loaded", "v1 (v2 failed)", "compare v3", "43", "53", "CONSULT_SEMANTIC", "NATIVE_SKILL_BODY_READ_ON_DEMAND"]:
         assert expected in text, expected

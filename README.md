@@ -40,7 +40,7 @@ Auto-Research method resources
 
 `arc-thin-e2e` 默认使用 `--foundation native`：每次运行一个 Pi session 文件，完整保留历史，通过 workspace 文件创建、编辑和使用组件。文件工具只访问 workspace；`data/`、`results/` 只读。写入组件的回执报告版本、下一请求激活或失败后的工作版本。普通笔记写入 `notes/`；长输出保存完整结果并提供精确读取引用。
 
-当前方案使用台账 + critic；Auto-Research 已弃用并暂停其开发、验收。`consult` 是显式请求的有界角色咨询。native 默认不回放 reasoning、不强制关卡切换复盘、不自动压缩；比较时可使用 `--replay-reasoning`、`--level-change-review`、`--auto-compaction`。`--foundation legacy` 保留旧运行行为。真实 ls20/lp85 对照尚未启动，采用和收益未验证；详见[最终方案](docs/plans/2026-10-12-harness-foundation-refactor-plan.md)及[实现验收记录](docs/reports/2026-10-12-harness-foundation-implementation.md)。
+当前方案使用台账 + critic；Auto-Research 已弃用并暂停其开发、验收。`consult` 是显式请求的有界角色咨询。native 默认不回放 reasoning、不强制关卡切换复盘，启用 Pi 原生自动压缩；`--no-auto-compaction` 可关闭，`--replay-reasoning`、`--level-change-review` 可用于比较。`--foundation legacy` 保留旧默认行为（自动压缩关闭）；显式 `--auto-compaction` 可开启。真实 ls20/lp85 对照尚未启动，采用和收益未验证；详见[最终方案](docs/plans/2026-10-12-harness-foundation-refactor-plan.md)及[实现验收记录](docs/reports/2026-10-12-harness-foundation-implementation.md)。
 
 零模型费用的 native 验收入口：
 

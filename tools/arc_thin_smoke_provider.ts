@@ -307,6 +307,13 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
         output.content = [{ type: 'text', text: 'Native checkpoint: exact evidence is retained behind receipts.\n' + refs.map(ref => 'ref: ' + ref).join('\n') }];
         stream.push({ type: 'start', partial: output }); stream.push({ type: 'done', reason: 'stop', message: output }); stream.end(); return stream;
       }
+      // Diagnostic-only usage crosses Pi's threshold after the long-result turn is eligible.
+      // No manual compact RPC or production provider changes drive this automatic path.
+      if (process.env.ARC_THIN_SMOKE_AUTO_COMPACTION === '1' &&
+          messages.filter((m: any) => m.role === 'user' && textOf(m).includes('Checkpoint before restart')).length === 3) {
+        output.usage.input = 174100;
+        output.usage.totalTokens = 174101;
+      }
 			if (process.env.ARC_THIN_COMPACTION_PROBE) {
 				const summary = systemPrompt.includes("context summarization assistant");
 				const transcript = messages.map((message) => ({ role: message?.role, text: textOf(message),

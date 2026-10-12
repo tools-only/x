@@ -44,7 +44,7 @@ def main():
         max_actions=100, max_decisions=None, max_reported_tokens=None, experiment_timeout_seconds=None,
         runner_timeout_argument=0, decision_timeout_seconds=900, turn_idle_timeout_seconds=180, max_output_tokens=None,
         thinking='high', thinking_format='qwen', input_modalities=['text'], ledger=True, critic=True,
-        auto_research=False, auto_compaction=False, replay_reasoning=False, level_change_review=False,
+        auto_research=False, auto_compaction=True, replay_reasoning=False, level_change_review=False,
         claim='Ordinary real ARC observation: native lifecycle, evidence delivery and continuity; no causal benefit claim.',
         guidance='Production ordinary gameplay only; no game solution or required component-creation probe.',
         budget_limit='User requested 100 actions with no experiment time, decision or total-token cap. Native environment rules, provider output capacity, tool bounds and request fault timeouts remain.',
@@ -63,7 +63,7 @@ def main():
             experiment_timeout_seconds=0, decision_timeout_seconds=900, turn_idle_timeout_seconds=180,
             pi_provider='yibu', pi_model='qwen3.8-27b', thinking='high', thinking_format='qwen',
             input_modalities='text', ledger=True, critic=True,
-            review_at_level_change=False, replay_reasoning=False, extension_env={'ARC_THIN_AUTO_COMPACTION':'0'})
+            review_at_level_change=False, replay_reasoning=False, extension_env={'ARC_THIN_AUTO_COMPACTION':'1'})
         protocol['source_hashes_after'] = source_hashes()
         protocol['source_unchanged'] = protocol['source_hashes_before'] == protocol['source_hashes_after']
         (root / 'real-observation-protocol.json').write_text(json.dumps(protocol, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
