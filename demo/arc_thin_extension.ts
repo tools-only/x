@@ -25,6 +25,7 @@
 import { createHash } from "node:crypto";
 import { projectNativeHistory } from "./arc_thin_native_context.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
+import { Binder } from "./arc_thin_binder.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -156,6 +157,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd()) : undefined;
+  const binder = workspace ? new Binder(workspace) : undefined;
+  if (workspace && binder) workspace.onWrite = path => binder.save(path, currentLevel());
 
 	// ---------------------------------------------------------------- stores
 
@@ -466,6 +469,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const sections: Array<[string, string]> = control ? [["recent", recentText()]]
 			: [["memory", memoryText()], ["skills", skillsText()], ["recent", recentText()]];
 		if (!control) {
+      if (binder) sections.push(['capabilities', binder.index(currentLevel())]);
 			const skillOutputs = latestSkillOutputsText();
 			if (skillOutputs) sections.splice(2, 0, ["skill_outputs", skillOutputs]);
 			const models = modelChecksText();
@@ -1642,6 +1646,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}));
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
+    if (binder) { await binder.scan(currentLevel()); binder.boundary(); }
 		carriedResults = run.batchResults;
 		// Keep the end of the reasoning: conclusions come last.
 		const reasoning = carryChars ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
@@ -1689,6 +1694,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		systemChars = rendered.length;
     if (native) {
       event.systemPromptOptions.customPrompt = rendered;
+      for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
+        event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
       return;
     }
 		return { systemPrompt: rendered };
