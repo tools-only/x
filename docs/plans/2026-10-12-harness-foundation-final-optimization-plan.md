@@ -10,7 +10,7 @@
 
 ---
 
-定稿日期：2026-10-13，Asia/Shanghai；文件名沿用2026-10-12证据批次。状态：实现与最终工程验收中；自主采用和净收益待验证。采用现有工作树 `D:/autoresearch_pi_compaction_fix_20261012`、分支 `codex/native-compaction-fix-20261012`、计划检查基线 `f843cddd`。保留已有未提交文档修改。原真实运行源和原 checkout 不修改。
+定稿日期：2026-10-13，Asia/Shanghai；文件名沿用2026-10-12证据批次。状态：工程实现及已列回归完成，普通真实实验运行中；自主语义复用和净收益待验证。采用现有工作树 `D:/autoresearch_pi_compaction_fix_20261012`、分支 `codex/native-compaction-fix-20261012`、计划检查基线 `f843cddd`。保留此前文档修改。原真实运行源和原 checkout 不修改。
 
 证据与实施状态的唯一记录是[实现报告的 O01–O20 清单](../reports/2026-10-12-harness-foundation-implementation.md#ordinary-ls20-failure-and-optimization-backlog-2026-10-12)。本文件规定决策、任务和验收，不复制另一套待办状态表；后续 red/green、smoke、实际配置和真实行为产物回填同一报告。
 
