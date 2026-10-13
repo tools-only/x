@@ -193,7 +193,8 @@ const HISTORY_SCRIPT: Step[] = Array.from({ length: 30 }, (_, n): Step => ({
 const FOUNDATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'notes/evidence.md', content: 'FOUNDATION_EXACT_NOTE\nCOUNTEREXAMPLE' }]] },
   { kind: 'decide', calls: [['edit', { path: 'notes/evidence.md', edits: [{ oldText: 'EXACT_NOTE', newText: 'EDITED_NOTE' }] }]] },
-  { kind: 'decide', calls: [['read', { path: 'notes/evidence.md', offset: 2, limit: 1 }], ['grep', { pattern: 'EDITED_NOTE' }]] },
+  { kind: 'decide', calls: [['read', { path: 'notes/evidence.md', offset: 2, limit: 1 }],
+    ['python', { code: "[line for line in open('notes/evidence.md').read().splitlines() if 'EDITED_NOTE' in line]" }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'workspace smoke' }]] },
   { kind: 'decide', calls: [['read', { path: 'data/current.json' }], ['write', { path: 'data/forbidden.json', content: 'forbidden' }],
     ['read', { path: '../run-config.json' }], ['python', { code: "import os\nprint(os.environ.get('PI_ARC_ACTION_TOKEN', 'NO_TOKEN'))" }],
@@ -275,6 +276,21 @@ const REUSE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: cellCode(5) }], ['python', { code: cellCode(6) }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'reuse 5' }]] },
 ];
+// Activation: saved code acts (python save= plays its returned actions, the saved script tool plays them again),
+// unsaved code does not, a missed step prediction stops the batch, and repeated python work makes the refiner save a
+// tool; a later decision is told what the refiner changed.
+const actionsCode = (predict: string) => `{"actions": [{"action": "ACTION1", "predict": ${predict}}, {"action": "ACTION4"}]}`;
+const ACTIVATION_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: `# Probe two moves.\n${actionsCode('{"level_changed": False}')}`, save: 'probe' }]] },
+  { kind: 'decide', calls: [['probe', { args: {} }]] },
+  { kind: 'decide', calls: [['python', { code: actionsCode('{"level_changed": False}') }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'unsaved code did not act' }]] },
+  { kind: 'decide', calls: [['python', { code: actionsCode('{"level_changed": True}'), save: 'miss' }]] },
+  { kind: 'decide', calls: [['python', { code: cellCode(1) }], ['python', { code: cellCode(2) }], ['python', { code: cellCode(3) }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after repeated cells' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'refiner had time' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'notice shown' }]] },
+];
 const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['run_skill', { name: 'old', args: { extra: 2 } }], ['read', { path: 'notes/controls.md' }]] },
   { kind: 'decide', calls: [['producer', { args: {} }]] },
@@ -288,6 +304,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
@@ -435,7 +452,8 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			}
 			const analyst = systemPrompt.includes("careful visual analyst") || consult;
 			const adoption = systemPrompt.startsWith("You review why an agent keeps rebuilding");
-			const critic = systemPrompt.includes("You review an agent") || adoption;
+			const refiner = systemPrompt.startsWith("You maintain the harness of an agent");
+			const critic = systemPrompt.includes("You review an agent") || adoption || refiner;
 			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
 			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(head.trimStart());
@@ -449,6 +467,13 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			else if (adoption) planned = { kind: "decide", text: messages.map(textOf).join("\n").includes("no component was saved")
 				? "missing | `cell = history.grid(0)[0][n]` typed in every call | tools/cell.py run(x: int) returning the cell\nnot a cause line"
 				: "varies | ADOPTION_UNEXPECTED_FINDING | none" };
+			else if (refiner) {
+				const why = messages.map(textOf).join("\n");
+				appendFileSync(join(process.env.ARC_RUN_ROOT ?? process.cwd(), "refiner-inputs.jsonl"), JSON.stringify({ systemPrompt, input: why }) + "\n");
+				planned = { kind: "decide", text: why.includes("redone")
+					? "FILE tools/cell_reader.py\n# Read one cell of the first frame.\ncell = history.grid(0)[0][args.get('x', 0)]\ncell\nEND\nWHY the same cell lookup was typed at #4-#5"
+					: "FILE notes/strategy.md\nRules\n- ACTION1 changes the grid (conf 2, #1)\nOpen questions\n- what ends a level\nNext experiment\n- REFINED_NEXT_EXPERIMENT\nFailure modes\n- none yet\nEND\nWHY first refinement after #6" };
+			}
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
 			else if (['recovery','death','length'].includes(process.env.ARC_THIN_SMOKE_SCRIPT!)) planned={kind:'decide',calls:[['arc_action',{action:'ACTION1'}]]};
 			else {

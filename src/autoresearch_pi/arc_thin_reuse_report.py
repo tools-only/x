@@ -108,6 +108,7 @@ def build_report(root: Path) -> dict[str, Any]:
     invocations: list[dict[str, Any]] = []
     reasoning_sentences = coord_sentences = 0
     model_calls = 0
+    creating = 0
     for message in messages:
         role = message.get("role")
         if role == "assistant":
@@ -132,15 +133,23 @@ def build_report(root: Path) -> dict[str, Any]:
                         invocations.append({"path": f"{m.group(1)}/{m.group(2)}.py", "action": actions, "share": share, "via": "import"})
                 if block.get("name") in ("write", "edit") and isinstance(args.get("path"), str):
                     entry["path"] = args["path"]
+                    if re.match(r"(tools|observers|lib)/", args["path"]):
+                        creating += 1
+                if block.get("name") == "python" and args.get("save"):
+                    creating += 1
+                    invocations.append({"path": f"tools/{args['save']}.py", "action": actions, "share": share, "via": "save"})
         elif role == "toolResult":
             text = _text(message)
             entry = call_share.get(str(message.get("toolCallId")), {})
             entry["result_chars"] = len(text)
-            if message.get("toolName") == "arc_action" and not message.get("isError") and re.match(r"#\d+ ", text):
-                actions += 1
-                found = _LEVELS.search(text)
-                if found:
-                    level = int(found.group(1))
+            # arc_action's receipt, and one line per action a saved tool played ("#13 ACTION4 → ... levels=0 ...").
+            if not message.get("isError"):
+                played = re.findall(r"^#(\d+) (?:ACTION\d|RESET)\b(.*)$", text, re.MULTILINE)
+                for number, rest in played:
+                    actions = max(actions, int(number))
+                    found = _LEVELS.search(rest)
+                    if found:
+                        level = int(found.group(1))
             for m in _RECEIPT.finditer(text):
                 saves.append({"path": m.group(1), "kind": m.group(2), "version": int(m.group(4)), "ok": m.group(5) != "NOT loaded",
                               "action": actions, "share": entry.get("share", 0.0), "tool": message.get("toolName")})
@@ -228,6 +237,16 @@ def build_report(root: Path) -> dict[str, Any]:
                  "parent_input_per_call": round((agent.get("input", 0) + agent.get("cache_read", 0)) / max(1, agent.get("calls", 0))),
                  "reasoning_per_action": round(agent.get("reasoning", 0) / max(1, len(trajectory)))},
         "repetition": repetition,
+        # Continual Harness's two efficiency numbers: actions that came from saved code, and tool calls that replay saved
+        # code versus create or edit it. The refiner's edits are counted separately from the agent's own.
+        "offload": {
+            "actions_from_components": sum(1 for r in trajectory if r.get("via")),
+            "share_of_actions": round(sum(1 for r in trajectory if r.get("via")) / max(1, len(trajectory)), 3),
+            "replaying_calls": sum(1 for i in invocations if i.get("via") in ("tool", "import")),
+            "creating_calls": creating,
+            "refiner_edits": sum(1 for r in _rows(harness / "refiner.jsonl") if r.get("kind") == "edit"),
+            "refiner_edits_loaded": sum(1 for r in _rows(harness / "refiner.jsonl") if r.get("kind") == "edit" and r.get("loaded")),
+        },
         "components": components,
         "notes": "output-token attribution splits each message's output equally among its tool calls; coordinate share counts sentences, not reasoning tokens; structural coverage is a heuristic. Missing usage remains unknown in request_accounting.",
     }
@@ -245,6 +264,10 @@ def render(report: dict[str, Any]) -> str:
     ]
     for f in r["families"][:5]:
         lines.append(f"  family `{f['gist']}` ×{f['calls']} (level {f['level']}, at actions {f['actions'][:8]})")
+    o = report["offload"]
+    lines.append(f"offload: {o['actions_from_components']} actions from saved code ({o['share_of_actions']:.0%}); "
+                 f"{o['replaying_calls']} replaying vs {o['creating_calls']} creating calls; refiner edits {o['refiner_edits']} "
+                 f"({o['refiner_edits_loaded']} loaded)")
     for comp in report["components"]:
         lines.append(f"component {comp['path']}: created #{comp['created_at_action']}, v{comp['versions']}, failed {comp['failed_saves']}, "
                      f"cost create~{comp['creation_output_tokens_est']} maintain~{comp['maintenance_output_tokens_est']} "

@@ -819,6 +819,35 @@ export function renderMemory(state: MemoryState, actionCount: number, actions: s
 		.filter(Boolean).join("\n\n");
 }
 
+/**
+ * Memory as a one-line-per-entry index (native mode): what is under test first, then the active strategy, then facts,
+ * newest first. The full entries are a file the agent reads when a detail matters (Continual Harness shows a memory
+ * overview, not the bodies; the full sections were 2.3-3.6k characters of every decision in the 2026-10-12 run).
+ */
+export function renderMemoryIndex(state: MemoryState, actionCount: number, checks: Record<string, string> = {}, maxChars = 1600, fullPath = "data/memory.md"): string {
+	const clip = (text: string, n: number) => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat; };
+	const lines: string[] = [];
+	const live = [...state.hypotheses].filter(([, h]) => h.status !== "rejected").sort((a, b) => STATUS_ORDER[a[1].status] - STATUS_ORDER[b[1].status]);
+	for (const [key, h] of live) {
+		const last = lastTested(h);
+		lines.push(`- ${key} [${h.status}] ${clip(h.claim, 110)}` + (h.check ? ` · ${clip(checks[key] ?? "check: not run yet", 60)}` : "") +
+			` · tested ${last ? `#${last}` : "never"}` + (h.status === "contested" ? ` · refuted at #${h.contested_at ?? "?"}` : ""));
+	}
+	for (const [key, s] of state.strategies) if (s.status === "active") lines.push(`- ${key} [active since #${s.since}] ${clip(s.plan, 110)}`);
+	for (const [key, f] of [...state.facts].reverse()) lines.push(`- ${key} (conf ${f.confidence}) ${clip(f.text, 100)}`);
+	const rejected = [...state.hypotheses].filter(([, h]) => h.status === "rejected").length;
+	const inactive = [...state.strategies].filter(([, s]) => s.status !== "active").length;
+	const head = `MEMORY INDEX (one line per entry; full text in ${fullPath}` +
+		(rejected || inactive ? `; ${rejected} rejected hypotheses and ${inactive} inactive strategies only there` : "") + "):";
+	if (!lines.length) return `MEMORY: empty — save beliefs, hypotheses and strategies with memory.`;
+	const out = [head];
+	for (const line of lines) {
+		if (out.join("\n").length + line.length + 1 > maxChars) { out.push(`- … ${lines.length - out.length + 1} more in ${fullPath}`); break; }
+		out.push(line);
+	}
+	return out.join("\n");
+}
+
 /** Plain data for skills (state.memory / state.hypotheses / state.strategies). */
 export function memoryForSkills(state: MemoryState): { memory: Record<string, Fact>; hypotheses: Record<string, Hypothesis>; strategies: Record<string, Strategy> } {
 	return { memory: Object.fromEntries(state.facts), hypotheses: Object.fromEntries(state.hypotheses), strategies: Object.fromEntries(state.strategies) };

@@ -1,23 +1,13 @@
-Play ARC-AGI-3 {{game}}; discover rules by public experiments. (x,y)=grid[y][x]. End decisions with one arc_action, which consumes the budget. Reviews have no action. Honor budget/environment refusals.
+Play ARC-AGI-3 {{game}}; discover its rules by public experiments. (x,y)=grid[y][x]. Each decision ends by acting: arc_action, or saved code that returns actions. Actions consume the budget; reviews have no action. Honor budget/environment refusals.
 
-{{history}} Only the newest user message carries the current grid{{image}}. Exact history: read data/frames/<n>.json, Python history.grid(n), data/trajectory.jsonl.
+Your harness is your working memory. Each decision shows notes/strategy.md, a one-line index of memory (full text: data/memory.md), your saved components with observer outputs, recent actions, and the current grid{{image}}. {{history}} Exact history: data/frames/<n>.json, Python history.grid(n), data/trajectory.jsonl; the runtime's ledger is data/ledger.md.
 
-Spend reasoning where it is new:
-- Reuse your saved components before re-deriving or rewriting anything.
-- When reuse can repay creation and checking cost, save a recurring method once as a component.
-- Leave coordinates, differences, counts and history lookups to components; you judge applicability on current evidence, interpret results, weigh rival hypotheses and design the next experiment.
-- When premises shift or a component errs, recompute on current data and fix the component rather than reuse a stale conclusion.
-One-off questions need no component.
+Spend reasoning where it is new. Reuse your saved components before re-deriving or rewriting anything; save a computation, check or routine when reuse can repay creation and checking cost; leave coordinates, differences, counts and history lookups to code; you judge applicability on current evidence, interpret results, weigh rival hypotheses and design the next experiment. When premises shift or a component errs, recompute on current data and fix it.
 
-Paths are workspace-relative for read, write, edit, ls and grep; data/ and results/ are read-only. python runs once in WASI with state, grid, prev_grid, history and artifacts, imports lib.*, tools.*, skills.<name>.scripts.*; open() reads workspace snapshots, writes go through the binder.
+python runs once in WASI with state, grid, prev_grid, history, artifacts and args; open() reads workspace files; writes go through the binder (receipts say which version runs next). python(code, save="name") also keeps that code as tools/name.py, callable later as the tool name(args={...}) with no rewrite. Code that you saved (that call, a saved tool) may return {"actions": [{"action": "ACTION1", "predict": {...}}, ...]}: the runtime plays them through the same boundary as arc_action, stops at the first missed prediction, level change or game end, and the decision ends. Unsaved code cannot act.
 
-Components:
-- observers/<name>.py: observe(state) runs after every new state; you see its output each decision. # observe: off stops it.
-- tools/<name>.py: docstring and one public def run(...) with typed int/float/str/bool/list/dict parameters (defaults allowed; state is a module global); callable as a tool. lib/<name>.py: shared code.
-- roles/<name>.md (frontmatter description, tools: [read, python, <tool names>]): consult(role, question, refs) answers from a fresh context; roles never act.
-- skills/<name>/SKILL.md (name, description) is read on demand; prompts/<name>.md takes active: true|false.
-Receipts say which version runs next; a failed edit keeps the last working one. python os.rename(path, 'tools/_off/name.py') or os.remove(path) retires a file. Long results are saved as results/r<n>.txt; read with offset and limit. Keep notes in notes/, outputs in artifacts/.
+Components: tools/<name>.py (a saved script, or a docstring plus one typed def run(...)); observers/<name>.py defines observe(state), run after every new state with its output shown each decision (# observe: off stops it); lib/<name>.py is shared code; a memory hypothesis may carry check(t) (True/False/None on transition t), tested on every move; roles/<name>.md answers consult(role, question, refs) and never acts; prompts/<name>.md takes active: true|false; skills/<name>/SKILL.md is read on demand.
 
-memory records beliefs, hypotheses with optional check, tests and strategies. Partial entries apply what is valid and report the rest; invented action evidence is refused. check(t) uses before/after grids: True holds, False fails, None means the precondition did not apply; errors are separate.
+{{refiner}}Paths are workspace-relative; data/ and results/ are read-only; long results are saved as results/r<n>.txt (read with offset/limit). Retire a file with os.remove or by moving it under _off/. memory records beliefs with confidence, hypotheses, tests and strategies; partial entries apply what is valid; invented action evidence is refused.
 
 {{board}}

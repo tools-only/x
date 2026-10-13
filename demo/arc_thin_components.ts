@@ -19,6 +19,17 @@ def _schema(node):
             return {'type': 'object', 'additionalProperties': _schema(node.slice.elts[1])}
     raise ValueError('unsupported or missing parameter annotation: ' + (ast.unparse(node) if node is not None else '(missing)'))
 
+def _is_script(tree):
+    return not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == 'run' for n in tree.body)
+
+def _first_comment(source):
+    for line in source.splitlines():
+        if line.strip().startswith('#'):
+            return line.strip().lstrip('#').strip()
+        if line.strip():
+            return ''
+    return ''
+
 def _inspect(req):
     path = req['path']
     name = path.split('/')[-1][:-3]
@@ -29,6 +40,12 @@ def _inspect(req):
     spec = {'name': name, 'kind': kind, 'description': (ast.get_docstring(tree) or name).splitlines()[0][:120],
             'enabled': not (kind == 'observer' and any(line.strip() == '# observe: off' for line in req['source'].splitlines()[:10]))}
     if kind == 'library':
+        return spec
+    if kind == 'tool' and _is_script(tree):
+        # A script tool is code that ran once and was saved as it is (python(code, save=name)): no signature to
+        # write; its inputs come in as the dict args and its final expression is the result.
+        spec['parameters'] = {'type': 'object', 'properties': {'args': {'type': 'object'}}, 'additionalProperties': False}
+        spec['description'] = (ast.get_docstring(tree) or _first_comment(req['source']) or ('saved python ' + name)).splitlines()[0][:120]
         return spec
     functions = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith('_')]
     entry = 'run' if kind == 'tool' else 'observe'
@@ -168,6 +185,13 @@ try:
         sys.meta_path.insert(0, _Loader())
         if _req['mode'] == 'exec':
             _req['state'] = _state
+            # args: the inputs of a saved script tool; one-off code sees {} (or what the caller passed).
+            _ns['args'] = _req.get('args') or {}
+            result = {'ok': True, 'value': _exec(_req)}
+        elif _req['mode'] == 'call' and _is_script(ast.parse(_sources.get(_req['path'], ''), _req['path'])):
+            _req['state'] = _state
+            _req['code'] = _sources.get(_req['path'], '')
+            _ns['args'] = (_req.get('args') or {}).get('args') or {}
             result = {'ok': True, 'value': _exec(_req)}
         else:
             module = __import__(_req['path'][:-3].replace('/', '.'), fromlist=['*'])

@@ -783,8 +783,9 @@ def run_arc_thin_e2e(
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             # Native history bands (demo/arc_thin_native_context.ts); verbatim 0 keeps every decision verbatim.
             "native_split_budget": pi_env.get("ARC_THIN_NATIVE_SPLIT_BUDGET", "1") == "1",
-            "native_history": {"verbatim": int(pi_env.get("ARC_THIN_NATIVE_VERBATIM", "4")),
-                               "condensed": int(pi_env.get("ARC_THIN_NATIVE_CONDENSED", "16"))} if foundation == "native" else None,
+            "native_history": {"verbatim": int(pi_env.get("ARC_THIN_NATIVE_VERBATIM", "2")),
+                               "condensed": int(pi_env.get("ARC_THIN_NATIVE_CONDENSED", "4")),
+                               "budget_chars": int(pi_env.get("ARC_THIN_NATIVE_HISTORY_CHARS", "12000"))} if foundation == "native" else None,
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 

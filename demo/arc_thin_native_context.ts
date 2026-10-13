@@ -13,7 +13,7 @@
  * Band edges move in steps of `verbatim` decisions, so the shown prefix stays identical for several decisions and
  * provider prompt caching keeps working between band moves.
  */
-export type NativeHistoryOptions = { verbatim?: number; condensed?: number };
+export type NativeHistoryOptions = { verbatim?: number; condensed?: number; budget?: number };
 
 const CONDENSED_TEXT_CHARS = 400;
 const CONDENSED_RESULT_CHARS = 300;
@@ -86,32 +86,41 @@ export function projectNativeHistory(messages: any[], replayReasoning = false, o
   const step = (n: number) => Math.floor(Math.max(0, n) / verbatim) * verbatim;
   const condensedFrom = step(earlier - verbatim);           // decisions [condensedFrom, ...) not verbatim are condensed
   const droppedBefore = step(earlier - verbatim - condensed);
-  const out: any[] = [];
+  const head: any[] = [];
   // Messages before the first decision (system, compaction summary) are kept.
-  for (let i = 0; i < (starts[0] ?? paired.length); i++) out.push(paired[i]);
-  for (let d = 0; d < starts.length; d++) {
+  for (let i = 0; i < (starts[0] ?? paired.length); i++) head.push(paired[i]);
+  const groups: any[][] = [];
+  for (let d = droppedBefore; d < starts.length; d++) {
     const slice = paired.slice(starts[d], starts[d + 1] ?? paired.length);
-    if (d < droppedBefore) continue;
-    if (d < condensedFrom) {
-      const body = slice.map(condense);
-      if (d === droppedBefore) body[0] = withNote(body[0], (droppedBefore
-        ? `(${droppedBefore} earlier decision${droppedBefore === 1 ? '' : 's'} not shown; memory, notes/, data/trajectory.jsonl and data/frames/ hold their record.)\n`
-        : '') + `(The ${condensedFrom - droppedBefore} decisions from here are condensed: long call arguments shortened, results clipped. ` +
-        `The newest ones after them are complete.)`);
-      out.push(...body);
-    } else if (d < starts.length - 1) out.push(...slice.map(clipLongResult));
-    else out.push(...slice);
+    groups.push(d < condensedFrom ? slice.map(condense) : d < starts.length - 1 ? slice.map(clipLongResult) : slice);
   }
-  return out;
+  // A character budget over the earlier decisions: the oldest go first; the current decision is always kept.
+  let dropped = droppedBefore;
+  if (options.budget !== undefined) {
+    const size = (group: any[]) => group.reduce((n, m) => n + textChars(m), 0);
+    let total = groups.slice(0, -1).reduce((n, g) => n + size(g), 0);
+    while (groups.length > 1 && total > options.budget) { total -= size(groups.shift()!); dropped += 1; }
+  }
+  const condensedShown = Math.max(0, condensedFrom - dropped);
+  if (groups.length > 1 && (dropped || condensedShown)) groups[0][0] = withNote(groups[0][0], (dropped
+    ? `(${dropped} earlier decision${dropped === 1 ? '' : 's'} not shown; your memory, notes/, saved components, data/trajectory.jsonl and data/frames/ hold what they established.)\n`
+    : '') + (condensedShown ? `(The ${condensedShown} decisions from here are condensed: long call arguments shortened, results clipped. ` +
+    `The newest ones after them are complete.)` : ''));
+  return [...head, ...groups.flat()];
 }
 
-/** Action numbers whose arc_action receipt is in the given messages ("#12 ACTION1 → ..."). */
+const textChars = (message: any) => typeof message?.content === 'string' ? message.content.length
+  : (Array.isArray(message?.content) ? message.content : []).reduce((n: number, block: any) =>
+    n + (block?.type === 'text' ? String(block.text).length : block?.type === 'toolCall' ? JSON.stringify(block.arguments ?? {}).length : 0), 0);
+
+/**
+ * Action numbers whose receipt is in the given messages: arc_action's "#12 ACTION1 → ..." and the per-step lines of a
+ * saved tool that played actions (one "#13 ACTION4 → ..." line per step).
+ */
 export function visibleActions(messages: any[]): Set<number> {
   const seen = new Set<number>();
-  for (const message of messages) if (message?.role === 'toolResult' && message.toolName === 'arc_action')
-    for (const block of Array.isArray(message.content) ? message.content : []) {
-      const match = /^#(\d+) /.exec(String(block?.text ?? ''));
-      if (match) seen.add(Number(match[1]));
-    }
+  for (const message of messages) if (message?.role === 'toolResult')
+    for (const block of Array.isArray(message.content) ? message.content : [])
+      for (const match of String(block?.text ?? '').matchAll(/^#(\d+) (?:ACTION\d|RESET)\b/gm)) seen.add(Number(match[1]));
   return seen;
 }

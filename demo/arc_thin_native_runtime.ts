@@ -11,7 +11,14 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
+  /** Play the actions a saved tool returned ({"actions": [...]}): what happened, and how many were played. */
+  act?(batch: { actions: unknown[] }, via: string): Promise<{ text: string; played: number }>;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any> };
+/** The value a run returned: a script's final expression, or run(...)'s return value. */
+const returned = (value: unknown) => value && typeof value === 'object' && 'stdout' in (value as any) ? (value as any).value : value;
+const actionBatch = (value: unknown): { actions: unknown[] } | undefined =>
+  value && typeof value === 'object' && Array.isArray((value as any).actions) ? value as { actions: unknown[] } : undefined;
+export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
   : typeof result.value === 'object' && result.value !== null && 'stdout' in result.value
     ? [(result.value as any).stdout, (result.value as any).has_value ? '→ ' + JSON.stringify((result.value as any).value) : ''].filter(Boolean).join('\n')
@@ -82,6 +89,15 @@ export class NativeRuntime {
   private levelRuns(level: number) {
     const kit = kitOf(this.host.binder.versionMap());
     return this.pythonRuns.filter(r => r.level === level && r.kit === kit);
+  }
+  /**
+   * Repeated python work on a level, for the refiner's trigger (native mode no longer shows it to the agent): a
+   * computation redone at least 3 times since the saved components last changed, or retyped although a saved
+   * component covers it.
+   */
+  repeatedWork(level: number) {
+    return repeatedFamilies(this.levelRuns(level), this.components()).filter(f => f.recent >= 3 || (f.covered && f.recent >= 2))
+      .map(f => ({ key: f.key, gist: f.gist, calls: f.recent, covered: f.covered, samples: f.runs.slice(-2).map(r => r.code ?? '').filter(Boolean) }));
   }
   /** REPEATED WORK for the working set; the families it names are remembered as shown at this decision. */
   repetitionText(level: number) {
@@ -203,24 +219,48 @@ export class NativeRuntime {
         timing_note:'execution_ms includes instantiate/guest; attempt ms includes host/compile/transport; do not sum overlapping phases'});
     }
   }
-  async python(code: string, signal?: AbortSignal, readonly = false) {
+  /**
+   * One-off python. With `save`, the code is first saved as it is under tools/<save>.py (a script tool: no signature,
+   * inputs come in as `args`) and this run counts as its first call: saving costs no rewrite, and only saved code may
+   * return actions for the runtime to play.
+   */
+  async python(code: string, signal?: AbortSignal, readonly = false, save?: string) {
+    const saveReceipts: string[] = [];
+    if (save !== undefined && !readonly) {
+      if (!SAVE_NAME.test(save)) throw Error('save must be a lowercase name like route_to (letters, digits, _)');
+      const path = `tools/${save}.py`;
+      this.host.workspace.mutate({ op: 'write', path, content: code.endsWith('\n') ? code : code + '\n' });
+      const receipt = await this.host.binder.save(path, this.host.level());
+      if (receipt) saveReceipts.push(receipt);
+      this.noteSave(path, receipt);
+      await this.host.binder.scan(this.host.level()); this.register();
+      const names = new Set(this.toolNames());
+      this.host.pi.setActiveTools([...this.host.pi.getActiveTools().filter(n => !this.registered.has(n) || names.has(n)), ...names]);
+    }
     const snap = this.snapshot(); const started = Date.now();
     const kit = kitOf(this.host.binder.versionMap());
     const result = await this.execute({ ...snap, mode: 'exec', code, allow_writes: !readonly }, signal);
-    const receipts = result.ok ? await this.applyWrites(result) : [];
+    const receipts = [...saveReceipts, ...(result.ok ? await this.applyWrites(result) : [])];
     const shape = codeShape(code);
     // A consult role's read-only python is not the parent's own work.
     const decision = this.decision();
     if (!readonly) {
       this.pythonRuns.push({ level: this.host.level(), ...shape, kit, decision, n: this.host.actionCount(), code: code.slice(0, 2000) });
       for (const m of code.matchAll(/\b(?:from|import)\s+(tools|lib)\.([A-Za-z_]\w*)/g)) this.uses.push({ path: `${m[1]}/${m[2]}.py`, decision });
+      if (save) this.uses.push({ path: `tools/${save}.py`, decision });
     }
     this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started,
-      ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit }) });
+      ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit, ...(save ? { saved_as: `tools/${save}.py` } : {}) }) });
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
     const body = [...receipts, shown(result), ...failed.map(s => 'bindings: ' + s)].join('\n');
-    return text(this.host.receipt?.(body) ?? body, !result.ok);
+    const batch = result.ok && !readonly ? actionBatch(returned(result.value)) : undefined;
+    if (batch && save && saveReceipts.every(r => !/NOT loaded/.test(r))) {
+      const played = await this.host.act?.(batch, `tools/${save}.py`);
+      if (played) return { ...text(`${this.host.receipt?.(body) ?? body}\n${played.text}`), terminate: played.played > 0 };
+    }
+    const note = batch ? '\nThe returned actions were not played: only saved code acts. Run it with save="<name>", or call a saved tool.' : '';
+    return text((this.host.receipt?.(body) ?? body) + note, !result.ok);
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
     const component = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name);
@@ -237,6 +277,10 @@ export class NativeRuntime {
       versions: snap.versions, ok: result.ok, ms: Date.now() - started });
     const fallback = this.host.binder.active().filter(x => x.path !== c.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
     const body = [`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n');
+    // A saved tool may act: the actions it returns are played by the runtime, and the decision ends.
+    const batch = result.ok && !readonly ? actionBatch(returned(result.value)) : undefined;
+    const played = batch ? await this.host.act?.(batch, c.path) : undefined;
+    if (played) return { ...text(`${this.host.receipt?.(body) ?? body}\n${played.text}`), terminate: played.played > 0 };
     return text(this.host.receipt?.(body) ?? body, !result.ok);
   }
   observe(n: number) {

@@ -24,7 +24,8 @@
  */
 import { createHash } from "node:crypto";
 import { projectNativeHistory, visibleActions } from "./arc_thin_native_context.ts";
-import { ADOPTION_SYSTEM, coordinateSentences, parseAdoptionReply } from "./arc_thin_reuse.ts";
+import { coordinateSentences } from "./arc_thin_reuse.ts";
+import { REFINER_PATH, REFINER_SEED, REFINER_SYSTEM, STRATEGY_CHARS, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
@@ -51,7 +52,7 @@ import {
 } from "./arc_thin_critic.ts";
 import {
 	MAX_EVIDENCE, MAX_HYPOTHESES, MAX_STEPS, MAX_STRATEGIES, STATUSES, STRATEGY_STATUSES, VERDICTS, applyRow, applyRows, emptyMemory, memoryForSkills,
-	planMemoryUpdate, renderFactsCompact, renderMemory, resetMemory, type ComponentContext, type MemoryParams,
+	planMemoryUpdate, renderFactsCompact, renderMemory, renderMemoryIndex, resetMemory, type ComponentContext, type MemoryParams,
 } from "./arc_thin_memory.ts";
 import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments, unescapeSource } from "./arc_thin_boundary.ts";
 import {
@@ -131,6 +132,8 @@ type SkillPrediction = { name: string; version?: number; error?: string } & Part
  */
 type ActionRow = {
 	n: number; decision: number; action: string; x?: number; y?: number; note?: string; idea?: string; expect?: string;
+	/** The saved tool whose returned actions included this one (native mode); absent for arc_action. */
+	via?: string;
 	changed_cells: number | null; bbox?: unknown; level_changed: boolean; state: string;
 	levels_completed: number; budget: any;
 	predict?: Prediction; prediction?: ScoredPrediction; skill_prediction?: SkillPrediction;
@@ -178,11 +181,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// since 2026-10-08) shows only the rebuilt working set. docs/reports/2026-10-12-memory-mechanism-review.md.
 	const continuity = native || process.env.ARC_THIN_CONTINUITY === "session" ? "session" : "rebuild";
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
-	// Native history bands (arc_thin_native_context.ts): ARC_THIN_NATIVE_VERBATIM=0 shows every decision verbatim.
+	// Native history: the newest 2 decisions complete, 4 more condensed, all within 12,000 characters (Continual Harness
+	// keeps a 12,000-character history and rebuilds the rest from its state). ARC_THIN_NATIVE_VERBATIM=0 shows everything.
 	const nativeSplitBudget = (process.env.ARC_THIN_NATIVE_SPLIT_BUDGET ?? "1") === "1";
-	const nativeVerbatim = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_VERBATIM ?? 4)));
+	const nativeVerbatim = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_VERBATIM ?? 2)));
 	const nativeHistory = nativeVerbatim ? { verbatim: nativeVerbatim,
-		condensed: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_CONDENSED ?? 16))) } : {};
+		condensed: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_CONDENSED ?? 4))),
+		budget: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 12000))) } : {};
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -500,10 +505,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const left = deadlineMs ? Math.max(0, deadlineMs - Date.now()) : undefined;
 		if (left !== undefined) parts.push(`${duration(left)} of run time left`);
 		if (lastDecisionCost) parts.push(`your last turn took ${duration(lastDecisionCost.ms)} and ${tokens(lastDecisionCost.output)} output tokens` +
-			(lastDecisionCost.reasoning ? ` (${tokens(lastDecisionCost.reasoning)} of them reasoning` +
-				// Native mode: name re-derivation in reasoning, the largest repeated work in the 2026-10-12 real run.
-				(native && lastDecisionCost.reasoning >= 2000 && (lastDecisionCost.coordinateShare ?? 0) >= 0.2
-					? `, about ${Math.round(100 * lastDecisionCost.coordinateShare!)}% of its reasoning sentences mentioning cells or coordinates` : "") + ")" : ""));
+			(lastDecisionCost.reasoning ? ` (${tokens(lastDecisionCost.reasoning)} of them reasoning)` : ""));
 		const times = actionTimes.slice(-6).filter((t) => t > 0);
 		if (times.length >= 3) {
 			const pace = (times.at(-1)! - times[0]) / (times.length - 1);
@@ -515,10 +517,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	function buildWorkingSet(ctx: ExtensionContext, shownActions?: Set<number>): Run["workingSet"] {
 		const recent = recentText(shownActions);
+		// Native mode: the context is the harness plus the present (Continual Harness rebuilds each decision from its
+		// state; Prime keeps data out of context). The strategy note, a memory index, recent actions not in view, what
+		// the refiner changed, and resources; the runtime's own analyses are files under data/, not resident text.
+		const nativeSections = (): Array<[string, string]> => {
+			const out: Array<[string, string]> = [];
+			const strategy = readStrategy();
+			if (strategy?.text.trim()) out.push(["strategy", `STRATEGY (${STRATEGY_PATH} v${strategy.version ?? "?"}, kept by you and your refiner):\n` +
+				strategy.text.trim().slice(0, STRATEGY_CHARS)]);
+			out.push(["memory", renderMemoryIndex(memory, trajectory.length, claimLines())]);
+			if (recent) out.push(["recent", recent]);
+			if (refinerNotice) { out.push(["refiner", refinerNotice]); refinerNotice = ""; }
+			return out;
+		};
 		const sections: Array<[string, string]> = control ? [["recent", recent]]
-			: native ? [["memory", memoryText()], ...(recent ? [["recent", recent] as [string, string]] : [])]
+			: native ? nativeSections()
       : [["memory", memoryText()], ["skills", skillsText()], ["recent", recent]];
-		if (!control) {
+		if (!control && !native) {
 			const skillOutputs = latestSkillOutputsText();
 			if (skillOutputs) sections.splice(2, 0, ["skill_outputs", skillOutputs]);
 			const models = modelChecksText();
@@ -536,10 +551,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// With session continuity those results are already in the shown history.
 		if (carriedResults.length && continuity !== "session")
 			sections.push(["carried", ["RESULTS OF THE TOOLS YOU CALLED TOGETHER WITH YOUR LAST ACTION:", ...carriedResults.map((line) => `- ${line}`)].join("\n")]);
-		const challenge = predictionChallengeText();
+		const challenge = native ? "" : predictionChallengeText();
 		if (challenge) sections.push(["challenge", challenge]);
-		if (ledgerText) sections.push(["ledger", ledgerText]);
-		if (criticText) sections.push(["critic", criticText]);
+		if (ledgerText && !native) sections.push(["ledger", ledgerText]);
+		if (criticText && !native) sections.push(["critic", criticText]);
 		const stateText = observation
 			? `CURRENT STATE\n${renderState(observation)}`
 			: "CURRENT STATE: unavailable — do not act on remembered grids.";
@@ -734,7 +749,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       nativeRuntime.register();
       const lookSpent = nativeSplitBudget && !run.consolidating && run.lookCalls >= NATIVE_LOOK_CALLS && !diagnosticBudget;
       const recordSpent = nativeSplitBudget && !run.consolidating && run.recordCalls >= NATIVE_RECORD_CALLS && !diagnosticBudget;
-      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', 'ls', 'grep', 'consult',
+      // ls and grep are left out: python lists and searches the workspace, and every schema is resent on each call.
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', 'consult',
         ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]
         .filter(name => name === 'arc_action' || (NATIVE_RECORD_TOOLS.has(name) ? !recordSpent : !lookSpent)));
       return;
@@ -794,6 +810,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const critic = readRows("critic.jsonl");
 		criticNotes = critic.filter((row) => row.kind === "note");
 		criticCheckedThrough = Math.max(0, ...critic.filter((row) => row.kind === "check").map((row) => Number(row.through) || 0));
+		const refiner = readRows("refiner.jsonl").filter((row) => row.kind === "start");
+		refineNotes = refiner.map((row) => ({ at: Number(row.at) || 0, level: 0, triggers: row.triggers ?? [], lines: [], dropped: [] }));
+		lastRefineAt = Math.max(0, ...refineNotes.map((note) => note.at));
+		// After a restart, events before the restart are not refined again.
+		refinedThrough = trajectory.length;
 	}
 
 	/** Every state the agent sees is kept: skills read it as state.history, and the ledger reads it when enabled. */
@@ -986,7 +1007,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, {
 			systemPrompt, messages: [{ role: "user", content, timestamp: Date.now() }],
 		} as any, { signal: options.signal, maxTokens: options.maxTokens,...(onResponse?{onResponse}:{}) } as any);
-		return native ? await requestTrace.run(systemPrompt === ADOPTION_SYSTEM ? 'adoption' : systemPrompt === CRITIC_SYSTEM || systemPrompt === NATIVE_CRITIC_SYSTEM ? 'critic' : 'analyst', decision, create) : await create().result();
+		return native ? await requestTrace.run(systemPrompt.startsWith(REFINER_SYSTEM) ? 'refiner' : systemPrompt === CRITIC_SYSTEM || systemPrompt === NATIVE_CRITIC_SYSTEM ? 'critic' : 'analyst', decision, create) : await create().result();
 	}
 
 	async function askCritic(ctx: ExtensionContext, dossier: string): Promise<{ reply: any; answer: string }> {
@@ -1051,48 +1072,86 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Adoption-gap investigation (native mode). When the agent goes on rebuilding a computation after REPEATED WORK
-	 * named it, the runtime locates where reuse broke (nothing saved, a failed save, a component that does not cover
-	 * it, a covering component left unused) and, with the critic enabled, asks an independent side call why and what
-	 * the smallest change is. Shown once; the agent decides what to do. Logged in reuse_reviews.jsonl.
+	 * The refiner (native mode; arc_thin_refiner.ts): after level changes, failures the critic used to review, repeated
+	 * python work, or REFINE_EVERY actions without one, one background side call writes one harness edit. It replaces
+	 * the advisory critic and the reuse-gap review; it never delays a decision, and the agent is told once what changed.
+	 * It runs while roles/refiner.md is active, so the agent can revise or retire its own refiner.
 	 */
-	let reuseText = "";
-	let reuseInFlight: Promise<void> | undefined;
-	let reusePending = "";
-	async function prepareReuse(ctx: ExtensionContext | undefined): Promise<void> {
-		reuseText = "";
-		if (!nativeRuntime || control || run.consolidating || reuseInFlight) return;
-		if (reusePending) { reuseText = reusePending; reusePending = ""; return; }
-		const gap = nativeRuntime.adoptionGaps(currentLevel())[0];
-		if (!gap) return;
-		const head = `REUSE GAP: \`${gap.gist}\` was rebuilt after REPEATED WORK named it at decision ${gap.shownAt}: ${gap.finding}.`;
-		append("reuse_reviews.jsonl", { kind: "gap", decision, at: trajectory.length, gist: gap.gist, shown_at: gap.shownAt, finding: gap.finding, covered: gap.covered });
-		if (!criticOn || !ctx?.model) { reuseText = head; return; }
+	const REFINE_EVERY = envNumber("ARC_REFINE_EVERY", 15);
+	let refineNotes: CriticNote[] = [];
+	let refinedThrough = 0;
+	let lastRefineAt = 0;
+	const refinedFamilies = new Set<string>();
+	let refinerInFlight: Promise<void> | undefined;
+	let refinerNotice = "";
+	const refinerActive = () => Boolean(native && criticOn && nativeRuntime && binder?.active().some((c) => c.path === REFINER_PATH));
+	function readStrategy(): { text: string; version?: number } | undefined {
+		if (!workspace) return undefined;
+		try { return { text: workspace.read(STRATEGY_PATH), version: binder?.versionMap()[STRATEGY_PATH] }; }
+		catch { return undefined; }
+	}
+
+	function refinerTriggers(state: LedgerState): { triggers: string[]; samples: string[] } {
+		const triggers: string[] = [];
+		let samples: string[] = [];
+		triggers.push(...criticTriggers(state, refineNotes, refinedThrough, memory.hypotheses.size, criticConfig, touchedKeys).triggers);
+		for (const row of trajectory.slice(refinedThrough)) if (row.level_changed) triggers.push(`level ${row.levels_completed} reached at #${row.n}`);
+		for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
+			if (refinedFamilies.has(family.key)) continue;
+			refinedFamilies.add(family.key);
+			triggers.push(family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
+				: `python computation \`${family.gist}\` redone ${family.calls} times`);
+			samples = family.samples;
+			break;
+		}
+		if (!triggers.length && trajectory.length - lastRefineAt >= REFINE_EVERY) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
+		refinedThrough = trajectory.length;
+		return { triggers, samples };
+	}
+
+	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
+		const role = binder!.active().find((c) => c.path === REFINER_PATH);
+		const strategy = readStrategy();
 		const saved = binder!.active().filter((c) => /^(tools|observers|lib)\/[^/]+\.py$/.test(c.path));
-		const covering = saved.find((c) => c.path === gap.covered);
 		const input = [
-			`REPEATED COMPUTATION: \`${gap.gist}\`; ${gap.total} python calls on this level, ${gap.after.length} of them after the agent was shown the repetition (decision ${gap.shownAt}).`,
-			`MECHANICAL FINDING: ${gap.finding}.`,
-			`LATEST CODE:\n${gap.samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n") || "(not kept)"}`,
-			`SAVED COMPONENTS:\n${saved.map((c) => `${c.path} v${c.version}: ${c.description || "(no description)"}`).join("\n") || "(none)"}` +
-				(covering ? `\n\nSOURCE OF ${covering.path}:\n${covering.source.slice(0, 1500)}` : ""),
+			`WHY NOW: ${triggers.join("; ")}`,
+			`ACTIONS SO FAR: ${trajectory.length}; levels completed: ${currentLevel()}; state: ${observation?.state ?? "unknown"}`,
+			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
+			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
+			`SAVED COMPONENTS:\n${saved.map((c) => `--- ${c.path} v${c.version}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
+			...(samples.length ? [`REPEATED PYTHON (latest calls):\n${samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n")}`] : []),
+			`LAST ACTIONS (with how their predictions scored):\n${trajectory.slice(-20).map(recentLine).join("\n") || "(none yet)"}`,
+			`CURRENT STATE:\n${observation ? renderState(observation) : "(unavailable)"}`,
 		].join("\n\n");
-		const review = (async () => {
-			const reply: any = await sideCall(ctx, ADOPTION_SYSTEM, [{ type: "text", text: input }],
-				{ signal: AbortSignal.timeout(criticConfig.timeoutMs), maxTokens: criticConfig.maxOutputTokens });
-			appendUsage("adoption", reply);
-			const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
-			const parsed = parseAdoptionReply(answer);
-			append("reuse_reviews.jsonl", { kind: "review", decision, gist: gap.gist, ...parsed, stop_reason: reply.stopReason, input_chars: input.length });
-			return parsed.lines.length ? [head, "Independent review of this gap (advisory):", ...parsed.lines.map((line) => `- ${line}`)].join("\n") : head;
-		})();
-		let settled = false;
-		reuseInFlight = review.then((text) => { if (settled) reusePending = text; else reuseText = text; })
-			.catch((error) => { logError("reuse:review", error); if (!settled) reuseText = head; })
-			.finally(() => { reuseInFlight = undefined; });
-		await Promise.race([reuseInFlight, new Promise((resolve) => setTimeout(resolve, CRITIC_WAIT_MS))]);
-		settled = true;
-		if (!reuseText) reuseText = head;
+		const system = REFINER_SYSTEM + (role?.body?.trim() ? `\n\nTHE AGENT'S INSTRUCTIONS FOR YOU (${REFINER_PATH}):\n${role.body.trim()}` : "");
+		const reply: any = await sideCall(ctx, system, [{ type: "text", text: input }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
+		appendUsage("refiner", reply);
+		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
+		const edit = parseRefinerReply(answer);
+		const at = trajectory.length;
+		const base = { at, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
+		if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
+		workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
+		const receipt = await binder!.save(edit.path, currentLevel());
+		nativeRuntime!.noteSave(edit.path, receipt);
+		nativeRuntime!.register();
+		const loaded = !/NOT loaded/.test(receipt ?? "");
+		const version = binder!.versionMap()[edit.path];
+		append("refiner.jsonl", { kind: "edit", ...base, path: edit.path, version, why: edit.why, loaded, receipt });
+		refinerNotice = `HARNESS UPDATE from your refiner (${REFINER_PATH}) after #${at} (${triggers[0]}): ${edit.path}` +
+			(version ? ` v${version}` : "") + (loaded ? "" : " failed validation; the previous version still runs") +
+			(edit.why ? ` — ${edit.why}` : "") + ". Revise or delete it like your own edits.";
+	}
+
+	function startRefiner(ctx: ExtensionContext | undefined, triggers: string[], samples: string[]): void {
+		if (!ctx?.model) return;
+		if (refinerInFlight) { append("refiner.jsonl", { kind: "suppressed", at: trajectory.length, reason: "refiner busy", triggers }); return; }
+		refineNotes.push({ at: trajectory.length, level: currentLevel(), triggers, lines: [], dropped: [] });
+		lastRefineAt = trajectory.length;
+		append("refiner.jsonl", { kind: "start", at: trajectory.length, decision, triggers });
+		refinerInFlight = runRefiner(ctx, triggers, samples)
+			.catch((error) => { logError("refiner", error); append("refiner.jsonl", { kind: "failed", at: trajectory.length, triggers, error: errorText(error).slice(0, 300) }); })
+			.finally(() => { refinerInFlight = undefined; });
 	}
 
 	/** Before each decision: bounded wait for observations, the ledger view, and the critic when triggered. */
@@ -1105,6 +1164,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const state = buildLedger(trajectory, observations, grids);
 		const goalRefs = goalHypothesisRefs();
 		ledgerText = renderLedgerView(state, [...memory.hypotheses.keys()], 900, goalRefs);
+		if (native && workspace) {
+			// Native mode keeps the runtime's own analyses out of the resident context: the ledger is a file the agent,
+			// its components and its refiner can read, and the refiner replaces the critic's advisory notes.
+			try { workspace.runtimeWrite("data/ledger.md", renderLedgerView(state, [...memory.hypotheses.keys()], 6000, goalRefs) + "\n"); }
+			catch (error) { logError("ledger:file", error); }
+			ledgerText = "";
+			// While a refinement runs, events wait for the next decision instead of being dropped.
+			if (refinerActive() && !refinerInFlight) {
+				const { triggers, samples } = refinerTriggers(state);
+				if (triggers.length) startRefiner(ctx, triggers, samples);
+			}
+			return;
+		}
 		if (!criticOn) return;
 		const previous = criticCheckedThrough;
 		const { triggers, suppressed } = criticTriggers(state, criticNotes, previous, memory.hypotheses.size, criticConfig, touchedKeys);
@@ -1310,68 +1382,124 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				action: string; x?: number; y?: number; note?: string; idea?: unknown;
 				predict?: Prediction; predict_skill?: string;
 			}) => {
-				if (!availableActions(observation).includes(params.action))
-					throw new Refusal(`action '${params.action}' is not currently available`);
-				const beforeGrid = gridOf(observation);
-				const label = actionLabel(params);
-				const payload: Record<string, unknown> = { action: params.action };
-				if (params.x !== undefined && params.y !== undefined) { payload.x = params.x; payload.y = params.y; }
-				const bySkill = !control && params.predict_skill ? await predictWithSkill(params.predict_skill, { ...payload }) : undefined;
-				if (params.note) payload.reasoning = params.note;
-				const idea = ledgerOn ? normIdea(params.idea) : "";
-				// The ledger keeps the informal part of the prediction as the experiment's expectation.
-				const expect = ledgerOn && !control && params.predict?.text ? params.predict.text : "";
-				let value: Record<string, any>;
-				// No agent abort signal here: an aborted request could still apply an unrecorded action.
-				try { value = await bridgeCall("/action", payload, 120_000); }
-				catch (error) {
-					// The environment failing is not the agent's to fix: end the decision instead of
-					// letting it retry the same call (each retry is a full model turn plus the timeout).
-					if (isEnvironmentFailure(error)) {
-						append("errors.jsonl", { hook: "arc_action:environment", environment: true, decision, action: label, message: errorText(error).slice(0, 500) });
-						return refused(`arc_action ${label} failed because the environment did not respond (${errorText(error).slice(0, 200)}). ` +
-							`This decision ends; the runner checks the environment before the next one.`);
-					}
-					throw new Refusal(`arc_action ${label} failed: ${errorText(error)}`);
+				const done = await submitAction(params);
+				if ("refusal" in done) {
+					if (done.environment) return refused(done.refusal);
+					throw new Refusal(done.refusal);
 				}
-				run.actionDone = true;
-				previousGrid = beforeGrid;
-				observation = value;
-				const delta = value.observation_delta ?? {};
-				const afterGrid = gridOf(value);
-				const row: ActionRow = {
-					n: trajectory.length + 1, decision, action: params.action,
-					...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}),
-					...(params.note ? { note: params.note } : {}),
-					...(idea ? { idea } : {}),
-					...(expect ? { expect } : {}),
-					// Evaluation only (never rendered for the agent): how much the frame changed, per the bridge.
-					changed_cells: typeof delta.changed_cells === "number" ? delta.changed_cells : gridDiff(beforeGrid, afterGrid),
-					...(delta.bbox ? { bbox: delta.bbox } : {}),
-					level_changed: Boolean(value.public_transition?.level_changed),
-					state: String(value.state ?? "UNKNOWN"),
-					levels_completed: Number(value.levels_completed ?? 0),
-					budget: value.action_budget ?? null,
-				};
-				// Check what the agent, or the skill it named, said this action would produce, against what came back.
-				const outcome: Outcome = { before: beforeGrid, after: afterGrid, level_changed: row.level_changed, state: row.state };
-				if (!control && params.predict) {
-					row.predict = params.predict;
-					// Text alone is kept, not checked: a score exists only when there was something to check.
-					const score = scorePrediction(params.predict, outcome);
-					if (score.fields.length) row.prediction = score;
-				}
-				if (bySkill) row.skill_prediction = { ...bySkill.row, ...(bySkill.prediction ? scorePrediction(bySkill.prediction, outcome) : {}) };
-				trajectory.push(row);
-				actionTimes.push(Date.now());
-				append("trajectory.jsonl", row);
-				recordState(row.n, afterGrid);
-        if (nativeRuntime) nativeRuntime.observe(row.n);
-				refreshActionSurface();
+				const row = done.row;
 				return text(`${actionLine(row)}${predictionClause(row)}`,
 					{ ...reportedAction(row), prediction: row.prediction, skill_prediction: row.skill_prediction }, true);
 			}),
 		});
+	}
+
+	/**
+	 * One action through the environment boundary, recorded like every other: arc_action and the actions a saved tool
+	 * returns both come here (`via` names the tool). The bridge, its budget and its refusals stay the only way to act.
+	 */
+	async function submitAction(params: {
+		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
+	}, via?: string): Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
+		if (!availableActions(observation).includes(params.action))
+			return { refusal: `action '${params.action}' is not currently available` };
+		const beforeGrid = gridOf(observation);
+		const label = actionLabel(params);
+		const payload: Record<string, unknown> = { action: params.action };
+		if (params.x !== undefined && params.y !== undefined) { payload.x = params.x; payload.y = params.y; }
+		const bySkill = !control && params.predict_skill ? await predictWithSkill(params.predict_skill, { ...payload }) : undefined;
+		if (params.note) payload.reasoning = params.note;
+		const idea = ledgerOn ? normIdea(params.idea) : "";
+		// The ledger keeps the informal part of the prediction as the experiment's expectation.
+		const expect = ledgerOn && !control && params.predict?.text ? params.predict.text : "";
+		const by = via ? `${via} action` : "arc_action";
+		let value: Record<string, any>;
+		// No agent abort signal here: an aborted request could still apply an unrecorded action.
+		try { value = await bridgeCall("/action", payload, 120_000); }
+		catch (error) {
+			// The environment failing is not the agent's to fix: end the decision instead of
+			// letting it retry the same call (each retry is a full model turn plus the timeout).
+			if (isEnvironmentFailure(error)) {
+				append("errors.jsonl", { hook: "arc_action:environment", environment: true, decision, action: label, message: errorText(error).slice(0, 500) });
+				return { environment: true, refusal: `${by} ${label} failed because the environment did not respond (${errorText(error).slice(0, 200)}). ` +
+					`This decision ends; the runner checks the environment before the next one.` };
+			}
+			return { refusal: `${by} ${label} failed: ${errorText(error)}` };
+		}
+		run.actionDone = true;
+		previousGrid = beforeGrid;
+		observation = value;
+		const delta = value.observation_delta ?? {};
+		const afterGrid = gridOf(value);
+		const row: ActionRow = {
+			n: trajectory.length + 1, decision, action: params.action,
+			...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}),
+			...(params.note ? { note: params.note } : {}),
+			...(idea ? { idea } : {}),
+			...(expect ? { expect } : {}),
+			...(via ? { via } : {}),
+			// Evaluation only (never rendered for the agent): how much the frame changed, per the bridge.
+			changed_cells: typeof delta.changed_cells === "number" ? delta.changed_cells : gridDiff(beforeGrid, afterGrid),
+			...(delta.bbox ? { bbox: delta.bbox } : {}),
+			level_changed: Boolean(value.public_transition?.level_changed),
+			state: String(value.state ?? "UNKNOWN"),
+			levels_completed: Number(value.levels_completed ?? 0),
+			budget: value.action_budget ?? null,
+		};
+		// Check what the agent, or the skill it named, said this action would produce, against what came back.
+		const outcome: Outcome = { before: beforeGrid, after: afterGrid, level_changed: row.level_changed, state: row.state };
+		if (!control && params.predict) {
+			row.predict = params.predict;
+			// Text alone is kept, not checked: a score exists only when there was something to check.
+			const score = scorePrediction(params.predict, outcome);
+			if (score.fields.length) row.prediction = score;
+		}
+		if (bySkill) row.skill_prediction = { ...bySkill.row, ...(bySkill.prediction ? scorePrediction(bySkill.prediction, outcome) : {}) };
+		trajectory.push(row);
+		actionTimes.push(Date.now());
+		append("trajectory.jsonl", row);
+		recordState(row.n, afterGrid);
+		if (nativeRuntime) nativeRuntime.observe(row.n);
+		refreshActionSurface();
+		return { row };
+	}
+
+	/** At most this many actions are played from one tool result. */
+	const MAX_PLAYED_ACTIONS = 24;
+	/**
+	 * Actions a saved tool returned ({"actions": [{"action": "ACTION1", "x"?, "y"?, "predict"?}, ...]} or plain labels):
+	 * played in order through submitAction, stopping at the first missed prediction, level change, non-running state,
+	 * unavailable action or environment failure. Codified routines then pay off in actions, not only in advice (in
+	 * Continual Harness 62% of executed actions came from saved skills).
+	 */
+	async function playActions(batch: { actions: unknown[] }, via: string): Promise<{ text: string; played: number }> {
+		if (run.consolidating) return { text: "(Returned actions are not played during a review.)", played: 0 };
+		if (run.actionDone) return { text: "(Returned actions not played: this decision already acted.)", played: 0 };
+		const steps = batch.actions.slice(0, MAX_PLAYED_ACTIONS);
+		const lines: string[] = [];
+		let stop = "";
+		for (const [index, raw] of steps.entries()) {
+			const item: any = typeof raw === "string" ? { action: raw } : raw && typeof raw === "object" ? raw : {};
+			const compact = String(item.action ?? "").toUpperCase().replace(/\s+/g, "").replace(/^A(\d)/, "ACTION$1");
+			const labelled = /^ACTION(\d)\((\d{1,2}),(\d{1,2})\)$/.exec(compact);
+			const action = labelled ? `ACTION${labelled[1]}` : compact;
+			const x = labelled ? Number(labelled[2]) : Number.isInteger(item.x) ? item.x : undefined;
+			const y = labelled ? Number(labelled[3]) : Number.isInteger(item.y) ? item.y : undefined;
+			const predict = item.predict === undefined ? undefined : normalizePrediction(item.predict);
+			const done = await submitAction({ action, ...(x !== undefined && y !== undefined ? { x, y } : {}),
+				note: typeof item.note === "string" ? item.note.slice(0, 300) : `step ${index + 1} of ${via}`, ...(predict ? { predict } : {}) }, via);
+			if ("refusal" in done) { stop = `step ${index + 1}: ${done.refusal}`; break; }
+			const row = done.row;
+			lines.push(`${actionLine(row)}${predictionClause(row)}`);
+			if (row.prediction?.fields.some((field) => field.hit === false)) { stop = `step ${index + 1}'s prediction missed`; break; }
+			if (row.level_changed) { stop = `the level changed at step ${index + 1}`; break; }
+			if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) { stop = `state ${row.state} at step ${index + 1}`; break; }
+		}
+		if (!stop && batch.actions.length > steps.length) stop = `${batch.actions.length - steps.length} actions beyond the limit of ${MAX_PLAYED_ACTIONS} were not played`;
+		append("played_actions.jsonl", { decision, via, requested: batch.actions.length, played: lines.length, stop });
+		const head = `PLAYED ${lines.length} of ${batch.actions.length} actions from ${via}${stop ? `; stopped: ${stop}` : ""}.` +
+			(lines.length ? " This decision ends." : "");
+		return { text: [head, ...lines].join("\n"), played: lines.length };
 	}
   if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
@@ -1596,14 +1724,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "python",
 			label: "Python",
-			description: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
-				"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
-				"Returns what you print and the value of a final expression. Standard library only; no files or network.",
-			parameters: Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }) }),
+			description: native
+				? "Run Python once. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
+					"value of a final expression. save=\"name\" also keeps this code as tools/name.py, callable later as the tool name(args={...}); " +
+					"saved code may return {\"actions\": [...]} to act."
+				: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
+					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
+					"Returns what you print and the value of a final expression. Standard library only; no files or network.",
+			parameters: native
+				? Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }), save: Type.Optional(Type.String({ maxLength: 41 })) })
+				: Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }) }),
 			prepareArguments: (args: any) => args && typeof args === "object" && typeof args.code === "string"
 				? { ...args, code: unescapeSource(args.code) } : args,
-			execute: guardTool("python", async (params: { code: string }, signal) => {
-        if (nativeRuntime) return nativeRuntime.python(params.code, signal);
+			execute: guardTool("python", async (params: { code: string; save?: string }, signal) => {
+        if (nativeRuntime) {
+          try { return await nativeRuntime.python(params.code, signal, false, params.save || undefined); }
+          catch (error) { throw new Refusal(errorText(error)); }
+        }
 				const started = Date.now();
 				const result = await runGuest({
 					mode: "exec", code: params.code, state: skillState(false, true),
@@ -1823,6 +1960,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     }
     nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => skillState(false, true),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
+      act: (batch, via) => playActions(batch, via),
       modelResult:create => requestTrace.run('consult', decision, create),
       artifacts: (result, component, n) => {
         const count = artifactLog.length;
@@ -1836,6 +1974,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
+    // The refiner is a role file the agent can revise or retire; it is written once, never re-created after deletion.
+    const refinerMarker = join(storeDir, '..', '.harness', 'refiner_seeded');
+    if (criticOn && !existsSync(refinerMarker)) {
+      try {
+        if (!existsSync(workspace.path(REFINER_PATH))) workspace.runtimeWrite(REFINER_PATH, REFINER_SEED);
+        writeFileSync(refinerMarker, new Date().toISOString() + '\n');
+      } catch (error) { logError('refiner:seed', error); }
+    }
     workspace.onWrite = async path => {
       const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
       nativeRuntime!.noteSave(path, receipt);
@@ -1893,12 +2039,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!control) { try { await refreshClaimChecks(); } catch (error) { logError("claims:refresh", error); } }
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
-		try { await prepareReuse(ctx); } catch (error) { reuseText = ""; logError("reuse:prepare", error); }
+		if (native && workspace) {
+			try { workspace.runtimeWrite("data/memory.md", renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()) + "\n"); }
+			catch (error) { logError("memory:file", error); }
+		}
 		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
       // The PNG is attached only for a model declared with image input (buildWorkingSet); say so only then.
       image: ctx.model?.input?.includes("image") ? " and its PNG" : "",
-      history: nativeVerbatim ? 'The newest decisions stay complete, older ones are condensed then omitted; Pi also retains compaction summaries. Thinking is not replayed by default.' : 'Pi retains history and compaction summaries; thinking is not replayed by default.',
-      board: ledgerOn ? LEDGER_PROMPT + (criticOn ? CRITIC_PROMPT : '') : '' }) : control
+      history: nativeVerbatim ? 'Your last few decisions stay in view within a fixed budget; older conversation is dropped, so what must last belongs in memory, notes/ or a component. Thinking is not replayed.' : 'Pi retains history and compaction summaries; thinking is not replayed by default.',
+      board: '',
+      refiner: criticOn ? 'Your refiner (roles/refiner.md; edit or delete it) runs in the background after level changes, missed predictions, stalls and repeated work, and makes one edit to notes/strategy.md or a component; you are told what changed. Revise its edits like your own.\n\n' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -1985,7 +2135,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// recent actions whose receipts are not already in that history.
 		const nativeShown = native ? projectNativeHistory(messages.slice(0, lastUser + 1), replayReasoning, nativeHistory) : [];
 		run.workingSet ??= buildWorkingSet(ctx, native ? visibleActions(nativeShown) : undefined);
-		const capabilities = binder ? [binder.index(currentLevel()), nativeRuntime?.repetitionText(currentLevel()) ?? '', reuseText,
+		const capabilities = binder ? [binder.index(currentLevel()),
 			nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
 		const head = {
 			...user,
