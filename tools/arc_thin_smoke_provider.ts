@@ -186,6 +186,10 @@ const CLAIMS_SCRIPT: Step[] = [
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", note: "second move" }]] },
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "third move" }]] },
 ];
+const HISTORY_SCRIPT: Step[] = Array.from({ length: 30 }, (_, n): Step => ({
+  kind: 'decide', say: `HISTORY_${n}:` + 'z'.repeat(700),
+  calls: [['arc_action', { action: 'ACTION1', note: `history boundary ${n}` }]],
+}));
 const FOUNDATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'notes/evidence.md', content: 'FOUNDATION_EXACT_NOTE\nCOUNTEREXAMPLE' }]] },
   { kind: 'decide', calls: [['edit', { path: 'notes/evidence.md', edits: [{ oldText: 'EXACT_NOTE', newText: 'EDITED_NOTE' }] }]] },
@@ -279,7 +283,8 @@ const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'artifacts/route.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ];
-const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
+const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
@@ -470,7 +475,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				// What earlier messages the request carried (continuity checks): user prompts, assistant text and calls.
 				transcript: messages.filter((message) => message?.role !== "system").map((message) => ({
 					role: message?.role,
-					text: textOf(message).slice(0, message?.role === "user" ? 160 : 600),
+					text: textOf(message).slice(0, message?.role === "user" ? 160 : process.env.ARC_THIN_SMOKE_SCRIPT === "history" ? 1000 : 600),
 					...(message?.role === "assistant" ? {
 						blocks: (Array.isArray(message.content) ? message.content : []).map((block: any) => block?.type),
 						calls: (Array.isArray(message.content) ? message.content : []).filter((block: any) => block?.type === "toolCall")

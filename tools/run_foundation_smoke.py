@@ -10,10 +10,11 @@ from autoresearch_pi.pi_kernel import PiKernel
 root = Path(sys.argv[1])
 script = sys.argv[2] if len(sys.argv) > 2 else "foundation"
 defaults = len(sys.argv) > 3 and sys.argv[3] == 'defaults'
+disabled = len(sys.argv) > 3 and sys.argv[3] == 'disabled'
 uncapped = len(sys.argv) > 3 and sys.argv[3] == 'uncapped'
 automatic = len(sys.argv) > 3 and sys.argv[3] == 'automatic'
 split = len(sys.argv) > 3 and sys.argv[3] == 'split'
-if defaults:
+if defaults or disabled:
     class AuditKernel(PiKernel):
         def start(self):
             audit = str(PROJECT_ROOT/'tools/arc_foundation_runtime_audit.ts')
@@ -85,7 +86,7 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
@@ -93,18 +94,19 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_THIN_NATIVE_VERBATIM': '2', 'ARC_THIN_NATIVE_CONDENSED': '2'} if banded else {}),
-        **({'ARC_THIN_NATIVE_SPLIT_BUDGET': '1'} if script == 'budget' else {}),
-        **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {} if defaults else {'ARC_THIN_AUTO_COMPACTION': '0'})})
+        **({'ARC_THIN_NATIVE_VERBATIM': '0', 'ARC_THIN_NATIVE_SPLIT_BUDGET': '0'} if disabled else {}),
+        **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {} if defaults or disabled else {'ARC_THIN_AUTO_COMPACTION': '0'})})
 summary = json.loads(path.read_text(encoding="utf-8"))
 requests = [json.loads(s) for s in (root / "smoke-requests.jsonl").read_text(encoding="utf-8").splitlines()]
 results = [r for request in requests for r in request.get("last_tool_results", [])]
 text = json.dumps(results)
 assert summary["passed"], summary
-if defaults:
+if defaults or disabled:
     assert json.loads((root/'run-config.json').read_text())['auto_compaction'] is True, 'native default compaction must reach installed Pi'
     config=json.loads((root/'run-config.json').read_text())
     policy=json.loads((root/'runtime-audit/compaction-policy.json').read_text())
-    assert config['native_history']['verbatim'] == 0 and config['native_split_budget'] is False
+    assert config['native_history'] == {'verbatim': 0 if disabled else 4, 'condensed': 16}
+    assert config['native_split_budget'] is (not disabled)
     assert config['pi_auto_compaction_enabled'] is True and policy['settings']['enabled'] is True
     assert 'Reuse your saved components' in (root/'runtime-audit/provider-inputs.jsonl').read_text(encoding='utf-8')
 if banded:
@@ -147,6 +149,15 @@ elif script == "receipts":
         probes = [json.loads(s) for s in (root / 'harness/compaction_probe.jsonl').read_text(encoding='utf-8').splitlines()]
         assert any(row['turnPrefixMessages'] for row in probes), 'split-turn path must be exercised'
         assert len(inputs.splitlines()) >= 2, 'Pi must summarize history and the split turn'
+elif script == "history":
+    config = json.loads((root / 'run-config.json').read_text())
+    assert config['native_history'] == {'verbatim': 4, 'condensed': 16} and config['native_split_budget'] is True
+    parent = [r for r in requests if not r.get('analyst') and not r.get('critic')]
+    shown = [json.dumps(r.get('transcript', [])) for r in parent]
+    assert any('earlier decision' in s and 'not shown' in s for s in shown), 'default bands must drop oldest history'
+    assert any('are condensed' in s for s in shown), 'default bands must condense the middle'
+    assert 'HISTORY_0:' not in shown[-1] and 'HISTORY_28:' + 'z' * 700 in shown[-1]
+    assert summary['actions'] == summary['actions_on_bridge'] == 30
 elif script == "budget":
     parent = [r for r in requests if not r.get("analyst") and not r.get("critic")]
     assert "budget of 10 calls is used" in text and "last look-up or compute call" in text, text[:2000]
@@ -163,7 +174,7 @@ elif script == "reuse":
     assert any("REPEATED WORK: 1 of your last 2 python calls" in s for s in parent), "repetition must be shown"
     gap = next((s for s in parent if "REUSE GAP:" in s), "")
     assert "no component was saved for it; it was rebuilt 2 more times" in gap, gap[-1500:]
-    if defaults:
+    if defaults or disabled:
         assert "Independent review of this gap" in gap and "- missing: " in gap and "tools/cell.py run(x: int)" in gap, gap[-1500:]
         reviews = [json.loads(s) for s in (root / "harness/reuse_reviews.jsonl").read_text(encoding="utf-8").splitlines()]
         assert [r["kind"] for r in reviews] == ["gap", "review"], reviews

@@ -1,4 +1,4 @@
-2026-10-13 分支整合：foundation-fixes 的 workspace/reuse 优化合入 native-compaction；原生压缩保持默认，历史分层和工具配额作为可选配置。合并验证与成本边界见[变更记录](reports/2026-10-13-foundation-fixes-native-merge.md)。B/C/D 的自主采用、父子净成本和压缩认知连续性仍开放。
+2026-10-13 分支整合：foundation-fixes 的 workspace/reuse 优化合入 native-compaction；原生压缩保持启用，历史分层和拆分工具预算随后按用户要求默认启用，保留显式关闭。合并验证与成本边界见[变更记录](reports/2026-10-13-foundation-fixes-native-merge.md)。B/C/D 的自主采用、父子净成本和压缩认知连续性仍开放。
 
 # 延后待办：ARC 边界与 Auto-Research 模式
 

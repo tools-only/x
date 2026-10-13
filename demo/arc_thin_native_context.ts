@@ -4,7 +4,7 @@
  *
  * Retaining every decision verbatim grew the request without bound: in foundation-native-ls20-real-20261012-02 the
  * prompt reached ~43k characters by action 21 (52k input tokens per action), mostly old python output and full
- * file reads the agent never looked at again. Optional bands (disabled by default) are counted in decisions
+ * file reads the agent never looked at again. Configurable bands (enabled by the native extension by default) are counted in decisions
  * (a decision starts at a user message):
  *   - the newest `verbatim` decisions as retained, except that a result over 2000 characters keeps its head;
  *   - the `condensed` decisions before them with long call arguments shortened and results clipped to their head,
@@ -71,7 +71,7 @@ function pairCalls(messages: any[], replayReasoning: boolean): any[] {
 }
 
 /**
- * Pi canonical retained history is the default; bands are an explicit diagnostic/comparator option.
+ * With no options this helper preserves Pi canonical history; the extension supplies its configured bands.
  * `messages` ends with the current decision (its user message and anything after it), which is always verbatim.
  * With no options every decision is kept verbatim (the canonical projection).
  */

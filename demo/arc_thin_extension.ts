@@ -179,8 +179,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const continuity = native || process.env.ARC_THIN_CONTINUITY === "session" ? "session" : "rebuild";
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
 	// Native history bands (arc_thin_native_context.ts): ARC_THIN_NATIVE_VERBATIM=0 shows every decision verbatim.
-	const nativeSplitBudget = process.env.ARC_THIN_NATIVE_SPLIT_BUDGET === "1";
-	const nativeVerbatim = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_VERBATIM ?? 0)));
+	const nativeSplitBudget = (process.env.ARC_THIN_NATIVE_SPLIT_BUDGET ?? "1") === "1";
+	const nativeVerbatim = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_VERBATIM ?? 4)));
 	const nativeHistory = nativeVerbatim ? { verbatim: nativeVerbatim,
 		condensed: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_CONDENSED ?? 16))) } : {};
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
@@ -1981,7 +1981,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const lastUser = messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
 		const user = messages[lastUser];
-		// Native mode retains canonical history by default (bands are opt-in); the working set lists only the
+		// Native mode applies configured history bands (4/16 by default; explicit 0 disables); the working set lists only the
 		// recent actions whose receipts are not already in that history.
 		const nativeShown = native ? projectNativeHistory(messages.slice(0, lastUser + 1), replayReasoning, nativeHistory) : [];
 		run.workingSet ??= buildWorkingSet(ctx, native ? visibleActions(nativeShown) : undefined);
