@@ -79,6 +79,8 @@ def _open(path, mode='r', *args, **kwargs):
     if path in _available and path not in _files and path not in _sources and ('a' in mode or 'r' in mode):
         raise _NeedFile(path)
     if any(c in mode for c in 'wax+'):
+        if _session_flags.get('loading'):
+            raise PermissionError('no workspace writes while the python session is restored or checkpointed')
         if not _req.get('allow_writes') or path.split('/')[0] in ('data', 'results'):
             raise PermissionError('workspace path is read-only in this execution')
         if 'b' in mode: raise ValueError('workspace writes must be text')
@@ -103,6 +105,7 @@ class _Loader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         if rel in _sources: exec(compile(_sources[rel], rel, 'exec'), module.__dict__)
 
 def _remove(path):
+    if _session_flags.get('loading'): raise PermissionError('no workspace mutation during session recovery')
     path = _path(path)
     if not _req.get('allow_writes') or path.split('/')[0] in ('data', 'results'):
         raise PermissionError('workspace path is read-only in this execution')
@@ -113,6 +116,7 @@ def _remove(path):
     _ops.append({'op': 'delete', 'path': path})
 
 def _rename(src, dst):
+    if _session_flags.get('loading'): raise PermissionError('no workspace mutation during session recovery')
     src, dst = _path(src), _path(dst)
     if not _req.get('allow_writes') or any(p.split('/')[0] in ('data', 'results') for p in (src, dst)):
         raise PermissionError('workspace path is read-only in this execution')
@@ -154,7 +158,7 @@ def _grid(rows):
     return [[int(c, 16) for c in row] for row in rows] if isinstance(rows, list) and rows and isinstance(rows[0], str) else rows
 
 class _Env:
-    """What saved code works with: the state and its history, and act(), which takes one action through the same
+    """What foreground code works with: the state and its history, and act(), which takes one action through the same
     boundary as arc_action and returns what came back, so the code decides whether to go on (closed loop)."""
     def __init__(self):
         self.state = _state
@@ -165,13 +169,18 @@ class _Env:
         self.memory = {'facts': _state.get('memory'), 'hypotheses': _state.get('hypotheses'), 'strategies': _state.get('strategies')}
         self.acted = 0
         self.stopped = None
+        self._namespace = _ns
+    def __getitem__(self, key):
+        return self.state[key]
+    def get(self, key, default=None):
+        return self.state.get(key, default)
     def frame(self, n):
         return self.history.grid(n)
     def act(self, action, x=None, y=None, predict=None):
         if _session_flags.get('loading'):
             raise PermissionError('no action while the python session is restored')
         if not _req.get('allow_act'):
-            raise PermissionError('only saved code acts: run this with python(save="name") or call a saved tool')
+            raise PermissionError('this execution is read-only or has no action capability')
         call = {'action': str(action).upper()}
         if x is not None and y is not None: call.update(x=int(x), y=int(y))
         if predict is not None: call['predict'] = predict
@@ -188,11 +197,35 @@ class _Env:
                 raise ActStopped(self.stopped)
             observation = dict(record['observation'])
             observation['grid'] = _grid(observation.get('grid'))
-            self.grid = observation['grid']
+            self._refresh(observation)
             return observation
         raise _NeedAct(call)
+    def _refresh(self, observation):
+        before = self.grid
+        self.prev_grid, self.grid = before, observation['grid']
+        self.state.update({k: observation[k] for k in ('state', 'levels_completed', 'available_actions', 'action_budget') if k in observation})
+        self.state.update({'grid': self.grid, 'prev_grid': before})
+        if 'frames' in observation:
+            self.state['frames'] = [_grid(frame) for frame in observation['frames']]
+        else:
+            self.state.pop('frames', None)  # never advertise an earlier animation as current
+        row = observation.get('transition')
+        if row and isinstance(self.history, _History):
+            n = row['n']
+            if n != len(self.history._rows) + 1:
+                raise RuntimeError('action feedback does not extend the canonical history')
+            self.history._rows.append(_Transition(row))
+            after = self.grid
+            if before and after and len(before) == len(after) and all(len(a) == len(b) for a, b in zip(before, after)) and self.history._base is not None:
+                self.history._deltas[str(n)] = [[x, y, before[y][x], v] for y, line in enumerate(after)
+                                                for x, v in enumerate(line) if before[y][x] != v]
+            else:
+                self.history.base_n = n if after else None
+                self.history._base, self.history._deltas = after or None, {}
+        self._namespace.update({'state': self.state, 'grid': self.grid, 'prev_grid': before, 'history': self.history})
     def restore(self, path, version):
         """Bring back an earlier version of a harness file (it becomes the newest version)."""
+        if _session_flags.get('loading'): raise PermissionError('no workspace mutation during session recovery')
         if not _req.get('allow_writes'): raise PermissionError('workspace path is read-only in this execution')
         _ops.append({'op': 'restore', 'path': _path(path), 'version': int(version)})
 
@@ -266,6 +299,8 @@ class _SessionUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         try:
             return super().find_class(module, name)
+        except _NeedFile:
+            raise
         except BaseException:
             _session_gone.append(module + '.' + name)
             return _Gone
@@ -298,22 +333,25 @@ def _session_load(session):
                     raise
                 except BaseException as problem:
                     report['failed_defs'].append([name, (type(problem).__name__ + ': ' + str(problem))[:120]])
+        blob = session.get('blob')
+        if blob:
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    values = _SessionUnpickler(io.BytesIO(zlib.decompress(base64.b64decode(blob)))).load()
+            except _NeedFile:
+                raise
+            except BaseException as problem:
+                report['load_error'] = (type(problem).__name__ + ': ' + str(problem))[:200]
+                return report
+            for name in [k for k, v in values.items() if v is _Gone or isinstance(v, _Gone)]:
+                del values[name]
+                report['gone'].append(name)
+            if report['gone']:
+                report['gone_refs'] = sorted(set(_session_gone))[:8]
+            _ns.update(values)
     finally:
         _session_flags['loading'] = False
         del _ops[mark:]
-    blob = session.get('blob')
-    if blob:
-        try:
-            values = _SessionUnpickler(io.BytesIO(zlib.decompress(base64.b64decode(blob)))).load()
-        except BaseException as problem:
-            report['load_error'] = (type(problem).__name__ + ': ' + str(problem))[:200]
-            return report
-        for name in [k for k, v in values.items() if v is _Gone or isinstance(v, _Gone)]:
-            del values[name]
-            report['gone'].append(name)
-        if report['gone']:
-            report['gone_refs'] = sorted(set(_session_gone))[:8]
-        _ns.update(values)
     return report
 
 def _session_statements(tree):
@@ -399,6 +437,7 @@ def _call(req, env):
         _ns['args'], _ns['env'] = inner, env
         return _exec(req)
     module = __import__(req['path'][:-3].replace('/', '.'), fromlist=['*'])
+    env._namespace = module.__dict__
     if entry == 'observe':
         return _jsonable(module.observe(_state))
     params = [a.arg for a in next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'run').args.args]
@@ -426,6 +465,7 @@ try:
         random.seed(0)
         _req['state'] = _state
         env = _Env()
+        _req['native_env'] = True
         _ns['ActStopped'] = ActStopped
         try:
             if _req['mode'] == 'exec':
@@ -443,6 +483,8 @@ try:
                     _restored = set(_ns) - _base
                     _req['session_ns'] = True
                 try:
+                    if _session is not None and _loaded.get('load_error'):
+                        raise RuntimeError('python session could not be restored; user code was not executed')
                     result = {'ok': True, 'value': _exec(_req)}
                 except (_NeedFile, _NeedAct):
                     raise
@@ -456,13 +498,17 @@ try:
                               'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('code') or '')}
                 if _session is not None:
                     if _loaded.get('load_error'):
-                        # The stored checkpoint did not load: this call ran without it and must not replace it.
+                        # The stored checkpoint did not load: no user code ran and it must not be replaced.
                         result['session'] = _loaded
                     else:
                         try:
-                            result['session'] = _session_dump(_req['code'], _session, _base, _before, _restored)
+                            _session_flags['loading'] = True
+                            with contextlib.redirect_stdout(io.StringIO()):
+                                result['session'] = _session_dump(_req['code'], _session, _base, _before, _restored)
                         except BaseException as error:
                             result['session'] = {'error': (type(error).__name__ + ': ' + str(error))[:200]}
+                        finally:
+                            _session_flags['loading'] = False
                         result['session'].update({k: v for k, v in _loaded.items() if v})
             else:
                 result = {'ok': True, 'value': _call(_req, env)}

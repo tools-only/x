@@ -754,6 +754,7 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_CONTINUITY"] = continuity
         pi_env["ARC_THIN_CONTINUITY_DECISIONS"] = str(max(1, int(continuity_decisions)))
         pi_env["ARC_THIN_FOUNDATION"] = foundation
+        pi_env["ARC_THIN_PARENT_OUTPUT_TOKENS"] = str(settings.get("max_tokens") or 0)
         pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
         pi_env.update(extension_env or {})
         observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "query") if foundation == "native" else "inline"
@@ -916,7 +917,7 @@ def run_arc_thin_e2e(
             recovery = CONSOLIDATE_RECOVERY_PROMPT if message == CONSOLIDATE_PROMPT else (
                 'RECOVER ACTION. The previous reply reached the provider output limit. Continue the unfinished '
                 'step using the available tools and current observation; reuse suitable components. '
-                'Do not repeat completed operations. End with one arc_action.' if foundation == 'native' else DECIDE_RECOVERY_PROMPT)
+                'Do not repeat completed operations. Finish with an acting call (arc_action or Python env.act).' if foundation == 'native' else DECIDE_RECOVERY_PROMPT)
             resumed = safe_turn(recovery)
             if length_stopped(resumed):
                 summary["length_recovery_failures"] += 1

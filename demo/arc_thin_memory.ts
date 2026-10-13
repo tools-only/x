@@ -849,6 +849,45 @@ export function renderMemoryIndex(state: MemoryState, actionCount: number, check
 }
 
 /** Plain data for skills (state.memory / state.hypotheses / state.strategies). */
+export function renderDecisionMemory(state: MemoryState, actionCount: number, checks: Record<string, string> = {}, maxChars = 4000): string {
+ const clip = (text: string, n: number) => text.length > n ? text.slice(0, n) + '… [partial; data/memory.md]' : text;
+ const active = [...state.strategies].filter(([, s]) => s.status === 'active');
+ const linked = new Set(active.flatMap(([, s]) => s.depends_on));
+ const questions = new Set([...linked].map(k => state.hypotheses.get(k)?.question).filter(Boolean));
+ const live = [...state.hypotheses].filter(([, h]) => h.status !== 'rejected');
+ if (!linked.size) for (const [, h] of live) if (h.question) questions.add(h.question);
+ const selected = [...state.hypotheses].filter(([k, h]) => linked.has(k) || h.status !== 'rejected' || Boolean(h.question && questions.has(h.question)));
+ const blocks: string[] = active.map(([k, s]) => `- ${k} [active] ${s.plan}\n  premises: ${s.depends_on.join(', ') || 'none named'}; methods: ${s.uses.join(', ') || 'none named'}`);
+ selected.sort(([a], [b]) => Number(linked.has(b)) - Number(linked.has(a)));
+ for (const [k, h] of selected) {
+  const evidence = [...h.evidence].reverse();
+  const chosen = [evidence.find(e => e.verdict === 'refutes'), evidence.find(e => e.verdict === 'supports'), evidence[0]];
+  const lines = [`- ${k} [${h.status}]${h.question ? ` question=${h.question}` : ''}: ${clip(h.claim, 450)}`];
+  if (h.next_test) lines.push(`  next test: ${clip(h.next_test, 400)}`);
+  if (h.predicts) lines.push(`  predicts: ${clip(h.predicts, 300)}`);
+  for (const e of [...new Set(chosen.filter(Boolean))] as Evidence[])
+   lines.push(`  #${e.action ?? '?'} ${e.verdict} under ${JSON.stringify(e.condition)}: ${clip(e.observed, 300)}`);
+  if (h.check) lines.push(`  ${checks[k] ?? 'check: not run yet'}`);
+  if (h.status === 'rejected' && !evidence.some(e => e.verdict === 'refutes')) lines.push('  rejected without recorded refutation');
+  blocks.push(lines.join('\n'));
+ }
+ const used = new Set(active.flatMap(([, s]) => s.uses).map(k => k.replace(/^memory:/, '')));
+ const facts = [...state.facts].reverse().sort(([a], [b]) => Number(used.has(b)) - Number(used.has(a)));
+ for (const [k, f] of facts) blocks.push(`- ${k} [confidence ${f.confidence}] ${clip(f.text, 600)}`);
+ const unselected = [...state.hypotheses].filter(([k]) => !selected.some(([key]) => key === k));
+ for (const [k, h] of unselected) blocks.push(`- ${k} [${h.status}] details: data/memory.md`);
+ if (!blocks.length) return 'MEMORY: empty.';
+ const out = ['CURRENT KNOWLEDGE (parent-authored judgments; full evidence: data/memory.md):'];
+ let omitted = 0;
+ for (const block of blocks) {
+  if (out.join('\n').length + block.length + 100 > maxChars) { omitted++; continue; }
+  out.push(block);
+ }
+ if (omitted) out.push(`${omitted} entries omitted by presentation budget; exact details: data/memory.md.`);
+ return out.join('\n');
+}
+
+/** Plain data for skills (state.memory / state.hypotheses / state.strategies). */
 export function memoryForSkills(state: MemoryState): { memory: Record<string, Fact>; hypotheses: Record<string, Hypothesis>; strategies: Record<string, Strategy> } {
 	return { memory: Object.fromEntries(state.facts), hypotheses: Object.fromEntries(state.hypotheses), strategies: Object.fromEntries(state.strategies) };
 }

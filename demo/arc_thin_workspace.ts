@@ -12,7 +12,7 @@ export class Workspace {
   onWrite?: (path: string) => Promise<string | undefined>;
   constructor(runRoot: string, options: { inlineChars?: number } = {}) {
     this.root = resolve(runRoot, 'workspace');
-    this.inlineChars = options.inlineChars ?? 1500;
+    this.inlineChars = options.inlineChars ?? 8000;
     if (!Number.isInteger(this.inlineChars) || this.inlineChars < 0) throw Error('invalid inline result threshold');
     const privateRoot = resolve(runRoot, '.harness'); mkdirSync(privateRoot, {recursive:true});
     this.resultIndex = join(privateRoot, 'result-index.jsonl');

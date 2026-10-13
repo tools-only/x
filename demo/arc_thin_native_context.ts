@@ -27,6 +27,33 @@ export function projectNativeHistory(messages: any[], replayReasoning = false): 
   return out;
 }
 
+/** Retire old raw results without changing the durable Pi transcript. Explicit reads still return actual bodies. */
+export function projectNativeDecision(messages: any[], options: {
+ reasoning?: 'all' | 'recent' | 'none'; fullResults?: number; archive?: (message: any, text: string) => string;
+} = {}): any[] {
+ const paired = projectNativeHistory(messages, options.reasoning !== 'none');
+ const latestThinking = paired.findLastIndex(m => m.role === 'assistant' && m.content?.some((b: any) => b.type === 'thinking'));
+ const results = paired.filter(m => m.role === 'toolResult');
+ const recent = new Set(results.slice(-(options.fullResults ?? 2)).map(m => m.toolCallId));
+ const lastImage = results.findLast(m => m.content?.some((b: any) => b.type === 'image'))?.toolCallId;
+ return paired.map((m, i) => {
+  if (m.role === 'assistant' && options.reasoning === 'recent' && i !== latestThinking)
+   return {...m, content: m.content.filter((b: any) => b.type !== 'thinking' || b.signature || b.thinkingSignature)};
+  if (m.role !== 'toolResult' || recent.has(m.toolCallId) || m.toolCallId === lastImage || !options.archive) return m;
+  const text = textOf(m);
+  if (text.length <= 400) return m;
+  return {...m, content: [{type: 'text', text: options.archive(m, text)}]};
+ }).filter(m => m.role !== 'assistant' || m.content.length);
+}
+
+/** A length recovery remains in the unfinished decision's projection, rather than moving its thinking before a new user. */
+export function nativeDecisionStart(messages: any[]): number {
+ let at = messages.findLastIndex(m => m.role === 'user');
+ while (at >= 0 && /^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(textOf(messages[at])))
+  at = messages.findLastIndex((m, i) => i < at && m.role === 'user');
+ return at;
+}
+
 export type HistoryOptions = { budget?: number; fullResults?: number; resultChars?: number };
 const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}… <${text.length} chars>` : text;

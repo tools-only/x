@@ -45,7 +45,7 @@ test('env.act is a closed loop by replay: each new act() is requested, recorded 
     '    seen.append(obs["changed_cells"])\n    if obs["changed_cells"] == 0: break\nseen';
   const run = (acts: any[], allow_act = true) => executeNative({ mode: 'exec', code, sources: {}, state: { grid: [[0]] }, files: {}, acts, allow_act });
   const refused = await run([], false);
-  assert.match(String(refused.error), /only saved code acts/);
+  assert.match(String(refused.error), /no action capability/);
   const first = await run([]);
   assert.deepEqual(first.need_act, { action: 'ACTION1', predict: { level_changed: false } });
   const one = { call: first.need_act, observation: { grid: ['0f'], changed_cells: 3 } };

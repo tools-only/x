@@ -8,13 +8,13 @@ import { PythonSession } from './arc_thin_python_session.ts';
 import { TaskPythonPool } from './pi_task_python_pool.ts';
 import { codeShape, componentLines, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 
-/** One action taken for saved code: the observation it gets back, or why acting stopped; `line` is the receipt. */
+/** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
 type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): Record<string, unknown>;
   level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
-  /** Take one action for saved code through the environment boundary (closed loop: env.act in the code). */
+  /** Take one action for foreground code through the environment boundary (closed loop: env.act). */
   act?(call: ActCall, via: string): Promise<ActOutcome>;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
   /** Keep the python namespace between python calls (default true). */
@@ -229,6 +229,11 @@ export class NativeRuntime {
         }
       }
       throw Error('workspace read or action budget exceeded; use history.grid(n) or env.frame(n) for frames');
+    } catch (error) {
+      // A guest/transport failure cannot erase actions already acknowledged by the host.
+      if (!acted.lines.length) throw error;
+      return { ok: false, error: String(error), acted,
+        ...(input.session ? { session: { error: 'execution ended before a checkpoint was returned' } } : {}) };
     } finally {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
       this.host.log('wasi_runs.jsonl',{mode:input.mode,n:this.host.actionCount(),...input.snapshotMetrics,
@@ -245,15 +250,15 @@ export class NativeRuntime {
       ...acted.lines].join('\n'), !result.ok), terminate: true };
   }
   /**
-   * One-off python. With `save`, the code is first saved as it is under tools/<save>.py and this run is its first
-   * call: saving costs no rewrite, and only saved code may act. Calls that share a session run one at a time.
+   * Foreground Python uses the parent's namespace and action boundary. With `save`, publication is optional and
+   * this run is the saved tool's first call. Calls that share a session run one at a time.
    */
   async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
   }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
     const saveReceipts: string[] = [];
-    let via: string | undefined;
+    let via: string | undefined = !readonly && this.host.act ? 'python' : undefined;
     if (save !== undefined && !readonly) {
       if (!SAVE_NAME.test(save)) throw Error('save must be a lowercase name like route_to (letters, digits, _)');
       const path = `tools/${save}.py`;
@@ -275,7 +280,7 @@ export class NativeRuntime {
     const outcome = session?.commit(result.session);
     const sessionNotes = [outcome?.receipt ?? '',
       // A saved tool runs without the session: say so when the code just saved relies on it.
-      via && result.session?.uses?.length ? `(${via} uses names from the python session: ${result.session.uses.join(', ').slice(0, 200)}. ` +
+      save && via?.startsWith('tools/') && result.session?.uses?.length ? `(${via} uses names from the python session: ${result.session.uses.join(', ').slice(0, 200)}. ` +
         'A saved tool runs without the session, so define them inside it or pass them in args.)' : ''].filter(Boolean).join('\n');
     if (outcome?.event) this.host.log('python_session.jsonl', { event: outcome.event, version: outcome.version, readonly, decision: this.decision(), n: this.host.actionCount(),
       chars: result.session?.chars ?? result.session?.over?.chars, raw_bytes: result.session?.raw_bytes ?? result.session?.over?.raw_bytes,

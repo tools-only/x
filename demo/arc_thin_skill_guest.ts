@@ -187,6 +187,8 @@ def _exec(req):
     ns = _ns if req.get("session_ns") else dict(_ns)
     ns.update({"state": state, "history": state.get("history"), "grid": state.get("grid"), "prev_grid": state.get("prev_grid"),
                "artifacts": state.get("artifacts") or {}, "skill": skill})
+    if req.get('native_env'):
+        ns['env']._namespace = ns
     tree = ast.parse(req["code"], "<skill>", "exec")
     last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
     buffer = io.StringIO()

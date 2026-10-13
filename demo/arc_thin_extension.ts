@@ -23,7 +23,7 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
-import { projectNativeHistory, summarizeHistory, visibleActions } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
@@ -53,7 +53,7 @@ import {
 } from "./arc_thin_critic.ts";
 import {
 	MAX_EVIDENCE, MAX_HYPOTHESES, MAX_STEPS, MAX_STRATEGIES, STATUSES, STRATEGY_STATUSES, VERDICTS, applyRow, applyRows, emptyMemory, memoryForSkills,
-	planMemoryUpdate, renderFactsCompact, renderMemory, renderMemoryIndex, resetMemory, type ComponentContext, type MemoryParams,
+	planMemoryUpdate, renderFactsCompact, renderMemory, renderDecisionMemory, resetMemory, type ComponentContext, type MemoryParams,
 } from "./arc_thin_memory.ts";
 import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments, unescapeSource } from "./arc_thin_boundary.ts";
 import {
@@ -174,6 +174,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";
   /** Reasoning kept within the current decision (default on in native mode; ARC_THIN_DECISION_REASONING=0 strips it). */
   const decisionReasoning = native && process.env.ARC_THIN_DECISION_REASONING !== "0";
+  const reasoningMode = process.env.ARC_THIN_REASONING_MODE ?? 'recent';
+  if (!['all', 'recent', 'none'].includes(reasoningMode)) throw Error('invalid ARC_THIN_REASONING_MODE');
 	const control = process.env.ARC_THIN_VARIANT === "control";
 	// Diagnostic smoke suites can request the legacy all-tools surface so they
 	// can exercise low-frequency tools in scripted ordinary turns. Real runs
@@ -203,7 +205,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
-    inlineChars: Number(process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 1500) }) : undefined;
+    inlineChars: Number(process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 8000) }) : undefined;
+  const archivedResults = new Map<string, string>();
+  const archiveResult = (message: any, body: string): string => {
+    const key = String(message.toolCallId) + createHash('sha256').update(body).digest('hex');
+    if (!archivedResults.has(key)) {
+      const saved = workspace!.saveResult(body);
+      const actions = body.split('\n').filter(line => /^#\d+ (ACTION\d|RESET)\b/.test(line));
+      archivedResults.set(key, `Earlier ${message.toolName} result archived (${body.length} chars${message.isError ? '; FAILED' : ''}).\n` +
+        `${actions.join('\n')}${actions.length ? '\n' : ''}First line (preview): ${body.split('\n')[0].slice(0, 160)}\n` +
+        `Exact content: ${saved.ref}; read with offset/limit if needed.`);
+    }
+    return archivedResults.get(key)!;
+  };
   const binder = workspace ? new Binder(workspace, validatePythonComponent) : undefined;
   let nativeRuntime: NativeRuntime | undefined;
 
@@ -539,7 +553,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// come the memory index, a summarised history, recent actions it does not cover, what a refinement changed, and
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
-			const out: Array<[string, string]> = [["memory", renderMemoryIndex(memory, trajectory.length, claimLines())]];
+			const out: Array<[string, string]> = [["memory", renderDecisionMemory(memory, trajectory.length, claimLines())]];
 			if (historyText) out.push(["history", historyText]);
 			if (recent) out.push(["recent", recent]);
 			if (refinerNotice) { out.push(["refiner", refinerNotice]); refinerNotice = ""; }
@@ -1151,6 +1165,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
+		const evidenceAt = trajectory.length, evidenceLevel = currentLevel();
+		const sourceVersions = binder!.versionMap();
+		const memoryBefore = JSON.stringify(memoryForSkills(memory));
+		const sourceBefore = new Map(workspace!.files().filter(path => /^(prompts|tools|lib|skills)\//.test(path)).map(path => [path, workspace!.read(path)]));
 		const strategy = readStrategy();
 		const saved = binder!.active().filter((c) => /^(tools|observers|lib)\/[^/]+\.py$/.test(c.path));
 		const input = [
@@ -1171,7 +1189,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
 		const edit = parseRefinerReply(answer);
 		const at = trajectory.length;
-		const base = { at, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
+		const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
+		if (currentLevel() !== evidenceLevel || (edit.kind === 'memory' && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
+			|| (edit.kind === 'file' && (binder!.versionMap()[edit.path] !== sourceVersions[edit.path]
+				|| (workspace!.files().includes(edit.path) ? workspace!.read(edit.path) : undefined) !== sourceBefore.get(edit.path)))) {
+			append('refiner.jsonl', {kind: 'stale', ...base, why: 'scope or target changed while refinement was running'});
+			return;
+		}
 		// Notices not yet shown are kept: two refinements between decisions are both reported.
 		const told = (what: string, why: string) => [refinerNotice, `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
 			(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits."].filter(Boolean).join("\n");
@@ -1597,6 +1621,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			line: `${actionLine(row)}${predictionClause(row)}`,
 			observation: {
 				n: row.n, action: actionLabel(row), grid: hexRows(gridOf(observation)), state: row.state, levels_completed: row.levels_completed,
+				frames: (observation?.frames ?? []).map((frame: any) => hexRows(frame)), action_budget: observation?.action_budget ?? null,
+				transition: { n: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
+					level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed },
 				level_changed: row.level_changed, changed_cells: row.changed_cells, ...(row.bbox ? { bbox: row.bbox } : {}),
 				available_actions: availableActions(observation), missed,
 			},
@@ -1828,7 +1855,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			description: native
 				? "Run Python once. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
 					"value of a final expression. save=\"name\" also keeps this code as tools/name.py, callable later as the tool name(args={...}); " +
-					"saved code may return {\"actions\": [...]} to act."
+					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
+					"Combine computation and feedback checks in code; print or return selected evidence. Saved tools run without this namespace."
 				: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
 					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
 					"Returns what you print and the value of a final expression. Standard library only; no files or network.",
@@ -2110,6 +2138,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
     if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
+		const prompt = String(event.prompt ?? "").trimStart();
+		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(prompt);
+		if (!continuing) {
 		carriedResults = run.batchResults;
 		// Keep the end of the reasoning: conclusions come last.
 		const reasoning = carryChars ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
@@ -2119,8 +2150,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run = freshRun();
 		actingStopped = undefined;
 		decision += 1;
+		} else {
+			run.endedAt = 0;
+			append('continuations.jsonl', {decision, n: trajectory.length, reason: 'provider length', tool_calls: run.toolCalls});
+		}
 		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…".
-		const prompt = String(event.prompt ?? "").trimStart();
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(prompt);
 		// A tool-only decision is already complete from the runner's perspective.
 		// The next turn must be an action turn; leaving memory/skill exposed here
@@ -2237,7 +2271,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     // (2026-10-13: a refinement's view showed nothing while the agent deliberated). Runs already done are skipped.
     if (nativeRuntime) nativeRuntime.observe(trajectory.length);
 		const messages: any[] = event.messages ?? [];
-		const lastUser = messages.findLastIndex((message) => message?.role === "user");
+		const lastUser = native ? nativeDecisionStart(messages) : messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
 		const user = messages[lastUser];
 		// Native mode rebuilds each decision: earlier decisions become one summarised section of the working set
@@ -2245,7 +2279,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// stays in front. ARC_THIN_NATIVE_HISTORY_CHARS=0 replays the whole session instead.
 		const summarised = native && nativeHistoryChars > 0;
 		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser), { budget: nativeHistoryChars }) : undefined;
-		run.workingSet ??= buildWorkingSet(ctx, summarised ? summary!.text : undefined);
+		// Assemble from current canonical state and current memory on every request; replace, never append revisions.
+		if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()) + '\n');
+		if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 		const capabilities = binder ? [binder.index(currentLevel()),
 			nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
 		const head = {
@@ -2262,8 +2298,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).
 		// Stripping it made every round re-derive what the previous one had settled (2026-10-13). Earlier decisions
 		// still carry none.
+		const recovery = messages.slice(lastUser + 1).filter(m => m.role === 'user').map(messageText).join('\n');
+		if (native && recovery) head.content[0].text += '\n\n' + recovery;
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
-			...projectNativeHistory([head, ...messages.slice(lastUser + 1)], replayReasoning || decisionReasoning)]
+			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
+        reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'none' : 'none',
+        fullResults: 2, archive: archiveResult })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		lastContextChars = projected.reduce((n, message) => n + messageText(message).length, 0) + systemChars;
 		// Developer-only accounting, never added to the model context.
@@ -2308,6 +2348,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		// Audit the actual wire policy without credentials, model content or image data.
 		const payload = event.payload ?? {};
+		// The runner explicitly declares the parent policy; an omitted registry field otherwise inherits 16,384.
+		const outputPolicy = process.env.ARC_THIN_PARENT_OUTPUT_TOKENS;
+		if (native && outputPolicy !== undefined) {
+			const limit = Number(outputPolicy);
+			if (!Number.isInteger(limit) || limit < 0) throw Error('invalid parent output-token policy');
+			if (!limit) { delete payload.max_tokens; delete payload.max_completion_tokens; }
+			else if ('max_completion_tokens' in payload) payload.max_completion_tokens = limit;
+			else payload.max_tokens = limit;
+		}
 		append("provider_policy.jsonl", {
 			decision, max_tokens: payload.max_tokens ?? payload.max_completion_tokens ?? null,
 			enable_thinking: payload.enable_thinking ?? payload.chat_template_kwargs?.enable_thinking ?? null,
