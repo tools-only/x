@@ -756,6 +756,9 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_FOUNDATION"] = foundation
         pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
         pi_env.update(extension_env or {})
+        observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "query") if foundation == "native" else "inline"
+        if observation_delivery not in ("query", "inline"):
+            raise ValueError("ARC_THIN_OBSERVATION must be query or inline")
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    *(["--session", str(root / "session.jsonl")] if foundation == "native" else ["--no-session"]),
@@ -781,11 +784,15 @@ def run_arc_thin_e2e(
             "review_at_level_change": review_at_level_change,
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
-            # Native history bands (demo/arc_thin_native_context.ts); verbatim 0 keeps every decision verbatim.
-            "native_split_budget": pi_env.get("ARC_THIN_NATIVE_SPLIT_BUDGET", "1") == "1",
-            "native_history": {"verbatim": int(pi_env.get("ARC_THIN_NATIVE_VERBATIM", "2")),
-                               "condensed": int(pi_env.get("ARC_THIN_NATIVE_CONDENSED", "4")),
-                               "budget_chars": int(pi_env.get("ARC_THIN_NATIVE_HISTORY_CHARS", "12000"))} if foundation == "native" else None,
+            "observation_delivery": observation_delivery,
+            # Reasoning kept between tool rounds of the current decision (native default on).
+            "decision_reasoning": foundation == "native" and pi_env.get("ARC_THIN_DECISION_REASONING", "1") != "0",
+            # Python names defined in one call stay defined in later calls (native default on).
+            "python_session": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0",
+            # Native history: a summarised section within this many characters (demo/arc_thin_native_context.ts);
+            # 0 replays the whole Pi session. Native decisions end at decision_tool_calls.
+            "native_history": {"summary_chars": int(pi_env.get("ARC_THIN_NATIVE_HISTORY_CHARS", "12000")),
+                               "decision_tool_calls": 16} if foundation == "native" else None,
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 

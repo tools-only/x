@@ -177,6 +177,18 @@ export function repairActionArguments(args: any): any {
 		if (typeof out.predict_skill === "string" && out.predict_skill.trim()) out.predict_skill = out.predict_skill.trim().slice(0, 40);
 		else delete out.predict_skill;
 	}
+	// Further actions: a JSON string or bare action names become step objects; an unusable list is dropped, never a
+	// reason to reject the first action.
+	if ("then" in out) {
+		let steps = out.then;
+		if (typeof steps === "string") { try { steps = JSON.parse(steps); } catch { steps = steps.split(/[\s,]+/).filter(Boolean); } }
+		steps = Array.isArray(steps) ? steps.map((step: any) => typeof step === "string" ? { action: step.trim().toUpperCase() } : step)
+			.filter((step: any) => isObject(step) && typeof step.action === "string") : [];
+		for (const step of steps) {
+			if ("predict" in step) { const predict = normalizePrediction(step.predict); if (predict) step.predict = predict; else delete step.predict; }
+		}
+		if (steps.length) out.then = steps; else delete out.then;
+	}
 	return out;
 }
 

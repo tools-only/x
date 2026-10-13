@@ -23,10 +23,11 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
-import { projectNativeHistory, visibleActions } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, summarizeHistory, visibleActions } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
-import { REFINER_PATH, REFINER_SEED, REFINER_SYSTEM, STRATEGY_CHARS, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
+import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
+import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
@@ -77,16 +78,14 @@ const CONSOLIDATION_TOOLS = ["memory", "skill", "python", "prompt", "ask_analyst
 const SOFT_TOOL_CALLS = 6;
 const HARD_TOOL_CALLS = 8;
 /**
- * Native decisions budget looking up and computing separately from recording. One shared limit of 6 ended two
- * decisions of foundation-native-ls20-real-20261012-02 in the middle of an analysis (each then cost a whole extra
- * decision to restate it). Over budget, the call is refused without ending the decision, and the exhausted kind of
- * tool leaves the surface so the next request can still record and act.
+ * Native decisions: one cap on tool calls, and the tool list never changes within a decision (Continual Harness keeps
+ * six fixed tools; a decision ends at a state change). The split look/record budgets of 2026-10-12 removed tools in
+ * the middle of a decision; in the first activation run the model kept calling the removed python ("Tool python not
+ * found" three times) and a decision stalled for 26 messages. At the cap the decision ends and the next one acts.
  */
-const NATIVE_LOOK_CALLS = 10;
-const NATIVE_RECORD_CALLS = 6;
-const NATIVE_HARD_TOOL_CALLS = NATIVE_LOOK_CALLS + NATIVE_RECORD_CALLS + 2;
-/** Tools that change what the agent keeps; every other non-action tool looks something up or computes. */
-const NATIVE_RECORD_TOOLS = new Set(["memory", "write", "edit"]);
+const NATIVE_DECISION_CALLS = 16;
+/** Further actions one arc_action may carry (its then list). */
+const THEN_STEPS = 11;
 const MAX_EXPLICIT_SKILL_CALLS = 4;
 const MAX_SKILLS = 40;
 const RECENT_ACTIONS = 8;
@@ -126,24 +125,36 @@ type Skill = { version: number; description: string; source: string; saved_at?: 
 /** A skill named as the predictor of one action: its scored prediction, or why there was none. */
 type SkillPrediction = { name: string; version?: number; error?: string } & Partial<ScoredPrediction>;
 /**
- * One action as stored in trajectory.jsonl. changed_cells and bbox come from the
- * bridge and are kept for evaluation only: the agent is never shown a frame
- * comparison it did not compute itself.
+ * One action as stored in trajectory.jsonl. changed_cells and bbox come from the bridge. Native receipts show them
+ * (since 2026-10-13: without them the agent took a 52-cell change for "nothing happened"); the legacy path keeps them
+ * for evaluation only. Neither path shows a frame comparison the agent did not compute itself.
  */
 type ActionRow = {
 	n: number; decision: number; action: string; x?: number; y?: number; note?: string; idea?: string; expect?: string;
 	/** The saved tool whose returned actions included this one (native mode); absent for arc_action. */
 	via?: string;
+	/** Coordinates were given for an action that takes none; the environment ignored them. */
+	ignored_xy?: boolean;
 	changed_cells: number | null; bbox?: unknown; level_changed: boolean; state: string;
 	levels_completed: number; budget: any;
 	predict?: Prediction; prediction?: ScoredPrediction; skill_prediction?: SkillPrediction;
 };
 /** What the environment reported for an action, as skills and history see it. */
-const reportedAction = (row: ActionRow) => ({
+const reportedAction = (row: ActionRow, facts = false) => ({
 	n: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
 	...(row.note ? { note: row.note } : {}),
+	// Native mode: what the environment reported changing, a count and its bounding box (no comparison of frames).
+	...(facts ? { changed_cells: row.changed_cells, ...(row.bbox ? { bbox: row.bbox } : {}) } : {}),
 	level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed, budget: row.budget,
 });
+/** The bridge's change report as receipt text: "changed=52 in x13-38 y40-62", or "changed=0". */
+const changeText = (row: ActionRow) => {
+	const box = row.bbox as { top?: number; left?: number; bottom?: number; right?: number } | undefined;
+	return `changed=${row.changed_cells ?? "?"}` + (row.changed_cells && box && [box.top, box.left, box.bottom, box.right].every(Number.isFinite)
+		? ` in x${box.left}-${box.right} y${box.top}-${box.bottom}` : "");
+};
+/** Only ACTION6 takes coordinates; the environment ignores them on every other action. */
+const takesCoordinates = (action: string) => action === "ACTION6";
 
 /** A model-facing tool error: expected, shown to the model, not logged as a harness fault. */
 class Refusal extends Error {}
@@ -157,7 +168,12 @@ const tokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n
 
 export default function arcThinExtension(pi: ExtensionAPI) {
   const native = process.env.ARC_THIN_FOUNDATION === "native";
+  const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'query' : 'inline';
+  if (!['query', 'inline'].includes(observationMode)) throw Error('ARC_THIN_OBSERVATION must be query or inline');
+  const queryObservation = native && observationMode === 'query';
   const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";
+  /** Reasoning kept within the current decision (default on in native mode; ARC_THIN_DECISION_REASONING=0 strips it). */
+  const decisionReasoning = native && process.env.ARC_THIN_DECISION_REASONING !== "0";
 	const control = process.env.ARC_THIN_VARIANT === "control";
 	// Diagnostic smoke suites can request the legacy all-tools surface so they
 	// can exercise low-frequency tools in scripted ordinary turns. Real runs
@@ -181,13 +197,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// since 2026-10-08) shows only the rebuilt working set. docs/reports/2026-10-12-memory-mechanism-review.md.
 	const continuity = native || process.env.ARC_THIN_CONTINUITY === "session" ? "session" : "rebuild";
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
-	// Native history: the newest 2 decisions complete, 4 more condensed, all within 12,000 characters (Continual Harness
-	// keeps a 12,000-character history and rebuilds the rest from its state). ARC_THIN_NATIVE_VERBATIM=0 shows everything.
-	const nativeSplitBudget = (process.env.ARC_THIN_NATIVE_SPLIT_BUDGET ?? "1") === "1";
-	const nativeVerbatim = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_VERBATIM ?? 2)));
-	const nativeHistory = nativeVerbatim ? { verbatim: nativeVerbatim,
-		condensed: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_CONDENSED ?? 4))),
-		budget: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 12000))) } : {};
+	// Native history: earlier decisions as one summarised section within 12,000 characters (Continual Harness's history
+	// budget), the newest 2 tool results whole. ARC_THIN_NATIVE_HISTORY_CHARS=0 replays the whole Pi session instead.
+	const nativeHistoryChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 12000)));
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -224,6 +236,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Wall-clock time of each action (actionTimes[n-1] for action n) and the previous decision's cost, for RESOURCES. */
 	let actionTimes: number[] = [];
 	let lastDecisionCost: { ms: number; output: number; reasoning: number; coordinateShare?: number } | undefined;
+	/** Characters of the last request (system prompt and messages), shown in RESOURCES so the agent sees its context size. */
+	let lastContextChars = 0;
 	const deadlineMs = Number(process.env.ARC_RUN_DEADLINE_MS) || 0;
 
 	function append(file: string, row: Record<string, unknown>): void {
@@ -368,10 +382,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function actionLine(row: ActionRow): string {
 		const budget = row.budget ?? {};
 		const resets = trajectory.filter((item) => item.n <= row.n && item.action === "RESET").length;
-		return `#${row.n} ${actionLabel(row)} → level_changed=${row.level_changed} ` +
+		// Native receipts say what changed (the bridge's count and box) and when given coordinates were ignored.
+		return `#${row.n} ${actionLabel(row)} → ${native ? `${changeText(row)} ` : ""}level_changed=${row.level_changed} ` +
 			`state=${row.state} levels=${row.levels_completed} ` +
 			`budget=${budget.used ?? "?"}/${budget.maximum ?? "∞"} (total ${budget.total_used ?? "?"}/${budget.total_maximum ?? "∞"})` +
-			(resets ? ` resets=${resets}` : "");
+			(resets ? ` resets=${resets}` : "") + (native && row.ignored_xy ? ` (x,y ignored: ${row.action} takes no coordinates)` : "");
 	}
 
 	// ---------------------------------------------------------------- per-decision state
@@ -379,7 +394,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	type Run = {
 		consolidating: boolean; forceAction: boolean; assistantMessages: number; toolCalls: number; arcSeenInMessage: number;
 		/** Native decisions: calls that look things up or compute, and calls that record (see gate). */
-		lookCalls: number; recordCalls: number; budgetNote?: string;
+		budgetNote?: string;
 		endBatchAt: number; actionDone: boolean;
 		memoryCommitted: boolean; skillCalls: number; skillSignatures: Set<string>;
 		/** Results of tools that shared the message with arc_action: the agent never sees them in this decision. */
@@ -395,7 +410,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		workingSet?: { text: string; image?: { type: "image"; data: string; mimeType: string } };
 	};
 	const freshRun = (): Run => ({
-		consolidating: false, forceAction: false, assistantMessages: 0, toolCalls: 0, lookCalls: 0, recordCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
+		consolidating: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0,
 	});
@@ -506,6 +521,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (left !== undefined) parts.push(`${duration(left)} of run time left`);
 		if (lastDecisionCost) parts.push(`your last turn took ${duration(lastDecisionCost.ms)} and ${tokens(lastDecisionCost.output)} output tokens` +
 			(lastDecisionCost.reasoning ? ` (${tokens(lastDecisionCost.reasoning)} of them reasoning)` : ""));
+		// Prime shows the agent its context fill; here, the size of the last request.
+		if (native && lastContextChars) parts.push(`your last request carried ${tokens(lastContextChars)} characters of context`);
 		const times = actionTimes.slice(-6).filter((t) => t > 0);
 		if (times.length >= 3) {
 			const pace = (times.at(-1)! - times[0]) / (times.length - 1);
@@ -515,17 +532,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return parts.length ? `RESOURCES: ${parts.join("; ")}. Reasoning and tool calls cost time, not actions.` : "";
 	}
 
-	function buildWorkingSet(ctx: ExtensionContext, shownActions?: Set<number>): Run["workingSet"] {
-		const recent = recentText(shownActions);
+	function buildWorkingSet(ctx: ExtensionContext, historyText?: string): Run["workingSet"] {
+		const recent = recentText(historyText === undefined ? undefined : visibleActions(historyText));
 		// Native mode: the context is the harness plus the present (Continual Harness rebuilds each decision from its
-		// state; Prime keeps data out of context). The strategy note, a memory index, recent actions not in view, what
-		// the refiner changed, and resources; the runtime's own analyses are files under data/, not resident text.
+		// state; Prime keeps data out of context). The strategy and other active prompts are in the system prompt; here
+		// come the memory index, a summarised history, recent actions it does not cover, what a refinement changed, and
+		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
-			const out: Array<[string, string]> = [];
-			const strategy = readStrategy();
-			if (strategy?.text.trim()) out.push(["strategy", `STRATEGY (${STRATEGY_PATH} v${strategy.version ?? "?"}, kept by you and your refiner):\n` +
-				strategy.text.trim().slice(0, STRATEGY_CHARS)]);
-			out.push(["memory", renderMemoryIndex(memory, trajectory.length, claimLines())]);
+			const out: Array<[string, string]> = [["memory", renderMemoryIndex(memory, trajectory.length, claimLines())]];
+			if (historyText) out.push(["history", historyText]);
 			if (recent) out.push(["recent", recent]);
 			if (refinerNotice) { out.push(["refiner", refinerNotice]); refinerNotice = ""; }
 			return out;
@@ -556,10 +571,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (ledgerText && !native) sections.push(["ledger", ledgerText]);
 		if (criticText && !native) sections.push(["critic", criticText]);
 		const stateText = observation
-			? `CURRENT STATE\n${renderState(observation)}`
+			? queryObservation ? observationReference(observation, trajectory.length) : `CURRENT STATE\n${renderState(observation)}`
 			: "CURRENT STATE: unavailable — do not act on remembered grids.";
 		let image: { type: "image"; data: string; mimeType: string } | undefined;
-		if (observation && ctx.model?.input?.includes("image")) {
+		if (!queryObservation && observation && ctx.model?.input?.includes("image")) {
 			try { image = renderArcFrameImage(observation).content; }
 			catch (error) { logError("context:image", error); }
 		}
@@ -568,7 +583,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const body = sections.map(([, value]) => value).join("\n\n");
 		try {
 			append("working_set.jsonl", {
-				decision, consolidating: run.consolidating, actions: trajectory.length,
+				decision, consolidating: run.consolidating, actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string]].map(([name, value]) => [name, value.length])),
 				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body,
 			});
@@ -747,12 +762,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (control) return;
     if (nativeRuntime && toolsReady) {
       nativeRuntime.register();
-      const lookSpent = nativeSplitBudget && !run.consolidating && run.lookCalls >= NATIVE_LOOK_CALLS && !diagnosticBudget;
-      const recordSpent = nativeSplitBudget && !run.consolidating && run.recordCalls >= NATIVE_RECORD_CALLS && !diagnosticBudget;
-      // ls and grep are left out: python lists and searches the workspace, and every schema is resent on each call.
+      // One fixed list for the whole decision: the built-in tools and the agent's saved tools. ls and grep are left
+      // out (python lists and searches the workspace, and every schema is resent on each call).
       pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', 'consult',
-        ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]
-        .filter(name => name === 'arc_action' || (NATIVE_RECORD_TOOLS.has(name) ? !recordSpent : !lookSpent)));
+        ...(criticOn ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
     }
 		const names = [...skills.keys()].sort();
@@ -819,11 +832,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Every state the agent sees is kept: skills read it as state.history, and the ledger reads it when enabled. */
 	function recordState(n: number, grid: number[][] | undefined): void {
+    if (workspace) storeObservation(workspace, observation, n);
     if (workspace && grid) {
       workspace.runtimeWrite(`data/frames/${n}.json`, JSON.stringify({ n, grid }) + '\n');
-      workspace.runtimeWrite('data/current.json', JSON.stringify({ n, grid, state: observation?.state,
-        levels_completed: observation?.levels_completed, available_actions: availableActions(observation) }) + '\n');
-      workspace.runtimeWrite('data/trajectory.jsonl', trajectory.map(row => JSON.stringify(reportedAction(row))).join('\n') + '\n');
+      workspace.runtimeWrite('data/trajectory.jsonl', trajectory.map(row => JSON.stringify(reportedAction(row, true))).join('\n') + '\n');
     }
 		if (!grid || grids.has(n)) return;
 		grids.set(n, grid);
@@ -970,7 +982,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const state: Record<string, unknown> = {
 					grid, prev_grid: grids.get(n - 1) ?? null, state: row?.state ?? null, levels_completed: row?.levels_completed ?? 0,
 					available_actions: availableActions(observation), action_budget: row?.budget ?? null,
-					recent_actions: trajectory.slice(Math.max(0, n - RECENT_ACTIONS), n).map(reportedAction), ...memoryForSkills(memory),
+					recent_actions: trajectory.slice(Math.max(0, n - RECENT_ACTIONS), n).map((row) => reportedAction(row, native)), ...memoryForSkills(memory),
 				};
 				// A history Skill is valid at save time as well as on later states.
 				// Backfill used to omit the foundation API and create a false
@@ -985,7 +997,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * The critic is a service to the agent's self-harness, not part of the agent's interface: its dossier keeps
 	 * the frame facts and the adapter's derived views it was designed with (plan §10.9).
 	 */
-	const decisionLine = (row: ActionRow) => actionLine(row).replace(" → ", ` → changed_cells=${row.changed_cells ?? "?"} `)
+	const decisionLine = (row: ActionRow) => (native ? actionLine(row) : actionLine(row).replace(" → ", ` → changed_cells=${row.changed_cells ?? "?"} `))
 		+ (row.idea ? ` | idea: ${row.idea}` : "")
 		+ (row.expect ? ` | expect: ${row.expect}` : "") + (row.note ? ` | note: ${row.note}` : "") + predictionClause(row);
 
@@ -1072,19 +1084,26 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * The refiner (native mode; arc_thin_refiner.ts): after level changes, failures the critic used to review, repeated
-	 * python work, or REFINE_EVERY actions without one, one background side call writes one harness edit. It replaces
-	 * the advisory critic and the reuse-gap review; it never delays a decision, and the agent is told once what changed.
-	 * It runs while roles/refiner.md is active, so the agent can revise or retire its own refiner.
+	 * The refinement pipeline (native mode; arc_thin_refiner.ts). Events start one background side call that makes one
+	 * harness edit; it replaces the advisory critic and the reuse-gap review, never delays a decision, and the agent is
+	 * told once what changed. Events: the failures the critic used to review, a level change, repeated python work, a
+	 * level played without any goal test, reasoning spent locating cells with no view tool, REFINE_EVERY actions
+	 * without a refinement, and the agent's own refine(focus).
 	 */
 	const REFINE_EVERY = envNumber("ARC_REFINE_EVERY", 15);
+	const GOAL_TEST_AFTER = envNumber("ARC_REFINE_GOAL_TEST_AFTER", 12);
 	let refineNotes: CriticNote[] = [];
 	let refinedThrough = 0;
 	let lastRefineAt = 0;
 	const refinedFamilies = new Set<string>();
+	let goalTestAskedAt = -1;
+	let viewAskedLevel = -1;
 	let refinerInFlight: Promise<void> | undefined;
 	let refinerNotice = "";
-	const refinerActive = () => Boolean(native && criticOn && nativeRuntime && binder?.active().some((c) => c.path === REFINER_PATH));
+	/** Files a refinement wrote: later refinements may rewrite them; other existing files belong to the agent. */
+	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string").map((row) => row.path));
+	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
+	const refinerActive = () => Boolean(native && criticOn && nativeRuntime && binder);
 	function readStrategy(): { text: string; version?: number } | undefined {
 		if (!workspace) return undefined;
 		try { return { text: workspace.read(STRATEGY_PATH), version: binder?.versionMap()[STRATEGY_PATH] }; }
@@ -1104,13 +1123,34 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			samples = family.samples;
 			break;
 		}
+		// No step on this level has predicted a level change: the moves explore, none tests how the level is won.
+		const levelStart = trajectory.findLastIndex((row) => row.level_changed) + 1;
+		const onLevel = trajectory.slice(levelStart);
+		if (onLevel.length >= GOAL_TEST_AFTER && !onLevel.some((row) => row.predict?.level_changed === true)
+			&& (goalTestAskedAt < levelStart || trajectory.length - goalTestAskedAt >= 2 * GOAL_TEST_AFTER)) {
+			goalTestAskedAt = trajectory.length;
+			triggers.push(`${onLevel.length} actions on this level and no step predicted a level change (no goal test yet)`);
+		}
+		// Reasoning spent reading positions off the grid, with no view tool reporting them.
+		const share = lastDecisionCost?.coordinateShare ?? 0;
+		if (share >= 0.3 && (lastDecisionCost?.reasoning ?? 0) >= 3000 && viewAskedLevel !== currentLevel()
+			&& !binder!.active().some((c) => c.kind === "tool" && c.view)) {
+			viewAskedLevel = currentLevel();
+			triggers.push(`about ${Math.round(100 * share)}% of the agent's reasoning sentences in its last decision located cells or coordinates, and no view tool reports them`);
+		}
 		if (!triggers.length && trajectory.length - lastRefineAt >= REFINE_EVERY) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
 		refinedThrough = trajectory.length;
 		return { triggers, samples };
 	}
 
+	/** The agent's own guidance for refinements: the body of prompts/refine.md, whether or not that prompt is active. */
+	function refineGuide(): string {
+		if (!workspace) return "";
+		try { return workspace.read(REFINE_GUIDE_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 1500); }
+		catch { return ""; }
+	}
+
 	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
-		const role = binder!.active().find((c) => c.path === REFINER_PATH);
 		const strategy = readStrategy();
 		const saved = binder!.active().filter((c) => /^(tools|observers|lib)\/[^/]+\.py$/.test(c.path));
 		const input = [
@@ -1118,40 +1158,74 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			`ACTIONS SO FAR: ${trajectory.length}; levels completed: ${currentLevel()}; state: ${observation?.state ?? "unknown"}`,
 			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
 			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
-			`SAVED COMPONENTS:\n${saved.map((c) => `--- ${c.path} v${c.version}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
+			`SAVED TOOLS:\n${saved.map((c) => `--- ${c.path} v${c.version}${c.view ? " (view)" : ""} ${refinedPaths.has(c.path) ? "REFINED" : "AGENT'S"}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
 			...(samples.length ? [`REPEATED PYTHON (latest calls):\n${samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n")}`] : []),
 			`LAST ACTIONS (with how their predictions scored):\n${trajectory.slice(-20).map(recentLine).join("\n") || "(none yet)"}`,
-			`CURRENT STATE:\n${observation ? renderState(observation) : "(unavailable)"}`,
+			`CURRENT STATE:\n${observation ? queryObservation ? observationReference(observation, trajectory.length) : renderState(observation) : "(unavailable)"}`,
+      ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
-		const system = REFINER_SYSTEM + (role?.body?.trim() ? `\n\nTHE AGENT'S INSTRUCTIONS FOR YOU (${REFINER_PATH}):\n${role.body.trim()}` : "");
+		const guide = refineGuide();
+		const system = REFINER_SYSTEM + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
 		const reply: any = await sideCall(ctx, system, [{ type: "text", text: input }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
 		appendUsage("refiner", reply);
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
 		const edit = parseRefinerReply(answer);
 		const at = trajectory.length;
 		const base = { at, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
+		// Notices not yet shown are kept: two refinements between decisions are both reported.
+		const told = (what: string, why: string) => [refinerNotice, `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
+			(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits."].filter(Boolean).join("\n");
+		if (edit.kind === "memory") {
+			const plan = planNativeMemoryUpdate(memory, { set: [{ key: edit.key, text: edit.text, confidence: edit.confidence,
+				...(edit.replaces ? { replaces: edit.replaces.filter((key) => memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key)) } : {}) }] },
+				trajectory.length, components());
+			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
+			applyRows(memory, plan.rows);
+			const retired = plan.rows.filter((row: any) => row.deleted).map((row) => row.key);
+			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, ...(retired.length ? { replaces: retired } : {}) });
+			refinerNotice = told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why);
+			return;
+		}
 		if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
+		// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
+		// tools/probe.py into an unrelated view). It may rewrite the strategy and files that refinements wrote.
+		if (!ownedByRefinement(edit.path)) {
+			append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
+			return;
+		}
 		workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
+		refinedPaths.add(edit.path);
 		const receipt = await binder!.save(edit.path, currentLevel());
 		nativeRuntime!.noteSave(edit.path, receipt);
 		nativeRuntime!.register();
 		const loaded = !/NOT loaded/.test(receipt ?? "");
 		const version = binder!.versionMap()[edit.path];
-		append("refiner.jsonl", { kind: "edit", ...base, path: edit.path, version, why: edit.why, loaded, receipt });
-		refinerNotice = `HARNESS UPDATE from your refiner (${REFINER_PATH}) after #${at} (${triggers[0]}): ${edit.path}` +
-			(version ? ` v${version}` : "") + (loaded ? "" : " failed validation; the previous version still runs") +
-			(edit.why ? ` — ${edit.why}` : "") + ". Revise or delete it like your own edits.";
+		append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt });
+		refinerNotice = told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why);
 	}
 
-	function startRefiner(ctx: ExtensionContext | undefined, triggers: string[], samples: string[]): void {
-		if (!ctx?.model) return;
-		if (refinerInFlight) { append("refiner.jsonl", { kind: "suppressed", at: trajectory.length, reason: "refiner busy", triggers }); return; }
+	/** Start one refinement unless one is running; true when it was started. */
+	/** The agent's own request made while a refinement ran: it runs next, so asking is never lost. */
+	let queuedFocus: string[] | undefined;
+	function startRefiner(ctx: ExtensionContext | undefined, triggers: string[], samples: string[], asked = false): boolean {
+		if (!ctx?.model) return false;
+		if (refinerInFlight) {
+			if (asked) queuedFocus = triggers;
+			append("refiner.jsonl", { kind: asked ? "queued" : "suppressed", at: trajectory.length, reason: "refiner busy", triggers });
+			return false;
+		}
 		refineNotes.push({ at: trajectory.length, level: currentLevel(), triggers, lines: [], dropped: [] });
 		lastRefineAt = trajectory.length;
 		append("refiner.jsonl", { kind: "start", at: trajectory.length, decision, triggers });
 		refinerInFlight = runRefiner(ctx, triggers, samples)
 			.catch((error) => { logError("refiner", error); append("refiner.jsonl", { kind: "failed", at: trajectory.length, triggers, error: errorText(error).slice(0, 300) }); })
-			.finally(() => { refinerInFlight = undefined; });
+			.finally(() => {
+				refinerInFlight = undefined;
+				const next = queuedFocus; queuedFocus = undefined;
+				if (next) startRefiner(ctx, next, [], true);
+			});
+		return true;
 	}
 
 	/** Before each decision: bounded wait for observations, the ledger view, and the critic when triggered. */
@@ -1214,7 +1288,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			levels_completed: observation?.levels_completed ?? null,
 			available_actions: availableActions(observation),
 			action_budget: observation?.action_budget ?? null,
-			recent_actions: trajectory.slice(-RECENT_ACTIONS).map(reportedAction),
+			recent_actions: trajectory.slice(-RECENT_ACTIONS).map((row) => reportedAction(row, native)),
 			...memoryForSkills(memory),
 			...artifactInputs(artifactLog),
 			// Frames can be large; leave them room in the sandbox input.
@@ -1271,10 +1345,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
-		const nativeBudget = native && nativeSplitBudget && !run.consolidating && !diagnosticBudget;
-		const hard = nativeBudget ? NATIVE_HARD_TOOL_CALLS : diagnosticBudget || HARD_TOOL_CALLS;
-		if ((!native || nativeBudget) && run.toolCalls > hard)
-			return { reason: `hard tool-call limit (${hard}) for this decision reached; the decision ends`, terminate: true };
+		const nativeCap = native && !run.consolidating && !diagnosticBudget;
+		if (!native && run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
+			return { reason: `hard tool-call limit (${diagnosticBudget || HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
 		if (name === "arc_action") {
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
 			if (run.actionDone || run.arcSeenInMessage === run.assistantMessages)
@@ -1283,22 +1356,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			return undefined;
 		}
 		if (run.actionDone && !endsBatch())
-			return { reason: "this decision already ended with arc_action", terminate: true };
-		if (nativeBudget) {
-			const record = NATIVE_RECORD_TOOLS.has(name);
-			const used = record ? ++run.recordCalls : ++run.lookCalls;
-			const limit = record ? NATIVE_RECORD_CALLS : NATIVE_LOOK_CALLS;
-			if (used < limit) return undefined;
-			refreshSkillSurface();
-			if (used === limit) {
-				run.budgetNote = `(This was the decision's last ${record ? "record (memory/write/edit)" : "look-up or compute"} call; ` +
-					`those tools are off until the next decision${record ? "" : ", memory still records"}.)`;
-				return undefined;
-			}
-			return { reason: `this decision's ${record ? "record (memory/write/edit)" : "look-up and compute"} budget of ${limit} calls is used; ` +
-				`this call was NOT run and those tools are off until the next decision. ` +
-				(record ? "End the decision with arc_action." : "Record what you found if it must last, then end the decision with arc_action."),
-				terminate: false };
+			return { reason: "this decision already acted", terminate: true };
+		if (nativeCap) {
+			// One cap, a fixed tool list: the last allowed call says so; later calls are not run, so the decision can
+			// still act with what it has, and a decision that keeps calling ends.
+			if (run.toolCalls > NATIVE_DECISION_CALLS + 4)
+				return { reason: `this decision used its ${NATIVE_DECISION_CALLS} tool calls and kept calling; the decision ends. The next decision must act.`, terminate: true };
+			if (run.toolCalls > NATIVE_DECISION_CALLS)
+				return { reason: `this decision used its ${NATIVE_DECISION_CALLS} tool calls; this call was NOT run. Act now with arc_action.`, terminate: false };
+			if (run.toolCalls === NATIVE_DECISION_CALLS)
+				run.budgetNote = `(This was tool call ${NATIVE_DECISION_CALLS} of ${NATIVE_DECISION_CALLS} for this decision: act now.)`;
+			return undefined;
 		}
 		if (!native && run.toolCalls > (diagnosticBudget || SOFT_TOOL_CALLS))
 			return run.consolidating
@@ -1358,12 +1426,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			description: `Submit one available action and end this decision.${hasCoordinates ? " ACTION6 accepts x,y." : ""} ` +
 				// Environment fact, checked in the bridge and the recorded runs: RESET is counted like any action.
 				(actions.includes("RESET") ? "RESET returns the level to its starting grid and counts as one action against both budgets. " : "") +
+				(native ? `then: up to ${THEN_STEPS} further actions played in order after it, stopping at a missed prediction, a level change or the game's end. ` : "") +
 				"Optional note, prediction and memory/idea updates are recorded for the next decision.",
 			parameters: Type.Object({
 				action: StringEnum(actions),
 				...(hasCoordinates ? {
 					x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
 					y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
+				} : {}),
+				// Continual Harness's take_actions: a planned sequence costs one decision, not one per action.
+				...(native ? {
+					then: Type.Optional(Type.Array(Type.Object({
+						action: StringEnum(actions),
+						...(hasCoordinates ? { x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })), y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })) } : {}),
+						predict: Type.Optional(Type.Unknown()),
+					}), { maxItems: THEN_STEPS })),
 				} : {}),
 				note: Type.Optional(Type.String({ maxLength: 300 })),
 				// A malformed prediction is dropped before validation (repairActionArguments), never a reason to reject the action.
@@ -1381,6 +1458,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			execute: guardTool("arc_action", async (params: {
 				action: string; x?: number; y?: number; note?: string; idea?: unknown;
 				predict?: Prediction; predict_skill?: string;
+				then?: Array<{ action: string; x?: number; y?: number; predict?: Prediction }>;
 			}) => {
 				const done = await submitAction(params);
 				if ("refusal" in done) {
@@ -1388,8 +1466,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					throw new Refusal(done.refusal);
 				}
 				const row = done.row;
-				return text(`${actionLine(row)}${predictionClause(row)}`,
-					{ ...reportedAction(row), prediction: row.prediction, skill_prediction: row.skill_prediction }, true);
+				const lines = [`${actionLine(row)}${predictionClause(row)}`];
+				// Further planned actions, each through the same path; the plan stops once what it assumed no longer holds.
+				const steps = native ? (params.then ?? []).slice(0, THEN_STEPS) : [];
+				let last = row, played = 0, stopped: string | undefined;
+				for (const step of steps) {
+					stopped = sequenceStop(last);
+					if (stopped) break;
+					const next = await submitAction({ action: step.action, ...(step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : {}),
+						note: `then ${played + 1} of ${steps.length}`, ...(step.predict ? { predict: step.predict } : {}) });
+					if ("refusal" in next) { stopped = next.refusal; break; }
+					last = next.row; played += 1;
+					lines.push(`${actionLine(last)}${predictionClause(last)}`);
+				}
+				if (played < steps.length) lines.push(`then: ${played} of ${steps.length} played; stopped: ${stopped}.`);
+				if (steps.length) append("action_sequences.jsonl", { decision, n: row.n, planned: steps.length + 1, played: played + 1, stopped: stopped ?? null });
+				return text(lines.join("\n"),
+					{ ...reportedAction(last, native), prediction: last.prediction, skill_prediction: last.skill_prediction }, true);
 			}),
 		});
 	}
@@ -1403,6 +1496,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}, via?: string): Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
 		if (!availableActions(observation).includes(params.action))
 			return { refusal: `action '${params.action}' is not currently available` };
+		// The environment ignores coordinates on actions that take none; recording them made later receipts read like
+		// clicks at different places (2026-10-13). They are dropped, and the receipt says so.
+		const givenXY = params.x !== undefined && params.y !== undefined;
+		const ignoredXY = native && givenXY && !takesCoordinates(params.action);
+		if (ignoredXY) params = { ...params, x: undefined, y: undefined };
 		const beforeGrid = gridOf(observation);
 		const label = actionLabel(params);
 		const payload: Record<string, unknown> = { action: params.action };
@@ -1438,7 +1536,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			...(idea ? { idea } : {}),
 			...(expect ? { expect } : {}),
 			...(via ? { via } : {}),
-			// Evaluation only (never rendered for the agent): how much the frame changed, per the bridge.
+			...(ignoredXY ? { ignored_xy: true } : {}),
+			// How much the frame changed, per the bridge (shown in native receipts, evaluation only in the legacy path).
 			changed_cells: typeof delta.changed_cells === "number" ? delta.changed_cells : gridDiff(beforeGrid, afterGrid),
 			...(delta.bbox ? { bbox: delta.bbox } : {}),
 			level_changed: Boolean(value.public_transition?.level_changed),
@@ -1464,42 +1563,44 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return { row };
 	}
 
-	/** At most this many actions are played from one tool result. */
-	const MAX_PLAYED_ACTIONS = 24;
+	/** Set by an action that changed the level or ended the game: later env.act calls of the same decision are refused. */
+	let actingStopped: string | undefined;
+	/** Why a planned sequence (arc_action then) must not go on after this action, or undefined. */
+	const sequenceStop = (row: ActionRow): string | undefined => row.level_changed ? `the level changed at #${row.n}`
+		: /^(GAME_OVER|WIN|FINISHED)$/.test(row.state) ? `state ${row.state} at #${row.n}`
+		: row.prediction?.fields.some((field) => field.hit === false) ? `#${row.n}'s prediction missed` : undefined;
+	const hexRows = (grid: number[][] | undefined) => grid?.map((row) => row.map((cell) => (cell & 15).toString(16)).join(""));
 	/**
-	 * Actions a saved tool returned ({"actions": [{"action": "ACTION1", "x"?, "y"?, "predict"?}, ...]} or plain labels):
-	 * played in order through submitAction, stopping at the first missed prediction, level change, non-running state,
-	 * unavailable action or environment failure. Codified routines then pay off in actions, not only in advice (in
-	 * Continual Harness 62% of executed actions came from saved skills).
+	 * One action for saved code (env.act in a tool): the same path as arc_action, so the bridge, its budget and its
+	 * refusals stay the only way to act. The code gets the observation back and decides whether to go on (closed loop,
+	 * as Continual Harness skills call take_actions); the runtime itself stops the call after a level change or a
+	 * terminal state, since what the code assumed no longer holds.
 	 */
-	async function playActions(batch: { actions: unknown[] }, via: string): Promise<{ text: string; played: number }> {
-		if (run.consolidating) return { text: "(Returned actions are not played during a review.)", played: 0 };
-		if (run.actionDone) return { text: "(Returned actions not played: this decision already acted.)", played: 0 };
-		const steps = batch.actions.slice(0, MAX_PLAYED_ACTIONS);
-		const lines: string[] = [];
-		let stop = "";
-		for (const [index, raw] of steps.entries()) {
-			const item: any = typeof raw === "string" ? { action: raw } : raw && typeof raw === "object" ? raw : {};
-			const compact = String(item.action ?? "").toUpperCase().replace(/\s+/g, "").replace(/^A(\d)/, "ACTION$1");
-			const labelled = /^ACTION(\d)\((\d{1,2}),(\d{1,2})\)$/.exec(compact);
-			const action = labelled ? `ACTION${labelled[1]}` : compact;
-			const x = labelled ? Number(labelled[2]) : Number.isInteger(item.x) ? item.x : undefined;
-			const y = labelled ? Number(labelled[3]) : Number.isInteger(item.y) ? item.y : undefined;
-			const predict = item.predict === undefined ? undefined : normalizePrediction(item.predict);
-			const done = await submitAction({ action, ...(x !== undefined && y !== undefined ? { x, y } : {}),
-				note: typeof item.note === "string" ? item.note.slice(0, 300) : `step ${index + 1} of ${via}`, ...(predict ? { predict } : {}) }, via);
-			if ("refusal" in done) { stop = `step ${index + 1}: ${done.refusal}`; break; }
-			const row = done.row;
-			lines.push(`${actionLine(row)}${predictionClause(row)}`);
-			if (row.prediction?.fields.some((field) => field.hit === false)) { stop = `step ${index + 1}'s prediction missed`; break; }
-			if (row.level_changed) { stop = `the level changed at step ${index + 1}`; break; }
-			if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) { stop = `state ${row.state} at step ${index + 1}`; break; }
-		}
-		if (!stop && batch.actions.length > steps.length) stop = `${batch.actions.length - steps.length} actions beyond the limit of ${MAX_PLAYED_ACTIONS} were not played`;
-		append("played_actions.jsonl", { decision, via, requested: batch.actions.length, played: lines.length, stop });
-		const head = `PLAYED ${lines.length} of ${batch.actions.length} actions from ${via}${stop ? `; stopped: ${stop}` : ""}.` +
-			(lines.length ? " This decision ends." : "");
-		return { text: [head, ...lines].join("\n"), played: lines.length };
+	async function actForCode(call: { action: string; x?: number; y?: number; predict?: unknown }, via: string):
+		Promise<{ observation?: Record<string, unknown>; stopped?: string; line?: string }> {
+		if (run.consolidating) return { stopped: "no action during a review" };
+		if (actingStopped) return { stopped: actingStopped };
+		const compact = String(call.action ?? "").toUpperCase().replace(/\s+/g, "").replace(/^A(\d)/, "ACTION$1");
+		const labelled = /^ACTION(\d)\((\d{1,2}),(\d{1,2})\)$/.exec(compact);
+		const action = labelled ? `ACTION${labelled[1]}` : compact;
+		const x = labelled ? Number(labelled[2]) : Number.isInteger(call.x) ? call.x : undefined;
+		const y = labelled ? Number(labelled[3]) : Number.isInteger(call.y) ? call.y : undefined;
+		const predict = call.predict === undefined ? undefined : normalizePrediction(call.predict);
+		const done = await submitAction({ action, ...(x !== undefined && y !== undefined ? { x, y } : {}), note: `by ${via}`, ...(predict ? { predict } : {}) }, via);
+		if ("refusal" in done) return { stopped: done.refusal };
+		const row = done.row;
+		const missed = Boolean(row.prediction?.fields.some((field) => field.hit === false));
+		append("played_actions.jsonl", { decision, via, n: row.n, action: actionLabel(row), changed_cells: row.changed_cells, missed });
+		if (row.level_changed) actingStopped = "the level changed";
+		else if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) actingStopped = `state ${row.state}`;
+		return {
+			line: `${actionLine(row)}${predictionClause(row)}`,
+			observation: {
+				n: row.n, action: actionLabel(row), grid: hexRows(gridOf(observation)), state: row.state, levels_completed: row.levels_completed,
+				level_changed: row.level_changed, changed_cells: row.changed_cells, ...(row.bbox ? { bbox: row.bbox } : {}),
+				available_actions: availableActions(observation), missed,
+			},
+		};
 	}
   if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
@@ -1958,9 +2059,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         artifacts: (artifactInputs(artifactLog) as any).artifacts ?? {} });
       writeFileSync(migrationMarker, JSON.stringify({ migrated, at: new Date().toISOString() }) + '\n');
     }
-    nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => skillState(false, true),
+    nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [] }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
-      act: (batch, via) => playActions(batch, via),
+      act: (call, via) => actForCode(call, via),
+      pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       modelResult:create => requestTrace.run('consult', decision, create),
       artifacts: (result, component, n) => {
         const count = artifactLog.length;
@@ -1974,21 +2076,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
-    // The refiner is a role file the agent can revise or retire; it is written once, never re-created after deletion.
-    const refinerMarker = join(storeDir, '..', '.harness', 'refiner_seeded');
-    if (criticOn && !existsSync(refinerMarker)) {
-      try {
-        if (!existsSync(workspace.path(REFINER_PATH))) workspace.runtimeWrite(REFINER_PATH, REFINER_SEED);
-        writeFileSync(refinerMarker, new Date().toISOString() + '\n');
-      } catch (error) { logError('refiner:seed', error); }
-    }
+    // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background.
+    if (criticOn) pi.registerTool({
+      name: 'refine', label: 'Refine',
+      description: 'Start a background refinement of your harness with a focus (e.g. "turn the route search into a tool" or ' +
+        '"write a goal test into the strategy"). It makes one edit to a prompt, memory entry, tool or skill; the next decision says what changed.',
+      parameters: Type.Object({ focus: Type.String({ minLength: 3, maxLength: 300 }) }),
+      execute: guardTool('refine', async (params: { focus: string }, _signal, ctx) =>
+        text(startRefiner(ctx, [`the agent asked: ${params.focus}`], [], true)
+          ? 'Refinement started in the background; a later decision says what it changed.'
+          : 'A refinement is running; yours starts after it, and a later decision says what it changed.', undefined, endsBatch())),
+    });
     workspace.onWrite = async path => {
       const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
       nativeRuntime!.noteSave(path, receipt);
       if (toolsReady) refreshSkillSurface();
-      if (path.startsWith('notes/')) return undefined;
       const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
-      return receipt ? receipt + (promptChars > 1500 ? `\nwarning: active prompts ${promptChars} chars exceed the 1500-char budget` : '') : undefined;
+      return receipt ? receipt + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
     };
   }
 	if (ledgerOn) loadLedgerStores();
@@ -2011,6 +2115,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (run.assistantMessages) lastDecisionCost = { ms: (run.endedAt || Date.now()) - run.startedAt, output: run.output, reasoning: run.reasoningTokens,
 			coordinateShare: run.reasoningSentences ? run.coordinateSentences / run.reasoningSentences : 0 };
 		run = freshRun();
+		actingStopped = undefined;
 		decision += 1;
 		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…".
 		const prompt = String(event.prompt ?? "").trimStart();
@@ -2044,11 +2149,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			catch (error) { logError("memory:file", error); }
 		}
 		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
-      // The PNG is attached only for a model declared with image input (buildWorkingSet); say so only then.
-      image: ctx.model?.input?.includes("image") ? " and its PNG" : "",
-      history: nativeVerbatim ? 'Your last few decisions stay in view within a fixed budget; older conversation is dropped, so what must last belongs in memory, notes/ or a component. Thinking is not replayed.' : 'Pi retains history and compaction summaries; thinking is not replayed by default.',
-      board: '',
-      refiner: criticOn ? 'Your refiner (roles/refiner.md; edit or delete it) runs in the background after level changes, missed predictions, stalls and repeated work, and makes one edit to notes/strategy.md or a component; you are told what changed. Revise its edits like your own.\n\n' : '' }) : control
+      observation: queryObservation
+        ? "state metadata and refs. Query raw grids/images with python/read"
+        : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
+      refine: criticOn ? 'Refinements run in the background after level changes, missing goal tests, stalls and repeated work, or on refine(focus); each makes one edit to a prompt, memory entry, tool or skill (guided by prompts/refine.md if you write it) and keeps memory and the strategy consolidated, so leave that bookkeeping to them. ' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -2127,14 +2231,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	pi.on("context", guard("context", async (event: any, ctx: ExtensionContext) => {
     if (binder) binder.boundary();
+    // A view that became active at this boundary runs on the current state now, not only after the next action
+    // (2026-10-13: a refinement's view showed nothing while the agent deliberated). Runs already done are skipped.
+    if (nativeRuntime) nativeRuntime.observe(trajectory.length);
 		const messages: any[] = event.messages ?? [];
 		const lastUser = messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
 		const user = messages[lastUser];
-		// Native mode applies configured history bands (4/16 by default; explicit 0 disables); the working set lists only the
-		// recent actions whose receipts are not already in that history.
-		const nativeShown = native ? projectNativeHistory(messages.slice(0, lastUser + 1), replayReasoning, nativeHistory) : [];
-		run.workingSet ??= buildWorkingSet(ctx, native ? visibleActions(nativeShown) : undefined);
+		// Native mode rebuilds each decision: earlier decisions become one summarised section of the working set
+		// (Continual Harness's history), the current decision is appended as it happens. A compaction summary Pi made
+		// stays in front. ARC_THIN_NATIVE_HISTORY_CHARS=0 replays the whole session instead.
+		const summarised = native && nativeHistoryChars > 0;
+		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser), { budget: nativeHistoryChars }) : undefined;
+		run.workingSet ??= buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 		const capabilities = binder ? [binder.index(currentLevel()),
 			nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
 		const head = {
@@ -2144,10 +2253,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				...(run.workingSet!.image ? [run.workingSet!.image] : []),
 			],
 		};
-		const history = native ? nativeShown.slice(0, -1)
+		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
+		const history = native ? (summarised ? prefix : projectNativeHistory(messages.slice(0, lastUser), replayReasoning))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
-		const projected = native ? projectNativeHistory([...messages.slice(0, lastUser), head, ...messages.slice(lastUser + 1)], replayReasoning, nativeHistory)
+		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
+		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).
+		// Stripping it made every round re-derive what the previous one had settled (2026-10-13). Earlier decisions
+		// still carry none.
+		const projected = native ? [...projectNativeHistory(history, replayReasoning),
+			...projectNativeHistory([head, ...messages.slice(lastUser + 1)], replayReasoning || decisionReasoning)]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
+		lastContextChars = projected.reduce((n, message) => n + messageText(message).length, 0) + systemChars;
 		// Developer-only accounting, never added to the model context.
 		// JSON characters exclude image bytes and are not a tokenizer estimate.
 		try {
@@ -2155,14 +2271,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const tools = pi.getAllTools?.().filter((tool) => active.has(tool.name))
 				.map(({ name, description, parameters }) => ({ name, description, parameters }));
 			append("context_budget.jsonl", {
-				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy',
+				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy', observation_delivery: observationMode,
         capability_index_chars: binder?.index(currentLevel()).length ?? 0,
         active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
         agent_tool_schemas: binder?.active().filter(c => c.kind === 'tool').map(c => ({ name: c.name, chars: JSON.stringify(c.parameters).length })) ?? [],
 				tools_json_chars: tools ? JSON.stringify(tools).length : null,
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
-				history_text_chars: history.reduce((n, message) => n + messageText(message).length, 0),
+				history_text_chars: summary ? summary.text.length : history.reduce((n, message) => n + messageText(message).length, 0),
+				...(summary ? { history_decisions: summary.decisions, history_omitted: summary.omitted } : {}),
 				message_text_chars: projected.reduce((n, message) => n + messageText(message).length, 0),
+				reasoning_chars: projected.reduce((n, message) => n + (Array.isArray(message.content)
+					? message.content.filter((block: any) => block.type === "thinking").reduce((m: number, block: any) => m + String(block.thinking ?? "").length, 0) : 0), 0),
 				images: projected.reduce((n, message) => n + (Array.isArray(message.content)
 					? message.content.filter((block: any) => block.type === "image").length : 0), 0),
 			});

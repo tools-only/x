@@ -1,6 +1,9 @@
 # Change record: harness activation (closing the five gaps with Prime Agent and Continual Harness)
 
 Date: 2026-10-13. Status: implemented. Functional and scripted full-chain checks pass; real-provider behaviour is unverified.
+Later the same day, the [architecture change](2026-10-13-harness-architecture-implementation.md) replaced returned action lists
+with `env.act`, `notes/strategy.md` with `prompts/strategy.md`, the refiner role file with a pipeline, and the history bands
+with a summarised section. This record stays the evidence of its own version.
 Branch `claude/harness-activation-20261013`, based on `codex/native-compaction-fix-20261012` (afce4dca).
 Analysis: [gap analysis](2026-10-13-prime-agent-continual-harness-gap-analysis.md) §3–§4 (in the main tree). The user
 authorised an aggressive closure of the five gaps on 2026-10-13. That authorisation covers code-returned actions, which had

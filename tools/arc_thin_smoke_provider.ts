@@ -15,7 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transport.ts";
 
 /** say: a text block sent before the tool calls (the scripted model has no reasoning channel; text stands in for it). */
-type Step = { kind: "decide" | "consolidate"; calls?: Array<[string, Record<string, unknown>]>; text?: string; say?: string };
+type Step = { kind: "decide" | "consolidate"; calls?: Array<[string, Record<string, unknown>]>; text?: string; say?: string; think?: string };
 
 const COUNT_COLOR = "def run(state, args):\n    g = state['grid']\n    return {'count': sum(r.count(args['color']) for r in g)}\n";
 
@@ -203,11 +203,24 @@ const FOUNDATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'data/frames/1.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'later parent' }]] },
 ];
+const QUERY_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: '[grid[3].index(9), len(state["frames"])]' }],
+    ...(process.env.ARC_HARNESS_CRITIC !== 'disabled' ? [['refine', { focus: 'query observation diagnostic' }] as [string, Record<string, unknown>]] : [])] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['python', { code: '[grid[3].index(9), prev_grid[3].index(9), history.grid(0)[3].index(9)]' }]] },
+  { kind: 'decide', calls: [['read', { path: 'data/frames/1.png' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', calls: [['read', { path: 'data/observations/0.json' }],
+    ['python', { code: '[grid[3].index(9), history.grid(1)[3].index(9)]' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+];
 const NATIVE_CLAIMS_SCRIPT: Step[] = CLAIMS_SCRIPT.map(step => ({...step, calls:step.calls?.map(([name,args]) =>
   name==='python' ? ['read',{path:'data/frames/1.json'}] : [name,args]) as Step['calls']}));
 NATIVE_CLAIMS_SCRIPT[2] = {kind:'decide',calls:Array.from({length:8},(_,i)=>['read',{
   path:'data/frames/1.json',offset:1,limit:i+1}]) as Step['calls']};
 const NATIVE_COMPARE = '"""Compare measured values."""\ndef run(x: int, bias: int = 2):\n    from lib.offset import plus\n    return plus(x, bias)\n';
+// The view is a tool marked '# view: on' (observers/ is the older place and still loads); the subagent lives in agents/.
+const NATIVE_VIEW = (value: string, mark = 'on') => `"""Where the marker is."""\n# view: ${mark}\ndef run(args, env):\n    return ${value}\n`;
 const COMPONENT_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'lib/offset.py', content: 'def plus(x, y):\n    return x + y\n' }],
     ['write', { path: 'tools/compare.py', content: NATIVE_COMPARE }]] },
@@ -215,16 +228,16 @@ const COMPONENT_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'prompts/probe.md', content: '---\nactive: true\n---\nNATIVE_STANDING_RULE' }],
     ['write', { path: 'skills/probe/SKILL.md', content: '---\nname: probe\ndescription: NATIVE_SKILL_DESCRIPTION\n---\nNATIVE_SKILL_BODY_READ_ON_DEMAND' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
-  { kind: 'decide', calls: [['write', { path: 'observers/position.py', content: 'def observe(state):\n    return state["grid"][3].index(9)\n' }],
-    ['write', { path: 'roles/check.md', content: '---\ndescription: check measurements\ntools: [read, python, compare]\n---\nReturn exact computed value.' }],
+  { kind: 'decide', calls: [['write', { path: 'tools/position.py', content: NATIVE_VIEW('env.grid[3].index(9)') }],
+    ['write', { path: 'agents/check.md', content: '---\ndescription: check measurements\ntools: [read, python, compare]\n---\nReturn exact computed value.' }],
     ['write', { path: 'skills/probe/scripts/helper.py', content: 'def answer():\n    return 42\n' }]] },
   { kind: 'decide', calls: [['python', { code: 'from skills.probe.scripts.helper import answer\nanswer()' }]] },
-  { kind: 'decide', calls: [['consult', { role: 'check', question: 'Compute compare(x=40).', refs: ['data/current.json'] }]] },
+  { kind: 'decide', calls: [['consult', { agent: 'check', question: 'Compute compare(x=40).', refs: ['data/current.json'] }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
   { kind: 'decide', calls: [['write', { path: 'tools/compare.py', content: 'def run(x: int)\n    return x\n' }]] },
-  { kind: 'decide', calls: [['compare', { x: 40 }]] },
+  { kind: 'decide', calls: [['compare', { args: { x: 40 } }]] },
   { kind: 'decide', calls: [['write', { path: 'prompts/probe.md', content: '---\nactive: false\n---\nNATIVE_STANDING_RULE' }],
-    ['write', { path: 'observers/position.py', content: '# observe: off\ndef observe(state):\n    return 999\n' }]] },
+    ['write', { path: 'tools/position.py', content: NATIVE_VIEW('999', 'off') }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION3' }]] },
   { kind: 'decide', calls: [['write', { path: 'tools/compare.py', content: NATIVE_COMPARE.replace('= 2', '= 3') }]] },
   { kind: 'decide', calls: [['compare', { x: 40 }]] },
@@ -232,15 +245,16 @@ const COMPONENT_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['compare', { x: 40 }], ['read', { path: 'skills/probe/SKILL.md' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
   { kind: 'decide', calls: [['write', { path: 'skills/probe/SKILL.md', content: '---\nname: probe\ndescription: REVISED_SKILL_DESCRIPTION\n---\nREVISED_SKILL_BODY' }],
-    ['write', { path: 'roles/check.md', content: '---\ndescription: REVISED_ROLE\ntools: [compare]\n---\nReturn the updated computed value.' }],
-    ['write', { path: 'observers/position.py', content: 'def observe(state):\n    return 777\n' }]] },
+    ['write', { path: 'agents/check.md', content: '---\ndescription: REVISED_ROLE\ntools: [compare]\n---\nReturn the updated computed value.' }],
+    ['write', { path: 'tools/position.py', content: NATIVE_VIEW('777') }]] },
+  // The older role argument still reaches the subagent.
   { kind: 'decide', calls: [['consult', { role: 'check', question: 'Compute compare(x=40).' }],
     ['memory', { set: [{ key: 'accepted', text: 'VALID_IN_PARTIAL_BATCH' }, { key: 'unfinished' }],
       hypotheses: [{ key: 'partial', claim: 'PARTIAL_CLAIM', evidence: { verdict: 'supports' } }] }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
   { kind: 'decide', calls: [['read', { path: 'skills/probe/SKILL.md' }],
     ['memory', { set: [{ key: 'corrupt_batch', text: 'NEVER_APPLIED' }], tests: [{ action: 999, verdicts: { partial: 'supports' } }] }]] },
-  { kind: 'decide', calls: [['python', { code: "import os\nos.rename('tools/compare.py', 'tools/_off/compare.py')\nos.remove('tools/_off/compare.py')\nos.rename('observers/position.py', 'observers/_off/position.py')\nos.remove('roles/check.md')\nos.remove('skills/probe/SKILL.md')\nos.remove('prompts/probe.md')" }]] },
+  { kind: 'decide', calls: [['python', { code: "import os\nos.rename('tools/compare.py', 'tools/_off/compare.py')\nos.remove('tools/_off/compare.py')\nos.rename('tools/position.py', 'tools/_off/position.py')\nos.remove('agents/check.md')\nos.remove('skills/probe/SKILL.md')\nos.remove('prompts/probe.md')" }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION3' }]] },
   { kind: 'decide', calls: [['compare', { x: 40 }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
@@ -252,13 +266,13 @@ const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
   { kind: 'decide', calls: [['python', { code: "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(80)))\n1" }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
-// Native look-up budget: eleven same-shape python calls in one message (the tenth is the last allowed, the
-// eleventh is refused without ending the decision), then memory and an action in the same decision; the next
-// decision gets python back and is shown the repetition.
+// Native call cap: eighteen same-shape python calls in one message (the sixteenth is the last allowed and says so,
+// the next two are not run and do not end the decision), then an action in the same decision; the tool list is the
+// same throughout and the next decision has its calls back.
 const BUDGET_SCRIPT: Step[] = [
-  { kind: 'decide', calls: Array.from({ length: 11 }, (_, n) => ['python', { code: `cell = history.grid(0)[0][${n}]\nprint('cell', ${n}, cell)` }] as [string, any]) },
-  { kind: 'decide', calls: [['memory', { set: [{ key: 'budget', text: 'BUDGET_RECORDED' }] }], ['arc_action', { action: 'ACTION1', note: 'after budget' }]] },
-  { kind: 'decide', calls: [['python', { code: 'print(len(grid))' }]] },
+  { kind: 'decide', calls: Array.from({ length: 18 }, (_, n) => ['python', { code: `cell = history.grid(0)[0][${n}]\nprint('cell', ${n}, cell)` }] as [string, any]) },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'after the cap' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(len(grid))' }], ['memory', { set: [{ key: 'budget', text: 'BUDGET_RECORDED' }] }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'budget reset' }]] },
 ];
 // Reuse: one computation typed twice (REPEATED WORK names it), then once in each of the next two decisions (an
@@ -276,19 +290,27 @@ const REUSE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: cellCode(5) }], ['python', { code: cellCode(6) }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'reuse 5' }]] },
 ];
-// Activation: saved code acts (python save= plays its returned actions, the saved script tool plays them again),
-// unsaved code does not, a missed step prediction stops the batch, and repeated python work makes the refiner save a
-// tool; a later decision is told what the refiner changed.
-const actionsCode = (predict: string) => `{"actions": [{"action": "ACTION1", "predict": ${predict}}, {"action": "ACTION4"}]}`;
+// Activation: saved code acts in a closed loop (python save= runs env.act and stops itself when a prediction misses;
+// the saved tool does it again), unsaved code cannot act, the agent writes its guidance for refinements and starts
+// one itself, and repeated python work makes a refinement save a tool; a later decision is told what changed.
+const actCode = (predict: string) => `out = []\nfor a in ('ACTION1', 'ACTION4'):\n    obs = env.act(a, predict=${predict})\n` +
+  `    out.append(obs['n'])\n    if obs['missed']: break\nout`;
 const ACTIVATION_SCRIPT: Step[] = [
-  { kind: 'decide', calls: [['python', { code: `# Probe two moves.\n${actionsCode('{"level_changed": False}')}`, save: 'probe' }]] },
+  { kind: 'decide', calls: [['python', { code: `# Probe two moves.\n${actCode('{"level_changed": False}')}`, save: 'probe' }]] },
   { kind: 'decide', calls: [['probe', { args: {} }]] },
-  { kind: 'decide', calls: [['python', { code: actionsCode('{"level_changed": False}') }]] },
-  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'unsaved code did not act' }]] },
-  { kind: 'decide', calls: [['python', { code: actionsCode('{"level_changed": True}'), save: 'miss' }]] },
-  { kind: 'decide', calls: [['python', { code: cellCode(1) }], ['python', { code: cellCode(2) }], ['python', { code: cellCode(3) }]] },
+  // Reasoning stays within the decision; what python defines stays for later calls.
+  { kind: 'decide', think: 'THINK_MARK_DECISION3', calls: [['python', { code: actCode('{"level_changed": False}') }],
+    ['python', { code: 'def plus_one(v):\n    return v + 1\nkept_value = 41' }],
+    ['write', { path: 'prompts/refine.md', content: '---\nactive: false\n---\nREFINE_GUIDE_MARK prefer goal tests.' }]] },
+  // Coordinates on an action that takes none are ignored, and the receipt says so.
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', x: 5, y: 5, note: 'unsaved code did not act' }]] },
+  { kind: 'decide', calls: [['python', { code: actCode('{"level_changed": True}'), save: 'miss' }]] },
+  { kind: 'decide', calls: [['python', { code: cellCode(1) }], ['python', { code: cellCode(2) }], ['python', { code: cellCode(3) }],
+    ['python', { code: 'plus_one(kept_value)' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after repeated cells' }]] },
-  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'refiner had time' }]] },
+  // A planned sequence in one call (Continual Harness's take_actions).
+  { kind: 'decide', calls: [['refine', { focus: 'write a goal test into the strategy' }],
+    ['arc_action', { action: 'ACTION1', note: 'refinement had time', then: ['ACTION4', { action: 'ACTION1' }] }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'notice shown' }]] },
 ];
 const MIGRATION_SCRIPT: Step[] = [
@@ -300,6 +322,7 @@ const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? QUERY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
@@ -324,6 +347,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 	let step = 0;
 	let toolCall = 0;
 	let probeOrdinary = 0;
+	let checkpoints = 0;
 	const idleFaults=new Set<number>();
 
 	pi.registerProvider("offline-arc-thin-smoke", {
@@ -331,7 +355,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 		apiKey: "offline",
 		baseUrl: "http://unused.invalid",
 		models: [{
-			id: "scripted", name: "scripted", reasoning: false, input: ["text"],
+			id: "scripted", name: "scripted", reasoning: false, input: process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? ["text", "image"] : ["text"],
 			contextWindow: 175000, maxTokens: 16384, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}],
 		streamSimple: scriptedProviderTransport((model, context, options) => {
@@ -362,9 +386,10 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
         stream.push({ type: 'start', partial: output }); stream.push({ type: 'done', reason: 'stop', message: output }); stream.end(); return stream;
       }
       // Diagnostic-only usage crosses Pi's threshold after the long-result turn is eligible.
-      // No manual compact RPC or production provider changes drive this automatic path.
-      if (process.env.ARC_THIN_SMOKE_AUTO_COMPACTION === '1' &&
-          messages.filter((m: any) => m.role === 'user' && textOf(m).includes('Checkpoint before restart')).length === 3) {
+      // No manual compact RPC or production provider changes drive this automatic path. Requests are counted, not
+      // messages: with the summarised history a request carries only the current decision's prompt.
+      if (process.env.ARC_THIN_SMOKE_AUTO_COMPACTION === '1' && !systemPrompt.includes('context summarization assistant')
+          && textOf([...messages].reverse().find((m: any) => m.role === 'user')).includes('Checkpoint before restart') && ++checkpoints === 3) {
         output.usage.input = 174100;
         output.usage.totalTokens = 174101;
       }
@@ -472,7 +497,9 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				appendFileSync(join(process.env.ARC_RUN_ROOT ?? process.cwd(), "refiner-inputs.jsonl"), JSON.stringify({ systemPrompt, input: why }) + "\n");
 				planned = { kind: "decide", text: why.includes("redone")
 					? "FILE tools/cell_reader.py\n# Read one cell of the first frame.\ncell = history.grid(0)[0][args.get('x', 0)]\ncell\nEND\nWHY the same cell lookup was typed at #4-#5"
-					: "FILE notes/strategy.md\nRules\n- ACTION1 changes the grid (conf 2, #1)\nOpen questions\n- what ends a level\nNext experiment\n- REFINED_NEXT_EXPERIMENT\nFailure modes\n- none yet\nEND\nWHY first refinement after #6" };
+					// Asked by the agent: an attempt to replace the agent's own tool, which the runtime refuses.
+					: why.includes("the agent asked") ? "FILE tools/probe.py\n# view: on\ngrid[0]\nEND\nWHY replace the probe with a view"
+					: "FILE prompts/strategy.md\nRules\n- ACTION1 changes the grid (conf 2, #1)\nOpen questions\n- what ends a level\nNext experiment\n- REFINED_NEXT_EXPERIMENT\nFailure modes\n- none yet\nEND\nWHY first refinement after #6" };
 			}
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
 			else if (['recovery','death','length'].includes(process.env.ARC_THIN_SMOKE_SCRIPT!)) planned={kind:'decide',calls:[['arc_action',{action:'ACTION1'}]]};
@@ -483,6 +510,11 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 					? { kind: "consolidate", text: "Script exhausted or out of order during consolidation." }
 					: { kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "fallback after script" }]] };
 			}
+      // A tool the run does not offer (refine without refinements) is left out of the scripted message.
+      if (planned?.calls && !analyst && !critic) {
+        const offered = new Set(tools.map((tool: any) => tool.name ?? tool.function?.name));
+        planned = { ...planned, calls: planned.calls.filter(([name]) => name !== 'refine' || offered.has('refine')) };
+      }
       if (planned?.calls) planned = { ...planned, calls: planned.calls.map(([name, args]) => [name,
         args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/(?:r\d+|[a-f0-9]{64})\.txt/)?.[0] ?? 'missing' } : args]) };
 			appendFileSync(log, JSON.stringify({
@@ -492,8 +524,13 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				// message_count excludes Pi's leading system message so the runner's checks keep the 0.80.6 meaning
 				// (1 = the first request of a decision).
 				message_count: messages.filter((message) => message?.role !== "system").length, roles: messages.map((message) => message?.role),
+        image_blocks: messages.flatMap((m: any) => (Array.isArray(m.content) ? m.content : [])
+          .filter((b: any) => b.type === 'image').map(() => ({ role: m.role, tool: m.toolName }))),
 				tools: tools.map((tool: any) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
 				system_prompt: systemPrompt, head,
+				// Reasoning the request carries from earlier assistant turns (kept within the current decision only).
+				reasoning_in_context: messages.filter((m: any) => m?.role === "assistant").flatMap((m: any) => Array.isArray(m.content) ? m.content : [])
+					.filter((b: any) => b?.type === "thinking").map((b: any) => String(b.thinking)),
         ...(process.env.ARC_THIN_SMOKE_SCRIPT==='nativeclaims' ? {latest_user:textOf(messages.findLast((m:any)=>m.role==='user'))} : {}),
 				last_tool_results: messages.filter((message) => message?.role === "toolResult")
 					.map((message) => ({ tool: message.toolName, is_error: message.isError, text: textOf(message).slice(0, 1200) })),
@@ -511,11 +548,20 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			}) + "\n", "utf8");
 
 			stream.push({ type: "start", partial: output });
+			if (planned.think) {
+				// Scripted reasoning, signed like Qwen's reasoning_content, to check what the next request carries.
+				const contentIndex = output.content.length;
+				output.content.push({ type: "thinking", thinking: planned.think, thinkingSignature: "reasoning_content" } as any);
+				stream.push({ type: "thinking_start", contentIndex, partial: output } as any);
+				stream.push({ type: "thinking_delta", contentIndex, delta: planned.think, partial: output } as any);
+				stream.push({ type: "thinking_end", contentIndex, content: planned.think, partial: output } as any);
+			}
 			if (planned.say) {
+				const contentIndex = output.content.length;
 				output.content.push({ type: "text", text: planned.say });
-				stream.push({ type: "text_start", contentIndex: 0, partial: output });
-				stream.push({ type: "text_delta", contentIndex: 0, delta: planned.say, partial: output });
-				stream.push({ type: "text_end", contentIndex: 0, content: planned.say, partial: output });
+				stream.push({ type: "text_start", contentIndex, partial: output });
+				stream.push({ type: "text_delta", contentIndex, delta: planned.say, partial: output });
+				stream.push({ type: "text_end", contentIndex, content: planned.say, partial: output });
 			}
 			if (planned.calls?.length) {
 				output.stopReason = "toolUse";

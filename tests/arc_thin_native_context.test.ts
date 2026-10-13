@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectNativeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
+import { projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
 
 test('native production instructions explicitly prefer amortized offload without a creation quota', () => {
@@ -36,52 +36,36 @@ test('canonical native projection retains all decisions and exact results, strip
   assert.equal(JSON.stringify(history).includes('aborted'), true, 'canonical history is immutable');
 });
 
-test('banded projection keeps newest decisions exact, condenses the middle, drops the oldest with a note', () => {
-  // 30 decisions: the last is the current one, 29 earlier.
+test('earlier decisions are one summarised section: newest results whole, older ones a line, action receipts kept', () => {
   const history = decisions(30);
-  const projected = projectNativeHistory(history, false, { verbatim: 4, condensed: 8 });
-  const users = projected.filter(m => m.role === 'user');
-  const text = (m: any) => typeof m.content === 'string' ? m.content : m.content.map((b: any) => b.text ?? '').join('\n');
-  // Earlier 29: condensed from step(25)=24, dropped before step(17)=16 → 8 condensed, 5 verbatim, plus the current.
-  assert.equal(users.length, 8 + 5 + 1);
-  assert.match(text(users[0]), /16 earlier decisions not shown/);
-  assert.match(text(users[0]), /The 8 decisions from here are condensed/);
-  assert.match(text(users[0]), /decision 16$/);
-  assert.equal(projected[0].role, 'system');
-  assert.equal(projected[1].role, 'compactionSummary');
-  const results = projected.filter(m => m.role === 'toolResult');
-  assert.equal(results.length, 14);
-  for (const result of results.slice(0, 8)) assert.ok(text(result).length < 360, 'condensed results are clipped');
-  for (const result of results.slice(8)) assert.ok(text(result).length > 1000, 'newest results are exact');
-  const calls = projected.filter(m => m.role === 'assistant').flatMap(m => m.content);
-  assert.match(calls[0].arguments.code, /^print\(16\)\n#+… <\d+ chars>$/);
-  assert.equal(calls.at(-1).arguments.code.length > 600, true);
-  // Calls and results stay paired.
-  const ids = new Set(calls.map((b: any) => b.id));
-  assert.ok(results.every(r => ids.has(r.toolCallId)));
-  assert.equal(JSON.stringify(projected).includes('secret reasoning'), false);
+  // An acting tool call in decision 3: its receipts are kept even when the result is old.
+  history.splice(history.findIndex(m => m.content === 'decision 4'), 0,
+    { role: 'assistant', content: [{ type: 'text', text: 'walking the corridor' }, { type: 'toolCall', id: 'walk', name: 'walk', arguments: { args: { steps: 2 } } }] },
+    { role: 'toolResult', toolCallId: 'walk', toolName: 'walk', content: [{ type: 'text', text: 'walk v1 →\n[3, 0]\nACTED 2 action(s). This decision ends.\n#7 ACTION1 → changed 3\n#8 ACTION4 → changed 0' }] });
+  const all = summarizeHistory(history, { budget: 1_000_000 });
+  assert.equal(all.decisions, 30);
+  assert.equal(all.omitted, 0);
+  assert.match(all.text, /^RECENT HISTORY \(your last 30 decisions, summarised, newest last\):/);
+  assert.equal(all.text.includes('secret reasoning'), false);
+  // The two newest results are whole; older ones keep their first line, clipped.
+  assert.ok(all.text.includes('EXACT 29' + 'Z'.repeat(1000)) && all.text.includes('EXACT 28' + 'Z'.repeat(1000)));
+  assert.match(all.text, /→ EXACT 27Z{192}… <1008 chars>/);
+  assert.match(all.text, /said: walking the corridor\nwalk\(\{"args":\{"steps":2\}\}\) → walk v1 →\n#7 ACTION1 → changed 3\n#8 ACTION4 → changed 0/);
+  // Long arguments are clipped.
+  assert.match(all.text, /python\(\{"code":"print\(5\)\\n#+… <\d+ chars>\)/);
+  // The budget keeps the newest decisions and says where the rest lives; one oversized decision does not empty it.
+  const tight = summarizeHistory(history, { budget: 3000 });
+  assert.ok(tight.decisions >= 2 && tight.decisions < 30 && tight.omitted === 30 - tight.decisions);
+  assert.match(tight.text, /older not shown: memory, your prompts and tools, data\/trajectory\.jsonl/);
+  assert.ok(tight.text.includes('EXACT 29') && !tight.text.includes('EXACT 0Z'));
+  const huge = summarizeHistory(decisions(3, 50_000), { budget: 3000, resultChars: 40_000 });
+  assert.equal(huge.decisions, 1);
+  assert.ok(huge.text.includes('EXACT 2') && huge.text.length < 3300);
+  assert.deepEqual(summarizeHistory([{ role: 'user', content: 'first decision' }]), { text: '', decisions: 0, omitted: 0 });
 });
 
-test('band edges move in steps, so the shown prefix is stable between steps', () => {
-  const at = (count: number) => JSON.stringify(projectNativeHistory(decisions(count), false, { verbatim: 4, condensed: 8 }).slice(0, 6));
-  assert.equal(at(26), at(27));
-  assert.equal(at(27), at(28));
-  // Under one step of earlier decisions past the verbatim band nothing is condensed.
-  const short = projectNativeHistory(decisions(8), false, { verbatim: 4, condensed: 8 });
-  assert.equal(short.filter(m => m.role === 'toolResult').every(m => m.content[0].text.length > 1000), true);
-  // Whole-file sized results keep their head once their decision is no longer the current one.
-  const long = projectNativeHistory(decisions(6, 5000), false, { verbatim: 4, condensed: 8 }).filter(m => m.role === 'toolResult');
-  assert.equal(long.length, 6);
-  for (const result of long.slice(0, -1)) assert.match(result.content[0].text, /… <5007 chars; repeat the call for the rest>$/);
-  assert.equal(long.at(-1).content[0].text.length, 5007);
-  assert.equal(projectNativeHistory(decisions(6, 5000)).filter(m => m.role === 'toolResult').every(m => m.content[0].text.length === 5007), true);
-});
-
-test('visible actions are read from arc_action receipts', () => {
-  const seen = visibleActions([
-    { role: 'toolResult', toolName: 'arc_action', content: [{ type: 'text', text: '#12 ACTION1 → level_changed=false' }] },
-    { role: 'toolResult', toolName: 'python', content: [{ type: 'text', text: '#13 not an action' }] },
-    { role: 'toolResult', toolName: 'arc_action', content: [{ type: 'text', text: 'one arc_action per decision; refused' }] },
-  ]);
-  assert.deepEqual([...seen], [12]);
+test('visible actions are read from action receipts in the summary', () => {
+  const seen = visibleActions('arc_action({"action":"ACTION1"}) → #12 ACTION1 → level_changed=false\n#13 ACTION4 → changed 2\n' +
+    'python({}) → #14 not an action\nsaid: #15 ACTION1 later');
+  assert.deepEqual([...seen], [12, 13]);
 });

@@ -91,6 +91,12 @@ test("skill op is inferred from the fields present; arc_action notes are clipped
 	const action = repairActionArguments({ action: "ACTION1", note: `${"why ".repeat(120)}\n` });
 	assert.equal(action.note.length, LIMITS.note);
 	assert.deepEqual(repairActionArguments({ action: "ACTION2" }), { action: "ACTION2" });
+	// A then list: names or a JSON string become steps; a malformed step prediction is dropped; an unusable list goes.
+	assert.deepEqual(repairActionArguments({ action: "ACTION1", then: ["action4", { action: "ACTION2", predict: 7 }] }).then,
+		[{ action: "ACTION4" }, { action: "ACTION2" }]);
+	assert.deepEqual(repairActionArguments({ action: "ACTION1", then: '["ACTION3"]' }).then, [{ action: "ACTION3" }]);
+	assert.deepEqual(repairActionArguments({ action: "ACTION1", then: "ACTION3, ACTION4" }).then, [{ action: "ACTION3" }, { action: "ACTION4" }]);
+	assert.equal("then" in repairActionArguments({ action: "ACTION1", then: [5, null] }), false);
 });
 
 test("environment failures are told apart from the agent's invalid actions", () => {

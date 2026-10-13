@@ -18,7 +18,7 @@ export class Workspace {
     this.resultIndex = join(privateRoot, 'result-index.jsonl');
     mkdirSync(this.root, { recursive: true });
     if (lstatSync(this.root).isSymbolicLink()) throw Error('workspace root cannot be a link');
-    for (const dir of ['data/frames', 'notes', 'prompts', 'lib', 'tools', 'observers', 'skills', 'roles', 'artifacts', 'results'])
+    for (const dir of ['data/frames', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results'])
       mkdirSync(this.path(dir, true, true), { recursive: true });
   }
   /** Also called by operations with Pi-resolved paths; callers must prevalidate raw arguments. */
@@ -43,7 +43,7 @@ export class Workspace {
     }
     return target;
   }
-  runtimeWrite(path: string, content: string) {
+  runtimeWrite(path: string, content: string | Uint8Array) {
     const target = this.path(path, true, true); mkdirSync(resolve(target, '..'), { recursive: true });
     writeFileSync(this.path(path, true, true), content, 'utf8');
   }
@@ -135,7 +135,8 @@ export class Workspace {
     const writeFile = async (p: string, content: string) => { writeFileSync(safe(p, true), content, 'utf8'); };
     const access = async (p: string) => { if (!existsSync(safe(p))) throw Error('workspace file does not exist'); };
     const tools: ToolDefinition[] = [
-      createReadToolDefinition(this.root, { operations: { readFile, access, detectImageMimeType: async () => null } }),
+      createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile, access,
+        detectImageMimeType: async p => readFileSync(safe(p)).subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? 'image/png' : null } }),
       createWriteToolDefinition(this.root, { operations: { writeFile, mkdir: async p => { mkdirSync(safe(p, true), { recursive: true }); } } }),
       createEditToolDefinition(this.root, { operations: { readFile, writeFile, access: async p => { safe(p, true); await access(p); } } }),
       createLsToolDefinition(this.root, { operations: { exists: p => existsSync(safe(p)), stat: p => lstatSync(safe(p)),
@@ -147,6 +148,7 @@ export class Workspace {
         const glob = args.glob ? new RegExp('^' + args.glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$') : null;
         const found: string[] = []; const limit = Math.min(1000, Math.max(1, args.limit ?? 100));
         for (const file of this.files(args.path ?? '.')) {
+          if (file.endsWith('.png')) continue;
           if (glob && !glob.test(file) && !glob.test(file.split('/').at(-1)!)) continue;
           const lines = this.read(file).split('\n');
           for (let n = 0; n < lines.length && found.length < limit; n++) if (regex.test(lines[n])) {

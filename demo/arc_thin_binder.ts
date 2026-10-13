@@ -6,33 +6,39 @@ import { createRequire } from 'node:module';
 import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[] };
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 type Entry = { path: string; version: number; hash: string; level: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
 const requirePi = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'));
 const { parseDocument } = requirePi('yaml'); // Pi 0.87.0's pinned YAML dependency, full Agent Skills frontmatter.
 
+/**
+ * The five capability categories (Prompt, Memory, Tool, Skill, Subagent; Memory lives in the memory store), by
+ * workspace place. lib/ holds code tools import (a dependency, not a capability); notes/, artifacts/ and other files
+ * are plain workspace files. observers/ and roles/ are older places for view tools and subagents.
+ */
 export function componentKind(path: string): string | undefined {
   if (path.split('/').includes('_off')) return;
-  if (/^(tools|observers|lib)\/[^/]+\.py$/.test(path)) return { tools: 'tool', observers: 'observer', lib: 'library' }[path.split('/')[0]];
+  if (/^(tools|observers)\/[^/]+\.py$/.test(path)) return 'tool';
+  if (/^lib\/[^/]+\.py$/.test(path)) return 'library';
   if (/^skills\/[^/]+\/SKILL\.md$/.test(path)) return 'skill';
-  if (/^(prompts|roles|notes)\/[^/]+\.md$/.test(path)) return { prompts: 'prompt', roles: 'role', notes: 'note' }[path.split('/')[0]];
+  if (/^prompts\/[^/]+\.md$/.test(path)) return 'prompt';
+  if (/^(agents|roles)\/[^/]+\.md$/.test(path)) return 'subagent';
 }
 /** The file conventions require only scalar values and lists, not an SDK. */
 export function markdownSpec(path: string, source: string): ComponentSpec {
   const kind = componentKind(path)!; const name = kind === 'skill' ? path.split('/')[1] : path.split('/').at(-1)!.replace(/\.md$/, '');
-  if (kind === 'note') return { kind, name, description: source.split(/\r?\n/)[0].slice(0, 100), enabled: true };
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(source);
   if (!match) throw Error('markdown needs frontmatter');
   const doc = parseDocument(match[1]); if (doc.errors.length) throw Error(doc.errors.map((e: Error) => e.message).join('; '));
   const header: Record<string, any> = doc.toJS({ maxAliasCount: 20 });
   if (!header || typeof header !== 'object' || Array.isArray(header)) throw Error('frontmatter must be a mapping');
   if (kind === 'prompt' && ![true, false].includes(header.active)) throw Error('prompt active must be true or false');
-  if ((kind === 'role' || kind === 'skill') && !String(header.description ?? '').trim()) throw Error('description is required');
+  if ((kind === 'subagent' || kind === 'skill') && !String(header.description ?? '').trim()) throw Error('description is required');
   if (kind === 'skill' && header.name !== name) throw Error('skill name must match its directory');
-  if (kind === 'role' && (!Array.isArray(header.tools) || header.tools.some((t: string) => ['arc_action', 'consult', 'write', 'edit', 'memory'].includes(t))))
-    throw Error('role tools must be read, python or named agent tools; never arc_action');
+  if (kind === 'subagent' && (!Array.isArray(header.tools) || header.tools.some((t: string) => ['arc_action', 'consult', 'write', 'edit', 'memory', 'refine'].includes(t))))
+    throw Error('subagent tools must be read, python or named tools; subagents never act');
   return { kind, name, description: String(header.description ?? match[2].split(/\r?\n/).find(s => s.trim()) ?? '').slice(0, 120),
     enabled: kind !== 'prompt' || header.active === true, body: match[2], tools: header.tools, refs: header.refs };
 }
@@ -50,12 +56,27 @@ export class Binder {
       const entry: Entry = JSON.parse(line);
       if (entry.good) entry.good.source = readFileSync(join(this.versions, `${entry.good.hash}.txt`), 'utf8');
       this.entries.set(entry.path, entry);
+      this.remember(entry);
     }
   }
   private record(entry: Entry) {
     this.entries.set(entry.path, entry);
+    this.remember(entry);
     const stored = { ...entry, ...(entry.good ? { good: { ...entry.good, source: undefined } } : {}) };
     appendFileSync(this.log, JSON.stringify(stored) + '\n');
+  }
+  /** Every saved version of every path (version → source hash), for restore. */
+  private history = new Map<string, Map<number, string>>();
+  private remember(entry: Entry) {
+    if (entry.retired) return;
+    const versions = this.history.get(entry.path) ?? new Map<number, string>();
+    versions.set(entry.version, entry.hash); this.history.set(entry.path, versions);
+  }
+  /** The source of one saved version, or undefined. */
+  sourceOf(path: string, version: number): string | undefined {
+    const hash = this.history.get(path)?.get(version);
+    const file = hash ? join(this.versions, `${hash}.txt`) : '';
+    return file && existsSync(file) ? readFileSync(file, 'utf8') : undefined;
   }
   save(path: string, level: number): Promise<string | undefined> {
     if (/^(data|results)(\/|$)/.test(path)) return Promise.resolve(undefined);
@@ -73,7 +94,7 @@ export class Binder {
     const entry: Entry = { path, version: (old?.version ?? 0) + 1, hash, level, good: old?.good };
     try {
       const spec = kind === 'file' ? { kind, name: path, description: '', enabled: false }
-        : kind === 'tool' || kind === 'observer' || kind === 'library'
+        : kind === 'tool' || kind === 'library'
           ? await this.validate?.(path, source) : markdownSpec(path, source);
       if (!spec) throw Error('Python component binder not available');
       entry.good = { ...spec, source, path, hash, level, version: entry.version };
@@ -107,18 +128,28 @@ export class Binder {
     const active = this.bindings.get(path); const entry = this.entries.get(path);
     return `${active?.name ?? path} v${active?.version ?? 'none'}${entry?.error ? ` (v${entry.version} failed)` : ''}`;
   }
+  /**
+   * The capability index: one line per saved prompt, tool, skill and subagent (memory has its own index). Libraries
+   * and plain files are not listed.
+   */
   index(level: number, failedInputs: Set<string> = new Set()): string {
-    const lines = [...this.entries].filter(([path, e]) => !e.retired && componentKind(path)).map(([path, e]) => {
-      const c = e.good; const status = e.error ? 'failed' : !c?.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
-      return `${c?.kind ?? componentKind(path)} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}${c && c.level < level && status !== 'stale' ? ' · stale' : ''}: ${c?.description ?? e.error} · ${c?.kind === 'tool' ? `${c.name}(...)` : `read ${path}`}`;
+    const order = ['prompt', 'tool', 'skill', 'subagent'];
+    const listed = [...this.entries].filter(([path, e]) => !e.retired && order.includes(componentKind(path) ?? ''))
+      .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
+    const lines = listed.map(([path, e]) => {
+      const c = e.good; const kind = componentKind(path)!;
+      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
+      const use = kind === 'tool' ? (path.startsWith('observers/') ? 'view' : `${c?.name ?? ''}(args)${c?.view ? ' · view' : ''}`)
+        : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
+      return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}`;
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';
-    const full = ['CAPABILITIES (your saved components)', ...lines].join('\n');
+    const full = ['HARNESS (your prompts, tools, skills and subagents; memory is indexed above)', ...lines].join('\n');
     if (full.length <= 1200) return full;
-    const groups = new Map<string, number>();
-    for (const [path, e] of this.entries) if (!e.retired && componentKind(path)) { const kind = componentKind(path)!; groups.set(kind, (groups.get(kind) ?? 0) + 1); }
-    return ['CAPABILITIES (grouped)', ...[...groups].map(([kind, n]) => `${kind}: ${n}; ls ${kind === 'library' ? 'lib' : kind === 'note' ? 'notes' : kind + 's'}`),
-      `${[...this.entries.values()].filter(e => !e.retired && e.error).length} failed; receipts label last working versions.`].join('\n');
+    const groups = new Map<string, string[]>();
+    for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path]); }
+    return ['HARNESS (names only; read a file for its text)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
+      `${listed.filter(([, e]) => e.error).length} failed; receipts label last working versions.`].join('\n').slice(0, 1200);
   }
 }

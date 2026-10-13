@@ -2,6 +2,8 @@
 
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-10-13 合并候选：Claude 的执行/计算会话/回执/历史/refinement 改动与 Codex 的 query 观测共存，原始动画帧/PNG 自动保存，默认只提供状态引用。见[合并记录](reports/2026-10-13-query-claude-merge.md)。普通真实自主查询、总成本净收益和跨压缩认知连续性未验证，B/D保持开放。
+
 2026-10-13 后续授权实施：最终方案的恢复/对账、原生压缩生效、短引用、调查配额减负、来源提示、critic条件证据及推理offload原则已实现，WASI阶段计量已接入。工程产物和一次100动作、无整场时间/token/decision上限、compaction开启的普通真实运行状态统一记录在[同一实现报告](reports/2026-10-12-harness-foundation-implementation.md#optimization-implementation-and-restart-2026-10-13)。B/C/D的真实自主采用、总成本净收益和压缩后认知连续性仍开放；Auto-Research继续关闭。以下“仅方案/未实现”段落保留为此前阶段记录。
 
 2026-10-13 self-harness目标补充：推理效率与offload是核心决策目标；优先复用适用组件、沉淀可摊销方法，减少重复基础推导，保持对当前条件和新解释的判断。已纳入[同一最终方案](plans/2026-10-12-harness-foundation-final-optimization-plan.md)的O14/O15及验收。与B/C/D的证据到使用、总成本和跨压缩方法连续性相关，仍未验证；本次未改生产提示或启动实验。

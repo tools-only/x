@@ -5,66 +5,149 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Workspace } from '../demo/arc_thin_workspace.ts';
 import { Binder } from '../demo/arc_thin_binder.ts';
-import { validatePythonComponent } from '../demo/arc_thin_components.ts';
-import { NativeRuntime } from '../demo/arc_thin_native_runtime.ts';
+import { validatePythonComponent, type ActCall } from '../demo/arc_thin_components.ts';
+import { MAX_ACTS, NativeRuntime } from '../demo/arc_thin_native_runtime.ts';
 import { parseRefinerReply, STRATEGY_CHARS } from '../demo/arc_thin_refiner.ts';
 import { emptyMemory, applyRow, renderMemoryIndex } from '../demo/arc_thin_memory.ts';
-import { projectNativeHistory } from '../demo/arc_thin_native_context.ts';
 
-const runtimeFor = (played: Array<{ batch: any; via: string }>) => {
+type Played = { call: ActCall; via: string };
+/** A host whose every second action changes nothing; `levelAt` makes that action change the level (the runtime then stops the call). */
+const runtimeFor = (played: Played[], options: { levelAt?: number; quiet?: boolean } = {}) => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'activation-')));
   const binder = new Binder(workspace, validatePythonComponent);
   const registered: string[] = [];
-  let active: string[] = [];
+  const tools = { active: ['python', 'arc_action'] };
+  let stopped: string | undefined;
   const runtime = new NativeRuntime({
-    pi: { registerTool(t: any) { registered.push(t.name); }, getActiveTools: () => active, setActiveTools: (names: string[]) => { active = names; } } as any,
+    pi: { registerTool(t: any) { registered.push(t.name); }, getActiveTools: () => tools.active, setActiveTools: (names: string[]) => { tools.active = names; } } as any,
     workspace, binder, state: () => ({ grid: [[7, 8]] }), level: () => 0, actionCount: () => played.length, log() {}, usage() {},
     wrap: (_name, fn) => fn,
-    act: async (batch, via) => { played.push({ batch, via }); return { text: `PLAYED ${batch.actions.length} from ${via}`, played: batch.actions.length }; },
+    act: async (call, via) => {
+      if (stopped) return { stopped };
+      played.push({ call, via });
+      const n = played.length;
+      const level = n === options.levelAt;
+      if (level) stopped = 'the level changed';
+      return { line: `#${n} ${call.action} → changed`, observation: { n, grid: ['78'], changed_cells: options.quiet || n % 2 ? 3 : 0, level_changed: level, missed: false } };
+    },
   });
-  return { workspace, binder, runtime, registered };
+  return { workspace, binder, runtime, registered, tools };
 };
+const LOOP = '# Walk until nothing changes.\nseen = []\nfor a in ("ACTION1", "ACTION4", "ACTION1"):\n    obs = env.act(a)\n' +
+  '    seen.append(obs["changed_cells"])\n    if obs["changed_cells"] == 0: break\n{"seen": seen, "bias": args.get("bias", 0)}';
 
-test('saved code acts: python(save=) saves the code as a script tool and plays what it returns; unsaved code does not', async () => {
-  const played: Array<{ batch: any; via: string }> = [];
-  const { workspace, binder, runtime, registered } = runtimeFor(played);
+test('saved code acts in a closed loop: python(save=) saves the code as a tool and runs it; unsaved code cannot act', async () => {
+  const played: Played[] = [];
+  const { workspace, binder, runtime, registered, tools } = runtimeFor(played);
   try {
-    const code = '# Two moves.\n{"actions": [{"action": "ACTION1"}, "ACTION4"], "seen": grid[0][1] + args.get("bias", 0)}';
-    const unsaved = await runtime.python(code);
+    const unsaved: any = await runtime.python(LOOP);
     assert.equal(played.length, 0);
-    assert.match(unsaved.content[0].text, /not played: only saved code acts/);
-    assert.notEqual((unsaved as any).terminate, true);
-    const saved: any = await runtime.python(code, undefined, false, 'two_moves');
-    assert.match(saved.content[0].text, /tools\/two_moves\.py → tool two_moves v1: saved · loaded/);
-    assert.match(saved.content[0].text, /PLAYED 2 from tools\/two_moves\.py/);
+    assert.match(unsaved.content[0].text, /only saved code acts/);
+    assert.notEqual(unsaved.terminate, true);
+    const saved: any = await runtime.python(LOOP, undefined, false, 'walk');
+    assert.match(saved.content[0].text, /tools\/walk\.py → tool walk v1: saved · loaded/);
+    // The code saw the second observation (nothing changed) and stopped itself: two actions, not three.
+    assert.match(saved.content[0].text, /"seen":\[3,0\]/);
+    assert.match(saved.content[0].text, /ACTED 2 action\(s\)\. This decision ends\.\n#1 ACTION1 → changed\n#2 ACTION4 → changed/);
     assert.equal(saved.terminate, true);
-    assert.equal(workspace.read('tools/two_moves.py').trim(), code);
-    assert.ok(registered.includes('two_moves'));
-    // The script tool takes its inputs as args and is callable without a rewrite.
+    assert.deepEqual(played.map(p => [p.call.action, p.via]), [['ACTION1', 'tools/walk.py'], ['ACTION4', 'tools/walk.py']]);
+    assert.equal(workspace.read('tools/walk.py').trim(), LOOP);
+    assert.ok(registered.includes('walk') && tools.active.includes('walk'));
+    // The saved tool takes a dict of arguments and is callable without a rewrite.
     binder.boundary();
-    const component = binder.active().find(c => c.path === 'tools/two_moves.py')!;
+    const component = binder.active().find(c => c.path === 'tools/walk.py')!;
     assert.deepEqual(component.parameters, { type: 'object', properties: { args: { type: 'object' } }, additionalProperties: false });
-    assert.equal(component.description, 'Two moves.');
+    assert.equal(component.description, 'Walk until nothing changes.');
     const called: any = await (runtime as any).call(component, { args: { bias: 2 } });
-    assert.match(called.content[0].text, /"seen":10/);
-    assert.equal(played.length, 2);
-    assert.equal(played[1].via, 'tools/two_moves.py');
-    // A read-only consult call never acts.
-    await (runtime as any).call(component, { args: {} }, undefined, true);
-    assert.equal(played.length, 2);
+    assert.match(called.content[0].text, /"bias":2/);
+    assert.equal(called.terminate, true);
+    assert.equal(played.length, 4);
+    // A read-only (subagent) call never acts.
+    const readonly: any = await (runtime as any).call(component, { args: {} }, undefined, true);
+    assert.match(readonly.content[0].text, /only saved code acts/);
+    assert.equal(played.length, 4);
     await assert.rejects(runtime.python('1', undefined, false, 'Bad Name'), /save must be a lowercase name/);
   } finally { runtime.close(); }
 });
 
-test('refiner replies: one FILE block with its WHY, NONE, or invalid', () => {
-  const edit = parseRefinerReply('FILE notes/strategy.md\n```\nRules\n- A1 moves up (conf 4, #1-#3)\n```\nEND\nWHY #1-#3 all moved the block up');
-  assert.deepEqual(edit, { kind: 'file', path: 'notes/strategy.md', content: 'Rules\n- A1 moves up (conf 4, #1-#3)\n', why: '#1-#3 all moved the block up' });
+test('the runtime ends an acting call at a level change and at the action limit; the actions taken stand', async () => {
+  const forever = '# Press until stopped.\nn = 0\nwhile True:\n    env.act("ACTION1")\n    n += 1\n';
+  const first: Played[] = [];
+  const level = runtimeFor(first, { levelAt: 2, quiet: true });
+  try {
+    const result: any = await level.runtime.python(forever, undefined, false, 'press');
+    assert.equal(first.length, 2);
+    assert.match(result.content[0].text, /\{"stopped":"the level changed"\}/);
+    assert.match(result.content[0].text, /ACTED 2 action\(s\); stopped: the level changed\. This decision ends\./);
+    assert.equal(result.terminate, true);
+  } finally { level.runtime.close(); }
+  const second: Played[] = [];
+  const limit = runtimeFor(second, { quiet: true });
+  try {
+    const result: any = await limit.runtime.python(forever, undefined, false, 'press');
+    assert.equal(second.length, MAX_ACTS);
+    assert.match(result.content[0].text, new RegExp(`ACTED ${MAX_ACTS} action\\(s\\); stopped: the limit of ${MAX_ACTS} actions per call was reached`));
+  } finally { limit.runtime.close(); }
+});
+
+test('every write is versioned and env.restore brings a version back; tools are only added within a decision', async () => {
+  const { workspace, binder, runtime, tools } = runtimeFor([]);
+  try {
+    await runtime.python('def run(args):\n    return 1\n', undefined, false, 'pick');
+    await runtime.python('def run(args):\n    return 2\n', undefined, false, 'pick');
+    assert.equal(binder.versionMap()['tools/pick.py'], 2);
+    const restored: any = await runtime.python('env.restore("tools/pick.py", 1)');
+    assert.match(restored.content[0].text, /tools\/pick\.py: restored from v1 · tools\/pick\.py → tool pick v3: saved · loaded/);
+    assert.equal(workspace.read('tools/pick.py'), 'def run(args):\n    return 1\n');
+    const missing: any = await runtime.python('env.restore("tools/pick.py", 9)');
+    assert.match(missing.content[0].text, /tools\/pick\.py: no version 9 to restore/);
+    // Removing a tool mid-decision does not take it out of the tool list the model was given.
+    binder.boundary();
+    await runtime.python("import os\nos.remove('tools/pick.py')");
+    assert.ok(tools.active.includes('pick'));
+    assert.equal(runtime.toolNames().includes('pick'), false);
+  } finally { runtime.close(); }
+});
+
+test('python calls share a session through the runtime; a subagent reads it but does not change it; it can be switched off', async () => {
+  const { runtime } = runtimeFor([]);
+  try {
+    const first: any = await runtime.python('def bump(v):\n    return v + step\nstep = 3');
+    assert.match(first.content[0].text, /\(kept for later python calls: bump, step\)/);
+    const second: any = await runtime.python('bump(4)');
+    assert.match(second.content[0].text, /→ 7/);
+    await runtime.python('step = 100', undefined, true);
+    assert.match((await runtime.python('bump(4)') as any).content[0].text, /→ 7/);
+  } finally { runtime.close(); }
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'activation-off-')));
+  const off = new NativeRuntime({ pi: { registerTool() {}, getActiveTools: () => [], setActiveTools() {} } as any, workspace,
+    binder: new Binder(workspace, validatePythonComponent), state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {},
+    wrap: (_name, fn) => fn, pythonSession: false });
+  try {
+    await off.python('step = 3');
+    assert.match((await off.python('step') as any).content[0].text, /NameError/);
+  } finally { off.close(); }
+});
+
+test('refinement replies: one FILE or MEMORY block with its WHY, NONE, or invalid', () => {
+  const edit = parseRefinerReply('FILE prompts/strategy.md\n```\nRules\n- A1 moves up (conf 4, #1-#3)\n```\nEND\nWHY #1-#3 all moved the block up');
+  assert.deepEqual(edit, { kind: 'file', path: 'prompts/strategy.md', content: '---\nactive: true\n---\nRules\n- A1 moves up (conf 4, #1-#3)\n', why: '#1-#3 all moved the block up' });
+  assert.deepEqual(parseRefinerReply('MEMORY rule.up 4\nACTION1 moves the block up\none cell.\nEND\nWHY #1-#3'),
+    { kind: 'memory', key: 'rule.up', confidence: 4, text: 'ACTION1 moves the block up one cell.', why: '#1-#3' });
+  assert.deepEqual(parseRefinerReply('MEMORY rule.up 5 replaces hyp.tick, hyp.click rule.up\nACTION1 moves the block up.\nEND\nWHY #1-#8'),
+    { kind: 'memory', key: 'rule.up', confidence: 5, text: 'ACTION1 moves the block up.', why: '#1-#8', replaces: ['hyp.tick', 'hyp.click'] });
+  const tool = parseRefinerReply('FILE tools/route.py\ndef run(args, env):\n    return 1\nEND\nWHY retyped at #4-#6');
+  assert.equal(tool.kind === 'file' && tool.content, 'def run(args, env):\n    return 1\n');
+  assert.equal(parseRefinerReply('FILE skills/probe/SKILL.md\n---\nname: probe\ndescription: d\n---\nbody\nEND').kind, 'file');
   assert.equal(parseRefinerReply('NONE nothing new since #4').kind, 'none');
   assert.equal(parseRefinerReply('FILE ../secret.py\nx\nEND').kind, 'invalid');
   assert.equal(parseRefinerReply('FILE data/frames/1.json\nx\nEND').kind, 'invalid');
+  assert.equal(parseRefinerReply('FILE notes/strategy.md\nx\nEND').kind, 'invalid');
+  assert.equal(parseRefinerReply('FILE agents/critic.md\nx\nEND').kind, 'invalid');
+  assert.equal(parseRefinerReply('MEMORY rule 9\nx\nEND').kind, 'invalid');
   assert.equal(parseRefinerReply('just prose').kind, 'invalid');
-  const long = parseRefinerReply(`FILE notes/strategy.md\n${'x'.repeat(4000)}\nEND`);
-  assert.equal(long.kind === 'file' && long.content.length, STRATEGY_CHARS + 1);
+  const long = parseRefinerReply(`FILE prompts/strategy.md\n${'x'.repeat(4000)}\nEND`);
+  assert.equal(long.kind === 'file' && long.content.length, '---\nactive: true\n---\n'.length + STRATEGY_CHARS + 1);
 });
 
 test('memory index: one line per entry, live hypotheses first, full text by path', () => {
@@ -79,17 +162,4 @@ test('memory index: one line per entry, live hypotheses first, full text by path
   assert.match(lines[2], /^- obs\.layout \(conf 3\) room x14-53/);
   assert.ok(lines[2].length < 140);
   assert.equal(lines.length, 3);
-});
-
-test('history budget drops the oldest earlier decisions, keeps the current one, and says where the record lives', () => {
-  const history: any[] = [];
-  for (let n = 0; n < 6; n++) history.push({ role: 'user', content: `decision ${n}` },
-    { role: 'assistant', content: [{ type: 'toolCall', id: String(n), name: 'python', arguments: { code: 'x' } }] },
-    { role: 'toolResult', toolCallId: String(n), toolName: 'python', content: [{ type: 'text', text: 'R'.repeat(1500) }] });
-  const shown = projectNativeHistory(history, false, { verbatim: 2, condensed: 4, budget: 3500 });
-  const users = shown.filter(m => m.role === 'user');
-  const text = (m: any) => typeof m.content === 'string' ? m.content : m.content.map((b: any) => b.text ?? '').join('\n');
-  assert.equal(text(users.at(-1)), 'decision 5');
-  assert.ok(users.length < 6);
-  assert.match(text(users[0]), /earlier decisions? not shown; your memory, notes\/, saved components/);
 });

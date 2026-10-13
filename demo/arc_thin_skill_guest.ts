@@ -183,9 +183,12 @@ def _exec(req):
             loaded[name] = ns["run"]
         return loaded[name](state, args)
 
-    ns = dict(_ns)
+    ns = _ns if req.get("session_ns") else dict(_ns)
     ns.update({"state": state, "history": state.get("history"), "grid": state.get("grid"), "prev_grid": state.get("prev_grid"),
                "artifacts": state.get("artifacts") or {}, "skill": skill})
+    # The namespace the code ran in, also when it raised: the native runtime keeps what it defined (python session).
+    global _last_ns
+    _last_ns = ns
     tree = ast.parse(req["code"], "<skill>", "exec")
     last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
     buffer = io.StringIO()

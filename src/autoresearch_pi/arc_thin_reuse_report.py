@@ -26,7 +26,21 @@ from typing import Any
 
 _KEYWORDS = set(("False None True and as assert async await break class continue def del elif else except finally for from global "
                  "if import in is lambda nonlocal not or pass raise return try while with yield").split())
-_RECEIPT = re.compile(r"(\S+) → (tool|observer|library|skill|prompt|role|note) (\S+) v(\d+): saved · (NOT loaded|loaded|off)")
+_RECEIPT = re.compile(r"(\S+) → (tool|observer|library|skill|prompt|subagent|role|note) (\S+) v(\d+): saved · (NOT loaded|loaded|off)")
+_SKILL_FILE = re.compile(r"^skills/([^/]+)/SKILL\.md$")
+
+
+def component_kind(path: str) -> str | None:
+    """Mirror of demo/arc_thin_binder.ts componentKind: the capability category of a workspace file."""
+    if "_off" in path.split("/"):
+        return None
+    for kind, pattern in (("tool", r"(tools|observers)/[^/]+\.py"), ("library", r"lib/[^/]+\.py"), ("skill", r"skills/[^/]+/SKILL\.md"),
+                          ("prompt", r"prompts/[^/]+\.md"), ("subagent", r"(agents|roles)/[^/]+\.md")):
+        if re.fullmatch(pattern, path):
+            return kind
+    return None
+
+
 _LEVELS = re.compile(r"\blevels=(\d+)")
 _COORD = re.compile(r"\(\s*\d+\s*,\s*\d+\s*\)|\b[xy]\s*=\s*\d+|\b[xy]\d+\s*[-–]\s*\d+|\brows?\s+\d+|\bcol(?:umn)?s?\s+\d+|\bc\d{2}-\d{2}|\br\d{2}\b",
                     re.IGNORECASE)
@@ -106,6 +120,7 @@ def build_report(root: Path) -> dict[str, Any]:
     python_calls: list[dict[str, Any]] = []
     saves: list[dict[str, Any]] = []
     invocations: list[dict[str, Any]] = []
+    skill_reads: list[str] = []
     reasoning_sentences = coord_sentences = 0
     model_calls = 0
     creating = 0
@@ -131,6 +146,8 @@ def build_report(root: Path) -> dict[str, Any]:
                     python_calls.append({**entry, **code_shape(args["code"]), "chars": len(args["code"])})
                     for m in re.finditer(r"\b(?:from|import)\s+(tools|lib)\.([A-Za-z_]\w*)", args["code"]):
                         invocations.append({"path": f"{m.group(1)}/{m.group(2)}.py", "action": actions, "share": share, "via": "import"})
+                if block.get("name") == "read" and isinstance(args.get("path"), str) and _SKILL_FILE.match(args["path"]):
+                    skill_reads.append(_SKILL_FILE.match(args["path"]).group(1))
                 if block.get("name") in ("write", "edit") and isinstance(args.get("path"), str):
                     entry["path"] = args["path"]
                     if re.match(r"(tools|observers|lib)/", args["path"]):
@@ -154,7 +171,7 @@ def build_report(root: Path) -> dict[str, Any]:
                 saves.append({"path": m.group(1), "kind": m.group(2), "version": int(m.group(4)), "ok": m.group(5) != "NOT loaded",
                               "action": actions, "share": entry.get("share", 0.0), "tool": message.get("toolName")})
             name = message.get("toolName")
-            if name and name not in ("arc_action", "memory", "python", "read", "write", "edit", "ls", "grep", "consult", "run_skill"):
+            if name and name not in ("arc_action", "memory", "python", "read", "write", "edit", "ls", "grep", "consult", "refine", "run_skill"):
                 invocations.append({"name": name, "action": actions, "share": entry.get("share", 0.0), "result_chars": len(text), "via": "tool"})
 
     # Repetition.
@@ -209,6 +226,41 @@ def build_report(root: Path) -> dict[str, Any]:
             "replaced": bool(created and covered and (len(uses) + len(observed)) > 0 and after / span_after < before / span_before),
         })
 
+    # The five capability categories, each as created -> used (the binder's log covers the agent's and the
+    # refinements' edits alike). "Used" is what the category's use looks like: a prompt applied, a tool called or
+    # shown as a view, a skill read, a subagent consulted, a memory entry written.
+    stored: dict[str, dict[str, Any]] = {}
+    for row in _rows(root / ".harness" / "components.jsonl"):
+        kind = component_kind(str(row.get("path", "")))
+        if not kind:
+            continue
+        item = stored.setdefault(row["path"], {"kind": kind, "versions": 0, "failed": 0, "loaded": False, "active": False})
+        if not row.get("retired"):
+            item["versions"] = max(item["versions"], int(row.get("version") or 0))
+            item["failed"] += 1 if row.get("error") else 0
+            item["loaded"] = item["loaded"] or (bool(row.get("good")) and not row.get("error"))
+        item["active"] = not row.get("retired") and bool((row.get("good") or {}).get("enabled")) and not row.get("error")
+    consults = [str(r.get("role")) for r in _rows(harness / "consult_runs.jsonl")]
+    tool_uses = [i.get("name") or Path(str(i.get("path", ""))).stem for i in invocations] + [str(r.get("name")) for r in observer_runs]
+    memory_rows = _rows(harness / "memory.jsonl")
+
+    def category(kind: str, used: list[str]) -> dict[str, Any]:
+        own = {path: item for path, item in stored.items() if item["kind"] == kind}
+        names = {(path.split("/")[1] if kind == "skill" else Path(path).stem) for path, item in own.items() if item["loaded"]}
+        return {"created": len(names), "versions": sum(item["versions"] for item in own.values()),
+                "failed_saves": sum(item["failed"] for item in own.values()), "active_at_end": sum(1 for item in own.values() if item["active"]),
+                "used": len(names & set(used)), "uses": sum(1 for name in used if name in names)}
+
+    prompts = category("prompt", [])
+    prompts["used"], prompts["uses"] = prompts["active_at_end"], None  # a prompt is used by being applied
+    categories = {
+        "prompt": prompts, "tool": category("tool", tool_uses), "skill": category("skill", skill_reads),
+        "subagent": category("subagent", consults),
+        # Use of a memory entry is not observable (the index is resident), so only its writes are counted.
+        "memory": {"created": len({str(r.get("key")) for r in memory_rows if r.get("key")}), "writes": len(memory_rows),
+                   "by_refinement": sum(1 for r in memory_rows if r.get("by") == "refinement"), "used": None},
+    }
+
     # Cost by kind, and the task.
     usage_rows = _rows(harness / "usage.jsonl")
     by_kind: dict[str, dict[str, int]] = {}
@@ -225,8 +277,14 @@ def build_report(root: Path) -> dict[str, Any]:
     accounting = summary.get("request_accounting")
     total = accounting["known_tokens_lower_bound"] if accounting else sum(
         k["input"] + k["cache_read"] + k["cache_write"] + k["output"] for k in by_kind.values())
+    refined = [r for r in _rows(harness / "refiner.jsonl") if r.get("kind") == "edit"]
+    categories["tool"]["actions"] = sum(1 for r in trajectory if r.get("via"))
+    by_component: dict[str, int] = {}
+    for row in trajectory:
+        if row.get("via"):
+            by_component[row["via"]] = by_component.get(row["via"], 0) + 1
     report = {
-        "format": "arc-thin-reuse-v1", "root": str(root),
+        "format": "arc-thin-reuse-v2", "root": str(root),
         "task": {"actions": len(trajectory) or actions, "levels_completed": summary.get("levels_completed", max((int(r.get("levels_completed") or 0) for r in trajectory), default=0)),
                  "actions_per_hour": round(len(trajectory) / hours, 1) if hours else None, "parent_model_calls": model_calls},
         "cost": {"by_kind": by_kind, "total_reported": total,
@@ -242,11 +300,14 @@ def build_report(root: Path) -> dict[str, Any]:
         "offload": {
             "actions_from_components": sum(1 for r in trajectory if r.get("via")),
             "share_of_actions": round(sum(1 for r in trajectory if r.get("via")) / max(1, len(trajectory)), 3),
+            "actions_by_component": by_component,
             "replaying_calls": sum(1 for i in invocations if i.get("via") in ("tool", "import")),
             "creating_calls": creating,
-            "refiner_edits": sum(1 for r in _rows(harness / "refiner.jsonl") if r.get("kind") == "edit"),
-            "refiner_edits_loaded": sum(1 for r in _rows(harness / "refiner.jsonl") if r.get("kind") == "edit" and r.get("loaded")),
+            "refiner_edits": len(refined),
+            "refiner_edits_loaded": sum(1 for r in refined if r.get("loaded")),
+            "refiner_edits_by_category": {c: sum(1 for r in refined if r.get("category") == c) for c in sorted({str(r.get("category")) for r in refined})},
         },
+        "categories": categories,
         "components": components,
         "notes": "output-token attribution splits each message's output equally among its tool calls; coordinate share counts sentences, not reasoning tokens; structural coverage is a heuristic. Missing usage remains unknown in request_accounting.",
     }
@@ -268,6 +329,8 @@ def render(report: dict[str, Any]) -> str:
     lines.append(f"offload: {o['actions_from_components']} actions from saved code ({o['share_of_actions']:.0%}); "
                  f"{o['replaying_calls']} replaying vs {o['creating_calls']} creating calls; refiner edits {o['refiner_edits']} "
                  f"({o['refiner_edits_loaded']} loaded)")
+    lines.append("categories (created -> used): " + "; ".join(
+        f"{name} {c['created']} -> {'n/a' if c['used'] is None else c['used']}" for name, c in report.get("categories", {}).items()))
     for comp in report["components"]:
         lines.append(f"component {comp['path']}: created #{comp['created_at_action']}, v{comp['versions']}, failed {comp['failed_saves']}, "
                      f"cost create~{comp['creation_output_tokens_est']} maintain~{comp['maintenance_output_tokens_est']} "

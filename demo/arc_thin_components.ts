@@ -7,20 +7,10 @@ import type { ComponentSpec } from './arc_thin_binder.ts';
 const NATIVE = String.raw`
 import ast, io, sys, importlib.abc, importlib.util, builtins
 
-def _schema(node):
-    if isinstance(node, ast.Name):
-        names = {'int': 'integer', 'float': 'number', 'str': 'string', 'bool': 'boolean', 'list': 'array', 'dict': 'object'}
-        if node.id in names:
-            return {'type': names[node.id]}
-    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
-        if node.value.id == 'list':
-            return {'type': 'array', 'items': _schema(node.slice)}
-        if node.value.id == 'dict' and isinstance(node.slice, ast.Tuple) and len(node.slice.elts) == 2 and ast.unparse(node.slice.elts[0]) == 'str':
-            return {'type': 'object', 'additionalProperties': _schema(node.slice.elts[1])}
-    raise ValueError('unsupported or missing parameter annotation: ' + (ast.unparse(node) if node is not None else '(missing)'))
-
-def _is_script(tree):
-    return not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == 'run' for n in tree.body)
+RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill')
+# Every tool has one interface: a dict of arguments (Continual Harness's run(state, args) contract; Prime calls plain
+# python). No schema is derived from type hints, so there is no annotation to get wrong.
+TOOL_PARAMETERS = {'type': 'object', 'properties': {'args': {'type': 'object'}}, 'additionalProperties': False}
 
 def _first_comment(source):
     for line in source.splitlines():
@@ -30,47 +20,28 @@ def _first_comment(source):
             return ''
     return ''
 
+def _entry(tree):
+    names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    return 'run' if 'run' in names else 'observe' if 'observe' in names else None
+
 def _inspect(req):
     path = req['path']
     name = path.split('/')[-1][:-3]
+    top = path.split('/')[0]
     tree = ast.parse(req['source'], path)
-    kind = {'tools': 'tool', 'observers': 'observer', 'lib': 'library'}[path.split('/')[0]]
-    if kind == 'tool' and name in ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'run_skill'):
+    describe = (ast.get_docstring(tree) or _first_comment(req['source']) or ('saved python ' + name)).splitlines()[0][:120]
+    if top == 'lib':
+        return {'name': name, 'kind': 'library', 'description': describe, 'enabled': True}
+    if name in RESERVED:
         raise ValueError('tool name is reserved by the foundation')
-    spec = {'name': name, 'kind': kind, 'description': (ast.get_docstring(tree) or name).splitlines()[0][:120],
-            'enabled': not (kind == 'observer' and any(line.strip() == '# observe: off' for line in req['source'].splitlines()[:10]))}
-    if kind == 'library':
-        return spec
-    if kind == 'tool' and _is_script(tree):
-        # A script tool is code that ran once and was saved as it is (python(code, save=name)): no signature to
-        # write; its inputs come in as the dict args and its final expression is the result.
-        spec['parameters'] = {'type': 'object', 'properties': {'args': {'type': 'object'}}, 'additionalProperties': False}
-        spec['description'] = (ast.get_docstring(tree) or _first_comment(req['source']) or ('saved python ' + name)).splitlines()[0][:120]
-        return spec
-    functions = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith('_')]
-    entry = 'run' if kind == 'tool' else 'observe'
-    if len(functions) != 1 or functions[0].name != entry or not isinstance(functions[0], ast.FunctionDef):
-        raise ValueError('define one public function ' + entry)
-    fn = functions[0]
-    if fn.decorator_list or fn.args.vararg or fn.args.kwarg or fn.args.posonlyargs:
-        raise ValueError('decorators, variadic and positional-only entry parameters are unsupported')
-    if kind == 'observer':
-        if len(fn.args.args) != 1 or fn.args.args[0].arg != 'state' or fn.args.kwonlyargs:
-            raise ValueError('observer must define observe(state)')
-    else:
-        args = fn.args.args + fn.args.kwonlyargs
-        defaults = [None] * (len(fn.args.args) - len(fn.args.defaults)) + fn.args.defaults + fn.args.kw_defaults
-        schema = {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False}
-        for arg, default in zip(args, defaults):
-            schema['properties'][arg.arg] = _schema(arg.annotation)
-            if default is None:
-                schema['required'].append(arg.arg)
-            else:
-                ast.literal_eval(default)
-        if len(json.dumps(schema, separators=(',', ':'))) > 400:
-            raise ValueError('tool schema exceeds 400 chars; simplify the signature')
-        spec['parameters'] = schema
-    return spec
+    head = [line.strip() for line in req['source'].splitlines()[:10]]
+    off = '# view: off' in head or '# observe: off' in head
+    # A view is a tool whose output is shown after every new state (observers/ is the older place for views).
+    view = (top == 'observers' or '# view: on' in head) and not off
+    if view and 'env.act(' in req['source']:
+        raise ValueError('a view runs after every new state and cannot act: remove "# view: on" or the env.act call')
+    return {'name': name, 'kind': 'tool', 'description': describe, 'parameters': TOOL_PARAMETERS, 'view': view,
+            'enabled': not (top == 'observers' and off)}
 
 _sources = _req.get('sources') or {}
 _files = dict(_req.get('files') or {})
@@ -158,7 +129,7 @@ def _names():
 
 # The workspace's file names are known without their contents, so listing needs no file transfer. Without this,
 # os.listdir('data') failed with ENOENT in the 2026-10-12 real run and the agent concluded data/ did not exist.
-_DIRS = ('data', 'notes', 'prompts', 'lib', 'tools', 'observers', 'skills', 'roles', 'artifacts', 'results')
+_DIRS = ('data', 'notes', 'prompts', 'lib', 'tools', 'observers', 'skills', 'agents', 'roles', 'artifacts', 'results')
 def _listdir(path='.'):
     prefix = _path(path)
     below = prefix + '/' if prefix else ''
@@ -171,35 +142,169 @@ def _isdir(path):
 def _isfile(path):
     return _path(path) in _names()
 
+class _NeedAct(BaseException):
+    pass
+class ActStopped(Exception):
+    """The runtime stopped acting for this call (level change, game end, the action limit); the actions taken stand."""
+
+def _grid(rows):
+    # Observations come back as one hex character per cell to keep the replayed input small.
+    return [[int(c, 16) for c in row] for row in rows] if isinstance(rows, list) and rows and isinstance(rows[0], str) else rows
+
+class _Env:
+    """What saved code works with: the state and its history, and act(), which takes one action through the same
+    boundary as arc_action and returns what came back, so the code decides whether to go on (closed loop)."""
+    def __init__(self):
+        self.state = _state
+        self.grid = _state.get('grid')
+        self.prev_grid = _state.get('prev_grid')
+        self.history = _state.get('history')
+        self.artifacts = _state.get('artifacts') or {}
+        self.memory = {'facts': _state.get('memory'), 'hypotheses': _state.get('hypotheses'), 'strategies': _state.get('strategies')}
+        self.acted = 0
+        self.stopped = None
+    def frame(self, n):
+        return self.history.grid(n)
+    def act(self, action, x=None, y=None, predict=None):
+        if not _req.get('allow_act'):
+            raise PermissionError('only saved code acts: run this with python(save="name") or call a saved tool')
+        call = {'action': str(action).upper()}
+        if x is not None and y is not None: call.update(x=int(x), y=int(y))
+        if predict is not None: call['predict'] = predict
+        if self.stopped: raise ActStopped(self.stopped)
+        done = _req.get('acts') or []
+        if self.acted < len(done):
+            record = done[self.acted]
+            if record['call'] != call:
+                raise RuntimeError('acting code must repeat the same act() calls when it is replayed; avoid randomness and time')
+            self.acted += 1
+            if record.get('stopped'):
+                # Code that catches this and calls act() again is refused here, without another host round trip.
+                self.stopped = record['stopped']
+                raise ActStopped(self.stopped)
+            observation = dict(record['observation'])
+            observation['grid'] = _grid(observation.get('grid'))
+            self.grid = observation['grid']
+            return observation
+        raise _NeedAct(call)
+    def restore(self, path, version):
+        """Bring back an earlier version of a harness file (it becomes the newest version)."""
+        if not _req.get('allow_writes'): raise PermissionError('workspace path is read-only in this execution')
+        _ops.append({'op': 'restore', 'path': _path(path), 'version': int(version)})
+
+# Python session (Prime Agent's persistent kernel, adapted: each call still runs in a fresh sandbox). What a python call
+# defines at top level stays available to later calls: imports, functions and classes are re-run from their source,
+# JSON values are restored. Names starting with _ and the runtime's own names are not kept.
+_SESSION_SKIP = {'state', 'grid', 'history', 'prev_grid', 'artifacts', 'skill', 'args', 'env', 'ActStopped'}
+_SESSION_VALUE_CHARS = 16000
+
+def _session_load(session):
+    failed = []
+    for name, src in (session.get('defs') or {}).items():
+        try:
+            exec(compile(src, '<session %s>' % name, 'exec'), _ns)
+        except BaseException:
+            failed.append(name)
+    _ns.update(session.get('vars') or {})
+    return failed
+
+def _session_delta(code):
+    import json
+    tree = ast.parse(code)
+    ns = globals().get('_last_ns') or {}
+    defs, values, dropped, assigned, total = {}, {}, [], [], 0
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            src = ast.get_source_segment(code, node)
+            if src: defs['import: ' + src] = src
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            src = ast.get_source_segment(code, node)
+            if src and node.name in ns:
+                head = ''.join('@' + ast.get_source_segment(code, d) + '\n' for d in node.decorator_list)
+                defs[node.name] = head + src
+        else:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store) and sub.id not in assigned:
+                    assigned.append(sub.id)
+    for name in assigned:
+        if name.startswith('_') or name in _SESSION_SKIP or name not in ns or name in defs:
+            continue
+        value = ns[name]
+        if callable(value) or type(value).__name__ == 'module':
+            continue
+        try:
+            text = json.dumps(value)
+        except (TypeError, ValueError):
+            dropped.append(name)
+            continue
+        if len(text) > _SESSION_VALUE_CHARS or total + len(text) > 3 * _SESSION_VALUE_CHARS:
+            dropped.append(name)
+            continue
+        total += len(text)
+        values[name] = json.loads(text)
+    return {'defs': defs, 'vars': values, 'dropped': dropped}
+
+def _call(req, env):
+    """One contract for every tool: a dict of arguments. A script reads args and env; run(args[, env]) is called with
+    them; an older run(**kwargs), run(state, args) or observe(state) keeps working."""
+    source = _sources.get(req['path'], '')
+    inner = (req.get('args') or {}).get('args') or {}
+    entry = _entry(ast.parse(source, req['path']))
+    if entry is None:
+        req['code'] = source
+        _ns['args'], _ns['env'] = inner, env
+        return _exec(req)
+    module = __import__(req['path'][:-3].replace('/', '.'), fromlist=['*'])
+    if entry == 'observe':
+        return _jsonable(module.observe(_state))
+    params = [a.arg for a in next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'run').args.args]
+    if params[:1] == ['args'] and len(params) <= 2:
+        value = module.run(inner, env) if len(params) == 2 else module.run(inner)
+    elif params[:2] == ['state', 'args']:
+        value = module.run(_state, inner)
+    else:
+        value = module.run(**inner)
+    return _jsonable(value)
+
 try:
     if _req['mode'] == 'inspect':
         result = {'ok': True, 'value': _inspect(_req)}
     else:
         builtins.open = _open
-        import os
+        import os, random
         os.remove = os.unlink = _remove
         os.rename = os.replace = _rename
         os.listdir = _listdir
         os.path.isdir, os.path.isfile = _isdir, _isfile
         os.path.exists = lambda path: _isfile(path) or _isdir(path)
         sys.meta_path.insert(0, _Loader())
-        if _req['mode'] == 'exec':
-            _req['state'] = _state
-            # args: the inputs of a saved script tool; one-off code sees {} (or what the caller passed).
-            _ns['args'] = _req.get('args') or {}
-            result = {'ok': True, 'value': _exec(_req)}
-        elif _req['mode'] == 'call' and _is_script(ast.parse(_sources.get(_req['path'], ''), _req['path'])):
-            _req['state'] = _state
-            _req['code'] = _sources.get(_req['path'], '')
-            _ns['args'] = (_req.get('args') or {}).get('args') or {}
-            result = {'ok': True, 'value': _exec(_req)}
-        else:
-            module = __import__(_req['path'][:-3].replace('/', '.'), fromlist=['*'])
-            value = module.observe(_state) if _req['mode'] == 'observe' else module.run(**(_req.get('args') or {}))
-            result = {'ok': True, 'value': _jsonable(value)}
+        # Acting code is replayed from the start after every action, so it must be deterministic.
+        random.seed(0)
+        _req['state'] = _state
+        env = _Env()
+        _ns['ActStopped'] = ActStopped
+        try:
+            if _req['mode'] == 'exec':
+                _ns['args'], _ns['env'] = _req.get('args') or {}, env
+                _session = _req.get('session')
+                if _session is not None:
+                    _ns.update({'state': _state, 'grid': _state.get('grid'), 'history': _state.get('history'),
+                                'prev_grid': _state.get('prev_grid'), 'artifacts': _state.get('artifacts') or {}})
+                    _session_failed = _session_load(_session)
+                    _req['session_ns'] = True
+                result = {'ok': True, 'value': _exec(_req)}
+                if _session is not None:
+                    result['session'] = _session_delta(_req['code'])
+                    if _session_failed: result['session']['failed'] = _session_failed
+            else:
+                result = {'ok': True, 'value': _call(_req, env)}
+        except ActStopped as stopped:
+            result = {'ok': True, 'value': {'stopped': str(stopped)}}
         if _ops: result['ops'] = _ops
 except _NeedFile as error:
     result = {'ok': False, 'error': 'workspace file requested', 'need_file': str(error)}
+except _NeedAct as error:
+    result = {'ok': False, 'error': 'action requested', 'need_act': error.args[0]}
 except BaseException as error:
     result = {'ok': False, 'error': type(error).__name__ + ': ' + str(error),
               'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('source') or _req.get('code') or '')}
@@ -207,7 +312,10 @@ except BaseException as error:
 
 const base = arcSkillGuestProgram(SKILL_LIMITS);
 const program = { ...base, source: base.source.split('\n_src =')[0] + NATIVE };
-export type NativeResult = GuestResult & { need_file?: string; ops?: Array<{ op: 'write' | 'move' | 'delete'; path: string; content?: string; destination?: string }> };
+export type ActCall = { action: string; x?: number; y?: number; predict?: unknown };
+export type SessionDelta = { defs: Record<string, string>; vars: Record<string, unknown>; dropped: string[]; failed?: string[] };
+export type NativeResult = GuestResult & { need_file?: string; need_act?: ActCall; session?: SessionDelta;
+  ops?: Array<{ op: 'write' | 'move' | 'delete' | 'restore'; path: string; content?: string; destination?: string; version?: number }> };
 export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool,
   onMetrics?: (metrics:Record<string,unknown>)=>void): Promise<NativeResult> {
   const reply = pool ? await pool.evaluate(program, input, signal) : await evaluateTaskPython(program, input, signal);
