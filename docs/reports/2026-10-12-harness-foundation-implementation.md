@@ -266,4 +266,12 @@ WASI仍为CPython/WASM、Wasmtime49.0.0，WASM SHA不变。可信宿主runner为
 
 ### 正式启动记录
 
-待最终回归退出和源冻结后，在本节记录真实PID、root、effective配置、首个provider响应/动作及运行中状态；启动成功不写成100动作完成。
+第一场：2026-10-13 01:20:45（Asia/Shanghai），冻结 `7991122f`，PID104672，root [foundation-native-ls20-optimized-real-20261013-01](../../runs/foundation-native-ls20-optimized-real-20261013-01/summary.json)。实际yibu/qwen3.8-27b回应HTTP200并流式输出，最终15动作=bridge15、0关、3712.2秒，02:22:38停止，`passed=false / decision_timeout`。scorecard正常closed/verified，源hash起止一致。69attempt=68parent（66completed、1aborted、1unsettled）+1critic；known下界2,427,900，unknown2，不是完整费用。报告输出239,463、reasoning216,701（90.5%输出），cache_read1,805,696另列，reasoning不重复加到总token。
+
+本场compaction有效开关为ON，context175000/reserve16384/keepRecent20000，实际compact0：ON与触发分开，O17仍未验证。68个actual provider输入均只有1份Lossless grid，未发现replayed thinking/非空reasoning_content或secret-exposure。29python、23memory、15arc_action、1write；父自主写了tools/diff.py，下一请求已装配，diff实际调用0。机会→识别→投入→候选→装配有部分真实证据，后续语义使用/替代重复推导/净收益没有证据，不能把创建当offload完成。8次memory错误实际参数为未注册的`update`字符串，返回nothing to change；保留为下一接口修复反馈候选，不在本次deadline单因素修复里加入新alias或解题提示。
+
+停止诊断：最后一次Pi prompt在18:07:36.960UTC发送，最后provider attempt在18:20:42.167UTC开始/18:20:45.206UTC收到HTTP200，18:22:37左右触及整轮900秒deadline；该attempt只有约115秒，不足以判定provider卡住。这个`decision_timeout_seconds`包含整轮多个provider/tool调用，不能称“单请求fault timeout”。原协议虽然没有整场deadline，仍错误地限制了活跃调查，与用户无时间上限要求不符。上文180/900为第一场历史配置，后续修正实际正式协议为整轮0、idle180，不新增整体token/decision数量上限。
+
+用户随后“继续”，在保留第一场完整产物后实施一个主要因素：tools/run_foundation_real.py的协议和runner参数同时改decision_timeout_seconds=0。新协议回归先RED（观察到900）后GREEN；[相关Python23项](../../runs/optimization-no-turn-deadline-20261013.log)通过，[actual Pi无整轮deadline/check增量/8次读取fixture](../../runs/optimization-active-turn-uncapped-20261013/summary.json)通过。无更改prompt、tool/quota、compaction阈值或游戏知识。这次重启由后续继续指示授权；仍不是净收益确认对照，不自动扩为12场或无限失败重试。
+
+第二场待修正源提交后重新启动；首场已关闭的scorecard不复用，保留独立canonical轨迹。记录新PID/effective配置和实际provider/action之后，启动成功仍不写成100动作完成。

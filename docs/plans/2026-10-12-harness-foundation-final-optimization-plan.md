@@ -116,7 +116,7 @@ if (params.key !== undefined || params.text !== undefined ||
 
 **Files:** `src/autoresearch_pi/arc_thin_e2e.py::safe_turn`、`src/autoresearch_pi/pi_kernel.py`、`src/autoresearch_pi/cli.py`、`tools/run_foundation_real.py`；`tests/test_pi_kernel_idle_timeout.py`；拟新增 `tests/test_arc_thin_recovery.py` 和实际 runner故障场景。
 
-选择：删除“整个运行恢复累计>=2就终止”的 gate，累计次数仅统计。每个逻辑请求最多2次连续恢复作为初始fault policy；一次正常结算的请求结束该组计数，后续隔离故障有自己的恢复机会。先保留当前180秒idle、900秒单决策fault timeout并明确展示；它们可显式设0关闭，不隐式恢复为默认。每个attempt的超时与当前逻辑请求的恢复次数分开，避免悄悄形成整场 deadline。失败分类写具体阶段，而非都归为 Pi 崩溃。
+选择：删除“整个运行恢复累计>=2就终止”的 gate，累计次数仅统计。每个逻辑请求最多2次连续恢复；一次正常结算结束该组计数，后续隔离故障有自己的机会。2026-10-13首场真实样本揭示900秒限制整个Pi决策中的多次provider/tool调用，而不是单个请求；不能将仍有进展的长调查判为卡住。按用户无时间上限要求，普通真实协议采用decision_timeout_seconds=0，保留180秒无事件idle保护。CLI显式整轮deadline只用于另外指定的有界诊断，不隐式恢复到正式运行。每个attempt、整轮决策和累计计数分别标注；失败分类写具体阶段，而非都归为Pi崩溃。
 
 恢复顺序固定：停止旧stream → abort后等真实settlement → 同步bridge动作与轨迹 → 验证已提交动作/公开状态 → 保留session和workspace → 继续未完成操作。成功arc_action已提交时，交还该动作结果并走下一正常决策；不重发原动作，也不为了恢复额外调用模型。只有Pi进程确实死亡且bridge状态可确认时，重启Pi加载原session；不重启游戏。单纯一次idle不new_session。
 

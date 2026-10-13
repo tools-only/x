@@ -84,6 +84,7 @@ if script == "receipts":
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
     max_decisions=7 if script == "components" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     ledger=defaults, critic=defaults, review_at_level_change=False,
@@ -103,6 +104,7 @@ if defaults:
     assert 'Treat reasoning time and tokens as a task resource' in (root/'runtime-audit/provider-inputs.jsonl').read_text(encoding='utf-8')
 if uncapped:
     assert 'of run time left' not in json.dumps(requests), 'zero must remove the run deadline, including from actual parent input'
+    assert json.loads((root/'run-config.json').read_text())['decision_timeout_seconds']==0
 if script == 'nativeclaims':
     claims=[json.loads(line) for line in (root/'harness/claim_checks.jsonl').read_text().splitlines()]
     assert [(row['n'],row['result']) for row in claims if row['key']=='hyp.right']==[(1,True),(2,None),(3,True)],claims

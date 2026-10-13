@@ -119,3 +119,27 @@ def test_abort_without_settlement_refuses_new_requests():
     with pytest.raises(RuntimeError,match='did not settle'):
         runner._recover_native_turn(turn,'DECIDE',kernel,stats,lambda:False)
     assert len(calls)==1 and stats['idle_recovery_failures']==1
+
+
+def test_real_protocol_has_no_active_decision_deadline(tmp_path,monkeypatch):
+    import importlib.util,json
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('real_protocol',runner.PROJECT_ROOT/'tools/run_foundation_real.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    monkeypatch.setattr(module,'load_project_dotenv',lambda _: {})
+    monkeypatch.setattr(module,'source_hashes',lambda: {})
+    root=tmp_path/'ordinary'
+    monkeypatch.setattr(module.sys,'argv',['run_foundation_real.py',str(root)])
+    seen={}
+    def run(path,**kwargs):
+        seen.update(kwargs);path.mkdir();summary=path/'summary.json'
+        summary.write_text(json.dumps(dict(passed=True,stop_reason='budget_exhausted')))
+        return summary
+    monkeypatch.setattr(module.runner,'run_arc_thin_e2e',run)
+    monkeypatch.setattr(module.runner,'PiKernel',runner.PiKernel)
+    module.main()
+    protocol=json.loads((root/'real-observation-protocol.json').read_text())
+    assert seen['decision_timeout_seconds']==protocol['decision_timeout_seconds']==0
+    assert seen['experiment_timeout_seconds']==0
+    assert seen['max_decisions'] is None and seen['max_reported_tokens'] is None
+    assert seen['max_actions']==100 and seen['turn_idle_timeout_seconds']==180
