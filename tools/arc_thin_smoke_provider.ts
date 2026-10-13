@@ -259,11 +259,14 @@ const COMPONENT_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['compare', { x: 40 }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
+// The Pi process is restarted between the two halves: the python session comes back from its checkpoint.
 const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
-  { kind: 'decide', calls: [['read', { path: '$last_result', offset: 41, limit: 1 }]] },
+  { kind: 'decide', calls: [['read', { path: '$last_result', offset: 41, limit: 1 }],
+    ['python', { code: 'kept_across_restart.append(len(kept_across_restart))\n[kept_across_restart, twice(21)]' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ] : [
-  { kind: 'decide', calls: [['python', { code: "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(80)))\n1" }]] },
+  { kind: 'decide', calls: [['python', { code: "def twice(v):\n    return 2 * v\nkept_across_restart = [41]\n" +
+    "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(80)))\n1" }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
 // Native call cap: eighteen same-shape python calls in one message (the sixteenth is the last allowed and says so,

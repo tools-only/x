@@ -50,7 +50,9 @@ _ops = []
 _available = set(_req.get('file_names') or [])
 class _NeedFile(BaseException):
     pass
-_state = _req.get('state') or {}
+class _StateDict(dict):
+    """The runtime's state: a dict, of its own type so the python session can refer to it instead of copying it."""
+_state = _StateDict(_req.get('state') or {})
 if isinstance(_state.get('history'), dict):
     _state['history'] = _History(_state['history'])
 
@@ -166,6 +168,8 @@ class _Env:
     def frame(self, n):
         return self.history.grid(n)
     def act(self, action, x=None, y=None, predict=None):
+        if _session_flags.get('loading'):
+            raise PermissionError('no action while the python session is restored')
         if not _req.get('allow_act'):
             raise PermissionError('only saved code acts: run this with python(save="name") or call a saved tool')
         call = {'action': str(action).upper()}
@@ -192,57 +196,197 @@ class _Env:
         if not _req.get('allow_writes'): raise PermissionError('workspace path is read-only in this execution')
         _ops.append({'op': 'restore', 'path': _path(path), 'version': int(version)})
 
-# Python session (Prime Agent's persistent kernel, adapted: each call still runs in a fresh sandbox). What a python call
-# defines at top level stays available to later calls: imports, functions and classes are re-run from their source,
-# JSON values are restored. Names starting with _ and the runtime's own names are not kept.
+# Python session: the default computation workspace (Prime Agent's persistent kernel, adapted to a fresh sandbox per
+# call). After every python call the whole user namespace is checkpointed, so in-place changes, deletions, common
+# types and shared references survive, and nothing has to be saved by hand.
+#   - Values are pickled inside the sandbox; the host stores the bytes and never unpickles them.
+#   - Functions and classes are re-run from the source of their def/class statement, in the order they were first
+#     defined, with acting, workspace writes and printing disabled: restoring never repeats an environment action.
+#   - The runtime's own objects (state, history, env) are never stored; a value that refers to one is re-attached to
+#     the current one. The names the runtime provides (grid, state, ...) are rebuilt from canonical history each call.
+#   - What cannot be kept is reported by name with the reason. Nothing is dropped silently.
+import pickle, zlib, base64, hashlib, types, textwrap, contextlib
+
 _SESSION_SKIP = {'state', 'grid', 'history', 'prev_grid', 'artifacts', 'skill', 'args', 'env', 'ActStopped'}
-_SESSION_VALUE_CHARS = 16000
+_SESSION_RAW_BYTES = 2 * 1024 * 1024
+_session_flags = {}
+_session_defs = {}
+_session_gone = []
+_runtime = {}
+
+class _Gone:
+    """Stands in for a value whose definition no longer loads."""
+    def __init__(self, *args, **kwargs): pass
+    def __call__(self, *args, **kwargs): return self
+    def __setstate__(self, state): pass
+    def __reduce__(self): raise pickle.PicklingError('its definition no longer loads')
+
+# Helpers a checkpoint refers to by name, in a module of their own so pickle finds them on both sides.
+def _runtime_ref(key):
+    return _runtime.get(key)
+def _module_ref(name):
+    try:
+        return __import__(name, fromlist=['*'])
+    except BaseException:
+        _session_gone.append('module ' + name)
+        return _Gone()
+def _transition(row):
+    return _Transition(row)
+_helpers = types.ModuleType('_arc_session')
+for _helper in (_runtime_ref, _module_ref, _transition, _Gone):
+    _helper.__module__ = '_arc_session'
+    setattr(_helpers, _helper.__name__, _helper)
+sys.modules['_arc_session'] = _helpers
+
+def _session_own(obj, name):
+    return callable(obj) and getattr(obj, '__module__', None) == 'skill' and getattr(obj, '__qualname__', '') == name
+
+class _SessionPickler(pickle.Pickler):
+    # reducer_override is not called for plain ints, floats, strings, lists, dicts and tuples, so data pickles at C
+    # speed; the runtime's state dict is a dict subclass (_StateDict) so that it is seen here.
+    def reducer_override(self, obj):
+        for key, owned in _runtime.items():
+            if obj is owned:
+                return (_runtime_ref, (key,))
+        if isinstance(obj, types.ModuleType):
+            return (_module_ref, (obj.__name__,))
+        if isinstance(obj, _Transition):
+            return (_transition, (dict(obj),))
+        if isinstance(obj, (_History, _Env)):
+            raise pickle.PicklingError('a runtime object: take it from history or env again')
+        if isinstance(obj, (types.FunctionType, type)) and getattr(obj, '__module__', None) == 'skill':
+            name = getattr(obj, '__qualname__', '')
+            if name not in _session_defs:
+                raise pickle.PicklingError('%s is not defined by a def or class statement at the top level' % (name or 'it'))
+            if _ns.get(name) is not obj:
+                raise pickle.PicklingError('it refers to an earlier %s, which has been redefined or deleted' % name)
+        return NotImplemented
+
+class _SessionUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except BaseException:
+            _session_gone.append(module + '.' + name)
+            return _Gone
+
+def _session_bytes(values):
+    buffer = io.BytesIO()
+    _SessionPickler(buffer, protocol=4).dump(values)
+    return buffer.getvalue()
+
+def _session_module():
+    # User code runs as the module 'skill', so kept values can refer to the functions and classes it defines.
+    global _ns
+    module = types.ModuleType('skill')
+    module.__dict__.update(_ns)
+    sys.modules['skill'] = module
+    _ns = module.__dict__
 
 def _session_load(session):
-    failed = []
-    for name, src in (session.get('defs') or {}).items():
+    """Bring back what earlier python calls left. Returns what did not come back, with reasons."""
+    report = {'failed_defs': [], 'gone': []}
+    mark = len(_ops)
+    _session_flags['loading'] = True
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name, src in session.get('defs') or []:
+                try:
+                    exec(compile(src, '<session %s>' % name, 'exec'), _ns)
+                    _session_defs[name] = src
+                except _NeedFile:
+                    raise
+                except BaseException as problem:
+                    report['failed_defs'].append([name, (type(problem).__name__ + ': ' + str(problem))[:120]])
+    finally:
+        _session_flags['loading'] = False
+        del _ops[mark:]
+    blob = session.get('blob')
+    if blob:
         try:
-            exec(compile(src, '<session %s>' % name, 'exec'), _ns)
-        except BaseException:
-            failed.append(name)
-    _ns.update(session.get('vars') or {})
-    return failed
+            values = _SessionUnpickler(io.BytesIO(zlib.decompress(base64.b64decode(blob)))).load()
+        except BaseException as problem:
+            report['load_error'] = (type(problem).__name__ + ': ' + str(problem))[:200]
+            return report
+        for name in [k for k, v in values.items() if v is _Gone or isinstance(v, _Gone)]:
+            del values[name]
+            report['gone'].append(name)
+        if report['gone']:
+            report['gone_refs'] = sorted(set(_session_gone))[:8]
+        _ns.update(values)
+    return report
 
-def _session_delta(code):
-    import json
-    tree = ast.parse(code)
-    ns = globals().get('_last_ns') or {}
-    defs, values, dropped, assigned, total = {}, {}, [], [], 0
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            src = ast.get_source_segment(code, node)
-            if src: defs['import: ' + src] = src
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            src = ast.get_source_segment(code, node)
-            if src and node.name in ns:
-                head = ''.join('@' + ast.get_source_segment(code, d) + '\n' for d in node.decorator_list)
-                defs[node.name] = head + src
-        else:
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store) and sub.id not in assigned:
-                    assigned.append(sub.id)
-    for name in assigned:
-        if name.startswith('_') or name in _SESSION_SKIP or name not in ns or name in defs:
-            continue
-        value = ns[name]
-        if callable(value) or type(value).__name__ == 'module':
-            continue
-        try:
-            text = json.dumps(value)
-        except (TypeError, ValueError):
-            dropped.append(name)
-            continue
-        if len(text) > _SESSION_VALUE_CHARS or total + len(text) > 3 * _SESSION_VALUE_CHARS:
-            dropped.append(name)
-            continue
-        total += len(text)
-        values[name] = json.loads(text)
-    return {'defs': defs, 'vars': values, 'dropped': dropped}
+def _session_statements(tree):
+    """def/class statements that run at module level, also inside if/try/with/for blocks."""
+    found, pending = [], list(tree.body)
+    while pending:
+        node = pending.pop(0)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.append(node)
+        elif isinstance(node, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
+            for field in ('body', 'orelse', 'finalbody'):
+                pending.extend(getattr(node, field, None) or [])
+            for handler in getattr(node, 'handlers', None) or []:
+                pending.extend(handler.body)
+    return found
+
+def _session_dump(code, session, base, before, loaded):
+    """Checkpoint the namespace as it is now. All or nothing: over capacity or unverifiable means no checkpoint."""
+    lines = code.splitlines()
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        tree = None
+    statements = _session_statements(tree) if tree is not None else []
+    for node in statements:
+        obj = _ns.get(node.name)
+        if _session_own(obj, node.name) and id(obj) != before.get(node.name):
+            first = min([d.lineno for d in node.decorator_list] + [node.lineno])
+            _session_defs[node.name] = textwrap.dedent('\n'.join(lines[first - 1:node.end_lineno])) + '\n'
+    for name in list(_session_defs):
+        if not _session_own(_ns.get(name), name):
+            del _session_defs[name]
+    values = {k: _ns[k] for k in _ns if not k.startswith('_') and k not in base and k not in _SESSION_SKIP and k not in _session_defs}
+    unsupported = []
+    try:
+        raw = _session_bytes(values)
+    except BaseException:
+        kept = {}
+        for k, v in values.items():
+            try:
+                _session_bytes({k: v})
+                kept[k] = v
+            except BaseException as problem:
+                unsupported.append([k, (type(v).__name__ + ': ' + str(problem))[:160]])
+        values = kept
+        raw = _session_bytes(values)
+    uses = []
+    if tree is not None:
+        own = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        own |= {node.name for node in statements}
+        own |= {(a.asname or a.name).split('.')[0] for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+        uses = sorted(({n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)} & loaded) - own)
+    out = {'unsupported': unsupported, 'uses': uses}
+    defs = [[k, v] for k, v in _session_defs.items()]
+    sha = hashlib.sha256(raw).hexdigest()
+    if sha == session.get('sha') and defs == (session.get('defs') or []):
+        out['unchanged'] = True
+        return out
+    packed = base64.b64encode(zlib.compress(raw, 6)).decode('ascii')
+    chars = len(packed) + sum(len(src) for _, src in defs)
+    cap = int(session.get('cap') or 0)
+    if len(raw) > _SESSION_RAW_BYTES or (cap and chars > cap):
+        sizes = sorted(((len(zlib.compress(_session_bytes({k: v}), 6)) * 4 // 3, k) for k, v in values.items()), reverse=True)
+        sizes += sorted(((len(src), k + '()') for k, src in defs), reverse=True)
+        out['over'] = {'chars': chars, 'cap': cap, 'raw_bytes': len(raw), 'largest': [[k, n] for n, k in sorted(sizes, reverse=True)[:5]]}
+        return out
+    try:
+        _SessionUnpickler(io.BytesIO(raw)).load()
+    except BaseException as problem:
+        out['error'] = 'it could not be read back (%s)' % (type(problem).__name__ + ': ' + str(problem))[:160]
+        return out
+    out.update({'defs': defs, 'blob': packed, 'sha': sha, 'names': sorted(values), 'chars': chars, 'raw_bytes': len(raw)})
+    return out
 
 def _call(req, env):
     """One contract for every tool: a dict of arguments. A script reads args and env; run(args[, env]) is called with
@@ -285,17 +429,41 @@ try:
         _ns['ActStopped'] = ActStopped
         try:
             if _req['mode'] == 'exec':
-                _ns['args'], _ns['env'] = _req.get('args') or {}, env
                 _session = _req.get('session')
+                if _session is not None:
+                    _session_module()
+                _ns['args'], _ns['env'] = _req.get('args') or {}, env
                 if _session is not None:
                     _ns.update({'state': _state, 'grid': _state.get('grid'), 'history': _state.get('history'),
                                 'prev_grid': _state.get('prev_grid'), 'artifacts': _state.get('artifacts') or {}})
-                    _session_failed = _session_load(_session)
+                    _runtime.update({'state': _state, 'history': _state.get('history'), 'env': env})
+                    _base = set(_ns)
+                    _loaded = _session_load(_session)
+                    _before = {name: id(_ns.get(name)) for name in _session_defs}
+                    _restored = set(_ns) - _base
                     _req['session_ns'] = True
-                result = {'ok': True, 'value': _exec(_req)}
+                try:
+                    result = {'ok': True, 'value': _exec(_req)}
+                except (_NeedFile, _NeedAct):
+                    raise
+                except ActStopped as stopped:
+                    result = {'ok': True, 'value': {'stopped': str(stopped)}}
+                except BaseException as error:
+                    if _session is None:
+                        raise
+                    # As in a kernel, what ran before the error stays: the namespace is checkpointed either way.
+                    result = {'ok': False, 'error': type(error).__name__ + ': ' + str(error),
+                              'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('code') or '')}
                 if _session is not None:
-                    result['session'] = _session_delta(_req['code'])
-                    if _session_failed: result['session']['failed'] = _session_failed
+                    if _loaded.get('load_error'):
+                        # The stored checkpoint did not load: this call ran without it and must not replace it.
+                        result['session'] = _loaded
+                    else:
+                        try:
+                            result['session'] = _session_dump(_req['code'], _session, _base, _before, _restored)
+                        except BaseException as error:
+                            result['session'] = {'error': (type(error).__name__ + ': ' + str(error))[:200]}
+                        result['session'].update({k: v for k, v in _loaded.items() if v})
             else:
                 result = {'ok': True, 'value': _call(_req, env)}
         except ActStopped as stopped:
@@ -310,11 +478,19 @@ except BaseException as error:
               'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('source') or _req.get('code') or '')}
 `;
 
-const base = arcSkillGuestProgram(SKILL_LIMITS);
+// A python call carries the session checkpoint in and out, so the native guest gets the runtime's largest transport.
+const NATIVE_LIMITS = { ...SKILL_LIMITS, input_bytes: 512 * 1024, output_bytes: 256 * 1024 };
+const base = arcSkillGuestProgram(NATIVE_LIMITS);
 const program = { ...base, source: base.source.split('\n_src =')[0] + NATIVE };
 export type ActCall = { action: string; x?: number; y?: number; predict?: unknown };
-export type SessionDelta = { defs: Record<string, string>; vars: Record<string, unknown>; dropped: string[]; failed?: string[] };
-export type NativeResult = GuestResult & { need_file?: string; need_act?: ActCall; session?: SessionDelta;
+/** What the guest reports about the python session after a call (arc_thin_python_session.ts commits it). */
+export type SessionReport = {
+  defs?: Array<[string, string]>; blob?: string; sha?: string; names?: string[]; chars?: number; raw_bytes?: number;
+  unchanged?: boolean; unsupported?: Array<[string, string]>; uses?: string[];
+  over?: { chars: number; cap: number; raw_bytes: number; largest: Array<[string, number]> };
+  error?: string; load_error?: string; failed_defs?: Array<[string, string]>; gone?: string[]; gone_refs?: string[];
+};
+export type NativeResult = GuestResult & { need_file?: string; need_act?: ActCall; session?: SessionReport;
   ops?: Array<{ op: 'write' | 'move' | 'delete' | 'restore'; path: string; content?: string; destination?: string; version?: number }> };
 export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool,
   onMetrics?: (metrics:Record<string,unknown>)=>void): Promise<NativeResult> {

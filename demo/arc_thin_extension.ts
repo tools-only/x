@@ -2063,6 +2063,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
+      // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
+      sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),
       artifacts: (result, component, n) => {
         const count = artifactLog.length;

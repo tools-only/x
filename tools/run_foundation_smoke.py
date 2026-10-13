@@ -142,6 +142,11 @@ elif script == 'migration':
     assert records[-1]['skill'] == 'producer' and records[-1]['value'] == 50 and records[-1]['n'] == 0
 elif script == "receipts":
     assert "COUNTEREXAMPLE_MIDDLE_EXACT" in text
+    # The python session survives the Pi restart: a function and an in-place changed list come back from the checkpoint.
+    assert any(r["tool"] == "python" and r["text"].endswith("→ [[41,1],42]") for r in results), [r["text"][-200:] for r in results if r["tool"] == "python"]
+    session_rows = [json.loads(s) for s in (root / "harness/python_session.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(r["event"] == "restored" and "twice()" in r["names"] for r in session_rows), session_rows
+    assert (root / ".harness/python_session/HEAD.json").is_file()
     refs = list((root / "workspace/results").glob("*.txt"))
     assert any("COUNTEREXAMPLE_MIDDLE_EXACT" in ref.read_text(encoding="utf-8") for ref in refs)
     inputs = (root / "native-summary-input.jsonl").read_text(encoding="utf-8")
@@ -197,7 +202,7 @@ elif script == "activation":
     planned_decision = next(r["decision"] for r in trajectory if r.get("note") == "then 1 of 2")
     assert [r["action"] for r in trajectory if r["decision"] == planned_decision] == ["ACTION1", "ACTION4", "ACTION1"], trajectory
     # The python session: a function and a value defined in decision 3 are used in decision 5.
-    assert "(kept for later python calls: plus_one, kept_value)" in text, text[:3000]
+    assert "(python session: +plus_one(), +kept_value)" in text, text[:3000]
     assert any(r["tool"] == "python" and r["text"].endswith("→ 42") for r in results), [r["text"] for r in results if r["tool"] == "python"]
     # Reasoning stays within its decision: the next request of the same decision carries it, later decisions do not.
     carried = [r for r in parent if "THINK_MARK_DECISION3" in r.get("reasoning_in_context", [])]

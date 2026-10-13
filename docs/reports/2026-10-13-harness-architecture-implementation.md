@@ -242,7 +242,7 @@ lowering the reasoning setting (the user's standing preference). Unverified unti
 | Change | Reference | Where |
 |---|---|---|
 | The current decision keeps its reasoning between tool rounds; earlier decisions still carry none. `ARC_THIN_DECISION_REASONING=0` turns it off. | CH keeps "the local reasoning chain" until the next state change; Qwen's chat template renders reasoning only after the last user message | context hook; `reasoning_chars` in `context_budget.jsonl` |
-| What a python call defines stays defined in later python calls: imports, functions and classes are re-run from source; JSON values are restored (16k per value, 48k for definitions and 96k for values in total, oldest dropped first). The receipt names what was kept. Subagents read the session but do not change it. `ARC_THIN_PYTHON_SESSION=0` turns it off. | Prime's persistent kernel, adapted: each call still runs in a fresh sandbox | `arc_thin_components.ts` `_session_load` / `_session_delta`; `NativeRuntime.keepSession` |
+| What a python call defines stays defined in later python calls. Superseded by the checkpointed session below. | Prime's persistent kernel, adapted: each call still runs in a fresh sandbox | see "The python session as the default workspace" |
 | Native receipts give the bridge's changed-cell count and box (`changed=52 in x13-38 y40-62`). Coordinates on actions other than ACTION6 are dropped and the receipt says they were ignored. | CH returns the observation with every action | `actionLine`, `submitAction`, `reportedAction` |
 | `arc_action` takes `then`: up to 11 further actions in the same call. They are played in order, and the sequence stops at a missed prediction, a level change, the game's end or a refusal. Logged in `action_sequences.jsonl`. | CH's `take_actions` | `registerArcAction`, `sequenceStop`, `repairActionArguments` |
 | Bookkeeping moves to refinements: the prompt asks the agent to run the next experiment once it is known and to write memory only for what would otherwise be lost. Refinements consolidate memory with `MEMORY <key> <conf> replaces <keys>`. | CH's Refiner consolidates; the orchestrator acts on p | prompt; `REFINER_SYSTEM`, `parseRefinerReply` |
@@ -274,6 +274,94 @@ and Codex's run on:
 - requests and actions per decision;
 - re-derived facts;
 - levels.
+
+## The python session as the default workspace
+
+**Requirement** (user, after Codex's merge review): ordinary python keeps its functions and values without `save`, files
+or reloading; in-place changes, deletions, common types and shared references survive; checkpoints are atomic, versioned
+and restored after a restart; runtime observations are rebuilt from canonical history; parent and child state are
+isolated; unsupported objects and capacity failures are reported accurately, never evicted silently; recovery never
+replays an environment action. Publishing tools stays a separate decision.
+
+**What the first session missed.** It captured only names assigned at the top level, as JSON. So `seen.append(x)` and
+`del x` were lost, tuples, sets and non-string keys changed, shared references became copies, eviction at the cap was
+silent, nothing survived a restart, and subagents read the parent's state.
+
+**Design.**
+- **Checkpoint the whole namespace after every call.** In the sandbox, every user name is pickled (protocol 4) and
+  compressed. It is unpickled once before it is reported, to check it reads back. The host stores the bytes and never
+  unpickles them. Plain data pickles at C speed; `reducer_override` sees only other objects. A first version with
+  `persistent_id` ran out of interpreter fuel on 60,000 floats.
+- **Re-run definitions from source, in place.** Functions and classes are re-run from their `def`/`class` statement,
+  including those inside `if`/`try`/`with` blocks. A redefinition replaces the source at its position, and `del` drops it.
+  Values refer to them by name in the module `skill`, the module user code now runs as.
+  - These cannot be kept, and are reported with the reason: a value that points at an earlier, since-redefined
+    function; a lambda; a nested function; a generator.
+  - Restoring runs with acting refused, printing suppressed and workspace writes discarded, so recovery cannot act or
+    write.
+- **Runtime objects by reference.** `state`, `history` and `env` are stored as references and re-attached to the current
+  ones. `grid` and the other names the runtime provides are rebuilt from canonical history every call. Copies the agent
+  makes stay copies.
+- **Errors.** As in a kernel, what ran before an error is kept.
+- **Commits** (`demo/arc_thin_python_session.ts`):
+  - one file per version (`.harness/python_session/v<n>.json`, with a sha256 of its content);
+  - written to a temporary name and renamed, then `HEAD.json`;
+  - the last 5 versions kept;
+  - after a restart, the newest intact version at or below the head is loaded;
+  - a version the guest cannot load is moved aside, the session rolls back to the version before it, and the agent is
+    told.
+- **No silent loss.** If the checkpoint exceeds 128,000 characters (compressed, base64, plus definition sources) or
+  2 MB raw, the call is not committed. The previous state stays and the receipt names the largest values. Unsupported
+  objects are named with the reason, and so are definitions that no longer re-run and values whose class no longer
+  loads. Unchanged sessions are not rewritten and say nothing.
+- **Isolation and order.**
+  - The parent's python calls run one at a time, in call order, so each sees what the previous one left.
+  - A subagent's python has an in-memory session of its own for that consult.
+  - Saved tools run without the session. When code saved with `python(save=)` reads session names, the receipt says the
+    tool will not have them.
+- **Transport.** The native guest's input limit is now 512 KB and its output limit 256 KB, the task-python ceilings, so a
+  checkpoint fits.
+- **Logs.** `harness/python_session.jsonl` records every commit, refusal, rollback and restore, with sizes and names;
+  `component_runs.jsonl` records the session version per call.
+
+**Verification (functional and scripted full chain).**
+- `tests/arc_thin_components.test.ts` (guest) covers:
+  - types: tuples, sets, tuple keys, `Counter`, `deque` with `maxlen`, bytes;
+  - shared references, `append`/`add` without assignment, `del`;
+  - class instances and an alias of a session function across calls;
+  - in-place redefinition, and an alias of the replaced function reported;
+  - unsupported lambda, generator and namedtuple, each named with its reason;
+  - runtime objects re-attached while copies stay copies;
+  - an error that keeps what ran before it;
+  - restore refusing `env.act`, discarding writes, and reporting the failed definition;
+  - an unloadable checkpoint reported without a replacement;
+  - over capacity refused, with the largest value named;
+  - an unchanged session sending nothing.
+- `tests/arc_thin_python_session.test.ts` (host) covers:
+  - versions, the head and pruning;
+  - restore after a restart;
+  - a damaged newest file, and an uncommitted newer file;
+  - rollback with versions never reused;
+  - refusals that keep the state and the files;
+  - receipts naming changes, unsupported values and dropped definitions;
+  - one-at-a-time ordering.
+- `tests/arc_thin_activation.test.ts` (runtime) covers:
+  - no save step needed;
+  - ordering of calls sent together;
+  - subagent isolation;
+  - the saved-tool warning;
+  - over capacity;
+  - restore after constructing a new runtime on the same directory;
+  - switching the session off.
+- 19/19 in these three files.
+- Foundation smoke `receipts` restarts the Pi process mid-run. A function and an in-place-extended list defined before
+  the restart give `[[41,1],42]` after it, and `python_session.jsonl` records the restore.
+
+**Not covered.**
+- Objects pickle cannot handle (open files, generators, lambdas, nested functions) are reported, not kept.
+- A value that depends on a module the sandbox lacks is dropped with the module named.
+- Very large state must go to files. The cap refuses it whole rather than truncating.
+- Real-provider use of the session is unverified.
 
 ## Risks, deviations and the next falsifiable check
 

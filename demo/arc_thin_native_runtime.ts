@@ -3,7 +3,8 @@ import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Binder, type Component } from './arc_thin_binder.ts';
 import { Workspace } from './arc_thin_workspace.ts';
-import { executeNative, type ActCall, type NativeResult, type SessionDelta } from './arc_thin_components.ts';
+import { executeNative, type ActCall, type NativeResult } from './arc_thin_components.ts';
+import { PythonSession } from './arc_thin_python_session.ts';
 import { TaskPythonPool } from './pi_task_python_pool.ts';
 import { codeShape, componentLines, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 
@@ -16,13 +17,13 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   /** Take one action for saved code through the environment boundary (closed loop: env.act in the code). */
   act?(call: ActCall, via: string): Promise<ActOutcome>;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
-  /** Keep what python calls define for later python calls (default true). */
-  pythonSession?: boolean };
+  /** Keep the python namespace between python calls (default true). */
+  pythonSession?: boolean;
+  /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
+  sessionDir?: string };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
 /** At most this many env.act calls in one tool call; acting code is replayed once per action. */
 export const MAX_ACTS = 24;
-/** Python session bounds: source of kept definitions and JSON of kept values; the oldest go first. */
-const SESSION_DEF_CHARS = 48_000, SESSION_VALUE_CHARS = 96_000;
 /** Python executions of the agent and its subagents that run at once (each is one python process). */
 const MAX_PARALLEL = 4;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
@@ -42,26 +43,11 @@ export class NativeRuntime {
   private observed = new Set<string>();
   private outputs = new Map<string, string>();
   private pythonRuns: PythonRun[] = [];
-  /** What python calls defined: definitions (re-run from source) and JSON values, oldest first. */
-  private session = { defs: new Map<string, string>(), vars: new Map<string, { value: unknown; chars: number }>() };
-  private sessionPayload() {
-    return { defs: Object.fromEntries(this.session.defs), vars: Object.fromEntries([...this.session.vars].map(([k, v]) => [k, v.value])) };
-  }
-  /** Keep a call's definitions and values; returns the names kept, for the receipt. */
-  private keepSession(delta: SessionDelta | undefined): string {
-    if (!delta) return '';
-    const { defs, vars } = this.session;
-    for (const [name, src] of Object.entries(delta.defs ?? {})) { defs.delete(name); defs.set(name, src); }
-    for (const [name, value] of Object.entries(delta.vars ?? {})) { vars.delete(name); vars.set(name, { value, chars: JSON.stringify(value).length }); }
-    let defChars = [...defs.values()].reduce((n, s) => n + s.length, 0);
-    for (const [name, src] of defs) { if (defChars <= SESSION_DEF_CHARS) break; defs.delete(name); defChars -= src.length; }
-    let valueChars = [...vars.values()].reduce((n, v) => n + v.chars, 0);
-    for (const [name, v] of vars) { if (valueChars <= SESSION_VALUE_CHARS) break; vars.delete(name); valueChars -= v.chars; }
-    const kept = [...Object.keys(delta.defs ?? {}).map(k => k.replace(/^import: /, '')), ...Object.keys(delta.vars ?? {})];
-    return [kept.length ? `(kept for later python calls: ${kept.join(', ').slice(0, 300)})` : '',
-      delta.dropped?.length ? `(not kept, not JSON or too large: ${delta.dropped.join(', ').slice(0, 200)})` : '',
-      delta.failed?.length ? `(earlier definitions that failed to re-run and were dropped: ${delta.failed.join(', ')})` : ''].filter(Boolean).join('\n');
-  }
+  /**
+   * The parent's python session: the namespace its python calls share, checkpointed after every call and restored
+   * after a restart (arc_thin_python_session.ts). Saved tools and subagents do not see it.
+   */
+  private session: PythonSession | undefined;
   /** Foreground executions running at once; the rest wait for a slot before their time allowance starts. */
   private running = 0;
   private waiting: Array<() => void> = [];
@@ -76,6 +62,10 @@ export class NativeRuntime {
     };
   }
   constructor(private host: Host) {
+    if (host.pythonSession !== false) {
+      this.session = new PythonSession(host.sessionDir);
+      if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
+    }
     host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a saved subagent (agents/<name>.md) with exact workspace refs. Subagents never act.',
       parameters: Type.Object({ agent: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
       prepareArguments: (args: any) => args && typeof args === 'object' && args.role && !args.agent ? { ...args, agent: args.role } : args,
@@ -256,9 +246,12 @@ export class NativeRuntime {
   }
   /**
    * One-off python. With `save`, the code is first saved as it is under tools/<save>.py and this run is its first
-   * call: saving costs no rewrite, and only saved code may act.
+   * call: saving costs no rewrite, and only saved code may act. Calls that share a session run one at a time.
    */
-  async python(code: string, signal?: AbortSignal, readonly = false, save?: string) {
+  async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
+    return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
+  }
+  private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
     const saveReceipts: string[] = [];
     let via: string | undefined;
     if (save !== undefined && !readonly) {
@@ -275,23 +268,29 @@ export class NativeRuntime {
     }
     const snap = this.snapshot(); const started = Date.now();
     const kit = kitOf(this.host.binder.versionMap());
-    const sessionOn = this.host.pythonSession !== false;
-    const result = await this.execute({ ...snap, mode: 'exec', code, allow_writes: !readonly, ...(sessionOn ? { session: this.sessionPayload() } : {}) },
+    const result = await this.execute({ ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}) },
       signal, undefined, via);
     const receipts = [...saveReceipts, ...(result.ok ? await this.applyWrites(result) : [])];
-    // A subagent's read-only python sees the session but does not change it.
-    const kept = result.ok && !readonly ? this.keepSession(result.session) : '';
+    // The namespace is checkpointed whether or not the code raised: what ran before an error stays, as in a kernel.
+    const outcome = session?.commit(result.session);
+    const sessionNotes = [outcome?.receipt ?? '',
+      // A saved tool runs without the session: say so when the code just saved relies on it.
+      via && result.session?.uses?.length ? `(${via} uses names from the python session: ${result.session.uses.join(', ').slice(0, 200)}. ` +
+        'A saved tool runs without the session, so define them inside it or pass them in args.)' : ''].filter(Boolean).join('\n');
+    if (outcome?.event) this.host.log('python_session.jsonl', { event: outcome.event, version: outcome.version, readonly, decision: this.decision(), n: this.host.actionCount(),
+      chars: result.session?.chars ?? result.session?.over?.chars, raw_bytes: result.session?.raw_bytes ?? result.session?.over?.raw_bytes,
+      names: result.session?.names?.length, defs: result.session?.defs?.length, unsupported: result.session?.unsupported,
+      over: result.session?.over, error: result.session?.error ?? result.session?.load_error, failed_defs: result.session?.failed_defs, gone: result.session?.gone });
     const shape = codeShape(code);
     // A consult's read-only python is not the parent's own work.
     const decision = this.decision();
     if (!readonly) this.pythonRuns.push({ level: this.host.level(), ...shape, kit, decision, n: this.host.actionCount(), code: code.slice(0, 2000) });
     this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started,
       ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit, ...(save ? { saved_as: `tools/${save}.py` } : {}) }),
-      acted: result.acted?.lines.length ?? 0, ...(result.session ? { session_defs: Object.keys(result.session.defs ?? {}).length,
-        session_vars: Object.keys(result.session.vars ?? {}).length, session_dropped: result.session.dropped?.length ?? 0 } : {}) });
+      acted: result.acted?.lines.length ?? 0, ...(outcome ? { session_version: outcome.version, session_event: outcome.event ?? 'unchanged' } : {}) });
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
-    return this.finish([...receipts, shown(result), kept, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result);
+    return this.finish([...receipts, shown(result), sessionNotes, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result);
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
     const component = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
@@ -342,6 +341,8 @@ export class NativeRuntime {
     if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${this.host.binder.active().filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}`);
     const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
     const tools: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
+    // The subagent's python has a session of its own for this consult: it neither sees nor changes the parent's.
+    const childSession = this.session ? new PythonSession() : undefined;
     for (const name of allowed) {
       if (name === 'arc_action') throw Error('arc_action cannot be granted');
       if (name === 'read') {
@@ -350,7 +351,7 @@ export class NativeRuntime {
         runTools.set(name, args => def.execute('consult', args, signal, undefined, ctx));
       } else if (name === 'python') {
         tools.push({ name, description: 'Read-only one-off Python', parameters: Type.Object({ code: Type.String() }) });
-        runTools.set(name, args => this.python(args.code, signal, true));
+        runTools.set(name, args => this.python(args.code, signal, true, undefined, childSession));
       } else {
         const c = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
         if (!c) throw Error(`subagent tool ${name} unavailable`);

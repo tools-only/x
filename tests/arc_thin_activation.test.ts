@@ -7,12 +7,13 @@ import { Workspace } from '../demo/arc_thin_workspace.ts';
 import { Binder } from '../demo/arc_thin_binder.ts';
 import { validatePythonComponent, type ActCall } from '../demo/arc_thin_components.ts';
 import { MAX_ACTS, NativeRuntime } from '../demo/arc_thin_native_runtime.ts';
+import { PythonSession } from '../demo/arc_thin_python_session.ts';
 import { parseRefinerReply, STRATEGY_CHARS } from '../demo/arc_thin_refiner.ts';
 import { emptyMemory, applyRow, renderMemoryIndex } from '../demo/arc_thin_memory.ts';
 
 type Played = { call: ActCall; via: string };
 /** A host whose every second action changes nothing; `levelAt` makes that action change the level (the runtime then stops the call). */
-const runtimeFor = (played: Played[], options: { levelAt?: number; quiet?: boolean } = {}) => {
+const runtimeFor = (played: Played[], options: { levelAt?: number; quiet?: boolean; sessionDir?: string; logs?: any[] } = {}) => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'activation-')));
   const binder = new Binder(workspace, validatePythonComponent);
   const registered: string[] = [];
@@ -20,8 +21,9 @@ const runtimeFor = (played: Played[], options: { levelAt?: number; quiet?: boole
   let stopped: string | undefined;
   const runtime = new NativeRuntime({
     pi: { registerTool(t: any) { registered.push(t.name); }, getActiveTools: () => tools.active, setActiveTools: (names: string[]) => { tools.active = names; } } as any,
-    workspace, binder, state: () => ({ grid: [[7, 8]] }), level: () => 0, actionCount: () => played.length, log() {}, usage() {},
-    wrap: (_name, fn) => fn,
+    workspace, binder, state: () => ({ grid: [[7, 8]] }), level: () => 0, actionCount: () => played.length,
+    log(file: string, row: any) { options.logs?.push({ file, ...row }); }, usage() {},
+    wrap: (_name, fn) => fn, ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
     act: async (call, via) => {
       if (stopped) return { stopped };
       played.push({ call, via });
@@ -109,16 +111,37 @@ test('every write is versioned and env.restore brings a version back; tools are 
   } finally { runtime.close(); }
 });
 
-test('python calls share a session through the runtime; a subagent reads it but does not change it; it can be switched off', async () => {
-  const { runtime } = runtimeFor([]);
+test('the python session is the default workspace: kept without a save step, after a restart, apart from subagents and saved tools', async () => {
+  const sessionDir = mkdtempSync(join(tmpdir(), 'activation-session-'));
+  const logs: any[] = [];
+  const { runtime } = runtimeFor([], { sessionDir, logs });
+  const out = (result: any) => result.content[0].text as string;
   try {
-    const first: any = await runtime.python('def bump(v):\n    return v + step\nstep = 3');
-    assert.match(first.content[0].text, /\(kept for later python calls: bump, step\)/);
-    const second: any = await runtime.python('bump(4)');
-    assert.match(second.content[0].text, /→ 7/);
-    await runtime.python('step = 100', undefined, true);
-    assert.match((await runtime.python('bump(4)') as any).content[0].text, /→ 7/);
+    assert.match(out(await runtime.python('def bump(v):\n    return v + step\nstep = 3\nseen = [1]')), /\(python session: \+bump\(\), \+seen, \+step\)/);
+    // An in-place change needs no assignment and no save; an unchanged session says nothing.
+    assert.doesNotMatch(out(await runtime.python('seen.append(bump(4))')), /python session/);
+    assert.match(out(await runtime.python('seen')), /→ \[1,7\]/);
+    // Calls sent together run in order, each seeing what the one before left.
+    const [a, b] = await Promise.all([runtime.python('order = [1]'), runtime.python('order.append(2)\norder')]);
+    assert.match(out(a), /\+order/);
+    assert.match(out(b), /→ \[1,2\]/);
+    // A subagent's python has its own session for the consult.
+    assert.match(out(await runtime.python('step = 100\nmine = 1', undefined, true, undefined, new PythonSession())), /\+mine, \+step/);
+    assert.match(out(await runtime.python('[bump(4), "mine" in globals()]')), /→ \[7,false\]/);
+    // Saving code that relies on the session says the tool will run without it.
+    assert.match(out(await runtime.python('bump(1)', undefined, false, 'use_bump')),
+      /\(tools\/use_bump\.py uses names from the python session: bump\. A saved tool runs without the session/);
+    // Over capacity: refused as a whole, the earlier state stays.
+    assert.match(out(await runtime.python('import random\nhuge = [random.random() for _ in range(30000)]')), /python session NOT saved: it needs \d+ KB and the limit is 128 KB; largest: huge/);
+    assert.match(out(await runtime.python('"huge" in globals()')), /→ false/);
   } finally { runtime.close(); }
+  // After a restart the same session comes back from its checkpoint.
+  const again = runtimeFor([], { sessionDir, logs });
+  try {
+    assert.match(out(await again.runtime.python('[bump(4), seen, order]')), /→ \[7,\[1,7\],\[1,2\]\]/);
+    assert.ok(logs.some(row => row.file === 'python_session.jsonl' && row.event === 'restored' && row.names.includes('bump()')));
+    assert.ok(logs.some(row => row.file === 'python_session.jsonl' && row.event === 'over_capacity' && row.over.largest[0][0] === 'huge'));
+  } finally { again.runtime.close(); }
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'activation-off-')));
   const off = new NativeRuntime({ pi: { registerTool() {}, getActiveTools: () => [], setActiveTools() {} } as any, workspace,
     binder: new Binder(workspace, validatePythonComponent), state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {},
