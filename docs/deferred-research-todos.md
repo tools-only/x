@@ -1,3 +1,5 @@
+2026-10-13 分支整合：foundation-fixes 的 workspace/reuse 优化合入 native-compaction；原生压缩保持默认，历史分层和工具配额作为可选配置。合并验证与成本边界见[变更记录](reports/2026-10-13-foundation-fixes-native-merge.md)。B/C/D 的自主采用、父子净成本和压缩认知连续性仍开放。
+
 # 延后待办：ARC 边界与 Auto-Research 模式
 
 2026-10-13 后续授权实施：最终方案的恢复/对账、原生压缩生效、短引用、调查配额减负、来源提示、critic条件证据及推理offload原则已实现，WASI阶段计量已接入。工程产物和一次100动作、无整场时间/token/decision上限、compaction开启的普通真实运行状态统一记录在[同一实现报告](reports/2026-10-12-harness-foundation-implementation.md#optimization-implementation-and-restart-2026-10-13)。B/C/D的真实自主采用、总成本净收益和压缩后认知连续性仍开放；Auto-Research继续关闭。以下“仅方案/未实现”段落保留为此前阶段记录。

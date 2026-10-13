@@ -16,3 +16,27 @@ def test_completed_cancelled_and_unsettled_requests_are_distinct_and_not_zero_co
     assert out['attempts']==92 and out['known_tokens_lower_bound']==910
     assert out['unknown_cost_attempts']==3 and not out['complete_cost_known']
     assert out['by_kind']['parent']==dict(attempts=90,completed=87,aborted=2,unsettled=1,failed=0)
+
+
+def test_reuse_report_preserves_partial_cost_and_cache_write_tokens(tmp_path):
+    import json
+    from autoresearch_pi.arc_thin_reuse_report import build_report
+
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "usage.jsonl").write_text(json.dumps(dict(
+        kind="agent", input=10, cache_read=20, cache_write=30, output=40, reasoning=5, total=100)) + "\n", encoding="utf-8")
+    accounting = _request_accounting([
+        dict(stage="request_prepared", request_id="ok", kind="parent"),
+        dict(stage="request_settlement", request_id="ok", status="completed", cost_status="reported", total=100),
+        dict(stage="request_prepared", request_id="pending", kind="adoption"),
+    ])
+    (tmp_path / "summary.json").write_text(json.dumps(dict(request_accounting=accounting)), encoding="utf-8")
+    cost = build_report(tmp_path)["cost"]
+    assert cost["total_reported"] == 100
+    assert cost["by_kind"]["agent"]["cache_write"] == 30
+    assert cost["complete_cost_known"] is False
+    assert cost["request_accounting"]["unknown_cost_attempts"] == 1
+    assert cost["request_accounting"]["by_kind"]["adoption"]["unsettled"] == 1
+    (tmp_path / "summary.json").unlink()
+    legacy = build_report(tmp_path)["cost"]
+    assert legacy["total_reported"] == 100 and legacy["complete_cost_known"] is None

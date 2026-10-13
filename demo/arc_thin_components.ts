@@ -136,6 +136,24 @@ def _rename(src, dst):
     _available.add(dst)
     _ops.append({'op': 'move', 'path': src, 'destination': dst})
 
+def _names():
+    return set(_available) | set(_files) | set(_sources)
+
+# The workspace's file names are known without their contents, so listing needs no file transfer. Without this,
+# os.listdir('data') failed with ENOENT in the 2026-10-12 real run and the agent concluded data/ did not exist.
+_DIRS = ('data', 'notes', 'prompts', 'lib', 'tools', 'observers', 'skills', 'roles', 'artifacts', 'results')
+def _listdir(path='.'):
+    prefix = _path(path)
+    below = prefix + '/' if prefix else ''
+    found = sorted({name[len(below):].split('/')[0] for name in _names() if name.startswith(below)} | (set(_DIRS) if not prefix else set()))
+    if not found and prefix.split('/')[0] not in _DIRS: raise FileNotFoundError(path)
+    return found
+def _isdir(path):
+    prefix = _path(path)
+    return not prefix or prefix in _DIRS or any(name.startswith(prefix + '/') for name in _names())
+def _isfile(path):
+    return _path(path) in _names()
+
 try:
     if _req['mode'] == 'inspect':
         result = {'ok': True, 'value': _inspect(_req)}
@@ -144,6 +162,9 @@ try:
         import os
         os.remove = os.unlink = _remove
         os.rename = os.replace = _rename
+        os.listdir = _listdir
+        os.path.isdir, os.path.isfile = _isdir, _isfile
+        os.path.exists = lambda path: _isfile(path) or _isdir(path)
         sys.meta_path.insert(0, _Loader())
         if _req['mode'] == 'exec':
             _req['state'] = _state

@@ -49,4 +49,8 @@ if mode=='idle':
 trajectory=[json.loads(line) for line in (root/'harness/trajectory.jsonl').read_text().splitlines()]
 assert [row['n'] for row in trajectory]==[1,2,3,4]
 assert json.loads((root/'run-config.json').read_text())['consolidate_after_actions']==0
+report=json.loads((root/'reuse_report.json').read_text())
+assert report['cost']['request_accounting']==summary['request_accounting']
+assert report['cost']['complete_cost_known']==summary['request_accounting']['complete_cost_known']
+assert report['cost']['total_reported']==summary['request_accounting']['known_tokens_lower_bound']
 print(path)

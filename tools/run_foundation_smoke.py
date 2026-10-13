@@ -21,6 +21,8 @@ if defaults:
                 self.command = [*self.command,'--extension',audit]
             return super().start()
     arc_thin_e2e.PiKernel=AuditKernel
+# 'banded' narrows the native history bands so a short smoke crosses all three (verbatim, condensed, dropped).
+banded = len(sys.argv) > 3 and sys.argv[3] == 'banded'
 if script == 'migration':
     class MigrationKernel(PiKernel):
         def start(self):
@@ -83,13 +85,15 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=7 if script == "components" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     ledger=defaults, critic=defaults, review_at_level_change=False,
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
+        **({'ARC_THIN_NATIVE_VERBATIM': '2', 'ARC_THIN_NATIVE_CONDENSED': '2'} if banded else {}),
+        **({'ARC_THIN_NATIVE_SPLIT_BUDGET': '1'} if script == 'budget' else {}),
         **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {} if defaults else {'ARC_THIN_AUTO_COMPACTION': '0'})})
 summary = json.loads(path.read_text(encoding="utf-8"))
 requests = [json.loads(s) for s in (root / "smoke-requests.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -100,8 +104,16 @@ if defaults:
     assert json.loads((root/'run-config.json').read_text())['auto_compaction'] is True, 'native default compaction must reach installed Pi'
     config=json.loads((root/'run-config.json').read_text())
     policy=json.loads((root/'runtime-audit/compaction-policy.json').read_text())
+    assert config['native_history']['verbatim'] == 0 and config['native_split_budget'] is False
     assert config['pi_auto_compaction_enabled'] is True and policy['settings']['enabled'] is True
-    assert 'Treat reasoning time and tokens as a task resource' in (root/'runtime-audit/provider-inputs.jsonl').read_text(encoding='utf-8')
+    assert 'Reuse your saved components' in (root/'runtime-audit/provider-inputs.jsonl').read_text(encoding='utf-8')
+if banded:
+    parent_requests = [r for r in requests if not r.get("analyst") and not r.get("critic")]
+    shown = [json.dumps(r.get("transcript", [])) for r in parent_requests]
+    assert any("earlier decision" in s and "not shown" in s for s in shown), "the oldest band must be dropped with a note"
+    assert any("are condensed" in s for s in shown), "the middle band must be condensed"
+    config = json.loads((root / "run-config.json").read_text(encoding="utf-8"))
+    assert config["native_history"] == {"verbatim": 2, "condensed": 2}, config["native_history"]
 if uncapped:
     assert 'of run time left' not in json.dumps(requests), 'zero must remove the run deadline, including from actual parent input'
     assert json.loads((root/'run-config.json').read_text())['decision_timeout_seconds']==0
@@ -135,6 +147,39 @@ elif script == "receipts":
         probes = [json.loads(s) for s in (root / 'harness/compaction_probe.jsonl').read_text(encoding='utf-8').splitlines()]
         assert any(row['turnPrefixMessages'] for row in probes), 'split-turn path must be exercised'
         assert len(inputs.splitlines()) >= 2, 'Pi must summarize history and the split turn'
+elif script == "budget":
+    parent = [r for r in requests if not r.get("analyst") and not r.get("critic")]
+    assert "budget of 10 calls is used" in text and "last look-up or compute call" in text, text[:2000]
+    assert sum("cell" in r["text"] for r in results if r["tool"] == "python") >= 10
+    names = [[t["name"] for t in r["tools"]] for r in parent]
+    after = next(i for i, r in enumerate(parent) if "budget of 10 calls is used" in json.dumps(r.get("last_tool_results", [])))
+    assert "python" not in names[after] and "memory" in names[after] and "arc_action" in names[after], names[after]
+    assert "python" in names[-1], names[-1]
+    assert summary["no_action_decisions"] == 0, summary
+    assert any("REPEATED WORK: 9 of your last 10 python calls" in r.get("current", "") for r in parent)
+    assert "BUDGET_RECORDED" in (root / "harness/memory.jsonl").read_text(encoding="utf-8")
+elif script == "reuse":
+    parent = [r.get("current", "") for r in requests if not r.get("analyst") and not r.get("critic")]
+    assert any("REPEATED WORK: 1 of your last 2 python calls" in s for s in parent), "repetition must be shown"
+    gap = next((s for s in parent if "REUSE GAP:" in s), "")
+    assert "no component was saved for it; it was rebuilt 2 more times" in gap, gap[-1500:]
+    if defaults:
+        assert "Independent review of this gap" in gap and "- missing: " in gap and "tools/cell.py run(x: int)" in gap, gap[-1500:]
+        reviews = [json.loads(s) for s in (root / "harness/reuse_reviews.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert [r["kind"] for r in reviews] == ["gap", "review"], reviews
+        assert reviews[1]["dropped"] == ["not a cause line"], reviews[1]
+        usage = (root / "harness/usage.jsonl").read_text(encoding="utf-8")
+        assert '"kind":"adoption"' in usage
+    assert any("tools/cell.py already covers it" in s for s in parent), "a saved tool must be matched with the calls it can replace"
+    runs = [json.loads(s) for s in (root / "harness/component_runs.jsonl").read_text(encoding="utf-8").splitlines()]
+    kinds = [r["kind"] for r in runs]
+    assert "reuse_shown" in kinds and kinds.count("reuse_gap") == 1 and any(r["kind"] == "save" and r["path"] == "tools/cell.py" and r["ok"] for r in runs), kinds
+    # The acceptance report: six same-computation calls, a tool that covers them but was never called, so not a replacement.
+    report = json.loads((root / "reuse_report.json").read_text(encoding="utf-8"))
+    assert report["repetition"]["python_calls"] == 6 and report["repetition"]["repeated_calls"] == 5, report["repetition"]
+    [cell] = [c for c in report["components"] if c["path"] == "tools/cell.py"]
+    assert (cell["covered_calls_before"], cell["covered_calls_after"], cell["invocations"], cell["replaced"]) == (4, 2, 0, False), cell
+    assert report["task"]["actions"] >= 5 and "agent" in report["cost"]["by_kind"], report["task"]
 elif script == "components":
     assert (root/'consult-length.jsonl').is_file(), 'consult length continuation must reach semantic result'
     for expected in ["compare v1", "42", "v2: saved", "NOT loaded", "v1 (v2 failed)", "compare v3", "43", "53", "CONSULT_SEMANTIC", "NATIVE_SKILL_BODY_READ_ON_DEMAND"]:

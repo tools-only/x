@@ -1,17 +1,23 @@
 Play ARC-AGI-3 {{game}}; discover rules by public experiments. (x,y)=grid[y][x]. End decisions with one arc_action, which consumes the budget. Reviews have no action. Honor budget/environment refusals.
 
-Pi retains history and compaction summaries, without replaying thinking by default. Only the newest message carries the current grid and PNG. read data/frames/<n>.json or Python history.grid(n) recovers exact earlier states. Saved results describe their labelled state; check applicability now.
+{{history}} Only the newest user message carries the current grid{{image}}. Exact history: read data/frames/<n>.json, Python history.grid(n), data/trajectory.jsonl.
 
-File tools use workspace-relative paths; data/ and results/ are read-only. Use notes/, prompts/, lib/, tools/, observers/, skills/<name>/, roles/, artifacts/. No links, absolute paths or traversal.
+Spend reasoning where it is new:
+- Reuse your saved components before re-deriving or rewriting anything.
+- When reuse can repay creation and checking cost, save a recurring method once as a component.
+- Leave coordinates, differences, counts and history lookups to components; you judge applicability on current evidence, interpret results, weigh rival hypotheses and design the next experiment.
+- When premises shift or a component errs, recompute on current data and fix the component rather than reuse a stale conclusion.
+One-off questions need no component.
 
-python runs once in fresh WASI with state, grid, prev_grid, history, artifacts and active lib.*, tools.*, skills.<name>.scripts.* imports. open() reads workspace snapshots; text writes use the binder. No host files, network or credentials.
+Paths are workspace-relative for read, write, edit, ls and grep; data/ and results/ are read-only. python runs once in WASI with state, grid, prev_grid, history and artifacts, imports lib.*, tools.*, skills.<name>.scripts.*; open() reads workspace snapshots, writes go through the binder.
 
-Treat reasoning time and tokens as a task resource. Prefer suitable existing harness components for recurring work. If reuse can repay creation and checking cost, save the method once and use it on later inputs. Use current evidence to check applicability; revise when conditions change. Reserve reasoning for interpretation, new hypotheses and experiment choice. One-off work can stay in python or direct reasoning.
+Components:
+- observers/<name>.py: observe(state) runs after every new state; you see its output each decision. # observe: off stops it.
+- tools/<name>.py: docstring and one public def run(...) with typed int/float/str/bool/list/dict parameters (defaults allowed; state is a module global); callable as a tool. lib/<name>.py: shared code.
+- roles/<name>.md (frontmatter description, tools: [read, python, <tool names>]): consult(role, question, refs) answers from a fresh context; roles never act.
+- skills/<name>/SKILL.md (name, description) is read on demand; prompts/<name>.md takes active: true|false.
+Receipts say which version runs next; a failed edit keeps the last working one. python os.rename(path, 'tools/_off/name.py') or os.remove(path) retires a file. Long results are saved as results/r<n>.txt; read with offset and limit. Keep notes in notes/, outputs in artifacts/.
 
-A component is its file. tools/<name>.py: module docstring, one public run(...) with typed int/float/str/bool/list/dict parameters (defaults allowed); state is global. observers/<name>.py: observe(state), automatic for each new state; # observe: off disables it. Skills: name/description frontmatter in SKILL.md, body read on demand. Prompts: active: true|false frontmatter. Roles: description and tools: [read, python, <named tools>] frontmatter plus instructions; consult(role, question, refs) gives one-shot advice, never game actions.
-
-write/edit receipts label the version active next request; failed edits keep the working version labelled. python os.rename(path, 'tools/_off/name.py') or os.remove(path) retires files via binder. No publish step. Runtime builds CAPABILITIES. Read results/<id>.txt with offset/limit for exact omitted lines.
-
-memory holds beliefs, hypotheses with optional check(t), tests and strategies. Valid partial entries apply; invalid parts are reported; invented action evidence is refused. Notes need no ledger upkeep. check(t) uses before/after grids: True holds, False fails, None means the precondition did not apply; errors are separate. Interpret the evidence and choose the next test.
+memory records beliefs, hypotheses with optional check, tests and strategies. Partial entries apply what is valid and report the rest; invented action evidence is refused. check(t) uses before/after grids: True holds, False fails, None means the precondition did not apply; errors are separate.
 
 {{board}}

@@ -112,7 +112,9 @@ export class Binder {
       const c = e.good; const status = e.error ? 'failed' : !c?.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
       return `${c?.kind ?? componentKind(path)} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}${c && c.level < level && status !== 'stale' ? ' · stale' : ''}: ${c?.description ?? e.error} · ${c?.kind === 'tool' ? `${c.name}(...)` : `read ${path}`}`;
     });
-    const full = ['CAPABILITIES', ...lines].join('\n');
+    // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
+    if (!lines.length) return '';
+    const full = ['CAPABILITIES (your saved components)', ...lines].join('\n');
     if (full.length <= 1200) return full;
     const groups = new Map<string, number>();
     for (const [path, e] of this.entries) if (!e.retired && componentKind(path)) { const kind = componentKind(path)!; groups.set(kind, (groups.get(kind) ?? 0) + 1); }
