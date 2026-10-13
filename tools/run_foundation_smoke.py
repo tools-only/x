@@ -61,7 +61,7 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=7 if script == "components" else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=7 if script == "components" else 6 if script == "reuse" else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     ledger=defaults, critic=defaults, review_at_level_change=False,
@@ -106,6 +106,28 @@ elif script == "budget":
     assert summary["no_action_decisions"] == 0, summary
     assert any("REPEATED WORK: 9 of your last 10 python calls" in r.get("current", "") for r in parent)
     assert "BUDGET_RECORDED" in (root / "harness/memory.jsonl").read_text(encoding="utf-8")
+elif script == "reuse":
+    parent = [r.get("current", "") for r in requests if not r.get("analyst") and not r.get("critic")]
+    assert any("REPEATED WORK: 1 of your last 2 python calls" in s for s in parent), "repetition must be shown"
+    gap = next((s for s in parent if "REUSE GAP:" in s), "")
+    assert "no component was saved for it; it was rebuilt 2 more times" in gap, gap[-1500:]
+    if defaults:
+        assert "Independent review of this gap" in gap and "- missing: " in gap and "tools/cell.py run(x: int)" in gap, gap[-1500:]
+        reviews = [json.loads(s) for s in (root / "harness/reuse_reviews.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert [r["kind"] for r in reviews] == ["gap", "review"], reviews
+        assert reviews[1]["dropped"] == ["not a cause line"], reviews[1]
+        usage = (root / "harness/usage.jsonl").read_text(encoding="utf-8")
+        assert '"kind":"adoption"' in usage
+    assert any("tools/cell.py already covers it" in s for s in parent), "a saved tool must be matched with the calls it can replace"
+    runs = [json.loads(s) for s in (root / "harness/component_runs.jsonl").read_text(encoding="utf-8").splitlines()]
+    kinds = [r["kind"] for r in runs]
+    assert "reuse_shown" in kinds and kinds.count("reuse_gap") == 1 and any(r["kind"] == "save" and r["path"] == "tools/cell.py" and r["ok"] for r in runs), kinds
+    # The acceptance report: six same-computation calls, a tool that covers them but was never called, so not a replacement.
+    report = json.loads((root / "reuse_report.json").read_text(encoding="utf-8"))
+    assert report["repetition"]["python_calls"] == 6 and report["repetition"]["repeated_calls"] == 5, report["repetition"]
+    [cell] = [c for c in report["components"] if c["path"] == "tools/cell.py"]
+    assert (cell["covered_calls_before"], cell["covered_calls_after"], cell["invocations"], cell["replaced"]) == (4, 2, 0, False), cell
+    assert report["task"]["actions"] >= 5 and "agent" in report["cost"]["by_kind"], report["task"]
 elif script == "components":
     for expected in ["compare v1", "42", "v2: saved", "NOT loaded", "v1 (v2 failed)", "compare v3", "43", "53", "CONSULT_SEMANTIC", "NATIVE_SKILL_BODY_READ_ON_DEMAND"]:
         assert expected in text, expected

@@ -103,3 +103,46 @@ Branch `claude/foundation-fixes-20261012` on top of `codex/harness-foundation-20
 - Next falsifiable check: the run described in the protocol, which needs budget approval.
 - Backlog: `docs/deferred-research-todos.md` D (cognitive continuity after compression). Bands are a form of compaction, so the next real
   run should check for re-derivation after band moves, as D asks.
+
+## Addendum 2026-10-13: reasoning offload as the core objective
+
+User decision: reasoning efficiency and offloading are the core decision objectives of the Self-Harness. The agent's default preferences
+are reuse, codifying recurring methods, reasoning on what is new, and revising on feedback. They are stated as concise principles, with no
+mandatory cost sheet or promotion procedure; one-off work is done directly. Persistent rebuilding of clearly reusable work triggers an
+autonomous adoption-gap investigation. Acceptance reports repetition overhead, total cost and task performance separately, and checks that
+components really replace repeated downstream work after their creation, validation, maintenance, invocation and output costs.
+
+- Baseline from the same real run at 37 actions (`python -m autoresearch_pi.arc_thin_reuse_report <run>`):
+  - 3.24M reported tokens; 2.41 parent calls per action; 31.5k input per call; 10.6k reasoning per action; 0 levels; 17.2 actions/hour.
+  - Only 2 of 21 python calls redid an earlier computation (about 300 output tokens).
+  - About 29% of reasoning sentences located cells or coordinates (text heuristic).
+  - Conclusion: in this run, most re-derivation happened in reasoning, not in code.
+- Runtime changes (native mode):
+  - Prompt: the four principles replace the per-kind benefit text. System prompt with the board is 2966 characters.
+  - `demo/arc_thin_reuse.ts` (new) does the code-shape grouping, coverage and gap detection:
+    - A saved component covers a repeated computation when its source has the structure of at least half of the computation's lines,
+      and at least two lines. Numbers and variable names are ignored, so a tool that turned the constants into parameters still matches.
+    - REPEATED WORK then says "tools/x.py already covers it" (reuse), or invites saving it once (codify).
+  - Adoption gap: rebuilding continues in at least 2 later decisions after REPEATED WORK named it. The runtime then locates the break once,
+    as one of: nothing saved, a failed save, components saved since that do not contain the code, a covering component left unused, or a
+    covering component used but the code still retyped. With the critic enabled, an independent side call (`ADOPTION_SYSTEM`) answers
+    `cause | evidence | smallest change`, where cause is varies, missing, uncovered, friction, unnoticed or stale. Shown once and logged in
+    `reuse_reviews.jsonl`; its usage is logged as kind `adoption`.
+  - RESOURCES adds "about N% of it locating cells and coordinates" to the last turn's reasoning when the share is at least 20% and
+    reasoning is at least 2k tokens. This makes the larger, reasoning-side repetition visible next to its cost.
+  - Save receipts now come first in python results, so the 450-character head of a long result keeps them.
+- Measurement: `src/autoresearch_pi/arc_thin_reuse_report.py` writes `reuse_report.json` at the end of each run. Its sections are task,
+  cost by kind, repetition and per-component lifecycle costs. A component counts as having replaced its covered calls only if it was
+  invoked and those calls became less frequent per action after it was saved.
+- Checks:
+  - New `reuse` foundation smoke, run with and without critic:
+    - REPEATED WORK is shown, then the gap is located ("no component was saved…") and the review parsed (one junk line dropped).
+    - A later tool is matched as "already covers it".
+    - The report gives 6 python calls with 5 repeated, and tools/cell.py with covered calls 4→2, 0 invocations, replaced=false. This is
+      the negative case of a component saved but not used.
+  - All other foundation smokes pass. Node unit tests are listed in the commit.
+- Evidence: functional and scripted full chain only. Whether the agent follows the principles, closes gaps or reasons less is unverified
+  until a real run. The success criteria for that run:
+  - lower coordinate-reasoning share and reasoning per action;
+  - REPEATED WORK and gaps are followed by components that the report marks replaced=true;
+  - parent calls and total tokens per action are reported next to levels and actions per hour.

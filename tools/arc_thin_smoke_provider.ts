@@ -252,6 +252,21 @@ const BUDGET_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: 'print(len(grid))' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'budget reset' }]] },
 ];
+// Reuse: one computation typed twice (REPEATED WORK names it), then once in each of the next two decisions (an
+// adoption gap: investigated by the side call), then saved as a tool; typing it again is matched with that tool.
+const cellCode = (n: number) => `cell = history.grid(0)[0][${n}]\nprint('cell', ${n}, cell)`;
+const REUSE_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: cellCode(1) }], ['python', { code: cellCode(2) }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'reuse 1' }]] },
+  { kind: 'decide', calls: [['python', { code: cellCode(3) }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'reuse 2' }]] },
+  { kind: 'decide', calls: [['python', { code: cellCode(4) }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'reuse 3' }]] },
+  { kind: 'decide', calls: [['write', { path: 'tools/cell.py', content: '"""Read one cell of the first frame."""\ndef run(x: int):\n    cell = history.grid(0)[0][x]\n    print(\'cell\', x, cell)\n    return cell\n' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'reuse 4' }]] },
+  { kind: 'decide', calls: [['python', { code: cellCode(5) }], ['python', { code: cellCode(6) }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'reuse 5' }]] },
+];
 const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['run_skill', { name: 'old', args: { extra: 2 } }], ['read', { path: 'notes/controls.md' }]] },
   { kind: 'decide', calls: [['producer', { args: {} }]] },
@@ -262,6 +277,7 @@ const MIGRATION_SCRIPT: Step[] = [
 ];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
@@ -378,7 +394,8 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			}
       const consult = systemPrompt.startsWith('CONSULT_ROLE');
 			const analyst = systemPrompt.includes("careful visual analyst") || consult;
-			const critic = systemPrompt.includes("You review an agent");
+			const adoption = systemPrompt.startsWith("You review why an agent keeps rebuilding");
+			const critic = systemPrompt.includes("You review an agent") || adoption;
 			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
 			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(head.trimStart());
@@ -389,6 +406,9 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
           : { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }], ['compare', { x: 40 }]] };
       }
 			else if (analyst) planned = { kind: "decide", text: "ANALYST: only cell (0,0) is non-zero; it counts actions." };
+			else if (adoption) planned = { kind: "decide", text: messages.map(textOf).join("\n").includes("no component was saved")
+				? "missing | `cell = history.grid(0)[0][n]` typed in every call | tools/cell.py run(x: int) returning the cell\nnot a cause line"
+				: "varies | ADOPTION_UNEXPECTED_FINDING | none" };
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
 			else {
 				planned = SCRIPT[step];

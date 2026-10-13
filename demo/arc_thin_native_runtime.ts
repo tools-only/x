@@ -1,14 +1,14 @@
 import { validateToolArguments } from '@earendil-works/pi-ai';
-import { createHash } from 'node:crypto';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Binder, type Component } from './arc_thin_binder.ts';
 import { Workspace } from './arc_thin_workspace.ts';
 import { executeNative, type NativeResult } from './arc_thin_components.ts';
 import { TaskPythonPool } from './pi_task_python_pool.ts';
+import { adoptionGaps, codeShape, componentLines, kitOf, repeatedFamilies, repetitionText, type AdoptionGap, type PythonRun } from './arc_thin_reuse.ts';
 
 type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): Record<string, unknown>;
-  level(): number; actionCount(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
+  level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
   receipt?(body: string): string };
@@ -17,48 +17,10 @@ const shown = (result: NativeResult) => !result.ok ? [result.error, result.where
     ? [(result.value as any).stdout, (result.value as any).has_value ? '→ ' + JSON.stringify((result.value as any).value) : ''].filter(Boolean).join('\n')
     : JSON.stringify(result.value ?? null);
 const text = (value: string, isError = false) => ({ content: [{ type: 'text' as const, text: value }], isError });
+export { codeShape, kitOf, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 
-/**
- * A python call's code with comments, blank lines and number literals normalised, so calls that differ only in
- * numbers (history.grid(1) vs history.grid(2)) share a shape. `lines` are hashes of the normalised lines, for
- * calls that share most of their code.
- */
-export function codeShape(code: string): { shape: string; lines: string[]; gist: string } {
-  const raw = code.split(/\r?\n/).map(line => line.replace(/(^|\s)#.*$/, '').trim()).filter(Boolean);
-  const norm = raw.map(line => line.replace(/\b\d+(\.\d+)?\b/g, '0').replace(/\s+/g, ' '));
-  const hash = (s: string, n: number) => createHash('sha256').update(s).digest('hex').slice(0, n);
-  const gist = raw.find(line => !/^(import|from)\s/.test(line)) ?? raw[0] ?? '';
-  return { shape: hash(norm.join('\n'), 12), lines: [...new Set(norm.map(line => hash(line, 8)))], gist: gist.length > 60 ? gist.slice(0, 59) + '…' : gist };
-}
-export type PythonRun = { level: number; shape: string; lines: string[]; gist: string; kit: string };
-/** The saved tools, observers and libraries (path@version): repetition is counted only since this last changed. */
-export const kitOf = (versions: Record<string, number>) =>
-  Object.entries(versions).filter(([path]) => /^(tools|observers|lib)\//.test(path)).map(([path, v]) => `${path}@${v}`).sort().join(',');
-const REPETITION_WINDOW = 12;
-
-/**
- * Groups of recent python calls (one level, after the latest saved tool/observer/library) that redid one
- * computation: same shape, or most lines shared. Factual input for the agent's own choice to make it a component.
- */
-export function repetitionText(runs: PythonRun[]): string {
-  const recent = runs.slice(-REPETITION_WINDOW);
-  const families: Array<{ gist: string; size: number; shape: string; lines: Set<string> }> = [];
-  for (const run of recent) {
-    const family = families.find(f => f.shape === run.shape || overlap(f.lines, run.lines) >= 0.6);
-    if (family) family.size += 1;
-    else families.push({ gist: run.gist, size: 1, shape: run.shape, lines: new Set(run.lines) });
-  }
-  const repeated = families.filter(f => f.size > 1).sort((a, b) => b.size - a.size);
-  if (!repeated.length) return '';
-  const redone = repeated.reduce((n, f) => n + f.size - 1, 0);
-  return `REPEATED WORK: ${redone} of your last ${recent.length} python calls on this level redid an earlier computation with small changes ` +
-    `(${repeated.slice(0, 3).map(f => `\`${f.gist}\` ×${f.size}`).join(', ')}). As tools/<name>.py that computation is one exact call ` +
-    `with arguments; as observers/<name>.py its result is shown here after every move without a call.`;
-}
-function overlap(a: Set<string>, b: string[]): number {
-  const shared = b.filter(line => a.has(line)).length;
-  return shared / Math.max(1, new Set([...a, ...b]).size);
-}
+/** A repeated computation that went on after it was shown, with where the reuse path broke (mechanical). */
+export type LocatedGap = AdoptionGap & { level: number; finding: string; samples: string[] };
 
 export class NativeRuntime {
   private registered = new Map<string, string>();
@@ -89,12 +51,83 @@ export class NativeRuntime {
   toolNames() { return this.host.binder.candidates().filter(c => c.kind === 'tool' && this.registered.has(c.name)).map(c => c.name); }
   /** Earlier python runs of this run (component_runs.jsonl), after a restart. */
   seedPython(rows: any[]) {
-    for (const r of rows) if (r?.kind === 'python' && !r.readonly && typeof r.shape === 'string')
-      this.pythonRuns.push({ level: Number(r.level) || 0, shape: r.shape, lines: r.lines ?? [], gist: String(r.gist ?? ''), kit: String(r.kit ?? '') });
+    for (const r of rows) {
+      if (r?.kind === 'python' && !r.readonly && typeof r.shape === 'string')
+        this.pythonRuns.push({ level: Number(r.level) || 0, shape: r.shape, lines: r.lines ?? [], struct: r.struct ?? [], gist: String(r.gist ?? ''), kit: String(r.kit ?? ''),
+          decision: Number(r.decision) || 0, n: Number(r.n) || 0 });
+      if (r?.kind === 'tool' && typeof r.path === 'string' && !r.readonly) this.uses.push({ path: r.path, decision: Number(r.decision) || 0 });
+      if (r?.kind === 'save' && typeof r.path === 'string') this.saves.push({ path: r.path, decision: Number(r.decision) || 0, ok: r.ok !== false, error: r.error });
+      if (r?.kind === 'reuse_shown' && Array.isArray(r.shapes))
+        for (const s of r.shapes) if (!this.shown.has(s)) this.shown.set(s, Number(r.decision) || 0);
+      if (r?.kind === 'reuse_gap' && Array.isArray(r.shapes)) for (const s of r.shapes) this.investigated.add(s);
+    }
   }
-  repetitionText(level: number) {
+  /** Calls the agent made to saved tools and imports of tools/lib modules from its python, by decision. */
+  private uses: Array<{ path: string; decision: number }> = [];
+  /** Component saves (write, edit or python) with whether they loaded. */
+  private saves: Array<{ path: string; decision: number; ok: boolean; error?: string }> = [];
+  /** Family key → decision at which REPEATED WORK first showed it; families already investigated as gaps. */
+  private shown = new Map<string, number>();
+  private investigated = new Set<string>();
+  private decision() { return this.host.decision?.() ?? 0; }
+  noteSave(path: string, receipt: string | undefined) {
+    if (!/^(tools|observers|lib)\/[^/]+\.py$/.test(path)) return;
+    const ok = !/NOT loaded/.test(receipt ?? '');
+    const row = { path, decision: this.decision(), ok, ...(ok ? {} : { error: /NOT loaded \(([^)]*)\)/.exec(receipt ?? '')?.[1]?.slice(0, 200) }) };
+    this.saves.push(row); this.host.log('component_runs.jsonl', { kind: 'save', ...row });
+  }
+  private components() {
+    return this.host.binder.active().filter(c => /^(tools|observers|lib)\//.test(c.path) && c.path.endsWith('.py')).map(c => componentLines(c.path, c.source));
+  }
+  private levelRuns(level: number) {
     const kit = kitOf(this.host.binder.versionMap());
-    return repetitionText(this.pythonRuns.filter(r => r.level === level && r.kit === kit));
+    return this.pythonRuns.filter(r => r.level === level && r.kit === kit);
+  }
+  /** REPEATED WORK for the working set; the families it names are remembered as shown at this decision. */
+  repetitionText(level: number) {
+    const runs = this.levelRuns(level); const components = this.components();
+    const decision = this.decision();
+    for (const family of repeatedFamilies(runs, components)) {
+      const fresh = [...new Set(family.runs.map(r => r.shape))].filter(s => !this.shown.has(s));
+      if (!fresh.length) continue;
+      for (const s of fresh) this.shown.set(s, decision);
+      this.host.log('component_runs.jsonl', { kind: 'reuse_shown', shapes: fresh, gist: family.gist, decision });
+    }
+    return repetitionText(runs, components);
+  }
+  /**
+   * Families rebuilt after they were shown, each with a mechanical finding of where reuse broke. Returned once per
+   * family (logged as reuse_gap); the semantic investigation is the caller's side call.
+   */
+  adoptionGaps(level: number): LocatedGap[] {
+    const runs = this.pythonRuns.filter(r => r.level === level);
+    const components = this.components();
+    const out: LocatedGap[] = [];
+    for (const gap of adoptionGaps(runs, components, this.shown, this.investigated)) {
+      for (const s of gap.shapes) this.investigated.add(s);
+      const since = gap.shownAt;
+      const savedSince = this.saves.filter(s => s.decision >= since);
+      let finding: string;
+      if (gap.covered) {
+        const used = this.uses.filter(u => u.path === gap.covered && u.decision >= since).length;
+        finding = gap.covered.startsWith('observers/')
+          ? `${gap.covered} covers it and its output is shown every decision, yet it was rebuilt ${gap.after.length} more times`
+          : used ? `${gap.covered} covers it and was used ${used} times since, yet it was still rebuilt ${gap.after.length} more times`
+            : `${gap.covered} covers it but was not used since; it was rebuilt ${gap.after.length} more times`;
+      } else if (savedSince.some(s => !s.ok)) {
+        const failed = savedSince.filter(s => !s.ok).at(-1)!;
+        finding = `a component save failed validation since (${failed.path}: ${failed.error ?? 'not loaded'}); it was rebuilt ${gap.after.length} more times`;
+      } else if (savedSince.length) {
+        finding = `the components saved since (${[...new Set(savedSince.map(s => s.path))].join(', ')}) do not contain this code; it was rebuilt ${gap.after.length} more times`;
+      } else finding = `no component was saved for it; it was rebuilt ${gap.after.length} more times`;
+      const samples = gap.after.slice(-2).map(r => r.code ?? '').filter(Boolean);
+      const located: LocatedGap = { ...gap, level, finding, samples };
+      this.host.log('component_runs.jsonl', { kind: 'reuse_gap', shapes: gap.shapes, gist: gap.gist, level, shown_at: since, decision: this.decision(),
+        rebuilt_after: gap.after.length, total: gap.total, covered: gap.covered, finding });
+      out.push(located);
+      break; // one investigation per decision; the next gap waits for the next decision
+    }
+    return out;
   }
   private snapshot() {
     const sources: Record<string, string> = {};
@@ -122,7 +155,7 @@ export class NativeRuntime {
     const receipts: string[] = [];
     for (const op of result.ops ?? []) {
       this.host.workspace.mutate(op);
-      if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level()); if (receipt) receipts.push(receipt); }
+      if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level()); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
       else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
     }
     if (result.ops?.length) {
@@ -158,11 +191,16 @@ export class NativeRuntime {
     const receipts = result.ok ? await this.applyWrites(result) : [];
     const shape = codeShape(code);
     // A consult role's read-only python is not the parent's own work.
-    if (!readonly) this.pythonRuns.push({ level: this.host.level(), ...shape, kit });
+    const decision = this.decision();
+    if (!readonly) {
+      this.pythonRuns.push({ level: this.host.level(), ...shape, kit, decision, n: this.host.actionCount(), code: code.slice(0, 2000) });
+      for (const m of code.matchAll(/\b(?:from|import)\s+(tools|lib)\.([A-Za-z_]\w*)/g)) this.uses.push({ path: `${m[1]}/${m[2]}.py`, decision });
+    }
     this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started,
-      ...(readonly ? { readonly } : { level: this.host.level(), ...shape, kit }) });
+      ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit }) });
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
-    const body = [shown(result), ...receipts, ...failed.map(s => 'bindings: ' + s)].join('\n');
+    // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
+    const body = [...receipts, shown(result), ...failed.map(s => 'bindings: ' + s)].join('\n');
     return text(this.host.receipt?.(body) ?? body, !result.ok);
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
@@ -175,7 +213,8 @@ export class NativeRuntime {
     let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal);
     const receipts = result.ok ? await this.applyWrites(result) : [];
     if (!readonly && this.host.artifacts) result = this.host.artifacts(result, c, this.host.actionCount());
-    this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, n: this.host.actionCount(), version: c.version,
+    if (!readonly) this.uses.push({ path: c.path, decision: this.decision() });
+    this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, path: c.path, decision: this.decision(), readonly, n: this.host.actionCount(), version: c.version,
       versions: snap.versions, ok: result.ok, ms: Date.now() - started });
     const fallback = this.host.binder.active().filter(x => x.path !== c.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
     const body = [`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n');

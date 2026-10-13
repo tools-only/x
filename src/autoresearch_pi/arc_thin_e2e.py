@@ -950,6 +950,13 @@ def _write_summary(root: Path, summary: dict[str, Any], final_state: dict[str, A
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+    if not partial:
+        # Repetition overhead, component costs/replacement, total cost and task result, measured separately.
+        try:
+            from .arc_thin_reuse_report import write_report
+            write_report(root)
+        except Exception:  # diagnostic only; never fails a run
+            pass
     return path
 
 
