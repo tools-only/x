@@ -274,4 +274,6 @@ WASI仍为CPython/WASM、Wasmtime49.0.0，WASM SHA不变。可信宿主runner为
 
 用户随后“继续”，在保留第一场完整产物后实施一个主要因素：tools/run_foundation_real.py的协议和runner参数同时改decision_timeout_seconds=0。新协议回归先RED（观察到900）后GREEN；[相关Python23项](../../runs/optimization-no-turn-deadline-20261013.log)通过，[actual Pi无整轮deadline/check增量/8次读取fixture](../../runs/optimization-active-turn-uncapped-20261013/summary.json)通过。无更改prompt、tool/quota、compaction阈值或游戏知识。这次重启由后续继续指示授权；仍不是净收益确认对照，不自动扩为12场或无限失败重试。
 
-第二场待修正源提交后重新启动；首场已关闭的scorecard不复用，保留独立canonical轨迹。记录新PID/effective配置和实际provider/action之后，启动成功仍不写成100动作完成。
+第二场：2026-10-13 08:31:32（Asia/Shanghai），修正源冻结 `46732008`，PID137696，root `runs/foundation-native-ls20-optimized-real-20261013-02`。08:34核查完成首个真实ACTION1，并进入后续父轮；[启动验证](../../runs/foundation-native-ls20-optimized-real-20261013-02/startup-verification.json)确认：真实HTTP200、source hashes一致、整场/整轮deadline0、max_decisions/max_reported_tokens=null、100动作上限、Pi compaction有效ON、ledger/critic ON、周期合并0、reasoning replay/强制跨关review OFF。实际provider输入包含offload原则、当前grid1份、未见secret-exposure或reasoning回放。PID仍运行；启动成功不写成100动作完成。首场已关闭的scorecard不复用，第二场为独立canonical轨迹。
+
+deadline修正后[最终Python回归65/65](../../runs/optimization-python-no-deadline-final-20261013.log)通过；Node代码未在该修正中改变，沿用最终112/112证据。完整方案的工程实现已交付；第二场普通模型结果、自主语义复用、实际compact后认知和净收益仍待证据。第一场的创建/装配只增加生命周期局部观察，不关闭B/C/D。
