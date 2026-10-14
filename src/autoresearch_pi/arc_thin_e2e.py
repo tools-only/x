@@ -84,6 +84,11 @@ THINKING_FORMATS = frozenset({"openai", "qwen", "qwen-chat-template"})
 PARTIAL_SUMMARY_EVERY = 10
 # With review_on_miss, a scored miss makes a review due once at least this many actions followed the last one.
 REVIEW_ON_MISS_GAP = 4
+#: The online ARC service sometimes times out while a game is created (2026-10-14: 5 of 6 launches in one hour). No
+#: action has been taken then, so starting the bridge again is safe; anything else stops the run as before.
+BRIDGE_START_ATTEMPTS = 3
+TRANSIENT_BRIDGE_START = re.compile(r"ReadTimeout|ConnectTimeout|ConnectionError|timed out|handshake|"
+                                    r"'NoneType' object has no attribute 'info'")
 
 
 def _bridge_health(bridge_url: str) -> dict[str, Any] | None:
@@ -782,18 +787,37 @@ def run_arc_thin_e2e(
            if fork else {}),
     }
     stage = "bridge"
-    bridge, bridge_stderr, launch_id, action_token = _start_bridge(
-        root, arc_root=arc_root, game=game, max_actions=max_actions, env=env,
-        bridge_python=bridge_python, bridge_module_paths=bridge_module_paths,
-        replay_actions=fork["replay"] if fork else None,
-    )
+    startup_error: Exception | None = None
+    ready: dict[str, Any] = {}
+    for attempt in range(1, BRIDGE_START_ATTEMPTS + 1):
+        bridge, bridge_stderr, launch_id, action_token = _start_bridge(
+            root, arc_root=arc_root, game=game, max_actions=max_actions, env=env,
+            bridge_python=bridge_python, bridge_module_paths=bridge_module_paths,
+            replay_actions=fork["replay"] if fork else None,
+        )
+        try:
+            # A fork's bridge plays the recorded actions before it is ready.
+            ready = _wait_for_bridge(root, bridge, timeout=60.0 + (5.0 * fork["actions"] if fork else 0.0), launch_id=launch_id)
+            startup_error = None
+            break
+        except Exception as exc:  # noqa: BLE001 - classified below, re-raised inside the run's error handling
+            startup_error = exc
+            error_file = root / "bridge-error.json"
+            text = error_file.read_text(encoding="utf-8") if error_file.is_file() else str(exc)
+            if attempt == BRIDGE_START_ATTEMPTS or not TRANSIENT_BRIDGE_START.search(text):
+                break
+            _stop_bridge(bridge, bridge_stderr, False)
+            if error_file.is_file():
+                error_file.replace(root / f"bridge-error-attempt{attempt}.json")
+            summary.setdefault("bridge_start_retries", []).append(TRANSIENT_BRIDGE_START.search(text).group(0))
+            time.sleep(15.0 * attempt)
     bridge_closed = False
     kernel: PiKernel | None = None
     trace = None
     final_state: dict[str, Any] | None = None
     try:
-        # A fork's bridge plays the recorded actions before it is ready.
-        ready = _wait_for_bridge(root, bridge, timeout=60.0 + (5.0 * fork["actions"] if fork else 0.0), launch_id=launch_id)
+        if startup_error is not None:
+            raise startup_error
         bridge_url = f"http://127.0.0.1:{int(ready['port'])}"
         if fork:
             used = ((_bridge_state(bridge_url) or {}).get("action_budget") or {}).get("total_used")

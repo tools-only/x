@@ -60,6 +60,7 @@ states[last]["grid"][0][0] = (states[last]["grid"][0][0] + 1) % 16
 refused = json.loads(run_arc_thin_e2e(root / "bad-fork", max_decisions=1, fork_from=bad,
     extension_env={"ARC_THIN_SMOKE_SCRIPT": "fork", "ARC_THIN_AUTO_COMPACTION": "0"}, **common).read_text(encoding="utf-8"))
 assert not refused["passed"] and str(refused["stop_reason"]).startswith("runner_error"), refused
+assert "bridge_start_retries" not in refused, 'a replay mismatch is not a transient start failure and is never retried'
 error = json.loads((root / "bad-fork/bridge-error.json").read_text(encoding="utf-8"))
 assert error["environment_error"]["type"] == "ReplayMismatch", error
 print(json.dumps({"source_actions": k, "fork_actions": len(new), "refused": refused["stop_reason"]}))
