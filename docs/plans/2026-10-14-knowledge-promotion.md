@@ -180,6 +180,15 @@ R7 是通用的反证手段，不依赖游戏内容：一条真实的转移规�
 | 自主采用 | 未验证 | — | — |
 | 净收益 | 未验证 | — | — |
 
+### 真实运行 pr-01（2026-10-14 23:23–23:42，4d7df791）
+
+- 配置：ls20、yibu/qwen3.8-27b、thinking high、10 动作、无 token 上限与截止、`ARC_THIN_NATIVE_HISTORY_CHARS=12000`（tc-02 设置）；`tmp/arc-kernel-20261014/pr-01/`（kernel worktree，未入库）。
+- 结果：10 动作、2 个决策、0 关，1,154.6 s；预算 token 258,070（kernel-02 326,286，tc-01 330,472）；8 个父请求中 1 个 provider 失败；无 ARC 环境故障。
+- 晋升路径没有被触发：refiner 一次也没有启动（无 `refiner.jsonl`）。agent 在决策 1 用一个 python cell 做了 4 个动作，在决策 2 用 python 循环做了 6 个；触发只在决策开始时评估，决策 2 开始时只有 4 个动作（R1 的 8 动作阈值未到）、4 条 memory 各写一次（没有 key 被改写 3 次），之后运行在动作上限处结束，没有第 3 个决策。
+- 然而本次正是 R1 要处理的情形：memory `goal_l0` 写着 "Unknown. H: (a) patch must reach creature window …; (b) specific window/tour; (c) progress track fills to 42"——三个竞争的目标假设被写成一条事实，没有检验；`actions_l0` 写着四个方向已全部验证——一个现成的可检验规则。
+- 断点：触发时机。10 动作上限下，agent 在 cell 内连续行动时决策很少，决策边界太稀；这不是机制失败，而是本次运行没有给机制出现的机会（设计中阶段 1 本来就要求 30–40 动作）。不改阈值来迁就 10 动作上限。
+- 成本观察（供 token 循环）：每请求非 reasoning 输入 9,467（kernel-02 16,994，tc-01 11,764，目标 8,500），最大工具结果 2,325 字符；69% 的输入是决策内重发的 reasoning——决策 2 的第一个请求输出 35,512 token（推理 33,601，11 分钟），随后 4 个请求各重发约 3.4 万 token。
+
 ## 交付决定
 
 - 已实现并通过功能与确定性全链路检查：晋升/降级计数、R7 控制对、refiner 的 HYPOTHESIS 形式、rules.md 提示组件、RULE CHECKS 行、空 view 触发、重算提示、refiner 成本上限。未验证：真实 refiner 是否写出有区分力的 check，agent 是否在规则常驻后减少重述，成本与任务效果。
