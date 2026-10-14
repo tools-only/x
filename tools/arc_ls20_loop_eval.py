@@ -126,12 +126,15 @@ def report(label):
     misses = sum(int((row.get('prediction') or {}).get('misses') or 0) for row in trajectory)
     actions = collections.Counter(str(row.get('action') or row.get('name') or '?') for row in trajectory)
     measured = tokens(harness)
-    played = summary.get('actions', len(trajectory)) or 0
+    # A partial summary is written while the run continues, so its counts go stale as the stores grow: trust the
+    # append-only trajectory whenever the summary is not the final one.
+    final = bool(summary) and not summary.get('partial')
+    played = (summary.get('actions') if final else None) or len(trajectory)
     # context_budget.jsonl is one row per provider round; a decision spans several, so count the distinct ids.
     budget_rows = rows(harness / 'context_budget.jsonl')
     decisions = len({row.get('decision') for row in budget_rows} - {None})
     out = dict(label=label,
-               levels_completed=summary.get('levels_completed') if summary.get('levels_completed') is not None
+               levels_completed=summary.get('levels_completed') if final and summary.get('levels_completed') is not None
                                 else (max(levels) if levels else None),
                stop_reason=summary.get('stop_reason'), passed=summary.get('passed'),
                partial=summary.get('partial'), elapsed_seconds=summary.get('elapsed_seconds'),
