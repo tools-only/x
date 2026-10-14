@@ -57,9 +57,7 @@ export function nativeDecisionStart(messages: any[]): number {
 
 /** Stores a whole result and returns the workspace path it can be read back from. */
 export type SaveResult = (text: string) => string;
-export type HistoryOptions = { budget?: number; fullResults?: number; resultChars?: number; save?: SaveResult;
-  /** "head" restores the head-only clip of before 2026-10-14 (comparison runs only). */
-  clip?: 'ends' | 'head' };
+export type HistoryOptions = { budget?: number; fullResults?: number; resultChars?: number; save?: SaveResult };
 /** Continual Harness's per-result cap. */
 export const HISTORY_RESULT_CHARS = 5000;
 const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
@@ -126,8 +124,7 @@ export function summarizeHistory(messages: any[], options: HistoryOptions = {}):
         const result = results.get(String(block.id));
         const body = result ? textOf(result) : '';
         const acted = actionLines(body);
-        const shown = newest.has(String(block.id))
-          ? options.clip === 'head' ? clip(body.trim(), resultChars) : clipEnds(body.trim(), resultChars, options.save)
+        const shown = newest.has(String(block.id)) ? clipEnds(body.trim(), resultChars, options.save)
           : [clip(flat(body.split('\n')[0] ?? ''), 200), ...acted.filter(line => line !== body.split('\n')[0])].join('\n');
         lines.push(`${block.name}(${clip(flat(JSON.stringify(block.arguments ?? {})), 160)})${result?.isError ? ' FAILED' : ''} → ${shown}`);
       }

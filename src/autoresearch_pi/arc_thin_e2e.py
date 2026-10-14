@@ -798,9 +798,6 @@ def run_arc_thin_e2e(
             "decision_reasoning": foundation == "native" and pi_env.get("ARC_THIN_DECISION_REASONING", "1") != "0",
             "decision_reasoning_mode": pi_env.get("ARC_THIN_REASONING_MODE", "all") if foundation == "native" else None,
             "archive_results": foundation == "native" and pi_env.get("ARC_THIN_ARCHIVE_RESULTS", "0") == "1",
-            # Comparison switches (2026-10-14 single-factor pilots): earlier summary clip and refinement instruction.
-            "history_clip": pi_env.get("ARC_THIN_HISTORY_CLIP", "ends") if foundation == "native" else None,
-            "memory_author": "refiner" if pi_env.get("ARC_THIN_MEMORY_AUTHOR") == "refiner" else "agent",
             # Python names defined in one call stay defined in later calls (native default on).
             "python_session": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0",
             # The session as a live kernel (2026-10-14): one sandbox instance keeps the namespace in memory and env.act

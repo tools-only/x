@@ -1,7 +1,7 @@
 # Meta-harness 变更记录：python 会话改为常驻 kernel，减少运行时重建上下文
 
 日期：2026-10-14（Asia/Shanghai）。状态：实现（功能与确定性接线已验证；真实模型未运行）。
-分支：`claude/kernel-20261014`，基于 `claude/objective-shaw-9d0ead`（52ef2f0a，cont-01/cont-01r 的默认配置）。
+分支：`claude/kernel-20261014`，基于 `claude/objective-shaw-9d0ead`（52ef2f0a，cont-01/cont-01r 的默认配置），之后合入该分支的 8bdcacf0（去掉单因素对比开关，四项连续性改动保留为默认）；合并后重跑受影响的 8 个测试文件（仅基线已有的 1 项失败）与 activation/receipts 两项 smoke（`tmp/smoke-*-3`，均通过）。
 
 ## 问题与命题
 
