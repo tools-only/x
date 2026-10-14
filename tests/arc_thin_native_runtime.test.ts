@@ -24,9 +24,11 @@ test('sandbox artifact globals reflect authoritative workspace JSON', async () =
     const runs=logs.filter(row=>row.file==='wasi_runs.jsonl');
     assert.equal(runs.length,2);
     assert.ok(runs[0].snapshot_read_bytes >= 500000);
-    assert.ok(runs[0].attempts[0].input_bytes < 200000);
-    assert.equal(runs[1].lazy_restarts,1);
-    assert.ok(runs[0].attempts[0].compile_ms>=0);
+    // Only files the code names travel with the cell; one it builds at run time is fetched while the cell waits.
+    assert.ok(runs[0].input_bytes < 200000);
+    assert.equal(runs[0].mode,'kernel');
+    assert.equal(runs[1].files_fetched,1);
+    assert.ok(runs[0].compile_ms>=0);
     assert.ok(runs[0].snapshot_ms>=0);
     // Listing works from file names alone (os.listdir('data') failed with ENOENT before).
     workspace.runtimeWrite('data/frames/0.json', '{}');

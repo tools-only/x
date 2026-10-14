@@ -803,6 +803,12 @@ def run_arc_thin_e2e(
             "memory_author": "refiner" if pi_env.get("ARC_THIN_MEMORY_AUTHOR") == "refiner" else "agent",
             # Python names defined in one call stay defined in later calls (native default on).
             "python_session": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0",
+            # The session as a live kernel (2026-10-14): one sandbox instance keeps the namespace in memory and env.act
+            # continues where it is called; off: a fresh sandbox per call restored from the checkpoint, acting replayed.
+            "python_kernel": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0"
+                             and pi_env.get("ARC_THIN_PYTHON_KERNEL", "1") != "0",
+            # The working set lists what the python session holds.
+            "session_view": foundation == "native" and pi_env.get("ARC_THIN_SESSION_VIEW", "1") != "0",
             # Native history: 0 (default since 2026-10-14) keeps earlier decisions as a transcript before the current head,
             # each earlier result clipped to result_chars; > 0 is a summarised section within that many characters
             # (demo/arc_thin_native_context.ts). Native decisions end at decision_tool_calls.

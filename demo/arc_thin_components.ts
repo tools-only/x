@@ -2,6 +2,7 @@
 import { arcSkillGuestProgram, SKILL_LIMITS, type GuestResult } from './arc_thin_skill_guest.ts';
 import { evaluateTaskPython } from './pi_task_python.ts';
 import { TaskPythonPool } from './pi_task_python_pool.ts';
+import { PythonKernel } from './pi_task_python_kernel.ts';
 import type { ComponentSpec } from './arc_thin_binder.ts';
 
 const NATIVE = String.raw`
@@ -43,18 +44,41 @@ def _inspect(req):
     return {'name': name, 'kind': 'tool', 'description': describe, 'parameters': TOOL_PARAMETERS, 'view': view,
             'enabled': not (top == 'observers' and off)}
 
-_sources = _req.get('sources') or {}
-_files = dict(_req.get('files') or {})
-_writes = {}
-_ops = []
-_available = set(_req.get('file_names') or [])
+# Run as a live kernel (pi_task_python_kernel.py), the guest has _rpc: it serves cell after cell in one namespace,
+# and asks the host for actions and files where the code asks, instead of ending and being replayed.
+_kernel = {'live': callable(globals().get('_rpc'))}
+_kernel_modules = set()
 class _NeedFile(BaseException):
     pass
 class _StateDict(dict):
     """The runtime's state: a dict, of its own type so the python session can refer to it instead of copying it."""
-_state = _StateDict(_req.get('state') or {})
-if isinstance(_state.get('history'), dict):
-    _state['history'] = _History(_state['history'])
+
+def _begin(req):
+    """What belongs to one cell. In a live kernel the namespace, definitions and the runtime's own modules stay."""
+    global _req, _sources, _files, _writes, _ops, _available, _state, _warnings
+    _req = req
+    _sources = req.get('sources') or {}
+    _files = dict(req.get('files') or {})
+    _writes = {}
+    _ops = []
+    _available = set(req.get('file_names') or [])
+    _state = _StateDict(req.get('state') or {})
+    if isinstance(_state.get('history'), dict):
+        _state['history'] = _History(_state['history'])
+    _warnings = []
+    # Workspace modules are imported from this cell's sources; a name already bound keeps what it was bound to.
+    for name in _kernel_modules:
+        sys.modules.pop(name, None)
+    _kernel_modules.clear()
+
+def _need(path):
+    """A workspace file this cell did not receive: a live kernel asks the host for it, a one-shot run restarts with it."""
+    if not _kernel['live']:
+        raise _NeedFile(path)
+    reply = _rpc({'t': 'file', 'path': path})
+    if reply.get('error'):
+        raise FileNotFoundError('%s: %s' % (path, reply['error']))
+    _files.update(reply.get('files') or {})
 
 def _path(path):
     path = str(path).replace('\\', '/')
@@ -77,7 +101,7 @@ class _Writer(io.StringIO):
 def _open(path, mode='r', *args, **kwargs):
     path = _path(path)
     if path in _available and path not in _files and path not in _sources and ('a' in mode or 'r' in mode):
-        raise _NeedFile(path)
+        _need(path)
     if any(c in mode for c in 'wax+'):
         if _session_flags.get('loading'):
             raise PermissionError('no workspace writes while the python session is restored or checkpointed')
@@ -100,6 +124,7 @@ class _Loader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def create_module(self, spec): return None
     def exec_module(self, module):
         rel = module.__name__.replace('.', '/') + '.py'
+        _kernel_modules.add(module.__name__)
         module.__dict__.update({'state': _state, 'grid': _state.get('grid'), 'history': _state.get('history'),
                                 'prev_grid': _state.get('prev_grid'), 'artifacts': _state.get('artifacts') or {}})
         if rel in _sources: exec(compile(_sources[rel], rel, 'exec'), module.__dict__)
@@ -120,7 +145,7 @@ def _rename(src, dst):
     src, dst = _path(src), _path(dst)
     if not _req.get('allow_writes') or any(p.split('/')[0] in ('data', 'results') for p in (src, dst)):
         raise PermissionError('workspace path is read-only in this execution')
-    if src in _available and src not in _files and src not in _sources: raise _NeedFile(src)
+    if src in _available and src not in _files and src not in _sources: _need(src)
     if src not in _files and src not in _sources: raise FileNotFoundError(src)
     _files[dst] = _files.get(src, _sources.get(src, ''))
     _files.pop(src, None)
@@ -185,21 +210,28 @@ class _Env:
         if x is not None and y is not None: call.update(x=int(x), y=int(y))
         if predict is not None: call['predict'] = predict
         if self.stopped: raise ActStopped(self.stopped)
-        done = _req.get('acts') or []
-        if self.acted < len(done):
+        if _kernel['live']:
+            # The cell waits here for the action's feedback and goes on; nothing before this line runs again.
+            record = _rpc({'t': 'act', 'call': call})
+            if record.get('error'):
+                raise PermissionError(record['error'])
+            self.acted += 1
+        else:
+            done = _req.get('acts') or []
+            if self.acted >= len(done):
+                raise _NeedAct(call)
             record = done[self.acted]
             if record['call'] != call:
                 raise RuntimeError('acting code must repeat the same act() calls when it is replayed; avoid randomness and time')
             self.acted += 1
-            if record.get('stopped'):
-                # Code that catches this and calls act() again is refused here, without another host round trip.
-                self.stopped = record['stopped']
-                raise ActStopped(self.stopped)
-            observation = dict(record['observation'])
-            observation['grid'] = _grid(observation.get('grid'))
-            self._refresh(observation)
-            return observation
-        raise _NeedAct(call)
+        if record.get('stopped'):
+            # Code that catches this and calls act() again is refused here, without another host round trip.
+            self.stopped = record['stopped']
+            raise ActStopped(self.stopped)
+        observation = dict(record['observation'])
+        observation['grid'] = _grid(observation.get('grid'))
+        self._refresh(observation)
+        return observation
     def _refresh(self, observation):
         before = self.grid
         self.prev_grid, self.grid = before, observation['grid']
@@ -428,6 +460,30 @@ def _session_statements(tree):
                 pending.extend(handler.body)
     return found
 
+def _brief(value):
+    """A few characters saying what a name holds, for the line that lists the session to the agent."""
+    if value is None or isinstance(value, (bool, int, float)):
+        text = repr(value)
+        return text if len(text) <= 20 else type(value).__name__
+    if isinstance(value, str):
+        return repr(value) if len(value) <= 20 else 'str[%d]' % len(value)
+    if isinstance(value, types.ModuleType):
+        return 'module'
+    if isinstance(value, type):
+        return 'class'
+    if callable(value):
+        return 'function'
+    try:
+        size = len(value)
+    except BaseException:
+        return type(value).__name__
+    if isinstance(value, tuple) and size <= 4 and all(v is None or isinstance(v, (bool, int, float)) for v in value):
+        return repr(value) if len(repr(value)) <= 20 else 'tuple[%d]' % size
+    first = value[0] if isinstance(value, (list, tuple)) and size else None
+    if isinstance(first, (list, tuple)) and all(isinstance(r, (list, tuple)) and len(r) == len(first) for r in value[:64]):
+        return '%s[%dx%d]' % (type(value).__name__, size, len(first))
+    return '%s[%d]' % (type(value).__name__, size)
+
 def _session_dump(code, session, base, before, loaded):
     """Checkpoint the namespace as it is now. All or nothing: over capacity or unverifiable means no checkpoint."""
     lines = code.splitlines()
@@ -446,6 +502,8 @@ def _session_dump(code, session, base, before, loaded):
             del _session_defs[name]
     values = {k: _ns[k] for k in _ns if not k.startswith('_') and k not in base and k not in _SESSION_SKIP
               and (k not in _session_defs or isinstance(_ns[k], types.FunctionType))}
+    brief = {k + '()': '' for k in _session_defs}
+    brief.update({k: _brief(v) for k, v in values.items() if k not in _session_defs})
     unsupported = []
     try:
         raw = _session_bytes(values)
@@ -465,7 +523,7 @@ def _session_dump(code, session, base, before, loaded):
         own |= {node.name for node in statements}
         own |= {(a.asname or a.name).split('.')[0] for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
         uses = sorted(({n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)} & loaded) - own)
-    out = {'unsupported': unsupported, 'uses': uses}
+    out = {'unsupported': unsupported, 'uses': uses, 'brief': brief}
     defs = [[k, v] for k, v in _session_defs.items()]
     sha = hashlib.sha256(raw).hexdigest()
     if sha == session.get('sha') and defs == (session.get('defs') or []):
@@ -511,10 +569,36 @@ def _call(req, env):
         value = module.run(**inner)
     return _jsonable(value)
 
-try:
-    if _req['mode'] == 'inspect':
-        result = {'ok': True, 'value': _inspect(_req)}
+def _session_cell(env):
+    """Bring the python session in for one cell: restore it from its checkpoint, or in a live kernel, where it already
+    is, point the names that held the runtime's objects at the current ones (as a restore does)."""
+    _session = _req['session']
+    if not (_kernel['live'] and _kernel.get('module')):
+        _session_module()
+        _kernel['module'] = True
+    previous = dict(_runtime)
+    _ns.update({'state': _state, 'grid': _state.get('grid'), 'history': _state.get('history'),
+                'prev_grid': _state.get('prev_grid'), 'artifacts': _state.get('artifacts') or {}})
+    _runtime.update({'state': _state, 'history': _state.get('history'), 'env': env})
+    if _kernel['live'] and _kernel.get('loaded'):
+        for name, value in list(_ns.items()):
+            for key, old in previous.items():
+                if value is old and old is not _runtime.get(key):
+                    _ns[name] = _runtime[key]
+        base, loaded = _kernel['base'], {}
     else:
+        base = set(_ns)
+        loaded = _session_load(_session)
+        if _kernel['live'] and not loaded.get('load_error'):
+            _kernel['loaded'], _kernel['base'] = True, base
+    _req['session_ns'] = True
+    return base, loaded, {name: id(_ns.get(name)) for name in _session_defs}, set(_ns) - base
+
+def _cell(req):
+    _begin(req)
+    try:
+        if _req['mode'] == 'inspect':
+            return {'ok': True, 'value': _inspect(_req)}
         builtins.open = _open
         import os, random
         os.remove = os.unlink = _remove
@@ -522,9 +606,11 @@ try:
         os.listdir = _listdir
         os.path.isdir, os.path.isfile = _isdir, _isfile
         os.path.exists = lambda path: _isfile(path) or _isdir(path)
-        sys.meta_path.insert(0, _Loader())
-        # Acting code is replayed from the start after every action, so it must be deterministic.
-        random.seed(0)
+        if not any(isinstance(finder, _Loader) for finder in sys.meta_path):
+            sys.meta_path.insert(0, _Loader())
+        if not _kernel['live']:
+            # Acting code is replayed from the start after every action, so it must be deterministic.
+            random.seed(0)
         _req['state'] = _state
         env = _Env()
         _req['native_env'] = True
@@ -533,18 +619,9 @@ try:
         try:
             if _req['mode'] == 'exec':
                 _session = _req.get('session')
-                if _session is not None:
-                    _session_module()
                 _ns['args'], _ns['env'] = _req.get('args') or {}, env
                 if _session is not None:
-                    _ns.update({'state': _state, 'grid': _state.get('grid'), 'history': _state.get('history'),
-                                'prev_grid': _state.get('prev_grid'), 'artifacts': _state.get('artifacts') or {}})
-                    _runtime.update({'state': _state, 'history': _state.get('history'), 'env': env})
-                    _base = set(_ns)
-                    _loaded = _session_load(_session)
-                    _before = {name: id(_ns.get(name)) for name in _session_defs}
-                    _restored = set(_ns) - _base
-                    _req['session_ns'] = True
+                    _base, _loaded, _before, _restored = _session_cell(env)
                 try:
                     if _session is not None and _loaded.get('load_error'):
                         raise RuntimeError('python session could not be restored; user code was not executed')
@@ -578,13 +655,40 @@ try:
         except ActStopped as stopped:
             result = {'ok': True, 'value': {'stopped': str(stopped)}}
         if _ops: result['ops'] = _ops
-except _NeedFile as error:
-    result = {'ok': False, 'error': 'workspace file requested', 'need_file': str(error)}
-except _NeedAct as error:
-    result = {'ok': False, 'error': 'action requested', 'need_act': error.args[0]}
-except BaseException as error:
-    result = {'ok': False, 'error': type(error).__name__ + ': ' + str(error),
-              'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('source') or _req.get('code') or '')}
+        return result
+    except _NeedFile as error:
+        return {'ok': False, 'error': 'workspace file requested', 'need_file': str(error)}
+    except _NeedAct as error:
+        return {'ok': False, 'error': 'action requested', 'need_act': error.args[0]}
+    except BaseException as error:
+        return {'ok': False, 'error': type(error).__name__ + ': ' + str(error),
+                'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('source') or _req.get('code') or '')}
+
+# What a live kernel sends back per cell: printed text and a final value bounded, so one cell cannot end the kernel by
+# its size. The whole value stays in the session as _.
+_KERNEL_TEXT = 240_000
+def _bounded(result):
+    value = result.get('value')
+    if isinstance(value, dict) and isinstance(value.get('stdout'), str) and len(value['stdout']) > _KERNEL_TEXT:
+        text = value['stdout']
+        value['stdout'] = text[:_KERNEL_TEXT // 4] + '\n… <%d of %d printed characters not returned> …\n' % (
+            len(text) - _KERNEL_TEXT, len(text)) + text[-(_KERNEL_TEXT * 3 // 4):]
+    if isinstance(value, dict) and value.get('has_value'):
+        size = len(json.dumps(value.get('value'), allow_nan=False))
+        if size > _KERNEL_TEXT:
+            value['value'] = '(the final value is %d characters of JSON and was not returned; it is _ in the python session)' % size
+    return result
+
+if _kernel['live']:
+    _next = _req
+    while _next is not None:
+        try:
+            _out = _bounded(_cell(_next))
+        except BaseException as _error:
+            _out = {'ok': False, 'error': (type(_error).__name__ + ': ' + str(_error))[:600]}
+        _next = _rpc({'t': 'done', 'result': _out})
+else:
+    result = _cell(_req)
 `;
 
 // A python call carries the session checkpoint in and out, so the native guest gets the runtime's largest transport.
@@ -596,6 +700,8 @@ export type ActCall = { action: string; x?: number; y?: number; predict?: unknow
 export type SessionReport = {
   defs?: Array<[string, string]>; blob?: string; sha?: string; names?: string[]; chars?: number; raw_bytes?: number;
   unchanged?: boolean; functions?: boolean; unsupported?: Array<[string, string]>; uses?: string[];
+  /** What the namespace holds after the call: name -> a few characters on what it is; definitions as name() -> "". */
+  brief?: Record<string, string>;
   over?: { chars: number; cap: number; raw_bytes: number; largest: Array<[string, number]> };
   error?: string; load_error?: string; failed_defs?: Array<[string, string]>; gone?: string[]; gone_refs?: string[];
 };
@@ -607,6 +713,8 @@ export async function executeNative(input: Record<string, unknown>, signal?: Abo
   onMetrics?.({...reply.consumed, ...(reply as any).transport});
   return reply.value as NativeResult;
 }
+/** The same guest program as a live kernel: it serves `exec` cells in one namespace until it ends. */
+export function nativeKernel(): PythonKernel { return new PythonKernel(program); }
 export async function validatePythonComponent(path: string, source: string): Promise<ComponentSpec> {
   const reply = await executeNative({ mode: 'inspect', path, source });
   if (!reply.ok) throw Error([reply.error, reply.where].filter(Boolean).join(' · '));

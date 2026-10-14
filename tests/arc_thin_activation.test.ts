@@ -131,14 +131,14 @@ test('the python session is the default workspace: kept without a save step, aft
     // Saving code that relies on the session says the tool will run without it.
     assert.match(out(await runtime.python('bump(1)', undefined, false, 'use_bump')),
       /\(tools\/use_bump\.py uses names from the python session: bump\. A saved tool runs without the session/);
-    // Over capacity: refused as a whole, the earlier state stays.
-    assert.match(out(await runtime.python('import random\nhuge = [random.random() for _ in range(30000)]')), /python session NOT saved: it needs \d+ KB and the limit is 128 KB; largest: huge/);
-    assert.match(out(await runtime.python('"huge" in globals()')), /→ false/);
+    // Over capacity: in the live kernel everything stays defined, but the checkpoint keeps the earlier state.
+    assert.match(out(await runtime.python('import random\nhuge = [random.random() for _ in range(30000)]')), /checkpoint is not written until it fits: it needs \d+ KB and the limit is 128 KB; largest: huge/);
+    assert.match(out(await runtime.python('"huge" in globals()')), /→ true/);
   } finally { runtime.close(); }
-  // After a restart the same session comes back from its checkpoint.
+  // After a restart the same session comes back from its checkpoint, without what never fitted in it.
   const again = runtimeFor([], { sessionDir, logs });
   try {
-    assert.match(out(await again.runtime.python('[bump(4), seen, order]')), /→ \[7,\[1,7\],\[1,2\]\]/);
+    assert.match(out(await again.runtime.python('[bump(4), seen, order, "huge" in globals()]')), /→ \[7,\[1,7\],\[1,2\],false\]/);
     assert.ok(logs.some(row => row.file === 'python_session.jsonl' && row.event === 'restored' && row.names.includes('bump()')));
     assert.ok(logs.some(row => row.file === 'python_session.jsonl' && row.event === 'over_capacity' && row.over.largest[0][0] === 'huge'));
   } finally { again.runtime.close(); }

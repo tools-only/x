@@ -156,6 +156,11 @@ elif script == "receipts":
     inputs = (root / "native-summary-input.jsonl").read_text(encoding="utf-8")
     assert "ref: results/" in inputs and '"thinking"' not in inputs
     assert all("refuted claims and their test conditions" in json.dumps(row) for row in map(json.loads, inputs.splitlines())), "ARC summary requirements must reach every actual Pi summarizer input"
+    # The summary replaces the calls that defined the session's names, not the names (live kernel).
+    assert all("The python session keeps running after this summary" in json.dumps(row) for row in map(json.loads, inputs.splitlines()))
+    # The Pi restart started a second kernel, which restored the session from its checkpoint.
+    kernels = [row for row in map(json.loads, (root / "harness/wasi_runs.jsonl").read_text(encoding="utf-8").splitlines()) if row.get("mode") == "kernel"]
+    assert sum(1 for row in kernels if row.get("fresh")) == 2, kernels
     assert any('Native checkpoint: exact evidence' in json.dumps(row.get('transcript', [])) for row in requests), 'later parent must receive the native checkpoint'
     assert (root / ("native-auto-compaction-event.json" if automatic else "native-compaction-rpc.json")).is_file()
     usage = [json.loads(s) for s in (root / 'harness/usage.jsonl').read_text(encoding='utf-8').splitlines()]
@@ -209,6 +214,15 @@ elif script == "activation":
     # The python session: a function and a value defined in decision 3 are used in decision 5.
     assert "(python session: +plus_one(), +kept_value)" in text, text[:3000]
     assert any(r["tool"] == "python" and r["text"].endswith("→ 42") for r in results), [r["text"] for r in results if r["tool"] == "python"]
+    # The live kernel: one kernel served every parent python call, acting code acted inside it, and later decision
+    # heads list what the session holds.
+    kernel_runs = [row for row in map(json.loads, (root / "harness/wasi_runs.jsonl").read_text(encoding="utf-8").splitlines())
+                   if row.get("mode") == "kernel"]
+    assert config["python_kernel"] is True and config["session_view"] is True, config
+    assert kernel_runs and sum(1 for row in kernel_runs if row.get("fresh")) == 1, kernel_runs
+    assert any(row.get("acts") == 2 for row in kernel_runs), kernel_runs
+    assert any("PYTHON SESSION (" in r.get("current", "") and "plus_one()" in r.get("current", "") and "kept_value 41" in r.get("current", "")
+               for r in parent), [r.get("current", "")[:600] for r in parent]
     # Reasoning stays in view between tool rounds of its decision (append-only, so the cache prefix holds) and is not
     # carried into later decisions.
     with_mark = [i for i, r in enumerate(parent) if "THINK_MARK_DECISION3" in r.get("reasoning_in_context", [])]

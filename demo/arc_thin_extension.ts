@@ -209,6 +209,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// ARC_THIN_MEMORY_AUTHOR=refiner restore the earlier summary clip and refinement instruction.
 	const historyClip = process.env.ARC_THIN_HISTORY_CLIP === 'head' ? 'head' as const : 'ends' as const;
 	const refinerWritesMemory = process.env.ARC_THIN_MEMORY_AUTHOR === 'refiner';
+	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
+	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
+	// ARC_THIN_PYTHON_KERNEL=0 restores a fresh sandbox per call restored from the checkpoint, with acting replayed;
+	// ARC_THIN_SESSION_VIEW=0 leaves the listing out.
+	const pythonKernel = native && process.env.ARC_THIN_PYTHON_KERNEL !== "0" && process.env.ARC_THIN_PYTHON_SESSION !== "0";
+	const sessionView = native && process.env.ARC_THIN_SESSION_VIEW !== "0";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -577,6 +583,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
 			const out: Array<[string, string]> = [["memory", renderDecisionMemory(memory, trajectory.length, claimLines())]];
+			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
+			const held = sessionView ? nativeRuntime?.sessionView() ?? "" : "";
+			if (held) out.push(["python", held]);
 			if (historyText) out.push(["history", historyText]);
 			if (recent) out.push(["recent", recent]);
 			if (refinerNotice) { out.push(["refiner", refinerNotice]); refinerNotice = ""; }
@@ -1879,6 +1888,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				? "Run Python once. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
 					"value of a final expression. save=\"name\" also keeps this code as tools/name.py, callable later as the tool name(args={...}); " +
 					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
+						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
+							"names and print only what you need to read; the final value is also _. " : "") +
 					"Combine computation and feedback checks in code; print or return selected evidence. Saved tools run without this namespace."
 				: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
 					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
@@ -2038,7 +2049,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.on("session_before_compact", guard("session_before_compact", async (event: any, ctx: ExtensionContext) => {
 			compactStarted = Date.now();
       if (native) {
-        const instructions = [event.customInstructions, 'Preserve controls, hypotheses with check records, refuted claims and their test conditions, open questions, active strategy and planned steps, what the last actions were testing, and exact workspace result references. Do not infer success from component creation.'].filter(Boolean).join('\n');
+        const instructions = [event.customInstructions, 'Preserve controls, hypotheses with check records, refuted claims and their test conditions, open questions, active strategy and planned steps, what the last actions were testing, and exact workspace result references. Do not infer success from component creation.',
+          // Prime's compaction note: the summary replaces the calls that defined the session's names, not the names.
+          ...(pythonKernel ? ['The python session keeps running after this summary: every name and function the calls defined stays available. Name the ones that hold results worth reusing and what they hold, so they are used instead of recomputed.'] : [])].filter(Boolean).join('\n');
         event.preparation.messagesToSummarize = projectNativeHistory(event.preparation.messagesToSummarize, replayReasoning);
         event.preparation.turnPrefixMessages = projectNativeHistory(event.preparation.turnPrefixMessages, replayReasoning);
         for (const message of [...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages])
@@ -2114,6 +2127,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
+      pythonKernel,
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
       sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),

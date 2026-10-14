@@ -20,7 +20,8 @@ import type { SessionReport } from "./arc_thin_components.ts";
 export const SESSION_CAP_CHARS = 128_000;
 const KEEP_VERSIONS = 5;
 
-type Checkpoint = { version: number; defs: Array<[string, string]>; blob: string; sha: string; names: string[]; chars: number; functions?: boolean };
+type Checkpoint = { version: number; defs: Array<[string, string]>; blob: string; sha: string; names: string[]; chars: number; functions?: boolean;
+  brief?: Record<string, string> };
 const EMPTY: Checkpoint = { version: 0, defs: [], blob: "", sha: "", names: [], chars: 0 };
 const digest = (checkpoint: Checkpoint) => createHash("sha256").update(JSON.stringify(checkpoint)).digest("hex");
 const kb = (chars: number) => `${Math.max(1, Math.round(chars / 1000))} KB`;
@@ -76,6 +77,37 @@ export class PythonSession {
   }
   /** Everything the session holds by name: values and definitions. */
   names(): string[] { return [...this.state.defs.map(([name]) => `${name}()`), ...this.state.names]; }
+  /**
+   * What the namespace holds now, name -> what it is (definitions as name(), first; then names in order). In a live
+   * kernel this is the namespace itself, including what the checkpoint could not keep; otherwise the last checkpoint.
+   */
+  private live?: Record<string, string>;
+  /** In a live kernel, what was already said about the checkpoint, so the same notice is not repeated every call. */
+  private noted = { over: "", unsupported: new Set<string>() };
+  holding(): Record<string, string> {
+    const brief = this.live ?? Object.fromEntries([...this.state.defs.map(([name]) => [`${name}()`, ""] as [string, string]),
+      ...this.state.names.map((name) => [name, this.state.brief?.[name] ?? ""] as [string, string])]);
+    const names = Object.keys(brief);
+    return Object.fromEntries([...names.filter((name) => name.endsWith("()")), ...names.filter((name) => !name.endsWith("()")).sort()]
+      .map((name) => [name, brief[name]]));
+  }
+  /** The live kernel ended: what it held beyond the checkpoint is gone, and the next kernel starts from the checkpoint. */
+  kernelEnded() { this.live = undefined; this.noted = { over: "", unsupported: new Set() }; }
+  /** One line for the agent: the names its python code can use without rebuilding anything. Empty when there are none. */
+  view(limit = 900): string {
+    const entries = Object.entries(this.holding());
+    if (!entries.length) return "";
+    const head = "PYTHON SESSION (defined by your earlier python calls and still there; use these names instead of recomputing or re-reading): ";
+    let text = entries.map(([name, what]) => what ? `${name} ${what}` : name).join(", ");
+    if (head.length + text.length > limit) text = entries.map(([name]) => name).join(", ");
+    if (head.length + text.length > limit) {
+      const shown: string[] = [];
+      let used = 0;
+      for (const [name] of entries) { if (used + name.length + 2 > limit - head.length - 40) break; shown.push(name); used += name.length + 2; }
+      text = `${shown.join(", ")}, … ${entries.length - shown.length} more (dir() lists them)`;
+    }
+    return head + text;
+  }
   /** What a python call receives. */
   payload() { return { defs: this.state.defs, blob: this.state.blob, sha: this.state.sha, cap: SESSION_CAP_CHARS,
     ...(this.state.functions ? {functions: true} : {}) }; }
@@ -93,38 +125,54 @@ export class PythonSession {
   }
   /**
    * Apply what one python call reported. The receipt is what the agent is told: changes by name, and anything that
-   * was not kept with its reason. An unchanged session says nothing.
+   * was not kept with its reason. An unchanged session says nothing. `live`: the call ran in a live kernel, so what it
+   * defined stays defined even when the checkpoint is not written; only a kernel restart falls back to the checkpoint.
    */
-  commit(report: SessionReport | undefined): SessionOutcome {
+  commit(report: SessionReport | undefined, live = false): SessionOutcome {
     if (!report) return { receipt: "", committed: false, version: this.state.version };
     const lines: string[] = [];
     let committed = false, event: string | undefined;
+    const before = Object.keys(this.holding());
     if (report.load_error) {
       const bad = this.state.version, now = this.rollback();
+      this.live = undefined;
       event = "rolled_back";
       lines.push(`(python session v${bad} could not be restored: ${report.load_error}. ` +
         (now ? `It is back at v${now}: ${listed(this.names()) || "empty"}.` : "It is empty now.") + " Nothing from this call was kept.)");
     } else if (report.error) {
       event = "not_saved";
-      lines.push(`(python session NOT saved: ${report.error}. The state before this call is kept.)`);
+      lines.push(live ? `(python session: everything is still defined, but the checkpoint failed: ${report.error}. A kernel restart would bring back v${this.state.version}.)`
+        : `(python session NOT saved: ${report.error}. The state before this call is kept.)`);
     } else if (report.over) {
       event = "over_capacity";
       const largest = report.over.largest.map(([name, chars]) => `${name} ${kb(chars)}`).join(", ");
-      lines.push(`(python session NOT saved: it needs ${kb(report.over.chars)} and the limit is ${kb(report.over.cap || SESSION_CAP_CHARS)}` +
-        `${largest ? `; largest: ${largest}` : ""}. The state before this call is kept, so nothing this call defined or changed is there next time: ` +
+      const size = `it needs ${kb(report.over.chars)} and the limit is ${kb(report.over.cap || SESSION_CAP_CHARS)}${largest ? `; largest: ${largest}` : ""}`;
+      const key = report.over.largest.map(([name]) => name).join(",");
+      if (!live) lines.push(`(python session NOT saved: ${size}. The state before this call is kept, so nothing this call defined or changed is there next time: ` +
         "del what you do not need, or write large data to a file.)");
+      else if (key !== this.noted.over) lines.push(`(python session: everything is still defined, but its checkpoint is not written until it fits: ${size}. ` +
+        `A kernel restart would bring back v${this.state.version}: del what you do not need, or write large data to a file.)`);
+      if (live) this.noted.over = key;
     } else if (!report.unchanged && report.sha !== undefined) {
-      const before = new Set(this.names());
       const next: Checkpoint = { version: this.latest + 1, defs: report.defs ?? [], blob: report.blob ?? "", sha: report.sha,
-        names: report.names ?? [], chars: report.chars ?? 0, ...(report.functions ? {functions: true} : {}) };
+        names: report.names ?? [], chars: report.chars ?? 0, ...(report.functions ? {functions: true} : {}),
+        ...(report.brief ? { brief: Object.fromEntries((report.names ?? []).map((name) => [name, report.brief![name] ?? ""])) } : {}) };
       this.write(next);
       this.state = next; this.latest = next.version; committed = true; event = "committed";
-      const after = new Set(this.names());
-      const changes = [...[...after].filter((name) => !before.has(name)).map((name) => `+${name}`), ...[...before].filter((name) => !after.has(name)).map((name) => `-${name}`)];
+      this.noted.over = "";
+    }
+    if (!report.load_error && (live || committed)) {
+      if (live && report.brief) this.live = report.brief;
+      const after = Object.keys(this.holding());
+      const changes = [...after.filter((name) => !before.includes(name)).map((name) => `+${name}`), ...before.filter((name) => !after.includes(name)).map((name) => `-${name}`)];
       if (changes.length) lines.push(`(python session: ${listed(changes)})`);
     }
-    if (report.unsupported?.length)
-      lines.push(`(not kept in the python session: ${listed(report.unsupported.map(([name, why]) => `${name} (${why})`), 500)})`);
+    // In a live kernel a value the checkpoint cannot hold stays defined; it is named once, not on every call.
+    const unsupported = (report.unsupported ?? []).filter(([name]) => !live || !this.noted.unsupported.has(name));
+    if (live) this.noted.unsupported = new Set((report.unsupported ?? []).map(([name]) => name));
+    if (unsupported.length)
+      lines.push(live ? `(defined, but not in the checkpoint, so a kernel restart loses them: ${listed(unsupported.map(([name, why]) => `${name} (${why})`), 500)})`
+        : `(not kept in the python session: ${listed(unsupported.map(([name, why]) => `${name} (${why})`), 500)})`);
     if (report.failed_defs?.length)
       lines.push(`(definitions that no longer run and were dropped: ${listed(report.failed_defs.map(([name, why]) => `${name} (${why})`), 400)})`);
     if (report.gone?.length)

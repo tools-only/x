@@ -197,6 +197,9 @@ def _exec(req):
         exec(compile(tree, "<skill>", "exec"), ns)
         if last is not None:
             value = eval(compile(ast.Expression(last.value), "<skill>", "eval"), ns)
+    if req.get("session_ns") and last is not None:
+        # As in a REPL, the final value stays reachable as _ (not checkpointed), so it need not be printed whole.
+        ns["_"] = value
     return {"stdout": buffer.getvalue(), "value": _jsonable(value), "has_value": last is not None}
 
 

@@ -3,9 +3,10 @@ import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Binder, type Component } from './arc_thin_binder.ts';
 import { Workspace } from './arc_thin_workspace.ts';
-import { executeNative, type ActCall, type NativeResult } from './arc_thin_components.ts';
+import { executeNative, nativeKernel, type ActCall, type NativeResult } from './arc_thin_components.ts';
 import { PythonSession } from './arc_thin_python_session.ts';
 import { TaskPythonPool } from './pi_task_python_pool.ts';
+import type { KernelRequest, PythonKernel } from './pi_task_python_kernel.ts';
 import { codeShape, componentLines, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 
 /** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
@@ -19,10 +20,12 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
+  /** Run the parent's python calls in a live kernel (default true); false: a fresh sandbox per call, restored from the checkpoint. */
+  pythonKernel?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
   sessionDir?: string };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
-/** At most this many env.act calls in one tool call; acting code is replayed once per action. */
+/** At most this many env.act calls in one tool call. */
 export const MAX_ACTS = 24;
 /** Python executions of the agent and its subagents that run at once (each is one python process). */
 const MAX_PARALLEL = 4;
@@ -48,6 +51,11 @@ export class NativeRuntime {
    * after a restart (arc_thin_python_session.ts). Saved tools and subagents do not see it.
    */
   private session: PythonSession | undefined;
+  /**
+   * The live kernel the parent's session runs in: its namespace stays in memory between calls and env.act waits for
+   * feedback where it is called. The checkpoint is still written after every call; a new kernel starts from it.
+   */
+  private kernel: PythonKernel | undefined;
   /** Foreground executions running at once; the rest wait for a slot before their time allowance starts. */
   private running = 0;
   private waiting: Array<() => void> = [];
@@ -65,6 +73,7 @@ export class NativeRuntime {
     if (host.pythonSession !== false) {
       this.session = new PythonSession(host.sessionDir);
       if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
+      if (host.pythonKernel !== false) this.kernel = nativeKernel();
     }
     host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a saved subagent (agents/<name>.md) with exact workspace refs. Subagents never act.',
       parameters: Type.Object({ agent: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
@@ -241,9 +250,71 @@ export class NativeRuntime {
         timing_note:'execution_ms includes instantiate/guest; attempt ms includes host/compile/transport; do not sum overlapping phases'});
     }
   }
-  /** The tool result: what the code returned, then what it did in the game; acting ends the decision. */
-  private finish(body: string, result: NativeResult & { acted?: Acted }) {
-    const shownBody = this.host.receipt?.(body) ?? body;
+  /**
+   * One cell in the live kernel. An action or a file the code asks for is answered while the cell waits, so the code
+   * runs once. The same limits hold as for a replayed call: at most MAX_ACTS actions, acting only with `via`.
+   */
+  private async executeKernel(input: ReturnType<NativeRuntime['snapshot']> & Record<string, any>, signal: AbortSignal | undefined,
+    via: string | undefined): Promise<NativeResult & { acted?: Acted; kernel?: { fresh: boolean; previousExit?: string; ended?: string } }> {
+    const started = performance.now();
+    const all = input.files; const files: Record<string, string> = {};
+    const source = input.code ?? '';
+    for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    const acted: Acted = { lines: [] };
+    let played = 0, fetched = 0;
+    const answer = async (request: KernelRequest): Promise<unknown> => {
+      if (request.t === 'act') {
+        if (!via || !this.host.act) return { error: 'this code cannot act' };
+        const call = request.call as ActCall;
+        if (!call || typeof call.action !== 'string') return { error: 'invalid action request' };
+        const outcome: ActOutcome = played >= MAX_ACTS ? { stopped: `the limit of ${MAX_ACTS} actions per call was reached` }
+          : acted.stopped ? { stopped: acted.stopped } : await this.host.act(call, via);
+        if (!outcome.stopped) played += 1;
+        if (outcome.line) acted.lines.push(outcome.line);
+        if (outcome.stopped) acted.stopped ??= outcome.stopped;
+        return outcome.stopped ? { stopped: outcome.stopped } : { observation: outcome.observation };
+      }
+      if (request.t === 'file') {
+        const path = String(request.path ?? '');
+        try { this.host.workspace.path(path); } catch (error) { return { error: String((error as Error).message ?? error) }; }
+        if (!Object.hasOwn(all, path)) return { error: 'not in the workspace' };
+        if (++fetched > 32) return { error: 'workspace read budget exceeded; use history.grid(n) or env.frame(n) for frames' };
+        // The rest of its folder comes along, so a loop over frames is one request, not one per file.
+        const out: Record<string, string> = { [path]: all[path] };
+        const folder = path.slice(0, path.lastIndexOf('/') + 1);
+        let room = 120_000;
+        for (const [other, body] of Object.entries(all)) {
+          if (!folder || !other.startsWith(folder) || other === path || body.length > room) continue;
+          out[other] = body; room -= body.length;
+        }
+        return { files: out };
+      }
+      return { error: 'unknown request' };
+    };
+    const { snapshotMetrics, ...request } = input;
+    const payload = { ...request, files, file_names: Object.keys(all), acts: [], allow_act: Boolean(via) };
+    let metrics: Record<string, unknown> = {}, ended: string | undefined;
+    try {
+      const run = await this.kernel!.run(payload, answer, signal);
+      metrics = { ...run.metrics, fresh: run.fresh };
+      return { ...run.result, acted, kernel: { fresh: run.fresh, ...(run.previousExit ? { previousExit: run.previousExit } : {}) } };
+    } catch (error) {
+      ended = String((error as Error)?.message ?? error);
+      this.session?.kernelEnded();
+      // A kernel that ended cannot erase actions already acknowledged by the host.
+      return { ok: false, error: `the python kernel ended: ${ended}`, acted, kernel: { fresh: false, ended } };
+    } finally {
+      this.host.log('wasi_runs.jsonl', { mode: 'kernel', n: this.host.actionCount(), ...snapshotMetrics, acts: played, files_fetched: fetched,
+        input_bytes: Buffer.byteLength(JSON.stringify(payload)), ...metrics, ...(ended ? { ended } : {}), total_ms: performance.now() - started });
+    }
+  }
+  /**
+   * The tool result: what the code returned, then what it did in the game; acting ends the decision. `valueKept`: the
+   * final value stays in the live session as _, so a result shortened here is still whole there.
+   */
+  private finish(body: string, result: NativeResult & { acted?: Acted }, valueKept = false) {
+    let shownBody = this.host.receipt?.(body) ?? body;
+    if (valueKept && shownBody !== body) shownBody += '\n(the whole final value is _ in the python session until your next final expression: take the part you need from it)';
     const acted = result.acted;
     if (!acted?.lines.length) return text(shownBody + (acted?.stopped ? `\n(no action taken: ${acted.stopped})` : ''), !result.ok);
     return { ...text([shownBody, `ACTED ${acted.lines.length} action(s)${acted.stopped ? `; stopped: ${acted.stopped}` : ''}. This decision ends.`,
@@ -273,12 +344,20 @@ export class NativeRuntime {
     }
     const snap = this.snapshot(); const started = Date.now();
     const kit = kitOf(this.host.binder.versionMap());
-    const result = await this.execute({ ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}) },
-      signal, undefined, via);
+    const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}) };
+    // The parent's session runs in its live kernel; a subagent's session and saved tools keep a fresh sandbox per call.
+    const live = Boolean(this.kernel && session && session === this.session);
+    const result = live ? await this.executeKernel(input, signal, via) : await this.execute(input, signal, undefined, via);
     const receipts = [...saveReceipts, ...(result.ok ? await this.applyWrites(result) : [])];
     // The namespace is checkpointed whether or not the code raised: what ran before an error stays, as in a kernel.
-    const outcome = session?.commit(result.session);
-    const sessionNotes = [outcome?.receipt ?? '',
+    const outcome = session?.commit(result.session, live);
+    // A checkpoint that did not load must not stay half-restored in the kernel: the next call starts from the rollback.
+    if (live && outcome?.event === 'rolled_back') { this.kernel!.kill('its checkpoint did not load'); session!.kernelEnded(); }
+    const kernel = live ? (result as any).kernel as { fresh: boolean; previousExit?: string; ended?: string } | undefined : undefined;
+    const sessionNotes = [
+      kernel?.fresh && kernel.previousExit ? `(new python kernel: the previous one ended (${kernel.previousExit}); the session was restored from its checkpoint v${session!.version} before this call)` : '',
+      kernel?.ended ? `(the next python call starts a new kernel with the session as checkpointed: v${session!.version}${session!.names().length ? `: ${session!.names().join(', ').slice(0, 300)}` : ', empty'})` : '',
+      outcome?.receipt ?? '',
       // A saved tool runs without the session: say so when the code just saved relies on it.
       save && via?.startsWith('tools/') && result.session?.uses?.length ? `(${via} uses names from the python session: ${result.session.uses.join(', ').slice(0, 200)}. ` +
         'A saved tool runs without the session, so define them inside it or pass them in args.)' : ''].filter(Boolean).join('\n');
@@ -295,7 +374,8 @@ export class NativeRuntime {
       acted: result.acted?.lines.length ?? 0, ...(outcome ? { session_version: outcome.version, session_event: outcome.event ?? 'unchanged' } : {}) });
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
-    return this.finish([...receipts, shown(result), sessionNotes, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result);
+    return this.finish([...receipts, shown(result), sessionNotes, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
+      live && result.ok && Boolean((result.value as any)?.has_value));
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
     const component = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
@@ -406,5 +486,7 @@ export class NativeRuntime {
       throw Error('consult tool/time budget exhausted');
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
-  close() { this.viewPool.close(); }
+  close() { this.viewPool.close(); this.kernel?.close(); }
+  /** The line listing what the parent's python session holds, for the decision's working set. */
+  sessionView(): string { return this.session?.view() ?? ''; }
 }
