@@ -44,6 +44,21 @@ test('edited prior reasoning or tool arguments cannot be hidden behind an old re
   const altered = { ...reasoning, content: [{ type: 'reasoning_text', text: 'updated thinking' }] };
   assert.equal(state.project({ input: [head, altered, call, result] }, 'decision1').audit.reason, 'previous_output_changed');
   assert.equal(setup().project({ input: [head, reasoning, { ...call, arguments: '{"code":"2+2"}' }, result] }, 'decision1').audit.reason, 'previous_output_changed');
+  // Omitting reasoning does not make an edited call acceptable either, and an output that matches nothing rebases.
+  assert.equal(setup().project({ input: [head, { ...call, arguments: '{"code":"2+2"}' }, result] }, 'decision1').audit.reason, 'previous_output_changed');
+  assert.equal(setup().project({ input: [head, result] }, 'decision1').audit.reason, 'previous_output_changed');
+});
+
+test('reasoning the decision does not replay still continues from the stored response', () => {
+  // ARC_THIN_REASONING_MODE=fields: the projection carries the model's own short fields instead of its reasoning text,
+  // so the reasoning item is absent rather than altered. The stored response holds it; only the new result is sent.
+  const projected = setup().project({ model: 'qwen', input: [head, call, result] }, 'decision1');
+  assert.equal(projected.payload.previous_response_id, 'resp_1');
+  assert.deepEqual(projected.payload.input, [result]);
+  assert.equal(projected.audit.local_reasoning_chars, 0);
+  assert.equal(projected.audit.wire_reasoning_chars, 0);
+  assert.equal(projected.audit.unreplayed_reasoning_blocks, 1);
+  assert.equal(setup().project({ model: 'qwen', input: [head, reasoning, call, result] }, 'decision1').audit.unreplayed_reasoning_blocks, 0);
 });
 
 test('incomplete/error responses and missing IDs clear continuation state', () => {

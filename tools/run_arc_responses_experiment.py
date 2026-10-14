@@ -33,7 +33,10 @@ class AuditedKernel(PiKernel):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--api', choices=['openai-completions', 'openai-responses'], required=True)
+    parser.add_argument('--api', choices=['openai-completions', 'openai-responses'], default='openai-responses')
+    # Omitted: the runner's default for the route ("fields" on Responses, "all" on Completions). Set it to separate the
+    # protocol change from the carry-forward change in a third arm.
+    parser.add_argument('--reasoning', choices=['all', 'fields', 'none'])
     parser.add_argument('--root', type=Path, required=True)
     args = parser.parse_args()
     root = args.root.resolve()
@@ -43,13 +46,14 @@ def main():
     os.environ['ARC_PI_API'] = args.api
     os.environ.pop('ARC_PI_THINKING_FORMAT', None)
     os.environ['ARC_MODEL'] = 'qwen3.8-27b'
+    reasoning = args.reasoning or ('fields' if args.api == 'openai-responses' else 'all')
     before = source_hashes()
     protocol = dict(provider='yibu', model='qwen3.8-27b', api=args.api, thinking='high', game='ls20',
         provider_mocked=False, environment_mocked=False, max_actions=8, max_decisions=3,
         max_uncached_input_plus_output_tokens=100000, max_output_tokens=32768,
         experiment_timeout_seconds=540, decision_timeout_seconds=540, turn_idle_timeout_seconds=180,
         foundation='native', input_modalities=['text'], ledger=True, critic=True,
-        decision_reasoning='all', observation='query', source_hashes_before=before,
+        decision_reasoning=reasoning, observation='query', source_hashes_before=before,
         source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=PROJECT, text=True).strip(),
         scope='Ordinary real ARC protocol/context diagnostic, no benchmark-improvement claim')
     protocol_path = root.parent / (root.name + '-protocol.json')
@@ -60,10 +64,10 @@ def main():
         result = runner.run_arc_thin_e2e(root, arc_root=Path('D:/arc-agi-benchmark/arc-agi-3-benchmarking'),
             game='ls20', foundation='native', max_actions=8, max_decisions=3, max_reported_tokens=100000,
             experiment_timeout_seconds=540, decision_timeout_seconds=540, turn_idle_timeout_seconds=180,
-            pi_provider='yibu', pi_model='qwen3.8-27b', thinking='high', input_modalities='text',
+            pi_provider='yibu', pi_model='qwen3.8-27b', pi_api=args.api, thinking='high', input_modalities='text',
             max_output_tokens=32768, ledger=True, critic=True, review_at_level_change=False,
-            replay_reasoning=False, extension_env={'ARC_THIN_REASONING_MODE': 'all',
-            'ARC_THIN_AUTO_COMPACTION': '1', 'ARC_THIN_RESPONSES_CONTINUATION': '1'})
+            replay_reasoning=False, extension_env={'ARC_THIN_REASONING_MODE': reasoning,
+            'ARC_THIN_AUTO_COMPACTION': '1'})
         summary = json.loads(result.read_text(encoding='utf-8'))
         print(json.dumps({k: summary.get(k) for k in ['passed', 'stop_reason', 'decisions', 'reported_tokens', 'actions', 'levels_completed']}, ensure_ascii=False), flush=True)
     finally:

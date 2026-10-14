@@ -1,5 +1,7 @@
 /** Stored Responses continuation with exact local-prefix and output verification.
- * Canonical Pi reasoning/history is preserved. Only the HTTP projection changes.
+ * Pi's own session is never changed, and nothing here rewrites history: only the HTTP projection changes. What the
+ * decision chooses to replay locally is the caller's policy (see arc_thin_native_context.ts); this helper verifies
+ * that whatever it does replay still matches the stored response before standing on its ID.
  */
 type Payload = Record<string, any>;
 
@@ -51,9 +53,17 @@ export class ResponsesContinuation {
         input.length < previous.input.length || canonical(input.slice(0, previous.input.length)) !== canonical(previous.input)
           ? 'prefix_changed' : 'previous_output_changed';
       if (reason === 'previous_output_changed') {
-        const outputs = input.slice(previous.input.length, previous.input.length + previous.blocks.length);
-        if (outputs.length === previous.blocks.length && outputs.every((item, i) => matchesOutput(item, previous.blocks[i]))) {
-          consumed = previous.input.length + previous.blocks.length;
+        // Match the previous output item by item. A reasoning block the decision's projection chose not to replay is
+        // simply absent, and the stored response still holds it, so it may be skipped; an altered one matches nothing
+        // and rebases, as does any missing or altered tool call or text. At least one item must actually match.
+        let at = previous.input.length;
+        let intact = true;
+        for (const block of previous.blocks) {
+          if (at < input.length && matchesOutput(input[at], block)) { at += 1; continue; }
+          if (block.type !== 'thinking') { intact = false; break; }
+        }
+        if (intact && at > previous.input.length) {
+          consumed = at;
           reason = input.length > consumed ? 'continued' : 'no_new_input';
         }
       }
@@ -66,7 +76,10 @@ export class ResponsesContinuation {
     return { payload: wire, audit: { mode: reason === 'continued' ? 'response_id_delta' : 'full', reason,
       previous_response_id: wire.previous_response_id ?? null, local_input_items: input.length,
       wire_input_items: wire.input.length, local_reasoning_chars: plainReasoningChars(input),
-      wire_reasoning_chars: plainReasoningChars(wire.input), omitted_items: reason === 'continued' ? consumed : 0 } };
+      wire_reasoning_chars: plainReasoningChars(wire.input), omitted_items: reason === 'continued' ? consumed : 0,
+      // Reasoning blocks of the previous output the projection did not replay at all: the stored response is the only
+      // copy this request's context has of them.
+      unreplayed_reasoning_blocks: reason === 'continued' ? previous!.blocks.length - (consumed - previous!.input.length) : 0 } };
   }
 
   accept(message: any): void {

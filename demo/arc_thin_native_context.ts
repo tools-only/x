@@ -27,11 +27,51 @@ export function projectNativeHistory(messages: any[], replayReasoning = false): 
   return out;
 }
 
+/** The size cap applied to a short-field block that had to be lifted out of a reasoning block. */
+export const CARRY_CHARS = 700;
+
+/**
+ * The model's own short-field block as it wrote it (Continual Harness's carry), or undefined. Nothing is rewritten or
+ * summarised: the marked region is returned verbatim, clipped only when it was lifted out of a reasoning block.
+ */
+export function carryText(text: string, limit = CARRY_CHARS): string | undefined {
+  // The last block wins: the model is asked to rewrite the fields, so a later one supersedes an earlier one.
+  const matches = [...String(text ?? '').matchAll(/<carry>([\s\S]*?)<\/carry>/gi)];
+  const body = matches.at(-1)?.[1].trim();
+  if (!body) return undefined;
+  return `<carry>\n${body.length > limit ? `${body.slice(0, limit)}… <${body.length} chars>` : body}\n</carry>`;
+}
+
+/**
+ * Within one decision the model's reasoning prose is not replayed; the `<carry>` fields it writes itself are. A message
+ * that wrote them inside its thinking instead of its text has them lifted onto the result that follows it, because that
+ * assistant message is already final when its result first appears: every earlier round therefore renders to the same
+ * bytes on every later request (the projection stays append-only and no turn is collapsed or dropped).
+ */
+export function carryFields(messages: any[], limit = CARRY_CHARS): any[] {
+  let lifted: string | undefined;
+  return messages.map(message => {
+    if (message?.role === 'assistant') {
+      const blocks: any[] = Array.isArray(message.content) ? message.content : [];
+      const thinking = blocks.filter(b => b?.type === 'thinking').map(b => String(b.thinking ?? '')).join('\n');
+      lifted = thinking && !carryText(textOf(message)) ? carryText(thinking, limit) : undefined;
+      const content = blocks.filter(b => b?.type !== 'thinking');
+      return content.length === blocks.length ? message : { ...message, content };
+    }
+    if (message?.role !== 'toolResult' || !lifted) return message;
+    const carry = lifted;
+    lifted = undefined;
+    return { ...message, content: [{ type: 'text', text: carry }, ...(Array.isArray(message.content) ? message.content : [])] };
+  });
+}
+
 /** Retire old raw results without changing the durable Pi transcript. Explicit reads still return actual bodies. */
 export function projectNativeDecision(messages: any[], options: {
- reasoning?: 'all' | 'recent' | 'none'; fullResults?: number; archive?: (message: any, text: string) => string;
+ reasoning?: 'all' | 'recent' | 'fields' | 'none'; fullResults?: number; carryChars?: number;
+ archive?: (message: any, text: string) => string;
 } = {}): any[] {
- const paired = projectNativeHistory(messages, options.reasoning !== 'none');
+ const paired = options.reasoning === 'fields' ? carryFields(projectNativeHistory(messages, true), options.carryChars)
+  : projectNativeHistory(messages, options.reasoning !== 'none');
  const latestThinking = paired.findLastIndex(m => m.role === 'assistant' && m.content?.some((b: any) => b.type === 'thinking'));
  const results = paired.filter(m => m.role === 'toolResult');
  const recent = new Set(results.slice(-(options.fullResults ?? 2)).map(m => m.toolCallId));
