@@ -112,6 +112,29 @@ pilot-01 中决策 2 从零开始。四个原因，各自独立可修：
 
 ## 交付决定
 
+### cont-01（2026-10-14，探索样本，协议偏离）
+
+- 运行：`runs/arc-continuity-claude-20261014/cont-01`，commit 12880f3a，ls20，yibu/qwen3.8-27b，thinking high，text+image，query 观测，20 动作 / 100k reported tokens / 600 s，与 pilot-01 相同。
+- 偏离：用户要求"commit 后跑 pilot"，四项改动一起生效，不是计划中的 02→03→04 单因素序列。单次运行，不能归因到任一改动。
+
+| | pilot-01 | cont-01 |
+| --- | --- | --- |
+| 停止 | deadline 602 s | token_cap 534 s |
+| 动作 / 完成决策 | 4 / 1 | 10 / 2 |
+| reported tokens（含 cache read） | 49,794 | 140,128 |
+| 未缓存 input / cache read | 21,027 / 10,752 | 44,325 / 75,520 |
+| output（其中 reasoning） | 18,015（15,605） | 20,283（17,982） |
+| 每动作 output | 4,504 | 2,028 |
+| memory 写入 / strategy | 0 / 无 | 0 / 无 |
+
+- 修复 A（决策内 reasoning）：决策 2 的后续轮次建立在前一轮结论上（"Confirmed: A1=up…" 直接用上一轮的 diff 解读，未重算）。但 reasoning 进入上下文后单轮 thinking 仍长（17,168 与 11,864 字符），且第二段开头复述了"current model"。决策内是否少了重推导：部分支持，未量化。
+- 修复 1（agent 写 memory）：未被采用。两个决策内 agent 没有写 memory 或 strategy；结论只在自己的文本里。4+6 个动作、2 个决策的运行里，跨决策需要保存的东西有限，不足以判定；仍为"未观察到采用"。
+- 修复 2+3（历史）：决策 2 首个思考直接引用了决策 1 的回执（"changed=52 in x13-38 y40-62"），没有从零重新描述网格。决策 2 首请求 cache=0，与预测一致（只有 system/tools 可复用，而这次连这部分也未命中）。决策内 cache read 随后升到 15–19k/请求。
+- 一次中途 miss：决策 2 第 5 请求（输入 16,438，cache 0）紧接一个 7,016 reasoning token 的轮次；之后请求正常命中，前缀未变，判断为 provider 侧，未确认。
+- **新发现的预算问题**：run 的 token 上限计入 cache read。cont-01 的 140k 中 75.5k 是 cache read，按上限停止早于 deadline。保留 reasoning 与转录使 cache read 按请求累计增长，所以在这个口径下，越能复用前缀的配置越早触顶。是否把 cache read 计入预算是用户的决定；比较时需同时报告两种口径。
+
+### 原交付决定
+
 - 已支持的声明：无（设计阶段）。
 - 决定与依据：A → 1 → 2+3 三个单因素顺序实验；预算文本随 pilot-02。
 - 下一可证伪检查：pilot-02 是否消除决策内重推导；pilot-03 agent 是否自写跨决策结论并在决策 2 使用；修复 2 离线回放是否保留 diff；pilot-04 决策 2 是否不再从零开始且首请求 cache > 0。
