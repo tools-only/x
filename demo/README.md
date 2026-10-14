@@ -96,7 +96,13 @@ transports SDK frames/actions and owns the native scorecard. Set
 `ARC_OPENAI_API_BASE`, `ARC_OPENAI_API_KEY`, and `ARC_MODEL` in this repository's
 `.env` for ARC-specific credentials; they override generic model variables only
 for ARC. The default Pi API is `openai-responses` to match the official model
-configuration (`ARC_PI_API=openai-completions` is an explicit gateway fallback).
+configuration, and a native run takes that route whatever `.env` says, because a
+decision's later queries continue from the stored response instead of re-sending
+the reasoning it already produced (`run_arc_thin_e2e(pi_api=...)` or
+`ARC_PI_API=openai-completions` for an A/B arm or a gateway without Responses).
+On that route the decision replays the short `<carry>` fields the agent writes
+rather than its reasoning text (`ARC_THIN_REASONING_MODE`, default `fields` on
+Responses and `all` on Completions).
 The treatment-only research extension is mounted after this adapter and does
 not alter the ARC frame or action contract.
 

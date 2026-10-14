@@ -80,6 +80,9 @@ NORMAL_STOPS = frozenset({"win", "budget_exhausted", "max_decisions", "token_cap
 CONTINUITY_MODES = frozenset({"rebuild", "session"})
 # How Pi encodes a thinking level for an OpenAI-Completions gateway (models.json compat.thinkingFormat).
 THINKING_FORMATS = frozenset({"openai", "qwen", "qwen-chat-template"})
+# The provider protocols a run may take. Responses carries a decision's reasoning in the stored response
+# (previous_response_id); Completions has no such state, so each request re-sends whatever history it is given.
+PI_APIS = frozenset({"openai-responses", "openai-completions"})
 # Decisions between snapshots of summary.json (marked "partial") while a run continues.
 PARTIAL_SUMMARY_EVERY = 10
 # With review_on_miss, a scored miss makes a review due once at least this many actions followed the last one.
@@ -481,6 +484,27 @@ def _thinking_format_for_route(settings: dict[str, Any], provider: str, model: s
     return None
 
 
+def _resolve_pi_api(settings: dict[str, Any], foundation: str, pi_api: str | None,
+                    declared_format: str | None) -> str:
+    """Choose the provider protocol for this run.
+
+    A native run defaults to OpenAI Responses, whatever the project environment says: within one decision the stored
+    response carries the reasoning the model already produced, so the later queries of that decision continue from its
+    ID instead of re-sending that text.  ``pi_api`` selects the route explicitly, which is how the arms of an A/B are
+    set and how a gateway without Responses is used.  A declared chat-template thinking dialect exists only on
+    Completions, so it keeps that route rather than being dropped without notice.
+    """
+    if pi_api is not None:
+        if pi_api not in PI_APIS:
+            raise ValueError(f"pi_api must be one of {sorted(PI_APIS)}")
+        if pi_api != "openai-completions" and declared_format:
+            raise ValueError("a declared thinking format requires pi_api=openai-completions")
+        return pi_api
+    if foundation == "native" and not declared_format:
+        return "openai-responses"
+    return str(settings["pi_api"])
+
+
 def _write_models_json(agent_dir: Path, provider: str, model: str, settings: dict[str, Any]) -> None:
     compat: dict[str, Any] = {"supportsDeveloperRole": False}
     if settings.get("thinking_format"):
@@ -698,6 +722,7 @@ def run_arc_thin_e2e(
     turn_idle_timeout_seconds: float = 180.0,
     pi_provider: str = "yibu",
     pi_model: str | None = None,
+    pi_api: str | None = None,
     thinking: str | None = "high",
     thinking_format: str | None = None,
     input_modalities: str | None = None,
@@ -766,6 +791,10 @@ def run_arc_thin_e2e(
         if thinking_format not in THINKING_FORMATS:
             raise ValueError(f"thinking_format must be one of {sorted(THINKING_FORMATS)}")
         settings["thinking_format"] = thinking_format
+    # A native run takes the OpenAI Responses route by default (ARC's official runtime): a stored response keeps the
+    # decision's reasoning server-side, so its later queries do not have to re-send that text.
+    settings["pi_api"] = _resolve_pi_api(
+        settings, foundation, pi_api, thinking_format or env.get("ARC_PI_THINKING_FORMAT"))
     model = str(pi_model or settings["model"])
     resolved_format = _thinking_format_for_route(settings, pi_provider, model, thinking)
     if resolved_format:
@@ -863,6 +892,13 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_FOUNDATION"] = foundation
         pi_env["ARC_THIN_PARENT_OUTPUT_TOKENS"] = str(settings.get("max_tokens") or 0)
         pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
+        # On the Responses route the stored response holds the decision's reasoning, so a later query of the same
+        # decision continues from its ID and the projection replays the agent's own short <carry> fields instead of its
+        # reasoning prose.  A Completions gateway has no stored response, so the decision keeps that text ("all"); an
+        # explicit extension_env below still decides either, which is how the arms of an A/B are set.
+        stored_responses = settings["pi_api"] == "openai-responses"
+        pi_env["ARC_THIN_RESPONSES_CONTINUATION"] = "1" if stored_responses else "0"
+        pi_env["ARC_THIN_REASONING_MODE"] = "fields" if stored_responses else "all"
         pi_env.update(extension_env or {})
         observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "query") if foundation == "native" else "inline"
         if observation_delivery not in ("query", "inline"):
@@ -896,8 +932,11 @@ def run_arc_thin_e2e(
             "observation_delivery": observation_delivery,
             # A run started from another run's snapshot (matched prefix): where from, and how much of it was replayed.
             "fork": summary.get("fork"), "snapshot_after_decisions": list(snapshot_after_decisions),
-            # Reasoning between tool rounds of the current decision: "all" (default since 2026-10-14) or "none" keep the
-            # projection append-only for the provider's prefix cache; "recent" and result archiving rewrite earlier messages.
+            # Reasoning between tool rounds of the current decision: "all" (the Completions default), "fields" (the
+            # Responses default: only the short <carry> block the agent writes is replayed) or "none" keep the projection
+            # append-only for the provider's prefix cache; "recent" and result archiving rewrite earlier messages.
+            "pi_api": settings["pi_api"],
+            "responses_continuation": pi_env.get("ARC_THIN_RESPONSES_CONTINUATION") == "1",
             "decision_reasoning": foundation == "native" and pi_env.get("ARC_THIN_DECISION_REASONING", "1") != "0",
             "decision_reasoning_mode": pi_env.get("ARC_THIN_REASONING_MODE", "all") if foundation == "native" else None,
             "archive_results": foundation == "native" and pi_env.get("ARC_THIN_ARCHIVE_RESULTS", "0") == "1",

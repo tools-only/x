@@ -3,6 +3,8 @@ import inspect
 import json
 import time
 
+import pytest
+
 from autoresearch_pi import arc_thin_e2e
 
 from autoresearch_pi.arc_thin_e2e import (
@@ -35,6 +37,22 @@ def test_known_qwen_route_encodes_requested_thinking_without_overriding_explicit
     provider = config["providers"]["yibu"]
     assert provider["compat"]["thinkingFormat"] == "qwen"
     assert provider["models"][0]["maxTokens"] == 2048
+
+
+def test_a_native_run_takes_the_responses_route_unless_an_arm_or_a_dialect_asks_otherwise():
+    """The stored response is what lets a decision's later queries leave earlier reasoning off the wire."""
+    resolve = arc_thin_e2e._resolve_pi_api
+    pinned = {"pi_api": "openai-completions"}
+    assert resolve(pinned, "native", None, None) == "openai-responses"
+    assert resolve(pinned, "legacy", None, None) == "openai-completions"
+    # An A/B arm and a gateway without Responses select the route themselves.
+    assert resolve({"pi_api": "openai-responses"}, "native", "openai-completions", None) == "openai-completions"
+    # A chat-template thinking dialect only exists on Completions: keep that route, never drop the dialect quietly.
+    assert resolve(pinned, "native", None, "qwen") == "openai-completions"
+    with pytest.raises(ValueError):
+        resolve(pinned, "native", "openai-responses", "qwen")
+    with pytest.raises(ValueError):
+        resolve(pinned, "native", "openai-chat", None)
 
 
 def test_partial_summary_is_marked_and_replaced_by_the_final_one(tmp_path):

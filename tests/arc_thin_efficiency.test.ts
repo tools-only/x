@@ -55,17 +55,45 @@ test('decision projection retains unfinished reasoning, signed blocks and exact 
 
 test('the default decision projection only appends: each request starts with the previous one unchanged', () => {
  const messages:any[]=[{role:'user', content:'DECIDE'}];
- const snapshots:string[]=[];
+ const chains:Record<string,string[]>={none:[],fields:[]};
  for (let i=0;i<5;i++) {
-  messages.push({role:'assistant',content:[{type:'thinking',thinking:`round ${i}`,thinkingSignature:'reasoning_content'},{type:'toolCall',id:`c${i}`,name:'python'}]},
+  messages.push({role:'assistant',content:[{type:'thinking',thinking:`round ${i} <carry>probe: step ${i}</carry>`,thinkingSignature:'reasoning_content'},{type:'toolCall',id:`c${i}`,name:'python'}]},
    {role:'toolResult',toolCallId:`c${i}`,content:[{type:'text',text:String(i).repeat(3000)}]});
-  for (const reasoning of ['none','all'] as const) {
+  for (const reasoning of ['none','fields','all'] as const) {
    const projected=JSON.stringify(projectNativeDecision(messages,{reasoning,fullResults:2}));
-   if (reasoning==='none') { assert.doesNotMatch(projected,/round/); snapshots.push(projected.slice(0,-1)); }
-   else assert.match(projected,new RegExp(`round ${i}`));
+   if (reasoning==='all') assert.match(projected,new RegExp(`round ${i}`));
+   else { assert.doesNotMatch(projected,/round/); chains[reasoning].push(projected.slice(0,-1)); }
   }
  }
- for (let i=1;i<snapshots.length;i++) assert.ok(snapshots[i].startsWith(snapshots[i-1]), `request ${i} rewrote an earlier message`);
+ for (const [mode,snapshots] of Object.entries(chains))
+  for (let i=1;i<snapshots.length;i++) assert.ok(snapshots[i].startsWith(snapshots[i-1]), `${mode}: request ${i} rewrote an earlier message`);
+});
+
+test('a decision carries the short fields the model wrote, not its reasoning prose, and keeps every call and result', () => {
+ const messages:any[]=[{role:'user',content:'DECIDE'},
+  {role:'assistant',content:[{type:'thinking',thinking:'long derivation '.repeat(50)+'<carry>probe: superseded</carry> more derivation <carry>premises: key opens door\nprobe: press ACTION1</carry>'},
+   {type:'toolCall',id:'a',name:'python'}]},
+  {role:'toolResult',toolCallId:'a',content:[{type:'text',text:'changed 3 cells'}]},
+  {role:'assistant',content:[{type:'thinking',thinking:'more derivation'},{type:'text',text:'<carry>eliminated: ACTION2 is a no-op here</carry>'},
+   {type:'toolCall',id:'b',name:'python'}]},
+  {role:'toolResult',toolCallId:'b',content:[{type:'text',text:'changed 0 cells'}]}];
+ const projected=projectNativeDecision(messages,{reasoning:'fields'});
+ const json=JSON.stringify(projected);
+ assert.doesNotMatch(json,/derivation/);
+ assert.doesNotMatch(json,/superseded/);
+ assert.match(json,/premises: key opens door/);
+ assert.match(json,/eliminated: ACTION2 is a no-op here/);
+ assert.deepEqual(projected.filter(m=>m.role==='toolResult').map(m=>m.toolCallId),['a','b']);
+ assert.match(JSON.stringify(projected.find(m=>m.toolCallId==='a')),/changed 3 cells/);
+ // A block the model put in its own text is left exactly as it wrote it: the stored response is verified against it.
+ assert.equal(projected.find(m=>m.role==='assistant'&&m.content.some((b:any)=>b.id==='b')).content[0].text,
+  '<carry>eliminated: ACTION2 is a no-op here</carry>');
+ assert.match(messages[1].content[0].thinking,/derivation/);
+ // One lifted out of thinking rides the result of the call that wrote it (both are final then, so the projection of
+ // every earlier round stays byte-identical) and is clipped, never rewritten.
+ const clipped=projectNativeDecision(messages,{reasoning:'fields',carryChars:20});
+ assert.match(JSON.stringify(clipped.find(m=>m.toolCallId==='a')),/premises: key opens/);
+ assert.match(JSON.stringify(clipped.find(m=>m.toolCallId==='a')),/chars>/);
 });
 
 test('the grid is shown as row runs with coordinates, background left out and equal rows merged; show() prints the same', async () => {

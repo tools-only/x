@@ -23,7 +23,8 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
-import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
+import { ResponsesContinuation } from "./arc_responses_continuation.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
@@ -168,6 +169,7 @@ const duration = (ms: number) => {
 const tokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
 export default function arcThinExtension(pi: ExtensionAPI) {
+  const responsesContinuation = new ResponsesContinuation();
   const native = process.env.ARC_THIN_FOUNDATION === "native";
   const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'query' : 'inline';
   if (!['query', 'inline'].includes(observationMode)) throw Error('ARC_THIN_OBSERVATION must be query or inline');
@@ -175,8 +177,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";
   /** Reasoning kept within the current decision (default on in native mode; ARC_THIN_DECISION_REASONING=0 strips it). */
   const decisionReasoning = native && process.env.ARC_THIN_DECISION_REASONING !== "0";
+  // How that reasoning is carried between the tool rounds of one decision. "all" replays its text; "fields" (the runner's
+  // default on the Responses route, where the stored response keeps the reasoning server-side) replays only the short
+  // <carry> block the model writes itself. Continual Harness / Prime keep the conclusions, not the deliberation.
   const reasoningMode = process.env.ARC_THIN_REASONING_MODE ?? 'all';
-  if (!['all', 'recent', 'none'].includes(reasoningMode)) throw Error('invalid ARC_THIN_REASONING_MODE');
+  if (!['all', 'recent', 'fields', 'none'].includes(reasoningMode)) throw Error('invalid ARC_THIN_REASONING_MODE');
+  const carryFieldChars = Math.max(80, Math.floor(Number(process.env.ARC_THIN_CARRY_FIELD_CHARS ?? NATIVE_CARRY_CHARS)));
   const archiveResults = process.env.ARC_THIN_ARCHIVE_RESULTS === '1';
 	const control = process.env.ARC_THIN_VARIANT === "control";
 	// Diagnostic smoke suites can request the legacy all-tools surface so they
@@ -2390,6 +2396,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       observation: queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
+      // What of a decision's own thinking comes back to it on its next call, and what the agent must write to keep the
+      // rest. The requirement is a short field block the agent authors; nothing summarises or rewrites its reasoning.
+      carry: reasoningMode === 'fields'
+        ? 'Your reasoning is not read back to you after the call it was written for; your text, calls and results are, '
+          + 'here and in later decisions. So end every message that calls a tool with a <carry>…</carry> block: premises '
+          + '(what current evidence supports), eliminated (what you ruled out and what ruled it out), probe (what this '
+          + 'call tests and the outcome that would settle it), open (what is still unknown). One short line each, rewritten '
+          + 'from scratch every time rather than appended to. What is not in it you will have to derive again.'
+        : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
       refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
@@ -2516,14 +2531,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const recovery = messages.slice(lastUser + 1).filter(m => m.role === 'user').map(messageText).join('\n');
 		if (native && recovery) head.content[0].text += '\n\n' + recovery;
 		// Within a decision the projection only appends, so the provider's cached prefix stays valid: reasoning is either
-		// all kept (default since 2026-10-14; pilot-01 re-derived settled conclusions without it) or all dropped
+		// all kept ("all"), replaced by the model's own short <carry> fields ("fields": the Responses route keeps the
+		// reasoning itself in the stored response, so re-sending its text only grows the request) or all dropped
 		// (ARC_THIN_REASONING_MODE=none), and earlier results are not replaced by archive stubs (ARC_THIN_ARCHIVE_RESULTS=1
 		// restores that). "recent" reasoning and archiving rewrite earlier messages on every request; with them the
 		// 2026-10-14 pilots reached a 1-2% cache hit rate.
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
 			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
-        reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'none' : 'none',
-        fullResults: 2, ...(archiveResults ? { archive: archiveResult } : {}) })]
+        reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'fields' | 'none' : 'none',
+        fullResults: 2, carryChars: carryFieldChars, ...(archiveResults ? { archive: archiveResult } : {}) })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		lastContextChars = projected.reduce((n, message) => n + messageText(message).length, 0) + systemChars;
 		// Developer-only accounting, never added to the model context.
@@ -2545,6 +2561,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				message_text_chars: projected.reduce((n, message) => n + messageText(message).length, 0),
 				reasoning_chars: projected.reduce((n, message) => n + (Array.isArray(message.content)
 					? message.content.filter((block: any) => block.type === "thinking").reduce((m: number, block: any) => m + String(block.thinking ?? "").length, 0) : 0), 0),
+				// Whether the short fields the agent is asked to write actually reach the next request of this decision:
+				// one count per projected message that has a <carry> block, and one per assistant message that called a
+				// tool without leaving any. Non-compliance is visible here instead of being patched silently.
+				...(native ? { decision_reasoning_mode: reasoningMode,
+					carry_blocks: projected.filter(message => carryText(messageText(message))).length,
+					carry_missing: projected.filter(message => message.role === 'assistant' && !carryText(messageText(message))
+						&& (Array.isArray(message.content) ? message.content : []).some((block: any) => block.type === 'toolCall')).length } : {}),
 				images: projected.reduce((n, message) => n + (Array.isArray(message.content)
 					? message.content.filter((block: any) => block.type === "image").length : 0), 0),
 			});
@@ -2566,7 +2589,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     return Object.keys(patch).length ? { messages: [...event.messages, { role: 'system', content: '', sections: patch, timestamp: Date.now() }] } : undefined;
   });
   if (nativeRuntime) pi.on('session_shutdown', () => nativeRuntime?.close());
-	pi.on("before_provider_request", guard("before_provider_request", (event: any) => {
+	pi.on("before_provider_request", guard("before_provider_request", (event: any, ctx: any) => {
 		if (native) {
 			if (parentRequest) requestTrace.finish(parentRequest);
 			parentRequest=requestTrace.start('parent',decision);
@@ -2578,15 +2601,22 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (native && outputPolicy !== undefined) {
 			const limit = Number(outputPolicy);
 			if (!Number.isInteger(limit) || limit < 0) throw Error('invalid parent output-token policy');
-			if (!limit) { delete payload.max_tokens; delete payload.max_completion_tokens; }
+			if (!limit) { delete payload.max_tokens; delete payload.max_completion_tokens; delete payload.max_output_tokens; }
+			else if (ctx.model?.api === 'openai-responses') payload.max_output_tokens = limit;
 			else if ('max_completion_tokens' in payload) payload.max_completion_tokens = limit;
 			else payload.max_tokens = limit;
 		}
 		append("provider_policy.jsonl", {
-			decision, max_tokens: payload.max_tokens ?? payload.max_completion_tokens ?? null,
+			decision, max_tokens: payload.max_output_tokens ?? payload.max_tokens ?? payload.max_completion_tokens ?? null,
 			enable_thinking: payload.enable_thinking ?? payload.chat_template_kwargs?.enable_thinking ?? null,
-			reasoning_effort: payload.reasoning_effort ?? null,
+			reasoning_effort: payload.reasoning?.effort ?? payload.reasoning_effort ?? null,
 		});
+		if (ctx.model?.api === 'openai-responses' && process.env.ARC_THIN_RESPONSES_CONTINUATION !== '0') {
+			const projection = responsesContinuation.project(payload, `${decision}:${ctx.model.provider}:${ctx.model.id}`);
+			append('responses_transport.jsonl', { decision, ...projection.audit,
+				wire_json_chars: JSON.stringify(projection.payload).length, recordedAt: new Date().toISOString() });
+			return projection.payload;
+		}
 	}));
 	if (native) {
     pi.on('before_provider_headers',()=>{
@@ -2606,6 +2636,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	pi.on("message_end", guard("message_end", (event: any) => {
 		const message = event.message;
 		if (message?.role !== "assistant") return undefined;
+		responsesContinuation.accept(message);
 		run.assistantMessages += 1;
 		run.endedAt = Date.now();
 		const blocks: any[] = Array.isArray(message.content) ? message.content : [];
