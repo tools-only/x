@@ -2398,14 +2398,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
       // What of a decision's own thinking comes back to it on its next call, and what the agent must write to keep the
       // rest. The requirement is a short field block the agent authors; nothing summarises or rewrites its reasoning.
+      // ls20-r01 and ls20-r02 measured carry_blocks=0 over 16 and 21 projected messages, with the long form of this ask
+      // and a <carry-missing> note on the result: this model does not author the block. The ask is kept to one line --
+      // the lift path and the note still pick one up if it ever writes one -- rather than spending the prompt's
+      // attention on an instruction two rounds have shown to be inert.
       carry: reasoningMode === 'fields'
-        ? 'Your reasoning is not read back to you after the call it was written for; your text, calls and results are, '
-          + 'here and in later decisions. So end every message that calls a tool with a <carry>…</carry> block: premises '
-          + '(what current evidence supports), eliminated (what you ruled out and what ruled it out), probe (what this '
-          + 'call tests and the outcome that would settle it), open (what is still unknown). One short line each, rewritten '
-          + 'from scratch every time rather than appended to. Writing it inside your reasoning works: the block is lifted '
-          + 'from there onto the result that follows, so it survives even when the message is only reasoning and a call. '
-          + 'What is not in it you will have to derive again.'
+        ? 'Your reasoning is not read back to you after the call it was written for; your text, calls and results are. '
+          + 'A <carry>premises / eliminated / probe / open</carry> block, in your text or your reasoning, is kept; what '
+          + 'is not in it you will have to derive again.'
+        : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
         : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
       refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })

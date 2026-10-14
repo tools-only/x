@@ -144,3 +144,13 @@ test('a tool-calling message with no short fields is told so once, on the result
   assert.match(kept, /probe: press ACTION1/);
   assert.match(kept, /probe: press ACTION2/);
 });
+
+test('the native instructions state what a prediction is for, which the native foundation had left unsaid', () => {
+  // ls20-r01 and ls20-r02 played 29 and 7 actions with prediction hits=0 and misses=0: the agent moved its acting
+  // into env.act and stopped predicting, so nothing was scored, no hypothesis check was tested and no judgment was
+  // promoted. The legacy prompt states the contract; the native one mentioned predict only as a parameter name.
+  const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
+  assert.match(prompt, /predict carries it, on arc_action, on each step of its then list, and on env\.act/);
+  assert.match(prompt, /stops at the first missed prediction/);
+  assert.match(prompt, /level or WIN transition, predict it explicitly/);
+});
