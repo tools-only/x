@@ -96,6 +96,8 @@ def carry(root):
     omitted = sum(int(row.get('omitted_items') or 0) for row in transport)
     wire_reasoning = sum(int(row.get('wire_reasoning_chars') or 0) for row in transport)
     budgets = rows(root / 'harness' / 'context_budget.jsonl')
+    # Each row counts the whole projection it was taken from, so these are read per round, not summed: the measure is
+    # whether the agent ever writes the block (max) and how many messages lacked it in the last projection.
     return dict(pi_api=config.get('pi_api'), responses_continuation=config.get('responses_continuation'),
                 decision_reasoning_mode=config.get('decision_reasoning_mode'),
                 thinking_format=config.get('thinking_format'),
@@ -104,8 +106,9 @@ def carry(root):
                 requests=len(transport), reasons=dict(reasons.most_common()),
                 continued_share=round(reasons.get('continued', 0) / len(transport), 2) if transport else None,
                 omitted_input_items=omitted, wire_reasoning_chars=wire_reasoning,
-                carry_blocks=sum(int(row.get('carry_blocks') or 0) for row in budgets),
-                carry_missing=sum(int(row.get('carry_missing') or 0) for row in budgets))
+                carry_blocks_max=max((int(row.get('carry_blocks') or 0) for row in budgets), default=0),
+                carry_rounds_with_a_block=sum(1 for row in budgets if int(row.get('carry_blocks') or 0)),
+                carry_missing_last=int(budgets[-1].get('carry_missing') or 0) if budgets else None)
 
 
 def report(label):

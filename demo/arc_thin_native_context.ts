@@ -42,19 +42,33 @@ export function carryText(text: string, limit = CARRY_CHARS): string | undefined
   return `<carry>\n${body.length > limit ? `${body.slice(0, limit)}… <${body.length} chars>` : body}\n</carry>`;
 }
 
+/** Asked for once per projection when a tool-calling message carried no short fields, so the gap is visible where it
+ * is felt (the next result) rather than only in the system prompt. Position-based, so earlier rounds keep their bytes. */
+export const CARRY_REMINDER = '<carry-missing>\nYour last message left no <carry> block, so its reasoning is gone and\n'
+  + 'only its call and this result remain. Write one (premises, eliminated, probe, open) in your reasoning or your\n'
+  + 'text from now on; what is not in it you will have to derive again.\n</carry-missing>';
+
 /**
  * Within one decision the model's reasoning prose is not replayed; the `<carry>` fields it writes itself are. A message
  * that wrote them inside its thinking instead of its text has them lifted onto the result that follows it, because that
  * assistant message is already final when its result first appears: every earlier round therefore renders to the same
  * bytes on every later request (the projection stays append-only and no turn is collapsed or dropped).
+ *
+ * A tool-calling message with no fields at all gets the reminder above on its result, once per projection. One is a
+ * probe, not a nag: the agent either starts writing the block or it does not, and `carry_blocks` measures which.
  */
 export function carryFields(messages: any[], limit = CARRY_CHARS): any[] {
   let lifted: string | undefined;
+  let reminded = false;
   return messages.map(message => {
     if (message?.role === 'assistant') {
       const blocks: any[] = Array.isArray(message.content) ? message.content : [];
       const thinking = blocks.filter(b => b?.type === 'thinking').map(b => String(b.thinking ?? '')).join('\n');
       lifted = thinking && !carryText(textOf(message)) ? carryText(thinking, limit) : undefined;
+      if (!lifted && !carryText(textOf(message)) && blocks.some(b => b?.type === 'toolCall') && !reminded) {
+        lifted = CARRY_REMINDER;
+        reminded = true;
+      }
       const content = blocks.filter(b => b?.type !== 'thinking');
       return content.length === blocks.length ? message : { ...message, content };
     }

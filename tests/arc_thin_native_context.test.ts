@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clipEnds, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
+import { carryFields, clipEnds, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
 
 test('native production instructions explicitly prefer amortized offload without a creation quota', () => {
@@ -112,4 +112,35 @@ test('earlier decisions are a frozen transcript: no reasoning or images, results
   const later = freezeHistory([...history, { role: 'user', content: 'decision 3' }], { save });
   assert.deepEqual(later.slice(0, frozen.length), frozen);
   assert.equal(JSON.stringify(history).includes('secret reasoning'), true, 'canonical history is immutable');
+});
+
+test('a tool-calling message with no short fields is told so once, on the result, without rewriting earlier rounds', () => {
+  // ls20-r01 measured carry_blocks=0 over 21 assistant messages: the model answered with reasoning and a call and
+  // never a <carry> block, so "fields" mode replayed nothing and the stored response was the only continuity.
+  const round = (i: number, carry?: string) => ([
+    { role: 'assistant', content: [{ type: 'thinking', thinking: `derivation ${i}${carry ? ` <carry>${carry}</carry>` : ''}` },
+      { type: 'toolCall', id: `c${i}`, name: 'python' }] },
+    { role: 'toolResult', toolCallId: `c${i}`, content: [{ type: 'text', text: `result ${i}` }] }]);
+  const messages: any[] = [{ role: 'user', content: 'DECIDE' }, ...round(0), ...round(1), ...round(2)];
+  const projected = carryFields(messages);
+  const reminders = projected.filter(m => JSON.stringify(m).includes('carry-missing'));
+  assert.equal(reminders.length, 1, 'one probe per projection, not a reminder on every result');
+  assert.equal(reminders[0].toolCallId, 'c0', 'the gap is reported on the result of the message that left it');
+  assert.doesNotMatch(JSON.stringify(projected), /derivation/, 'the reminder does not bring reasoning prose back');
+
+  // Append-only: each later request must start with the previous one byte for byte, or the stored response the
+  // continuation stands on no longer matches its verified local prefix.
+  let previous = '';
+  for (let i = 1; i <= 3; i++) {
+    const snapshot = JSON.stringify(carryFields(messages.slice(0, 1 + 2 * i))).slice(0, -1);
+    assert.ok(snapshot.startsWith(previous), `request ${i} rewrote an earlier message`);
+    previous = snapshot;
+  }
+
+  // A model that does write the block gets it carried and is not reminded at all.
+  const writes: any[] = [{ role: 'user', content: 'DECIDE' }, ...round(0, 'probe: press ACTION1'), ...round(1, 'probe: press ACTION2')];
+  const kept = JSON.stringify(carryFields(writes));
+  assert.doesNotMatch(kept, /carry-missing/);
+  assert.match(kept, /probe: press ACTION1/);
+  assert.match(kept, /probe: press ACTION2/);
 });

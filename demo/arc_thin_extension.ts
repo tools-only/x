@@ -2403,7 +2403,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
           + 'here and in later decisions. So end every message that calls a tool with a <carry>…</carry> block: premises '
           + '(what current evidence supports), eliminated (what you ruled out and what ruled it out), probe (what this '
           + 'call tests and the outcome that would settle it), open (what is still unknown). One short line each, rewritten '
-          + 'from scratch every time rather than appended to. What is not in it you will have to derive again.'
+          + 'from scratch every time rather than appended to. Writing it inside your reasoning works: the block is lifted '
+          + 'from there onto the result that follows, so it survives even when the message is only reasoning and a call. '
+          + 'What is not in it you will have to derive again.'
         : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
       refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
