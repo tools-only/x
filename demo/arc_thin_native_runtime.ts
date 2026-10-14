@@ -17,6 +17,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
   /** Take one action for foreground code through the environment boundary (closed loop: env.act). */
   act?(call: ActCall, via: string): Promise<ActOutcome>;
+  /** Commit a memory update made by code (env.remember) through the memory tool's own update; returns its receipt. */
+  remember?(args: unknown): Promise<string>;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
@@ -156,11 +158,21 @@ export class NativeRuntime {
   private async applyWrites(result: NativeResult) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
     for (const op of result.ops ?? []) {
+      if (op.op === 'memory') continue;
       this.host.workspace.path(op.path, true);
       if (op.destination) this.host.workspace.path(op.destination, true);
     }
     const receipts: string[] = [];
+    let files = 0;
     for (const op of result.ops ?? []) {
+      if (op.op === 'memory') {
+        // Refused updates are reported with the result; they never undo the cell's other writes or actions.
+        if (!this.host.remember) { receipts.push('memory: not available here'); continue; }
+        try { receipts.push('memory: ' + await this.host.remember(op.args)); }
+        catch (error) { receipts.push('memory refused: ' + String((error as Error)?.message ?? error)); }
+        continue;
+      }
+      files += 1;
       if (op.op === 'restore') {
         const source = this.host.binder.sourceOf(op.path, Number(op.version));
         if (source === undefined) { receipts.push(`${op.path}: no version ${op.version} to restore`); continue; }
@@ -173,7 +185,7 @@ export class NativeRuntime {
       if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level()); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
       else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
     }
-    if (result.ops?.length) {
+    if (files) {
       await this.host.binder.scan(this.host.level()); this.register();
       // Tools are only added mid-decision, never removed: the tool list the agent sees stays consistent.
       const names = new Set(this.toolNames());

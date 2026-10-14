@@ -1678,6 +1678,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.setActiveTools(active);
 	}
 
+	let pythonMemory: ((params: unknown, signal?: AbortSignal) => Promise<string>) | undefined;
 	if (!control) {
 		const text600 = Type.String({ minLength: 1, maxLength: 600 });
 		const confidence = Type.Integer({ minimum: 1, maximum: 5 });
@@ -1747,7 +1748,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}), { maxItems: MAX_STRATEGIES }), Type.String({ maxLength: 12000, description: "JSON array accepted" })])),
 			}),
 			prepareArguments: repairMemoryArguments,
-			execute: guardTool("memory", async (params: MemoryParams, signal) => {
+			execute: guardTool("memory", async (params: MemoryParams, signal) => text(await commitMemory(params, signal), undefined, endsBatch())),
+		});
+		/** One committed memory update, from the memory tool or python's env.remember: its receipt, or a Refusal. */
+		async function commitMemory(params: MemoryParams, signal?: AbortSignal): Promise<string> {
 		const plan = (native ? planNativeMemoryUpdate : planMemoryUpdate)(memory, params, trajectory.length, components());
 				if (!plan.ok) throw new Refusal(plan.error);
 				const checksBefore = new Map([...memory.hypotheses].map(([key, h]) => [key, h.check ? claimVersion(h.check) : ""]));
@@ -1771,9 +1775,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					const lines = claimLines();
 					checkLines = changed.map((key) => `${key} ${lines[key] ?? "check: not run yet"}`);
 				}
-				return text([plan.receipt, ...checkLines].join("\n"), undefined, endsBatch());
-			}),
-		});
+				return [plan.receipt, ...checkLines].join("\n");
+		}
+		// Python's env.remember goes through the same update as the memory tool, so bookkeeping and an action can share
+		// one cell (Prime Agent's programmatic tool calling) instead of costing a separate request each.
+		pythonMemory = (params, signal) => commitMemory(repairMemoryArguments(params) as MemoryParams, signal);
 
 		pi.registerTool({
 			name: "skill",
@@ -2122,6 +2128,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [] }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
+      ...(pythonMemory ? { remember: pythonMemory } : {}),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.

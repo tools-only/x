@@ -214,6 +214,13 @@ elif script == "activation":
     # The python session: a function and a value defined in decision 3 are used in decision 5.
     assert "(python session: +plus_one(), +kept_value)" in text, text[:3000]
     assert any(r["tool"] == "python" and r["text"].endswith("→ 42") for r in results), [r["text"] for r in results if r["tool"] == "python"]
+    # env.remember in a python cell commits through the memory tool's own update, with its receipt in the cell's result,
+    # and the entry reaches a later decision's memory.
+    remembered = [json.loads(s) for s in (root / "harness/memory.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(r.get("key") == "smoke.remember" for r in remembered), remembered
+    assert any(r["tool"] == "python" and "memory: " in r["text"] and "smoke.remember" in r["text"] for r in results), \
+        [r["text"][:300] for r in results if r["tool"] == "python"]
+    assert any("REMEMBER_MARK" in r.get("current", "") for r in parent), [r.get("current", "")[:600] for r in parent]
     # The live kernel: one kernel served every parent python call, acting code acted inside it, and later decision
     # heads list what the session holds.
     kernel_runs = [row for row in map(json.loads, (root / "harness/wasi_runs.jsonl").read_text(encoding="utf-8").splitlines())
@@ -245,7 +252,7 @@ elif script == "activation":
     current = [r.get("current", "") for r in parent]
     for absent in ["GOAL CHECKS", "IDEAS", "PREDICTION CHALLENGE", "EXPLORATION", "CRITIC", "REPEATED WORK", "STRATEGY ("]:
         assert not any(absent in s for s in current), absent
-    assert all(("MEMORY INDEX" in s or "MEMORY: empty" in s) for s in current)
+    assert all(("MEMORY INDEX" in s or "MEMORY: empty" in s or "CURRENT KNOWLEDGE" in s) for s in current)
     assert all(t["name"] not in ("ls", "grep") for r in parent for t in r["tools"])
     assert any("tool probe v1 active" in s and "probe(args)" in s for s in current), 'the capability index lists the saved tool'
     assert (root / "workspace/data/memory.md").is_file()

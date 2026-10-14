@@ -260,6 +260,12 @@ class _Env:
         if _session_flags.get('loading'): raise PermissionError('no workspace mutation during session recovery')
         if not _req.get('allow_writes'): raise PermissionError('workspace path is read-only in this execution')
         _ops.append({'op': 'restore', 'path': _path(path), 'version': int(version)})
+    def remember(self, **args):
+        """Update memory with the memory tool's arguments (op/key/text, set, delete, hypotheses, tests, strategies).
+        Applied when the cell ends, with the cell's file writes; the receipt comes with the cell's result."""
+        if _session_flags.get('loading'): raise PermissionError('no memory update during session recovery')
+        if not _req.get('allow_writes'): raise PermissionError('memory is read-only in this execution')
+        _ops.append({'op': 'memory', 'args': json.loads(json.dumps(args))})
 
 # Python session: the default computation workspace (Prime Agent's persistent kernel, adapted to a fresh sandbox per
 # call). After every python call the whole user namespace is checkpointed, so in-place changes, deletions, common
@@ -706,7 +712,8 @@ export type SessionReport = {
   error?: string; load_error?: string; failed_defs?: Array<[string, string]>; gone?: string[]; gone_refs?: string[];
 };
 export type NativeResult = GuestResult & { need_file?: string; need_act?: ActCall; session?: SessionReport;
-  ops?: Array<{ op: 'write' | 'move' | 'delete' | 'restore'; path: string; content?: string; destination?: string; version?: number }> };
+  ops?: Array<{ op: 'write' | 'move' | 'delete' | 'restore'; path: string; content?: string; destination?: string; version?: number }
+    | { op: 'memory'; args: unknown; path?: undefined; destination?: undefined }> };
 export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool,
   onMetrics?: (metrics:Record<string,unknown>)=>void): Promise<NativeResult> {
   const reply = pool ? await pool.evaluate(program, input, signal) : await evaluateTaskPython(program, input, signal);

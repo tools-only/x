@@ -8,7 +8,7 @@ import { Binder } from '../demo/arc_thin_binder.ts';
 import { validatePythonComponent, type ActCall } from '../demo/arc_thin_components.ts';
 import { NativeRuntime } from '../demo/arc_thin_native_runtime.ts';
 
-const make = (options: { sessionDir?: string; logs?: any[]; played?: ActCall[]; pythonKernel?: boolean } = {}) => {
+const make = (options: { sessionDir?: string; logs?: any[]; played?: ActCall[]; pythonKernel?: boolean; remembered?: unknown[] } = {}) => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'kernel-')));
   const tools = { active: ['python', 'arc_action'] };
   const runtime = new NativeRuntime({
@@ -17,6 +17,10 @@ const make = (options: { sessionDir?: string; logs?: any[]; played?: ActCall[]; 
     actionCount: () => options.played?.length ?? 0, log(file: string, row: any) { options.logs?.push({ file, ...row }); }, usage() {},
     wrap: (_name, fn) => fn, receipt: body => workspace.receipt(body), ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
     ...(options.pythonKernel === false ? { pythonKernel: false } : {}),
+    ...(options.remembered ? { remember: async (args: any) => {
+      if (!args?.key) throw Error('a memory entry needs a key');
+      options.remembered!.push(args); return `set ${args.key}`;
+    } } : {}),
     act: async (call) => {
       options.played?.push(call);
       const n = options.played?.length ?? 0;
@@ -65,6 +69,31 @@ test('the live kernel keeps what a checkpoint cannot, runs acting code once, rea
     assert.ok(runs.slice(1).every(row => !row.fresh), 'one kernel served every call');
     assert.equal(runs.find(row => row.acts === 2)?.files_fetched, 0);
   } finally { runtime.close(); }
+});
+
+test('one cell writes memory and a file and acts: one call, with every receipt', async () => {
+  const played: ActCall[] = [];
+  const remembered: unknown[] = [];
+  const { workspace, runtime } = make({ played, remembered });
+  try {
+    const result: any = await runtime.python("env.remember(op='set', key='rule', text='ACTION1 moves up')\n" +
+      "env.remember(op='set', text='no key')\n" +
+      "with open('prompts/strategy.md', 'w') as f: f.write('next: go up')\n" +
+      "env.act('ACTION1')\n'done'");
+    const shown = out(result);
+    assert.match(shown, /memory: set rule/);
+    assert.match(shown, /memory refused: a memory entry needs a key/);
+    assert.match(shown, /ACTED 1 action\(s\)\. This decision ends\./);
+    assert.equal(result.terminate, true);
+    assert.deepEqual(remembered, [{ op: 'set', key: 'rule', text: 'ACTION1 moves up' }]);
+    assert.equal(workspace.read('prompts/strategy.md'), 'next: go up');
+    assert.deepEqual(played.map(call => call.action), ['ACTION1']);
+  } finally { runtime.close(); }
+  // Read-only code (a subagent's python) cannot write memory.
+  const quiet = make({ remembered: [] });
+  try {
+    assert.match(out(await quiet.runtime.python("env.remember(op='set', key='x', text='y')", undefined, true)), /PermissionError: memory is read-only/);
+  } finally { quiet.runtime.close(); }
 });
 
 test('an interrupted cell ends the kernel; the next call starts a new one from the checkpoint and says so', async () => {

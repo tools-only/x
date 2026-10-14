@@ -304,7 +304,7 @@ const ACTIVATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['probe', { args: {} }]] },
   // Reasoning stays within the decision; what python defines stays for later calls.
   { kind: 'decide', think: 'THINK_MARK_DECISION3', calls: [['python', { code: 'show(x0=0, y0=0, x1=7, y1=7)' }],
-    ['python', { code: 'def plus_one(v):\n    return v + 1\nkept_value = 41' }],
+    ['python', { code: "def plus_one(v):\n    return v + 1\nkept_value = 41\nenv.remember(op='set', key='smoke.remember', text='REMEMBER_MARK written from python')" }],
     ['write', { path: 'prompts/refine.md', content: '---\nactive: false\n---\nREFINE_GUIDE_MARK prefer goal tests.' }]] },
   // Coordinates on an action that takes none are ignored, and the receipt says so.
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', x: 5, y: 5, note: 'unsaved code did not act' }]] },
