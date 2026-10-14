@@ -2453,10 +2453,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	pi.on("tool_result", guard("tool_result", (event: any) =>
 		(event.details as { refused?: boolean } | undefined)?.refused ? { isError: true } : undefined));
   if (workspace) pi.on('tool_result', (event: any) => {
-    // Exact readback is already explicitly ranged by the caller; do not replace it with another receipt.
-    if (event.toolName === 'read') return;
+    // Exact readback is explicitly ranged by the caller; do not replace it with another receipt. An unranged read is
+    // capped like any other result and points back at the file itself (kernel-02: one unranged read of an 18k-char
+    // result was re-sent in six requests).
+    if (event.toolName === 'read' && (event.input?.offset != null || event.input?.limit != null)) return;
+    const source = event.toolName === 'read' ? String(event.input?.path ?? '').replace(/\\/g, '/') || undefined : undefined;
     const content = event.content.map((block: any) => block.type === 'text'
-      ? { ...block, text: workspace.receipt(block.text, event.isError ? 'error' : 'ok') } : block);
+      ? { ...block, text: workspace.receipt(block.text, event.isError ? 'error' : 'ok', [], source) } : block);
     return { content };
   });
 }

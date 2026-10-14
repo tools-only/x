@@ -5,6 +5,9 @@ import { createHash } from 'node:crypto';
 import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition,
   createGrepToolDefinition, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 
+/** A receipt line longer than this is a stub. A 64-cell grid row printed as a list is about 190 characters. */
+export const LONG_LINE_CHARS = 400;
+
 export class Workspace {
   readonly root: string;
   private resultIndex: string;
@@ -106,11 +109,24 @@ export class Workspace {
       return {ref, hash};
     }
   }
-  receipt(body: string, status = 'ok', keyLines: string[] = []): string {
+  /**
+   * A result too long to show whole: saved under results/ (or, with `source`, the file it was read from) and shown as a
+   * preview. Lines longer than LONG_LINE_CHARS become one-line stubs first: a dumped grid or state dict on one line
+   * otherwise used the whole preview and hid the short lines the code printed as its findings, and the agent then read
+   * the file back whole (kernel-02, 2026-10-14). If what remains fits the inline threshold it is shown whole.
+   */
+  receipt(body: string, status = 'ok', keyLines: string[] = [], source?: string): string {
     if (body.length <= this.inlineChars) return body;
-    const {hash, ref} = this.saveResult(body);
-    const keys = [...keyLines, ...body.split('\n').filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);
-    const lines = body.split('\n'); const shown = new Map<number, string>();
+    const {hash, ref} = source ? {hash: createHash('sha256').update(body).digest('hex'), ref: source} : this.saveResult(body);
+    const raw = body.split('\n');
+    const keys = [...keyLines, ...raw.filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);
+    const lines = raw.map((line, i) => line.length > LONG_LINE_CHARS
+      ? `[line ${i + 1}: ${line.length} chars not shown; starts ${JSON.stringify(line.slice(0, 80))}]` : line);
+    const stubs = raw.filter(line => line.length > LONG_LINE_CHARS).length;
+    const readBack = `read ${ref} with offset/limit for exact lines${stubs ? ', or open it in python' : ''}.`;
+    if (stubs && lines.join('\n').length <= this.inlineChars)
+      return `Result ${status}; ${body.length} chars; ${lines.length} lines; sha256=${hash}\nPreview partial; ${stubs} long line${stubs === 1 ? '' : 's'} not shown, every other line whole:\n${lines.join('\n')}\n${keys ? keys + '\n' : ''}ref: ${ref}\n${readBack}`;
+    const shown = new Map<number, string>();
     const sample = (indices: number[]) => {
       let room = 240;
       for (const i of indices) {
@@ -127,7 +143,7 @@ export class Workspace {
     const preview = [...shown].sort(([a],[b]) => a-b).map(([i,line]) => `L${i+1}: ${line}`).join('\n');
     const omitted = lines.map((_,i) => i+1).filter(n => !shown.has(n-1));
     const omittedText = omitted.length ? `omitted lines ${omitted[0]}–${omitted.at(-1)}` : 'partial lines marked above';
-    return `Result ${status}; ${body.length} chars; ${lines.length} lines; sha256=${hash}\nPreview partial; ${omittedText}\n${preview}\n${keys ? keys + '\n' : ''}ref: ${ref}\nread ${ref} with offset/limit for exact lines.`;
+    return `Result ${status}; ${body.length} chars; ${lines.length} lines; sha256=${hash}\nPreview partial; ${omittedText}\n${preview}\n${keys ? keys + '\n' : ''}ref: ${ref}\n${readBack}`;
   }
   fileTools(): ToolDefinition[] {
     const safe = (p: string, write = false) => this.path(p, write, false, true);
