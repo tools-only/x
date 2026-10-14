@@ -21,6 +21,13 @@ TOKENS = TOKENS or None
 SECONDS = int(sys.argv[4]) if len(sys.argv) > 4 else 600
 VARIABLES = dict(arg.split('=', 1) for arg in sys.argv[5:])
 assert all(key.startswith('ARC_THIN_') for key in VARIABLES), VARIABLES
+# The native history is an append-only transcript with no overall bound, because byte-identical earlier decisions are
+# cacheable. On this gateway they are not: ls20-r03b measured 19 of 25 decision cold starts with zero cache credit, at
+# a mean of 43,185 input tokens, while 68 of 69 later rounds of a decision did hit cache at a mean of 3,006. The
+# transcript had grown to 134,195 characters by decision 25, so cold starts alone were over half the run's 2.07M
+# tokens. Summarising earlier decisions within a bound trades verbatim recall -- which memory, rules and saved tools
+# already hold -- for a cold start the provider can afford. Pass the variable explicitly to override or to restore 0.
+VARIABLES.setdefault('ARC_THIN_NATIVE_HISTORY_CHARS', '12000')
 os.environ.update(VARIABLES)
 # Completions-only A/B arm: a declared dialect pins openai-completions, so it stays out of the Responses baseline.
 THINKING_FORMAT = os.environ.get('PILOT_THINKING_FORMAT') or None
