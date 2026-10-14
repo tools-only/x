@@ -50,7 +50,15 @@
 
 ## 实现与验证
 
-- 第 1 轮离线：kernel-02 的 `results/r000001.txt`（56,198 字符）经新回执为 1,386 字符，52 个 cell 的 diff 全部可见，两条长行为存根；无范围 `read` 的同一内容为 1,279 字符（`tmp/offline-receipt.txt`）。新增 [tests/arc_thin_receipt_lines.test.ts](../../tests/arc_thin_receipt_lines.test.ts) 4 项。
+- 第 1 轮离线：kernel-02 的 `results/r000001.txt`（56,198 字符）经新回执为 1,386 字符，52 个 cell 的 diff 全部可见，两条长行为存根；无范围 `read` 的同一内容为 1,279 字符（`tmp/offline-receipt.txt`）。新增 [tests/arc_thin_receipt_lines.test.ts](../../tests/arc_thin_receipt_lines.test.ts) 4 项。`tests/arc_thin_*.test.ts` 154 项中 149 通过，5 项失败均为基线既有（见 python kernel 记录）；全量运行时 `arc_thin_action_surface` 一项因与 smoke 并行负载超时，单独重跑通过。确定性 smoke `foundation`（含无范围读 `data/current.json`、`data/frames/1.json`）通过（`tmp/smoke-tc-foundation`）。
+- 第 1 轮真实运行 tc-01（b7d4e1db；`python -u tmp/arc-kernel-20261014/pilot.py tc-01 10 0 0`；产物 `tmp/arc-kernel-20261014/tc-01/`，拆分 `tc-01-cost.txt`）：
+  - 结果：10 动作、11 个决策、0 关，2,501 s；预算 token 330,472（kernel-02 326,286）。23 个父请求中 5 个以 provider `Request timed out.` 失败（决策 10 的第一个在 5 分钟后失败，其余约 11 s 内失败），成本未知，决策 10 因此没有动作。
+  - M2 达标：进入上下文的最大工具结果 1,575 字符（kernel-02 18,281）；当前决策内工具结果估计 2,280 token（kernel-02 82,274）。模型在决策 3 打印 `state['frames']`，回执把 12,525 字符的行换成存根，之后没有读回 `results/`；全程 `read` 只有 `data/frames/0.png`、`prompts/strategy.md`、`data/ledger.md` 各一次。
+  - M1 未达标：每请求非 reasoning 输入 11,764（kernel-02 16,994，−31%；目标 8,500）。现在最大的可控部分是之前决策的冻结转录：估计 109,278 token（36%），决策 9 时每请求约 1 万 token，并随决策数线性增长；其次是工具 schema 48,192（16%）。最后一个请求的转录 21.4k 字符中：工具结果 8.6k、python 代码 5.0k、`arc_action` 参数（note/idea/predict）3.4k、`memory` 参数 3.1k。
+  - 输出 89,918（reasoning 83,217），高于 kernel-02 的 52,059；决策数从 5 增到 11（本次 agent 几乎每个决策只行动一次，kernel-02 在 python cell 内连续行动）。总预算 token 持平，是因为 reasoning 增加抵消了结果 token 的下降；这一部分不在本循环可改范围内。
+  - 缓存：11 个决策的首请求中 9 个缓存为 0；冻结转录的缓存理由在 yibu 上仍未兑现。
+- 第 2 轮（一个因素：之前决策的表示）：用已有的 Continual Harness 式有界摘要（`ARC_THIN_NATIVE_HISTORY_CHARS=12000`：每决策 said ≤300 字符、调用参数 ≤160 字符、最新 2 个结果 ≤5,000 字符、更早结果只留首行与动作回执，按新到旧填入 12,000 字符）替代冻结转录。先以环境变量运行 tc-02，不改代码默认值；达标后再改默认与 smoke 断言。理由：Prime 的论点是 REPL 保留计算状态，所以转录可以被压缩；本分支的 kernel 正提供这一点（会话列表列出 `diff()` 等名字），代码正文不必在每个请求中重发。风险：agent 为重建状态而增加读文件——以读回调用数作为守护指标。
+- tc-02（2026-10-14 12:43 起）作废：10 个父请求中 6 个以 provider 超时失败；第一个动作时 ARC 远端 SDK `step` 超过 90 s（`EnvironmentCallTimeout`，结果未知、不可重放），运行以 `environment_outcome_unknown` 停止，0 动作，37,251 报告 token。环境故障，不计入循环的 5 次上限；同配置重跑为 tc-02r。
 
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
