@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
+import { clipEnds, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
 
 test('native production instructions explicitly prefer amortized offload without a creation quota', () => {
@@ -68,4 +68,42 @@ test('visible actions are read from action receipts in the summary', () => {
   const seen = visibleActions('arc_action({"action":"ACTION1"}) → #12 ACTION1 → level_changed=false\n#13 ACTION4 → changed 2\n' +
     'python({}) → #14 not an action\nsaid: #15 ACTION1 later');
   assert.deepEqual([...seen], [12, 13]);
+});
+
+test('a long result keeps its start and its end, receipts from the middle, and where the whole text is', () => {
+  // pilot-01: a dumped grid filled the head-only clip and the diffs printed after it were lost.
+  const body = 'STATE ' + '[0, 0, 5, 5], '.repeat(600) + '\n#4 ACTION2 → changed 3\n' + 'D'.repeat(6000) + '\nDIFF 52 cells at (10,12)';
+  const saved: string[] = [];
+  const shown = clipEnds(body, 5000, text => { saved.push(text); return 'results/r7.txt'; });
+  assert.ok(shown.length < 5300, String(shown.length));
+  const at = body.indexOf('#4 ACTION2');
+  assert.ok(at > 1500 && at < body.length - 3500, 'the receipt is from the omitted middle');
+  assert.ok(shown.startsWith('STATE [0, 0, 5, 5]') && shown.endsWith('DIFF 52 cells at (10,12)'));
+  assert.match(shown, /… <\d+ of \d+ chars omitted; full: results\/r7\.txt> …\n#4 ACTION2 → changed 3\n/);
+  assert.deepEqual(saved, [body]);
+  assert.equal(clipEnds('short', 5000, () => { throw Error('not saved'); }), 'short');
+  // The summary uses it for the newest results.
+  const history = [{ role: 'user', content: 'decision 0' },
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'a', name: 'python', arguments: {} }] },
+    { role: 'toolResult', toolCallId: 'a', toolName: 'python', content: [{ type: 'text', text: body }] },
+    { role: 'user', content: 'decision 1' }];
+  assert.ok(summarizeHistory(history, { budget: 100_000 }).text.includes('DIFF 52 cells'));
+});
+
+test('earlier decisions are a frozen transcript: no reasoning or images, results clipped, same bytes on every request', () => {
+  const history = decisions(3, 9000);
+  history[2] = { role: 'user', content: [{ type: 'text', text: 'decision 0' }, { type: 'image', data: 'png' }] };
+  let saves = 0;
+  const save = () => { saves++; return 'results/r1.txt'; };
+  const frozen = freezeHistory(history, { save });
+  assert.equal(frozen.filter(m => m.role === 'user').length, 3);
+  assert.equal(JSON.stringify(frozen).includes('secret reasoning'), false);
+  assert.equal(JSON.stringify(frozen).includes('"image"'), false);
+  const results = frozen.filter(m => m.role === 'toolResult').map(m => m.content[0].text);
+  assert.ok(results.every(text => text.length < 5300 && text.startsWith('EXACT') && text.includes('results/r1.txt')), results.map(t => t.length).join());
+  assert.equal(saves, 3);
+  // A later request sees the same earlier decisions plus one more; the shared part is unchanged.
+  const later = freezeHistory([...history, { role: 'user', content: 'decision 3' }], { save });
+  assert.deepEqual(later.slice(0, frozen.length), frozen);
+  assert.equal(JSON.stringify(history).includes('secret reasoning'), true, 'canonical history is immutable');
 });

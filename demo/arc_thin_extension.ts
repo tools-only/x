@@ -23,7 +23,7 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
-import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
@@ -174,7 +174,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";
   /** Reasoning kept within the current decision (default on in native mode; ARC_THIN_DECISION_REASONING=0 strips it). */
   const decisionReasoning = native && process.env.ARC_THIN_DECISION_REASONING !== "0";
-  const reasoningMode = process.env.ARC_THIN_REASONING_MODE ?? 'none';
+  const reasoningMode = process.env.ARC_THIN_REASONING_MODE ?? 'all';
   if (!['all', 'recent', 'none'].includes(reasoningMode)) throw Error('invalid ARC_THIN_REASONING_MODE');
   const archiveResults = process.env.ARC_THIN_ARCHIVE_RESULTS === '1';
 	const control = process.env.ARC_THIN_VARIANT === "control";
@@ -200,14 +200,22 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// since 2026-10-08) shows only the rebuilt working set. docs/reports/2026-10-12-memory-mechanism-review.md.
 	const continuity = native || process.env.ARC_THIN_CONTINUITY === "session" ? "session" : "rebuild";
 	const continuityDecisions = Math.max(1, Math.floor(Number(process.env.ARC_THIN_CONTINUITY_DECISIONS) || 8));
-	// Native history: earlier decisions as one summarised section within 12,000 characters (Continual Harness's history
-	// budget), the newest 2 tool results whole. ARC_THIN_NATIVE_HISTORY_CHARS=0 replays the whole Pi session instead.
-	const nativeHistoryChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 12000)));
+	// Native history (2026-10-14): earlier decisions as a transcript before the current head, each earlier result clipped
+	// to ARC_THIN_HISTORY_RESULT_CHARS (default 5,000, Continual Harness's cap). ARC_THIN_NATIVE_HISTORY_CHARS > 0 restores
+	// the summarised section inside the head (the default before 2026-10-14), within that many characters.
+	const nativeHistoryChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 0)));
+	const historyResultChars = Math.max(200, Math.floor(Number(process.env.ARC_THIN_HISTORY_RESULT_CHARS ?? NATIVE_HISTORY_RESULT_CHARS)));
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
     inlineChars: Number(process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 8000) }) : undefined;
   const archivedResults = new Map<string, string>();
+  const historyRefs = new Map<string, string>();
+  const saveHistoryResult = (text: string): string => {
+    const hash = createHash('sha256').update(text).digest('hex');
+    if (!historyRefs.has(hash)) historyRefs.set(hash, workspace!.saveResult(text).ref);
+    return historyRefs.get(hash)!;
+  };
   const archiveResult = (message: any, body: string): string => {
     const key = String(message.toolCallId) + createHash('sha256').update(body).digest('hex');
     if (!archivedResults.has(key)) {
@@ -393,14 +401,22 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return row.x !== undefined && row.y !== undefined ? `${row.action}(${row.x},${row.y})` : row.action;
 	}
 
+	/** Actions left under whichever limit is nearer: the level's or the run's (pilot-01 read "1/110 (total 1/20)" as two budgets). */
+	function budgetText(budget: any): string {
+		const limits = ([["level", budget.used, budget.maximum], ["run", budget.total_used, budget.total_maximum]] as const)
+			.filter(([, used, maximum]) => typeof used === "number" && typeof maximum === "number") as [string, number, number][];
+		if (!limits.length) return `actions_used=${budget.total_used ?? budget.used ?? "?"}`;
+		const [name, used, maximum] = limits.reduce((a, b) => b[2] - b[1] < a[2] - a[1] ? b : a);
+		return `actions_left=${Math.max(0, maximum - used)} (${name} limit ${maximum})`;
+	}
+
 	/** What the environment reported for an action. No frame comparison: that is a tool the agent writes. */
 	function actionLine(row: ActionRow): string {
 		const budget = row.budget ?? {};
 		const resets = trajectory.filter((item) => item.n <= row.n && item.action === "RESET").length;
 		// Native receipts say what changed (the bridge's count and box) and when given coordinates were ignored.
 		return `#${row.n} ${actionLabel(row)} → ${native ? `${changeText(row)} ` : ""}level_changed=${row.level_changed} ` +
-			`state=${row.state} levels=${row.levels_completed} ` +
-			`budget=${budget.used ?? "?"}/${budget.maximum ?? "∞"} (total ${budget.total_used ?? "?"}/${budget.total_maximum ?? "∞"})` +
+			`state=${row.state} levels=${row.levels_completed} ${budgetText(budget)}` +
 			(resets ? ` resets=${resets}` : "") + (native && row.ignored_xy ? ` (x,y ignored: ${row.action} takes no coordinates)` : "");
 	}
 
@@ -544,7 +560,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (times.length >= 3) {
 			const pace = (times.at(-1)! - times[0]) / (times.length - 1);
 			parts.push(`the last ${times.length - 1} actions took ${duration(pace)} each` +
-				(left !== undefined && pace > 0 ? `, so about ${Math.floor(left / pace)} more fit in the time left at that pace` : ""));
+				(left !== undefined && pace > 0 ? `, so the time left allows about ${Math.floor(left / pace)} more at that pace` : ""));
 		}
 		return parts.length ? `RESOURCES: ${parts.join("; ")}. Reasoning and tool calls cost time, not actions.` : "";
 	}
@@ -2191,7 +2207,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       observation: queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
-      refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and keeps memory and strategy consolidated: leave that bookkeeping to them. ' : '' }) : control
+      refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -2277,11 +2293,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const lastUser = native ? nativeDecisionStart(messages) : messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
 		const user = messages[lastUser];
-		// Native mode rebuilds each decision: earlier decisions become one summarised section of the working set
-		// (Continual Harness's history), the current decision is appended as it happens. A compaction summary Pi made
-		// stays in front. ARC_THIN_NATIVE_HISTORY_CHARS=0 replays the whole session instead.
+		// Native mode: earlier decisions are a transcript in front of the current head (freezeHistory), so they stay
+		// byte-identical and cacheable; ARC_THIN_NATIVE_HISTORY_CHARS > 0 puts a summary inside the head instead.
+		// A compaction summary Pi made stays in front either way.
 		const summarised = native && nativeHistoryChars > 0;
-		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser), { budget: nativeHistoryChars }) : undefined;
+		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser),
+			{ budget: nativeHistoryChars, resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
 		// Native mode builds the head of a decision once and keeps it byte-identical until the decision ends: the
 		// provider reuses its cached prefix only while everything before the newest message is unchanged. Rebuilding it
 		// per request (run time left, last request size, refreshed memory) dropped the cache hit rate to ~1% on
@@ -2303,7 +2320,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
-		const history = native ? (summarised ? prefix : projectNativeHistory(messages.slice(0, lastUser), replayReasoning))
+		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
+			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
 		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).
@@ -2312,9 +2330,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const recovery = messages.slice(lastUser + 1).filter(m => m.role === 'user').map(messageText).join('\n');
 		if (native && recovery) head.content[0].text += '\n\n' + recovery;
 		// Within a decision the projection only appends, so the provider's cached prefix stays valid: reasoning is either
-		// all kept or all dropped (default: dropped; ARC_THIN_REASONING_MODE=all keeps it), and earlier results are not
-		// replaced by archive stubs (ARC_THIN_ARCHIVE_RESULTS=1 restores that). "recent" reasoning and archiving rewrite
-		// earlier messages on every request; with them the 2026-10-14 pilots reached a 1-2% cache hit rate.
+		// all kept (default since 2026-10-14; pilot-01 re-derived settled conclusions without it) or all dropped
+		// (ARC_THIN_REASONING_MODE=none), and earlier results are not replaced by archive stubs (ARC_THIN_ARCHIVE_RESULTS=1
+		// restores that). "recent" reasoning and archiving rewrite earlier messages on every request; with them the
+		// 2026-10-14 pilots reached a 1-2% cache hit rate.
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
 			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
         reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'none' : 'none',
@@ -2334,6 +2353,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         agent_tool_schemas: binder?.active().filter(c => c.kind === 'tool').map(c => ({ name: c.name, chars: JSON.stringify(c.parameters).length })) ?? [],
 				tools_json_chars: tools ? JSON.stringify(tools).length : null,
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
+				...(native ? { history_mode: summarised ? 'summary' : 'transcript' } : {}),
 				history_text_chars: summary ? summary.text.length : history.reduce((n, message) => n + messageText(message).length, 0),
 				...(summary ? { history_decisions: summary.decisions, history_omitted: summary.omitted } : {}),
 				message_text_chars: projected.reduce((n, message) => n + messageText(message).length, 0),

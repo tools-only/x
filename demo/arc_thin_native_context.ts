@@ -1,11 +1,10 @@
 /**
  * What the model is shown of its earlier decisions in native mode. Pi's session file is never changed.
  *
- * The decision context is rebuilt at every state change (Continual Harness: the prompt is rebuilt after a call that
- * changes the game state, and analysis is appended within the decision). Earlier decisions are not replayed as a
- * transcript; they appear as one summarised section inside a fixed character budget, with the latest tool results in
- * full and older ones as one line each. Raw transcript bands (2026-10-12/13) dropped everything once a single verbose
- * decision exceeded the budget (history_messages=0 in the first activation run); a summary degrades gradually.
+ * Default (2026-10-14): earlier decisions are a transcript placed before the current decision's head (freezeHistory),
+ * the Prime Agent arrangement. A summary rebuilt inside the head (summarizeHistory, ARC_THIN_NATIVE_HISTORY_CHARS > 0)
+ * changed every decision, so every decision began with a full cache miss, and it lost results that did not fit
+ * (pilot-01). The transcript is bounded by clipping each earlier result and by Pi's compaction.
  */
 
 /** Pair calls with results and drop thinking, over the whole list (the canonical projection). */
@@ -56,7 +55,11 @@ export function nativeDecisionStart(messages: any[]): number {
  return at;
 }
 
-export type HistoryOptions = { budget?: number; fullResults?: number; resultChars?: number };
+/** Stores a whole result and returns the workspace path it can be read back from. */
+export type SaveResult = (text: string) => string;
+export type HistoryOptions = { budget?: number; fullResults?: number; resultChars?: number; save?: SaveResult };
+/** Continual Harness's per-result cap. */
+export const HISTORY_RESULT_CHARS = 5000;
 const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}… <${text.length} chars>` : text;
 const textOf = (message: any) => typeof message?.content === 'string' ? message.content
@@ -65,12 +68,44 @@ const textOf = (message: any) => typeof message?.content === 'string' ? message.
 const actionLines = (text: string) => text.split('\n').filter(line => /^#\d+ (?:ACTION\d|RESET)\b/.test(line));
 
 /**
+ * A long result as its start and its end, with the size of the middle and where the whole text is. Code tends to print
+ * its inputs first and its findings last; head-only clipping kept a dumped grid and lost the diffs (pilot-01, 2026-10-14).
+ * Action receipts from the omitted middle are kept.
+ */
+export function clipEnds(text: string, limit: number, save?: SaveResult): string {
+  if (text.length <= limit) return text;
+  const head = Math.floor(limit * 0.3), tail = limit - head;
+  const middle = text.slice(head, text.length - tail);
+  const receipts = actionLines(middle);
+  return `${text.slice(0, head)}\n… <${middle.length} of ${text.length} chars omitted${save ? `; full: ${save(text)}` : ''}> …\n` +
+    (receipts.length ? receipts.join('\n') + '\n…\n' : '') + text.slice(-tail);
+}
+
+/**
+ * Earlier decisions as a transcript that only grows: what the agent wrote, called and got back, no reasoning, each
+ * result clipped by clipEnds and without images. A finished decision renders to the same bytes on every request, so the
+ * provider's cached prefix covers all of them; only Pi's compaction rewrites it.
+ */
+export function freezeHistory(messages: any[], options: { resultChars?: number; save?: SaveResult } = {}): any[] {
+  const limit = options.resultChars ?? HISTORY_RESULT_CHARS;
+  return projectNativeHistory(messages).map(message => {
+    if (message.role === 'user' && Array.isArray(message.content) && message.content.some((b: any) => b?.type === 'image'))
+      return { ...message, content: message.content.filter((b: any) => b?.type !== 'image') };
+    if (message.role !== 'toolResult') return message;
+    const blocks = Array.isArray(message.content) ? message.content : [];
+    const text = textOf(message);
+    if (text.length <= limit && blocks.every((b: any) => b?.type === 'text')) return message;
+    return { ...message, content: [{ type: 'text', text: clipEnds(text, limit, options.save) }] };
+  });
+}
+
+/**
  * The decisions before the current one as text: per decision what the agent said, each call with a short form of its
  * arguments, and what came back. The newest `fullResults` results (default 2) are whole up to `resultChars`; older
  * ones keep their first line and any action receipts. Decisions are added newest first until the budget is used.
  */
 export function summarizeHistory(messages: any[], options: HistoryOptions = {}): { text: string; decisions: number; omitted: number } {
-  const budget = options.budget ?? 12000, fullResults = options.fullResults ?? 2, resultChars = options.resultChars ?? 2000;
+  const budget = options.budget ?? 12000, fullResults = options.fullResults ?? 2, resultChars = options.resultChars ?? HISTORY_RESULT_CHARS;
   const paired = projectNativeHistory(messages);
   const starts = paired.map((m, i) => m?.role === 'user' ? i : -1).filter(i => i >= 0);
   const results = new Map(paired.filter(m => m?.role === 'toolResult').map(m => [String(m.toolCallId), m]));
@@ -89,7 +124,7 @@ export function summarizeHistory(messages: any[], options: HistoryOptions = {}):
         const result = results.get(String(block.id));
         const body = result ? textOf(result) : '';
         const acted = actionLines(body);
-        const shown = newest.has(String(block.id)) ? clip(body.trim(), resultChars)
+        const shown = newest.has(String(block.id)) ? clipEnds(body.trim(), resultChars, options.save)
           : [clip(flat(body.split('\n')[0] ?? ''), 200), ...acted.filter(line => line !== body.split('\n')[0])].join('\n');
         lines.push(`${block.name}(${clip(flat(JSON.stringify(block.arguments ?? {})), 160)})${result?.isError ? ' FAILED' : ''} → ${shown}`);
       }
@@ -99,10 +134,11 @@ export function summarizeHistory(messages: any[], options: HistoryOptions = {}):
   const kept: string[] = [];
   let used = 0;
   for (let i = blocks.length - 1; i >= 0; i--) {
-    // The newest decision is always shown, clipped to the budget if it alone exceeds it.
-    const block = kept.length ? blocks[i] : blocks[i].slice(0, budget);
-    if (kept.length && used + block.length > budget) break;
-    kept.unshift(block); used += block.length;
+    // The newest decision is always shown, clipped to the budget if it alone exceeds it. Labels count toward the budget.
+    const label = `[decision -${blocks.length - i}]\n`.length + 1;
+    const block = kept.length ? blocks[i] : blocks[i].slice(0, budget - label);
+    if (kept.length && used + label + block.length > budget) break;
+    kept.unshift(block); used += label + block.length;
   }
   const omitted = blocks.length - kept.length;
   if (!kept.length) return { text: '', decisions: 0, omitted: 0 };

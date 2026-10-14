@@ -96,6 +96,8 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '1200'} if tight else {}),
+        # The history script exercises the summarised section, no longer the native default.
+        **({'ARC_THIN_NATIVE_HISTORY_CHARS': '12000'} if script == 'history' and not tight else {}),
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '0'} if disabled else {}),
         **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {} if defaults or disabled else {'ARC_THIN_AUTO_COMPACTION': '0'})})
 summary = json.loads(path.read_text(encoding="utf-8"))
@@ -104,21 +106,23 @@ results = [r for request in requests for r in request.get("last_tool_results", [
 text = json.dumps(results)
 assert summary["passed"], summary
 parent_requests = [r for r in requests if not r.get("analyst") and not r.get("critic")]
-# Earlier decisions reach the model as one summarised section of the working set, so what an ended decision's tools
-# returned is checked there as well as in the tool results of the request that followed them.
-shown_history = json.dumps([r.get("current", "") for r in parent_requests], ensure_ascii=False)
+# Earlier decisions reach the model as a transcript before the current head (native default) or, with a summary
+# budget, as a summarised section of the working set; what an ended decision's tools returned is checked in both.
+shown_history = json.dumps([[r.get("current", ""), r.get("transcript", [])] for r in parent_requests], ensure_ascii=False)
 config = json.loads((root / 'run-config.json').read_text(encoding='utf-8'))
-assert config['native_history'] == {'summary_chars': 0 if disabled else 1200 if tight else 12000, 'decision_tool_calls': 16}, config['native_history']
+summary_chars = 1200 if tight else 12000 if script == 'history' else 0
+assert config['native_history'] == {'summary_chars': summary_chars, 'result_chars': 5000, 'decision_tool_calls': 16}, config['native_history']
 assert config['decision_reasoning'] is True and config['python_session'] is True, config
 if defaults or disabled:
     assert config['auto_compaction'] is True, 'native default compaction must reach installed Pi'
     policy=json.loads((root/'runtime-audit/compaction-policy.json').read_text())
     assert config['pi_auto_compaction_enabled'] is True and policy['settings']['enabled'] is True
     assert 'Spend reasoning where it is new' in (root/'runtime-audit/provider-inputs.jsonl').read_text(encoding='utf-8')
-if disabled:
-    # Summary off: the whole session is replayed, as before 2026-10-13.
+if not summary_chars:
+    # Transcript: earlier decisions are replayed in front of the current head, without a summary.
     assert 'RECENT HISTORY' not in shown_history
-    assert any(r['roles'].count('user') > 1 for r in parent_requests), 'the whole session must be replayed'
+    if len(parent_requests) > 1:
+        assert any(r['roles'].count('user') > 1 for r in parent_requests), 'earlier decisions must be replayed'
 elif len(parent_requests) > 1 and script != 'receipts':
     assert all(r['roles'].count('user') == 1 for r in parent_requests), 'a request carries one decision, not a transcript'
 if tight:
@@ -205,13 +209,21 @@ elif script == "activation":
     # The python session: a function and a value defined in decision 3 are used in decision 5.
     assert "(python session: +plus_one(), +kept_value)" in text, text[:3000]
     assert any(r["tool"] == "python" and r["text"].endswith("→ 42") for r in results), [r["text"] for r in results if r["tool"] == "python"]
-    # Reasoning is not carried between tool rounds by default (append-only projection for the provider cache).
-    assert not any("THINK_MARK_DECISION3" in r.get("reasoning_in_context", []) for r in parent), [r.get("reasoning_in_context") for r in parent]
-    assert config["decision_reasoning_mode"] == "none" and config["archive_results"] is False, config
+    # Reasoning stays in view between tool rounds of its decision (append-only, so the cache prefix holds) and is not
+    # carried into later decisions.
+    with_mark = [i for i, r in enumerate(parent) if "THINK_MARK_DECISION3" in r.get("reasoning_in_context", [])]
+    assert with_mark and with_mark[-1] < len(parent) - 1, [r.get("reasoning_in_context") for r in parent]
+    assert len({parent[i]["current"] for i in with_mark}) == 1, 'reasoning must not outlive its decision'
+    assert config["decision_reasoning_mode"] == "all" and config["archive_results"] is False, config
     # Within a decision every request extends the previous one unchanged: the cacheable prefix is never rewritten.
     for before, after in zip(parent, parent[1:]):
-        if after["message_count"] > before["message_count"] and after["transcript"][0] == before["transcript"][0]:
+        if after["message_count"] > before["message_count"] and after["current"] == before["current"]:
             assert after["transcript"][:len(before["transcript"])] == before["transcript"], (before["transcript"], after["transcript"])
+    # Across decisions, the earlier decisions' transcript is unchanged as well (only the current head is rebuilt).
+    starts = [r for r, p in zip(parent[1:], parent) if r["current"] != p["current"]]
+    for before, after in zip(starts, starts[1:]):
+        users = [i for i, m in enumerate(before["transcript"]) if m["role"] == "user"]
+        assert after["transcript"][:users[-1]] == before["transcript"][:users[-1]], 'history before the head must be byte-stable'
     # The current grid is in view as row runs, and show() prints a region the same way.
     assert all("as row runs" in s for s in [r.get("current", "") for r in parent]), parent[0].get("current", "")[:2000]
     assert summary["actions"] == summary["actions_on_bridge"] == len(trajectory)
