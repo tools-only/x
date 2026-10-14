@@ -723,6 +723,23 @@ class ArcBridge:
             }
             return after
 
+    def replay(self, path: Path) -> int:
+        """Play a snapshot's recorded actions before serving (a fork of an earlier run, arc_thin_e2e fork_from).
+
+        Each resulting grid must equal the recorded one: a fork only starts from the same state, never a similar one.
+        """
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        for index, row in enumerate(rows, 1):
+            payload = {"action": row["action"], **({"x": row["x"], "y": row["y"]} if "x" in row and "y" in row else {})}
+            frames = self.step(payload).get("frames") or []
+            if row.get("grid") is not None and (not frames or frames[-1] != row["grid"]):
+                details = {"type": "ReplayMismatch", "message": f"replayed action {index} ({row['action']}) did not reproduce "
+                           "the recorded grid: the environment does not repeat this run from its start", "action_index": index}
+                self._append({"event": "fork_replay_failed", **details})
+                raise ArcEnvironmentError("replay", details)
+        self._append({"event": "fork_replayed", "actions": len(rows), "source": str(path)})
+        return len(rows)
+
     def close(self) -> dict[str, Any]:
         with self._access():
             if self._close_result and self._close_result.get('close_status') == 'failed':
@@ -886,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--game", required=True)
     parser.add_argument("--max-actions", type=int, default=None)
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--replay-actions", type=Path, default=None)
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
@@ -899,6 +917,8 @@ def main(argv: list[str] | None = None) -> int:
     server: ThreadingHTTPServer | None = None
     try:
         bridge = ArcBridge(root, args.game, args.max_actions)
+        if args.replay_actions is not None:
+            bridge.replay(args.replay_actions)
         server = ThreadingHTTPServer(("127.0.0.1", args.port), _make_handler(bridge))
         port = server.server_address[1]
         ready = {"status": "ready", "host": "127.0.0.1", "port": port, "game": args.game, "pid": os.getpid()}

@@ -317,6 +317,12 @@ const ACTIVATION_SCRIPT: Step[] = [
     ['arc_action', { action: 'ACTION1', note: 'refinement had time', then: ['ACTION4', { action: 'ACTION1' }] }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'notice shown' }]] },
 ];
+// Fork (tools/run_fork_smoke.py): a run started from the activation smoke's snapshot after decision 3 uses the python
+// session names that decision defined, and its first action continues the source's numbering.
+const FORK_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: '(plus_one(kept_value), len(history))' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after fork' }]] },
+];
 const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['run_skill', { name: 'old', args: { extra: 2 } }], ['read', { path: 'notes/controls.md' }]] },
   { kind: 'decide', calls: [['producer', { args: {} }]] },
@@ -332,6 +338,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
