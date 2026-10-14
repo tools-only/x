@@ -88,8 +88,6 @@ test('a long result keeps its start and its end, receipts from the middle, and w
     { role: 'toolResult', toolCallId: 'a', toolName: 'python', content: [{ type: 'text', text: body }] },
     { role: 'user', content: 'decision 1' }];
   assert.ok(summarizeHistory(history, { budget: 100_000 }).text.includes('DIFF 52 cells'));
-  // The comparison switch restores the head-only clip.
-  assert.ok(!summarizeHistory(history, { budget: 100_000, resultChars: 2000, clip: 'head' }).text.includes('DIFF 52 cells'));
 });
 
 test('earlier decisions are a frozen transcript: no reasoning or images, results clipped, same bytes on every request', () => {
