@@ -1,6 +1,6 @@
 # Meta-harness 变更记录：python 会话改为常驻 kernel，减少运行时重建上下文
 
-日期：2026-10-14（Asia/Shanghai）。状态：实现（功能与确定性接线已验证；真实模型未运行）。
+日期：2026-10-14（Asia/Shanghai）。状态：实现（功能与确定性接线已验证；真实模型 1 次 10 动作试跑，受时间截止限制，命题未检验）。
 分支：`claude/kernel-20261014`，基于 `claude/objective-shaw-9d0ead`（52ef2f0a，cont-01/cont-01r 的默认配置），之后合入该分支的 8bdcacf0（去掉单因素对比开关，四项连续性改动保留为默认）；合并后重跑受影响的 8 个测试文件（仅基线已有的 1 项失败）与 activation/receipts 两项 smoke（`tmp/smoke-*-3`，均通过）。
 
 ## 问题与命题
@@ -61,15 +61,20 @@
   - 更新 [tests/arc_thin_activation.test.ts](../../tests/arc_thin_activation.test.ts)（超出上限的语义）和 [tests/arc_thin_native_runtime.test.ts](../../tests/arc_thin_native_runtime.test.ts)（kernel 的日志字段）。
   - 全部 32 个 `tests/arc_thin_*.test.ts`：150 项中 145 通过、5 项失败；5 项在基线（52ef2f0a 的独立 worktree，未改代码）上同样失败，与本改动无关，未修：`saved code acts in a closed loop ... unsaved code cannot act`（未保存代码现在可以行动）、`python session never stores runtime objects ...`（Writer 定义在恢复时被拒的期望已过时）、`arc_thin_receipts.test.ts` 的 3 项（回执长度/短 ID/部分单行标记）。
   - 确定性全链路（mock ARC SDK、真实 bridge、真实 Pi、native thin 扩展、WASI、脚本化 provider）：`python tools/run_foundation_smoke.py tmp/smoke-activation-1 activation` 通过，新增断言：一个 kernel 服务全部父 python 调用（`fresh` 仅 1 次）、`python save=` 的两次动作在 kernel 内完成、后续决策 head 含 `PYTHON SESSION (... plus_one() ... kept_value 41`；kernel cell 墙钟 0–250 ms（首个含启动 1.7 s），旧路径约 2.2 s/次。`receipts` 脚本通过：Pi 重启后第二个 kernel 从检查点恢复（`→ [[41,1],42]`），压缩指令进入两次实际 summarizer 输入，整个运行恰好 2 个新 kernel。最终代码上重跑两项（`tmp/smoke-activation-2`、`tmp/smoke-receipts-2`）均 `passed: true`。
-- 机会漏斗、语义使用、成本与任务结果：未测（无真实模型运行）。
+- 真实运行 kernel-01（用户授权 10 个动作；c29a7f03 = 本分支合入 objective-shaw b215905a；ls20、yibu/qwen3.8-27b、thinking high、text+image、query 观测、100k 预算 token、600 s；产物 `tmp/arc-kernel-20261014/kernel-01/`，worktree 内未入库，启动脚本同目录 `pilot.py`）：
+  - 结果：600 s 截止，1 个完整决策 + 第 2 个决策未完成，4 个动作，0 关；预算 token 55,854。cont-01r（同配置、20 动作上限）在 600 s 内 2 个决策、10 个动作。单次运行，且时间完全由模型生成决定，不能归因于 kernel。
+  - 时间去向：5 个父请求，第 4 个请求 9,087 输出 token（推理 8,795）用时 3 分 23 秒，第 5 个请求到截止仍未完成。python 两次调用：kernel 启动 2.0 s（编译 1.27 s）+ cell 0.20 s，第二次 cell 0.06 s，`fresh` 只有第一次；未发生重启。
+  - 语义使用：第二次 python 调用直接使用第一次留下的 `g2`/`g3`/`g4`（未重读帧），但重新定义了会话中已有的 `diff`。两次工具结果分别 1,343 和 684 字符，没有整段打印。
+  - 未达到的环节：working set 的 `PYTHON SESSION` 行只在下一个决策出现，而第 3 个决策没有开始，所以会话列表与压缩提示在这次运行中都未被模型看到；"决策 2+ 不再重读 data/" 无法评估。
+- 机会漏斗、语义使用、成本与任务结果：仅 kernel-01 一次（见上），未达到命题所需的决策数。
 - 协议偏离：无（尚未运行实验）。
 
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
 | 功能正确 | 通过 | node:test + 真实 WASI kernel | `tests/arc_thin_kernel.test.ts` 等；不涉及模型行为 |
 | 全链路可达 | 通过（确定性） | mock ARC SDK、真实 bridge/Pi、脚本化 provider | `tmp/smoke-activation-2`、`tmp/smoke-receipts-2`（worktree 内，未入库）；证明接线与生命周期，不证明模型会用列表 |
-| 自主采用 | 未验证 | — | 需要真实 provider 运行 |
-| 净收益 | 未验证 | — | 需要与 cont-01/cont-01r 的同预算对照 |
+| 自主采用 | 部分观察（1 次） | yibu/qwen3.8-27b，ls20 | kernel-01：同一决策内跨调用复用会话名字；会话列表未到达模型（只完成 1 个决策） |
+| 净收益 | 未验证 | — | kernel-01 受 600 s 截止限制，4 动作对 cont-01r 的 10 动作，单次、不可归因；需要同预算多次或 fork 对照 |
 
 ## 交付决定
 
