@@ -86,15 +86,18 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=30 if script == "history" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 10 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     input_modalities="text,image" if script == "query" else None,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
-    ledger=defaults, critic=defaults, review_at_level_change=False,
+    # The promotion path runs through refinements, which need the ledger and its trigger service.
+    ledger=defaults or script == 'promotion', critic=defaults or script == 'promotion', review_at_level_change=False,
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
+        # The activation script checks the other refinement events; the promotion script checks this one.
+        **({'ARC_REFINE_UNCHECKED_AFTER': '1000'} if script == 'activation' else {}),
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '1200'} if tight else {}),
         # The history script exercises the summarised section, no longer the native default.
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '12000'} if script == 'history' and not tight else {}),
@@ -170,6 +173,30 @@ elif script == "receipts":
         probes = [json.loads(s) for s in (root / 'harness/compaction_probe.jsonl').read_text(encoding='utf-8').splitlines()]
         assert any(row['turnPrefixMessages'] for row in probes), 'split-turn path must be exercised'
         assert len(inputs.splitlines()) >= 2, 'Pi must summarize history and the split turn'
+elif script == "promotion":
+    refiner = [json.loads(s) for s in (root / 'harness/refiner.jsonl').read_text(encoding='utf-8').splitlines()]
+    edits = [(row.get('path'), row.get('version')) for row in refiner if row.get('kind') == 'edit']
+    starts = [row['triggers'] for row in refiner if row.get('kind') == 'start']
+    # A restated belief became a checked hypothesis, through the memory component.
+    assert any('no hypothesis carries a check' in ' '.join(t) for t in starts), starts
+    assert ('memory:hyp.right', None) in edits, edits
+    checks = [json.loads(s) for s in (root / 'harness/claim_checks.jsonl').read_text(encoding='utf-8').splitlines()]
+    # Its check discriminates: it fails on at least one mismatched move.
+    controls = [row for row in checks if row.get('control') and row['key'] == 'hyp.right']
+    assert controls and False in controls[0]['results'], controls
+    # Four holds made it a rule in the rules prompt (a versioned prompt component), applied in later system prompts.
+    assert any('a candidate rule for prompts/rules.md' in ' '.join(t) for t in starts), starts
+    assert ('prompts/rules.md', 1) in edits and ('prompts/rules.md', 2) in edits, edits
+    parents = [r for r in parent_requests if 'system_prompt' in r]
+    assert any('(hyp.right)' in r['system_prompt'] for r in parents), 'the promoted rule must reach a later system prompt'
+    # The wrap at #8 failed the cited check: the rule went into dispute and a refinement revised it.
+    assert any(row['key'] == 'hyp.right' and row.get('n') == 8 and row.get('result') is False for row in checks), checks
+    assert any('the rule is in dispute' in ' '.join(t) for t in starts), starts
+    assert any('(hyp.right_wrap)' in r['system_prompt'] for r in parents), 'the revised rule must reach a later system prompt'
+    currents = [r.get('current', '') for r in parent_requests]
+    assert any('RULE CHECKS (prompts/rules.md)' in c and '1 held' in c for c in currents), 'the rule checks must be shown while play goes on'
+    # The retyped computation was named in its own result.
+    assert any('tools/nine.py already computes this' in r['text'] for r in results if r['tool'] == 'python'), [r['text'][-200:] for r in results if r['tool'] == 'python']
 elif script == "history":
     last = parent_requests[-1].get('current', '')
     assert 'RECENT HISTORY (your last' in last and 'older not shown' in last, 'the default budget must drop the oldest decisions with a note'

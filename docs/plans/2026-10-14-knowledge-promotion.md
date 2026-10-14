@@ -1,6 +1,6 @@
 # Meta-harness 变更记录：认识的分层存放与晋升/降级规则（长程任务）
 
-日期：2026-10-14（Asia/Shanghai）。状态：设计，待用户确认；未实现。
+日期：2026-10-14（Asia/Shanghai）。状态：第 1 轮实现（分支 `claude/promote-20261014`，基于 c82e3dd0 = kernel 分支 + tc-02 配置文档）；功能检查进行中，真实运行未做。
 按 [开发流程](../development-workflow.md) 使用。分支 `claude/kernel-20261014`。关联：[token 开销循环](2026-10-14-token-cost-loop.md)（运行配置的前提）、[可证伪 self-harness 计划](2026-10-12-falsifiable-self-harness-plan.md)（`check(t)` 的来源）、[延后待办 D](../deferred-research-todos.md)（压缩后的认知连续性）。
 
 ## 问题与命题
@@ -139,15 +139,49 @@ R7 是通用的反证手段，不依赖游戏内容：一条真实的转移规�
 4. smoke：新增场景覆盖 R1→R2→R5、R7、I1（空输出 view 不激活）与 I3（重算后提示出现）。
 5. 阶段 0 回放，然后按预算进入阶段 1。
 
+## 实现（第 1 轮，2026-10-14）
+
+用户要求：持久化尽量经由 harness 组件实现，避免独立的临时存储。据此：
+
+| 设计项 | 实现 | 持久化载体 |
+| --- | --- | --- |
+| R1 陈述 → 假设 | `promotionEvents`（`arc_thin_extension.ts`）：事实 key 被写 ≥ 3 次（`ARC_REFINE_BELIEF_REWRITES`）且无带 check 的假设，或 ≥ 8 动作无带 check 的假设（`ARC_REFINE_UNCHECKED_AFTER`）→ refiner；refiner 新增 `HYPOTHESIS` 回复形式（`arc_thin_refiner.ts`），经 `planNativeMemoryUpdate` 写入 | memory 组件（hypothesis + check） |
+| R2 假设 → 规则 | `promotionView`（`arc_thin_claims.ts`）：当前版本 check holds ≥ 4、fails 0、无 error、非 rejected、通过 R7 → refiner 写 `prompts/rules.md` | prompt 组件（binder 版本化，active 时进入 system） |
+| R3 作用域 | 只在触发文本中报告跨几个关卡成立；未做关卡标签 | — |
+| R4 目标 | 未单独实现：目标假设用同一 check 机制（`t['level_changed']`）；refiner 提示要求目标规则只在关卡变化确认后写入 | — |
+| R5 规则 → 争议 | 被 rules.md 引用的 key 的 check 出现 False → refiner 修订；不由 runtime 改状态或改文件（"判断归 agent/refiner"） | prompt 组件新版本 |
+| R6 容量 | rules.md > 1,500 字符 → refiner 合并 | prompt 组件 |
+| R7 空洞性 | `controlSegments`：把一次移动前的网格与另一次（结果不同的）移动后的网格配对、沿用前者的动作，最多 6 对；在已有 claims 沙箱中运行；没有任何一对返回 False 的 check 不晋升。结果作为 `claim_checks.jsonl` 中 `control: true` 的行保存 | 已有的 claims 证据存储 |
+| I1 空输出 view | `NativeRuntime.emptyViews()`：view 连续 ≥ 2 个状态输出为空（None、空串/容器、无输出脚本）或报错 → refiner 修复或退役。偏离设计：不在装配时拒绝激活（需要改 binder 状态机），改为尽早触发修复 | tool 组件新版本 |
+| I2 组件进入 python 会话 | 未实现（改变 kernel 命名空间，需与 checkpoint 恢复一起验证），留待下一轮 | — |
+| I3 重算提示 | `coveringComponent`（`arc_thin_reuse.ts`）：本次 python 调用所属计算已出现 ≥ 2 次且有组件覆盖 → 在这次结果末尾加一行，每组件每关一次；记录 `component_runs.jsonl` 的 `cover_hint` | 无新存储 |
+| I4 规则反馈 | working set 新增 `rules` 段："RULE CHECKS (prompts/rules.md) on #n: N held, failed: …"（只在 rules.md 引用了 key 时出现）；放在 working set 而不是 system，避免每步改写 system 前缀 | — |
+| I5 调用账本 | 未单独实现；`cover_hint`、`observer_runs.jsonl` 与已有 `component_runs.jsonl` 提供原始计数，汇总留待报告脚本 | — |
+
+其他偏离与更正：
+- 设计中说 `memory.md` 的"HYPOTHESES: none — keep 2-4…"出现在每个决策——更正：native 模式的 working set 用 `renderDecisionMemory`，不含这句；它只在 `data/memory.md` 文件与 refiner 输入中。因此未删除。
+- R2 的"覆盖 ≥ 2 个决策"条件未实现：新写的 check 会立即在全部已记录转移上运行，历史转移本身就是真实证据。
+- 一次 refinement 只做一个编辑，因此每次只提出一个晋升事件（顺序：争议、候选、陈述→假设、空 view、容量），已提出的不再重复；其余在后续 refinement 中提出。
+- system prompt：Prompt 能力说明中 strategy 改为"open questions, next experiment, failure modes"，并加一句 rules.md 的含义；refiner 提示中 strategy 去掉 Rules 部分。
+- 测试：[tests/arc_thin_promotion.test.ts](../../tests/arc_thin_promotion.test.ts)（晋升判定、负例、争议、容量、控制对、HYPOTHESIS 解析、空输出判定、覆盖提示）；确定性 smoke `promotion` 场景（`tools/arc_thin_smoke_provider.ts`、`tools/run_foundation_smoke.py`）在 mock 游戏上走 R1→R2→R5 与 I3。
+- 成本上限：refinement 的预算 token（未缓存输入 + 输出）超过父代理的 10%（`ARC_REFINE_MAX_SHARE`）且超过 20,000（`ARC_REFINE_MIN_TOKENS`，运行早期一次调用就占很大比例）后，只有关卡变化与"规则争议"还会启动 refinement，其余触发记为 `refiner.jsonl` 的 `over_budget` 行；agent 自己的 `refine(focus)` 不受影响。
+- I3 之后，被组件覆盖的计算不再在第 2 次重打时触发 refinement（`repeatedWork` 只保留"重做 ≥ 3 次"）：第 2 次先在结果中提示，仍重打时才请 refinement，避免为同一件事既提示又花一次模型调用。
+- `activation` smoke 设置 `ARC_REFINE_UNCHECKED_AFTER=1000`：该场景检查其他 refinement 事件，"无带 check 的假设"事件由 `promotion` 场景检查。
+
+验证（mock ARC SDK、真实 bridge、真实 Pi、WASI、脚本化 provider）：
+- `tests/arc_thin_*.test.ts`：161 项中 155 通过；6 项失败中 5 项是基线既有失败（与 kernel 记录相同），另 1 项 `installed Pi sends current action enums…` 在全量运行中 20 s 超时、单独运行通过（与 kernel 分支上的现象相同）。
+- smoke `promotion`（`tmp/smoke-promotion-7`，成本上限加入后重跑）通过：`refiner.jsonl` 依次为 "memory belief.move was rewritten 3 times…" → `memory:hyp.right`；"hyp.right held on 4 recorded moves… candidate rule" → `prompts/rules.md` v1；`#8` 处 check 失败 → "the rule is in dispute" → `prompts/rules.md` v2。控制对 4 个全部 False（check 有区分力）；规则行进入之后的 system prompt；working set 出现 `RULE CHECKS`；第 2 次重打 `grid[3].index(9)` 的结果含 "tools/nine.py already computes this"。
+- 回归 smoke：`activation`、`activation defaults`（成本上限加入后重跑：`tmp/smoke-promote-activation-defaults4`；第一版上限在脚本化 provider 的极小 token 数上误触发，因而加了 20,000 的下限）、`foundation`、`foundation defaults`、`receipts` 均通过。
+
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
-| 功能正确 | 未验证 | — | — |
-| 全链路可达 | 未验证 | — | — |
+| 功能正确 | 通过 | node:test + WASI claims 沙箱 | `tests/arc_thin_promotion.test.ts`；不涉及模型行为 |
+| 全链路可达 | 通过（确定性） | mock ARC SDK、真实 bridge/Pi/WASI、脚本化 provider | `tmp/smoke-promotion-7`（kernel worktree 的 tmp，未入库）；证明接线与生命周期，不证明真实 refiner 会写出有效 check，也不证明 agent 会用规则 |
 | 自主采用 | 未验证 | — | — |
 | 净收益 | 未验证 | — | — |
 
 ## 交付决定
 
-- 当前仅为设计。未支持任何行为或收益声明。
-- 待用户确认的选择：(a) 是否把 Rules 从 strategy.md 拆出为 rules.md；(b) R2 的阈值（holds ≥ 4、≥ 2 个决策）；(c) refiner 成本上限 10%；(d) 阶段 1 的预算与动作数；(e) 是否删除 memory.md 的写假设催促句；(f) I2 是否把已保存组件放进 python 会话（改变 kernel 的命名空间，需要与 checkpoint 恢复一起验证）；(g) I3 的提示频率（每组件每关一次）。
+- 已实现并通过功能与确定性全链路检查：晋升/降级计数、R7 控制对、refiner 的 HYPOTHESIS 形式、rules.md 提示组件、RULE CHECKS 行、空 view 触发、重算提示、refiner 成本上限。未验证：真实 refiner 是否写出有区分力的 check，agent 是否在规则常驻后减少重述，成本与任务效果。
+- 已按设计默认值实现的选择（用户以"实现晋升"确认）：(a) Rules 拆为 rules.md；(b) holds ≥ 4（"≥ 2 个决策"条件未实现，见上）；(c) 成本上限 10%；(e) 不删除催促句（更正后不需要）；(g) 每组件每关提示一次。未实现：(f) I2、I5。待定：(d) 阶段 1 的预算与动作数。
 - 关联 backlog D：本设计让已确立的认识以常驻文本跨压缩保留；"关键假设与反证是否跨压缩保留"仍需在阶段 1 中检查实际 provider 输入，状态不变。

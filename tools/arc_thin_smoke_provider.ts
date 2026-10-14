@@ -323,6 +323,24 @@ const FORK_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: '(plus_one(kept_value), len(history))' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after fork' }]] },
 ];
+// Promotion (docs/plans/2026-10-14-knowledge-promotion.md), on the mock game where ACTION1/ACTION4 move the 9 in row 3
+// one cell right and it wraps at the edge: a belief rewritten three times makes a refinement write it as a checked
+// hypothesis; four holds and failing controls make one write prompts/rules.md citing it; the wrap at #8 fails the check
+// and a refinement revises the rule. A computation retyped after it was saved as a tool is named in its own result.
+// One scripted step per request: a non-acting call and the action that ends its decision are separate steps.
+const act = (action: string): Step => ({ kind: 'decide', calls: [['arc_action', { action }]] });
+const believe = (text: string): Step => ({ kind: 'decide', calls: [['memory', { set: [{ key: 'belief.move', text }] }]] });
+const PROMOTION_SCRIPT: Step[] = [
+  believe('ACTION1 moves the 9 right'), act('ACTION1'),
+  believe('ACTION1 moves the 9 one cell right'), act('ACTION1'),
+  believe('ACTION1 and ACTION4 move the 9 right'), act('ACTION4'),
+  { kind: 'decide', calls: [['python', { code: 'grid[3].index(9)', save: 'nine' }]] }, act('ACTION1'),
+  // The saved tool is active from the next decision on; retyping its computation there is named in the result.
+  { kind: 'decide', calls: [['python', { code: 'grid[3].index(9)' }]] }, act('ACTION1'),
+  act('ACTION2'), act('ACTION4'), act('ACTION1'), act('ACTION1'), act('ACTION4'),
+];
+const PROMOTION_CHECK = "def check(t):\n    if t['action'] not in ('ACTION1', 'ACTION4'):\n        return None\n" +
+  "    return t['after'][3].index(9) == t['before'][3].index(9) + 1";
 const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['run_skill', { name: 'old', args: { extra: 2 } }], ['read', { path: 'notes/controls.md' }]] },
   { kind: 'decide', calls: [['producer', { args: {} }]] },
@@ -338,6 +356,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'promotion' ? PROMOTION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
@@ -506,7 +525,13 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			else if (refiner) {
 				const why = messages.map(textOf).join("\n");
 				appendFileSync(join(process.env.ARC_RUN_ROOT ?? process.cwd(), "refiner-inputs.jsonl"), JSON.stringify({ systemPrompt, input: why }) + "\n");
-				planned = { kind: "decide", text: why.includes("redone")
+				planned = { kind: "decide", text: why.includes("the rule is in dispute")
+					? "FILE prompts/rules.md\n- ACTION1 and ACTION4 move the 9 one cell right except at the right edge, where it wraps (hyp.right_wrap)\nEND\nWHY hyp.right failed at the edge"
+					: why.includes("a candidate rule for prompts/rules.md")
+					? "FILE prompts/rules.md\n- ACTION1 and ACTION4 move the 9 one cell right (hyp.right)\nEND\nWHY hyp.right held on every move it applied to"
+					: why.includes("no hypothesis carries a check")
+					? `HYPOTHESIS hyp.right\nclaim: ACTION1 and ACTION4 move the 9 in row 3 one cell right\nquestion: what the actions do\npredicts: the 9 one column further right\ncheck:\n${PROMOTION_CHECK}\nEND\nWHY belief.move was restated three times`
+					: why.includes("redone")
 					? "FILE tools/cell_reader.py\n# Read one cell of the first frame.\ncell = history.grid(0)[0][args.get('x', 0)]\ncell\nEND\nWHY the same cell lookup was typed at #4-#5"
 					// Asked by the agent: an attempt to replace the agent's own tool, which the runtime refuses.
 					: why.includes("the agent asked") ? "FILE tools/probe.py\n# view: on\ngrid[0]\nEND\nWHY replace the probe with a view"

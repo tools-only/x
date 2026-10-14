@@ -7,7 +7,7 @@ import { executeNative, nativeKernel, type ActCall, type NativeResult } from './
 import { PythonSession } from './arc_thin_python_session.ts';
 import { TaskPythonPool } from './pi_task_python_pool.ts';
 import type { KernelRequest, PythonKernel } from './pi_task_python_kernel.ts';
-import { codeShape, componentLines, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
+import { codeShape, componentLines, coveringComponent, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 
 /** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
@@ -36,6 +36,21 @@ const shown = (result: NativeResult) => !result.ok ? [result.error, result.where
 const text = (value: string, isError = false) => ({ content: [{ type: 'text' as const, text: value }], isError });
 export { codeShape, kitOf, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 
+/** A component's output that carries nothing: None, an empty string or container, or a script that printed nothing. */
+export function isEmptyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'string') return !value.trim();
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'object') {
+    const v = value as Record<string, unknown>;
+    if ('stdout' in v) return !String(v.stdout ?? '').trim() && (!v.has_value || isEmptyValue(v.value));
+    return Object.keys(v).length === 0;
+  }
+  return false;
+}
+/** Consecutive empty outputs before a view is reported to the refinement. */
+export const EMPTY_VIEW_STATES = 2;
+
 /** What one execution acted: the receipt lines and, when the runtime stopped it, why. */
 type Acted = { lines: string[]; stopped?: string };
 
@@ -45,6 +60,15 @@ export class NativeRuntime {
   private pending: Promise<unknown> = Promise.resolve();
   private observed = new Set<string>();
   private outputs = new Map<string, string>();
+  /** path@version → the states on which the view has shown nothing, in a row. */
+  private viewHealth = new Map<string, { path: string; version: number; states: number[]; error?: string }>();
+  /** level:path of components already named in a python result as covering a retyped computation. */
+  private coverHinted = new Set<string>();
+  /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
+  emptyViews() {
+    const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => `${c.path}@${c.version}`));
+    return [...this.viewHealth].filter(([key, v]) => live.has(key) && v.states.length >= EMPTY_VIEW_STATES).map(([, v]) => v);
+  }
   private pythonRuns: PythonRun[] = [];
   /**
    * The parent's python session: the namespace its python calls share, checkpointed after every call and restored
@@ -122,10 +146,11 @@ export class NativeRuntime {
   }
   /**
    * Repeated python work on a level, for the refinement trigger: a computation redone at least 3 times since the
-   * saved tools last changed, or retyped although a saved tool covers it.
+   * saved tools last changed. A computation a saved component covers is named in the python result at its second
+   * typing (coveringComponent); a refinement is asked only if it is typed again after that.
    */
   repeatedWork(level: number) {
-    return repeatedFamilies(this.levelRuns(level), this.components()).filter(f => f.recent >= 3 || (f.covered && f.recent >= 2))
+    return repeatedFamilies(this.levelRuns(level), this.components()).filter(f => f.recent >= 3)
       .map(f => ({ key: f.key, gist: f.gist, calls: f.recent, covered: f.covered, samples: f.runs.slice(-2).map(r => r.code ?? '').filter(Boolean) }));
   }
   repetitionText(level: number) { return repetitionText(this.levelRuns(level), this.components()); }
@@ -373,8 +398,20 @@ export class NativeRuntime {
       ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit, ...(save ? { saved_as: `tools/${save}.py` } : {}) }),
       acted: result.acted?.lines.length ?? 0, ...(outcome ? { session_version: outcome.version, session_event: outcome.event ?? 'unchanged' } : {}) });
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
+    // Saved once, named once: when this call retypes what a saved component computes, its own result says so (once per
+    // component and level), so the next call can use it instead (Prime: the change arrives in the next tool result).
+    const covering = readonly ? undefined : coveringComponent(this.levelRuns(this.host.level()), this.components());
+    const coverKey = `${this.host.level()}:${covering}`;
+    let coverNote = '';
+    if (covering && !this.coverHinted.has(coverKey)) {
+      this.coverHinted.add(coverKey);
+      const c = this.host.binder.active().find(x => x.path === covering);
+      coverNote = `(${covering} already computes this: ${c?.kind === 'tool' && !c.path.startsWith('lib/') ? `call ${c.name}(args={...})` :
+        `from ${covering.replace(/\.py$/, '').replace(/\//g, '.')} import …`} instead of retyping it)`;
+      this.host.log('component_runs.jsonl', { kind: 'cover_hint', path: covering, level: this.host.level(), decision, n: this.host.actionCount() });
+    }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
-    return this.finish([...receipts, shown(result), sessionNotes, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
+    return this.finish([...receipts, shown(result), sessionNotes, coverNote, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
       live && result.ok && Boolean((result.value as any)?.has_value));
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
@@ -407,6 +444,13 @@ export class NativeRuntime {
         const liveLabel = this.host.binder.label(c.path);
         const body = `${c.name} v${c.version}${liveLabel.startsWith(`${c.name} v${c.version}`) ? liveLabel.slice(`${c.name} v${c.version}`.length) : ''} state #${n}: ${shown(result)}`;
         this.outputs.set(c.path, this.host.receipt?.(body) ?? body);
+        // A view that shows nothing is a saved component the agent cannot use (tc-01: a refined view returned None on
+        // every state and nobody noticed); consecutive empty states are counted for the refinement trigger.
+        const empty = !result.ok || isEmptyValue(result.value);
+        const streak = this.viewHealth.get(`${c.path}@${c.version}`) ?? { path: c.path, version: c.version, states: [] as number[] };
+        streak.states = empty ? [...streak.states, n] : [];
+        streak.error = result.ok ? undefined : String(result.error ?? '');
+        this.viewHealth.set(`${c.path}@${c.version}`, streak);
         this.host.log('observer_runs.jsonl', { key, n, name: c.name, version: c.version, versions: snap.versions,
           ok: result.ok, value: result.ok ? result.value : undefined, error: result.ok ? undefined : result.error, ms: Date.now() - started });
       };
