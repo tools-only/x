@@ -7,6 +7,14 @@ import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefi
 
 /** A receipt line longer than this is a stub. A 64-cell grid row printed as a list is about 190 characters. */
 export const LONG_LINE_CHARS = 400;
+/** Lines over LONG_LINE_CHARS as one-line stubs: dumped data, kept out of view; the lines code printed as findings stay. */
+export function stubLongLines(raw: string[]): { lines: string[]; stubs: number } {
+  const lines = raw.map((line, i) => line.length > LONG_LINE_CHARS
+    ? `[line ${i + 1}: ${line.length} chars not shown; starts ${JSON.stringify(line.slice(0, 80))}]` : line);
+  return { lines, stubs: raw.filter(line => line.length > LONG_LINE_CHARS).length };
+}
+/** Only refinements write it, from checked hypotheses (docs/plans/2026-10-14-knowledge-promotion.md). */
+export const REFINED_ONLY = 'prompts/rules.md';
 
 export class Workspace {
   readonly root: string;
@@ -34,6 +42,10 @@ export class Workspace {
     const rel = relative(this.root, target).replace(/\\/g, '/');
     if (rel.startsWith('../') || isAbsolute(rel)) throw Error('path leaves workspace');
     if (write && !runtime && /^(data|results)(\/|$)/i.test(rel)) throw Error('workspace data/ and results/ are read-only');
+    // pr-01 (2026-10-14): the agent used the rules prompt as a notebook and rewrote it each request, so promotions had
+    // nowhere to go. Its rules come from its checked hypotheses; notes and plans have their own places.
+    if (write && !runtime && rel.toLowerCase() === REFINED_ONLY) throw Error(`${REFINED_ONLY} is kept by refinements from your ` +
+      'hypotheses whose checks hold; write plans and open questions to prompts/strategy.md, notes to notes/');
     let cursor = this.root;
     for (const part of rel.split('/').filter(Boolean)) {
       cursor = join(cursor, part);
@@ -120,9 +132,7 @@ export class Workspace {
     const {hash, ref} = source ? {hash: createHash('sha256').update(body).digest('hex'), ref: source} : this.saveResult(body);
     const raw = body.split('\n');
     const keys = [...keyLines, ...raw.filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);
-    const lines = raw.map((line, i) => line.length > LONG_LINE_CHARS
-      ? `[line ${i + 1}: ${line.length} chars not shown; starts ${JSON.stringify(line.slice(0, 80))}]` : line);
-    const stubs = raw.filter(line => line.length > LONG_LINE_CHARS).length;
+    const { lines, stubs } = stubLongLines(raw);
     const readBack = `read ${ref} with offset/limit for exact lines${stubs ? ', or open it in python' : ''}.`;
     if (stubs && lines.join('\n').length <= this.inlineChars)
       return `Result ${status}; ${body.length} chars; ${lines.length} lines; sha256=${hash}\nPreview partial; ${stubs} long line${stubs === 1 ? '' : 's'} not shown, every other line whole:\n${lines.join('\n')}\n${keys ? keys + '\n' : ''}ref: ${ref}\n${readBack}`;

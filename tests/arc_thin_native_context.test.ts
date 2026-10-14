@@ -47,8 +47,9 @@ test('earlier decisions are one summarised section: newest results whole, older 
   assert.equal(all.omitted, 0);
   assert.match(all.text, /^RECENT HISTORY \(your last 30 decisions, summarised, newest last\):/);
   assert.equal(all.text.includes('secret reasoning'), false);
-  // The two newest results are whole; older ones keep their first line, clipped.
-  assert.ok(all.text.includes('EXACT 29' + 'Z'.repeat(1000)) && all.text.includes('EXACT 28' + 'Z'.repeat(1000)));
+  // The two newest results are shown in full except that a line of dumped data (over 400 characters) is a one-line stub
+  // (2026-10-14, pr-01); older ones keep their first line, clipped.
+  for (const n of [29, 28]) assert.ok(all.text.includes(`[line 1: 1008 chars not shown; starts "EXACT ${n}${'Z'.repeat(70)}`), String(n));
   assert.match(all.text, /→ EXACT 27Z{192}… <1008 chars>/);
   assert.match(all.text, /said: walking the corridor\nwalk\(\{"args":\{"steps":2\}\}\) → walk v1 →\n#7 ACTION1 → changed 3\n#8 ACTION4 → changed 0/);
   // Long arguments are clipped.
@@ -58,7 +59,10 @@ test('earlier decisions are one summarised section: newest results whole, older 
   assert.ok(tight.decisions >= 2 && tight.decisions < 30 && tight.omitted === 30 - tight.decisions);
   assert.match(tight.text, /older not shown: memory, your prompts and tools, data\/trajectory\.jsonl/);
   assert.ok(tight.text.includes('EXACT 29') && !tight.text.includes('EXACT 0Z'));
-  const huge = summarizeHistory(decisions(3, 50_000), { budget: 3000, resultChars: 40_000 });
+  // An oversized decision of short lines (one line of dumped data would be a stub) is clipped, not dropped.
+  const lines = decisions(3).map(m => m.role === 'toolResult'
+    ? { ...m, content: [{ type: 'text', text: `${m.content[0].text.slice(0, 7)}\n` + ('Z'.repeat(99) + '\n').repeat(500) }] } : m);
+  const huge = summarizeHistory(lines, { budget: 3000, resultChars: 40_000 });
   assert.equal(huge.decisions, 1);
   assert.ok(huge.text.includes('EXACT 2') && huge.text.length < 3300);
   assert.deepEqual(summarizeHistory([{ role: 'user', content: 'first decision' }]), { text: '', decisions: 0, omitted: 0 });
@@ -100,7 +104,9 @@ test('earlier decisions are a frozen transcript: no reasoning or images, results
   assert.equal(JSON.stringify(frozen).includes('secret reasoning'), false);
   assert.equal(JSON.stringify(frozen).includes('"image"'), false);
   const results = frozen.filter(m => m.role === 'toolResult').map(m => m.content[0].text);
-  assert.ok(results.every(text => text.length < 5300 && text.startsWith('EXACT') && text.includes('results/r1.txt')), results.map(t => t.length).join());
+  // Each result is one 9,007-character line of data: a stub that says where the whole result is.
+  assert.ok(results.every(text => text.length < 5300 && text.startsWith('[line 1: 9007 chars not shown; starts "EXACT') && text.includes('results/r1.txt')),
+    results.map(t => t.length).join());
   assert.equal(saves, 3);
   // A later request sees the same earlier decisions plus one more; the shared part is unchanged.
   const later = freezeHistory([...history, { role: 'user', content: 'decision 3' }], { save });

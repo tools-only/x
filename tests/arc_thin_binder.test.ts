@@ -9,7 +9,7 @@ import { Binder } from '../demo/arc_thin_binder.ts';
 test('binder versions writes, labels failed fallback, activates next boundary and recovers retirement', async () => {
   const root = mkdtempSync(join(tmpdir(), 'binder-')); const w = new Workspace(root);
   let b = new Binder(w); const save = async (path: string, content: string) => { w.runtimeWrite(path, content); return b.save(path, 0); };
-  assert.match(await save('prompts/p.md', '---\nactive: true\n---\nKEEP_HYPOTHESIS'), /v1.*saved.*loaded.*next request/);
+  assert.match(await save('prompts/p.md', '---\nactive: true\n---\nKEEP_HYPOTHESIS'), /v1.*saved.*loaded.*next decision/);
   assert.equal(b.active().length, 0);
   b.boundary(); assert.equal(b.active()[0].version, 1);
   assert.match(await save('prompts/p.md', 'missing header'), /v2.*NOT loaded.*v1 still runs/);

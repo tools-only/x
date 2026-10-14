@@ -103,9 +103,12 @@ export class Binder {
   }
   private receipt(entry: Entry) {
     const kind = componentKind(entry.path); const name = entry.good?.name ?? entry.path.split('/').at(-1);
+    // A prompt is part of the system prompt, which stays fixed within a decision (a change mid-decision invalidated the
+    // provider's cached prefix on every later request of it, pr-01 2026-10-14); it applies from the next decision.
+    const from = kind === 'prompt' ? 'your next decision' : 'your next request';
     return `${entry.path} → ${kind} ${name} v${entry.version}: saved · ` + (entry.error
       ? `NOT loaded (${entry.error}) · ${entry.good ? `v${entry.good.version} still runs, its outputs are labelled` : 'no active version'}`
-      : entry.good?.enabled ? 'loaded · active from your next request' : 'off · not active from your next request');
+      : entry.good?.enabled ? `loaded · active from ${from}` : `off · not active from ${from}`);
   }
   async scan(level: number) {
     const paths = new Set(this.workspace.files().filter(p => !/^(data|results)(\/|$)/.test(p)));

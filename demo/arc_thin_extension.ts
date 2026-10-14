@@ -62,7 +62,8 @@ import {
 import { buildHistory, gridChanges, type CellChange } from "./arc_thin_history.ts";
 import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } from "./arc_thin_analyst.ts";
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
-import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue } from "./arc_thin_claims.ts";
+import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue,
+	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView } from "./arc_thin_claims.ts";
 
 /** run_skill is added to these while at least one skill is saved (refreshSkillSurface). */
 // Keep action requests small. Prompt editing and the one-shot analyst remain
@@ -256,6 +257,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let artifactLog: ArtifactRecord[] = [];
 	/** Results of the agent's hypothesis checks on recorded transitions (claim_checks.jsonl); see arc_thin_claims.ts. */
 	let claimRows: ClaimRow[] = [];
+	/** "key@version" → the check's results on mismatched transitions (claim_checks.jsonl rows with control: true). */
+	const claimControls = new Map<string, ControlRecord>();
 	/** "key@version" → why that check could not be used (it is not run again). */
 	const claimCompileErrors = new Map<string, string>();
 	/** Transitions whose grids are not available: never checked, so not asked for again. */
@@ -267,6 +270,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let lastDecisionCost: { ms: number; output: number; reasoning: number; coordinateShare?: number } | undefined;
 	/** Characters of the last request (system prompt and messages), shown in RESOURCES so the agent sees its context size. */
 	let lastContextChars = 0;
+	/** Budget tokens (uncached input + output) spent so far, by usage kind (agent, refiner, …). */
+	const spentTokens = new Map<string, number>();
 	const deadlineMs = Number(process.env.ARC_RUN_DEADLINE_MS) || 0;
 
 	function append(file: string, row: Record<string, unknown>): void {
@@ -314,8 +319,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		artifactLog = readRows("artifacts.jsonl");
 		claimRows = [];
 		claimCompileErrors.clear();
+		claimControls.clear();
 		for (const row of readRows("claim_checks.jsonl")) {
 			if (row.compile_error) claimCompileErrors.set(`${row.key}@${row.version}`, String(row.compile_error));
+			else if (row.control && Array.isArray(row.results)) claimControls.set(`${row.key}@${row.version}`, { key: row.key, version: row.version, results: row.results });
 			else if (row.key && row.version && Number.isInteger(row.n)) claimRows.push(row as ClaimRow);
 		}
 		overlay = readRows("prompt.jsonl").at(-1)?.text ?? "";
@@ -328,6 +335,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating).map((row) => Number(row.actions) || 0));
 		const decisions = [...trajectory, ...readRows("usage.jsonl"), ...workingSets].map((row) => Number(row.decision) || 0);
 		decision = Math.max(0, ...decisions);
+		spentTokens.clear();
+		for (const row of readRows("usage.jsonl")) if (row.kind)
+			spentTokens.set(row.kind, (spentTokens.get(row.kind) ?? 0) + (Number(row.input) || 0) + (Number(row.output) || 0));
 	}
 
 	const requestTrace = new RequestTrace(row => append('request-events.jsonl', row));
@@ -335,6 +345,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function appendUsage(kind: string, message: any): void {
 		const usage = message?.usage ?? {};
 		if (kind === "agent") { run.output += Number(usage.output) || 0; run.reasoningTokens += Number(usage.reasoning) || 0; }
+		// Budget tokens (uncached input + output) by kind, for the refinements' cost ceiling.
+		spentTokens.set(kind, (spentTokens.get(kind) ?? 0) + (Number(usage.input) || 0) + (Number(usage.output) || 0));
 		if (native) {
 			if (kind === 'agent' && parentRequest) { requestTrace.finish(parentRequest,message); parentRequest=undefined; }
 			append('usage.jsonl',{decision,kind,...usageRecord(message),request_id:requestTrace.idFor(message) ?? null});
@@ -579,6 +591,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
 			const out: Array<[string, string]> = [["memory", renderDecisionMemory(memory, trajectory.length, claimLines())]];
+			const rules = ruleChecksText();
+			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
 			const held = sessionView ? nativeRuntime?.sessionView() ?? "" : "";
 			if (held) out.push(["python", held]);
@@ -777,6 +791,62 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const rows = claimRows.filter((row) => row.key === key && row.version === version);
 			return [key, renderClaimSummary(rows.length ? summarizeClaim(rows, level) : undefined, compileError)];
 		}));
+	}
+
+	/** The rules prompt as written (refinements maintain it; it applies while its frontmatter says active). */
+	function rulesText(): string {
+		if (!workspace) return "";
+		try { return workspace.read(RULES_PATH); } catch { return ""; }
+	}
+
+	/** Promotion and demotion as the checks' records show them (docs/plans/2026-10-14-knowledge-promotion.md). */
+	function promotion(): PromotionView {
+		const hypotheses = new Map([...memory.hypotheses].map(([key, h]) => [key, { status: h.status,
+			...(h.check && !claimCompileErrors.has(`${key}@${claimVersion(h.check)}`) ? { version: claimVersion(h.check) } : {}) }]));
+		return promotionView(hypotheses, claimRows, claimControls, rulesText());
+	}
+
+	/**
+	 * Run each qualifying check once on mismatched transitions (the grid before one move with the grid after another),
+	 * so a check that holds whatever happened is not offered as a rule. Recorded as one claim_checks.jsonl row per check.
+	 */
+	async function refreshClaimControls(signal?: AbortSignal): Promise<void> {
+		const due = promotion().needControls;
+		if (!due.length) return;
+		const { segments, sources } = controlSegments(trajectory.map((row) => row.n), grids);
+		const sourceOf = new Map(trajectory.map((row) => [row.n, row]));
+		const transitions = Object.fromEntries([...sources].map(([id, n]) => {
+			const row = sourceOf.get(n)!;
+			return [String(id), { action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
+				level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed }];
+		}));
+		const claims = claimChecks().filter((claim) => due.some((d) => d.key === claim.key && d.version === claim.version));
+		// Too little history to pair moves: decided again once there is.
+		if (!segments.length || !claims.length) return;
+		const result = await runGuest({ mode: "claims", claims: claims.map(({ key, source }) => ({ key, source })), segments, transitions }, signal);
+		if (!result.ok) { logError("claims:controls", new Error(guestFailure(result))); return; }
+		const value = result.value as Record<string, { results: Array<[number, ClaimValue, string?]>; error: string | null }>;
+		for (const claim of claims) {
+			const out = value[claim.key];
+			if (!out || out.error) continue;
+			const record: ControlRecord = { key: claim.key, version: claim.version, results: out.results.map(([, verdict]) => verdict) };
+			claimControls.set(`${claim.key}@${claim.version}`, record);
+			append("claim_checks.jsonl", { ...record, control: true, pairs: [...sources].map(([id, n]) => [n, id]) });
+		}
+	}
+
+	/** The rules' checks on the latest move, for the working set: a rule is seen being kept, or failing, as play goes on. */
+	function ruleChecksText(): string {
+		const keys = citedKeys(rulesText());
+		if (!keys.length || !trajectory.length) return "";
+		const n = trajectory.length;
+		const versions = new Map(claimChecks().map((claim) => [claim.key, claim.version]));
+		const latest = keys.map((key) => [key, claimRows.find((row) => row.key === key && row.version === versions.get(key) && row.n === n)?.result] as const);
+		const failed = latest.filter(([, result]) => result === false).map(([key]) => key);
+		const held = latest.filter(([, result]) => result === true).length;
+		const unchecked = keys.filter((key) => !versions.has(key));
+		return `RULE CHECKS (${RULES_PATH}) on #${n}: ${held} held, ${failed.length ? `failed: ${failed.join(", ")}` : "0 failed"}` +
+			(unchecked.length ? `; no check behind ${unchecked.join(", ")}` : "");
 	}
 
 	const explorationText = () => explorationLine(trajectory, grids, trajectory.length, availableActions(observation));
@@ -1134,6 +1204,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	const REFINE_EVERY = envNumber("ARC_REFINE_EVERY", 15);
 	const GOAL_TEST_AFTER = envNumber("ARC_REFINE_GOAL_TEST_AFTER", 12);
+	/** A fact rewritten this often while no hypothesis has a check: the agent restates a belief instead of testing it. */
+	const BELIEF_REWRITES = envNumber("ARC_REFINE_BELIEF_REWRITES", 3);
+	const UNCHECKED_AFTER = envNumber("ARC_REFINE_UNCHECKED_AFTER", 8);
+	/** Refinements' cost ceiling as a share of the agent's budget tokens (Continual Harness spends about 5%). */
+	const REFINER_SHARE = envNumber("ARC_REFINE_MAX_SHARE", 0.1);
+	/** Below this many refinement tokens the share is not applied: early in a run one call is a large share. */
+	const REFINER_MIN_TOKENS = envNumber("ARC_REFINE_MIN_TOKENS", 20_000);
 	let refineNotes: CriticNote[] = [];
 	let refinedThrough = 0;
 	let lastRefineAt = 0;
@@ -1144,7 +1221,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let refinerNotice = "";
 	/** Files a refinement wrote: later refinements may rewrite them; other existing files belong to the agent. */
 	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string").map((row) => row.path));
-	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
+	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || path === RULES_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
 	const refinerActive = () => Boolean(native && criticOn && nativeRuntime && binder);
 	function readStrategy(): { text: string; version?: number } | undefined {
 		if (!workspace) return undefined;
@@ -1180,9 +1257,75 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			viewAskedLevel = currentLevel();
 			triggers.push(`about ${Math.round(100 * share)}% of the agent's reasoning sentences in its last decision located cells or coordinates, and no view tool reports them`);
 		}
+		triggers.push(...promotionEvents(refinerOverBudget()));
 		if (!triggers.length && trajectory.length - lastRefineAt >= REFINE_EVERY) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
 		refinedThrough = trajectory.length;
+		// Over the cost ceiling only a level change and a rule in dispute still start a refinement (the agent's own
+		// refine(focus) is not counted here: it starts one directly).
+		if (refinerOverBudget()) {
+			const kept = triggers.filter((t) => /^level \d+ reached|the rule is in dispute/.test(t));
+			if (kept.length < triggers.length) append("refiner.jsonl", { kind: "over_budget", at: trajectory.length, dropped: triggers.filter((t) => !kept.includes(t)),
+				refiner_tokens: spentTokens.get("refiner") ?? 0, agent_tokens: spentTokens.get("agent") ?? 0 });
+			return { triggers: kept, samples };
+		}
 		return { triggers, samples };
+	}
+
+	/** Refinements have used more than REFINER_SHARE of the agent's own budget tokens (and more than a few calls' worth). */
+	const refinerOverBudget = () => (spentTokens.get("refiner") ?? 0) > Math.max(REFINER_MIN_TOKENS, REFINER_SHARE * (spentTokens.get("agent") ?? 0));
+
+	/**
+	 * The promotion path's events (docs/plans/2026-10-14-knowledge-promotion.md): a rule whose check failed, a check
+	 * ready to become a rule, a belief restated in memory with no check behind it, a view that shows nothing, an
+	 * over-long rules prompt. A refinement makes one edit, so one event is raised per refinement, most urgent first;
+	 * each is raised once. Counting is the runtime's; the edit is the refinement's.
+	 */
+	const promotionAsked = new Set<string>();
+	let uncheckedAskedAt = -1;
+	function promotionEvents(urgentOnly = false): string[] {
+		const due: Array<[string, string]> = [];
+		const view = promotion();
+		const findings = promotionTriggers(view);
+		view.refuted.forEach((r, i) => due.push([`refuted:${r.key}:${r.failing.at(-1)}`, findings[view.candidates.length + i]]));
+		(urgentOnly ? [] : view.candidates).forEach((c, i) => due.push([`promote:${c.key}@${c.version}`, findings[i]]));
+		if (!urgentOnly && ![...memory.hypotheses.values()].some((h) => h.check)) {
+			const touches = new Map<string, number>();
+			for (const t of memoryTouches) if (memory.facts.has(t.key)) touches.set(t.key, (touches.get(t.key) ?? 0) + 1);
+			const churned = [...touches].filter(([, n]) => n >= BELIEF_REWRITES).sort((a, b) => b[1] - a[1])[0];
+			if (churned) due.push([`churn:${churned[0]}`, `memory ${churned[0]} was rewritten ${churned[1]} times and no hypothesis carries a check: ` +
+				"turn the belief it restates most into a HYPOTHESIS with a check"]);
+			else if (trajectory.length >= UNCHECKED_AFTER && (uncheckedAskedAt < 0 || trajectory.length - uncheckedAskedAt >= 2 * UNCHECKED_AFTER))
+				due.push([`unchecked:${trajectory.length}`, `${trajectory.length} actions and no hypothesis carries a check: turn a belief the agent has stated into a HYPOTHESIS with a check`]);
+		}
+		for (const broken of urgentOnly ? [] : nativeRuntime?.emptyViews() ?? [])
+			due.push([`view:${broken.path}@${broken.version}`, `view ${broken.path} v${broken.version} showed nothing on states ${broken.states.map((n) => `#${n}`).join(", ")}` +
+				(broken.error ? ` (${broken.error.slice(0, 120)})` : "") + ": fix it so it returns what it reports, or retire it"]);
+		if (view.overCap && !urgentOnly) due.push([`cap:${rulesText().length}`, findings.at(-1)!]);
+		const next = due.find(([id]) => !promotionAsked.has(id));
+		if (!next) return [];
+		promotionAsked.add(next[0]);
+		pendingPromotion = next[0];
+		if (next[0].startsWith("unchecked:")) uncheckedAskedAt = trajectory.length;
+		return [next[1]];
+	}
+	/** The promotion event in the refinement now running, to raise again if its one edit went elsewhere. */
+	let pendingPromotion: string | undefined;
+	const promotionRetries = new Map<string, number>();
+	/**
+	 * pr-02 (2026-10-14): "no hypothesis carries a check" came with another trigger, the refinement wrote a view for the
+	 * other, and the event counted as raised. An event the edit did not address is raised again (twice at most).
+	 */
+	function settlePromotion(id: string | undefined, edit: { kind: string; path?: string }): void {
+		if (!id) return;
+		const addressed = /^(churn|unchecked):/.test(id) ? edit.kind === "hypothesis"
+			: /^(promote|refuted|cap):/.test(id) ? edit.kind === "file" && edit.path === RULES_PATH
+			: id.startsWith("view:") ? edit.kind === "file" && edit.path === id.slice(5).replace(/@\d+$/, "") : true;
+		const retryKey = id.startsWith("unchecked:") ? "unchecked" : id;
+		const tries = promotionRetries.get(retryKey) ?? 0;
+		if (addressed || tries >= 2) return;
+		promotionRetries.set(retryKey, tries + 1);
+		promotionAsked.delete(id);
+		if (id.startsWith("unchecked:")) uncheckedAskedAt = -1;
 	}
 
 	/** The agent's own guidance for refinements: the body of prompts/refine.md, whether or not that prompt is active. */
@@ -1193,6 +1336,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
+		const promotionId = pendingPromotion;
+		pendingPromotion = undefined;
 		const evidenceAt = trajectory.length, evidenceLevel = currentLevel();
 		const sourceVersions = binder!.versionMap();
 		const memoryBefore = JSON.stringify(memoryForSkills(memory));
@@ -1203,6 +1348,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			`WHY NOW: ${triggers.join("; ")}`,
 			`ACTIONS SO FAR: ${trajectory.length}; levels completed: ${currentLevel()}; state: ${observation?.state ?? "unknown"}`,
 			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
+			`CURRENT ${RULES_PATH}${rulesText() ? ` (v${binder!.versionMap()[RULES_PATH] ?? "?"})` : " (not written yet)"}:\n${rulesText() || "(empty)"}`,
 			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
 			`SAVED TOOLS:\n${saved.map((c) => `--- ${c.path} v${c.version}${c.view ? " (view)" : ""} ${refinedPaths.has(c.path) ? "REFINED" : "AGENT'S"}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
 			...(samples.length ? [`REPEATED PYTHON (latest calls):\n${samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n")}`] : []),
@@ -1216,9 +1362,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		appendUsage("refiner", reply);
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
 		const edit = parseRefinerReply(answer);
+		settlePromotion(promotionId, edit as { kind: string; path?: string });
 		const at = trajectory.length;
 		const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
-		if (currentLevel() !== evidenceLevel || (edit.kind === 'memory' && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
+		if (currentLevel() !== evidenceLevel || ((edit.kind === 'memory' || edit.kind === 'hypothesis') && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
 			|| (edit.kind === 'file' && (binder!.versionMap()[edit.path] !== sourceVersions[edit.path]
 				|| (workspace!.files().includes(edit.path) ? workspace!.read(edit.path) : undefined) !== sourceBefore.get(edit.path)))) {
 			append('refiner.jsonl', {kind: 'stale', ...base, why: 'scope or target changed while refinement was running'});
@@ -1239,6 +1386,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			refinerNotice = told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why);
 			return;
 		}
+		// A belief turned into a checked hypothesis goes through the memory component like the agent's own: the runtime
+		// then runs its check on every recorded move, which is what promotion counts.
+		if (edit.kind === "hypothesis") {
+			if (memory.hypotheses.has(edit.key)) { append("refiner.jsonl", { kind: "refused", ...base, path: `memory:${edit.key}`, why: `${edit.key} exists; a refinement adds hypotheses, it does not rewrite them` }); return; }
+			const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(edit.question ? { question: edit.question } : {}),
+				...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}) }] }, trajectory.length, components());
+			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
+			applyRows(memory, plan.rows);
+			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check) });
+			refinerNotice = told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why);
+			return;
+		}
 		if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
 		// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
 		// tools/probe.py into an unrelated view). It may rewrite the strategy and files that refinements wrote.
@@ -1246,7 +1406,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
 			return;
 		}
-		workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
+		// The rules prompt is refinement-only (the agent's writes to it are refused), so it is written as the runtime.
+		if (edit.path === RULES_PATH) workspace!.runtimeWrite(edit.path, edit.content);
+		else workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
 		refinedPaths.add(edit.path);
 		const receipt = await binder!.save(edit.path, currentLevel());
 		nativeRuntime!.noteSave(edit.path, receipt);
@@ -2217,7 +2379,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Model skills are checked on the transition just recorded (incremental; failures leave the decision unchanged).
 		if (!control) await refreshModelChecks();
 		// So are the hypotheses' checks: each new transition is one more test of every claim.
-		if (!control) { try { await refreshClaimChecks(); } catch (error) { logError("claims:refresh", error); } }
+		if (!control) { try { await refreshClaimChecks(); await refreshClaimControls(); } catch (error) { logError("claims:refresh", error); } }
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
 		if (native && workspace) {
@@ -2242,6 +2404,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     if (native) {
       event.systemPromptOptions.customPrompt = rendered;
       event.systemPromptOptions.cwd = workspace!.root;
+      // The active prompts are taken once per decision: the system prompt is the first thing in every request, and a
+      // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14).
+      decisionPrompts = promptSections();
       for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
         event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
       return;
@@ -2387,10 +2552,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return { messages: projected };
 	}));
 
+  /** The active prompts as system-prompt sections. */
+  const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c =>
+    [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+  /** The prompt sections fixed at the start of the current decision (native mode); undefined before the first. */
+  let decisionPrompts: Record<string, string> | undefined;
   if (binder) pi.on('context_with_system', (event: any) => {
     const current = getCurrentSystemMessage(event.messages)?.sections ?? {};
-    const desired = Object.fromEntries(binder.active().filter(c => c.kind === 'prompt').map(c =>
-      [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+    const desired = native && decisionPrompts ? decisionPrompts : promptSections();
     const patch: Record<string, string | null> = {};
     for (const key of new Set([...Object.keys(current).filter(k => k.startsWith('prompt_')), ...Object.keys(desired)]))
       if (current[key] !== desired[key]) patch[key] = desired[key] ?? null;

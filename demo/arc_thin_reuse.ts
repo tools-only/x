@@ -99,6 +99,17 @@ export function repetitionText(runs: PythonRun[], components: ComponentLines[] =
 /** Rebuilt in at least two later decisions, at least twice, after the agent was shown the repetition. */
 export const GAP_MIN_CALLS = 2;
 
+/**
+ * The saved component that already computes what the latest call retyped, when that computation has now been typed at
+ * least twice: the point at which saying so once, in the call's own result, saves the next retyping.
+ */
+export function coveringComponent(runs: PythonRun[], components: ComponentLines[]): string | undefined {
+  const latest = runs.at(-1);
+  if (!latest) return undefined;
+  const family = families(runs, components).find(f => f.runs.includes(latest));
+  return family && family.runs.length >= 2 ? family.covered : undefined;
+}
+
 export type AdoptionGap = { key: string; shapes: string[]; gist: string; shownAt: number; after: PythonRun[]; total: number; covered?: string };
 
 /**
