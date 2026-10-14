@@ -238,7 +238,7 @@ class _Env:
 #   - The runtime's own objects (state, history, env) are never stored; a value that refers to one is re-attached to
 #     the current one. The names the runtime provides (grid, state, ...) are rebuilt from canonical history each call.
 #   - What cannot be kept is reported by name with the reason. Nothing is dropped silently.
-import pickle, zlib, base64, hashlib, types, textwrap, contextlib
+import pickle, zlib, base64, hashlib, types, textwrap, contextlib, marshal
 
 _SESSION_SKIP = {'state', 'grid', 'history', 'prev_grid', 'artifacts', 'skill', 'args', 'env', 'ActStopped'}
 _SESSION_RAW_BYTES = 2 * 1024 * 1024
@@ -265,8 +265,15 @@ def _module_ref(name):
         return _Gone()
 def _transition(row):
     return _Transition(row)
+def _function_ref(name, code, defaults, kwdefaults, attributes, annotations):
+    # Construct code without executing defaults/decorators. Its globals are the freshly rebound namespace.
+    fn = types.FunctionType(marshal.loads(code), _ns, name, defaults)
+    fn.__module__ = 'skill'
+    fn.__kwdefaults__, fn.__annotations__ = kwdefaults, annotations
+    fn.__dict__.update(attributes)
+    return fn
 _helpers = types.ModuleType('_arc_session')
-for _helper in (_runtime_ref, _module_ref, _transition, _Gone):
+for _helper in (_runtime_ref, _module_ref, _transition, _function_ref, _Gone):
     _helper.__module__ = '_arc_session'
     setattr(_helpers, _helper.__name__, _helper)
 sys.modules['_arc_session'] = _helpers
@@ -293,6 +300,9 @@ class _SessionPickler(pickle.Pickler):
                 raise pickle.PicklingError('%s is not defined by a def or class statement at the top level' % (name or 'it'))
             if _ns.get(name) is not obj:
                 raise pickle.PicklingError('it refers to an earlier %s, which has been redefined or deleted' % name)
+            if isinstance(obj, types.FunctionType):
+                if obj.__closure__: raise pickle.PicklingError('a closure requires an explicit self-contained definition')
+                return (_function_ref, (name, marshal.dumps(obj.__code__), obj.__defaults__, obj.__kwdefaults__, obj.__dict__, obj.__annotations__))
         return NotImplemented
 
 class _SessionUnpickler(pickle.Unpickler):
@@ -327,7 +337,19 @@ def _session_load(session):
         with contextlib.redirect_stdout(io.StringIO()):
             for name, src in session.get('defs') or []:
                 try:
-                    exec(compile(src, '<session %s>' % name, 'exec'), _ns)
+                    tree = ast.parse(src)
+                    # New checkpoints contain function code/defaults in the same object graph as all values.
+                    # Source remains for compatibility and inspection; older blobs still use source restoration.
+                    if session.get('functions'):
+                        for node in tree.body:
+                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                node.decorator_list = []
+                                node.args.defaults = []
+                                node.args.kw_defaults = [None for _ in node.args.kw_defaults]
+                                node.returns = None
+                                for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs, node.args.vararg, node.args.kwarg]:
+                                    if arg is not None: arg.annotation = None
+                    exec(compile(tree, '<session %s>' % name, 'exec'), _ns)
                     _session_defs[name] = src
                 except _NeedFile:
                     raise
@@ -384,7 +406,8 @@ def _session_dump(code, session, base, before, loaded):
     for name in list(_session_defs):
         if not _session_own(_ns.get(name), name):
             del _session_defs[name]
-    values = {k: _ns[k] for k in _ns if not k.startswith('_') and k not in base and k not in _SESSION_SKIP and k not in _session_defs}
+    values = {k: _ns[k] for k in _ns if not k.startswith('_') and k not in base and k not in _SESSION_SKIP
+              and (k not in _session_defs or isinstance(_ns[k], types.FunctionType))}
     unsupported = []
     try:
         raw = _session_bytes(values)
@@ -423,7 +446,8 @@ def _session_dump(code, session, base, before, loaded):
     except BaseException as problem:
         out['error'] = 'it could not be read back (%s)' % (type(problem).__name__ + ': ' + str(problem))[:160]
         return out
-    out.update({'defs': defs, 'blob': packed, 'sha': sha, 'names': sorted(values), 'chars': chars, 'raw_bytes': len(raw)})
+    out.update({'defs': defs, 'blob': packed, 'sha': sha, 'names': sorted(k for k in values if k not in _session_defs),
+                'functions': True, 'chars': chars, 'raw_bytes': len(raw)})
     return out
 
 def _call(req, env):
@@ -532,7 +556,7 @@ export type ActCall = { action: string; x?: number; y?: number; predict?: unknow
 /** What the guest reports about the python session after a call (arc_thin_python_session.ts commits it). */
 export type SessionReport = {
   defs?: Array<[string, string]>; blob?: string; sha?: string; names?: string[]; chars?: number; raw_bytes?: number;
-  unchanged?: boolean; unsupported?: Array<[string, string]>; uses?: string[];
+  unchanged?: boolean; functions?: boolean; unsupported?: Array<[string, string]>; uses?: string[];
   over?: { chars: number; cap: number; raw_bytes: number; largest: Array<[string, number]> };
   error?: string; load_error?: string; failed_defs?: Array<[string, string]>; gone?: string[]; gone_refs?: string[];
 };

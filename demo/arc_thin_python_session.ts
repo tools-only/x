@@ -20,7 +20,7 @@ import type { SessionReport } from "./arc_thin_components.ts";
 export const SESSION_CAP_CHARS = 128_000;
 const KEEP_VERSIONS = 5;
 
-type Checkpoint = { version: number; defs: Array<[string, string]>; blob: string; sha: string; names: string[]; chars: number };
+type Checkpoint = { version: number; defs: Array<[string, string]>; blob: string; sha: string; names: string[]; chars: number; functions?: boolean };
 const EMPTY: Checkpoint = { version: 0, defs: [], blob: "", sha: "", names: [], chars: 0 };
 const digest = (checkpoint: Checkpoint) => createHash("sha256").update(JSON.stringify(checkpoint)).digest("hex");
 const kb = (chars: number) => `${Math.max(1, Math.round(chars / 1000))} KB`;
@@ -77,7 +77,8 @@ export class PythonSession {
   /** Everything the session holds by name: values and definitions. */
   names(): string[] { return [...this.state.defs.map(([name]) => `${name}()`), ...this.state.names]; }
   /** What a python call receives. */
-  payload() { return { defs: this.state.defs, blob: this.state.blob, sha: this.state.sha, cap: SESSION_CAP_CHARS }; }
+  payload() { return { defs: this.state.defs, blob: this.state.blob, sha: this.state.sha, cap: SESSION_CAP_CHARS,
+    ...(this.state.functions ? {functions: true} : {}) }; }
   /** Step back to the newest older version that reads, or to empty. */
   private rollback(): number {
     const bad = this.state.version;
@@ -115,7 +116,7 @@ export class PythonSession {
     } else if (!report.unchanged && report.sha !== undefined) {
       const before = new Set(this.names());
       const next: Checkpoint = { version: this.latest + 1, defs: report.defs ?? [], blob: report.blob ?? "", sha: report.sha,
-        names: report.names ?? [], chars: report.chars ?? 0 };
+        names: report.names ?? [], chars: report.chars ?? 0, ...(report.functions ? {functions: true} : {}) };
       this.write(next);
       this.state = next; this.latest = next.version; committed = true; event = "committed";
       const after = new Set(this.names());

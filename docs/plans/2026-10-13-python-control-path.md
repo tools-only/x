@@ -1,6 +1,6 @@
 # Persistent Python as the parent control path
 
-Date: 2026-10-13, updated 2026-10-14 (Asia/Shanghai). Status: implemented candidate; real-provider evaluation authorized and pending.
+Date: 2026-10-13, updated 2026-10-14 (Asia/Shanghai). Status: implemented candidate; real-provider screening in progress.
 Base: `c0c9a70d`, Claude's checkpointed Python workspace. Branch: `codex/arc-query-efficiency-20261013`.
 
 ## Problem and claim
@@ -54,6 +54,16 @@ Real-run artifacts: D:/autoresearch_pi_project/runs/arc-efficiency-20261014/. Ev
 
 ## Delivery decision
 
-Candidate only until verification is recorded. This changes one main factor: access to the existing action path from the default persisted computation workspace. Full within-decision reasoning replay, history summarization, output thresholds, model/provider, and reasoning effort remain comparison factors for later work, not silently bundled changes.
+The integrated implementation remains a candidate until behavioral evaluation is recorded. The implemented factors and exploratory protocol are listed above; historical single-factor intentions do not describe the final integrated candidate.
 
 Related backlog: B/D evidence-to-action and cognitive continuity remain open. Next falsifiable question: does the ordinary parent now use one persisted program to execute a useful experiment and emit compact evidence, or does the same repeated analysis persist?
+
+## Iteration 01 result and correction
+
+Frozen commit 60901df9, real yibu/qwen3.8-27b/high, official ls20: 15 completed parent requests, 224,397 reported tokens (202,087 input, 1,664 cache read, 20,646 output including 18,584 reasoning), one ACTION1 probe, zero completed levels, about 17 minutes. Token-cap stop. This fails the screening efficiency target. The budget is checked after the decision, so the 200k threshold overshot; it is a screening threshold, not a strict provider-spending guarantee.
+
+Actual behavior: 11 Python analysis calls before the first image read, repeated raw and region grids/component queries, then observation metadata and a direct action. No ordinary Python action use yet. Old result bodies were archived, but reasoning rose to 35,774 resident characters. The cause is concrete: Pi stores Qwen's transport-field selector `thinkingSignature=reasoning_content`; the projection incorrectly treated any such field as an opaque signature, retaining every old reasoning block. Remove old transport markers while retaining genuine opaque signed blocks.
+
+A separate observed workspace defect: function source was restored before values, so `def show(..., comps=comps)` raised NameError on later calls. Persist top-level function code/defaults/attributes in the same pickle graph as values; restore source placeholders without evaluating defaults/decorators/annotations, then reconstruct the checkpointed functions in the sandbox. The host never unpickles. Old checkpoints remain readable, closures remain explicitly unsupported, class restoration is unchanged. A targeted WASI check now confirms shared mutable function defaults survive across calls without repeated definition evaluation. This does not claim universal Python-object or cross-version persistence.
+
+Next screening: freeze both corrections, run high and low sequentially on the same code/provider/model/game, 100k reported tokens or 10 minutes each, max 20 actions. Independent initial episodes; no code/gameplay interventions. This is a one-pair exploratory effort comparison, not replicated net-benefit acceptance. Completed and unknown pending/cancelled usage will be reported separately. First inspect reachability and observation/image adoption; zero-action samples are failures of the cost-to-action target, not successful savings.

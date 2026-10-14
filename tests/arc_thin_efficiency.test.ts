@@ -25,6 +25,10 @@ test('ordinary persisted Python acts twice, sees current globals/history, and co
   assert.match(result.content[0].text, /once.*1,1,1.*2,2,2/);
   const kept:any = await runtime.python('assert env["grid"] == grid\nseen');
   assert.match(kept.content[0].text, /once.*1,1,1.*2,2,2/);
+  await runtime.python('samples = [1]\ndef measure(x=samples):\n    x.append(grid[0][0])\n    return len(x)\nmeasure()');
+  const defaults:any = await runtime.python('measure()\n(measure.__defaults__[0] is samples, samples)');
+  assert.match(defaults.content[0].text,/true,\[1,2,2\]/);
+  assert.doesNotMatch(defaults.content[0].text,/definitions.*dropped/);
   const denied:any = await runtime.python('env.act("ACTION1")', undefined, true);
   assert.equal(n,2); assert.equal(denied.isError,true);
  } finally {runtime.close();}
@@ -32,7 +36,7 @@ test('ordinary persisted Python acts twice, sees current globals/history, and co
 
 test('decision projection retains unfinished reasoning, signed blocks and exact recovery while archiving old results', () => {
  const messages:any[]=[{role:'user', content:'DECIDE'},
-  {role:'assistant',content:[{type:'thinking',thinking:'old'}, {type:'toolCall',id:'a',name:'python'}]},
+  {role:'assistant',content:[{type:'thinking',thinking:'old',thinkingSignature:'reasoning_content'}, {type:'toolCall',id:'a',name:'python'}]},
   {role:'toolResult',toolCallId:'a',content:[{type:'text',text:'A'.repeat(2000)}]},
   {role:'assistant',content:[{type:'thinking',thinking:'signed',thinkingSignature:'opaque'},{type:'toolCall',id:'b'}]},
   {role:'toolResult',toolCallId:'b',content:[{type:'text',text:'recent'}]},

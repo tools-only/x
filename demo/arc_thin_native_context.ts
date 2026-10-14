@@ -38,7 +38,9 @@ export function projectNativeDecision(messages: any[], options: {
  const lastImage = results.findLast(m => m.content?.some((b: any) => b.type === 'image'))?.toolCallId;
  return paired.map((m, i) => {
   if (m.role === 'assistant' && options.reasoning === 'recent' && i !== latestThinking)
-   return {...m, content: m.content.filter((b: any) => b.type !== 'thinking' || b.signature || b.thinkingSignature)};
+   // OpenAI-compatible providers use these strings to select a wire field, not to sign a reasoning block.
+   return {...m, content: m.content.filter((b: any) => b.type !== 'thinking' || b.signature ||
+    (b.thinkingSignature && !['reasoning_content', 'reasoning', 'reasoning_text'].includes(b.thinkingSignature)))};
   if (m.role !== 'toolResult' || recent.has(m.toolCallId) || m.toolCallId === lastImage || !options.archive) return m;
   const text = textOf(m);
   if (text.length <= 400) return m;
