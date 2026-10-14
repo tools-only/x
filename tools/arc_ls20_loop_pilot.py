@@ -36,6 +36,23 @@ for name in ('src', 'demo', 'tools'):
 for name in ('package.json', 'package-lock.json', 'pyproject.toml'):
     shutil.copy2(SOURCE / name, SNAPSHOT / name)
 subprocess.run(['cmd', '/c', 'mklink', '/J', str(SNAPSHOT / 'node_modules'), str(SOURCE / 'node_modules')], check=True, capture_output=True)
+# Parse the extensions before the bridge and the kernel start. Pi reports a syntax error only once its RPC process is
+# already up ("Pi RPC process exited before responding"), which cost ls20-r03 a snapshot and a run label for a
+# duplicated line; this names the file and position instead. Node's strip-only TypeScript rejects constructs Pi's
+# loader accepts (a parameter property in arc_thin_binder.ts), so only a plain SyntaxError counts as a failure.
+EXTENSIONS = sorted((SNAPSHOT / 'demo').glob('arc_*.ts')) + sorted((SNAPSHOT / 'tools').glob('arc_*.ts'))
+parse = subprocess.run(['node', '--experimental-strip-types', '--input-type=module', '-e',
+    'const bad = [];\n'
+    'for (const path of process.argv.slice(1)) {\n'
+    '  try { await import("file:///" + path.replaceAll("\\\\", "/")); }\n'
+    '  catch (error) {\n'
+    '    if (error instanceof SyntaxError && error.code !== "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX")\n'
+    '      bad.push(path + ": " + error.message);\n'
+    '  }\n'
+    '}\n'
+    'if (bad.length) { console.error(bad.join("\\n")); process.exit(1); }',
+    *(str(path) for path in EXTENSIONS)], capture_output=True, text=True)
+assert parse.returncode == 0, 'an extension does not parse:\n' + (parse.stderr or parse.stdout)
 protocol = dict(source=str(SOURCE), commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=SOURCE, text=True).strip(),
     branch=subprocess.check_output(['git', 'branch', '--show-current'], cwd=SOURCE, text=True).strip(),
     provider='yibu', model='qwen3.8-27b', thinking='high', input_modalities='text,image', observation='query',

@@ -2407,7 +2407,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
           + 'A <carry>premises / eliminated / probe / open</carry> block, in your text or your reasoning, is kept; what '
           + 'is not in it you will have to derive again.'
         : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
-        : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
       refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
