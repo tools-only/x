@@ -193,6 +193,10 @@ elif script == "promotion":
     assert any(row['key'] == 'hyp.right' and row.get('n') == 8 and row.get('result') is False for row in checks), checks
     assert any('the rule is in dispute' in ' '.join(t) for t in starts), starts
     assert any('(hyp.right_wrap)' in r['system_prompt'] for r in parents), 'the revised rule must reach a later system prompt'
+    # Prompt changes apply from the next decision: within a decision the system prompt never changes (cache prefix).
+    for before, after in zip(parents, parents[1:]):
+        if after.get('current') == before.get('current'):
+            assert after['system_prompt'] == before['system_prompt'], 'the system prompt changed within a decision'
     currents = [r.get('current', '') for r in parent_requests]
     assert any('RULE CHECKS (prompts/rules.md)' in c and '1 held' in c for c in currents), 'the rule checks must be shown while play goes on'
     # The retyped computation was named in its own result.

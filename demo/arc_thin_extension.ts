@@ -1221,7 +1221,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let refinerNotice = "";
 	/** Files a refinement wrote: later refinements may rewrite them; other existing files belong to the agent. */
 	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string").map((row) => row.path));
-	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
+	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || path === RULES_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
 	const refinerActive = () => Boolean(native && criticOn && nativeRuntime && binder);
 	function readStrategy(): { text: string; version?: number } | undefined {
 		if (!workspace) return undefined;
@@ -1304,8 +1304,28 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const next = due.find(([id]) => !promotionAsked.has(id));
 		if (!next) return [];
 		promotionAsked.add(next[0]);
+		pendingPromotion = next[0];
 		if (next[0].startsWith("unchecked:")) uncheckedAskedAt = trajectory.length;
 		return [next[1]];
+	}
+	/** The promotion event in the refinement now running, to raise again if its one edit went elsewhere. */
+	let pendingPromotion: string | undefined;
+	const promotionRetries = new Map<string, number>();
+	/**
+	 * pr-02 (2026-10-14): "no hypothesis carries a check" came with another trigger, the refinement wrote a view for the
+	 * other, and the event counted as raised. An event the edit did not address is raised again (twice at most).
+	 */
+	function settlePromotion(id: string | undefined, edit: { kind: string; path?: string }): void {
+		if (!id) return;
+		const addressed = /^(churn|unchecked):/.test(id) ? edit.kind === "hypothesis"
+			: /^(promote|refuted|cap):/.test(id) ? edit.kind === "file" && edit.path === RULES_PATH
+			: id.startsWith("view:") ? edit.kind === "file" && edit.path === id.slice(5).replace(/@\d+$/, "") : true;
+		const retryKey = id.startsWith("unchecked:") ? "unchecked" : id;
+		const tries = promotionRetries.get(retryKey) ?? 0;
+		if (addressed || tries >= 2) return;
+		promotionRetries.set(retryKey, tries + 1);
+		promotionAsked.delete(id);
+		if (id.startsWith("unchecked:")) uncheckedAskedAt = -1;
 	}
 
 	/** The agent's own guidance for refinements: the body of prompts/refine.md, whether or not that prompt is active. */
@@ -1316,6 +1336,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
+		const promotionId = pendingPromotion;
+		pendingPromotion = undefined;
 		const evidenceAt = trajectory.length, evidenceLevel = currentLevel();
 		const sourceVersions = binder!.versionMap();
 		const memoryBefore = JSON.stringify(memoryForSkills(memory));
@@ -1340,6 +1362,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		appendUsage("refiner", reply);
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
 		const edit = parseRefinerReply(answer);
+		settlePromotion(promotionId, edit as { kind: string; path?: string });
 		const at = trajectory.length;
 		const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
 		if (currentLevel() !== evidenceLevel || ((edit.kind === 'memory' || edit.kind === 'hypothesis') && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
@@ -1383,7 +1406,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
 			return;
 		}
-		workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
+		// The rules prompt is refinement-only (the agent's writes to it are refused), so it is written as the runtime.
+		if (edit.path === RULES_PATH) workspace!.runtimeWrite(edit.path, edit.content);
+		else workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
 		refinedPaths.add(edit.path);
 		const receipt = await binder!.save(edit.path, currentLevel());
 		nativeRuntime!.noteSave(edit.path, receipt);
@@ -2372,6 +2397,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     if (native) {
       event.systemPromptOptions.customPrompt = rendered;
       event.systemPromptOptions.cwd = workspace!.root;
+      // The active prompts are taken once per decision: the system prompt is the first thing in every request, and a
+      // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14).
+      decisionPrompts = promptSections();
       for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
         event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
       return;
@@ -2517,10 +2545,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return { messages: projected };
 	}));
 
+  /** The active prompts as system-prompt sections. */
+  const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c =>
+    [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+  /** The prompt sections fixed at the start of the current decision (native mode); undefined before the first. */
+  let decisionPrompts: Record<string, string> | undefined;
   if (binder) pi.on('context_with_system', (event: any) => {
     const current = getCurrentSystemMessage(event.messages)?.sections ?? {};
-    const desired = Object.fromEntries(binder.active().filter(c => c.kind === 'prompt').map(c =>
-      [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+    const desired = native && decisionPrompts ? decisionPrompts : promptSections();
     const patch: Record<string, string | null> = {};
     for (const key of new Set([...Object.keys(current).filter(k => k.startsWith('prompt_')), ...Object.keys(desired)]))
       if (current[key] !== desired[key]) patch[key] = desired[key] ?? null;

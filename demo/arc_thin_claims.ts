@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { gridChanges, type CellChange } from "./arc_thin_history.ts";
 import type { Grid } from "./arc_thin_prediction.ts";
+import { REFINED_ONLY } from "./arc_thin_workspace.ts";
 
 /** One check result: true holds, false fails, null does not apply, "error" the check raised or returned something else. */
 export type ClaimValue = true | false | null | "error";
@@ -103,7 +104,7 @@ export function renderClaimSummary(summary: ClaimSummary | undefined, compileErr
 // revises it, so what persists is always a versioned harness component.
 
 /** Where established rules live: a prompt the refinements maintain, applied at every decision while active. */
-export const RULES_PATH = "prompts/rules.md";
+export const RULES_PATH = REFINED_ONLY;
 export const RULES_CHARS = 1500;
 /** Holds needed before a check is offered for promotion (with no fails, no errors, and a check that discriminates). */
 export const PROMOTE_HOLDS = 4;

@@ -5,6 +5,43 @@ import { CONTROL_BASE, PROMOTE_HOLDS, RULES_CHARS, citedKeys, controlSegments, p
 import { parseRefinerReply } from '../demo/arc_thin_refiner.ts';
 import { isEmptyValue } from '../demo/arc_thin_native_runtime.ts';
 import { codeShape, componentLines, coveringComponent, type PythonRun } from '../demo/arc_thin_reuse.ts';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Workspace } from '../demo/arc_thin_workspace.ts';
+import { freezeHistory, historyResult } from '../demo/arc_thin_native_context.ts';
+
+test('the rules prompt is written by refinements only: the agent is pointed to its own places', async () => {
+  const w = new Workspace(mkdtempSync(join(tmpdir(), 'rules-owner-')));
+  assert.throws(() => w.mutate({ op: 'write', path: 'prompts/rules.md', content: 'notes' }), /kept by refinements.*prompts\/strategy\.md.*notes\//);
+  assert.throws(() => w.path('prompts/RULES.md', true), /kept by refinements/);
+  const write = w.fileTools().find((t) => t.name === 'write')!;
+  await assert.rejects(write.execute('w', { path: 'prompts/rules.md', content: 'x' }, undefined, undefined, {} as any), /kept by refinements/);
+  w.runtimeWrite('prompts/rules.md', '---\nactive: true\n---\n- r (hyp.r)\n');
+  assert.match(w.read('prompts/rules.md'), /hyp\.r/);
+  w.mutate({ op: 'write', path: 'prompts/strategy.md', content: '---\nactive: true\n---\nplan' });
+});
+
+test('an earlier result keeps the lines code printed as findings and drops dumped data', () => {
+  const dump = '[' + Array.from({ length: 52 }, (_, i) => `(${30 + i % 5}, ${40 + i}, 3, 12)`).join(', ') + ']';
+  const text = ['== ACTION1 == ndiffs=52', dump, 'bbox x 13 38 y 40 62', '#1 ACTION1 → changed=52'].join('\n');
+  const saved: string[] = [];
+  const shown = historyResult(text, 5000, (body) => { saved.push(body); return 'results/r000009.txt'; });
+  assert.match(shown, /^== ACTION1 == ndiffs=52\n\[line 2: \d+ chars not shown; starts "\[\(30, 40, 3, 12\)/);
+  assert.match(shown, /bbox x 13 38 y 40 62\n#1 ACTION1 → changed=52\n\(full result: results\/r000009\.txt\)$/);
+  assert.deepEqual(saved, [text]);
+  assert.equal(historyResult('short\nlines', 5000), 'short\nlines');
+  // The frozen transcript applies the same rule, and leaves results without long lines untouched.
+  const messages = [{ role: 'user', content: 'Decide.' },
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'a', name: 'python', arguments: {} }, { type: 'toolCall', id: 'b', name: 'python', arguments: {} }] },
+    { role: 'toolResult', toolCallId: 'a', toolName: 'python', content: [{ type: 'text', text }] },
+    { role: 'toolResult', toolCallId: 'b', toolName: 'python', content: [{ type: 'text', text: 'small' }] }];
+  const frozen = freezeHistory(messages);
+  const results = frozen.filter((m: any) => m.role === 'toolResult');
+  assert.match(results[0].content[0].text, /chars not shown/);
+  assert.deepEqual(results[1].content, messages[3].content);
+  assert.deepEqual(freezeHistory(messages), frozen, 'a finished decision renders to the same bytes every time');
+});
 
 const rows = (key: string, version: string, results: Array<true | false | null>, level = 0): ClaimRow[] =>
   results.map((result, i) => ({ key, version, n: i + 1, level, result }));

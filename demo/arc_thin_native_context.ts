@@ -6,6 +6,7 @@
  * changed every decision, so every decision began with a full cache miss, and it lost results that did not fit
  * (pilot-01). The transcript is bounded by clipping each earlier result and by Pi's compaction.
  */
+import { LONG_LINE_CHARS, stubLongLines } from './arc_thin_workspace.ts';
 
 /** Pair calls with results and drop thinking, over the whole list (the canonical projection). */
 export function projectNativeHistory(messages: any[], replayReasoning = false): any[] {
@@ -82,6 +83,19 @@ export function clipEnds(text: string, limit: number, save?: SaveResult): string
 }
 
 /**
+ * An earlier result as kept in history: lines of dumped data (over LONG_LINE_CHARS) become one-line stubs, so the
+ * history keeps what the code printed as findings, then the ends are clipped. In pr-01 (2026-10-14) about 5,000 of the
+ * 6,700 characters summarising decision 1 were four printed lists of changed cells. When anything was stubbed, the
+ * whole result's saved path is given.
+ */
+export function historyResult(text: string, limit: number, save?: SaveResult): string {
+  const { lines, stubs } = stubLongLines(text.split('\n'));
+  if (!stubs) return clipEnds(text, limit, save);
+  const kept = lines.join('\n');
+  return kept.length <= limit ? `${kept}${save ? `\n(full result: ${save(text)})` : ''}` : clipEnds(kept, limit, save ? () => save(text) : undefined);
+}
+
+/**
  * Earlier decisions as a transcript that only grows: what the agent wrote, called and got back, no reasoning, each
  * result clipped by clipEnds and without images. A finished decision renders to the same bytes on every request, so the
  * provider's cached prefix covers all of them; only Pi's compaction rewrites it.
@@ -94,8 +108,8 @@ export function freezeHistory(messages: any[], options: { resultChars?: number; 
     if (message.role !== 'toolResult') return message;
     const blocks = Array.isArray(message.content) ? message.content : [];
     const text = textOf(message);
-    if (text.length <= limit && blocks.every((b: any) => b?.type === 'text')) return message;
-    return { ...message, content: [{ type: 'text', text: clipEnds(text, limit, options.save) }] };
+    if (text.length <= limit && blocks.every((b: any) => b?.type === 'text') && !text.split('\n').some(line => line.length > LONG_LINE_CHARS)) return message;
+    return { ...message, content: [{ type: 'text', text: historyResult(text, limit, options.save) }] };
   });
 }
 
@@ -124,7 +138,7 @@ export function summarizeHistory(messages: any[], options: HistoryOptions = {}):
         const result = results.get(String(block.id));
         const body = result ? textOf(result) : '';
         const acted = actionLines(body);
-        const shown = newest.has(String(block.id)) ? clipEnds(body.trim(), resultChars, options.save)
+        const shown = newest.has(String(block.id)) ? historyResult(body.trim(), resultChars, options.save)
           : [clip(flat(body.split('\n')[0] ?? ''), 200), ...acted.filter(line => line !== body.split('\n')[0])].join('\n');
         lines.push(`${block.name}(${clip(flat(JSON.stringify(block.arguments ?? {})), 160)})${result?.isError ? ' FAILED' : ''} → ${shown}`);
       }

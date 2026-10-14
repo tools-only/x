@@ -189,6 +189,18 @@ R7 是通用的反证手段，不依赖游戏内容：一条真实的转移规�
 - 断点：触发时机。10 动作上限下，agent 在 cell 内连续行动时决策很少，决策边界太稀；这不是机制失败，而是本次运行没有给机制出现的机会（设计中阶段 1 本来就要求 30–40 动作）。不改阈值来迁就 10 动作上限。
 - 成本观察（供 token 循环）：每请求非 reasoning 输入 9,467（kernel-02 16,994，tc-01 11,764，目标 8,500），最大工具结果 2,325 字符；69% 的输入是决策内重发的 reasoning——决策 2 的第一个请求输出 35,512 token（推理 33,601，11 分钟），随后 4 个请求各重发约 3.4 万 token。
 
+### pr-01 上下文分析后的三项修正（2026-10-15）
+
+依据 `tmp/arc-kernel-20261014/pr-01-context.txt`（每个请求的实际 payload 分解与相邻请求首个差异位置）：
+
+1. **提示在下一个决策生效**：决策 2 的请求 6–8 相隔 12–23 s，却都在 message 0（system）处与上一请求不同而全部未命中缓存——agent 在同一决策内写了 3 次 `prompts/rules.md`，每次"active from your next request"都改写 system。约 14 万未缓存输入 token 本可能是缓存读（预算 token 约 258k → 约 120k；yibu 缓存行为不稳定，属估计）。修改：决策开始时快照活动 prompt 段（`decisionPrompts`），`context_with_system` 在该决策内只用快照；prompt 的保存回执改为 "active from your next decision"（Prime：在回合边界应用）。其他组件仍从下一请求生效。
+2. **rules.md 只由 refinement 写**：agent 把它当记事本（颜色、布局、开放问题、"This decision" 计划），且 agent 写过的文件 refinement 不能覆盖，晋升无处可写。修改：`Workspace.path` 拒绝非 runtime 写入 `prompts/rules.md`，错误信息指向 `prompts/strategy.md` 与 `notes/`；refinement 以 runtime 身份写入；`ownedByRefinement` 包含该路径。system prompt 未加说明（smoke 的 3,000 字符上限只剩 11 字符；拒绝信息在 agent 试图写入时说明）。
+3. **历史中的数据行变为存根**：决策 1 的摘要 6.7k 字符中约 5k 是四份 52 个变化 cell 的列表。修改：`historyResult`（`arc_thin_native_context.ts`）对冻结转录与摘要两条路径都先把 > 400 字符的行换成一行存根（与回执同一函数 `stubLongLines`），有存根时附全文路径，再做首尾截断。
+
+另一项（来自进行中的 pr-02，同一代码）：决策 4 开始时 "11 actions and no hypothesis carries a check" 与"坐标推理占比"同时触发，refinement 只做一个编辑并选择写 view，R1 事件却已记为"已提出"。修改：`settlePromotion`——本次 refinement 的编辑没有对应该晋升事件（R1 应为 HYPOTHESIS，R2/R5/R6 应写 rules.md，空 view 应改该 view）时，下一次重新提出，每个事件至多重提 2 次。
+
+验证：全量 `tests/arc_thin_*.test.ts` 163 项（与 pr-02 并行运行）中 9 项失败：5 项基线既有；`arc_thin_action_surface` 一项超时、`arc_thin_components` 一项 python 启动超时，单独重跑均通过；`arc_thin_native_context` 两项因修正 3 的行为改变而失败，测试已按新语义更新（单行数据在历史中为存根；超大决策改用短行数据检验截断），重跑通过（`tmp/promote-test-fix3.txt`：15/15）。新增测试：rules.md 拒绝 agent 写入（write 工具、mutate、大小写变体）、refinement 以 runtime 写入；`historyResult` 存根与全文路径、冻结转录逐字节稳定。smoke：`promotion`（新增断言：同一决策内 system prompt 不变；`tmp/smoke-promotion-9`）、`activation defaults`、`history`、`foundation` 通过。
+
 ## 交付决定
 
 - 已实现并通过功能与确定性全链路检查：晋升/降级计数、R7 控制对、refiner 的 HYPOTHESIS 形式、rules.md 提示组件、RULE CHECKS 行、空 view 触发、重算提示、refiner 成本上限。未验证：真实 refiner 是否写出有区分力的 check，agent 是否在规则常驻后减少重述，成本与任务效果。
