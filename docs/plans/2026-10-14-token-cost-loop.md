@@ -59,6 +59,7 @@
   - 缓存：11 个决策的首请求中 9 个缓存为 0；冻结转录的缓存理由在 yibu 上仍未兑现。
 - 第 2 轮（一个因素：之前决策的表示）：用已有的 Continual Harness 式有界摘要（`ARC_THIN_NATIVE_HISTORY_CHARS=12000`：每决策 said ≤300 字符、调用参数 ≤160 字符、最新 2 个结果 ≤5,000 字符、更早结果只留首行与动作回执，按新到旧填入 12,000 字符）替代冻结转录。先以环境变量运行 tc-02，不改代码默认值；达标后再改默认与 smoke 断言。理由：Prime 的论点是 REPL 保留计算状态，所以转录可以被压缩；本分支的 kernel 正提供这一点（会话列表列出 `diff()` 等名字），代码正文不必在每个请求中重发。风险：agent 为重建状态而增加读文件——以读回调用数作为守护指标。
 - tc-02（2026-10-14 12:43 起）作废：10 个父请求中 6 个以 provider 超时失败；第一个动作时 ARC 远端 SDK `step` 超过 90 s（`EnvironmentCallTimeout`，结果未知、不可重放），运行以 `environment_outcome_unknown` 停止，0 动作，37,251 报告 token。环境故障，不计入循环的 5 次上限；同配置重跑为 tc-02r。
+- tc-02r（13:10 起）同样作废：18 个父请求中 8 个在 provider 处 5 分钟无响应头后超时（`request-events.jsonl`：`request_prepared` 之后没有 `response_headers`），随后 ARC 远端 SDK `step` 返回 None（`EnvironmentReturnedNoFrame`），运行以 `environment_outcome_unknown` 停止，0 动作，预算 token 44,908。两次故障都在 provider 与 ARC 远端，代码未变；第 2 轮（有界历史）尚无有效样本。下一次重跑前先确认 provider 与 ARC 远端可用。
 
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
