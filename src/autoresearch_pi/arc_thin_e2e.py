@@ -15,6 +15,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -83,6 +84,11 @@ THINKING_FORMATS = frozenset({"openai", "qwen", "qwen-chat-template"})
 PARTIAL_SUMMARY_EVERY = 10
 # With review_on_miss, a scored miss makes a review due once at least this many actions followed the last one.
 REVIEW_ON_MISS_GAP = 4
+#: The online ARC service sometimes times out while a game is created (2026-10-14: 5 of 6 launches in one hour). No
+#: action has been taken then, so starting the bridge again is safe; anything else stops the run as before.
+BRIDGE_START_ATTEMPTS = 3
+TRANSIENT_BRIDGE_START = re.compile(r"ReadTimeout|ConnectTimeout|ConnectionError|timed out|handshake|"
+                                    r"'NoneType' object has no attribute 'info'")
 
 
 def _bridge_health(bridge_url: str) -> dict[str, Any] | None:
@@ -493,10 +499,11 @@ def _write_models_json(agent_dir: Path, provider: str, model: str, settings: dic
 
 
 def _start_bridge(root: Path, *, arc_root: Path, game: str, max_actions: int | None, env: dict[str, str],
-                  bridge_python: Path | None, bridge_module_paths: tuple[Path, ...]
+                  bridge_python: Path | None, bridge_module_paths: tuple[Path, ...], replay_actions: Path | None = None,
                   ) -> tuple[subprocess.Popen[str], Any, str, str]:
     """Start the ARC bridge process; returns (process, stderr file, launch id, action token).
-    The caller waits for it with _wait_for_bridge and stops it with _stop_bridge."""
+    The caller waits for it with _wait_for_bridge and stops it with _stop_bridge. ``replay_actions`` (a fork) is played
+    before the bridge reports ready."""
     arc_root = arc_root.resolve()
     arc_python = bridge_python or arc_root / ".venv" / "Scripts" / "python.exe"
     if not arc_python.is_file():
@@ -511,6 +518,8 @@ def _start_bridge(root: Path, *, arc_root: Path, game: str, max_actions: int | N
                       "--root", str(root), "--game", game, "--port", "0"]
     if max_actions is not None:
         bridge_command.extend(["--max-actions", str(max_actions)])
+    if replay_actions is not None:
+        bridge_command.extend(["--replay-actions", str(replay_actions)])
     # stderr goes to a file: an undrained pipe can block a long-running bridge.
     bridge_stderr = (root / "bridge-stderr.log").open("w", encoding="utf-8")
     try:
@@ -559,6 +568,60 @@ def _request_accounting(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return dict(attempts=len(starts), by_kind=by_kind, known_tokens_lower_bound=known,
                 unknown_cost_attempts=unknown, complete_cost_known=unknown == 0,
                 cost_scope='provider-reported tokens, not verified billing')
+
+
+#: What a snapshot keeps: the Pi session, the extension's stores, the agent's workspace, and the binder and python
+#: session checkpoints. Bridge, provider and smoke logs belong to the run that wrote them.
+FORK_ITEMS = ("session.jsonl", "harness", "workspace", ".harness")
+
+
+def _copy_items(source: Path, target: Path) -> None:
+    for name in FORK_ITEMS:
+        if (source / name).is_dir():
+            shutil.copytree(source / name, target / name)
+        elif (source / name).is_file():
+            shutil.copy2(source / name, target / name)
+
+
+def _snapshot_run(root: Path, decision: int, game: str, fork: dict[str, Any] | None) -> Path:
+    """Copy the run's state after ``decision`` to ``snapshots/after-decision-<k>`` for later forks."""
+    target = root / "snapshots" / f"after-decision-{decision}"
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
+    _copy_items(root, target)
+    trajectory = _read_jsonl(root / "harness" / "trajectory.jsonl")
+    meta = {"format": "arc-thin-snapshot-v1", "game": game, "decision": decision, "actions": len(trajectory),
+            "reported_tokens": _reported_tokens(root / "harness"), "budget_tokens": _budget_tokens(root / "harness"),
+            "created_at": time.time(),
+            # A refinement may still be running in the background; its result then belongs to the source run only.
+            **({"forked_from": fork["source"]} if fork else {})}
+    (target / "snapshot.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def _seed_fork(root: Path, snapshot: Path, game: str) -> dict[str, Any]:
+    """Copy a snapshot into a new run root and write the actions the bridge replays, each with the grid it must yield."""
+    snapshot = snapshot.resolve()
+    meta = json.loads((snapshot / "snapshot.json").read_text(encoding="utf-8"))
+    if meta.get("format") != "arc-thin-snapshot-v1" or meta.get("game") != game:
+        raise ValueError(f"{snapshot} is not a snapshot of {game}: {meta}")
+    _copy_items(snapshot, root)
+    trajectory = _read_jsonl(root / "harness" / "trajectory.jsonl")
+    if len(trajectory) != meta["actions"]:
+        raise ValueError(f"snapshot trajectory has {len(trajectory)} actions, its record {meta['actions']}")
+    grids = {int(row["n"]): row["grid"] for row in _read_jsonl(root / "harness" / "states.jsonl")
+             if isinstance(row.get("grid"), list) and "n" in row}
+    replay = root / "fork-replay.jsonl"
+    with replay.open("w", encoding="utf-8") as stream:
+        for row in trajectory:
+            coordinates = {"x": row["x"], "y": row["y"]} if "x" in row and "y" in row else {}
+            stream.write(json.dumps({"n": row["n"], "action": row["action"], **coordinates,
+                                     "grid": grids.get(int(row["n"]))}, separators=(",", ":")) + "\n")
+    return {"source": str(snapshot), "decision": meta["decision"], "actions": len(trajectory), "replay": replay,
+            "total_used": ((trajectory[-1].get("budget") or {}).get("total_used") if trajectory else None),
+            "prefix_reported_tokens": _reported_tokens(root / "harness"),
+            "prefix_budget_tokens": _budget_tokens(root / "harness")}
 
 
 def _consolidation_interval(foundation: str, explicit: int | None) -> int:
@@ -651,8 +714,14 @@ def run_arc_thin_e2e(
     extension_env: dict[str, str] | None = None,
     foundation: str = "native",
     replay_reasoning: bool = False,
+    snapshot_after_decisions: tuple[int, ...] = (),
+    fork_from: Path | None = None,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
+
+    ``snapshot_after_decisions`` copies the run's state after those decisions to ``snapshots/after-decision-<k>``;
+    ``fork_from`` starts a new run from such a snapshot (replaying its actions on a fresh environment), so arms of a
+    comparison share the same prefix (docs/plans/2026-10-14-matched-prefix-evaluation.md).
 
     ``carry_reasoning_chars`` is the opt-in comparison variable C1 of
     docs/plans/2026-10-10-self-harness-priority-plan.md; off by default. ``continuity="session"`` keeps the
@@ -677,6 +746,11 @@ def run_arc_thin_e2e(
         raise ValueError(f"run root must be new or empty: {root}")
     root.mkdir(parents=True, exist_ok=True)
     harness = root / "harness"
+    # fork_from: start from another run's snapshot (a matched prefix for comparisons). Its stores are copied, the bridge
+    # replays its actions and checks every grid, and only what happens after the fork counts toward the token cap.
+    fork = _seed_fork(root, Path(fork_from), game) if fork_from is not None else None
+    budget_offset = fork["prefix_budget_tokens"] if fork else 0
+    snapshot_after_decisions = tuple(int(d) for d in snapshot_after_decisions)
     started = time.monotonic()
     # Explicit zero disables the experimental run deadline; None retains the historical default.
     deadline = math.inf if experiment_timeout_seconds == 0 else started + (experiment_timeout_seconds or OFFICIAL_MAX_RUNTIME_SECONDS)
@@ -709,19 +783,46 @@ def run_arc_thin_e2e(
         "decisions": 0, "consolidations": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0,
+        **({"fork": {key: fork[key] for key in ("source", "decision", "actions", "prefix_reported_tokens", "prefix_budget_tokens")}}
+           if fork else {}),
     }
     stage = "bridge"
-    bridge, bridge_stderr, launch_id, action_token = _start_bridge(
-        root, arc_root=arc_root, game=game, max_actions=max_actions, env=env,
-        bridge_python=bridge_python, bridge_module_paths=bridge_module_paths,
-    )
+    startup_error: Exception | None = None
+    ready: dict[str, Any] = {}
+    for attempt in range(1, BRIDGE_START_ATTEMPTS + 1):
+        bridge, bridge_stderr, launch_id, action_token = _start_bridge(
+            root, arc_root=arc_root, game=game, max_actions=max_actions, env=env,
+            bridge_python=bridge_python, bridge_module_paths=bridge_module_paths,
+            replay_actions=fork["replay"] if fork else None,
+        )
+        try:
+            # A fork's bridge plays the recorded actions before it is ready.
+            ready = _wait_for_bridge(root, bridge, timeout=60.0 + (5.0 * fork["actions"] if fork else 0.0), launch_id=launch_id)
+            startup_error = None
+            break
+        except Exception as exc:  # noqa: BLE001 - classified below, re-raised inside the run's error handling
+            startup_error = exc
+            error_file = root / "bridge-error.json"
+            text = error_file.read_text(encoding="utf-8") if error_file.is_file() else str(exc)
+            if attempt == BRIDGE_START_ATTEMPTS or not TRANSIENT_BRIDGE_START.search(text):
+                break
+            _stop_bridge(bridge, bridge_stderr, False)
+            if error_file.is_file():
+                error_file.replace(root / f"bridge-error-attempt{attempt}.json")
+            summary.setdefault("bridge_start_retries", []).append(TRANSIENT_BRIDGE_START.search(text).group(0))
+            time.sleep(15.0 * attempt)
     bridge_closed = False
     kernel: PiKernel | None = None
     trace = None
     final_state: dict[str, Any] | None = None
     try:
-        ready = _wait_for_bridge(root, bridge, launch_id=launch_id)
+        if startup_error is not None:
+            raise startup_error
         bridge_url = f"http://127.0.0.1:{int(ready['port'])}"
+        if fork:
+            used = ((_bridge_state(bridge_url) or {}).get("action_budget") or {}).get("total_used")
+            if fork["total_used"] is not None and used != fork["total_used"]:
+                raise RuntimeError(f"fork replay left the environment at {used} actions, the snapshot at {fork['total_used']}")
 
         stage = "pi"
         node, cli = _resolve_pi_cli()
@@ -793,6 +894,8 @@ def run_arc_thin_e2e(
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,
+            # A run started from another run's snapshot (matched prefix): where from, and how much of it was replayed.
+            "fork": summary.get("fork"), "snapshot_after_decisions": list(snapshot_after_decisions),
             # Reasoning between tool rounds of the current decision: "all" (default since 2026-10-14) or "none" keep the
             # projection append-only for the provider's prefix cache; "recent" and result archiving rewrite earlier messages.
             "decision_reasoning": foundation == "native" and pi_env.get("ARC_THIN_DECISION_REASONING", "1") != "0",
@@ -961,7 +1064,7 @@ def run_arc_thin_e2e(
             if max_decisions is not None and summary["decisions"] >= max_decisions:
                 summary["stop_reason"] = "max_decisions"
                 break
-            if max_reported_tokens is not None and _budget_tokens(harness) >= max_reported_tokens:
+            if max_reported_tokens is not None and _budget_tokens(harness) - budget_offset >= max_reported_tokens:
                 summary["stop_reason"] = "token_cap"
                 break
             if time.monotonic() >= deadline - 5:
@@ -1033,6 +1136,9 @@ def run_arc_thin_e2e(
                     break
             else:
                 environment_streak = 0
+            if not consolidate and summary["decisions"] in snapshot_after_decisions:
+                # Pi is idle between turns: the session, harness stores, workspace and python session are consistent.
+                summary.setdefault("snapshots", []).append(str(_snapshot_run(root, summary["decisions"], game, fork)))
             if summary["decisions"] and summary["decisions"] % PARTIAL_SUMMARY_EVERY == 0 and not consolidate:
                 _write_summary(root, summary, final_state, started, partial=True)
         latest = _bridge_state(bridge_url, attempts=1)
