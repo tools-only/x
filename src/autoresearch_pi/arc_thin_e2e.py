@@ -113,6 +113,12 @@ def _reported_tokens(harness: Path) -> int:
     return total
 
 
+def _budget_tokens(harness: Path) -> int:
+    """What max_reported_tokens caps: uncached input plus output. Cache reads are excluded (user decision 2026-10-14):
+    counting them stopped the run that reused its prefix most (cont-01, 76k of 140k were cache reads)."""
+    return sum(int(row.get("input") or 0) + int(row.get("output") or 0) for row in _read_jsonl(harness / "usage.jsonl"))
+
+
 def _fatal_errors(harness: Path) -> int:
     return sum(1 for row in _read_jsonl(harness / "errors.jsonl") if row.get("fatal"))
 
@@ -772,7 +778,8 @@ def run_arc_thin_e2e(
             **{key: summary[key] for key in ("format", "game", "variant", "provider", "model", "thinking",
                                              "thinking_format", "thinking_reaches_provider")},
             "max_actions": max_actions, "max_decisions": max_decisions,
-            "max_reported_tokens": max_reported_tokens, "experiment_timeout_seconds": experiment_timeout_seconds,
+            "max_reported_tokens": max_reported_tokens, "token_cap_measure": "uncached_input+output",
+            "experiment_timeout_seconds": experiment_timeout_seconds,
             "consolidate_after_actions": consolidate_after_actions, "review_on_miss": review_on_miss, "input_modalities": settings["input_modalities"],
             "max_output_tokens": settings.get("max_tokens"), "command": command,
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
@@ -791,6 +798,9 @@ def run_arc_thin_e2e(
             "decision_reasoning": foundation == "native" and pi_env.get("ARC_THIN_DECISION_REASONING", "1") != "0",
             "decision_reasoning_mode": pi_env.get("ARC_THIN_REASONING_MODE", "all") if foundation == "native" else None,
             "archive_results": foundation == "native" and pi_env.get("ARC_THIN_ARCHIVE_RESULTS", "0") == "1",
+            # Comparison switches (2026-10-14 single-factor pilots): earlier summary clip and refinement instruction.
+            "history_clip": pi_env.get("ARC_THIN_HISTORY_CLIP", "ends") if foundation == "native" else None,
+            "memory_author": "refiner" if pi_env.get("ARC_THIN_MEMORY_AUTHOR") == "refiner" else "agent",
             # Python names defined in one call stay defined in later calls (native default on).
             "python_session": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0",
             # Native history: 0 (default since 2026-10-14) keeps earlier decisions as a transcript before the current head,
@@ -948,7 +958,7 @@ def run_arc_thin_e2e(
             if max_decisions is not None and summary["decisions"] >= max_decisions:
                 summary["stop_reason"] = "max_decisions"
                 break
-            if max_reported_tokens is not None and _reported_tokens(harness) >= max_reported_tokens:
+            if max_reported_tokens is not None and _budget_tokens(harness) >= max_reported_tokens:
                 summary["stop_reason"] = "token_cap"
                 break
             if time.monotonic() >= deadline - 5:
@@ -1075,6 +1085,7 @@ def _write_summary(root: Path, summary: dict[str, Any], final_state: dict[str, A
         "levels_completed": (final_state or {}).get("levels_completed"),
         "win_levels": (final_state or {}).get("win_levels"),
         "reported_tokens": _reported_tokens(harness),
+        "budget_tokens": _budget_tokens(harness),
         "elapsed_seconds": round(time.monotonic() - started, 1),
         "harness": _harness_stats(harness),
         "updated_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),

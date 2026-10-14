@@ -205,6 +205,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// the summarised section inside the head (the default before 2026-10-14), within that many characters.
 	const nativeHistoryChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 0)));
 	const historyResultChars = Math.max(200, Math.floor(Number(process.env.ARC_THIN_HISTORY_RESULT_CHARS ?? NATIVE_HISTORY_RESULT_CHARS)));
+	// Comparison switches for the 2026-10-14 single-factor pilots: ARC_THIN_HISTORY_CLIP=head and
+	// ARC_THIN_MEMORY_AUTHOR=refiner restore the earlier summary clip and refinement instruction.
+	const historyClip = process.env.ARC_THIN_HISTORY_CLIP === 'head' ? 'head' as const : 'ends' as const;
+	const refinerWritesMemory = process.env.ARC_THIN_MEMORY_AUTHOR === 'refiner';
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -2207,7 +2211,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       observation: queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
-      refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
+      refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and ' +
+        (refinerWritesMemory ? 'keeps memory and strategy consolidated: leave that bookkeeping to them. ' : 'consolidates the memory and strategy you write. ') : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -2298,7 +2303,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// A compaction summary Pi made stays in front either way.
 		const summarised = native && nativeHistoryChars > 0;
 		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser),
-			{ budget: nativeHistoryChars, resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
+			{ budget: nativeHistoryChars, resultChars: historyResultChars, clip: historyClip, ...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
 		// Native mode builds the head of a decision once and keeps it byte-identical until the decision ends: the
 		// provider reuses its cached prefix only while everything before the newest message is unchanged. Rebuilding it
 		// per request (run time left, last request size, refreshed memory) dropped the cache hit rate to ~1% on
