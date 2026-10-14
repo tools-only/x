@@ -786,8 +786,11 @@ def run_arc_thin_e2e(
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,
-            # Reasoning kept between tool rounds of the current decision (native default on).
+            # Reasoning between tool rounds of the current decision: "none" (default) or "all" keep the projection
+            # append-only for the provider's prefix cache; "recent" and result archiving rewrite earlier messages.
             "decision_reasoning": foundation == "native" and pi_env.get("ARC_THIN_DECISION_REASONING", "1") != "0",
+            "decision_reasoning_mode": pi_env.get("ARC_THIN_REASONING_MODE", "none") if foundation == "native" else None,
+            "archive_results": foundation == "native" and pi_env.get("ARC_THIN_ARCHIVE_RESULTS", "0") == "1",
             # Python names defined in one call stay defined in later calls (native default on).
             "python_session": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0",
             # Native history: a summarised section within this many characters (demo/arc_thin_native_context.ts);

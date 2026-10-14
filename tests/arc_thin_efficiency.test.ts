@@ -8,6 +8,8 @@ import {Binder} from '../demo/arc_thin_binder.ts';
 import {NativeRuntime} from '../demo/arc_thin_native_runtime.ts';
 import {emptyMemory, renderDecisionMemory} from '../demo/arc_thin_memory.ts';
 import {nativeDecisionStart, projectNativeDecision} from '../demo/arc_thin_native_context.ts';
+import {gridRuns} from '../demo/arc_thin_observation.ts';
+import {executeNative} from '../demo/arc_thin_components.ts';
 
 test('ordinary persisted Python acts twice, sees current globals/history, and commits mutations only once', async () => {
  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'arc-efficiency-')));
@@ -49,6 +51,31 @@ test('decision projection retains unfinished reasoning, signed blocks and exact 
  assert.doesNotMatch(JSON.stringify(projected), /"thinking":"old"/);
  assert.equal(projected.find(m=>m.toolCallId==='a').content[0].text,'exact ref 2000');
  assert.equal(messages[2].content[0].text.length,2000);
+});
+
+test('the default decision projection only appends: each request starts with the previous one unchanged', () => {
+ const messages:any[]=[{role:'user', content:'DECIDE'}];
+ const snapshots:string[]=[];
+ for (let i=0;i<5;i++) {
+  messages.push({role:'assistant',content:[{type:'thinking',thinking:`round ${i}`,thinkingSignature:'reasoning_content'},{type:'toolCall',id:`c${i}`,name:'python'}]},
+   {role:'toolResult',toolCallId:`c${i}`,content:[{type:'text',text:String(i).repeat(3000)}]});
+  for (const reasoning of ['none','all'] as const) {
+   const projected=JSON.stringify(projectNativeDecision(messages,{reasoning,fullResults:2}));
+   if (reasoning==='none') { assert.doesNotMatch(projected,/round/); snapshots.push(projected.slice(0,-1)); }
+   else assert.match(projected,new RegExp(`round ${i}`));
+  }
+ }
+ for (let i=1;i<snapshots.length;i++) assert.ok(snapshots[i].startsWith(snapshots[i-1]), `request ${i} rewrote an earlier message`);
+});
+
+test('the grid is shown as row runs with coordinates, background left out and equal rows merged; show() prints the same', async () => {
+ const grid=Array.from({length:6},(_,y)=>Array.from({length:8},(_,x)=>y<2?4:y<4&&x>=2&&x<=4?3:x===7?11:4));
+ assert.equal(gridRuns(grid),'Grid 6×8 as row runs (x ranges inclusive, then the color; background 4 not listed; rows not listed are all background):\n'+
+  'y2-3: 2-4:3 7:11\ny4-5: 7:11');
+ assert.match(gridRuns(Array.from({length:64},(_,y)=>Array.from({length:64},(_,x)=>(x*7+y*3)%13)),500),/too varied to show here; use show\(\) in python/);
+ const out:any=await executeNative({mode:'exec',code:'show()\nshow(x0=2, y0=2, x1=4, y1=3)',sources:{},files:{},state:{grid}});
+ assert.equal(out.value.stdout,'rows y0-5, x0-7; background 4 not listed; rows not listed are all background:\ny2-3: 2-4:3 7:11\ny4-5: 7:11\n'+
+  'rows y2-3, x2-4; background 3 not listed; rows not listed are all background:\n');
 });
 
 test('current knowledge carries next experiment and conditional negative evidence; common results arrive whole', () => {

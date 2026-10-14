@@ -185,12 +185,13 @@ elif script == "activation":
     trajectory = [json.loads(s) for s in (root / "harness/trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
     via = [r.get("via") for r in trajectory]
     # Saved code acts in a closed loop: python save= takes two actions through env.act, the saved tool takes them
-    # again, unsaved code cannot act, and code that sees its prediction miss stops itself after one action.
+    # again, and code that sees its prediction miss stops itself after one action.
     assert via[:5] == ["tools/probe.py"] * 4 + [None], via
     assert via[5] == "tools/miss.py" and via[6] != "tools/miss.py", via
     assert "ACTED 2 action(s). This decision ends." in shown_history, shown_history[:3000]
     assert "ACTED 1 action(s). This decision ends." in shown_history
-    assert "only saved code acts" in text
+    # show() prints a region as row runs (the mock grid's corner).
+    assert any(r["tool"] == "python" and r["text"].startswith("rows y0-7, x0-7; background") for r in results), [r["text"][:200] for r in results if r["tool"] == "python"]
     played = [json.loads(s) for s in (root / "harness/played_actions.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [(r["via"], r["missed"]) for r in played] == [("tools/probe.py", False)] * 4 + [("tools/miss.py", True)], played
     # Factual receipts: the change count, and coordinates the action ignores are dropped and named.
@@ -204,9 +205,15 @@ elif script == "activation":
     # The python session: a function and a value defined in decision 3 are used in decision 5.
     assert "(python session: +plus_one(), +kept_value)" in text, text[:3000]
     assert any(r["tool"] == "python" and r["text"].endswith("→ 42") for r in results), [r["text"] for r in results if r["tool"] == "python"]
-    # Reasoning stays within its decision: the next request of the same decision carries it, later decisions do not.
-    carried = [r for r in parent if "THINK_MARK_DECISION3" in r.get("reasoning_in_context", [])]
-    assert len(carried) == 1 and carried[0]["planned"]["calls"][0][0] == "arc_action", [r.get("reasoning_in_context") for r in parent]
+    # Reasoning is not carried between tool rounds by default (append-only projection for the provider cache).
+    assert not any("THINK_MARK_DECISION3" in r.get("reasoning_in_context", []) for r in parent), [r.get("reasoning_in_context") for r in parent]
+    assert config["decision_reasoning_mode"] == "none" and config["archive_results"] is False, config
+    # Within a decision every request extends the previous one unchanged: the cacheable prefix is never rewritten.
+    for before, after in zip(parent, parent[1:]):
+        if after["message_count"] > before["message_count"] and after["transcript"][0] == before["transcript"][0]:
+            assert after["transcript"][:len(before["transcript"])] == before["transcript"], (before["transcript"], after["transcript"])
+    # The current grid is in view as row runs, and show() prints a region the same way.
+    assert all("as row runs" in s for s in [r.get("current", "") for r in parent]), parent[0].get("current", "")[:2000]
     assert summary["actions"] == summary["actions_on_bridge"] == len(trajectory)
     # The context is the harness plus the present: no runtime-made analyses resident; ledger and memory are files.
     current = [r.get("current", "") for r in parent]
@@ -231,7 +238,7 @@ elif script == "activation":
         assert all(r["loaded"] for r in edits), edits
         triggers = [t for r in refiner for t in r.get("triggers", [])]
         assert any("redone 3 times" in t for t in triggers), triggers
-        assert any("retyped 2 times although tools/probe.py covers it" in t for t in triggers), triggers
+        assert any("the predicted level change did not happen" in t for t in triggers), triggers
         # The agent's own request is never dropped: started at once, or queued behind a running refinement and started after it.
         asked = [r for r in refiner if r.get("triggers") == ["the agent asked: write a goal test into the strategy"]]
         assert any(r["kind"] == "start" for r in asked), refiner

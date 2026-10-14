@@ -174,8 +174,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";
   /** Reasoning kept within the current decision (default on in native mode; ARC_THIN_DECISION_REASONING=0 strips it). */
   const decisionReasoning = native && process.env.ARC_THIN_DECISION_REASONING !== "0";
-  const reasoningMode = process.env.ARC_THIN_REASONING_MODE ?? 'recent';
+  const reasoningMode = process.env.ARC_THIN_REASONING_MODE ?? 'none';
   if (!['all', 'recent', 'none'].includes(reasoningMode)) throw Error('invalid ARC_THIN_REASONING_MODE');
+  const archiveResults = process.env.ARC_THIN_ARCHIVE_RESULTS === '1';
 	const control = process.env.ARC_THIN_VARIANT === "control";
 	// Diagnostic smoke suites can request the legacy all-tools surface so they
 	// can exercise low-frequency tools in scripted ordinary turns. Real runs
@@ -422,6 +423,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		/** Reasoning sentences in this decision, and those locating cells or coordinates (coordinateSentences). */
 		reasoningSentences: number; coordinateSentences: number;
 		workingSet?: { text: string; image?: { type: "image"; data: string; mimeType: string } };
+		/** Native: the decision's first message as built once (kept byte-identical for the provider's prefix cache). */
+		head?: any; headKey?: string;
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
@@ -2186,9 +2189,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
       observation: queryObservation
-        ? "state metadata and refs. Query raw grids/images with python/read"
+        ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
-      refine: criticOn ? 'Refinements run in the background after level changes, missing goal tests, stalls and repeated work, or on refine(focus); each makes one edit to a prompt, memory entry, tool or skill (guided by prompts/refine.md if you write it) and keeps memory and the strategy consolidated, so leave that bookkeeping to them. ' : '' }) : control
+      refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and keeps memory and strategy consolidated: leave that bookkeeping to them. ' : '' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -2279,18 +2282,26 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// stays in front. ARC_THIN_NATIVE_HISTORY_CHARS=0 replays the whole session instead.
 		const summarised = native && nativeHistoryChars > 0;
 		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser), { budget: nativeHistoryChars }) : undefined;
-		// Assemble from current canonical state and current memory on every request; replace, never append revisions.
-		if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()) + '\n');
-		if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
-		const capabilities = binder ? [binder.index(currentLevel()),
-			nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
-		const head = {
-			...user,
-			content: [
-				{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
-				...(run.workingSet!.image ? [run.workingSet!.image] : []),
-			],
-		};
+		// Native mode builds the head of a decision once and keeps it byte-identical until the decision ends: the
+		// provider reuses its cached prefix only while everything before the newest message is unchanged. Rebuilding it
+		// per request (run time left, last request size, refreshed memory) dropped the cache hit rate to ~1% on
+		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
+		const headKey = `${decision}:${lastUser}`;
+		if (!native || run.headKey !== headKey) {
+			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()) + '\n');
+			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
+			const capabilities = binder ? [binder.index(currentLevel()),
+				nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
+			run.head = {
+				...user,
+				content: [
+					{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
+					...(run.workingSet!.image ? [run.workingSet!.image] : []),
+				],
+			};
+			run.headKey = headKey;
+		}
+		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
 		const history = native ? (summarised ? prefix : projectNativeHistory(messages.slice(0, lastUser), replayReasoning))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
@@ -2300,10 +2311,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// still carry none.
 		const recovery = messages.slice(lastUser + 1).filter(m => m.role === 'user').map(messageText).join('\n');
 		if (native && recovery) head.content[0].text += '\n\n' + recovery;
+		// Within a decision the projection only appends, so the provider's cached prefix stays valid: reasoning is either
+		// all kept or all dropped (default: dropped; ARC_THIN_REASONING_MODE=all keeps it), and earlier results are not
+		// replaced by archive stubs (ARC_THIN_ARCHIVE_RESULTS=1 restores that). "recent" reasoning and archiving rewrite
+		// earlier messages on every request; with them the 2026-10-14 pilots reached a 1-2% cache hit rate.
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
 			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
         reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'none' : 'none',
-        fullResults: 2, archive: archiveResult })]
+        fullResults: 2, ...(archiveResults ? { archive: archiveResult } : {}) })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		lastContextChars = projected.reduce((n, message) => n + messageText(message).length, 0) + systemChars;
 		// Developer-only accounting, never added to the model context.

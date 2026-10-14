@@ -28,12 +28,44 @@ export function storeObservation(workspace: Workspace, value: any, n: number) {
   workspace.runtimeWrite(ref, JSON.stringify(snapshot) + '\n');
 }
 
+/**
+ * A grid as row runs: per row the x ranges and their color, the most common color left out, equal consecutive rows
+ * merged ("y8-12: 32-40:3"). Lossless, and about a tenth of the tokens of digit rows for a tokenizer that splits
+ * digits (Qwen: one token per cell). Coordinates are written out, so nothing has to be counted by eye. The python
+ * helper show() in arc_thin_components.ts prints the same format.
+ */
+export function gridRuns(grid: number[][], limit = 6000): string {
+  const counts = new Map<number, number>();
+  for (const row of grid) for (const v of row) counts.set(v, (counts.get(v) ?? 0) + 1);
+  const bg = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+  const rowText = (row: number[]) => {
+    const out: string[] = [];
+    for (let x = 0, start = 0; x <= row.length; x++) {
+      if (x < row.length && row[x] === row[start]) continue;
+      if (row[start] !== bg) out.push(x - 1 === start ? `${start}:${row[start]}` : `${start}-${x - 1}:${row[start]}`);
+      start = x;
+    }
+    return out.join(' ');
+  };
+  const groups: Array<{ from: number; to: number; text: string }> = [];
+  grid.forEach((row, y) => {
+    const text = rowText(row), last = groups.at(-1);
+    if (last && last.text === text && last.to === y - 1) last.to = y; else groups.push({ from: y, to: y, text });
+  });
+  const lines = groups.filter((g) => g.text).map((g) => `y${g.from}${g.to > g.from ? `-${g.to}` : ''}: ${g.text}`);
+  const head = `Grid ${grid.length}×${grid[0]?.length ?? 0} as row runs (x ranges inclusive, then the color; background ${bg} not listed; ` +
+    'rows not listed are all background):';
+  const body = [head, ...lines].join('\n');
+  return body.length <= limit ? body : `${head}\n(${lines.length} row groups, ${body.length} characters: too varied to show here; use show() in python)`;
+}
+
 export function observationReference(value: any, n: number): string {
   const snapshot = publicObservation(value, n), grid = snapshot.frames.at(-1);
   if (!grid?.length) return 'CURRENT STATE: unavailable — do not act on remembered grids.';
   return `CURRENT STATE #${n}: ${snapshot.state}; levels_completed=${snapshot.levels_completed}; ` +
     `available_actions=${JSON.stringify(snapshot.available_actions)}; action_budget=${JSON.stringify(snapshot.action_budget)}\n` +
-    `Grid ${grid.length}×${grid[0].length}; animation_frames=${snapshot.frames.length}; grid_sha256=${snapshot.grid_sha256}\n` +
+    `${gridRuns(grid)}\n` +
+    `animation_frames=${snapshot.frames.length}; grid_sha256=${snapshot.grid_sha256}. ` +
     `Exact data: data/observations/${n}.json (all frames and image refs); data/frames/${n}.json (latest grid); ` +
-    `data/frames/${n}.png (latest image). Python: grid, prev_grid, state['frames'], history.grid(n).`;
+    `data/frames/${n}.png (latest image). Python: grid, prev_grid, state['frames'], history.grid(n), show().`;
 }

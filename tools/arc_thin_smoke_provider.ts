@@ -266,7 +266,8 @@ const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ] : [
   { kind: 'decide', calls: [['python', { code: "def twice(v):\n    return 2 * v\nkept_across_restart = [41]\n" +
-    "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(80)))\n1" }]] },
+    // Longer than the 8,000-character inline limit, so it is saved as a result and read back by offset.
+    "print('\\n'.join('COUNTEREXAMPLE_MIDDLE_EXACT' if i == 40 else 'line %d: ' % i + 'x' * 80 for i in range(120)))\n1" }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
 ];
 // Native call cap: eighteen same-shape python calls in one message (the sixteenth is the last allowed and says so,
@@ -302,7 +303,7 @@ const ACTIVATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: `# Probe two moves.\n${actCode('{"level_changed": False}')}`, save: 'probe' }]] },
   { kind: 'decide', calls: [['probe', { args: {} }]] },
   // Reasoning stays within the decision; what python defines stays for later calls.
-  { kind: 'decide', think: 'THINK_MARK_DECISION3', calls: [['python', { code: actCode('{"level_changed": False}') }],
+  { kind: 'decide', think: 'THINK_MARK_DECISION3', calls: [['python', { code: 'show(x0=0, y0=0, x1=7, y1=7)' }],
     ['python', { code: 'def plus_one(v):\n    return v + 1\nkept_value = 41' }],
     ['write', { path: 'prompts/refine.md', content: '---\nactive: false\n---\nREFINE_GUIDE_MARK prefer goal tests.' }]] },
   // Coordinates on an action that takes none are ignored, and the receipt says so.

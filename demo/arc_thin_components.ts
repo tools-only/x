@@ -240,7 +240,45 @@ class _Env:
 #   - What cannot be kept is reported by name with the reason. Nothing is dropped silently.
 import pickle, zlib, base64, hashlib, types, textwrap, contextlib, marshal
 
-_SESSION_SKIP = {'state', 'grid', 'history', 'prev_grid', 'artifacts', 'skill', 'args', 'env', 'ActStopped'}
+def _row_runs(row, x0, bg):
+    out, start = [], 0
+    for x in range(1, len(row) + 1):
+        if x < len(row) and row[x] == row[start]:
+            continue
+        if row[start] != bg:
+            out.append('%d:%s' % (x0 + start, row[start]) if x - 1 == start else '%d-%d:%s' % (x0 + start, x0 + x - 1, row[start]))
+        start = x
+    return ' '.join(out)
+
+def show(g=None, x0=0, y0=0, x1=None, y1=None, bg=None):
+    """Print a grid (default: the current one) or the region x0..x1, y0..y1 (inclusive) as row runs: x ranges and
+    their color, the background (default: the most common color) left out, equal consecutive rows merged. Lossless,
+    with coordinates written out, and about a tenth of the tokens of printing digit rows."""
+    g = _state.get('grid') if g is None else g
+    if not g:
+        print('show: no grid')
+        return
+    rows = [list(r[x0:None if x1 is None else x1 + 1]) for r in g[y0:None if y1 is None else y1 + 1]]
+    if bg is None:
+        counts = {}
+        for r in rows:
+            for v in r:
+                counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get) if counts else 0
+    groups = []
+    for i, r in enumerate(rows):
+        text = _row_runs(r, x0, bg)
+        if groups and groups[-1][2] == text:
+            groups[-1][1] = y0 + i
+        else:
+            groups.append([y0 + i, y0 + i, text])
+    width = len(rows[0]) if rows else 0
+    print('rows y%d-%d, x%d-%d; background %s not listed; rows not listed are all background:' % (y0, y0 + len(rows) - 1, x0, x0 + width - 1, bg))
+    for a, b, text in groups:
+        if text:
+            print(('y%d' % a if a == b else 'y%d-%d' % (a, b)) + ': ' + text)
+
+_SESSION_SKIP = {'state', 'grid', 'history', 'prev_grid', 'artifacts', 'skill', 'args', 'env', 'ActStopped', 'show'}
 _SESSION_RAW_BYTES = 2 * 1024 * 1024
 _session_flags = {}
 _session_defs = {}
@@ -491,6 +529,7 @@ try:
         env = _Env()
         _req['native_env'] = True
         _ns['ActStopped'] = ActStopped
+        _ns['show'] = show
         try:
             if _req['mode'] == 'exec':
                 _session = _req.get('session')
