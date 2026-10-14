@@ -3,13 +3,22 @@
 1. levels_completed (the gate), 2. tokens and actions (minimised), 3. self-harness: which non-memory components the
 agent converted or used (skills, tools, subagents/observers, refiner, action sequences, python session).
 
-Usage: python eval.py <label> [<label> ...]   -- reads $PILOT_OUT/<label>/arc-run (default: this file's directory).
+Usage: python arc_ls20_loop_eval.py <label> [<label> ...]
+A label is resolved against $PILOT_OUT, then the working directory, then this file's directory, so the evaluator finds
+a round whether or not the environment names the output root; an unresolvable label is an error rather than zeroes.
 Works on a running round too: the stores are append-only, so a partial read is still a measure of what has happened.
 """
 from pathlib import Path
 import json, os, sys, collections
 
-BASE = Path(os.environ.get('PILOT_OUT') or Path(__file__).resolve().parent)
+ROOTS = [Path(p) for p in (os.environ.get('PILOT_OUT'), os.getcwd(), Path(__file__).resolve().parent) if p]
+
+
+def resolve(label):
+    for root in ROOTS:
+        if (root / label / 'arc-run').is_dir():
+            return root / label / 'arc-run'
+    raise SystemExit(f'no round {label!r} under any of: ' + ', '.join(str(r) for r in ROOTS))
 
 
 def rows(path):
@@ -28,22 +37,23 @@ def rows(path):
 
 
 def tokens(harness):
-    """Uncached input + output (the cap measure since 2026-10-14) plus the raw totals, from request events."""
-    requests = rows(harness / 'request-events.jsonl')
-    agg = collections.Counter()
-    for row in requests:
-        usage = row.get('usage') or row
-        for key in ('input', 'output', 'cache_read', 'cache_write', 'input_tokens', 'output_tokens',
-                    'cached_input', 'cache_read_input_tokens', 'total', 'total_tokens'):
-            value = usage.get(key)
-            if isinstance(value, (int, float)):
-                agg[key] += int(value)
+    """The two measures the runner itself writes, from usage.jsonl, plus where they went.
+
+    ``budget`` is what max_reported_tokens caps: uncached input + output, cache reads excluded. ``reported`` is the
+    full total including cache reads. Splitting by kind separates the agent's own cost from its components'.
+    """
     usage_rows = rows(harness / 'usage.jsonl')
+    budget = sum(int(row.get('input') or 0) + int(row.get('output') or 0) for row in usage_rows)
+    reported = sum(int(row.get('total') or 0) or int(row.get('input') or 0) + int(row.get('output') or 0)
+                   for row in usage_rows)
     by_kind = collections.Counter()
     for row in usage_rows:
         by_kind[str(row.get('kind') or 'decision')] += int(row.get('total') or 0)
-    return dict(requests=len(requests), request_totals=dict(agg), usage_by_kind=dict(by_kind),
-                usage_total=sum(by_kind.values()))
+    # request-events.jsonl is one row per request *stage*, so the request count is its distinct ids.
+    requests = {row.get('request_id') for row in rows(harness / 'request-events.jsonl')}
+    requests.discard(None)
+    return dict(budget_tokens=budget, reported_tokens=reported, requests=len(requests),
+                by_kind=dict(by_kind.most_common()))
 
 
 def self_harness(root, harness):
@@ -70,25 +80,36 @@ def self_harness(root, harness):
 
 
 def carry(root):
-    """Responses route audits: continuation used, and decisions where the agent wrote no <carry> fields."""
+    """Responses route audits: whether the stored continuation was actually stood on, and what the carry cost was.
+
+    ``responses_transport.jsonl`` records one row per provider request. ``continued`` means the exact local prefix
+    matched the stored response, so the request sent a delta and named previous_response_id; any other reason is a
+    rebase that re-sent the whole input. ``carry_missing`` counts projected assistant tool-calling messages with no
+    <carry> block, which is what the "fields" mode replays in place of reasoning prose.
+    """
     config = {}
     path = root / 'run-config.json'
     if path.is_file():
         config = json.loads(path.read_text(encoding='utf-8'))
-    audit = collections.Counter()
-    for row in rows(root / 'runtime-audit' / 'events.jsonl') + rows(root / 'request-control.jsonl'):
-        kind = str(row.get('event') or row.get('kind') or '')
-        if any(word in kind for word in ('carry', 'response', 'continu', 'prefix')):
-            audit[kind] += 1
+    transport = rows(root / 'harness' / 'responses_transport.jsonl')
+    reasons = collections.Counter(str(row.get('reason')) for row in transport)
+    omitted = sum(int(row.get('omitted_items') or 0) for row in transport)
+    wire_reasoning = sum(int(row.get('wire_reasoning_chars') or 0) for row in transport)
+    budgets = rows(root / 'harness' / 'context_budget.jsonl')
     return dict(pi_api=config.get('pi_api'), responses_continuation=config.get('responses_continuation'),
                 decision_reasoning_mode=config.get('decision_reasoning_mode'),
                 thinking_format=config.get('thinking_format'),
                 thinking_reaches_provider=config.get('thinking_reaches_provider'),
-                continuity=config.get('continuity'), audit=dict(audit))
+                continuity=config.get('continuity'),
+                requests=len(transport), reasons=dict(reasons.most_common()),
+                continued_share=round(reasons.get('continued', 0) / len(transport), 2) if transport else None,
+                omitted_input_items=omitted, wire_reasoning_chars=wire_reasoning,
+                carry_blocks=sum(int(row.get('carry_blocks') or 0) for row in budgets),
+                carry_missing=sum(int(row.get('carry_missing') or 0) for row in budgets))
 
 
 def report(label):
-    root = BASE / label / 'arc-run'
+    root = resolve(label)
     harness = root / 'harness'
     trajectory = rows(harness / 'trajectory.jsonl')
     summary = {}
@@ -101,17 +122,28 @@ def report(label):
     hits = sum(int((row.get('prediction') or {}).get('hits') or 0) for row in trajectory)
     misses = sum(int((row.get('prediction') or {}).get('misses') or 0) for row in trajectory)
     actions = collections.Counter(str(row.get('action') or row.get('name') or '?') for row in trajectory)
+    measured = tokens(harness)
+    played = summary.get('actions', len(trajectory)) or 0
+    # context_budget.jsonl is one row per provider round; a decision spans several, so count the distinct ids.
+    budget_rows = rows(harness / 'context_budget.jsonl')
+    decisions = len({row.get('decision') for row in budget_rows} - {None})
     out = dict(label=label,
                levels_completed=summary.get('levels_completed') if summary.get('levels_completed') is not None
                                 else (max(levels) if levels else None),
                stop_reason=summary.get('stop_reason'), passed=summary.get('passed'),
                partial=summary.get('partial'), elapsed_seconds=summary.get('elapsed_seconds'),
-               actions=summary.get('actions', len(trajectory)), action_mix=dict(actions.most_common()),
+               actions=played, action_mix=dict(actions.most_common()),
                level_action_budget=budget, level_changes=sum(1 for row in trajectory if row.get('level_changed')),
                prediction=dict(hits=hits, misses=misses),
-               decisions=len(rows(harness / 'context_budget.jsonl')),
-               reported_tokens=summary.get('reported_tokens'), budget_tokens=summary.get('budget_tokens'),
-               tokens=tokens(harness), route=carry(root), self_harness=self_harness(root, harness),
+               decisions=decisions, provider_rounds=len(budget_rows),
+               # What the round is optimised against: cost per action, how many actions one decision buys, and how
+               # many provider rounds a decision spends before it acts.
+               efficiency=dict(budget_tokens_per_action=round(measured['budget_tokens'] / played, 1) if played else None,
+                               actions_per_decision=round(played / decisions, 2) if decisions else None,
+                               rounds_per_decision=round(len(budget_rows) / decisions, 2) if decisions else None,
+                               seconds_per_action=round(summary['elapsed_seconds'] / played, 1)
+                               if played and summary.get('elapsed_seconds') else None),
+               tokens=measured, route=carry(root), self_harness=self_harness(root, harness),
                error=summary.get('error'))
     return out
 
