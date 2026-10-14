@@ -66,19 +66,28 @@
   - 时间去向：5 个父请求，第 4 个请求 9,087 输出 token（推理 8,795）用时 3 分 23 秒，第 5 个请求到截止仍未完成。python 两次调用：kernel 启动 2.0 s（编译 1.27 s）+ cell 0.20 s，第二次 cell 0.06 s，`fresh` 只有第一次；未发生重启。
   - 语义使用：第二次 python 调用直接使用第一次留下的 `g2`/`g3`/`g4`（未重读帧），但重新定义了会话中已有的 `diff`。两次工具结果分别 1,343 和 684 字符，没有整段打印。
   - 未达到的环节：working set 的 `PYTHON SESSION` 行只在下一个决策出现，而第 3 个决策没有开始，所以会话列表与压缩提示在这次运行中都未被模型看到；"决策 2+ 不再重读 data/" 无法评估。
-- 机会漏斗、语义使用、成本与任务结果：仅 kernel-01 一次（见上），未达到命题所需的决策数。
+- 真实运行 kernel-02（用户要求取消全部阈值重跑：无 token 上限、无时间截止，仍为 10 动作；其余同 kernel-01；`python -u tmp/arc-kernel-20261014/pilot.py kernel-02 10 0 0`；产物 `tmp/arc-kernel-20261014/kernel-02/`，转录摘录 `kernel-02-session.txt`）：
+  - 结果：`budget_exhausted`（10 动作用完），5 个决策，0 关，1,275.7 s；17 个父请求全部完成，预算 token 326,286，报告 token 499,086；无 length/idle 中断，无整理（consolidation 0）。
+  - 时间去向：仍由模型生成决定。决策 4 的两个请求分别输出 12,624 与 16,916 token（推理 12,357 / 16,576），约 4.5 分钟和 5.5 分钟；决策 2 的一个请求输出 7,183 token。kernel：只有 1 个新 kernel（启动 3.4 s，编译 2.1 s），其余 13 个 cell 计算 31–312 ms；行动 cell 1.25–3.7 s，几乎全是等待动作返回；14 次调用中 6 次在 cell 内行动（1/1/2/4/2 个动作），无重放、无重启、无 unsupported。
+  - 会话增长：`python_session.jsonl` 13 次提交，名字 5 → 23，函数 1 → 5（`diff`、`bbox_of_color`、`render`、`motif_pos`、`ones`）。
+  - 会话列表到达模型：决策 2–5 的 working set 都有 `PYTHON SESSION` 行（python 段 238/296/311/490 字符，均值 267，占 working set 均值 3,197 字符的 8%）。
+  - 语义使用：决策 2–5 都直接使用会话中的 `diff()`、`g0`、`grid`、`prev`；决策 3 一个 cell 内 2 个动作，决策 4 定义 `motif_pos` 等后一个 cell 内 4 个动作，决策 5 复用 `motif_pos`/`diff` 后 2 个动作。没有重新定义 `diff`（kernel-01 中重定义过）。
+  - 重建调用：只出现在决策 2 —— 读 `results/r000001.txt`（18,281 字符）、`data/ledger.md`、`data/memory.md`，遍历目录，`json.load(data/current.json)`，读 `data/trajectory.jsonl`。决策 3–5 没有 `read` 调用，也没有读取 `data/` 文件。
+  - 每决策工具结果字符：986 / 23,905 / 2,172 / 6,277 / 561。决策 2 的 18,281 来自决策 1 整段 `print(fb)` 产生的回执（56,198 字符截为回执，提示可用 `_`），模型没有用 `_`，而是读回了 results 文件；这是本次运行最大的单项上下文开销，不是 kernel 本身造成，但 kernel 也没有消除它。
+  - 对照：没有同阈值的匹配运行（cont-01/cont-01r 有 600 s 截止）。决策 2 的重建与决策 3–5 不重建同时可以由"决策 2 前会话只有决策 1 的少量名字"解释，单次运行不能区分是列表起作用还是模型偶然行为。
+- 机会漏斗、语义使用、成本与任务结果：kernel-01、kernel-02 两次（见上）；kernel-02 达到了命题所需的决策数，但没有匹配对照。
 - 协议偏离：无（尚未运行实验）。
 
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
 | 功能正确 | 通过 | node:test + 真实 WASI kernel | `tests/arc_thin_kernel.test.ts` 等；不涉及模型行为 |
 | 全链路可达 | 通过（确定性） | mock ARC SDK、真实 bridge/Pi、脚本化 provider | `tmp/smoke-activation-2`、`tmp/smoke-receipts-2`（worktree 内，未入库）；证明接线与生命周期，不证明模型会用列表 |
-| 自主采用 | 部分观察（1 次） | yibu/qwen3.8-27b，ls20 | kernel-01：同一决策内跨调用复用会话名字；会话列表未到达模型（只完成 1 个决策） |
-| 净收益 | 未验证 | — | kernel-01 受 600 s 截止限制，4 动作对 cont-01r 的 10 动作，单次、不可归因；需要同预算多次或 fork 对照 |
+| 自主采用 | 观察到（2 次，无对照） | yibu/qwen3.8-27b，ls20 | kernel-02：会话列表进入决策 2–5，模型跨决策复用 `diff`/`g0`/`motif_pos` 并在 cell 内连续行动；决策 2 仍重建（读 results 回执与 data/），决策 3–5 未读 data/ |
+| 净收益 | 未验证 | — | kernel-01 受截止限制；kernel-02 无阈值但无匹配对照，0 关、时间由模型推理长度主导；需要 fork 的 kernel 开/关对照 |
 
 ## 交付决定
 
 - 已支持的声明：kernel 后端、动作不重放、按需读文件、检查点恢复、会话列表、压缩提示在单元测试与确定性全链路中正确。未支持：代理会使用列表、重建调用减少、运行时上下文或 token 下降、任务进展改善。
 - 决定：保留为本分支默认（可用开关关闭），处于实验状态。
-- 下一可证伪检查：按上方协议跑 2 次真实运行，与 cont-01/cont-01r 比较决策 2+ 的重读调用数和每决策工具结果字符数。若列表出现而重读不减，下一个单因素是从父代理的系统提示/历史行里去掉指向 `data/current.json`、`data/trajectory.jsonl` 的重复入口。
+- 下一可证伪检查：从同一前缀 fork 出 kernel 开/关两臂（`ARC_THIN_PYTHON_KERNEL`），同阈值，比较决策 2+ 的重读调用数和每决策工具结果字符数。若列表出现而重读不减，下一个单因素是从父代理的系统提示/历史行里去掉指向 `data/current.json`、`data/trajectory.jsonl` 的重复入口。kernel-02 另暴露一个独立机会：大输出截为回执后，模型读回整个 results 文件而不是用 `_`（18k 字符）；是否处理（例如回执里给出结构摘要）是单独的改动，不并入本记录。
 - 关联 backlog：[deferred-research-todos.md](../deferred-research-todos.md) D（压缩后的认知连续性）——本改动让会话中的计算状态跨压缩保留并在压缩提示中声明，但"关键假设是否跨压缩保留"仍未验证，状态不变。
