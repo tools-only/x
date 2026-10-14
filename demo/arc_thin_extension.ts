@@ -23,6 +23,7 @@
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
 import { createHash } from "node:crypto";
+import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
@@ -168,6 +169,7 @@ const duration = (ms: number) => {
 const tokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
 export default function arcThinExtension(pi: ExtensionAPI) {
+  const responsesContinuation = new ResponsesContinuation();
   const native = process.env.ARC_THIN_FOUNDATION === "native";
   const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'query' : 'inline';
   if (!['query', 'inline'].includes(observationMode)) throw Error('ARC_THIN_OBSERVATION must be query or inline');
@@ -2566,7 +2568,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     return Object.keys(patch).length ? { messages: [...event.messages, { role: 'system', content: '', sections: patch, timestamp: Date.now() }] } : undefined;
   });
   if (nativeRuntime) pi.on('session_shutdown', () => nativeRuntime?.close());
-	pi.on("before_provider_request", guard("before_provider_request", (event: any) => {
+	pi.on("before_provider_request", guard("before_provider_request", (event: any, ctx: any) => {
 		if (native) {
 			if (parentRequest) requestTrace.finish(parentRequest);
 			parentRequest=requestTrace.start('parent',decision);
@@ -2578,15 +2580,22 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (native && outputPolicy !== undefined) {
 			const limit = Number(outputPolicy);
 			if (!Number.isInteger(limit) || limit < 0) throw Error('invalid parent output-token policy');
-			if (!limit) { delete payload.max_tokens; delete payload.max_completion_tokens; }
+			if (!limit) { delete payload.max_tokens; delete payload.max_completion_tokens; delete payload.max_output_tokens; }
+			else if (ctx.model?.api === 'openai-responses') payload.max_output_tokens = limit;
 			else if ('max_completion_tokens' in payload) payload.max_completion_tokens = limit;
 			else payload.max_tokens = limit;
 		}
 		append("provider_policy.jsonl", {
-			decision, max_tokens: payload.max_tokens ?? payload.max_completion_tokens ?? null,
+			decision, max_tokens: payload.max_output_tokens ?? payload.max_tokens ?? payload.max_completion_tokens ?? null,
 			enable_thinking: payload.enable_thinking ?? payload.chat_template_kwargs?.enable_thinking ?? null,
-			reasoning_effort: payload.reasoning_effort ?? null,
+			reasoning_effort: payload.reasoning?.effort ?? payload.reasoning_effort ?? null,
 		});
+		if (ctx.model?.api === 'openai-responses' && process.env.ARC_THIN_RESPONSES_CONTINUATION !== '0') {
+			const projection = responsesContinuation.project(payload, `${decision}:${ctx.model.provider}:${ctx.model.id}`);
+			append('responses_transport.jsonl', { decision, ...projection.audit,
+				wire_json_chars: JSON.stringify(projection.payload).length, recordedAt: new Date().toISOString() });
+			return projection.payload;
+		}
 	}));
 	if (native) {
     pi.on('before_provider_headers',()=>{
@@ -2606,6 +2615,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	pi.on("message_end", guard("message_end", (event: any) => {
 		const message = event.message;
 		if (message?.role !== "assistant") return undefined;
+		responsesContinuation.accept(message);
 		run.assistantMessages += 1;
 		run.endedAt = Date.now();
 		const blocks: any[] = Array.isArray(message.content) ? message.content : [];
