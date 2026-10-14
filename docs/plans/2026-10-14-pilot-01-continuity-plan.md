@@ -133,6 +133,23 @@ pilot-01 中决策 2 从零开始。四个原因，各自独立可修：
 - 一次中途 miss：决策 2 第 5 请求（输入 16,438，cache 0）紧接一个 7,016 reasoning token 的轮次；之后请求正常命中，前缀未变，判断为 provider 侧，未确认。
 - **新发现的预算问题**：run 的 token 上限计入 cache read。cont-01 的 140k 中 75.5k 是 cache read，按上限停止早于 deadline。保留 reasoning 与转录使 cache read 按请求累计增长，所以在这个口径下，越能复用前缀的配置越早触顶。是否把 cache read 计入预算是用户的决定；比较时需同时报告两种口径。
 
+### pilot-02（2026-10-14，单因素：决策内 reasoning）
+
+- 运行：`runs/arc-continuity-claude-20261014/pilot-02`，commit 见 protocol.json；`ARC_THIN_NATIVE_HISTORY_CHARS=12000 ARC_THIN_HISTORY_RESULT_CHARS=2000 ARC_THIN_HISTORY_CLIP=head ARC_THIN_MEMORY_AUTHOR=refiner`（历史、截断、refine 指令同 pilot-01，已在 provider 输入中核对），reasoning 默认 `all`。预算同 pilot-01；token 上限口径改为未缓存 input + output（用户 2026-10-14 决定），本次未触顶。首次启动在 `git rev-parse` 处因 Windows 0xC0000142 失败，未开始游戏，删除快照后同名重启。
+
+| | pilot-01 | pilot-02 | cont-01 |
+| --- | --- | --- | --- |
+| 停止 | deadline | deadline 605 s | token_cap（旧口径） |
+| 动作 / 完成决策 | 4 / 1 | 4 / 1 | 10 / 2 |
+| 未缓存 input + output | 49,042 | 71,044 | 64,608 |
+| cache read | 10,752 | 0 | 75,520 |
+| 决策 2 最长单轮 thinking | — | 32,948 字符 | 17,168 字符 |
+| memory 写入 | 0 | 0 | 0 |
+
+- 结论：单独保留决策内 reasoning 未改变结果。决策 2 仍未在 600 s 内行动；它在后续轮次利用了上一轮的 diff 结果（未重算），但单轮 thinking 更长（17k、33k 字符），并花了一轮调查空文件列表。按预先判定，"决策内重推导消失"不足以带来进展；命题 A 在本样本中**未获支持**，也未被反驳（单样本）。
+- 混杂：决策 1 的行为在三次运行间差异很大：pilot-02 决策 1 打印了整个状态（结果 188,009 字符），cont-01 决策 1 用一次 arc_action 链完成。单样本无法区分配置效应与运行间方差；cont-01 的改善不能归给 A。
+- **cache 新发现（假设）**：三次运行中，cache 命中与否和"距离该前缀上次被处理的时间"一致，而不是与前缀是否变化一致。命中的请求距前一请求开始约 1 分钟以内（cont-01：48 s、56 s 命中 4k、15k）；未命中的距离约 3 分钟以上（cont-01 第 5 请求 3 分 16 秒；pilot-02 每一请求之间 2–5 分钟），即使前缀只追加。推测 provider 前缀缓存寿命约 2–3 分钟，而 qwen 在 ~40 tok/s 下生成 6k+ reasoning 就超过它。若成立，长 reasoning 的轮次之后 cache 总会失效，A 和修复 3 的 cache 收益在这个 provider 上受限于生成时长。下一检查：从 request-events 计算每请求的前缀上次处理时间与 cache_read 的关系（不需新运行）。
+
 ### 原交付决定
 
 - 已支持的声明：无（设计阶段）。
