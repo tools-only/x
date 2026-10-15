@@ -118,20 +118,48 @@ su15 (relayed by the user; its raw logs are not on this machine), the frozen ls2
 |---|---|---|---|
 | Functional correctness | Passed offline | local Node/Python, no provider | unit tests and replay above |
 | Full-chain reachability | Passed for the new paths, with two shared stale smoke checks | mock ARC SDK, real bridge, installed Pi 0.87.0, scripted provider | `smokes2`/`smokes-branch2` `schedule`, activation; not the real ARC service |
-| Autonomous adoption | Unverified | — | su15-s02 (running) is one ordinary run; it can show whether facts and notices are read and acted on, not a causal effect |
+| Autonomous adoption | Unverified | — | su15-s02/s03 are single ordinary runs; they can show whether facts, notices and batches are used, not a causal effect |
 | Net benefit | Unverified | — | needs R1/R2 |
 
-## Real run (user request, 2026-10-15)
+## Real runs (user request, 2026-10-15)
 
 `su15-s02`: `PILOT_GAME=su15`, source commit `83276f8b`, this branch's defaults (history window off), yibu /
 qwen3.8-27b, thinking high, Responses route, query observations; 300 actions, safety caps 6,000,000 budget tokens and
-36,000 s. Output `D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015/su15-s02`; evaluate with
-`PILOT_OUT=D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015 python tools/arc_ls20_loop_eval.py su15-s02`. One
-exploratory run: there is no matched deecdde6 su15 run on this machine (GLM's ran elsewhere).
+36,000 s. Output `D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015/su15-s02`. Stopped by the user's decision
+after 20 actions (about 70 minutes), 0 levels, to change the configuration. What it showed:
+
+- time: 94% of the wall time of the first 10 actions was the model generating (2,944 s), about 12k output tokens per
+  action (90% reasoning) at 41–51 tokens/s; waits for headers and first tokens 5%; python 11 s. One action per decision
+  throughout; ls20-r03b had the same 2–10 minutes per decision early but played 4–19 actions per decision from d5.
+- budget tokens about 33k per action; decision-start uncached input 13k–16k (no cache hit across minutes-long decisions).
+- one provider stall (a request silent for 5 minutes, then ended; the retry worked); two calls lost to the tool-name
+  mix-up of the Responses route (python carrying read's arguments and the reverse).
+- the facts block was in every head; its stall and repeat lines never fired because the bottom line erased new cells on
+  every action, so each state counted as new, although only that line changed on 9 of the first 12 clicks.
+- the first scheduled refinement started at #17 (due at #15; the decision before played two actions) with three
+  conditions as input and wrote `hyp.timer_goal` with a check.
 
 `su15-s01`, the first launch, ended during its first request (0 actions) because it was started from a terminal tab
-that was then closed, which ended its process tree; that request's cost is unknown. `su15-s02` was started through WMI
-(`C:/Users/qi/tmp/r03b-simple/launch-su15-s02.cmd`), outside any tab.
+that was then closed, which ended its process tree; that request's cost is unknown. Later runs are started through WMI
+(`C:/Users/qi/tmp/r03b-simple/launch-su15-s0*.cmd`), outside any tab.
+
+**Changes after su15-s02 (user request).**
+- Tool-name repair: phase01's `1abf7c7e` and `adb08483` cherry-picked (`9f26025f`, `513da14c`). A later call that
+  arrived under the first call's name gets its own back before Pi validates it; repairs go to `tool_call_repairs.jsonl`.
+- Batches (`782781cd`): in native mode `arc_action` takes `actions`, a list played in order, as Continual Harness's
+  take_actions; up to 24 and at most the act share of the budget left; it stops early only at a level change, the game's
+  end or a refusal (`ARC_THIN_BATCH_STOP=miss` restores the stop at a missed prediction). The earlier `action` + `then`
+  shape is turned into a batch before validation. Tests `tests/arc_thin_batch.test.ts` (3); the smokes activation,
+  activation-defaults, schedule and foundation pass their own checks (the batch from the activation script's then form
+  plays 3 of 3) and stop at the shared `system_chars` check as before.
+- Thinking off: the user asked not to run with high reasoning but with it off. This reverses the 2026-10-11 decision
+  ("close llm reasoning is not the right decision"), and the 2026-10-11 thinking-off ls20 run spent 2–3 actions per
+  fact; it is recorded here, not argued. `PILOT_THINKING=off` with `PILOT_THINKING_FORMAT=qwen` sends
+  `enable_thinking=false` on the Completions route, the encoding that reached qwen on 2026-10-02/10-11.
+
+`su15-s03`: commit `782781cd`, thinking off (Completions, `enable_thinking=false`), otherwise as su15-s02; 300 actions,
+caps 6,000,000 budget tokens and 36,000 s. Output `D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015/su15-s03`;
+evaluate with `PILOT_OUT=D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015 python tools/arc_ls20_loop_eval.py su15-s03`.
 
 ## Not built (only if runs show the need)
 
