@@ -221,6 +221,60 @@ steps by their outcome, not by what was declared.
 - Separate: the timeout that ended su15-s04 is a real remote fault of the kind deferred item A handled only with mocks;
   reconciling an unknown step by reading the environment's state, if the SDK exposes it, would keep such a run going.
 
+## M1 + M2 built (2026-10-16, user request "implement M1+M2, then run E1")
+
+| Item | Where | Default | Earlier behaviour |
+|---|---|---|---|
+| M1: a batch stops after an action that changed nothing apart from masked cells (ticker cells, meter lines) or brought back the state the batch started from, and after a checked prediction (cells, level_changed, state) that missed; a RESET or a level change always counts as progress; the stop line says why ("#18 changed only cells that change on (nearly) every action (row 63)"); env.act returns `progress` (and `no_progress`) and the code decides; tool description and the system prompt's batch sentence say so | `progressAt` in `demo/arc_thin_ledger.ts`; `stillReason`, `batchStop`, `actForCode`, `{{batch}}` in `demo/arc_thin_extension.ts` and `demo/prompts/arc_thin_native_system.md` | `ARC_THIN_BATCH_STOP=progress` | `ARC_THIN_BATCH_STOP=end` (782781cd), `=miss` (miss stop only) |
+| M2: `meterLines`: a row or column changed by ≥4 consecutive non-RESET actions that changed anything (≥2 of them different, none a click on the line), each changing 1–4 cells not changed before in the attempt; masked per level with the ticker cells for stall, repeats and M1; facts count "N only recurring cells" apart from "changed nothing" and add one `RECURRING CHANGE` line | `meterLines`, `maskedHashes`, `buildLedger(…, { lines })`, `renderFacts` | `ARC_THIN_METER_LINES` on | `ARC_THIN_METER_LINES=0` |
+| Measurement: the same detection over any run, whatever its flags: no-change share after the fork point, batch stops by kind, python actions without progress, actions to the first level change | `tools/arc_thin_progress_eval.ts` | — | — |
+
+- **Deviation from the analysis.** M1 was to stop at any state seen earlier in the attempt. That would cut a planned
+  path that crosses where it has been (backtracking in a maze), and su15-s04 had no such stop, so M1 stops only at a
+  return to the state the batch started from. Recorded before any real run.
+- **Relation to earlier work.** M2 is a narrow instance of the every-variant-part design of
+  [2026-10-09](2026-10-09-ledger-critic-general-signals.md) (not implemented): lines instead of position-free region
+  signatures, and different thresholds. That design's thresholds (≥3 variants each tried twice) would not have found
+  su15-s04's row before #45. G4 disclosure: METER_RUN = 4 and METER_CELLS = 4 were chosen after reading su15-s02–s04, so
+  su15 is in-sample; they are frozen for E1.
+- **Generality.** No colour, position or role in code, prompts or tests; the unit fixtures are synthetic boards (a
+  filling row, an object moved by one action, clicks that paint the clicked row, a toggled cell); the facts state counts.
+  A negative case it cannot rule out: a game whose goal is to fill such a line has every step stopped (the agent can
+  still play one per call or loop in code with `progress` in view).
+- **Offline evidence.**
+  - Unit: `tests/arc_thin_meter_lines.test.ts` (5, new), `arc_thin_batch.test.ts` (4: the 782781cd stops under
+    `end`, the share cap, `miss`, and the new default with "changed nothing", a checked miss, text not checked, and a
+    loop back to the batch's start), `arc_thin_native_context.test.ts` (prompt contract). Full suite: 41 files, 198
+    tests, 193 pass; the 5 failures are the ones that also fail at deecdde6 (activation, components, receipts ×3;
+    `C:/Users/qi/tmp/r03b-simple/tests-m12-full`).
+  - Real runs, read only: the eval finds row 63 as a meter line in su15-s02 (since #2), s03 (#8) and s04 (#3); s04's
+    actions after it: 17 changed nothing and 57 only the row (share 0.787; RESETs and level 2 not counted). M1 over
+    s04's 14 recorded batch calls (`C:/Users/qi/tmp/r03b-simple/m1-counterfactual-s04.json`): control back 7 times,
+    53 actions not played, the batch that completed level 1 unchanged.
+  - Smoke (mock SDK with `MOCK_ARC_METER=1`, production bridge, installed Pi, scripted provider): new `progress` script
+    — four moves show row 7 as a meter, "batch: 1 of 3 played; stopped: #5 changed only cells that change on (nearly)
+    every action (row 7)", env.act `progress=False` with its reason, "#8 brought back the state this batch started
+    from", the RECURRING line and "only recurring cells" in the heads, the new batch sentence in the system prompt.
+    `activation`, `activation:defaults`, `schedule`, `foundation` pass their own checks under the new defaults. Every
+    native script still stops at the shared `system_chars <= 3000` check, as before
+    (`C:/Users/qi/tmp/r03b-simple/smokes-m12b`).
+
+**E1 protocol (fixed before the runs).**
+- Arms on one commit: A = `ARC_THIN_BATCH_STOP=end ARC_THIN_METER_LINES=0` (782781cd behaviour), B = defaults. yibu /
+  qwen3.8-27b, thinking off (`enable_thinking=false`, Completions), query observations, text+image.
+- Sources (A flags, so the shared prefix plays as before): su15 snapshotted after decision 5; ls20 (negative case:
+  moves by keys, a move bar) and ar25 (held-out: the first id, alphabetically, of the 25 games the API lists that no
+  run in `D:/autoresearch_pi_project/runs` used) after decision 3.
+- Forks per arm: su15 3 (each ≤60 actions after the fork, ≤600k budget tokens, ≤1,800 s); ls20 and ar25 2 (≤40,
+  ≤400k, ≤1,500 s). A and B of the same index run at the same time. Budget ≤ 8.0M budget tokens in all.
+- Measures (`tools/arc_thin_progress_eval.ts`, the same detection for both arms): no-change share after the fork,
+  levels and actions to the first level change, budget tokens per action, actions per decision, batch stops by kind,
+  lines found.
+- Keep M1+M2 as the default if on su15 B's mean no-change share is at most half of A's, levels and actions to the
+  first level change are no worse, and budget tokens per action rise by at most 25%; and if on ls20 B's actions per
+  decision are at least 0.75 of A's; ar25 and ls20 report every line found and whether it is a line that fills on
+  every action (inspected in the frames). Exploratory: 2–3 forks per arm, all reported.
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or

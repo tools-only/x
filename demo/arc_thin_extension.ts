@@ -48,7 +48,7 @@ import { evaluateTaskPython, TaskPythonError, type ValidatedTaskPythonProgram } 
 import { SKILL_LIMITS, arcSkillFoundation, guestFailure, arcSkillGuestProgram, type GuestResult } from "./arc_thin_skill_guest.ts";
 import { backtestCases, renderBacktest, scoreBacktest, type GuestCaseResult, type ModelCheck } from "./arc_thin_backtest.ts";
 import { sharedTaskPythonPool } from "./pi_task_python_pool.ts";
-import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, renderFacts, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
+import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, progressAt, renderFacts, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
 import {
 	CRITIC_SYSTEM, NATIVE_CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
 } from "./arc_thin_critic.ts";
@@ -235,10 +235,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const memoryOrder = process.env.ARC_THIN_MEMORY_VIEW === "legacy" ? "legacy" : "priority";
 	const actShare = process.env.ARC_THIN_ACT_SHARE === undefined ? 0.25 : Math.max(0, Number(process.env.ARC_THIN_ACT_SHARE) || 0);
 	const carryAsk = process.env.ARC_THIN_CARRY_ASK === "1";
-	// In native mode arc_action plays a batch, as Continual Harness's take_actions does, and stops early only at a level
-	// change, the game's end or a refusal. ARC_THIN_BATCH_STOP=miss also stops it at a missed prediction (the earlier
-	// then list).
-	const batchStopOnMiss = process.env.ARC_THIN_BATCH_STOP === "miss";
+	// In native mode arc_action plays a batch, as Continual Harness's take_actions does. A batch is judged by what its
+	// steps do, not by what the call declared (2026-10-16): in su15-s04 every wasteful batch stated its target, and six of
+	// them spent 57 actions that changed nothing outside the bottom row. By default (ARC_THIN_BATCH_STOP=progress) a batch
+	// stops after an action that changed nothing apart from recurring cells or brought back the state the batch started
+	// from (progressAt), after a checked prediction that missed, and at a level change, the game's end or a refusal;
+	// ARC_THIN_BATCH_STOP=miss drops the progress stop and ARC_THIN_BATCH_STOP=end also the miss stop (782781cd).
+	const batchStopMode = ["end", "miss"].includes(process.env.ARC_THIN_BATCH_STOP ?? "") ? process.env.ARC_THIN_BATCH_STOP! : "progress";
+	const batchStopOnMiss = batchStopMode !== "end";
+	const batchStopOnStill = batchStopMode === "progress";
+	// The ledger's mask also covers rows and columns that fill a few cells on every action (meterLines, 2026-10-16), for the
+	// facts and the progress stop; ARC_THIN_METER_LINES=0 keeps the per-cell ticker mask alone.
+	const meterLinesOn = process.env.ARC_THIN_METER_LINES !== "0";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -1590,7 +1598,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// The state itself is recorded for every run (before_agent_start); observeOne skips states already observed.
 		if (gridOf(observation)) observeState(trajectory.length, skillState(false, false));
 		await Promise.race([observer, new Promise((resolve) => setTimeout(resolve, OBSERVE_WAIT_MS))]);
-		const state = buildLedger(trajectory, observations, grids);
+		const state = buildLedger(trajectory, observations, grids, { lines: meterLinesOn });
 		const goalRefs = goalHypothesisRefs();
 		ledgerText = renderLedgerView(state, [...memory.hypotheses.keys()], 900, goalRefs);
 		if (native && workspace) {
@@ -1604,7 +1612,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (factsLayout) {
 				try {
 					const level = currentLevel();
-					factsText = renderFacts(buildLedger(trajectory.filter((row) => levelOf(row) === level), observations, grids),
+					factsText = renderFacts(buildLedger(trajectory.filter((row) => levelOf(row) === level), observations, grids, { lines: meterLinesOn }),
 						observation?.action_budget ?? trajectory.at(-1)?.budget);
 				} catch (error) { factsText = ""; logError("ledger:facts", error); }
 			}
@@ -1794,7 +1802,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const description = native
 			? `Play a batch of actions in order and end this decision: actions lists them, one or more, up to ${MAX_ACTS} (fewer when little ` +
 				"budget is left). Each goes through the environment in turn; the batch stops early when the level changes, the game ends" +
-				(batchStopOnMiss ? ", a prediction misses" : "") + ` or an action is refused.${hasCoordinates ? " ACTION6 takes x,y." : ""} ` + resetFact +
+				(batchStopOnStill ? ", an action is refused, a checked prediction misses (cells, level_changed or state; text is kept, not " +
+					"checked), or an action changed nothing apart from cells that change on (nearly) every action or brought back the state " +
+					"the batch started from; what was not played is left to your next call."
+					: (batchStopOnMiss ? ", a prediction misses" : "") + " or an action is refused.") +
+				`${hasCoordinates ? " ACTION6 takes x,y." : ""} ` + resetFact +
 				"Each action may carry predict; note and idea are recorded for the next decision."
 			: `Submit one available action and end this decision.${hasCoordinates ? " ACTION6 accepts x,y." : ""} ` + resetFact +
 				"Optional note, prediction and memory/idea updates are recorded for the next decision.";
@@ -1836,7 +1848,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				let stopped: string | undefined;
 				for (const [i, step] of planned.entries()) {
 					if (i >= limit.cap) { stopped = limit.why; break; }
-					if (i > 0) { stopped = batchStop(rows.at(-1)!); if (stopped) break; }
+					if (i > 0) { stopped = batchStop(rows.at(-1)!, rows[0].n - 1); if (stopped) break; }
 					const done = await submitAction({ action: step.action, ...(step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : {}),
 						...(i === 0 ? (params.note ? { note: params.note } : {}) : { note: `batch ${i + 1} of ${planned.length}` }),
 						...(params.idea !== undefined ? { idea: params.idea } : {}), ...(step.predict ? { predict: step.predict } : {}),
@@ -1946,12 +1958,26 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Set by an action that changed the level or ended the game: later env.act calls of the same decision are refused. */
 	let actingStopped: string | undefined;
 	/**
-	 * Why a batch must not go on after this action, or undefined: the level changed or the game ended (what the batch
-	 * assumed no longer holds, as for Continual Harness's take_actions); with ARC_THIN_BATCH_STOP=miss, a missed prediction.
+	 * Why `row` moved nothing on, or undefined (progressAt over this level's actions up to it): it changed nothing apart
+	 * from recurring cells, or, in a batch that started from state `from`, brought that state back. Advisory: a failure
+	 * here never stops a batch.
 	 */
-	const batchStop = (row: ActionRow): string | undefined => row.level_changed ? `the level changed at #${row.n}`
+	function stillReason(row: ActionRow, from?: number): string | undefined {
+		try {
+			const level = levelOf(row);
+			const result = progressAt(trajectory.filter((item) => item.n <= row.n && levelOf(item) === level), grids, row.n, meterLinesOn, from);
+			return result.progress ? undefined : result.why;
+		} catch (error) { logError("batch:progress", error); return undefined; }
+	}
+	/**
+	 * Why a batch that started from state `from` must not go on after this action, or undefined: the level changed or the
+	 * game ended (what the batch assumed no longer holds, as for Continual Harness's take_actions); unless
+	 * ARC_THIN_BATCH_STOP=end, a checked prediction missed; by default, the action made no progress (stillReason).
+	 */
+	const batchStop = (row: ActionRow, from: number): string | undefined => row.level_changed ? `the level changed at #${row.n}`
 		: /^(GAME_OVER|WIN|FINISHED)$/.test(row.state) ? `state ${row.state} at #${row.n}`
-		: batchStopOnMiss && row.prediction?.fields.some((field) => field.hit === false) ? `#${row.n}'s prediction missed` : undefined;
+		: batchStopOnMiss && row.prediction?.fields.some((field) => field.hit === false) ? `#${row.n}'s prediction missed`
+		: batchStopOnStill ? stillReason(row, from) : undefined;
 	const hexRows = (grid: number[][] | undefined) => grid?.map((row) => row.map((cell) => (cell & 15).toString(16)).join(""));
 	/**
 	 * One action for saved code (env.act in a tool): the same path as arc_action, so the bridge, its budget and its
@@ -1973,7 +1999,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if ("refusal" in done) return { stopped: done.refusal };
 		const row = done.row;
 		const missed = Boolean(row.prediction?.fields.some((field) => field.hit === false));
-		append("played_actions.jsonl", { decision, via, n: row.n, action: actionLabel(row), changed_cells: row.changed_cells, missed });
+		// What a batch stops on is reported to code instead (2026-10-16): the code decides whether to go on.
+		const still = batchStopOnStill ? stillReason(row) : undefined;
+		append("played_actions.jsonl", { decision, via, n: row.n, action: actionLabel(row), changed_cells: row.changed_cells, missed,
+			...(batchStopOnStill ? { progress: !still } : {}) });
 		if (row.level_changed) actingStopped = "the level changed";
 		else if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) actingStopped = `state ${row.state}`;
 		return {
@@ -1985,6 +2014,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed },
 				level_changed: row.level_changed, changed_cells: row.changed_cells, ...(row.bbox ? { bbox: row.bbox } : {}),
 				available_actions: availableActions(observation), missed,
+				...(batchStopOnStill ? { progress: !still, ...(still ? { no_progress: still } : {}) } : {}),
 			},
 		};
 	}
@@ -2557,6 +2587,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			catch (error) { logError("memory:file", error); }
 		}
 		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
+      // How far a batch goes (batchStopMode); "end" is the sentence of 782781cd.
+      batch: batchStopOnStill
+        ? "A batch plays while its actions move the state on: it stops after an action that changed nothing apart from cells that "
+          + "change on (nearly) every action or brought back the state the batch started from, after a checked prediction misses, and "
+          + "at a level change, the game's end or a refusal; env.act returns `progress` and `missed`, and your code decides whether to go on."
+        : "A batch stops early at a level change, the game's end or a refusal; env.act returns `missed` and your code decides whether to go on.",
       observation: queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),

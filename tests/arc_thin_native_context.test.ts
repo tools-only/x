@@ -151,7 +151,11 @@ test('the native instructions state what a prediction is for, which the native f
   // promoted. The legacy prompt states the contract; the native one mentioned predict only as a parameter name.
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
   assert.match(prompt, /predict carries it, on each action of an arc_action batch and on env\.act/);
-  // Since 2026-10-15 a batch goes on past a missed prediction (Continual Harness's take_actions); env.act code decides.
-  assert.match(prompt, /A batch stops early at a level change, the game's end or a refusal; env\.act returns `missed`/);
+  // How far a batch goes is filled in by the extension (ARC_THIN_BATCH_STOP): by default (2026-10-16) it stops when its
+  // actions stop moving the state on; "end" keeps the 2026-10-15 sentence (Continual Harness's take_actions).
+  assert.match(prompt, /\{\{batch\}\}/);
+  const extension = readFileSync(new URL('../demo/arc_thin_extension.ts', import.meta.url), 'utf8');
+  assert.match(extension, /A batch plays while its actions move the state on/);
+  assert.match(extension, /A batch stops early at a level change, the game's end or a refusal; env\.act returns `missed`/);
   assert.match(prompt, /level or WIN transition, predict it explicitly/);
 });

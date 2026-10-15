@@ -24,17 +24,23 @@ test('a batch arrives in the earlier shapes too and is turned into one actions l
   assert.deepEqual(repairBatchArguments({ note: 'nothing' }), { note: 'nothing' });
 });
 
-/** The native extension on a bridge whose 9 moves one cell per action, without ledger or refinements. */
-async function fixture(env: Record<string, string> = {}) {
+/**
+ * The native extension on a bridge whose 9 moves one cell per action (round a row of 8), without ledger or
+ * refinements; the actions in `still` change nothing.
+ */
+async function fixture(env: Record<string, string> = {}, still: string[] = []) {
   let n = 0;
   const grid = () => { const g = Array.from({ length: 8 }, () => Array(8).fill(0)); g[3][n % 8] = 9; return g; };
   const state = () => ({ frames: [grid()], state: 'NOT_FINISHED', levels_completed: 0, agent_available_actions: ['ACTION1', 'ACTION2', 'ACTION6'],
     action_budget: { used: n, maximum: 40, total_used: n, total_maximum: null } });
   const server = createServer((req, res) => {
-    req.on('data', () => {}); req.on('end', () => {
-      if (req.url !== '/state') n++;
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; }); req.on('end', () => {
+      const action = req.url === '/action' ? String(JSON.parse(body || '{}').action ?? '') : '';
+      const moves = req.url !== '/state' && !still.includes(action);
+      if (moves) n++;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ ...state(), observation_delta: { frame_available: true, changed_cells: 2, cells: [] }, public_transition: { level_changed: false } }));
+      res.end(JSON.stringify({ ...state(), observation_delta: { frame_available: true, changed_cells: moves ? 2 : 0, cells: [] }, public_transition: { level_changed: false } }));
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -67,8 +73,8 @@ async function fixture(env: Record<string, string> = {}) {
   };
 }
 
-test('arc_action plays a batch in one call; a missed prediction does not stop it, a refusal does', async () => {
-  const h = await fixture();
+test('with ARC_THIN_BATCH_STOP=end a batch plays in one call; a missed prediction does not stop it, a refusal does', async () => {
+  const h = await fixture({ ARC_THIN_BATCH_STOP: 'end' });
   try {
     const schema = h.tool().parameters.properties;
     assert.equal(schema.actions.maxItems, 24);
@@ -83,20 +89,43 @@ test('arc_action plays a batch in one call; a missed prediction does not stop it
     // The earlier action + then shape still plays as a batch.
     const legacy = await h.play({ action: 'ACTION2', then: ['ACTION1'] });
     assert.match(legacy, /^#6 ACTION2 → [^\n]*\n#7 ACTION1 → /);
+    // Going round the row back to an earlier state does not stop it either.
+    const round = await h.play({ actions: Array.from({ length: 9 }, () => ({ action: 'ACTION1' })) });
+    assert.match(round, /^PLAYED #8–#16: ACTION1 ×9\n/);
   } finally { await h.close(); }
 });
 
-test('a batch is capped at its share of the budget left, and ARC_THIN_BATCH_STOP=miss restores the stop at a miss', async () => {
-  const capped = await fixture();
+test('a batch is capped at its share of the budget left, and ARC_THIN_BATCH_STOP=miss stops only at a miss', async () => {
+  const capped = await fixture({ ARC_THIN_BATCH_STOP: 'end' });
   try {
     const text = await capped.play({ actions: Array.from({ length: 12 }, () => ({ action: 'ACTION1' })) });
     assert.match(text, /^PLAYED #1–#10: ACTION1 ×10\n/);
     assert.match(text, /\nbatch: 10 of 12 played; stopped: this call's share of the budget was reached \(10 actions: 25% of the 40 left\)\.$/);
   } finally { await capped.close(); }
-  const miss = await fixture({ ARC_THIN_BATCH_STOP: 'miss' });
+  const miss = await fixture({ ARC_THIN_BATCH_STOP: 'miss' }, ['ACTION6']);
   try {
-    assert.match(miss.tool().description, /a prediction misses/);
+    assert.match(miss.tool().description, /a prediction misses or an action is refused/);
     const text = await miss.play({ actions: [{ action: 'ACTION1', predict: { cells: [[0, 0, 7]] } }, { action: 'ACTION2' }] });
     assert.match(text, /\nbatch: 1 of 2 played; stopped: #1's prediction missed\.$/);
+    const quiet = await miss.play({ actions: [{ action: 'ACTION6', x: 1, y: 1 }, { action: 'ACTION6', x: 2, y: 2 }] });
+    assert.doesNotMatch(quiet, /stopped/);
   } finally { await miss.close(); }
+});
+
+test('by default a batch stops when its actions stop moving the state on, and after a checked prediction misses', async () => {
+  const h = await fixture({}, ['ACTION6']);
+  try {
+    assert.match(h.tool().description, /a checked prediction misses \(cells, level_changed or state; text is kept, not checked\), or an action changed nothing apart from cells that change on \(nearly\) every action or brought back the state the batch started from/);
+    const quiet = await h.play({ actions: [{ action: 'ACTION6', x: 1, y: 1 }, { action: 'ACTION1' }], note: 'a click, then a move' });
+    assert.match(quiet, /\nbatch: 1 of 2 played; stopped: #1 changed nothing\.$/);
+    const missed = await h.play({ actions: [{ action: 'ACTION1', predict: { cells: [[0, 0, 7]] } }, { action: 'ACTION2' }] });
+    assert.match(missed, /\nbatch: 1 of 2 played; stopped: #2's prediction missed\.$/);
+    // Text is kept, not checked: it stops nothing.
+    const text = await h.play({ actions: [{ action: 'ACTION1', predict: { text: 'the 9 jumps' } }, { action: 'ACTION1' }] });
+    assert.match(text, /^#3 ACTION1 → [^\n]*\n#4 ACTION1 → [^\n]*$/);
+    // Round the row of 8: positions met earlier are passed through; the 8th move brings back where the batch started.
+    const round = await h.play({ actions: Array.from({ length: 9 }, () => ({ action: 'ACTION1' })) });
+    assert.match(round, /^PLAYED #5–#12: ACTION1 ×8\n/);
+    assert.match(round, /\nbatch: 8 of 9 played; stopped: #12 brought back the state this batch started from\.$/);
+  } finally { await h.close(); }
 });

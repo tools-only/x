@@ -5,6 +5,9 @@ from types import SimpleNamespace
 # MOCK_ARC_FAIL_AFTER=N: every step after the first N returns None, as the remote
 # SDK wrapper did in real runs (the bridge reports EnvironmentReturnedNoFrame).
 FAIL_AFTER = int(os.environ.get("MOCK_ARC_FAIL_AFTER") or 0)
+# MOCK_ARC_METER=1 (the progress smoke, 2026-10-16): the bottom row fills one cell from the right on every step,
+# ACTION3 leaves the 9 where it is, and the corner counter is off, so a step can change nothing but that row.
+METER = os.environ.get("MOCK_ARC_METER") == "1"
 
 
 class OperationMode:
@@ -22,7 +25,11 @@ class Environment:
     def _observe(self):
         grid = [[0] * 8 for _ in range(8)]
         grid[3][self.position] = 9
-        grid[0][0] = self.actions % 10
+        if METER:
+            for x in range(max(0, 8 - self.actions), 8):
+                grid[7][x] = 5
+        else:
+            grid[0][0] = self.actions % 10
         self.observation_space = SimpleNamespace(game_id=self.game, frame=[grid],
             state=SimpleNamespace(name='PLAYING'), levels_completed=0, win_levels=1,
             guid='mock-arc', full_reset=False, available_actions=[1,2,3,4])
@@ -32,7 +39,8 @@ class Environment:
         if FAIL_AFTER and self.actions >= FAIL_AFTER:
             return None
         self.actions += 1
-        self.position = (self.position + (1 if action.name in {'ACTION1','ACTION4'} else -1)) % 8
+        if not (METER and action.name == 'ACTION3'):
+            self.position = (self.position + (1 if action.name in {'ACTION1','ACTION4'} else -1)) % 8
         return self._observe()
 
 

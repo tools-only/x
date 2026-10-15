@@ -190,15 +190,134 @@ export function constantAtCompletions(done: Completion[], index: Map<number, Map
 export type LedgerState = {
 	rows: LedgerRow[]; experiments: Experiment[]; effort: IdeaEffort[]; repeats: Repetition[]; stall: number;
 	index: Map<number, Map<string, Record<string, string>>>; completions: Completion[]; ticker_cells: number;
+	/** Meter lines of the level of the last row, when they were looked for (`lines_on`). */
+	lines: MeterLine[]; lines_on: boolean;
 };
+
+/** A row or column that fills (or drains) a few cells on nearly every action that changes anything (meterLines). */
+export type MeterLine = {
+	axis: "row" | "column"; index: number; length: number;
+	/** The first action of the run of actions that showed it. */
+	since: number;
+	/** Non-RESET actions from `since` on that changed anything, and how many of them changed this line. */
+	changing: number; hits: number;
+	/** Fewest and most cells of the line that one of those actions changed. */
+	min: number; max: number;
+	/** Whether an action changed a cell of the line that had already changed in the same attempt. */
+	again: boolean;
+	/** Cells of the line that differ from the state the current attempt started from (the level's start or a RESET). */
+	differs: number;
+};
+
+export const METER_RUN = 4;
+export const METER_CELLS = 4;
+export const lineLabel = (line: { axis: "row" | "column"; index: number }) => `${line.axis} ${line.index}`;
+const onLine = (line: { axis: "row" | "column"; index: number }, x: number, y: number) => line.axis === "row" ? y === line.index : x === line.index;
+
+function changedCells(before: number[][], after: number[][]): Array<[number, number]> {
+	const out: Array<[number, number]> = [];
+	for (let y = 0; y < Math.max(before.length, after.length); y += 1)
+		for (let x = 0; x < Math.max(before[y]?.length ?? 0, after[y]?.length ?? 0); x += 1)
+			if (before[y]?.[x] !== after[y]?.[x]) out.push([x, y]);
+	return out;
+}
+
+/**
+ * Rows and columns that change a few cells on each action whatever the action is: over METER_RUN consecutive non-RESET
+ * actions that changed anything, at least two of them different, each changed 1..METER_CELLS cells of the line that had
+ * not changed before in the attempt, and none was a click on the line itself. A bar that fills changes each of its
+ * cells once, so the per-cell ticker mask (cells changed on ≥80% of transitions) never covers it: in su15-s04 every
+ * press made a new state, and the stall and repeat counts stayed silent while 60 of 94 actions changed only the bottom
+ * row (2026-10-16). Counts only: whether such a line is a budget, a clock or the goal is the agent's call. `rows` are
+ * one level's actions (the action that completed the level is skipped).
+ */
+export function meterLines(rows: Array<{ n: number; action: string; x?: number; y?: number; level_changed?: boolean }>,
+	grids: Map<number, number[][]>): MeterLine[] {
+	type Track = { run: number; keys: Set<string>; start: number; min: number; max: number };
+	const tracks = new Map<string, Track>();
+	const found: MeterLine[] = [];
+	let changed = new Set<string>();
+	const ordered = [...rows].sort((a, b) => a.n - b.n);
+	let attemptStart = ordered.length ? ordered[0].n - 1 : 0;
+	for (const row of ordered) {
+		if (row.level_changed) continue;
+		if (row.action === "RESET") { tracks.clear(); changed = new Set(); attemptStart = row.n; continue; }
+		const before = grids.get(row.n - 1), after = grids.get(row.n);
+		if (!before || !after) continue;
+		const diff = changedCells(before, after);
+		if (!diff.length) continue;
+		const byLine = new Map<string, Array<[number, number]>>();
+		for (const [x, y] of diff) {
+			byLine.set(`row ${y}`, [...(byLine.get(`row ${y}`) ?? []), [x, y]]);
+			byLine.set(`column ${x}`, [...(byLine.get(`column ${x}`) ?? []), [x, y]]);
+		}
+		for (const line of found) {
+			const cells = byLine.get(lineLabel(line));
+			line.changing += 1;
+			if (!cells) continue;
+			line.hits += 1; line.min = Math.min(line.min, cells.length); line.max = Math.max(line.max, cells.length);
+			if (cells.some(([x, y]) => changed.has(`${x},${y}`))) line.again = true;
+		}
+		const clicked = row.x !== undefined && row.y !== undefined;
+		for (const [key, cells] of byLine) {
+			if (found.some((line) => lineLabel(line) === key)) continue;
+			const [axis, at] = key.split(" ");
+			const line = { axis: axis as "row" | "column", index: Number(at) };
+			const fits = cells.length <= METER_CELLS && cells.every(([x, y]) => !changed.has(`${x},${y}`)) && !(clicked && onLine(line, row.x!, row.y!));
+			if (!fits) { tracks.delete(key); continue; }
+			const track = tracks.get(key) ?? { run: 0, keys: new Set<string>(), start: row.n, min: cells.length, max: cells.length };
+			track.run += 1; track.keys.add(actionKey(row));
+			track.min = Math.min(track.min, cells.length); track.max = Math.max(track.max, cells.length);
+			tracks.set(key, track);
+			if (track.run >= METER_RUN && track.keys.size >= 2) {
+				const grid = after;
+				found.push({ ...line, length: line.axis === "row" ? grid[line.index]?.length ?? 0 : grid.length, since: track.start,
+					changing: track.run, hits: track.run, min: track.min, max: track.max, again: false, differs: 0 });
+				tracks.delete(key);
+			}
+		}
+		// A run is consecutive: a line this action did not change (in a way that fits) starts over.
+		for (const key of [...tracks.keys()]) if (!byLine.has(key)) tracks.delete(key);
+		for (const [x, y] of diff) changed.add(`${x},${y}`);
+	}
+	const start = grids.get(attemptStart), last = ordered.length ? grids.get(ordered.at(-1)!.n) : undefined;
+	for (const line of found) {
+		if (!start || !last) continue;
+		let differs = 0;
+		for (let i = 0; i < line.length; i += 1) {
+			const [x, y] = line.axis === "row" ? [i, line.index] : [line.index, i];
+			if (start[y]?.[x] !== last[y]?.[x]) differs += 1;
+		}
+		line.differs = differs;
+	}
+	return found;
+}
+
+/** Meter lines per level (each level searched on its own) and the level each state belongs to. */
+function linesByLevel(rows: LedgerRow[], grids: Map<number, number[][]>): { at: (n: number) => MeterLine[]; current: MeterLine[] } {
+	const stateLevel = new Map<number, number>();
+	const groups = new Map<number, LedgerRow[]>();
+	for (const row of [...rows].sort((a, b) => a.n - b.n)) {
+		const before = row.levels_completed - (row.level_changed ? 1 : 0);
+		if (!stateLevel.has(row.n - 1)) stateLevel.set(row.n - 1, before);
+		stateLevel.set(row.n, row.levels_completed);
+		groups.set(before, [...(groups.get(before) ?? []), row]);
+	}
+	const lines = new Map<number, MeterLine[]>();
+	for (const [level, group] of groups) lines.set(level, meterLines(group, grids));
+	const last = rows.at(-1);
+	return { at: (n) => lines.get(stateLevel.get(n) ?? -1) ?? [], current: last ? lines.get(last.levels_completed) ?? [] : [] };
+}
 
 /**
  * State hashes that ignore "ticker" cells: cells that changed on at least 80% of
  * the transitions so far (step counters, timers). Without this, a counter makes
  * every state unique and repetition can never be seen. grids[n] is the state after
- * action n (grids[0] before the first action).
+ * action n (grids[0] before the first action). `linesAt(n)` adds the meter lines
+ * that state n's level showed (meterLines).
  */
-export function maskedHashes(grids: Map<number, number[][]>): { hash: Map<number, string>; ticker: number } {
+export function maskedHashes(grids: Map<number, number[][]>, linesAt: (n: number) => MeterLine[] = () => []):
+	{ hash: Map<number, string>; ticker: number } {
 	const ns = [...grids.keys()].sort((a, b) => a - b);
 	const counts = new Map<string, number>();
 	let transitions = 0;
@@ -212,18 +331,49 @@ export function maskedHashes(grids: Map<number, number[][]>): { hash: Map<number
 	}
 	const ticker = new Set(transitions >= 8 ? [...counts].filter(([, count]) => count / transitions >= 0.8).map(([key]) => key) : []);
 	const hash = new Map<number, string>();
-	for (const [n, grid] of grids) hash.set(n, gridHash(ticker.size
-		? grid.map((row, y) => row.map((cell, x) => ticker.has(`${x},${y}`) ? -1 : cell)) : grid));
+	for (const [n, grid] of grids) {
+		const lines = linesAt(n);
+		hash.set(n, gridHash(ticker.size || lines.length
+			? grid.map((row, y) => row.map((cell, x) => ticker.has(`${x},${y}`) || lines.some((line) => onLine(line, x, y)) ? -1 : cell)) : grid));
+	}
 	return { hash, ticker: ticker.size };
 }
 
-export function buildLedger(rows: LedgerRow[], observations: Observation[], grids: Map<number, number[][]> = new Map()): LedgerState {
-	const { hash, ticker } = maskedHashes(grids);
+/** `lines`: also mask the meter lines each level shows (meterLines); off, only ticker cells are masked (until 2026-10-16). */
+export function buildLedger(rows: LedgerRow[], observations: Observation[], grids: Map<number, number[][]> = new Map(),
+	options: { lines?: boolean } = {}): LedgerState {
+	const levels = options.lines ? linesByLevel(rows, grids) : undefined;
+	const { hash, ticker } = maskedHashes(grids, levels?.at);
 	const hashed = rows.map(row => ({ ...row, before_hash: hash.get(row.n - 1) ?? row.before_hash, after_hash: hash.get(row.n) ?? row.after_hash }));
 	const experiments = groupExperiments(hashed);
 	const index = observationIndex(observations);
 	return { rows: hashed, experiments, effort: ideaEffort(experiments), repeats: repetitions(hashed), stall: stallLength(hashed),
-		index, completions: completions(hashed, experiments, index), ticker_cells: ticker };
+		index, completions: completions(hashed, experiments, index), ticker_cells: ticker,
+		lines: levels?.current ?? [], lines_on: Boolean(options.lines) };
+}
+
+/**
+ * Whether action n moved the state on, for a batch (2026-10-16): the state after it, with ticker cells and (with
+ * `lines`) meter lines left out, differs from the state before it and, given `from` (the state the batch started
+ * from), from that one too. A RESET and a level change always count. `rows` are this level's actions up to n.
+ * A batch that revisits an older state is not stopped: a planned path may cross where it has been.
+ */
+export function progressAt(rows: LedgerRow[], grids: Map<number, number[][]>, n: number, lines = true, from?: number):
+	{ progress: true } | { progress: false; why: string } {
+	const upTo = [...rows].filter((row) => row.n <= n).sort((a, b) => a.n - b.n);
+	const row = upTo.find((item) => item.n === n);
+	if (!row || row.action === "RESET" || row.level_changed) return { progress: true };
+	if (row.changed_cells === 0) return { progress: false, why: `#${n} changed nothing` };
+	const found = lines ? meterLines(upTo, grids) : [];
+	const { hash, ticker } = maskedHashes(grids, () => found);
+	const after = hash.get(n);
+	if (after === undefined) return { progress: true };
+	if (hash.get(n - 1) === after) {
+		const where = [...found.map(lineLabel), ...(ticker ? [`${ticker} cell${ticker === 1 ? "" : "s"} that change on most actions`] : [])];
+		return { progress: false, why: `#${n} changed only cells that change on (nearly) every action${where.length ? ` (${where.join(", ")})` : ""}` };
+	}
+	if (from !== undefined && from < n - 1 && hash.get(from) === after) return { progress: false, why: `#${n} brought back the state this batch started from` };
+	return { progress: true };
 }
 
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -379,15 +529,19 @@ export function renderFacts(state: LedgerState, budget: BudgetReport, maxChars =
 			budgetPart("run", budget.total_used, budget.total_maximum) : "unknown"}`];
 	if (!rows.length) lines.push("EFFORT on this level: no actions yet");
 	else {
-		const byAction = new Map<string, { n: number; quiet: number }>();
+		// With meter lines on, an action that changed only masked cells (ticker cells, meter lines) is counted apart.
+		const byAction = new Map<string, { n: number; quiet: number; masked: number }>();
 		for (const row of rows) {
-			const item = byAction.get(row.action) ?? { n: 0, quiet: 0 };
+			const item = byAction.get(row.action) ?? { n: 0, quiet: 0, masked: 0 };
 			item.n += 1;
 			if (row.changed_cells === 0) item.quiet += 1;
+			else if (state.lines_on && row.action !== "RESET" && row.before_hash && row.before_hash === row.after_hash) item.masked += 1;
 			byAction.set(row.action, item);
 		}
 		const mix = [...byAction].sort((a, b) => b[1].n - a[1].n);
-		const parts = mix.slice(0, 5).map(([action, item]) => `${action} ${item.n}${item.quiet ? ` (${item.quiet} changed nothing)` : ""}`);
+		const counted = (item: { quiet: number; masked: number }) => [...(item.quiet ? [`${item.quiet} changed nothing`] : []),
+			...(item.masked ? [`${item.masked} only recurring cells`] : [])].join(", ");
+		const parts = mix.slice(0, 5).map(([action, item]) => `${action} ${item.n}${counted(item) ? ` (${counted(item)})` : ""}`);
 		if (mix.length > 5) parts.push(`${mix.length - 5} other actions`);
 		const last = rows.at(-1)!;
 		let streak = 1;
@@ -395,6 +549,13 @@ export function renderFacts(state: LedgerState, budget: BudgetReport, maxChars =
 		const now = [...(streak >= 3 ? [`now ${last.action} ×${streak} in a row since #${rows[rows.length - streak].n}`] : []),
 			...(state.stall >= 3 ? [`no new state for the last ${state.stall}`] : [])];
 		lines.push(`EFFORT on this level: ${rows.length} action${rows.length === 1 ? "" : "s"} — ${parts.join(", ")}${now.length ? `; ${now.join("; ")}` : ""}`);
+	}
+	if (state.lines_on && (state.lines.length || state.ticker_cells)) {
+		const each = (line: MeterLine) => `${lineLabel(line)} changed on ${line.hits} of the ${line.changing} non-RESET actions that changed ` +
+			`anything since #${line.since}, ${line.min === line.max ? line.min : `${line.min}-${line.max}`} cell${line.max === 1 ? "" : "s"} each` +
+			`${line.again ? "" : ", each cell once"}; ${line.differs} of its ${line.length} cells differ from this attempt's start`;
+		lines.push(`RECURRING CHANGE (left out of the changed-nothing, stall and repeat counts): ${[...state.lines.slice(0, 2).map(each),
+			...(state.ticker_cells ? [`${state.ticker_cells} cell${state.ticker_cells === 1 ? "" : "s"} that changed on ≥80% of transitions`] : [])].join("; ")}`);
 	}
 	const goals = goalPredictionRows(state);
 	lines.push(`GOAL TESTS on this level (actions that predicted a level change or WIN): ${goals.length

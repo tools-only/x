@@ -85,14 +85,19 @@ if script == "receipts":
                 self.probed = True
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
+if script == "progress":
+    # The bridge inherits this process's environment: the mock board gets a meter row and a move that stays put.
+    import os
+    os.environ["MOCK_ARC_METER"] = "1"
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=30 if script == "history" else 12 if script == "schedule" else 10 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 12 if script == "schedule" else 10 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script in ('nativeclaims', 'progress') else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     input_modalities="text,image" if script == "query" else None,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     # The promotion path runs through refinements, which need the ledger and its trigger service; so does the schedule.
-    ledger=defaults or script in ('promotion', 'schedule'), critic=defaults or script in ('promotion', 'schedule'), review_at_level_change=False,
+    # The progress script reads the facts, which need the ledger.
+    ledger=defaults or script in ('promotion', 'schedule', 'progress'), critic=defaults or script in ('promotion', 'schedule'), review_at_level_change=False,
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
         # The scripts written before 2026-10-15 check refinements their events start; 'schedule' checks the fixed step.
         **({'ARC_REFINE_EVERY': '2'} if script == 'schedule' else {'ARC_REFINE_TRIGGERS': 'events'}),
@@ -239,6 +244,21 @@ elif script == "schedule":
     assert any('SCHEDULED_STRATEGY_MARK' in r['system_prompt'] for r in parent_requests)
     budgets = [json.loads(s) for s in (root / 'harness/context_budget.jsonl').read_text(encoding='utf-8').splitlines()]
     assert all('history_args_chars' in r and r.get('facts_chars', 0) > 0 for r in budgets if 'decision' in r), budgets[-1]
+elif script == "progress":
+    # The batch stops come from the progress rule (ARC_THIN_BATCH_STOP default) and the meter row (meterLines).
+    sequences = [json.loads(s) for s in (root / 'harness/action_sequences.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [(s['n'], s['planned'], s['played']) for s in sequences] == [(1, 4, 4), (5, 3, 1), (7, 3, 2)], sequences
+    assert sequences[0]['stopped'] is None, sequences
+    assert sequences[1]['stopped'] == '#5 changed only cells that change on (nearly) every action (row 7)', sequences
+    assert sequences[2]['stopped'] == '#8 brought back the state this batch started from', sequences
+    played = [json.loads(s) for s in (root / 'harness/played_actions.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [(p['n'], p['via'], p['progress']) for p in played] == [(6, 'python', False)], played
+    assert 'PROGRESS False #6 changed only cells that change on (nearly) every action (row 7)' in text, text[-2000:]
+    assert 'batch: 1 of 3 played; stopped: #5 changed only cells that change on (nearly) every action (row 7).' in text, text[-2000:]
+    currents = [r.get('current', '') for r in parent_requests]
+    assert any('RECURRING CHANGE (left out of the changed-nothing, stall and repeat counts): row 7 changed on' in c for c in currents), [c[:1500] for c in currents]
+    assert any('only recurring cells' in c for c in currents), [c[:1500] for c in currents]
+    assert all('A batch plays while its actions move the state on' in r['system_prompt'] for r in parent_requests)
 elif script == "history":
     last = parent_requests[-1].get('current', '')
     assert 'RECENT HISTORY (your last' in last and 'older not shown' in last, 'the default budget must drop the oldest decisions with a note'
