@@ -402,6 +402,30 @@ makes the level impossible within its limit is wrong somewhere: test the part th
 claim: on level 2 the agent clicks 3–8 cells from a block it has moved before 100 of the level's actions are spent, and
 completes level 2.
 
+**su15-r7 (r7 `16265c34`), final.** Ended by level 2's budget at 240 actions, 47 minutes, 2.50M budget tokens, **1
+level** (#30).
+
+**su15-r8b (r8 + refinement input log, `6e42c942`; r8 itself was stopped at 9 actions to add the log).** Ended by level
+2's budget at 261 actions, 1 level (#51). The claim fails: the agent again moved blocks one cell per click in batches of
+up to 20 ("push UR×11", "19 clicks pushing block"), and no click 4–7 cells from a block was played. Recomputed with r9's
+counts, its level 2 had 128 clicks on an object, 56 next to one, 3 two or three cells away (all three changed the
+board), and none farther.
+
+**Refinement replay (2026-10-16, `replay_refiner.py`, r8b's refinement at #76, two samples each).** The same input sent
+again to yibu qwen3.8-27b on the Completions route, `enable_thinking` false or true. Without thinking (29–37 s, ~1.3k
+output tokens) both replies chased goal ideas (an unclicked cell of the top-left cluster; ACTION7). With thinking
+(500–542 s, ~24–26k reasoning tokens each) both were more careful (one called the top-left cluster "likely a legend, not
+targets"; one noticed #75's block move as "unexplained" and asked to re-click it), but neither named a click a few cells
+from a block. Thinking in the refiner alone would cost ~9 minutes and ~25k tokens per refinement and, on this input,
+did not reach the missing test. Two samples at one point: no claim beyond that.
+
+**r9 (`78a9069a`).** The facts count the level's clicks by distance from the nearest cell that is neither background
+(the commonest colour of the state before the click) nor on a meter line, with how many changed the board besides
+recurring cells ("CLICKS on this level by distance …: on it 128 (118 changed), next to it 56 (55 changed), 2-3 away 3 (3
+changed), 4-7 away 0, 8+ away 0"); coverage counts, no reading of the game. `ARC_THIN_CLICK_FACTS=0` leaves it out.
+Suites touched pass 26/26. su15-r9 started; claim: on level 2 the agent clicks 4–7 cells from the nearest object before
+100 of the level's actions are spent, and completes level 2.
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or
