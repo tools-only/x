@@ -296,6 +296,34 @@ export function meterLines(rows: Array<{ n: number; action: string; x?: number; 
 	return found;
 }
 
+export type ChangeOnLines = { lines: string[]; on: number; rest: number; box?: { left: number; right: number; top: number; bottom: number } };
+/**
+ * Action n's change split by the meter lines its level showed by then (`rows`: this level's actions up to n): how many
+ * changed cells lie on those lines, and the count and box of the rest. Undefined when no line is known, the action
+ * changed none of its cells, or it completed the level. In su15-r7 every receipt's box ran down to the bottom row
+ * ("changed=8 in x39-47 y35-63" for a block that moved within x39-41 y35-37).
+ */
+export function changeOnLines(rows: Array<{ n: number; action: string; x?: number; y?: number; level_changed?: boolean }>,
+	grids: Map<number, number[][]>, n: number): ChangeOnLines | undefined {
+	const upTo = rows.filter((row) => row.n <= n);
+	const row = upTo.find((item) => item.n === n);
+	const before = grids.get(n - 1), after = grids.get(n);
+	if (!row || row.level_changed || !before || !after) return undefined;
+	const found = meterLines(upTo, grids);
+	if (!found.length) return undefined;
+	const touched = new Set<string>();
+	const rest: Array<[number, number]> = [];
+	let on = 0;
+	for (const [x, y] of changedCells(before, after)) {
+		const line = found.find((item) => onLine(item, x, y));
+		if (line) { on += 1; touched.add(lineLabel(line)); } else rest.push([x, y]);
+	}
+	if (!on) return undefined;
+	const xs = rest.map(([x]) => x), ys = rest.map(([, y]) => y);
+	return { lines: [...touched], on, rest: rest.length,
+		...(rest.length ? { box: { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) } } : {}) };
+}
+
 /** Meter lines per level (each level searched on its own) and the level each state belongs to. */
 function linesByLevel(rows: LedgerRow[], grids: Map<number, number[][]>): { at: (n: number) => MeterLine[]; current: MeterLine[] } {
 	const stateLevel = new Map<number, number>();

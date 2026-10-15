@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildLedger, maskedHashes, meterLines, progressAt, renderFacts, type LedgerRow } from '../demo/arc_thin_ledger.ts';
+import { buildLedger, changeOnLines, maskedHashes, meterLines, progressAt, renderFacts, type LedgerRow } from '../demo/arc_thin_ledger.ts';
 
 // Synthetic toy boards only (no grid is copied from a game): 10x10, a static object at (2,2) and an empty bottom row.
 const start = () => {
@@ -64,6 +64,19 @@ test('one action repeated is a meter line only when it changes nothing but the l
     grid[4][x] = 0; grid[4][x + 1] = 3; fill(grid);
   } })));
   assert.deepEqual(meterLines(moving.rows, moving.grids), []);
+});
+
+test('a change is split by the meter lines known by then: the count on them, the count and box of the rest', () => {
+  const { rows, grids } = play(start(), [...clicks,
+    { action: 'ACTION1', edit: move([2, 2], [3, 2]) },
+  ]);
+  // Before the line is known there is nothing to split.
+  assert.equal(changeOnLines(rows, grids, 3), undefined);
+  assert.deepEqual(changeOnLines(rows, grids, 5), { lines: ['row 9'], on: 2, rest: 0 });
+  assert.deepEqual(changeOnLines(rows, grids, 6), { lines: ['row 9'], on: 2, rest: 2, box: { left: 2, right: 3, top: 2, bottom: 2 } });
+  // An action that changed none of a line's cells is reported as the bridge reports it.
+  const quiet = play(start(), [...clicks, { action: 'ACTION1', edit: (grid) => { grid[2][2] = 0; grid[2][3] = 3; } }]);
+  assert.equal(changeOnLines(quiet.rows, quiet.grids, 6), undefined);
 });
 
 test('an object moved by one action, clicks that paint the clicked row, and a cell changed twice are not meter lines', () => {

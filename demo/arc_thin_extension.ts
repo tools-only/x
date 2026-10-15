@@ -48,7 +48,7 @@ import { evaluateTaskPython, TaskPythonError, type ValidatedTaskPythonProgram } 
 import { SKILL_LIMITS, arcSkillFoundation, guestFailure, arcSkillGuestProgram, type GuestResult } from "./arc_thin_skill_guest.ts";
 import { backtestCases, renderBacktest, scoreBacktest, type GuestCaseResult, type ModelCheck } from "./arc_thin_backtest.ts";
 import { sharedTaskPythonPool } from "./pi_task_python_pool.ts";
-import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, progressAt, renderFacts, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
+import { buildLedger, changeOnLines, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, progressAt, renderFacts, renderLedgerView, type ChangeOnLines, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
 import {
 	CRITIC_SYSTEM, NATIVE_CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
 } from "./arc_thin_critic.ts";
@@ -137,6 +137,8 @@ type ActionRow = {
 	ignored_xy?: boolean;
 	changed_cells: number | null; bbox?: unknown; level_changed: boolean; state: string;
 	levels_completed: number; budget: any;
+	/** Native, with meter lines on: the change split by the level's meter lines (changeOnLines). */
+	apart?: ChangeOnLines;
 	predict?: Prediction; prediction?: ScoredPrediction; skill_prediction?: SkillPrediction;
 };
 /** What the environment reported for an action, as skills and history see it. */
@@ -147,9 +149,15 @@ const reportedAction = (row: ActionRow, facts = false) => ({
 	...(facts ? { changed_cells: row.changed_cells, ...(row.bbox ? { bbox: row.bbox } : {}) } : {}),
 	level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed, budget: row.budget,
 });
-/** The bridge's change report as receipt text: "changed=52 in x13-38 y40-62", or "changed=0". */
+/**
+ * The bridge's change report as receipt text: "changed=52 in x13-38 y40-62", or "changed=0". When some of the change lay
+ * on a meter line, the box is the rest's: "changed=8 (2 on row 63; 6 in x39-41 y35-37)".
+ */
 const changeText = (row: ActionRow) => {
 	const box = row.bbox as { top?: number; left?: number; bottom?: number; right?: number } | undefined;
+	const apart = row.apart;
+	if (apart) return `changed=${row.changed_cells ?? "?"} (${apart.on} on ${apart.lines.join(" and ")}` +
+		(apart.box ? `; ${apart.rest} in x${apart.box.left}-${apart.box.right} y${apart.box.top}-${apart.box.bottom})` : "; nothing else)");
 	return `changed=${row.changed_cells ?? "?"}` + (row.changed_cells && box && [box.top, box.left, box.bottom, box.right].every(Number.isFinite)
 		? ` in x${box.left}-${box.right} y${box.top}-${box.bottom}` : "");
 };
@@ -1972,8 +1980,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (bySkill) row.skill_prediction = { ...bySkill.row, ...(bySkill.prediction ? scorePrediction(bySkill.prediction, outcome) : {}) };
 		trajectory.push(row);
 		actionTimes.push(Date.now());
-		append("trajectory.jsonl", row);
 		recordState(row.n, afterGrid);
+		if (native && meterLinesOn && !row.level_changed) {
+			try {
+				const level = levelOf(row);
+				const apart = changeOnLines(trajectory.filter((item) => levelOf(item) === level), grids, row.n);
+				if (apart) row.apart = apart;
+			} catch (error) { logError("receipt:lines", error); }
+		}
+		append("trajectory.jsonl", row);
 		if (nativeRuntime) nativeRuntime.observe(row.n);
 		refreshActionSurface();
 		return { row };
