@@ -56,10 +56,12 @@ export const CARRY_REMINDER = '<carry-missing>\nYour last message left no <carry
  *
  * A tool-calling message with no fields at all gets the reminder above on its result, once per projection. One is a
  * probe, not a nag: the agent either starts writing the block or it does not, and `carry_blocks` measures which.
+ * `remind: false` leaves the reminder out (the extension's default since 2026-10-15: carries were written about twice in
+ * ls20-r03b's 102 requests and never in ls20-r01, ls20-r02 or su15); a block the model does write is still lifted.
  */
-export function carryFields(messages: any[], limit = CARRY_CHARS): any[] {
+export function carryFields(messages: any[], limit = CARRY_CHARS, remind = true): any[] {
   let lifted: string | undefined;
-  let reminded = false;
+  let reminded = !remind;
   return messages.map(message => {
     if (message?.role === 'assistant') {
       const blocks: any[] = Array.isArray(message.content) ? message.content : [];
@@ -82,9 +84,9 @@ export function carryFields(messages: any[], limit = CARRY_CHARS): any[] {
 /** Retire old raw results without changing the durable Pi transcript. Explicit reads still return actual bodies. */
 export function projectNativeDecision(messages: any[], options: {
  reasoning?: 'all' | 'recent' | 'fields' | 'none'; fullResults?: number; carryChars?: number;
- archive?: (message: any, text: string) => string;
+ archive?: (message: any, text: string) => string; carryReminder?: boolean;
 } = {}): any[] {
- const paired = options.reasoning === 'fields' ? carryFields(projectNativeHistory(messages, true), options.carryChars)
+ const paired = options.reasoning === 'fields' ? carryFields(projectNativeHistory(messages, true), options.carryChars, options.carryReminder ?? true)
   : projectNativeHistory(messages, options.reasoning !== 'none');
  const latestThinking = paired.findLastIndex(m => m.role === 'assistant' && m.content?.some((b: any) => b.type === 'thinking'));
  const results = paired.filter(m => m.role === 'toolResult');
@@ -165,6 +167,47 @@ export function freezeHistory(messages: any[], options: { resultChars?: number; 
     if (text.length <= limit && blocks.every((b: any) => b?.type === 'text') && !text.split('\n').some(line => line.length > LONG_LINE_CHARS)) return message;
     return { ...message, content: [{ type: 'text', text: historyResult(text, limit, options.save) }] };
   });
+}
+
+/** Characters a message's tool calls send: name and arguments (ls20-r03b's history carried about 96k of them, uncounted). */
+export const callChars = (message: any): number => (Array.isArray(message?.content) ? message.content : [])
+  .filter((b: any) => b?.type === 'toolCall').reduce((n: number, b: any) => n + String(b.name ?? '').length + JSON.stringify(b.arguments ?? {}).length, 0);
+/** Characters a message sends: its text and its calls. */
+export const sentChars = (message: any): number => textOf(message).length + callChars(message);
+
+/** The earlier decisions boundHistory keeps, and what it left out. */
+export type HistoryWindow = { messages: any[]; kept: number; dropped: number; chars: number; oversize: boolean };
+
+/**
+ * The frozen transcript cut to the newest `decisions` earlier decisions within `maxChars` (sentChars), dropping whole
+ * decisions, oldest first; unset or 0 limits keep everything, which is the default (2026-10-15). A decision starts at a
+ * prompt that is not a length recovery (RECOVER …), so a call always stays with its result. The newest earlier decision is
+ * kept even when it alone is over `maxChars` (`oversize`): it ended with the action whose receipts the head no longer
+ * repeats. A Pi compaction summary in front is kept. When decisions were dropped, the first kept prompt says where their
+ * record is. The window moves only when a decision starts, so the requests within a decision send the same bytes.
+ */
+export function boundHistory(messages: any[], options: { decisions?: number; maxChars?: number } = {}): HistoryWindow {
+  const starts = messages.map((m, i) => m?.role === 'user' && !/^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(textOf(m)) ? i : -1).filter(i => i >= 0);
+  const decisions = options.decisions && options.decisions > 0 ? options.decisions : Infinity;
+  const maxChars = options.maxChars && options.maxChars > 0 ? options.maxChars : Infinity;
+  const size = (list: any[]) => list.reduce((n, m) => n + sentChars(m), 0);
+  let first = starts.length, used = 0, oversize = false;
+  for (let d = starts.length - 1; d >= 0 && starts.length - d <= decisions; d--) {
+    const chars = size(messages.slice(starts[d], starts[d + 1] ?? messages.length));
+    if (used + chars > maxChars) {
+      if (d === starts.length - 1) { first = d; used = chars; oversize = true; }
+      break;
+    }
+    first = d; used += chars;
+  }
+  if (!first || first === starts.length) return { messages, kept: starts.length, dropped: 0, chars: size(messages), oversize };
+  const [head, ...rest] = messages.slice(starts[first]);
+  const note = `(${first} earlier decision${first === 1 ? ' is' : 's are'} not shown here: data/trajectory.jsonl, data/frames/, ` +
+    'results/ and data/memory.md hold their record.)';
+  const content = Array.isArray(head.content) ? head.content : [{ type: 'text', text: String(head.content ?? '') }];
+  const out = [...messages.slice(0, starts[0]).filter(m => m?.role === 'compactionSummary'),
+    { ...head, content: [{ type: 'text', text: note }, ...content] }, ...rest];
+  return { messages: out, kept: starts.length - first, dropped: first, chars: size(out), oversize };
 }
 
 /**

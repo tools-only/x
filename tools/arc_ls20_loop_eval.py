@@ -111,6 +111,49 @@ def carry(root):
                 carry_missing_last=int(budgets[-1].get('carry_missing') or 0) if budgets else None)
 
 
+def decision_starts(harness):
+    """Uncached input of each decision's first agent request (usage.jsonl), where the prefix cache is mostly cold."""
+    first = {}
+    for row in rows(harness / 'usage.jsonl'):
+        if row.get('kind') == 'agent' and row.get('decision') is not None and row['decision'] not in first:
+            first[row['decision']] = int(row.get('input') or 0)
+    values = list(first.values())
+    return dict(decisions=len(values), uncached_input=sum(values),
+                mean_uncached_input=round(sum(values) / len(values)) if values else None)
+
+
+def refinements(harness):
+    """Refinement calls by what started them (the first trigger) and by how they ended (refiner.jsonl)."""
+    started, ended = collections.Counter(), collections.Counter()
+    for row in rows(harness / 'refiner.jsonl'):
+        if row.get('kind') == 'start':
+            first = str((row.get('triggers') or ['?'])[0])
+            started['scheduled' if first.startswith('scheduled:') else 'level' if ' reached at #' in first
+                    else 'agent' if first.startswith('the agent asked') else 'event'] += 1
+        elif row.get('kind'):
+            ended[str(row['kind'])] += 1
+    return dict(started=dict(started.most_common()), outcomes=dict(ended.most_common()))
+
+
+def goal_tests(trajectory):
+    """Actions that predicted a level change or WIN, per level they were played on (1-based), and how they scored."""
+    out = collections.defaultdict(lambda: dict(tests=0, hit=0, miss=0))
+    for row in trajectory:
+        predict = row.get('predict') or {}
+        field = 'level_changed' if predict.get('level_changed') is True \
+            else 'state' if str(predict.get('state') or '').upper() == 'WIN' else None
+        if not field:
+            continue
+        level = int(row.get('levels_completed') or 0) - (1 if row.get('level_changed') else 0) + 1
+        score = next((f for f in (row.get('prediction') or {}).get('fields') or [] if f.get('field') == field), {})
+        out[level]['tests'] += 1
+        if score.get('hit') is True:
+            out[level]['hit'] += 1
+        elif score.get('hit') is False:
+            out[level]['miss'] += 1
+    return {str(level): value for level, value in sorted(out.items())}
+
+
 def report(label):
     root = resolve(label)
     harness = root / 'harness'
@@ -130,6 +173,8 @@ def report(label):
     # context_budget.jsonl is one row per provider round; a decision spans several, so count the distinct ids.
     budget_rows = rows(harness / 'context_budget.jsonl')
     decisions = len({row.get('decision') for row in budget_rows} - {None})
+    last = budget_rows[-1] if budget_rows else {}
+    quiet = sum(1 for row in trajectory if row.get('changed_cells') == 0)
     out = dict(label=label,
                levels_completed=summary.get('levels_completed') if summary.get('levels_completed') is not None
                                 else (max(levels) if levels else None),
@@ -147,6 +192,14 @@ def report(label):
                                seconds_per_action=round(summary['elapsed_seconds'] / played, 1)
                                if played and summary.get('elapsed_seconds') else None),
                tokens=measured, route=carry(root), self_harness=self_harness(root, harness),
+               # Where a decision's cost starts, how much of the play changed nothing, what refinements did, and how often
+               # the goal was tested (2026-10-15); history as the last request sent it, call arguments counted apart.
+               decision_start=decision_starts(harness),
+               changed_nothing=dict(actions=quiet, share=round(quiet / len(trajectory), 3) if trajectory else None),
+               refinements=refinements(harness), goal_tests=goal_tests(trajectory),
+               history={key: last.get(key) for key in ('history_mode', 'history_messages', 'history_text_chars', 'history_args_chars',
+                                                       'history_kept_decisions', 'history_dropped_decisions', 'facts_chars')
+                        if key in last},
                error=summary.get('error'))
     return out
 

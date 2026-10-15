@@ -848,8 +848,70 @@ export function renderMemoryIndex(state: MemoryState, actionCount: number, check
 	return out.join("\n");
 }
 
-/** Plain data for skills (state.memory / state.hypotheses / state.strategies). */
-export function renderDecisionMemory(state: MemoryState, actionCount: number, checks: Record<string, string> = {}, maxChars = 4000): string {
+/**
+ * Memory as shown at the head of a native decision, within `maxChars`. "priority" (2026-10-15) puts first what the record
+ * disputes: a hypothesis whose own check fails (ls20-r03b's hyp.strip_eat failed on 259 of 288 moves) and a contested or
+ * rejected premise of the active strategy; then open experiments, the active strategy, the other live hypotheses with
+ * the refuted rivals that bound them, facts clipped to 200 characters, and the rest as one line each. What does not fit
+ * is named by key: at 600 characters a fact, ls20-r03b's last view left out 8 of its 15 entries without naming them.
+ * Statuses are not changed here. "legacy" is the order before (strategy, premises, facts).
+ */
+export function renderDecisionMemory(state: MemoryState, actionCount: number, checks: Record<string, string> = {}, maxChars = 4000,
+ order: 'priority' | 'legacy' = 'priority'): string {
+ if (order === 'legacy') return renderDecisionMemoryLegacy(state, actionCount, checks, maxChars);
+ const clip = (text: string, n: number) => text.length > n ? text.slice(0, n) + '… [partial; data/memory.md]' : text;
+ const active = [...state.strategies].filter(([, s]) => s.status === 'active');
+ const linked = new Set(active.flatMap(([, s]) => s.depends_on));
+ const live = [...state.hypotheses].filter(([, h]) => h.status !== 'rejected');
+ const questions = new Set(live.map(([, h]) => h.question).filter(Boolean));
+ const fails = (k: string) => /\bfails [1-9]/.test(checks[k] ?? '');
+ const hypothesis = (k: string, h: Hypothesis) => {
+  const evidence = [...h.evidence].reverse();
+  const chosen = [evidence.find(e => e.verdict === 'refutes'), evidence.find(e => e.verdict === 'supports'), evidence[0]];
+  const lines = [`- ${k} [${h.status}]${h.question ? ` question=${h.question}` : ''}: ${clip(h.claim, 450)}`];
+  if (h.next_test) lines.push(`  next test: ${clip(h.next_test, 400)}`);
+  if (h.predicts) lines.push(`  predicts: ${clip(h.predicts, 300)}`);
+  for (const e of [...new Set(chosen.filter(Boolean))] as Evidence[])
+   lines.push(`  #${e.action ?? '?'} ${e.verdict} under ${JSON.stringify(e.condition)}: ${clip(e.observed, 300)}`);
+  if (h.check) lines.push(`  ${checks[k] ?? 'check: not run yet'}`);
+  if (h.status === 'rejected' && !evidence.some(e => e.verdict === 'refutes')) lines.push('  rejected without recorded refutation');
+  return lines.join('\n');
+ };
+ const blocks: Array<[string, string]> = [];
+ const place = (k: string, block: string) => { if (!blocks.some(([key]) => key === k)) blocks.push([k, block]); };
+ for (const [k, h] of state.hypotheses)
+  if ((fails(k) && h.status !== 'rejected') || (linked.has(k) && (h.status === 'contested' || h.status === 'rejected'))) place(k, hypothesis(k, h));
+ for (const [k, h] of live) if (h.status === 'open' && (h.next_test || h.predicts)) place(k, hypothesis(k, h));
+ for (const [k, s] of active) place(k, `- ${k} [active] ${clip(s.plan, 300)}\n  premises: ${s.depends_on.join(', ') || 'none named'}; methods: ${s.uses.join(', ') || 'none named'}`);
+ for (const [k, h] of [...live].sort(([a], [b]) => Number(linked.has(b)) - Number(linked.has(a)))) place(k, hypothesis(k, h));
+ for (const [k, h] of state.hypotheses) if (h.status === 'rejected' && h.question && questions.has(h.question)) place(k, hypothesis(k, h));
+ const used = new Set(active.flatMap(([, s]) => s.uses).map(k => k.replace(/^memory:/, '')));
+ for (const [k, f] of [...state.facts].reverse().sort(([a], [b]) => Number(used.has(b)) - Number(used.has(a))))
+  place(k, `- ${k} [confidence ${f.confidence}] ${clip(f.text, 200)}`);
+ for (const [k, h] of state.hypotheses) place(k, `- ${k} [${h.status}] details: data/memory.md`);
+ for (const [k, s] of state.strategies) place(k, `- ${k} [${s.status}] details: data/memory.md`);
+ const missing = [...(state.hypotheses.size ? [] : ['HYPOTHESES: none']), ...(active.length ? [] : ['STRATEGY: none active'])].join(' · ');
+ if (!blocks.length) return `MEMORY: empty. ${missing}`;
+ const head = ['CURRENT KNOWLEDGE (parent-authored judgments; full evidence: data/memory.md):', ...(missing ? [missing] : [])];
+ // What does not fit is listed by key; the room that list needs is found by refilling once it is known.
+ const fill = (reserve: number) => {
+  const out = [...head], omitted: string[] = [];
+  let size = out.join('\n').length;
+  for (const [k, block] of blocks) {
+   if (size + 1 + block.length > maxChars - reserve) { omitted.push(k); continue; }
+   out.push(block); size += 1 + block.length;
+  }
+  return { out, omitted, size };
+ };
+ const notShown = (keys: string[]) => `not shown: ${keys.join(', ')} (full text: data/memory.md)`;
+ let filled = fill(0);
+ for (let tries = 0; tries < 4 && filled.omitted.length && filled.size + 1 + notShown(filled.omitted).length > maxChars; tries++)
+  filled = fill(1 + notShown(filled.omitted).length);
+ if (filled.omitted.length) filled.out.push(notShown(filled.omitted));
+ return filled.out.join('\n');
+}
+
+function renderDecisionMemoryLegacy(state: MemoryState, actionCount: number, checks: Record<string, string> = {}, maxChars = 4000): string {
  const clip = (text: string, n: number) => text.length > n ? text.slice(0, n) + '… [partial; data/memory.md]' : text;
  const active = [...state.strategies].filter(([, s]) => s.status === 'active');
  const linked = new Set(active.flatMap(([, s]) => s.depends_on));

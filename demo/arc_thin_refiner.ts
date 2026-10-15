@@ -50,6 +50,13 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 
 const EDITABLE = /^(prompts\/[a-z0-9_-]+\.md|(tools|lib)\/[a-z_][a-z0-9_]*\.py|skills\/[a-z0-9_-]+\/SKILL\.md)$/;
 
+/**
+ * Whether a scheduled refinement is due (ARC_REFINE_TRIGGERS=fixed): the action count passed a multiple of `every` since
+ * the last scheduled one. Multiples keep the schedule regular when one decision plays many actions.
+ */
+export const scheduleDue = (actions: number, last: number, every: number) =>
+	every > 0 && Math.floor(actions / every) > Math.floor(last / every);
+
 export type RefinerEdit =
 	| { kind: "file"; path: string; content: string; why: string }
 	| { kind: "memory"; key: string; confidence: number; text: string; why: string; replaces?: string[] }

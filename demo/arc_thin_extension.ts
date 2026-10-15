@@ -24,14 +24,14 @@
  */
 import { createHash } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
-import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, boundHistory, callChars, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
-import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
+import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply, scheduleDue } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
-import { NativeRuntime } from "./arc_thin_native_runtime.ts";
+import { NativeRuntime, actLimit } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
 import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
 import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
@@ -48,7 +48,7 @@ import { evaluateTaskPython, TaskPythonError, type ValidatedTaskPythonProgram } 
 import { SKILL_LIMITS, arcSkillFoundation, guestFailure, arcSkillGuestProgram, type GuestResult } from "./arc_thin_skill_guest.ts";
 import { backtestCases, renderBacktest, scoreBacktest, type GuestCaseResult, type ModelCheck } from "./arc_thin_backtest.ts";
 import { sharedTaskPythonPool } from "./pi_task_python_pool.ts";
-import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
+import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, renderFacts, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
 import {
 	CRITIC_SYSTEM, NATIVE_CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
 } from "./arc_thin_critic.ts";
@@ -212,12 +212,24 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// the summarised section inside the head (the default before 2026-10-14), within that many characters.
 	const nativeHistoryChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 0)));
 	const historyResultChars = Math.max(200, Math.floor(Number(process.env.ARC_THIN_HISTORY_RESULT_CHARS ?? NATIVE_HISTORY_RESULT_CHARS)));
+	// The transcript's window (2026-10-15): the newest ARC_THIN_NATIVE_HISTORY_DECISIONS earlier decisions within
+	// ARC_THIN_NATIVE_HISTORY_MAX_CHARS characters, text and call arguments counted (boundHistory). Unset or 0: all of them.
+	const historyDecisions = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_DECISIONS) || 0));
+	const historyMaxChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_MAX_CHARS) || 0));
 	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
 	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
 	// ARC_THIN_PYTHON_KERNEL=0 restores a fresh sandbox per call restored from the checkpoint, with acting replayed;
 	// ARC_THIN_SESSION_VIEW=0 leaves the listing out.
 	const pythonKernel = native && process.env.ARC_THIN_PYTHON_KERNEL !== "0" && process.env.ARC_THIN_PYTHON_SESSION !== "0";
 	const sessionView = native && process.env.ARC_THIN_SESSION_VIEW !== "0";
+	// 2026-10-15 (docs/plans/2026-10-15-r03b-simple-context-plan.md). The runtime's facts lead each native decision's head
+	// in place of RECENT ACTIONS (ARC_THIN_FACTS=0 restores the earlier head); memory is shown disputed-first
+	// (ARC_THIN_MEMORY_VIEW=legacy restores the earlier order); one acting python call may spend ARC_THIN_ACT_SHARE of the
+	// budget left (0: the fixed MAX_ACTS); the <carry> ask and its reminder are left out (ARC_THIN_CARRY_ASK=1 restores them).
+	const factsLayout = native && ledgerOn && process.env.ARC_THIN_FACTS !== "0";
+	const memoryOrder = process.env.ARC_THIN_MEMORY_VIEW === "legacy" ? "legacy" : "priority";
+	const actShare = process.env.ARC_THIN_ACT_SHARE === undefined ? 0.25 : Math.max(0, Number(process.env.ARC_THIN_ACT_SHARE) || 0);
+	const carryAsk = process.env.ARC_THIN_CARRY_ASK === "1";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -596,15 +608,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// come the memory index, a summarised history, recent actions it does not cover, what a refinement changed, and
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
-			const out: Array<[string, string]> = [["memory", renderDecisionMemory(memory, trajectory.length, claimLines())]];
+			const memoryView = renderDecisionMemory(memory, trajectory.length, claimLines(), 4000, memoryOrder);
 			const rules = ruleChecksText();
-			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
 			const held = sessionView ? nativeRuntime?.sessionView() ?? "" : "";
+			const notice = takeRefinerNotice();
+			// The runtime's facts first, then costs, what a refinement did, and the agent's own knowledge. RECENT ACTIONS is
+			// left out: the transcript in front of this head holds those receipts.
+			if (factsLayout) return ([["facts", factsText], ["resources", resourcesText()], ["refiner", notice], ["memory", memoryView],
+				["rules", rules], ["python", held], ["history", historyText ?? ""]] as Array<[string, string]>).filter(([, value]) => value);
+			const out: Array<[string, string]> = [["memory", memoryView]];
+			if (rules) out.push(["rules", rules]);
 			if (held) out.push(["python", held]);
 			if (historyText) out.push(["history", historyText]);
 			if (recent) out.push(["recent", recent]);
-			if (refinerNotice) { out.push(["refiner", refinerNotice]); refinerNotice = ""; }
+			if (notice) out.push(["refiner", notice]);
 			return out;
 		};
 		const sections: Array<[string, string]> = control ? [["recent", recent]]
@@ -620,7 +638,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const explore = explorationText();
 			if (explore) sections.push(["explore", explore]);
 		}
-		const resources = control ? "" : resourcesText();
+		const resources = control || factsLayout ? "" : resourcesText();
 		if (resources) sections.push(["resources", resources]);
 		if (carriedReasoning)
 			sections.push(["reasoning", `YOUR REASONING AT THE PREVIOUS DECISION (its last ${carryChars} characters; it is not kept after ` +
@@ -914,6 +932,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let observer: Promise<void> = Promise.resolve();
 	let ledgerText = "";
 	let criticText = "";
+	/** The runtime's facts about the current level (renderFacts), built before each native decision. */
+	let factsText = "";
 	let criticNotes: CriticNote[] = [];
 	let criticCheckedThrough = 0;
 	let criticShownDecision = -10;
@@ -944,6 +964,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const refiner = readRows("refiner.jsonl").filter((row) => row.kind === "start");
 		refineNotes = refiner.map((row) => ({ at: Number(row.at) || 0, level: 0, triggers: row.triggers ?? [], lines: [], dropped: [] }));
 		lastRefineAt = Math.max(0, ...refineNotes.map((note) => note.at));
+		// The step schedule goes on from the last scheduled refinement, or the last one skipped over the cost ceiling.
+		const scheduled = (list: unknown) => Array.isArray(list) && list.some((trigger) => String(trigger).startsWith("scheduled:"));
+		lastScheduledAt = Math.max(0, ...readRows("refiner.jsonl")
+			.filter((row) => scheduled(row.kind === "start" ? row.triggers : row.kind === "over_budget" ? row.dropped : undefined))
+			.map((row) => Number(row.at) || 0));
 		// After a restart, events before the restart are not refined again.
 		refinedThrough = trajectory.length;
 	}
@@ -1202,12 +1227,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * The refinement pipeline (native mode; arc_thin_refiner.ts). Events start one background side call that makes one
-	 * harness edit; it replaces the advisory critic and the reuse-gap review, never delays a decision, and the agent is
-	 * told once what changed. Events: the failures the critic used to review, a level change, repeated python work, a
-	 * level played without any goal test, reasoning spent locating cells with no view tool, REFINE_EVERY actions
-	 * without a refinement, and the agent's own refine(focus).
+	 * The refinement pipeline (native mode; arc_thin_refiner.ts). One background side call makes one harness edit; it
+	 * replaces the advisory critic and the reuse-gap review, never delays a decision, and the agent is told once what
+	 * changed, or that nothing did. When one starts (ARC_REFINE_TRIGGERS): "fixed", the default since 2026-10-15, every
+	 * REFINE_EVERY actions, at a level change and on the agent's own refine(focus), with the conditions below as its input;
+	 * "events" (deecdde6), whenever one of those conditions arises: the failures the critic used to review, a level change,
+	 * repeated python work, a level played without any goal test, reasoning spent locating cells with no view tool, the
+	 * promotion path's events, REFINE_EVERY actions without a refinement, and refine(focus).
 	 */
+	const REFINE_TRIGGERS = process.env.ARC_REFINE_TRIGGERS ?? "fixed";
+	if (!["fixed", "events"].includes(REFINE_TRIGGERS)) throw Error("ARC_REFINE_TRIGGERS must be fixed or events");
 	const REFINE_EVERY = envNumber("ARC_REFINE_EVERY", 15);
 	const GOAL_TEST_AFTER = envNumber("ARC_REFINE_GOAL_TEST_AFTER", 12);
 	/** A fact rewritten this often while no hypothesis has a check: the agent restates a belief instead of testing it. */
@@ -1220,11 +1249,32 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let refineNotes: CriticNote[] = [];
 	let refinedThrough = 0;
 	let lastRefineAt = 0;
+	/** Action count at the last scheduled refinement ("fixed"), or at the last one skipped over the cost ceiling. */
+	let lastScheduledAt = 0;
 	const refinedFamilies = new Set<string>();
 	let goalTestAskedAt = -1;
 	let viewAskedLevel = -1;
 	let refinerInFlight: Promise<void> | undefined;
-	let refinerNotice = "";
+	/** Refinement outcomes not yet shown, with the action count an edit was based on. */
+	let refinerNotices: Array<{ text: string; evidenceAt?: number }> = [];
+	const tell = (text: string, evidenceAt?: number) => { refinerNotices.push({ text, ...(evidenceAt !== undefined ? { evidenceAt } : {}) }); };
+	/** " It was made from the record up to #228; since then: #229 RESET." when actions followed the record an edit used. */
+	const evidenceSince = (at?: number): string => {
+		if (at === undefined || trajectory.length <= at) return "";
+		const since = trajectory.slice(at);
+		const label = (row: ActionRow) => `#${row.n} ${actionLabel(row)}`;
+		return ` It was made from the record up to #${at}; since then: ` + (since.length === 1 ? label(since[0])
+			: `${since.length} actions (${since.length <= 3 ? since.map(label).join(", ") : `${label(since[0])}, ${label(since[1])}, …, ${label(since.at(-1)!)}`})`) + ".";
+	};
+	/**
+	 * The notices for the next decision's head, each shown once. An edit says what record it was made from when actions
+	 * followed: in ls20-r03b a strategy written before a RESET was shown after it, with nothing to tell them apart.
+	 */
+	function takeRefinerNotice(): string {
+		const text = refinerNotices.map(({ text, evidenceAt }) => text + evidenceSince(evidenceAt)).join("\n");
+		refinerNotices = [];
+		return text;
+	}
 	/** Files a refinement wrote: later refinements may rewrite them; other existing files belong to the agent. */
 	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string").map((row) => row.path));
 	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || path === RULES_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
@@ -1235,35 +1285,50 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch { return undefined; }
 	}
 
-	function refinerTriggers(state: LedgerState): { triggers: string[]; samples: string[] } {
-		const triggers: string[] = [];
+	/**
+	 * The conditions in the record a refinement can act on, each raised once (the counters above): the failures the critic
+	 * used to review, repeated python work (with its latest calls as samples), a level played without a goal test,
+	 * reasoning spent locating cells with no view tool, and the promotion path's events.
+	 */
+	function conditionParts(state: LedgerState) {
+		const failures = criticTriggers(state, refineNotes, refinedThrough, memory.hypotheses.size, criticConfig, touchedKeys).triggers;
+		const work: string[] = [];
 		let samples: string[] = [];
-		triggers.push(...criticTriggers(state, refineNotes, refinedThrough, memory.hypotheses.size, criticConfig, touchedKeys).triggers);
-		for (const row of trajectory.slice(refinedThrough)) if (row.level_changed) triggers.push(`level ${row.levels_completed} reached at #${row.n}`);
 		for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
 			if (refinedFamilies.has(family.key)) continue;
 			refinedFamilies.add(family.key);
-			triggers.push(family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
+			work.push(family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
 				: `python computation \`${family.gist}\` redone ${family.calls} times`);
 			samples = family.samples;
 			break;
 		}
 		// No step on this level has predicted a level change: the moves explore, none tests how the level is won.
+		const goal: string[] = [];
 		const levelStart = trajectory.findLastIndex((row) => row.level_changed) + 1;
 		const onLevel = trajectory.slice(levelStart);
 		if (onLevel.length >= GOAL_TEST_AFTER && !onLevel.some((row) => row.predict?.level_changed === true)
 			&& (goalTestAskedAt < levelStart || trajectory.length - goalTestAskedAt >= 2 * GOAL_TEST_AFTER)) {
 			goalTestAskedAt = trajectory.length;
-			triggers.push(`${onLevel.length} actions on this level and no step predicted a level change (no goal test yet)`);
+			goal.push(`${onLevel.length} actions on this level and no step predicted a level change (no goal test yet)`);
 		}
 		// Reasoning spent reading positions off the grid, with no view tool reporting them.
+		const view: string[] = [];
 		const share = lastDecisionCost?.coordinateShare ?? 0;
 		if (share >= 0.3 && (lastDecisionCost?.reasoning ?? 0) >= 3000 && viewAskedLevel !== currentLevel()
 			&& !binder!.active().some((c) => c.kind === "tool" && c.view)) {
 			viewAskedLevel = currentLevel();
-			triggers.push(`about ${Math.round(100 * share)}% of the agent's reasoning sentences in its last decision located cells or coordinates, and no view tool reports them`);
+			view.push(`about ${Math.round(100 * share)}% of the agent's reasoning sentences in its last decision located cells or coordinates, and no view tool reports them`);
 		}
-		triggers.push(...promotionEvents(refinerOverBudget()));
+		return { failures, work, samples, goal, view, promotion: promotionEvents(refinerOverBudget()) };
+	}
+	const levelChanges = () => trajectory.slice(refinedThrough).filter((row) => row.level_changed).map((row) => `level ${row.levels_completed} reached at #${row.n}`);
+
+	/** What starts a refinement before this decision (none while one runs: prepareLedger waits), and its input conditions. */
+	function refinerTriggers(state: LedgerState): { triggers: string[]; samples: string[]; conditions: string[] } {
+		if (REFINE_TRIGGERS === "fixed") return fixedTriggers(state);
+		const parts = conditionParts(state);
+		const triggers = [...parts.failures, ...levelChanges(), ...parts.work, ...parts.goal, ...parts.view, ...parts.promotion];
+		const samples = parts.samples;
 		if (!triggers.length && trajectory.length - lastRefineAt >= REFINE_EVERY) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
 		refinedThrough = trajectory.length;
 		// Over the cost ceiling only a level change and a rule in dispute still start a refinement (the agent's own
@@ -1272,9 +1337,32 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const kept = triggers.filter((t) => /^level \d+ reached|the rule is in dispute/.test(t));
 			if (kept.length < triggers.length) append("refiner.jsonl", { kind: "over_budget", at: trajectory.length, dropped: triggers.filter((t) => !kept.includes(t)),
 				refiner_tokens: spentTokens.get("refiner") ?? 0, agent_tokens: spentTokens.get("agent") ?? 0 });
-			return { triggers: kept, samples };
+			return { triggers: kept, samples, conditions: [] };
 		}
-		return { triggers, samples };
+		return { triggers, samples, conditions: [] };
+	}
+
+	/**
+	 * "fixed": a scheduled refinement every REFINE_EVERY actions (scheduleDue), one at a level change, and the agent's own
+	 * (refine, started directly). The conditions are read only when one starts and go to it as input, so none is used up
+	 * without being passed on. A wake while a refinement runs waits for the next decision start (prepareLedger); over the
+	 * cost ceiling a scheduled one is skipped and only level changes start one.
+	 */
+	function fixedTriggers(state: LedgerState): { triggers: string[]; samples: string[]; conditions: string[] } {
+		const triggers = levelChanges();
+		if (scheduleDue(trajectory.length, lastScheduledAt, REFINE_EVERY)) {
+			const due = `scheduled: every ${REFINE_EVERY} actions, now #${trajectory.length}`;
+			if (!refinerOverBudget()) triggers.push(due);
+			else {
+				lastScheduledAt = trajectory.length;
+				append("refiner.jsonl", { kind: "over_budget", at: trajectory.length, dropped: [due],
+					refiner_tokens: spentTokens.get("refiner") ?? 0, agent_tokens: spentTokens.get("agent") ?? 0 });
+			}
+		}
+		if (!triggers.length) return { triggers, samples: [], conditions: [] };
+		const parts = conditionParts(state);
+		refinedThrough = trajectory.length;
+		return { triggers, samples: parts.samples, conditions: [...parts.failures, ...parts.work, ...parts.goal, ...parts.view, ...parts.promotion] };
 	}
 
 	/** Refinements have used more than REFINER_SHARE of the agent's own budget tokens (and more than a few calls' worth). */
@@ -1341,7 +1429,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch { return ""; }
 	}
 
-	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
+	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[], asked = false, conditions: string[] = []): Promise<void> {
 		const promotionId = pendingPromotion;
 		pendingPromotion = undefined;
 		const evidenceAt = trajectory.length, evidenceLevel = currentLevel();
@@ -1352,6 +1440,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const saved = binder!.active().filter((c) => /^(tools|observers|lib)\/[^/]+\.py$/.test(c.path));
 		const input = [
 			`WHY NOW: ${triggers.join("; ")}`,
+			// "fixed": the conditions that started refinements of their own in "events" mode, and the agent's facts block.
+			...(conditions.length ? [`ALSO ON RECORD:\n${conditions.slice(0, 10).map((line) => `- ${line}`).join("\n")}` +
+				(conditions.length > 10 ? `\n- (${conditions.length - 10} more of the same kinds)` : "")] : []),
+			...(REFINE_TRIGGERS === "fixed" && factsText ? [factsText] : []),
 			`ACTIONS SO FAR: ${trajectory.length}; levels completed: ${currentLevel()}; state: ${observation?.state ?? "unknown"}`,
 			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
 			`CURRENT ${RULES_PATH}${rulesText() ? ` (v${binder!.versionMap()[RULES_PATH] ?? "?"})` : " (not written yet)"}:\n${rulesText() || "(empty)"}`,
@@ -1366,30 +1458,48 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const system = REFINER_SYSTEM + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
 		const reply: any = await sideCall(ctx, system, [{ type: "text", text: input }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
 		appendUsage("refiner", reply);
+		const at = trajectory.length;
+		const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
+		const reason = triggers[0];
+		// A call the provider failed or cut off is reported as such, before its text is parsed: in r03b's su15 run (from
+		// GLM's analysis) a refinement that stopped with stop_reason=error was logged as an invalid reply, and the agent
+		// heard of neither.
+		if (reply.stopReason === "error" || reply.stopReason === "aborted" || reply.stopReason === "length") {
+			const kind = reply.stopReason === "length" ? "truncated" : "failed";
+			const error = String(reply.errorMessage || reply.stopReason).replace(/\s+/g, " ").trim().slice(0, 200);
+			append("refiner.jsonl", { kind, ...base, error, output_tokens: reply.usage?.output ?? null });
+			settlePromotion(promotionId, { kind });
+			tell(`REFINEMENT after #${evidenceAt} (${reason}) ${kind === "failed" ? `failed: ${error}` : "was cut off at its output limit"}; nothing changed.`);
+			return;
+		}
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
 		const edit = parseRefinerReply(answer);
 		settlePromotion(promotionId, edit as { kind: string; path?: string });
-		const at = trajectory.length;
-		const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
 		if (currentLevel() !== evidenceLevel || ((edit.kind === 'memory' || edit.kind === 'hypothesis') && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
 			|| (edit.kind === 'file' && (binder!.versionMap()[edit.path] !== sourceVersions[edit.path]
 				|| (workspace!.files().includes(edit.path) ? workspace!.read(edit.path) : undefined) !== sourceBefore.get(edit.path)))) {
 			append('refiner.jsonl', {kind: 'stale', ...base, why: 'scope or target changed while refinement was running'});
+			if (asked) tell(`REFINEMENT after #${evidenceAt} (${reason}) was not applied: the level or what it would edit changed while it ran.`);
 			return;
 		}
-		// Notices not yet shown are kept: two refinements between decisions are both reported.
-		const told = (what: string, why: string) => [refinerNotice, `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
-			(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits."].filter(Boolean).join("\n");
+		// Notices not yet shown are kept: two refinements between decisions are both reported. "after #N" is the record the
+		// refinement was given; actions played while it ran are named when the notice is shown (evidenceSince).
+		const told = (what: string, why: string) => tell(`HARNESS UPDATE by a refinement after #${evidenceAt} (${reason}): ${what}` +
+			(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits.", evidenceAt);
 		if (edit.kind === "memory") {
 			const plan = planNativeMemoryUpdate(memory, { set: [{ key: edit.key, text: edit.text, confidence: edit.confidence,
 				...(edit.replaces ? { replaces: edit.replaces.filter((key) => memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key)) } : {}) }] },
 				trajectory.length, components());
-			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+			if (!plan.ok) {
+				append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error });
+				tell(`REFINEMENT after #${evidenceAt} (${reason}) returned a memory entry that could not be saved (${plan.error}); nothing changed.`);
+				return;
+			}
 			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 			applyRows(memory, plan.rows);
 			const retired = plan.rows.filter((row: any) => row.deleted).map((row) => row.key);
 			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, ...(retired.length ? { replaces: retired } : {}) });
-			refinerNotice = told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why);
+			told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why);
 			return;
 		}
 		// A belief turned into a checked hypothesis goes through the memory component like the agent's own: the runtime
@@ -1398,18 +1508,29 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (memory.hypotheses.has(edit.key)) { append("refiner.jsonl", { kind: "refused", ...base, path: `memory:${edit.key}`, why: `${edit.key} exists; a refinement adds hypotheses, it does not rewrite them` }); return; }
 			const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(edit.question ? { question: edit.question } : {}),
 				...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}) }] }, trajectory.length, components());
-			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+			if (!plan.ok) {
+				append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error });
+				tell(`REFINEMENT after #${evidenceAt} (${reason}) returned a hypothesis that could not be saved (${plan.error}); nothing changed.`);
+				return;
+			}
 			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 			applyRows(memory, plan.rows);
 			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check) });
-			refinerNotice = told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why);
+			told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why);
 			return;
 		}
-		if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
+		if (edit.kind !== "file") {
+			append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why });
+			// A reply in no known form is reported; a scheduled "no edit" is not news, one the agent asked for is.
+			if (edit.kind === "invalid") tell(`REFINEMENT after #${evidenceAt} (${reason}) returned no usable edit (${edit.why}); nothing changed.`);
+			else if (asked) tell(`REFINEMENT after #${evidenceAt} (${reason}) made no edit: ${edit.why || "no reason given"}.`);
+			return;
+		}
 		// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
 		// tools/probe.py into an unrelated view). It may rewrite the strategy and files that refinements wrote.
 		if (!ownedByRefinement(edit.path)) {
 			append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
+			if (asked) tell(`REFINEMENT after #${evidenceAt} (${reason}) was not applied: it would have replaced your ${edit.path}.`);
 			return;
 		}
 		// The rules prompt is refinement-only (the agent's writes to it are refused), so it is written as the runtime.
@@ -1422,13 +1543,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const loaded = !/NOT loaded/.test(receipt ?? "");
 		const version = binder!.versionMap()[edit.path];
 		append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt });
-		refinerNotice = told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why);
+		told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why);
 	}
 
 	/** Start one refinement unless one is running; true when it was started. */
 	/** The agent's own request made while a refinement ran: it runs next, so asking is never lost. */
 	let queuedFocus: string[] | undefined;
-	function startRefiner(ctx: ExtensionContext | undefined, triggers: string[], samples: string[], asked = false): boolean {
+	function startRefiner(ctx: ExtensionContext | undefined, triggers: string[], samples: string[], asked = false, conditions: string[] = []): boolean {
 		if (!ctx?.model) return false;
 		if (refinerInFlight) {
 			if (asked) queuedFocus = triggers;
@@ -1437,9 +1558,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		refineNotes.push({ at: trajectory.length, level: currentLevel(), triggers, lines: [], dropped: [] });
 		lastRefineAt = trajectory.length;
-		append("refiner.jsonl", { kind: "start", at: trajectory.length, decision, triggers });
-		refinerInFlight = runRefiner(ctx, triggers, samples)
-			.catch((error) => { logError("refiner", error); append("refiner.jsonl", { kind: "failed", at: trajectory.length, triggers, error: errorText(error).slice(0, 300) }); })
+		if (triggers.some((trigger) => trigger.startsWith("scheduled:"))) lastScheduledAt = trajectory.length;
+		append("refiner.jsonl", { kind: "start", at: trajectory.length, decision, triggers, ...(conditions.length ? { conditions } : {}) });
+		refinerInFlight = runRefiner(ctx, triggers, samples, asked, conditions)
+			.catch((error) => {
+				logError("refiner", error);
+				append("refiner.jsonl", { kind: "failed", at: trajectory.length, triggers, error: errorText(error).slice(0, 300) });
+				tell(`REFINEMENT (${triggers[0]}) failed: ${errorText(error).replace(/\s+/g, " ").trim().slice(0, 200)}; nothing changed.`);
+			})
 			.finally(() => {
 				refinerInFlight = undefined;
 				const next = queuedFocus; queuedFocus = undefined;
@@ -1450,7 +1576,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Before each decision: bounded wait for observations, the ledger view, and the critic when triggered. */
 	async function prepareLedger(ctx: ExtensionContext | undefined): Promise<void> {
-		ledgerText = ""; criticText = "";
+		ledgerText = ""; criticText = ""; factsText = "";
 		if (!ledgerOn) return;
 		// The state itself is recorded for every run (before_agent_start); observeOne skips states already observed.
 		if (gridOf(observation)) observeState(trajectory.length, skillState(false, false));
@@ -1464,10 +1590,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			try { workspace.runtimeWrite("data/ledger.md", renderLedgerView(state, [...memory.hypotheses.keys()], 6000, goalRefs) + "\n"); }
 			catch (error) { logError("ledger:file", error); }
 			ledgerText = "";
+			// Its counts for the current level are pushed into the head instead (renderFacts): read from the file, they
+			// were not read (once in ls20-r03b's 288 actions).
+			if (factsLayout) {
+				try {
+					const level = currentLevel();
+					factsText = renderFacts(buildLedger(trajectory.filter((row) => levelOf(row) === level), observations, grids),
+						observation?.action_budget ?? trajectory.at(-1)?.budget);
+				} catch (error) { factsText = ""; logError("ledger:facts", error); }
+			}
 			// While a refinement runs, events wait for the next decision instead of being dropped.
 			if (refinerActive() && !refinerInFlight) {
-				const { triggers, samples } = refinerTriggers(state);
-				if (triggers.length) startRefiner(ctx, triggers, samples);
+				const { triggers, samples, conditions } = refinerTriggers(state);
+				if (triggers.length) startRefiner(ctx, triggers, samples, false, conditions);
 			}
 			return;
 		}
@@ -1714,8 +1849,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	async function submitAction(params: {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
 	}, via?: string): Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
-		if (!availableActions(observation).includes(params.action))
-			return { refusal: `action '${params.action}' is not currently available` };
+		// The refusal says what is available and what was played last, nothing more: in ls20-r03b a refusal that named
+		// neither was read as "RESET is ONE-TIME" and kept in memory.
+		if (!availableActions(observation).includes(params.action)) {
+			const last = trajectory.at(-1);
+			return { refusal: `action '${params.action}' is not currently available. Available now: ${availableActions(observation).join(", ") || "none reported"}; ` +
+				`last action played: ${last ? `#${last.n} ${actionLabel(last)}` : "none yet"}.` };
+		}
 		// The environment ignores coordinates on actions that take none; recording them made later receipts read like
 		// clicks at different places (2026-10-13). They are dropped, and the receipt says so.
 		const givenXY = params.x !== undefined && params.y !== undefined;
@@ -2296,6 +2436,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [] }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
+      actLimit: () => actLimit(observation?.action_budget ?? trajectory.at(-1)?.budget, actShare),
       ...(pythonMemory ? { remember: pythonMemory } : {}),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
@@ -2396,18 +2537,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       observation: queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
-      // What of a decision's own thinking comes back to it on its next call, and what the agent must write to keep the
-      // rest. The requirement is a short field block the agent authors; nothing summarises or rewrites its reasoning.
-      // ls20-r01 and ls20-r02 measured carry_blocks=0 over 16 and 21 projected messages, with the long form of this ask
-      // and a <carry-missing> note on the result: this model does not author the block. The ask is kept to one line --
-      // the lift path and the note still pick one up if it ever writes one -- rather than spending the prompt's
-      // attention on an instruction two rounds have shown to be inert.
+      // What of a decision's own thinking comes back to it on its next call. The <carry> ask is left out by default
+      // (2026-10-15): carries were written about twice in ls20-r03b's 102 requests and never in ls20-r01, ls20-r02 or
+      // su15; a block the model does write is still kept. ARC_THIN_CARRY_ASK=1 restores the ask.
       carry: reasoningMode === 'fields'
-        ? 'Your reasoning is not read back to you after the call it was written for; your text, calls and results are. '
-          + 'A <carry>premises / eliminated / probe / open</carry> block, in your text or your reasoning, is kept; what '
-          + 'is not in it you will have to derive again.'
+        ? 'Your reasoning is not read back to you after the call it was written for; your text, calls and results are.'
+          + (carryAsk ? ' A <carry>premises / eliminated / probe / open</carry> block, in your text or your reasoning, is kept; what '
+          + 'is not in it you will have to derive again.' : '')
         : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
-      refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
+      refine: !criticOn ? '' : REFINE_TRIGGERS === 'fixed'
+        ? `A refinement runs in the background every ${REFINE_EVERY} actions, at a level change, or when you call refine(focus); it makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides it), and the next decision says what changed. `
+        : 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -2523,8 +2663,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
+		const frozen = native && !summarised && !replayReasoning
+			? freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
+		// ARC_THIN_NATIVE_HISTORY_DECISIONS / _MAX_CHARS: only the newest earlier decisions, whole (unset: every one).
+		const bounded = frozen && (historyDecisions || historyMaxChars)
+			? boundHistory(frozen, { decisions: historyDecisions, maxChars: historyMaxChars }) : undefined;
 		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
-			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }))
+			: bounded?.messages ?? frozen!)
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
 		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).
@@ -2541,7 +2686,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
 			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
         reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'fields' | 'none' : 'none',
-        fullResults: 2, carryChars: carryFieldChars, ...(archiveResults ? { archive: archiveResult } : {}) })]
+        fullResults: 2, carryChars: carryFieldChars, carryReminder: carryAsk, ...(archiveResults ? { archive: archiveResult } : {}) })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		lastContextChars = projected.reduce((n, message) => n + messageText(message).length, 0) + systemChars;
 		// Developer-only accounting, never added to the model context.
@@ -2559,7 +2704,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
 				...(native ? { history_mode: summarised ? 'summary' : 'transcript' } : {}),
 				history_text_chars: summary ? summary.text.length : history.reduce((n, message) => n + messageText(message).length, 0),
+				// Tool-call arguments the history sends, which history_text_chars leaves out (about 96k in ls20-r03b).
+				history_args_chars: history.reduce((n, message) => n + callChars(message), 0),
 				...(summary ? { history_decisions: summary.decisions, history_omitted: summary.omitted } : {}),
+				...(bounded ? { history_kept_decisions: bounded.kept, history_dropped_decisions: bounded.dropped, history_newest_oversize: bounded.oversize } : {}),
+				...(native ? { facts_chars: factsText.length } : {}),
 				message_text_chars: projected.reduce((n, message) => n + messageText(message).length, 0),
 				reasoning_chars: projected.reduce((n, message) => n + (Array.isArray(message.content)
 					? message.content.filter((block: any) => block.type === "thinking").reduce((m: number, block: any) => m + String(block.thinking ?? "").length, 0) : 0), 0),

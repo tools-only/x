@@ -17,6 +17,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
   /** Take one action for foreground code through the environment boundary (closed loop: env.act). */
   act?(call: ActCall, via: string): Promise<ActOutcome>;
+  /** How many actions one acting call may take, read when the call starts (default MAX_ACTS). */
+  actLimit?(): ActLimit;
   /** Commit a memory update made by code (env.remember) through the memory tool's own update; returns its receipt. */
   remember?(args: unknown): Promise<string>;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
@@ -29,6 +31,43 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
 /** At most this many env.act calls in one tool call. */
 export const MAX_ACTS = 24;
+/** The cap on one acting call, and what the result says when the call reaches it. */
+export type ActLimit = { cap: number; why: string };
+const FIXED_LIMIT: ActLimit = { cap: MAX_ACTS, why: `the limit of ${MAX_ACTS} actions per call was reached` };
+/**
+ * One acting call's cap: `share` of the actions the budget has left (the nearer of the level's and the run's limits),
+ * at least one and at most MAX_ACTS; MAX_ACTS when no budget is reported or the share is 0. With a fixed 24 alone, one
+ * call could spend most of what was left late in a level (2026-10-15).
+ */
+export function actLimit(budget: any, share: number): ActLimit {
+  const left = [[budget?.used, budget?.maximum], [budget?.total_used, budget?.total_maximum]]
+    .filter(([used, maximum]) => typeof used === 'number' && typeof maximum === 'number').map(([used, maximum]) => Math.max(0, maximum - used));
+  if (!left.length || !(share > 0)) return FIXED_LIMIT;
+  const remaining = Math.min(...left);
+  const cap = Math.max(1, Math.min(MAX_ACTS, Math.ceil(remaining * share)));
+  return cap === MAX_ACTS ? FIXED_LIMIT
+    : { cap, why: `this call's share of the budget was reached (${cap} action${cap === 1 ? '' : 's'}: ${Math.round(share * 100)}% of the ${remaining} left)` };
+}
+/** One action an acting call took, for its summary line. */
+export type ActedRow = { n?: number; action: string; changed?: number | null };
+/**
+ * One line over an acting call of three or more actions: the range, the count per action and how many changed no
+ * cell, so a batch can be read without going through every receipt (they follow it, one per action).
+ */
+export function actedSummary(rows: ActedRow[]): string {
+  if (rows.length < 3) return '';
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.action, (counts.get(row.action) ?? 0) + 1);
+  const quiet = rows.filter(row => row.changed === 0).length;
+  const first = rows[0].n, last = rows.at(-1)!.n;
+  return `PLAYED${first !== undefined && last !== undefined ? ` #${first}–#${last}` : ''}: ` +
+    [...counts].map(([action, n]) => `${action} ×${n}`).join(', ') + (quiet ? `; ${quiet} changed nothing` : '');
+}
+const actedRow = (call: ActCall, outcome: ActOutcome): ActedRow => {
+  const seen = (outcome.observation ?? {}) as Record<string, any>;
+  return { ...(typeof seen.n === 'number' ? { n: seen.n } : {}), action: String(seen.transition?.action ?? call.action ?? '?').replace(/\(.*$/, ''),
+    changed: typeof seen.changed_cells === 'number' ? seen.changed_cells : null };
+};
 /** Python executions of the agent and its subagents that run at once (each is one python process). */
 const MAX_PARALLEL = 4;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
@@ -53,8 +92,8 @@ export function isEmptyValue(value: unknown): boolean {
 /** Consecutive empty outputs before a view is reported to the refinement. */
 export const EMPTY_VIEW_STATES = 2;
 
-/** What one execution acted: the receipt lines and, when the runtime stopped it, why. */
-type Acted = { lines: string[]; stopped?: string };
+/** What one execution acted: the receipt lines, the actions for the summary line and, when the runtime stopped it, why. */
+type Acted = { lines: string[]; rows: ActedRow[]; stopped?: string };
 
 export class NativeRuntime {
   private registered = new Map<string, string>();
@@ -231,7 +270,8 @@ export class NativeRuntime {
     const source = input.code ?? input.sources[input.path] ?? '';
     for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
     const acts: Array<{ call: ActCall; observation?: unknown; stopped?: string }> = [];
-    const acted: Acted = { lines: [] };
+    const acted: Acted = { lines: [], rows: [] };
+    let limit: ActLimit | undefined;
     const controller = new AbortController(); const abort = () => controller.abort();
     signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
     // Each attempt gets its own time allowance once it holds a slot: a replayed acting call restarts the code once per
@@ -256,9 +296,12 @@ export class NativeRuntime {
         if (result.need_act) {
           if (!via || !this.host.act) throw Error('this code cannot act');
           const played = acts.filter(a => !a.stopped).length;
-          const outcome: ActOutcome = played >= MAX_ACTS ? { stopped: `the limit of ${MAX_ACTS} actions per call was reached` }
+          // The cap is read once, before the call's first action.
+          limit ??= this.host.actLimit?.() ?? FIXED_LIMIT;
+          const outcome: ActOutcome = played >= limit.cap ? { stopped: limit.why }
             : acted.stopped ? { stopped: acted.stopped } : await this.host.act(result.need_act, via);
           if (outcome.line) acted.lines.push(outcome.line);
+          if (!outcome.stopped) acted.rows.push(actedRow(result.need_act, outcome));
           if (outcome.stopped) acted.stopped ??= outcome.stopped;
           acts.push({ call: result.need_act, ...(outcome.stopped ? { stopped: outcome.stopped } : { observation: outcome.observation }) });
           continue;
@@ -297,16 +340,18 @@ export class NativeRuntime {
     const all = input.files; const files: Record<string, string> = {};
     const source = input.code ?? '';
     for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
-    const acted: Acted = { lines: [] };
-    let played = 0, fetched = 0;
+    const acted: Acted = { lines: [], rows: [] };
+    let played = 0, fetched = 0, limit: ActLimit | undefined;
     const answer = async (request: KernelRequest): Promise<unknown> => {
       if (request.t === 'act') {
         if (!via || !this.host.act) return { error: 'this code cannot act' };
         const call = request.call as ActCall;
         if (!call || typeof call.action !== 'string') return { error: 'invalid action request' };
-        const outcome: ActOutcome = played >= MAX_ACTS ? { stopped: `the limit of ${MAX_ACTS} actions per call was reached` }
+        // The cap is read once, before the call's first action.
+        limit ??= this.host.actLimit?.() ?? FIXED_LIMIT;
+        const outcome: ActOutcome = played >= limit.cap ? { stopped: limit.why }
           : acted.stopped ? { stopped: acted.stopped } : await this.host.act(call, via);
-        if (!outcome.stopped) played += 1;
+        if (!outcome.stopped) { played += 1; acted.rows.push(actedRow(call, outcome)); }
         if (outcome.line) acted.lines.push(outcome.line);
         if (outcome.stopped) acted.stopped ??= outcome.stopped;
         return outcome.stopped ? { stopped: outcome.stopped } : { observation: outcome.observation };
@@ -354,8 +399,9 @@ export class NativeRuntime {
     if (valueKept && shownBody !== body) shownBody += '\n(the whole final value is _ in the python session until your next final expression: take the part you need from it)';
     const acted = result.acted;
     if (!acted?.lines.length) return text(shownBody + (acted?.stopped ? `\n(no action taken: ${acted.stopped})` : ''), !result.ok);
+    const summary = actedSummary(acted.rows ?? []);
     return { ...text([shownBody, `ACTED ${acted.lines.length} action(s)${acted.stopped ? `; stopped: ${acted.stopped}` : ''}. This decision ends.`,
-      ...acted.lines].join('\n'), !result.ok), terminate: true };
+      ...(summary ? [summary] : []), ...acted.lines].join('\n'), !result.ok), terminate: true };
   }
   /**
    * Foreground Python uses the parent's namespace and action boundary. With `save`, publication is optional and

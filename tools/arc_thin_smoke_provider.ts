@@ -349,10 +349,16 @@ const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'artifacts/route.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ];
+// Fixed-step refinements (ARC_REFINE_EVERY=2): one action per decision. The refinements the schedule starts reply late
+// (below): the first edits the strategy, the second fails at the provider, later ones make no edit.
+const SCHEDULE_SCRIPT: Step[] = Array.from({ length: 12 }, (_, n): Step => ({
+  kind: 'decide', calls: [['arc_action', { action: n % 2 ? 'ACTION4' : 'ACTION1', note: `schedule ${n}` }]],
+}));
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? QUERY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'schedule' ? SCHEDULE_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
@@ -378,6 +384,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 	let toolCall = 0;
 	let probeOrdinary = 0;
 	let checkpoints = 0;
+	let scheduledRefinements = 0;
 	const idleFaults=new Set<number>();
 
 	pi.registerProvider("offline-arc-thin-smoke", {
@@ -414,6 +421,24 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
         const refs = [...new Set(evidence.match(/results\/(?:r\d+|[a-f0-9]{64})\.txt/g) ?? [])];
         output.content = [{ type: 'text', text: 'Native checkpoint: exact evidence is retained behind receipts.\n' + refs.map(ref => 'ref: ' + ref).join('\n') }];
         stream.push({ type: 'start', partial: output }); stream.push({ type: 'done', reason: 'stop', message: output }); stream.end(); return stream;
+      }
+      // Fixed-step refinements (schedule script). Each reply comes 400 ms late, two or three scripted decisions after it
+      // started, so the notice has to say what was played after the record it was made from.
+      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'schedule' && systemPrompt.startsWith('You maintain the harness of an agent')) {
+        appendFileSync(join(process.env.ARC_RUN_ROOT!, 'refiner-inputs.jsonl'), JSON.stringify({ systemPrompt, input: messages.map(textOf).join('\n') }) + '\n');
+        const call = ++scheduledRefinements;
+        setTimeout(() => {
+          if (call === 2) {
+            output.stopReason = 'error';
+            output.errorMessage = 'SCRIPTED_PROVIDER_ERROR';
+            stream.push({ type: 'error', reason: 'error', error: output }); stream.end(); return;
+          }
+          output.content = [{ type: 'text', text: call === 1
+            ? 'FILE prompts/strategy.md\nOpen questions\n- what ends a level\nNext experiment\n- SCHEDULED_STRATEGY_MARK\nFailure modes\n- none yet\nEND\nWHY first scheduled review, #1-#2'
+            : 'NONE nothing new since the last refinement' }];
+          stream.push({ type: 'start', partial: output }); stream.push({ type: 'done', reason: 'stop', message: output }); stream.end();
+        }, 400);
+        return stream;
       }
       // Diagnostic-only usage crosses Pi's threshold after the long-result turn is eligible.
       // No manual compact RPC or production provider changes drive this automatic path. Requests are counted, not

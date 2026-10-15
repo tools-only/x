@@ -926,6 +926,8 @@ def run_arc_thin_e2e(
             "max_continuous_idle_recoveries": 2,
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
+            # The native transcript ignores continuity_decisions; native_history below says what it keeps.
+            "continuity_decisions_scope": "legacy_only" if foundation == "native" else "all",
             "review_at_level_change": review_at_level_change,
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
@@ -950,10 +952,16 @@ def run_arc_thin_e2e(
             "session_view": foundation == "native" and pi_env.get("ARC_THIN_SESSION_VIEW", "1") != "0",
             # Native history: 0 (default since 2026-10-14) keeps earlier decisions as a transcript before the current head,
             # each earlier result clipped to result_chars; > 0 is a summarised section within that many characters
-            # (demo/arc_thin_native_context.ts). Native decisions end at decision_tool_calls.
+            # (demo/arc_thin_native_context.ts). decisions / max_chars bound the transcript to the newest earlier decisions
+            # (0: every one). Native decisions end at decision_tool_calls.
             "native_history": {"summary_chars": int(pi_env.get("ARC_THIN_NATIVE_HISTORY_CHARS", "0")),
                                "result_chars": int(pi_env.get("ARC_THIN_HISTORY_RESULT_CHARS", "5000")),
+                               "decisions": int(pi_env.get("ARC_THIN_NATIVE_HISTORY_DECISIONS") or 0),
+                               "max_chars": int(pi_env.get("ARC_THIN_NATIVE_HISTORY_MAX_CHARS") or 0),
                                "decision_tool_calls": 16} if foundation == "native" else None,
+            # Every setting the extension reads from its environment, so an arm is identified by its run-config.
+            "extension_env": {key: value for key, value in sorted(pi_env.items())
+                              if key.startswith(("ARC_THIN_", "ARC_REFINE_", "ARC_HARNESS_", "ARC_CRITIC_"))},
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 

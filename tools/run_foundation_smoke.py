@@ -86,14 +86,19 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=30 if script == "history" else 10 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 12 if script == "schedule" else 10 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     input_modalities="text,image" if script == "query" else None,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
-    # The promotion path runs through refinements, which need the ledger and its trigger service.
-    ledger=defaults or script == 'promotion', critic=defaults or script == 'promotion', review_at_level_change=False,
+    # The promotion path runs through refinements, which need the ledger and its trigger service; so does the schedule.
+    ledger=defaults or script in ('promotion', 'schedule'), critic=defaults or script in ('promotion', 'schedule'), review_at_level_change=False,
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
+        # The scripts written before 2026-10-15 check refinements their events start; 'schedule' checks the fixed step.
+        **({'ARC_REFINE_EVERY': '2'} if script == 'schedule' else {'ARC_REFINE_TRIGGERS': 'events'}),
+        # The activation script checks reasoning kept within a decision, the "all" mode; the runner now picks "fields"
+        # on the Responses route, so the script names its mode.
+        **({'ARC_THIN_REASONING_MODE': 'all'} if script == 'activation' else {}),
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
         # The activation script checks the other refinement events; the promotion script checks this one.
@@ -114,7 +119,9 @@ parent_requests = [r for r in requests if not r.get("analyst") and not r.get("cr
 shown_history = json.dumps([[r.get("current", ""), r.get("transcript", [])] for r in parent_requests], ensure_ascii=False)
 config = json.loads((root / 'run-config.json').read_text(encoding='utf-8'))
 summary_chars = 1200 if tight else 12000 if script == 'history' else 0
-assert config['native_history'] == {'summary_chars': summary_chars, 'result_chars': 5000, 'decision_tool_calls': 16}, config['native_history']
+assert config['native_history'] == {'summary_chars': summary_chars, 'result_chars': 5000, 'decisions': 0, 'max_chars': 0,
+                                    'decision_tool_calls': 16}, config['native_history']
+assert config['extension_env']['ARC_THIN_SMOKE_SCRIPT'] == script, config['extension_env']
 assert config['decision_reasoning'] is True and config['python_session'] is True, config
 if defaults or disabled:
     assert config['auto_compaction'] is True, 'native default compaction must reach installed Pi'
@@ -201,6 +208,37 @@ elif script == "promotion":
     assert any('RULE CHECKS (prompts/rules.md)' in c and '1 held' in c for c in currents), 'the rule checks must be shown while play goes on'
     # The retyped computation was named in its own result.
     assert any('tools/nine.py already computes this' in r['text'] for r in results if r['tool'] == 'python'), [r['text'][-200:] for r in results if r['tool'] == 'python']
+elif script == "schedule":
+    refiner = [json.loads(s) for s in (root / 'harness/refiner.jsonl').read_text(encoding='utf-8').splitlines()]
+    starts = [row for row in refiner if row.get('kind') == 'start']
+    # Fixed step: a refinement starts at the second action, then again at a later multiple of two, or at the first
+    # decision start after one while the previous still ran; no event starts one here.
+    assert len(starts) >= 2 and starts[0]['at'] == 2, starts
+    assert all(row['triggers'][0].startswith('scheduled: every 2 actions, now #') for row in starts), starts
+    assert all(later['at'] > earlier['at'] for earlier, later in zip(starts, starts[1:])), starts
+    # Outcomes: the edit, the provider failure (classified before any parsing), and no "invalid" reply.
+    assert any(row['kind'] == 'edit' and row['path'] == 'prompts/strategy.md' for row in refiner), refiner
+    assert any(row['kind'] == 'failed' and row.get('error') == 'SCRIPTED_PROVIDER_ERROR' for row in refiner), refiner
+    assert not any(row['kind'] == 'invalid' for row in refiner), refiner
+    currents = [r.get('current', '') for r in parent_requests]
+    # The agent is told both: the edit with the actions played after its record, and the failure. A scheduled
+    # "no edit" is logged only.
+    assert any('HARNESS UPDATE by a refinement after #2 (scheduled: every 2 actions, now #2): prompts/strategy.md v1' in c
+               and 'It was made from the record up to #2; since then: ' in c for c in currents), [c[:1600] for c in currents]
+    assert any(' failed: SCRIPTED_PROVIDER_ERROR; nothing changed.' in c for c in currents), [c[:1600] for c in currents]
+    assert not any('made no edit' in c for c in currents)
+    # The runtime's facts lead every head; RECENT ACTIONS is gone, and an empty memory says what is missing.
+    assert all('RUNTIME FACTS (' in c and 'ACTION BUDGET (a resource, not the goal): level ' in c for c in currents), currents[0][:1600]
+    assert not any('RECENT ACTIONS' in c for c in currents)
+    assert any('HYPOTHESES: none · STRATEGY: none active' in c for c in currents)
+    assert all('A refinement runs in the background every 2 actions' in r['system_prompt'] for r in parent_requests)
+    assert all('<carry>' not in r['system_prompt'] for r in parent_requests), 'the carry ask is off by default'
+    # The refinement is given the same facts, and the strategy it wrote is applied from then on.
+    inputs = [json.loads(s) for s in (root / 'refiner-inputs.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert inputs and all('WHY NOW: scheduled: every 2 actions' in r['input'] and 'RUNTIME FACTS (' in r['input'] for r in inputs), inputs
+    assert any('SCHEDULED_STRATEGY_MARK' in r['system_prompt'] for r in parent_requests)
+    budgets = [json.loads(s) for s in (root / 'harness/context_budget.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert all('history_args_chars' in r and r.get('facts_chars', 0) > 0 for r in budgets if 'decision' in r), budgets[-1]
 elif script == "history":
     last = parent_requests[-1].get('current', '')
     assert 'RECENT HISTORY (your last' in last and 'older not shown' in last, 'the default budget must drop the oldest decisions with a note'

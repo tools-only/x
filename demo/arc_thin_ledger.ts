@@ -11,7 +11,7 @@ export type LedgerRow = {
 	n: number; action: string; x?: number; y?: number; idea?: string; expect?: string;
 	/** The agent's structured action prediction; only level/WIN fields are used by goal coverage. */
 	predict?: { level_changed?: boolean; state?: string };
-	prediction?: { fields?: Array<{ field: string; hit: boolean | null }> };
+	prediction?: { fields?: Array<{ field: string; hit: boolean | null; expected?: string; observed?: string }> };
 	changed_cells: number | null; level_changed: boolean; state: string; levels_completed: number;
 	before_hash?: string; after_hash?: string;
 	/** As the bridge reports it after the action: used/maximum for the level, total_used/total_maximum for the run. */
@@ -82,6 +82,24 @@ export function repetitions(rows: LedgerRow[]): Repetition[] {
 		if (row.action === "RESET" || row.state === "GAME_OVER") { episode += 1; seen.clear(); continue; }
 		if (!row.before_hash || !row.after_hash) continue;
 		const key = `${episode}|${row.before_hash}|${actionKey(row)}|${row.after_hash}`;
+		const earlier = seen.get(key) ?? [];
+		if (earlier.length) out.push({ n: row.n, earlier: [...earlier], key });
+		seen.set(key, [...earlier, row.n]);
+	}
+	return out;
+}
+
+/**
+ * Same action from the same state with the same result as earlier on this level, across attempts: unlike
+ * repetitions(), a RESET does not clear what was seen, since a line replayed after a reset is what the facts block
+ * counts. RESET rows themselves are not compared.
+ */
+export function levelRepeats(rows: LedgerRow[]): Repetition[] {
+	const seen = new Map<string, number[]>();
+	const out: Repetition[] = [];
+	for (const row of rows) {
+		if (row.action === "RESET" || !row.before_hash || !row.after_hash) continue;
+		const key = `${row.before_hash}|${actionKey(row)}|${row.after_hash}`;
 		const earlier = seen.get(key) ?? [];
 		if (earlier.length) out.push({ n: row.n, earlier: [...earlier], key });
 		seen.set(key, [...earlier, row.n]);
@@ -337,6 +355,57 @@ export function renderLedgerView(state: LedgerState, hypothesisKeys: string[], m
 	const lastN = state.rows.at(-1)?.n ?? 0;
 	const recent = state.repeats.filter(item => item.n > lastN - 10).slice(-2);
 	if (recent.length) lines.push(`REPEATS: ${recent.map(item => `#${item.n} gave the same result from the same state as ${item.earlier.map(n => `#${n}`).join(", ")}`).join("; ")}`);
+	const text = lines.join("\n");
+	return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
+}
+
+/** The bridge's action budget as reported: used/maximum for the level, total_used/total_maximum for the run. */
+export type BudgetReport = LedgerRow["budget"];
+
+const budgetPart = (name: string, used: unknown, maximum: unknown) => typeof used !== "number" ? `${name} unknown`
+	: typeof maximum === "number" ? `${name} ${used} of ${maximum} used, ${Math.max(0, maximum - used)} left`
+	: `${name} ${used} used, limit unknown`;
+
+/**
+ * The runtime's counts for the current level, at the top of each native decision (2026-10-15). In ls20-r03b they were
+ * only in data/ledger.md, which the agent read once in 288 actions; r03b on su15 (as GLM's analysis of that run reports
+ * it) clicked 25 times in a row with nothing changing. Counts and action numbers only: what they mean is the agent's
+ * call. `state` is the ledger over this level's actions.
+ */
+export function renderFacts(state: LedgerState, budget: BudgetReport, maxChars = 900): string {
+	const rows = state.rows;
+	const lines = ["RUNTIME FACTS (counted from this level's record; data/ledger.md has more):",
+		`ACTION BUDGET (a resource, not the goal): ${budget ? `${budgetPart("level", budget.used, budget.maximum)}; ` +
+			budgetPart("run", budget.total_used, budget.total_maximum) : "unknown"}`];
+	if (!rows.length) lines.push("EFFORT on this level: no actions yet");
+	else {
+		const byAction = new Map<string, { n: number; quiet: number }>();
+		for (const row of rows) {
+			const item = byAction.get(row.action) ?? { n: 0, quiet: 0 };
+			item.n += 1;
+			if (row.changed_cells === 0) item.quiet += 1;
+			byAction.set(row.action, item);
+		}
+		const mix = [...byAction].sort((a, b) => b[1].n - a[1].n);
+		const parts = mix.slice(0, 5).map(([action, item]) => `${action} ${item.n}${item.quiet ? ` (${item.quiet} changed nothing)` : ""}`);
+		if (mix.length > 5) parts.push(`${mix.length - 5} other actions`);
+		const last = rows.at(-1)!;
+		let streak = 1;
+		while (streak < rows.length && rows[rows.length - 1 - streak].action === last.action) streak += 1;
+		const now = [...(streak >= 3 ? [`now ${last.action} ×${streak} in a row since #${rows[rows.length - streak].n}`] : []),
+			...(state.stall >= 3 ? [`no new state for the last ${state.stall}`] : [])];
+		lines.push(`EFFORT on this level: ${rows.length} actions — ${parts.join(", ")}${now.length ? `; ${now.join("; ")}` : ""}`);
+	}
+	const goals = goalPredictionRows(state);
+	lines.push(`GOAL TESTS on this level (actions that predicted a level change or WIN): ${goals.length
+		? (goals.length > 6 ? `${goals.length - 6} earlier, then ` : "") + goals.slice(-6).map(item => `#${item.row.n} ${item.result}`).join(", ")
+		: "none"}`);
+	const missed = [...rows].reverse().find(row => (row.prediction?.fields ?? []).some(field => field.hit === false));
+	if (missed) lines.push(`LATEST MISS: #${missed.n} ` + missed.prediction!.fields!.filter(field => field.hit === false).slice(0, 2)
+		.map(field => `${field.field}=${clip(String(field.expected ?? "?"), 60)} (saw ${clip(String(field.observed ?? "?"), 60)})`).join("; "));
+	const repeats = levelRepeats(rows);
+	if (repeats.length) lines.push(`REPEATS on this level: ${repeats.length} action(s) gave the same result from the same state as an earlier one; ` +
+		`latest #${repeats.at(-1)!.n} (as ${repeats.at(-1)!.earlier.slice(-3).map(n => `#${n}`).join(", ")})`);
 	const text = lines.join("\n");
 	return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
 }
