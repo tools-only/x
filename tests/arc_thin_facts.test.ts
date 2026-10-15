@@ -13,7 +13,7 @@ test('a level of clicks that change nothing reads as counts, a streak, a stall a
     "RUNTIME FACTS (counted from this level's record; data/ledger.md has more):",
     'ACTION BUDGET (a resource, not the goal): level 25 of 110 used, 85 left; run 25 used, limit unknown',
     'EFFORT on this level: 25 actions — ACTION6 25 (25 changed nothing); now ACTION6 ×25 in a row since #1; no new state for the last 24',
-    'GOAL TESTS on this level (actions that predicted a level change or WIN): none',
+    'GOAL TESTS on this level (actions whose predict had level_changed=true or state WIN; text predictions are not counted): none',
     'REPEATS on this level: 24 action(s) gave the same result from the same state as an earlier one; latest #25 (as #22, #23, #24)',
   ].join('\n'));
 });
@@ -39,7 +39,7 @@ test('goal tests and the latest miss are listed by action number; what is not re
     row(2, 'ACTION2', { changed_cells: 4, predict: { state: 'WIN' }, prediction: { fields: [{ field: 'state', hit: null, expected: 'WIN' }] } }),
   ];
   const text = renderFacts(buildLedger(rows, [], new Map()), { used: 2, maximum: 10 });
-  assert.match(text, /^GOAL TESTS on this level \(actions that predicted a level change or WIN\): #1 MISS, #2 unscored$/m);
+  assert.match(text, /^GOAL TESTS on this level \(actions whose predict had level_changed=true or state WIN; text predictions are not counted\): #1 MISS, #2 unscored$/m);
   assert.match(text, /^LATEST MISS: #1 level_changed=true \(saw false\)$/m);
   assert.match(text, /level 2 of 10 used, 8 left; run unknown/);
   assert.match(renderFacts(buildLedger([], [], new Map()), {}), /level unknown; run unknown\nEFFORT on this level: no actions yet/);

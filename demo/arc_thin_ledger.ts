@@ -563,7 +563,9 @@ export function renderFacts(state: LedgerState, budget: BudgetReport, maxChars =
 			...(state.ticker_cells ? [`${state.ticker_cells} cell${state.ticker_cells === 1 ? "" : "s"} that changed on ≥80% of transitions`] : [])].join("; ")}`);
 	}
 	const goals = goalPredictionRows(state);
-	lines.push(`GOAL TESTS on this level (actions that predicted a level change or WIN): ${goals.length
+	// Only predict fields count: in su15-r2 the agent tested goal ideas with text predictions, the line said "none", and the
+	// refiner, reading "no goal test yet", proposed filling the counter row as a goal test (2026-10-16).
+	lines.push(`GOAL TESTS on this level (actions whose predict had level_changed=true or state WIN; text predictions are not counted): ${goals.length
 		? (goals.length > 6 ? `${goals.length - 6} earlier, then ` : "") + goals.slice(-6).map(item => `#${item.row.n} ${item.result}`).join(", ")
 		: "none"}`);
 	const missed = [...rows].reverse().find(row => (row.prediction?.fields ?? []).some(field => field.hit === false));

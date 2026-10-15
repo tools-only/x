@@ -865,7 +865,18 @@ export function renderDecisionMemory(state: MemoryState, actionCount: number, ch
  const live = [...state.hypotheses].filter(([, h]) => h.status !== 'rejected');
  const questions = new Set(live.map(([, h]) => h.question).filter(Boolean));
  const fails = (k: string) => /\bfails [1-9]/.test(checks[k] ?? '');
+ // A claim its own check contradicts on nearly every move it bears on is one line (2026-10-16): su15-r2 showed a
+ // hypothesis failing 174 of 179 moves in full at the top of every head, and the agent re-read it as "my understanding of
+ // the basic mechanic is wrong".
+ const contradicted = (k: string) => {
+  const m = /holds (\d+) · fails (\d+)/.exec(checks[k] ?? '');
+  const holds = Number(m?.[1] ?? 0), failed = Number(m?.[2] ?? 0);
+  return m && failed >= 10 && failed >= 0.9 * (holds + failed) ? { holds, failed } : undefined;
+ };
  const hypothesis = (k: string, h: Hypothesis) => {
+  const against = h.status !== 'rejected' ? contradicted(k) : undefined;
+  if (against) return `- ${k} [${h.status}]: its own check fails on ${against.failed} of the ${against.holds + against.failed} moves it ` +
+   `bears on; the claim as written is contradicted: revise or delete it (text and check: data/memory.md)`;
   const evidence = [...h.evidence].reverse();
   const chosen = [evidence.find(e => e.verdict === 'refutes'), evidence.find(e => e.verdict === 'supports'), evidence[0]];
   const lines = [`- ${k} [${h.status}]${h.question ? ` question=${h.question}` : ''}: ${clip(h.claim, 450)}`];

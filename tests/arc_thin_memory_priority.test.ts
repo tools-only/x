@@ -30,7 +30,9 @@ test('memory shows first what the record disputes, then open experiments, the st
   assert.ok(Math.max(at('hyp.exit'), at('hyp.fuel')) < at('hyp.probe'), 'a failing check and a contested premise come before open experiments');
   assert.ok(at('hyp.probe') < at('strat.route') && at('strat.route') < at('hyp.old') && at('hyp.old') < at('fact.walls'));
   assert.ok(at('fact.walls') < at('fact.f29'), 'facts the strategy uses come first');
-  assert.match(view, /- hyp\.fuel \[supported\][^\n]*\n[^]*fails 259/, 'its status is not changed; the check line says what failed');
+  // Its status is not changed; a check that fails on nearly every move it bears on makes the entry one line (2026-10-16).
+  assert.match(view, /- hyp\.fuel \[supported\]: its own check fails on 259 of the 277 moves it bears on; the claim as written is contradicted: revise or delete it/);
+  assert.doesNotMatch(view, /rings refill fuel/);
   assert.match(view, /#2 refutes under "start": no move/, 'a refuted rival keeps its refutation');
   assert.ok(view.length <= 4000);
 });

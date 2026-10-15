@@ -1329,7 +1329,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (onLevel.length >= GOAL_TEST_AFTER && !onLevel.some((row) => row.predict?.level_changed === true)
 			&& (goalTestAskedAt < levelStart || trajectory.length - goalTestAskedAt >= 2 * GOAL_TEST_AFTER)) {
 			goalTestAskedAt = trajectory.length;
-			goal.push(`${onLevel.length} actions on this level and no step predicted a level change (no goal test yet)`);
+			goal.push(`${onLevel.length} actions on this level and none whose predict had level_changed=true (text predictions are not ` +
+				"counted; ideas tested by text are in the actions' notes)");
 		}
 		// Reasoning spent reading positions off the grid, with no view tool reporting them.
 		const view: string[] = [];
