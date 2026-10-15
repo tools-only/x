@@ -31,7 +31,7 @@ import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
-import { NativeRuntime, actLimit } from "./arc_thin_native_runtime.ts";
+import { MAX_ACTS, NativeRuntime, actLimit, actedSummary } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
 import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
 import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
@@ -56,7 +56,7 @@ import {
 	MAX_EVIDENCE, MAX_HYPOTHESES, MAX_STEPS, MAX_STRATEGIES, STATUSES, STRATEGY_STATUSES, VERDICTS, applyRow, applyRows, emptyMemory, memoryForSkills,
 	planMemoryUpdate, renderFactsCompact, renderMemory, renderDecisionMemory, resetMemory, type ComponentContext, type MemoryParams,
 } from "./arc_thin_memory.ts";
-import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments, repairToolCallNames, unescapeSource } from "./arc_thin_boundary.ts";
+import { isEnvironmentFailure, repairActionArguments, repairBatchArguments, repairMemoryArguments, repairSkillArguments, repairToolCallNames, unescapeSource } from "./arc_thin_boundary.ts";
 import {
 	normalizePrediction, predictionSchema, renderScore, scorePrediction, type Outcome, type Prediction, type ScoredPrediction,
 } from "./arc_thin_prediction.ts";
@@ -86,8 +86,6 @@ const HARD_TOOL_CALLS = 8;
  * found" three times) and a decision stalled for 26 messages. At the cap the decision ends and the next one acts.
  */
 const NATIVE_DECISION_CALLS = 16;
-/** Further actions one arc_action may carry (its then list). */
-const THEN_STEPS = 11;
 const MAX_EXPLICIT_SKILL_CALLS = 4;
 const MAX_SKILLS = 40;
 const RECENT_ACTIONS = 8;
@@ -237,6 +235,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const memoryOrder = process.env.ARC_THIN_MEMORY_VIEW === "legacy" ? "legacy" : "priority";
 	const actShare = process.env.ARC_THIN_ACT_SHARE === undefined ? 0.25 : Math.max(0, Number(process.env.ARC_THIN_ACT_SHARE) || 0);
 	const carryAsk = process.env.ARC_THIN_CARRY_ASK === "1";
+	// In native mode arc_action plays a batch, as Continual Harness's take_actions does, and stops early only at a level
+	// change, the game's end or a refusal. ARC_THIN_BATCH_STOP=miss also stops it at a missed prediction (the earlier
+	// then list).
+	const batchStopOnMiss = process.env.ARC_THIN_BATCH_STOP === "miss";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -1782,68 +1784,79 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	function registerArcAction(actions: string[]): void {
 		const hasCoordinates = actions.includes("ACTION6");
+		const coordinates = hasCoordinates ? {
+			x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
+			y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
+		} : {};
+		// Environment fact, checked in the bridge and the recorded runs: RESET is counted like any action.
+		const resetFact = actions.includes("RESET") ? "RESET returns the level to its starting grid and counts as one action against both budgets. " : "";
+		// Native mode: a batch, as Continual Harness's take_actions (one decision for a planned sequence, not one per action).
+		const description = native
+			? `Play a batch of actions in order and end this decision: actions lists them, one or more, up to ${MAX_ACTS} (fewer when little ` +
+				"budget is left). Each goes through the environment in turn; the batch stops early when the level changes, the game ends" +
+				(batchStopOnMiss ? ", a prediction misses" : "") + ` or an action is refused.${hasCoordinates ? " ACTION6 takes x,y." : ""} ` + resetFact +
+				"Each action may carry predict; note and idea are recorded for the next decision."
+			: `Submit one available action and end this decision.${hasCoordinates ? " ACTION6 accepts x,y." : ""} ` + resetFact +
+				"Optional note, prediction and memory/idea updates are recorded for the next decision.";
 		pi.registerTool({
 			name: "arc_action",
 			label: "ARC action",
-			description: `Submit one available action and end this decision.${hasCoordinates ? " ACTION6 accepts x,y." : ""} ` +
-				// Environment fact, checked in the bridge and the recorded runs: RESET is counted like any action.
-				(actions.includes("RESET") ? "RESET returns the level to its starting grid and counts as one action against both budgets. " : "") +
-				(native ? `then: up to ${THEN_STEPS} further actions played in order after it, stopping at a missed prediction, a level change or the game's end. ` : "") +
-				"Optional note, prediction and memory/idea updates are recorded for the next decision.",
+			description,
 			parameters: Type.Object({
-				action: StringEnum(actions),
-				...(hasCoordinates ? {
-					x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
-					y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
-				} : {}),
-				// Continual Harness's take_actions: a planned sequence costs one decision, not one per action.
 				...(native ? {
-					then: Type.Optional(Type.Array(Type.Object({
-						action: StringEnum(actions),
-						...(hasCoordinates ? { x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })), y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })) } : {}),
-						predict: Type.Optional(Type.Unknown()),
-					}), { maxItems: THEN_STEPS })),
-				} : {}),
-				note: Type.Optional(Type.String({ maxLength: 300 })),
-				// A malformed prediction is dropped before validation (repairActionArguments), never a reason to reject the action.
-				...(control ? {} : {
-					predict: Type.Optional(predictionSchema()),
-					predict_skill: Type.Optional(Type.String({ maxLength: 40 })),
+					actions: Type.Array(Type.Object({
+						action: StringEnum(actions), ...coordinates,
+						// A malformed prediction is dropped before validation (repairBatchArguments), never a reason to reject the action.
+						...(control ? {} : { predict: Type.Optional(predictionSchema()) }),
+					}), { minItems: 1, maxItems: MAX_ACTS }),
+				} : {
+					action: StringEnum(actions), ...coordinates,
+					...(control ? {} : { predict: Type.Optional(predictionSchema()) }),
 				}),
+				note: Type.Optional(Type.String({ maxLength: 300 })),
+				...(control ? {} : { predict_skill: Type.Optional(Type.String({ maxLength: 40 })) }),
 				// No length limits here: an over-long value is clipped, never a reason to reject the action.
 				// What the move should do goes in predict (text and checked fields): one prediction surface, not two.
 				...(ledgerOn ? {
 					idea: Type.Optional(Type.String()),
 				} : {}),
 			}),
-			prepareArguments: repairActionArguments,
-			execute: guardTool("arc_action", async (params: {
-				action: string; x?: number; y?: number; note?: string; idea?: unknown;
-				predict?: Prediction; predict_skill?: string;
-				then?: Array<{ action: string; x?: number; y?: number; predict?: Prediction }>;
-			}) => {
-				const done = await submitAction(params);
-				if ("refusal" in done) {
-					if (done.environment) return refused(done.refusal);
-					throw new Refusal(done.refusal);
+			prepareArguments: native ? repairBatchArguments : repairActionArguments,
+			execute: guardTool("arc_action", async (args: any) => {
+				// The earlier shapes (action with its then list) are accepted here too, for callers that skip preparation.
+				const params: { note?: string; idea?: unknown; predict_skill?: string;
+					actions: Array<{ action: string; x?: number; y?: number; predict?: Prediction }> } =
+					native ? repairBatchArguments(args) : { ...args, actions: [{ action: args.action, x: args.x, y: args.y, predict: args.predict }] };
+				const planned = (params.actions ?? []).slice(0, native ? MAX_ACTS : 1);
+				if (!planned.length) throw new Refusal("arc_action needs at least one action in actions");
+				// One call may spend a share of the budget left, as an acting python call may (actLimit).
+				const limit = native ? actLimit(observation?.action_budget ?? trajectory.at(-1)?.budget, actShare) : { cap: 1, why: "" };
+				const rows: ActionRow[] = [];
+				const lines: string[] = [];
+				let stopped: string | undefined;
+				for (const [i, step] of planned.entries()) {
+					if (i >= limit.cap) { stopped = limit.why; break; }
+					if (i > 0) { stopped = batchStop(rows.at(-1)!); if (stopped) break; }
+					const done = await submitAction({ action: step.action, ...(step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : {}),
+						...(i === 0 ? (params.note ? { note: params.note } : {}) : { note: `batch ${i + 1} of ${planned.length}` }),
+						...(params.idea !== undefined ? { idea: params.idea } : {}), ...(step.predict ? { predict: step.predict } : {}),
+						...(i === 0 && params.predict_skill ? { predict_skill: params.predict_skill } : {}) });
+					if ("refusal" in done) {
+						if (!rows.length) {
+							if (done.environment) return refused(done.refusal);
+							throw new Refusal(done.refusal);
+						}
+						stopped = done.refusal;
+						break;
+					}
+					rows.push(done.row);
+					lines.push(`${actionLine(done.row)}${predictionClause(done.row)}`);
 				}
-				const row = done.row;
-				const lines = [`${actionLine(row)}${predictionClause(row)}`];
-				// Further planned actions, each through the same path; the plan stops once what it assumed no longer holds.
-				const steps = native ? (params.then ?? []).slice(0, THEN_STEPS) : [];
-				let last = row, played = 0, stopped: string | undefined;
-				for (const step of steps) {
-					stopped = sequenceStop(last);
-					if (stopped) break;
-					const next = await submitAction({ action: step.action, ...(step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : {}),
-						note: `then ${played + 1} of ${steps.length}`, ...(step.predict ? { predict: step.predict } : {}) });
-					if ("refusal" in next) { stopped = next.refusal; break; }
-					last = next.row; played += 1;
-					lines.push(`${actionLine(last)}${predictionClause(last)}`);
-				}
-				if (played < steps.length) lines.push(`then: ${played} of ${steps.length} played; stopped: ${stopped}.`);
-				if (steps.length) append("action_sequences.jsonl", { decision, n: row.n, planned: steps.length + 1, played: played + 1, stopped: stopped ?? null });
-				return text(lines.join("\n"),
+				const last = rows.at(-1)!;
+				const summary = actedSummary(rows.map((row) => ({ n: row.n, action: row.action, changed: row.changed_cells })));
+				if (rows.length < planned.length) lines.push(`batch: ${rows.length} of ${planned.length} played; stopped: ${String(stopped).replace(/\.$/, "")}.`);
+				if (planned.length > 1) append("action_sequences.jsonl", { decision, n: rows[0].n, planned: planned.length, played: rows.length, stopped: stopped ?? null });
+				return text([...(summary ? [summary] : []), ...lines].join("\n"),
 					{ ...reportedAction(last, native), prediction: last.prediction, skill_prediction: last.skill_prediction }, true);
 			}),
 		});
@@ -1932,10 +1945,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Set by an action that changed the level or ended the game: later env.act calls of the same decision are refused. */
 	let actingStopped: string | undefined;
-	/** Why a planned sequence (arc_action then) must not go on after this action, or undefined. */
-	const sequenceStop = (row: ActionRow): string | undefined => row.level_changed ? `the level changed at #${row.n}`
+	/**
+	 * Why a batch must not go on after this action, or undefined: the level changed or the game ended (what the batch
+	 * assumed no longer holds, as for Continual Harness's take_actions); with ARC_THIN_BATCH_STOP=miss, a missed prediction.
+	 */
+	const batchStop = (row: ActionRow): string | undefined => row.level_changed ? `the level changed at #${row.n}`
 		: /^(GAME_OVER|WIN|FINISHED)$/.test(row.state) ? `state ${row.state} at #${row.n}`
-		: row.prediction?.fields.some((field) => field.hit === false) ? `#${row.n}'s prediction missed` : undefined;
+		: batchStopOnMiss && row.prediction?.fields.some((field) => field.hit === false) ? `#${row.n}'s prediction missed` : undefined;
 	const hexRows = (grid: number[][] | undefined) => grid?.map((row) => row.map((cell) => (cell & 15).toString(16)).join(""));
 	/**
 	 * One action for saved code (env.act in a tool): the same path as arc_action, so the bridge, its budget and its

@@ -275,10 +275,11 @@ elif script == "activation":
     # Factual receipts: the change count, and coordinates the action ignores are dropped and named.
     assert trajectory[4]["action"] == "ACTION1" and trajectory[4].get("ignored_xy") is True and "x" not in trajectory[4], trajectory[4]
     assert "(x,y ignored: ACTION1 takes no coordinates)" in shown_history and "changed=" in shown_history
-    # One arc_action carries a planned sequence: three actions in one decision.
+    # One arc_action carries a planned sequence: three actions in one decision (the earlier action + then form, turned
+    # into a batch before validation).
     sequences = [json.loads(s) for s in (root / "harness/action_sequences.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [(r["planned"], r["played"]) for r in sequences] == [(3, 3)], sequences
-    planned_decision = next(r["decision"] for r in trajectory if r.get("note") == "then 1 of 2")
+    planned_decision = next(r["decision"] for r in trajectory if r.get("note") == "batch 2 of 3")
     assert [r["action"] for r in trajectory if r["decision"] == planned_decision] == ["ACTION1", "ACTION4", "ACTION1"], trajectory
     # The python session: a function and a value defined in decision 3 are used in decision 5.
     assert "(python session: +plus_one(), +kept_value)" in text, text[:3000]

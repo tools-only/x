@@ -192,6 +192,41 @@ export function repairActionArguments(args: any): any {
 	return out;
 }
 
+const coordinate = (value: unknown) => typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+
+/**
+ * arc_action in native mode takes a batch, as Continual Harness's take_actions does: `actions`, played in order. The
+ * earlier shapes still arrive and are turned into one: `action` (with x, y and predict) followed by its `then` steps;
+ * an `actions` list sent as a JSON string or as bare action names; an item naming its action `name` (take_actions'
+ * field). A prediction given once for the call goes to the first action when that one has none. Coordinates sent as
+ * digits become numbers; predictions keep their well-formed fields only. Nothing usable is left for the schema to
+ * refuse.
+ */
+export function repairBatchArguments(args: any): any {
+	if (!isObject(args)) return args;
+	const out: Record<string, any> = repairActionArguments(args);
+	let list: any = out.actions;
+	if (typeof list === "string") list = parseLooseJson(list) ?? list.split(/[\s,]+/).filter(Boolean);
+	let steps: Array<Record<string, any>> = (Array.isArray(list) ? list : []).flatMap((item: any) => {
+		if (typeof item === "string" && item.trim()) return [{ action: item.trim().toUpperCase() }];
+		if (!isObject(item)) return [];
+		const { name, ...rest } = item;
+		const action = typeof rest.action === "string" ? rest.action : typeof name === "string" ? name : undefined;
+		return action ? [{ ...rest, action }] : [];
+	});
+	if (!steps.length && typeof out.action === "string")
+		steps = [{ action: out.action, ...(out.x !== undefined ? { x: out.x } : {}), ...(out.y !== undefined ? { y: out.y } : {}) }, ...(out.then ?? [])];
+	if (!steps.length) return out;
+	if (out.predict && !("predict" in steps[0])) steps[0] = { ...steps[0], predict: out.predict };
+	steps = steps.map((step) => {
+		const item: Record<string, any> = { ...step, ...("x" in step ? { x: coordinate(step.x) } : {}), ...("y" in step ? { y: coordinate(step.y) } : {}) };
+		if ("predict" in item) { const predict = normalizePrediction(item.predict); if (predict) item.predict = predict; else delete item.predict; }
+		return item;
+	});
+	const { action: _action, x: _x, y: _y, predict: _predict, then: _then, actions: _actions, ...rest } = out;
+	return { ...rest, actions: steps };
+}
+
 /**
  * Bridge failures that mean the environment, not the agent's choice, failed:
  * transport timeouts or aborts, connection errors, and bridge responses with a

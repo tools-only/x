@@ -1,6 +1,6 @@
-"""Freeze a committed source tree and run one real ARC pilot (yibu/qwen3.8-27b, high reasoning, text+image, query
-observations) on ls20 or the game PILOT_GAME names. Budgets come from argv; 0 turns a limit off, so an uncapped round is
-`pilot.py <label> 0 0 0`.
+"""Freeze a committed source tree and run one real ARC pilot (yibu/qwen3.8-27b, thinking PILOT_THINKING (default high),
+text+image, query observations) on ls20 or the game PILOT_GAME names. Budgets come from argv; 0 turns a limit off, so an
+uncapped round is `pilot.py <label> 0 0 0`.
 
 Further arguments KEY=VALUE are the round's comparison variables (ARC_THIN_* / ARC_REFINE_* environment), recorded in
 protocol.json. FORK=<snapshot dir> starts from another run's snapshot, SNAPSHOT=<k>[,<k>] snapshots this one after those
@@ -34,6 +34,9 @@ os.environ.update(VARIABLES)
 # Completions-only A/B arm: a declared dialect pins openai-completions, so it stays out of the Responses baseline.
 THINKING_FORMAT = os.environ.get('PILOT_THINKING_FORMAT') or None
 PI_API = os.environ.get('PILOT_PI_API') or None
+# The thinking level (default high). "off" reaches qwen only with a dialect that encodes it (PILOT_THINKING_FORMAT=qwen
+# sends enable_thinking=false on Completions); check reasoning tokens in harness/usage.jsonl before trusting the label.
+THINKING = os.environ.get('PILOT_THINKING') or 'high'
 OUT = BASE / LABEL
 SNAPSHOT = OUT / 'runtime'
 assert not OUT.exists(), 'A pilot is immutable; choose a fresh label'
@@ -66,7 +69,7 @@ parse = subprocess.run(['node', '--experimental-strip-types', '--input-type=modu
 assert parse.returncode == 0, 'an extension does not parse:\n' + (parse.stderr or parse.stdout)
 protocol = dict(source=str(SOURCE), commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=SOURCE, text=True).strip(),
     branch=subprocess.check_output(['git', 'branch', '--show-current'], cwd=SOURCE, text=True).strip(), game=GAME,
-    provider='yibu', model='qwen3.8-27b', thinking='high', input_modalities='text,image', observation='query',
+    provider='yibu', model='qwen3.8-27b', thinking=THINKING, input_modalities='text,image', observation='query',
     pi_api=PI_API or 'openai-responses (native default)', thinking_format=THINKING_FORMAT,
     python_kernel=os.environ.get('ARC_THIN_PYTHON_KERNEL', '1') != '0', session_view=os.environ.get('ARC_THIN_SESSION_VIEW', '1') != '0',
     variables=VARIABLES, fork_from=FORK, snapshot_after_decisions=list(SNAPSHOTS), max_decisions=MAXDEC,
@@ -98,7 +101,7 @@ try:
     result = runner.run_arc_thin_e2e(OUT / 'arc-run', arc_root=Path('D:/arc-agi-benchmark/arc-agi-3-benchmarking'),
         game=GAME, foundation='native', variant='treatment', max_actions=ACTIONS, max_decisions=MAXDEC,
         max_reported_tokens=TOKENS, experiment_timeout_seconds=SECONDS, decision_timeout_seconds=0, turn_idle_timeout_seconds=0,
-        max_no_action_decisions=float('inf'), pi_provider='yibu', pi_model='qwen3.8-27b', thinking='high',
+        max_no_action_decisions=float('inf'), pi_provider='yibu', pi_model='qwen3.8-27b', thinking=THINKING,
         pi_api=PI_API, thinking_format=THINKING_FORMAT, input_modalities='text,image',
         ledger=True, critic=True, replay_reasoning=False,
         **({'fork_from': Path(FORK)} if FORK else {}), **({'snapshot_after_decisions': SNAPSHOTS} if SNAPSHOTS else {}))
