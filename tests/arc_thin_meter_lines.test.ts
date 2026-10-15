@@ -71,10 +71,11 @@ test('progress: nothing changed, only the meter changed, or the batch came back 
     { action: 'ACTION1', edit: move([2, 2], [3, 2]) },
     { action: 'ACTION2', edit: move([3, 2], [2, 2]) },
   ]);
-  assert.deepEqual(progressAt(rows, grids, 2), { progress: false, why: '#2 changed nothing' });
+  assert.deepEqual(progressAt(rows, grids, 2), { progress: false, why: '#2 changed nothing; outside recurring cells the board has not changed since #1' });
   // Before the line is known a fill is new; once it is, the same kind of fill is not.
   assert.deepEqual(progressAt(rows, grids, 3), { progress: true });
-  assert.deepEqual(progressAt(rows, grids, 5), { progress: false, why: '#5 changed only cells that change on (nearly) every action (row 9)' });
+  assert.deepEqual(progressAt(rows, grids, 5), { progress: false,
+    why: '#5 changed only cells that change on (nearly) every action (row 9); outside them the board has not changed on this level' });
   assert.deepEqual(progressAt(rows, grids, 6), { progress: true });
   assert.deepEqual(progressAt(rows, grids, 7), { progress: true });
   // There and back: a batch that started after the RESET is back where it started; an older state is no stop.

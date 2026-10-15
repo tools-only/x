@@ -117,7 +117,7 @@ test('by default a batch stops when its actions stop moving the state on, and af
   try {
     assert.match(h.tool().description, /a checked prediction misses \(cells, level_changed or state; text is kept, not checked\), or an action changed nothing apart from cells that change on \(nearly\) every action or brought back the state the batch started from/);
     const quiet = await h.play({ actions: [{ action: 'ACTION6', x: 1, y: 1 }, { action: 'ACTION1' }], note: 'a click, then a move' });
-    assert.match(quiet, /\nbatch: 1 of 2 played; stopped: #1 changed nothing\.$/);
+    assert.match(quiet, /\nbatch: 1 of 2 played; stopped: #1 changed nothing; outside recurring cells the board has not changed on this level\.$/);
     const missed = await h.play({ actions: [{ action: 'ACTION1', predict: { cells: [[0, 0, 7]] } }, { action: 'ACTION2' }] });
     assert.match(missed, /\nbatch: 1 of 2 played; stopped: #2's prediction missed\.$/);
     // Text is kept, not checked: it stops nothing.

@@ -355,12 +355,14 @@ const SCHEDULE_SCRIPT: Step[] = Array.from({ length: 12 }, (_, n): Step => ({
   kind: 'decide', calls: [['arc_action', { action: n % 2 ? 'ACTION4' : 'ACTION1', note: `schedule ${n}` }]],
 }));
 // Batches judged by progress (MOCK_ARC_METER=1: the bottom row fills on every step, ACTION3 leaves the 9 in place).
-// Four moves show the row as a meter; a batch then stops after an action that changed only that row, env.act reports
-// the same as progress=False, and a batch stops after a move that brings back an earlier state.
+// Four moves show the row as a meter; a batch then stops after an action that changed only that row, an acting python
+// call stops after three such actions (each reported as progress=False), and a batch stops after a move that brings
+// back where it started.
 const PROGRESS_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { actions: ['ACTION1', 'ACTION4', 'ACTION1', 'ACTION4'].map((action) => ({ action })), note: 'four moves' }]] },
   { kind: 'decide', calls: [['arc_action', { actions: [{ action: 'ACTION3' }, { action: 'ACTION3' }, { action: 'ACTION1' }], note: 'stay, stay, move' }]] },
-  { kind: 'decide', calls: [['python', { code: "fb = env.act('ACTION3')\nprint('PROGRESS', fb['progress'], fb.get('no_progress'))" }]] },
+  { kind: 'decide', calls: [['python', { code: "try:\n    for i in range(4):\n        fb = env.act('ACTION3')\n" +
+    "        print('PROGRESS', fb['progress'], fb.get('no_progress'))\nexcept Exception as error:\n    print('STOPPED', error)" }]] },
   { kind: 'decide', calls: [['arc_action', { actions: [{ action: 'ACTION1' }, { action: 'ACTION2' }, { action: 'ACTION1' }], note: 'there and back' }]] },
 ];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT

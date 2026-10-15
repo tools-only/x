@@ -21,7 +21,13 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"hypotheses with a check(t) the runtime runs on every recorded move), tools (tools/<name>.py, python the agent calls by name), " +
 	"skills (skills/<name>/SKILL.md, a procedure read on demand) and subagents. You are called after an event (WHY NOW). From the " +
 	"record, make the single most useful small edit, so the agent re-derives less and acts on what the evidence shows.\n" +
-	"How understanding moves: a belief the agent states (in memory or its notes) becomes a HYPOTHESIS with a check; a check that " +
+	// 2026-10-16: refinements wrote the agent's current belief down as a checked hypothesis (su15-s04 #37) and kept its
+	// costliest test going (#78); the rival it needed came only after a GAME_OVER.
+	"Look first at what the agent's current line of play assumes (its notes, memory and strategy): when the record has not " +
+	"tested that against a rival explanation, the most useful edit usually names the rival and the cheapest action whose " +
+	"outcome would tell them apart.\n" +
+	"How understanding moves: a belief the agent states (in memory or its notes), or its rival, becomes a HYPOTHESIS with a check " +
+	"that some action could fail; a check that " +
 	"keeps holding becomes a line of prompts/rules.md that cites its key; a cited check that fails puts the rule in dispute, and " +
 	"you narrow or remove that line. The runtime counts the checks; the WHY NOW line says which step is due. Consolidate settled " +
 	"or contradicted memory into one MEMORY entry that replaces them, and keep the strategy's next experiment current.\n" +
@@ -36,8 +42,9 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"too tests nothing and is not promoted.\n" +
 	`FILE paths: prompts/rules.md (under ${RULES_CHARS} characters; one rule per line, each ending with the key of the check that ` +
 	"keeps it: '- <the rule in one sentence> (hyp.<name>)'; a goal rule only after a level change confirmed it), " +
-	`prompts/strategy.md (under ${STRATEGY_CHARS} characters, three parts: Open questions, Next experiment, Failure modes; when no ` +
-	"step has tested how a level is won, the next experiment is a goal test), tools/<name>.py, lib/<name>.py or skills/<name>/SKILL.md " +
+	`prompts/strategy.md (under ${STRATEGY_CHARS} characters, three parts: Open questions, Next experiment, Failure modes; the ` +
+	"next experiment is the cheapest action whose outcome separates the live explanations, a goal test when one is cheap), " +
+	"tools/<name>.py, lib/<name>.py or skills/<name>/SKILL.md " +
 	"(frontmatter name and description). A tool is a script " +
 	"or def run(args, env): args is a dict; env has state, grid, history (history.grid(n)), frame(n) and act(action, x=None, y=None, " +
 	"predict=None), which takes one action and returns the observation (grid, changed_cells, level_changed, state, missed), so code " +

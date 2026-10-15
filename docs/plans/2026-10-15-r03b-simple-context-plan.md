@@ -275,6 +275,44 @@ steps by their outcome, not by what was declared.
   decision are at least 0.75 of A's; ar25 and ls20 report every line found and whether it is a line that fills on
   every action (inspected in the frames). Exploratory: 2–3 forks per arm, all reported.
 
+**E1 results (2026-10-16; stopped after the first pairs, commit `c5d0110c`).** Output
+`D:/autoresearch_pi_project/runs/arc-e1-20261016`; measured with `tools/arc_thin_progress_eval.ts`
+(`C:/Users/qi/tmp/r03b-simple/e1-summary.json`). Sources: su15 17 actions at decision 5 (the last 10 one batch on one
+cell: the counter row half full at the fork), ls20 20, ar25 3.
+
+| Fork | Actions after the fork | No-change share | Levels | Budget tokens per action | Actions per decision | Notes |
+|---|---|---|---|---|---|---|
+| su15 A1 | 60 | 0.683 | 0 | 4,702 | 3.3 | |
+| su15 A2 | 11 | — | 0 | — | — | ended by an ARC step over 90 s (`environment_outcome_unknown`) |
+| su15 B1 | 46 | 0.652 | 0 | 13,220 | 1.9 | token cap; 31 python actions, 28 without progress |
+| su15 B2 | 57+ | 0.632 | 0 | 7,485 | 2.4 | 15 python actions, all without progress |
+| ls20 A1 | 40 | 0.100 | 0 | 9,958 | 2.9 | lines found: rows 61, 62 |
+| ls20 B1 | 40 | 0.025 | 0 | 9,847 | 2.7 | stops: 4 returns to the batch's start (the agent cycled moves to drain the bar), 1 move that changed only the bar |
+
+- **Verdict: not kept as built.** On su15 the no-change share did not fall (B 0.64 against A 0.68) and tokens per action
+  rose 1.6–2.8×. ls20 actions per decision stayed within the limit (0.93 of A), and its stops hit real loops.
+- **Broken transition: the stop was not taken as evidence.** After the first stop, both su15 B forks played the same
+  presses from python, which reported `progress=False` and went on; B1 wrote: "the harness treats row-63 changes as
+  recurring and won't let a multi-action batch ride on them. I'll drive the fill via Python." The goal belief ("fill
+  the row") formed after five clicks and held until the row was full, as in s04.
+- Not run: su15 pair 3, ls20 pair 2, ar25 (held-out) pairs. M2 found the bar in ls20 too (rows 61–62); its false-line
+  check on a held-out game is still open.
+
+**r2 (2026-10-16, the user's loop: fix, then run su15 again).**
+- Acting code: a python call stops acting after `ARC_THIN_STILL_LIMIT` (3) actions without progress
+  (`NativeRuntime.stillCounter`; `stillLimit` host); the system prompt says so.
+- The stop says what the agent needs: "#18 changed only cells that change on (nearly) every action (row 63); outside
+  them the board has not changed on this level" (`progressAt`).
+- M3, refinement for discrimination: `REFINER_SYSTEM` asks first what the current line of play assumes and, when the
+  record has no rival for it, for the rival and the cheapest action that separates them; the next experiment is the
+  cheapest separating action, a goal test only when it is cheap; the promotion events ask for the untested rival as a
+  checked hypothesis instead of the agent's own belief.
+- Environment: the bridge's SDK step timeout is `ARC_BRIDGE_STEP_TIMEOUT_SECONDS` (default 90 s; the pilots set 300 s)
+  and the extension waits that long plus 30 s for an action; an expired call is still never replayed.
+- Checks: the targeted suites (meter lines, batch, facts, fixed refine, native runtime, kernel, act limit, promotion,
+  native context) pass 44/44; the `progress` smoke now also checks "STOPPED 3 actions of this call moved nothing on";
+  `progress`, `activation`, `schedule` and `promotion` pass their own checks.
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or

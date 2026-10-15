@@ -19,6 +19,12 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   act?(call: ActCall, via: string): Promise<ActOutcome>;
   /** How many actions one acting call may take, read when the call starts (default MAX_ACTS). */
   actLimit?(): ActLimit;
+  /**
+   * After how many actions that moved nothing on (their feedback has progress=false) an acting call stops; 0 or absent:
+   * never. In su15-e1-B1 (2026-10-16) a batch stopped by the progress rule went on as a python loop that ignored
+   * `progress`: 24 of its 26 actions changed only the bottom row.
+   */
+  stillLimit?(): number;
   /** Commit a memory update made by code (env.remember) through the memory tool's own update; returns its receipt. */
   remember?(args: unknown): Promise<string>;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
@@ -262,6 +268,19 @@ export class NativeRuntime {
    * loop over frames is one restart, not one per file), and each env.act() is taken through the host and the code
    * replayed with the observation (closed loop, at most MAX_ACTS per call).
    */
+  /**
+   * Counts the actions of one acting call that moved nothing on (feedback progress=false); at the host's stillLimit the
+   * call stops acting, like an arc_action batch after one such action. The code still gets that action's feedback.
+   */
+  private stillCounter(acted: Acted): (outcome: ActOutcome) => void {
+    const cap = this.host.stillLimit?.() ?? 0;
+    let count = 0;
+    return (outcome) => {
+      if (!cap || outcome.stopped || outcome.observation?.progress !== false) return;
+      count += 1;
+      if (count >= cap) acted.stopped ??= `${count} actions of this call moved nothing on; the last: ${String(outcome.observation.no_progress ?? 'no progress')}`;
+    };
+  }
   private async execute(input: ReturnType<NativeRuntime['snapshot']> & Record<string, any>, signal?: AbortSignal, pool?: TaskPythonPool,
     via?: string): Promise<NativeResult & { acted?: Acted }> {
     const started=performance.now(); const attempts:any[]=[];
@@ -272,6 +291,7 @@ export class NativeRuntime {
     const acts: Array<{ call: ActCall; observation?: unknown; stopped?: string }> = [];
     const acted: Acted = { lines: [], rows: [] };
     let limit: ActLimit | undefined;
+    const still = this.stillCounter(acted);
     const controller = new AbortController(); const abort = () => controller.abort();
     signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
     // Each attempt gets its own time allowance once it holds a slot: a replayed acting call restarts the code once per
@@ -303,6 +323,7 @@ export class NativeRuntime {
           if (outcome.line) acted.lines.push(outcome.line);
           if (!outcome.stopped) acted.rows.push(actedRow(result.need_act, outcome));
           if (outcome.stopped) acted.stopped ??= outcome.stopped;
+          still(outcome);
           acts.push({ call: result.need_act, ...(outcome.stopped ? { stopped: outcome.stopped } : { observation: outcome.observation }) });
           continue;
         }
@@ -342,6 +363,7 @@ export class NativeRuntime {
     for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
     const acted: Acted = { lines: [], rows: [] };
     let played = 0, fetched = 0, limit: ActLimit | undefined;
+    const still = this.stillCounter(acted);
     const answer = async (request: KernelRequest): Promise<unknown> => {
       if (request.t === 'act') {
         if (!via || !this.host.act) return { error: 'this code cannot act' };
@@ -354,6 +376,7 @@ export class NativeRuntime {
         if (!outcome.stopped) { played += 1; acted.rows.push(actedRow(call, outcome)); }
         if (outcome.line) acted.lines.push(outcome.line);
         if (outcome.stopped) acted.stopped ??= outcome.stopped;
+        still(outcome);
         return outcome.stopped ? { stopped: outcome.stopped } : { observation: outcome.observation };
       }
       if (request.t === 'file') {

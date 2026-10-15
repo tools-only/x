@@ -247,14 +247,17 @@ elif script == "schedule":
 elif script == "progress":
     # The batch stops come from the progress rule (ARC_THIN_BATCH_STOP default) and the meter row (meterLines).
     sequences = [json.loads(s) for s in (root / 'harness/action_sequences.jsonl').read_text(encoding='utf-8').splitlines()]
-    assert [(s['n'], s['planned'], s['played']) for s in sequences] == [(1, 4, 4), (5, 3, 1), (7, 3, 2)], sequences
+    assert [(s['n'], s['planned'], s['played']) for s in sequences] == [(1, 4, 4), (5, 3, 1), (9, 3, 2)], sequences
     assert sequences[0]['stopped'] is None, sequences
-    assert sequences[1]['stopped'] == '#5 changed only cells that change on (nearly) every action (row 7)', sequences
-    assert sequences[2]['stopped'] == '#8 brought back the state this batch started from', sequences
+    still = '#5 changed only cells that change on (nearly) every action (row 7); outside them the board has not changed since #4'
+    assert sequences[1]['stopped'] == still, sequences
+    assert sequences[2]['stopped'] == '#10 brought back the state this batch started from', sequences
     played = [json.loads(s) for s in (root / 'harness/played_actions.jsonl').read_text(encoding='utf-8').splitlines()]
-    assert [(p['n'], p['via'], p['progress']) for p in played] == [(6, 'python', False)], played
+    assert [(p['n'], p['via'], p['progress']) for p in played] == [(6, 'python', False), (7, 'python', False), (8, 'python', False)], played
     assert 'PROGRESS False #6 changed only cells that change on (nearly) every action (row 7)' in text, text[-2000:]
-    assert 'batch: 1 of 3 played; stopped: #5 changed only cells that change on (nearly) every action (row 7).' in text, text[-2000:]
+    assert ('STOPPED 3 actions of this call moved nothing on; the last: #8 changed only cells that change on (nearly) every action (row 7)'
+            in text), text[-2000:]
+    assert f'batch: 1 of 3 played; stopped: {still}.' in text, text[-2000:]
     currents = [r.get('current', '') for r in parent_requests]
     assert any('RECURRING CHANGE (left out of the changed-nothing, stall and repeat counts): row 7 changed on' in c for c in currents), [c[:1500] for c in currents]
     assert any('only recurring cells' in c for c in currents), [c[:1500] for c in currents]

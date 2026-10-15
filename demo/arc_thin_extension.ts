@@ -244,6 +244,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const batchStopMode = ["end", "miss"].includes(process.env.ARC_THIN_BATCH_STOP ?? "") ? process.env.ARC_THIN_BATCH_STOP! : "progress";
 	const batchStopOnMiss = batchStopMode !== "end";
 	const batchStopOnStill = batchStopMode === "progress";
+	// Acting code gets `progress` with each env.act and decides; it stops acting after ARC_THIN_STILL_LIMIT actions that
+	// moved nothing on (2026-10-16: su15-e1-B1 moved a stopped batch into a python loop that ignored `progress`).
+	const stillLimit = Math.max(0, Number(process.env.ARC_THIN_STILL_LIMIT ?? 3) || 0);
 	// The ledger's mask also covers rows and columns that fill a few cells on every action (meterLines, 2026-10-16), for the
 	// facts and the progress stop; ARC_THIN_METER_LINES=0 keeps the per-cell ticker mask alone.
 	const meterLinesOn = process.env.ARC_THIN_METER_LINES !== "0";
@@ -1403,10 +1406,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const touches = new Map<string, number>();
 			for (const t of memoryTouches) if (memory.facts.has(t.key)) touches.set(t.key, (touches.get(t.key) ?? 0) + 1);
 			const churned = [...touches].filter(([, n]) => n >= BELIEF_REWRITES).sort((a, b) => b[1] - a[1])[0];
+			// 2026-10-16: these asked for the agent's own belief as a hypothesis, and su15-s04's refinement wrote down the
+			// belief that cost the level a GAME_OVER (#37). The rival is what the record lacks.
 			if (churned) due.push([`churn:${churned[0]}`, `memory ${churned[0]} was rewritten ${churned[1]} times and no hypothesis carries a check: ` +
-				"turn the belief it restates most into a HYPOTHESIS with a check"]);
+				"write as a HYPOTHESIS with a check the untested rival of the belief it restates most (the same question)"]);
 			else if (trajectory.length >= UNCHECKED_AFTER && (uncheckedAskedAt < 0 || trajectory.length - uncheckedAskedAt >= 2 * UNCHECKED_AFTER))
-				due.push([`unchecked:${trajectory.length}`, `${trajectory.length} actions and no hypothesis carries a check: turn a belief the agent has stated into a HYPOTHESIS with a check`]);
+				due.push([`unchecked:${trajectory.length}`, `${trajectory.length} actions and no hypothesis carries a check: write as a HYPOTHESIS ` +
+					"with a check the untested rival of the belief the agent's current line of play depends on (the same question)"]);
 		}
 		for (const broken of urgentOnly ? [] : nativeRuntime?.emptyViews() ?? [])
 			due.push([`view:${broken.path}@${broken.version}`, `view ${broken.path} v${broken.version} showed nothing on states ${broken.states.map((n) => `#${n}`).join(", ")}` +
@@ -1905,7 +1911,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const by = via ? `${via} action` : "arc_action";
 		let value: Record<string, any>;
 		// No agent abort signal here: an aborted request could still apply an unrecorded action.
-		try { value = await bridgeCall("/action", payload, 120_000); }
+		// Wait as long as the bridge waits for the environment, plus a margin (ARC_BRIDGE_STEP_TIMEOUT_SECONDS, default 90 s):
+		// giving up first left a step in flight that ended the run as "outcome unknown".
+		try { value = await bridgeCall("/action", payload, Math.max(120_000, (Number(process.env.ARC_BRIDGE_STEP_TIMEOUT_SECONDS) || 90) * 1000 + 30_000)); }
 		catch (error) {
 			// The environment failing is not the agent's to fix: end the decision instead of
 			// letting it retry the same call (each retry is a full model turn plus the timeout).
@@ -2490,6 +2498,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
       actLimit: () => actLimit(observation?.action_budget ?? trajectory.at(-1)?.budget, actShare),
+      stillLimit: () => batchStopOnStill ? stillLimit : 0,
       ...(pythonMemory ? { remember: pythonMemory } : {}),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
@@ -2591,7 +2600,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       batch: batchStopOnStill
         ? "A batch plays while its actions move the state on: it stops after an action that changed nothing apart from cells that "
           + "change on (nearly) every action or brought back the state the batch started from, after a checked prediction misses, and "
-          + "at a level change, the game's end or a refusal; env.act returns `progress` and `missed`, and your code decides whether to go on."
+          + "at a level change, the game's end or a refusal; env.act returns `progress` and `missed`, and your code decides whether to go on"
+          + (stillLimit ? ` (a call stops acting after ${stillLimit} actions that moved nothing on).` : ".")
         : "A batch stops early at a level change, the game's end or a refusal; env.act returns `missed` and your code decides whether to go on.",
       observation: queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"

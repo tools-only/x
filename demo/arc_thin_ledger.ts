@@ -356,22 +356,27 @@ export function buildLedger(rows: LedgerRow[], observations: Observation[], grid
  * Whether action n moved the state on, for a batch (2026-10-16): the state after it, with ticker cells and (with
  * `lines`) meter lines left out, differs from the state before it and, given `from` (the state the batch started
  * from), from that one too. A RESET and a level change always count. `rows` are this level's actions up to n.
- * A batch that revisits an older state is not stopped: a planned path may cross where it has been.
+ * A batch that revisits an older state is not stopped: a planned path may cross where it has been. The reason says
+ * when the board outside the masked cells last changed: in su15-e1-B1 the agent read the bare stop as a rule of the
+ * harness and played the same presses from python.
  */
 export function progressAt(rows: LedgerRow[], grids: Map<number, number[][]>, n: number, lines = true, from?: number):
 	{ progress: true } | { progress: false; why: string } {
 	const upTo = [...rows].filter((row) => row.n <= n).sort((a, b) => a.n - b.n);
 	const row = upTo.find((item) => item.n === n);
 	if (!row || row.action === "RESET" || row.level_changed) return { progress: true };
-	if (row.changed_cells === 0) return { progress: false, why: `#${n} changed nothing` };
 	const found = lines ? meterLines(upTo, grids) : [];
 	const { hash, ticker } = maskedHashes(grids, () => found);
+	const where = [...found.map(lineLabel), ...(ticker ? [`${ticker} cell${ticker === 1 ? "" : "s"} that change on most actions`] : [])];
+	const since = () => {
+		const last = [...upTo].reverse().find((item) => item.n < n && hash.has(item.n) && hash.has(item.n - 1) && hash.get(item.n) !== hash.get(item.n - 1));
+		return `; outside ${where.length ? "them" : "recurring cells"} the board has not changed ${last ? `since #${last.n}` : "on this level"}`;
+	};
+	if (row.changed_cells === 0) return { progress: false, why: `#${n} changed nothing${since()}` };
 	const after = hash.get(n);
 	if (after === undefined) return { progress: true };
-	if (hash.get(n - 1) === after) {
-		const where = [...found.map(lineLabel), ...(ticker ? [`${ticker} cell${ticker === 1 ? "" : "s"} that change on most actions`] : [])];
-		return { progress: false, why: `#${n} changed only cells that change on (nearly) every action${where.length ? ` (${where.join(", ")})` : ""}` };
-	}
+	if (hash.get(n - 1) === after)
+		return { progress: false, why: `#${n} changed only cells that change on (nearly) every action${where.length ? ` (${where.join(", ")})` : ""}${since()}` };
 	if (from !== undefined && from < n - 1 && hash.get(from) === after) return { progress: false, why: `#${n} brought back the state this batch started from` };
 	return { progress: true };
 }

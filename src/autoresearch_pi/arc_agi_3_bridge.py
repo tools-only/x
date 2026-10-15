@@ -356,7 +356,10 @@ class ArcBridge:
         self._lock = threading.RLock()
         self._sdk_call: dict[str, Any] | None = None
         self._uncertain: dict[str, Any] | None = None
-        self.sdk_timeout_seconds = 90.0
+        # How long one SDK call may take before its outcome counts as unknown and the bridge stops. The remote step took
+        # longer than 90 s in su15-s04 (#95) and su15-e1-A2 (2026-10-15/16), ending both runs; a pilot may wait longer
+        # (ARC_BRIDGE_STEP_TIMEOUT_SECONDS). An expired call is still never replayed or committed.
+        self.sdk_timeout_seconds = float(os.environ.get("ARC_BRIDGE_STEP_TIMEOUT_SECONDS") or 90.0)
         self.close_timeout_seconds = 20.0
         self.action_token = os.environ.get("ARC_BRIDGE_ACTION_TOKEN", "")
         self._leases: dict[str, dict[str, Any]] = {}
