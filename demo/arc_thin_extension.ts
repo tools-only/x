@@ -38,7 +38,7 @@ import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
 import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { StringEnum, getCurrentSystemMessage } from "@earendil-works/pi-ai";
+import { StringEnum, getCurrentSystemMessage, validateToolArguments } from "@earendil-works/pi-ai";
 import { compact as piCompact, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderArcLatestFrameRuns } from "./arc_agi_3_official_adapter.ts";
@@ -56,7 +56,7 @@ import {
 	MAX_EVIDENCE, MAX_HYPOTHESES, MAX_STEPS, MAX_STRATEGIES, STATUSES, STRATEGY_STATUSES, VERDICTS, applyRow, applyRows, emptyMemory, memoryForSkills,
 	planMemoryUpdate, renderFactsCompact, renderMemory, renderDecisionMemory, resetMemory, type ComponentContext, type MemoryParams,
 } from "./arc_thin_memory.ts";
-import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments, unescapeSource } from "./arc_thin_boundary.ts";
+import { isEnvironmentFailure, repairActionArguments, repairMemoryArguments, repairSkillArguments, repairToolCallNames, unescapeSource } from "./arc_thin_boundary.ts";
 import {
 	normalizePrediction, predictionSchema, renderScore, scorePrediction, type Outcome, type Prediction, type ScoredPrediction,
 } from "./arc_thin_prediction.ts";
@@ -2787,6 +2787,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	pi.on("message_end", guard("message_end", (event: any) => {
 		const message = event.message;
 		if (message?.role !== "assistant") return undefined;
+		// Before anything reads the calls: a later call that arrived under the first call's name gets its own back (the
+		// block is renamed in place, so Pi validates, runs and saves the corrected call).
+		const active = new Set(pi.getActiveTools?.() ?? []);
+		const repaired = repairToolCallNames(message, (pi.getAllTools?.() ?? []).filter((tool) => active.has(tool.name)), validateToolArguments as any);
+		if (repaired.length) append("tool_call_repairs.jsonl", { decision, n: trajectory.length, repairs: repaired });
 		responsesContinuation.accept(message);
 		run.assistantMessages += 1;
 		run.endedAt = Date.now();

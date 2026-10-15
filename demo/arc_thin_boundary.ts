@@ -206,3 +206,44 @@ export function isEnvironmentFailure(error: unknown): boolean {
 	if (name === "TimeoutError" || name === "AbortError") return true;
 	return /aborted due to timeout|timed out|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up/i.test(message);
 }
+
+/** A tool as Pi lists it: its name and its parameter schema. */
+export type ToolShape = { name: string; description?: string; parameters?: any };
+export type ToolValidator = (tool: ToolShape, call: { type: "toolCall"; id: string; name: string; arguments: any }) => unknown;
+
+/** Whether a tool takes exactly these arguments: each key is one it declares, and they pass its schema. */
+function takes(tool: ToolShape, args: unknown, validate: ToolValidator): boolean {
+	const declared = tool.parameters?.properties;
+	if (!isObject(args) || !isObject(declared) || Object.keys(args).some((key) => !(key in declared))) return false;
+	try { validate(tool, { type: "toolCall", id: "name-repair", name: tool.name, arguments: args }); return true; }
+	catch { return false; }
+}
+
+/**
+ * Tool calls that reached the agent loop under the wrong name. On the yibu Responses route, when one message called
+ * several different tools, every later call arrived with the first call's name and its own arguments (ls20-r03b: 2
+ * calls; ls20-p01-r1: 6 in its first two decisions, e.g. python {path, limit}, read {code}, write {op, set}). Pi takes
+ * a function call's name from the stream's output_item.added event and never revises it, so each such call failed
+ * validation and its work was lost, and the request after it read nothing from the provider's cache.
+ *
+ * Only that shape is repaired: a later call that carries the first call's name, in a message with two or more calls,
+ * whose named tool does not take its arguments while exactly one other active tool does. The block is renamed in
+ * place, before Pi validates and runs it, so the run, the session and the transcript all hold the corrected call. A
+ * call that validates, the first call, and a call no tool or several tools would take are never changed.
+ */
+export function repairToolCallNames(message: any, tools: ToolShape[], validate: ToolValidator): Array<{ id: string; from: string; to: string }> {
+	const calls = (Array.isArray(message?.content) ? message.content : []).filter((block: any) => block?.type === "toolCall");
+	if (calls.length < 2) return [];
+	const byName = new Map(tools.map((tool) => [tool.name, tool]));
+	const repairs: Array<{ id: string; from: string; to: string }> = [];
+	for (const call of calls.slice(1)) {
+		if (call.name !== calls[0].name) continue;
+		const named = byName.get(call.name);
+		if (named && takes(named, call.arguments, validate)) continue;
+		const others = tools.filter((tool) => tool.name !== call.name && takes(tool, call.arguments, validate));
+		if (others.length !== 1) continue;
+		repairs.push({ id: String(call.id), from: String(call.name), to: others[0].name });
+		call.name = others[0].name;
+	}
+	return repairs;
+}
