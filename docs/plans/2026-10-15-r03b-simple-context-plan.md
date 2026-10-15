@@ -356,6 +356,26 @@ the restriction; the targeted suites pass 41/41; `progress`, `activation`, `sche
 checks (`C:/Users/qi/tmp/r03b-simple/smokes-r5`). su15-r5 started 2026-10-16 with r2's settings; claim: decisions
 without an action stay under 25% and never more than 3 in a row.
 
+**su15-r5 (r5 `81e05c99`).** Ended by level 2's budget at 248 actions, 51 minutes, 3.27M budget tokens, 86 decisions,
+**1 level** (#38). The claim holds: 1 decision without an action, no streak, the action-only restriction never needed.
+No-change share 0.12; every action went through arc_action batches (76 calls, 17 stopped at "only recurring cells").
+- Level 2 was lost to a wrong belief about moves: the agent clicked each block's own top-left cell, saw it move one cell
+  up-left, and concluded that blocks "move (-1,-1) per click" (#53–#61); a click on the block's other corner moved
+  nothing (#52). Its plan then called two blocks "unreachable" within an attempt, and it walked blocks one cell per
+  action for the rest of the level. In r3 the agent had found that a block moves towards a click several cells away.
+- The refinements did not name the belief. At #93 and #120 they proposed running the bar out as "the cheapest
+  discriminator" (one GAME_OVER followed); after level 1 the rules held only "traversing the diagonal trail … completes
+  the level", which at #135 was still cited as "the established rule … untested on this level", while how a click moved
+  the square (to a clicked point up to ~8.5 cells away, found at #30–#34) was in no rule.
+
+**r6 (`9bc507ef`).** The refiner charter adds where such assumptions hide: an effect seen with one kind of argument (clicks
+always on the object, or at one distance or side of it) is unknown for the others; a plan that calls something
+unreachable, or the actions left too few, rests on a belief about what actions can do, the first to test; an experiment
+that would end the attempt is never the cheapest. Rules say what actions do, with the arguments they were seen with;
+what completed a level is stated as what was done on which level. Refiner suites pass 21/21. su15-r6 started with r5's
+settings; claim: a refinement names such a belief and the agent tests it within 10 actions; no refinement proposes an
+experiment that ends the attempt.
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or
