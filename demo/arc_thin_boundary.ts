@@ -207,16 +207,23 @@ export function isEnvironmentFailure(error: unknown): boolean {
 	return /aborted due to timeout|timed out|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up/i.test(message);
 }
 
-/** A tool as Pi lists it: its name and its parameter schema. */
-export type ToolShape = { name: string; description?: string; parameters?: any };
+/** A tool as Pi lists it: its name and its parameter schema, with the tool's own argument preparation when known. */
+export type ToolShape = { name: string; description?: string; parameters?: any; prepareArguments?: (args: any) => any };
 export type ToolValidator = (tool: ToolShape, call: { type: "toolCall"; id: string; name: string; arguments: any }) => unknown;
 
-/** Whether a tool takes exactly these arguments: each key is one it declares, and they pass its schema. */
+/**
+ * Whether a tool takes exactly these arguments: each key the model sent is one the tool declares, and, prepared by the
+ * tool's own prepareArguments as Pi prepares them, they pass its schema (ls20-p01-r2: a memory call with a 770-char
+ * text, which memory clips to 600 before its schema, was otherwise taken by no tool and left unrepaired).
+ */
 function takes(tool: ToolShape, args: unknown, validate: ToolValidator): boolean {
 	const declared = tool.parameters?.properties;
 	if (!isObject(args) || !isObject(declared) || Object.keys(args).some((key) => !(key in declared))) return false;
-	try { validate(tool, { type: "toolCall", id: "name-repair", name: tool.name, arguments: args }); return true; }
-	catch { return false; }
+	try {
+		const prepared = typeof tool.prepareArguments === "function" ? tool.prepareArguments(args) : args;
+		validate(tool, { type: "toolCall", id: "name-repair", name: tool.name, arguments: prepared });
+		return true;
+	} catch { return false; }
 }
 
 /**

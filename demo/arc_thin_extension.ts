@@ -174,6 +174,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'query' : 'inline';
   if (!['query', 'inline'].includes(observationMode)) throw Error('ARC_THIN_OBSERVATION must be query or inline');
   const queryObservation = native && observationMode === 'query';
+  // Every tool definition registered here, as registered (Pi's getAllTools lists only name and schema): the tool-call
+  // name repair prepares a call's arguments with the tool's own prepareArguments before its schema, as Pi does.
+  const toolDefinitions = new Map<string, any>();
+  if (typeof pi.registerTool === "function") {
+    const registerTool = pi.registerTool.bind(pi);
+    pi.registerTool = ((definition: any) => { toolDefinitions.set(definition?.name, definition); return registerTool(definition); }) as typeof pi.registerTool;
+  }
   const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";
   /** Reasoning kept within the current decision (default on in native mode; ARC_THIN_DECISION_REASONING=0 strips it). */
   const decisionReasoning = native && process.env.ARC_THIN_DECISION_REASONING !== "0";
@@ -2790,7 +2797,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Before anything reads the calls: a later call that arrived under the first call's name gets its own back (the
 		// block is renamed in place, so Pi validates, runs and saves the corrected call).
 		const active = new Set(pi.getActiveTools?.() ?? []);
-		const repaired = repairToolCallNames(message, (pi.getAllTools?.() ?? []).filter((tool) => active.has(tool.name)), validateToolArguments as any);
+		const tools = (pi.getAllTools?.() ?? []).filter((tool) => active.has(tool.name))
+			.map((tool) => ({ ...tool, prepareArguments: toolDefinitions.get(tool.name)?.prepareArguments }));
+		const repaired = repairToolCallNames(message, tools, validateToolArguments as any);
 		if (repaired.length) append("tool_call_repairs.jsonl", { decision, n: trajectory.length, repairs: repaired });
 		responsesContinuation.accept(message);
 		run.assistantMessages += 1;
