@@ -64,6 +64,19 @@ async function fixture(env: Record<string, string> = {}, still: string[] = []) {
       return String(result.content[0].text);
     },
     trajectory: () => readFileSync(join(root, 'harness/trajectory.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)),
+    /** A new decision with this prompt, without acting. */
+    async decide(prompt = 'Decide.') {
+      await handlers.get('before_agent_start')({ prompt, systemPromptOptions: { sections: {} } }, ctx);
+      await handlers.get('context')({ messages: [{ role: 'user', content: prompt }] }, ctx);
+    },
+    /** One tool call in the current decision: its text, or REFUSED with the refusal. */
+    async call(name: string, args: any) {
+      try {
+        const result = await tools.get(name).execute('t', args, undefined, undefined, ctx);
+        return (result.content ?? []).map((part: any) => part.text ?? '').join('\n');
+      } catch (error) { return `REFUSED ${(error as Error).message}`; }
+    },
+    active: () => [...active],
     async close() {
       await handlers.get('session_shutdown')?.({}, ctx);
       await new Promise<void>((r) => server.close(() => r()));
@@ -110,6 +123,33 @@ test('a batch is capped at its share of the budget left, and ARC_THIN_BATCH_STOP
     const quiet = await miss.play({ actions: [{ action: 'ACTION6', x: 1, y: 1 }, { action: 'ACTION6', x: 2, y: 2 }] });
     assert.doesNotMatch(quiet, /stopped/);
   } finally { await miss.close(); }
+});
+
+test('a call that ended a decision unchanged is refused in the next; after two decisions without an action only arc_action is offered', async () => {
+  // su15-r4 (2026-10-16): 239 of 260 decisions ended without an action, each re-reading one image after the prompt to act.
+  const h = await fixture();
+  const forced = 'Decide the next action. Your previous decision ended without arc_action; end this one with exactly one arc_action.';
+  try {
+    await h.play({ actions: [{ action: 'ACTION1' }] });
+    await h.decide();
+    const reads = [];
+    for (let i = 0; i < 3; i++) reads.push(await h.call('read', { path: 'notes/missing.md' }));
+    assert.match(reads[2], /decision ends/);
+    await h.decide(forced);
+    assert.ok(h.active().includes('read'), 'one decision without an action keeps the tools');
+    assert.doesNotMatch(await h.call('read', { path: 'notes/other.md' }), /ended your previous decision/);
+    const again = [];
+    for (let i = 0; i < 3; i++) again.push(await h.call('read', { path: 'notes/missing.md' }));
+    assert.match(again[0], /^REFUSED this read call, with these arguments, ended your previous decision without any change/);
+    // Refusals count as unchanged errors: the third ends the decision.
+    assert.match(again[2], /^Repeated unchanged error; decision ends: this read call/);
+    await h.decide(forced);
+    assert.deepEqual(h.active(), ['arc_action']);
+    // An action ends the streak: the next decision has its tools again.
+    await h.call('arc_action', { actions: [{ action: 'ACTION1' }] });
+    await h.decide();
+    assert.ok(h.active().includes('read') && h.active().includes('arc_action'));
+  } finally { await h.close(); }
 });
 
 test('by default a batch stops when its actions stop moving the state on, and after a checked prediction misses', async () => {

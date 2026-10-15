@@ -33,7 +33,7 @@ import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { MAX_ACTS, NativeRuntime, actLimit, actedSummary } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
-import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
+import { canonical, NativeLoopGuard } from "./arc_thin_native_loop.ts";
 import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
 import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -1758,6 +1758,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const nativeLoop = new NativeLoopGuard();
 	const loopEpoch = () => JSON.stringify([decision, trajectory.length, binder?.versionMap(),
 		[...memory.facts], [...memory.hypotheses], [...memory.strategies]]);
+	// su15-r4 (2026-10-16): 239 of 260 decisions ended without an action. Each re-read the same image until the loop guard
+	// ended it, and the next decision, told to act, opened with the same read. The call that ended a decision is refused in
+	// the next one while nothing has changed, and after two decisions in a row without an action only arc_action is offered.
+	const loopSignature = (name: string, params: unknown) => JSON.stringify([name, canonical(params)]);
+	const changeKey = () => JSON.stringify([trajectory.length, binder?.versionMap(), [...memory.facts], [...memory.hypotheses], [...memory.strategies]]);
+	let loopEndedCall: { signature: string; changes: string } | undefined;
+	let noActionStreak = 0, decisionStartActions = 0;
 
 	function guardTool<P>(name: string, fn: (params: P, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any> | any) {
 		/** A result produced alongside arc_action is carried into the next decision; the agent cannot see it now. */
@@ -1778,18 +1785,26 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			const epoch = native ? loopEpoch() : '';
 			try {
+				// Refused as an unchanged error, so three in a row end the decision.
+				if (native && name !== "arc_action" && loopEndedCall?.signature === loopSignature(name, params) && loopEndedCall.changes === changeKey())
+					throw new Refusal(`this ${name} call, with these arguments, ended your previous decision without any change, and nothing has ` +
+						"changed since; its result is in your history. Act now with arc_action, or try something different.");
 				const result = await fn(params, signal, ctx);
-				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError)))
+				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError))) {
+					loopEndedCall = { signature: loopSignature(name, params), changes: changeKey() };
 					return carry({...result, terminate:true, details:{...result.details, no_progress:true},
 						content:[...(result.content ?? []), {type:'text', text:'Three identical observations/errors without a state or workspace change; this decision ends. Use the recorded evidence or change the investigation.'}]}, Boolean(result?.isError));
+				}
 				const carried = carry(result, Boolean(result?.isError));
 				const note = run.budgetNote; run.budgetNote = undefined;
 				return note && Array.isArray(carried?.content)
 					? { ...carried, content: [...carried.content, { type: "text" as const, text: note }] } : carried;
 			}
 			catch (error) {
-				if (native && nativeLoop.record(name, params, epoch, true))
+				if (native && nativeLoop.record(name, params, epoch, true)) {
+					loopEndedCall = { signature: loopSignature(name, params), changes: changeKey() };
 					return carry({...refused('Repeated unchanged error; decision ends: ' + errorText(error)), isError:true}, true);
+				}
 				if (!(error instanceof Refusal)) logError(`tool:${name}`, error);
 				if (name !== "arc_action" && endsBatch()) return carry(refused(errorText(error)), true);
 				throw error;
@@ -2559,6 +2574,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		carriedReasoning = reasoning.length > carryChars ? `…${reasoning.slice(-carryChars)}` : reasoning;
 		if (run.assistantMessages) lastDecisionCost = { ms: (run.endedAt || Date.now()) - run.startedAt, output: run.output, reasoning: run.reasoningTokens,
 			coordinateShare: run.reasoningSentences ? run.coordinateSentences / run.reasoningSentences : 0 };
+		// Decisions in a row that ended without an action; reviews have none by design.
+		if (decision > 0 && !run.consolidating) noActionStreak = trajectory.length > decisionStartActions ? 0 : noActionStreak + 1;
+		decisionStartActions = trajectory.length;
 		run = freshRun();
 		actingStopped = undefined;
 		decision += 1;
@@ -2578,7 +2596,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			reviewedThrough = trajectory.length;
 		}
 		toolsReady = true;
-		if (control || run.forceAction && !native) pi.setActiveTools(["arc_action"]);
+		// Native decisions keep their tools when told to act, unless the decision before also ended without an action.
+		const actionOnly = run.forceAction && (!native || noActionStreak >= 2);
+		if (native && actionOnly) append("forced_actions.jsonl", { decision, n: trajectory.length, no_action_streak: noActionStreak });
+		if (control || actionOnly) pi.setActiveTools(["arc_action"]);
 		else refreshSkillSurface(run.consolidating
 			? CONSOLIDATION_TOOLS
 			: (expandedDecisionTools ? EXPANDED_DECISION_TOOLS : DECISION_TOOLS));
