@@ -313,6 +313,25 @@ cell: the counter row half full at the fork), ls20 20, ar25 3.
   native context) pass 44/44; the `progress` smoke now also checks "STOPPED 3 actions of this call moved nothing on";
   `progress`, `activation`, `schedule` and `promotion` pass their own checks.
 
+**Held-out check, ar25 (r2 code, one pair).** Both arms completed level 1 (A 26 actions after the fork, B 28); no-change
+share A 0.226, B 0.133. M2 found column 63 in both: the frames show a bar that fills one cell from the top per action
+and resets at RESET and at the level change, a counter, so no false line (`C:/Users/qi/tmp/r03b-simple/ar25-col63.txt`).
+
+**su15-r2 (r2 `51b1ae6b`, no run caps, thinking off; `D:/autoresearch_pi_project/runs/arc-loop-20261016/su15-r2`).**
+Ended by level 2's budget at 261 actions, 62 minutes, 3.84M budget tokens, 1 level.
+- Level 1 at #51 (su15-s04: #92): the click that moves the block found at #7 and the solution played as one python
+  loop of 20 moves (#32–#51). All 261 actions went through python; the 3-action stop fired 8 times.
+- Level 2: 210 actions without the level. The agent worked out the new pieces (clicks create 2×2 blocks, move them,
+  pull the nearest one into the large shape; ACTION7 undoes), tested many goal ideas by text predictions, and reset
+  20 times. At #152 and #165 the refiner rewrote the strategy to "complete row 63"; the agent filled the row twice
+  (GAME_OVER at #207 and #240). The facts said "GOAL TESTS: none" and the refiner was told "no goal test yet", since
+  only predict fields count; a hypothesis whose check failed on 174 of 179 moves stood in full at the top of every head.
+- No-change share 0.335 by #170 (s04 0.79).
+
+**r3 (`b80023c7`).** The facts line and the refiner condition say that only predict fields count as goal tests; a
+hypothesis whose own check fails on ≥10 and ≥90% of the moves it bears on is shown as one line asking to revise or
+delete it. Suites touched pass 53/53. su15-r3 started 02:25 (Asia/Shanghai) with the same settings as r2.
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or
