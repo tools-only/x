@@ -118,7 +118,7 @@ su15 (relayed by the user; its raw logs are not on this machine), the frozen ls2
 |---|---|---|---|
 | Functional correctness | Passed offline | local Node/Python, no provider | unit tests and replay above |
 | Full-chain reachability | Passed for the new paths, with two shared stale smoke checks | mock ARC SDK, real bridge, installed Pi 0.87.0, scripted provider | `smokes2`/`smokes-branch2` `schedule`, activation; not the real ARC service |
-| Autonomous adoption | Unverified | — | su15-s02/s03 are single ordinary runs; they can show whether facts, notices and batches are used, not a causal effect |
+| Autonomous adoption | Partly observed, one run | yibu / qwen3.8-27b, thinking off, real ARC service | su15-s04: batches in 14 of 27 action decisions (3.4 actions per decision); 7 refinement edits reached later decisions; 0 of 94 predictions checkable; use of the facts not attributable (no reasoning text; code comments cite receipts). Not a causal effect |
 | Net benefit | Unverified | — | needs R1/R2 |
 
 ## Real runs (user request, 2026-10-15)
@@ -171,23 +171,71 @@ request to the last action), 0 levels:
   `openai-completions`: the pilot's label ignored the declared dialect. The label is fixed for later pilots; su15-s04's
   `protocol.json` has the same wrong label.
 
-`su15-s04`: the rerun, same settings, commit `64a9f580` (code as `782781cd`), launched 23:10 Asia/Shanghai.
-`run-config.json`: thinking off, `thinking_format` qwen, `openai-completions`; the first requests report reasoning 0.
-Evaluate with `PILOT_OUT=D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015 python tools/arc_ls20_loop_eval.py su15-s04`.
+`su15-s04`: the rerun, same settings, commit `64a9f580` (code as `782781cd`), launched 23:10 Asia/Shanghai;
+`run-config.json`: thinking off, `thinking_format` qwen, `openai-completions`; reasoning 0 on every request. It ended
+at 94 actions after 27.4 minutes: the ARC SDK's step for #95 did not return within 90 s and the runner stopped with
+`environment_outcome_unknown`, 206 actions unused. Level 1 was completed at #92 (23 minutes, 26 decisions). Evaluator
+output: `C:/Users/qi/tmp/r03b-simple/eval-su15-s04.txt`.
+
+- cost and pace: 692,531 budget tokens, 7,367 per action, of which 412,449 (60%) were decision-start uncached input
+  (14.7k per decision); 17.5 s per action; 3.4 actions per decision; 7 refinements (34,861 tokens), all edits.
+- what the actions did: 17 of 94 changed something other than the bottom row (block moves, an undo, RESETs that put
+  blocks back); 60 changed only the bottom row, 2 cells each, which fills from one end and ended the game when full
+  (GAME_OVER at #45); 17 changed nothing. The facts block and the evaluator's `changed_nothing` (17) count only the
+  last group: the ledger's ticker mask is per cell (changed on ≥80% of transitions), and each cell of a filling row
+  changes once, so every fill made a new state and the stall and repeat lines stayed silent, as in s02.
+- batches: 14 calls played more than one action. Four calls of 8–10 clicks (#6–#45) played 10 clicks that changed
+  nothing and then 28 that only filled the row, up to GAME_OVER; after resets, two more calls (#57–#78) tested fills of
+  24 and 32 cells (19 more such actions). The batch that completed level 1 (#84–#92, a block moved step by step to a
+  target) played 7 and then 2, cut by the act share. Every wasteful batch stated its target ("fill y63: x54-55 become
+  5"; "y63 now fully filled, expect level change or win"). All 94 predictions were text, so none was checked.
+- refinements: #15 and #45 sent the agent to a goal test, #37 turned its belief about the bottom row into a hypothesis
+  with a check, #78 kept the fill-to-32 test; #45 also named the objects not yet tried, after which the agent probed them
+  and found the mechanic at #51; at the level change the refiner wrote the solution as a rule. The #37 edit arrived 5 s
+  after the agent had issued #38–#45.
+
+## After su15-s04: candidate mechanisms (analysis, not built)
+
+The user's direction: batch only for a plan that needs several actions to reach a position or state. In su15-s04 every
+wasteful batch had such a plan; the plans were wrong, and nothing checked what each step achieved. The candidates judge
+steps by their outcome, not by what was declared.
+
+| # | Mechanism | Where | su15-s04's recorded calls | Cost |
+|---|---|---|---|---|
+| M1 | A batch returns control after a step that made no progress: the masked state after it was already seen in this attempt (nothing changed outside masked cells, or an earlier state came back); RESET is exempt. A checkable prediction (cells, level_changed, state) that misses also stops it, as `ARC_THIN_BATCH_STOP=miss` does now; text is not checked. env.act reports progress and the code decides; the act share still caps a call | `batchStop` in `demo/arc_thin_extension.ts`; env.act result | returns control in 7 of 14 batches, after #6, #18, #28, #38, #48, #59 and #69; 53 of their actions not played; no GAME_OVER in #38–#45; the level-1 batch unchanged | one decision (~15k uncached input) each time it fires |
+| M2 | The ticker mask also covers a line: a row or column in which ≥4 consecutive non-RESET actions that changed anything, ≥2 of them distinct, each changed ≤4 cells that had not changed before in the attempt. Stall, repeats, "changed nothing" and M1 ignore it; the facts add one counted line (at #27: "row 63 changed on all 14 actions that changed anything since #3, 2 cells each, none back; 28 of 64 changed") | `maskedHashes`, `renderFacts` in `demo/arc_thin_ledger.ts` | found after #16; "changed nothing" 77 instead of 17; stall and repeats fire during the fills | one facts line |
+| M3 | Refinement for discrimination: the next experiment is the cheapest action that tells the premise of the current line of play from a rival (a goal test when that is cheap); a hypothesis it writes names its rival; condition lines state counts, not instructions ("turn a belief … into a HYPOTHESIS with a check") | `REFINER_SYSTEM` in `demo/arc_thin_refiner.ts`; conditions in the extension | #37 and #78 would weigh the fills against a rival | refiner input only |
+
+- Not proposed: a declared plan or checkable prediction as the condition for a batch (su15-s04's wasteful batches
+  declared targets; it would add decisions to the winning batch and an obligation to `arc_action`); a stop on repeated
+  identical actions (cuts navigation by repeated moves, where each step does make progress).
+- Generality: no colours, positions or labels in code or prompts; M2 is defined on diffs and the facts state counts,
+  not meaning. The pattern is in-sample (su15-s02/s04; the 2026-10-09 ls20 runs also took a move bar for the goal).
+- Protocol (needs its own budget; one main factor at a time): E1 = M1+M2 (M1 needs M2's mask) against `64a9f580` on
+  su15 forks from a snapshot after decision 5, 3 forks per arm, each ≤60 actions, ≤30 min, ≤600k budget tokens;
+  negative cases: ls20 (navigation with repeated moves and a move bar), 2 forks per arm, ≤40 actions, and a held-out
+  game chosen by a fixed rule before the runs. Keep if the share of actions with no change outside masked lines falls
+  by at least half from su15-s04's 0.82, actions to level 1 (or levels within 60 actions) are no worse, budget tokens per
+  action rise by at most 25%, ls20 actions per decision fall by at most 25%, and M2 stays silent where no line qualifies.
+  E2 = M3 on top of E1.
+- Separate: the timeout that ended su15-s04 is a real remote fault of the kind deferred item A handled only with mocks;
+  reconciling an unknown step by reading the environment's state, if the SDK exposes it, would keep such a run going.
 
 ## Not built (only if runs show the need)
 
-Stopping a batch on an exact repeat; an old-event view, decision transcript files or previous-decision-only history;
-animation frames in the head; moving prompt sections or continuing responses across decisions; a JSON or repair
-refiner; phase01's reuse pack and its contested-on-failed-check status.
+Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or
+previous-decision-only history; animation frames in the head; moving prompt sections or continuing responses across
+decisions; a JSON or repair refiner; phase01's reuse pack and its contested-on-failed-check status.
 
 ## Delivery decision
 
 - Supported: the implementation and its offline behaviour; wiring of the fixed schedule, notices, facts and refusal
   through the real bridge and Pi with a scripted provider.
 - Not supported yet: that the agent reads and uses the facts or notices, and any task or cost effect.
-- Next falsifiable checks: su15-s04 (facts cited in notes or code; no-change share and streaks; refiner outcomes;
-  batch sizes), then R1 and R2 under their own budgets.
+- Next falsifiable checks: E1 (M1+M2 against `64a9f580`, §After su15-s04), then E2 (M3); R1 and R2 remain. Each needs
+  its own budget.
 - Backlog ([deferred-research-todos](../deferred-research-todos.md)): A (RESET semantics) — the refusal reports public
-  facts only, no rule; C/D (carry and continuity across compaction) — the carry ask is off, and the history window is
-  the R2 experiment. None closes.
+  facts only, no rule; A also covers the environment-fault contract, which the su15-s04 timeout exercised for real, and
+  keeping action sequences above the adapter: batches and M1 stay in the extension, the bridge still takes one action
+  per call. C/D (carry and continuity across compaction) — the carry ask is off, and the history window is the R2
+  experiment. None closes.
