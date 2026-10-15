@@ -1488,6 +1488,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		].join("\n\n");
 		const guide = refineGuide();
 		const system = REFINER_SYSTEM + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		// Each refinement's whole input, so that one can be replayed offline (2026-10-16: su15-r5–r7's refinements, without
+		// reasoning, never named the belief that lost level 2; whether reasoning would is open).
+		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, system, input });
 		const reply: any = await sideCall(ctx, system, [{ type: "text", text: input }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
 		appendUsage("refiner", reply);
 		const at = trajectory.length;
