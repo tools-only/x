@@ -332,6 +332,15 @@ Ended by level 2's budget at 261 actions, 62 minutes, 3.84M budget tokens, 1 lev
 hypothesis whose own check fails on ≥10 and ≥90% of the moves it bears on is shown as one line asking to revise or
 delete it. Suites touched pass 53/53. su15-r3 started 02:25 (Asia/Shanghai) with the same settings as r2.
 
+**su15-r3 (r3 `b80023c7`).** Ended by level 3's budget at 292 actions, 84 minutes, 4.02M budget tokens, 141
+decisions, **2 levels** (the first run of this branch past level 1); no environment or provider errors.
+- Level 1 at #40, level 2 at #162 (122 actions; human baseline 42): the agent found that two blocks of one size merge
+  into the next size and won by a merge it had predicted (`level_changed=true ok`). 38 actions carried a structured
+  level prediction (r2: almost none), 2 of them right — the two level changes.
+- Level 3: 130 actions, 20 goal tests missed, one GAME_OVER (#189); the refiner proposed a rival and its test at each
+  scheduled refinement. No-change share 0.20 by #159.
+- su15-r4 repeats r3 at the same code to see the spread between runs (started 03:55).
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or
