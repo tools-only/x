@@ -70,7 +70,8 @@ assert parse.returncode == 0, 'an extension does not parse:\n' + (parse.stderr o
 protocol = dict(source=str(SOURCE), commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=SOURCE, text=True).strip(),
     branch=subprocess.check_output(['git', 'branch', '--show-current'], cwd=SOURCE, text=True).strip(), game=GAME,
     provider='yibu', model='qwen3.8-27b', thinking=THINKING, input_modalities='text,image', observation='query',
-    pi_api=PI_API or 'openai-responses (native default)', thinking_format=THINKING_FORMAT,
+    pi_api=PI_API or ('project setting, kept by the declared thinking dialect (route: arc-run/run-config.json)'
+        if THINKING_FORMAT else 'openai-responses (native default)'), thinking_format=THINKING_FORMAT,
     python_kernel=os.environ.get('ARC_THIN_PYTHON_KERNEL', '1') != '0', session_view=os.environ.get('ARC_THIN_SESSION_VIEW', '1') != '0',
     variables=VARIABLES, fork_from=FORK, snapshot_after_decisions=list(SNAPSHOTS), max_decisions=MAXDEC,
     max_reported_tokens=TOKENS, token_cap_measure='uncached_input+output',

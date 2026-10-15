@@ -1,8 +1,8 @@
 # r03b simple context: the runtime's facts in the head, refinement on a fixed step, a bounded history
 
 Date: 2026-10-15 (Asia/Shanghai). Status: implemented on `claude/r03b-simple-20261015` (commit `83276f8b`), cut from tag
-`ls20-r03b-deecdde6`; offline checks and the deterministic foundation smoke done; one real su15 run started on the
-user's request (§Real run). Paired comparisons R1/R2 are not run.
+`ls20-r03b-deecdde6`; offline checks and the deterministic foundation smoke done; real su15 runs on the user's request
+(§Real runs). Paired comparisons R1/R2 are not run.
 
 Change record per [the development workflow](../development-workflow.md). Sources: the user's priority list in
 `C:/Users/qi/tmp/ls20-r03b-vs-ch-prime-context.md` (push spend facts, stop zero-information batches, Prime-style
@@ -158,8 +158,22 @@ that was then closed, which ended its process tree; that request's cost is unkno
   `enable_thinking=false` on the Completions route, the encoding that reached qwen on 2026-10-02/10-11.
 
 `su15-s03`: commit `782781cd`, thinking off (Completions, `enable_thinking=false`), otherwise as su15-s02; 300 actions,
-caps 6,000,000 budget tokens and 36,000 s. Output `D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015/su15-s03`;
-evaluate with `PILOT_OUT=D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015 python tools/arc_ls20_loop_eval.py su15-s03`.
+caps 6,000,000 budget tokens and 36,000 s. Output `D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015/su15-s03`.
+Stopped when the user asked for a rerun, after 13 actions in 10 decisions (about 8 minutes from the first completed
+request to the last action), 0 levels:
+
+- reasoning 0 on all 30 completed requests, 101–1,580 output tokens each; under a minute per decision, against about
+  3.5 minutes per action over su15-s02's 20.
+- two requests failed before any stream arrived (`stop_reason=error`, decisions 2 and 9); each retry worked.
+- every action went through `arc_action`: two batches (decision 1: 2 of 2; decision 10: 3 of 3), the other eight
+  decisions one action each; 4 of the 13 actions changed nothing.
+- `protocol.json` names the route `openai-responses (native default)`, but `run-config.json` records the one used,
+  `openai-completions`: the pilot's label ignored the declared dialect. The label is fixed for later pilots; su15-s04's
+  `protocol.json` has the same wrong label.
+
+`su15-s04`: the rerun, same settings, commit `64a9f580` (code as `782781cd`), launched 23:10 Asia/Shanghai.
+`run-config.json`: thinking off, `thinking_format` qwen, `openai-completions`; the first requests report reasoning 0.
+Evaluate with `PILOT_OUT=D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015 python tools/arc_ls20_loop_eval.py su15-s04`.
 
 ## Not built (only if runs show the need)
 
@@ -172,8 +186,8 @@ refiner; phase01's reuse pack and its contested-on-failed-check status.
 - Supported: the implementation and its offline behaviour; wiring of the fixed schedule, notices, facts and refusal
   through the real bridge and Pi with a scripted provider.
 - Not supported yet: that the agent reads and uses the facts or notices, and any task or cost effect.
-- Next falsifiable checks: su15-s02 (facts cited in reasoning or notes; no-change share and streaks; refiner
-  outcomes), then R1 and R2 under their own budgets.
+- Next falsifiable checks: su15-s04 (facts cited in notes or code; no-change share and streaks; refiner outcomes;
+  batch sizes), then R1 and R2 under their own budgets.
 - Backlog ([deferred-research-todos](../deferred-research-todos.md)): A (RESET semantics) — the refusal reports public
   facts only, no rule; C/D (carry and continuity across compaction) — the carry ask is off, and the history window is
   the R2 experiment. None closes.
