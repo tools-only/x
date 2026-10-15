@@ -394,7 +394,7 @@ export function renderFacts(state: LedgerState, budget: BudgetReport, maxChars =
 		while (streak < rows.length && rows[rows.length - 1 - streak].action === last.action) streak += 1;
 		const now = [...(streak >= 3 ? [`now ${last.action} ×${streak} in a row since #${rows[rows.length - streak].n}`] : []),
 			...(state.stall >= 3 ? [`no new state for the last ${state.stall}`] : [])];
-		lines.push(`EFFORT on this level: ${rows.length} actions — ${parts.join(", ")}${now.length ? `; ${now.join("; ")}` : ""}`);
+		lines.push(`EFFORT on this level: ${rows.length} action${rows.length === 1 ? "" : "s"} — ${parts.join(", ")}${now.length ? `; ${now.join("; ")}` : ""}`);
 	}
 	const goals = goalPredictionRows(state);
 	lines.push(`GOAL TESTS on this level (actions that predicted a level change or WIN): ${goals.length

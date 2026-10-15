@@ -118,16 +118,20 @@ su15 (relayed by the user; its raw logs are not on this machine), the frozen ls2
 |---|---|---|---|
 | Functional correctness | Passed offline | local Node/Python, no provider | unit tests and replay above |
 | Full-chain reachability | Passed for the new paths, with two shared stale smoke checks | mock ARC SDK, real bridge, installed Pi 0.87.0, scripted provider | `smokes2`/`smokes-branch2` `schedule`, activation; not the real ARC service |
-| Autonomous adoption | Unverified | — | su15-s01 (running) is one ordinary run; it can show whether facts and notices are read and acted on, not a causal effect |
+| Autonomous adoption | Unverified | — | su15-s02 (running) is one ordinary run; it can show whether facts and notices are read and acted on, not a causal effect |
 | Net benefit | Unverified | — | needs R1/R2 |
 
 ## Real run (user request, 2026-10-15)
 
-`su15-s01`: `PILOT_GAME=su15`, source commit `83276f8b`, this branch's defaults (history window off), yibu /
+`su15-s02`: `PILOT_GAME=su15`, source commit `83276f8b`, this branch's defaults (history window off), yibu /
 qwen3.8-27b, thinking high, Responses route, query observations; 300 actions, safety caps 6,000,000 budget tokens and
-36,000 s. Output `D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015/su15-s01`; evaluate with
-`PILOT_OUT=D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015 python tools/arc_ls20_loop_eval.py su15-s01`. One
+36,000 s. Output `D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015/su15-s02`; evaluate with
+`PILOT_OUT=D:/autoresearch_pi_project/runs/arc-r03b-simple-20261015 python tools/arc_ls20_loop_eval.py su15-s02`. One
 exploratory run: there is no matched deecdde6 su15 run on this machine (GLM's ran elsewhere).
+
+`su15-s01`, the first launch, ended during its first request (0 actions) because it was started from a terminal tab
+that was then closed, which ended its process tree; that request's cost is unknown. `su15-s02` was started through WMI
+(`C:/Users/qi/tmp/r03b-simple/launch-su15-s02.cmd`), outside any tab.
 
 ## Not built (only if runs show the need)
 
@@ -140,7 +144,7 @@ refiner; phase01's reuse pack and its contested-on-failed-check status.
 - Supported: the implementation and its offline behaviour; wiring of the fixed schedule, notices, facts and refusal
   through the real bridge and Pi with a scripted provider.
 - Not supported yet: that the agent reads and uses the facts or notices, and any task or cost effect.
-- Next falsifiable checks: su15-s01 (facts cited in reasoning or notes; no-change share and streaks; refiner
+- Next falsifiable checks: su15-s02 (facts cited in reasoning or notes; no-change share and streaks; refiner
   outcomes), then R1 and R2 under their own budgets.
 - Backlog ([deferred-research-todos](../deferred-research-todos.md)): A (RESET semantics) — the refusal reports public
   facts only, no rule; C/D (carry and continuity across compaction) — the carry ask is off, and the history window is
