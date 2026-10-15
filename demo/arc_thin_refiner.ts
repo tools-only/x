@@ -26,6 +26,12 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"Look first at what the agent's current line of play assumes (its notes, memory and strategy): when the record has not " +
 	"tested that against a rival explanation, the most useful edit usually names the rival and the cheapest action whose " +
 	"outcome would tell them apart.\n" +
+	// su15-r5 (2026-10-16): level 2 was lost to "a block moves one cell up-left per click", learned only from clicks on the
+	// block's own corner; the refinements never named it and twice proposed running the bar out, which ended the attempt.
+	"Two places such assumptions hide. An effect seen with only one kind of argument (clicks always on the object, or at one " +
+	"distance or side of it) is unknown for the others. A plan that calls something unreachable, or the actions left too few, " +
+	"rests on a belief about what actions can do; that belief is the first to test. An experiment that would end the attempt " +
+	"(GAME_OVER) costs every action of the attempt, so it is never the cheapest.\n" +
 	"How understanding moves: a belief the agent states (in memory or its notes), or its rival, becomes a HYPOTHESIS with a check " +
 	"that some action could fail; a check that " +
 	"keeps holding becomes a line of prompts/rules.md that cites its key; a cited check that fails puts the rule in dispute, and " +
@@ -41,7 +47,9 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"the move contradicts it, None when the move does not bear on it. It is also run on mismatched moves; one that is True on those " +
 	"too tests nothing and is not promoted.\n" +
 	`FILE paths: prompts/rules.md (under ${RULES_CHARS} characters; one rule per line, each ending with the key of the check that ` +
-	"keeps it: '- <the rule in one sentence> (hyp.<name>)'; a goal rule only after a level change confirmed it), " +
+	"keeps it: '- <the rule in one sentence> (hyp.<name>)'; rules say what actions do to things, with the arguments they were " +
+	"seen with, since that carries to later levels; what completed a level is stated as what was done on which level (#n), as " +
+	"the next level's goal may differ), " +
 	`prompts/strategy.md (under ${STRATEGY_CHARS} characters, three parts: Open questions, Next experiment, Failure modes; the ` +
 	"next experiment is the cheapest action whose outcome separates the live explanations, a goal test when one is cheap), " +
 	"tools/<name>.py, lib/<name>.py or skills/<name>/SKILL.md " +
