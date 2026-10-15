@@ -224,16 +224,18 @@ function changedCells(before: number[][], after: number[][]): Array<[number, num
 
 /**
  * Rows and columns that change a few cells on each action whatever the action is: over METER_RUN consecutive non-RESET
- * actions that changed anything, at least two of them different, each changed 1..METER_CELLS cells of the line that had
- * not changed before in the attempt, and none was a click on the line itself. A bar that fills changes each of its
- * cells once, so the per-cell ticker mask (cells changed on ≥80% of transitions) never covers it: in su15-s04 every
- * press made a new state, and the stall and repeat counts stayed silent while 60 of 94 actions changed only the bottom
- * row (2026-10-16). Counts only: whether such a line is a budget, a clock or the goal is the agent's call. `rows` are
- * one level's actions (the action that completed the level is skipped).
+ * actions that changed anything, at least two of them different (or one action repeated that changed nothing but the
+ * line), each changed 1..METER_CELLS cells of the line that had not changed before in the attempt, and none was a click
+ * on the line itself. A bar that fills changes each of its cells once, so the per-cell ticker mask (cells changed on ≥80%
+ * of transitions) never covers it: in su15-s04 every press made a new state, and the stall and repeat counts stayed
+ * silent while 60 of 94 actions changed only the bottom row (2026-10-16). In su15-r6 one click repeated 32 times changed
+ * nothing but that row until the attempt ended, and no line was found, as all 32 were the same action. Counts only:
+ * whether such a line is a budget, a clock or the goal is the agent's call. `rows` are one level's actions (the action
+ * that completed the level is skipped).
  */
 export function meterLines(rows: Array<{ n: number; action: string; x?: number; y?: number; level_changed?: boolean }>,
 	grids: Map<number, number[][]>): MeterLine[] {
-	type Track = { run: number; keys: Set<string>; start: number; min: number; max: number };
+	type Track = { run: number; keys: Set<string>; start: number; min: number; max: number; alone: boolean };
 	const tracks = new Map<string, Track>();
 	const found: MeterLine[] = [];
 	let changed = new Set<string>();
@@ -265,11 +267,12 @@ export function meterLines(rows: Array<{ n: number; action: string; x?: number; 
 			const line = { axis: axis as "row" | "column", index: Number(at) };
 			const fits = cells.length <= METER_CELLS && cells.every(([x, y]) => !changed.has(`${x},${y}`)) && !(clicked && onLine(line, row.x!, row.y!));
 			if (!fits) { tracks.delete(key); continue; }
-			const track = tracks.get(key) ?? { run: 0, keys: new Set<string>(), start: row.n, min: cells.length, max: cells.length };
+			const track = tracks.get(key) ?? { run: 0, keys: new Set<string>(), start: row.n, min: cells.length, max: cells.length, alone: true };
 			track.run += 1; track.keys.add(actionKey(row));
 			track.min = Math.min(track.min, cells.length); track.max = Math.max(track.max, cells.length);
+			track.alone &&= cells.length === diff.length;
 			tracks.set(key, track);
-			if (track.run >= METER_RUN && track.keys.size >= 2) {
+			if (track.run >= METER_RUN && (track.keys.size >= 2 || track.alone)) {
 				const grid = after;
 				found.push({ ...line, length: line.axis === "row" ? grid[line.index]?.length ?? 0 : grid.length, since: track.start,
 					changing: track.run, hits: track.run, min: track.min, max: track.max, again: false, differs: 0 });

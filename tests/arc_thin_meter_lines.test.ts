@@ -50,6 +50,22 @@ test('a row that fills a few new cells on every action, whatever was clicked, is
   assert.deepEqual(meterLines(rows.slice(0, 4), grids), []);
 });
 
+test('one action repeated is a meter line only when it changes nothing but the line', () => {
+  // su15-r6 (2026-10-16): 32 clicks on one cell changed only the bottom row, and no line was found.
+  const same = play(start(), Array.from({ length: 5 }, () => ({ action: 'ACTION6', x: 5, y: 5, edit: fill })));
+  assert.deepEqual(meterLines(same.rows, same.grids), [{ axis: 'row', index: 9, length: 10, since: 1, changing: 5, hits: 5, min: 2, max: 2,
+    again: false, differs: 10 }]);
+  assert.deepEqual(progressAt(same.rows, same.grids, 5), { progress: false,
+    why: '#5 changed only cells that change on (nearly) every action (row 9); outside them the board has not changed on this level' });
+  // The same press that also moves an object could be filling the row itself: no line until another action fills it too.
+  const walker = start();
+  walker[4][2] = 3;
+  const moving = play(walker, [2, 3, 4, 5, 6].map((x) => ({ action: 'ACTION4', edit: (grid: number[][]) => {
+    grid[4][x] = 0; grid[4][x + 1] = 3; fill(grid);
+  } })));
+  assert.deepEqual(meterLines(moving.rows, moving.grids), []);
+});
+
 test('an object moved by one action, clicks that paint the clicked row, and a cell changed twice are not meter lines', () => {
   const walker = start();
   walker[4][2] = 3;

@@ -8,6 +8,8 @@ test('native production instructions explicitly prefer amortized offload without
   assert.match(prompt, /Reuse your saved components/);
   assert.match(prompt, /creation and checking cost/);
   assert.match(prompt, /applicability on current evidence/);
+  // su15-r5/r6 (2026-10-16): blocks were taken to move one cell per click, from clicks always next to them.
+  assert.match(prompt, /An effect seen only with one kind of argument \(a click always on the object, or always next to it\) is unknown for other arguments: vary it once before a plan depends on it\./);
 });
 
 function decisions(count: number, resultChars = 1000): any[] {
