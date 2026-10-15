@@ -341,6 +341,21 @@ decisions, **2 levels** (the first run of this branch past level 1); no environm
   scheduled refinement. No-change share 0.20 by #159.
 - su15-r4 repeats r3 at the same code to see the spread between runs (started 03:55).
 
+**su15-r4 (r3 code again; killed at decision 260, about 30 minutes).** 48 actions, **0 levels** (r3: level 1 at #40).
+239 of 260 decisions ended without an action: from about #46 each decision re-read one frame image three times until
+the loop guard ended it, and the next decision, told to act, opened with the same read and the same sentence ("I've
+been stuck in a loop … look at the current image with fresh eyes"). The native path kept every tool in a decision told
+to act, so nothing broke the repeat; the session history then held more copies of it. Two runs at one commit gave 2 and
+0 levels, so a single run cannot attribute r2 → r3 to the change.
+
+**r5 (`81e05c99`).** The call that made the loop guard end a decision is refused in later decisions while nothing
+(actions, workspace, memory) has changed, and the refusal counts as an unchanged error (three end the decision); after
+two decisions in a row without an action, a decision told to act offers only arc_action (`forced_actions.jsonl`), and an
+action ends the streak; reviews neither count nor reset it. `arc_thin_batch.test.ts` covers the refusal, its bound and
+the restriction; the targeted suites pass 41/41; `progress`, `activation`, `schedule` and `promotion` pass their own
+checks (`C:/Users/qi/tmp/r03b-simple/smokes-r5`). su15-r5 started 2026-10-16 with r2's settings; claim: decisions
+without an action stay under 25% and never more than 3 in a row.
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or
