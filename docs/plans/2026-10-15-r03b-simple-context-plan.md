@@ -376,6 +376,32 @@ what completed a level is stated as what was done on which level. Refiner suites
 settings; claim: a refinement names such a belief and the agent tests it within 10 actions; no refinement proposes an
 experiment that ends the attempt.
 
+**su15-r6 (r6 `9bc507ef`).** Ended by level 2's budget at 276 actions, 46 minutes, 2.43M budget tokens, **1 level**
+(#66). The claim fails: no refinement named the belief (they argued between goal ideas: dots, the diamond, ACTION7), and
+the r6 rules change never ran at the level change (the refinement then running went stale; the next rewrote the
+strategy). Two failures:
+- #1–#32: one click repeated, played in batches of 8 and 20, emptied the bottom row (each action changed only that row,
+  each prediction of it scored right) until GAME_OVER. No meter line was found: the rule wanted two different actions.
+- Level 2 as in r5: "click adjacent empty cell → moves existing block 1 step toward click" (memory, #179); clicks a few
+  cells away were never tried.
+
+**r7 (`16265c34`).** One action repeated counts for a meter line when it changes nothing but the line (a press that also
+moves something still needs a second action). The system prompt adds: "An effect seen only with one kind of argument (a
+click always on the object, or always next to it) is unknown for other arguments: vary it once before a plan depends on
+it." su15-r7 started alongside r6's last minutes. So far level 1 at **#30** (r5 #38, r6 #66); on level 2 the agent varied
+clicks as near and far only: adjacent clicks moved a block one cell, far ones did nothing, and it wrote "impossible since
+blocks only go left" (python, level 2); it walked blocks one cell per click and emptied the row once more (GAME_OVER #66).
+Receipts did not help it see where things moved: every box ran down to the bottom row ("changed=8 in x39-47 y35-63"
+for a block that moved within x39-41 y35-37).
+
+**r8 (`7476910b`).** Receipts split a change by the meter lines known by then ("changed=8 (2 on row 63; 6 in x39-41
+y35-37)"; `changeOnLines`, rows keep it as `apart`), for the agent and for the refiner, which sees no frames. The prompt
+sentence now reads "try other distances and sides before a plan depends on it", and adds "An account of the actions that
+makes the level impossible within its limit is wrong somewhere: test the part that limits it." Suites touched pass
+25/25; `progress` and `activation` pass their own checks and show the split receipts. su15-r8 started while r7 runs;
+claim: on level 2 the agent clicks 3–8 cells from a block it has moved before 100 of the level's actions are spent, and
+completes level 2.
+
 ## Not built (only if runs show the need)
 
 Stopping a batch on an exact repeat (now inside M1 above); an old-event view, decision transcript files or
