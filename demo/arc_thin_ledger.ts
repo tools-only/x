@@ -192,6 +192,8 @@ export type LedgerState = {
 	index: Map<number, Map<string, Record<string, string>>>; completions: Completion[]; ticker_cells: number;
 	/** Meter lines of the level of the last row, when they were looked for (`lines_on`). */
 	lines: MeterLine[]; lines_on: boolean;
+	/** ACTION6 clicks by distance from the nearest non-background cell (clickCoverage), when asked for. */
+	clicks?: ClickCoverage;
 };
 
 /** A row or column that fills (or drains) a few cells on nearly every action that changes anything (meterLines). */
@@ -370,9 +372,12 @@ export function maskedHashes(grids: Map<number, number[][]>, linesAt: (n: number
 	return { hash, ticker: ticker.size };
 }
 
-/** `lines`: also mask the meter lines each level shows (meterLines); off, only ticker cells are masked (until 2026-10-16). */
+/**
+ * `lines`: also mask the meter lines each level shows (meterLines); off, only ticker cells are masked (until 2026-10-16).
+ * `clicks`: count ACTION6 clicks by distance from the nearest non-background cell (clickCoverage; `rows` are one level's).
+ */
 export function buildLedger(rows: LedgerRow[], observations: Observation[], grids: Map<number, number[][]> = new Map(),
-	options: { lines?: boolean } = {}): LedgerState {
+	options: { lines?: boolean; clicks?: boolean } = {}): LedgerState {
 	const levels = options.lines ? linesByLevel(rows, grids) : undefined;
 	const { hash, ticker } = maskedHashes(grids, levels?.at);
 	const hashed = rows.map(row => ({ ...row, before_hash: hash.get(row.n - 1) ?? row.before_hash, after_hash: hash.get(row.n) ?? row.after_hash }));
@@ -380,7 +385,8 @@ export function buildLedger(rows: LedgerRow[], observations: Observation[], grid
 	const index = observationIndex(observations);
 	return { rows: hashed, experiments, effort: ideaEffort(experiments), repeats: repetitions(hashed), stall: stallLength(hashed),
 		index, completions: completions(hashed, experiments, index), ticker_cells: ticker,
-		lines: levels?.current ?? [], lines_on: Boolean(options.lines) };
+		lines: levels?.current ?? [], lines_on: Boolean(options.lines),
+		...(options.clicks ? { clicks: clickCoverage(hashed, grids, levels?.current ?? []) } : {}) };
 }
 
 /**
@@ -413,6 +419,38 @@ export function progressAt(rows: LedgerRow[], grids: Map<number, number[][]>, n:
 }
 
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
+/** Click distances are counted in these bins (cells, the larger of dx and dy): on a cell, next to it, 2-3, 4-7, 8 or more. */
+export const CLICK_BINS = [[0, 0], [1, 1], [2, 3], [4, 7], [8, Infinity]] as const;
+export type ClickCoverage = Array<{ clicks: number; changed: number }>;
+/**
+ * ACTION6 clicks of a level by their distance from the nearest cell that, in the state before the click, was neither the
+ * commonest colour nor on a meter line; with how many of them changed the board beyond the recurring cells. Coverage
+ * only, not a reading of the game: in su15-r5 to r8 (2026-10-16) every click that moved something was on or next to it,
+ * other clicks were 8 or more cells from anything, and nothing between was tried while the plans assumed one-cell moves.
+ */
+export function clickCoverage(rows: Array<{ n: number; action: string; x?: number; y?: number; before_hash?: string; after_hash?: string }>,
+	grids: Map<number, number[][]>, lines: MeterLine[] = []): ClickCoverage {
+	const bins: ClickCoverage = CLICK_BINS.map(() => ({ clicks: 0, changed: 0 }));
+	for (const row of rows) {
+		if (row.action !== "ACTION6" || row.x === undefined || row.y === undefined) continue;
+		const grid = grids.get(row.n - 1);
+		if (!grid?.length) continue;
+		const counts = new Map<number, number>();
+		for (const line of grid) for (const cell of line) counts.set(cell, (counts.get(cell) ?? 0) + 1);
+		const background = [...counts].sort((a, b) => b[1] - a[1])[0][0];
+		let distance = Infinity;
+		for (let y = 0; y < grid.length; y += 1)
+			for (let x = 0; x < grid[y].length; x += 1)
+				if (grid[y][x] !== background && !lines.some((line) => onLine(line, x, y)))
+					distance = Math.min(distance, Math.max(Math.abs(x - row.x), Math.abs(y - row.y)));
+		const bin = CLICK_BINS.findIndex(([low, high]) => distance >= low && distance <= high);
+		if (bin < 0) continue;
+		bins[bin].clicks += 1;
+		if (row.before_hash !== undefined && row.after_hash !== undefined && row.before_hash !== row.after_hash) bins[bin].changed += 1;
+	}
+	return bins;
+}
 
 /**
  * Counts over exact grids (no masking): where the current grid was seen before, what was tried from it with how
@@ -592,6 +630,12 @@ export function renderFacts(state: LedgerState, budget: BudgetReport, maxChars =
 			`${line.again ? "" : ", each cell once"}; ${line.differs} of its ${line.length} cells differ from this attempt's start`;
 		lines.push(`RECURRING CHANGE (left out of the changed-nothing, stall and repeat counts): ${[...state.lines.slice(0, 2).map(each),
 			...(state.ticker_cells ? [`${state.ticker_cells} cell${state.ticker_cells === 1 ? "" : "s"} that changed on ≥80% of transitions`] : [])].join("; ")}`);
+	}
+	const clicks = state.clicks?.reduce((sum, bin) => sum + bin.clicks, 0) ?? 0;
+	if (state.clicks && clicks >= 5) {
+		const names = ["on it", "next to it", "2-3 away", "4-7 away", "8+ away"];
+		lines.push(`CLICKS on this level by distance from the nearest cell that is not background or recurring (in cells; how many ` +
+			`changed the board besides recurring cells): ${state.clicks.map((bin, i) => `${names[i]} ${bin.clicks}${bin.clicks ? ` (${bin.changed} changed)` : ""}`).join(", ")}`);
 	}
 	const goals = goalPredictionRows(state);
 	// Only predict fields count: in su15-r2 the agent tested goal ideas with text predictions, the line said "none", and the

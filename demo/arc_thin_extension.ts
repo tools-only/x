@@ -258,6 +258,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// The ledger's mask also covers rows and columns that fill a few cells on every action (meterLines, 2026-10-16), for the
 	// facts and the progress stop; ARC_THIN_METER_LINES=0 keeps the per-cell ticker mask alone.
 	const meterLinesOn = process.env.ARC_THIN_METER_LINES !== "0";
+	// The facts count ACTION6 clicks by distance from the nearest non-background cell (clickCoverage, 2026-10-16: in
+	// su15-r5 to r8 no click between the next cell and 8 cells away was tried); ARC_THIN_CLICK_FACTS=0 leaves the line out.
+	const clickFactsOn = process.env.ARC_THIN_CLICK_FACTS !== "0";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -1630,8 +1633,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (factsLayout) {
 				try {
 					const level = currentLevel();
-					factsText = renderFacts(buildLedger(trajectory.filter((row) => levelOf(row) === level), observations, grids, { lines: meterLinesOn }),
-						observation?.action_budget ?? trajectory.at(-1)?.budget);
+					factsText = renderFacts(buildLedger(trajectory.filter((row) => levelOf(row) === level), observations, grids, { lines: meterLinesOn, clicks: clickFactsOn }),
+						observation?.action_budget ?? trajectory.at(-1)?.budget, clickFactsOn ? 1200 : 900);
 				} catch (error) { factsText = ""; logError("ledger:facts", error); }
 			}
 			// While a refinement runs, events wait for the next decision instead of being dropped.

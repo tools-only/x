@@ -79,6 +79,16 @@ test('a change is split by the meter lines known by then: the count on them, the
   assert.equal(changeOnLines(quiet.rows, quiet.grids, 6), undefined);
 });
 
+test('clicks are counted by distance from the nearest cell that is neither background nor recurring', () => {
+  const { rows, grids } = play(start(), [...clicks, { action: 'ACTION6', x: 3, y: 2, edit: move([2, 2], [3, 2]) }]);
+  const state = buildLedger(rows, [], grids, { lines: true, clicks: true });
+  // (2,2) twice on the object, (1,1) and (3,2) next to it, (5,5) 3 away, (7,3) 5 away; only (3,2) moved anything besides the row.
+  assert.deepEqual(state.clicks, [{ clicks: 2, changed: 0 }, { clicks: 2, changed: 1 }, { clicks: 1, changed: 0 }, { clicks: 1, changed: 0 }, { clicks: 0, changed: 0 }]);
+  assert.match(renderFacts(state, null, 1200), /\nCLICKS on this level by distance from the nearest cell that is not background or recurring \(in cells; how many changed the board besides recurring cells\): on it 2 \(0 changed\), next to it 2 \(1 changed\), 2-3 away 1 \(0 changed\), 4-7 away 1 \(0 changed\), 8\+ away 0(\n|$)/);
+  assert.equal(buildLedger(rows, [], grids, { lines: true }).clicks, undefined);
+  assert.doesNotMatch(renderFacts(buildLedger(rows.slice(0, 4), [], grids, { lines: true, clicks: true }), null), /CLICKS/, 'fewer than 5 clicks: no line');
+});
+
 test('an object moved by one action, clicks that paint the clicked row, and a cell changed twice are not meter lines', () => {
   const walker = start();
   walker[4][2] = 3;
