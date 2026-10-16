@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { carryFields, clipEnds, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
+import { carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
 
 test('native production instructions explicitly prefer amortized offload without a creation quota', () => {
@@ -112,6 +112,40 @@ test('earlier decisions are a frozen transcript: no reasoning or images, results
   const later = freezeHistory([...history, { role: 'user', content: 'decision 3' }], { save });
   assert.deepEqual(later.slice(0, frozen.length), frozen);
   assert.equal(JSON.stringify(history).includes('secret reasoning'), true, 'canonical history is immutable');
+});
+
+test('rounds that repeated the same calls show once with their count; receipts of the results left out are kept', () => {
+  // su15-r1-B2 (2026-10-16): one python call 20 times in a row; the gateway refused every request that carried them.
+  const round = (id: string, args: any, text: string, name = 'python') => [
+    { role: 'assistant', content: [{ type: 'text', text: `try ${id}` }, { type: 'toolCall', id, name, arguments: args }] },
+    { role: 'toolResult', toolCallId: id, toolName: name, content: [{ type: 'text', text }] }];
+  const same = [{ role: 'user', content: 'decision 1' },
+    ...Array.from({ length: 5 }, (_, i) => round(`p${i}`, { code: "print('same')" }, 'same')).flat()];
+  const collapsed = collapseRepeatedCalls(same);
+  assert.equal(collapsed.length, 3);
+  assert.equal(collapsed[1].content[1].id, 'p0');
+  assert.equal(collapsed[2].toolCallId, 'p0', 'the result answers the call that is kept');
+  assert.equal(collapsed[2].content[0].text, "(This call was made 5 times in a row; every result was the same:)\nsame");
+  // Acting calls whose results differ: the last result, and the earlier action receipts (the record of what was played).
+  const acting = [{ role: 'user', content: 'decision 2' },
+    ...round('a0', { code: 'act()', x: 1 }, 'moved\n#4 ACTION1 → changed=2'),
+    ...round('a1', { x: 1, code: 'act()' }, 'moved\n#5 ACTION1 → changed=2'),
+    ...round('a2', { code: 'act()', x: 1 }, 'moved\n#6 ACTION1 → changed=3')];
+  const played = collapseRepeatedCalls(acting);
+  assert.equal(played.length, 3, 'arguments compare whatever their key order');
+  assert.equal(played[2].content[0].text, '(This call was made 3 times in a row; 2 earlier results are not shown; their action receipts:\n' +
+    '#4 ACTION1 → changed=2\n#5 ACTION1 → changed=2\nThe last result:)\nmoved\n#6 ACTION1 → changed=3');
+  // A decision boundary, an assistant message without calls, or a different call ends a run; single rounds are untouched.
+  const split = [{ role: 'user', content: 'decision 3' }, ...round('s0', { code: 'x' }, 'r'),
+    { role: 'user', content: 'decision 4' }, ...round('s1', { code: 'x' }, 'r'),
+    { role: 'assistant', content: [{ type: 'text', text: 'thinking aloud' }] }, ...round('s2', { code: 'x' }, 'r'),
+    ...round('s3', { code: 'y' }, 'r')];
+  assert.deepEqual(collapseRepeatedCalls(split), split);
+  // In the frozen transcript by default; collapseRepeats: false keeps every copy. A finished decision keeps its bytes.
+  const history = [...same, { role: 'user', content: 'decision 2' }];
+  assert.equal(freezeHistory(history).filter(m => m.role === 'toolResult').length, 1);
+  assert.equal(freezeHistory(history, { collapseRepeats: false }).filter(m => m.role === 'toolResult').length, 5);
+  assert.deepEqual(freezeHistory([...history, ...round('n0', { code: 'z' }, 'r')]).slice(0, 4), freezeHistory(history).slice(0, 4));
 });
 
 test('a tool-calling message with no short fields is told so once, on the result, without rewriting earlier rounds', () => {

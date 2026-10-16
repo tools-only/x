@@ -212,6 +212,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// the summarised section inside the head (the default before 2026-10-14), within that many characters.
 	const nativeHistoryChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 0)));
 	const historyResultChars = Math.max(200, Math.floor(Number(process.env.ARC_THIN_HISTORY_RESULT_CHARS ?? NATIVE_HISTORY_RESULT_CHARS)));
+	// Rounds of an earlier decision that repeated the same calls are shown once with their count (2026-10-16: a gateway
+	// refused every request carrying such a repetition). ARC_THIN_COLLAPSE_REPEATS=0 keeps every copy.
+	const collapseRepeats = process.env.ARC_THIN_COLLAPSE_REPEATS !== "0";
 	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
 	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
 	// ARC_THIN_PYTHON_KERNEL=0 restores a fresh sandbox per call restored from the checkpoint, with acting replayed;
@@ -2524,7 +2527,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
 		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
-			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }))
+			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, collapseRepeats, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
 		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).

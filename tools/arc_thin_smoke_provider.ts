@@ -356,8 +356,17 @@ const RESTART_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'step that hangs' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'after the restart' }]] },
 ];
+// Gateway refusal (tools/run_repeat_refusal_smoke.py, ARC_THIN_SMOKE_GATEWAY_REPEATS=5): one action, then one python call
+// five times in a row; the request after it carries five identical rounds and is refused. The decision after that acts
+// only if its history shows the repetition once.
+const REPEAT_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'before the repeats' }]] },
+  ...Array.from({ length: 5 }, (): Step => ({ kind: 'decide', calls: [['python', { code: "print('same')" }]] })),
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after the refusal' }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'repeat' ? REPEAT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? QUERY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
@@ -416,6 +425,37 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// context.systemPrompt and context.tools), so the runner's prompt is the first user message, not messages[0].
 			const systemPrompt = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
 			const tools: any[] = (context.tools?.length ? context.tools : getCurrentTools(messages as any)) ?? [];
+			// The yibu gateway as seen on 2026-10-16 (su15-r1-B2): a request whose messages repeat an identical tool call in
+			// ARC_THIN_SMOKE_GATEWAY_REPEATS consecutive rounds is refused, stop=error and no usage. Rounds are assistant
+			// messages with calls; any other message except a tool result ends a run.
+			const gatewayRepeats = Number(process.env.ARC_THIN_SMOKE_GATEWAY_REPEATS || 0);
+			if (gatewayRepeats) {
+				let longest = 0, current = 0, previous = "";
+				for (const message of messages) {
+					const calls = message?.role === "assistant" && Array.isArray(message.content)
+						? message.content.filter((block: any) => block?.type === "toolCall") : [];
+					if (!calls.length) {
+						if (message?.role !== "toolResult") { current = 0; previous = ""; }
+						continue;
+					}
+					const key = JSON.stringify(calls.map((block: any) => [block.name, block.arguments]));
+					current = key === previous ? current + 1 : 1;
+					previous = key;
+					longest = Math.max(longest, current);
+				}
+				if (longest >= gatewayRepeats) {
+					appendFileSync(join(process.env.ARC_RUN_ROOT ?? process.cwd(), "gateway-refusals.jsonl"),
+						JSON.stringify({ longest, messages: messages.length }) + "\n");
+					output.stopReason = "error";
+					output.errorMessage = "Repetitive tool calls detected in the conversation history. The same tool call with identical " +
+						"name and arguments has been repeated across multiple consecutive rounds.";
+					output.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+					stream.push({ type: "error", reason: "error", error: output });
+					stream.end();
+					return stream;
+				}
+			}
       if (process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' && systemPrompt.includes('context summarization assistant')) {
         const evidence = messages.map(textOf).join('\n');
         appendFileSync(join(process.env.ARC_RUN_ROOT!, 'native-summary-input.jsonl'), JSON.stringify({ systemPrompt, messages }) + '\n');

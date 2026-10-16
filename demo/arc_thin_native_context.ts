@@ -7,6 +7,7 @@
  * (pilot-01). The transcript is bounded by clipping each earlier result and by Pi's compaction.
  */
 import { LONG_LINE_CHARS, stubLongLines } from './arc_thin_workspace.ts';
+import { canonical } from './arc_thin_native_loop.ts';
 
 /** Pair calls with results and drop thinking, over the whole list (the canonical projection). */
 export function projectNativeHistory(messages: any[], replayReasoning = false): any[] {
@@ -150,13 +151,71 @@ export function historyResult(text: string, limit: number, save?: SaveResult): s
 }
 
 /**
+ * Rounds in a row that repeat the same tool calls (names and arguments) render as the first of them, with the last
+ * one's results and how many times it ran; the action receipts of the results left out are kept. A round is an
+ * assistant message with tool calls and the results that answer them; any other message ends a run.
+ *
+ * The yibu gateway refuses every request whose messages repeat an identical call across consecutive rounds. In
+ * su15-r1-B2 (2026-10-16) the agent ran one python call 20 times in a row in one decision; the transcript of earlier
+ * decisions carried the repetition into every later request, so every one was refused and the run never acted again
+ * (su15-r4 failed the same way).
+ */
+export function collapseRepeatedCalls(messages: any[]): any[] {
+  type Round = { message: any; ids: string[]; results: any[]; key: string };
+  const out: any[] = [];
+  let run: Round[] = [];
+  let current: Round | undefined;
+  const flush = () => {
+    if (run.length === 1) out.push(run[0].message, ...run[0].results);
+    else if (run.length > 1) {
+      out.push(run[0].message);
+      run[0].ids.forEach((id, i) => {
+        const results = run.map(round => round.results.find(r => String(r.toolCallId) === round.ids[i]));
+        const texts = results.map(textOf);
+        const same = texts.every(text => text === texts[0]);
+        const receipts = same ? [] : texts.slice(0, -1).flatMap(actionLines);
+        const note = same ? `(This call was made ${run.length} times in a row; every result was the same:)`
+          : `(This call was made ${run.length} times in a row; ${run.length - 1} earlier results are not shown` +
+            (receipts.length ? `; their action receipts:\n${receipts.join('\n')}` : '') + '\nThe last result:)';
+        const kept = results.findLast(Boolean);
+        if (kept) out.push({ ...kept, toolCallId: id, content: [{ type: 'text', text: `${note}\n${texts.at(-1)}` }] });
+      });
+    }
+    run = [];
+  };
+  for (const message of messages) {
+    const calls = message?.role === 'assistant' && Array.isArray(message.content)
+      ? message.content.filter((block: any) => block?.type === 'toolCall') : [];
+    if (calls.length) {
+      const round = { message, ids: calls.map((block: any) => String(block.id)), results: [],
+        key: JSON.stringify(calls.map((block: any) => [block.name, canonical(block.arguments ?? {})])) };
+      if (run.length && run[run.length - 1].key !== round.key) flush();
+      run.push(round);
+      current = round;
+      continue;
+    }
+    if (message?.role === 'toolResult' && current?.ids.includes(String(message.toolCallId))) {
+      current.results.push(message);
+      continue;
+    }
+    flush();
+    current = undefined;
+    out.push(message);
+  }
+  flush();
+  return out;
+}
+
+/**
  * Earlier decisions as a transcript that only grows: what the agent wrote, called and got back, no reasoning, each
  * result clipped by clipEnds and without images. A finished decision renders to the same bytes on every request, so the
- * provider's cached prefix covers all of them; only Pi's compaction rewrites it.
+ * provider's cached prefix covers all of them; only Pi's compaction rewrites it. Rounds that repeated the same calls
+ * show once with their count (collapseRepeatedCalls); `collapseRepeats: false` keeps every copy.
  */
-export function freezeHistory(messages: any[], options: { resultChars?: number; save?: SaveResult } = {}): any[] {
+export function freezeHistory(messages: any[], options: { resultChars?: number; save?: SaveResult; collapseRepeats?: boolean } = {}): any[] {
   const limit = options.resultChars ?? HISTORY_RESULT_CHARS;
-  return projectNativeHistory(messages).map(message => {
+  const projected = projectNativeHistory(messages);
+  return (options.collapseRepeats === false ? projected : collapseRepeatedCalls(projected)).map(message => {
     if (message.role === 'user' && Array.isArray(message.content) && message.content.some((b: any) => b?.type === 'image'))
       return { ...message, content: message.content.filter((b: any) => b?.type !== 'image') };
     if (message.role !== 'toolResult') return message;

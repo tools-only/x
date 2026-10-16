@@ -96,6 +96,10 @@ TRANSIENT_BRIDGE_START = re.compile(r"ReadTimeout|ConnectTimeout|ConnectionError
 #: decisions the runner can start a new game instead and replay the recorded actions with every grid checked, as a fork
 #: does; the action whose outcome was unknown is not among them. At most this many restarts per run (0: stop as before).
 MAX_ENVIRONMENT_RESTARTS = 3
+#: A provider that ends this many turns in a row with the same error and no action will not answer the run again: the
+#: run stops. su15-r1-B2 (2026-10-16) sent about 290 requests that the yibu gateway refused for repeated calls in their
+#: history; the refusals reported no usage, so no token cap ended the run. 0 keeps going as before.
+MAX_PROVIDER_ERRORS = 3
 
 
 def _append_events(root: Path, events: list[Any]) -> None:
@@ -146,6 +150,15 @@ def _fatal_errors(harness: Path) -> int:
 def _environment_errors(harness: Path) -> int:
     """arc_action calls the extension ended because the environment failed (timeout, 5xx)."""
     return sum(1 for row in _read_jsonl(harness / "errors.jsonl") if row.get("environment"))
+
+
+def _provider_error(events: list[dict[str, Any]]) -> str | None:
+    """The error a provider ended a turn's last reply with (stop reason "error"), if it did."""
+    for event in reversed(events or []):
+        message = event.get("message") if isinstance(event, dict) else None
+        if event.get("type") == "message_end" and isinstance(message, dict) and message.get("role") == "assistant":
+            return str(message.get("errorMessage") or "provider error") if message.get("stopReason") == "error" else None
+    return None
 
 
 def _tool_errors(events: Path) -> dict[str, int]:
@@ -761,6 +774,7 @@ def run_arc_thin_e2e(
     snapshot_after_decisions: tuple[int, ...] = (),
     fork_from: Path | None = None,
     max_environment_restarts: int = MAX_ENVIRONMENT_RESTARTS,
+    max_provider_errors: int = MAX_PROVIDER_ERRORS,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
 
@@ -771,6 +785,8 @@ def run_arc_thin_e2e(
     When a step's outcome is unknown (or the bridge process ended), the next decision does not start on it: the runner
     starts a new game on the same port and action token, replays the recorded actions with every grid checked, and the
     next decision's prompt says so, at most ``max_environment_restarts`` times (0: the run stops, as before).
+    A provider that ends ``max_provider_errors`` turns in a row with the same error and no action stops the run as
+    ``provider_error`` (0: it keeps going, as before).
 
     ``carry_reasoning_chars`` is the opt-in comparison variable C1 of
     docs/plans/2026-10-10-self-harness-priority-plan.md; off by default. ``continuity="session"`` keeps the
@@ -836,6 +852,7 @@ def run_arc_thin_e2e(
         "decisions": 0, "consolidations": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0, "environment_restarts": [],
+        "provider_errors": 0,
         **({"fork": {key: fork[key] for key in ("source", "decision", "actions", "prefix_reported_tokens", "prefix_budget_tokens")}}
            if fork else {}),
     }
@@ -956,7 +973,7 @@ def run_arc_thin_e2e(
             "observation_delivery": observation_delivery,
             # A run started from another run's snapshot (matched prefix): where from, and how much of it was replayed.
             "fork": summary.get("fork"), "snapshot_after_decisions": list(snapshot_after_decisions),
-            "max_environment_restarts": max_environment_restarts,
+            "max_environment_restarts": max_environment_restarts, "max_provider_errors": max_provider_errors,
             # Reasoning between tool rounds of the current decision: "all" (the Completions default), "fields" (the
             # Responses default: only the short <carry> block the agent writes is replayed) or "none" keep the projection
             # append-only for the provider's prefix cache; "recent" and result archiving rewrite earlier messages.
@@ -1019,6 +1036,7 @@ def run_arc_thin_e2e(
         level_changed_since_consolidation = False
         no_action_streak = 0
         environment_streak = 0
+        provider_errors: list[str] = []
 
         def turn(message: str) -> list[dict[str, Any]]:
             response = kernel.prompt(message)
@@ -1283,6 +1301,16 @@ def run_arc_thin_e2e(
                     break
             else:
                 environment_streak = 0
+            # The same refusal three turns in a row: the provider will not answer this run again (MAX_PROVIDER_ERRORS).
+            refusal = _provider_error(events) if len(_read_jsonl(harness / "trajectory.jsonl")) == action_count else None
+            if refusal:
+                summary["provider_errors"] += 1
+            provider_errors = [*provider_errors, refusal] if refusal else []
+            if max_provider_errors and len(provider_errors) >= max_provider_errors \
+                    and len(set(provider_errors[-max_provider_errors:])) == 1:
+                summary["stop_reason"] = "provider_error"
+                summary["error"] = refusal[:500]
+                break
             if not consolidate and summary["decisions"] in snapshot_after_decisions:
                 # Pi is idle between turns: the session, harness stores, workspace and python session are consistent.
                 summary.setdefault("snapshots", []).append(str(_snapshot_run(root, summary["decisions"], game, fork)))
