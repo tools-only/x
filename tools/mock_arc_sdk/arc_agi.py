@@ -1,10 +1,17 @@
 """Mock only ARC SDK environment calls; production bridge/runner remain real."""
 import os
+import time
 from types import SimpleNamespace
 
 # MOCK_ARC_FAIL_AFTER=N: every step after the first N returns None, as the remote
 # SDK wrapper did in real runs (the bridge reports EnvironmentReturnedNoFrame).
 FAIL_AFTER = int(os.environ.get("MOCK_ARC_FAIL_AFTER") or 0)
+# MOCK_ARC_HANG_AT=N with MOCK_ARC_HANG_MARKER=<file> (the restart smoke, 2026-10-16): the Nth step of a game does not
+# return for MOCK_ARC_HANG_SECONDS (default 30), once per marker file, as steps of the online service did in su15 runs;
+# the bridge's step timeout (90 s) ends the wait first when the hang is longer.
+HANG_AT = int(os.environ.get("MOCK_ARC_HANG_AT") or 0)
+HANG_MARKER = os.environ.get("MOCK_ARC_HANG_MARKER") or ""
+HANG_SECONDS = float(os.environ.get("MOCK_ARC_HANG_SECONDS") or 30)
 
 
 class OperationMode:
@@ -31,6 +38,9 @@ class Environment:
     def step(self, action, data, reasoning):
         if FAIL_AFTER and self.actions >= FAIL_AFTER:
             return None
+        if HANG_AT and self.actions + 1 == HANG_AT and HANG_MARKER and not os.path.exists(HANG_MARKER):
+            open(HANG_MARKER, 'w').close()
+            time.sleep(HANG_SECONDS)
         self.actions += 1
         self.position = (self.position + (1 if action.name in {'ACTION1','ACTION4'} else -1)) % 8
         return self._observe()

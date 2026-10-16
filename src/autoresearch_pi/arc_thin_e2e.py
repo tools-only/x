@@ -24,7 +24,6 @@ from typing import Any
 
 from .arc_agi_3_adapter import OFFICIAL_MAX_RUNTIME_SECONDS, resolve_input_modalities, resolve_model_settings
 from .arc_agi_3_e2e import (
-    _append_bridge_event_batch,
     _arc_terminal_or_budget_exhausted,
     _get_json,
     _pi_cli_version,
@@ -92,6 +91,18 @@ REVIEW_ON_MISS_GAP = 4
 BRIDGE_START_ATTEMPTS = 3
 TRANSIENT_BRIDGE_START = re.compile(r"ReadTimeout|ConnectTimeout|ConnectionError|timed out|handshake|"
                                     r"'NoneType' object has no attribute 'info'")
+#: A step of the online service sometimes does not return for minutes; the bridge then refuses all access, since that
+#: step's outcome is unknown (EnvironmentCallTimeout ended su15-s04, e1-A2, r9 and f0 on 2026-10-15/16). Between
+#: decisions the runner can start a new game instead and replay the recorded actions with every grid checked, as a fork
+#: does; the action whose outcome was unknown is not among them. At most this many restarts per run (0: stop as before).
+MAX_ENVIRONMENT_RESTARTS = 3
+
+
+def _append_events(root: Path, events: list[Any]) -> None:
+    with (root / "bridge-events.jsonl").open("a", encoding="utf-8") as stream:
+        for event in events:
+            if isinstance(event, dict):
+                stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
 def _bridge_health(bridge_url: str) -> dict[str, Any] | None:
@@ -524,10 +535,12 @@ def _write_models_json(agent_dir: Path, provider: str, model: str, settings: dic
 
 def _start_bridge(root: Path, *, arc_root: Path, game: str, max_actions: int | None, env: dict[str, str],
                   bridge_python: Path | None, bridge_module_paths: tuple[Path, ...], replay_actions: Path | None = None,
+                  port: int = 0, action_token: str | None = None,
                   ) -> tuple[subprocess.Popen[str], Any, str, str]:
     """Start the ARC bridge process; returns (process, stderr file, launch id, action token).
-    The caller waits for it with _wait_for_bridge and stops it with _stop_bridge. ``replay_actions`` (a fork) is played
-    before the bridge reports ready."""
+    The caller waits for it with _wait_for_bridge and stops it with _stop_bridge. ``replay_actions`` (a fork, or an
+    environment restart) is played before the bridge reports ready; a restart passes the old ``port`` and
+    ``action_token`` so that Pi keeps its bridge URL and token."""
     arc_root = arc_root.resolve()
     arc_python = bridge_python or arc_root / ".venv" / "Scripts" / "python.exe"
     if not arc_python.is_file():
@@ -537,9 +550,9 @@ def _start_bridge(root: Path, *, arc_root: Path, game: str, max_actions: int | N
     bridge_env["PYTHONPATH"] = os.pathsep.join(
         [src, *(str(path.resolve()) for path in bridge_module_paths), env.get("PYTHONPATH", "")])
     launch_id = secrets.token_hex(16)
-    action_token = secrets.token_urlsafe(32)
+    action_token = action_token or secrets.token_urlsafe(32)
     bridge_command = [str(arc_python), "-m", "autoresearch_pi.arc_agi_3_bridge",
-                      "--root", str(root), "--game", game, "--port", "0"]
+                      "--root", str(root), "--game", game, "--port", str(int(port))]
     if max_actions is not None:
         bridge_command.extend(["--max-actions", str(max_actions)])
     if replay_actions is not None:
@@ -624,6 +637,19 @@ def _snapshot_run(root: Path, decision: int, game: str, fork: dict[str, Any] | N
     return target
 
 
+def _write_replay(root: Path, replay: Path) -> list[dict[str, Any]]:
+    """Write the run's recorded actions for the bridge to replay, each with the grid it must yield; returns them."""
+    trajectory = _read_jsonl(root / "harness" / "trajectory.jsonl")
+    grids = {int(row["n"]): row["grid"] for row in _read_jsonl(root / "harness" / "states.jsonl")
+             if isinstance(row.get("grid"), list) and "n" in row}
+    with replay.open("w", encoding="utf-8") as stream:
+        for row in trajectory:
+            coordinates = {"x": row["x"], "y": row["y"]} if "x" in row and "y" in row else {}
+            stream.write(json.dumps({"n": row["n"], "action": row["action"], **coordinates,
+                                     "grid": grids.get(int(row["n"]))}, separators=(",", ":")) + "\n")
+    return trajectory
+
+
 def _seed_fork(root: Path, snapshot: Path, game: str) -> dict[str, Any]:
     """Copy a snapshot into a new run root and write the actions the bridge replays, each with the grid it must yield."""
     snapshot = snapshot.resolve()
@@ -631,17 +657,10 @@ def _seed_fork(root: Path, snapshot: Path, game: str) -> dict[str, Any]:
     if meta.get("format") != "arc-thin-snapshot-v1" or meta.get("game") != game:
         raise ValueError(f"{snapshot} is not a snapshot of {game}: {meta}")
     _copy_items(snapshot, root)
-    trajectory = _read_jsonl(root / "harness" / "trajectory.jsonl")
+    replay = root / "fork-replay.jsonl"
+    trajectory = _write_replay(root, replay)
     if len(trajectory) != meta["actions"]:
         raise ValueError(f"snapshot trajectory has {len(trajectory)} actions, its record {meta['actions']}")
-    grids = {int(row["n"]): row["grid"] for row in _read_jsonl(root / "harness" / "states.jsonl")
-             if isinstance(row.get("grid"), list) and "n" in row}
-    replay = root / "fork-replay.jsonl"
-    with replay.open("w", encoding="utf-8") as stream:
-        for row in trajectory:
-            coordinates = {"x": row["x"], "y": row["y"]} if "x" in row and "y" in row else {}
-            stream.write(json.dumps({"n": row["n"], "action": row["action"], **coordinates,
-                                     "grid": grids.get(int(row["n"]))}, separators=(",", ":")) + "\n")
     return {"source": str(snapshot), "decision": meta["decision"], "actions": len(trajectory), "replay": replay,
             "total_used": ((trajectory[-1].get("budget") or {}).get("total_used") if trajectory else None),
             "prefix_reported_tokens": _reported_tokens(root / "harness"),
@@ -741,12 +760,17 @@ def run_arc_thin_e2e(
     replay_reasoning: bool = False,
     snapshot_after_decisions: tuple[int, ...] = (),
     fork_from: Path | None = None,
+    max_environment_restarts: int = MAX_ENVIRONMENT_RESTARTS,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
 
     ``snapshot_after_decisions`` copies the run's state after those decisions to ``snapshots/after-decision-<k>``;
     ``fork_from`` starts a new run from such a snapshot (replaying its actions on a fresh environment), so arms of a
     comparison share the same prefix (docs/plans/2026-10-14-matched-prefix-evaluation.md).
+
+    When a step's outcome is unknown (or the bridge process ended), the next decision does not start on it: the runner
+    starts a new game on the same port and action token, replays the recorded actions with every grid checked, and the
+    next decision's prompt says so, at most ``max_environment_restarts`` times (0: the run stops, as before).
 
     ``carry_reasoning_chars`` is the opt-in comparison variable C1 of
     docs/plans/2026-10-10-self-harness-priority-plan.md; off by default. ``continuity="session"`` keeps the
@@ -811,7 +835,7 @@ def run_arc_thin_e2e(
         "passed": False, "stop_reason": None,
         "decisions": 0, "consolidations": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
-        "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0,
+        "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0, "environment_restarts": [],
         **({"fork": {key: fork[key] for key in ("source", "decision", "actions", "prefix_reported_tokens", "prefix_budget_tokens")}}
            if fork else {}),
     }
@@ -932,6 +956,7 @@ def run_arc_thin_e2e(
             "observation_delivery": observation_delivery,
             # A run started from another run's snapshot (matched prefix): where from, and how much of it was replayed.
             "fork": summary.get("fork"), "snapshot_after_decisions": list(snapshot_after_decisions),
+            "max_environment_restarts": max_environment_restarts,
             # Reasoning between tool rounds of the current decision: "all" (the Completions default), "fields" (the
             # Responses default: only the short <carry> block the agent writes is replayed) or "none" keep the projection
             # append-only for the provider's prefix cache; "recent" and result archiving rewrite earlier messages.
@@ -1083,10 +1108,91 @@ def run_arc_thin_e2e(
                 summary["length_recovery_failures"] += 1
             return resumed
 
+        restart_note = ""
+
+        def restart_environment(health: dict[str, Any] | None) -> None:
+            """Replace an environment whose last step has no known outcome (or whose process ended) by a new game at the
+            last recorded state. Pi is idle between decisions and keeps its bridge URL and token."""
+            nonlocal bridge, bridge_stderr, bridge_after, restart_note
+            began = time.monotonic()
+            k = len(summary["environment_restarts"]) + 1
+            cause = "process_ended" if bridge.poll() is not None else "outcome_unknown"
+            try:
+                bridge_after = _sync_bridge_events(root, bridge_url, bridge_after)
+            except (OSError, ValueError):
+                pass
+            _stop_bridge(bridge, bridge_stderr, False)
+            if bridge.poll() is None:
+                bridge.wait(timeout=10)  # never two bridges on one port
+
+            def set_aside(suffix: str) -> None:
+                # Kept for the record; a handle the ended process still holds only delays the rename.
+                for name in ("bridge-stderr.log", "bridge-error.json"):
+                    for _ in range(10):
+                        try:
+                            if (root / name).is_file():
+                                (root / name).replace(root / f"{Path(name).stem}-{suffix}{Path(name).suffix}")
+                            break
+                        except OSError:
+                            time.sleep(0.5)
+
+            set_aside(f"restart{k}")
+            replay = root / f"restart-replay-{k}.jsonl"
+            recorded = _write_replay(root, replay)
+            expected = (recorded[-1].get("budget") or {}).get("total_used") if recorded else None
+            port = int(bridge_url.rsplit(":", 1)[1])
+            failures: list[str] = []
+            for attempt in range(1, BRIDGE_START_ATTEMPTS + 1):
+                bridge, bridge_stderr, launch, _ = _start_bridge(
+                    root, arc_root=arc_root, game=game, max_actions=max_actions, env=env, bridge_python=bridge_python,
+                    bridge_module_paths=bridge_module_paths, replay_actions=replay, port=port, action_token=action_token)
+                try:
+                    _wait_for_bridge(root, bridge, timeout=60.0 + 5.0 * len(recorded), launch_id=launch)
+                    used = ((_bridge_state(bridge_url) or {}).get("action_budget") or {}).get("total_used")
+                    if expected is not None and used != expected:
+                        raise RuntimeError(f"the replay left the environment at {used} actions, the record at {expected}")
+                    break
+                except Exception as exc:  # noqa: BLE001 - retried, then raised with every attempt's reason
+                    reason = f"{type(exc).__name__}: {exc}"
+                    failures.append(reason[:500])
+                    _stop_bridge(bridge, bridge_stderr, False)
+                    if bridge.poll() is None:
+                        bridge.wait(timeout=10)
+                    set_aside(f"restart{k}-attempt{attempt}")
+                    # A grid that did not repeat will not repeat on the next attempt either.
+                    if attempt == BRIDGE_START_ATTEMPTS or "ReplayMismatch" in reason:
+                        raise RuntimeError("environment restart failed: " + " | ".join(failures)) from exc
+                    time.sleep(15.0 * attempt)
+            # The new game's replay is on record already, as the actions it repeats; only the restart is added.
+            fresh = _get_json(f"{bridge_url}/events?after=0")
+            events = fresh.get("events") if isinstance(fresh.get("events"), list) else []
+            bridge_after = int(fresh.get("next") or len(events))
+            opened = next((event for event in events if isinstance(event, dict) and event.get("event") == "scorecard_opened"), {})
+            error = (health or {}).get("error") or {}
+            record = {"restart": k, "cause": cause, "after_action": len(recorded), "decisions": summary["decisions"],
+                      "error": {key: error[key] for key in ("type", "message") if key in error},
+                      "attempts": attempt, "failures": failures, "seconds": round(time.monotonic() - began, 1),
+                      "scorecard_id": opened.get("scorecard_id")}
+            _append_events(root, [{"event": "environment_restarted", **record}])
+            summary["environment_restarts"].append(record)
+            where = f"the state after action #{len(recorded)}, the last one recorded" if recorded else "the start of the game"
+            restart_note = (f"(The environment stopped answering during an action and was restarted at {where}; that action "
+                            "was not applied.)" if cause == "outcome_unknown"
+                            else f"(The environment's process ended; it was restarted at {where}.)")
+
         while True:
             state = _bridge_state(bridge_url)
             if state is None:
                 health = _bridge_health(bridge_url)
+                # Pi is idle here: a step whose outcome is unknown, or a bridge that ended, is replaced by a new game at the
+                # last recorded state instead of ending the run.
+                if len(summary["environment_restarts"]) < max_environment_restarts and (
+                        (health or {}).get("status") == "uncertain" or bridge.poll() is not None):
+                    try:
+                        restart_environment(health)
+                        continue
+                    except Exception as exc:  # noqa: BLE001 - the run stops below with the reason on record
+                        summary["environment_restart_error"] = f"{type(exc).__name__}: {exc}"[:2000]
                 summary["bridge_health"] = health
                 summary["stop_reason"] = (
                     "environment_outcome_unknown" if health and health.get("status") in {"uncertain", "busy"}
@@ -1135,14 +1241,16 @@ def run_arc_thin_e2e(
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
                 else:
-                    prompt = NO_ACTION_PROMPT if no_action_streak else DECIDE_PROMPT
+                    prompt = (NO_ACTION_PROMPT if no_action_streak else DECIDE_PROMPT) + (f" {restart_note}" if restart_note else "")
+                    restart_note = ""
                     events = recover_length(prompt, safe_turn(prompt))
                     summary["decisions"] += 1
                     new_rows = _read_jsonl(harness / "trajectory.jsonl")[action_count:]
                     if new_rows:
                         no_action_streak = 0
                         level_changed_since_consolidation |= any(row.get("level_changed") for row in new_rows)
-                    else:
+                    # A decision the environment ended is not one without an action (environment_streak below).
+                    elif _environment_errors(harness) == environment_before:
                         no_action_streak += 1
                         summary["no_action_decisions"] += 1
             except TimeoutError as exc:
@@ -1188,7 +1296,8 @@ def run_arc_thin_e2e(
             closed = _post_json(bridge_url + "/close", {}, timeout=60.0, action_token=action_token)
             events = closed.pop("events", [])
             if isinstance(events, list):
-                _append_bridge_event_batch(root, events)
+                # The cursor, not the file's length: after a restart the bridge's events begin with its new game.
+                _append_events(root, events[bridge_after:])
             summary["bridge_close"] = closed
             summary['bridge_close_status'] = closed.get('close_status','closed')
             summary['scorecard_verified'] = closed.get('scorecard_verified',False)
@@ -1527,6 +1636,8 @@ def run_arc_thin_environment_smoke(root: Path) -> Path:
             bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
             ledger=False, critic=False, extension_env={"ARC_THIN_SMOKE_SCRIPT": "environment",
                                                        "ARC_THIN_EXPANDED_TOOLS": "enabled"},
+            # The stop path; tools/run_fork_smoke.py part 5 checks the restart.
+            max_environment_restarts=0,
         )
     finally:
         if previous is None:

@@ -349,7 +349,15 @@ const MIGRATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'artifacts/route.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ];
+// Environment restart (tools/run_fork_smoke.py part 4, MOCK_ARC_HANG_AT=2): the second action's step does not return, the
+// runner restarts the environment between decisions, and the third decision acts from the replayed state.
+const RESTART_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'before the fault' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'step that hangs' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'after the restart' }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? QUERY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT

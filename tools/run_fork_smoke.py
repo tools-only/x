@@ -5,8 +5,12 @@ actual Pi and WASI.
 2. A fork starts from that snapshot: the bridge replays the source's actions and checks every grid, Pi continues the
    source's session, the python session keeps the names decision 3 defined, and new actions continue the numbering.
 3. A snapshot whose recorded grid was altered cannot be forked: the replay stops at the bridge.
+4. A step that does not return (once, at the second action) ends its decision; before the next one the runner starts a
+   new game on the same port and token and replays the recorded action with its grid checked. The next decision is told,
+   and its action continues the numbering.
 """
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -63,4 +67,27 @@ assert not refused["passed"] and str(refused["stop_reason"]).startswith("runner_
 assert "bridge_start_retries" not in refused, 'a replay mismatch is not a transient start failure and is never retried'
 error = json.loads((root / "bad-fork/bridge-error.json").read_text(encoding="utf-8"))
 assert error["environment_error"]["type"] == "ReplayMismatch", error
-print(json.dumps({"source_actions": k, "fork_actions": len(new), "refused": refused["stop_reason"]}))
+
+# The bridge gives up on a step after 90 s; the mock's second step outlasts it, once per marker file.
+os.environ.update({"MOCK_ARC_HANG_AT": "2", "MOCK_ARC_HANG_MARKER": str(root / "hang-marker"), "MOCK_ARC_HANG_SECONDS": "100"})
+restart = json.loads(run_arc_thin_e2e(root / "restart", max_decisions=3,
+    extension_env={"ARC_THIN_SMOKE_SCRIPT": "restart", "ARC_THIN_AUTO_COMPACTION": "0"}, **common).read_text(encoding="utf-8"))
+assert restart["passed"] and restart["stop_reason"] == "max_decisions", restart
+[record] = restart["environment_restarts"]
+assert record["cause"] == "outcome_unknown" and record["after_action"] == 1 \
+    and record["error"].get("type") == "EnvironmentCallTimeout", record
+assert restart["no_action_decisions"] == 0 and restart["harness"]["environment_errors"] == 1, restart
+restart_rows = read(root / "restart/harness/trajectory.jsonl")
+assert [(r["n"], r["action"], (r.get("budget") or {}).get("total_used")) for r in restart_rows] \
+    == [(1, "ACTION1", 1), (2, "ACTION1", 2)], restart_rows
+restart_events = read(root / "restart/bridge-events.jsonl")
+assert [e["index"] for e in restart_events if e.get("event") == "action"] == [1, 2], 'the replayed action is on record once'
+assert [e.get("event") for e in restart_events].count("environment_restarted") == 1, [e.get("event") for e in restart_events]
+assert (root / "restart/bridge-stderr-restart1.log").is_file(), 'the first bridge\'s log is kept'
+restart_parent = [r for r in read(root / "restart/smoke-requests.jsonl") if not r.get("analyst") and not r.get("critic")]
+assert len(restart_parent) == 3 and restart_parent[-1]["current"].startswith(
+    "Decide the next action. (The environment stopped answering during an action and was restarted at the state after "
+    "action #1, the last one recorded; that action was not applied.)"), [r["current"][:200] for r in restart_parent]
+assert "(The environment" not in restart_parent[1]["current"][:200], 'the note is given once, after the restart'
+print(json.dumps({"source_actions": k, "fork_actions": len(new), "refused": refused["stop_reason"],
+                  "restart": {key: record[key] for key in ("after_action", "attempts", "seconds")}}))

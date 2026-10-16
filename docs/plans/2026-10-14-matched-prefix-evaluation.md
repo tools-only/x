@@ -91,3 +91,21 @@ Follows the [development workflow](../development-workflow.md). Plan: step 1 of 
 - **Next falsifiable check.** Each arm needs at least 3 forks, chosen from this noise level. Decide the arms (current
   defaults versus `ARC_REFINE_DIGEST=1`, and the Reasoning retention changes once committed) and budget about 100k
   tokens and 10 minutes per fork.
+
+## Environment restart (2026-10-16, ported from `claude/r03b-simple-20261015`, af976326)
+
+- **Failure.** A step of the online service that does not return within the bridge's step timeout leaves the bridge
+  refusing all access (`uncertain`). The run then stopped as `environment_outcome_unknown`. This ended su15-s04, e1-A2, r9
+  and f0 on 2026-10-15/16, f0 after 2 actions.
+- **Change, in the runner only** (`max_environment_restarts`, default 3; 0 stops as before). Between decisions the runner
+  replaces such an environment, or a bridge whose process ended, with a new game on the same port and action token. It
+  replays the recorded actions with every grid checked, the replay a fork already uses. The bridge is unchanged and
+  never replays or commits a step whose outcome is unknown.
+  - The next decision's prompt says once that the environment was restarted and that the failed action was not applied.
+  - `bridge-events.jsonl` gets one `environment_restarted` event and has each action once.
+  - `summary.environment_restarts` records each restart.
+  - A replay mismatch stops the run.
+- **Evidence.** Mock: `run_fork_smoke.py` part 4, a step that hangs past the 90 s timeout once. Online on the branch
+  (su15 fork test, 2026-10-16): two restarts after 300 s timeouts, each on the first attempt (82 s and 165 s to replay
+  151 and 226 actions). Both runs continued, and one went on to complete level 2.
+- Ported without the branch's agent changes; the step timeout stays 90 s here.
