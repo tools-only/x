@@ -162,3 +162,16 @@ Date: 2026-10-16 (Asia/Shanghai). Status: implementation; offline checks. Branch
     - Part 3, defaults: the third identical call ends decision 2, no request is refused, and the next decision acts.
 - **Layers.** Functional and full chain: passed offline (scripted provider, mock SDK, production bridge, real Pi).
   Real gateway: not tested for prevention. Adoption: not applicable. Net benefit: unverified.
+
+## In real runs (L0 of the su15 level-2 loop, 2026-10-17)
+
+- **Recovery worked once.** In su15-l0-1 the gateway refused a run of 20 identical calls within one decision: RESET while
+  RESET was not available, each rejected by schema validation. The next decision went through.
+- **Prevention missed two kinds of repeat.**
+  - Calls that failed schema validation never reach the tool, so the loop guard does not see them.
+  - Real actions that change nothing move the epoch on (the action count), so they never repeat in the guard's terms.
+- **The collapse's model of the gateway was wrong.** The gateway counts identical calls across decision prompts. After
+  su15-l0-1 played `ACTION6(31,15)` once per decision 20 times, its history showed 20 identical calls separated only by
+  prompts. The collapse keeps runs within a decision, and so does this record's smoke imitation, so the gateway refused 3
+  turns in a row and the stop rule ended the run (`provider_error`).
+- Follow-up: iteration L1 of [the level-2 loop](2026-10-17-su15-level2-loop.md).
