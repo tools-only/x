@@ -35,7 +35,7 @@ Date: 2026-10-16 (Asia/Shanghai). Status: implementation; offline checks. Branch
 
 | Item | Where | Default | Earlier behaviour |
 |---|---|---|---|
-| Rounds in a row with identical tool calls (names, and arguments compared with keys sorted) in finished decisions render as the first round. Its result is the last round's result, with a note: "(This call was made N times in a row; every result was the same:)", or, when results differed, how many are not shown and the action receipts (`#n ACTION…` lines) they held. A user message, an assistant message without calls, or a different call ends a run. | `collapseRepeatedCalls` in `demo/arc_thin_native_context.ts`, applied in `freezeHistory` | on | `ARC_THIN_COLLAPSE_REPEATS=0` |
+| Rounds in a row with identical tool calls (names, and arguments compared with keys sorted) and the same outcome in finished decisions render as the first round. Its result is the last round's result, with a note: "(This call was made N times in a row; every result was the same:)", or, when results differed, how many are not shown and the action receipts (`#n ACTION…` lines) they held. A refused call is not a repeat of one that ran: in su15-r1-B2 calls 17–20 were refused by the decision's call cap, and showing only that refusal would have hidden what the 16 before it returned. A user message, an assistant message without calls, or a different call ends a run. | `collapseRepeatedCalls` in `demo/arc_thin_native_context.ts`, applied in `freezeHistory` | on | `ARC_THIN_COLLAPSE_REPEATS=0` |
 | A run stops as `provider_error` when 3 turns in a row end with the same provider error and no action. `summary.provider_errors` counts refused turns. | `MAX_PROVIDER_ERRORS`, `_provider_error` in `src/autoresearch_pi/arc_thin_e2e.py` | 3 | `max_provider_errors=0` |
 | `canonical` (argument key sorting) is shared by the loop guard and the collapse. | `demo/arc_thin_native_loop.ts` | — | — |
 
@@ -82,22 +82,48 @@ Date: 2026-10-16 (Asia/Shanghai). Status: implementation; offline checks. Branch
   environment smoke passes.
 - The `activation` smoke fails at its check of reasoning kept within a decision. Unchanged `r03b` fails it the same way
   (base's smoke runner does not set `ARC_THIN_REASONING_MODE=all`), so this change did not cause it.
+- Rerun after a refused call stopped counting as a repeat of one that ran (`checks-repeat2`): TS 25/25, with the B2 case
+  (5 calls that ran and 2 refused show as two rounds); the refusal smoke gives the same results.
+
+### Replay against the real gateway (2026-10-16, user-approved; `C:/Users/qi/tmp/r03b-simple/replay-refusal.py`)
+
+- Request: su15-r1-B2's first request after the refusal (`runtime-audit/provider-inputs.jsonl` row 77, the exact
+  payload Pi sent: 214 messages, decision 26's 20 identical rounds before the new head). Variants: as logged, and with
+  the collapse applied to the payload (160 messages, longest run 2: the 16 calls that ran and the 4 the call cap
+  refused). Two samples each, alternating, streamed as Pi sends them; yibu / qwen3.8-27b, thinking off.
+
+| Variant | Longest run | Outcome (2 samples each) | Usage per request |
+|---|---|---|---|
+| As logged | 20 | refused both times: `invalid_parameter_error`, "Repetitive tool calls detected…" | 39,277 prompt + 90 completion |
+| Collapsed | 2 | accepted both times: finish `tool_calls` | 34,875 prompt + 197 completion |
+
+- **The claim holds at the gateway:** the collapsed history is accepted, and the history as logged is refused.
+- **What triggers the refusal:** in every sample the model wrote the same sentence ("I've been stuck in a loop… Let me
+  examine what row 63 correlates with…") and then emitted the same python call again. With 20 copies in the history the
+  gateway cut the stream at that call; with the collapsed history it let it through. So the note did not stop the
+  agent from repeating its call.
+- **Refused requests are billed:** the refused stream reports its usage (39k prompt tokens), but Pi records no usage for
+  a stream that ends in an error. su15-r1-B2's 308 refusals therefore cost about 12M prompt tokens that its token cap
+  never saw. The stop after 3 refusals bounds this.
+- Cost of the replay: about 149k tokens.
 
 | Evidence layer | Status | Provider / environment | Artifacts and limits |
 |---|---|---|---|
 | Functional | passed | test fixtures | `tests/arc_thin_native_context.test.ts` |
-| Full chain | passed | scripted provider imitating the gateway; mock SDK; production bridge; real Pi 0.87 | `tools/run_repeat_refusal_smoke.py`; the real gateway's rule is not known exactly |
+| Full chain | passed | scripted provider imitating the gateway; mock SDK; production bridge; real Pi 0.87 | `tools/run_repeat_refusal_smoke.py` |
+| Real gateway | passed for one request | yibu / qwen3.8-27b | replay above: collapsed 2/2 accepted, as logged 0/2; one request, two samples each |
 | Autonomous adoption | not applicable | — | nothing for the agent to adopt |
-| Net benefit | unverified | — | needs the replay below or a real refusal |
+| Net benefit | unverified | — | the agent repeated its call again after the collapse; no run measured |
 
 ## Delivery decision
 
-- Supported: the collapse and the stop rule work as designed, offline and through the real runner, bridge and Pi
-  against an imitation of the gateway.
-- Not supported: that the real gateway accepts the collapsed history (its rule is inferred from two runs), and any
-  effect on task results.
-- Decision: kept on `claude/r03b-repeat-20261016`, not merged into `r03b`. The collapse changes what the agent sees after
-  a repetition, so by the integration rule it waits for real evidence.
-- Next falsifiable check: the replay above, with su15-r1-B2's decision-27 request sent to yibu with every copy and
-  collapsed (a few requests, well under 1M tokens; needs a budget). Then preventing the repetition (identical
-  successful calls in `NativeLoopGuard`), as its own change.
+- Supported: the collapse and the stop rule work offline and through the real runner, bridge and Pi against an
+  imitation of the gateway. The real gateway accepts the collapsed version of the request su15-r1-B2 was refused on.
+- Not supported: that a run recovers into useful play. In the replay the model repeated its call. Task effect is
+  untested.
+- Decision: kept on `claude/r03b-repeat-20261016`, not merged into `r03b`. It changes what the agent sees after a
+  repetition, so by the integration rule it waits for run evidence.
+- Next falsifiable check: prevention, as its own change. `NativeLoopGuard` would end a decision after 3 identical
+  successful calls with identical results and an unchanged state, as it already does for failed calls and file reads.
+  The replay shows the repetition persists even when the history says how often the call ran. A further gap: refused
+  requests' usage is invisible to the token cap (Pi drops it on error).

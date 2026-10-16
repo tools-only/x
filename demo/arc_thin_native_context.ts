@@ -153,7 +153,9 @@ export function historyResult(text: string, limit: number, save?: SaveResult): s
 /**
  * Rounds in a row that repeat the same tool calls (names and arguments) render as the first of them, with the last
  * one's results and how many times it ran; the action receipts of the results left out are kept. A round is an
- * assistant message with tool calls and the results that answer them; any other message ends a run.
+ * assistant message with tool calls and the results that answer them; any other message ends a run. A call that was
+ * refused is not a repeat of one that ran: in su15-r1-B2 calls 17-20 were refused by the decision's call cap, and
+ * showing only their refusal would have hidden what the 16 before them returned.
  *
  * The yibu gateway refuses every request whose messages repeat an identical call across consecutive rounds. In
  * su15-r1-B2 (2026-10-16) the agent ran one python call 20 times in a row in one decision; the transcript of earlier
@@ -161,48 +163,42 @@ export function historyResult(text: string, limit: number, save?: SaveResult): s
  * (su15-r4 failed the same way).
  */
 export function collapseRepeatedCalls(messages: any[]): any[] {
-  type Round = { message: any; ids: string[]; results: any[]; key: string };
-  const out: any[] = [];
-  let run: Round[] = [];
-  let current: Round | undefined;
-  const flush = () => {
-    if (run.length === 1) out.push(run[0].message, ...run[0].results);
-    else if (run.length > 1) {
-      out.push(run[0].message);
-      run[0].ids.forEach((id, i) => {
-        const results = run.map(round => round.results.find(r => String(r.toolCallId) === round.ids[i]));
-        const texts = results.map(textOf);
-        const same = texts.every(text => text === texts[0]);
-        const receipts = same ? [] : texts.slice(0, -1).flatMap(actionLines);
-        const note = same ? `(This call was made ${run.length} times in a row; every result was the same:)`
-          : `(This call was made ${run.length} times in a row; ${run.length - 1} earlier results are not shown` +
-            (receipts.length ? `; their action receipts:\n${receipts.join('\n')}` : '') + '\nThe last result:)';
-        const kept = results.findLast(Boolean);
-        if (kept) out.push({ ...kept, toolCallId: id, content: [{ type: 'text', text: `${note}\n${texts.at(-1)}` }] });
-      });
-    }
-    run = [];
-  };
+  type Round = { message: any; ids: string[]; results: any[]; calls: string };
+  // Rounds and the other messages, in order.
+  const items: Array<Round | { other: any }> = [];
   for (const message of messages) {
     const calls = message?.role === 'assistant' && Array.isArray(message.content)
       ? message.content.filter((block: any) => block?.type === 'toolCall') : [];
-    if (calls.length) {
-      const round = { message, ids: calls.map((block: any) => String(block.id)), results: [],
-        key: JSON.stringify(calls.map((block: any) => [block.name, canonical(block.arguments ?? {})])) };
-      if (run.length && run[run.length - 1].key !== round.key) flush();
-      run.push(round);
-      current = round;
-      continue;
-    }
-    if (message?.role === 'toolResult' && current?.ids.includes(String(message.toolCallId))) {
-      current.results.push(message);
-      continue;
-    }
-    flush();
-    current = undefined;
-    out.push(message);
+    const last = items.at(-1);
+    if (calls.length) items.push({ message, ids: calls.map((block: any) => String(block.id)), results: [],
+      calls: JSON.stringify(calls.map((block: any) => [block.name, canonical(block.arguments ?? {})])) });
+    else if (message?.role === 'toolResult' && last && 'ids' in last && last.ids.includes(String(message.toolCallId)))
+      last.results.push(message);
+    else items.push({ other: message });
   }
-  flush();
+  const key = (round: Round) => round.calls + JSON.stringify(round.results.map(result => Boolean(result.isError)));
+  const out: any[] = [];
+  for (let i = 0; i < items.length;) {
+    const item = items[i];
+    if (!('ids' in item)) { out.push(item.other); i += 1; continue; }
+    let end = i + 1;
+    while (end < items.length && 'ids' in items[end] && key(items[end] as Round) === key(item)) end += 1;
+    const run = items.slice(i, end) as Round[];
+    i = end;
+    if (run.length === 1) { out.push(item.message, ...item.results); continue; }
+    out.push(item.message);
+    item.ids.forEach((id, k) => {
+      const results = run.map(round => round.results.find(result => String(result.toolCallId) === round.ids[k]));
+      const texts = results.map(textOf);
+      const same = texts.every(text => text === texts[0]);
+      const receipts = same ? [] : texts.slice(0, -1).flatMap(actionLines);
+      const note = same ? `(This call was made ${run.length} times in a row; every result was the same:)`
+        : `(This call was made ${run.length} times in a row; ${run.length - 1} earlier results are not shown` +
+          (receipts.length ? `; their action receipts:\n${receipts.join('\n')}` : '') + '\nThe last result:)';
+      const kept = results.findLast(Boolean);
+      if (kept) out.push({ ...kept, toolCallId: id, content: [{ type: 'text', text: `${note}\n${texts.at(-1)}` }] });
+    });
+  }
   return out;
 }
 

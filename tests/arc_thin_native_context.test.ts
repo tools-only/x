@@ -135,6 +135,14 @@ test('rounds that repeated the same calls show once with their count; receipts o
   assert.equal(played.length, 3, 'arguments compare whatever their key order');
   assert.equal(played[2].content[0].text, '(This call was made 3 times in a row; 2 earlier results are not shown; their action receipts:\n' +
     '#4 ACTION1 → changed=2\n#5 ACTION1 → changed=2\nThe last result:)\nmoved\n#6 ACTION1 → changed=3');
+  // A refused call is not a repeat of one that ran (B2's calls 17-20 hit the decision's call cap): two rounds remain.
+  const refusedRound = (id: string) => [
+    { role: 'assistant', content: [{ type: 'toolCall', id, name: 'python', arguments: { code: "print('same')" } }] },
+    { role: 'toolResult', toolCallId: id, toolName: 'python', isError: true, content: [{ type: 'text', text: 'this call was NOT run' }] }];
+  const capped = collapseRepeatedCalls([...same, ...refusedRound('q0'), ...refusedRound('q1')]);
+  assert.deepEqual(capped.filter(m => m.role === 'toolResult').map(m => m.content[0].text), [
+    "(This call was made 5 times in a row; every result was the same:)\nsame",
+    '(This call was made 2 times in a row; every result was the same:)\nthis call was NOT run']);
   // A decision boundary, an assistant message without calls, or a different call ends a run; single rounds are untouched.
   const split = [{ role: 'user', content: 'decision 3' }, ...round('s0', { code: 'x' }, 'r'),
     { role: 'user', content: 'decision 4' }, ...round('s1', { code: 'x' }, 'r'),
