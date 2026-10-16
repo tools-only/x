@@ -175,3 +175,16 @@ Date: 2026-10-16 (Asia/Shanghai). Status: implementation; offline checks. Branch
   prompts. The collapse keeps runs within a decision, and so does this record's smoke imitation, so the gateway refused 3
   turns in a row and the stop rule ended the run (`provider_error`).
 - Follow-up: iteration L1 of [the level-2 loop](2026-10-17-su15-level2-loop.md).
+
+## Across decision prompts (L1, 2026-10-17)
+
+- **Collapse.** A run of rounds with identical calls and the same outcome now goes on across decision prompts and
+  assistant messages without calls; those stay in place, and of the run's rounds only the last remains, with the note
+  ("This call was made 20 times in a row, in 20 decisions; …"). Keeping the last round means a run that goes on in the
+  next decision changes the transcript only from the decision where it ended before, so the prefix cache before that
+  point is kept. A finished decision is therefore no longer byte-stable when a run it ends with continues.
+- **Imitation.** The smoke provider's gateway counts identical calls across every message without calls (prompts,
+  results, text-only messages); only a different call ends a run. That is stricter than what su15-l0-1 showed (prompts
+  only), so a collapse that passes it also passes the real gateway's count as far as it is known.
+- The other two parts of L1 (refusing an action repeated without effect, and an unavailable action refused by the tool
+  with what is available) and the checks are in [the level-2 loop](2026-10-17-su15-level2-loop.md).

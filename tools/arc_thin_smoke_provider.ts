@@ -364,9 +364,19 @@ const REPEAT_SCRIPT: Step[] = [
   ...Array.from({ length: 5 }, (): Step => ({ kind: 'decide', calls: [['python', { code: "print('same')" }]] })),
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after the refusal' }]] },
 ];
+// Repeats across decisions (tools/run_repeat_refusal_smoke.py parts 4-5, MOCK_ARC_STILL_ACTIONS=ACTION3): RESET before any
+// action, which is not available yet; then ACTION3, which changes only the counter cell, once per decision. The fourth is
+// refused, and three identical refusals end that decision; the next decision plays another action. The gateway imitation
+// counts the identical calls across decisions, so a request goes through only if the history shows them once.
+const STILL_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['arc_action', { action: 'RESET', note: 'not available yet' }]] },
+  ...Array.from({ length: 6 }, (): Step => ({ kind: 'decide', calls: [['arc_action', { action: 'ACTION3', note: 'again' }]] })),
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'something else' }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'repeat' ? REPEAT_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'still' ? STILL_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? QUERY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
@@ -425,19 +435,17 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// context.systemPrompt and context.tools), so the runner's prompt is the first user message, not messages[0].
 			const systemPrompt = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
 			const tools: any[] = (context.tools?.length ? context.tools : getCurrentTools(messages as any)) ?? [];
-			// The yibu gateway as seen on 2026-10-16 (su15-r1-B2): a request whose messages repeat an identical tool call in
-			// ARC_THIN_SMOKE_GATEWAY_REPEATS consecutive rounds is refused, stop=error and no usage. Rounds are assistant
-			// messages with calls; any other message except a tool result ends a run.
+			// The yibu gateway as seen on 2026-10-16 and 2026-10-17 (su15-r1-B2, su15-l0-1): a request whose messages repeat an
+			// identical tool call in ARC_THIN_SMOKE_GATEWAY_REPEATS consecutive rounds is refused, stop=error and no usage.
+			// Rounds are assistant messages with calls. The count goes on across decision prompts (seen in su15-l0-1), and
+			// here also across any other message without calls; only a different call ends a run.
 			const gatewayRepeats = Number(process.env.ARC_THIN_SMOKE_GATEWAY_REPEATS || 0);
 			if (gatewayRepeats) {
 				let longest = 0, current = 0, previous = "";
 				for (const message of messages) {
 					const calls = message?.role === "assistant" && Array.isArray(message.content)
 						? message.content.filter((block: any) => block?.type === "toolCall") : [];
-					if (!calls.length) {
-						if (message?.role !== "toolResult") { current = 0; previous = ""; }
-						continue;
-					}
+					if (!calls.length) continue;
 					const key = JSON.stringify(calls.map((block: any) => [block.name, block.arguments]));
 					current = key === previous ? current + 1 : 1;
 					previous = key;

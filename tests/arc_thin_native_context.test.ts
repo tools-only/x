@@ -123,8 +123,8 @@ test('rounds that repeated the same calls show once with their count; receipts o
     ...Array.from({ length: 5 }, (_, i) => round(`p${i}`, { code: "print('same')" }, 'same')).flat()];
   const collapsed = collapseRepeatedCalls(same);
   assert.equal(collapsed.length, 3);
-  assert.equal(collapsed[1].content[1].id, 'p0');
-  assert.equal(collapsed[2].toolCallId, 'p0', 'the result answers the call that is kept');
+  assert.equal(collapsed[1].content[1].id, 'p4', 'the last round is kept');
+  assert.equal(collapsed[2].toolCallId, 'p4', 'the result answers the call that is kept');
   assert.equal(collapsed[2].content[0].text, "(This call was made 5 times in a row; every result was the same:)\nsame");
   // Acting calls whose results differ: the last result, and the earlier action receipts (the record of what was played).
   const acting = [{ role: 'user', content: 'decision 2' },
@@ -143,17 +143,31 @@ test('rounds that repeated the same calls show once with their count; receipts o
   assert.deepEqual(capped.filter(m => m.role === 'toolResult').map(m => m.content[0].text), [
     "(This call was made 5 times in a row; every result was the same:)\nsame",
     '(This call was made 2 times in a row; every result was the same:)\nthis call was NOT run']);
-  // A decision boundary, an assistant message without calls, or a different call ends a run; single rounds are untouched.
-  const split = [{ role: 'user', content: 'decision 3' }, ...round('s0', { code: 'x' }, 'r'),
-    { role: 'user', content: 'decision 4' }, ...round('s1', { code: 'x' }, 'r'),
-    { role: 'assistant', content: [{ type: 'text', text: 'thinking aloud' }] }, ...round('s2', { code: 'x' }, 'r'),
+  // A run goes on across decision prompts and messages without calls, which stay in place (su15-l0-1, 2026-10-17: the
+  // gateway counts identical calls across prompts). A different call or a message of another kind ends it; single
+  // rounds are untouched.
+  const across = [{ role: 'user', content: 'decision 3' }, ...round('s0', { code: 'x' }, '#7 ACTION3 → changed=1'),
+    { role: 'user', content: 'decision 4' }, ...round('s1', { code: 'x' }, '#8 ACTION3 → changed=1'),
+    { role: 'assistant', content: [{ type: 'text', text: 'thinking aloud' }] }, ...round('s2', { code: 'x' }, '#9 ACTION3 → changed=1'),
     ...round('s3', { code: 'y' }, 'r')];
-  assert.deepEqual(collapseRepeatedCalls(split), split);
+  const merged = collapseRepeatedCalls(across);
+  assert.deepEqual(merged.map(m => m.role), ['user', 'user', 'assistant', 'assistant', 'toolResult', 'assistant', 'toolResult']);
+  assert.equal(merged[3].content[1].id, 's2');
+  assert.equal(merged[4].content[0].text, '(This call was made 3 times in a row, in 2 decisions; 2 earlier results are not shown; ' +
+    'their action receipts:\n#7 ACTION3 → changed=1\n#8 ACTION3 → changed=1\nThe last result:)\n#9 ACTION3 → changed=1');
+  assert.deepEqual(merged.slice(5), across.slice(-2));
+  const ended = [...round('t0', { code: 'x' }, 'r'), { role: 'compactionSummary', summary: 'earlier' }, ...round('t1', { code: 'x' }, 'r')];
+  assert.deepEqual(collapseRepeatedCalls(ended), ended);
   // In the frozen transcript by default; collapseRepeats: false keeps every copy. A finished decision keeps its bytes.
   const history = [...same, { role: 'user', content: 'decision 2' }];
   assert.equal(freezeHistory(history).filter(m => m.role === 'toolResult').length, 1);
   assert.equal(freezeHistory(history, { collapseRepeats: false }).filter(m => m.role === 'toolResult').length, 5);
   assert.deepEqual(freezeHistory([...history, ...round('n0', { code: 'z' }, 'r')]).slice(0, 4), freezeHistory(history).slice(0, 4));
+  // Unless its run of repeated calls goes on: then it changes from where the run ended before.
+  const grown = freezeHistory([...history, ...round('p5', { code: "print('same')" }, 'same'), { role: 'user', content: 'decision 3' }]);
+  assert.deepEqual(grown.slice(0, 1), freezeHistory(history).slice(0, 1));
+  assert.deepEqual(grown.map(m => m.role), ['user', 'user', 'assistant', 'toolResult', 'user']);
+  assert.equal(grown[3].content[0].text, "(This call was made 6 times in a row, in 2 decisions; every result was the same:)\nsame");
 });
 
 test('a tool-calling message with no short fields is told so once, on the result, without rewriting earlier rounds', () => {

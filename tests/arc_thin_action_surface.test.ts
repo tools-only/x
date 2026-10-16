@@ -145,10 +145,12 @@ test("installed Pi sends current action enums and rejects unavailable actions be
 		assert.deepEqual(tools.map(tool => !!tool?.parameters.properties.x), [false, false, false, true, false, false, false]);
 		assert.deepEqual(submitted, ["ACTION1", "ACTION6", "RESET", "ACTION3"], "unavailable calls never reach the bridge");
 		const errors = events.filter(row => row.type === "tool_execution_end" && row.isError);
-		assert.equal(errors.length, 2, "both deliberate negative calls fail schema validation");
-		assert.ok(errors.every(row => JSON.stringify(row.result).includes("Validation failed")), JSON.stringify(errors));
+		// Both deliberate negative calls pass Pi's enum check under prepareArguments and are refused by the tool, which says
+		// what is available (2026-10-17; before, Pi's validation rejected them without saying so).
+		assert.equal(errors.length, 2, "both deliberate negative calls are refused");
+		assert.ok(errors.every(row => JSON.stringify(row.result).includes("is not currently available (available now: RESET, ACTION1)")), JSON.stringify(errors));
 		writeFileSync(join(root, "scope-summary.json"), JSON.stringify({ passed: true, provider: "scripted", environment: "HTTP stand-in",
-			requests: requests.length, submitted, validation_errors: errors.length, enums: tools.map(tool => tool?.parameters.properties.action.enum ?? []) }, null, 2));
+			requests: requests.length, submitted, refused: errors.length, enums: tools.map(tool => tool?.parameters.properties.action.enum ?? []) }, null, 2));
 	} finally {
 		complete = undefined; reject = undefined;
 		child.kill(); lines.close();

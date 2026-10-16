@@ -1,6 +1,6 @@
 """Gateway refusal smoke (docs/plans/2026-10-16-provider-repeat-refusal.md): mock SDK, production bridge, actual Pi and
 WASI, and the scripted provider imitating the yibu gateway: a request whose messages repeat an identical tool call in 5
-consecutive rounds is refused (stop=error, no usage).
+consecutive rounds is refused (stop=error, no usage). Rounds are counted across decision prompts, as the gateway does.
 
 1. Default transcript: decision 2 makes one python call five times, and the request after it is refused. The next
    decision's history shows the five rounds once, with their count; its request is accepted and it acts.
@@ -10,6 +10,13 @@ consecutive rounds is refused (stop=error, no usage).
    (ARC_THIN_LOOP_RESULTS=0); with it on, the third identical call already ends the decision.
 3. Defaults: the third identical call with the same result ends decision 2, no request is refused, and the next
    decision acts.
+4. Repeats across decisions (docs/plans/2026-10-17-su15-level2-loop.md, iteration L1; MOCK_ARC_STILL_ACTIONS=ACTION3
+   changes only the counter cell). Decision 1 sends RESET, which is not available before the first action: the tool
+   refuses it with what is available, and the decision plays ACTION3. Decisions 2-3 play ACTION3 again. In decision 4
+   it is refused (three plays in a row changed 1 cell each), and the third identical refusal ends the decision. Decision
+   5 plays ACTION1. No request is refused: the history shows the plays across decisions 1-3 once, and the refusals once.
+5. The same with ARC_THIN_COLLAPSE_REPEATS=0: from decision 4 on the requests carry 5 identical calls in a row and are
+   refused, and the run stops as provider_error.
 """
 import json
 import os
@@ -64,6 +71,44 @@ guarded_requests = [r for r in read(root / "guarded/smoke-requests.jsonl") if no
 ended = [m["text"] for r in guarded_requests for m in r["transcript"] if m["role"] == "toolResult"
          and "Three identical observations/errors without a state or workspace change" in m["text"]]
 assert ended, 'the third identical call ended decision 2'
+
+os.environ["MOCK_ARC_STILL_ACTIONS"] = "ACTION3"  # read by the mock SDK inside the bridge
+still_env = {"ARC_THIN_SMOKE_SCRIPT": "still", "ARC_THIN_AUTO_COMPACTION": "0"}
+still = json.loads(run_arc_thin_e2e(root / "still", extension_env=still_env, **{**common, "max_decisions": 7}).read_text(encoding="utf-8"))
+still_rows = read(root / "still/harness/trajectory.jsonl")
+assert still["passed"] and still["stop_reason"] == "max_decisions", still["stop_reason"]
+assert not read(root / "still/gateway-refusals.jsonl") and still["provider_errors"] == 0, still["provider_errors"]
+assert [r["action"] for r in still_rows[:4]] == ["ACTION3", "ACTION3", "ACTION3", "ACTION1"], still_rows
+assert [r["changed_cells"] for r in still_rows[:3]] == [1, 1, 1], still_rows
+assert still_rows[3].get("note") == "something else" and still_rows[3]["decision"] == 5, still_rows[3]
+still_requests = [r for r in read(root / "still/smoke-requests.jsonl") if not r.get("analyst") and not r.get("critic")]
+results = [m["text"] for r in still_requests for m in r["transcript"] if m["role"] == "toolResult"]
+assert any("action 'RESET' is not currently available (available now: ACTION1, ACTION2, ACTION3, ACTION4); nothing was played"
+           in text for text in results), 'an unavailable action is refused with what is available'
+assert any("ACTION3 was NOT played: the last 3 actions (#1-#3) were this same action and each changed at most 2 cells; "
+           "play a different action" in text for text in results), 'the fourth ACTION3 is refused'
+assert any("Repeated unchanged error; decision ends: ACTION3 was NOT played" in text for text in results), \
+    'the third identical refusal ends decision 4'
+fifth = next(r for r in still_requests if any(call == ["arc_action", {"action": "ACTION1", "note": "something else"}]
+                                              for call in (r.get("planned") or {}).get("calls", [])))
+still_rounds = [m for m in fifth["transcript"] if m["role"] == "assistant"
+                and any(c["arguments"].get("action") == "ACTION3" for c in m.get("calls", []))]
+assert len(still_rounds) == 2, [m.get("calls") for m in fifth["transcript"]]
+still_notes = [m["text"] for m in fifth["transcript"] if m["role"] == "toolResult"]
+assert any(text.startswith("(This call was made 3 times in a row, in 3 decisions; 2 earlier results are not shown; their action "
+                           "receipts:\n#1 ACTION3") for text in still_notes), still_notes
+assert any(text.startswith("(This call was made 3 times in a row; 2 earlier results are not shown\nThe last result:)\n"
+                           "Repeated unchanged error") for text in still_notes), still_notes
+
+every = json.loads(run_arc_thin_e2e(root / "still-every-copy", extension_env={**still_env, "ARC_THIN_COLLAPSE_REPEATS": "0"},
+                                    **{**common, "max_decisions": 7}).read_text(encoding="utf-8"))
+every_refusals = read(root / "still-every-copy/gateway-refusals.jsonl")
+assert not every["passed"] and every["stop_reason"] == "provider_error", every["stop_reason"]
+assert every["provider_errors"] == 3 and len(every_refusals) == 3 and all(r["longest"] == 5 for r in every_refusals), every_refusals
+assert [r["action"] for r in read(root / "still-every-copy/harness/trajectory.jsonl")] == ["ACTION3"] * 3
+del os.environ["MOCK_ARC_STILL_ACTIONS"]
 print(json.dumps({"collapse": {"actions": len(rows), "refusals": len(refusals), "stop": collapsed["stop_reason"]},
                   "every_copy": {"actions": len(kept_rows), "refusals": len(kept_refusals), "stop": kept["stop_reason"]},
-                  "guarded": {"actions": len(guarded_rows), "refusals": 0, "stop": guarded["stop_reason"]}}))
+                  "guarded": {"actions": len(guarded_rows), "refusals": 0, "stop": guarded["stop_reason"]},
+                  "still": {"actions": len(still_rows), "refusals": 0, "stop": still["stop_reason"]},
+                  "still_every_copy": {"refusals": len(every_refusals), "stop": every["stop_reason"]}}))

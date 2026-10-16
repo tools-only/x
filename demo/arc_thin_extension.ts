@@ -88,6 +88,20 @@ const HARD_TOOL_CALLS = 8;
 const NATIVE_DECISION_CALLS = 16;
 /** Further actions one arc_action may carry (its then list). */
 const THEN_STEPS = 11;
+/**
+ * An action that changed at most this many cells did nothing visible beyond what every action changes (2026-10-17: the
+ * clicks su15-l0-1 repeated 20 times and su15-l0-2 30 times changed 1-2 cells each). Native decisions refuse such an
+ * action after it was played that way several times in a row (ARC_THIN_NO_EFFECT_REPEATS, see submitAction).
+ */
+const NO_EFFECT_CELLS = 2;
+/**
+ * Pi checks arguments against the action enum of the current state before a tool runs, and its message ("must be equal
+ * to one of the allowed values") does not say what is available. su15-l0-1 (2026-10-17) sent RESET 20 times in a row
+ * just after a RESET, each rejected there and unseen by the decision's guards. prepareArguments carries such an action
+ * past that check under this key, and the tool refuses it with what is available, as it refuses a call made against an
+ * outdated schema.
+ */
+const UNAVAILABLE_KEY = "unavailable_action";
 const MAX_EXPLICIT_SKILL_CALLS = 4;
 const MAX_SKILLS = 40;
 const RECENT_ACTIONS = 8;
@@ -212,9 +226,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// the summarised section inside the head (the default before 2026-10-14), within that many characters.
 	const nativeHistoryChars = Math.max(0, Math.floor(Number(process.env.ARC_THIN_NATIVE_HISTORY_CHARS ?? 0)));
 	const historyResultChars = Math.max(200, Math.floor(Number(process.env.ARC_THIN_HISTORY_RESULT_CHARS ?? NATIVE_HISTORY_RESULT_CHARS)));
-	// Rounds of an earlier decision that repeated the same calls are shown once with their count (2026-10-16: a gateway
-	// refused every request carrying such a repetition). ARC_THIN_COLLAPSE_REPEATS=0 keeps every copy.
+	// Rounds of earlier decisions that repeated the same calls are shown once with their count, also across decision
+	// prompts (2026-10-16: a gateway refused every request carrying such a repetition; 2026-10-17: it counts across
+	// prompts). ARC_THIN_COLLAPSE_REPEATS=0 keeps every copy.
 	const collapseRepeats = process.env.ARC_THIN_COLLAPSE_REPEATS !== "0";
+	// Native: an action played this many times in a row, each changing at most NO_EFFECT_CELLS cells, is refused the next
+	// time until another action is played (2026-10-17). ARC_THIN_NO_EFFECT_REPEATS=0 turns the refusal off.
+	const noEffectRepeats = !native ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? 3
+		: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NO_EFFECT_REPEATS) || 0));
 	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
 	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
 	// ARC_THIN_PYTHON_KERNEL=0 restores a fresh sandbox per call restored from the checkpoint, with acting replayed;
@@ -1645,6 +1664,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		};
 	}
 
+	/** An action the current state does not offer goes past Pi's enum check to the tool's own refusal (UNAVAILABLE_KEY). */
+	function carryUnavailable(args: any): any {
+		const available = availableActions(observation);
+		const carry = (call: any) => available.length && call && typeof call === "object" && typeof call.action === "string"
+			&& !available.includes(call.action) ? { ...call, action: available[0], [UNAVAILABLE_KEY]: call.action } : call;
+		const out = carry(args);
+		return out && typeof out === "object" && Array.isArray(out.then) ? { ...out, then: out.then.map(carry) } : out;
+	}
+	/** The action a call named, also when prepareArguments carried it past the enum check. */
+	const namedAction = (call: { action: string }) => String((call as any)[UNAVAILABLE_KEY] ?? call.action);
+
 	function registerArcAction(actions: string[]): void {
 		const hasCoordinates = actions.includes("ACTION6");
 		pi.registerTool({
@@ -1681,13 +1711,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					idea: Type.Optional(Type.String()),
 				} : {}),
 			}),
-			prepareArguments: repairActionArguments,
+			prepareArguments: (args: unknown) => carryUnavailable(repairActionArguments(args)),
 			execute: guardTool("arc_action", async (params: {
 				action: string; x?: number; y?: number; note?: string; idea?: unknown;
 				predict?: Prediction; predict_skill?: string;
 				then?: Array<{ action: string; x?: number; y?: number; predict?: Prediction }>;
 			}) => {
-				const done = await submitAction(params);
+				const done = await submitAction({ ...params, action: namedAction(params) });
 				if ("refusal" in done) {
 					if (done.environment) return refused(done.refusal);
 					throw new Refusal(done.refusal);
@@ -1700,7 +1730,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				for (const step of steps) {
 					stopped = sequenceStop(last);
 					if (stopped) break;
-					const next = await submitAction({ action: step.action, ...(step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : {}),
+					const next = await submitAction({ action: namedAction(step), ...(step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : {}),
 						note: `then ${played + 1} of ${steps.length}`, ...(step.predict ? { predict: step.predict } : {}) });
 					if ("refusal" in next) { stopped = next.refusal; break; }
 					last = next.row; played += 1;
@@ -1721,8 +1751,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	async function submitAction(params: {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
 	}, via?: string): Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
-		if (!availableActions(observation).includes(params.action))
-			return { refusal: `action '${params.action}' is not currently available` };
+		const available = availableActions(observation);
+		const previous = trajectory.at(-1);
+		if (!available.includes(params.action))
+			return { refusal: `action '${params.action}' is not currently available (available now: ${available.join(", ") || "none"}` +
+				`${previous ? `; last action played: #${previous.n} ${actionLabel(previous)}` : ""}); nothing was played` };
 		// The environment ignores coordinates on actions that take none; recording them made later receipts read like
 		// clicks at different places (2026-10-13). They are dropped, and the receipt says so.
 		const givenXY = params.x !== undefined && params.y !== undefined;
@@ -1730,6 +1763,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (ignoredXY) params = { ...params, x: undefined, y: undefined };
 		const beforeGrid = gridOf(observation);
 		const label = actionLabel(params);
+		// The same action again after it changed at most NO_EFFECT_CELLS cells each of the last noEffectRepeats times in a
+		// row. Every play was a new state to the loop guard, so su15-l0-2 played one click 30 times and su15-l0-1 another
+		// 20 times (2026-10-17). Any other action lifts this; a refusal ends the decision at the third, like any repeated
+		// failed call. The refusal does not say what lifts it, so that it does not invite one filler action per three.
+		const repeats = noEffectRepeats ? trajectory.slice(-noEffectRepeats) : [];
+		if (repeats.length && repeats.length === noEffectRepeats && repeats.every((row) => actionLabel(row) === label
+			&& typeof row.changed_cells === "number" && row.changed_cells <= NO_EFFECT_CELLS))
+			return { refusal: `${label} was NOT played: the last ${noEffectRepeats} actions (#${repeats[0].n}-#${repeats.at(-1)!.n}) were ` +
+				`this same action and each changed at most ${NO_EFFECT_CELLS} cells; play a different action` };
 		const payload: Record<string, unknown> = { action: params.action };
 		if (params.x !== undefined && params.y !== undefined) { payload.x = params.x; payload.y = params.y; }
 		const bySkill = !control && params.predict_skill ? await predictWithSkill(params.predict_skill, { ...payload }) : undefined;

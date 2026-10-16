@@ -151,16 +151,19 @@ export function historyResult(text: string, limit: number, save?: SaveResult): s
 }
 
 /**
- * Rounds in a row that repeat the same tool calls (names and arguments) render as the first of them, with the last
- * one's results and how many times it ran; the action receipts of the results left out are kept. A round is an
- * assistant message with tool calls and the results that answer them; any other message ends a run. A call that was
- * refused is not a repeat of one that ran: in su15-r1-B2 calls 17-20 were refused by the decision's call cap, and
- * showing only their refusal would have hidden what the 16 before them returned.
+ * Rounds in a row that repeat the same tool calls (names and arguments) render as the last of them, with how many times
+ * it ran; the action receipts of the results left out are kept. A round is an assistant message with tool calls and the
+ * results that answer them. A run goes on across decision prompts and assistant messages without calls, which stay in
+ * place; a different call or any other message ends it. A call that was refused is not a repeat of one that ran: in
+ * su15-r1-B2 calls 17-20 were refused by the decision's call cap, and showing only their refusal would have hidden what
+ * the 16 before them returned.
  *
  * The yibu gateway refuses every request whose messages repeat an identical call across consecutive rounds. In
  * su15-r1-B2 (2026-10-16) the agent ran one python call 20 times in a row in one decision; the transcript of earlier
  * decisions carried the repetition into every later request, so every one was refused and the run never acted again
- * (su15-r4 failed the same way).
+ * (su15-r4 failed the same way). The gateway also counts across decision prompts: su15-l0-1 (2026-10-17) played one
+ * action once per decision 20 times and was refused until the run stopped. Keeping the last round means a run that
+ * grows into the next decision changes the transcript only from its previous end on.
  */
 export function collapseRepeatedCalls(messages: any[]): any[] {
   type Round = { message: any; ids: string[]; results: any[]; calls: string };
@@ -177,36 +180,49 @@ export function collapseRepeatedCalls(messages: any[]): any[] {
     else items.push({ other: message });
   }
   const key = (round: Round) => round.calls + JSON.stringify(round.results.map(result => Boolean(result.isError)));
+  // What a run goes on across: decision prompts, and assistant messages without calls.
+  const passes = (other: any) => other?.role === 'user' || other?.role === 'assistant';
   const out: any[] = [];
   for (let i = 0; i < items.length;) {
     const item = items[i];
     if (!('ids' in item)) { out.push(item.other); i += 1; continue; }
-    let end = i + 1;
-    while (end < items.length && 'ids' in items[end] && key(items[end] as Round) === key(item)) end += 1;
-    const run = items.slice(i, end) as Round[];
-    i = end;
-    if (run.length === 1) { out.push(item.message, ...item.results); continue; }
-    out.push(item.message);
-    item.ids.forEach((id, k) => {
+    let end = i;
+    for (let j = i + 1; j < items.length; j++) {
+      const next = items[j];
+      if ('ids' in next ? key(next) !== key(item) : !passes(next.other)) break;
+      if ('ids' in next) end = j;
+    }
+    const span = items.slice(i, end + 1);
+    i = end + 1;
+    const run = span.filter((entry): entry is Round => 'ids' in entry);
+    const passed = span.flatMap(entry => 'ids' in entry ? [] : [entry.other]);
+    const kept = run.at(-1)!;
+    out.push(...passed);
+    if (run.length === 1) { out.push(kept.message, ...kept.results); continue; }
+    const decisions = 1 + passed.filter(message => message?.role === 'user').length;
+    const times = `This call was made ${run.length} times in a row${decisions > 1 ? `, in ${decisions} decisions` : ''}`;
+    out.push(kept.message);
+    kept.ids.forEach((id, k) => {
       const results = run.map(round => round.results.find(result => String(result.toolCallId) === round.ids[k]));
       const texts = results.map(textOf);
       const same = texts.every(text => text === texts[0]);
       const receipts = same ? [] : texts.slice(0, -1).flatMap(actionLines);
-      const note = same ? `(This call was made ${run.length} times in a row; every result was the same:)`
-        : `(This call was made ${run.length} times in a row; ${run.length - 1} earlier results are not shown` +
+      const note = same ? `(${times}; every result was the same:)`
+        : `(${times}; ${run.length - 1} earlier results are not shown` +
           (receipts.length ? `; their action receipts:\n${receipts.join('\n')}` : '') + '\nThe last result:)';
-      const kept = results.findLast(Boolean);
-      if (kept) out.push({ ...kept, toolCallId: id, content: [{ type: 'text', text: `${note}\n${texts.at(-1)}` }] });
+      const result = results.at(-1);
+      if (result) out.push({ ...result, toolCallId: id, content: [{ type: 'text', text: `${note}\n${texts.at(-1)}` }] });
     });
   }
   return out;
 }
 
 /**
- * Earlier decisions as a transcript that only grows: what the agent wrote, called and got back, no reasoning, each
- * result clipped by clipEnds and without images. A finished decision renders to the same bytes on every request, so the
- * provider's cached prefix covers all of them; only Pi's compaction rewrites it. Rounds that repeated the same calls
- * show once with their count (collapseRepeatedCalls); `collapseRepeats: false` keeps every copy.
+ * Earlier decisions as a transcript: what the agent wrote, called and got back, no reasoning, each result clipped by
+ * clipEnds and without images. A finished decision renders to the same bytes on every request, so the provider's cached
+ * prefix covers it, until Pi's compaction rewrites it or a run of repeated calls it ends with goes on in the next
+ * decision. Rounds that repeated the same calls show once with their count (collapseRepeatedCalls);
+ * `collapseRepeats: false` keeps every copy.
  */
 export function freezeHistory(messages: any[], options: { resultChars?: number; save?: SaveResult; collapseRepeats?: boolean } = {}): any[] {
   const limit = options.resultChars ?? HISTORY_RESULT_CHARS;

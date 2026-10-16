@@ -15,6 +15,8 @@ HANG_SECONDS = float(os.environ.get("MOCK_ARC_HANG_SECONDS") or 30)
 # MOCK_ARC_LEVEL_AT=N (fork smoke part 5, 2026-10-17): the Nth step completes level 1 of 2; the 9 restarts at the left of
 # row 5.
 LEVEL_AT = int(os.environ.get("MOCK_ARC_LEVEL_AT") or 0)
+# MOCK_ARC_STILL_ACTIONS=ACTION3 (refusal smoke parts 4-5, 2026-10-17): the named actions change only the counter cell.
+STILL_ACTIONS = {name for name in (os.environ.get("MOCK_ARC_STILL_ACTIONS") or "").split(",") if name}
 
 
 class OperationMode:
@@ -46,7 +48,8 @@ class Environment:
             open(HANG_MARKER, 'w').close()
             time.sleep(HANG_SECONDS)
         self.actions += 1
-        self.position = (self.position + (1 if action.name in {'ACTION1','ACTION4'} else -1)) % 8
+        if action.name not in STILL_ACTIONS:
+            self.position = (self.position + (1 if action.name in {'ACTION1','ACTION4'} else -1)) % 8
         if LEVEL_AT and self.actions == LEVEL_AT:
             self.levels, self.position = 1, 0
         return self._observe()
