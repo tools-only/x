@@ -73,7 +73,7 @@ PERSISTED_EVENTS = frozenset({
     "response", "turn_start", "turn_end", "agent_start", "agent_end", "agent_settled",
     "message_start", "message_end", "tool_execution_start", "tool_execution_end", "extension_error",
 })
-NORMAL_STOPS = frozenset({"win", "budget_exhausted", "max_decisions", "token_cap", "deadline"})
+NORMAL_STOPS = frozenset({"win", "budget_exhausted", "max_decisions", "max_levels", "token_cap", "deadline"})
 # rebuild: every decision shows only the rebuilt working set (the 2026-10-08 design); session: the agent's last
 # decisions from Pi's session stay in view as well (docs/reports/2026-10-12-memory-mechanism-review.md).
 CONTINUITY_MODES = frozenset({"rebuild", "session"})
@@ -772,6 +772,8 @@ def run_arc_thin_e2e(
     foundation: str = "native",
     replay_reasoning: bool = False,
     snapshot_after_decisions: tuple[int, ...] = (),
+    snapshot_at_levels: tuple[int, ...] = (),
+    max_levels: int | None = None,
     fork_from: Path | None = None,
     max_environment_restarts: int = MAX_ENVIRONMENT_RESTARTS,
     max_provider_errors: int = MAX_PROVIDER_ERRORS,
@@ -780,7 +782,9 @@ def run_arc_thin_e2e(
 
     ``snapshot_after_decisions`` copies the run's state after those decisions to ``snapshots/after-decision-<k>``;
     ``fork_from`` starts a new run from such a snapshot (replaying its actions on a fresh environment), so arms of a
-    comparison share the same prefix (docs/plans/2026-10-14-matched-prefix-evaluation.md).
+    comparison share the same prefix (docs/plans/2026-10-14-matched-prefix-evaluation.md). ``snapshot_at_levels``
+    also snapshots after the decision that completed each of those levels, and ``max_levels`` stops the run once that
+    many are completed: a source for forks from a level's start.
 
     When a step's outcome is unknown (or the bridge process ended), the next decision does not start on it: the runner
     starts a new game on the same port and action token, replays the recorded actions with every grid checked, and the
@@ -816,6 +820,7 @@ def run_arc_thin_e2e(
     fork = _seed_fork(root, Path(fork_from), game) if fork_from is not None else None
     budget_offset = fork["prefix_budget_tokens"] if fork else 0
     snapshot_after_decisions = tuple(int(d) for d in snapshot_after_decisions)
+    snapshot_at_levels = tuple(int(level) for level in snapshot_at_levels)
     started = time.monotonic()
     # Explicit zero disables the experimental run deadline; None retains the historical default.
     deadline = math.inf if experiment_timeout_seconds == 0 else started + (experiment_timeout_seconds or OFFICIAL_MAX_RUNTIME_SECONDS)
@@ -973,6 +978,7 @@ def run_arc_thin_e2e(
             "observation_delivery": observation_delivery,
             # A run started from another run's snapshot (matched prefix): where from, and how much of it was replayed.
             "fork": summary.get("fork"), "snapshot_after_decisions": list(snapshot_after_decisions),
+            "snapshot_at_levels": list(snapshot_at_levels), "max_levels": max_levels,
             "max_environment_restarts": max_environment_restarts, "max_provider_errors": max_provider_errors,
             # Reasoning between tool rounds of the current decision: "all" (the Completions default), "fields" (the
             # Responses default: only the short <carry> block the agent writes is replayed) or "none" keep the projection
@@ -1224,6 +1230,9 @@ def run_arc_thin_e2e(
             if _arc_terminal_or_budget_exhausted(state):
                 summary["stop_reason"] = "budget_exhausted"
                 break
+            if max_levels is not None and int(state.get("levels_completed") or 0) >= max_levels:
+                summary["stop_reason"] = "max_levels"
+                break
             if max_decisions is not None and summary["decisions"] >= max_decisions:
                 summary["stop_reason"] = "max_decisions"
                 break
@@ -1311,7 +1320,8 @@ def run_arc_thin_e2e(
                 summary["stop_reason"] = "provider_error"
                 summary["error"] = refusal[:500]
                 break
-            if not consolidate and summary["decisions"] in snapshot_after_decisions:
+            if not consolidate and (summary["decisions"] in snapshot_after_decisions or any(
+                    row.get("level_changed") and row.get("levels_completed") in snapshot_at_levels for row in new_rows)):
                 # Pi is idle between turns: the session, harness stores, workspace and python session are consistent.
                 summary.setdefault("snapshots", []).append(str(_snapshot_run(root, summary["decisions"], game, fork)))
             if summary["decisions"] and summary["decisions"] % PARTIAL_SUMMARY_EVERY == 0 and not consolidate:

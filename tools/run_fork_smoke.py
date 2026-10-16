@@ -8,6 +8,8 @@ actual Pi and WASI.
 4. A step that does not return (once, at the second action) ends its decision; before the next one the runner starts a
    new game on the same port and token and replays the recorded action with its grid checked. The next decision is told,
    and its action continues the numbering.
+5. A source that stops at its first level (snapshot_at_levels, max_levels) leaves a snapshot right after the level
+   change, and a fork from it plays on from level 2's start.
 """
 import json
 import os
@@ -89,5 +91,22 @@ assert len(restart_parent) == 3 and restart_parent[-1]["current"].startswith(
     "Decide the next action. (The environment stopped answering during an action and was restarted at the state after "
     "action #1, the last one recorded; that action was not applied.)"), [r["current"][:200] for r in restart_parent]
 assert "(The environment" not in restart_parent[1]["current"][:200], 'the note is given once, after the restart'
+# The mock board completes level 1 of 2 on the first step (the bridge inherits this environment).
+for name in ("MOCK_ARC_HANG_AT", "MOCK_ARC_HANG_MARKER", "MOCK_ARC_HANG_SECONDS"):
+    os.environ.pop(name, None)
+os.environ["MOCK_ARC_LEVEL_AT"] = "1"
+level_source = json.loads(run_arc_thin_e2e(root / "level-source", max_decisions=5, snapshot_at_levels=(1,), max_levels=1,
+    extension_env={"ARC_THIN_SMOKE_SCRIPT": "restart", "ARC_THIN_AUTO_COMPACTION": "0"}, **common).read_text(encoding="utf-8"))
+assert level_source["passed"] and level_source["stop_reason"] == "max_levels" and level_source["decisions"] == 1, level_source
+level_snapshot = root / "level-source/snapshots/after-decision-1"
+assert json.loads((level_snapshot / "snapshot.json").read_text(encoding="utf-8"))["actions"] == 1
+level_config = json.loads((root / "level-source/run-config.json").read_text(encoding="utf-8"))
+assert level_config["max_levels"] == 1 and level_config["snapshot_at_levels"] == [1], level_config
+level_fork = json.loads(run_arc_thin_e2e(root / "level-fork", max_decisions=1, max_levels=2, fork_from=level_snapshot,
+    extension_env={"ARC_THIN_SMOKE_SCRIPT": "restart", "ARC_THIN_AUTO_COMPACTION": "0"}, **common).read_text(encoding="utf-8"))
+assert level_fork["passed"] and level_fork["stop_reason"] == "max_decisions", level_fork["stop_reason"]
+level_rows = read(root / "level-fork/harness/trajectory.jsonl")
+assert [(r["n"], r["level_changed"], r["levels_completed"]) for r in level_rows] == [(1, True, 1), (2, False, 1)], level_rows
 print(json.dumps({"source_actions": k, "fork_actions": len(new), "refused": refused["stop_reason"],
-                  "restart": {key: record[key] for key in ("after_action", "attempts", "seconds")}}))
+                  "restart": {key: record[key] for key in ("after_action", "attempts", "seconds")},
+                  "level_fork_actions": len(level_rows) - 1}))

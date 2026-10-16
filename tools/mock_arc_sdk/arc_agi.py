@@ -12,6 +12,9 @@ FAIL_AFTER = int(os.environ.get("MOCK_ARC_FAIL_AFTER") or 0)
 HANG_AT = int(os.environ.get("MOCK_ARC_HANG_AT") or 0)
 HANG_MARKER = os.environ.get("MOCK_ARC_HANG_MARKER") or ""
 HANG_SECONDS = float(os.environ.get("MOCK_ARC_HANG_SECONDS") or 30)
+# MOCK_ARC_LEVEL_AT=N (fork smoke part 5, 2026-10-17): the Nth step completes level 1 of 2; the 9 restarts at the left of
+# row 5.
+LEVEL_AT = int(os.environ.get("MOCK_ARC_LEVEL_AT") or 0)
 
 
 class OperationMode:
@@ -21,17 +24,18 @@ class OperationMode:
 class Environment:
     def __init__(self, game):
         self.game = game
-        self.info = SimpleNamespace(baseline_actions=[100])
+        self.info = SimpleNamespace(baseline_actions=[100, 100] if LEVEL_AT else [100])
         self.actions = 0
         self.position = 2
+        self.levels = 0
         self._observe()
 
     def _observe(self):
         grid = [[0] * 8 for _ in range(8)]
-        grid[3][self.position] = 9
+        grid[5 if self.levels else 3][self.position] = 9
         grid[0][0] = self.actions % 10
         self.observation_space = SimpleNamespace(game_id=self.game, frame=[grid],
-            state=SimpleNamespace(name='PLAYING'), levels_completed=0, win_levels=1,
+            state=SimpleNamespace(name='PLAYING'), levels_completed=self.levels, win_levels=2 if LEVEL_AT else 1,
             guid='mock-arc', full_reset=False, available_actions=[1,2,3,4])
         return self.observation_space
 
@@ -43,6 +47,8 @@ class Environment:
             time.sleep(HANG_SECONDS)
         self.actions += 1
         self.position = (self.position + (1 if action.name in {'ACTION1','ACTION4'} else -1)) % 8
+        if LEVEL_AT and self.actions == LEVEL_AT:
+            self.levels, self.position = 1, 0
         return self._observe()
 
 
