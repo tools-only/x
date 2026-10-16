@@ -1599,7 +1599,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	const refused = (reason: string) => text(reason, { refused: true }, true);
-	const nativeLoop = new NativeLoopGuard();
+	// A call that succeeded counts as a repeat when its result is the same too (2026-10-16); ARC_THIN_LOOP_RESULTS=0
+	// restores the earlier rule, under which only failed calls and reads counted.
+	const nativeLoop = new NativeLoopGuard({ results: process.env.ARC_THIN_LOOP_RESULTS !== "0" });
+	const resultText = (result: any) => (Array.isArray(result?.content) ? result.content : [])
+		.map((block: any) => block?.type === "text" ? String(block.text) : String(block?.type)).join("\n");
 	const loopEpoch = () => JSON.stringify([decision, trajectory.length, binder?.versionMap(),
 		[...memory.facts], [...memory.hypotheses], [...memory.strategies]]);
 
@@ -1623,7 +1627,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const epoch = native ? loopEpoch() : '';
 			try {
 				const result = await fn(params, signal, ctx);
-				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError)))
+				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError), resultText(result)))
 					return carry({...result, terminate:true, details:{...result.details, no_progress:true},
 						content:[...(result.content ?? []), {type:'text', text:'Three identical observations/errors without a state or workspace change; this decision ends. Use the recorded evidence or change the investigation.'}]}, Boolean(result?.isError));
 				const carried = carry(result, Boolean(result?.isError));

@@ -127,3 +127,38 @@ Date: 2026-10-16 (Asia/Shanghai). Status: implementation; offline checks. Branch
   successful calls with identical results and an unchanged state, as it already does for failed calls and file reads.
   The replay shows the repetition persists even when the history says how often the call ran. A further gap: refused
   requests' usage is invisible to the token cap (Pi drops it on error).
+
+## Prevention: a call that succeeded can be a repeat (2026-10-17, user: "go")
+
+- **Failure.** The collapse recovers a refused run, but in the replay the model made the same python call again in both
+  samples, though its history said the call had run 16 times. In su15-r1-B2 our loop guard never saw the 20 calls.
+  `NativeLoopGuard` counted only failed calls and reads (`read`, `ls`, `grep`); a call of any other tool that succeeded
+  reset it.
+- **Claim.** If a call that succeeded counts as a repeat when its result is the same and the state is unchanged
+  (decision, actions, saved components, memory: the existing epoch), a decision that repeats such a call ends at the
+  third. B2's decision 26 would have ended after 3 calls, not 20, before the gateway refused anything.
+- **Negative cases.**
+  - A legitimate repeat is cut: the same code printing the same output three times while something outside the epoch
+    changed, such as a session variable it does not print. The decision ends with the existing message ("Three identical
+    observations/errors without a state or workspace change…") and the next decision goes on.
+  - The agent opens the next decision with the same call. Base has no refusal of the call that ended a decision (the
+    branch's r5 added one), so it can repeat 3 calls per decision. Each finished decision then collapses to one round.
+- **Design.** `NativeLoopGuard.record(name, args, epoch, failed, result)`: reads and failed calls count by their
+  arguments, as before. Any other call that succeeded counts with its result text in the signature.
+  `ARC_THIN_LOOP_RESULTS=0` restores the earlier rule. No new prompt text: the message is the guard's existing one.
+- **Checks** (`C:/Users/qi/tmp/r03b-simple/checks-repeat3`, this branch against unchanged `r03b`):
+  - Unit: `tests/arc_thin_native_loop.test.ts` covers the same result repeating, a result that changes, a state
+    change, reads by their arguments, and the earlier rule.
+  - Full arc_thin TS suite: 163/169 here, 162/167 on `r03b`. This branch has the two new tests. The five failures on
+    `r03b` (activation, components, receipts ×3) fail here too.
+  - One more failure here, the action-surface suite, was a 20 s Pi start timeout right after a machine reboot. Run
+    alone it passes 2/2.
+  - Native foundation smokes (foundation, nativeclaims, migration, receipts, promotion, history, budget, activation,
+    reuse, components, query): the same outcome on both trees. Each stops at its known check on `r03b` (nine at the
+    shared `system_chars` check, activation at its reasoning-mode check, components at its skill description).
+  - Refusal smoke:
+    - Part 1, recovery: one refusal, then the next decision acts.
+    - Part 2, every copy kept: 3 refusals, then a `provider_error` stop.
+    - Part 3, defaults: the third identical call ends decision 2, no request is refused, and the next decision acts.
+- **Layers.** Functional and full chain: passed offline (scripted provider, mock SDK, production bridge, real Pi).
+  Real gateway: not tested for prevention. Adoption: not applicable. Net benefit: unverified.

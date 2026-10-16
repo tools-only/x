@@ -15,3 +15,26 @@ test('native investigation permits distinct calls beyond six and stops only unch
   assert.equal(guard.record('python',{code:'broken'},'v1',true),true);
   assert.equal(guard.record('python',{code:'fixed'},'v1',false),false);
 });
+
+test('a call that succeeded repeats only with the same result and state; ARC_THIN_LOOP_RESULTS=0 keeps the earlier rule', () => {
+  // su15-r1-B2 (2026-10-16): one python call 20 times in a row with the same output.
+  const guard = new NativeLoopGuard();
+  const code = {code: "print('same')"};
+  assert.equal(guard.record('python', code, 'v1', false, 'same'), false);
+  assert.equal(guard.record('python', code, 'v1', false, 'same'), false);
+  assert.equal(guard.record('python', code, 'v1', false, 'same'), true);
+  // The same call whose output changes is not a repeat: code that acts or reads a changing session.
+  guard.reset();
+  for (let n = 0; n < 6; n++) assert.equal(guard.record('python', code, 'v1', false, `n=${n}`), false);
+  // Nor is it one after the state changed (an action, a saved component, memory).
+  guard.reset();
+  assert.equal(guard.record('python', code, 'v1', false, 'same'), false);
+  assert.equal(guard.record('python', code, 'v1', false, 'same'), false);
+  assert.equal(guard.record('python', code, 'v2', false, 'same'), false);
+  // Reads still repeat by their arguments alone.
+  guard.reset();
+  for (const [i, text] of ['a', 'b', 'c'].entries()) assert.equal(guard.record('read', {path: 'x'}, 'v1', false, text), i === 2);
+  const earlier = new NativeLoopGuard({results: false});
+  for (let n = 0; n < 5; n++) assert.equal(earlier.record('python', code, 'v1', false, 'same'), false);
+  assert.equal(earlier.record('read', {path: 'x'}, 'v1', false), false);
+});
