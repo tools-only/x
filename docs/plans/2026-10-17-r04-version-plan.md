@@ -1,7 +1,9 @@
 # r04: the next version from the su15 loop and the online-correction work (plan, 2026-10-17)
 
-Status: built on `claude/r04-20261017` (worktree `worktrees/r04`, from `009c6825`), items 1–7; offline checks and E1
-below. User, 2026-10-17: "build r04, then run E1". Base for the build: `claude/r03b-repeat-20261016` at `2b9cc6ac` (r03b +
+Status: built on `claude/r04-20261017` (worktree `worktrees/r04`, from `009c6825`), items 1–7; offline checks below.
+E1 ran on 2026-10-17 and was cut short by a gateway outage after 56 actions; no shakedown criterion failed, and one
+recording bug it found is fixed (E1 results below). E2 awaits the user's budget approval.
+User, 2026-10-17: "build r04, then run E1". Base for the build: `claude/r03b-repeat-20261016` at `2b9cc6ac` (r03b +
 the su15 loop's fixes). Follows [the development workflow](../development-workflow.md). Inputs: [the su15 level-2 loop](2026-10-17-su15-level2-loop.md),
 the online-correction session's records (`docs/plans/2026-10-16-refinement-ledger.md` on `claude/refiner-ledger-20261016`,
 `docs/plans/2026-10-17-refinement-package-loop-candidate.md` on `claude/refine-model-r03b-20261017`), and the branch
@@ -200,7 +202,10 @@ inventory below.
   - `arc_run_measures.mjs` reproduces the loop's measures for su15-l1-1.
   - The analyst's digest of su15-l1-1 is 48,067 characters.
   - The analyst's first real call (gpt-6.1-sol) sent nothing for 15 minutes and timed out, unlike the replay's 15–60 s
-    replies. The tool now waits 5 minutes per read and tries once more. It is not yet checked end to end.
+    replies. The tool now waits 5 minutes per read and tries once more.
+  - End to end: the retry on su15-l1-1 worked (160 s; 16,160 prompt tokens, 16,000 of them cached; 3,667 completion).
+    On su15-r04-e1 it answered in 17 s without a retry (7,337 prompt and 3,695 completion tokens; digest 13,431
+    characters); its reading is under the E1 results.
 
 ### E1 (launched 2026-10-17)
 
@@ -216,6 +221,106 @@ inventory below.
   - the share of check results that are errors, and whether the agent repairs such checks;
   - inputs and replies logged for every refinement;
   - `refiner:ledger` and `refiner:expect` errors in `errors.jsonl`.
+
+### E1 results (2026-10-17)
+
+Measures `C:/Users/qi/tmp/r04/e1-check` (`status.txt`, `shakedown.json`, `measures.json`); the analyst's reading in the
+run's `arc-run/analysis/post-run-gpt-6.1-sol.md`.
+
+| Run | Actions | Levels | GAME_OVERs | RESETs | Budget tokens (refiner) | Stop | Provider errors |
+|---|---|---|---|---|---|---|---|
+| su15-r04-e1 | 56, on level 1 | 0 | 1 (#56) | 3 | 0.59M (40k) | `provider_error` on level 1 | 4 decisions, 19 failed requests |
+
+- **A gateway outage ended it.** Play ran 12:03–12:29 local. From about 12:31 every request failed: the consolidation
+  after the GAME_OVER timed out four times, then three decisions got "Connection error." four times each, and the runner
+  stopped on the third identical error at 13:04. A chat probe on qwen3.8-27b during those decisions was cut off after
+  62 s; by 13:20 qwen3.8-27b and gpt-6.1-sol answered (2.5 s, 7.0 s). The failed requests report no usage.
+  - The stop rule was written for the gateway's refusal of repeated calls, which waiting does not cure. It stops on
+    transport errors too, which waiting does.
+- **Shakedown: no criterion failed; the plan continues.**
+
+| Criterion | E1 |
+|---|---|
+| Edits carry ids, some an EXPECT | ids 9 of 9; EXPECT 7 of 9, none malformed |
+| `told` rows | 9: each edit shown once (the ninth at decision 30, during the outage) |
+| Later inputs show YOUR EARLIER EDITS with outcomes | all 8 inputs after the first edit; across them the expectation lines read met 8, contradicted 2, raised 2, not seen in time 3, not yet decided 2, not yet shown to the agent 4 |
+| Inputs and replies logged | 9 and 9, model `qwen3.8-27b` |
+| `refiner:ledger`, `refiner:expect` errors | none; no `errors.jsonl` |
+| Strict checks: share of errors, repair | not testable: no hypothesis was written in E1. One of 7 expectation checks raised (e3 read `t.get('_n', 0)`); the next two inputs showed the KeyError with the keys a move has. |
+
+- **The edits** (each expectation's last outcome in the ledger):
+
+| Edit | After | Target | Expected (within) | Outcome |
+|---|---|---|---|---|
+| e1 | #7 | `prompts/rules.md` v1 | ACTION6(20,30) places a 3×3 block (2) | contradicted at #9 |
+| e2 | #8 | `prompts/rules.md`, the same three rules again (still v1) | an ACTION6 places a block and erases one (2) | met at #11 |
+| e3 | #9 | memory `hyp.border_cost`: refused by memory, recorded as applied (fixed below) | 2 more bar cells erased (3) | its check raised at #11 |
+| e4 | #10 | `prompts/strategy.md` v1: a goal test with ACTION7 | ACTION7, or a click on a block (3) | met at #12 |
+| e5 | #12 | `prompts/rules.md` v2: ACTION7 is not a no-op | ACTION7 tried in another configuration (3) | not seen in 3 |
+| e6 | #15 | `prompts/strategy.md` v2: click another cell | ACTION6 on a cell other than (10,53) (3) | met at #19 |
+| e7 | #30 | memory `border_erasure_rule` | — | — |
+| e8 | #41 | `prompts/strategy.md` v3: a goal test now; "more than 5 actions on border-cost mapping" as a failure mode | ACTION7 as a goal test (3) | shown at #56, after the GAME_OVER |
+| e9 | #56 | memory `border_depletion_gameover`, replacing e7's entry | — | shown at decision 30; the run ended |
+
+- **The refiner with the ledger** (one run; nothing to compare without it):
+  - It read the record: two rewrites name a stale next experiment (e6, e8), and e5 replaced the rule "ACTION7 changes
+    0 cells" after #12 changed 18.
+  - After its two unmet expectations it did not repeat the edit: after e1's contradiction (#9) and e5's miss its next
+    edits went elsewhere, and e8 turned e5's open question (what makes ACTION7 act) into a goal test. Nothing here shows
+    whether the ledger caused that.
+  - A contradicted expectation did not narrow the rule it tested: rules v2 (#12) kept the ACTION6 line e1's expectation
+    rested on ("places a 3×3 block … centered on (x,y)"), though the agent's memory had said since #10 that only
+    clicks on 0-cells place one.
+  - e2 spent a refinement re-issuing rules v1 unchanged, with a new expectation.
+  - Expectation checks served as checks of game rules (e1–e3) as well as of the agent's play (e4–e6, e8). The rules
+    cite `hyp.action6_mechanic`, `hyp.border_cost` and `hyp.action7_noop`, which never existed, and the one belief
+    turned toward a hypothesis was written as `MEMORY hyp.border_cost`, the first such edit in all recorded runs. No
+    checked hypothesis came into being, though "no hypothesis carries a check" was a trigger 5 times. The refiner of the
+    six base runs wrote 10 checked hypotheses in 150 refinements, at least one per run. One run cannot say whether
+    EXPECT takes their place; E2 counts it.
+- **The agent.** Level 1 was not completed by #56; the base completed it at #26, #31, #34, #56 and #83, and l0-2 never.
+  - It played 2 of the 3 proposed tests that could be judged: e4's goal test at the next action, e6's other cell
+    within 3; not e5's.
+  - #26–#56: 31 actions in a row each changed only 2 cells of the bottom bar, 30 of them in three python sweeps of
+    clicks one cell apart (decisions 25, 26 and 28), until the bar was empty and the game over. Its code printed "LEVEL
+    COMPLETE" on the GAME_OVER; the next decision recorded the GAME_OVER correctly, and its memory then read the bar as
+    a finite resource, as e9 did.
+  - This is su15-l0-2's failure (30 identical clicks that changed only the bar) with the coordinates varied, so L1's
+    refusal of identical repeats never fired (`refused_no_effect` 0). The L1 record names this gap.
+  - e8, which named that failure mode, landed 2 s after decision 28 began, and that decision's one python call played
+    #42–#56. Refinement notices reach the agent at decision starts only.
+- **Fix after E1 (record correctness, accepted offline).**
+  - A refinement's MEMORY or HYPOTHESIS edit that the memory component refused was recorded as applied:
+    `planNativeMemoryUpdate` accepts calls in part, so a set it skips entirely comes back `ok` with no rows. e3 (a
+    `hyp.` key belongs to a hypothesis) got an id, a notice to the agent, an expectation check, and the ledger line "no
+    longer in memory".
+  - Such a reply is now recorded as `invalid` with the memory component's reason: no id, no notice, no ledger line. The
+    r03b line has the same code.
+  - Checks: `tests/arc_thin_refine_ledger.test.ts` 8/8 (one new), `arc_thin_memory` 23/23, `arc_thin_promotion` 9/9,
+    `arc_thin_analyst` 2/2; the promotion smoke passes its ledger checks and stops at its known check
+    (`system_chars`), as before.
+- **The post-run analyst on E1** (gpt-6.1-sol, development loop): it names the untried ACTION7 test and the missing
+  hypotheses. It blames the #42–#56 sweep on the agent continuing after the refiner's warning, which, as it says
+  elsewhere, the agent had not been shown. Its proposed change, a structured checkpoint before each repeat after a result
+  that did not confirm a prediction, is a standing obligation on the decision path; not adopted. Its digest does not
+  contain the agent's code.
+
+| Evidence layer | Status | Provider / environment | Artifacts and limits |
+|---|---|---|---|
+| Functional | passed | test fixtures | the unit tests above |
+| Full chain | passed | scripted provider; mock SDK; production bridge; real Pi 0.87 | promotion smoke's ledger checks |
+| Real provider | mechanisms work in real play | yibu / qwen3.8-27b, thinking off | su15-r04-e1: one run, 56 actions, ended by an outage |
+| Autonomous adoption | partial | same | the agent played 2 of 3 judged proposals; after 2 unmet expectations the refiner did not repeat the edit, nor narrow the contradicted rule |
+| Net benefit | unverified | — | one truncated run; level 1 not completed |
+
+- **Next: E2,** with the user's budget approval. E1 does not count as one of its three runs (it did not run to the end).
+  - Three full su15 runs on the commit with the fix, at most 18M budget tokens.
+  - Before them, recommended: the runner waits out transport errors ("Connection error.", "Request timed out.") instead
+    of counting them toward the refusal stop. Runner only, nothing new for the agent; checked offline with the refusal
+    smoke. The three runs share one gateway, and E1's outage would have ended all three.
+  - Added measures: checked hypotheses written by the agent and the refiner (base: the refiner's 10 in 6 runs);
+    refinement notices that arrive after a decision began; runs of 10 or more consecutive actions with varied arguments
+    that change only the cells every action changes.
 
 ## Evaluation (each step needs its own budget)
 

@@ -186,6 +186,30 @@ test('a later refinement is told what became of its edits: an expectation met on
   } finally { await h.close(); }
 });
 
+test('a MEMORY line the memory component refuses is recorded as invalid: no edit, no notice, nothing in the ledger', async () => {
+  // su15-r04-e1 #9: "MEMORY hyp.border_cost 4" (a hyp. key belongs to a hypothesis) was refused by the memory component
+  // but recorded as edit e3, announced to the agent, and listed as "no longer in memory".
+  const h = await fixture({});
+  try {
+    await h.decide();
+    await h.decide();
+    await h.decide();
+    await h.calls(1);
+    await h.settle(reply(`MEMORY hyp.border 4\nEach move changes two cells\nEND\nWHY #1-#3 changed two each\n${EXPECT_ACTION2}`));
+    const fourth = await h.decide('ACTION2');
+    assert.doesNotMatch(fourth, /HARNESS UPDATE/);
+    await h.begin();
+    await h.calls(2);
+    assert.doesNotMatch(h.inputs[1], /YOUR EARLIER EDITS/);
+    const refiner = h.rows('refiner.jsonl');
+    assert.deepEqual(refiner.filter((row) => row.kind === 'edit' || row.kind === 'told'), []);
+    const invalid = refiner.filter((row) => row.kind === 'invalid');
+    assert.equal(invalid.length, 1);
+    assert.match(invalid[0].why, /not applied: set\[0\]: [^]*keys starting with hyp\. or strat\. are hypotheses or strategies/);
+    assert.deepEqual(h.rows('memory.jsonl').filter((row) => row.key === 'hyp.border'), []);
+  } finally { await h.close(); }
+});
+
 test('a hypothesis a refinement wrote is followed by its own check results since the agent was told', async () => {
   const h = await fixture({});
   try {

@@ -1562,6 +1562,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				...(edit.replaces ? { replaces: edit.replaces.filter((key) => memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key)) } : {}) }] },
 				trajectory.length, components());
 			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+			// The native plan accepts a call in part and reports what it skipped; a set it skips entirely changes nothing.
+			// su15-r04-e1 #9: "MEMORY hyp.border_cost" was refused (a hyp. key is a hypothesis's), yet recorded as an edit, the
+			// agent was told of an entry that did not exist, and the ledger then said it was "no longer in memory".
+			if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
 			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 			applyRows(memory, plan.rows);
 			const retired = plan.rows.filter((row: any) => row.deleted).map((row) => row.key);
@@ -1577,6 +1581,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(edit.question ? { question: edit.question } : {}),
 				...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}) }] }, trajectory.length, components());
 			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+			if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
 			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 			applyRows(memory, plan.rows);
 			const id = `e${++refinerEdits}`;
