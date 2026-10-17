@@ -238,8 +238,8 @@ None of them closes with this plan.
 ## 8. Part H as built (2026-10-18)
 
 On `claude/r04-20261017`, commits `5ca52682`–`575997a7` from `d473cb7f`, built test-first (each test seen failing
-first). Nothing was run on the real provider. Part S is not built. The build ledger (rulings, test runs) is in the
-worktree's `.superpowers/sdd/2026-10-17-hypothesis-loop-and-self-harness/progress.md`.
+first). Nothing was run on the real provider. Part S is not built. The build's rulings, test runs and the final
+review's findings are in the [build ledger](2026-10-17-hypothesis-loop-build-ledger.md).
 
 | # | As built | Where | Resident cost | Off switch |
 |---|---|---|---|---|
@@ -294,7 +294,7 @@ worktree's `.superpowers/sdd/2026-10-17-hypothesis-loop-and-self-harness/progres
 ### Final review and fix pass (2026-10-18)
 
 A fresh reviewer (opus) read the range `d473cb7f..27e8134b`: no critical finding, four important ones, fixed with a test
-each in one commit after `27e8134b` (the build ledger has each ruling):
+each in `8beb97c3`:
 - **I1:** a hypothesis already contested (by a refutation or an earlier check version) when its check contested was not
   marked, so the agent's restated status was overridden at once. Now that check's contest is spent, also on replay.
 - **I2:** after the check was fixed the hypothesis stayed contested at the top with no reason shown, and the note did not
@@ -304,8 +304,7 @@ each in one commit after `27e8134b` (the build ledger has each ruling):
   authorship, replayed memory touches). Rows `by: "check"` are now nobody's write; the summary counts them apart.
 - **I4:** a refinement reply that was refused or discarded still answered its promotion event. Events are now settled
   by the edit as applied (this applies to every promotion event), and the contest event asks for a new key.
-- Eight minor findings are deferred (the build ledger lists them); the reviewer set eleven items aside, each ruled on in
-  the ledger.
+- Eight minor findings are deferred and the reviewer's eleven set-aside items are ruled on, in the build ledger.
 
 **Next** (each needs the user's budget): the replay R-H (≤1.5M of the replays' budget; R-S waits for Part S), then
 E-H (3 su15 runs with `ARC_REFINE_LEDGER=0`, ≤18M, plus one held-out run, ≤6M). Before E-H: the runner's wait on
