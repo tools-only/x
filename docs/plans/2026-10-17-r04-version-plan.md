@@ -2,12 +2,14 @@
 
 Status: built on `claude/r04-20261017` (worktree `worktrees/r04`, from `009c6825`), items 1–7; offline checks below.
 E1 ran on 2026-10-17 and was cut short by a gateway outage after 56 actions; no shakedown criterion failed, and one
-recording bug it found is fixed (E1 results below). E2 awaits the user's budget approval.
+recording bug it found is fixed (E1 results below). Later on 2026-10-17 the online-correction session was folded into
+this line, which is now the one branch to track: its records and its plan for the hypothesis loop and the self-harness
+are in `docs/plans` here, and that plan puts its tests before E2 (see Next, under the E1 results).
 User, 2026-10-17: "build r04, then run E1". Base for the build: `claude/r03b-repeat-20261016` at `2b9cc6ac` (r03b +
 the su15 loop's fixes). Follows [the development workflow](../development-workflow.md). Inputs: [the su15 level-2 loop](2026-10-17-su15-level2-loop.md),
-the online-correction session's records (`docs/plans/2026-10-16-refinement-ledger.md` on `claude/refiner-ledger-20261016`,
-`docs/plans/2026-10-17-refinement-package-loop-candidate.md` on `claude/refine-model-r03b-20261017`), and the branch
-inventory below.
+the online-correction session's records ([refinement ledger](2026-10-16-refinement-ledger.md),
+[refinement package](2026-10-17-refinement-package-loop-candidate.md), [merge check](2026-10-17-merge-simple-ledger-repeat.md)),
+and the branch inventory below.
 
 ## Decisions this plan rests on
 
@@ -65,10 +67,13 @@ inventory below.
 | Line | Commits that matter | Where |
 |---|---|---|
 | r03b | `cf419ec3` environment restart on `deecdde6` | `worktrees/r03b-restart` |
-| su15 loop | `f581f918`, `5751333a` collapse and `provider_error` stop; `95a3803f` loop guard counts repeats that succeeded; `33f4c5bf` snapshot and stop at a level; `f3d1d2b1` L1 guards | `worktrees/r03b-repeat` |
-| online correction | `fe9dccd6` ledger, EXPECT, `ARC_REFINE_MODEL`, refiner logs; `009b670c` strict expectation checks (on r03b-simple `1d60dcf1`) | `worktrees/refiner-ledger-20261016` |
-| loop port | `8686067f` `ARC_REFINE_MODEL`, discriminating charter, refiner logs (on `33f4c5bf`) | `worktrees/refine-model-r03b-20261017` |
+| su15 loop | `f581f918`, `5751333a` collapse and `provider_error` stop; `95a3803f` loop guard counts repeats that succeeded; `33f4c5bf` snapshot and stop at a level; `f3d1d2b1` L1 guards | `claude/r03b-repeat-20261016`, an ancestor of r04 |
+| online correction | `fe9dccd6` ledger, EXPECT, `ARC_REFINE_MODEL`, refiner logs; `009b670c` strict expectation checks (on r03b-simple `1d60dcf1`) | `claude/refiner-ledger-20261016` |
+| loop port | `8686067f` `ARC_REFINE_MODEL`, discriminating charter, refiner logs (on `33f4c5bf`) | `claude/refine-model-r03b-20261017` |
 | r03b-simple | r2–r10 (facts in the head, meter lines, click-distance facts, rivals) | `worktrees/r03b` |
+
+When the sessions were folded together (2026-10-17), the worktrees of the su15 loop, the online correction, the loop
+port, the merge check and the hypothesis plan were removed; their branches remain.
 
 ## r04 composition
 
@@ -313,14 +318,20 @@ run's `arc-run/analysis/post-run-gpt-6.1-sol.md`.
 | Autonomous adoption | partial | same | the agent played 2 of 3 judged proposals; after 2 unmet expectations the refiner did not repeat the edit, nor narrow the contradicted rule |
 | Net benefit | unverified | — | one truncated run; level 1 not completed |
 
-- **Next: E2,** with the user's budget approval. E1 does not count as one of its three runs (it did not run to the end).
-  - Three full su15 runs on the commit with the fix, at most 18M budget tokens.
-  - Before them, recommended: the runner waits out transport errors ("Connection error.", "Request timed out.") instead
-    of counting them toward the refusal stop. Runner only, nothing new for the agent; checked offline with the refusal
-    smoke. The three runs share one gateway, and E1's outage would have ended all three.
-  - Added measures: checked hypotheses written by the agent and the refiner (base: the refiner's 10 in 6 runs);
+- **Next** (revised when the sessions were folded together, 2026-10-17):
+  - The [hypothesis loop and self-harness plan](2026-10-17-hypothesis-loop-and-self-harness.md) goes first; the user
+    ranked those two problems highest. Part H is built on this branch (offline, no provider cost), then the replays R-H
+    and R-S (≤1.5M), then E-H (3 su15 runs with `ARC_REFINE_LEDGER=0`, ≤18M, plus one held-out run, ≤6M). Each paid
+    step needs the user's approval.
+  - E2 follows E-H and E-S, as that plan orders them. E1 does not count as one of its three runs (it did not run to the
+    end): three full su15 runs, at most 18M budget tokens.
+  - Before any paid run: the runner waits out transport errors ("Connection error.", "Request timed out.") instead of
+    counting them toward the refusal stop. Runner only, nothing new for the agent; checked offline with the refusal
+    smoke. Runs share one gateway, and E1's outage would have ended all of them.
+  - Added to E2's measures: checked hypotheses written by the agent and the refiner (base: the refiner's 10 in 6 runs);
     refinement notices that arrive after a decision began; runs of 10 or more consecutive actions with varied arguments
     that change only the cells every action changes.
+  - What a paper needs beyond this line: the [publication readiness review](../reports/2026-10-17-publication-readiness-review.md).
 
 ## Evaluation (each step needs its own budget)
 
