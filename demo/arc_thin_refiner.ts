@@ -31,8 +31,8 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"check:\n<python defining check(t)>\nEND\nWHY <one line>\n" +
 	"or\nNONE <one line: why no edit helps now>\n" +
 	"A check sees one recorded move: t['action'] (e.g. 'ACTION1'), t.get('x'), t.get('y'), t['level_changed'], t['state'], t['levels_completed'], " +
-	"t['changed_cells'] (how many cells the move changed), t['before'] and t['after'] (the grids, rows of ints, before[y][x]); t.get of " +
-	"any other key fails. It returns True when the claim holds on that move, False when " +
+	"t['changed_cells'] (how many cells the move changed), t['bbox'] (their box, {'top','left','bottom','right'}, or None), t['before'] and " +
+	"t['after'] (the grids, rows of ints, before[y][x]); t.get of any other key fails. It returns True when the claim holds on that move, False when " +
 	"the move contradicts it, None when the move does not bear on it. It is also run on mismatched moves; one that is True on those " +
 	"too tests nothing and is not promoted.\n" +
 	`FILE paths: prompts/rules.md (under ${RULES_CHARS} characters; one rule per line, each ending with the key of the check that ` +

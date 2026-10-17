@@ -91,11 +91,12 @@ class _StrictTransition(_Transition):
     """A move as a check sees it: t.get() of a key the move does not carry fails instead of returning the default. Checks
     that read changed_cells, changed or predict this way computed on the default: in su15-r2 one recorded 206 fails and 5
     holds so, and in su15-f2-src2 an expectation was reported contradicted on a move that met it. x and y stay optional
-    (actions without coordinates). changed_cells is counted from the two grids when a check first reads it."""
+    (actions without coordinates). changed_cells and bbox, which receipts and trajectory rows report, are counted from the
+    two grids when a check first reads them."""
 
     def _has(self, key):
-        if key == "changed_cells" and not dict.__contains__(self, key):
-            dict.__setitem__(self, key, _changed_cells(dict.get(self, "before"), dict.get(self, "after")))
+        if key in _DERIVED and not dict.__contains__(self, key):
+            dict.__setitem__(self, key, _DERIVED[key](dict.get(self, "before"), dict.get(self, "after")))
         return dict.__contains__(self, key)
 
     def __missing__(self, key):
@@ -104,12 +105,12 @@ class _StrictTransition(_Transition):
         raise KeyError(key)
 
     def __contains__(self, key):
-        return key == "changed_cells" or dict.__contains__(self, key)
+        return key in _DERIVED or dict.__contains__(self, key)
 
     def get(self, key, default=None):
         if self._has(key) or key in ("x", "y"):
             return dict.get(self, key, default)
-        raise KeyError("a move has no %r; it has %s" % (key, ", ".join(sorted(set(self) | {"x", "y", "changed_cells"}))))
+        raise KeyError("a move has no %r; it has %s" % (key, ", ".join(sorted(set(self) | {"x", "y"} | set(_DERIVED)))))
 
 
 def _changed_cells(before, after):
@@ -119,6 +120,28 @@ def _changed_cells(before, after):
     for row_b, row_a in zip(before, after):
         changed += sum(1 for b, a in zip(row_b, row_a) if b != a) + abs(len(row_b) - len(row_a))
     return changed
+
+
+def _bbox(before, after):
+    """The box of the cells that differ, as trajectory rows report it; None when none differ or the shapes differ."""
+    if before is None or after is None or len(before) != len(after):
+        return None
+    box = None
+    for y, (row_b, row_a) in enumerate(zip(before, after)):
+        if len(row_b) != len(row_a):
+            return None
+        for x, (b, a) in enumerate(zip(row_b, row_a)):
+            if b != a:
+                if box is None:
+                    box = {"top": y, "left": x, "bottom": y, "right": x}
+                else:
+                    box["left"] = min(box["left"], x)
+                    box["right"] = max(box["right"], x)
+                    box["bottom"] = y
+    return box
+
+
+_DERIVED = {"changed_cells": _changed_cells, "bbox": _bbox}
 
 
 def _jsonable(value, depth=0):
@@ -170,8 +193,8 @@ def _claims(req):
         except BaseException as error:
             checks.append((claim, None, (type(error).__name__ + ": " + str(error))[:300] + " " + _where(error, claim["source"])))
     meta = req.get("transitions") or {}
-    # strict (2026-10-17, r04): t.get of a key a move does not carry fails, and a move carries changed_cells (counted
-    # from its two grids when read), which the agent's receipts report and checks read.
+    # strict (2026-10-17, r04): t.get of a key a move does not carry fails, and a move carries changed_cells and bbox
+    # (counted from its two grids when read), which the agent's receipts report and checks read.
     move = _StrictTransition if req.get("strict") else _Transition
     out = {claim["key"]: {"results": [], "error": error} for claim, _fn, error in checks}
     for segment in req.get("segments") or []:

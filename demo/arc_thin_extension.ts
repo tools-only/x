@@ -2098,7 +2098,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					check: Type.Optional(Type.String({ maxLength: 4000, description:
 						"Optional Python: def check(t) -> True/False/None (holds/fails/does not apply) for one transition t " +
 						"(t.n, t.action, t.x, t.y, t.before, t.after grids [y][x], t.level_changed, t.state, t.levels_completed, " +
-						"t.changed_cells; t.get of any other key fails). " +
+						"t.changed_cells, t.bbox {top,left,bottom,right} of the changed cells or None; t.get of any other key fails). " +
 						"Run on every recorded and later move; results are shown with the hypothesis. \"\" removes it." })),
 					evidence: Type.Optional(Type.Object({
 						action: Type.Optional(Type.Integer({ minimum: 1, description: "Test action number." })),

@@ -77,18 +77,21 @@ test('a MEMORY line that copies the charter\'s brackets around replaces is accep
 
 /**
  * The native extension on a bridge whose 9 moves one cell per action (two cells change), with the ledger and
- * refinements on (ARC_REFINE_EVERY=2). The refiner's model calls wait until the test settles them.
+ * refinements on (ARC_REFINE_EVERY=2). The refiner's model calls wait until the test settles them. Actions in
+ * `still` leave the grid as it was.
  */
-async function fixture(env: Record<string, string>) {
+async function fixture(env: Record<string, string>, { still = [] as string[] } = {}) {
   let n = 0;
   const grid = () => { const g = Array.from({ length: 8 }, () => Array(8).fill(0)); g[3][n % 8] = 9; return g; };
   const state = () => ({ frames: [grid()], state: 'NOT_FINISHED', levels_completed: 0, agent_available_actions: ['ACTION1', 'ACTION2'],
     action_budget: { used: n, maximum: 40, total_used: n, total_maximum: null } });
   const server = createServer((req, res) => {
-    req.on('data', () => {}); req.on('end', () => {
-      if (req.url !== '/state') n++;
+    let body = ''; req.on('data', (chunk) => body += chunk); req.on('end', () => {
+      const action = req.url === '/action' ? JSON.parse(body || '{}').action : undefined;
+      const moved = req.url !== '/state' && !still.includes(action);
+      if (moved) n++;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ ...state(), observation_delta: { frame_available: true, changed_cells: 2, cells: [] }, public_transition: { level_changed: false } }));
+      res.end(JSON.stringify({ ...state(), observation_delta: { frame_available: true, changed_cells: moved ? 2 : 0, cells: [] }, public_transition: { level_changed: false } }));
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -242,7 +245,7 @@ test('checks see changed_cells, and t.get of a key a move does not carry raises,
     await h.calls(2);
     const entry = h.inputs[1].split('\n').find((line) => line.startsWith('- after #3 memory hyp.cells')) ?? '';
     assert.match(entry, / · its check since: holds 1 · fails 0 · n\/a 0; status \w+ · /, "the hypothesis check reads the move's changed_cells");
-    assert.match(entry, /expected within 2: "the agent's moves change cells" — its check raised on 1 of 1 move\(s\), first at #4 \(KeyError: "a move has no 'changed'; it has action, after, before, changed_cells, level_changed, levels_completed, n, state, x, y"/);
+    assert.match(entry, /expected within 2: "the agent's moves change cells" — its check raised on 1 of 1 move\(s\), first at #4 \(KeyError: "a move has no 'changed'; it has action, after, bbox, before, changed_cells, level_changed, levels_completed, n, state, x, y"/);
     // The agent's own hypothesis that reads a key a move does not carry gets an error on every move, not a default.
     await h.memory({ hypotheses: [{ key: 'hyp.noted', claim: 'moves carry a prediction', check: "def check(t):\n    return t.get('predict') is not None\n" }] });
     await h.begin();
@@ -251,6 +254,23 @@ test('checks see changed_cells, and t.get of a key a move does not carry raises,
     const cells = h.rows('claim_checks.jsonl').filter((row) => row.key === 'hyp.cells' && !row.control);
     assert.deepEqual(cells.filter((row) => row.result !== null).map((row) => row.result), cells.filter((row) => row.result !== null).map(() => true),
       'every ACTION1 move changed two cells');
+  } finally { await h.close(); }
+});
+
+test("a check's move carries bbox, the box of the cells it changed as trajectory rows report it, and None when nothing changed", async () => {
+  // Receipts and data/trajectory.jsonl report a box ({top, left, bottom, right}); a check's move did not carry one.
+  const h = await fixture({}, { still: ['ACTION2'] });
+  try {
+    await h.decide('ACTION1');
+    await h.decide('ACTION1');
+    await h.decide('ACTION2');
+    await h.begin();
+    const receipt = await h.memory({ hypotheses: [{ key: 'hyp.box', claim: 'ACTION1 moves the 9 one cell right; ACTION2 changes nothing',
+      check: "def check(t):\n    if 'bbox' not in t:\n        return False\n    if t['action'] == 'ACTION1':\n" +
+        "        return t['bbox'] == {'top': 3, 'left': t['n'] - 1, 'bottom': 3, 'right': t['n']}\n    return t.get('bbox') is None\n" }] });
+    assert.match(receipt, /hyp\.box check on 3 recorded move\(s\): holds 3 · fails 0/, receipt);
+    const rows = h.rows('claim_checks.jsonl').filter((row) => row.key === 'hyp.box' && !row.control);
+    assert.deepEqual(rows.map((row) => [row.n, row.result]), [[1, true], [2, true], [3, true]]);
   } finally { await h.close(); }
 });
 
