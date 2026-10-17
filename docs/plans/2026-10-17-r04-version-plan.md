@@ -322,7 +322,7 @@ run's `arc-run/analysis/post-run-gpt-6.1-sol.md`.
   - The [hypothesis loop and self-harness plan](2026-10-17-hypothesis-loop-and-self-harness.md) goes first; the user
     ranked those two problems highest. Part H is built on this branch (offline, no provider cost), then the replays R-H
     and R-S (≤1.5M), then E-H (3 su15 runs with `ARC_REFINE_LEDGER=0`, ≤18M, plus one held-out run, ≤6M). Each paid
-    step needs the user's approval.
+    step needs the user's approval. Part H was built and checked offline on 2026-10-18 (that plan's §8).
   - E2 follows E-H and E-S, as that plan orders them. E1 does not count as one of its three runs (it did not run to the
     end): three full su15 runs, at most 18M budget tokens.
   - Before any paid run: the runner waits out transport errors ("Connection error.", "Request timed out.") instead of

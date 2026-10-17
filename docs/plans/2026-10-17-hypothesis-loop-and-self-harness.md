@@ -1,6 +1,7 @@
 # Plan: a hypothesis loop whose checks matter, and a self-harness with a payoff
 
-Date: 2026-10-17 (Asia/Shanghai). Status: plan; nothing built, nothing run. Written on
+Date: 2026-10-17 (Asia/Shanghai). Status: Part H built and checked offline on 2026-10-18 (§8); Part S not built;
+nothing run on the real provider. Written on
 `claude/r04-hypothesis-harness-20261017` (from `009c6825`) and committed on `claude/r04-20261017` when its session was
 folded into the r04 line; updated there to r04 at `6c513fd4` and E1. Follows
 [the development workflow](../development-workflow.md); it extends the [r04 plan](2026-10-17-r04-version-plan.md):
@@ -219,8 +220,8 @@ r04's E1 was ended by a gateway outage after 56 actions, and three runs share on
 
 | Evidence layer | Status | Provider / environment | Artifacts and limits |
 |---|---|---|---|
-| Functional correctness | Unverified | — | §4 |
-| Full-chain reachability | Unverified | — | §4 smokes |
+| Functional correctness | Part H: passed; Part S: unverified (not built) | test fixtures, HTTP stand-in | §8 |
+| Full-chain reachability | Part H: passed | scripted provider, mock SDK, production bridge, real Pi 0.87, WASI | §8, the `hypotheses` smoke |
 | Autonomous adoption | Unverified | — | R-H, R-S, E-H, E-S |
 | Net benefit | Unverified | — | E-H, E-S against the pooled base |
 
@@ -233,3 +234,63 @@ r04's E1 was ended by a gateway outage after 56 actions, and three runs share on
 - **B** (double-check role): H3a compares rivals mechanically; judging them stays with the agent.
 
 None of them closes with this plan.
+
+## 8. Part H as built (2026-10-18)
+
+On `claude/r04-20261017`, commits `5ca52682`–`575997a7` from `d473cb7f`, built test-first (each test seen failing
+first). Nothing was run on the real provider. Part S is not built. The build ledger (rulings, test runs) is in the
+worktree's `.superpowers/sdd/2026-10-17-hypothesis-loop-and-self-harness/progress.md`.
+
+| # | As built | Where | Resident cost | Off switch |
+|---|---|---|---|---|
+| H1a | `bbox` on a check's move: `{top, left, bottom, right}` of the changed cells, None when none changed or the shapes differ, counted when first read; among the keys the strict KeyError lists; named in the refiner charter and the legacy check description | guest `_StrictTransition`, `_bbox` | none | — |
+| H1b | The native memory tool's hypothesis items name key, question, claim, predicts, next_test, status and check (the move's keys and the goal form). The fields stay loosely typed, so the planner still reports a malformed field per entry | `NATIVE_CHECK_DESCRIPTION`, memory tool schema | +805 characters per request (the hypotheses property, 41 → 846), not the ≈450 estimated | — |
+| H1c | A check field that defines no check (`def check(`, `check = lambda`) is kept as next_test, after one given with it; an existing check stays; the receipt shows the form | `planNativeMemoryUpdate` | none | — |
+| H1d | Each check's source in `data/memory.md` and in native `memory(op="list")` | `renderHypotheses`, `ComponentContext.checkSources` | none in the head | — |
+| H2a | A current check with ≥5 decided moves failing on at least half contests its hypothesis: a memory row `by: "check"`, `contested_at` the move where it first held; once per key, check version and claim; at each decision start and when a check is saved (receipt line). The decision view lists contested hypotheses first, with "! its check fails on F of D decided moves (…): narrow the claim to where it held, fix the check, or reject it" | `checkContest`, `contestByChecks`, `contestNotes`, `renderDecisionMemory` | one line per contested hypothesis | `ARC_CHECK_CONTEST_MIN=0` |
+| H2b | One refinement event per check-contested hypothesis and check version ("… is contested: …; write a narrower HYPOTHESIS for where it held, or make the strategy's next experiment settle it"), answered by a HYPOTHESIS edit or a strategy rewrite; none for a key whose citing rule is already in dispute; not raised over the refiner budget | `contestEvents`, `promotionEvents`, `settlePromotion` | refiner input only | with H2a |
+| H2c | RULE CHECKS says "cites hyp.x, which does not exist" apart from "no check behind hyp.y"; one refinement event per missing cited key, answered by a HYPOTHESIS edit or a rules rewrite | `ruleChecksText`, `PromotionView.missing` | when it applies | — |
+| H3a | One line per question whose rivals carry checks: the latest recorded move separating two of them, or "no recorded move separates …" (both decided N moves / no move decided by both); at most 4 pairs | `rivalLines` | one line per such question | — |
+
+- **Departures from the design** (the ledger's rulings): the refinements cannot rewrite a hypothesis, so H2b asks for a
+  narrower one or the next experiment; H2c also raises a refinement event (only refinements write the rules prompt);
+  all contested hypotheses come first in the view, not only those contested by checks; the contest is once per claim as
+  well as check version; `memory(op="list")` lists every source (it has no key filter); H3a's lines sit after the
+  CURRENT KNOWLEDGE block, outside its 4,000-character budget.
+
+### Offline acceptance (2026-10-18, `C:/Users/qi/tmp/r04/h/`)
+
+- **Unit:** 14 new tests; the files they are in pass: `arc_thin_refine_ledger` 15/15, `arc_thin_claims` 6/6,
+  `arc_thin_native_memory` 6/6, `arc_thin_memory` 24/24, `arc_thin_promotion` 9/9.
+- **Full arc_thin TS suite:** 188/193 (`checks/ts`). The 5 failures are the known ones, by name the same as at
+  `7d2533bc` (activation 1, components 1, receipts 3); the installed-Pi action-surface test passed this time.
+- **pytest:** 29/29. **Refusal smoke:** parts 1–5 as before. **Fork smoke:** as before.
+- **Native smokes:** the same outcome as at `7d2533bc`, each stopping at its known check. The new `hypotheses` smoke
+  passes its own checks in the full chain (real Pi, production bridge, mock SDK, WASI): the prose check kept as
+  next_test and the contest in the receipt; the memory row `by: "check"` with `contested_at` 5; a later head with the
+  contested hypothesis first, its line, and "#5 separates hyp.right (holds) from hyp.left (fails)"; sources in
+  `data/memory.md`, none in the head; the contest answered by a refinement's narrower hypothesis. The promotion smoke
+  now makes 4 refinement edits (3 before), as the new events add refinements.
+- **H0 (the strict recheck, now with bbox):** none of the 29 check sources in these runs' memory logs reads `bbox`, so
+  H1a changes no recorded verdict. The re-run with `tools/arc_thin_recheck_claims.ts` matched r04's item-5 table on the
+  9 runs it finished (L0, L1, r2–r4: the same result and change counts) and was not completed for the other five.
+- **H2a simulated on the recorded checks** (17 su15 runs, 25 checks, all refinement-written; `contest-sim.json`):
+  - 12 of 25 checks would have contested their hypothesis; every one of the 12 stayed `open` in its run.
+  - su15-l1-3's `hyp.action6_moves_bottom` crosses at #114 (233 decided, 172 fails), as the plan expected; su15-l1-2's
+    `hyp.floor_erosion` (24 fails in 201) does not.
+  - The results are as recorded: before r04, checks ran without the strict rule. su15-r2's
+    `hyp.action6_requires_nonzero_target` (206 fails of 211) failed on a default the strict rule turns into errors, so
+    11 of 25 under it.
+  - Most crossings come early (#6–#15 in five runs), so in those runs the contest and its refinement would have come
+    in the first refinements.
+
+| Evidence layer | Status | Provider / environment | Artifacts and limits |
+|---|---|---|---|
+| Functional correctness | passed | test fixtures, HTTP stand-in | the unit tests above |
+| Full-chain reachability | passed | scripted provider, mock SDK, production bridge, real Pi 0.87, WASI | the `hypotheses` smoke |
+| Autonomous adoption | unverified | — | R-H (replay), then E-H |
+| Net benefit | unverified | — | E-H against the pooled base |
+
+**Next** (each needs the user's budget): the replay R-H (≤1.5M of the replays' budget; R-S waits for Part S), then
+E-H (3 su15 runs with `ARC_REFINE_LEDGER=0`, ≤18M, plus one held-out run, ≤6M). Before E-H: the runner's wait on
+transport errors.
