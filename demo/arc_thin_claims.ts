@@ -138,6 +138,42 @@ export function contestEvents(contests: Array<{ key: string; version: string; co
 		`${key} is contested: ${renderContest(contest)}; write a narrower HYPOTHESIS for where it held, or make the strategy's next experiment settle it`]);
 }
 
+/** Rival pairs named per question; the rest are counted. */
+const RIVAL_PAIRS = 4;
+
+/**
+ * H3a: hypotheses that share a question, each with a check, compared on the recorded moves: one line per question. A
+ * move separates two rivals when both checks decided it and differ; the latest such move is named. Counting only: a
+ * check runs on the moves the agent chose, and a belief collects holds from its own consequences (su15-l1-1's
+ * hyp.block_movement held on 109 of 111) unless a rival is judged on the same moves.
+ */
+export function rivalLines(hypotheses: Map<string, { question?: string; version?: string; status: string }>, rows: ClaimRow[]): string[] {
+	const byQuestion = new Map<string, string[]>();
+	for (const [key, h] of hypotheses)
+		if (h.question && h.version && h.status !== "rejected") byQuestion.set(h.question, [...(byQuestion.get(h.question) ?? []), key]);
+	const lines: string[] = [];
+	for (const [question, keys] of byQuestion) {
+		if (keys.length < 2) continue;
+		const decided = new Map(keys.map((key) => [key, new Map(rows
+			.filter((r) => r.key === key && r.version === hypotheses.get(key)!.version && (r.result === true || r.result === false))
+			.map((r) => [r.n, r.result === true]))]));
+		const parts: string[] = [];
+		for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) {
+			const [a, b] = [keys[i], keys[j]];
+			const both = [...decided.get(a)!].filter(([n]) => decided.get(b)!.has(n)).sort((x, y) => x[0] - y[0]);
+			const apart = both.filter(([n, held]) => decided.get(b)!.get(n) !== held);
+			if (apart.length) {
+				const [n, held] = apart.at(-1)!;
+				parts.push(`#${n} separates ${a} (${held ? "holds" : "fails"}) from ${b} (${held ? "fails" : "holds"})`);
+			} else parts.push(`no recorded move separates ${a} from ${b} (${both.length
+				? `both decided ${both.length} move${both.length === 1 ? "" : "s"}, same results` : "no move decided by both"})`);
+		}
+		lines.push(`question "${question}": ${parts.slice(0, RIVAL_PAIRS).join("; ")}` +
+			(parts.length > RIVAL_PAIRS ? `; … (${parts.length - RIVAL_PAIRS} more pairs)` : ""));
+	}
+	return lines;
+}
+
 // ---------------------------------------------------------------- promotion (docs/plans/2026-10-14-knowledge-promotion.md)
 //
 // A checked hypothesis becomes a standing rule, and a standing rule goes back to dispute, by the evidence the checks

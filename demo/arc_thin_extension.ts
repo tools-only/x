@@ -65,7 +65,7 @@ import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } fr
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
 import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue,
 	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView,
-	CONTEST_MIN_DECIDED, checkContest, contestEvents, renderContest } from "./arc_thin_claims.ts";
+	CONTEST_MIN_DECIDED, checkContest, contestEvents, renderContest, rivalLines } from "./arc_thin_claims.ts";
 
 /**
  * A hypothesis check as the native memory tool describes it where the agent writes one: the keys a move carries (strict:
@@ -635,7 +635,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// come the memory index, a summarised history, recent actions it does not cover, what a refinement changed, and
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
-			const out: Array<[string, string]> = [["memory", renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes())]];
+			// Rivals with checks, compared on the recorded moves (H3a): one line per question.
+			const rivals = rivalLines(new Map([...memory.hypotheses].map(([key, h]) => [key, { ...(h.question ? { question: h.question } : {}), status: h.status,
+				...(h.check && !claimCompileErrors.has(`${key}@${claimVersion(h.check)}`) ? { version: claimVersion(h.check) } : {}) }])), claimRows);
+			const out: Array<[string, string]> = [["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]];
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.

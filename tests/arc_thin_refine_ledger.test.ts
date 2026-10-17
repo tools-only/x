@@ -373,6 +373,20 @@ test('a rule citing a hypothesis that does not exist is named under RULE CHECKS 
   } finally { await h.close(); }
 });
 
+test('rival hypotheses with checks are compared on the recorded moves in the decision view', async () => {
+  const h = await fixture({});
+  try {
+    await h.decide('ACTION1');
+    await h.decide('ACTION1');
+    await h.begin();
+    await h.memory({ hypotheses: [{ key: 'hyp.two', question: 'what ACTION1 changes', claim: 'two cells', check: TWO },
+      { key: 'hyp.one', question: 'what ACTION1 changes', claim: 'one cell', check: "def check(t):\n    return t['changed_cells'] == 1\n" }] });
+    await h.act('ACTION1');
+    const head = await h.begin();
+    assert.match(head, /\nquestion "what action1 changes": #3 separates hyp\.two \(holds\) from hyp\.one \(fails\)/);
+  } finally { await h.close(); }
+});
+
 test('ARC_REFINE_LEDGER=0 gives the earlier input and charter; the edits are still logged with ids', async () => {
   const h = await fixture({ ARC_REFINE_LEDGER: '0' });
   try {

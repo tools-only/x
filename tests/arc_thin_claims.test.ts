@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkContest, claimSegments, claimVersion, contestEvents, levelOf, renderClaimSummary, renderContest, summarizeClaim, type ClaimRow } from "../demo/arc_thin_claims.ts";
+import { checkContest, claimSegments, claimVersion, contestEvents, levelOf, renderClaimSummary, renderContest, rivalLines, summarizeClaim, type ClaimRow } from "../demo/arc_thin_claims.ts";
 
 const grid = (value: number, size = 4) => Array.from({ length: size }, (_, y) => Array.from({ length: size }, (_, x) => (x === value && y === 1 ? 9 : 0)));
 const row = (n: number, result: ClaimRow["result"], level = 0): ClaimRow => ({ key: "hyp.a", version: "v", n, level, result });
@@ -68,4 +68,25 @@ test("each check-contested hypothesis is one refinement event per check version,
 	assert.deepEqual(events.map(([id]) => id), ["contested:hyp.a@v1"]);
 	assert.match(events[0][1], /^hyp\.a is contested: its check fails on 6 of 6 decided moves \(#1, #2, …, #6\); /);
 	assert.deepEqual(contestEvents([], []), []);
+});
+
+test("rivals with checks: one line per question, naming a recorded move that separates two of them, or saying none does", () => {
+	// su15-l1-1's hyp.block_movement held on 109 of 111 moves it decided, all moves the agent chose because it held the
+	// belief; nothing compared it with a rival on the same moves.
+	const results = (key: string, version: string, list: Array<ClaimRow["result"]>) =>
+		list.map((result, i): ClaimRow => ({ key, version, n: i + 1, level: 0, result }));
+	const hypotheses = new Map<string, { question?: string; version?: string; status: string }>([
+		["hyp.a", { question: "reach", version: "va", status: "open" }], ["hyp.b", { question: "reach", version: "vb", status: "open" }],
+		["hyp.c", { question: "goal", version: "vc", status: "open" }], ["hyp.d", { question: "goal", version: "vd", status: "supported" }],
+		["hyp.e", { question: "goal", status: "open" }], ["hyp.f", { question: "goal", version: "vf", status: "rejected" }],
+		["hyp.g", { question: "alone", version: "vg", status: "open" }],
+	]);
+	const rows = [...results("hyp.a", "va", [true, true, false, null]), ...results("hyp.b", "vb", [true, false, false, true]),
+		...results("hyp.c", "vc", [true, null, true]), ...results("hyp.d", "vd", [true, false, true]), ...results("hyp.f", "vf", [false, false, false])];
+	assert.deepEqual(rivalLines(hypotheses, rows), [
+		'question "reach": #2 separates hyp.a (holds) from hyp.b (fails)',
+		'question "goal": no recorded move separates hyp.c from hyp.d (both decided 2 moves, same results)',
+	]);
+	assert.deepEqual(rivalLines(new Map([["hyp.a", { question: "q", version: "va", status: "open" }], ["hyp.b", { question: "q", version: "vb", status: "open" }]]), []),
+		['question "q": no recorded move separates hyp.a from hyp.b (no move decided by both)']);
 });
