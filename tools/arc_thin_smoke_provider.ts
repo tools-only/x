@@ -216,6 +216,21 @@ const QUERY_SCRIPT: Step[] = [
 ];
 const NATIVE_CLAIMS_SCRIPT: Step[] = CLAIMS_SCRIPT.map(step => ({...step, calls:step.calls?.map(([name,args]) =>
   name==='python' ? ['read',{path:'data/frames/1.json'}] : [name,args]) as Step['calls']}));
+// The hypothesis loop (plan 2026-10-17, Part H), in the full chain: the 9 goes right on ACTION1 and back on ACTION3, so
+// "every move takes it left" fails on 3 of 5 moves and is contested by its check; hyp.right and hyp.left are rivals that
+// the ACTION1 moves separate; an English sentence in check is kept as the next test. A refinement answers the contest.
+const ALWAYS_LEFT_CHECK = "def check(t):\n    return t['after'][3].index(9) < t['before'][3].index(9)\n";
+const HYPOTHESES_SCRIPT: Step[] = [
+	...['ACTION1', 'ACTION3', 'ACTION1', 'ACTION3', 'ACTION1'].map((action): Step => ({ kind: 'decide', calls: [['arc_action', { action }]] })),
+	{ kind: 'decide', calls: [['memory', { hypotheses: [
+		{ key: 'hyp.right', question: 'controls', claim: 'ACTION1 moves the 9 one cell right', check: RIGHT_CHECK },
+		{ key: 'hyp.left', question: 'controls', claim: 'ACTION1 moves the 9 one cell left', check: WRONG_CHECK },
+		{ key: 'hyp.always_left', question: 'every move', claim: 'every move takes the 9 one cell left', check: ALWAYS_LEFT_CHECK },
+		{ key: 'hyp.prose', question: 'what ACTION3 does', claim: 'ACTION3 undoes ACTION1', check: 'after an ACTION3, is the 9 back where it was? record it' },
+	] }]] },
+	{ kind: 'decide', calls: [['arc_action', { action: 'ACTION3' }]] },
+	{ kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+];
 NATIVE_CLAIMS_SCRIPT[2] = {kind:'decide',calls:Array.from({length:8},(_,i)=>['read',{
   path:'data/frames/1.json',offset:1,limit:i+1}]) as Step['calls']};
 const NATIVE_COMPARE = '"""Compare measured values."""\ndef run(x: int, bias: int = 2):\n    from lib.offset import plus\n    return plus(x, bias)\n';
@@ -379,6 +394,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'still' ? STILL_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? QUERY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'nativeclaims' ? NATIVE_CLAIMS_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'hypotheses' ? HYPOTHESES_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
@@ -583,6 +599,11 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				appendFileSync(join(process.env.ARC_RUN_ROOT ?? process.cwd(), "refiner-inputs.jsonl"), JSON.stringify({ systemPrompt, input: why }) + "\n");
 				planned = { kind: "decide", text: why.includes("the rule is in dispute")
 					? "FILE prompts/rules.md\n- ACTION1 and ACTION4 move the 9 one cell right except at the right edge, where it wraps (hyp.right_wrap)\nEND\nWHY hyp.right failed at the edge"
+					// A hypothesis its check contests: a narrower one where it held (the refinement cannot rewrite the agent's).
+					: why.includes(" is contested: ")
+					? "HYPOTHESIS hyp.left_on_action3\nclaim: ACTION3 moves the 9 one cell left\nquestion: every move\ncheck:\n" +
+						"def check(t):\n    if t['action'] != 'ACTION3':\n        return None\n    return t['after'][3].index(9) == t['before'][3].index(9) - 1\nEND\n" +
+						"WHY hyp.always_left held only on the ACTION3 moves"
 					: why.includes("a candidate rule for prompts/rules.md")
 					? "FILE prompts/rules.md\n- ACTION1 and ACTION4 move the 9 one cell right (hyp.right)\nEND\nWHY hyp.right held on every move it applied to"
 					: why.includes("no hypothesis carries a check")

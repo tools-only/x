@@ -88,18 +88,21 @@ if script == "receipts":
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
     # promotion: 11 decisions since r04, whose refinements run the ledger's expectation checks in the sandbox before the
     # model call, so the dispute refinement's rule lands one decision later than before.
-    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script in ("activation", "hypotheses") else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     input_modalities="text,image" if script == "query" else None,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
-    # The promotion path runs through refinements, which need the ledger and its trigger service.
-    ledger=defaults or script == 'promotion', critic=defaults or script == 'promotion', review_at_level_change=False,
+    # The promotion path and the hypothesis loop's refinement event run through refinements, which need the ledger and
+    # its trigger service.
+    ledger=defaults or script in ('promotion', 'hypotheses'), critic=defaults or script in ('promotion', 'hypotheses'), review_at_level_change=False,
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
         # The activation script checks the other refinement events; the promotion script checks this one.
-        **({'ARC_REFINE_UNCHECKED_AFTER': '1000'} if script == 'activation' else {}),
+        **({'ARC_REFINE_UNCHECKED_AFTER': '1000'} if script in ('activation', 'hypotheses') else {}),
+        # Only events start refinements in the hypotheses script, so the contested one is the first.
+        **({'ARC_REFINE_EVERY': '100'} if script == 'hypotheses' else {}),
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '1200'} if tight else {}),
         # The history script exercises the summarised section, no longer the native default.
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '12000'} if script == 'history' and not tight else {}),
@@ -220,6 +223,31 @@ elif script == "promotion":
     assert 0 < len(kept) <= len(starts) and all(r['model'] == 'scripted' and r['input'].startswith('WHY NOW: ') for r in kept), [r.get('model') for r in kept]
     assert replies and all(r['model'] == 'scripted' for r in replies) and any('EXPECT within 3 actions' in r['text'] for r in replies), replies
     print(json.dumps({'ledger_checks': {'edits': len(edits), 'told': len(told), 'ledger_inputs': len(ledgers), 'kept_inputs': len(kept)}}), flush=True)
+elif script == "hypotheses":
+    # The hypothesis loop (plan 2026-10-17, Part H) in the full chain: real Pi, production bridge, mock SDK, WASI checks.
+    assert 'hyp.prose: the check is not Python; it was kept as next_test' in text, text[-2000:]
+    assert 'hyp.always_left contested: its check fails on 3 of 5 decided moves (#1, #3, #5)' in text, text[-2000:]
+    memory_rows = [json.loads(s) for s in (root / 'harness/memory.jsonl').read_text(encoding='utf-8').splitlines()]
+    contested = [row for row in memory_rows if row.get('by') == 'check']
+    # hyp.left joins it once a fifth ACTION1 move (after the script, a fallback move) fails it too.
+    assert [(row['key'], row['hyp']['status'], row['hyp']['contested_at']) for row in contested][:1] == [('hyp.always_left', 'contested', 5)], contested
+    prose = [row['hyp'] for row in memory_rows if row.get('key') == 'hyp.prose' and 'hyp' in row]
+    assert prose and 'check' not in prose[-1] and prose[-1]['next_test'].startswith('after an ACTION3'), prose
+    # A later parent sees it first, with what its check says, and the rivals compared on the same moves (after #6).
+    line = '! its check fails on 3 of 6 decided moves (#1, #3, #5): narrow the claim to where it held, fix the check, or reject it'
+    later = [r.get('current', '') for r in parent_requests if line in r.get('current', '')]
+    assert later, [r.get('current', '')[:800] for r in parent_requests[-3:]]
+    head = later[0][later[0].index('CURRENT KNOWLEDGE'):]
+    assert head.index('- hyp.always_left [contested]') < head.index('- hyp.right'), head[:1500]
+    assert 'question "controls": #5 separates hyp.right (holds) from hyp.left (fails)' in head, head[:1500]
+    assert 'check source:' in (root / 'workspace/data/memory.md').read_text(encoding='utf-8')
+    assert 'def check' not in head
+    # The contest reached a refinement, which added a narrower hypothesis.
+    refiner = [json.loads(s) for s in (root / 'harness/refiner.jsonl').read_text(encoding='utf-8').splitlines()]
+    starts = [' '.join(row['triggers']) for row in refiner if row.get('kind') == 'start']
+    assert starts and 'hyp.always_left is contested: its check fails on 3 of ' in starts[0], starts
+    assert any(row.get('kind') == 'edit' and row.get('path') == 'memory:hyp.left_on_action3' for row in refiner), refiner
+    print(json.dumps({'hypothesis_checks': {'contested': len(contested), 'refinements': len(starts)}}), flush=True)
 elif script == "history":
     last = parent_requests[-1].get('current', '')
     assert 'RECENT HISTORY (your last' in last and 'older not shown' in last, 'the default budget must drop the oldest decisions with a note'
