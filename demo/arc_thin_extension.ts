@@ -2621,7 +2621,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
 		if (native && workspace) {
-			try { workspace.runtimeWrite("data/memory.md", renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()) + "\n"); }
+			try { workspace.runtimeWrite("data/memory.md", renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + "\n"); }
 			catch (error) { logError("memory:file", error); }
 		}
 		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
@@ -2740,7 +2740,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
 		const headKey = `${decision}:${lastUser}`;
 		if (!native || run.headKey !== headKey) {
-			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()) + '\n');
+			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 			const capabilities = binder ? [binder.index(currentLevel()),
 				nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';

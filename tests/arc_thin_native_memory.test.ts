@@ -109,3 +109,13 @@ test('a check written in English is kept as the next test, the receipt shows the
   commit({ hypotheses: [{ key: 'blob', check: '' }] }, 4);
   assert.equal(memory.hypotheses.get('hyp.blob')!.check, undefined);
 });
+
+test('memory(op="list") in native mode shows each check source', () => {
+  const memory = emptyMemory();
+  const seed = planNativeMemoryUpdate(memory, { hypotheses: [{ key: 'two', claim: 'ACTION1 changes two cells', check: 'def check(t):\n    return None\n' }] }, 2);
+  assert.equal(seed.ok, true); if (!seed.ok) return;
+  applyRows(memory, seed.rows);
+  const list = planNativeMemoryUpdate(memory, { op: 'list' }, 2);
+  assert.equal(list.ok, true); if (!list.ok) return;
+  assert.match(list.receipt, /- hyp\.two \[open\] ACTION1 changes two cells\n  check: not run yet\n  check source:\n    def check\(t\):\n        return None\n/);
+});

@@ -462,3 +462,16 @@ test("supported or rejected without a separating test is shown; deleting reports
 	assert.match(plan.receipt, /deleted with: hyp\.a 2 result\(s\), 0 refuting, 1 that told it apart from a rival; hyp\.d 0 result\(s\), 0 refuting, 0 that told it apart from a rival/);
 	assert.ok(!state.hypotheses.has("hyp.a") && !state.hypotheses.has("hyp.d"));
 });
+
+test("a check's source is in the full memory on demand (data/memory.md, list), not in the views shown every decision", () => {
+	// The decision view and data/memory.md showed claims and counts only, so the refinements' 48 working checks were
+	// never something the agent could read and copy.
+	const state = emptyMemory();
+	const source = "def check(t):\n    if t['action'] != 'ACTION1':\n        return None\n    return t['changed_cells'] == 2\n";
+	commit(state, { hypotheses: [{ key: "two", claim: "ACTION1 changes two cells", check: source }, { key: "none", claim: "no check here" }] }, 3);
+	const full = renderMemory(state, 3, [], { checkSources: true });
+	assert.match(full, /- hyp\.two \[open\] ACTION1 changes two cells\n  check: not run yet\n  check source:\n    def check\(t\):\n        if t\['action'\] != 'ACTION1':\n            return None\n        return t\['changed_cells'\] == 2\n/);
+	assert.equal((full.match(/check source:/g) ?? []).length, 1, "only hypotheses with a check");
+	assert.doesNotMatch(renderMemory(state, 3), /check source:|def check/);
+	assert.doesNotMatch(renderHypotheses(state, 3), /def check/);
+});

@@ -27,7 +27,7 @@ export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams,
     if (action !== undefined && !(Number.isInteger(Number(action)) && Number(action) >= 1 && Number(action) <= actionCount))
       return { ok: false, error: `memory NOT changed: action #${action} does not exist (actions so far: ${actionCount})` };
   }
-  if (params.op === 'list') return planMemoryUpdate(state, params, actionCount, {...ctx, factProvenance:true});
+  if (params.op === 'list') return planMemoryUpdate(state, params, actionCount, {...ctx, factProvenance:true, checkSources:true});
   const working = emptyMemory(); working.facts = new Map(state.facts); working.hypotheses = new Map(state.hypotheses);
   working.strategies = new Map(state.strategies); working.dropped = [...state.dropped]; working.revisions = [...state.revisions];
   const rows: MemoryRow[] = []; const receipts: string[] = []; const skipped: string[] = [];

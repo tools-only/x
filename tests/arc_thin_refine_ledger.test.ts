@@ -126,6 +126,8 @@ async function fixture(env: Record<string, string>, { still = [] as string[] } =
     ? readFileSync(join(root, 'harness', name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
   return {
     inputs, systems, act, begin, rows,
+    /** A file of the run, e.g. workspace/data/memory.md. */
+    file: (path: string) => readFileSync(join(root, path), 'utf8'),
     memory: async (params: any) => (await tools.get('memory').execute('t', params, undefined, undefined, ctx)).content.map((b: any) => b.text ?? '').join('\n'),
     async decide(action = 'ACTION1') { const head = await begin(); await act(action); return head; },
     /** Settle the oldest refinement call still waiting; the next call (if any) starts after its ledger checks. */
@@ -271,6 +273,20 @@ test("a check's move carries bbox, the box of the cells it changed as trajectory
     assert.match(receipt, /hyp\.box check on 3 recorded move\(s\): holds 3 · fails 0/, receipt);
     const rows = h.rows('claim_checks.jsonl').filter((row) => row.key === 'hyp.box' && !row.control);
     assert.deepEqual(rows.map((row) => [row.n, row.result]), [[1, true], [2, true], [3, true]]);
+  } finally { await h.close(); }
+});
+
+test("data/memory.md shows each check's source; the decision's own view does not", async () => {
+  const h = await fixture({});
+  try {
+    await h.decide('ACTION1');
+    await h.begin();
+    await h.memory({ hypotheses: [{ key: 'hyp.two', claim: 'ACTION1 changes two cells',
+      check: "def check(t):\n    return t['changed_cells'] == 2 if t['action'] == 'ACTION1' else None\n" }] });
+    const head = await h.begin();
+    assert.match(h.file('workspace/data/memory.md'), /- hyp\.two \[open\] ACTION1 changes two cells\n  check on 1 recorded move\(s\): holds 1 · fails 0\n  check source:\n    def check\(t\):\n        return t\['changed_cells'\] == 2 if t\['action'\] == 'ACTION1' else None\n/);
+    assert.match(head, /hyp\.two/);
+    assert.doesNotMatch(head, /def check/);
   } finally { await h.close(); }
 });
 

@@ -59,8 +59,11 @@ export type MemoryState = {
 	facts: Map<string, Fact>; hypotheses: Map<string, Hypothesis>; strategies: Map<string, Strategy>;
 	dropped: Dropped[]; revisions: Revision[];
 };
-/** Harness components outside memory that a strategy can use; checks: the rendered check line per hypothesis key. */
-export type ComponentContext = { skills?: Record<string, number>; overlay?: string; checks?: Record<string, string>; factProvenance?: boolean };
+/**
+ * Harness components outside memory that a strategy can use; checks: the rendered check line per hypothesis key;
+ * checkSources: each check's code under its hypothesis (the full memory read on demand, not the per-decision views).
+ */
+export type ComponentContext = { skills?: Record<string, number>; overlay?: string; checks?: Record<string, string>; factProvenance?: boolean; checkSources?: boolean };
 
 export type HypothesisInput = {
 	key: string; claim?: string; question?: string; predicts?: string; status?: Status; next_test?: string; evidence?: Partial<Evidence>;
@@ -695,7 +698,7 @@ function evidenceLines(h: Hypothesis): string[] {
 	return [...(hidden > 0 ? [`  (${hidden} earlier result(s) not shown; state.hypotheses has all)`] : []), ...shown.map(line)];
 }
 
-export function renderHypotheses(state: MemoryState, actionCount: number, checks: Record<string, string> = {}): string {
+export function renderHypotheses(state: MemoryState, actionCount: number, checks: Record<string, string> = {}, sources = false): string {
 	const all = [...state.hypotheses];
 	const count = (status: Status) => all.filter(([, h]) => h.status === status).length;
 	const lines = [all.length
@@ -728,6 +731,9 @@ export function renderHypotheses(state: MemoryState, actionCount: number, checks
 				lines.push(`- ${key} [${h.status}] ${h.claim}`);
 				if (h.predicts) lines.push(`  predicts: ${h.predicts}`);
 				if (h.check) lines.push(`  ${checks[key] ?? "check: not run yet"}`);
+				// The code itself, where the full memory is read on demand: the refinements' working checks were never
+				// visible to the agent as examples (decision views carry the claim and the counts only).
+				if (h.check && sources) lines.push("  check source:", ...h.check.replace(/\s+$/, "").split("\n").map((line) => `    ${line}`));
 				for (const line of evidenceLines(h)) lines.push(line);
 			}
 			const last = lastTested(h);
@@ -815,7 +821,7 @@ export function renderRevisions(state: MemoryState, actions: string[], ctx: Comp
 
 /** The whole memory as shown in the working set (revisions need the action labels). */
 export function renderMemory(state: MemoryState, actionCount: number, actions: string[] = [], ctx: ComponentContext = {}): string {
-	return [renderHypotheses(state, actionCount, ctx.checks), renderStrategies(state, actionCount, ctx, actions), renderRevisions(state, actions, ctx), renderFacts(state,ctx.factProvenance)]
+	return [renderHypotheses(state, actionCount, ctx.checks, ctx.checkSources), renderStrategies(state, actionCount, ctx, actions), renderRevisions(state, actions, ctx), renderFacts(state,ctx.factProvenance)]
 		.filter(Boolean).join("\n\n");
 }
 
