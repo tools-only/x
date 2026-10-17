@@ -86,7 +86,9 @@ if script == "receipts":
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
-    max_decisions=30 if script == "history" else 10 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    # promotion: 11 decisions since r04, whose refinements run the ledger's expectation checks in the sandbox before the
+    # model call, so the dispute refinement's rule lands one decision later than before.
+    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script == "activation" else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     input_modalities="text,image" if script == "query" else None,
@@ -201,6 +203,23 @@ elif script == "promotion":
     assert any('RULE CHECKS (prompts/rules.md)' in c and '1 held' in c for c in currents), 'the rule checks must be shown while play goes on'
     # The retyped computation was named in its own result.
     assert any('tools/nine.py already computes this' in r['text'] for r in results if r['tool'] == 'python'), [r['text'][-200:] for r in results if r['tool'] == 'python']
+    # The refinement ledger (r04): the hypothesis edit keeps its id and expectation, the decision that showed it is
+    # recorded, and a later refinement is told what its check and its expectation showed since then.
+    first = next(row for row in refiner if row.get('kind') == 'edit' and row.get('path') == 'memory:hyp.right')
+    assert first['id'] == 'e1' and first['expect']['within'] == 3 and 'def check(t)' in first['expect']['check'], first
+    told = [row for row in refiner if row.get('kind') == 'told']
+    assert told and told[0]['id'] == 'e1' and told[0]['at'] >= first['at'], told
+    refinements = [json.loads(s) for s in (root / 'refiner-inputs.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert all('YOUR EARLIER EDITS, when present' in r['systemPrompt'] for r in refinements), refinements[0]['systemPrompt'][-400:]
+    ledgers = [r['input'] for r in refinements if 'YOUR EARLIER EDITS (newest first' in r['input']]
+    assert any('memory hyp.right (still as written)' in text and 'its check since: holds' in text
+               and 'expected within 3: "the agent moves the 9 right" — met at #' in text for text in ledgers), [t[:1200] for t in ledgers]
+    # Every refinement's input and reply is kept, with the model that answered.
+    kept = [json.loads(s) for s in (root / 'harness/refiner_inputs.jsonl').read_text(encoding='utf-8').splitlines()]
+    replies = [json.loads(s) for s in (root / 'harness/refiner_replies.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert 0 < len(kept) <= len(starts) and all(r['model'] == 'scripted' and r['input'].startswith('WHY NOW: ') for r in kept), [r.get('model') for r in kept]
+    assert replies and all(r['model'] == 'scripted' for r in replies) and any('EXPECT within 3 actions' in r['text'] for r in replies), replies
+    print(json.dumps({'ledger_checks': {'edits': len(edits), 'told': len(told), 'ledger_inputs': len(ledgers), 'kept_inputs': len(kept)}}), flush=True)
 elif script == "history":
     last = parent_requests[-1].get('current', '')
     assert 'RECENT HISTORY (your last' in last and 'older not shown' in last, 'the default budget must drop the oldest decisions with a note'

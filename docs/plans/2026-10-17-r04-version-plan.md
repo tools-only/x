@@ -1,7 +1,8 @@
 # r04: the next version from the su15 loop and the online-correction work (plan, 2026-10-17)
 
-Status: plan, nothing built. Base for the build: `claude/r03b-repeat-20261016` at `2b9cc6ac` (r03b + the su15 loop's
-fixes). Follows [the development workflow](../development-workflow.md). Inputs: [the su15 level-2 loop](2026-10-17-su15-level2-loop.md),
+Status: built on `claude/r04-20261017` (worktree `worktrees/r04`, from `009c6825`), items 1–7; offline checks and E1
+below. User, 2026-10-17: "build r04, then run E1". Base for the build: `claude/r03b-repeat-20261016` at `2b9cc6ac` (r03b +
+the su15 loop's fixes). Follows [the development workflow](../development-workflow.md). Inputs: [the su15 level-2 loop](2026-10-17-su15-level2-loop.md),
 the online-correction session's records (`docs/plans/2026-10-16-refinement-ledger.md` on `claude/refiner-ledger-20261016`,
 `docs/plans/2026-10-17-refinement-package-loop-candidate.md` on `claude/refine-model-r03b-20261017`), and the branch
 inventory below.
@@ -75,7 +76,7 @@ inventory below.
 | 2 | Collapse of repeated calls (across prompts), `provider_error` stop, loop guard on repeats that succeeded | `f581f918`, `5751333a`, `95a3803f`, `f3d1d2b1` | yes | gateway replay 2/2; L0 recovery; no provider stop in L1 | `ARC_THIN_COLLAPSE_REPEATS=0`, `ARC_THIN_LOOP_RESULTS=0` |
 | 3 | Repeat-without-effect refusal; unavailable action refused with what is available | `f3d1d2b1` | yes, as a guard | L1: claims held, 11 plays affected | `ARC_THIN_NO_EFFECT_REPEATS=0` |
 | 4 | Snapshot and stop at a level | `33f4c5bf` | yes (tooling) | fork smoke | — |
-| 5 | Hypothesis checks: transitions carry `changed_cells`; a missing key is a check error shown on the hypothesis, not a default | new; expectation side as `009b670c` | yes, as a correctness fix | to build; acceptance below | one variable for the earlier rule |
+| 5 | Hypothesis checks: transitions carry `changed_cells`; a missing key is a check error shown on the hypothesis, not a default | new; expectation side as `009b670c` | yes, as a correctness fix | `tools/arc_thin_recheck_claims.ts` over 14 recorded runs (below) | none: each run's `claim_checks.jsonl` keeps the earlier rule's results, and the recheck tool compares |
 | 6 | Refinement ledger and EXPECT, with strict expectation checks | `fe9dccd6`, `009b670c`, ported | yes: **the factor r04 tests** | F2 sources: EXPECT 9/9, one edit acted on | `ARC_REFINE_LEDGER=0` |
 | 7 | Refiner input and reply logs; model on usage rows | `fe9dccd6` / `8686067f` | yes (measurement) | — | always on |
 
@@ -106,6 +107,115 @@ inventory below.
    - A post-run analyst: one call per finished run to a stronger model, over those measures, the refiner's edits and
      the trajectory. It answers our template (failures, the broken transition, a general candidate change) for us to
      review; nothing returns into the run.
+
+## As built (2026-10-17)
+
+- Items 1–4 of the composition come with the branch (the loop line at `2b9cc6ac`).
+- **Item 5, strict checks** (`demo/arc_thin_skill_guest.ts`, `demo/arc_thin_extension.ts`):
+  - Hypothesis checks, their controls and expectation checks see a move on which `t.get` of a key the move does not
+    carry raises a KeyError that names the keys it has; x and y stay optional.
+  - `t['changed_cells']`, `t.get('changed_cells')` and `t.changed_cells` give how many cells differ between the move's
+    two grids, counted when a check first reads it.
+  - The refinement charter and the legacy memory tool's check description name `changed_cells` and the strict reading.
+    The native system prompt is unchanged: a check that reads a wrong key now shows its error, with the keys a move
+    has, on the hypothesis line.
+  - No switch back: each run's `claim_checks.jsonl` keeps what the earlier rule gave, and
+    `tools/arc_thin_recheck_claims.ts` re-runs a run's checks under the strict rule.
+- **Items 6–7, ledger, EXPECT and logs,** ported by hand from `fe9dccd6` and `009b670c` (the r03b line's refiner
+  differs from the r03b-simple line's):
+  - `arc_thin_refiner.ts`: `REFINER_LEDGER_SYSTEM`, `renderEditLedger`, `parseExpect` (with "within N:" as a horizon),
+    EXPECT kept on FILE, MEMORY and HYPOTHESIS edits, and MEMORY lines with bracketed `[replaces …]` accepted.
+  - `arc_thin_extension.ts`:
+    - the refiner's notices are a list carrying the edit's id, and the decision that shows one records `told` in
+      `refiner.jsonl`;
+    - edits get ids `e<n>` and keep their expectation (`within` defaults to `ARC_REFINE_EVERY`), or why it was not used;
+    - each refinement opens with YOUR EARLIER EDITS after ACTIONS SO FAR;
+    - `refiner_inputs.jsonl` and `refiner_replies.jsonl` keep every input and reply;
+    - usage rows and refinement starts name the model.
+  - Differences from the source branch:
+    - the ledger's "after #N" is the action count when the refinement ended, as the r03b line's notice says;
+    - a hypothesis's check counts include "raised N";
+    - an EXPECT that could not be used is listed with its reason.
+    Not ported: `ARC_REFINE_MODEL`, the source line's notice wording (`evidenceSince`) and its fixed-step trigger text.
+- **Item 4, development-loop tools,** outside runs:
+  - `tools/arc_run_measures.mjs`: the loop's measures, per level.
+  - `tools/arc_refine_replay.py`: logged refinement inputs under a variant, on the agent's model by default, with
+    results shuffled for blind grading.
+  - `tools/arc_post_run_analyst.py`: one call to a stronger model over a finished run's digest, answering the
+    development template; `--digest-only` makes no call.
+  - `tools/arc_thin_recheck_claims.ts` (item 5's acceptance).
+
+### Item 5's acceptance: recorded checks re-run under the strict rule
+
+`tools/arc_thin_recheck_claims.ts` over the 14 su15 runs with recorded checks (`C:/Users/qi/tmp/r04/quick`):
+
+| Runs | Checks re-run | Results compared | Results that change |
+|---|---|---|---|
+| L0 ×3, L1 ×3 (r03b line) | 9 | 1,484 | 0 |
+| r5, r6, r8b | 5 | 1,065 | 0 |
+| r2 | 1 | 260 | 211: 206 fails and 5 holds become errors |
+| r3 | 2 | 480 | 9: n/a becomes holds |
+| r4 | 1 | 48 | 28: n/a becomes errors |
+| r7 | 3 | 394 | 23: fails become errors |
+| r9 | 2 | 416 | 198: n/a becomes errors |
+
+- Every changed result belongs to one of the 6 checks that read `changed_cells` (5 refinement-written, 1 the agent's).
+- Five of them treated it as a list of cells (`len(t.get('changed_cells', []))`, `for c in changed`). Under the
+  earlier rule each computed on the empty default, so 460 verdicts were made on nothing. Strictly they raise
+  ("object of type 'int' has no len()"), and the error now shows on the hypothesis line.
+- r3's check compared the count and gains 9 real holds.
+- No check that read only present keys changed. The 9 checks of L0 and L1 were unaffected.
+
+### Checks (2026-10-17, `C:/Users/qi/tmp/r04`)
+
+- **Unit:** new `tests/arc_thin_refine_ledger.test.ts`, 7/7:
+  - EXPECT parsing, with "within N:" as a horizon and malformed blocks named;
+  - ledger rendering and its size bound;
+  - bracketed `[replaces …]`;
+  - in the extension:
+    - a later refinement is told that an expectation was met (#4) and that the agent deleted a memory entry (#5);
+    - `told` rows are recorded when the edit is shown (e1 at 3, e2 at 5);
+    - inputs and replies are logged with the model;
+    - a refined hypothesis's check counts since it was shown;
+    - strict checks: a hypothesis check reads the real `changed_cells`, an expectation reading `changed` and the
+      agent's own check reading `predict` raise with the keys a move has;
+  - `ARC_REFINE_LEDGER=0` restores the earlier input and charter.
+  - The repeat refusal is off in that fixture: its object moves one cell per action, so 2 cells change on every move,
+    the known false positive.
+- **Full arc_thin TS suite:** 172/178.
+  - The 5 known failures (activation, components, receipts ×3) fail on `2b9cc6ac` too; the 7 extra tests are the new
+    file's.
+  - The sixth, the installed-Pi action-surface test, was a 20 s Pi start timeout under load; alone it passes 2/2.
+- **pytest:** 29/29. **Refusal smoke** parts 1–5 and **fork smoke** parts 1–5: pass.
+- **Native smokes:** the same outcome as on the L1 tree, each stopping at its known check. `promotion` also checks the
+  ledger in the full chain:
+  - the hypothesis edit is e1 with its expectation;
+  - three `told` rows;
+  - later refinements see YOUR EARLIER EDITS, with `memory hyp.right (still as written)`, its check counts, and
+    "expected within 3 … met at #";
+  - every input and reply is kept with the model.
+  - Its run is now 11 decisions instead of 10. The ledger's sandbox check before the model call made the dispute
+    refinement take 3.5 s instead of 0.5 s, so the revised rule landed one decision later.
+- **Development tools:**
+  - `arc_run_measures.mjs` reproduces the loop's measures for su15-l1-1.
+  - The analyst's digest of su15-l1-1 is 48,067 characters.
+  - The analyst's first real call (gpt-6.1-sol) sent nothing for 15 minutes and timed out, unlike the replay's 15–60 s
+    replies. The tool now waits 5 minutes per read and tries once more. It is not yet checked end to end.
+
+### E1 (launched 2026-10-17)
+
+- su15-r04-e1 in `D:/autoresearch_pi_project/runs/arc-r04-20261017`, on the commit that adds r04.
+- The su15 loop's settings: `0 6000000 0 SNAPLEVEL=1`, thinking off, yibu / qwen3.8-27b.
+- Launcher `C:/Users/qi/tmp/r04/launch-su15-r04.cmd`.
+- **Budget:** at most 6M budget tokens.
+- **Shakedown measures:**
+  - edits with ids and expectations;
+  - `told` rows;
+  - refinement inputs with YOUR EARLIER EDITS;
+  - expectation outcomes;
+  - the share of check results that are errors, and whether the agent repairs such checks;
+  - inputs and replies logged for every refinement;
+  - `refiner:ledger` and `refiner:expect` errors in `errors.jsonl`.
 
 ## Evaluation (each step needs its own budget)
 

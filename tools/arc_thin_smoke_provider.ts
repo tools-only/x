@@ -586,7 +586,9 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 					: why.includes("a candidate rule for prompts/rules.md")
 					? "FILE prompts/rules.md\n- ACTION1 and ACTION4 move the 9 one cell right (hyp.right)\nEND\nWHY hyp.right held on every move it applied to"
 					: why.includes("no hypothesis carries a check")
-					? `HYPOTHESIS hyp.right\nclaim: ACTION1 and ACTION4 move the 9 in row 3 one cell right\nquestion: what the actions do\npredicts: the 9 one column further right\ncheck:\n${PROMOTION_CHECK}\nEND\nWHY belief.move was restated three times`
+					// With an expectation (the refinement ledger, r04): later refinements are told whether it was met.
+					? `HYPOTHESIS hyp.right\nclaim: ACTION1 and ACTION4 move the 9 in row 3 one cell right\nquestion: what the actions do\npredicts: the 9 one column further right\ncheck:\n${PROMOTION_CHECK}\nEND\nWHY belief.move was restated three times\n` +
+						"EXPECT within 3 actions: the agent moves the 9 right\ndef check(t):\n    return True if t['action'] in ('ACTION1', 'ACTION4') else None\nEND"
 					: why.includes("redone")
 					? "FILE tools/cell_reader.py\n# Read one cell of the first frame.\ncell = history.grid(0)[0][args.get('x', 0)]\ncell\nEND\nWHY the same cell lookup was typed at #4-#5"
 					// Asked by the agent: an attempt to replace the agent's own tool, which the runtime refuses.

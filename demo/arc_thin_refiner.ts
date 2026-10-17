@@ -31,7 +31,8 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"check:\n<python defining check(t)>\nEND\nWHY <one line>\n" +
 	"or\nNONE <one line: why no edit helps now>\n" +
 	"A check sees one recorded move: t['action'] (e.g. 'ACTION1'), t.get('x'), t.get('y'), t['level_changed'], t['state'], t['levels_completed'], " +
-	"t['before'] and t['after'] (the grids, rows of ints, before[y][x]). It returns True when the claim holds on that move, False when " +
+	"t['changed_cells'] (how many cells the move changed), t['before'] and t['after'] (the grids, rows of ints, before[y][x]); t.get of " +
+	"any other key fails. It returns True when the claim holds on that move, False when " +
 	"the move contradicts it, None when the move does not bear on it. It is also run on mismatched moves; one that is True on those " +
 	"too tests nothing and is not promoted.\n" +
 	`FILE paths: prompts/rules.md (under ${RULES_CHARS} characters; one rule per line, each ending with the key of the check that ` +
@@ -48,14 +49,90 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"Never invent observations; " +
 	"a rule without evidence gets confidence 1.";
 
+/**
+ * The refinement ledger (ARC_REFINE_LEDGER, on by default; ported from claude/refiner-ledger-20261016, record
+ * docs/plans/2026-10-16-refinement-ledger.md there): what became of the refinements' own latest edits, and what an edit
+ * was expected to change. In su15-r2 a strategy rewritten to "complete row 63" was followed twice into GAME_OVER (#207,
+ * #240), and nothing told the next refinement; in su15-l0-1 the refinements rewrote one goal line seven times.
+ */
+export const REFINER_LEDGER_SYSTEM = "\nYOUR EARLIER EDITS, when present, lists your latest edits and what the record shows since the agent " +
+	"was told of each. An edit that was not used, or whose expectation failed, is the first thing to revise or replace, before " +
+	"adding another. After an edit's WHY line you may say what it should change:\nEXPECT within <N> actions: <one sentence: what " +
+	"the agent's moves will show if the edit is used and right>\n<python defining check(t), as for hypotheses: True when a move " +
+	"shows it, False when a move contradicts it, None when the move does not bear on it>\nEND\nThe runtime runs it on the moves " +
+	"after the agent is told of the edit and reports the result under YOUR EARLIER EDITS.";
+
+export const EXPECT_MAX_ACTIONS = 60;
+/** What an edit is expected to change: a check on the moves that follow it. `within` is absent when the reply named none. */
+export type Expectation = { claim: string; within?: number; check: string };
+
+/** One of the refinements' latest edits as the runtime found it; the extension counts, this module only renders. */
+export type LedgerEntry = {
+	/** The action count the edit's record ended at ("after #N", as the agent's notice says). */
+	at: number;
+	/** The action count when the agent was told of it (the decision start that showed the notice); absent: not yet. */
+	told?: number;
+	/** What it edited, e.g. "prompts/strategy.md v5" or "memory hyp.reach". */
+	target: string;
+	why: string;
+	/** What became of it: "still current", "rewritten by a refinement (now v6)", "deleted by the agent at #81". */
+	now: string;
+	/** The record since the agent was told, e.g. "14 actions (1 RESET), no level change". */
+	since?: string;
+	/** Use the runtime can count: tool calls, a view's output, a hypothesis check's results. */
+	use?: string;
+	/** The expectation and what the moves since showed. */
+	expect?: string;
+};
+
+const clip = (text: string, chars: number) => {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > chars ? flat.slice(0, chars - 1) + "…" : flat;
+};
+
+/** The ledger section of a refinement's input, newest edit first, within `maxChars`. */
+export function renderEditLedger(entries: LedgerEntry[], maxChars = 1800): string {
+	if (!entries.length) return "";
+	const lines = ["YOUR EARLIER EDITS (newest first; what the record shows since the agent was told of each):"];
+	let used = lines[0].length;
+	for (const [i, entry] of entries.entries()) {
+		const line = `- after #${entry.at} ${entry.target} (${entry.now}): "${clip(entry.why, 140)}" · ` +
+			(entry.told === undefined ? "not shown to the agent yet" : `since #${entry.told}: ${entry.since ?? "no actions"}`) +
+			(entry.use ? ` · ${entry.use}` : "") + (entry.expect ? ` · ${entry.expect}` : "");
+		if (used + line.length + 1 > maxChars) { lines.push(`- (${entries.length - i} older edit(s) not shown)`); break; }
+		lines.push(line);
+		used += line.length + 1;
+	}
+	return lines.join("\n");
+}
+
 const EDITABLE = /^(prompts\/[a-z0-9_-]+\.md|(tools|lib)\/[a-z_][a-z0-9_]*\.py|skills\/[a-z0-9_-]+\/SKILL\.md)$/;
 
+/** An EXPECT block after the edit: the expectation, or why it could not be used. */
+type Expects = { expect?: Expectation; expectError?: string };
+
 export type RefinerEdit =
-	| { kind: "file"; path: string; content: string; why: string }
-	| { kind: "memory"; key: string; confidence: number; text: string; why: string; replaces?: string[] }
-	| { kind: "hypothesis"; key: string; claim: string; question?: string; predicts?: string; check?: string; why: string }
+	| ({ kind: "file"; path: string; content: string; why: string } & Expects)
+	| ({ kind: "memory"; key: string; confidence: number; text: string; why: string; replaces?: string[] } & Expects)
+	| ({ kind: "hypothesis"; key: string; claim: string; question?: string; predicts?: string; check?: string; why: string } & Expects)
 	| { kind: "none"; why: string }
 	| { kind: "invalid"; why: string };
+
+/** Code fences around a python body are tolerated, as in a hypothesis check. */
+const unfence = (code: string) => code.replace(/^\s*```[a-z]*\s*\r?\n/, "").replace(/\r?\n\s*```\s*$/, "").trimEnd();
+
+/** The EXPECT block in `text` (a reply with its edit block taken out), if any. */
+export function parseExpect(text: string): Expects {
+	// "within 5:" without "actions" is a horizon too (su15-f2-src2 #62 wrote it, and it was read as part of the sentence).
+	const match = /^\s*EXPECT\b[ \t]*(?:within[ \t]+(\d+)(?:[ \t]+actions?)?\b)?[ \t:]*([^\r\n]*)\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
+	if (!match) return {};
+	const claim = match[2].trim().slice(0, 300);
+	const check = unfence(match[3]);
+	if (!claim) return { expectError: "an EXPECT needs a sentence saying what the moves will show" };
+	if (!/\bdef\s+check\s*\(/.test(check)) return { expectError: "an EXPECT check must define check(t)" };
+	const within = match[1] ? Math.max(1, Math.min(EXPECT_MAX_ACTIONS, Number(match[1]))) : undefined;
+	return { expect: { claim, ...(within ? { within } : {}), check: check + "\n" } };
+}
 
 /** A HYPOTHESIS block: `field: value` lines, then `check:` and the python source up to END. */
 function parseHypothesis(match: RegExpExecArray, why: string): RefinerEdit {
@@ -73,21 +150,29 @@ function parseHypothesis(match: RegExpExecArray, why: string): RefinerEdit {
 		...(predicts ? { predicts: predicts.slice(0, 300) } : {}), ...(check ? { check: check + "\n" } : {}), why };
 }
 
-/** One FILE, MEMORY or HYPOTHESIS block (fences inside it are tolerated) and its WHY line, or NONE. */
+/** One FILE, MEMORY or HYPOTHESIS block (fences inside it are tolerated), its WHY line and an optional EXPECT block, or NONE. */
 export function parseRefinerReply(text: string): RefinerEdit {
 	const none = /^\s*NONE\b[:\s]*(.*)$/m.exec(text);
 	const file = /^\s*FILE\s+(\S+)\s*\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
-	const memory = /^\s*MEMORY\s+(\S+)\s+([1-5])(?:[ \t]+replaces[ \t]+([^\r\n]+))?\s*\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
+	// The charter writes the optional part as "[replaces <key>, <key>]", and replies copy the brackets: all 5 invalid
+	// replies in the 2026-10-16 refinement replay (96 replies) were such MEMORY lines. Brackets are accepted.
+	const memory = /^\s*MEMORY\s+(\S+)\s+([1-5])(?:[ \t]+\[?replaces[ \t]+([^\r\n\]]+)\]?)?\s*\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
 	const hypothesis = /^\s*HYPOTHESIS\s+(\S+)\s*\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
 	const block = file ?? memory ?? hypothesis;
 	if (!block) return none ? { kind: "none", why: none[1].trim().slice(0, 300) } : { kind: "invalid", why: "no FILE, MEMORY or HYPOTHESIS block ending in END, and no NONE line" };
-	const why = (/^\s*WHY\b[:\s]*(.*)$/m.exec(text.slice((block.index ?? 0) + block[0].length))?.[1]?.trim() ?? "").slice(0, 300);
-	if (!file && !memory) return parseHypothesis(hypothesis!, why);
+	const end = (block.index ?? 0) + block[0].length;
+	const why = (/^\s*WHY\b[:\s]*(.*)$/m.exec(text.slice(end))?.[1]?.trim() ?? "").slice(0, 300);
+	// The expectation may come before or after the edit; the edit's own block is not searched.
+	const expects = parseExpect(text.slice(0, block.index ?? 0) + "\n" + text.slice(end));
+	if (!file && !memory) {
+		const edit = parseHypothesis(hypothesis!, why);
+		return edit.kind === "hypothesis" ? { ...edit, ...expects } : edit;
+	}
 	if (!file) {
 		const body = memory![4].replace(/\s+/g, " ").trim();
 		if (!/^[a-z0-9_.-]{1,40}$/i.test(memory![1]) || !body) return { kind: "invalid", why: "memory needs a short key and a text" };
 		const replaces = (memory![3] ?? "").split(/[\s,]+/).map((key) => key.trim()).filter((key) => key && key !== memory![1]);
-		return { kind: "memory", key: memory![1], confidence: Number(memory![2]), text: body.slice(0, 600), why, ...(replaces.length ? { replaces } : {}) };
+		return { kind: "memory", key: memory![1], confidence: Number(memory![2]), text: body.slice(0, 600), why, ...(replaces.length ? { replaces } : {}), ...expects };
 	}
 	const path = file[1].replace(/^`|`$/g, "");
 	if (!EDITABLE.test(path)) return { kind: "invalid", why: `path ${path} is not a prompt, tool, library or skill file` };
@@ -99,5 +184,5 @@ export function parseRefinerReply(text: string): RefinerEdit {
 		const split = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)([\s\S]*)$/.exec(content);
 		if (split && split[2].length > STRATEGY_CHARS) content = split[1] + split[2].slice(0, STRATEGY_CHARS);
 	}
-	return { kind: "file", path, content: content.endsWith("\n") ? content : content + "\n", why };
+	return { kind: "file", path, content: content.endsWith("\n") ? content : content + "\n", why, ...expects };
 }

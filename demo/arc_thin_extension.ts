@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
-import { REFINE_GUIDE_PATH, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply } from "./arc_thin_refiner.ts";
+import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply, renderEditLedger, type LedgerEntry } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { Binder } from "./arc_thin_binder.ts";
@@ -377,7 +377,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		spentTokens.set(kind, (spentTokens.get(kind) ?? 0) + (Number(usage.input) || 0) + (Number(usage.output) || 0));
 		if (native) {
 			if (kind === 'agent' && parentRequest) { requestTrace.finish(parentRequest,message); parentRequest=undefined; }
-			append('usage.jsonl',{decision,kind,...usageRecord(message),request_id:requestTrace.idFor(message) ?? null});
+			// The model that answered, per row: the agent's and its side calls' tokens can be told apart afterwards.
+			append('usage.jsonl',{decision,kind,...usageRecord(message),model:message?.model ?? null,request_id:requestTrace.idFor(message) ?? null});
 			return;
 		}
 		append("usage.jsonl", {
@@ -626,7 +627,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (held) out.push(["python", held]);
 			if (historyText) out.push(["history", historyText]);
 			if (recent) out.push(["recent", recent]);
-			if (refinerNotice) { out.push(["refiner", refinerNotice]); refinerNotice = ""; }
+			if (refinerNotices.length) {
+				out.push(["refiner", refinerNotices.map(({ text }) => text).join("\n")]);
+				// When the agent is told of an edit: the ledger counts what it did from this decision on.
+				for (const { editId } of refinerNotices) if (editId) append("refiner.jsonl", { kind: "told", id: editId, at: trajectory.length, decision });
+				refinerNotices = [];
+			}
 			return out;
 		};
 		const sections: Array<[string, string]> = control ? [["recent", recent]]
@@ -763,6 +769,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		.map(([key, h]) => ({ key, source: h.check!, version: claimVersion(h.check!) }));
 
 	/**
+	 * What the environment reported for the transitions `ns`, as a check sees it besides the two grids (the guest adds
+	 * changed_cells from them). Checks run strict (r04, 2026-10-17): t.get of a key a move does not carry fails. Before,
+	 * 6 of the 14 hypotheses refinements wrote in su15 r2-r9 read changed_cells, which a move did not carry, and were
+	 * judged on the default; one recorded 206 fails and 5 holds so, and those counts decide promotion.
+	 */
+	function transitionsFor(ns: Iterable<number>): Record<string, unknown> {
+		const byN = new Map(trajectory.map((row) => [row.n, row]));
+		return Object.fromEntries([...ns].map((n) => {
+			const row = byN.get(n);
+			return [String(n), row && {
+				action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
+				level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed,
+			}];
+		}));
+	}
+
+	/**
 	 * Run the checks of `keys` (default: every hypothesis with a check) on the recorded transitions they have no result
 	 * for yet. One sandbox call per batch of grids; a check that does not compile is recorded once and skipped.
 	 */
@@ -778,16 +801,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const { batches, missing } = claimSegments([...wanted], grids);
 		for (const n of missing) claimGridsMissing.add(n);
 		if (missing.length) logError("claims:grids", new Error(`no grids for transitions ${missing.slice(0, 8).join(", ")}`));
-		const meta = Object.fromEntries(trajectory.map((row) => [String(row.n), {
-			action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
-			level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed,
-		}]));
 		const byN = new Map(trajectory.map((row) => [row.n, row]));
 		for (const segments of batches) {
 			const ns = new Set(segments.flatMap((segment) => segment.steps.map((step) => step.n)));
 			const result = await runGuest({
-				mode: "claims", claims: claims.map(({ key, source }) => ({ key, source })), segments,
-				transitions: Object.fromEntries([...ns].map((n) => [String(n), meta[String(n)]])),
+				mode: "claims", strict: true, claims: claims.map(({ key, source }) => ({ key, source })), segments, transitions: transitionsFor(ns),
 			}, signal);
 			if (!result.ok) { logError("claims:run", new Error(guestFailure(result))); return; }
 			const value = result.value as Record<string, { results: Array<[number, ClaimValue, string?]>; error: string | null }>;
@@ -851,7 +869,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const claims = claimChecks().filter((claim) => due.some((d) => d.key === claim.key && d.version === claim.version));
 		// Too little history to pair moves: decided again once there is.
 		if (!segments.length || !claims.length) return;
-		const result = await runGuest({ mode: "claims", claims: claims.map(({ key, source }) => ({ key, source })), segments, transitions }, signal);
+		const result = await runGuest({ mode: "claims", strict: true, claims: claims.map(({ key, source }) => ({ key, source })), segments, transitions }, signal);
 		if (!result.ok) { logError("claims:controls", new Error(guestFailure(result))); return; }
 		const value = result.value as Record<string, { results: Array<[number, ClaimValue, string?]>; error: string | null }>;
 		for (const claim of claims) {
@@ -1239,6 +1257,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const REFINER_SHARE = envNumber("ARC_REFINE_MAX_SHARE", 0.1);
 	/** Below this many refinement tokens the share is not applied: early in a run one call is a large share. */
 	const REFINER_MIN_TOKENS = envNumber("ARC_REFINE_MIN_TOKENS", 20_000);
+	/**
+	 * The refinement ledger (r04; from claude/refiner-ledger-20261016): each refinement is given what became of the
+	 * refinements' latest edits, and an edit may carry an expectation that the runtime checks on the moves that follow.
+	 * ARC_REFINE_LEDGER=0 restores the earlier input and charter.
+	 */
+	const REFINE_LEDGER = process.env.ARC_REFINE_LEDGER !== "0";
+	const LEDGER_EDITS = envNumber("ARC_REFINE_LEDGER_EDITS", 5);
 	let refineNotes: CriticNote[] = [];
 	let refinedThrough = 0;
 	let lastRefineAt = 0;
@@ -1246,7 +1271,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let goalTestAskedAt = -1;
 	let viewAskedLevel = -1;
 	let refinerInFlight: Promise<void> | undefined;
-	let refinerNotice = "";
+	/** Refinement outcomes not yet shown, with the id of the edit each reports (the ledger follows it from there). */
+	let refinerNotices: Array<{ text: string; editId?: string }> = [];
+	/** Edits made so far in this run (and the source run of a fork): the next edit's id is e<count + 1>. */
+	let refinerEdits = readRows("refiner.jsonl").filter((row) => row.kind === "edit").length;
 	/** Files a refinement wrote: later refinements may rewrite them; other existing files belong to the agent. */
 	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string").map((row) => row.path));
 	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || path === RULES_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
@@ -1363,9 +1391,127 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch { return ""; }
 	}
 
+	/** "14 actions (1 RESET, GAME_OVER at #92), no level change" for the recorded actions `rows`. */
+	function sinceText(rows: ActionRow[]): string {
+		if (!rows.length) return "no actions";
+		const resets = rows.filter((row) => row.action === "RESET").length;
+		const over = rows.filter((row) => row.state === "GAME_OVER").map((row) => `#${row.n}`);
+		const levels = rows.filter((row) => row.level_changed).map((row) => `level ${row.levels_completed} reached at #${row.n}`);
+		const marks = [...(resets ? [`${resets} RESET`] : []), ...(over.length ? [`GAME_OVER at ${over.join(", ")}`] : [])];
+		return `${rows.length} action${rows.length === 1 ? "" : "s"}${marks.length ? ` (${marks.join(", ")})` : ""}, ${levels.length ? levels.join(", ") : "no level change"}`;
+	}
+
+	/** Each expectation's check run on the moves (start, end] (claims mode, strict, as hypothesis checks): the results per id. */
+	async function expectationResults(list: Array<{ id: string; source: string; start: number; end: number }>) {
+		const out = new Map<string, { results: Array<[number, ClaimValue, string?]>; error?: string }>();
+		const ns = new Set<number>();
+		for (const item of list) for (let n = item.start + 1; n <= item.end; n += 1) ns.add(n);
+		if (!ns.size) return out;
+		for (const segments of claimSegments([...ns], grids).batches) {
+			const steps = new Set(segments.flatMap((segment) => segment.steps.map((step) => step.n)));
+			const result = await runGuest({ mode: "claims", strict: true, claims: list.map(({ id, source }) => ({ key: id, source })), segments, transitions: transitionsFor(steps) });
+			if (!result.ok) { logError("refiner:expect", new Error(guestFailure(result))); break; }
+			const value = result.value as Record<string, { results: Array<[number, ClaimValue, string?]>; error: string | null }>;
+			for (const item of list) {
+				const got = value[item.id];
+				if (!got) continue;
+				const entry = out.get(item.id) ?? { results: [] };
+				if (got.error) entry.error = got.error;
+				entry.results.push(...got.results.filter(([n]) => n > item.start && n <= item.end));
+				out.set(item.id, entry);
+			}
+		}
+		return out;
+	}
+
+	/** What an expectation's results say, first move first: met, contradicted, a failing check, or not seen yet. */
+	function expectationText(expect: { claim: string; within: number }, moves: number, got?: { results: Array<[number, ClaimValue, string?]>; error?: string }): string {
+		const head = `expected within ${expect.within}: "${expect.claim.replace(/\s+/g, " ").slice(0, 160)}" — `;
+		if (got?.error) return head + `its check could not run (${got.error.replace(/\s+/g, " ").slice(0, 120)})`;
+		const results = [...(got?.results ?? [])].sort((a, b) => a[0] - b[0]);
+		const decided = results.find(([, value]) => value === true || value === false);
+		const errors = results.filter(([, value]) => value === "error");
+		// A check that raises only on the moves it means to judge would otherwise read as "not seen".
+		const raised = errors.length ? `its check raised on ${errors.length} of ${results.length} move(s), first at #${errors[0][0]} (${String(errors[0][2] ?? "").replace(/\s+/g, " ").slice(0, 140)})` : "";
+		if (decided) return head + `${decided[1] ? "met" : "contradicted"} at #${decided[0]}` + (raised ? `; ${raised}` : "");
+		if (raised) return head + raised;
+		return head + (moves >= expect.within ? `not seen in ${expect.within} actions` : `not seen yet (${moves} of ${expect.within} actions)`);
+	}
+
+	/**
+	 * The refinement ledger: the refinements' latest edits, what became of each (still current, rewritten, deleted), what
+	 * the agent did since it was told of it (actions, resets, GAME_OVERs, level changes, calls of a refined tool, a view's
+	 * output, a refined hypothesis's check results) and whether its expectation was met. The runtime counts; what an
+	 * outcome means is left to the refinement.
+	 */
+	async function editLedgerText(): Promise<string> {
+		const rows = readRows("refiner.jsonl");
+		const edits = rows.filter((row) => row.kind === "edit").slice(-LEDGER_EDITS).reverse();
+		if (!edits.length) return "";
+		const toldAt = new Map<string, number>(rows.filter((row) => row.kind === "told").map((row) => [String(row.id), Number(row.at) || 0]));
+		const memoryRows = readRows("memory.jsonl");
+		const toolRuns = readRows("component_runs.jsonl").filter((row) => row.kind === "tool");
+		const versions = binder!.versionMap();
+		const views = new Set(binder!.active().filter((c) => c.kind === "tool" && c.view).map((c) => c.path));
+		const empty = new Set((nativeRuntime?.emptyViews() ?? []).map((view) => view.path));
+		const told = (edit: any) => edit.id === undefined ? undefined : toldAt.get(String(edit.id));
+		const horizon = (edit: any) => Math.max(1, Number(edit.expect?.within) || REFINE_EVERY);
+		const expectations = edits.filter((edit) => edit.expect?.check && told(edit) !== undefined).map((edit) => ({
+			id: String(edit.id), source: String(edit.expect.check), start: told(edit)!, end: Math.min(trajectory.length, told(edit)! + horizon(edit)),
+		}));
+		const results = await expectationResults(expectations);
+		const entries = edits.map((edit): LedgerEntry => {
+			const from = told(edit);
+			const path = String(edit.path ?? "");
+			const entry: LedgerEntry = { at: Number(edit.at) || 0, ...(from !== undefined ? { told: from } : {}),
+				target: path, why: String(edit.why ?? ""), now: "still current" };
+			if (from !== undefined) entry.since = sinceText(trajectory.filter((row) => row.n > from));
+			if (path.startsWith("memory:")) {
+				const key = path.slice("memory:".length);
+				entry.target = `memory ${key}`;
+				const later = memoryRows.filter((row) => row.key === key && String(row.t ?? "") > String(edit.t ?? ""));
+				const last = later.at(-1);
+				const who = last?.by === "refinement" ? "a refinement" : "the agent";
+				entry.now = last ? `${last.deleted ? "deleted" : "rewritten"} by ${who} at #${last.at}`
+					: memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key) ? "still as written" : "no longer in memory";
+				const hypothesis = memory.hypotheses.get(key);
+				if (hypothesis && from !== undefined) {
+					// The current check's results only: a rewritten check starts a new count.
+					const version = hypothesis.check ? claimVersion(hypothesis.check) : undefined;
+					const checks = claimRows.filter((row) => row.key === key && row.version === version && row.n > from);
+					const count = (value: ClaimValue) => checks.filter((row) => row.result === value).length;
+					entry.use = (!version ? "no check" : checks.length ? `its check since: holds ${count(true)} · fails ${count(false)} · n/a ${count(null)}` +
+						(count("error") ? ` · raised ${count("error")}` : "") : "its check has not run on a move since") + `; status ${hypothesis.status}`;
+				}
+			} else {
+				const current = versions[path];
+				entry.target = `${path} v${edit.version ?? "?"}`;
+				entry.now = current === undefined ? "retired"
+					: current === edit.version ? "still current"
+					: rows.some((row) => row.kind === "edit" && row.path === path && row.version === current) ? `rewritten by a refinement (now v${current})`
+					: `changed by the agent (now v${current})`;
+				if (/^tools\/[^/]+\.py$/.test(path) && from !== undefined && current !== undefined) entry.use = views.has(path)
+					? (empty.has(path) ? "a view that has shown nothing on its latest states" : "a view, shown at each decision")
+					: `called ${toolRuns.filter((row) => row.path === path && Number(row.n) > from).length} time(s) since`;
+			}
+			if (edit.expect?.claim && from !== undefined) entry.expect = expectationText({ claim: String(edit.expect.claim), within: horizon(edit) },
+				trajectory.length - from, results.get(String(edit.id)));
+			else if (edit.expect?.claim) entry.expect = `expected within ${horizon(edit)}: "${String(edit.expect.claim).slice(0, 160)}"`;
+			else if (edit.expect_error) entry.expect = `its EXPECT was not used: ${String(edit.expect_error)}`;
+			return entry;
+		});
+		return renderEditLedger(entries);
+	}
+
 	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
 		const promotionId = pendingPromotion;
 		pendingPromotion = undefined;
+		// The ledger first: its checks run in the sandbox, and the record below is read after them.
+		let ledger = "";
+		if (REFINE_LEDGER) {
+			try { ledger = await editLedgerText(); }
+			catch (error) { logError("refiner:ledger", error); }
+		}
 		const evidenceAt = trajectory.length, evidenceLevel = currentLevel();
 		const sourceVersions = binder!.versionMap();
 		const memoryBefore = JSON.stringify(memoryForSkills(memory));
@@ -1375,6 +1521,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const input = [
 			`WHY NOW: ${triggers.join("; ")}`,
 			`ACTIONS SO FAR: ${trajectory.length}; levels completed: ${currentLevel()}; state: ${observation?.state ?? "unknown"}`,
+			...(ledger ? [ledger] : []),
 			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
 			`CURRENT ${RULES_PATH}${rulesText() ? ` (v${binder!.versionMap()[RULES_PATH] ?? "?"})` : " (not written yet)"}:\n${rulesText() || "(empty)"}`,
 			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
@@ -1385,10 +1532,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
 		const guide = refineGuide();
-		const system = REFINER_SYSTEM + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		const system = REFINER_SYSTEM + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
+		// could not: the r03b line did not keep them).
+		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
 		const reply: any = await sideCall(ctx, system, [{ type: "text", text: input }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
 		appendUsage("refiner", reply);
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
+		append("refiner_replies.jsonl", { at: evidenceAt, decision, model: ctx.model?.id ?? null, stop_reason: reply.stopReason ?? null, text: answer.slice(0, 20_000) });
 		const edit = parseRefinerReply(answer);
 		settlePromotion(promotionId, edit as { kind: string; path?: string });
 		const at = trajectory.length;
@@ -1400,8 +1551,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			return;
 		}
 		// Notices not yet shown are kept: two refinements between decisions are both reported.
-		const told = (what: string, why: string) => [refinerNotice, `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
-			(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits."].filter(Boolean).join("\n");
+		const told = (what: string, why: string, editId: string) => refinerNotices.push({ editId, text: `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
+			(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits." });
+		// An applied edit gets an id (the ledger follows it from the decision that shows it) and keeps its expectation.
+		const ledgerFields = (id: string) => ({ id, ...(edit.kind === "file" || edit.kind === "memory" || edit.kind === "hypothesis"
+			? { ...(edit.expect ? { expect: { ...edit.expect, within: edit.expect.within ?? REFINE_EVERY } } : {}),
+				...(edit.expectError ? { expect_error: edit.expectError } : {}) } : {}) });
 		if (edit.kind === "memory") {
 			const plan = planNativeMemoryUpdate(memory, { set: [{ key: edit.key, text: edit.text, confidence: edit.confidence,
 				...(edit.replaces ? { replaces: edit.replaces.filter((key) => memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key)) } : {}) }] },
@@ -1410,8 +1565,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 			applyRows(memory, plan.rows);
 			const retired = plan.rows.filter((row: any) => row.deleted).map((row) => row.key);
-			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, ...(retired.length ? { replaces: retired } : {}) });
-			refinerNotice = told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why);
+			const id = `e${++refinerEdits}`;
+			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, ...(retired.length ? { replaces: retired } : {}), ...ledgerFields(id) });
+			told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why, id);
 			return;
 		}
 		// A belief turned into a checked hypothesis goes through the memory component like the agent's own: the runtime
@@ -1423,8 +1579,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
 			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 			applyRows(memory, plan.rows);
-			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check) });
-			refinerNotice = told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why);
+			const id = `e${++refinerEdits}`;
+			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check), ...ledgerFields(id) });
+			told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why, id);
 			return;
 		}
 		if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
@@ -1443,8 +1600,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		nativeRuntime!.register();
 		const loaded = !/NOT loaded/.test(receipt ?? "");
 		const version = binder!.versionMap()[edit.path];
-		append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt });
-		refinerNotice = told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why);
+		const id = `e${++refinerEdits}`;
+		append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt, ...ledgerFields(id) });
+		told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why, id);
 	}
 
 	/** Start one refinement unless one is running; true when it was started. */
@@ -1459,7 +1617,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		refineNotes.push({ at: trajectory.length, level: currentLevel(), triggers, lines: [], dropped: [] });
 		lastRefineAt = trajectory.length;
-		append("refiner.jsonl", { kind: "start", at: trajectory.length, decision, triggers });
+		append("refiner.jsonl", { kind: "start", at: trajectory.length, decision, triggers, model: ctx.model.id ?? null });
 		refinerInFlight = runRefiner(ctx, triggers, samples)
 			.catch((error) => { logError("refiner", error); append("refiner.jsonl", { kind: "failed", at: trajectory.length, triggers, error: errorText(error).slice(0, 300) }); })
 			.finally(() => {
@@ -1934,7 +2092,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					next_test: Type.Optional(line(300, "Cheapest separating action.")),
 					check: Type.Optional(Type.String({ maxLength: 4000, description:
 						"Optional Python: def check(t) -> True/False/None (holds/fails/does not apply) for one transition t " +
-						"(t.n, t.action, t.x, t.y, t.before, t.after grids [y][x], t.level_changed, t.state, t.levels_completed). " +
+						"(t.n, t.action, t.x, t.y, t.before, t.after grids [y][x], t.level_changed, t.state, t.levels_completed, " +
+						"t.changed_cells; t.get of any other key fails). " +
 						"Run on every recorded and later move; results are shown with the hypothesis. \"\" removes it." })),
 					evidence: Type.Optional(Type.Object({
 						action: Type.Optional(Type.Integer({ minimum: 1, description: "Test action number." })),
