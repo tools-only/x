@@ -193,6 +193,8 @@ export type PromotionView = {
 	refuted: Array<{ key: string; failing: number[] }>;
 	/** Cited keys with no hypothesis or no check: a rule nothing keeps. */
 	unchecked: string[];
+	/** Cited keys that name no hypothesis at all (H2c): su15-r04-e1's rules cited three that never existed. */
+	missing: string[];
 	overCap: boolean;
 };
 
@@ -203,7 +205,7 @@ export type PromotionView = {
 export function promotionView(hypotheses: Map<string, { version?: string; status: string }>, rows: ClaimRow[],
 	controls: Map<string, ControlRecord>, rules: string): PromotionView {
 	const cited = new Set(citedKeys(rules));
-	const view: PromotionView = { candidates: [], needControls: [], vacuous: [], refuted: [], unchecked: [], overCap: rules.length > RULES_CHARS };
+	const view: PromotionView = { candidates: [], needControls: [], vacuous: [], refuted: [], unchecked: [], missing: [], overCap: rules.length > RULES_CHARS };
 	for (const [key, h] of hypotheses) {
 		if (!h.version) continue;
 		const mine = rows.filter((r) => r.key === key && r.version === h.version);
@@ -217,7 +219,10 @@ export function promotionView(hypotheses: Map<string, { version?: string; status
 		else if (!ok) view.vacuous.push(key);
 		else view.candidates.push({ key, version: h.version, holds: held.length, levels: new Set(held.map((r) => r.level)).size });
 	}
-	for (const key of cited) if (!hypotheses.get(key)?.version) view.unchecked.push(key);
+	for (const key of cited) {
+		if (!hypotheses.has(key)) view.missing.push(key);
+		if (!hypotheses.get(key)?.version) view.unchecked.push(key);
+	}
 	return view;
 }
 

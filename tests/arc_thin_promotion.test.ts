@@ -81,6 +81,10 @@ test('a cited rule whose check fails is in dispute; a cited key with no check is
   assert.deepEqual(view.refuted, [{ key: 'hyp.a', failing: [3, 5] }]);
   assert.deepEqual(view.unchecked, ['hyp.bar']);
   assert.equal(view.candidates.length, 0);
+  // A cited key that names no hypothesis at all, apart from one that exists without a check (su15-r04-e1's refinements
+  // cited hyp.action6_mechanic, hyp.border_cost and hyp.action7_noop, none of which existed).
+  assert.deepEqual(view.missing, ['hyp.bar']);
+  assert.deepEqual(promotionView(new Map([['hyp.a', hyp('v1')], ['hyp.bar', hyp()]]), [], new Map(), rules).missing, []);
   assert.match(promotionTriggers(view)[0], /hyp\.a, cited in prompts\/rules\.md, failed at #3, #5: the rule is in dispute/);
   const long = promotionView(new Map(), [], new Map(), 'x'.repeat(RULES_CHARS + 1));
   assert.equal(long.overCap, true);

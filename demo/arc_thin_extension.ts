@@ -945,8 +945,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const latest = keys.map((key) => [key, claimRows.find((row) => row.key === key && row.version === versions.get(key) && row.n === n)?.result] as const);
 		const failed = latest.filter(([, result]) => result === false).map(([key]) => key);
 		const held = latest.filter(([, result]) => result === true).length;
-		const unchecked = keys.filter((key) => !versions.has(key));
+		// A cited key that names no hypothesis is not the same as one without a check (H2c).
+		const missing = keys.filter((key) => !memory.hypotheses.has(key));
+		const unchecked = keys.filter((key) => memory.hypotheses.has(key) && !versions.has(key));
 		return `RULE CHECKS (${RULES_PATH}) on #${n}: ${held} held, ${failed.length ? `failed: ${failed.join(", ")}` : "0 failed"}` +
+			(missing.length ? `; cites ${missing.join(", ")}, which ${missing.length > 1 ? "do" : "does"} not exist` : "") +
 			(unchecked.length ? `; no check behind ${unchecked.join(", ")}` : "");
 	}
 
@@ -1406,6 +1409,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const contest = h.status === "contested" ? currentContest(key, h) : undefined;
 			return contest ? [{ key, version: claimVersion(h.check!), contest }] : [];
 		}), view.refuted.map((r) => r.key)));
+		// A rule citing a hypothesis that does not exist (H2c): only refinements write the rules prompt.
+		if (!urgentOnly) for (const key of view.missing)
+			due.push([`missing:${key}`, `${RULES_PATH} cites ${key}, which does not exist: write it as a HYPOTHESIS with a check, or take the line out`]);
 		(urgentOnly ? [] : view.candidates).forEach((c, i) => due.push([`promote:${c.key}@${c.version}`, findings[i]]));
 		if (!urgentOnly && ![...memory.hypotheses.values()].some((h) => h.check)) {
 			const touches = new Map<string, number>();
@@ -1438,6 +1444,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!id) return;
 		const addressed = /^(churn|unchecked):/.test(id) ? edit.kind === "hypothesis"
 			: id.startsWith("contested:") ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === STRATEGY_PATH)
+			: id.startsWith("missing:") ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === RULES_PATH)
 			: /^(promote|refuted|cap):/.test(id) ? edit.kind === "file" && edit.path === RULES_PATH
 			: id.startsWith("view:") ? edit.kind === "file" && edit.path === id.slice(5).replace(/@\d+$/, "") : true;
 		const retryKey = id.startsWith("unchecked:") ? "unchecked" : id;

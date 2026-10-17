@@ -352,6 +352,27 @@ test('a check-contested hypothesis starts one refinement, and a HYPOTHESIS edit 
   } finally { await h.close(); }
 });
 
+test('a rule citing a hypothesis that does not exist is named under RULE CHECKS and raised to a refinement', async () => {
+  // su15-r04-e1's refinements wrote rules citing hyp.action6_mechanic, hyp.border_cost and hyp.action7_noop, none of
+  // which existed; RULE CHECKS said "no check behind" them, as for a hypothesis without a check.
+  const h = await fixture({});
+  try {
+    await h.begin();
+    await h.memory({ hypotheses: [{ key: 'hyp.right', claim: 'ACTION1 moves the 9 one cell right', check: TWO }] });
+    await h.act('ACTION1');
+    await h.decide();
+    await h.decide();
+    await h.calls(1);
+    await h.settle(reply('FILE prompts/rules.md\n- ACTION1 moves the 9 one cell right (hyp.right)\n- ACTION2 changes nothing (hyp.still)\nEND\nWHY #1-#3 moved it right'));
+    await h.act('ACTION1');
+    const head = await h.begin();
+    assert.match(head, /RULE CHECKS \(prompts\/rules\.md\) on #\d+: [^\n]*; cites hyp\.still, which does not exist/);
+    assert.doesNotMatch(head, /cites hyp\.right/);
+    await h.calls(2);
+    assert.match(h.inputs[1] ?? '', /^WHY NOW: [^\n]*prompts\/rules\.md cites hyp\.still, which does not exist/);
+  } finally { await h.close(); }
+});
+
 test('ARC_REFINE_LEDGER=0 gives the earlier input and charter; the edits are still logged with ids', async () => {
   const h = await fixture({ ARC_REFINE_LEDGER: '0' });
   try {
