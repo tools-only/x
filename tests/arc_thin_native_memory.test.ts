@@ -1,7 +1,37 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Value } from 'typebox/value';
+import arcThinExtension from '../demo/arc_thin_extension.ts';
 import { emptyMemory, applyRows, renderFactsCompact } from '../demo/arc_thin_memory.ts';
 import { planNativeMemoryUpdate } from '../demo/arc_thin_native_memory.ts';
+
+/** The tools the extension registers in native mode. */
+function nativeTools(): Map<string, any> {
+  const saved = { ...process.env };
+  Object.assign(process.env, { ARC_RUN_ROOT: mkdtempSync(join(tmpdir(), 'native-memory-')), ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment' });
+  const tools = new Map<string, any>();
+  try {
+    arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: () => {}, getActiveTools: () => [],
+      getAllTools: () => [...tools.values()], on: () => {}, getThinkingLevel: () => 'off' } as any);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
+  return tools;
+}
+
+test("the native memory tool documents each hypothesis field where it is written, and validates as loosely as before", () => {
+  // The agent put a check in 10 of its 72 hypothesis writes (su15 since 2026-10-15), 3 of them English: in native mode
+  // the hypotheses parameter was an array of anything, and the check's interface was described only in the legacy schema.
+  const items = nativeTools().get('memory').parameters.properties.hypotheses.items;
+  assert.deepEqual(Object.keys(items.properties ?? {}).sort(), ['check', 'claim', 'key', 'next_test', 'predicts', 'question', 'status']);
+  for (const [name, field] of Object.entries(items.properties) as Array<[string, any]>) assert.ok(field.description, `${name} has a description`);
+  // A malformed field is still the planner's to report per entry, not a schema error that refuses the whole call.
+  assert.equal(Value.Check(items, { key: 'hyp.a', claim: 42, status: 'maybe', evidence: { verdict: 'supports' } }), true);
+});
 
 test('native facts have the same action provenance in live and replayed views', () => {
   const state = emptyMemory();
@@ -50,4 +80,32 @@ test('native memory accepts independent valid and partial entries but refuses fa
   assert.equal(memory.facts.has('should_not_apply'), false);
   const update = planNativeMemoryUpdate(memory, { hypotheses: [{ key: 'h', next_test: 'ACTION4' }] }, 2);
   assert.equal(update.ok, true);
+});
+
+test('a check written in English is kept as the next test, the receipt shows the form, and it never replaces a working check', () => {
+  // su15-l1-1 saved "after an ACTION6 or ACTION7, does the 9-blob move? record direction" as a check three times; it never
+  // compiled ("check: not usable (SyntaxError …)") and the hypothesis kept no test.
+  const memory = emptyMemory();
+  const commit = (params: any, n: number) => {
+    const plan = planNativeMemoryUpdate(memory, params, n);
+    assert.equal(plan.ok, true); if (!plan.ok) throw new Error(plan.error);
+    applyRows(memory, plan.rows);
+    return plan.receipt;
+  };
+  const prose = 'after an ACTION6 or ACTION7, does the 9-blob move? record direction';
+  const receipt = commit({ hypotheses: [{ key: 'blob', claim: 'clicks move the blob', check: prose }] }, 3);
+  assert.equal(memory.hypotheses.get('hyp.blob')!.check, undefined);
+  assert.equal(memory.hypotheses.get('hyp.blob')!.next_test, prose);
+  assert.match(receipt, /hyp\.blob: the check is not Python; it was kept as next_test\. A check is def check\(t\)/);
+  // Prose in place of a working check keeps the check; a next_test given with it comes first.
+  const working = 'def check(t):\n    return None\n';
+  commit({ hypotheses: [{ key: 'blob', check: working }] }, 3);
+  commit({ hypotheses: [{ key: 'blob', check: 'record the direction', next_test: 'ACTION6 at the blob' }] }, 4);
+  assert.equal(memory.hypotheses.get('hyp.blob')!.check, working);
+  assert.equal(memory.hypotheses.get('hyp.blob')!.next_test, 'ACTION6 at the blob; record the direction');
+  // Python that defines check another way is compiled as before, and "" still removes the check.
+  commit({ hypotheses: [{ key: 'blob', check: 'check = lambda t: None' }] }, 4);
+  assert.equal(memory.hypotheses.get('hyp.blob')!.check, 'check = lambda t: None\n');
+  commit({ hypotheses: [{ key: 'blob', check: '' }] }, 4);
+  assert.equal(memory.hypotheses.get('hyp.blob')!.check, undefined);
 });

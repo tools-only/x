@@ -66,6 +66,15 @@ import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, s
 import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue,
 	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView } from "./arc_thin_claims.ts";
 
+/**
+ * A hypothesis check as the native memory tool describes it where the agent writes one: the keys a move carries (strict:
+ * any other fails) and the goal form. The agent put a check in 10 of its 72 hypothesis writes in su15 since 2026-10-15,
+ * 3 of them English; the interface was described only in the legacy schema.
+ */
+const NATIVE_CHECK_DESCRIPTION = "Python def check(t), run on every recorded and later move: True holds, False fails, None does not apply. " +
+	"t: n, action, x, y (t.get: may be absent), changed_cells, bbox ({top,left,bottom,right} or None), level_changed, state, levels_completed, " +
+	"before, after (grids [y][x]); other keys fail. A goal claim: False when its condition holds after a move and the level did not change.";
+
 /** run_skill is added to these while at least one skill is saved (refreshSkillSurface). */
 // Keep action requests small. Prompt editing and the one-shot analyst remain
 // available on the existing consolidation turn, where there is no action
@@ -2072,7 +2081,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         op: Type.Optional(StringEnum(['set', 'delete', 'list', 'update'])),
         key: Type.Optional(Type.String({ maxLength: 48 })), text: Type.Optional(Type.String({ maxLength: 600 })), confidence: Type.Optional(Type.Number()),
         set: Type.Optional(Type.Array(Type.Any(), { maxItems: 40 })), delete: Type.Optional(Type.Array(Type.String(), { maxItems: 40 })),
-        hypotheses: Type.Optional(Type.Array(Type.Any(), { maxItems: 16 })), tests: Type.Optional(Type.Array(Type.Any(), { maxItems: 4 })),
+        // Each field documented where the agent writes it, without tightening what validates: the planner reports a
+        // malformed field per entry (partial acceptance) instead of a schema error refusing the whole call.
+        hypotheses: Type.Optional(Type.Array(Type.Object({
+          key: Type.Optional(Type.Any({ description: "hyp.<name>" })),
+          question: Type.Optional(Type.Any({ description: "What it answers (\"goal\"); rivals share it." })),
+          claim: Type.Optional(Type.Any({ description: "One sentence." })),
+          predicts: Type.Optional(Type.Any({ description: "What a move shows if it holds." })),
+          next_test: Type.Optional(Type.Any({ description: "Cheapest action separating it from rivals." })),
+          status: Type.Optional(Type.Any({ description: "open|supported|contested|rejected" })),
+          check: Type.Optional(Type.Any({ description: NATIVE_CHECK_DESCRIPTION })),
+        }, { additionalProperties: true }), { maxItems: 16 })), tests: Type.Optional(Type.Array(Type.Any(), { maxItems: 4 })),
         strategies: Type.Optional(Type.Array(Type.Any(), { maxItems: 4 })),
       }) : Type.Object({
 				op: Type.Optional(StringEnum(["set", "delete", "list", "update"] as const)),

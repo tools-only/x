@@ -1,6 +1,25 @@
 /** Partial acceptance for the native surface; action evidence integrity remains atomic. */
 import { emptyMemory, applyRows, planMemoryUpdate, type MemoryState, type MemoryParams, type MemoryPlan,
-  type MemoryRow, type ComponentContext, STATUSES, STRATEGY_STATUSES } from './arc_thin_memory.ts';
+  type MemoryRow, type ComponentContext, HYP_PREFIX, STATUSES, STRATEGY_STATUSES } from './arc_thin_memory.ts';
+
+/** Python that defines check (def check(…) or check = lambda); anything else in a check field is a sentence. */
+const definesCheck = (source: string) => /\bdef\s+check\s*\(|\bcheck\s*=\s*lambda\b/.test(source);
+
+/**
+ * su15-l1-1 (2026-10-16) saved "after an ACTION6 or ACTION7, does the 9-blob move? record direction" as a check three
+ * times: it never compiled, and the hypothesis kept no test. A sentence in check is kept as the next test instead, after
+ * one given with it, and an existing check stays.
+ */
+function proseCheckAsNextTest(fields: Record<string, any>): string | undefined {
+  if (typeof fields.check !== 'string' || !fields.check.trim() || definesCheck(fields.check)) return undefined;
+  const prose = fields.check.trim();
+  const given = typeof fields.next_test === 'string' && fields.next_test.trim() ? fields.next_test.trim() : '';
+  fields.next_test = given ? `${given}; ${prose}` : prose;
+  delete fields.check;
+  const key = String(fields.key ?? '').trim();
+  return `${key.startsWith(HYP_PREFIX) ? key : HYP_PREFIX + key}: the check is not Python; it was kept as next_test. ` +
+    'A check is def check(t): returning True, False or None';
+}
 
 export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams, actionCount: number, ctx: ComponentContext = {}): MemoryPlan {
   for (const item of [...(params.hypotheses ?? []).map(h => h?.evidence), ...(params.tests ?? [])]) {
@@ -32,7 +51,10 @@ export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams,
   for (const [index, item] of (params.hypotheses ?? []).entries()) {
     if (!item || typeof item !== 'object') { skipped.push(`hypotheses[${index}]: needs an entry`); continue; }
     const { evidence, ...fields } = item;
-    if (apply(`hypotheses[${index}]`, { hypotheses: [fields] }) && evidence !== undefined)
+    const prose = proseCheckAsNextTest(fields);
+    const applied = apply(`hypotheses[${index}]`, { hypotheses: [fields] });
+    if (applied && prose) receipts.push(prose);
+    if (applied && evidence !== undefined)
       apply(`hypotheses[${index}].evidence`, { hypotheses: [{ key: item.key, evidence }] });
   }
   for (const [index, item] of (params.tests ?? []).entries()) apply(`tests[${index}]`, { tests: [item] });
