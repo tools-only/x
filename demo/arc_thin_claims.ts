@@ -135,7 +135,7 @@ export const renderContest = (contest: CheckContest) =>
  */
 export function contestEvents(contests: Array<{ key: string; version: string; contest: CheckContest }>, refuted: string[]): Array<[string, string]> {
 	return contests.filter(({ key }) => !refuted.includes(key)).map(({ key, version, contest }) => [`contested:${key}@${version}`,
-		`${key} is contested: ${renderContest(contest)}; write a narrower HYPOTHESIS for where it held, or make the strategy's next experiment settle it`]);
+		`${key} is contested: ${renderContest(contest)}; write a narrower HYPOTHESIS under a new key for where it held, or make the strategy's next experiment settle it`]);
 }
 
 /** Rival pairs named per question; the rest are counted. */

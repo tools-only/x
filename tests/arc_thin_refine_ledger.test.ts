@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import arcThinExtension from '../demo/arc_thin_extension.ts';
 import { repairActionArguments } from '../demo/arc_thin_boundary.ts';
-import { parseExpect, parseRefinerReply, renderEditLedger, REFINER_LEDGER_SYSTEM } from '../demo/arc_thin_refiner.ts';
+import { memoryEditNow, parseExpect, parseRefinerReply, renderEditLedger, REFINER_LEDGER_SYSTEM } from '../demo/arc_thin_refiner.ts';
 
 const reply = (text: string, usage = { input: 100, output: 50 }) => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop',
   usage: { ...usage, cacheRead: 0, cacheWrite: 0, totalTokens: usage.input + usage.output } });
@@ -62,6 +62,13 @@ test('the ledger lists edits newest first and stays within its characters', () =
     { at: 0, told: 1, target: 'b'.repeat(300), why: 'w', now: 'still current', since: 'no actions' }], 200);
   assert.match(short, /\n- \(1 older edit\(s\) not shown\)$/);
   assert.equal(renderEditLedger([]), '');
+});
+
+test("the ledger keeps a check's contest apart from the agent's rewrites", () => {
+  assert.equal(memoryEditNow([{ by: 'check', at: 8 }], true), 'still as written; contested by its check at #8');
+  assert.equal(memoryEditNow([{ at: 5 }, { by: 'check', at: 8 }], true), 'rewritten by the agent at #5; contested by its check at #8');
+  assert.equal(memoryEditNow([{ by: 'refinement', at: 6, deleted: true }], false), 'deleted by a refinement at #6');
+  assert.equal(memoryEditNow([], false), 'no longer in memory');
 });
 
 test('a MEMORY line that copies the charter\'s brackets around replaces is accepted', () => {
@@ -308,7 +315,7 @@ test("a check failing on at least half of 5 decided moves contests its hypothesi
     const head = await h.begin();
     const view = head.slice(head.indexOf('CURRENT KNOWLEDGE'));
     assert.ok(view.includes('- hyp.three [contested]') && view.indexOf('- hyp.three') < view.indexOf('- hyp.fine'), view);
-    assert.match(view, /\n  ! its check fails on 5 of 5 decided moves \(#1, #2, …, #5\): narrow the claim to where it held, fix the check, or reject it/);
+    assert.match(view, /\n  ! its check fails on 5 of 5 decided moves \(#1, #2, …, #5\): narrow the claim and its check to where it held, fix the check, or reject it; then restate its status/);
     // The agent restates it open: the same check and claim do not contest it again.
     await h.memory({ hypotheses: [{ key: 'hyp.three', status: 'open' }] });
     await h.act('ACTION1');
@@ -329,6 +336,45 @@ test('ARC_CHECK_CONTEST_MIN=0 leaves check results out of a hypothesis status', 
     assert.doesNotMatch(await h.memory({ hypotheses: [{ key: 'hyp.three', claim: 'ACTION1 changes three cells', check: THREE }] }), /contested/);
     await h.begin();
     assert.deepEqual(h.rows('memory.jsonl').filter((row) => row.by === 'check'), []);
+  } finally { await h.close(); }
+});
+
+/** Five ACTION1 moves (two cells each), then hyp.three, whose check fails on all of them. */
+async function contested(env: Record<string, string> = {}, extra: Record<string, unknown> = {}) {
+  const h = await fixture(env);
+  for (let i = 0; i < 5; i++) await h.decide('ACTION1');
+  await h.begin();
+  const receipt = await h.memory({ hypotheses: [{ key: 'hyp.three', claim: 'ACTION1 changes three cells', check: THREE, ...extra }] });
+  return { h, receipt };
+}
+
+test('a hypothesis already contested by a refutation is not contested again by its check after the agent restates it', async () => {
+  const { h } = await contested({}, { evidence: { action: 5, condition: 'after ACTION1', observed: 'two cells changed', verdict: 'refutes' } });
+  try {
+    assert.doesNotMatch(await h.memory({ hypotheses: [{ key: 'hyp.three', status: 'open' }] }), /contested/);
+  } finally { await h.close(); }
+});
+
+test("a contest whose check was fixed says so, and what is left to do", async () => {
+  const { h } = await contested();
+  try {
+    await h.memory({ hypotheses: [{ key: 'hyp.three', check: TWO }] });
+    assert.match(await h.begin(), /\n  ! contested at #5; its current check does not contest it: narrow the claim, reject it, or restate its status/);
+  } finally { await h.close(); }
+});
+
+test('a refinement answer that is refused leaves the contest to be raised again', async () => {
+  const { h } = await contested({ ARC_REFINE_EVERY: '100' });
+  try {
+    await h.act('ACTION1');
+    await h.begin();
+    await h.calls(1);
+    // The same key: refused ("exists"), so the event is not answered.
+    await h.settle(reply('HYPOTHESIS hyp.three\nclaim: ACTION1 changes two cells\ncheck:\ndef check(t):\n    return None\nEND\nWHY narrower'));
+    await h.act('ACTION1');
+    await h.begin();
+    await h.calls(2);
+    assert.match(h.inputs[1] ?? '', /hyp\.three is contested: [^\n]*under a new key/);
   } finally { await h.close(); }
 });
 

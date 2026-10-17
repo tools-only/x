@@ -247,8 +247,8 @@ worktree's `.superpowers/sdd/2026-10-17-hypothesis-loop-and-self-harness/progres
 | H1b | The native memory tool's hypothesis items name key, question, claim, predicts, next_test, status and check (the move's keys and the goal form). The fields stay loosely typed, so the planner still reports a malformed field per entry | `NATIVE_CHECK_DESCRIPTION`, memory tool schema | +805 characters per request (the hypotheses property, 41 → 846), not the ≈450 estimated | — |
 | H1c | A check field that defines no check (`def check(`, `check = lambda`) is kept as next_test, after one given with it; an existing check stays; the receipt shows the form | `planNativeMemoryUpdate` | none | — |
 | H1d | Each check's source in `data/memory.md` and in native `memory(op="list")` | `renderHypotheses`, `ComponentContext.checkSources` | none in the head | — |
-| H2a | A current check with ≥5 decided moves failing on at least half contests its hypothesis: a memory row `by: "check"`, `contested_at` the move where it first held; once per key, check version and claim; at each decision start and when a check is saved (receipt line). The decision view lists contested hypotheses first, with "! its check fails on F of D decided moves (…): narrow the claim to where it held, fix the check, or reject it" | `checkContest`, `contestByChecks`, `contestNotes`, `renderDecisionMemory` | one line per contested hypothesis | `ARC_CHECK_CONTEST_MIN=0` |
-| H2b | One refinement event per check-contested hypothesis and check version ("… is contested: …; write a narrower HYPOTHESIS for where it held, or make the strategy's next experiment settle it"), answered by a HYPOTHESIS edit or a strategy rewrite; none for a key whose citing rule is already in dispute; not raised over the refiner budget | `contestEvents`, `promotionEvents`, `settlePromotion` | refiner input only | with H2a |
+| H2a | A current check with ≥5 decided moves failing on at least half contests its hypothesis: a memory row `by: "check"`, `contested_at` the move where it first held; once per key, check version and claim, and spent without a row when the hypothesis is already contested (by a refutation or an earlier check), so a status set afterwards stands; checked at each decision start and after every committed memory call (receipt line). The decision view lists contested hypotheses first, with "! its check fails on F of D decided moves (…): narrow the claim and its check to where it held, fix the check, or reject it; then restate its status", or, once the current check no longer contests it, "! contested at #N; its current check does not contest it: narrow the claim, reject it, or restate its status". Rows `by: "check"` are nobody's write in the ledger ("contested by its check at #N"), the run summary (`contested_by_check`), the reuse report (`by_check`) and the recheck tool | `checkContest`, `contestByChecks`, `contestNotes`, `renderDecisionMemory`, `memoryEditNow` | one line per contested hypothesis with a check | `ARC_CHECK_CONTEST_MIN=0` |
+| H2b | One refinement event per check-contested hypothesis and check version ("… is contested: …; write a narrower HYPOTHESIS under a new key for where it held, or make the strategy's next experiment settle it"), answered by an applied HYPOTHESIS edit or strategy rewrite: every promotion event is now settled by the edit as applied, so a reply refused, invalid or discarded as stale leaves it to be raised again (twice at most); none for a key whose citing rule is already in dispute; not raised over the refiner budget | `contestEvents`, `promotionEvents`, `runRefiner`/`settlePromotion` | refiner input only | with H2a |
 | H2c | RULE CHECKS says "cites hyp.x, which does not exist" apart from "no check behind hyp.y"; one refinement event per missing cited key, answered by a HYPOTHESIS edit or a rules rewrite | `ruleChecksText`, `PromotionView.missing` | when it applies | — |
 | H3a | One line per question whose rivals carry checks: the latest recorded move separating two of them, or "no recorded move separates …" (both decided N moves / no move decided by both); at most 4 pairs | `rivalLines` | one line per such question | — |
 
@@ -291,6 +291,22 @@ worktree's `.superpowers/sdd/2026-10-17-hypothesis-loop-and-self-harness/progres
 | Autonomous adoption | unverified | — | R-H (replay), then E-H |
 | Net benefit | unverified | — | E-H against the pooled base |
 
+### Final review and fix pass (2026-10-18)
+
+A fresh reviewer (opus) read the range `d473cb7f..27e8134b`: no critical finding, four important ones, fixed with a test
+each in one commit after `27e8134b` (the build ledger has each ruling):
+- **I1:** a hypothesis already contested (by a refutation or an earlier check version) when its check contested was not
+  marked, so the agent's restated status was overridden at once. Now that check's contest is spent, also on replay.
+- **I2:** after the check was fixed the hypothesis stayed contested at the top with no reason shown, and the note did not
+  say to restate the status. The note now says so, and a contested hypothesis whose current check no longer contests
+  it gets its own line.
+- **I3:** contest rows counted as the agent's writes (ledger "rewritten by the agent", run summary, reuse report, recheck
+  authorship, replayed memory touches). Rows `by: "check"` are now nobody's write; the summary counts them apart.
+- **I4:** a refinement reply that was refused or discarded still answered its promotion event. Events are now settled
+  by the edit as applied (this applies to every promotion event), and the contest event asks for a new key.
+- Eight minor findings are deferred (the build ledger lists them); the reviewer set eleven items aside, each ruled on in
+  the ledger.
+
 **Next** (each needs the user's budget): the replay R-H (≤1.5M of the replays' budget; R-S waits for Part S), then
 E-H (3 su15 runs with `ARC_REFINE_LEDGER=0`, ≤18M, plus one held-out run, ≤6M). Before E-H: the runner's wait on
-transport errors.
+transport errors. For E-H's measures, an agent write is a memory row without `by`.

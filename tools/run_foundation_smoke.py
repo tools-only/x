@@ -234,7 +234,7 @@ elif script == "hypotheses":
     prose = [row['hyp'] for row in memory_rows if row.get('key') == 'hyp.prose' and 'hyp' in row]
     assert prose and 'check' not in prose[-1] and prose[-1]['next_test'].startswith('after an ACTION3'), prose
     # A later parent sees it first, with what its check says, and the rivals compared on the same moves (after #6).
-    line = '! its check fails on 3 of 6 decided moves (#1, #3, #5): narrow the claim to where it held, fix the check, or reject it'
+    line = '! its check fails on 3 of 6 decided moves (#1, #3, #5): narrow the claim and its check to where it held, fix the check, or reject it; then restate its status'
     later = [r.get('current', '') for r in parent_requests if line in r.get('current', '')]
     assert later, [r.get('current', '')[:800] for r in parent_requests[-3:]]
     head = later[0][later[0].index('CURRENT KNOWLEDGE'):]

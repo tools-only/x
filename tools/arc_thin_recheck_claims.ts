@@ -21,9 +21,10 @@ async function recheck(dir: string) {
   const trajectory = read(join(dir, 'trajectory.jsonl'));
   const byN = new Map(trajectory.map((row) => [Number(row.n), row]));
   const grids = new Map<number, any>(read(join(dir, 'states.jsonl')).filter((row) => Array.isArray(row.grid)).map((row) => [Number(row.n), row.grid]));
-  // Every check source that ever stood in memory, by key and version (the agent's and the refinements' writes).
+  // Every check source that ever stood in memory, by key and version (the agent's and the refinements' writes; a row by
+  // "check" is the runtime contesting a hypothesis, which is not authorship).
   const sources = new Map<string, { key: string; source: string; by: string }>();
-  for (const row of read(join(dir, 'memory.jsonl'))) if (typeof row?.hyp?.check === 'string' && row.hyp.check)
+  for (const row of read(join(dir, 'memory.jsonl'))) if (typeof row?.hyp?.check === 'string' && row.hyp.check && row.by !== 'check')
     sources.set(`${row.key}@${claimVersion(row.hyp.check)}`, { key: row.key, source: row.hyp.check, by: row.by === 'refinement' ? 'refinement' : 'agent' });
   const recorded = new Map<string, Map<number, Value>>();
   for (const row of read(join(dir, 'claim_checks.jsonl'))) {

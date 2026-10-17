@@ -90,6 +90,18 @@ const clip = (text: string, chars: number) => {
 	return flat.length > chars ? flat.slice(0, chars - 1) + "…" : flat;
 };
 
+/**
+ * What became of a refinement's memory entry, from the memory.jsonl rows for its key written since the edit: the latest
+ * rewrite or deletion and who made it, and a contest by its check (a runtime row, by: "check", not anyone's rewrite).
+ */
+export function memoryEditNow(later: Array<{ by?: string; deleted?: boolean; at?: number }>, present: boolean): string {
+	const last = later.filter((row) => row.by !== "check").at(-1);
+	const contest = later.filter((row) => row.by === "check").at(-1);
+	const now = last ? `${last.deleted ? "deleted" : "rewritten"} by ${last.by === "refinement" ? "a refinement" : "the agent"} at #${last.at}`
+		: present ? "still as written" : "no longer in memory";
+	return contest ? `${now}; contested by its check at #${contest.at}` : now;
+}
+
 /** The ledger section of a refinement's input, newest edit first, within `maxChars`. */
 export function renderEditLedger(entries: LedgerEntry[], maxChars = 1800): string {
 	if (!entries.length) return "";

@@ -256,9 +256,12 @@ def build_report(root: Path) -> dict[str, Any]:
     categories = {
         "prompt": prompts, "tool": category("tool", tool_uses), "skill": category("skill", skill_reads),
         "subagent": category("subagent", consults),
-        # Use of a memory entry is not observable (the index is resident), so only its writes are counted.
-        "memory": {"created": len({str(r.get("key")) for r in memory_rows if r.get("key")}), "writes": len(memory_rows),
-                   "by_refinement": sum(1 for r in memory_rows if r.get("by") == "refinement"), "used": None},
+        # Use of a memory entry is not observable (the index is resident), so only its writes are counted. A row by "check"
+        # (the runtime contesting a hypothesis by its own check) is nobody's write.
+        "memory": {"created": len({str(r.get("key")) for r in memory_rows if r.get("key")}),
+                   "writes": sum(1 for r in memory_rows if r.get("by") != "check"),
+                   "by_refinement": sum(1 for r in memory_rows if r.get("by") == "refinement"),
+                   "by_check": sum(1 for r in memory_rows if r.get("by") == "check"), "used": None},
     }
 
     # Cost by kind, and the task.

@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
-import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, parseRefinerReply, renderEditLedger, type LedgerEntry } from "./arc_thin_refiner.ts";
+import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, parseRefinerReply, renderEditLedger, type LedgerEntry } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { Binder } from "./arc_thin_binder.ts";
@@ -346,7 +346,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		contestedByCheck.clear();
 		for (const row of readRows("memory.jsonl")) {
 			applyRow(memory, row);
-			if (row.at !== undefined && row.key) memoryTouches.push({ key: String(row.key), at: Number(row.at) || 0 });
+			if (row.at !== undefined && row.key && row.by !== "check") memoryTouches.push({ key: String(row.key), at: Number(row.at) || 0 });
 			if (row.by === "check" && row.hyp?.check) contestedByCheck.add(contestId(String(row.key), row.hyp));
 		}
 		skills.clear();
@@ -369,6 +369,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			else if (row.control && Array.isArray(row.results)) claimControls.set(`${row.key}@${row.version}`, { key: row.key, version: row.version, results: row.results });
 			else if (row.key && row.version && Number.isInteger(row.n)) claimRows.push(row as ClaimRow);
 		}
+		// A hypothesis already contested when its check would contest it: that check's contest is spent (H2a).
+		for (const [key, h] of memory.hypotheses) if (h.status === "contested" && currentContest(key, h)) contestedByCheck.add(contestId(key, h));
 		overlay = readRows("prompt.jsonl").at(-1)?.text ?? "";
 		trajectory = readRows("trajectory.jsonl");
 		actionTimes = trajectory.map((row: any) => Date.parse(row.t) || 0);
@@ -875,10 +877,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function contestByChecks(): string[] {
 		const lines: string[] = [];
 		for (const [key, h] of [...memory.hypotheses]) {
-			if (h.status === "rejected" || h.status === "contested" || contestedByCheck.has(contestId(key, h))) continue;
+			if (h.status === "rejected" || contestedByCheck.has(contestId(key, h))) continue;
 			const contest = currentContest(key, h);
 			if (!contest) continue;
 			contestedByCheck.add(contestId(key, h));
+			// Already contested (by a refutation, or by an earlier version of its check): this check's contest is spent, so a
+			// status the agent sets afterwards stands.
+			if (h.status === "contested") continue;
 			const next = { ...h, status: "contested" as const, contested_at: contest.at };
 			append("memory.jsonl", { key, hyp: next, at: trajectory.length, by: "check" });
 			applyRows(memory, [{ key, hyp: next }]);
@@ -887,12 +892,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return lines;
 	}
 
-	/** The decision view's line under each contested hypothesis whose current check still fails on at least half its moves. */
+	/** The decision view's line under each contested hypothesis with a check: what its current check says (H2a). */
 	function contestNotes(): Record<string, string> {
 		const notes: Record<string, string> = {};
 		for (const [key, h] of memory.hypotheses) {
-			const contest = h.status === "contested" ? currentContest(key, h) : undefined;
-			if (contest) notes[key] = `! ${renderContest(contest)}: narrow the claim to where it held, fix the check, or reject it`;
+			if (h.status !== "contested" || !h.check) continue;
+			const contest = currentContest(key, h);
+			notes[key] = contest
+				? `! ${renderContest(contest)}: narrow the claim and its check to where it held, fix the check, or reject it; then restate its status`
+				: `! contested at #${h.contested_at ?? "?"}; its current check does not contest it: narrow the claim, reject it, or restate its status`;
 		}
 		return notes;
 	}
@@ -1544,10 +1552,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const key = path.slice("memory:".length);
 				entry.target = `memory ${key}`;
 				const later = memoryRows.filter((row) => row.key === key && String(row.t ?? "") > String(edit.t ?? ""));
-				const last = later.at(-1);
-				const who = last?.by === "refinement" ? "a refinement" : "the agent";
-				entry.now = last ? `${last.deleted ? "deleted" : "rewritten"} by ${who} at #${last.at}`
-					: memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key) ? "still as written" : "no longer in memory";
+				entry.now = memoryEditNow(later, memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key));
 				const hypothesis = memory.hypotheses.get(key);
 				if (hypothesis && from !== undefined) {
 					// The current check's results only: a rewritten check starts a new count.
@@ -1615,73 +1620,82 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
 		append("refiner_replies.jsonl", { at: evidenceAt, decision, model: ctx.model?.id ?? null, stop_reason: reply.stopReason ?? null, text: answer.slice(0, 20_000) });
 		const edit = parseRefinerReply(answer);
-		settlePromotion(promotionId, edit as { kind: string; path?: string });
-		const at = trajectory.length;
-		const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
-		if (currentLevel() !== evidenceLevel || ((edit.kind === 'memory' || edit.kind === 'hypothesis') && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
-			|| (edit.kind === 'file' && (binder!.versionMap()[edit.path] !== sourceVersions[edit.path]
-				|| (workspace!.files().includes(edit.path) ? workspace!.read(edit.path) : undefined) !== sourceBefore.get(edit.path)))) {
-			append('refiner.jsonl', {kind: 'stale', ...base, why: 'scope or target changed while refinement was running'});
-			return;
-		}
-		// Notices not yet shown are kept: two refinements between decisions are both reported.
-		const told = (what: string, why: string, editId: string) => refinerNotices.push({ editId, text: `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
-			(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits." });
-		// An applied edit gets an id (the ledger follows it from the decision that shows it) and keeps its expectation.
-		const ledgerFields = (id: string) => ({ id, ...(edit.kind === "file" || edit.kind === "memory" || edit.kind === "hypothesis"
-			? { ...(edit.expect ? { expect: { ...edit.expect, within: edit.expect.within ?? REFINE_EVERY } } : {}),
-				...(edit.expectError ? { expect_error: edit.expectError } : {}) } : {}) });
-		if (edit.kind === "memory") {
-			const plan = planNativeMemoryUpdate(memory, { set: [{ key: edit.key, text: edit.text, confidence: edit.confidence,
-				...(edit.replaces ? { replaces: edit.replaces.filter((key) => memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key)) } : {}) }] },
-				trajectory.length, components());
-			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
-			// The native plan accepts a call in part and reports what it skipped; a set it skips entirely changes nothing.
-			// su15-r04-e1 #9: "MEMORY hyp.border_cost" was refused (a hyp. key is a hypothesis's), yet recorded as an edit, the
-			// agent was told of an entry that did not exist, and the ledger then said it was "no longer in memory".
-			if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
-			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
-			applyRows(memory, plan.rows);
-			const retired = plan.rows.filter((row: any) => row.deleted).map((row) => row.key);
+		// The promotion event is answered by the edit as applied: a reply that is refused, invalid or discarded as stale
+		// leaves it to be raised again (Part H review: a narrower hypothesis under the contested key is refused).
+		let applied = false;
+		try {
+			const at = trajectory.length;
+			const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
+			if (currentLevel() !== evidenceLevel || ((edit.kind === 'memory' || edit.kind === 'hypothesis') && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
+				|| (edit.kind === 'file' && (binder!.versionMap()[edit.path] !== sourceVersions[edit.path]
+					|| (workspace!.files().includes(edit.path) ? workspace!.read(edit.path) : undefined) !== sourceBefore.get(edit.path)))) {
+				append('refiner.jsonl', {kind: 'stale', ...base, why: 'scope or target changed while refinement was running'});
+				return;
+			}
+			// Notices not yet shown are kept: two refinements between decisions are both reported.
+			const told = (what: string, why: string, editId: string) => refinerNotices.push({ editId, text: `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
+				(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits." });
+			// An applied edit gets an id (the ledger follows it from the decision that shows it) and keeps its expectation.
+			const ledgerFields = (id: string) => ({ id, ...(edit.kind === "file" || edit.kind === "memory" || edit.kind === "hypothesis"
+				? { ...(edit.expect ? { expect: { ...edit.expect, within: edit.expect.within ?? REFINE_EVERY } } : {}),
+					...(edit.expectError ? { expect_error: edit.expectError } : {}) } : {}) });
+			if (edit.kind === "memory") {
+				const plan = planNativeMemoryUpdate(memory, { set: [{ key: edit.key, text: edit.text, confidence: edit.confidence,
+					...(edit.replaces ? { replaces: edit.replaces.filter((key) => memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key)) } : {}) }] },
+					trajectory.length, components());
+				if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+				// The native plan accepts a call in part and reports what it skipped; a set it skips entirely changes nothing.
+				// su15-r04-e1 #9: "MEMORY hyp.border_cost" was refused (a hyp. key is a hypothesis's), yet recorded as an edit, the
+				// agent was told of an entry that did not exist, and the ledger then said it was "no longer in memory".
+				if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
+				for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
+				applyRows(memory, plan.rows);
+				const retired = plan.rows.filter((row: any) => row.deleted).map((row) => row.key);
+				const id = `e${++refinerEdits}`;
+				append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, ...(retired.length ? { replaces: retired } : {}), ...ledgerFields(id) });
+				applied = true;
+				told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why, id);
+				return;
+			}
+			// A belief turned into a checked hypothesis goes through the memory component like the agent's own: the runtime
+			// then runs its check on every recorded move, which is what promotion counts.
+			if (edit.kind === "hypothesis") {
+				if (memory.hypotheses.has(edit.key)) { append("refiner.jsonl", { kind: "refused", ...base, path: `memory:${edit.key}`, why: `${edit.key} exists; a refinement adds hypotheses, it does not rewrite them` }); return; }
+				const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(edit.question ? { question: edit.question } : {}),
+					...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}) }] }, trajectory.length, components());
+				if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
+				if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
+				for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
+				applyRows(memory, plan.rows);
+				const id = `e${++refinerEdits}`;
+				append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check), ...ledgerFields(id) });
+				applied = true;
+				told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why, id);
+				return;
+			}
+			if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
+			// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
+			// tools/probe.py into an unrelated view). It may rewrite the strategy and files that refinements wrote.
+			if (!ownedByRefinement(edit.path)) {
+				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
+				return;
+			}
+			// The rules prompt is refinement-only (the agent's writes to it are refused), so it is written as the runtime.
+			if (edit.path === RULES_PATH) workspace!.runtimeWrite(edit.path, edit.content);
+			else workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
+			refinedPaths.add(edit.path);
+			const receipt = await binder!.save(edit.path, currentLevel());
+			nativeRuntime!.noteSave(edit.path, receipt);
+			nativeRuntime!.register();
+			const loaded = !/NOT loaded/.test(receipt ?? "");
+			const version = binder!.versionMap()[edit.path];
 			const id = `e${++refinerEdits}`;
-			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, ...(retired.length ? { replaces: retired } : {}), ...ledgerFields(id) });
-			told(`memory ${edit.key} (conf ${edit.confidence})${retired.length ? `, replacing ${retired.join(", ")}` : ""}`, edit.why, id);
-			return;
+			append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt, ...ledgerFields(id) });
+			applied = true;
+			told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why, id);
+		} finally {
+			settlePromotion(promotionId, applied ? edit as { kind: string; path?: string } : { kind: "none" });
 		}
-		// A belief turned into a checked hypothesis goes through the memory component like the agent's own: the runtime
-		// then runs its check on every recorded move, which is what promotion counts.
-		if (edit.kind === "hypothesis") {
-			if (memory.hypotheses.has(edit.key)) { append("refiner.jsonl", { kind: "refused", ...base, path: `memory:${edit.key}`, why: `${edit.key} exists; a refinement adds hypotheses, it does not rewrite them` }); return; }
-			const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(edit.question ? { question: edit.question } : {}),
-				...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}) }] }, trajectory.length, components());
-			if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
-			if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
-			for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
-			applyRows(memory, plan.rows);
-			const id = `e${++refinerEdits}`;
-			append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check), ...ledgerFields(id) });
-			told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why, id);
-			return;
-		}
-		if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
-		// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
-		// tools/probe.py into an unrelated view). It may rewrite the strategy and files that refinements wrote.
-		if (!ownedByRefinement(edit.path)) {
-			append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
-			return;
-		}
-		// The rules prompt is refinement-only (the agent's writes to it are refused), so it is written as the runtime.
-		if (edit.path === RULES_PATH) workspace!.runtimeWrite(edit.path, edit.content);
-		else workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
-		refinedPaths.add(edit.path);
-		const receipt = await binder!.save(edit.path, currentLevel());
-		nativeRuntime!.noteSave(edit.path, receipt);
-		nativeRuntime!.register();
-		const loaded = !/NOT loaded/.test(receipt ?? "");
-		const version = binder!.versionMap()[edit.path];
-		const id = `e${++refinerEdits}`;
-		append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt, ...ledgerFields(id) });
-		told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why, id);
 	}
 
 	/** Start one refinement unless one is running; true when it was started. */

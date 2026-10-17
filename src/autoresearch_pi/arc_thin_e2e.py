@@ -191,6 +191,8 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
     hypotheses = {key: row["hyp"] for key, row in memory.items() if isinstance(row.get("hyp"), dict)}
     strategies = {key: row["strat"] for key, row in memory.items() if isinstance(row.get("strat"), dict)}
     evidence = [item for hyp in hypotheses.values() for item in hyp.get("evidence") or []]
+    # A row by "check" is the runtime marking a hypothesis contested by its own check (H2a): nobody's write.
+    written = [row for row in memory_rows if row.get("by") != "check"]
     skills: dict[str, Any] = {}
     skill_rows = _read_jsonl(harness / "skills.jsonl")
     for row in skill_rows:
@@ -204,11 +206,12 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
     errors = _read_jsonl(harness / "errors.jsonl")
     return {
         "memory_entries": len(memory) - len(hypotheses) - len(strategies),
-        "memory_writes": len(memory_rows),
+        "memory_writes": len(written),
         "memory_deletes": sum(1 for row in memory_rows if row.get("deleted")),
         "hypotheses": {
             "final": {key: hyp.get("status") for key, hyp in hypotheses.items()},
-            "writes": sum(1 for row in memory_rows if isinstance(row.get("hyp"), dict)),
+            "writes": sum(1 for row in written if isinstance(row.get("hyp"), dict)),
+            "contested_by_check": len(memory_rows) - len(written),
             "evidence": len(evidence),
             "refutations": sum(1 for item in evidence if item.get("verdict") == "refutes"),
             "questions": sorted({str(hyp.get("question")) for hyp in hypotheses.values() if hyp.get("question")}),
