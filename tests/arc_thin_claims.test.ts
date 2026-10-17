@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow } from "../demo/arc_thin_claims.ts";
+import { checkContest, claimSegments, claimVersion, contestEvents, levelOf, renderClaimSummary, renderContest, summarizeClaim, type ClaimRow } from "../demo/arc_thin_claims.ts";
 
 const grid = (value: number, size = 4) => Array.from({ length: size }, (_, y) => Array.from({ length: size }, (_, x) => (x === value && y === 1 ? 9 : 0)));
 const row = (n: number, result: ClaimRow["result"], level = 0): ClaimRow => ({ key: "hyp.a", version: "v", n, level, result });
@@ -45,4 +45,27 @@ test("versions identify the source; the level of an action is the levels complet
 	assert.notEqual(claimVersion("a"), claimVersion("b"));
 	assert.equal(levelOf({ level_changed: true, levels_completed: 1 }), 0);
 	assert.equal(levelOf({ level_changed: false, levels_completed: 1 }), 1);
+});
+
+test("a check contests its hypothesis from 5 decided moves failing on at least half, at the move where that first held", () => {
+	// su15-l1-3: hyp.action6_moves_bottom's check read "holds 60 · fails 158" in its last of 314 requests; it stayed open.
+	const rows = (results: Array<ClaimRow["result"]>) => results.map((result, i) => row(i + 1, result));
+	// n/a and errors are not decided moves: 4 decided are too few, however they went.
+	assert.equal(checkContest(rows([false, false, false, false, null, "error"])), undefined);
+	assert.deepEqual(checkContest(rows([true, false, null, false, true, false])), { decided: 5, fails: 3, failing: [2, 4, 6], at: 6 });
+	assert.deepEqual(checkContest(rows([true, false, null, false, true, false]).reverse())?.at, 6, "rows in any order");
+	assert.deepEqual(checkContest(rows([false, true, false, true, true, false])), { decided: 6, fails: 3, failing: [1, 3, 6], at: 6 });
+	assert.equal(checkContest(rows([false, false, false, true, true, true, true, true])), undefined, "crossed at #5, below half now");
+	assert.equal(checkContest(rows([false, false, false, false, false, true]))?.at, 5);
+	assert.equal(checkContest(rows([false, false, false, false, false]), 0), undefined, "0 turns it off");
+	assert.equal(renderContest({ decided: 218, fails: 158, failing: [51, 52, 60, 61, 70], at: 59 }),
+		"its check fails on 158 of 218 decided moves (#51, #52, …, #70)");
+});
+
+test("each check-contested hypothesis is one refinement event per check version, none when a rule citing it is in dispute", () => {
+	const contest = { decided: 6, fails: 6, failing: [1, 2, 3, 4, 5, 6], at: 5 };
+	const events = contestEvents([{ key: "hyp.a", version: "v1", contest }, { key: "hyp.b", version: "v2", contest }], ["hyp.b"]);
+	assert.deepEqual(events.map(([id]) => id), ["contested:hyp.a@v1"]);
+	assert.match(events[0][1], /^hyp\.a is contested: its check fails on 6 of 6 decided moves \(#1, #2, …, #6\); /);
+	assert.deepEqual(contestEvents([], []), []);
 });

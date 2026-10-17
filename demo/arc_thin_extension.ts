@@ -64,7 +64,8 @@ import { buildHistory, gridChanges, type CellChange } from "./arc_thin_history.t
 import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } from "./arc_thin_analyst.ts";
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
 import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue,
-	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView } from "./arc_thin_claims.ts";
+	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView,
+	CONTEST_MIN_DECIDED, checkContest, contestEvents, renderContest } from "./arc_thin_claims.ts";
 
 /**
  * A hypothesis check as the native memory tool describes it where the agent writes one: the keys a move carries (strict:
@@ -300,6 +301,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const claimCompileErrors = new Map<string, string>();
 	/** Transitions whose grids are not available: never checked, so not asked for again. */
 	const claimGridsMissing = new Set<number>();
+	/** "key@check version@claim" that its check has contested once (H2a): a status set afterwards stands. */
+	const contestedByCheck = new Set<string>();
+	const contestId = (key: string, h: { check?: string; claim: string }) =>
+		`${key}@${claimVersion(h.check ?? "")}@${createHash("sha256").update(h.claim).digest("hex").slice(0, 12)}`;
 	/** Memory keys written, with the action count at the time: the critic's notes are followed up by key. */
 	let memoryTouches: Array<{ key: string; at: number }> = [];
 	/** Wall-clock time of each action (actionTimes[n-1] for action n) and the previous decision's cost, for RESOURCES. */
@@ -338,9 +343,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function replay(): void {
 		resetMemory(memory);
 		memoryTouches = [];
+		contestedByCheck.clear();
 		for (const row of readRows("memory.jsonl")) {
 			applyRow(memory, row);
 			if (row.at !== undefined && row.key) memoryTouches.push({ key: String(row.key), at: Number(row.at) || 0 });
+			if (row.by === "check" && row.hyp?.check) contestedByCheck.add(contestId(String(row.key), row.hyp));
 		}
 		skills.clear();
 		skillVersions.clear();
@@ -628,7 +635,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// come the memory index, a summarised history, recent actions it does not cover, what a refinement changed, and
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
-			const out: Array<[string, string]> = [["memory", renderDecisionMemory(memory, trajectory.length, claimLines())]];
+			const out: Array<[string, string]> = [["memory", renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes())]];
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
@@ -846,6 +853,45 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const rows = claimRows.filter((row) => row.key === key && row.version === version);
 			return [key, renderClaimSummary(rows.length ? summarizeClaim(rows, level) : undefined, compileError)];
 		}));
+	}
+
+	/** The contest a hypothesis's current check makes on its results (H2a), if any. */
+	function currentContest(key: string, h: { check?: string }) {
+		if (!h.check) return undefined;
+		const version = claimVersion(h.check);
+		if (claimCompileErrors.has(`${key}@${version}`)) return undefined;
+		return checkContest(claimRows.filter((row) => row.key === key && row.version === version), CHECK_CONTEST_MIN);
+	}
+
+	/**
+	 * H2a: a hypothesis whose current check fails on at least half of at least ARC_CHECK_CONTEST_MIN decided moves
+	 * becomes contested, through the memory row an unanswered refutation leads to. Once per check version and claim, so a
+	 * status the agent sets afterwards stands; narrowing, fixing or rejecting it stays the agent's (or a refinement's).
+	 * Returns a receipt line per hypothesis contested now.
+	 */
+	function contestByChecks(): string[] {
+		const lines: string[] = [];
+		for (const [key, h] of [...memory.hypotheses]) {
+			if (h.status === "rejected" || h.status === "contested" || contestedByCheck.has(contestId(key, h))) continue;
+			const contest = currentContest(key, h);
+			if (!contest) continue;
+			contestedByCheck.add(contestId(key, h));
+			const next = { ...h, status: "contested" as const, contested_at: contest.at };
+			append("memory.jsonl", { key, hyp: next, at: trajectory.length, by: "check" });
+			applyRows(memory, [{ key, hyp: next }]);
+			lines.push(`${key} contested: ${renderContest(contest)}`);
+		}
+		return lines;
+	}
+
+	/** The decision view's line under each contested hypothesis whose current check still fails on at least half its moves. */
+	function contestNotes(): Record<string, string> {
+		const notes: Record<string, string> = {};
+		for (const [key, h] of memory.hypotheses) {
+			const contest = h.status === "contested" ? currentContest(key, h) : undefined;
+			if (contest) notes[key] = `! ${renderContest(contest)}: narrow the claim to where it held, fix the check, or reject it`;
+		}
+		return notes;
 	}
 
 	/** The rules prompt as written (refinements maintain it; it applies while its frontmatter says active). */
@@ -1262,6 +1308,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** A fact rewritten this often while no hypothesis has a check: the agent restates a belief instead of testing it. */
 	const BELIEF_REWRITES = envNumber("ARC_REFINE_BELIEF_REWRITES", 3);
 	const UNCHECKED_AFTER = envNumber("ARC_REFINE_UNCHECKED_AFTER", 8);
+	/** Decided moves a check needs before it contests its hypothesis (H2a); 0 leaves check results out of status. */
+	const CHECK_CONTEST_MIN = /^\d+$/.test(process.env.ARC_CHECK_CONTEST_MIN ?? "") ? Number(process.env.ARC_CHECK_CONTEST_MIN) : CONTEST_MIN_DECIDED;
 	/** Refinements' cost ceiling as a share of the agent's budget tokens (Continual Harness spends about 5%). */
 	const REFINER_SHARE = envNumber("ARC_REFINE_MAX_SHARE", 0.1);
 	/** Below this many refinement tokens the share is not applied: early in a run one call is a large share. */
@@ -1352,6 +1400,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const view = promotion();
 		const findings = promotionTriggers(view);
 		view.refuted.forEach((r, i) => due.push([`refuted:${r.key}:${r.failing.at(-1)}`, findings[view.candidates.length + i]]));
+		// A hypothesis its own check contests (H2a), once per check version: only the agent rewrites it; a refinement can
+		// add a narrower one or set the next experiment.
+		if (!urgentOnly) due.push(...contestEvents([...memory.hypotheses].flatMap(([key, h]) => {
+			const contest = h.status === "contested" ? currentContest(key, h) : undefined;
+			return contest ? [{ key, version: claimVersion(h.check!), contest }] : [];
+		}), view.refuted.map((r) => r.key)));
 		(urgentOnly ? [] : view.candidates).forEach((c, i) => due.push([`promote:${c.key}@${c.version}`, findings[i]]));
 		if (!urgentOnly && ![...memory.hypotheses.values()].some((h) => h.check)) {
 			const touches = new Map<string, number>();
@@ -1383,6 +1437,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function settlePromotion(id: string | undefined, edit: { kind: string; path?: string }): void {
 		if (!id) return;
 		const addressed = /^(churn|unchecked):/.test(id) ? edit.kind === "hypothesis"
+			: id.startsWith("contested:") ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === STRATEGY_PATH)
 			: /^(promote|refuted|cap):/.test(id) ? edit.kind === "file" && edit.path === RULES_PATH
 			: id.startsWith("view:") ? edit.kind === "file" && edit.path === id.slice(5).replace(/@\d+$/, "") : true;
 		const retryKey = id.startsWith("unchecked:") ? "unchecked" : id;
@@ -2175,7 +2230,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					const lines = claimLines();
 					checkLines = changed.map((key) => `${key} ${lines[key] ?? "check: not run yet"}`);
 				}
-				return [plan.receipt, ...checkLines].join("\n");
+				// A saved check that already fails on most of the recorded moves contests its hypothesis now (H2a).
+				return [plan.receipt, ...checkLines, ...contestByChecks()].join("\n");
 		}
 		// Python's env.remember goes through the same update as the memory tool, so bookkeeping and an action can share
 		// one cell (Prime Agent's programmatic tool calling) instead of costing a separate request each.
@@ -2617,7 +2673,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Model skills are checked on the transition just recorded (incremental; failures leave the decision unchanged).
 		if (!control) await refreshModelChecks();
 		// So are the hypotheses' checks: each new transition is one more test of every claim.
-		if (!control) { try { await refreshClaimChecks(); await refreshClaimControls(); } catch (error) { logError("claims:refresh", error); } }
+		if (!control) { try { await refreshClaimChecks(); await refreshClaimControls(); contestByChecks(); } catch (error) { logError("claims:refresh", error); } }
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
 		if (native && workspace) {

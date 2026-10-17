@@ -290,6 +290,68 @@ test("data/memory.md shows each check's source; the decision's own view does not
   } finally { await h.close(); }
 });
 
+const TWO = "def check(t):\n    return t['changed_cells'] == 2\n";
+const THREE = "def check(t):\n    return t['changed_cells'] == 3\n";
+
+test("a check failing on at least half of 5 decided moves contests its hypothesis once, shown first; the agent's later status stands", async () => {
+  // su15-l1-3: hyp.action6_moves_bottom stayed open with its check at "holds 60 · fails 158" in the last of its 314 requests.
+  const h = await fixture({});
+  try {
+    for (let i = 0; i < 5; i++) await h.decide('ACTION1');
+    await h.begin();
+    const receipt = await h.memory({ hypotheses: [{ key: 'hyp.fine', claim: 'ACTION1 changes two cells', check: TWO },
+      { key: 'hyp.three', claim: 'ACTION1 changes three cells', check: THREE }] });
+    assert.match(receipt, /hyp\.three contested: its check fails on 5 of 5 decided moves \(#1, #2, …, #5\)/);
+    assert.doesNotMatch(receipt, /hyp\.fine contested/);
+    const byCheck = () => h.rows('memory.jsonl').filter((row) => row.key === 'hyp.three' && row.by === 'check');
+    assert.deepEqual(byCheck().map((row) => [row.hyp.status, row.hyp.contested_at]), [['contested', 5]]);
+    const head = await h.begin();
+    const view = head.slice(head.indexOf('CURRENT KNOWLEDGE'));
+    assert.ok(view.includes('- hyp.three [contested]') && view.indexOf('- hyp.three') < view.indexOf('- hyp.fine'), view);
+    assert.match(view, /\n  ! its check fails on 5 of 5 decided moves \(#1, #2, …, #5\): narrow the claim to where it held, fix the check, or reject it/);
+    // The agent restates it open: the same check and claim do not contest it again.
+    await h.memory({ hypotheses: [{ key: 'hyp.three', status: 'open' }] });
+    await h.act('ACTION1');
+    await h.begin();
+    assert.equal(byCheck().length, 1);
+    // A rewritten check that still fails contests it again.
+    const again = await h.memory({ hypotheses: [{ key: 'hyp.three', check: "def check(t):\n    return t['changed_cells'] == 4\n" }] });
+    assert.match(again, /hyp\.three contested: its check fails on 6 of 6 decided moves/);
+    assert.equal(byCheck().length, 2);
+  } finally { await h.close(); }
+});
+
+test('ARC_CHECK_CONTEST_MIN=0 leaves check results out of a hypothesis status', async () => {
+  const h = await fixture({ ARC_CHECK_CONTEST_MIN: '0' });
+  try {
+    for (let i = 0; i < 5; i++) await h.decide('ACTION1');
+    await h.begin();
+    assert.doesNotMatch(await h.memory({ hypotheses: [{ key: 'hyp.three', claim: 'ACTION1 changes three cells', check: THREE }] }), /contested/);
+    await h.begin();
+    assert.deepEqual(h.rows('memory.jsonl').filter((row) => row.by === 'check'), []);
+  } finally { await h.close(); }
+});
+
+test('a check-contested hypothesis starts one refinement, and a HYPOTHESIS edit answers it', async () => {
+  // Only events start refinements here (ARC_REFINE_EVERY=100).
+  const h = await fixture({ ARC_REFINE_EVERY: '100' });
+  try {
+    for (let i = 0; i < 5; i++) await h.decide('ACTION1');
+    await h.begin();
+    await h.memory({ hypotheses: [{ key: 'hyp.three', claim: 'ACTION1 changes three cells', check: THREE }] });
+    await h.act('ACTION1');
+    await h.begin();
+    await h.calls(1);
+    assert.match(h.inputs[0] ?? '', /^WHY NOW: [^\n]*hyp\.three is contested: its check fails on 6 of 6 decided moves/);
+    await h.settle(reply("HYPOTHESIS hyp.where\nclaim: ACTION1 changes three cells only somewhere else\nquestion: what ACTION1 changes\n" +
+      "check:\ndef check(t):\n    return None\nEND\nWHY #1-#6 changed two cells each"));
+    await h.act('ACTION1');
+    await h.begin();
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(h.inputs.length, 1, 'answered once, not raised again');
+  } finally { await h.close(); }
+});
+
 test('ARC_REFINE_LEDGER=0 gives the earlier input and charter; the edits are still logged with ids', async () => {
   const h = await fixture({ ARC_REFINE_LEDGER: '0' });
   try {

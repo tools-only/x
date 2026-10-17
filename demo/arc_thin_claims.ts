@@ -97,6 +97,47 @@ export function renderClaimSummary(summary: ClaimSummary | undefined, compileErr
 		(summary.firstError ? ` · first error: ${summary.firstError.slice(0, 120)}` : "");
 }
 
+// ---------------------------------------------------------------- contest by checks (plan 2026-10-17, H2a)
+//
+// A check's results changed no status: su15-l1-3's hyp.action6_moves_bottom stayed open with its check at "holds 60 ·
+// fails 158". A check that mostly fails now contests its hypothesis; narrowing, fixing or rejecting stays the agent's.
+
+/** Decided moves (holds + fails) a check needs before it can contest its hypothesis; 0 turns contesting off. */
+export const CONTEST_MIN_DECIDED = 5;
+
+/** A check failing on at least half its decided moves: the counts, the failing moves, and where that first held. */
+export type CheckContest = { decided: number; fails: number; failing: number[]; at: number };
+
+/**
+ * Whether a check's own results contest its hypothesis: at least `min` decided moves, failing on at least half of
+ * them now. `at` is the move at which that first held, counting moves in order. n/a and errors are not decided.
+ */
+export function checkContest(rows: ClaimRow[], min = CONTEST_MIN_DECIDED): CheckContest | undefined {
+	if (min <= 0) return undefined;
+	const decided = rows.filter((r) => r.result === true || r.result === false).sort((a, b) => a.n - b.n);
+	let fails = 0, at: number | undefined;
+	decided.forEach((r, i) => {
+		if (r.result === false) fails += 1;
+		if (at === undefined && i + 1 >= min && 2 * fails >= i + 1) at = r.n;
+	});
+	if (at === undefined || 2 * fails < decided.length) return undefined;
+	return { decided: decided.length, fails, failing: decided.filter((r) => r.result === false).map((r) => r.n), at };
+}
+
+/** "its check fails on 158 of 218 decided moves (#51, #52, …, #70)" */
+export const renderContest = (contest: CheckContest) =>
+	`its check fails on ${contest.fails} of ${contest.decided} decided moves (${failures(contest.failing)})`;
+
+/**
+ * H2b: one refinement event per check-contested hypothesis and check version. None for a key in `refuted`: a rule that
+ * cites it is in dispute, and that event asks for the same edit. A refinement does not rewrite the agent's hypotheses;
+ * it can add a narrower one or set the strategy's next experiment.
+ */
+export function contestEvents(contests: Array<{ key: string; version: string; contest: CheckContest }>, refuted: string[]): Array<[string, string]> {
+	return contests.filter(({ key }) => !refuted.includes(key)).map(({ key, version, contest }) => [`contested:${key}@${version}`,
+		`${key} is contested: ${renderContest(contest)}; write a narrower HYPOTHESIS for where it held, or make the strategy's next experiment settle it`]);
+}
+
 // ---------------------------------------------------------------- promotion (docs/plans/2026-10-14-knowledge-promotion.md)
 //
 // A checked hypothesis becomes a standing rule, and a standing rule goes back to dispute, by the evidence the checks
