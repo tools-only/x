@@ -39,6 +39,20 @@ def test_known_qwen_route_encodes_requested_thinking_without_overriding_explicit
     assert provider["models"][0]["maxTokens"] == 2048
 
 
+def test_a_provider_outage_is_waited_out_and_a_refusal_is_not():
+    """su15-r04-e1 (2026-10-17) stopped after three decisions of "Connection error." in a ~35-minute gateway outage: the
+    stop for a provider that refuses the run treated a connection it could not make as a refusal."""
+    wait = arc_thin_e2e._outage_wait
+    assert wait("Connection error.", waited=0, max_wait=3600, streak=0, base=30) == 30
+    assert wait("Request timed out.", waited=30, max_wait=3600, streak=1, base=30) == 60
+    assert wait("Connection error.", waited=0, max_wait=3600, streak=9, base=30) == 300, "at most 10 x base per wait"
+    assert wait("Connection error.", waited=3590, max_wait=3600, streak=3, base=30) == 10, "never past the allowance"
+    assert wait("Connection error.", waited=3600, max_wait=3600, streak=3, base=30) == 0
+    assert wait("Repetitive tool calls detected in the conversation history.", waited=0, max_wait=3600, streak=0, base=30) == 0
+    assert wait(None, waited=0, max_wait=3600, streak=0, base=30) == 0
+    assert wait("Connection error.", waited=0, max_wait=0, streak=0, base=30) == 0, "0 keeps the earlier behaviour"
+
+
 def test_a_native_run_takes_the_responses_route_unless_an_arm_or_a_dialect_asks_otherwise():
     """The stored response is what lets a decision's later queries leave earlier reasoning off the wire."""
     resolve = arc_thin_e2e._resolve_pi_api

@@ -17,6 +17,8 @@ consecutive rounds is refused (stop=error, no usage). Rounds are counted across 
    5 plays ACTION1. No request is refused: the history shows the plays across decisions 1-3 once, and the refusals once.
 5. The same with ARC_THIN_COLLAPSE_REPEATS=0: from decision 4 on the requests carry 5 identical calls in a row and are
    refused, and the run stops as provider_error.
+6-7. A gateway outage ("Connection error.", no usage) is waited out, and counted as before once the run's allowance for
+   waiting is spent.
 """
 import json
 import os
@@ -107,8 +109,32 @@ assert not every["passed"] and every["stop_reason"] == "provider_error", every["
 assert every["provider_errors"] == 3 and len(every_refusals) == 3 and all(r["longest"] == 5 for r in every_refusals), every_refusals
 assert [r["action"] for r in read(root / "still-every-copy/harness/trajectory.jsonl")] == ["ACTION3"] * 3
 del os.environ["MOCK_ARC_STILL_ACTIONS"]
+
+# 6. A gateway outage (su15-r04-e1, 2026-10-17: three decisions of "Connection error." stopped the run). After the first
+#    request, the next 12 end with "Connection error."; Pi retries each request 3 times itself, so that is 3 decisions.
+#    The runner waits each one out (backoff shortened here), does not count those decisions toward the no-action stop
+#    (2 here), and the run goes on acting.
+os.environ["ARC_THIN_SMOKE_OUTAGE"] = "1:12"  # read by the scripted provider inside Pi
+outage_env = {"ARC_THIN_AUTO_COMPACTION": "0"}
+outage = json.loads(run_arc_thin_e2e(root / "outage", extension_env=outage_env, **{**common, "max_decisions": 16,
+    "max_no_action_decisions": 2, "provider_outage_backoff_seconds": 0.05, "max_provider_outage_seconds": 30}).read_text(encoding="utf-8"))
+outage_rows = read(root / "outage/harness/trajectory.jsonl")
+assert outage["passed"] and outage["stop_reason"] == "max_decisions", (outage["stop_reason"], outage.get("error"))
+assert outage["provider_errors"] == 3 and outage.get("provider_outage_seconds", 0) > 0, outage
+assert len(outage_rows) >= 2, outage_rows
+# 7. A longer outage (16 requests, 4 decisions) with a 0.05 s allowance: the first decision spends it, the identical errors
+#    of the next three count, and the run stops as before.
+os.environ["ARC_THIN_SMOKE_OUTAGE"] = "1:16"
+spent = json.loads(run_arc_thin_e2e(root / "outage-spent", extension_env=outage_env, **{**common, "max_decisions": 16,
+    "max_no_action_decisions": 10, "provider_outage_backoff_seconds": 0.05, "max_provider_outage_seconds": 0.05}).read_text(encoding="utf-8"))
+assert not spent["passed"] and spent["stop_reason"] == "provider_error" and spent["error"] == "Connection error.", spent["stop_reason"]
+assert spent["provider_errors"] == 4 and spent.get("provider_outage_seconds") == 0.05, spent
+del os.environ["ARC_THIN_SMOKE_OUTAGE"]
 print(json.dumps({"collapse": {"actions": len(rows), "refusals": len(refusals), "stop": collapsed["stop_reason"]},
                   "every_copy": {"actions": len(kept_rows), "refusals": len(kept_refusals), "stop": kept["stop_reason"]},
                   "guarded": {"actions": len(guarded_rows), "refusals": 0, "stop": guarded["stop_reason"]},
                   "still": {"actions": len(still_rows), "refusals": 0, "stop": still["stop_reason"]},
-                  "still_every_copy": {"refusals": len(every_refusals), "stop": every["stop_reason"]}}))
+                  "still_every_copy": {"refusals": len(every_refusals), "stop": every["stop_reason"]},
+                  "outage": {"actions": len(outage_rows), "provider_errors": outage["provider_errors"],
+                             "waited": outage.get("provider_outage_seconds"), "stop": outage["stop_reason"]},
+                  "outage_spent": {"stop": spent["stop_reason"], "waited": spent.get("provider_outage_seconds")}}))

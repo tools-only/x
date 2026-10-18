@@ -17,6 +17,9 @@ import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transpo
 /** say: a text block sent before the tool calls (the scripted model has no reasoning channel; text stands in for it). */
 type Step = { kind: "decide" | "consolidate"; calls?: Array<[string, Record<string, unknown>]>; text?: string; say?: string; think?: string };
 
+/** Requests this provider has answered in this Pi process (the gateway outage imitation counts them). */
+let providerRequests = 0;
+
 const COUNT_COLOR = "def run(state, args):\n    g = state['grid']\n    return {'count': sum(r.count(args['color']) for r in g)}\n";
 
 const DEFAULT_SCRIPT: Step[] = [
@@ -456,6 +459,19 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// Rounds are assistant messages with calls. The count goes on across decision prompts (seen in su15-l0-1), and
 			// here also across any other message without calls; only a different call ends a run.
 			const gatewayRepeats = Number(process.env.ARC_THIN_SMOKE_GATEWAY_REPEATS || 0);
+			// A gateway outage (tools/run_repeat_refusal_smoke.py parts 6-7, ARC_THIN_SMOKE_OUTAGE="after:count"): after `after`
+			// requests the next `count` end with "Connection error." and no usage, as su15-r04-e1's did for 35 minutes.
+			const [outageAfter, outageCount] = String(process.env.ARC_THIN_SMOKE_OUTAGE || "0:0").split(":").map(Number);
+			providerRequests += 1;
+			if (outageCount && providerRequests > outageAfter && providerRequests <= outageAfter + outageCount) {
+				output.stopReason = "error";
+				output.errorMessage = "Connection error.";
+				output.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+				stream.push({ type: "error", reason: "error", error: output });
+				stream.end();
+				return stream;
+			}
 			if (gatewayRepeats) {
 				let longest = 0, current = 0, previous = "";
 				for (const message of messages) {

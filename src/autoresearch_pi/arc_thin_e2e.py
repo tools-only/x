@@ -100,6 +100,23 @@ MAX_ENVIRONMENT_RESTARTS = 3
 #: run stops. su15-r1-B2 (2026-10-16) sent about 290 requests that the yibu gateway refused for repeated calls in their
 #: history; the refusals reported no usage, so no token cap ended the run. 0 keeps going as before.
 MAX_PROVIDER_ERRORS = 3
+#: A provider error that names the connection rather than the request (the gateway down or unreachable) is waited out
+#: instead of counted toward MAX_PROVIDER_ERRORS: su15-r04-e1 (2026-10-17) stopped after three decisions of "Connection
+#: error." in a ~35-minute yibu outage. At most this many seconds of waiting per run (0: count them, as before), backing
+#: off from OUTAGE_BACKOFF_SECONDS (doubled per wait, at most ten times it).
+MAX_PROVIDER_OUTAGE_SECONDS = 3600
+OUTAGE_BACKOFF_SECONDS = 30.0
+TRANSPORT_ERROR = re.compile(r"connection error|timed out|timeout|econnreset|econnrefused|etimedout|eai_again|enotfound|"
+                             r"socket hang up|fetch failed|network|terminated|bad gateway|service unavailable|overloaded|"
+                             r"rate limit|\b(?:429|50[234])\b", re.IGNORECASE)
+
+
+def _outage_wait(error: str | None, *, waited: float, max_wait: float, streak: int, base: float = OUTAGE_BACKOFF_SECONDS) -> float:
+    """Seconds to wait before the next decision when the last turn ended on a transport error (0: none, a refusal, or
+    the run's outage allowance is spent). The wait doubles with each one in a row, up to ten times the base."""
+    if not error or not TRANSPORT_ERROR.search(error) or base <= 0 or waited >= max_wait:
+        return 0.0
+    return float(min(10 * base, base * 2 ** streak, max_wait - waited))
 
 
 def _append_events(root: Path, events: list[Any]) -> None:
@@ -780,6 +797,8 @@ def run_arc_thin_e2e(
     fork_from: Path | None = None,
     max_environment_restarts: int = MAX_ENVIRONMENT_RESTARTS,
     max_provider_errors: int = MAX_PROVIDER_ERRORS,
+    max_provider_outage_seconds: float = MAX_PROVIDER_OUTAGE_SECONDS,
+    provider_outage_backoff_seconds: float = OUTAGE_BACKOFF_SECONDS,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
 
@@ -793,7 +812,8 @@ def run_arc_thin_e2e(
     starts a new game on the same port and action token, replays the recorded actions with every grid checked, and the
     next decision's prompt says so, at most ``max_environment_restarts`` times (0: the run stops, as before).
     A provider that ends ``max_provider_errors`` turns in a row with the same error and no action stops the run as
-    ``provider_error`` (0: it keeps going, as before).
+    ``provider_error`` (0: it keeps going, as before). A transport error (the gateway unreachable, not refusing) is
+    waited out first, for up to ``max_provider_outage_seconds`` per run (0: counted at once, as before).
 
     ``carry_reasoning_chars`` is the opt-in comparison variable C1 of
     docs/plans/2026-10-10-self-harness-priority-plan.md; off by default. ``continuity="session"`` keeps the
@@ -983,6 +1003,7 @@ def run_arc_thin_e2e(
             "fork": summary.get("fork"), "snapshot_after_decisions": list(snapshot_after_decisions),
             "snapshot_at_levels": list(snapshot_at_levels), "max_levels": max_levels,
             "max_environment_restarts": max_environment_restarts, "max_provider_errors": max_provider_errors,
+            "max_provider_outage_seconds": max_provider_outage_seconds,
             # Reasoning between tool rounds of the current decision: "all" (the Completions default), "fields" (the
             # Responses default: only the short <carry> block the agent writes is replayed) or "none" keep the projection
             # append-only for the provider's prefix cache; "recent" and result archiving rewrite earlier messages.
@@ -1046,6 +1067,9 @@ def run_arc_thin_e2e(
         no_action_streak = 0
         environment_streak = 0
         provider_errors: list[str] = []
+        # Seconds slept waiting out transport errors, and how many such waits in a row (MAX_PROVIDER_OUTAGE_SECONDS).
+        outage_waited = 0.0
+        outage_streak = 0
 
         def turn(message: str) -> list[dict[str, Any]]:
             response = kernel.prompt(message)
@@ -1314,15 +1338,28 @@ def run_arc_thin_e2e(
             else:
                 environment_streak = 0
             # The same refusal three turns in a row: the provider will not answer this run again (MAX_PROVIDER_ERRORS).
+            # A transport error is not a refusal: it is waited out first (MAX_PROVIDER_OUTAGE_SECONDS), and the decision
+            # it cost is not counted as one the agent ended without an action.
             refusal = _provider_error(events) if len(_read_jsonl(harness / "trajectory.jsonl")) == action_count else None
             if refusal:
                 summary["provider_errors"] += 1
-            provider_errors = [*provider_errors, refusal] if refusal else []
-            if max_provider_errors and len(provider_errors) >= max_provider_errors \
-                    and len(set(provider_errors[-max_provider_errors:])) == 1:
-                summary["stop_reason"] = "provider_error"
-                summary["error"] = refusal[:500]
-                break
+            outage = _outage_wait(refusal, waited=outage_waited, max_wait=max_provider_outage_seconds, streak=outage_streak,
+                                  base=provider_outage_backoff_seconds)
+            if outage and time.monotonic() + outage < deadline - 5:
+                outage_streak += 1
+                outage_waited += outage
+                summary["provider_outage_seconds"] = round(outage_waited, 2)
+                if not consolidate and no_action_streak:
+                    no_action_streak -= 1
+                time.sleep(outage)
+            else:
+                outage_streak = 0
+                provider_errors = [*provider_errors, refusal] if refusal else []
+                if max_provider_errors and len(provider_errors) >= max_provider_errors \
+                        and len(set(provider_errors[-max_provider_errors:])) == 1:
+                    summary["stop_reason"] = "provider_error"
+                    summary["error"] = refusal[:500]
+                    break
             if not consolidate and (summary["decisions"] in snapshot_after_decisions or any(
                     row.get("level_changed") and row.get("levels_completed") in snapshot_at_levels for row in new_rows)):
                 # Pi is idle between turns: the session, harness stores, workspace and python session are consistent.
