@@ -84,8 +84,56 @@ it passed and what stays unverified. Paid runs (R-H, E-H) wait for a budget.
 
 ### Decision
 
-- Keep, experimental, evaluated inside R-H and E-H (no separate arm). Next falsifiable check: R-H replays the refiner
-  input at the 12 would-contest points (now with the check source) to qwen and counts rewrites that parse, decide at
-  least 5 recorded moves and fail fewer than half.
+- Keep, experimental, evaluated inside R-H and E-H (no separate arm). Next falsifiable check: the contest replay
+  (iteration 2) sends the refiner input at each point where a check would have contested its hypothesis, with the
+  contest event and the check source, to qwen, and counts rewrites that parse, decide at least 5 recorded moves and fail
+  on fewer than half.
 - Backlog: item C (hypothesis → check → revision) gains a revision path for refinement-written hypotheses; its status
   does not change without a real run.
+
+## Iteration 2 (2026-10-19): where the actions go, and the contest replay
+
+Analysis only; no runtime change. Scripts and outputs in `C:/Users/qi/tmp/r04/loop/` (`noeffect-runs`, `chains`,
+`window`, `quiet-decisions`).
+
+### What the recorded runs show
+
+- **Quiet runs into GAME_OVER.** Runs of at least 10 actions that each changed at most 2 cells (`NO_EFFECT_CELLS`, the
+  runtime's "nothing beyond what every action changes") occur in 8 of 18 su15 runs; four ended in GAME_OVER:
+  su15-l1-3 #1-#33 (from #9 two clicks alternated in then-chains of 9), su15-l1-2 #26-#40 (a then-chain stepping y by 2),
+  su15-r04-e1 #26-#56 (python loops of 10 and 15 clicks), su15-l0-2 #14-#45 (one click 30 times, refused since L1).
+  Level 0's action budget is 110 (5 × baseline): su15-l0-2 ran out of it with 0 levels, su15-l1-3 used 83 of it. No
+  refinement trigger named such a run. In E1 the refiner explained the row that empties by 2 cells per action only at the
+  GAME_OVER (#56); its strategy pivot written at #41 became active at decision 29, after decision 28's 15-click loop.
+- **Level 1 is where runs fail.** Of the 13 recorded su15 runs that reached it, 3 passed it, 8 spent its 210 actions
+  (5 × its baseline of 42) without passing, and 2 ended earlier for other reasons. Among the six L0/L1 runs (the only
+  ones with then-chains), the two that passed it used few chained actions there (su15-l0-3: 0 of 45, one action per
+  decision; su15-l0-1: 11 of 160) and the three that failed used 119-153 of 210. In su15-l1-1 the agent moved blocks
+  one cell per click in chains of 8-11 and found at #211 that a click near a block moves it there; the refinements
+  rewrote the strategy 17 times on that level under the one-cell model and never proposed that experiment. This is a
+  correlation in the same agent's samples; chains may follow from the slow model rather than cause it.
+- **Refinement checks contradict the record when written.** Under r04's strict rule, of 31 check versions in the 15
+  runs that logged refinement inputs, 30 compile and 9 would be contested while current, all written by refinements;
+  7 of the 9 were contested at the move they were written (e.g. su15-fB3 `hyp.L1_gameover_on_block_click`: fails on
+  111 of 112 recorded moves at #200). Over all 17 earlier runs, 8 of 32 versions would be contested under the strict
+  rule, not 12 as the non-strict replay of the recorded results said.
+- **Generality.** `NO_EFFECT_CELLS = 2` was set from su15, whose move counter changes 1-2 cells per action; a one-cell
+  object moving one step also changes 2 cells. A stop on quiet sequences keyed to it would fit su15 further, so none is
+  built; a game-independent notion of the per-action change would come first.
+
+### The contest replay (`tools/arc_contest_replay.ts`)
+
+- `build` runs every recorded check under the strict rule on the run's moves, finds where H2a would contest it while
+  current, and takes the first logged refinement input from then on: its WHY NOW becomes the contest event in the
+  current wording, with the check under CHECKS NAMED ABOVE, and the system prompt the current charter. `grade` parses
+  each reply as the runtime does and runs a HYPOTHESIS check on the moves up to the input and after it.
+- Dry run (no provider): 9 cases (su15-r8b 2, su15-fA3 1, su15-fB2 3, su15-fB3 2, su15-f2-src2 1); graded as their own
+  replies, all 9 come out contested with the counts above, so the grader reproduces the runtime's contest.
+- Sending them: `python -I tools/arc_refine_replay.py <out> --input <out>/harness:0,1,2,3,4,5,6,7,8 --samples 2`,
+  18 qwen calls of about 3-4k input tokens each; at most 0.1M budget tokens. Not run: it needs the user's budget.
+
+### Decision
+
+- No runtime change in this iteration. The next candidate with the strongest evidence is a refinement hypothesis whose
+  check already contests on the recorded moves being returned to the refiner instead of applied (7 of 9 above), to be
+  written as its own change after the contest replay shows what qwen does with the contest event.
