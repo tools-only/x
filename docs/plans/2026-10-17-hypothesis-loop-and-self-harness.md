@@ -308,4 +308,8 @@ each in `8beb97c3`:
 
 **Next** (each needs the user's budget): the replay R-H (≤1.5M of the replays' budget; R-S waits for Part S), then
 E-H (3 su15 runs with `ARC_REFINE_LEDGER=0`, ≤18M, plus one held-out run, ≤6M). Before E-H: the runner's wait on
-transport errors. For E-H's measures, an agent write is a memory row without `by`.
+transport errors (built 2026-10-18, below). For E-H's measures, an agent write is a memory row without `by`.
+
+**Self-evolve loop, 2026-10-18** ([record](2026-10-18-self-evolve-loop.md)): a refinement now rewrites a contested
+hypothesis that refinements wrote (all 25 recorded checks were) and sees the checks its triggers name; the runner waits
+out transport errors. Both are evaluated inside R-H and E-H.

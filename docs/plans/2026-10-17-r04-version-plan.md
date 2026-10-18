@@ -327,7 +327,8 @@ run's `arc-run/analysis/post-run-gpt-6.1-sol.md`.
     end): three full su15 runs, at most 18M budget tokens.
   - Before any paid run: the runner waits out transport errors ("Connection error.", "Request timed out.") instead of
     counting them toward the refusal stop. Runner only, nothing new for the agent; checked offline with the refusal
-    smoke. Runs share one gateway, and E1's outage would have ended all of them.
+    smoke. Runs share one gateway, and E1's outage would have ended all of them. Built 2026-10-18
+    ([self-evolve loop](2026-10-18-self-evolve-loop.md), iteration 1): 30 s doubling to 300 s, at most 3600 s per run.
   - Added to E2's measures: checked hypotheses written by the agent and the refiner (base: the refiner's 10 in 6 runs);
     refinement notices that arrive after a decision began; runs of 10 or more consecutive actions with varied arguments
     that change only the cells every action changes.
