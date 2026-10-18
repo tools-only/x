@@ -130,12 +130,15 @@ export const renderContest = (contest: CheckContest) =>
 
 /**
  * H2b: one refinement event per check-contested hypothesis and check version. None for a key in `refuted`: a rule that
- * cites it is in dispute, and that event asks for the same edit. A refinement does not rewrite the agent's hypotheses;
- * it can add a narrower one or set the strategy's next experiment.
+ * cites it is in dispute, and that event asks for the same edit. A refinement rewrites only hypotheses refinements
+ * wrote (all 25 checks recorded in su15 since 2026-10-15 were); the agent's it can only narrow under a new key.
  */
-export function contestEvents(contests: Array<{ key: string; version: string; contest: CheckContest }>, refuted: string[]): Array<[string, string]> {
-	return contests.filter(({ key }) => !refuted.includes(key)).map(({ key, version, contest }) => [`contested:${key}@${version}`,
-		`${key} is contested: ${renderContest(contest)}; write a narrower HYPOTHESIS under a new key for where it held, or make the strategy's next experiment settle it`]);
+export function contestEvents(contests: Array<{ key: string; version: string; contest: CheckContest; ownedByRefinement?: boolean }>,
+	refuted: string[]): Array<[string, string]> {
+	return contests.filter(({ key }) => !refuted.includes(key)).map(({ key, version, contest, ownedByRefinement }) => [`contested:${key}@${version}`,
+		`${key} is contested: ${renderContest(contest)}; ` + (ownedByRefinement
+			? `a refinement wrote it, so rewrite it with HYPOTHESIS ${key}, narrower where it held, or make the strategy's next experiment settle it`
+			: "write a narrower HYPOTHESIS under a new key for where it held, or make the strategy's next experiment settle it")]);
 }
 
 /** Rival pairs named per question; the rest are counted. */

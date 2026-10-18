@@ -892,6 +892,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return lines;
 	}
 
+	/** Whether a hypothesis is a refinement's own: its latest write (a contest by its check is no one's) was a refinement's. */
+	function refinementOwned(key: string): boolean {
+		const last = readRows("memory.jsonl").filter((row) => row.key === key && row.by !== "check").at(-1);
+		return Boolean(last && !last.deleted && last.hyp && last.by === "refinement");
+	}
+
 	/** The decision view's line under each contested hypothesis with a check: what its current check says (H2a). */
 	function contestNotes(): Record<string, string> {
 		const notes: Record<string, string> = {};
@@ -1418,7 +1424,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// add a narrower one or set the next experiment.
 		if (!urgentOnly) due.push(...contestEvents([...memory.hypotheses].flatMap(([key, h]) => {
 			const contest = h.status === "contested" ? currentContest(key, h) : undefined;
-			return contest ? [{ key, version: claimVersion(h.check!), contest }] : [];
+			return contest ? [{ key, version: claimVersion(h.check!), contest, ownedByRefinement: refinementOwned(key) }] : [];
 		}), view.refuted.map((r) => r.key)));
 		// A rule citing a hypothesis that does not exist (H2c): only refinements write the rules prompt.
 		if (!urgentOnly) for (const key of view.missing)
@@ -1599,6 +1605,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const saved = binder!.active().filter((c) => /^(tools|observers|lib)\/[^/]+\.py$/.test(c.path));
 		const input = [
 			`WHY NOW: ${triggers.join("; ")}`,
+			// The checks of the hypotheses the triggers name (a contested one, a disputed rule's), to narrow or fix them.
+			...((named) => named.length ? [`CHECKS NAMED ABOVE:\n${named.map((key) => `--- ${key}\n${memory.hypotheses.get(key)!.check!.replace(/\s+$/, "")}`).join("\n")}`] : [])(
+				[...new Set(triggers.join(" ").match(/\bhyp\.[A-Za-z0-9_.-]*[A-Za-z0-9_]/g) ?? [])].filter((key) => memory.hypotheses.get(key)?.check)),
 			`ACTIONS SO FAR: ${trajectory.length}; levels completed: ${currentLevel()}; state: ${observation?.state ?? "unknown"}`,
 			...(ledger ? [ledger] : []),
 			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
@@ -1658,19 +1667,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				return;
 			}
 			// A belief turned into a checked hypothesis goes through the memory component like the agent's own: the runtime
-			// then runs its check on every recorded move, which is what promotion counts.
+			// then runs its check on every recorded move, which is what promotion counts. A refinement rewrites only
+			// hypotheses that refinements wrote (as it rewrites only files refinements wrote); the rewrite starts open.
 			if (edit.kind === "hypothesis") {
-				if (memory.hypotheses.has(edit.key)) { append("refiner.jsonl", { kind: "refused", ...base, path: `memory:${edit.key}`, why: `${edit.key} exists; a refinement adds hypotheses, it does not rewrite them` }); return; }
+				const rewrote = memory.hypotheses.has(edit.key);
+				if (rewrote && !refinementOwned(edit.key)) { append("refiner.jsonl", { kind: "refused", ...base, path: `memory:${edit.key}`, why: `${edit.key} is the agent's; a refinement adds hypotheses and rewrites only its own` }); return; }
 				const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(edit.question ? { question: edit.question } : {}),
-					...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}) }] }, trajectory.length, components());
+					...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}), ...(rewrote ? { status: "open" as const } : {}) }] },
+					trajectory.length, components());
 				if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
 				if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
 				for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 				applyRows(memory, plan.rows);
 				const id = `e${++refinerEdits}`;
-				append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check), ...ledgerFields(id) });
+				append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check),
+					...(rewrote ? { rewrote: true } : {}), ...ledgerFields(id) });
 				applied = true;
-				told(`hypothesis ${edit.key}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why, id);
+				told(`hypothesis ${edit.key}${rewrote ? " rewritten" : ""}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why, id);
 				return;
 			}
 			if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }

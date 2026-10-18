@@ -68,6 +68,11 @@ test("each check-contested hypothesis is one refinement event per check version,
 	assert.deepEqual(events.map(([id]) => id), ["contested:hyp.a@v1"]);
 	assert.match(events[0][1], /^hyp\.a is contested: its check fails on 6 of 6 decided moves \(#1, #2, …, #6\); /);
 	assert.deepEqual(contestEvents([], []), []);
+	// A hypothesis a refinement wrote is the refinement's to rewrite; the agent's is only narrowed under a new key.
+	const [[, own]] = contestEvents([{ key: "hyp.a", version: "v1", contest, ownedByRefinement: true }], []);
+	assert.match(own, /rewrite it with HYPOTHESIS hyp\.a/);
+	assert.doesNotMatch(own, /new key/);
+	assert.match(events[0][1], /under a new key/);
 });
 
 test("rivals with checks: one line per question, naming a recorded move that separates two of them, or saying none does", () => {

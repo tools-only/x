@@ -135,6 +135,8 @@ async function fixture(env: Record<string, string>, { still = [] as string[] } =
     inputs, systems, act, begin, rows,
     /** A file of the run, e.g. workspace/data/memory.md. */
     file: (path: string) => readFileSync(join(root, path), 'utf8'),
+    /** Any registered tool, called as the agent would. */
+    tool: async (name: string, params: any) => (await tools.get(name).execute('t', params, undefined, undefined, ctx)).content.map((b: any) => b.text ?? '').join('\n'),
     memory: async (params: any) => (await tools.get('memory').execute('t', params, undefined, undefined, ctx)).content.map((b: any) => b.text ?? '').join('\n'),
     async decide(action = 'ACTION1') { const head = await begin(); await act(action); return head; },
     /** Settle the oldest refinement call still waiting; the next call (if any) starts after its ledger checks. */
@@ -375,6 +377,30 @@ test('a refinement answer that is refused leaves the contest to be raised again'
     await h.begin();
     await h.calls(2);
     assert.match(h.inputs[1] ?? '', /hyp\.three is contested: [^\n]*under a new key/);
+  } finally { await h.close(); }
+});
+
+test('a refinement rewrites a hypothesis a refinement wrote once its check contests it, seeing that check', async () => {
+  // All 25 checks recorded in su15 since 2026-10-15 were refinement-written, and 12 would have been contested; a
+  // refinement could only add hypotheses, so a contested one of its own could never be narrowed.
+  const h = await fixture({ ARC_REFINE_EVERY: '100' });
+  try {
+    await h.decide('ACTION1');
+    await h.begin();
+    await h.tool('refine', { focus: 'write the hypothesis the moves suggest' });
+    await h.calls(1);
+    await h.settle(reply(`HYPOTHESIS hyp.three\nclaim: ACTION1 changes three cells\nquestion: what ACTION1 changes\ncheck:\n${THREE}END\nWHY #1 changed cells`));
+    for (let i = 0; i < 5; i++) await h.decide('ACTION1');
+    await h.begin();
+    await h.calls(2);
+    assert.match(h.inputs[1] ?? '', /hyp\.three is contested: [^\n]*rewrite it with HYPOTHESIS hyp\.three/);
+    assert.match(h.inputs[1] ?? '', /\nCHECKS NAMED ABOVE:\n--- hyp\.three\ndef check\(t\):\n    return t\['changed_cells'\] == 3\n/);
+    await h.settle(reply(`HYPOTHESIS hyp.three\nclaim: ACTION1 changes two cells\nquestion: what ACTION1 changes\ncheck:\n${TWO}END\nWHY every move changed two cells`));
+    await h.act('ACTION1');
+    await h.begin();
+    const rewritten = h.rows('memory.jsonl').filter((row) => row.key === 'hyp.three' && row.by === 'refinement').at(-1);
+    assert.deepEqual([rewritten?.hyp.claim, rewritten?.hyp.status, rewritten?.hyp.check], ['ACTION1 changes two cells', 'open', TWO]);
+    assert.ok(h.rows('refiner.jsonl').some((row) => row.kind === 'edit' && row.path === 'memory:hyp.three' && row.rewrote), 'recorded as a rewrite');
   } finally { await h.close(); }
 });
 
