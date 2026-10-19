@@ -263,3 +263,51 @@ What the agent used (`tools/arc_adoption.mjs`; a component counts only when the 
 - **Run 4b:** `su15-g61-2`, the same with `ARC_THIN_NATIVE_HISTORY_CHARS=16000` (the summarised history in the head,
   the native default before 2026-10-14, bounded): falsified if budget tokens per action do not fall by at least a third,
   or if the first four levels take markedly more actions than in g61-1.
+
+## Iteration 5 (2026-10-19): diagnosis only
+
+From here the user's rules are: keep the refiner on, no change to the current version's mechanism or structure, no
+repeated costly runs; find the drawbacks from the agent's runtime trajectory against the previous and best runs.
+
+### su15-g61-2 against su15-g61-1 (the best run)
+
+g61-2 was stopped at the user's request after 151 actions: 2 levels (#68, #94), three GAME_OVERs (#40, #112, #143),
+2.06M budget tokens (12.7k per action against g61-1's 29.5k), 57 actions on its third level, which g61-1 passed in 17.
+The falsifier of run 4b holds: the cost fell by more than a third, and the levels came markedly slower.
+
+1. **The timer read as the click's effect.** 26 of the first 40 actions changed only the 2 cells by which the bottom bar
+   shrinks; the agent recorded "the same diagonal coordinate (42,21) cleared (62,63)-(63,63) at #1 but (16,63)-(17,63)
+   at #32" and swept the diagonal markers twice, losing the first life to the timer at #40 and calling that GAME_OVER
+   "a terminal goal/failure signal". g61-1 clicked next to the token at #1 and saw 20 cells change. The same misreading
+   occurred in qwen runs (su15-r04-e1's "border erasure rule"; ls20 runs taking the move bar for the goal).
+2. **The refiner amplified it.** Its first hypothesis (#14) was the bar's change as the click's effect; the rival
+   events (iteration 3) produced two more bar-based rivals (x and y projections); promotion made it a rule at #22, removed
+   at #40 after nine disputes. Refinement checks gravitate to the most regular change, which is the counter.
+3. **The refiner's budget gate dropped the GAME_OVER trigger at #40**: with the agent 2.6 times cheaper per action, the
+   refiner's 10% share of the agent's tokens was exceeded early.
+4. **Bounded history means re-derivation**: 46 python cells (g61-1: 17), mostly the same per-move diff recomputed from
+   `history.grid`, and 1.68 requests per action (0.93).
+5. **On its third level the agent took the one-cell model**: after finding on the second level that a click sends a
+   block to a remote target (#76), it recorded at #143 "clicks on the movable object's footprint select
+   object-relative steps: blue 2x2 top-left gives up-left" and moved blocks one cell per click (#122-#139), the belief
+   that cost gpt-5.6-sol its second levels. g61-1 passed this level clicking destinations several cells away.
+6. Memory was written only in the reviews after GAME_OVER (#40, #112, #143), as in g61-1.
+
+### Why the components the agent creates go unused
+
+Across the su15 runs on record (L0, L1 and the 9 runs on r04): callable components (saved tools, skills, subagents,
+`refine`, `consult`) were called 5 times in total (one refinement tool 3 times in su15-l0-1; the agent's own tool twice
+in su15-g61-2). Components the runtime runs or shows by itself were consumed in every run: the strategy prompt (read
+at every decision, followed or explicitly skipped in the agents' notes), hypothesis checks (run on every move; the
+agents rejected hypotheses after contests and separations), views (su15-g56-1's view shown at 81 decisions).
+
+- What the agent saves are snapshots, not functions: all three tools the agents published (g61-1 `initial_compare`
+  and `lvl2inspect`, g61-2 `inspect_l1`) take no arguments and print a fixed comparison or fixed regions of the grid.
+  The python session held only data, never a function, in g61-2.
+- The computations are short, situation-specific queries: a per-move diff is one comprehension; g61-2 typed it about
+  16 times rather than defining it once, because writing it costs one call, the same as calling a tool, and needs no
+  recall of a tool's interface.
+- The bottleneck is inference, not computation: g61-1 passed four levels with 17 python cells in 206 actions. Its
+  losses came from what it believed (goal, timer, hazard), which no saved computation addresses.
+- So exploitation happens where the runtime does the pulling: a component the agent must remember to call is not
+  called; a component that runs or is shown by itself is used.
