@@ -9,7 +9,7 @@
  * baseline: plays a recording's actions as a plan: the earlier level's moves copied (a negative case) or the target
  *   level's own recorded moves (the judge's positive control).
  *
- * fit <out> <model> <source run> <a>-<b> <validation run> <a>-<b> [--calls 14] [--budget 250000] [--effort ..] [--label name]
+ * fit <out> <model> <source run> <a>-<b> <validation run> <a>-<b> [--calls 14] [--budget 250000] [--effort ..] [--force-test n] [--label name]
  *   <a>-<b> of the source spans the level's moves and ends with the move that completed it.
  * plan <out> <label> <target run> <entry n> [--calls 8] [--budget 150000] [--max-actions 60] [--name dir] [--env dir] [--game g]
  *   plans the level the target run entered with its move #n (the grid after #n is the plan's start), with <out>/<label>'s fit.
@@ -116,7 +116,7 @@ async function fit(out: string, model: string, sourceRun: string, sourceRange: s
     budget: Number(options.budget ?? 250_000), dir: join(out, options.label ?? `fit-${model}-${effort}`), shown: [source.set], validation, novel,
     head: [{ role: 'system', content: SYSTEM }, { role: 'user', content: fitPrompt(source, validation, completion, maxCalls) }],
     log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: false, persist: options.persist !== '0',
-    studyLimit: Number(options['study-limit'] ?? 0) };
+    studyLimit: Number(options['study-limit'] ?? 0), forceTest: Number(options['force-test'] ?? 0) };
   mkdirSync(loop.dir, { recursive: true });
   writeFileSync(join(loop.dir, 'prompt.txt'), `${SYSTEM}\n\n${loop.head[1].content}`);
   await runLoop(loop);

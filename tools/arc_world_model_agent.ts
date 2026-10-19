@@ -11,7 +11,7 @@
  *   attempt changed). `experiment` gives a finished fit the outcomes of moves of a kind its record lacks, recorded in
  *   another play of the same level, and scores the code before and after on a third recording of that level.
  *
- * agent <out> <model> [--calls 14] [--budget 400000] [--effort medium|off] [--max-tokens n] [--persist 0] [--study-limit 0] [--label name]
+ * agent <out> <model> [--calls 14] [--budget 400000] [--effort medium|off] [--max-tokens n] [--persist 0] [--study-limit 0] [--force-test 0] [--label name]
  *   <out> is a window directory (tools/arc_world_model.ts window). Writes <out>/<label>/.
  * experiment <out> <label> <experiment run> <from>-<to> <test run> <from>-<to> [--k 3] [--calls 5] [--budget 150000]
  *   continues <out>/<label>; writes <out>/<label>/experiment/.
@@ -45,6 +45,11 @@ export type Loop = {
    * with a limit of 4 (A3e) it kept calling python through 7 refusals and tested once, worse than A3b.
    */
   studyLimit?: number; sinceTest?: number;
+  /**
+   * After this many python calls in a row without a test, the next request names test in tool_choice, so the reply
+   * itself must hold a step() (round 3, P1-b2; 0 or unset disables). Python is never refused under this rule.
+   */
+  forceTest?: number;
   submitted?: { test: number; code: string; unknowns: string }; stop?: string;
 };
 
@@ -412,9 +417,9 @@ async function testTool(loop: Loop, code: string): Promise<{ text: string; versi
  * or a stream that errs before any output is tried again after 15, 60 and 180 s (round 2's first launch lost two arms
  * to "fetch failed" with two immediate attempts); the cause is kept in the error.
  */
-export async function completeTools(loop: Loop, messages: any[], tools: any[] = TOOLS) {
+export async function completeTools(loop: Loop, messages: any[], tools: any[] = TOOLS, toolChoice: any = 'auto') {
   const { base, key } = gateway();
-  const body = { model: loop.model, messages, tools, tool_choice: 'auto', max_tokens: loop.maxTokens, stream: true,
+  const body = { model: loop.model, messages, tools, tool_choice: toolChoice, max_tokens: loop.maxTokens, stream: true,
     stream_options: { include_usage: true },
     ...(loop.model.startsWith('qwen') ? { enable_thinking: loop.effort !== 'off' } : loop.effort !== 'off' ? { reasoning_effort: loop.effort } : {}) };
   const waits = [15, 60, 180];
@@ -502,9 +507,10 @@ export async function runLoop(loop: Loop) {
     if (loop.calls >= loop.maxCalls) { loop.stop = `replies used (${loop.calls})`; break; }
     if (loop.spent >= loop.budget) { loop.stop = `budget spent (${loop.spent} of ${loop.budget})`; break; }
     const messages = requestMessages(loop);
+    const forced = Boolean(loop.forceTest) && (loop.sinceTest ?? 0) >= loop.forceTest!;
     let reply;
-    try { reply = await completeTools(loop, messages); } catch (error) {
-      appendFileSync(join(loop.dir, 'calls.jsonl'), JSON.stringify({ call: loop.calls + 1, error: String((error as Error).message) }) + '\n');
+    try { reply = await completeTools(loop, messages, TOOLS, forced ? { type: 'function', function: { name: 'test' } } : 'auto'); } catch (error) {
+      appendFileSync(join(loop.dir, 'calls.jsonl'), JSON.stringify({ call: loop.calls + 1, forced, error: String((error as Error).message) }) + '\n');
       loop.stop = `call failed: ${String((error as Error).message).slice(0, 200)}`;
       break;
     }
@@ -514,7 +520,7 @@ export async function runLoop(loop: Loop) {
     appendFileSync(join(loop.dir, 'replies.jsonl'), JSON.stringify({ call: loop.calls, text: reply.text, tools: reply.calls.map((call) => call.name) }) + '\n');
     appendFileSync(join(loop.dir, 'calls.jsonl'), JSON.stringify({ call: loop.calls, finish: reply.finish, seconds: reply.seconds,
       usage: reply.usage, budget_tokens: tokens, reasoning_chars: reply.reasoning_chars, tools: reply.calls.map((call) => call.name),
-      request_chars: JSON.stringify(messages).length, ...(reply.stream_error ? { stream_error: reply.stream_error } : {}) }) + '\n');
+      request_chars: JSON.stringify(messages).length, ...(forced ? { forced } : {}), ...(reply.stream_error ? { stream_error: reply.stream_error } : {}) }) + '\n');
     const exchange: Exchange = { messages: [], notes: [], calls: [] };
     if (!reply.calls.length) {
       exchange.messages.push({ role: 'assistant', content: reply.text },
@@ -630,7 +636,7 @@ async function agent(out: string, model: string, options: Record<string, string>
     shown: [setup.shown], validation: setup.validation, novel: setup.novel,
     head: [{ role: 'system', content: SYSTEM }, { role: 'user', content: agentPrompt(setup, maxCalls) }],
     log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: false, persist: options.persist !== '0',
-    studyLimit: Number(options['study-limit'] ?? 0) };
+    studyLimit: Number(options['study-limit'] ?? 0), forceTest: Number(options['force-test'] ?? 0) };
   mkdirSync(loop.dir, { recursive: true });
   writeFileSync(join(loop.dir, 'prompt.txt'), `${SYSTEM}\n\n${loop.head[1].content}`);
   await runLoop(loop);

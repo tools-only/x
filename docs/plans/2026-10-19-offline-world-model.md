@@ -577,3 +577,48 @@ with the coverage line (P1-P4, just merged); it is not built here.
   supported, and the dream's first wrong step locates where the model and the level part.
 - **Budget.** Round 3 has spent 93k (A3e). P1-a 400k, P1-b 300k, P1-c 400k: at most 1.19M in all. If P1-a fails, one
   revision of one factor, at most 400k, only where the broken transition is clear.
+
+### Phase 1 results
+
+| Arm | Fit (replies, tests, budget tokens; best version) | Plan (replies, budget tokens) | One play in the local game |
+| --- | --- | --- | --- |
+| P1-a gpt-6.1-sol, level 2 to 3 | 14, 8, 97k; right on 14 of 15 level-2 moves and on 76 of q38-1's 106 (79 outside the counter row) | 8, 33k; one revision | **completed level 3 at its 18th action** (19 planned; the run took 17 with real feedback) |
+| P1-b qwen3.8-27b off, level 2 to 3 | 14, **0**, 67k; no version | not run: no model | — |
+| P1-c gpt-6.1-sol, level 3 to 4 (negative case) | 14, 12, 55k; right on 16 of 16 level-3 moves and on 40 of g61-2's 55 | 5, 27k | not completed (15 actions); the model wrong outside the counter row on every real move |
+
+Artifacts: `runs/arc-dream-20261019/p1-g61-l2-l3/` and `p1-g61-l3-l4/` (`fit.json`, `final.py`, `plan-*/plan.json`,
+`steps.jsonl`).
+
+- **P1-a: supported.** No real action was played before the submit.
+  - The fitted code states rules over what the grid shows and names no positions. Pieces of four ranks (colours a, 6,
+    f, b); a click pulls the pieces within a radius of 8 to the clicked cell; two pieces of the same, largest rank
+    merge into the next rank; each click fills 2 cells of the counter row.
+  - The planner listed level 3's pieces and its two targets. From the header it inferred that the level asks for a
+    rank-4 and a rank-3 piece. It simulated a 19-action plan, found the one level-2 move its model missed (#29),
+    widened the radius to 9 (then 15 of 15), simulated again, and submitted.
+  - Its stated guess was which target takes which size; it took the header's order. The plan did not need the 19th
+    action.
+  - The model on the real play: right outside the counter row on 16 of the 17 moves; the counter row on 5 (level 3's
+    counter fills at another rate). The dream matched the real grids outside the counter row through step 12. From
+    step 13, when the rank-4 piece entered its target, 7 cells differed; the plan did not depend on them.
+  - Cost: 130k budget tokens offline (97k fit, 33k plan) in place of the run's 17 real actions on that level.
+- **P1-c: failed, as expected.** The level-3 model was right on its own record. On level 4 it was wrong on every real
+  move outside the counter row, from the first. The planner noted a new outline it could not model and planned around
+  it; the plan reached no completion and no game over. Level 4's last recorded attempt (#177-#193) completes it at its
+  17th action, so the level was passable in 17. What level 4 adds is outside level 3's record, as W1 found.
+- **P1-b: not supported at the fit.** qwen with thinking off studied with python for all 14 replies and tested nothing.
+  This is the transition A3c, A3d and A3e already showed.
+
+### P1-b2: forcing the test call (decided after P1-b, before any further call)
+
+- **Why.** Phase 2 would run on qwen, the runs' model, and qwen's fit never reaches a candidate: no test in A3c, A3d
+  and P1-b; one blind test after 7 refusals in A3e. The untested lever named after A3e is a mechanical one: the request
+  itself requires the call.
+- **The one factor changed.** After 4 python calls in a row without a test, the next request names `test` in
+  `tool_choice` (`--force-test 4`); python is never refused. Every forced request is marked in `calls.jsonl`.
+- **Arm.** qwen3.8-27b, thinking off: fit on g61-1's level 2 as in P1-b (at most 14 replies, 150k), then the plan of
+  level 3 if a version exists (at most 8 replies, 100k).
+- **Supported** (check 1: qwen commits to a tested candidate) if the fit tests at least 3 versions and its best is
+  right outside the counter row on at least 60% of the 106 validation moves (P1-a: 75%), at no more than 150k. Phase 1
+  for qwen is supported if its plan completes level 3.
+- **Budget.** Round 3 has spent 373k; P1-b2 at most 250k.
