@@ -1,13 +1,15 @@
 # Offline world model ("dreaming") from recorded trajectories
 
 Date: 2026-10-19 (Asia/Shanghai). Status: phase 0 failed; round 2 (validation, a test-driven loop) passes on su15's
-second level for both models and fails on its fourth (the gate); both tools are kept as offline measurements; phases 1
-and 2 not run.
+second level for both models and fails on its fourth (the gate); round 3: phase 1 run offline. gpt-6.1-sol's plan,
+made in a model fitted on level 2, completed level 3 in one play in a local copy of the game; level 4 stays out of
+reach, qwen (thinking off) reached no usable fit, and no net benefit is shown. All tools are kept as offline
+measurements; phase 2 not run.
 
 Change record per [the development workflow](../development-workflow.md), with the sections of
 [the template](../templates/meta-harness-change.md). Built on `claude/r04-dream-20261019` in the temporary worktree
 `worktrees/r04-dream` (cut from r04 `7be18770`), then rebased and fast-forwarded into `claude/r04-20261017`; the
-worktree was removed.
+worktree was removed. Rounds 2 and 3 were built the same way in `worktrees/r04-dream2` and `worktrees/r04-dream3`.
 The plan was drafted in a side chat on 2026-10-19 and accepted by the user ("do this for me"): phase 0 and, if it
 passes, phase 1 offline; phase 2 (in-run) only with the user's go-ahead.
 
@@ -622,3 +624,58 @@ Artifacts: `runs/arc-dream-20261019/p1-g61-l2-l3/` and `p1-g61-l3-l4/` (`fit.jso
   right outside the counter row on at least 60% of the 106 validation moves (P1-a: 75%), at no more than 150k. Phase 1
   for qwen is supported if its plan completes level 3.
 - **Budget.** Round 3 has spent 373k; P1-b2 at most 250k.
+- **Result: not supported.** The forcing worked as a mechanism: replies 5 and 10 were forced and each called test. But
+  both versions were the same 300-character step() that only fills the counter row (validation 3 of 106 exact, 18
+  right outside the counter row). Between them qwen studied by printing whole grids from the top; the output limit cut
+  them before the rows that change, and it ran the same printing code three times. The plan (8 replies, 57k) called
+  python every time and never submitted, through the "last reply" notice. 151k in all
+  (`p1-g61-l2-l3/fit-qwen3.8-27b-off-forced/`).
+- **The broken transition, located more closely.** qwen with thinking off does not fail only at committing: made to
+  commit, it holds almost nothing, because its study does not reach the changes (it does not use the change lists
+  the prompt already gives). A3b reached 83% on W2 at 270k; nothing in round 3 reproduced that at a lower cost.
+
+## Round 3 decision
+
+Round 3 spent 524k budget tokens of its 1.2M: A3e 93k, P1-a 130k (fit 97k, plan 33k), P1-b 67k, P1-c 83k (55k,
+27k), P1-b2 151k (93k, 57k). No ARC action was played online; plans were played in the local copy of su15.
+
+| Check | Result | Status |
+| --- | --- | --- |
+| 1. qwen commits to a tested candidate | A3e (refuse python after 4 studies): one blind test, P1 6%. P1-b: no test. P1-b2 (force the test call): two forced tests of a counter-only step() | not supported; the study itself does not reach the changes |
+| 2. Phase 1: plan a level in the fitted model | P1-a: gpt-6.1-sol's plan completed su15's level 3 in its one play (18 actions). P1-c: the level-3 model fails on level 4 from the first move, as expected | supported for one transfer whose mechanics the earlier record holds |
+| 3. Coverage of states in play | left to the coverage line (P1-P4, merged into r04) | not built here |
+
+| Evidence level | Status | Provider / environment | Artifacts and limits |
+| --- | --- | --- | --- |
+| Functional | passed | local WASI sandbox; `arc_agi` OFFLINE with su15 `1944f8ab` | `check` (planner tools, plan parsing, both baselines, the dream comparison); fidelity 206 of 206 actions; the positive controls complete levels 3 and 4 at the 17th action, as the run did |
+| Offline prediction | passed for P1-a | yibu: gpt-6.1-sol medium | the level-2 model is right outside the counter row on 79 of 106 moves of another play and on 16 of 17 real moves of level 3; the dream matched the real grids for 12 steps. The level-3 model is wrong on level 4 from its first move |
+| Full chain | not applicable | — | offline: no runner, Pi or online ARC action; the judge is a local copy |
+| Autonomous adoption | not applicable | — | nothing reaches the run's agent |
+| Net benefit | not shown | local judge against su15-g61-1's record | the plan completed level 3 with no exploratory action, but the run itself spent 17 actions and 61k budget tokens there (decisions 31-35: agent 48k, refiner 13k), against the dream's 18 actions and 130k. Level 4, where the run spent 138 actions (6 of them resets) over seven attempts, is out of the dream's reach |
+
+- **Supported claims.**
+  - A step() that gpt-6.1-sol fitted from 15 moves of one passed su15 level states rules that carry to the next
+    level. Planning in it from that level's first grid alone, with one revision, gave a plan that completed the level
+    in one real play.
+  - The planner read the goal from the grid (the header's ranks, the targets) and named the one guess it made.
+  - A record carries over only what it shows: level 3's model fails on level 4's first move.
+- **Not supported.**
+  - A net benefit: on level 3 the run was already efficient (17 actions, 61k); where it was not (level 4), the dream
+    fails.
+  - qwen3.8-27b with thinking off as the dream's model at a bounded cost. After A3b (83% at 270k), five arms (A3c, A3d,
+    A3e, P1-b, P1-b2) gave no usable fit, even with the test call forced.
+- **Limits.** One game, one transfer, one fit and one plan per arm. The source is a clean, near-shortest play by
+  gpt-6.1-sol. The validation came from another run's recording of the same level, which a run would not have.
+- **Decision.**
+  - Keep `tools/arc_world_model_plan.ts` and `tools/arc_local_judge.py` as offline measurements, next to round 2's
+    tools. `--study-limit` and `--force-test` stay off by default. Nothing in the runtime changes.
+  - Phase 2 (in-run use) is not started: it needs the user's approval, and the evidence shows capability, not
+    benefit. If approved, it would fit after each passed level and plan the next, with gpt-family run models; qwen
+    first needs a working fit.
+- **Next falsifiable checks** (not run; each needs a budget):
+  1. In-run validation: refit P1-a's level with validation held out from the same record (no second recording), then
+     plan level 3 again. Does the plan still complete it? About 150k.
+  2. qwen with thinking on for the fit and the plan only (the runs keep thinking off). Does it reach a tested
+     candidate, and does its plan complete level 3? About 300k.
+  3. Benefit: a level whose mechanics an earlier record holds but where the run spent many actions. su15 has none
+     among the recorded levels; it needs other games or runs.
