@@ -168,6 +168,10 @@ def step(grid, action, x, y, history):
 
 It runs in a sandboxed CPython 3.12 without third-party modules, with a time limit of a few seconds for a whole attempt.
 
+The record shown is already loaded in python as \`record\`, grids included: for example \`m = record[0]["moves"][0]\` is the
+first move shown, and \`m["before"][m["y"]][m["x"]]\` the colour of the cell it acted on. Read grids from it; do not copy
+them from this text.
+
 You have up to ${maxCalls} replies; each may call tools. Use them: study the record with python, test each version, and fix what
 test shows wrong. Submit when validation stops improving or your replies run out; the version best on validation counts.`);
   return parts.join('\n\n');

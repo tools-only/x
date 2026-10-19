@@ -407,3 +407,28 @@ Two follow-ups, exploratory, each with one factor:
   - Supported if the right-outside-busy-lines share on the 70 test moves rises by at least 15 points; falsified below
     5.
 - Both together keep round 2 within 1.2M of its 1.5M.
+
+### Follow-up results
+
+- **A1d: gpt-6.1-sol at high effort, W1.**
+  - 10 replies, 4 tests, 152k budget tokens. One python call stopped the sandbox; it was reported and the loop went on.
+  - Best on validation: 0/14. P1 4/68 (6%), P2 54/73 (74%).
+  - By the pre-stated rule (P1 below 20%), W1 is out of this model's reach offline with this procedure, at medium and
+    at high effort.
+- **3b′: the three moves A2's code predicts worst** (q38-1 #65, #66, #67: a merged 3x3 piece moving).
+  - 5 replies, 58k budget tokens.
+  - On q38-1's attempts 3-5: 38/70 right outside busy lines before, 42/70 after (+5.7 points), between the
+    pre-stated bounds of 5 and 15 points: inconclusive.
+  - By kind: clicks inside the last changed area 0 → 2 of 3, touching it 1 → 3 of 3, more than 6 cells 23 → 24 of 29,
+    2-6 cells 11 → 10 of 32.
+  - W2's own P1 rose from 83% to 85%.
+- **Spent in round 2:** 841k budget tokens.
+
+### One optimisation: qwen's cost (A3c)
+
+- **What costs.** A3b fixed W2 at 270k budget tokens, 3.5 times A2's 77k. 7 of its 13 python calls retyped grids from
+  the prompt (two ended in unterminated strings) instead of reading `record`, which the tool description names.
+- **The one factor changed.** The task text adds an example: `record` already holds the grids,
+  `m = record[0]["moves"][0]` is the first move shown and `m["before"][m["y"]][m["x"]]` the colour of its cell.
+- **Arm.** A3c: qwen3.8-27b, thinking off, W2, round 2c's tool, at most 14 replies and 250k.
+- **Supported** if P1 is at least 75% at no more than 135k budget tokens (half of A3b's). Otherwise not supported.
