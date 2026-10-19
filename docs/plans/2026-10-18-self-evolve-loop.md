@@ -374,3 +374,7 @@ conflict, in the refinement's file write in `arc_thin_extension.ts`, keeps the b
 every path with `workspace.mutate`. r04 now runs P1-P3 by default (`ARC_REFINE_COVERAGE=0` turns them off; P4 needs
 `ARC_THIN_LEAN=1`). Full unit suite after the merge: 38 files, 210 tests, 205 pass; the 5 failures (activation 1,
 components 1, receipts 3) are the base's own (r04 before the merge: 193 tests, 188 pass, the same 5).
+
+Then, at the user's "merge and fix moveFacts too": the ledger's busy-line candidate from the eloquent-clarke session
+(`d1a7bdcd`, record `2026-10-19-ledger-busy-lines.md`), and MoveFacts on the same status mask, which had masked the
+player's track in ls20 and ka59 (record `2026-10-19-coverage-attempts-delivery.md`, "After the merge").

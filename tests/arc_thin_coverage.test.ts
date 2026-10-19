@@ -42,6 +42,55 @@ test("a line that changes on most moves is a counter: boxes and the kinds of cli
 		"(now x4-4 y12-12): inside 5, touching 1, 2-6 cells 3, more than 6 cells 2, first of an attempt 1; ACTION7 never played");
 });
 
+/** A one-cell sprite (9) walking down and back up column 5, one cell per move, and the bar in row 15 losing a cell per move. */
+function walk(moves: number) {
+	const grid = Array.from({ length: 16 }, (_, y) => Array.from({ length: 16 }, () => (y === 15 ? 3 : 0)));
+	let y = 2, dy = 1;
+	grid[y][5] = 9;
+	const grids = new Map<number, number[][]>([[0, grid.map((row) => [...row])]]);
+	const rows: MoveRow[] = [];
+	for (let i = 0; i < moves; i += 1) {
+		grid[y][5] = 0;
+		if (y + dy < 2 || y + dy > 12) dy = -dy;
+		y += dy;
+		grid[y][5] = 9;
+		grid[15][15 - i] = 0;
+		grids.set(i + 1, grid.map((row) => [...row]));
+		rows.push({ n: i + 1, action: dy > 0 ? "ACTION2" : "ACTION1", level_changed: false, state: "NOT_FINISHED", levels_completed: 0 });
+	}
+	return { rows, facts: new MoveFacts(grids) };
+}
+
+test("an object walking along a line is not a counter: its track stays in boxes and grid keys", () => {
+	// The ledger's held-out recheck (docs/plans/2026-10-19-ledger-busy-lines.md): an ls20 player walking a corridor on most
+	// moves made the corridor's columns busy, and its positions merged. A walker takes its values along; a bar is recoloured.
+	const { rows, facts } = walk(12);
+	assert.deepEqual([...facts.refresh(rows).rows], [15]);
+	assert.deepEqual([...facts.busy.cols], [], "column 5 is the sprite's track");
+	assert.deepEqual(facts.box(3), { top: 4, left: 5, bottom: 5, right: 5 });
+	assert.notEqual(facts.key(1), facts.key(2), "two positions of the sprite are two grids");
+	assert.equal(facts.key(8), facts.key(12), "the same position with the bar masked is the same grid");
+});
+
+test("a counter cell is masked as a cell: its row and column stay", () => {
+	// A digit at (15,0) changes on every move; clicks toggle cells, one of them in column 15.
+	const grid = Array.from({ length: 16 }, () => Array.from({ length: 16 }, () => 0));
+	const grids = new Map<number, number[][]>([[0, grid.map((row) => [...row])]]);
+	const rows: MoveRow[] = [];
+	const clicks: Array<[number, number]> = [[2, 2], [3, 3], [4, 4], [5, 5], [6, 6], [7, 7], [8, 8], [9, 9], [15, 5], [10, 10]];
+	clicks.forEach(([x, y], i) => {
+		grid[y][x] = grid[y][x] ? 0 : 9;
+		grid[0][15] = 1 + (i % 9);
+		grids.set(i + 1, grid.map((row) => [...row]));
+		rows.push({ n: i + 1, action: "ACTION6", x, y, level_changed: false, state: "NOT_FINISHED", levels_completed: 0 });
+	});
+	const facts = new MoveFacts(grids);
+	const busy = facts.refresh(rows);
+	assert.deepEqual([[...busy.rows], [...busy.cols], [...busy.cells]], [[], [], ["15,0"]]);
+	assert.deepEqual(facts.box(9), { top: 5, left: 15, bottom: 5, right: 15 }, "the click in column 15 is placed, without the counter");
+	assert.notEqual(facts.key(8), facts.key(9), "the cell it toggled shows in the grid key");
+});
+
 test("rare kinds are the available ones the level has (almost) not played; a proposed move is classified from the last change", () => {
 	// Twenty clicks, each on the block where the previous one moved it: all inside the last changed area.
 	const { rows, facts } = play(Array.from({ length: 20 }, (_, k) => ["ACTION6", (1 + k) % 14, (1 + k) % 14] as [string, number, number]));

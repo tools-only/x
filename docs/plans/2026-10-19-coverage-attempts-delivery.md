@@ -163,7 +163,7 @@ environment boundary.
 
 The user chose (2026-10-19, after the loop session recorded "diagnose, don't redesign") to finish the first pair and
 decide before anything else runs. The change is not merged into `claude/r04-20261017`: that would change the version
-the loop session diagnoses.
+the loop session diagnoses. Later that day the user said merge: `e0b3e3a6` on r04 (P1-P3 on by default).
 
 ## Results of the first pair (r04-cov `a3ad22e8`, `runs/arc-p13-20261019`)
 
@@ -208,3 +208,38 @@ Next falsifiable check, if continued: the rival path itself, on a run where a hy
 that needs some moves on the level (or the exact move) before a pinned kind counts as played.
 
 Related backlog: item C (hypothesis → experiment → revision); its status does not change on this evidence.
+
+## After the merge: MoveFacts masks the ledger's status cells (2026-10-19)
+
+- **Defect.** `MoveFacts.busy` counted a row or column as busy when any of its cells changed on at least 80% of the
+  ordinary moves that changed something. The ledger's held-out recheck (`2026-10-19-ledger-busy-lines.md`) showed that
+  such a rule masks a player's track. Replayed through MoveFacts, it masked the corridor's columns 34-38 or the
+  player's rows 40-49 in 14 of 15 ls20 records, and in both ka59 records rows 30-32, along which a 3x3 player walks
+  left and right.
+- **Change** (user: "fix moveFacts too"). The ledger's rule moved into `statusMask` (`arc_thin_ledger.ts`), which
+  `maskedHashes` and `MoveFacts.refresh` now share: ticker cells (changed on at least 80% of the transitions) are masked
+  as cells, and a row or column counts only when its other cells were recoloured one way on at least 80% of them.
+  MoveFacts keeps its own transitions (the ordinary moves that changed something). `Busy` gains `cells`; boxes and
+  grid keys leave out ticker cells as well as busy lines. `BUSY_SHARE` and `BUSY_MIN_MOVES` are gone (the same 0.8 and
+  8 are in `statusMask`).
+- **Tests.** Two new `arc_thin_coverage` tests, both seen failing first: a sprite walking along a column (the column
+  was masked) and a counter cell (its row and column were masked). `arc_thin_coverage` 8/8, `arc_thin_coverage_events`
+  3/3, `arc_thin_ledger` 15/15, `arc_thin_critic` 1/1. Full suite: 38 files, 215 tests, 209 pass; the failures are the
+  base's 5 (activation 1, components 1, receipts 3) and `arc_thin_action_surface` (a 20 s Pi timeout under load; 2/2
+  when rerun alone).
+- **Replay** (`C:/Users/qi/tmp/busy-lines/movefacts-recheck.ts`, decision by decision against MoveFacts at `d1a7bdcd`;
+  outputs `movefacts-su15.*`, `movefacts-heldout.*`; no model call):
+  - su15, 9 runs (the 7 of `arc-models-20261019`, the 2 above): row 63 masked at the same decisions, no move kind
+    changed, the same distinct grids per level. Only su15-g61-1's one-decision transient lines at #8 shrink, from rows
+    52-54 and columns 9-11 to row 52, column 11 and 8 ticker cells.
+  - Held out, 27 records of 6 games: ls20 keeps rows 61-62 (its bar) and loses the corridor (columns 34-38 remain at
+    one decision of one record); ka59 masks nothing; ar25 keeps column 63 (its bar) and its transient lines drop to six
+    columns at one decision; bp35, ft09 and tu93 keep row 63. Distinct grids per level are never fewer and are more in
+    6 records (ls20-e1-A1 6 → 11, thin-hyp-ls20-C2 2 → 8, thin-hyp-ls20-B 2 → 5, ls20-e1-src 1 → 3, thin-sh-r3-ls20
+    1 → 2, thin-sh-r2-ka59 15 → 18). Move kinds change in ka59 only, one move per record.
+  - As in the ledger, some ls20 records now mask 25 ticker cells (50 in one): a 5x5 tile the player leaves or enters on
+    most moves.
+- **Evidence level.** Functional: tests and replay. ls20 prompted the one-way condition in the ledger session, so it is
+  in-sample here; ka59 shows the same defect fixed without having shaped the rule. Not run: full chain, adoption,
+  benefit.
+- Still unfixed: a kind counts as rare on a young level; `parseMove` reads "ACTION7(0,0)" as a click cell.

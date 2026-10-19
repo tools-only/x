@@ -12,8 +12,8 @@
  * Attempts: the actions between RESETs, GAME_OVERs and level changes. su15-g56-1 ended six attempts on its second level
  * in GAME_OVER; between them the agent noted hazards and kept its movement model.
  */
-import { gridChanges } from "./arc_thin_history.ts";
-import { gridHash, isGoalHypothesis } from "./arc_thin_ledger.ts";
+import { gridChanges, type CellChange } from "./arc_thin_history.ts";
+import { gridHash, isGoalHypothesis, statusMask } from "./arc_thin_ledger.ts";
 
 type Grid = number[][];
 /** The one action that takes coordinates in ARC-AGI-3 (the extension's takesCoordinates). */
@@ -38,76 +38,74 @@ export const boxDistance = (x: number, y: number, box: Box) =>
 export const boxText = (box: Box) => `x${box.left}-${box.right} y${box.top}-${box.bottom}`;
 
 /**
- * A row or column that changed on at least BUSY_SHARE of the ordinary moves (no RESET, level change or GAME_OVER) is a
- * counter or timer, not where a move acted: su15's move counter in row 63 changed on every move that changed anything,
- * so the bridge's box of each move reached down to it. The ledger's ticker cells (arc_thin_ledger.ts) apply the same
- * share to cells; a bar that shrinks changes each of its cells once, so here it is lines.
+ * A counter or timer is not where a move acted: su15's move counter in row 63 changed on every move that changed
+ * anything, so the bridge's box of each move reached down to it. The masked cells are the ledger's status cells and
+ * lines (statusMask in arc_thin_ledger.ts) over the ordinary moves (no RESET, level change or GAME_OVER) that changed
+ * something: cells that changed on at least 80% of them, and rows or columns recoloured one way on at least 80% of
+ * them. A line that only an object walks along keeps its cells (an ls20 player's corridor was masked by the plain
+ * rule, 2026-10-19).
  */
-export const BUSY_SHARE = 0.8;
-export const BUSY_MIN_MOVES = 8;
-export type Busy = { rows: Set<number>; cols: Set<number> };
+export type Busy = { rows: Set<number>; cols: Set<number>; cells: Set<string> };
+const NO_BUSY = (): Busy => ({ rows: new Set(), cols: new Set(), cells: new Set() });
 
 const ordinary = (row: MoveRow) => row.action !== "RESET" && !row.level_changed && row.state !== "GAME_OVER";
 /** The level an action was taken on (0-based): the levels completed before it. */
 const levelOfRow = (row: MoveRow) => Math.max(0, row.levels_completed - (row.level_changed ? 1 : 0));
 
-/** What every move changed, its box without busy lines, and each grid's key with them masked; cached per move. */
+/** What every move changed, its box without status cells, and each grid's key with them masked; cached per move. */
 export class MoveFacts {
 	private grids: Map<number, Grid>;
-	private changes = new Map<number, Array<[number, number]> | null>();
+	private changes = new Map<number, CellChange[] | null>();
 	private keys = new Map<number, string>();
 	private busyAt = -1;
-	busy: Busy = { rows: new Set(), cols: new Set() };
+	busy: Busy = NO_BUSY();
 	constructor(grids: Map<number, Grid>) { this.grids = grids; }
 	/** Forget everything computed (the grids were reloaded). */
-	clear(): void { this.changes.clear(); this.keys.clear(); this.busyAt = -1; this.busy = { rows: new Set(), cols: new Set() }; }
-	/** Cells move n changed ([x, y]), or null without both grids (not kept: a grid may be recorded later). */
-	changed(n: number): Array<[number, number]> | null {
+	clear(): void { this.changes.clear(); this.keys.clear(); this.busyAt = -1; this.busy = NO_BUSY(); }
+	/** Cells move n changed ([x, y, before, after]), or null without both grids (not kept: a grid may be recorded later). */
+	changed(n: number): CellChange[] | null {
 		if (!this.changes.has(n)) {
 			const before = this.grids.get(n - 1), after = this.grids.get(n);
 			if (!before || !after) return null;
-			const cells = gridChanges(before, after);
-			this.changes.set(n, cells ? cells.map(([x, y]) => [x, y] as [number, number]) : null);
+			this.changes.set(n, gridChanges(before, after) ?? null);
 		}
 		return this.changes.get(n)!;
 	}
-	/** Busy lines over the ordinary moves in `rows` (recomputed when more moves are recorded). */
+	/** Status cells and lines over the ordinary moves in `rows` (recomputed when more moves are recorded). */
 	refresh(rows: MoveRow[]): Busy {
 		if (this.busyAt === rows.length) return this.busy;
-		const rowCounts = new Map<number, number>(), colCounts = new Map<number, number>();
-		let moves = 0;
+		const transitions: CellChange[][] = [];
 		for (const row of rows) {
 			if (!ordinary(row)) continue;
 			const cells = this.changed(row.n);
-			if (!cells?.length) continue;
-			moves += 1;
-			for (const y of new Set(cells.map(([, y]) => y))) rowCounts.set(y, (rowCounts.get(y) ?? 0) + 1);
-			for (const x of new Set(cells.map(([x]) => x))) colCounts.set(x, (colCounts.get(x) ?? 0) + 1);
+			if (cells?.length) transitions.push(cells);
 		}
-		const busy = (counts: Map<number, number>) => new Set(moves >= BUSY_MIN_MOVES
-			? [...counts].filter(([, count]) => count >= BUSY_SHARE * moves).map(([line]) => line) : []);
-		const next = { rows: busy(rowCounts), cols: busy(colCounts) };
-		const same = (a: Set<number>, b: Set<number>) => a.size === b.size && [...a].every((line) => b.has(line));
-		// Grid keys depend on the busy lines only.
-		if (!same(next.rows, this.busy.rows) || !same(next.cols, this.busy.cols)) this.keys.clear();
+		const { ticker, rows: lines, cols } = statusMask(transitions);
+		const next = { rows: lines, cols, cells: ticker };
+		const same = <K>(a: Set<K>, b: Set<K>) => a.size === b.size && [...a].every((item) => b.has(item));
+		// Grid keys depend on the masked cells only.
+		if (!same(next.rows, this.busy.rows) || !same(next.cols, this.busy.cols) || !same(next.cells, this.busy.cells)) this.keys.clear();
 		this.busy = next;
 		this.busyAt = rows.length;
 		return this.busy;
 	}
-	/** The box of the cells move n changed outside busy lines, or undefined. */
+	private masked(x: number, y: number): boolean {
+		return this.busy.rows.has(y) || this.busy.cols.has(x) || this.busy.cells.has(`${x},${y}`);
+	}
+	/** The box of the cells move n changed outside status cells, or undefined. */
 	box(n: number): Box | undefined {
-		const cells = (this.changed(n) ?? []).filter(([x, y]) => !this.busy.rows.has(y) && !this.busy.cols.has(x));
+		const cells = (this.changed(n) ?? []).filter(([x, y]) => !this.masked(x, y));
 		if (!cells.length) return undefined;
 		const xs = cells.map(([x]) => x), ys = cells.map(([, y]) => y);
 		return { top: Math.min(...ys), left: Math.min(...xs), bottom: Math.max(...ys), right: Math.max(...xs) };
 	}
-	/** The grid after move n (0: the start), busy lines masked, as a key. */
+	/** The grid after move n (0: the start), status cells masked, as a key. */
 	key(n: number): string | undefined {
 		if (!this.keys.has(n)) {
 			const grid = this.grids.get(n);
 			if (!grid) return undefined;
-			const { rows, cols } = this.busy;
-			this.keys.set(n, gridHash(rows.size || cols.size ? grid.map((line, y) => line.map((cell, x) => rows.has(y) || cols.has(x) ? -1 : cell)) : grid));
+			const { rows, cols, cells } = this.busy;
+			this.keys.set(n, gridHash(rows.size || cols.size || cells.size ? grid.map((line, y) => line.map((cell, x) => this.masked(x, y) ? -1 : cell)) : grid));
 		}
 		return this.keys.get(n);
 	}
@@ -135,13 +133,13 @@ export type Coverage = {
 	moves: number;
 	/** Clicks (moves with coordinates) by region; "unplaced": nothing had changed yet in their attempt. */
 	clicks: Record<Region | "unplaced", number>;
-	/** Other actions: how often played, and the distinct grids (busy lines masked) they were played from. */
+	/** Other actions: how often played, and the distinct grids (status cells masked) they were played from. */
 	actions: Map<string, { played: number; grids: Set<string> }>;
-	/** Distinct grids (busy lines masked) the level has shown. */
+	/** Distinct grids (status cells masked) the level has shown. */
 	grids: number;
 	/** The area the next click is measured from: the box the latest change of the current attempt left. */
 	box?: Box;
-	/** The current grid's key (busy lines masked). */
+	/** The current grid's key (status cells masked). */
 	current?: string;
 };
 

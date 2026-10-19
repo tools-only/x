@@ -176,41 +176,29 @@ export type LedgerState = {
 	index: Map<number, Map<string, Record<string, string>>>; completions: Completion[]; ticker_cells: number;
 };
 
+/** One changed cell: [x, y, value before, value after] (undefined where a grid has no such cell). */
+export type CellChangeOf = [x: number, y: number, from: number | undefined, to: number | undefined];
+
 /**
- * State hashes that ignore "ticker" cells: cells that changed on at least 80% of
- * the transitions so far (step counters, timers). Without this, a counter makes
- * every state unique and repetition can never be seen. Busy lines are masked too:
- * rows or columns whose cells other than tickers were recoloured one way (no value
- * both left and arrived in the line) on at least 80% of the transitions. A bar that
- * shrinks by a few cells per action changes each of its cells once, so none of them is
- * a ticker, but its line is recoloured on every action; an object moving along a line
- * takes its values with it, so its track is not masked. Record:
- * docs/plans/2026-10-19-ledger-busy-lines.md. grids[n] is the state after action n
- * (grids[0] before the first action).
+ * The status cells and lines of a run, from the cells each of its transitions changed: "ticker" cells that changed on
+ * at least 80% of the transitions (step counters, timers), and rows or columns whose cells other than tickers were
+ * recoloured one way (no value both left and arrived in the line) on at least 80% of them; none before 8 transitions.
+ * A bar that shrinks by a few cells per action changes each of its cells once, so none of them is a ticker, but its
+ * line is recoloured on every action; an object moving along a line takes its values with it, so its track is not
+ * masked. Record: docs/plans/2026-10-19-ledger-busy-lines.md. The ledger's state hashes and the move coverage's boxes
+ * and grid keys (arc_thin_coverage.ts) mask the same cells, each over its own transitions.
  */
-export function maskedHashes(grids: Map<number, number[][]>): { hash: Map<number, string>; ticker: number; busy: { rows: number[]; cols: number[] } } {
-	type Change = [x: number, y: number, from: number | undefined, to: number | undefined];
-	const ns = [...grids.keys()].sort((a, b) => a - b);
-	const changes: Change[][] = [];
-	for (let i = 1; i < ns.length; i += 1) {
-		const a = grids.get(ns[i - 1])!, b = grids.get(ns[i])!;
-		if (ns[i] !== ns[i - 1] + 1) continue;
-		const changed: Change[] = [];
-		for (let y = 0; y < Math.max(a.length, b.length); y += 1)
-			for (let x = 0; x < Math.max(a[y]?.length ?? 0, b[y]?.length ?? 0); x += 1)
-				if (a[y]?.[x] !== b[y]?.[x]) changed.push([x, y, a[y]?.[x], b[y]?.[x]]);
-		changes.push(changed);
-	}
+export function statusMask(transitions: CellChangeOf[][]): { ticker: Set<string>; rows: Set<number>; cols: Set<number> } {
 	/** Keys found among the changes of at least 80% of the transitions (none before 8 transitions). */
-	const frequent = <K>(transitions: K[][]) => {
+	const frequent = <K>(lists: K[][]) => {
 		const counts = new Map<K, number>();
-		for (const keys of transitions) for (const key of new Set(keys)) counts.set(key, (counts.get(key) ?? 0) + 1);
-		return new Set(transitions.length >= 8 ? [...counts].filter(([, count]) => count / transitions.length >= 0.8).map(([key]) => key) : []);
+		for (const keys of lists) for (const key of new Set(keys)) counts.set(key, (counts.get(key) ?? 0) + 1);
+		return new Set(lists.length >= 8 ? [...counts].filter(([, count]) => count / lists.length >= 0.8).map(([key]) => key) : []);
 	};
-	const ticker = frequent(changes.map(changed => changed.map(([x, y]) => `${x},${y}`)));
+	const ticker = frequent(transitions.map(changed => changed.map(([x, y]) => `${x},${y}`)));
 	// Lines count only the changes of their other cells: a ticker cell alone would hide its whole row and column.
-	const other = changes.map(changed => changed.filter(([x, y]) => !ticker.has(`${x},${y}`)));
-	const recoloured = (changed: Change[], line: (change: Change) => number) => {
+	const other = transitions.map(changed => changed.filter(([x, y]) => !ticker.has(`${x},${y}`)));
+	const recoloured = (changed: CellChangeOf[], line: (change: CellChangeOf) => number) => {
 		const values = new Map<number, { from: Set<number | undefined>; to: Set<number | undefined> }>();
 		for (const change of changed) {
 			const item = values.get(line(change)) ?? { from: new Set(), to: new Set() };
@@ -218,8 +206,28 @@ export function maskedHashes(grids: Map<number, number[][]>): { hash: Map<number
 		}
 		return [...values].filter(([, { from, to }]) => ![...from].some(value => to.has(value))).map(([key]) => key);
 	};
-	const rows = frequent(other.map(changed => recoloured(changed, ([, y]) => y)));
-	const cols = frequent(other.map(changed => recoloured(changed, ([x]) => x)));
+	return { ticker, rows: frequent(other.map(changed => recoloured(changed, ([, y]) => y))),
+		cols: frequent(other.map(changed => recoloured(changed, ([x]) => x))) };
+}
+
+/**
+ * State hashes that ignore the status cells and lines (statusMask) over the transitions so far. Without this, a counter
+ * or a timer bar makes every state unique and repetition can never be seen. grids[n] is the state after action n
+ * (grids[0] before the first action).
+ */
+export function maskedHashes(grids: Map<number, number[][]>): { hash: Map<number, string>; ticker: number; busy: { rows: number[]; cols: number[] } } {
+	const ns = [...grids.keys()].sort((a, b) => a - b);
+	const changes: CellChangeOf[][] = [];
+	for (let i = 1; i < ns.length; i += 1) {
+		const a = grids.get(ns[i - 1])!, b = grids.get(ns[i])!;
+		if (ns[i] !== ns[i - 1] + 1) continue;
+		const changed: CellChangeOf[] = [];
+		for (let y = 0; y < Math.max(a.length, b.length); y += 1)
+			for (let x = 0; x < Math.max(a[y]?.length ?? 0, b[y]?.length ?? 0); x += 1)
+				if (a[y]?.[x] !== b[y]?.[x]) changed.push([x, y, a[y]?.[x], b[y]?.[x]]);
+		changes.push(changed);
+	}
+	const { ticker, rows, cols } = statusMask(changes);
 	const hash = new Map<number, string>();
 	for (const [n, grid] of grids) hash.set(n, gridHash(ticker.size || rows.size || cols.size
 		? grid.map((row, y) => row.map((cell, x) => ticker.has(`${x},${y}`) || rows.has(y) || cols.has(x) ? -1 : cell)) : grid));

@@ -1,8 +1,8 @@
 # Ledger: busy status lines masked with ticker cells, so a timer bar no longer hides repeats
 
 Date: 2026-10-19 (Asia/Shanghai). Status: implemented and checked offline on `claude/eloquent-clarke-791d8a` (cut from
-r04 `5e998182`); not merged into `claude/r04-20261017`. The user said on 2026-10-19 not to change the current version's
-mechanism or structure without asking, so the change and its evidence go to the user first. No paid run.
+r04 `5e998182`, committed there as `2018eb0a`); merged into `claude/r04-20261017` at the user's "merge" the same day
+(`d1a7bdcd`). The rule now lives in `statusMask`, which `MoveFacts` shares (see "Related"). No paid run.
 
 Change record per [the development workflow](../development-workflow.md), with the sections of
 [the template](../templates/meta-harness-change.md).
@@ -153,13 +153,15 @@ Change record per [the development workflow](../development-workflow.md), with t
   states that differ outside status lines.
 - **Not supported.** That the extra repeat and stall lines help: in su15 they would reach the refiner about once per
   run, and nothing shows yet what a refinement does with them.
-- **Decision.** Waiting for the user: merge the candidate into `claude/r04-20261017` as one commit, or not.
+- **Decision.** The user said merge (2026-10-19): `d1a7bdcd` on `claude/r04-20261017`, the candidate as one commit.
 - **Next falsifiable check**, in the next authorized r04 run: count repeat and stall triggers, the refinements they
   start, and repeated moves in the 10 actions after each such refinement against the 10 before. No fewer repeats after
   them would mean the signal reaches the refiner without effect.
 - **Related.**
-  - `MoveFacts.busy` in `demo/arc_thin_coverage.ts` (`claude/r04-cov-20261019`, not yet on r04) defines busy lines over
-    the moves that changed something, with no ticker exclusion and no one-way condition. A player walking a corridor
-    would make its columns busy there too. Once both are on r04, one definition should serve both.
+  - `MoveFacts.busy` in `demo/arc_thin_coverage.ts` defined busy lines over the moves that changed something, with no
+    ticker exclusion and no one-way condition, so a player walking a corridor made its columns busy there too. Fixed on
+    r04 at the user's "fix moveFacts too": the rule above is now `statusMask` in `arc_thin_ledger.ts`, used by
+    `maskedHashes` and `MoveFacts.refresh` alike; record in `2026-10-19-coverage-attempts-delivery.md`, "After the
+    merge".
   - [Deferred research todos](../deferred-research-todos.md) (moving derived features such as an effect ledger to the
     agent's side): unchanged. The ledger stays a runtime service by the user's 2026-10-19 division of roles.
