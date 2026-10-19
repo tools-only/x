@@ -369,6 +369,8 @@ su15-p13-g56-1 (gpt-5.6-sol; branch `claude/r04-cov-20261019` at a3ad22e8, P1-P3
 3 levels (#27, #78, #125) and stopped at the token cap; by that session's reading its levels came before any P1-P3
 event fired, and it found the click-relocates-block mechanic itself at #41. gpt-5.6-sol on this harness is therefore
 1, 1, 3: iteration 3's single-run reading ("the stronger model did not pass more levels here") is inside the
-variance. The paired qwen run passed 1. That branch is not merged into r04 (the user decides); after da770b7a the
-merge has one conflict, in the refinement's file write in `arc_thin_extension.ts` (keep the branch's P3 pinning, then
-`workspace.mutate` for every path).
+variance. The paired qwen run passed 1. At the user's "merge" the branch was merged into r04 (e0b3e3a6): its one
+conflict, in the refinement's file write in `arc_thin_extension.ts`, keeps the branch's P3 pinning and then writes
+every path with `workspace.mutate`. r04 now runs P1-P3 by default (`ARC_REFINE_COVERAGE=0` turns them off; P4 needs
+`ARC_THIN_LEAN=1`). Full unit suite after the merge: 38 files, 210 tests, 205 pass; the 5 failures (activation 1,
+components 1, receipts 3) are the base's own (r04 before the merge: 193 tests, 188 pass, the same 5).
