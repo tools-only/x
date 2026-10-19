@@ -362,3 +362,13 @@ unused components is then not the runtime choosing components by state, which it
   in `arc_thin_components` (a restored python session refuses a writing class body the test expects kept), fails the
   same way on the base since r03b. No smoke (a minor change). Unverified: whether the agent writes its rules there in
   play, whether they are right and followed, and any benefit.
+
+### A third gpt-5.6-sol run (2026-10-19, from the coverage session)
+
+su15-p13-g56-1 (gpt-5.6-sol; branch `claude/r04-cov-20261019` at a3ad22e8, P1-P3 on; `runs/arc-p13-20261019`) passed
+3 levels (#27, #78, #125) and stopped at the token cap; by that session's reading its levels came before any P1-P3
+event fired, and it found the click-relocates-block mechanic itself at #41. gpt-5.6-sol on this harness is therefore
+1, 1, 3: iteration 3's single-run reading ("the stronger model did not pass more levels here") is inside the
+variance. The paired qwen run passed 1. That branch is not merged into r04 (the user decides); after da770b7a the
+merge has one conflict, in the refinement's file write in `arc_thin_extension.ts` (keep the branch's P3 pinning, then
+`workspace.mutate` for every path).
