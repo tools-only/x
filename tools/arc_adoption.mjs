@@ -28,7 +28,7 @@ for (const label of labels) {
   const saves = runs.filter((row) => row.kind === 'save');
   const memory = read(join(harness, 'memory.jsonl')).filter((row) => typeof row.key === 'string');
   const author = (row) => row.by ?? 'agent';
-  const python = calls.filter((call) => call.name === 'python').map((call) => String(call.arguments?.code ?? ''));
+  const python = calls.filter((call) => call.name === 'python');
   const rows = read(join(harness, 'trajectory.jsonl'));
   out.push({
     label, actions: rows.length, levels: rows.at(-1)?.levels_completed ?? 0, decisions: new Set(rows.map((row) => row.decision)).size,
@@ -37,7 +37,8 @@ for (const label of labels) {
     components_saved: count(saves.map((row) => `${row.path} by ${refinedPaths.has(row.path) ? 'refinement' : 'agent'}${row.ok ? '' : ' (not loaded)'}`)),
     component_calls: count(runs.filter((row) => row.kind === 'tool').map((row) => row.path)),
     acting_code_actions: count(rows.filter((row) => row.via).map((row) => row.via)),
-    python_cells: python.length, python_saves: python.filter((code) => /\bsave\s*=/.test(code)).length,
+    // python(code, save="name") publishes the cell as a tool: save is an argument of the call, not part of the code.
+    python_cells: python.length, python_saves: python.filter((call) => typeof call.arguments?.save === 'string' && call.arguments.save).length,
     agent_writes: count([...pathsOf('write'), ...pathsOf('edit')].map(kindOfPath)),
     agent_reads: count(pathsOf('read').map((path) => path.startsWith('data/observations/') ? 'data/observations/' : path)),
     memory_ops: count(calls.filter((call) => call.name === 'memory').map((call) => String(call.arguments?.op ?? 'set'))),

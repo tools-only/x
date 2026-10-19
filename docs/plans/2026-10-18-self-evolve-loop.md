@@ -236,3 +236,30 @@ What the agent used (`tools/arc_adoption.mjs`; a component counts only when the 
 - **Totals so far on r04 (four runs):** gpt-5.6-sol 1 and 1 level; qwen 2 and 1. With pooled qwen L0/L1 the second
   level is passed in 3 of 8 qwen runs and 0 of 2 gpt-5.6-sol runs. Next: gpt-6.1-sol, the gateway's strongest GPT, on
   the same harness (`su15-g61-1`), with one more qwen run (`su15-q38-3`).
+
+## Iteration 4 (2026-10-19): the strongest model, and what limits it
+
+### Third pair (r04 at `85280ac2`)
+
+| Run | Model | Levels (at) | Actions | Budget tokens | Per action | Stop |
+| --- | --- | --- | --- | --- | --- | --- |
+| su15-g61-1 | gpt-6.1-sol, medium | **4** (#22, #38, #55, #193) | 206 | 6.08M | 29.5k | token cap, on the fifth level, 45 minutes |
+| su15-q38-3 | qwen3.8-27b, off | 0 | 110 | 1.87M | 17.0k | the first level's 110 actions spent |
+
+- **The su15 record.** Four levels; the best before was three (su15-l0-3, qwen, 194 actions). The first three took 55
+  actions, the fourth 138. The model played almost without code: 136 `arc_action` decisions, 14 python cells, 2 memory
+  calls; it published two tools of its own (the first agent-written tools in these runs) and called neither later; no
+  `refine` or `consult`. The refinements wrote 13 strategy versions and 4 hypotheses (two rewritten by the iteration-1
+  path); two rival events fired.
+- **Reading for the user's question 3.** With the same harness the strongest model passes four levels, gpt-5.6-sol one
+  and qwen zero to two. The harness carries a capable model; the weaker models are limited by what they infer, and the
+  mechanisms added for them (rivals, contests) move their beliefs only within what they think to test.
+- **What limits the strong model: the cost of its context.** The agent's uncached input per request grew from 7k
+  tokens in the first 20 requests to 80k in the last 11: native history keeps the whole transcript of earlier decisions
+  (results clipped to 5,000 characters) in front of the head, and Pi compacts only near the 175k window. The
+  transcript is kept byte-stable for the provider's cache, which pays for qwen on this gateway (cache reads 2-4 times
+  its uncached input) but not for the GPT models (gpt-6.1-sol: 1.06M cache reads against 5.82M uncached; gpt-5.6-sol:
+  0.46M against 4.35M). Under the 6M cap the run stopped on the fifth level after 206 actions.
+- **Run 4b:** `su15-g61-2`, the same with `ARC_THIN_NATIVE_HISTORY_CHARS=16000` (the summarised history in the head,
+  the native default before 2026-10-14, bounded): falsified if budget tokens per action do not fall by at least a third,
+  or if the first four levels take markedly more actions than in g61-1.
