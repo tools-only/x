@@ -161,5 +161,50 @@ environment boundary.
 
 ## Decision
 
-Pending the runs. Related backlog: item C (hypothesis → experiment → revision); its status does not change without
-real-run evidence.
+The user chose (2026-10-19, after the loop session recorded "diagnose, don't redesign") to finish the first pair and
+decide before anything else runs. The change is not merged into `claude/r04-20261017`: that would change the version
+the loop session diagnoses.
+
+## Results of the first pair (r04-cov `a3ad22e8`, `runs/arc-p13-20261019`)
+
+| Run | Model | Levels (at) | Actions | Budget tokens | Per action | Stop |
+| --- | --- | --- | --- | --- | --- | --- |
+| su15-p13-g56-1 | gpt-5.6-sol, medium | 3 (#27, #78, #125) | 236 | 6.05M | 25.6k | token cap on level 4 |
+| su15-p13-q38-1 | qwen3.8-27b, off | 1 (#57) | 267 | 5.04M | 18.9k | level 2's 210 actions spent |
+
+Base on r04: gpt-5.6-sol 1 and 1 level (16.2k and 19.3k per action); qwen 2, 1, 0 (22.6k, 21.5k, 17.0k).
+
+- **Events.** gpt: no rival or contest event; two repeated-failure events on level 4 (#166: empty reply, raised again;
+  #175: a rival control model, "ACTION6 attracts the diamond", test move `ACTION6(63,26)`). qwen: one rival event
+  (#56, discarded as stale: the level changed at #57 while it ran), two contest events (#58 answered in the rules
+  prompt, raised again; #60 answered in the strategy), one repeated-failure event (#122, returned once for a click
+  without its cell, then `ACTION6(37,40)`). EXPECT on event replies: qwen 3 of 4, gpt 0 of 2.
+- **Delivery.** Three pinned moves, all released as played: qwen `ACTION6(37,40)` played exactly at #135, one action
+  after the agent was told; gpt `ACTION6(63,26)` met by `ACTION6(63,20)` at #183; qwen `ACTION6(13,55)` met at #65 by
+  another click of the same kind, never played itself (its kind, "inside", counted as rare only because level 2 had 3
+  moves when it was pinned). One overdue receipt line (qwen #64).
+- **P1 did not run to completion**: no rival with a rare-kind separating move was applied in either run (gpt's
+  hypotheses never qualified; qwen's one event was stale).
+- **The gpt-5.6-sol levels are not attributable to P1-P3.** No event fired before #166 (level 4). The only new element
+  the agent saw before then was the RESOURCES attempt line, from #60. It found level 2's mechanic itself at #41-#42
+  ("the click moved the nearest 2x2 block so its lower-right cell was at the click"), the move both base runs missed;
+  its level-2 clicks were spread (18 at 2-6 cells, 24 farther) where g56-1/g56-2 had 4 and 1 at 2-6 cells. Read as
+  sample variance on the base harness: gpt-5.6-sol on r04 is now 1, 1 and 3 levels.
+- **Defects found** (not fixed; runs are on the frozen commit): a kind counts as rare on a young level only because the
+  level has few moves, so a pinned kind can be met by an ordinary move (qwen e13); `parseMove` reads "ACTION7(0,0)" as a
+  click cell (seen in qwen's #56 reply, harmless there). Seen, not caused by this change: qwen's refinements spent 10 of
+  31 edits rewriting `prompts/rules.md` after "cites hyp.X, which does not exist" events; 56 sandbox errors running
+  hypothesis checks (`claims:run`), as in g56-2 (36).
+- Cost: refiner share 2.6% (gpt) and 4.2% (qwen) of agent budget tokens, base 2.9-3.9%; no harness errors from the new
+  paths.
+
+| Evidence layer | Status | Provider / environment | Artifacts and limits |
+| --- | --- | --- | --- |
+| Full-chain reachability | passed for P2, P3 and the contest path; P1's rival path not reached | yibu, real ARC su15 | `runs/arc-p13-20261019`, `C:/Users/qi/tmp/r04/cov/p13-measures.json` |
+| Autonomous adoption | partial: 3 of 3 pinned moves released as played (one only by kind), 1 return corrected | yibu, gpt-5.6-sol and qwen | one run per model |
+| Net benefit | not shown | — | gpt's levels came before any event; qwen within its base |
+
+Next falsifiable check, if continued: the rival path itself, on a run where a hypothesis qualifies; and a rarity rule
+that needs some moves on the level (or the exact move) before a pinned kind counts as played.
+
+Related backlog: item C (hypothesis → experiment → revision); its status does not change on this evidence.
