@@ -1,7 +1,8 @@
 # Offline world model ("dreaming") from recorded trajectories
 
-Date: 2026-10-19 (Asia/Shanghai). Status: phase 0 failed; the tool is kept as an offline measurement; phases 1 and 2
-not run.
+Date: 2026-10-19 (Asia/Shanghai). Status: phase 0 failed; round 2 (validation, a test-driven loop) passes on su15's
+second level for both models and fails on its fourth (the gate); both tools are kept as offline measurements; phases 1
+and 2 not run.
 
 Change record per [the development workflow](../development-workflow.md), with the sections of
 [the template](../templates/meta-harness-change.md). Built on `claude/r04-dream-20261019` in the temporary worktree
@@ -446,3 +447,54 @@ Two follow-ups, exploratory, each with one factor:
 - **Arm.** A3d: qwen3.8-27b, thinking off, W2, at most 14 replies and 200k.
 - **Supported** if P1 is at least 75% at no more than 135k budget tokens.
 - Round 2 then stays within 1.15M. No further run in round 2 whatever the result.
+- **Result: not supported.**
+  - 14 replies of python study (the moves, the counter row, the blocks around each click), 75k budget tokens, no test.
+  - The notice was in every tool result, and from reply 11 on it carried the line to test now. qwen kept calling
+    python.
+  - qwen with thinking off studies one small question per reply and does not move to a candidate on its own. A3b's
+    one test came at its last reply.
+
+### Round 2 decision
+
+Round 2 spent 1,017k budget tokens of its 1.5M: A1 23k, A3 52k, A2 77k plus its two experiment steps (12k and 58k),
+A1b 38k, A3b 270k, A1c 159k, A1d 152k, A3c 101k, A3d 75k. No ARC action was played.
+
+| Failure | Change | Result | Status |
+| --- | --- | --- | --- |
+| Copying | Validation never shown; the version best on it counts; the system prompt asks for rules over what a grid shows | W2: both models' final codes state the mechanic as rules (gaps 4 and 3 points; qwen keeps one table of this level's marker pairs). W1: no fit copies (gaps at most 7 points), but none finds rules either | fixed |
+| Effort | A tool loop (python, test, submit); then partial progress shown and weak submits returned (2c); the replies left | W2: gpt-6.1-sol 9 tests in 11 replies, 77k; qwen right at its 14th reply, 270k. W1: 10 replies of study and tests at medium and at high effort, validation 0/14 throughout | fixed where the mechanics are within the model's reach; W1 is not, for gpt-6.1-sol offline |
+| The data limit | Coverage counts, stated unknowns, experiments from other recordings of the level | 3b falsified: the click kind the record lacked was not missing for the fitted rule. The record lacks states (merged pieces, the orange area, the counter refill). 3 worst-predicted outcomes: +5.7 points, inconclusive. The unknowns named overlapping blocks once, in words | not fixed offline |
+
+| Evidence level | Status | Provider / environment | Artifacts and limits |
+| --- | --- | --- | --- |
+| Functional | passed | local WASI sandbox, recorded runs | `check` (tools on identity, oracle, a syntax error); dry experiment steps; phase 0 reproduced after the refactor |
+| Offline prediction | passed on W2, failed on W1 (the gate) | yibu: gpt-6.1-sol medium and high, qwen3.8-27b off | W2: P1 83% for both models (85% after 3b′), P2 96% and 98%. W1: P1 at most 7%. One fit per arm and window; the W2 margin over the mark is 13 points |
+| Full chain | not applicable | — | offline; no runner, Pi or ARC action involved |
+| Autonomous adoption | not applicable | — | nothing reaches the agent |
+| Net benefit | not tested | — | phase 1 not run |
+
+- **Supported claims.**
+  - With validation the model never sees and a test-driven loop, both gpt-6.1-sol and qwen3.8-27b (thinking off, the
+    qwen runs' setting) write a world model of su15's second level from g56-1's record. It predicts 84 of the 101
+    unseen moves outside the counter row, against 47% and 6% for one-shot replies in phase 0.
+  - The fourth level (W1) stays out of reach of gpt-6.1-sol offline, at medium and high effort.
+  - What a record lacks is mostly states the agent never reached, not kinds of clicks: the fitted rule covered click
+    distances it had not seen.
+- **Not supported.**
+  - That the coverage kinds of clicks locate what a record lacks (3b).
+  - That three outcomes of a missing state teach it (3b′, inconclusive).
+  - qwen's lower-cost runs (A3c, A3d) without a reliable step from study to a candidate.
+- **Decision.**
+  - Keep `tools/arc_world_model_agent.ts` (round 2c settings by default) and `tools/arc_world_model.ts` as offline
+    measurements. Nothing in the runtime changes.
+  - Phase 1 is not run: the gate (W1) fails. On W2 a planner would recombine the block moves only. The moves that pass
+    that level (merging, delivering to the orange area) are absent from its record: the data limit again.
+  - Phase 2 is not proposed on this evidence.
+- **Next falsifiable checks** (not run; each needs the user's budget):
+  1. For qwen, a loop that asks for a tested step() every few python calls. Measure P1 and cost on W2 against A3b.
+  2. Phase 1 on a level whose record covers the moves that pass it (g61-1's level 2 or 3, passed in 16-17 moves):
+     does planning in the fitted model find a passing sequence?
+  3. For the data limit, in play rather than offline: the coverage session's experiment events
+     (`docs/plans/2026-10-19-coverage-attempts-delivery.md`) count kinds of clicks. Round 2 suggests counting states the
+     level has not shown (for example arrangements the agent never produced) and the world model's unknowns as
+     candidate experiments. Not built; a candidate for that line.
