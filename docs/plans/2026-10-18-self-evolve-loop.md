@@ -311,5 +311,29 @@ agents rejected hypotheses after contests and separations), views (su15-g56-1's 
   session persists between calls, and g61-2 never defined a function in it.
 - The bottleneck is inference, not computation: g61-1 passed four levels with 17 python cells in 206 actions. Its
   losses came from what it believed (goal, timer, hazard), which no saved computation addresses.
-- So exploitation happens where the runtime does the pulling: a component the agent must remember to call is not
-  called; a component that runs or is shown by itself is used.
+- What is consumed is mostly what the services wrote: in g61-1 the strategy prompt had 18 versions, 17 of them
+  refinements'; su15-g56-1's view was a refinement's; in g61-2 all 5 hypotheses with a check were refinements' (g61-1:
+  4 of 8). The agents read that material and judged it (followed or skipped in their notes). The agent's own part,
+  deciding what to codify and when to call it, is where little happened (g61-1 and g61-2: 3 tools saved, 2 calls; no
+  function in g61-2's python session).
+
+### Who holds which decision
+
+The user's division (2026-10-19): the runtime, refiner, ledger and the other modules are services that provide
+interfaces, execution and material; the agent makes the decisions, chooses what to invoke, and acts. A remedy for
+unused components is then not the runtime choosing components by state, which it cannot judge. Checked against it:
+
+- `prompts/rules.md` reverses the division. The system prompt lists it as "rules your checks established", and a
+  refinement's edit of it is announced with "Revise, restore or delete it like your own edits", but the workspace
+  refuses the agent's writes (`demo/arc_thin_workspace.ts`, since pr-01 on 2026-10-14, where the agent rewrote it at
+  every request as a notebook). In the 7 runs of `arc-models-20261019` agents wrote it 5 times, in 4 runs, and were
+  refused each time: su15-q38-1 after #102 and #174, su15-q38-2 after #89 and su15-q38-3 after #105 wrote their own
+  mechanics as rules (785-1560 characters); su15-g61-2 after #40 tried to empty it while a refinement's disputed rule
+  stood (a refinement removed it at the next decision). The cost here was small: q38-2 and q38-3 moved the content to
+  memory or the strategy, q38-1's was in memory already (and its movement rule proved wrong at #180). It is the one
+  standing component the agents set out to build on their own, and the one they may not write.
+- Iteration 3's repeated-python text steers refinements to views, which run at every decision, over tools, which the
+  agent calls: the service then chooses what the agent looks at. The agent can switch a view off, so this is milder.
+- Not changed (no mechanism changes). The options: let the agent write `prompts/rules.md` (the division's answer, a
+  mechanism change that reopens pr-01's notebook use), or keep it refinement-only and correct the two texts that say
+  otherwise.
