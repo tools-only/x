@@ -432,3 +432,17 @@ Two follow-ups, exploratory, each with one factor:
   `m = record[0]["moves"][0]` is the first move shown and `m["before"][m["y"]][m["x"]]` the colour of its cell.
 - **Arm.** A3c: qwen3.8-27b, thinking off, W2, round 2c's tool, at most 14 replies and 250k.
 - **Supported** if P1 is at least 75% at no more than 135k budget tokens (half of A3b's). Otherwise not supported.
+- **Result: not supported, for a new reason.**
+  - qwen read `record` this time: no grid retyped, 101k budget tokens for 14 replies, against A3b's 270k.
+  - But all 14 replies were python study (the counter row, the markers, the blob, each click's changes). No step()
+    was ever tested or submitted, so there is no result.
+- **The broken transition** moved from wasted reads to committing to a candidate: the model does not track the
+  replies it has left.
+
+### Last run of round 2 (A3d): the replies left
+
+- **The one factor changed.** Every tool result ends with `[replies left: N]`. With three or fewer left and no version
+  tested, it adds: "You have no tested version yet: write step() and test it now".
+- **Arm.** A3d: qwen3.8-27b, thinking off, W2, at most 14 replies and 200k.
+- **Supported** if P1 is at least 75% at no more than 135k budget tokens.
+- Round 2 then stays within 1.15M. No further run in round 2 whatever the result.

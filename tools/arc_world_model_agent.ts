@@ -511,7 +511,7 @@ async function runLoop(loop: Loop) {
     const exchange: Exchange = { messages: [], notes: [], calls: [] };
     if (!reply.calls.length) {
       exchange.messages.push({ role: 'assistant', content: reply.text },
-        { role: 'user', content: 'Use the tools: python to study the record, test to score a step(), submit to end.' });
+        { role: 'user', content: `Use the tools: python to study the record, test to score a step(), submit to end. [replies left: ${loop.maxCalls - loop.calls}]` });
       exchange.notes.push(`reply ${loop.calls}: no tool call (${first(reply.text, 120)})`);
       loop.tail.push(exchange);
       continue;
@@ -564,6 +564,12 @@ async function runLoop(loop: Loop) {
         code: args.code ?? null, ...(args.unknowns ? { unknowns: args.unknowns } : {}), result: text }) + '\n');
     }
     loop.tail.push(exchange);
+    // Every tool result ends with the replies left; with three or fewer and no version tested, it says so (A3c, qwen:
+    // 14 replies of python study, no step() ever tested).
+    const left = loop.maxCalls - loop.calls;
+    const last = exchange.messages.findLast((message: any) => message.role === 'tool' || message.role === 'user');
+    if (last && !loop.stop) last.content += `\n\n[replies left: ${left}]` + (left <= 3 && !loop.tests
+      ? ' You have no tested version yet: write step() and test it now; the version best on validation is the result.' : '');
     console.log(`reply ${loop.calls} (${tokens} budget tokens, ${reply.seconds} s): ${exchange.notes.join(' | ').slice(0, 300)}`);
   }
 }
