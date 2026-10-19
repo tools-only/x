@@ -4,8 +4,9 @@ Date: 2026-10-19 (Asia/Shanghai). Status: phase 0 failed; the tool is kept as an
 not run.
 
 Change record per [the development workflow](../development-workflow.md), with the sections of
-[the template](../templates/meta-harness-change.md). Work on `claude/r04-dream-20261019` in the temporary worktree
-`worktrees/r04-dream` (cut from r04 `7be18770`); it is folded back into `claude/r04-20261017` and removed when done.
+[the template](../templates/meta-harness-change.md). Built on `claude/r04-dream-20261019` in the temporary worktree
+`worktrees/r04-dream` (cut from r04 `7be18770`), then rebased and fast-forwarded into `claude/r04-20261017`; the
+worktree was removed.
 The plan was drafted in a side chat on 2026-10-19 and accepted by the user ("do this for me"): phase 0 and, if it
 passes, phase 1 offline; phase 2 (in-run) only with the user's go-ahead.
 
@@ -103,7 +104,7 @@ passes, phase 1 offline; phase 2 (in-run) only with the user's go-ahead.
 - Outputs: `runs/arc-dream-20261019/w1-g61-l4/`, `runs/arc-dream-20261019/w2-g56-l2/` (`window.json`, `prompt.txt`,
   `score-identity.json`, `score-oracle.json`, `oracle.py`).
 
-### Fits under the fixed protocol (prompt v1, `2720842c`)
+### Fits under the fixed protocol (prompt v1, `6884412a`; `2720842c` before the rebase onto r04)
 
 All four fits ran in parallel on 2026-10-19 and cost 321,071 budget tokens in total, by the corrected measure below
 (316,600 as first recorded). Outputs are in `runs/arc-dream-20261019/<window>/<model>-<effort>/` (`fit.json`, and per
