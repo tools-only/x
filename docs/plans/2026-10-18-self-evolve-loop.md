@@ -137,3 +137,71 @@ Analysis only; no runtime change. Scripts and outputs in `C:/Users/qi/tmp/r04/lo
 - No runtime change in this iteration. The next candidate with the strongest evidence is a refinement hypothesis whose
   check already contests on the recorded moves being returned to the refiner instead of applied (7 of 9 above), to be
   written as its own change after the contest replay shows what qwen does with the contest event.
+
+## Iteration 3 (2026-10-19): a stronger model on the same harness, and what both models use
+
+The user's rules from here (2026-10-19): no smoke tests for minor changes, the real ARC result is the gold test; optimize
+the practical use of the harness components and avoid mechanisms that stay unused or produce output the agent does not
+adopt; other models on the same gateway may be run to tell model limits from mechanism defects. Real runs are part of
+the loop, each with a 6M budget-token cap as before.
+
+### The comparison (r04 at `8f44f7f9`, su15, `runs/arc-models-20261019`)
+
+Same harness, same settings as the su15 loop (no action cap beyond the game's per-level budgets, 6M budget tokens, no
+time cap); `tools/arc_ls20_loop_pilot.py` now takes `PILOT_MODEL` (the refinements use the session's model).
+
+| Run | Model | Levels | Actions | Budget tokens | Per action | Stop |
+| --- | --- | --- | --- | --- | --- | --- |
+| su15-g56-1 | gpt-5.6-sol, reasoning medium | 1 (#71) | 281, 210 on the second level | 4.55M | 16.2k | the second level's 210 actions spent |
+| su15-q38-1 | qwen3.8-27b, thinking off | 2 (#40, #151) | 267, 116 on the third level | 6.05M | 22.6k | token cap |
+
+What the agent used (`tools/arc_adoption.mjs`; a component counts only when the agent called it or acted on it):
+
+| | g56-1 | q38-1 | six earlier qwen runs (L0, L1) |
+| --- | --- | --- | --- |
+| python cells | 12 | 173 | 12-191 per run |
+| saved tools called by the agent | 0 | 0 | 3 calls, one run |
+| tools and views written by refinements | 1 view (shown at 81 decisions) | 1 tool (0 calls) | 8 tools |
+| refine / consult calls | 0 / 0 | 0 / 0 | 0 / 0 |
+| agent hypotheses with a check | 5 (with statuses kept up to date) | 7 | 3, one run |
+| refinement edits (strategy) | 18 (16) | 29 (22) | 144 (91) in 7 runs |
+| refinement replies refused because the check had no `def` line | 4 of 23 | 0 | — |
+
+- **Where the second level was lost.** gpt-5.6-sol settled on "the clicked corner of a 2x2 block moves it one cell
+  (top-left: up-left, top-right: up, bottom-left: left)": 151 of its 185 click steps there moved a block one cell, six
+  GAME_OVERs. Its `hyp.color6_anchor_motion` was marked supported, and its check held on every click the agent made;
+  the first refinement hypothesis (`hyp.color6_block_moves_up_left`) restated it. No click a few cells away from a
+  block was made, which is the move that shows the mechanic. qwen tested distances on the first level ("can the token
+  move 4 cells", "distance limit 6", #14-#22) and on the second level moved blocks by clicking points 4-7 cells away.
+  su15-l1-1 (qwen, 2026-10-16) lost the same level to the same one-cell belief, also restated by a refinement.
+- **Reading.** One run each: the stronger model did not pass more levels here (pooled qwen base for the second level:
+  2 of 6). Both models use memory and whatever the runtime shows them (strategy, views, CURRENT KNOWLEDGE), and neither
+  calls saved tools, refine or consult. The refinement step that turns the agent's stated belief into a checked
+  hypothesis reinforces the belief instead of testing it, with either model: a check that runs only on the moves the
+  agent chose collects holds from them. That is a mechanism defect, not a model limit.
+
+### Changes
+
+- `withCheckDef`: a check written as the body of `check(t)` gets its `def` line (refinement HYPOTHESIS and EXPECT, the
+  memory tool).
+- Rival events: a hypothesis with a check that holds on at least 5 decided moves (fewer than half failing), with a
+  question and no other live hypothesis with a check under it, raises one refinement event per check version, before
+  promotion to a rule: "write the strongest rival HYPOTHESIS, another explanation of the same moves, whose check
+  disagrees with hyp.x on a move not made yet; say in predicts which move would separate them". The rival is stored
+  under the target's question as stored, so H3a compares the two on the same moves in CURRENT KNOWLEDGE ("no recorded
+  move separates …" / "#n separates …"); the event is answered by a hypothesis under a new key. The charter says why.
+  `ARC_REFINE_RIVALS=0` turns it off.
+- The repeated-python trigger adds: "if it reads the state, a view ('# view: on') shows its result at every decision,
+  while a tool waits to be called". The view gpt's refinement wrote was shown at every decision; the tools were not
+  called.
+- Nothing removed: the five capability kinds stay in the system prompt (the user's self-defining direction); trimming
+  consult, skills and subagents from it is the candidate if they stay unused.
+
+### Evaluation
+
+- The same pair on the new commit (`su15-g56-2`, `su15-q38-2`), 6M budget tokens each.
+- Mechanism: rival events raised; rivals written (and refused or invalid); moves on which a rival and its target were
+  both decided with different results, made after the rival appeared; views written, and repeated python after them.
+- Outcome: levels and budget tokens per action against the first pair and the pooled base.
+- Falsifiers: no rival event fires (no unchallenged hypothesis with a question); rivals are written but no separating
+  move is made within the level; levels fall below the first pair's for the same model.
