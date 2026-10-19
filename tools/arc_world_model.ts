@@ -1,7 +1,8 @@
 /**
  * Offline world model ("dreaming"), phase 0 of docs/plans/2026-10-19-offline-world-model.md: from the transitions a
  * run recorded, a model writes the game's rules as Python step(grid, action, x, y, history), and the sandbox runs it on
- * every recorded move of a window, each from the recorded grid before the move. No game action is played.
+ * every recorded move of a window, each from the recorded grid before the move. No game action is played. Round 2 (the
+ * test-driven loop) is tools/arc_world_model_agent.ts, which imports from here.
  *
  * window <run or harness dir> <from>-<to> <out>: splits the window's moves into attempts (a RESET starts one; RESET and
  *   level-changing moves are not scored), holds out the last attempt and the second half of every earlier one, finds
@@ -22,26 +23,26 @@ import { fileURLToPath } from 'node:url';
 import { evaluateTaskPython, TASK_PYTHON_FORMAT, taskPythonLimits, taskPythonRuntimeIdentity,
   type ValidatedTaskPythonProgram } from '../demo/pi_task_python.ts';
 
-type Grid = number[][];
+export type Grid = number[][];
 type Kind = 'fit' | 'half' | 'later';
-type Move = { n: number; action: string; x?: number; y?: number; state?: string; attempt: number; index: number; kind: Kind;
+export type Move = { n: number; action: string; x?: number; y?: number; state?: string; attempt: number; index: number; kind: Kind;
   changed: number; changed_busy: number; seen: boolean };
-type Attempt = { index: number; start: number; moves: Move[] };
-type Window = { harness: string; from: number; to: number; width: number; height: number; attempts: Attempt[];
+export type Attempt = { index: number; start: number; moves: Move[] };
+export type Window = { harness: string; from: number; to: number; width: number; height: number; attempts: Attempt[];
   excluded: Array<{ n: number; why: string }>; busy: { rows: number[]; cols: number[] }; baselines?: Record<string, Summary> };
-type Result = { n: number; wrong_other?: number; wrong_busy?: number; changed?: number; changes?: number[][]; error?: string };
+export type Result = { n: number; wrong_other?: number; wrong_busy?: number; changed?: number; changes?: number[][]; error?: string };
 type Group = { moves: number; exact: number; exact_other: number; exact_busy: number; errors: number; wrong_other_cells: number;
   changed_other_cells: number };
-type Summary = Record<string, Group>;
+export type Summary = Record<string, Group>;
 
-const read = (path: string): any[] => existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
+export const read = (path: string): any[] => existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
   try { return [JSON.parse(line)]; } catch { return []; } }) : [];
 const harnessOf = (dir: string) => existsSync(join(dir, 'arc-run', 'harness')) ? join(dir, 'arc-run', 'harness') : dir;
-const moves = (window: Window) => window.attempts.flatMap((attempt) => attempt.moves);
-const label = (move: { action: string; x?: number; y?: number }) => move.x !== undefined ? `${move.action} x=${move.x} y=${move.y}` : move.action;
-const hex = (grid: Grid) => grid.map((row) => row.map((cell) => cell.toString(16)).join('')).join('\n');
+export const moves = (window: Window) => window.attempts.flatMap((attempt) => attempt.moves);
+export const label = (move: { action: string; x?: number; y?: number }) => move.x !== undefined ? `${move.action} x=${move.x} y=${move.y}` : move.action;
+export const hex = (grid: Grid) => grid.map((row) => row.map((cell) => cell.toString(16)).join('')).join('\n');
 
-function load(harness: string) {
+export function load(harness: string) {
   const rows = new Map<number, any>(read(join(harness, 'trajectory.jsonl')).map((row) => [Number(row.n), row]));
   const grids = new Map<number, Grid>(read(join(harness, 'states.jsonl')).filter((row) => Array.isArray(row.grid))
     .map((row) => [Number(row.n), row.grid]));
@@ -49,7 +50,7 @@ function load(harness: string) {
 }
 
 /** The cells that differ, as [x, y, after]. */
-function delta(before: Grid, after: Grid): number[][] {
+export function delta(before: Grid, after: Grid): number[][] {
   const out: number[][] = [];
   for (let y = 0; y < after.length; y += 1) for (let x = 0; x < after[y].length; x += 1)
     if (before[y][x] !== after[y][x]) out.push([x, y, after[y][x]]);
@@ -57,7 +58,7 @@ function delta(before: Grid, after: Grid): number[][] {
 }
 
 /** Changed cells row by row, as runs of one colour change: "y12 x3-5 4>9". */
-function runs(before: Grid, after: Grid): string {
+export function runs(before: Grid, after: Grid): string {
   const parts: string[] = [];
   for (let y = 0; y < after.length; y += 1) {
     for (let x = 0; x < after[y].length;) {
@@ -70,12 +71,12 @@ function runs(before: Grid, after: Grid): string {
   return parts.join('; ') || 'no change';
 }
 
-const busyCell = (window: Window, x: number, y: number) => window.busy.rows.includes(y) || window.busy.cols.includes(x);
-const maskedKey = (window: Window, grid: Grid, move: { action: string; x?: number; y?: number }) => createHash('sha256')
+export const busyCell = (window: Window, x: number, y: number) => window.busy.rows.includes(y) || window.busy.cols.includes(x);
+export const maskedKey = (window: Window, grid: Grid, move: { action: string; x?: number; y?: number }) => createHash('sha256')
   .update(JSON.stringify(grid.map((row, y) => row.map((cell, x) => busyCell(window, x, y) ? -1 : cell)))).digest('hex').slice(0, 16)
   + `|${move.action}|${move.x ?? ''}|${move.y ?? ''}`;
 
-function buildWindow(dir: string, from: number, to: number): Window {
+export function buildWindow(dir: string, from: number, to: number): Window {
   const harness = resolve(harnessOf(dir));
   const { rows, grids } = load(harness);
   const attempts: Attempt[] = [];
@@ -123,7 +124,7 @@ const GROUPS: Record<string, (move: Move) => boolean> = {
   heldout_seen: (move) => move.kind !== 'fit' && move.seen, half: (move) => move.kind === 'half', later: (move) => move.kind === 'later',
 };
 
-function summarize(window: Window, results: Map<number, Result>): Summary {
+export function summarize(window: Window, results: Map<number, Result>): Summary {
   const out: Summary = {};
   for (const [name, test] of Object.entries(GROUPS)) {
     const group: Group = { moves: 0, exact: 0, exact_other: 0, exact_busy: 0, errors: 0, wrong_other_cells: 0, changed_other_cells: 0 };
@@ -255,10 +256,11 @@ out
 `;
 
 const LIMITS = { input_bytes: 512 * 1024, output_bytes: 256 * 1024, memory_bytes: 256 * 1024 * 1024, fuel: 4_000_000_000, timeout_ms: 30_000 };
-const program: ValidatedTaskPythonProgram = { format: TASK_PYTHON_FORMAT, source: GUEST, limits: LIMITS,
-  effective_limits: taskPythonLimits(LIMITS), runtime: taskPythonRuntimeIdentity() };
+export const guestProgram = (source: string): ValidatedTaskPythonProgram => ({ format: TASK_PYTHON_FORMAT, source, limits: LIMITS,
+  effective_limits: taskPythonLimits(LIMITS), runtime: taskPythonRuntimeIdentity() });
+const program = guestProgram(GUEST);
 
-async function pool<T>(items: T[], limit: number, work: (item: T) => Promise<void>) {
+export async function pool<T>(items: T[], limit: number, work: (item: T) => Promise<void>) {
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (next < items.length) await work(items[next++]);
@@ -266,17 +268,20 @@ async function pool<T>(items: T[], limit: number, work: (item: T) => Promise<voi
 }
 
 /**
- * Runs a step() source on every move of the window, one sandbox call per attempt (4 at a time). The moves before the
- * scored ones are replayed as history. A call that times out or runs out of fuel is retried on halves of its moves, at
- * most three times deep; moves still unscored then count as errors.
+ * Runs a step() source on the moves `pick` selects (all by default), one sandbox call per attempt (4 at a time). The
+ * attempt's moves before them are replayed as history. A call that times out or runs out of fuel is retried on halves
+ * of its moves, at most three times deep; moves still unscored then count as errors.
  */
-async function scoreSource(window: Window, grids: Map<number, Grid>, source: string) {
+export async function scoreSource(window: Window, grids: Map<number, Grid>, source: string, pick: (move: Move) => boolean = () => true) {
   const started = Date.now();
   const results = new Map<number, Result>();
   let compileError: string | undefined;
-  const segment = (attempt: Attempt, scored: Set<number>) => ({ grid: grids.get(attempt.start), moves: attempt.moves.map((move) => ({
-    n: move.n, action: move.action, ...(move.x !== undefined ? { x: move.x, y: move.y } : {}),
-    delta: delta(grids.get(move.n - 1)!, grids.get(move.n)!), score: scored.has(move.n) })) });
+  const segment = (attempt: Attempt, scored: Set<number>) => {
+    const last = attempt.moves.findLastIndex((move) => scored.has(move.n));
+    return { grid: grids.get(attempt.start), moves: attempt.moves.slice(0, last + 1).map((move) => ({
+      n: move.n, action: move.action, ...(move.x !== undefined ? { x: move.x, y: move.y } : {}),
+      delta: delta(grids.get(move.n - 1)!, grids.get(move.n)!), score: scored.has(move.n) })) };
+  };
   const run = async (attempt: Attempt, ns: number[], depth: number): Promise<void> => {
     try {
       const value: any = (await evaluateTaskPython(program, { source, segments: [segment(attempt, new Set(ns))],
@@ -292,13 +297,14 @@ async function scoreSource(window: Window, grids: Map<number, Grid>, source: str
       } else for (const n of ns) results.set(n, { n, error: `the sandbox stopped (${message}) on a batch of ${ns.length} moves` });
     }
   };
-  await pool(window.attempts, 4, (attempt) => run(attempt, attempt.moves.map((move) => move.n), 0));
-  if (compileError) for (const move of moves(window)) results.set(move.n, { n: move.n, error: compileError });
+  const jobs = window.attempts.map((attempt) => ({ attempt, ns: attempt.moves.filter(pick).map((move) => move.n) })).filter((job) => job.ns.length);
+  await pool(jobs, 4, (job) => run(job.attempt, job.ns, 0));
+  if (compileError) for (const move of moves(window).filter(pick)) results.set(move.n, { n: move.n, error: compileError });
   return { results, compileError, seconds: Math.round((Date.now() - started) / 1000) };
 }
 
 /** A lookup of every recorded move by its grid and action (no busy mask): exact unless the result depends on more. */
-function oracleSource(window: Window, grids: Map<number, Grid>): string {
+export function oracleSource(window: Window, grids: Map<number, Grid>): string {
   const table: Record<string, number[][]> = {};
   const collisions: number[] = [];
   for (const move of moves(window)) {
@@ -401,7 +407,7 @@ function extractCode(text: string): string | undefined {
   return blocks.reverse().find((block) => /\bdef\s+step\s*\(/.test(block));
 }
 
-function gateway() {
+export function gateway() {
   const env: Record<string, string | undefined> = { ...process.env };
   const local = fileURLToPath(new URL('../.env', import.meta.url));
   const path = existsSync(local) ? local : 'D:/autoresearch_pi_project/.env';
@@ -423,7 +429,7 @@ function gateway() {
  * count it only in total_tokens (prompt 16,135 + completion 18,248, total 50,790 with 16,407 reasoning), so the larger
  * of the two readings counts.
  */
-const budgetTokens = (usage: any) => {
+export const budgetTokens = (usage: any) => {
   if (!usage) return 0;
   const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
   return Math.max(Math.max(0, (usage.prompt_tokens ?? 0) - cached) + (usage.completion_tokens ?? 0), (usage.total_tokens ?? 0) - cached);
@@ -479,12 +485,12 @@ async function complete(model: string, messages: any[], effort: string, maxToken
   throw new Error(`no reply from ${model}: ${lastError}`);
 }
 
-const verdict = (summary: Summary) => {
+export const verdict = (summary: Summary) => {
   const novel = summary.heldout_novel, heldout = summary.heldout;
   return { p1_novel_exact_other: novel.moves ? novel.exact_other / novel.moves : null, p2_heldout_exact_busy: heldout.moves ? heldout.exact_busy / heldout.moves : null,
     pass: novel.moves > 0 && novel.exact_other >= 0.7 * novel.moves && heldout.exact_busy >= 0.9 * heldout.moves };
 };
-const summaryLine = (summary: Summary) => Object.entries(summary).map(([name, g]) =>
+export const summaryLine = (summary: Summary) => Object.entries(summary).map(([name, g]) =>
   `${name} ${g.exact}/${g.moves} exact (outside busy ${g.exact_other}, busy ${g.exact_busy}, errors ${g.errors}, wrong cells ${g.wrong_other_cells}/${g.changed_other_cells})`).join('; ');
 
 async function fit(out: string, model: string, options: Record<string, string>) {
@@ -542,38 +548,44 @@ async function fit(out: string, model: string, options: Record<string, string>) 
   console.log(JSON.stringify({ model, effort, prompt, spent, stop, best_round: report.best_round, verdict: report.verdict }));
 }
 
-const [command, ...args] = process.argv.slice(2);
-const flags = (list: string[]) => Object.fromEntries(list.flatMap((arg, i) => arg.startsWith('--') ? [[arg.slice(2), list[i + 1]?.startsWith('--') || list[i + 1] === undefined ? 'true' : list[i + 1]]] : []));
-if (command === 'window') {
-  const [dir, span, out] = args;
-  const [from, to] = span.split('-').map(Number);
-  const window = buildWindow(dir, from, to);
-  const { grids } = load(window.harness);
-  window.baselines = baselines(window, grids);
-  mkdirSync(out, { recursive: true });
-  writeFileSync(join(out, 'window.json'), JSON.stringify(window, null, 1));
-  writeFileSync(join(out, 'prompt.txt'), recordPrompt(window, grids));
-  console.log(JSON.stringify({ attempts: window.attempts.map((a) => `${a.index}: #${a.moves[0].n}-#${a.moves.at(-1)!.n} (${a.moves.length})`),
-    excluded: window.excluded, busy: window.busy, prompt_chars: recordPrompt(window, grids).length }));
-  for (const [name, summary] of Object.entries(window.baselines)) console.log(`${name}: ${summaryLine(summary)}`);
-} else if (command === 'score') {
-  const [out, file, ...rest] = args;
-  const options = flags(rest);
-  const window: Window = JSON.parse(readFileSync(join(out, 'window.json'), 'utf8'));
-  const { grids } = load(window.harness);
-  const source = file === '--oracle' ? oracleSource(window, grids) : readFileSync(file, 'utf8');
-  if (file === '--oracle') writeFileSync(join(out, 'oracle.py'), source);
-  const scored = await scoreSource(window, grids, source);
-  const summary = summarize(window, scored.results);
-  const name = options.name ?? (file === '--oracle' ? 'oracle' : file.split(/[\\/]/).at(-1)!.replace(/\.py$/, ''));
-  // --changes keeps each move's predicted changes (the first 150 cells) for analysis of what the code gets wrong.
-  writeFileSync(join(out, `score-${name}.json`), JSON.stringify({ seconds: scored.seconds, compile_error: scored.compileError ?? null, summary,
-    verdict: verdict(summary), results: [...scored.results.values()].map(({ changes, ...rest }) => options.changes ? { ...rest, changes } : rest) }, null, 1));
-  console.log(`${name} (scored in ${scored.seconds} s): ${summaryLine(summary)}`);
-} else if (command === 'fit') {
-  const [out, model, ...rest] = args;
-  await fit(out, model, flags(rest));
-} else {
-  console.error('usage: arc_world_model.ts window <run> <from>-<to> <out> | score <out> <file.py>|--oracle | fit <out> <model> [--rounds 3] ...');
-  process.exit(2);
+export const flags = (list: string[]) => Object.fromEntries(list.flatMap((arg, i) => arg.startsWith('--') ? [[arg.slice(2), list[i + 1]?.startsWith('--') || list[i + 1] === undefined ? 'true' : list[i + 1]]] : []));
+/** Whether a module is the program node was started with (the round-2 module imports this one). */
+export const isMain = (url: string) => Boolean(process.argv[1]) && resolve(process.argv[1]).toLowerCase() === fileURLToPath(url).toLowerCase();
+
+async function cli(command: string, args: string[]) {
+  if (command === 'window') {
+    const [dir, span, out] = args;
+    const [from, to] = span.split('-').map(Number);
+    const window = buildWindow(dir, from, to);
+    const { grids } = load(window.harness);
+    window.baselines = baselines(window, grids);
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, 'window.json'), JSON.stringify(window, null, 1));
+    writeFileSync(join(out, 'prompt.txt'), recordPrompt(window, grids));
+    console.log(JSON.stringify({ attempts: window.attempts.map((a) => `${a.index}: #${a.moves[0].n}-#${a.moves.at(-1)!.n} (${a.moves.length})`),
+      excluded: window.excluded, busy: window.busy, prompt_chars: recordPrompt(window, grids).length }));
+    for (const [name, summary] of Object.entries(window.baselines)) console.log(`${name}: ${summaryLine(summary)}`);
+  } else if (command === 'score') {
+    const [out, file, ...rest] = args;
+    const options = flags(rest);
+    const window: Window = JSON.parse(readFileSync(join(out, 'window.json'), 'utf8'));
+    const { grids } = load(window.harness);
+    const source = file === '--oracle' ? oracleSource(window, grids) : readFileSync(file, 'utf8');
+    if (file === '--oracle') writeFileSync(join(out, 'oracle.py'), source);
+    const scored = await scoreSource(window, grids, source);
+    const summary = summarize(window, scored.results);
+    const name = options.name ?? (file === '--oracle' ? 'oracle' : file.split(/[\\/]/).at(-1)!.replace(/\.py$/, ''));
+    // --changes keeps each move's predicted changes (the first 150 cells) for analysis of what the code gets wrong.
+    writeFileSync(join(out, `score-${name}.json`), JSON.stringify({ seconds: scored.seconds, compile_error: scored.compileError ?? null, summary,
+      verdict: verdict(summary), results: [...scored.results.values()].map(({ changes, ...rest }) => options.changes ? { ...rest, changes } : rest) }, null, 1));
+    console.log(`${name} (scored in ${scored.seconds} s): ${summaryLine(summary)}`);
+  } else if (command === 'fit') {
+    const [out, model, ...rest] = args;
+    await fit(out, model, flags(rest));
+  } else {
+    console.error('usage: arc_world_model.ts window <run> <from>-<to> <out> | score <out> <file.py>|--oracle | fit <out> <model> [--rounds 3] ...');
+    process.exit(2);
+  }
 }
+
+if (isMain(import.meta.url)) await cli(process.argv[2], process.argv.slice(3));

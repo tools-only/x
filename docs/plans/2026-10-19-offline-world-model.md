@@ -251,3 +251,73 @@ round `reply-k.md`, `code-k.py` and `score-k.json`).
 - **Related backlog.** [Deferred research todos](../deferred-research-todos.md) §C: "evaluate snapshot branching,
   replay and rollback experiments if the environment supports them" (若环境支持，再评估快照分支、回放及可回滚实验).
   A fitted simulator was the substitute for branching here, and at this fidelity it is not one. The item stays open.
+
+## Round 2 (2026-10-19): fixing copying, effort and the data limit
+
+The user asked to fix the three failures found in phase 0: copying instead of rules, little effort at the run's setting,
+and a record that holds only what the agent tried. Built on `claude/r04-dream2-20261019` (temporary worktree
+`worktrees/r04-dream2`, from r04 `5e998182`), to be folded back into r04 like round 1.
+
+### One change per failure
+
+- **Copying → validation the model never sees.** The last 30% (rounded down) of each attempt's fit moves become
+  validation; the rest are shown. Validation moves never appear in the prompt or in what the python tool can read.
+  `test` reports them by counts only. The final code is the version best on validation, ranked by exact moves, then
+  moves right outside busy lines, then fewer wrong cells. A lookup of the shown moves gains nothing there, and test
+  says so when the shown moves fit far better than validation. The system prompt states the same: rules over what a
+  grid shows, no recognising recorded moves.
+  - W1: 44 moves shown, 14 validation (all unlike any shown).
+  - W2: 64 shown, 23 validation (all unlike any shown).
+  - The final test is phase 0's held-out set, unchanged: W1 68 novel moves, W2 101.
+- **Effort → a tool loop.** At most 14 replies:
+  - `python` runs code on the record shown.
+  - `test` scores a step(): every shown move it gets wrong, the five worst with the recorded change against the
+    code's, and exactness by move kind.
+  - `submit` ends the work.
+  - A first submit with validation below 90% and at least 4 replies left is returned once.
+  - History is folded into a log when more than 6 exchanges are kept: the oldest 4 go, and the best version's code
+    stays in view.
+- **The data limit → coverage, unknowns and an experiment.**
+  - The prompt counts the moves shown by kind, using the coverage record's kinds
+    (`docs/plans/2026-10-19-coverage-attempts-delivery.md`): a click by its Chebyshev distance from the area the
+    previous move of its attempt changed (inside, touching, 2-6 cells, more than 6, before any change), another action
+    by name. The counts include the colours of the clicked cells.
+  - `submit` asks for up to three situations the record does not decide, each with the one move that would decide it.
+  - `tools/arc_world_model_agent.ts experiment` then gives the finished fit the outcomes of 3 moves of a kind its
+    record lacks and lets it continue for at most 5 replies. The outcomes come from another recording of the same
+    level: su15's levels start from the same layout in every run (level 2's start grid hashes `bbe97b6e273a` in all
+    seven arc-models-20261019 runs).
+  - Both versions are then scored, by kind, on a third recording of that level.
+  - The kind is the first rare kind the unknowns named, if the experiment recording has 3 moves of it. Otherwise it is
+    the click kind the shown record has fewest of.
+- **No change elsewhere.** The runtime and phase 0's scoring do not change: phase 0's scores reproduce exactly after
+  the refactor (identity, and v1 round 3).
+
+### Pre-run protocol (fixed before any model call of round 2)
+
+- **Arms.**
+  - A1 (gating): gpt-6.1-sol, reasoning medium, on W1, at most 450k budget tokens.
+  - A2: gpt-6.1-sol, medium, on W2, at most 300k. Then the experiment step, at most 150k: experiments from
+    su15-g61-1's level 2 (#23-#38), test recording su15-q38-1's level 2 (#41-#151).
+  - A3: qwen3.8-27b, thinking off, on W2 (agent-native for qwen runs), at most 300k. Its experiment step runs only if
+    budget remains, as exploratory.
+  - Total at most 1.5M, the spare reserved for an arm that fails for transport reasons.
+- **Gate (unchanged from phase 0).** P1 ≥ 70% and P2 ≥ 90% for A1. A pass permits phase 1 offline, labelled as following
+  a protocol change.
+- **Per failure, for gpt-6.1-sol.**
+  - Copying is fixed if the final code's gap between shown and validation moves (right outside busy lines) is at most
+    25 points, and P1 exceeds phase 0's best on that window by at least 15 points (W1: 51% → at least 66%; W2: 47% →
+    at least 62%).
+  - Effort is reported, not gated: replies, tests, output and reasoning tokens. The final code must not be a
+    placeholder: P1 above identity's (W1 6%, W2 6%).
+  - The data limit:
+    - (3a) The submitted unknowns name at least one move of a kind holding at most 5% of the shown moves.
+    - (3b) After the 3 outcomes, the exactness right outside busy lines on q38-1's level-2 clicks of the experiment kind
+      rises by at least 25 points over the version before. Falsified below 10 points; inconclusive in between.
+    - W2's P1 must not fall by more than 10 points.
+    - Dry run, no model call, with the grid unchanged as the fit: kind 2-6 cells (fallback); experiments g61-1 #30,
+      #32, #36; on q38-1's 41 such clicks, identity is right on 6.
+- **Functional checks done.**
+  - `check` on W1 and W2: the python tool reads 44 and 64 moves and reports errors with their line; test reports
+    identity, oracle (44/44 + 14/14; 64/64 + 23/23) and a syntax error correctly; unknowns parse into moves and kinds.
+  - Outputs: `C:/Users/qi/tmp/dream2/check-w1.txt`, `check-w2.txt`, `check-phase0.txt`, `dry-experiment.txt`.
