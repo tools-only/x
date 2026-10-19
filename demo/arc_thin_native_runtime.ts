@@ -62,14 +62,25 @@ export class NativeRuntime {
   private pending: Promise<unknown> = Promise.resolve();
   private observed = new Set<string>();
   private outputs = new Map<string, string>();
-  /** path@version → the states on which the view has shown nothing, in a row. */
-  private viewHealth = new Map<string, { path: string; version: number; states: number[]; error?: string }>();
+  /** path@version → the states on which the view has shown nothing, in a row, and how many of the latest raised. */
+  private viewHealth = new Map<string, { path: string; version: number; states: number[]; failed: number; error?: string }>();
+  /** path@version of views that showed something at least once. */
+  private viewShowed = new Set<string>();
   /** level:path of components already named in a python result as covering a retyped computation. */
   private coverHinted = new Set<string>();
   /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
   emptyViews() {
     const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => `${c.path}@${c.version}`));
     return [...this.viewHealth].filter(([key, v]) => live.has(key) && v.states.length >= EMPTY_VIEW_STATES).map(([, v]) => v);
+  }
+  /** The newest version of `path` below `below` that showed something as a view. */
+  lastShowingVersion(path: string, below: number): number | undefined {
+    for (let version = below - 1; version > 0; version--) if (this.viewShowed.has(`${path}@${version}`)) return version;
+    return undefined;
+  }
+  /** Which view versions showed something, from observer_runs.jsonl, after a restart. */
+  seedViews(rows: any[]) {
+    for (const r of rows) if (r?.ok && typeof r.key === 'string' && !isEmptyValue(r.value)) this.viewShowed.add(r.key.replace(/@\d+$/, ''));
   }
   private pythonRuns: PythonRun[] = [];
   /**
@@ -459,10 +470,12 @@ export class NativeRuntime {
         // A view that shows nothing is a saved component the agent cannot use (tc-01: a refined view returned None on
         // every state and nobody noticed); consecutive empty states are counted for the refinement trigger.
         const empty = !result.ok || isEmptyValue(result.value);
-        const streak = this.viewHealth.get(`${c.path}@${c.version}`) ?? { path: c.path, version: c.version, states: [] as number[] };
+        const streak = this.viewHealth.get(`${c.path}@${c.version}`) ?? { path: c.path, version: c.version, states: [] as number[], failed: 0 };
         streak.states = empty ? [...streak.states, n] : [];
+        streak.failed = result.ok ? 0 : streak.failed + 1;
         streak.error = result.ok ? undefined : String(result.error ?? '');
         this.viewHealth.set(`${c.path}@${c.version}`, streak);
+        if (!empty) this.viewShowed.add(`${c.path}@${c.version}`);
         this.host.log('observer_runs.jsonl', { key, n, name: c.name, version: c.version, versions: snap.versions,
           ok: result.ok, value: result.ok ? result.value : undefined, error: result.ok ? undefined : result.error, ms: Date.now() - started });
       };

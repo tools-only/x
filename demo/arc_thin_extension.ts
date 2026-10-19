@@ -1392,6 +1392,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** A pinned move is dropped after PIN_EXPIRES times its window; its overdue line is added to at most PIN_NAGS receipts. */
 	const PIN_EXPIRES = 3;
 	const PIN_NAGS = 3;
+	/**
+	 * A view a refinement wrote that raised on this many states in a row goes back to its newest version that showed
+	 * something, or under _off/ when none did (restoreBrokenViews); 0: off.
+	 */
+	const VIEW_RESTORE_STATES = envNumber("ARC_REFINE_VIEW_RESTORE", 6);
 	/** The next experiment a coverage event delivered: the move, its kind when pinned, and the strategy line carrying it. */
 	type Pin = { edit: string; move: Move; kind: string; line: string; within: number; level: number; at: number; nagged: number };
 	let pin: Pin | undefined;
@@ -1412,6 +1417,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let refinerEdits = readRows("refiner.jsonl").filter((row) => row.kind === "edit").length;
 	/** Files a refinement wrote: later refinements may rewrite them; other existing files belong to the agent. */
 	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string").map((row) => row.path));
+	/** path@version of the versions refinements wrote, and those the runtime restored for them (restoreBrokenViews). */
+	const refinedVersions = new Set<string>(readRows("refiner.jsonl").filter((row) => (row.kind === "edit" || row.kind === "view_restored")
+		&& row.loaded !== false && typeof row.path === "string" && row.version !== undefined).map((row) => `${row.path}@${row.version}`));
 	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || path === RULES_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
 	const refinerActive = () => Boolean(native && criticOn && nativeRuntime && binder);
 	function readStrategy(): { text: string; version?: number } | undefined {
@@ -1674,6 +1682,46 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (id.startsWith("unchecked:")) uncheckedAskedAt = -1;
 	}
 
+	/**
+	 * A view a refinement wrote that keeps raising goes back to its newest version that showed something, or is moved under
+	 * _off/ when no version did; the agent is told. In su15-p13-q38-1 tools/elements.py v3 raised on all 86 remaining states:
+	 * the refinement asked to fix it returned the same file, and the event is raised once per version. The runtime only
+	 * undoes refinements' output; a view the agent wrote stays the agent's, who sees what it shows.
+	 */
+	const restoredViews = new Set<string>();
+	async function restoreBrokenViews(): Promise<void> {
+		if (!VIEW_RESTORE_STATES || !nativeRuntime || !workspace || !binder) return;
+		for (const broken of nativeRuntime.emptyViews()) {
+			const key = `${broken.path}@${broken.version}`;
+			if (broken.failed < VIEW_RESTORE_STATES || !refinedVersions.has(key) || restoredViews.has(key)) continue;
+			restoredViews.add(key);
+			const why = `view ${broken.path} v${broken.version}, a refinement's, raised on ${broken.failed} states in a row` +
+				(broken.error ? ` (${broken.error.replace(/\s+/g, " ").slice(0, 120)})` : "");
+			const back = nativeRuntime.lastShowingVersion(broken.path, broken.version);
+			const source = back === undefined ? undefined : binder.sourceOf(broken.path, back);
+			if (source !== undefined) {
+				// The same content failing again is not the view's doing (the sandbox, say): nothing to restore.
+				if (workspace.read(broken.path) === source) continue;
+				workspace.mutate({ op: "write", path: broken.path, content: source });
+				const receipt = await binder.save(broken.path, currentLevel());
+				nativeRuntime.noteSave(broken.path, receipt);
+				const version = binder.versionMap()[broken.path];
+				if (version !== undefined) refinedVersions.add(`${broken.path}@${version}`);
+				append("refiner.jsonl", { kind: "view_restored", at: trajectory.length, decision, path: broken.path, from: broken.version, to: back, version,
+					states: broken.states.slice(-VIEW_RESTORE_STATES), error: broken.error?.slice(0, 300), receipt });
+				refinerNotices.push({ text: `HARNESS UPDATE by the runtime after #${trajectory.length}: ${why}; v${back}, its newest version that ` +
+					`showed something, is back as v${version}. Revise, restore or delete it like your own edits.` });
+			} else {
+				const destination = `_off/${broken.path}`;
+				workspace.mutate({ op: "move", path: broken.path, destination });
+				append("refiner.jsonl", { kind: "view_retired", at: trajectory.length, decision, path: broken.path, version: broken.version, destination,
+					states: broken.states.slice(-VIEW_RESTORE_STATES), error: broken.error?.slice(0, 300) });
+				refinerNotices.push({ text: `HARNESS UPDATE by the runtime after #${trajectory.length}: ${why}, and no version of it showed anything; ` +
+					`it is moved to ${destination}.` });
+			}
+		}
+	}
+
 	/** The agent's own guidance for refinements: the body of prompts/refine.md, whether or not that prompt is active. */
 	function refineGuide(): string {
 		if (!workspace) return "";
@@ -1849,10 +1897,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		};
 		let { reply, answer } = await ask(input);
 		let edit = parseRefinerReply(answer);
+		/** Why a FILE reply would change nothing: it is the current file again (whitespace at line ends aside). */
+		const unchangedFile = (e: typeof edit): string | undefined => {
+			if (e.kind !== "file" || !workspace!.files().includes(e.path)) return undefined;
+			const normal = (text: string) => text.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trimEnd();
+			return normal(workspace!.read(e.path)) === normal(e.content)
+				? `it is the same as the current ${e.path} v${binder!.versionMap()[e.path] ?? "?"}, so nothing would change` : undefined;
+		};
 		// A coverage event's answer names its test move in a form the runtime classifies, a rival's of a kind the level has
-		// not seen (P1); otherwise it goes back once with the reason, and the second answer is used as it comes.
+		// not seen (P1); a FILE answer changes the file (su15-p13-q38-1 #183: the repair of a crashing view returned it as it
+		// was, and was recorded and announced as an edit). Otherwise it goes back once with the reason, and the second
+		// answer is used as it comes.
 		const coverageEvent = COVERAGE && /^(rival|contested|repeat):/.test(promotionId ?? "");
-		const problem = coverageEvent && edit.kind === "hypothesis" ? moveProblem(promotionId!, edit.predicts) : undefined;
+		const problem = (coverageEvent && edit.kind === "hypothesis" ? moveProblem(promotionId!, edit.predicts) : undefined) ?? unchangedFile(edit);
 		if (problem) {
 			append("refiner.jsonl", { kind: "returned", at: trajectory.length, decision, event: promotionId, why: problem });
 			const again = `${input}\n\nYOUR REPLY WAS:\n${answer.trim()}\n\nNOT APPLIED: ${problem}. Reply again with the whole edit in the same form.`;
@@ -1945,6 +2002,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
 				return;
 			}
+			// The same file again is not an edit: nothing is written, and the agent is not told of one.
+			if (unchangedFile(edit)) {
+				append("refiner.jsonl", { kind: "unchanged", ...base, path: edit.path, version: binder!.versionMap()[edit.path], why: edit.why });
+				return;
+			}
 			// A coverage event answered in the strategy pins the first move its next experiment names (P3), and a pinned move
 			// stays the first item of any strategy a refinement writes until it is played.
 			let content = edit.content, clause = "";
@@ -1961,6 +2023,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			nativeRuntime!.register();
 			const loaded = !/NOT loaded/.test(receipt ?? "");
 			const version = binder!.versionMap()[edit.path];
+			if (loaded && version !== undefined) refinedVersions.add(`${edit.path}@${version}`);
 			const id = `e${++refinerEdits}`;
 			append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt, ...ledgerFields(id) });
 			applied = true;
@@ -2901,6 +2964,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
+    nativeRuntime.seedViews(readRows('observer_runs.jsonl'));
     // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background.
     if (criticOn && refineTool) pi.registerTool({
       name: 'refine', label: 'Refine',
@@ -2934,6 +2998,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
 		// A pinned next experiment that was played, or whose level or time ended, leaves the strategy before it is bound (P3).
 		if (COVERAGE && refinerActive()) { try { await settlePin(); } catch (error) { logError("pin:settle", error); } }
+		// A refinement's view that keeps raising goes back to a version that showed something, before it is bound.
+		if (refinerActive()) { try { await restoreBrokenViews(); } catch (error) { logError("view:restore", error); } }
     if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
 		const prompt = String(event.prompt ?? "").trimStart();
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(prompt);

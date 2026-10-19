@@ -43,8 +43,13 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	`prompts/strategy.md (under ${STRATEGY_CHARS} characters, three parts: Open questions, Next experiment, Failure modes; when no ` +
 	"step has tested how a level is won, the next experiment is a goal test), tools/<name>.py, lib/<name>.py or skills/<name>/SKILL.md " +
 	"(frontmatter name and description). A tool is a script " +
-	"or def run(args, env): args is a dict; env has state, grid, history (history.grid(n)), frame(n) and act(action, x=None, y=None, " +
-	"predict=None), which takes one action and returns the observation (grid, changed_cells, level_changed, state, missed), so code " +
+	"or def run(args, env): args is a dict; env.grid is the current grid and env.prev_grid the grid before the last action " +
+	"(rows of ints, grid[y][x]); env.history.grid(n) is the grid after action n (grid(0) before the first), env.frame(n) the " +
+	"same; env.state is the current observation as a dict, whose 'state' is the game status string ('NOT_FINISHED', " +
+	"'GAME_OVER', ...), next to 'levels_completed', 'available_actions' and 'frames' (the last action's animation, often " +
+	"empty); env['k'] and env.get('k') read that dict, so env.get('state') is the status string, not a dict. " +
+	"env.act(action, x=None, y=None, predict=None) takes one action and returns the observation (grid, changed_cells, " +
+	"level_changed, state, missed), so code " +
 	"can stop when nothing changes. A tool with the line '# view: on' near its top is run after every new state and its output is " +
 	"shown to the agent each decision: use one to report positions the agent keeps reading off the grid; it must return a value " +
 	"(a view that returns None shows nothing). Never replace a file the " +

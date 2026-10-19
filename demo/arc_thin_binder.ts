@@ -88,7 +88,7 @@ export class Binder {
   private async saveSource(path: string, level: number, kind: string, source: string) {
     const hash = createHash('sha256').update(source).digest('hex');
     const old = this.entries.get(path);
-    if (old?.hash === hash && !old.retired) return kind === 'file' ? undefined : this.receipt(old);
+    if (old?.hash === hash && !old.retired) return kind === 'file' ? undefined : this.receipt(old, true);
     const target = join(this.versions, `${hash}.txt`);
     if (!existsSync(target)) writeFileSync(target, source, { flag: 'wx', encoding: 'utf8' });
     const entry: Entry = { path, version: (old?.version ?? 0) + 1, hash, level, good: old?.good };
@@ -101,14 +101,21 @@ export class Binder {
     } catch (error) { entry.error = error instanceof Error ? error.message : String(error); }
     this.record(entry); return kind === 'file' ? undefined : this.receipt(entry);
   }
-  private receipt(entry: Entry) {
+  /**
+   * What a save did, as the writer is told. `unchanged`: the content was already the current version, so nothing new
+   * was saved (su15-p13-q38-1 #183: a repair that returned a crashing view as it was read "v3: saved · loaded").
+   */
+  private receipt(entry: Entry, unchanged = false) {
     const kind = componentKind(entry.path); const name = entry.good?.name ?? entry.path.split('/').at(-1);
     // A prompt is part of the system prompt, which stays fixed within a decision (a change mid-decision invalidated the
     // provider's cached prefix on every later request of it, pr-01 2026-10-14); it applies from the next decision.
     const from = kind === 'prompt' ? 'your next decision' : 'your next request';
-    return `${entry.path} → ${kind} ${name} v${entry.version}: saved · ` + (entry.error
-      ? `NOT loaded (${entry.error}) · ${entry.good ? `v${entry.good.version} still runs, its outputs are labelled` : 'no active version'}`
-      : entry.good?.enabled ? `loaded · active from ${from}` : `off · not active from ${from}`);
+    const failed = entry.error
+      ? `NOT loaded (${entry.error}) · ${entry.good ? `v${entry.good.version} still runs, its outputs are labelled` : 'no active version'}` : '';
+    if (unchanged) return `${entry.path} → ${kind} ${name} v${entry.version}: unchanged, the same content as before · ` +
+      (failed || (entry.good?.enabled ? 'loaded' : 'off'));
+    return `${entry.path} → ${kind} ${name} v${entry.version}: saved · ` + (failed
+      || (entry.good?.enabled ? `loaded · active from ${from}` : `off · not active from ${from}`));
   }
   async scan(level: number) {
     const paths = new Set(this.workspace.files().filter(p => !/^(data|results)(\/|$)/.test(p)));
