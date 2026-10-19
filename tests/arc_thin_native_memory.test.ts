@@ -33,6 +33,28 @@ test("the native memory tool documents each hypothesis field where it is written
   assert.equal(Value.Check(items, { key: 'hyp.a', claim: 42, status: 'maybe', evidence: { verdict: 'supports' } }), true);
 });
 
+test('a claim that opens with a status word sets that status when none is given', () => {
+  // su15-q38-2 (2026-10-19): "REJECTED: #89 proved …" with status open kept two dead rivals compared for 45 decisions.
+  const state = emptyMemory();
+  const first = planNativeMemoryUpdate(state, { hypotheses: [{ key: 'hyp.row', claim: 'erasing the row wins', question: 'goal' }] }, 5);
+  assert.equal(first.ok, true); if (!first.ok) return;
+  applyRows(state, first.rows);
+  const rejected = planNativeMemoryUpdate(state, { hypotheses: [{ key: 'hyp.row', claim: 'REJECTED: #89 proved that emptying the row is a loss' }] }, 89);
+  assert.equal(rejected.ok, true); if (!rejected.ok) return;
+  applyRows(state, rejected.rows);
+  assert.equal(state.hypotheses.get('hyp.row')?.status, 'rejected');
+  assert.match(rejected.receipt, /hyp\.row: status set to rejected, as its claim begins/);
+  // An explicit status wins, and a claim that only mentions the word does not change it.
+  const explicit = planNativeMemoryUpdate(state, { hypotheses: [{ key: 'hyp.b', claim: 'CONFIRMED: ACTION7 undoes', status: 'open' }] }, 90);
+  assert.equal(explicit.ok, true); if (!explicit.ok) return;
+  applyRows(state, explicit.rows);
+  assert.equal(state.hypotheses.get('hyp.b')?.status, 'open');
+  const mention = planNativeMemoryUpdate(state, { hypotheses: [{ key: 'hyp.c', claim: 'the rejected block returns to the start' }] }, 91);
+  assert.equal(mention.ok, true); if (!mention.ok) return;
+  applyRows(state, mention.rows);
+  assert.equal(state.hypotheses.get('hyp.c')?.status, 'open');
+});
+
 test('native facts have the same action provenance in live and replayed views', () => {
   const state = emptyMemory();
   const saved = planNativeMemoryUpdate(state, {set:[{key:'bar',text:'bar=19'}]}, 25);

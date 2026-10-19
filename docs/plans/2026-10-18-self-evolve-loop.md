@@ -205,3 +205,34 @@ What the agent used (`tools/arc_adoption.mjs`; a component counts only when the 
 - Outcome: levels and budget tokens per action against the first pair and the pooled base.
 - Falsifiers: no rival event fires (no unchallenged hypothesis with a question); rivals are written but no separating
   move is made within the level; levels fall below the first pair's for the same model.
+- Replayed on recorded runs (memory and check results as recorded, `C:/Users/qi/tmp/r04/loop/rival-sim.mjs`), the rule
+  fires 1-3 times per run, on the beliefs in question: su15-g56-1 at #89 (the refinement's restatement, 9 of 9) and at
+  #104 and #142 (the agent's `hyp.color6_anchor_motion`, 23 of 23, then 51 of 51 under its next check); su15-l1-1 at
+  #67 (`hyp.block_movement`, 25 of 25); su15-q38-1 twice, su15-l1-3 and su15-l0-1 once each. The second pair runs on
+  `2a836c30`.
+
+### The second pair (r04 at `2a836c30`, rival events on)
+
+| Run | Model | Levels | Actions | Budget tokens | Stop |
+| --- | --- | --- | --- | --- | --- |
+| su15-g56-2 | gpt-5.6-sol, medium | 1 (#28) | 238, 210 on the second level | 4.60M | the second level's 210 actions spent |
+| su15-q38-2 | qwen3.8-27b, off | 1 (#21) | 231, 210 on the second level | 4.96M | the second level's 210 actions spent |
+
+- **Rival events fired and were used.** g56-2: five rival events, three rivals written (two replies invalid). On the
+  second level the rival `hyp.level2_clicked_cell_becomes_bottom_right` ("clicking any cell of a 2x2 block repositions
+  it so the clicked cell becomes its bottom-right corner") was compared with the refinement's restatement of the
+  agent's belief ("only the top-left cell moves it, one cell up-left") in CURRENT KNOWLEDGE; the agent's next moves
+  separated them (#69, #80, #84, #91, #92), the restatement was contested by its check, and the agent rejected it and
+  wrote "the clicked corner commands a direction". q38-2: two rival goal hypotheses ("erasing the bottom row wins",
+  "all dots must reach the circle"); the agent tested and dropped both, a reset showed the row is a life bar.
+- **Neither run found the mechanic.** The rival that matched the game ("repositions so the clicked cell becomes its
+  bottom-right") differs from "corner commands" only for clicks off the block, and every proposed separating move was a
+  click on a block. In g56-2 163 of 188 click steps on the second level moved a block one cell; the H3a line "no
+  recorded move separates … (no move decided by both)" stood for the last 35 decisions without effect.
+- **A defect the comparison exposed:** qwen rejected hypotheses by rewriting the claim ("REJECTED: #89 proved …") and
+  left the status open, so two dead hypotheses were compared as rivals in CURRENT KNOWLEDGE for 45 decisions. Fix: a
+  claim that opens with a status word (REJECTED, REFUTED, DISPROVED, FALSIFIED, CONTESTED, DISPUTED, SUPPORTED,
+  CONFIRMED) sets that status when none is given, and the receipt says so.
+- **Totals so far on r04 (four runs):** gpt-5.6-sol 1 and 1 level; qwen 2 and 1. With pooled qwen L0/L1 the second
+  level is passed in 3 of 8 qwen runs and 0 of 2 gpt-5.6-sol runs. Next: gpt-6.1-sol, the gateway's strongest GPT, on
+  the same harness (`su15-g61-1`), with one more qwen run (`su15-q38-3`).

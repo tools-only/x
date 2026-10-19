@@ -23,6 +23,27 @@ function proseCheckAsNextTest(fields: Record<string, any>): string | undefined {
     'A check is def check(t): returning True, False or None';
 }
 
+/** A status word that opens a claim, as written by the agent ("REJECTED: …"), and the status it means. */
+const CLAIM_STATUS: Array<[RegExp, typeof STATUSES[number]]> = [
+  [/^\s*\**(REJECTED|REFUTED|DISPROVED|FALSIFIED)\b\**\s*[:.\-—]/i, 'rejected'],
+  [/^\s*\**(CONTESTED|DISPUTED)\b\**\s*[:.\-—]/i, 'contested'],
+  [/^\s*\**(SUPPORTED|CONFIRMED)\b\**\s*[:.\-—]/i, 'supported'],
+];
+
+/**
+ * su15-q38-2 (qwen, 2026-10-19) rejected three hypotheses by rewriting their claims ("REJECTED: #89 proved that emptying
+ * the bottom row causes GAME OVER") and left their status open, so CURRENT KNOWLEDGE kept them live and compared two of
+ * them as rivals for 45 decisions. A claim that opens with a status word sets that status when no status is given.
+ */
+function claimStatus(fields: Record<string, any>): string | undefined {
+  if (fields.status !== undefined || typeof fields.claim !== 'string') return undefined;
+  const found = CLAIM_STATUS.find(([pattern]) => pattern.test(fields.claim));
+  if (!found) return undefined;
+  fields.status = found[1];
+  const key = String(fields.key ?? '').trim();
+  return `${key.startsWith(HYP_PREFIX) ? key : HYP_PREFIX + key}: status set to ${found[1]}, as its claim begins; status is the field that does this`;
+}
+
 export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams, actionCount: number, ctx: ComponentContext = {}): MemoryPlan {
   for (const item of [...(params.hypotheses ?? []).map(h => h?.evidence), ...(params.tests ?? [])]) {
     const action = item?.action;
@@ -54,8 +75,10 @@ export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams,
     if (!item || typeof item !== 'object') { skipped.push(`hypotheses[${index}]: needs an entry`); continue; }
     const { evidence, ...fields } = item;
     const prose = proseCheckAsNextTest(fields);
+    const status = claimStatus(fields);
     const applied = apply(`hypotheses[${index}]`, { hypotheses: [fields] });
     if (applied && prose) receipts.push(prose);
+    if (applied && status) receipts.push(status);
     if (applied && evidence !== undefined)
       apply(`hypotheses[${index}].evidence`, { hypotheses: [{ key: item.key, evidence }] });
   }
