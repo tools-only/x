@@ -11,7 +11,7 @@
  *   attempt changed). `experiment` gives a finished fit the outcomes of moves of a kind its record lacks, recorded in
  *   another play of the same level, and scores the code before and after on a third recording of that level.
  *
- * agent <out> <model> [--calls 14] [--budget 400000] [--effort medium|off] [--max-tokens n] [--label name]
+ * agent <out> <model> [--calls 14] [--budget 400000] [--effort medium|off] [--max-tokens n] [--persist 0] [--study-limit 4] [--label name]
  *   <out> is a window directory (tools/arc_world_model.ts window). Writes <out>/<label>/.
  * experiment <out> <label> <experiment run> <from>-<to> <test run> <from>-<to> [--k 3] [--calls 5] [--budget 150000]
  *   continues <out>/<label>; writes <out>/<label>/experiment/.
@@ -39,6 +39,11 @@ type Loop = {
   calls: number; spent: number; tests: number; versions: Version[]; returned: boolean;
   /** Return a submit with validation under 90% each time until a third of the replies are left (round 2c), not just once. */
   persist?: boolean;
+  /**
+   * After this many python calls in a row without a test, python is refused until a version is tested (round 3; 0
+   * disables). qwen with thinking off studied for all 14 replies of A3c and A3d without ever testing a step().
+   */
+  studyLimit?: number; sinceTest?: number;
   submitted?: { test: number; code: string; unknowns: string }; stop?: string;
 };
 
@@ -51,8 +56,9 @@ const boxDistance = (x: number, y: number, box: Box) => Math.max(box.left - x, 0
 const kindText = (kind: string) => { const [action, region] = kind.split(':'); return region ? `a click ${REGIONS[region]}` : action; };
 
 /**
- * Each move's kind, and after each move the box the latest change of its attempt left (busy lines out). Re-implements
- * moveKinds of demo/arc_thin_coverage.ts (branch claude/r04-cov-20261019) until that module is in this branch.
+ * Each move's kind, and after each move the box the latest change of its attempt left (busy lines out): the kinds of
+ * moveKinds in demo/arc_thin_coverage.ts (same counts on the six su15 runs it was checked on), computed here over a
+ * window's attempts, since that module reads trajectory rows of a whole run.
  */
 function coverageOf(window: Window, grids: Map<number, Grid>) {
   const kinds = new Map<number, string>(), boxes = new Map<number, Box | undefined>();
@@ -529,10 +535,16 @@ async function runLoop(loop: Loop) {
       }
       const started = Date.now();
       let text: string;
-      if (call.name === 'python') {
+      if (call.name === 'python' && loop.studyLimit && (loop.sinceTest ?? 0) >= loop.studyLimit) {
+        text = `Not run: ${loop.studyLimit} python studies in a row without a test. Write step() with what you have found and `
+          + 'call test; then study more.';
+        exchange.notes.push(`python refused: ${loop.studyLimit} studies without a test`);
+      } else if (call.name === 'python') {
+        loop.sinceTest = (loop.sinceTest ?? 0) + 1;
         text = await python(loop, String(args.code ?? ''));
         exchange.notes.push(`python: ${first(String(args.code ?? ''), 100)} -> ${first(text, 160)}`);
       } else if (call.name === 'test' || call.name === 'submit') {
+        loop.sinceTest = 0;
         const { text: feedback, version } = await testTool(loop, String(args.code ?? ''));
         const v = version.rank;
         if (call.name === 'test') {
@@ -616,7 +628,8 @@ async function agent(out: string, model: string, options: Record<string, string>
     budget: Number(options.budget ?? 400_000), dir: join(out, options.label ?? `agent-${model}-${effort}`),
     shown: [setup.shown], validation: setup.validation, novel: setup.novel,
     head: [{ role: 'system', content: SYSTEM }, { role: 'user', content: agentPrompt(setup, maxCalls) }],
-    log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: false, persist: options.persist !== '0' };
+    log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: false, persist: options.persist !== '0',
+    studyLimit: Number(options['study-limit'] ?? 4) };
   mkdirSync(loop.dir, { recursive: true });
   writeFileSync(join(loop.dir, 'prompt.txt'), `${SYSTEM}\n\n${loop.head[1].content}`);
   await runLoop(loop);

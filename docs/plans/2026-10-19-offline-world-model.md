@@ -498,3 +498,28 @@ A1b 38k, A3b 270k, A1c 159k, A1d 152k, A3c 101k, A3d 75k. No ARC action was play
      (`docs/plans/2026-10-19-coverage-attempts-delivery.md`) count kinds of clicks. Round 2 suggests counting states the
      level has not shown (for example arrangements the agent never produced) and the world model's unknowns as
      candidate experiments. Not built; a candidate for that line.
+
+## Round 3 (2026-10-19): the user said "go on" to the next checks
+
+Built on `claude/r04-dream3-20261019` (temporary worktree `worktrees/r04-dream3`, from r04 `e0b3e3a6`, which now
+includes the coverage session's P1-P4). Budget: at most 1.2M budget tokens for round 3, my choice. Next check 3 stays
+with the coverage line (P1-P4, just merged); it is not built here.
+
+### A local judge for plans
+
+- `arc_agi` can run a game locally: NORMAL mode downloads its files, with a local scorecard; OFFLINE mode runs them
+  afterwards without the network. su15 (version `1944f8ab`) was downloaded once into
+  `runs/arc-dream-20261019/env`.
+- Fidelity: replaying su15-g61-1's 206 recorded actions locally reproduces every recorded grid, state and level count
+  (0 mismatches; `C:/Users/qi/tmp/dream3/fidelity.py`, output `env/fidelity-su15-g61-1.json`).
+- The local game is used only as a black-box judge of plans. Its source is not read, and nothing from it reaches a
+  model or a prompt.
+
+### A3e: qwen commits to a candidate (next check 1)
+
+- **What breaks.** A3c and A3d: qwen with thinking off studied with python for all 14 replies and never tested a
+  step(), with or without a replies-left notice.
+- **The one factor changed.** After 4 python calls in a row without a test, python is refused ("write step() with what
+  you have found and call test") until a version is tested (`--study-limit 4`, default; 0 restores round 2).
+- **Arm.** A3e: qwen3.8-27b, thinking off, W2, at most 14 replies and 200k.
+- **Supported** if P1 is at least 75% at no more than 135k budget tokens (A3b: 83% at 270k).
