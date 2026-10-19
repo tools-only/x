@@ -325,8 +325,8 @@ unused components is then not the runtime choosing components by state, which it
 
 - `prompts/rules.md` reverses the division. The system prompt lists it as "rules your checks established", and a
   refinement's edit of it is announced with "Revise, restore or delete it like your own edits", but the workspace
-  refuses the agent's writes (`demo/arc_thin_workspace.ts`, since pr-01 on 2026-10-14, where the agent rewrote it at
-  every request as a notebook). In the 7 runs of `arc-models-20261019` agents wrote it 5 times, in 4 runs, and were
+  refuses the agent's writes (`demo/arc_thin_workspace.ts`, since pr-01 on 2026-10-14, where the agent wrote it three
+  times in one decision as a notebook). In the 7 runs of `arc-models-20261019` agents wrote it 5 times, in 4 runs, and were
   refused each time: su15-q38-1 after #102 and #174, su15-q38-2 after #89 and su15-q38-3 after #105 wrote their own
   mechanics as rules (785-1560 characters); su15-g61-2 after #40 tried to empty it while a refinement's disputed rule
   stood (a refinement removed it at the next decision). The cost here was small: q38-2 and q38-3 moved the content to
@@ -334,6 +334,31 @@ unused components is then not the runtime choosing components by state, which it
   standing component the agents set out to build on their own, and the one they may not write.
 - Iteration 3's repeated-python text steers refinements to views, which run at every decision, over tools, which the
   agent calls: the service then chooses what the agent looks at. The agent can switch a view off, so this is milder.
-- Not changed (no mechanism changes). The options: let the agent write `prompts/rules.md` (the division's answer, a
-  mechanism change that reopens pr-01's notebook use), or keep it refinement-only and correct the two texts that say
-  otherwise.
+- Not changed in this iteration (no mechanism changes). The options: let the agent write `prompts/rules.md` (the
+  division's answer, a mechanism change that reopens pr-01's notebook use), or keep it refinement-only and correct the
+  two texts that say otherwise. The user chose the first: iteration 6.
+
+## Iteration 6: the agent writes `prompts/rules.md` (user agreed, 2026-10-19)
+
+- Problem: the refusal above. Its reasons in pr-01 (one 10-action qwen run of 2 decisions; the agent wrote the file
+  three times in its second decision, with colours, layout, open questions and that decision's plan): each write
+  changed the system prompt and lost the cache, and a refinement could not overwrite a file the agent wrote, so
+  promotions had nowhere to go. Both are now met otherwise: prompts apply from the next decision, and refinements may
+  rewrite `prompts/rules.md` whoever wrote it (`ownedByRefinement`). The notebook use did not recur in the refused
+  writes of the 7 runs above: four were rules, one removed a disputed rule.
+- Claim: the agent's writes and deletions of `prompts/rules.md` are accepted and versioned as for
+  `prompts/strategy.md`; refinements keep writing promotions to it and narrowing or removing disputed lines; the two
+  texts that promised the agent this (system prompt, refinement notice) become true. Burden removed: a refused call,
+  and the agent's rules moved elsewhere, at the moments it consolidates what it learned.
+- Change: the workspace no longer refuses the path; `RULES_PATH` is defined in `arc_thin_claims.ts`; a refinement's
+  rules edit is written like its other file edits. No prompt text changed. One factor: nothing else in promotion
+  changes.
+- Falsifiers, for the next authorized run (none is run for this alone): the agent writes the file in more than 1
+  decision in 10, or puts plans and open questions there (pr-01's notebook use); a promoted line the agent deleted is
+  promoted again while its hypothesis is not rejected (the guard then: do not re-promote a check version whose line the
+  agent removed). Not expected: a level gain from this alone; the refused writes cost little.
+- Checks: unit tests, 10 files, 70 tests, 69 pass (`arc_thin_promotion` now asserts the agent's writes through
+  `mutate` and the write tool; `arc_thin_refine_ledger` writes a refinement's rules edit the new way); the one failure,
+  in `arc_thin_components` (a restored python session refuses a writing class body the test expects kept), fails the
+  same way on the base since r03b. No smoke (a minor change). Unverified: whether the agent writes its rules there in
+  play, whether they are right and followed, and any benefit.

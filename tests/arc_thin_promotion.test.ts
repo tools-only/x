@@ -11,14 +11,15 @@ import { join } from 'node:path';
 import { Workspace } from '../demo/arc_thin_workspace.ts';
 import { freezeHistory, historyResult } from '../demo/arc_thin_native_context.ts';
 
-test('the rules prompt is written by refinements only: the agent is pointed to its own places', async () => {
+test('the rules prompt is written by the agent and by refinements', async () => {
   const w = new Workspace(mkdtempSync(join(tmpdir(), 'rules-owner-')));
-  assert.throws(() => w.mutate({ op: 'write', path: 'prompts/rules.md', content: 'notes' }), /kept by refinements.*prompts\/strategy\.md.*notes\//);
-  assert.throws(() => w.path('prompts/RULES.md', true), /kept by refinements/);
+  w.mutate({ op: 'write', path: 'prompts/rules.md', content: '---\nactive: true\n---\n- the piece moves right (hyp.right)\n' });
+  assert.match(w.read('prompts/rules.md'), /hyp\.right/);
   const write = w.fileTools().find((t) => t.name === 'write')!;
-  await assert.rejects(write.execute('w', { path: 'prompts/rules.md', content: 'x' }, undefined, undefined, {} as any), /kept by refinements/);
-  w.runtimeWrite('prompts/rules.md', '---\nactive: true\n---\n- r (hyp.r)\n');
-  assert.match(w.read('prompts/rules.md'), /hyp\.r/);
+  await write.execute('w', { path: 'prompts/rules.md', content: '---\nactive: true\n---\n- r (hyp.r)\n' }, undefined, undefined, {} as any);
+  assert.match(w.read('prompts/rules.md'), /\(hyp\.r\)/);
+  w.runtimeWrite('prompts/rules.md', '---\nactive: true\n---\n- s (hyp.s)\n');
+  assert.match(w.read('prompts/rules.md'), /hyp\.s/);
   w.mutate({ op: 'write', path: 'prompts/strategy.md', content: '---\nactive: true\n---\nplan' });
 });
 

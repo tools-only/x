@@ -914,7 +914,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return notes;
 	}
 
-	/** The rules prompt as written (refinements maintain it; it applies while its frontmatter says active). */
+	/** The rules prompt as written (the agent and refinements maintain it; it applies while its frontmatter says active). */
 	function rulesText(): string {
 		if (!workspace) return "";
 		try { return workspace.read(RULES_PATH); } catch { return ""; }
@@ -1704,14 +1704,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
 			// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
-			// tools/probe.py into an unrelated view). It may rewrite the strategy and files that refinements wrote.
+			// tools/probe.py into an unrelated view). It may rewrite the strategy, the rules prompt and files that refinements wrote.
 			if (!ownedByRefinement(edit.path)) {
 				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
 				return;
 			}
-			// The rules prompt is refinement-only (the agent's writes to it are refused), so it is written as the runtime.
-			if (edit.path === RULES_PATH) workspace!.runtimeWrite(edit.path, edit.content);
-			else workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
+			workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
 			refinedPaths.add(edit.path);
 			const receipt = await binder!.save(edit.path, currentLevel());
 			nativeRuntime!.noteSave(edit.path, receipt);

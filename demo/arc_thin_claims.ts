@@ -8,7 +8,6 @@
 import { createHash } from "node:crypto";
 import { gridChanges, type CellChange } from "./arc_thin_history.ts";
 import type { Grid } from "./arc_thin_prediction.ts";
-import { REFINED_ONLY } from "./arc_thin_workspace.ts";
 
 /** One check result: true holds, false fails, null does not apply, "error" the check raised or returned something else. */
 export type ClaimValue = true | false | null | "error";
@@ -218,10 +217,11 @@ export function withCheckDef(source: string): string {
 //
 // A checked hypothesis becomes a standing rule, and a standing rule goes back to dispute, by the evidence the checks
 // already keep. The runtime only counts; a refinement writes the rule into prompts/rules.md (a prompt component) or
-// revises it, so what persists is always a versioned harness component.
+// revises it, so what persists is always a versioned harness component. The agent writes and revises the file too
+// (2026-10-19: its writes had been refused since pr-01, and in the next 7 runs every refused write was a rule).
 
-/** Where established rules live: a prompt the refinements maintain, applied at every decision while active. */
-export const RULES_PATH = REFINED_ONLY;
+/** Where established rules live: a prompt the agent and the refinements maintain, applied at every decision while active. */
+export const RULES_PATH = "prompts/rules.md";
 export const RULES_CHARS = 1500;
 /** Holds needed before a check is offered for promotion (with no fails, no errors, and a check that discriminates). */
 export const PROMOTE_HOLDS = 4;

@@ -13,8 +13,6 @@ export function stubLongLines(raw: string[]): { lines: string[]; stubs: number }
     ? `[line ${i + 1}: ${line.length} chars not shown; starts ${JSON.stringify(line.slice(0, 80))}]` : line);
   return { lines, stubs: raw.filter(line => line.length > LONG_LINE_CHARS).length };
 }
-/** Only refinements write it, from checked hypotheses (docs/plans/2026-10-14-knowledge-promotion.md). */
-export const REFINED_ONLY = 'prompts/rules.md';
 
 export class Workspace {
   readonly root: string;
@@ -42,10 +40,6 @@ export class Workspace {
     const rel = relative(this.root, target).replace(/\\/g, '/');
     if (rel.startsWith('../') || isAbsolute(rel)) throw Error('path leaves workspace');
     if (write && !runtime && /^(data|results)(\/|$)/i.test(rel)) throw Error('workspace data/ and results/ are read-only');
-    // pr-01 (2026-10-14): the agent used the rules prompt as a notebook and rewrote it each request, so promotions had
-    // nowhere to go. Its rules come from its checked hypotheses; notes and plans have their own places.
-    if (write && !runtime && rel.toLowerCase() === REFINED_ONLY) throw Error(`${REFINED_ONLY} is kept by refinements from your ` +
-      'hypotheses whose checks hold; write plans and open questions to prompts/strategy.md, notes to notes/');
     let cursor = this.root;
     for (const part of rel.split('/').filter(Boolean)) {
       cursor = join(cursor, part);
