@@ -8,11 +8,11 @@
  *   busy lines (rows or columns changed on at least 80% of the fit moves: counters, timers) and scores two baselines:
  *   no change, and replay (a move whose grid outside busy lines and whose action occur among the fit moves gets the
  *   change recorded there). Writes <out>/window.json.
- * score <out> <file.py> | --oracle: scores a step() source. --oracle scores a lookup of every recorded move by grid and
- *   action, a check of the scoring itself: it is exact wherever the grid and action decide the result.
- * fit <out> <model> [--rounds 3] [--budget 300000] [--effort medium|off] [--max-tokens n] [--label name]: a prompt with
- *   the fit moves, then up to --rounds repairs showing the fit moves the code gets most wrong. Every round's code is
- *   scored on all moves; the round best on the fit moves is the result. Writes <out>/<label>/.
+ * score <out> <file.py> | --oracle [--changes] [--name n]: scores a step() source. --oracle scores a lookup of every recorded
+ *   move by grid and action, a check of the scoring itself: it is exact wherever the grid and action decide the result.
+ * fit <out> <model> [--rounds 3] [--budget 300000] [--effort medium|off] [--max-tokens n] [--prompt v1|v2] [--label name]:
+ *   a prompt with the fit moves, then up to --rounds repairs showing the fit moves the code gets most wrong. Every round's
+ *   code is scored on all moves; the round best on the fit moves is the result. Writes <out>/<label>/.
  * Usage: node --experimental-transform-types --no-warnings tools/arc_world_model.ts window|score|fit ...
  */
 import { createHash } from 'node:crypto';
@@ -318,7 +318,15 @@ function oracleSource(window: Window, grids: Map<number, Grid>): string {
 const SYSTEM = 'You infer the rules of a deterministic turn-based grid game from a record of its moves, and write them as a Python '
   + 'function that predicts the grid after any move.';
 
-function recordPrompt(window: Window, grids: Map<number, Grid>): string {
+/**
+ * v1 is the prompt the record's protocol fixed. Under it gpt-6.1-sol answered with a placeholder (the grid unchanged)
+ * and then declined to write code at all; v2 adds one sentence asking for the most complete model the record supports.
+ */
+const PROMPTS = ['v1', 'v2'];
+const BEST_EFFORT = ' Each rule you capture makes more moves exact, so write the most complete model the record supports, never a\n'
+  + 'placeholder that returns the grid unchanged; where the record leaves a case open, choose the simplest rule consistent with it.';
+
+function recordPrompt(window: Window, grids: Map<number, Grid>, version = 'v2'): string {
   const all = moves(window);
   const actions = [...new Set(all.map((move) => move.action))].sort()
     .map((action) => all.some((move) => move.action === action && move.x !== undefined) ? `${action} (with x, y)` : action);
@@ -358,7 +366,7 @@ def step(grid, action, x, y, history):
     the current grid is the result of the last one (history is [] at the start of an attempt)."""
 
 The function will be run on every move of these attempts from the recorded grid before it, including the moves kept out, and
-scored on exact agreement of every cell with the recorded grid after the move. It runs in a sandboxed CPython 3.12 without
+scored on exact agreement of every cell with the recorded grid after the move.${version === 'v1' ? '' : BEST_EFFORT} It runs in a sandboxed CPython 3.12 without
 third-party modules, with a time limit of a few seconds for a whole attempt. Before the code, state briefly the rules you
 found. Then give the complete code in one \`\`\`python block.`);
   return parts.join('\n\n');
@@ -477,11 +485,13 @@ async function fit(out: string, model: string, options: Record<string, string>) 
   const rounds = Number(options.rounds ?? 3), budget = Number(options.budget ?? 300_000);
   const effort = options.effort ?? (model.startsWith('qwen') ? 'off' : 'medium');
   const maxTokens = Number(options['max-tokens'] ?? (model.startsWith('qwen') ? 16_000 : 32_000));
+  const prompt = options.prompt ?? 'v2';
+  if (!PROMPTS.includes(prompt)) throw new Error(`--prompt is one of ${PROMPTS.join(', ')}`);
   const dir = join(out, options.label ?? `${model}-${effort}`);
   mkdirSync(dir, { recursive: true });
   const calls = join(dir, 'calls.jsonl');
   let spent = read(calls).reduce((sum, row) => sum + (row.budget_tokens ?? 0), 0);
-  const messages: any[] = [{ role: 'system', content: SYSTEM }, { role: 'user', content: recordPrompt(window, grids) }];
+  const messages: any[] = [{ role: 'system', content: SYSTEM }, { role: 'user', content: recordPrompt(window, grids, prompt) }];
   writeFileSync(join(dir, 'prompt.txt'), messages[1].content);
   let best: { round: number; summary: Summary } | undefined;
   const rank = (summary: Summary) => [summary.fit.exact, summary.fit.exact_other, -summary.fit.wrong_other_cells];
@@ -518,10 +528,10 @@ async function fit(out: string, model: string, options: Record<string, string>) 
     if (round < rounds) messages.push({ role: 'user', content: repairPrompt(window, grids, scored.results, scored.compileError) });
   }
   writeFileSync(join(dir, 'messages.json'), JSON.stringify(messages, null, 1));
-  const report = { model, effort, rounds, budget, spent, stop, best_round: best?.round ?? null, summary: best?.summary ?? null,
+  const report = { model, effort, prompt, rounds, budget, spent, stop, best_round: best?.round ?? null, summary: best?.summary ?? null,
     verdict: best ? verdict(best.summary) : null, baselines: window.baselines };
   writeFileSync(join(dir, 'fit.json'), JSON.stringify(report, null, 1));
-  console.log(JSON.stringify({ model, effort, spent, stop, best_round: report.best_round, verdict: report.verdict }));
+  console.log(JSON.stringify({ model, effort, prompt, spent, stop, best_round: report.best_round, verdict: report.verdict }));
 }
 
 const [command, ...args] = process.argv.slice(2);
@@ -539,16 +549,18 @@ if (command === 'window') {
     excluded: window.excluded, busy: window.busy, prompt_chars: recordPrompt(window, grids).length }));
   for (const [name, summary] of Object.entries(window.baselines)) console.log(`${name}: ${summaryLine(summary)}`);
 } else if (command === 'score') {
-  const [out, file] = args;
+  const [out, file, ...rest] = args;
+  const options = flags(rest);
   const window: Window = JSON.parse(readFileSync(join(out, 'window.json'), 'utf8'));
   const { grids } = load(window.harness);
   const source = file === '--oracle' ? oracleSource(window, grids) : readFileSync(file, 'utf8');
   if (file === '--oracle') writeFileSync(join(out, 'oracle.py'), source);
   const scored = await scoreSource(window, grids, source);
   const summary = summarize(window, scored.results);
-  const name = file === '--oracle' ? 'oracle' : file.split(/[\\/]/).at(-1)!.replace(/\.py$/, '');
+  const name = options.name ?? (file === '--oracle' ? 'oracle' : file.split(/[\\/]/).at(-1)!.replace(/\.py$/, ''));
+  // --changes keeps each move's predicted changes (the first 150 cells) for analysis of what the code gets wrong.
   writeFileSync(join(out, `score-${name}.json`), JSON.stringify({ seconds: scored.seconds, compile_error: scored.compileError ?? null, summary,
-    verdict: verdict(summary), results: [...scored.results.values()].map(({ changes, ...rest }) => rest) }, null, 1));
+    verdict: verdict(summary), results: [...scored.results.values()].map(({ changes, ...rest }) => options.changes ? { ...rest, changes } : rest) }, null, 1));
   console.log(`${name} (scored in ${scored.seconds} s): ${summaryLine(summary)}`);
 } else if (command === 'fit') {
   const [out, model, ...rest] = args;

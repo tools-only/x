@@ -102,9 +102,53 @@ passes, phase 1 offline; phase 2 (in-run) only with the user's go-ahead.
 - Outputs: `runs/arc-dream-20261019/w1-g61-l4/`, `runs/arc-dream-20261019/w2-g56-l2/` (`window.json`, `prompt.txt`,
   `score-identity.json`, `score-oracle.json`, `oracle.py`).
 
-### Fits
+### Fits under the fixed protocol (prompt v1, `2720842c`)
 
-(to be filled in from `runs/arc-dream-20261019/<window>/<model>-<effort>/fit.json`)
+All four fits ran in parallel on 2026-10-19 and cost 316,600 budget tokens in total. Outputs are in
+`runs/arc-dream-20261019/<window>/<model>-<effort>/` (`fit.json`, and per round `reply-k.md`, `code-k.py` and
+`score-k.json`).
+
+| Fit | Rounds with code | Best round | P1: novel held-out, outside busy | P2: held-out, busy line | Budget tokens |
+| --- | --- | --- | --- | --- | --- |
+| W1 gpt-6.1-sol, medium | 2 of 4 | 3 | 35/68 (51%) | 45/73 (62%) | 72,816 |
+| W2 gpt-6.1-sol, medium | 4 of 4 | 1 | 22/101 (22%) | 115/117 (98%) | 29,431 |
+| W1 qwen3.8-27b, off | 2 of 4 | 2 | 0/68 | 49/73 (67%) | 121,862 |
+| W2 qwen3.8-27b, off | 4 of 4 | 0 | 6/101 (6%) | 4/117 (3%) | 92,491 |
+| identity, W1 / W2 | — | — | 4/68 / 6/101 | 6/73 / 5/117 | 0 |
+
+- **Verdict: fail.** The gating fit, gpt-6.1-sol on W1, misses both marks.
+- **The model did not invest.**
+  - Round 0 on W1 returned the grid unchanged, "only a conservative fallback", after 1.6k reasoning tokens.
+  - Round 1 wrote no code at all: "I can't give a complete predictive function that is justified by the evidence
+    here."
+  - Only the repair's "give the complete code" produced attempts (rounds 2 and 3).
+  - Across its eight calls gpt-6.1-sol reported at most 2.6k reasoning tokens (none in two of them) and took
+    11-104 s per call.
+  - qwen (thinking off) wrote its analysis into the reply until the turn ended, without code, in rounds 0 and 1 on W1.
+- **W1 round 3 is a lookup, not a model.**
+  - It is a table of the 42 observed (hazard position, click) transitions, with a spatial fallback: two same-colour
+    pieces near the click merge into the next size, the hazard steps up to 4 cells toward the nearest piece, ACTION7
+    restores the last board-changing move but not the bottom row, and the bottom row follows a formula.
+  - It is exact outside busy lines on 57 of the 58 fit moves (memorised), and on 35 of the 68 novel held-out moves.
+- **W2.** gpt-6.1-sol got the counter row right on 115 of the 117 held-out moves, and the board on 22 of the 101
+  novel ones.
+
+### Deviation (decided after v1, before any further call)
+
+- **What breaks.** Investment: the model writes a placeholder or declines, so v1 measures willingness more than
+  ability. Per the protocol, v1's verdict stands: fail.
+- **The one factor changed.** Prompt v2 adds one sentence: each rule captured makes more moves exact; write the most
+  complete model the record supports, never a placeholder; where the record leaves a case open, choose the simplest
+  rule consistent with it. `--prompt v1` reproduces v1. Pass marks unchanged.
+- **Exploratory runs, labelled as such.**
+  - gpt-6.1-sol, medium, v2: W1 (at most 150k) and W2 (at most 100k).
+  - qwen3.8-27b with thinking on, v2: W2 only (at most 150k). This is the protocol's exploratory arm. It changes the
+    prompt and the thinking together, so it does not separate the two.
+  - Only if v2 fails on W1: one gpt-6.1-sol fit at `reasoning_effort` high on W1 (at most 150k).
+  - With all of these, phase 0 stays within 0.87M of its 1.0M.
+  - Not run: qwen with thinking off under v2, which would isolate the prompt's effect on qwen.
+- **Phase 1 condition.** A v2 or high-effort pass on W1 is exploratory evidence: phase 1 may follow, labelled
+  exploratory.
 
 | Evidence level | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
