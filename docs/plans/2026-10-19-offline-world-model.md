@@ -523,3 +523,57 @@ with the coverage line (P1-P4, just merged); it is not built here.
   you have found and call test") until a version is tested (`--study-limit 4`, default; 0 restores round 2).
 - **Arm.** A3e: qwen3.8-27b, thinking off, W2, at most 14 replies and 200k.
 - **Supported** if P1 is at least 75% at no more than 135k budget tokens (A3b: 83% at 270k).
+- **Result: not supported.** P1 6% (6 of 101 novel held-out moves exact outside the counter row), P2 68%, 93k budget
+  tokens, one test (validation 0 of 23 exact). Artifacts: `w2-g56-l2/r3-qwen3.8-27b-off/`.
+  - After 4 studies, python was refused for 7 replies in a row. qwen kept calling python with longer study code (1-6k
+    characters). At reply 11 it wrote "I need to stop studying and start testing" and still called python. The refused
+    calls returned nothing, so it studied blind for those 7 replies.
+  - Its one tested step() (reply 12) hard-codes this level's four marker pairs. It is right outside the counter row on
+    42% of the moves shown and on 9% of validation.
+  - A3b's one test came after 13 replies of study that all returned results; it scored 83%.
+- **The broken transition** stays the step from study to a candidate. qwen with thinking off does not switch tools on an
+  instruction, whether a notice (A3d) or a refusal (A3e). The refusal withheld information and did not produce a
+  candidate.
+- **Decision.** `--study-limit` defaults to 0 again (round 2's behaviour); the option stays. No further change to the
+  qwen loop in round 3. Untested next check: forcing the call in the request (`tool_choice` naming `test`) after a few
+  studies, so that the reply itself must hold a step().
+
+### Phase 1: dream the next level (next check 2), fixed before any model call
+
+- **Why the next level.** A passed level's record holds its passing sequence, so a plan for that same level can copy
+  it. Planning is tested on a level the record does not hold: su15-g61-1's level 3 (first grid after #38, a different
+  layout from level 2's). This is also how phase 2 would use it: after passing a level, plan the next one in the model
+  before acting.
+- **Fit** (`tools/arc_world_model_plan.ts fit`): the record of g61-1's level 2 (#23-#37, then #38 completed it; the
+  completing move is shown, and step() need not predict it). Validation: q38-1's level 2 (#41-#151, another play),
+  counts only. The prompt says the model will plan another level with its step(). Round 2's loop and settings
+  otherwise: the version best on validation counts, weak submits are returned until a third of the replies are left,
+  at most 14 replies.
+- **Plan** (`plan`): a new conversation gets the fitted code, the level-2 record with its first and last grids, and
+  level 3's first grid. Tools: python (step, simulate, start, record), revise (replaces the model; reports its fit on
+  level 2's moves), submit_plan (at most 60 actions). At most 8 replies. No real action before the submit.
+- **Judge.** The local game replays g61-1's 38 actions, then plays the plan once, until it ends, completes the level,
+  or the game is over. Nothing of the local game reaches a model.
+- **Controls, no model (`check`, `baseline`; run).** Level 3's recorded 17 moves complete it at the 17th (positive
+  control). Level 2's 16 moves copied onto level 3 do not complete it, and level 3's 17 copied onto level 4 do not
+  complete level 4 (negative cases). Planner tools on fixed code: python, errors, revise, plan parsing, the dream
+  comparison (output `C:/Users/qi/tmp/dream3/check-plan.txt`; baselines in `runs/arc-dream-20261019/p1-*`).
+- **Arms.**
+  - P1-a: gpt-6.1-sol, medium effort: fit at most 250k, plan at most 150k.
+  - P1-b: qwen3.8-27b, thinking off: fit at most 200k, plan at most 100k. Run only if P1-a completes level 3; if
+    gpt-6.1-sol's plan fails, qwen's adds little for its cost.
+  - P1-c, negative case with a model: gpt-6.1-sol fits level 3 (#39-#54, #55 completed it; validation g61-2's level 3,
+    #95-#151) and plans level 4 (first grid after #55). Same limits as P1-a. Run only if P1-a completes level 3.
+    Expected to fail: level 4 has mechanics level 3's record lacks (W1 stayed out of reach). A pass would overturn that
+    reading.
+- **Measures.**
+  - Benefit (primary): the plan completes the level in its one play, yes or no; its length against the run's real
+    actions on that level (17 on level 3).
+  - Prediction: the fitted model (and the revised one, if any) on each real move of the plan, from the real grid before
+    it; the dream: the plan simulated in the final model from the first grid, against the real grids outside the
+    counter row, and the first step where they differ.
+  - Cost: budget tokens of the fit and the plan.
+- **Supported** (planning in a fitted model passes an unseen level) if P1-a's plan completes level 3. Otherwise not
+  supported, and the dream's first wrong step locates where the model and the level part.
+- **Budget.** Round 3 has spent 93k (A3e). P1-a 400k, P1-b 300k, P1-c 400k: at most 1.19M in all. If P1-a fails, one
+  revision of one factor, at most 400k, only where the broken transition is clear.

@@ -11,7 +11,7 @@
  *   attempt changed). `experiment` gives a finished fit the outcomes of moves of a kind its record lacks, recorded in
  *   another play of the same level, and scores the code before and after on a third recording of that level.
  *
- * agent <out> <model> [--calls 14] [--budget 400000] [--effort medium|off] [--max-tokens n] [--persist 0] [--study-limit 4] [--label name]
+ * agent <out> <model> [--calls 14] [--budget 400000] [--effort medium|off] [--max-tokens n] [--persist 0] [--study-limit 0] [--label name]
  *   <out> is a window directory (tools/arc_world_model.ts window). Writes <out>/<label>/.
  * experiment <out> <label> <experiment run> <from>-<to> <test run> <from>-<to> [--k 3] [--calls 5] [--budget 150000]
  *   continues <out>/<label>; writes <out>/<label>/experiment/.
@@ -27,12 +27,12 @@ import { budgetTokens, buildWindow, busyCell, delta, flags, gateway, guestProgra
 
 type Box = { top: number; left: number; bottom: number; right: number };
 /** Moves of one recording that play one part: shown, validation, or experiments. */
-type MoveSet = { name: string; window: Window; grids: Map<number, Grid>; moves: Move[]; kinds: Map<number, string> };
+export type MoveSet = { name: string; window: Window; grids: Map<number, Grid>; moves: Move[]; kinds: Map<number, string> };
 type Scored = { sets: Map<string, Map<number, Result>>; compileError?: string };
 type Rank = number[];
-type Version = { test: number; code: string; rank: Rank; feedback: string };
+export type Version = { test: number; code: string; rank: Rank; feedback: string };
 type Exchange = { messages: any[]; notes: string[]; calls: string[] };
-type Loop = {
+export type Loop = {
   model: string; effort: string; maxTokens: number; maxCalls: number; budget: number; dir: string;
   shown: MoveSet[]; validation: MoveSet; novel: Set<number>;
   head: any[]; log: string[]; tail: Exchange[];
@@ -40,8 +40,9 @@ type Loop = {
   /** Return a submit with validation under 90% each time until a third of the replies are left (round 2c), not just once. */
   persist?: boolean;
   /**
-   * After this many python calls in a row without a test, python is refused until a version is tested (round 3; 0
-   * disables). qwen with thinking off studied for all 14 replies of A3c and A3d without ever testing a step().
+   * After this many python calls in a row without a test, python is refused until a version is tested (round 3; 0, the
+   * default, disables). qwen with thinking off studied for all 14 replies of A3c and A3d without ever testing a step();
+   * with a limit of 4 (A3e) it kept calling python through 7 refusals and tested once, worse than A3b.
    */
   studyLimit?: number; sinceTest?: number;
   submitted?: { test: number; code: string; unknowns: string }; stop?: string;
@@ -53,14 +54,14 @@ const REGIONS: Record<string, string> = { inside: 'inside the last changed area'
   near: '2-6 cells from the last changed area', far: 'more than 6 cells from the last changed area', first: 'before any change in its attempt' };
 const regionOf = (distance: number) => distance <= 0 ? 'inside' : distance === 1 ? 'touching' : distance <= 6 ? 'near' : 'far';
 const boxDistance = (x: number, y: number, box: Box) => Math.max(box.left - x, 0, x - box.right, box.top - y, y - box.bottom);
-const kindText = (kind: string) => { const [action, region] = kind.split(':'); return region ? `a click ${REGIONS[region]}` : action; };
+export const kindText = (kind: string) => { const [action, region] = kind.split(':'); return region ? `a click ${REGIONS[region]}` : action; };
 
 /**
  * Each move's kind, and after each move the box the latest change of its attempt left (busy lines out): the kinds of
  * moveKinds in demo/arc_thin_coverage.ts (same counts on the six su15 runs it was checked on), computed here over a
  * window's attempts, since that module reads trajectory rows of a whole run.
  */
-function coverageOf(window: Window, grids: Map<number, Grid>) {
+export function coverageOf(window: Window, grids: Map<number, Grid>) {
   const kinds = new Map<number, string>(), boxes = new Map<number, Box | undefined>();
   for (const attempt of window.attempts) {
     let box: Box | undefined;
@@ -78,7 +79,7 @@ function coverageOf(window: Window, grids: Map<number, Grid>) {
 }
 
 /** "34 moves: clicks inside the last changed area 20, touching it 1, ...; ACTION7 4; clicked cells by colour: 5: 12, 6: 9". */
-function coverageText(set: MoveSet): string {
+export function coverageText(set: MoveSet): string {
   const count = new Map<string, number>();
   for (const move of set.moves) count.set(set.kinds.get(move.n)!, (count.get(set.kinds.get(move.n)!) ?? 0) + 1);
   const click = set.moves.find((move) => move.x !== undefined)?.action;
@@ -115,7 +116,7 @@ function splitOf(out: string) {
 
 // ---------------------------------------------------------------- prompts
 
-const SYSTEM = 'You find the rules of a deterministic turn-based grid game in a record of its moves and write them as a Python '
+export const SYSTEM = 'You find the rules of a deterministic turn-based grid game in a record of its moves and write them as a Python '
   + 'function step(grid, action, x, y, history) that predicts the grid after any move. You work with tools: python runs code on '
   + 'the record shown, test scores a step() on the moves shown and on validation moves you have not seen, submit ends the work.\n'
   + 'Rules are statements over what a grid shows: colours, shapes, sizes, counts, and positions relative to each other and to '
@@ -253,7 +254,7 @@ out
 const explorer = guestProgram(EXPLORE);
 
 /** The record the python tool sees: each shown set's moves, an attempt's from its start, an experiment's from its own grid. */
-function recordSegments(shown: MoveSet[]) {
+export function recordSegments(shown: MoveSet[]) {
   const segments: any[] = [];
   for (const set of shown) {
     const picked = new Set(set.moves.map((move) => move.n));
@@ -296,7 +297,7 @@ async function scoreSets(sets: MoveSet[], code: string): Promise<Scored> {
 }
 
 type Tally = { moves: number; exact: number; other: number; busy: number; errors: number; cells: number };
-function tally(list: Move[], results: Map<number, Result>): Tally {
+export function tally(list: Move[], results: Map<number, Result>): Tally {
   const t: Tally = { moves: list.length, exact: 0, other: 0, busy: 0, errors: 0, cells: 0 };
   for (const move of list) {
     const r = results.get(move.n);
@@ -411,9 +412,9 @@ async function testTool(loop: Loop, code: string): Promise<{ text: string; versi
  * or a stream that errs before any output is tried again after 15, 60 and 180 s (round 2's first launch lost two arms
  * to "fetch failed" with two immediate attempts); the cause is kept in the error.
  */
-async function completeTools(loop: Loop, messages: any[]) {
+export async function completeTools(loop: Loop, messages: any[], tools: any[] = TOOLS) {
   const { base, key } = gateway();
-  const body = { model: loop.model, messages, tools: TOOLS, tool_choice: 'auto', max_tokens: loop.maxTokens, stream: true,
+  const body = { model: loop.model, messages, tools, tool_choice: 'auto', max_tokens: loop.maxTokens, stream: true,
     stream_options: { include_usage: true },
     ...(loop.model.startsWith('qwen') ? { enable_thinking: loop.effort !== 'off' } : loop.effort !== 'off' ? { reasoning_effort: loop.effort } : {}) };
   const waits = [15, 60, 180];
@@ -495,7 +496,7 @@ function requestMessages(loop: Loop): any[] {
 
 const first = (text: string, n: number) => { const line = text.replace(/\s+/g, ' ').trim(); return line.length > n ? `${line.slice(0, n)}...` : line; };
 
-async function runLoop(loop: Loop) {
+export async function runLoop(loop: Loop) {
   mkdirSync(loop.dir, { recursive: true });
   while (!loop.stop) {
     if (loop.calls >= loop.maxCalls) { loop.stop = `replies used (${loop.calls})`; break; }
@@ -586,7 +587,7 @@ async function runLoop(loop: Loop) {
   }
 }
 
-const bestVersion = (loop: Loop) => loop.versions.reduce<Version | undefined>((b, version) => !b || better(version.rank, b.rank) ? version : b, undefined);
+export const bestVersion = (loop: Loop) => loop.versions.reduce<Version | undefined>((b, version) => !b || better(version.rank, b.rank) ? version : b, undefined);
 
 /** The moves the unknowns name, each with its kind from the grid after the move it names, and whether that kind is rare. */
 function proposals(unknowns: string, setup: ReturnType<typeof splitOf>) {
@@ -629,7 +630,7 @@ async function agent(out: string, model: string, options: Record<string, string>
     shown: [setup.shown], validation: setup.validation, novel: setup.novel,
     head: [{ role: 'system', content: SYSTEM }, { role: 'user', content: agentPrompt(setup, maxCalls) }],
     log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: false, persist: options.persist !== '0',
-    studyLimit: Number(options['study-limit'] ?? 4) };
+    studyLimit: Number(options['study-limit'] ?? 0) };
   mkdirSync(loop.dir, { recursive: true });
   writeFileSync(join(loop.dir, 'prompt.txt'), `${SYSTEM}\n\n${loop.head[1].content}`);
   await runLoop(loop);
@@ -667,7 +668,7 @@ function byKind(window: Window, kinds: Map<number, string>, results: Map<number,
  * Busy lines over all of a recording's moves that changed something. A recording used only for experiments or testing
  * has no fit moves, from which buildWindow takes them, and without them the counter row would stretch every change box.
  */
-function busyOver(window: Window, grids: Map<number, Grid>) {
+export function busyOver(window: Window, grids: Map<number, Grid>) {
   const rows = new Map<number, number>(), cols = new Map<number, number>();
   let changed = 0;
   for (const move of moves(window)) {
@@ -679,6 +680,12 @@ function busyOver(window: Window, grids: Map<number, Grid>) {
   }
   const busy = (counts: Map<number, number>) => [...counts].filter(([, count]) => changed >= 8 && count >= 0.8 * changed).map(([line]) => line).sort((a, b) => a - b);
   window.busy = { rows: busy(rows), cols: busy(cols) };
+  // The moves' changed-cell counts follow the new lines (test feedback's "with the grid unchanged" counts them).
+  for (const move of moves(window)) {
+    const cells = delta(grids.get(move.n - 1)!, grids.get(move.n)!);
+    move.changed_busy = cells.filter(([x, y]) => busyCell(window, x, y)).length;
+    move.changed = cells.length - move.changed_busy;
+  }
 }
 
 /**
