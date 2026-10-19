@@ -179,26 +179,51 @@ export type LedgerState = {
 /**
  * State hashes that ignore "ticker" cells: cells that changed on at least 80% of
  * the transitions so far (step counters, timers). Without this, a counter makes
- * every state unique and repetition can never be seen. grids[n] is the state after
- * action n (grids[0] before the first action).
+ * every state unique and repetition can never be seen. Busy lines are masked too:
+ * rows or columns whose cells other than tickers were recoloured one way (no value
+ * both left and arrived in the line) on at least 80% of the transitions. A bar that
+ * shrinks by a few cells per action changes each of its cells once, so none of them is
+ * a ticker, but its line is recoloured on every action; an object moving along a line
+ * takes its values with it, so its track is not masked. Record:
+ * docs/plans/2026-10-19-ledger-busy-lines.md. grids[n] is the state after action n
+ * (grids[0] before the first action).
  */
-export function maskedHashes(grids: Map<number, number[][]>): { hash: Map<number, string>; ticker: number } {
+export function maskedHashes(grids: Map<number, number[][]>): { hash: Map<number, string>; ticker: number; busy: { rows: number[]; cols: number[] } } {
+	type Change = [x: number, y: number, from: number | undefined, to: number | undefined];
 	const ns = [...grids.keys()].sort((a, b) => a - b);
-	const counts = new Map<string, number>();
-	let transitions = 0;
+	const changes: Change[][] = [];
 	for (let i = 1; i < ns.length; i += 1) {
 		const a = grids.get(ns[i - 1])!, b = grids.get(ns[i])!;
 		if (ns[i] !== ns[i - 1] + 1) continue;
-		transitions += 1;
+		const changed: Change[] = [];
 		for (let y = 0; y < Math.max(a.length, b.length); y += 1)
 			for (let x = 0; x < Math.max(a[y]?.length ?? 0, b[y]?.length ?? 0); x += 1)
-				if (a[y]?.[x] !== b[y]?.[x]) counts.set(`${x},${y}`, (counts.get(`${x},${y}`) ?? 0) + 1);
+				if (a[y]?.[x] !== b[y]?.[x]) changed.push([x, y, a[y]?.[x], b[y]?.[x]]);
+		changes.push(changed);
 	}
-	const ticker = new Set(transitions >= 8 ? [...counts].filter(([, count]) => count / transitions >= 0.8).map(([key]) => key) : []);
+	/** Keys found among the changes of at least 80% of the transitions (none before 8 transitions). */
+	const frequent = <K>(transitions: K[][]) => {
+		const counts = new Map<K, number>();
+		for (const keys of transitions) for (const key of new Set(keys)) counts.set(key, (counts.get(key) ?? 0) + 1);
+		return new Set(transitions.length >= 8 ? [...counts].filter(([, count]) => count / transitions.length >= 0.8).map(([key]) => key) : []);
+	};
+	const ticker = frequent(changes.map(changed => changed.map(([x, y]) => `${x},${y}`)));
+	// Lines count only the changes of their other cells: a ticker cell alone would hide its whole row and column.
+	const other = changes.map(changed => changed.filter(([x, y]) => !ticker.has(`${x},${y}`)));
+	const recoloured = (changed: Change[], line: (change: Change) => number) => {
+		const values = new Map<number, { from: Set<number | undefined>; to: Set<number | undefined> }>();
+		for (const change of changed) {
+			const item = values.get(line(change)) ?? { from: new Set(), to: new Set() };
+			item.from.add(change[2]); item.to.add(change[3]); values.set(line(change), item);
+		}
+		return [...values].filter(([, { from, to }]) => ![...from].some(value => to.has(value))).map(([key]) => key);
+	};
+	const rows = frequent(other.map(changed => recoloured(changed, ([, y]) => y)));
+	const cols = frequent(other.map(changed => recoloured(changed, ([x]) => x)));
 	const hash = new Map<number, string>();
-	for (const [n, grid] of grids) hash.set(n, gridHash(ticker.size
-		? grid.map((row, y) => row.map((cell, x) => ticker.has(`${x},${y}`) ? -1 : cell)) : grid));
-	return { hash, ticker: ticker.size };
+	for (const [n, grid] of grids) hash.set(n, gridHash(ticker.size || rows.size || cols.size
+		? grid.map((row, y) => row.map((cell, x) => ticker.has(`${x},${y}`) || rows.has(y) || cols.has(x) ? -1 : cell)) : grid));
+	return { hash, ticker: ticker.size, busy: { rows: [...rows].sort((a, b) => a - b), cols: [...cols].sort((a, b) => a - b) } };
 }
 
 export function buildLedger(rows: LedgerRow[], observations: Observation[], grids: Map<number, number[][]> = new Map()): LedgerState {

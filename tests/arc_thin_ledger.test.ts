@@ -31,6 +31,42 @@ test("ticker cells are masked so repeated results become visible", () => {
 	assert.ok(state.stall >= 10);
 });
 
+test("a bar that shrinks by one cell per action is masked as a busy line, so repeats become visible", () => {
+	// Row 0 is the meaningful state (0,0,1,0,0,1...). Row 1 is a bar of 12 cells that loses one cell per action: each
+	// of its cells changes once, so none is a ticker cell, but the row changes on every action.
+	const grids = new Map<number, number[][]>();
+	for (let n = 0; n <= 12; n += 1) grids.set(n, [
+		[n % 3 === 2 ? 1 : 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+		Array.from({ length: 12 }, (_, x) => x < 12 - n ? 5 : 0),
+	]);
+	const rows = Array.from({ length: 12 }, (_, i) => row(i + 1, "ACTION1"));
+	const masked = maskedHashes(grids);
+	assert.equal(masked.ticker, 0);
+	assert.deepEqual(masked.busy, { rows: [1], cols: [] });
+	const state = buildLedger(rows, [], grids);
+	assert.deepEqual(state.repeats.map(item => item.n), [4, 5, 6, 7, 8, 9, 10, 11, 12]);
+	assert.deepEqual(state.repeats[0].earlier, [1]);
+});
+
+test("a ticker cell does not make its row a busy line", () => {
+	// (0,0) changes on every action; (1,0) on the same row is the meaningful state and still tells states apart.
+	const grids = new Map<number, number[][]>();
+	for (let n = 0; n <= 12; n += 1) grids.set(n, [[n % 10, n % 3 === 2 ? 1 : 0, 0]]);
+	const rows = Array.from({ length: 12 }, (_, i) => row(i + 1, "ACTION1"));
+	assert.deepEqual(maskedHashes(grids).busy, { rows: [], cols: [] });
+	assert.deepEqual(buildLedger(rows, [], grids).repeats.map(item => item.n), [4, 5, 6, 7, 8, 9, 10, 11, 12]);
+});
+
+test("an object moving up and down a column on every action does not make the column a busy line", () => {
+	// The object (9) moves down from row 0 to row 5, back up to row 0 and down again. Only #11 and #12 repeat a move
+	// from the same position (#1, #2); masking the column would make every move look like a repeat.
+	const path = [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0, 1, 2];
+	const grids = new Map<number, number[][]>(path.map((y, n) => [n, Array.from({ length: 6 }, (_, r) => [0, r === y ? 9 : 0, 0])]));
+	const rows = path.slice(1).map((y, i) => row(i + 1, y > path[i] ? "ACTION2" : "ACTION1"));
+	assert.deepEqual(maskedHashes(grids).busy, { rows: [], cols: [] });
+	assert.deepEqual(buildLedger(rows, [], grids).repeats.map(item => [item.n, item.earlier]), [[11, [1]], [12, [2]]]);
+});
+
 test("measurements at completions and the constant-at-every-completion line", () => {
 	const rows = [row(1, "ACTION1"), row(2, "ACTION1", { level_changed: true, levels_completed: 1 }), row(3, "ACTION1"),
 		row(4, "ACTION1"), row(5, "ACTION1", { level_changed: true, levels_completed: 2 })];
