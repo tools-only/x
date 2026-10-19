@@ -129,16 +129,24 @@ export const renderContest = (contest: CheckContest) =>
 	`its check fails on ${contest.fails} of ${contest.decided} decided moves (${failures(contest.failing)})`;
 
 /**
+ * What events carry about the kinds of moves made on the level (arc_thin_coverage.ts): the counts, and the kinds the
+ * level has (almost) not seen, in words. The test move an event asks for is named in a form the runtime can classify.
+ */
+export type Gaps = { text: string; rare: string[] };
+export const MOVE_FORM = "ACTION6(x,y) or ACTIONn";
+
+/**
  * H2b: one refinement event per check-contested hypothesis and check version. None for a key in `refuted`: a rule that
  * cites it is in dispute, and that event asks for the same edit. A refinement rewrites only hypotheses refinements
  * wrote (all 25 checks recorded in su15 since 2026-10-15 were); the agent's it can only narrow under a new key.
  */
 export function contestEvents(contests: Array<{ key: string; version: string; contest: CheckContest; ownedByRefinement?: boolean }>,
-	refuted: string[]): Array<[string, string]> {
+	refuted: string[], gaps?: Gaps): Array<[string, string]> {
 	return contests.filter(({ key }) => !refuted.includes(key)).map(({ key, version, contest, ownedByRefinement }) => [`contested:${key}@${version}`,
 		`${key} is contested: ${renderContest(contest)}; ` + (ownedByRefinement
 			? `a refinement wrote it, so rewrite it with HYPOTHESIS ${key}, narrower where it held, or make the strategy's next experiment settle it`
-			: "write a narrower HYPOTHESIS under a new key for where it held, or make the strategy's next experiment settle it")]);
+			: "write a narrower HYPOTHESIS under a new key for where it held, or make the strategy's next experiment settle it") +
+		(gaps ? `. Moves ${gaps.text}. Name the move that settles it as ${MOVE_FORM} (in predicts, or first in the strategy's Next experiment)` : "")]);
 }
 
 /** Rival pairs named per question; the rest are counted. */
@@ -199,11 +207,21 @@ export function unchallenged(hypotheses: Map<string, { question?: string; versio
 	return out;
 }
 
-/** The refinement event for an unchallenged hypothesis, once per hypothesis and check version. */
-export const rivalEvents = (found: ReturnType<typeof unchallenged>): Array<[string, string]> => found.map(({ key, version, question, decided, holds }) =>
+/**
+ * The refinement event for an unchallenged hypothesis, once per hypothesis and check version. With `gaps` (P1,
+ * 2026-10-19) the rival must disagree on a kind of move the level has not seen: in su15-g56-2 the rival that matched the
+ * game differed from the belief only for clicks off a block, its predicts named another click on a block, and 163 of 188
+ * clicks on that level were on a block. `kindText` puts a kind in words.
+ */
+export const rivalEvents = (found: ReturnType<typeof unchallenged>, gaps?: Gaps, kindText: (kind: string) => string = (kind) => kind):
+	Array<[string, string]> => found.map(({ key, version, question, decided, holds }) =>
 	[`rival:${key}@${version}`, `${key} holds on ${holds} of ${decided} decided moves, all moves the agent chose, and no other hypothesis ` +
-		`with a check answers "${question}": write the strongest rival HYPOTHESIS, another explanation of the same moves, whose check ` +
-		`disagrees with ${key} on a move not made yet; say in predicts which move would separate them`]);
+		`with a check answers "${question}"` + (gaps ? `. Moves ${gaps.text}` : "") + `: write the strongest rival HYPOTHESIS, another ` +
+		`explanation of the same moves, whose check disagrees with ${key} on ` + (gaps?.rare.length
+			? `a kind of move this level has not seen (${gaps.rare.map(kindText).join("; ")}); name that move in predicts as ${MOVE_FORM}: ` +
+				"it becomes the first item of the strategy's next experiment"
+			: gaps ? `a move not made yet; name that move in predicts as ${MOVE_FORM}: it becomes the first item of the strategy's next experiment`
+			: "a move not made yet; say in predicts which move would separate them")]);
 
 /**
  * A check written as the body of check(t), without its def line, gets the def line: gpt-5.6-sol wrote 4 of its 23

@@ -23,8 +23,10 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"record, make the single most useful small edit, so the agent re-derives less and acts on what the evidence shows.\n" +
 	"How understanding moves: a belief the agent states (in memory or its notes) becomes a HYPOTHESIS with a check; a check " +
 	"that holds only on the moves the agent chose proves little until a rival (another explanation of the same moves, under the " +
-	"same question, whose check disagrees on a move not made yet) is judged beside it; a check that keeps holding becomes a line of prompts/rules.md that cites its key; a cited check that fails puts the rule in dispute, and " +
-	"you narrow or remove that line. The runtime counts the checks; the WHY NOW line says which step is due. Consolidate settled " +
+	"same question, whose check disagrees on a kind of move not made yet) is judged beside it; a check that keeps holding becomes a line of prompts/rules.md that cites its key; a cited check that fails puts the rule in dispute, and " +
+	"you narrow or remove that line. The runtime counts the checks; the WHY NOW line says which step is due. When WHY NOW asks for a " +
+	"move as ACTION6(x,y) or ACTIONn, write exactly that form in predicts: the runtime makes the move the first item of the strategy's " +
+	"next experiment and checks that the agent plays it. Consolidate settled " +
 	"or contradicted memory into one MEMORY entry that replaces them, and keep the strategy's next experiment current.\n" +
 	"Reply with exactly one of:\nFILE <path>\n<the complete new file content>\nEND\nWHY <one line: the evidence, citing actions like #12 or #3-#7>\n" +
 	"or\nMEMORY <key> <confidence 1-5> [replaces <key>, <key>]\n<the fact or rule, one or two sentences>\nEND\nWHY <one line>\n" +
@@ -120,6 +122,32 @@ export function renderEditLedger(entries: LedgerEntry[], maxChars = 1800): strin
 }
 
 const EDITABLE = /^(prompts\/[a-z0-9_-]+\.md|(tools|lib)\/[a-z_][a-z0-9_]*\.py|skills\/[a-z0-9_-]+\/SKILL\.md)$/;
+
+/**
+ * The strategy with `item` as the first line of its Next experiment section, added after the frontmatter when the
+ * strategy has none (P3, 2026-10-19: the agents act on the strategy's next experiment and passed over separating moves
+ * shown in CURRENT KNOWLEDGE).
+ */
+export function withNextItem(content: string, item: string): string {
+	const text = content.trim() ? content : "---\nactive: true\n---\n";
+	const lines = text.split(/\r?\n/);
+	const head = lines.findIndex((line) => /^\s*(#{1,6}\s*)?next experiments?\b/i.test(line));
+	if (head >= 0) { lines.splice(head + 1, 0, item); return lines.join("\n"); }
+	const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text)?.[0] ?? "";
+	return `${frontmatter}## Next experiment\n${item}\n\n${text.slice(frontmatter.length)}`;
+}
+
+/** The strategy without the lines that start with `prefix` (an item withNextItem added). */
+export const withoutNextItem = (content: string, prefix: string) => content.split(/\r?\n/).filter((line) => !line.startsWith(prefix)).join("\n");
+
+/** The text of the strategy's Next experiment section (its heading line's rest, then the lines up to the next heading), or "". */
+export function nextExperimentText(content: string): string {
+	const lines = content.split(/\r?\n/);
+	const head = lines.findIndex((line) => /^\s*(#{1,6}\s*)?next experiments?\b/i.test(line));
+	if (head < 0) return "";
+	const end = lines.findIndex((line, i) => i > head && /^\s*#{1,6}\s/.test(line));
+	return [lines[head].replace(/^\s*(#{1,6}\s*)?next experiments?\b[:\s-]*/i, ""), ...lines.slice(head + 1, end < 0 ? undefined : end)].join("\n").trim();
+}
 
 /** An EXPECT block after the edit: the expectation, or why it could not be used. */
 type Expects = { expect?: Expectation; expectError?: string };

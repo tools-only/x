@@ -26,7 +26,8 @@ import { createHash } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
-import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, parseRefinerReply, renderEditLedger, type LedgerEntry } from "./arc_thin_refiner.ts";
+import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
+	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { Binder } from "./arc_thin_binder.ts";
@@ -65,7 +66,9 @@ import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } fr
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
 import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue,
 	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView,
-	CONTEST_MIN_DECIDED, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged } from "./arc_thin_claims.ts";
+	CONTEST_MIN_DECIDED, MOVE_FORM, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged, type Gaps } from "./arc_thin_claims.ts";
+import { MoveFacts, REPEAT_ATTEMPTS, attemptLine, attempts, classify, coverage, coverageText, failedUnderOneModel, kindText, modelChanges, moveKinds,
+	moveText, parseMove, rareKinds, repeatEvent, type Attempt, type Move } from "./arc_thin_coverage.ts";
 
 /**
  * A hypothesis check as the native memory tool describes it where the agent writes one: the keys a move carries (strict:
@@ -250,6 +253,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// ARC_THIN_SESSION_VIEW=0 leaves the listing out.
 	const pythonKernel = native && process.env.ARC_THIN_PYTHON_KERNEL !== "0" && process.env.ARC_THIN_PYTHON_SESSION !== "0";
 	const sessionView = native && process.env.ARC_THIN_SESSION_VIEW !== "0";
+	// P4 (2026-10-19): the agent called refine and consult 0 times in 10 or more su15 runs with either model. ARC_THIN_LEAN=1
+	// leaves both tools out, with the system prompt's subagent line and the long form of its skill line (one at a time:
+	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
+	const lean = process.env.ARC_THIN_LEAN === "1";
+	const refineTool = !lean && process.env.ARC_THIN_REFINE_TOOL !== "0";
+	const consultTool = !lean && process.env.ARC_THIN_CONSULT !== "0";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -287,6 +296,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** grids.get(n) is the grid after action n (0 = before the first action); persisted in states.jsonl. */
 	const grids = new Map<number, number[][]>();
 	const changeCache = new Map<number, CellChange[] | null>();
+	/** What each move changed, outside counter lines, for the kinds of moves made (arc_thin_coverage.ts). */
+	const moveFacts = new MoveFacts(grids);
 	/** Action count at the latest consolidation turn. */
 	let reviewedThrough = 0;
 	/** The agent's model skills replayed on recorded transitions (model_checks.jsonl). */
@@ -376,6 +387,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		actionTimes = trajectory.map((row: any) => Date.parse(row.t) || 0);
 		grids.clear();
 		changeCache.clear();
+		moveFacts.clear();
 		for (const row of readRows("states.jsonl")) if (Array.isArray(row.grid)) grids.set(Number(row.n), row.grid);
 		const workingSets = readRows("working_set.jsonl");
 		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating).map((row) => Number(row.actions) || 0));
@@ -615,6 +627,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function resourcesText(): string {
 		const parts: string[] = [];
+		// P2 (2026-10-19): this attempt beside the earlier ones on the level, which ended in GAME_OVER or RESET.
+		const tries = native && COVERAGE ? attemptLine(attempts(trajectory), currentLevel()) : "";
+		if (tries) parts.push(tries);
 		const left = deadlineMs ? Math.max(0, deadlineMs - Date.now()) : undefined;
 		if (left !== undefined) parts.push(`${duration(left)} of run time left`);
 		if (lastDecisionCost) parts.push(`your last turn took ${duration(lastDecisionCost.ms)} and ${tokens(lastDecisionCost.output)} output tokens` +
@@ -637,8 +652,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// come the memory index, a summarised history, recent actions it does not cover, what a refinement changed, and
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
-			// Rivals with checks, compared on the recorded moves (H3a): one line per question.
-			const rivals = rivalLines(checkedHypotheses(), claimRows);
+			// Rivals with checks, compared on the recorded moves (H3a): one line per question, shown when it is new or changed
+			// (P3: "no recorded move separates …" stood unchanged in 35 decisions of su15-g56-2 and 45 of su15-q38-2). A count
+			// of moves both decided alike is not a change.
+			const rivals = rivalLines(checkedHypotheses(), claimRows).filter((line) => {
+				if (!COVERAGE) return true;
+				const question = line.slice(0, line.indexOf('": ') + 1), seen = line.replace(/both decided \d+ moves?/g, "both decided");
+				if (shownRivals.get(question) === seen) return false;
+				shownRivals.set(question, seen);
+				return true;
+			});
 			const out: Array<[string, string]> = [["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]];
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
@@ -650,7 +673,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (refinerNotices.length) {
 				out.push(["refiner", refinerNotices.map(({ text }) => text).join("\n")]);
 				// When the agent is told of an edit: the ledger counts what it did from this decision on.
-				for (const { editId } of refinerNotices) if (editId) append("refiner.jsonl", { kind: "told", id: editId, at: trajectory.length, decision });
+				for (const { editId } of refinerNotices) if (editId) {
+					append("refiner.jsonl", { kind: "told", id: editId, at: trajectory.length, decision });
+					toldAt.set(editId, trajectory.length);
+				}
 				refinerNotices = [];
 			}
 			return out;
@@ -1000,8 +1026,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       nativeRuntime.register();
       // One fixed list for the whole decision: the built-in tools and the agent's saved tools. ls and grep are left
       // out (python lists and searches the workspace, and every schema is resent on each call).
-      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', 'consult',
-        ...(criticOn ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', ...(consultTool ? ['consult'] : []),
+        ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
     }
 		const names = [...skills.keys()].sort();
@@ -1064,6 +1090,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		lastRefineAt = Math.max(0, ...refineNotes.map((note) => note.at));
 		// After a restart, events before the restart are not refined again.
 		refinedThrough = trajectory.length;
+		// When the agent was told of each edit, and the next experiment still pinned when the run stopped (P3).
+		const rows = readRows("refiner.jsonl");
+		toldAt.clear();
+		for (const row of rows) if (row.kind === "told" && row.id !== undefined) toldAt.set(String(row.id), Number(row.at) || 0);
+		const last = rows.filter((row) => row.kind === "next").at(-1);
+		pin = last && !rows.some((row) => row.kind === "next_done" && row.edit === last.edit)
+			? { edit: String(last.edit), move: last.move, kind: String(last.move_kind), line: String(last.line), within: Number(last.within) || NEXT_WITHIN,
+				level: Number(last.level) || 0, at: Number(last.at) || 0, nagged: 0 } : undefined;
 	}
 
 	/** Every state the agent sees is kept: skills read it as state.history, and the ledger reads it when enabled. */
@@ -1346,6 +1380,25 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	const REFINE_LEDGER = process.env.ARC_REFINE_LEDGER !== "0";
 	const LEDGER_EDITS = envNumber("ARC_REFINE_LEDGER_EDITS", 5);
+	/**
+	 * P1-P3 (docs/plans/2026-10-19-coverage-attempts-delivery.md): rival, contest and repeated-failure events carry the kinds
+	 * of moves the level has seen and ask for their test move as a move; a rival's must be of a kind the level has not
+	 * seen. The move becomes the first item of the strategy's next experiment until it is played, and the comparison of
+	 * rivals is shown when it changes. ARC_REFINE_COVERAGE=0 turns all of it off.
+	 */
+	const COVERAGE = native && process.env.ARC_REFINE_COVERAGE !== "0";
+	/** Actions the agent has to play a pinned move once told of it (an EXPECT's within, up to 30, overrides). */
+	const NEXT_WITHIN = envNumber("ARC_REFINE_NEXT_WITHIN", 10);
+	/** A pinned move is dropped after PIN_EXPIRES times its window; its overdue line is added to at most PIN_NAGS receipts. */
+	const PIN_EXPIRES = 3;
+	const PIN_NAGS = 3;
+	/** The next experiment a coverage event delivered: the move, its kind when pinned, and the strategy line carrying it. */
+	type Pin = { edit: string; move: Move; kind: string; line: string; within: number; level: number; at: number; nagged: number };
+	let pin: Pin | undefined;
+	/** The action count at which the agent was told of each edit (the decision that showed its notice). */
+	const toldAt = new Map<string, number>();
+	/** H3a lines already shown, by question: each is shown when new and again only when it changes. */
+	const shownRivals = new Map<string, string>();
 	let refineNotes: CriticNote[] = [];
 	let refinedThrough = 0;
 	let lastRefineAt = 0;
@@ -1365,6 +1418,134 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!workspace) return undefined;
 		try { return { text: workspace.read(STRATEGY_PATH), version: binder?.versionMap()[STRATEGY_PATH] }; }
 		catch { return undefined; }
+	}
+
+	// ---------------------------------------------------------------- coverage events and the pinned next experiment
+
+	/** The kinds of moves made on the current level and those it has (almost) not seen (P1), as events carry them. */
+	function gapsNow(): Gaps & { cov: ReturnType<typeof coverage>; available: string[] } {
+		const available = availableActions(observation);
+		const cov = coverage(trajectory, moveFacts);
+		return { cov, available, text: coverageText(cov, available), rare: rareKinds(cov, available) };
+	}
+
+	/** How many moves of `kind` the level has seen. */
+	const kindCount = (cov: ReturnType<typeof coverage>, kind: string) => {
+		const [action, region] = kind.split(":");
+		return region ? cov.clicks[region as keyof typeof cov.clicks] ?? 0 : cov.actions.get(action)?.played ?? 0;
+	};
+
+	/**
+	 * Why a coverage event's HYPOTHESIS answer cannot be used as written: its predicts names no move in a form the runtime
+	 * can classify, a click without its cell, an action not available, or (rival events) a kind of move the level has
+	 * already seen while other kinds are missing. The answer goes back to the refinement once with the reason.
+	 */
+	function moveProblem(id: string, predicts: string | undefined): string | undefined {
+		const move = parseMove(predicts ?? "");
+		if (!move) return `its predicts names no move: write the move that tests it as ${MOVE_FORM}`;
+		const gaps = gapsNow();
+		if (gaps.available.length && !gaps.available.includes(move.action))
+			return `${move.action} is not available (available now: ${gaps.available.join(", ")}): write an available move as ${MOVE_FORM}`;
+		const { kind, rare, needsXY } = classify(move, gaps.cov, gaps.available);
+		if (needsXY) return `${move.action} needs the cell it acts on: write it as ${move.action}(x,y)`;
+		if (id.startsWith("rival:") && gaps.rare.length && !rare)
+			return `${moveText(move)} is ${kindText(kind)}, a kind of move this level has seen ${kindCount(gaps.cov, kind)} times; the rival must ` +
+				`disagree with it on a kind the level has not seen: ${gaps.rare.map(kindText).join("; ")}`;
+		return undefined;
+	}
+
+	/** Whether move `row` is the pinned move's kind (a click unplaced when pinned: that same cell). */
+	const playsPin = (row: ActionRow, kinds: Map<number, string>, p: Pick<Pin, "move" | "kind">) => p.kind.endsWith(":unplaced")
+		? row.action === p.move.action && row.x === p.move.x && row.y === p.move.y : kinds.get(row.n) === p.kind;
+
+	/** When the agent was told of the pinned move, and the first move of its kind played since. */
+	function pinStatus(current: Pin): { told?: number; met?: number } {
+		const told = toldAt.get(current.edit);
+		if (told === undefined) return {};
+		const kinds = moveKinds(trajectory, moveFacts);
+		return { told, met: trajectory.find((row) => row.n > told && playsPin(row, kinds, current))?.n };
+	}
+
+	/** The strategy written by the runtime (the pinned line added or taken out), versioned like a refinement's edit. */
+	async function writeStrategy(content: string): Promise<void> {
+		workspace!.mutate({ op: "write", path: STRATEGY_PATH, content: content.endsWith("\n") ? content : content + "\n" });
+		refinedPaths.add(STRATEGY_PATH);
+		nativeRuntime!.noteSave(STRATEGY_PATH, await binder!.save(STRATEGY_PATH, currentLevel()));
+	}
+
+	/**
+	 * Pin `move` (P3): record it and return its strategy line, which writers put first in the next experiment (pinned()).
+	 * An earlier pinned move is replaced.
+	 */
+	function setPin(editId: string, move: Move, kind: string, why: string, within: number, rare?: boolean): Pin | undefined {
+		const old = pin;
+		if (old) append("refiner.jsonl", { kind: "next_done", edit: old.edit, outcome: "replaced", at: trajectory.length });
+		const reason = why.replace(/\s+/g, " ").trim();
+		const line = `- First: ${moveText(move)}${kind.endsWith(":unplaced") ? "" : `, ${kindText(kind)}`}` +
+			(reason ? `; ${reason.length > 240 ? `${reason.slice(0, 239)}…` : reason}` : "");
+		pin = { edit: editId, move, kind, line, within, level: currentLevel(), at: trajectory.length, nagged: 0 };
+		append("refiner.jsonl", { kind: "next", edit: editId, move, move_kind: kind, ...(rare !== undefined ? { rare } : {}), line, within,
+			level: pin.level, at: pin.at });
+		return old;
+	}
+
+	/** A strategy text with the pinned line first in its next experiment, and a replaced pin's line taken out. */
+	function pinned(content: string, old?: Pin): string {
+		const text = old ? withoutNextItem(content, old.line) : content;
+		return pin && !text.includes(pin.line) ? withNextItem(text, pin.line) : text;
+	}
+
+	/** Drop the pinned move and its strategy line: it was played, its level ended, or its time ran out. */
+	async function releasePin(outcome: "met" | "level" | "expired", n?: number): Promise<void> {
+		if (!pin) return;
+		const done = pin;
+		pin = undefined;
+		append("refiner.jsonl", { kind: "next_done", edit: done.edit, outcome, at: trajectory.length, ...(n !== undefined ? { n } : {}) });
+		const strategy = readStrategy()?.text;
+		if (strategy?.includes(done.line)) await writeStrategy(withoutNextItem(strategy, done.line));
+	}
+
+	/** At a decision's start, before the active prompts are bound: release the pinned move once it is settled. */
+	async function settlePin(): Promise<void> {
+		if (!pin || !workspace) return;
+		if (currentLevel() !== pin.level) return releasePin("level");
+		const { told, met } = pinStatus(pin);
+		if (met !== undefined) return releasePin("met", met);
+		if (told !== undefined && trajectory.length - told >= PIN_EXPIRES * pin.within) return releasePin("expired");
+	}
+
+	/** The receipt's line while the pinned move is overdue (told at least its window ago, not played), at most PIN_NAGS times. */
+	function pinNag(): string {
+		if (!pin || pin.nagged >= PIN_NAGS || currentLevel() !== pin.level) return "";
+		const { told, met } = pinStatus(pin);
+		if (told === undefined || met !== undefined || trajectory.length - told < pin.within) return "";
+		pin.nagged += 1;
+		return `(The strategy's next experiment, ${moveText(pin.move)}${pin.kind.endsWith(":unplaced") ? "" : ` (${kindText(pin.kind)})`}, ` +
+			`has not been played in the ${trajectory.length - told} actions since it was set.)`;
+	}
+
+	/**
+	 * P2: the level's failed attempts since the agent last changed a hypothesis about what its actions do, when there are
+	 * REPEAT_ATTEMPTS of them; once per level and model. The model in play is the agent's live hypothesis whose check
+	 * decided most moves of those attempts.
+	 */
+	const repeatTargets = new Map<string, string>();
+	function repeatDue(gaps: Gaps | undefined): [string, string] | undefined {
+		const level = currentLevel();
+		const changes = modelChanges(readRows("memory.jsonl"));
+		const failed = failedUnderOneModel(attempts(trajectory), changes, level);
+		if (failed.length < REPEAT_ATTEMPTS) return undefined;
+		const id = `repeat:${level}:${changes.reduce((a, b) => Math.max(a, b), -1)}`;
+		const inside = (n: number) => failed.some((attempt: Attempt) => n >= attempt.start && n <= attempt.end);
+		const versions = checkedHypotheses();
+		const target = [...versions].filter(([key, h]) => h.version && h.status !== "rejected" && !isGoalHypothesis(key, h.question)).map(([key, h]) => {
+			const decided = claimRows.filter((row) => row.key === key && row.version === h.version && inside(row.n) && (row.result === true || row.result === false));
+			return { key, question: h.question, decided: decided.length, holds: decided.filter((row) => row.result === true).length };
+		}).filter((t) => t.decided > 0).sort((a, b) => b.decided - a.decided)[0];
+		if (target) repeatTargets.set(id, target.key);
+		const budget = trajectory.at(-1)?.budget;
+		const left = typeof budget?.maximum === "number" && typeof budget?.used === "number" ? Math.max(0, budget.maximum - budget.used) : null;
+		return [id, repeatEvent(failed, left, target, gaps, MOVE_FORM)];
 	}
 
 	function refinerTriggers(state: LedgerState): { triggers: string[]; samples: string[] } {
@@ -1426,18 +1607,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const due: Array<[string, string]> = [];
 		const view = promotion();
 		const findings = promotionTriggers(view);
+		// The kinds of moves the level has seen (P1), carried by the contest, repeated-failure and rival events.
+		const gaps = COVERAGE && !urgentOnly ? gapsNow() : undefined;
 		view.refuted.forEach((r, i) => due.push([`refuted:${r.key}:${r.failing.at(-1)}`, findings[view.candidates.length + i]]));
 		// A hypothesis its own check contests (H2a), once per check version: only the agent rewrites it; a refinement can
 		// add a narrower one or set the next experiment.
 		if (!urgentOnly) due.push(...contestEvents([...memory.hypotheses].flatMap(([key, h]) => {
 			const contest = h.status === "contested" ? currentContest(key, h) : undefined;
 			return contest ? [{ key, version: claimVersion(h.check!), contest, ownedByRefinement: refinementOwned(key) }] : [];
-		}), view.refuted.map((r) => r.key)));
+		}), view.refuted.map((r) => r.key), gaps));
 		// A rule citing a hypothesis that does not exist (H2c): only refinements write the rules prompt.
 		if (!urgentOnly) for (const key of view.missing)
 			due.push([`missing:${key}`, `${RULES_PATH} cites ${key}, which does not exist: write it as a HYPOTHESIS with a check, or take the line out`]);
+		// Attempts on this level keep failing under one model (P2): a rival control model and its test move.
+		const repeat = gaps ? repeatDue(gaps) : undefined;
+		if (repeat) due.push(repeat);
 		// A hypothesis that holds with no rival beside it gets one before it can become a rule (ARC_REFINE_RIVALS=0: off).
-		if (!urgentOnly && RIVAL_EVENTS) due.push(...rivalEvents(unchallenged(checkedHypotheses(), claimRows)));
+		if (!urgentOnly && RIVAL_EVENTS) due.push(...rivalEvents(unchallenged(checkedHypotheses(), claimRows), gaps, kindText));
 		(urgentOnly ? [] : view.candidates).forEach((c, i) => due.push([`promote:${c.key}@${c.version}`, findings[i]]));
 		if (!urgentOnly && ![...memory.hypotheses.values()].some((h) => h.check)) {
 			const touches = new Map<string, number>();
@@ -1462,8 +1648,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** The promotion event in the refinement now running, to raise again if its one edit went elsewhere. */
 	let pendingPromotion: string | undefined;
 	const promotionRetries = new Map<string, number>();
-	/** The hypothesis a rival event is about: "rival:hyp.x@<version>" names hyp.x. */
-	const rivalTarget = (id: string | undefined) => id?.startsWith("rival:") ? id.slice(6).replace(/@[^@]*$/, "") : undefined;
+	/**
+	 * The hypothesis an event's answer is a rival of, sharing its question so H3a compares them: "rival:hyp.x@<version>"
+	 * names hyp.x; a repeated-failure event names the model in play (repeatTargets).
+	 */
+	const rivalTarget = (id: string | undefined) => id?.startsWith("rival:") ? id.slice(6).replace(/@[^@]*$/, "")
+		: id?.startsWith("repeat:") ? repeatTargets.get(id) : undefined;
 	/**
 	 * pr-02 (2026-10-14): "no hypothesis carries a check" came with another trigger, the refinement wrote a view for the
 	 * other, and the event counted as raised. An event the edit did not address is raised again (twice at most).
@@ -1472,7 +1662,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!id) return;
 		const addressed = /^(churn|unchecked):/.test(id) ? edit.kind === "hypothesis"
 			: id.startsWith("rival:") ? edit.kind === "hypothesis" && edit.key !== rivalTarget(id)
-			: id.startsWith("contested:") ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === STRATEGY_PATH)
+			: /^(contested|repeat):/.test(id) ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === STRATEGY_PATH)
 			: id.startsWith("missing:") ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === RULES_PATH)
 			: /^(promote|refuted|cap):/.test(id) ? edit.kind === "file" && edit.path === RULES_PATH
 			: id.startsWith("view:") ? edit.kind === "file" && edit.path === id.slice(5).replace(/@\d+$/, "") : true;
@@ -1560,6 +1750,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			id: String(edit.id), source: String(edit.expect.check), start: told(edit)!, end: Math.min(trajectory.length, told(edit)! + horizon(edit)),
 		}));
 		const results = await expectationResults(expectations);
+		// The kinds of the moves played, for the next experiments edits pinned (P3).
+		const kinds = rows.some((row) => row.kind === "next") ? moveKinds(trajectory, moveFacts) : new Map<number, string>();
 		const entries = edits.map((edit): LedgerEntry => {
 			const from = told(edit);
 			const path = String(edit.path ?? "");
@@ -1595,6 +1787,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				trajectory.length - from, results.get(String(edit.id)));
 			else if (edit.expect?.claim) entry.expect = `expected within ${horizon(edit)}: "${String(edit.expect.claim).slice(0, 160)}"`;
 			else if (edit.expect_error) entry.expect = `its EXPECT was not used: ${String(edit.expect_error)}`;
+			// The move this edit made the strategy's next experiment, and whether the agent played its kind since it was told.
+			const next = rows.find((row) => row.kind === "next" && row.edit === edit.id);
+			if (next) {
+				const p = { move: next.move as Move, kind: String(next.move_kind) };
+				const played = from === undefined ? undefined : trajectory.find((row) => row.n > from && playsPin(row, kinds, p))?.n;
+				const window = Number(next.within) || NEXT_WITHIN;
+				const status = from === undefined ? "not shown yet" : played !== undefined ? `played at #${played}`
+					: `not played in ${trajectory.length - from} action(s)${trajectory.length - from >= window ? `, past its ${window}` : ""}`;
+				entry.expect = [entry.expect, `next experiment ${moveText(p.move)}${p.kind.endsWith(":unplaced") ? "" : ` (${kindText(p.kind)})`}: ${status}`]
+					.filter(Boolean).join(" · ");
+			}
 			return entry;
 		});
 		return renderEditLedger(entries);
@@ -1636,11 +1839,37 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
 		// could not: the r03b line did not keep them).
 		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
-		const reply: any = await sideCall(ctx, system, [{ type: "text", text: input }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
-		appendUsage("refiner", reply);
-		const answer = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
-		append("refiner_replies.jsonl", { at: evidenceAt, decision, model: ctx.model?.id ?? null, stop_reason: reply.stopReason ?? null, text: answer.slice(0, 20_000) });
-		const edit = parseRefinerReply(answer);
+		const ask = async (text: string, returned = false) => {
+			const reply: any = await sideCall(ctx, system, [{ type: "text", text }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
+			appendUsage("refiner", reply);
+			const answer: string = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
+			append("refiner_replies.jsonl", { at: evidenceAt, decision, model: ctx.model?.id ?? null, stop_reason: reply.stopReason ?? null,
+				text: answer.slice(0, 20_000), ...(returned ? { returned: true } : {}) });
+			return { reply, answer };
+		};
+		let { reply, answer } = await ask(input);
+		let edit = parseRefinerReply(answer);
+		// A coverage event's answer names its test move in a form the runtime classifies, a rival's of a kind the level has
+		// not seen (P1); otherwise it goes back once with the reason, and the second answer is used as it comes.
+		const coverageEvent = COVERAGE && /^(rival|contested|repeat):/.test(promotionId ?? "");
+		const problem = coverageEvent && edit.kind === "hypothesis" ? moveProblem(promotionId!, edit.predicts) : undefined;
+		if (problem) {
+			append("refiner.jsonl", { kind: "returned", at: trajectory.length, decision, event: promotionId, why: problem });
+			const again = `${input}\n\nYOUR REPLY WAS:\n${answer.trim()}\n\nNOT APPLIED: ${problem}. Reply again with the whole edit in the same form.`;
+			append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input: again, returned: true });
+			({ reply, answer } = await ask(again, true));
+			edit = parseRefinerReply(answer);
+		}
+		/** Pin the move `text` names (P3); the notice's clause for it, or "" when it names none the runtime can place. */
+		const pinFrom = (text: string, editId: string, why: string, within?: number): { clause: string; old?: Pin } => {
+			const move = parseMove(text);
+			if (!move) return { clause: "" };
+			const gaps = gapsNow();
+			const { kind, rare, needsXY } = classify(move, gaps.cov, gaps.available);
+			if (needsXY || (gaps.available.length && !gaps.available.includes(move.action))) return { clause: "" };
+			const old = setPin(editId, move, kind, why, Math.min(30, within ?? NEXT_WITHIN), rare);
+			return { old, clause: `; its test move ${moveText(move)} is the first item of ${STRATEGY_PATH}'s next experiment` };
+		};
 		// The promotion event is answered by the edit as applied: a reply that is refused, invalid or discarded as stale
 		// leaves it to be raised again (Part H review: a narrower hypothesis under the contested key is refused).
 		let applied = false;
@@ -1653,8 +1882,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				append('refiner.jsonl', {kind: 'stale', ...base, why: 'scope or target changed while refinement was running'});
 				return;
 			}
-			// Notices not yet shown are kept: two refinements between decisions are both reported.
-			const told = (what: string, why: string, editId: string) => refinerNotices.push({ editId, text: `HARNESS UPDATE by a refinement after #${at} (${triggers[0]}): ${what}` +
+			// Notices not yet shown are kept: two refinements between decisions are both reported. The event that started the
+			// refinement is named by its first 200 characters (coverage events carry the level's counts after them).
+			const cause = triggers[0]?.length > 200 ? `${triggers[0].slice(0, 199)}…` : triggers[0];
+			const told = (what: string, why: string, editId: string) => refinerNotices.push({ editId, text: `HARNESS UPDATE by a refinement after #${at} (${cause}): ${what}` +
 				(why ? ` — ${why}` : "") + ". Revise, restore or delete it like your own edits." });
 			// An applied edit gets an id (the ledger follows it from the decision that shows it) and keeps its expectation.
 			const ledgerFields = (id: string) => ({ id, ...(edit.kind === "file" || edit.kind === "memory" || edit.kind === "hypothesis"
@@ -1699,7 +1930,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check),
 					...(rewrote ? { rewrote: true } : {}), ...ledgerFields(id) });
 				applied = true;
-				told(`hypothesis ${edit.key}${rewrote ? " rewritten" : ""}${edit.check ? " with a check, run on every recorded move" : ""}`, edit.why, id);
+				// The test move a coverage event's answer named becomes the first item of the strategy's next experiment (P3).
+				const { clause, old } = coverageEvent && edit.predicts
+					? pinFrom(edit.predicts, id, `${edit.key}${target && target !== edit.key ? ` against ${target}` : ""}: ${edit.predicts}`, edit.expect?.within)
+					: { clause: "", old: undefined };
+				if (clause) await writeStrategy(pinned(readStrategy()?.text ?? "", old));
+				told(`hypothesis ${edit.key}${rewrote ? " rewritten" : ""}${edit.check ? " with a check, run on every recorded move" : ""}${clause}`, edit.why, id);
 				return;
 			}
 			if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
@@ -1709,9 +1945,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
 				return;
 			}
+			// A coverage event answered in the strategy pins the first move its next experiment names (P3), and a pinned move
+			// stays the first item of any strategy a refinement writes until it is played.
+			let content = edit.content, clause = "";
+			if (edit.path === STRATEGY_PATH && COVERAGE) {
+				const from: { clause: string; old?: Pin } = coverageEvent
+					? pinFrom(nextExperimentText(content), `e${refinerEdits + 1}`, edit.why, edit.expect?.within) : { clause: "" };
+				clause = from.clause;
+				content = pinned(content, from.old);
+			}
 			// The rules prompt is refinement-only (the agent's writes to it are refused), so it is written as the runtime.
-			if (edit.path === RULES_PATH) workspace!.runtimeWrite(edit.path, edit.content);
-			else workspace!.mutate({ op: "write", path: edit.path, content: edit.content });
+			if (edit.path === RULES_PATH) workspace!.runtimeWrite(edit.path, content);
+			else workspace!.mutate({ op: "write", path: edit.path, content });
 			refinedPaths.add(edit.path);
 			const receipt = await binder!.save(edit.path, currentLevel());
 			nativeRuntime!.noteSave(edit.path, receipt);
@@ -1721,7 +1966,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const id = `e${++refinerEdits}`;
 			append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt, ...ledgerFields(id) });
 			applied = true;
-			told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why, id);
+			told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}${clause}`, edit.why, id);
 		} finally {
 			settlePromotion(promotionId, applied ? edit as { kind: string; path?: string; key?: string } : { kind: "none" });
 		}
@@ -2018,6 +2263,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}
 				if (played < steps.length) lines.push(`then: ${played} of ${steps.length} played; stopped: ${stopped}.`);
 				if (steps.length) append("action_sequences.jsonl", { decision, n: row.n, planned: steps.length + 1, played: played + 1, stopped: stopped ?? null });
+				// The strategy's pinned next experiment, once overdue (P3: its expected move not played within its window).
+				const overdue = COVERAGE ? pinNag() : "";
+				if (overdue) { lines.push(overdue); append("refiner.jsonl", { kind: "next_overdue", edit: pin?.edit, at: trajectory.length, decision }); }
 				return text(lines.join("\n"),
 					{ ...reportedAction(last, native), prediction: last.prediction, skill_prediction: last.skill_prediction }, true);
 			}),
@@ -2656,7 +2904,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
     // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background.
-    if (criticOn) pi.registerTool({
+    if (criticOn && refineTool) pi.registerTool({
       name: 'refine', label: 'Refine',
       description: 'Start a background refinement of your harness with a focus (e.g. "turn the route search into a tool" or ' +
         '"write a goal test into the strategy"). It makes one edit to a prompt, memory entry, tool or skill; the next decision says what changed.',
@@ -2686,6 +2934,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}));
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
+		// A pinned next experiment that was played, or whose level or time ended, leaves the strategy before it is bound (P3).
+		if (COVERAGE && refinerActive()) { try { await settlePin(); } catch (error) { logError("pin:settle", error); } }
     if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
 		const prompt = String(event.prompt ?? "").trimStart();
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(prompt);
@@ -2748,7 +2998,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
           + 'A <carry>premises / eliminated / probe / open</carry> block, in your text or your reasoning, is kept; what '
           + 'is not in it you will have to derive again.'
         : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
-      refine: criticOn ? 'Refinements run in the background (level changes, missing goal tests, stalls, repeated work, refine(focus)); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ' : '' }) : control
+      refine: criticOn ? `Refinements run in the background (level changes, missing goal tests, stalls, repeated work${refineTool ? ', refine(focus)' : ''}); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ` : '',
+      // P4 (ARC_THIN_LEAN, ARC_THIN_CONSULT): without consult, subagents have no way to be asked, so their line goes (below).
+      kinds: consultTool ? 'five' : 'four',
+      nonacting: consultTool ? 'subagents or views' : 'views',
+      skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -2757,7 +3011,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					? `Your last ${continuityDecisions} decisions stay in view (what you wrote, called and got back, not your\nreasoning); older ones and all reasoning are not carried forward.`
 					: "Earlier conversation and unsaved reasoning are not carried forward.",
 			});
-		const rendered = systemPrompt.trimEnd() + "\n";
+		const rendered = (native && !consultTool ? systemPrompt.replace(/^- Subagent:.*\r?\n/m, "") : systemPrompt).trimEnd() + "\n";
 		systemChars = rendered.length;
     if (native) {
       event.systemPromptOptions.customPrompt = rendered;

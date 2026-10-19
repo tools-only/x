@@ -31,9 +31,11 @@ export type GoalHypothesisRef = { key: string; evidence?: Array<{ action?: numbe
  * Whether a hypothesis is about the goal, by the words of its own question or key. A compatibility heuristic,
  * not recognition: coverage used to require the question to be exactly "goal", so a run whose agent asked
  * "what is the goal?" was told there were no untested goal hypotheses for 68 actions (hypstrategy ls20, 2026-10-11).
+ * su15-g56-1 (2026-10-19) asked "what completes level 1?", which "complete" alone did not match; "completed" stays
+ * out (its control question was "how are completed color-6 blocks moved").
  */
 export const isGoalHypothesis = (key: string, question?: string) =>
-	/\b(goal|win|wins|winning|objective|level change|complete|completion)\b/i.test(`${question ?? ""} ${key.replace(/[._]/g, " ")}`);
+	/\b(goal|win|wins|winning|won|objective|level change|complete|completes|completion)\b/i.test(`${question ?? ""} ${key.replace(/[._]/g, " ")}`);
 
 export const gridHash = (grid: unknown) => createHash("sha256").update(JSON.stringify(grid ?? null)).digest("hex").slice(0, 16);
 export const actionKey = (row: { action: string; x?: number; y?: number }) =>

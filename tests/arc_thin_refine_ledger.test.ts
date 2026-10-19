@@ -373,11 +373,11 @@ test('a refinement answer that is refused leaves the contest to be raised again'
     await h.begin();
     await h.calls(1);
     // The same key: refused ("exists"), so the event is not answered.
-    await h.settle(reply('HYPOTHESIS hyp.three\nclaim: ACTION1 changes two cells\ncheck:\ndef check(t):\n    return None\nEND\nWHY narrower'));
+    await h.settle(reply('HYPOTHESIS hyp.three\nclaim: ACTION1 changes two cells\npredicts: ACTION1 changes two cells\ncheck:\ndef check(t):\n    return None\nEND\nWHY narrower'));
     await h.act('ACTION1');
     await h.begin();
     await h.calls(2);
-    assert.match(h.inputs[1] ?? '', /hyp\.three is contested: [^\n]*under a new key/);
+    assert.match(h.inputs[1] ?? '', /^WHY NOW: [^\n]*hyp\.three is contested: [^\n]*under a new key/);
   } finally { await h.close(); }
 });
 
@@ -396,7 +396,8 @@ test('a refinement rewrites a hypothesis a refinement wrote once its check conte
     await h.calls(2);
     assert.match(h.inputs[1] ?? '', /hyp\.three is contested: [^\n]*rewrite it with HYPOTHESIS hyp\.three/);
     assert.match(h.inputs[1] ?? '', /\nCHECKS NAMED ABOVE:\n--- hyp\.three\ndef check\(t\):\n    return t\['changed_cells'\] == 3\n/);
-    await h.settle(reply(`HYPOTHESIS hyp.three\nclaim: ACTION1 changes two cells\nquestion: what ACTION1 changes\ncheck:\n${TWO}END\nWHY every move changed two cells`));
+    // Since 2026-10-19 a contest's answer names the move that settles it (P3), or goes back once.
+    await h.settle(reply(`HYPOTHESIS hyp.three\nclaim: ACTION1 changes two cells\nquestion: what ACTION1 changes\npredicts: ACTION1 changes two cells\ncheck:\n${TWO}END\nWHY every move changed two cells`));
     await h.act('ACTION1');
     await h.begin();
     const rewritten = h.rows('memory.jsonl').filter((row) => row.key === 'hyp.three' && row.by === 'refinement').at(-1);
@@ -417,7 +418,7 @@ test('a check-contested hypothesis starts one refinement, and a HYPOTHESIS edit 
     await h.calls(1);
     assert.match(h.inputs[0] ?? '', /^WHY NOW: [^\n]*hyp\.three is contested: its check fails on 6 of 6 decided moves/);
     await h.settle(reply("HYPOTHESIS hyp.where\nclaim: ACTION1 changes three cells only somewhere else\nquestion: what ACTION1 changes\n" +
-      "check:\ndef check(t):\n    return None\nEND\nWHY #1-#6 changed two cells each"));
+      "predicts: ACTION2 shows whether the third cell is elsewhere\ncheck:\ndef check(t):\n    return None\nEND\nWHY #1-#6 changed two cells each"));
     await h.act('ACTION1');
     await h.begin();
     await new Promise((r) => setTimeout(r, 500));
