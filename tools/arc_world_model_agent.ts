@@ -361,14 +361,23 @@ async function testTool(loop: Loop, code: string): Promise<{ text: string; versi
 
 // ---------------------------------------------------------------- the model
 
-/** One streamed chat completion with tools; tool-call fragments are joined by index. */
+/**
+ * One streamed chat completion with tools; tool-call fragments are joined by index. A transport failure, a 5xx or 429,
+ * or a stream that errs before any output is tried again after 15, 60 and 180 s (round 2's first launch lost two arms
+ * to "fetch failed" with two immediate attempts); the cause is kept in the error.
+ */
 async function completeTools(loop: Loop, messages: any[]) {
   const { base, key } = gateway();
   const body = { model: loop.model, messages, tools: TOOLS, tool_choice: 'auto', max_tokens: loop.maxTokens, stream: true,
     stream_options: { include_usage: true },
     ...(loop.model.startsWith('qwen') ? { enable_thinking: loop.effort !== 'off' } : loop.effort !== 'off' ? { reasoning_effort: loop.effort } : {}) };
+  const waits = [15, 60, 180];
   let lastError = '';
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt <= waits.length; attempt += 1) {
+    if (attempt) {
+      appendFileSync(join(loop.dir, 'calls.jsonl'), JSON.stringify({ retry: attempt, after: lastError }) + '\n');
+      await new Promise((done) => setTimeout(done, waits[attempt - 1] * 1000));
+    }
     const started = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20 * 60_000);
@@ -377,7 +386,7 @@ async function completeTools(loop: Loop, messages: any[]) {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
       if (!response.ok) {
         lastError = `HTTP ${response.status}: ${(await response.text()).slice(0, 400)}`;
-        if (response.status < 500) break;
+        if (response.status < 500 && response.status !== 429) break;
         continue;
       }
       const decoder = new TextDecoder();
@@ -412,7 +421,9 @@ async function completeTools(loop: Loop, messages: any[]) {
       return { text: content.join(''), calls: calls.filter(Boolean).map((call, i) => ({ ...call, id: call.id || `call_${Date.now()}_${i}` })),
         finish, usage, reasoning_chars: reasoning, seconds: Math.round((Date.now() - started) / 1000), stream_error: streamError };
     } catch (error) {
-      lastError = String((error as Error).message ?? error).slice(0, 400);
+      const cause = (error as any)?.cause;
+      lastError = `${String((error as Error).message ?? error).slice(0, 200)}${cause ? ` (${String(cause.code ?? '')} ${String(cause.message ?? cause).slice(0, 200)})` : ''}`
+        + ` after ${Math.round((Date.now() - started) / 1000)} s`;
     } finally {
       clearTimeout(timer);
     }
