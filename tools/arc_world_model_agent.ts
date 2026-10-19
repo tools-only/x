@@ -677,28 +677,40 @@ async function experiment(out: string, labelName: string, expRun: string, expSpa
   busyOver(tw, tg);
   const ecov = coverageOf(ew, eg), tcov = coverageOf(tw, tg);
   const ofKind = (kind: string) => moves(ew).filter((move) => ecov.kinds.get(move.n) === kind);
-  const named = (state.proposals ?? []).find((p: any) => p.rare && ofKind(p.kind).length >= k)?.kind;
   const shownCount = (kind: string) => setup.shown.moves.filter((move) => setup.kinds.get(move.n) === kind).length;
-  const click = setup.shown.moves.find((move) => move.x !== undefined)?.action ?? 'ACTION6';
-  const fallback = ['near', 'touching', 'far', 'inside'].map((region) => `${click}:${region}`)
-    .filter((kind) => ofKind(kind).length >= k).sort((a, b) => shownCount(a) - shownCount(b))[0];
-  const kind = named ?? fallback;
-  if (!kind) throw new Error('the experiment recording has no kind with enough moves');
-  const chosen = ofKind(kind).slice(0, k);
-  const xdir = join(dir, 'experiment');
+  let kind: string | undefined, named: string | undefined, chosen: Move[];
+  if (options.pick === 'worst') {
+    // Hindsight (round 2c follow-up): the k moves of the experiment recording the code predicts worst. The missing kinds
+    // of clicks were not what the fit lacked; it lacked states (merged pieces) its record never reached.
+    const scored = (await scoreSource(ew, eg, state.best_code)).results;
+    const wrongOf = (move: Move) => scored.get(move.n)?.wrong_other ?? -1;
+    chosen = moves(ew).filter((move) => wrongOf(move) > 0).sort((a, b) => wrongOf(b) - wrongOf(a)).slice(0, k);
+    kind = 'worst';
+  } else {
+    named = (state.proposals ?? []).find((p: any) => p.rare && ofKind(p.kind).length >= k)?.kind;
+    const click = setup.shown.moves.find((move) => move.x !== undefined)?.action ?? 'ACTION6';
+    const fallback = ['near', 'touching', 'far', 'inside'].map((region) => `${click}:${region}`)
+      .filter((each) => ofKind(each).length >= k).sort((a, b) => shownCount(a) - shownCount(b))[0];
+    kind = named ?? fallback;
+    if (!kind) throw new Error('the experiment recording has no kind with enough moves');
+    chosen = ofKind(kind).slice(0, k);
+  }
+  const xdir = join(dir, options.label ?? 'experiment');
   mkdirSync(xdir, { recursive: true });
   const experiments: MoveSet = { name: 'experiments', window: ew, grids: eg, moves: chosen, kinds: ecov.kinds };
-  const outcomes = chosen.map((move, i) => `EXPERIMENT ${i + 1}: ${label(move)}, ${kindText(kind)}, from this grid:\n${hex(eg.get(move.n - 1)!)}\n`
+  const outcomes = chosen.map((move, i) => `EXPERIMENT ${i + 1}: ${label(move)}, ${kindText(ecov.kinds.get(move.n)!)}, from this grid:\n${hex(eg.get(move.n - 1)!)}\n`
     + `changed: ${runs(eg.get(move.n - 1)!, eg.get(move.n)!)}`).join('\n\n');
+  const what = kind === 'worst' ? `${chosen.length} moves your submitted code predicts worst` :
+    `${chosen.length} moves of a kind the record shown had ${shownCount(kind)} of (${kindText(kind)})`;
   const maxCalls = Number(options.calls ?? 5);
   const loop: Loop = { model: state.model, effort: state.effort, maxTokens: state.maxTokens, maxCalls, budget: Number(options.budget ?? 150_000),
     dir: xdir, shown: [setup.shown, experiments], validation: setup.validation, novel: setup.novel,
     head: [{ role: 'system', content: SYSTEM }, { role: 'user', content: agentPrompt(setup, maxCalls) },
       { role: 'user', content: `YOUR SUBMITTED WORK (best on validation):\n\`\`\`python\n${state.best_code}\n\`\`\`\n\n${state.best_feedback}\n\n`
         + `YOUR UNKNOWNS: ${state.unknowns ?? '(none)'}` },
-      { role: 'user', content: `NEW: the outcomes of ${chosen.length} moves of a kind the record shown had ${shownCount(kind)} of (${kindText(kind)}), `
-        + `made in another play of this same level, so from other grids. python's record has them as attempts "experiments #n"; test `
-        + `scores them with the moves shown.\n\n${outcomes}\n\nRevise your step() with what they show, test it, and submit.` }],
+      { role: 'user', content: `NEW: the outcomes of ${what}, made in another play of this same level, so from other grids. `
+        + `python's record has them as attempts "experiments #n"; test scores them with the moves shown.\n\n${outcomes}\n\n`
+        + 'Revise your step() with what they show, test it, and submit.' }],
     log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: true };
   writeFileSync(join(xdir, 'prompt.txt'), loop.head.slice(1).map((m: any) => m.content).join('\n\n'));
   const beforeX = (await scoreSource(tw, tg, state.best_code)).results;
@@ -713,7 +725,7 @@ async function experiment(out: string, labelName: string, expRun: string, expSpa
     after: { test_recording: byKind(tw, tcov.kinds, afterX), window: summaryOf(setup, (await scoreSource(setup.window, setup.grids, after)).results) } };
   writeFileSync(join(xdir, 'experiment.json'), JSON.stringify(report, null, 1));
   const line = (g: Record<string, Tally>) => Object.entries(g).map(([name, t]) => `${name === 'all' ? 'all' : kindText(name)} ${t.other}/${t.moves}`).join(', ');
-  console.log(`kind ${kindText(kind)} (${named ? 'named by the unknowns' : 'fallback'}), experiments ${chosen.map((m) => `#${m.n}`).join(' ')}`);
+  console.log(`kind ${kindText(kind)} (${kind === 'worst' ? 'the moves predicted worst' : named ? 'named by the unknowns' : 'fallback'}), experiments ${chosen.map((m) => `#${m.n}`).join(' ')}`);
   console.log(`test recording, right outside busy lines by kind: before ${line(report.before.test_recording)}`);
   console.log(`                                                  after  ${line(report.after.test_recording)}`);
   console.log(JSON.stringify({ spent: loop.spent, calls: loop.calls, stop: loop.stop, window_before: report.before.window.verdict, window_after: report.after.window.verdict }));

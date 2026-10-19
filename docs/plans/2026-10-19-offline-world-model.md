@@ -364,3 +364,46 @@ and a record that holds only what the agent tried. Built on `claude/r04-dream2-2
 - **Arm.** A1c: gpt-6.1-sol, reasoning medium, W1, at most 14 replies and 450k budget tokens.
 - **Marks.** Unchanged: the gate (P1 ≥ 70%, P2 ≥ 90%) and the copying marks (gap at most 25 points; P1 at least 66%).
   A1b remains round 2's result for W1. A1c is a protocol change and is reported as one.
+
+### Round 2 results so far, and two follow-ups
+
+- **A3b: qwen3.8-27b, thinking off, W2.**
+  - 14 replies (all of them), 1 test, at the last reply: validation 22/23. 270k budget tokens, most of them spent
+    retyping grids from the prompt into python instead of reading `record`.
+  - Final test: 84 of the 101 novel moves right outside busy lines (P1 83%; phase 0's qwen: 6%), 115/117 on the
+    counter row (P2 98%). Gap between shown and validation moves: 3 points.
+  - Its rule matches the game: "clicking a block cell moves its bottom-right to click pos".
+- **A2's experiment step (3b, pre-registered): falsified.**
+  - The fallback kind, clicks 2-6 cells from the last changed area, used g61-1's #30, #32 and #36.
+  - On q38-1's level 2 such clicks were right 14/41 before and 15/41 after; W2's P1 was unchanged (83%).
+  - The code already predicted all 3 experiment moves before seeing them: its rule (the click moves a block's
+    bottom-right corner) covers clicks at any distance. That kind was not what the record lacked.
+- **What W2's code does lack.** Scored on q38-1's level 2 (`runs/arc-dream-20261019/w2x-q38-l2`), A2's final code is
+  right outside busy lines on 25 of the 62 novel moves. Its misses:
+  - the 3x3 pieces two blocks merge into (cells going f>5 and 5>f: 302);
+  - pieces moving onto the orange area (f>9, 9>f, 9>6: 140);
+  - the counter row refilling (busy 5>0: 96).
+  These are states g56-1's agent never reached: it never merged two blocks. The record lacks states, not only kinds of
+  clicks. A2's third unknown ("multiple overlapping or widely separated 2x2 six-brushes") pointed near this gap.
+- **A1c: gpt-6.1-sol, W1, round 2c.**
+  - 10 replies, 6 tests (4 of them returned submits), 159k budget tokens.
+  - It studied the record with python (object positions, the hazard's track), then wrote versions whose validation
+    stayed at 0/14.
+  - The best on validation is wrong on more cells than the grid unchanged. P1 0/68, P2 49/73.
+  - Fail: the progress signal and the returned submits did not produce rules on W1.
+- **Spent in round 2 so far:** 631k budget tokens (A1 23k, A3 52k, A2 77k with its experiment 12k, A1b 38k, A3b 270k,
+  A1c 159k).
+
+Two follow-ups, exploratory, each with one factor:
+
+- **A1d: the reasoning effort.** gpt-6.1-sol at `reasoning_effort` high, W1, round 2c's tool, at most 14 replies and
+  400k. If W1's P1 stays below 20%, W1 is out of this model's reach offline with this procedure.
+- **3b′: the missing states.**
+  - A2's fit gets the outcomes of the 3 moves of q38-1's attempts 1-2 (#41-#77) that its code predicts worst, and
+    continues for at most 5 replies (150k).
+  - Test on q38-1's attempts 3-5 (#79-#151, 70 moves).
+  - The choice uses the recorded outcomes, which is hindsight. It stands for an agent that played the moves its model
+    gets wrong; it asks whether a missing mechanic can be learned from three examples.
+  - Supported if the right-outside-busy-lines share on the 70 test moves rises by at least 15 points; falsified below
+    5.
+- Both together keep round 2 within 1.2M of its 1.5M.
