@@ -1,6 +1,7 @@
 # Offline world model ("dreaming") from recorded trajectories
 
-Date: 2026-10-19 (Asia/Shanghai). Status: phase 0, evaluation.
+Date: 2026-10-19 (Asia/Shanghai). Status: phase 0 failed; the tool is kept as an offline measurement; phases 1 and 2
+not run.
 
 Change record per [the development workflow](../development-workflow.md), with the sections of
 [the template](../templates/meta-harness-change.md). Work on `claude/r04-dream-20261019` in the temporary worktree
@@ -104,13 +105,13 @@ passes, phase 1 offline; phase 2 (in-run) only with the user's go-ahead.
 
 ### Fits under the fixed protocol (prompt v1, `2720842c`)
 
-All four fits ran in parallel on 2026-10-19 and cost 316,600 budget tokens in total. Outputs are in
-`runs/arc-dream-20261019/<window>/<model>-<effort>/` (`fit.json`, and per round `reply-k.md`, `code-k.py` and
-`score-k.json`).
+All four fits ran in parallel on 2026-10-19 and cost 321,071 budget tokens in total, by the corrected measure below
+(316,600 as first recorded). Outputs are in `runs/arc-dream-20261019/<window>/<model>-<effort>/` (`fit.json`, and per
+round `reply-k.md`, `code-k.py` and `score-k.json`).
 
 | Fit | Rounds with code | Best round | P1: novel held-out, outside busy | P2: held-out, busy line | Budget tokens |
 | --- | --- | --- | --- | --- | --- |
-| W1 gpt-6.1-sol, medium | 2 of 4 | 3 | 35/68 (51%) | 45/73 (62%) | 72,816 |
+| W1 gpt-6.1-sol, medium | 2 of 4 | 3 | 35/68 (51%) | 45/73 (62%) | 77,287 |
 | W2 gpt-6.1-sol, medium | 4 of 4 | 1 | 22/101 (22%) | 115/117 (98%) | 29,431 |
 | W1 qwen3.8-27b, off | 2 of 4 | 2 | 0/68 | 49/73 (67%) | 121,862 |
 | W2 qwen3.8-27b, off | 4 of 4 | 0 | 6/101 (6%) | 4/117 (3%) | 92,491 |
@@ -150,13 +151,102 @@ All four fits ran in parallel on 2026-10-19 and cost 316,600 budget tokens in to
 - **Phase 1 condition.** A v2 or high-effort pass on W1 is exploratory evidence: phase 1 may follow, labelled
   exploratory.
 
+### Exploratory fits (prompt v2; one at high effort)
+
+| Fit | Best round (on fit) | P1: novel held-out, outside busy | P2: held-out, busy line | Budget tokens |
+| --- | --- | --- | --- | --- |
+| W1 gpt-6.1-sol, medium, v2 | 2 | 9/68 (13%) | 6/73 (8%) | 110,796 |
+| W2 gpt-6.1-sol, medium, v2 | 3 | 47/101 (47%) | 115/117 (98%) | 80,377 |
+| W2 qwen3.8-27b, thinking on, v2 | 0 | 5/101 (5%) | 115/117 (98%) | 89,233 |
+| W1 gpt-6.1-sol, high, v2 (stopped at its budget after round 2) | 2 | 9/68 (13%) | 54/73 (74%) | 153,941 + a cut call |
+
+- **All four fail.** The best held-out result of any round was not a selected round: W2 v2 round 1, 67 of the 101 novel
+  moves (66%) right outside the busy line.
+- **Every gpt-6.1-sol fit on W1 converged on memorisation.**
+  - v1 round 3: a table of the observed (hazard position, click) transitions.
+  - The high-effort round 2 (after 16.4k reasoning tokens in round 1): it identifies which recorded attempt the click
+    sequence follows and replays that attempt's recorded hazard route.
+  - These fit the moves shown (57 and 27 of 58 exact) and miss the novel ones.
+  - The first reply was a minimal local rule with a disclaimer under every prompt and effort: "the record does not
+    establish a general rule".
+- **W2's code learns the agent's habit.** v2 round 3 reproduces the one-cell up-left sweeps the agent repeated, with
+  coordinate-specific conditions. It misses one-cell moves in other directions, merges into the next piece size, and
+  the merged piece's moves.
+- **The counter row is learnable.** Both models got it right on 115 of the 117 W2 held-out moves (qwen only with
+  thinking on). On W1 the best was 54/73.
+- **Gateway behaviour is uncontrolled.**
+  - Latency ranged from 6 to 711 s per call.
+  - Reported prompt tokens fell as the conversation grew (21,465 in round 0, 16,097 in round 1 of the same fit).
+  - On some calls `completion_tokens` left the reasoning out: total = prompt + completion + reasoning. The tool now
+    counts the larger of the two readings, and the budgets in these tables are recomputed that way.
+  - One qwen stream ended without a finish reason.
+  - The calls were probably served by more than one backend. The record cannot tell which.
+
+### What the codes miss (held-out moves; `score --changes`, then a tally by colour transition)
+
+- **W1** (v1 round 3, the best on W1; 50 held-out moves with wrong cells):
+  - 340 cells: the switch of the disk and the top marker to colour 2, in four moves. The trigger was not modelled.
+  - 265 cells: the largest piece's movement.
+  - About 420 cells: the hazard's step. The code moves it up to 4 cells toward the nearest piece.
+  - 25 moves: the counter's step, off by one cell. Three more are off by 4 to 7 cells: the counter's larger steps
+    after clicks that change nothing.
+  - Clicks that change nothing: the code predicts a move on them.
+- **W2** (v2 round 3; 55 held-out moves with wrong cells): one-cell moves in the directions the agent rarely used
+  (188 cells), merges into colour f and the merged piece's moves (98 cells).
+- **A limit of the data, whatever the model.** A record holds only what the agent tried. g56-1 never clicked away
+  from a block (iteration 3 of the self-evolve loop), and that is the mechanic that passes the level. No world model
+  fitted to that record can contain it, so planning in it would only recombine observed effects.
+
+### Total cost
+
+- 755,418 budget tokens by the corrected measure, within phase 0's 1.0M. The cut call is not included; its usage was
+  not reported.
+- No ARC action was played.
+- Outputs: `runs/arc-dream-20261019/`. The failure tallies were made with `C:/Users/qi/tmp/dream/misses.mjs`.
+
+### Side findings, outside this change
+
+- **The ledger's ticker rule misses a shrinking bar.** `maskedHashes` (`demo/arc_thin_ledger.ts`) masks cells that
+  change on at least 80% of transitions. A bar changes each of its cells once, so the rule finds 0 ticker cells in
+  su15-g61-1, -g56-1, -g61-2 and -q38-1.
+  - The line rule used here finds row 63 in all four.
+  - Repeats the ledger sees, against repeats outside the timer: 16 vs 23, 36 vs 66, 4 vs 19, 14 vs 21.
+  - Script: `C:/Users/qi/tmp/dream/ticker-check.ts`.
+  - This is a runtime change, so it is not made here. It is offered as a separate task.
+- **The runs' usage logs** (`harness/usage.jsonl` of g61-1, g61-2, g56-1, g56-2 and q38-3) show no row with
+  reasoning above output, nor a total above its parts.
+  - So the gap above is not visible there, but their reasoning per request is small (48k-65k tokens per run).
+  - Whether the 6M cap undercounted GPT runs remains unverified.
+
 | Evidence level | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
-| Functional | passed | local sandbox, recorded runs | identity and oracle checks above |
+| Functional | passed | local WASI sandbox, recorded runs | identity and oracle checks above |
+| Offline prediction (the phase 0 claim) | failed | yibu: gpt-6.1-sol medium/high, qwen3.8-27b off/on | v1 fails the pre-registered mark; the v2 and high-effort variants also fail; two windows, one fit per arm |
 | Full chain | not applicable | — | offline; no runner, Pi or ARC action involved |
-| Autonomous adoption | not applicable | — | nothing reaches the agent in phase 0 |
-| Net benefit | unverified | — | phase 0 measures prediction only |
+| Autonomous adoption | not applicable | — | nothing reaches the agent |
+| Net benefit | not tested | — | phase 1 not reached |
 
 ## Delivery decision
 
-(to be filled in after the fits)
+- **Supported claims.**
+  - The tool scores a written step() on a recorded window exactly: the identity and oracle checks pass.
+  - At the agent's settings and with up to three repairs, neither gpt-6.1-sol nor qwen3.8-27b writes a world model
+    that predicts these levels' held-out moves. Best novel held-out moves right outside the busy line: W1 51%, W2 47%
+    (66% in a round the fit moves did not select).
+  - Both models learn the counter row.
+- **Not supported.**
+  - That more offline compute fixes this: high effort raised reasoning to 16k tokens and produced memorisation of the
+    recorded routes, not rules.
+  - Anything about planning or levels: phase 1 was not run.
+- **Decision.** Phase 0 fails, so per the protocol phase 1 is not run, and phase 2 is not proposed.
+  `tools/arc_world_model.ts` stays as an offline measurement. It changes nothing in the runtime.
+- **The next falsifiable checks** (not run; each needs the user's budget):
+  1. A test-driven fit. The model runs its own code on the fit moves and revises 10-20 times, as a coding agent
+     would. The oracle shows that exact code exists for these records. Same windows, protocol and pass marks, at most
+     0.5M per fit. Falsified if W1's novel held-out result stays below 70%.
+  2. The off-policy scoring of refiner edits proposed in the same side chat: pure analysis of recorded runs, no model
+     call needed.
+  - Neither addresses the data limit: what a record never tried, offline reasoning cannot recover.
+- **Related backlog.** [Deferred research todos](../deferred-research-todos.md) §C: "evaluate snapshot branching,
+  replay and rollback experiments if the environment supports them" (若环境支持，再评估快照分支、回放及可回滚实验).
+  A fitted simulator was the substitute for branching here, and at this fidelity it is not one. The item stays open.

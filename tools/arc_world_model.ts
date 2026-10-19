@@ -418,8 +418,16 @@ function gateway() {
   return { base: base.replace(/\/$/, ''), key };
 }
 
-const budgetTokens = (usage: any) => usage ? Math.max(0, (usage.prompt_tokens ?? 0) - (usage.prompt_tokens_details?.cached_tokens ?? 0))
-  + (usage.completion_tokens ?? 0) : 0;
+/**
+ * Uncached input plus output. Some backends behind one gateway model name leave reasoning out of completion_tokens and
+ * count it only in total_tokens (prompt 16,135 + completion 18,248, total 50,790 with 16,407 reasoning), so the larger
+ * of the two readings counts.
+ */
+const budgetTokens = (usage: any) => {
+  if (!usage) return 0;
+  const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
+  return Math.max(Math.max(0, (usage.prompt_tokens ?? 0) - cached) + (usage.completion_tokens ?? 0), (usage.total_tokens ?? 0) - cached);
+};
 
 /** One streamed chat completion. Qwen's dialect carries the thinking switch, GPT models reasoning_effort (as the runs did). */
 async function complete(model: string, messages: any[], effort: string, maxTokens: number) {
