@@ -1,6 +1,7 @@
 /** Partial acceptance for the native surface; action evidence integrity remains atomic. */
 import { emptyMemory, applyRows, planMemoryUpdate, type MemoryState, type MemoryParams, type MemoryPlan,
   type MemoryRow, type ComponentContext, HYP_PREFIX, STATUSES, STRATEGY_STATUSES } from './arc_thin_memory.ts';
+import { withCheckDef } from './arc_thin_claims.ts';
 
 /** Python that defines check (def check(…) or check = lambda); anything else in a check field is a sentence. */
 const definesCheck = (source: string) => /\bdef\s+check\s*\(|\bcheck\s*=\s*lambda\b/.test(source);
@@ -8,9 +9,10 @@ const definesCheck = (source: string) => /\bdef\s+check\s*\(|\bcheck\s*=\s*lambd
 /**
  * su15-l1-1 (2026-10-16) saved "after an ACTION6 or ACTION7, does the 9-blob move? record direction" as a check three
  * times: it never compiled, and the hypothesis kept no test. A sentence in check is kept as the next test instead, after
- * one given with it, and an existing check stays.
+ * one given with it, and an existing check stays. The body of check(t) without its def line gets the def line.
  */
 function proseCheckAsNextTest(fields: Record<string, any>): string | undefined {
+  if (typeof fields.check === 'string') fields.check = withCheckDef(fields.check);
   if (typeof fields.check !== 'string' || !fields.check.trim() || definesCheck(fields.check)) return undefined;
   const prose = fields.check.trim();
   const given = typeof fields.next_test === 'string' && fields.next_test.trim() ? fields.next_test.trim() : '';

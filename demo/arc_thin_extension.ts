@@ -65,7 +65,7 @@ import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } fr
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
 import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue,
 	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView,
-	CONTEST_MIN_DECIDED, checkContest, contestEvents, renderContest, rivalLines } from "./arc_thin_claims.ts";
+	CONTEST_MIN_DECIDED, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged } from "./arc_thin_claims.ts";
 
 /**
  * A hypothesis check as the native memory tool describes it where the agent writes one: the keys a move carries (strict:
@@ -638,8 +638,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// resources. The runtime's own analyses are files under data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
 			// Rivals with checks, compared on the recorded moves (H3a): one line per question.
-			const rivals = rivalLines(new Map([...memory.hypotheses].map(([key, h]) => [key, { ...(h.question ? { question: h.question } : {}), status: h.status,
-				...(h.check && !claimCompileErrors.has(`${key}@${claimVersion(h.check)}`) ? { version: claimVersion(h.check) } : {}) }])), claimRows);
+			const rivals = rivalLines(checkedHypotheses(), claimRows);
 			const out: Array<[string, string]> = [["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]];
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
@@ -867,6 +866,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (claimCompileErrors.has(`${key}@${version}`)) return undefined;
 		return checkContest(claimRows.filter((row) => row.key === key && row.version === version), CHECK_CONTEST_MIN);
 	}
+
+	/** Each hypothesis's question and status, and its check version when the check compiles (H3a, rival events). */
+	const checkedHypotheses = () => new Map([...memory.hypotheses].map(([key, h]) => [key, { ...(h.question ? { question: h.question } : {}), status: h.status,
+		...(h.check && !claimCompileErrors.has(`${key}@${claimVersion(h.check)}`) ? { version: claimVersion(h.check) } : {}) }]));
 
 	/**
 	 * H2a: a hypothesis whose current check fails on at least half of at least ARC_CHECK_CONTEST_MIN decided moves
@@ -1330,6 +1333,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const UNCHECKED_AFTER = envNumber("ARC_REFINE_UNCHECKED_AFTER", 8);
 	/** Decided moves a check needs before it contests its hypothesis (H2a); 0 leaves check results out of status. */
 	const CHECK_CONTEST_MIN = /^\d+$/.test(process.env.ARC_CHECK_CONTEST_MIN ?? "") ? Number(process.env.ARC_CHECK_CONTEST_MIN) : CONTEST_MIN_DECIDED;
+	/** A refinement writes a rival for a hypothesis that holds unchallenged (self-evolve loop, 2026-10-19); 0: off. */
+	const RIVAL_EVENTS = process.env.ARC_REFINE_RIVALS !== "0";
 	/** Refinements' cost ceiling as a share of the agent's budget tokens (Continual Harness spends about 5%). */
 	const REFINER_SHARE = envNumber("ARC_REFINE_MAX_SHARE", 0.1);
 	/** Below this many refinement tokens the share is not applied: early in a run one call is a large share. */
@@ -1370,8 +1375,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
 			if (refinedFamilies.has(family.key)) continue;
 			refinedFamilies.add(family.key);
-			triggers.push(family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
-				: `python computation \`${family.gist}\` redone ${family.calls} times`);
+			// The agent calls saved tools seldom (3 calls in 9 su15 runs, 2026-10-19) but reads what a view shows.
+			triggers.push((family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
+				: `python computation \`${family.gist}\` redone ${family.calls} times`) +
+				"; if it reads the state, a view ('# view: on') shows its result at every decision, while a tool waits to be called");
 			samples = family.samples;
 			break;
 		}
@@ -1429,6 +1436,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// A rule citing a hypothesis that does not exist (H2c): only refinements write the rules prompt.
 		if (!urgentOnly) for (const key of view.missing)
 			due.push([`missing:${key}`, `${RULES_PATH} cites ${key}, which does not exist: write it as a HYPOTHESIS with a check, or take the line out`]);
+		// A hypothesis that holds with no rival beside it gets one before it can become a rule (ARC_REFINE_RIVALS=0: off).
+		if (!urgentOnly && RIVAL_EVENTS) due.push(...rivalEvents(unchallenged(checkedHypotheses(), claimRows)));
 		(urgentOnly ? [] : view.candidates).forEach((c, i) => due.push([`promote:${c.key}@${c.version}`, findings[i]]));
 		if (!urgentOnly && ![...memory.hypotheses.values()].some((h) => h.check)) {
 			const touches = new Map<string, number>();
@@ -1453,13 +1462,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** The promotion event in the refinement now running, to raise again if its one edit went elsewhere. */
 	let pendingPromotion: string | undefined;
 	const promotionRetries = new Map<string, number>();
+	/** The hypothesis a rival event is about: "rival:hyp.x@<version>" names hyp.x. */
+	const rivalTarget = (id: string | undefined) => id?.startsWith("rival:") ? id.slice(6).replace(/@[^@]*$/, "") : undefined;
 	/**
 	 * pr-02 (2026-10-14): "no hypothesis carries a check" came with another trigger, the refinement wrote a view for the
 	 * other, and the event counted as raised. An event the edit did not address is raised again (twice at most).
 	 */
-	function settlePromotion(id: string | undefined, edit: { kind: string; path?: string }): void {
+	function settlePromotion(id: string | undefined, edit: { kind: string; path?: string; key?: string }): void {
 		if (!id) return;
 		const addressed = /^(churn|unchecked):/.test(id) ? edit.kind === "hypothesis"
+			: id.startsWith("rival:") ? edit.kind === "hypothesis" && edit.key !== rivalTarget(id)
 			: id.startsWith("contested:") ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === STRATEGY_PATH)
 			: id.startsWith("missing:") ? edit.kind === "hypothesis" || (edit.kind === "file" && edit.path === RULES_PATH)
 			: /^(promote|refuted|cap):/.test(id) ? edit.kind === "file" && edit.path === RULES_PATH
@@ -1672,7 +1684,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (edit.kind === "hypothesis") {
 				const rewrote = memory.hypotheses.has(edit.key);
 				if (rewrote && !refinementOwned(edit.key)) { append("refiner.jsonl", { kind: "refused", ...base, path: `memory:${edit.key}`, why: `${edit.key} is the agent's; a refinement adds hypotheses and rewrites only its own` }); return; }
-				const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(edit.question ? { question: edit.question } : {}),
+				// A rival answering a rival event shares its target's question as stored, so H3a compares the two on the
+				// same moves whatever wording the reply gave the question.
+				const target = rivalTarget(promotionId);
+				const question = target && target !== edit.key ? memory.hypotheses.get(target)?.question ?? edit.question : edit.question;
+				const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(question ? { question } : {}),
 					...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}), ...(rewrote ? { status: "open" as const } : {}) }] },
 					trajectory.length, components());
 				if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
@@ -1707,7 +1723,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			applied = true;
 			told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}`, edit.why, id);
 		} finally {
-			settlePromotion(promotionId, applied ? edit as { kind: string; path?: string } : { kind: "none" });
+			settlePromotion(promotionId, applied ? edit as { kind: string; path?: string; key?: string } : { kind: "none" });
 		}
 	}
 

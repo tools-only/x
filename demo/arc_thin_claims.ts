@@ -177,6 +177,43 @@ export function rivalLines(hypotheses: Map<string, { question?: string; version?
 	return lines;
 }
 
+/**
+ * A hypothesis whose check holds with no rival beside it: at least `min` decided moves, failing on fewer than half, and
+ * no other live hypothesis with a check under its question. Its holds come from the moves the agent chose: in
+ * su15-g56-1 (gpt-5.6-sol, 2026-10-19) and su15-l1-1 (qwen, 2026-10-16) the belief that lost the second level ("a click
+ * on a block moves it one cell") held on the clicks the agent made, and the click that would have refuted it (a few
+ * cells away from a block) was never tried. A refinement is asked for the rival, which H3a then compares on the moves.
+ */
+export function unchallenged(hypotheses: Map<string, { question?: string; version?: string; status: string }>, rows: ClaimRow[],
+	min = CONTEST_MIN_DECIDED): Array<{ key: string; version: string; question: string; decided: number; holds: number }> {
+	if (min <= 0) return [];
+	const out: Array<{ key: string; version: string; question: string; decided: number; holds: number }> = [];
+	for (const [key, h] of hypotheses) {
+		if (!h.question || !h.version || h.status === "rejected" || h.status === "contested") continue;
+		if ([...hypotheses].some(([other, r]) => other !== key && r.question === h.question && r.version && r.status !== "rejected")) continue;
+		const decided = rows.filter((r) => r.key === key && r.version === h.version && (r.result === true || r.result === false));
+		const holds = decided.filter((r) => r.result === true).length;
+		if (decided.length >= min && 2 * holds > decided.length)
+			out.push({ key, version: h.version, question: h.question, decided: decided.length, holds });
+	}
+	return out;
+}
+
+/** The refinement event for an unchallenged hypothesis, once per hypothesis and check version. */
+export const rivalEvents = (found: ReturnType<typeof unchallenged>): Array<[string, string]> => found.map(({ key, version, question, decided, holds }) =>
+	[`rival:${key}@${version}`, `${key} holds on ${holds} of ${decided} decided moves, all moves the agent chose, and no other hypothesis ` +
+		`with a check answers "${question}": write the strongest rival HYPOTHESIS, another explanation of the same moves, whose check ` +
+		`disagrees with ${key} on a move not made yet; say in predicts which move would separate them`]);
+
+/**
+ * A check written as the body of check(t), without its def line, gets the def line: gpt-5.6-sol wrote 4 of its 23
+ * refinement replies in su15-g56-1 (2026-10-19) that way, and each was refused. Anything else is returned as it is.
+ */
+export function withCheckDef(source: string): string {
+	if (/\bdef\s+check\s*\(|\bcheck\s*=\s*lambda\b/.test(source) || !/^[ \t]*return\b/m.test(source)) return source;
+	return "def check(t):\n" + source.split(/\r?\n/).map((line) => (line.trim() ? `    ${line}` : line)).join("\n");
+}
+
 // ---------------------------------------------------------------- promotion (docs/plans/2026-10-14-knowledge-promotion.md)
 //
 // A checked hypothesis becomes a standing rule, and a standing rule goes back to dispute, by the evidence the checks

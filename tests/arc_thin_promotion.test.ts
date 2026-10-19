@@ -111,7 +111,9 @@ test('a refinement can add a checked hypothesis', () => {
     predicts: 'one column further right', check: 'def check(t):\n    return None\n', why: 'restated three times' });
   assert.equal(parseRefinerReply('HYPOTHESIS right\nclaim: x\nEND').kind, 'invalid');
   assert.equal(parseRefinerReply('HYPOTHESIS hyp.x\nquestion: q\nEND').kind, 'invalid');
-  assert.equal(parseRefinerReply('HYPOTHESIS hyp.x\nclaim: c\ncheck:\nreturn True\nEND').kind, 'invalid');
+  // The body of check(t) without its def line gets the def line (su15-g56-1, 2026-10-19); a sentence is still refused.
+  assert.equal((parseRefinerReply('HYPOTHESIS hyp.x\nclaim: c\ncheck:\nreturn True\nEND') as any).check, 'def check(t):\n    return True\n');
+  assert.equal(parseRefinerReply('HYPOTHESIS hyp.x\nclaim: c\ncheck:\nthe piece moves right\nEND').kind, 'invalid');
   assert.deepEqual(parseRefinerReply('HYPOTHESIS hyp.x\nclaim: c\nEND\nWHY w'), { kind: 'hypothesis', key: 'hyp.x', claim: 'c', why: 'w' });
   // The rules prompt is a prompt component like the strategy: frontmatter is added when missing.
   const rules = parseRefinerReply('FILE prompts/rules.md\n- the piece moves right (hyp.right)\nEND\nWHY held 4 times');

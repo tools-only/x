@@ -1,9 +1,39 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkContest, claimSegments, claimVersion, contestEvents, levelOf, renderClaimSummary, renderContest, rivalLines, summarizeClaim, type ClaimRow } from "../demo/arc_thin_claims.ts";
+import { checkContest, claimSegments, claimVersion, contestEvents, levelOf, renderClaimSummary, renderContest, rivalEvents, rivalLines, summarizeClaim,
+	unchallenged, withCheckDef, type ClaimRow } from "../demo/arc_thin_claims.ts";
+import { parseRefinerReply } from "../demo/arc_thin_refiner.ts";
 
 const grid = (value: number, size = 4) => Array.from({ length: size }, (_, y) => Array.from({ length: size }, (_, x) => (x === value && y === 1 ? 9 : 0)));
 const row = (n: number, result: ClaimRow["result"], level = 0): ClaimRow => ({ key: "hyp.a", version: "v", n, level, result });
+
+test("a check written as the body of check(t) gets its def line, in a refinement's HYPOTHESIS and EXPECT alike", () => {
+	// su15-g56-1 (gpt-5.6-sol, 2026-10-19): 4 of 23 refinement replies were refused for this.
+	const body = "if t.get('action') != 'ACTION7':\n    return None\nreturn bool(t['level_changed'])";
+	assert.equal(withCheckDef(body), "def check(t):\n    if t.get('action') != 'ACTION7':\n        return None\n    return bool(t['level_changed'])");
+	assert.equal(withCheckDef("def check(t):\n    return True"), "def check(t):\n    return True");
+	assert.equal(withCheckDef("after an ACTION6, does the blob move?"), "after an ACTION6, does the blob move?", "prose stays prose");
+	const reply = parseRefinerReply(`HYPOTHESIS hyp.goal\nclaim: ACTION7 wins\ncheck:\n${body}\nEND\nWHY #50\nEXPECT within 3: ACTION7 is tried\nreturn t['action'] == 'ACTION7'\nEND`);
+	assert.equal(reply.kind, "hypothesis");
+	assert.match((reply as any).check, /^def check\(t\):\n    if t\.get/);
+	assert.equal((reply as any).expect?.check, "def check(t):\n    return t['action'] == 'ACTION7'\n");
+});
+
+test("a hypothesis that holds with no rival under its question is unchallenged, and raises one rival event per check version", () => {
+	const rows = [1, 2, 3, 4, 5, 6].map((n) => ({ ...row(n, n === 6 ? false : true), key: "hyp.one_cell" }));
+	const alone = new Map([["hyp.one_cell", { question: "how blocks move", version: "v", status: "supported" }]]);
+	assert.deepEqual(unchallenged(alone, rows).map(({ key, decided, holds }) => [key, decided, holds]), [["hyp.one_cell", 6, 5]]);
+	const [[id, text]] = rivalEvents(unchallenged(alone, rows));
+	assert.equal(id, "rival:hyp.one_cell@v");
+	assert.match(text, /^hyp\.one_cell holds on 5 of 6 decided moves, .*answers "how blocks move": write the strongest rival HYPOTHESIS/);
+	// A rival with a check under the same question, too few decided moves, no question, or a contested status: none.
+	assert.deepEqual(unchallenged(new Map([...alone, ["hyp.far_click", { question: "how blocks move", version: "w", status: "open" }]]), rows), []);
+	assert.deepEqual(unchallenged(alone, rows.slice(0, 4)), []);
+	assert.deepEqual(unchallenged(new Map([["hyp.one_cell", { version: "v", status: "open" }]]), rows), []);
+	assert.deepEqual(unchallenged(new Map([["hyp.one_cell", { question: "how blocks move", version: "v", status: "contested" }]]), rows), []);
+	// A rival without a check does not count: there is nothing to compare on the moves.
+	assert.equal(unchallenged(new Map([...alone, ["hyp.prose", { question: "how blocks move", status: "open" }]]), rows).length, 1);
+});
 
 test("segments carry the grid before each run of consecutive transitions, then cell changes; gaps and shape changes restart", () => {
 	const grids = new Map<number, number[][]>([[0, grid(0)], [1, grid(1)], [2, grid(2)], [4, grid(3)], [5, grid(0, 5)]]);

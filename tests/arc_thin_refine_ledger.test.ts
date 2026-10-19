@@ -33,7 +33,8 @@ test('an EXPECT block after or before an edit is kept with it; a malformed one i
   // su15-f2-src2 #62 wrote the horizon without "actions"; it was read as part of the sentence, with the default horizon.
   assert.deepEqual(parseExpect('EXPECT within 5: The agent stops\ndef check(t):\n    return None\nEND').expect,
     { claim: 'The agent stops', within: 5, check: 'def check(t):\n    return None\n' });
-  assert.equal(parseExpect('EXPECT within 3 actions: x\nreturn None\nEND').expectError, 'an EXPECT check must define check(t)');
+  // The body of check(t) without its def line gets the def line (su15-g56-1, 2026-10-19); other code is still refused.
+  assert.deepEqual(parseExpect('EXPECT within 3 actions: x\nreturn None\nEND').expect, { claim: 'x', within: 3, check: 'def check(t):\n    return None\n' });
   const malformed = parseRefinerReply('FILE prompts/strategy.md\n- plan\nEND\nWHY w\nEXPECT within 3 actions: x\nprint(1)\nEND');
   assert.equal(malformed.kind, 'file');
   assert.equal((malformed as any).expect, undefined);

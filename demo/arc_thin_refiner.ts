@@ -8,7 +8,7 @@
  *   - the edit goes through the same lifecycle as the agent's own writes (binder: validated, versioned, restorable);
  *   - the agent starts one with refine(focus) and shapes it with prompts/refine.md; it is told once what changed.
  */
-import { RULES_CHARS, RULES_PATH } from "./arc_thin_claims.ts";
+import { RULES_CHARS, RULES_PATH, withCheckDef } from "./arc_thin_claims.ts";
 export { RULES_PATH, RULES_CHARS };
 
 export const STRATEGY_PATH = "prompts/strategy.md";
@@ -21,8 +21,9 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"hypotheses with a check(t) the runtime runs on every recorded move), tools (tools/<name>.py, python the agent calls by name), " +
 	"skills (skills/<name>/SKILL.md, a procedure read on demand) and subagents. You are called after an event (WHY NOW). From the " +
 	"record, make the single most useful small edit, so the agent re-derives less and acts on what the evidence shows.\n" +
-	"How understanding moves: a belief the agent states (in memory or its notes) becomes a HYPOTHESIS with a check; a check that " +
-	"keeps holding becomes a line of prompts/rules.md that cites its key; a cited check that fails puts the rule in dispute, and " +
+	"How understanding moves: a belief the agent states (in memory or its notes) becomes a HYPOTHESIS with a check; a check " +
+	"that holds only on the moves the agent chose proves little until a rival (another explanation of the same moves, under the " +
+	"same question, whose check disagrees on a move not made yet) is judged beside it; a check that keeps holding becomes a line of prompts/rules.md that cites its key; a cited check that fails puts the rule in dispute, and " +
 	"you narrow or remove that line. The runtime counts the checks; the WHY NOW line says which step is due. Consolidate settled " +
 	"or contradicted memory into one MEMORY entry that replaces them, and keep the strategy's next experiment current.\n" +
 	"Reply with exactly one of:\nFILE <path>\n<the complete new file content>\nEND\nWHY <one line: the evidence, citing actions like #12 or #3-#7>\n" +
@@ -139,7 +140,7 @@ export function parseExpect(text: string): Expects {
 	const match = /^\s*EXPECT\b[ \t]*(?:within[ \t]+(\d+)(?:[ \t]+actions?)?\b)?[ \t:]*([^\r\n]*)\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
 	if (!match) return {};
 	const claim = match[2].trim().slice(0, 300);
-	const check = unfence(match[3]);
+	const check = withCheckDef(unfence(match[3]));
 	if (!claim) return { expectError: "an EXPECT needs a sentence saying what the moves will show" };
 	if (!/\bdef\s+check\s*\(/.test(check)) return { expectError: "an EXPECT check must define check(t)" };
 	const within = match[1] ? Math.max(1, Math.min(EXPECT_MAX_ACTIONS, Number(match[1]))) : undefined;
@@ -152,7 +153,7 @@ function parseHypothesis(match: RegExpExecArray, why: string): RefinerEdit {
 	const body = match[2];
 	const at = body.search(/^\s*check:\s*$/m);
 	const head = at >= 0 ? body.slice(0, at) : body;
-	const check = at >= 0 ? body.slice(at).replace(/^\s*check:\s*\r?\n/, "").replace(/^\s*```[a-z]*\s*\r?\n/, "").replace(/\r?\n\s*```\s*$/, "").trimEnd() : "";
+	const check = withCheckDef(at >= 0 ? body.slice(at).replace(/^\s*check:\s*\r?\n/, "").replace(/^\s*```[a-z]*\s*\r?\n/, "").replace(/\r?\n\s*```\s*$/, "").trimEnd() : "");
 	const field = (name: string) => new RegExp(`^\\s*${name}:\\s*(.+)$`, "m").exec(head)?.[1]?.trim();
 	const claim = field("claim");
 	if (!/^hyp\.[a-z0-9_.-]{1,40}$/i.test(key) || !claim) return { kind: "invalid", why: "a hypothesis needs a hyp.<name> key and a claim" };
