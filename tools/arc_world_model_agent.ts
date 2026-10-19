@@ -37,6 +37,8 @@ type Loop = {
   shown: MoveSet[]; validation: MoveSet; novel: Set<number>;
   head: any[]; log: string[]; tail: Exchange[];
   calls: number; spent: number; tests: number; versions: Version[]; returned: boolean;
+  /** Return a submit with validation under 90% each time until a third of the replies are left (round 2c), not just once. */
+  persist?: boolean;
   submitted?: { test: number; code: string; unknowns: string }; stop?: string;
 };
 
@@ -305,6 +307,38 @@ function rankOf(loop: Loop, scored: Scored): Rank {
 }
 const better = (a: Rank, b: Rank) => { for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return a[i] > b[i]; return true; };
 
+/**
+ * Wrong cells outside busy lines, grouped by what the record did there ("went 5>7", "stayed 5") and what the code put
+ * instead, largest first; with the grid-unchanged count for scale. Round 2's first fit of W1 gave up after two
+ * versions that scored 0 exact moves: where every move changes many cells, exact moves show no partial progress.
+ */
+function cellLines(sets: MoveSet[], scored: Scored): string[] {
+  let wrong = 0, unchanged = 0, partial = 0;
+  const groups = new Map<string, { cells: number; moves: Set<number>; yours: Map<number, number> }>();
+  for (const set of sets) for (const move of set.moves) {
+    const r = scored.sets.get(set.name)?.get(move.n);
+    unchanged += move.changed;
+    if (!r || r.error !== undefined || r.wrong_other === undefined) { wrong += move.changed; continue; }
+    wrong += r.wrong_other;
+    if ((r.changed ?? 0) > (r.changes?.length ?? 0)) { partial += 1; continue; }
+    const before = set.grids.get(move.n - 1)!, after = set.grids.get(move.n)!;
+    const yours = before.map((row) => [...row]);
+    for (const [x, y, value] of r.changes ?? []) if (typeof value === 'number') yours[y][x] = value;
+    for (let y = 0; y < after.length; y += 1) for (let x = 0; x < after[y].length; x += 1) {
+      if (yours[y][x] === after[y][x] || busyCell(set.window, x, y)) continue;
+      const b = before[y][x], a = after[y][x];
+      const key = b === a ? `stayed ${b.toString(16)}` : `went ${b.toString(16)}>${a.toString(16)}`;
+      const group = groups.get(key) ?? { cells: 0, moves: new Set<number>(), yours: new Map<number, number>() };
+      group.cells += 1; group.moves.add(move.n); group.yours.set(yours[y][x], (group.yours.get(yours[y][x]) ?? 0) + 1);
+      groups.set(key, group);
+    }
+  }
+  const top = [...groups].sort((a, b) => b[1].cells - a[1].cells).slice(0, 6).map(([key, g]) =>
+    `${key}: ${g.cells} cells in ${g.moves.size} moves (yours ${[...g.yours].sort((p, q) => q[1] - p[1]).slice(0, 2).map(([v, n]) => `${v.toString(16)} ${n}`).join(', ')})`);
+  return [`Wrong cells outside the busy lines on the moves shown: ${wrong}; with the grid unchanged: ${unchanged}.`,
+    ...(top.length ? [`Largest unexplained, by what the record did there: ${top.join('; ')}${partial ? ` (${partial} moves left out: your code changed more than 150 cells)` : ''}.`] : [])];
+}
+
 function testFeedback(loop: Loop, scored: Scored, test: number): string {
   if (scored.compileError) return `test #${test}: the code did not run: ${scored.compileError}`;
   const v = tally(loop.validation.moves, scored.sets.get('validation')!);
@@ -325,8 +359,11 @@ function testFeedback(loop: Loop, scored: Scored, test: number): string {
   };
   lines.push(`Right outside those lines, by kind: shown: ${kindLine(own.set, scored.sets.get('shown')!)}; validation: `
     + `${kindLine(loop.validation, scored.sets.get('validation')!)}.`);
+  lines.push(...cellLines(loop.shown, scored));
   if (share(own.t.other, own.t.moves) - share(v.other, v.moves) >= 0.25 && share(own.t.other, own.t.moves) >= 0.5)
     lines.push('The code fits the moves shown much better than the validation moves: it reproduces recorded moves rather than rules that hold elsewhere.');
+  const best = loop.versions.reduce<Version | undefined>((b, version) => !b || better(version.rank, b.rank) ? version : b, undefined);
+  if (best) lines.push(`Best on validation so far: test #${best.test}.`);
   const wrong: Array<{ set: MoveSet; move: Move; r: Result; cells: number }> = [];
   for (const { set } of shownTallies) for (const move of set.moves) {
     const r = scored.sets.get(set.name)!.get(move.n);
@@ -342,12 +379,10 @@ function testFeedback(loop: Loop, scored: Scored, test: number): string {
     if (r.error !== undefined) { lines.push(`${head}: ${r.error}`); continue; }
     const yours = before.map((row) => [...row]);
     for (const [x, y, value] of r.changes ?? []) if (typeof value === 'number') yours[y][x] = value;
-    const cut = (text: string) => text.length > 420 ? `${text.slice(0, 420)}...` : text;
+    const cut = (text: string) => text.length > 360 ? `${text.slice(0, 360)}...` : text;
     lines.push(`${head}: ${cells} cells wrong\n  recorded: ${cut(runs(before, set.grids.get(move.n)!))}\n  yours:    ${cut(runs(before, yours))}`);
   }
-  const best = loop.versions.reduce<Version | undefined>((b, version) => !b || better(version.rank, b.rank) ? version : b, undefined);
-  if (best) lines.push(`Best on validation so far: test #${best.test}.`);
-  return lines.join('\n').slice(0, 3600);
+  return lines.join('\n').slice(0, 4200);
 }
 
 async function testTool(loop: Loop, code: string): Promise<{ text: string; version: Version }> {
@@ -465,6 +500,7 @@ async function runLoop(loop: Loop) {
     loop.calls += 1;
     const tokens = budgetTokens(reply.usage);
     loop.spent += tokens;
+    appendFileSync(join(loop.dir, 'replies.jsonl'), JSON.stringify({ call: loop.calls, text: reply.text, tools: reply.calls.map((call) => call.name) }) + '\n');
     appendFileSync(join(loop.dir, 'calls.jsonl'), JSON.stringify({ call: loop.calls, finish: reply.finish, seconds: reply.seconds,
       usage: reply.usage, budget_tokens: tokens, reasoning_chars: reply.reasoning_chars, tools: reply.calls.map((call) => call.name),
       request_chars: JSON.stringify(messages).length, ...(reply.stream_error ? { stream_error: reply.stream_error } : {}) }) + '\n');
@@ -501,11 +537,13 @@ async function runLoop(loop: Loop) {
         } else {
           const left = loop.maxCalls - loop.calls;
           const weak = (v[0] ?? 0) < 0.9 * loop.validation.moves.length;
-          if (left >= 4 && weak && !loop.returned) {
-            loop.returned = true;
-            text = `${feedback}\n\nNot ended: validation is ${v[0]} of ${loop.validation.moves.length} with ${left} replies left. Continue `
-              + 'improving with python and test, or call submit again to end.';
-            exchange.notes.push(`submit (test #${version.test}) returned once: validation ${v[0]}/${loop.validation.moves.length}`);
+          const floor = Math.floor(loop.maxCalls / 3);
+          if (weak && !loop.returned && (loop.persist ? left > floor : left >= 4)) {
+            loop.returned = !loop.persist;
+            text = `${feedback}\n\nNot ended: validation is ${v[0]} of ${loop.validation.moves.length} with ${left} replies left. `
+              + (loop.persist ? `Take the largest unexplained change above, study it with python, write it into step and test it. `
+                + `Submit is accepted once validation reaches 90% or ${floor} replies are left.` : 'Continue improving with python and test, or call submit again to end.');
+            exchange.notes.push(`submit (test #${version.test}) returned: validation ${v[0]}/${loop.validation.moves.length}`);
           } else {
             loop.submitted = { test: version.test, code: version.code, unknowns: String(args.unknowns ?? '') };
             loop.stop = 'submitted';
@@ -534,11 +572,17 @@ function proposals(unknowns: string, setup: ReturnType<typeof splitOf>) {
   for (const move of setup.shown.moves) count.set(setup.kinds.get(move.n)!, (count.get(setup.kinds.get(move.n)!) ?? 0) + 1);
   const limit = Math.floor(0.05 * setup.shown.moves.length);
   const shownN = new Set(setup.shown.moves.map((move) => move.n));
+  const clicks = new Set(setup.shown.moves.filter((move) => move.x !== undefined).map((move) => move.action));
   const out: Array<{ text: string; action: string; x?: number; y?: number; after?: number; kind: string; shown_of_kind: number; rare: boolean }> = [];
   for (const match of unknowns.matchAll(/\b(ACTION\d+)\s*(?:\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\))?[^#\n]{0,24}?#(\d+)/gi)) {
     const [text, action, x, y, after] = match;
     const n = Number(after);
     const box = shownN.has(n) ? setup.boxes.get(n) : undefined;
+    // A click named without its cell is no concrete move: its kind is unknown, not rare.
+    if (x === undefined && clicks.has(action.toUpperCase())) {
+      out.push({ text, action: action.toUpperCase(), after: n, kind: `${action.toUpperCase()}:unplaced`, shown_of_kind: 0, rare: false });
+      continue;
+    }
     const kind = x !== undefined ? `${action.toUpperCase()}:${box ? regionOf(boxDistance(Number(x), Number(y), box)) : 'first'}` : action.toUpperCase();
     const shownOf = count.get(kind) ?? 0;
     out.push({ text, action: action.toUpperCase(), ...(x !== undefined ? { x: Number(x), y: Number(y) } : {}), after: n, kind,
@@ -562,7 +606,7 @@ async function agent(out: string, model: string, options: Record<string, string>
     budget: Number(options.budget ?? 400_000), dir: join(out, options.label ?? `agent-${model}-${effort}`),
     shown: [setup.shown], validation: setup.validation, novel: setup.novel,
     head: [{ role: 'system', content: SYSTEM }, { role: 'user', content: agentPrompt(setup, maxCalls) }],
-    log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: false };
+    log: [], tail: [], calls: 0, spent: 0, tests: 0, versions: [], returned: false, persist: options.persist !== '0' };
   mkdirSync(loop.dir, { recursive: true });
   writeFileSync(join(loop.dir, 'prompt.txt'), `${SYSTEM}\n\n${loop.head[1].content}`);
   await runLoop(loop);

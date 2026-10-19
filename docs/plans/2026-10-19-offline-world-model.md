@@ -321,3 +321,46 @@ and a record that holds only what the agent tried. Built on `claude/r04-dream2-2
   - `check` on W1 and W2: the python tool reads 44 and 64 moves and reports errors with their line; test reports
     identity, oracle (44/44 + 14/14; 64/64 + 23/23) and a syntax error correctly; unknowns parse into moves and kinds.
   - Outputs: `C:/Users/qi/tmp/dream2/check-w1.txt`, `check-w2.txt`, `check-phase0.txt`, `dry-experiment.txt`.
+
+### Round 2 runs, first results
+
+- **Transport.** The first launch lost A1 after 2 replies and A3 after 3 to "fetch failed". The client made two
+  immediate attempts and kept no cause. Fix `827aa134`: retries after 15, 60 and 180 s, with the cause recorded. A1 and A3
+  were relaunched as A1b and A3b from the reserved spare. The lost attempts cost 23k and 52k budget tokens.
+- **A2: gpt-6.1-sol, W2.**
+  - 11 replies, 9 tests, 77k budget tokens. Submitted at test #9 with validation 22/23.
+  - Final test: 84 of the 101 novel moves right outside busy lines (P1 83%; phase 0's best was 47%), and 112 of 117 on
+    the counter row (P2 96%). Gap between shown and validation moves: 4 points.
+  - Copying and effort are fixed on W2 by the protocol's marks.
+- **A1b: gpt-6.1-sol, W1.**
+  - 3 replies, 38k budget tokens. Python never used.
+  - Two versions modelled everything at once (the hazard moving toward the click, merges, undo). Each was exact on 0
+    of the 44 shown moves.
+  - The first submit was returned once; the second carried a counter-only rule, "only observable universal rule
+    robustly inferred".
+  - P1 5/68 (7%), P2 43/73 (59%). Fail: on W1 the model still does not invest.
+- **3a, A2's unknowns.**
+  - Its second situation is "ACTION6 whose click is touching or 2-6 cells from an existing brush": the two kinds its
+    record lacks, named in words.
+  - Its concrete moves, though, are clicks inside the last changed area (`ACTION6(34,37) after #194`,
+    `ACTION6(18,37) after #74`).
+  - Its first situation names no cell. The parser had counted such a click as a rare kind; a click without its cell
+    is now no concrete move.
+  - 3a holds in words, not as a concrete move.
+
+### Round 2c (decided after A1b, before any further W1 call): investment on a hard window
+
+- **What breaks.** On W1 every move changes many cells (1,290 wrong cells over the 44 shown moves with the grid
+  unchanged). A version that captures one mechanic still scores 0 exact moves, so test shows no progress and the
+  model quits after two versions.
+- **The one factor changed: investment support.**
+  - test adds the wrong cells outside busy lines against the grid-unchanged count, and the largest unexplained
+    changes by what the record did there ("went 7>5: 324 cells in 42 moves (yours 7 324)").
+  - A submit with validation under 90% is returned each time until a third of the replies are left (`--persist 0`
+    restores round 2's single return).
+  - Each reply's text is saved (`replies.jsonl`).
+  - Checked without a model call: the grid-unchanged and oracle versions give 1,290 and 0 wrong cells, and the
+    breakdown reads as above.
+- **Arm.** A1c: gpt-6.1-sol, reasoning medium, W1, at most 14 replies and 450k budget tokens.
+- **Marks.** Unchanged: the gate (P1 ≥ 70%, P2 ≥ 90%) and the copying marks (gap at most 25 points; P1 at least 66%).
+  A1b remains round 2's result for W1. A1c is a protocol change and is reported as one.
