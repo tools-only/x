@@ -84,6 +84,8 @@ export class PythonSession {
   private live?: Record<string, string>;
   /** In a live kernel, what was already said about the checkpoint, so the same notice is not repeated every call. */
   private noted = { over: "", unsupported: new Set<string>() };
+  /** Names whose function was already reported lost to a value (once per name). */
+  private overwritten = new Set<string>();
   holding(): Record<string, string> {
     const brief = this.live ?? Object.fromEntries([...this.state.defs.map(([name]) => [`${name}()`, ""] as [string, string]),
       ...this.state.names.map((name) => [name, this.state.brief?.[name] ?? ""] as [string, string])]);
@@ -133,6 +135,7 @@ export class PythonSession {
     const lines: string[] = [];
     let committed = false, event: string | undefined;
     const before = Object.keys(this.holding());
+    const sources = new Map(this.state.defs);
     if (report.load_error) {
       const bad = this.state.version, now = this.rollback();
       this.live = undefined;
@@ -163,9 +166,20 @@ export class PythonSession {
     }
     if (!report.load_error && (live || committed)) {
       if (live && report.brief) this.live = report.brief;
-      const after = Object.keys(this.holding());
+      const now = this.holding();
+      const after = Object.keys(now);
       const changes = [...after.filter((name) => !before.includes(name)).map((name) => `+${name}`), ...before.filter((name) => !after.includes(name)).map((name) => `-${name}`)];
       if (changes.length) lines.push(`(python session: ${listed(changes)})`);
+      // A function the agent defined that this call bound to a value is gone, said once per name in plain words: in
+      // su15-p13-q38-1 `diff = [...]` at #38 replaced the diff(a, b) defined at #35, the receipt read "+diff, -diff()",
+      // and 30 later cells computed the difference by hand.
+      for (const name of before.filter((key) => key.endsWith("()") && !after.includes(key)).map((key) => key.slice(0, -2))) {
+        const what = now[name];
+        if (what === undefined || what === "function" || what === "class" || this.overwritten.has(name)) continue;
+        this.overwritten.add(name);
+        const signature = /^\s*(?:async\s+)?def\s+(\w+\s*\(.*?\))\s*(?:->[^:\n]*)?:/m.exec(sources.get(name) ?? "")?.[1]?.replace(/\s+/g, " ") ?? `${name}()`;
+        lines.push(`(${name} was your function ${signature}; this call bound ${name} to ${what || "a value"}, so the function is no longer in the session)`);
+      }
     }
     // In a live kernel a value the checkpoint cannot hold stays defined; it is named once, not on every call.
     const unsupported = (report.unsupported ?? []).filter(([name]) => !live || !this.noted.unsupported.has(name));
