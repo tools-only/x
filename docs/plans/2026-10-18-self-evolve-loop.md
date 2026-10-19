@@ -304,9 +304,11 @@ agents rejected hypotheses after contests and separations), views (su15-g56-1's 
 - What the agent saves are snapshots, not functions: all three tools the agents published (g61-1 `initial_compare`
   and `lvl2inspect`, g61-2 `inspect_l1`) take no arguments and print a fixed comparison or fixed regions of the grid.
   The python session held only data, never a function, in g61-2.
-- The computations are short, situation-specific queries: a per-move diff is one comprehension; g61-2 typed it about
-  16 times rather than defining it once, because writing it costs one call, the same as calling a tool, and needs no
-  recall of a tool's interface.
+- The computations are short, situation-specific queries: a per-move diff is one comprehension; g61-2 typed it in 26 of
+  its 46 python cells up to #112 rather than defining it once, because writing it costs one call, the same as calling a
+  tool, and needs no recall of a tool's interface. The saving a saved function would bring is the line itself (about 40
+  output tokens per use, about 1k over the run against 2.06M). The free form of reuse was not taken either: the python
+  session persists between calls, and g61-2 never defined a function in it.
 - The bottleneck is inference, not computation: g61-1 passed four levels with 17 python cells in 206 actions. Its
   losses came from what it believed (goal, timer, hazard), which no saved computation addresses.
 - So exploitation happens where the runtime does the pulling: a component the agent must remember to call is not
