@@ -119,6 +119,36 @@ Next falsifiable check (next authorized run): a refinement view that raises is b
 states; no `edit` row carries an unchanged receipt; after a B notice, the agent defines the function again or renames
 its data, against retyping the computation by hand as at #38-#258.
 
+### Run su15-cb-q38-1 (2026-10-19, user: "run ARC with qwen based on the final version")
+
+Setup: r04 bc4761a5 on su15, qwen3.8-27b with thinking off (qwen dialect) via yibu. Budget-token cap 6M, no action or
+time cap, the same settings as the qwen runs compared below. Artifacts: `runs/arc-cb-20261019/su15-cb-q38-1`.
+
+| run | levels (at action) | actions | budget tokens | per action | ended by |
+|---|---|---|---|---|---|
+| su15-cb-q38-1 (C+B) | 1 (#20) | 230 | 3.46M | 15.0k | level 2's 210 actions spent |
+| su15-p13-q38-1 | 1 (#57) | 267 | 5.04M | 18.9k | level 2's actions spent |
+| su15-q38-1 | 2 (#40, #151) | 267 | 6.05M | 22.6k | token cap |
+| su15-q38-2 | 1 (#21) | 231 | 4.96M | 21.5k | level 2's actions spent |
+| su15-q38-3 | 0 | 110 | 1.87M | 17.0k | level 1's actions spent |
+
+- C, unchanged writes:
+  - Refiner side: fired 5 times. Four FILE replies equal to the current file were sent back. Three second replies
+    made the intended edit: at #22 a missing hypothesis was written; at #92 a new strategy with a pinned ACTION7 test,
+    played at #105; at #111 the dangling citation the first reply said it had removed was actually removed. At #49
+    the second reply was the same file again, so it was logged `unchanged` and the agent was not told.
+  - Agent side: after #145 the agent wrote `prompts/rules.md` unchanged three times, despite the "unchanged" receipt.
+    The loop guard ended the decision. The likely cause is copying instead of editing, under a size warning that names
+    no file; the rules prompt kept a stale ACTION7 line.
+- C, view rollback: never exercised (no views in observer_runs.jsonl).
+- B: never exercised. The agent defined no python functions; 48 of its 89 python calls only printed fixed text.
+- Environment: 6 provider timeouts at 300 s and 1 connection error, about 30 of the 94 minutes. 31 of 209 agent
+  requests read nothing from the provider's cache; they carried 75% of the agent's budget tokens (the context grew to
+  about 105k tokens). The previous qwen run looked the same (74%).
+- Status: C's refiner path is reachable and changed refiner behaviour in this run. Adoption by the agent failed once.
+  Net benefit is unverified: this is one run, not a causal trial. The levels match the earlier qwen runs (1, 2, 1, 0).
+  The lower cost per action cannot be attributed to C or B, given the provider-cache variance.
+
 Scripts and outputs (outside the repository): `C:\Users\qi\tmp\r04\cov\` — reuse-diag.mjs (hint replay, families,
 coverage), pyclass.mjs (python call kinds, view windows), rounds.mjs (request cost of comment-only rounds), defs.mjs
 (session functions), cells.mjs, ws.mjs, refdump.mjs; outputs reuse-*.json, pyclass-*.json, rounds-*.txt, defs-*.json.
