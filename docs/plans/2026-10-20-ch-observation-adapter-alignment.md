@@ -263,8 +263,10 @@ asks) and a long uncompacted transcript (39 requests over 20k uncached tokens ca
 the stall review used once and then not; net benefit, none in this run (0 levels; one run, with the gateway's timeouts as
 a confound).
 
-Next falsifiable checks (each needs a budget; none run): (1) the same version with `ARC_THIN_NO_EFFECT_REPEATS=3`, the
-one factor that separates this run's copying from the old-path runs; (2) a change for the user to decide: the transcript
-shows consecutive decisions that repeated the same calls once, with their count, as `collapseRepeatedCalls` does for
-rounds, so a copy has one predecessor instead of 29; (3) a stronger model (gpt-6.1-sol) on the same version, to separate
-qwen's limit (thinking off) from the mechanism.
+Next falsifiable checks (each needs a budget; none run): (1) a change for the user to decide: the transcript shows
+consecutive decisions that repeated the same calls once, with their count, as `collapseRepeatedCalls` already does for
+rounds, so a copy has one predecessor instead of 29 and the repetition is stated as a fact (nothing is blocked); (2) a
+stronger model (gpt-6.1-sol) on the same version, to separate qwen's limit (thinking off) from the mechanism; (3) only
+as a control that isolates the factor, not as the fix (the user ruled blocking repeats out as the answer on 2026-10-20):
+the same version with `ARC_THIN_NO_EFFECT_REPEATS=3`, the one setting that separates this run's copying from the
+old-path runs.
