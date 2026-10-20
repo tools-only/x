@@ -186,3 +186,35 @@ test('a run restarted right after the decision that completed a level (a fork fr
 		assert.match(second.inputs[0] ?? '', /^WHY NOW: level 1 reached at #2/);
 	} finally { await second.close(); await new Promise<void>((r) => w.server.close(() => r())); }
 });
+
+test('a rule in dispute starts one refinement per check version and level, not one per failing move', async () => {
+	// su15-lr-p13-q38 (2026-10-20): the rule a refinement scoped to level 1 cited a check that failed on every level-2 move;
+	// the dispute was raised again at each new failing move, 18 refinements in 27 actions rewrote the rules prompt.
+	const w = await world();
+	const h = await attach(w);
+	let settled = 0;
+	const settleAll = async (n: number) => {
+		await new Promise((r) => setTimeout(r, 1500));
+		while (settled < h.inputs.length) {
+			settled += 1;
+			await h.settle(reply(`FILE prompts/rules.md\n- Level 1: a click never changes the board, seen to #${n} (hyp.never)\nEND\nWHY #${n}`));
+		}
+	};
+	try {
+		await h.begin();
+		await h.call('memory', { hypotheses: [{ key: 'hyp.never', question: 'what a click does', claim: 'a click never changes the board',
+			check: 'def check(t):\n    return False\n' }] });
+		await h.call('write', { path: 'prompts/rules.md', content: '---\nactive: true\n---\n- Level 1: a click never changes the board (hyp.never)\n' });
+		await h.act({ action: 'ACTION6', x: 1, y: 1 });
+		for (let n = 2; n <= 5; n++) {
+			await h.begin();
+			await settleAll(n - 1);
+			await h.act({ action: 'ACTION6', x: n, y: n });
+		}
+		await h.begin();
+		await settleAll(5);
+		const disputes = h.rows('refiner.jsonl').filter((row) => row.kind === 'start' && /the rule is in dispute/.test((row.triggers ?? []).join(' ')));
+		assert.equal(disputes.length, 1, JSON.stringify(disputes.map((row) => row.triggers)));
+		assert.match(h.file('workspace/prompts/rules.md'), /seen to #1 \(hyp\.never\)/);
+	} finally { await h.close(); await new Promise<void>((r) => w.server.close(() => r())); }
+});

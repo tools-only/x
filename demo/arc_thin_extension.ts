@@ -1785,7 +1785,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const findings = promotionTriggers(view);
 		// The kinds of moves the level has seen (P1), carried by the contest, repeated-failure and rival events.
 		const gaps = COVERAGE && !urgentOnly ? gapsNow() : undefined;
-		view.refuted.forEach((r, i) => due.push([`refuted:${r.key}:${r.failing.at(-1)}`, findings[view.candidates.length + i]]));
+		// A rule in dispute is raised once per check version and level, as a contested check is once per version. Raised at
+		// every new failing move, a rule scoped to level 1 whose check failed on every level-2 move started 18 refinements in
+		// 27 actions of su15-lr-p13-q38 (2026-10-20), each rewriting the rules prompt and so the system prompt.
+		view.refuted.forEach((r, i) => {
+			const check = memory.hypotheses.get(r.key)?.check;
+			const version = check ? claimVersion(check) : "";
+			const level = claimRows.find((row) => row.key === r.key && row.version === version && row.n === r.failing.at(-1))?.level ?? currentLevel();
+			due.push([`refuted:${r.key}@${version}:${level}`, findings[view.candidates.length + i]]);
+		});
 		// A hypothesis its own check contests (H2a), once per check version: only the agent rewrites it; a refinement can
 		// add a narrower one or set the next experiment.
 		if (!urgentOnly) due.push(...contestEvents([...memory.hypotheses].flatMap(([key, h]) => {
