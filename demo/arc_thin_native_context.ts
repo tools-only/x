@@ -106,7 +106,7 @@ export function projectNativeDecision(messages: any[], options: {
 /** A length recovery remains in the unfinished decision's projection, rather than moving its thinking before a new user. */
 export function nativeDecisionStart(messages: any[]): number {
  let at = messages.findLastIndex(m => m.role === 'user');
- while (at >= 0 && /^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(textOf(messages[at])))
+ while (at >= 0 && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW)\b/.test(textOf(messages[at])))
   at = messages.findLastIndex((m, i) => i < at && m.role === 'user');
  return at;
 }
