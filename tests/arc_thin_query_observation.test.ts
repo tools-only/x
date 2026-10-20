@@ -24,8 +24,7 @@ async function fixture(mode?: string) {
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   const root = mkdtempSync(join(tmpdir(), 'query-observation-'));
   const env = { ...process.env };
-  // The earlier native observation modes; ARC_THIN_CH (the default) is tested in arc_thin_ch_mode.
-  Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', ARC_THIN_CH: '0',
+  Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment',
     PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'disabled',
     ARC_HARNESS_CRITIC: 'disabled', ARC_REFINE_EVERY: '1000000' });
   if (mode) process.env.ARC_THIN_OBSERVATION = mode; else delete process.env.ARC_THIN_OBSERVATION;

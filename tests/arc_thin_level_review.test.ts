@@ -86,12 +86,10 @@ const reply = (text: string) => ({ role: 'assistant', content: [{ type: 'text', 
 /** One extension instance on `w` (a second one on the same world is a restart of the run). */
 async function attach(w: { url: string; root: string }) {
 	const saved = { ...process.env };
-	// Only the events under test start refinements: no schedule, goal-test or unchecked-belief events. The earlier native
-	// action path and prompt placement (arc_action {action, x, y}, active prompts in the system prompt); ARC_THIN_CH is tested
-	// in arc_thin_ch_mode.
+	// Only the events under test start refinements: no schedule, goal-test or unchecked-belief events.
 	Object.assign(process.env, { ARC_RUN_ROOT: w.root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', PI_ARC_BRIDGE_URL: w.url,
 		ARC_HARNESS_LEDGER: 'enabled', ARC_HARNESS_CRITIC: 'enabled', ARC_REFINE_EVERY: '1000', ARC_REFINE_GOAL_TEST_AFTER: '1000',
-		ARC_REFINE_UNCHECKED_AFTER: '1000', ARC_THIN_NO_EFFECT_REPEATS: '0', ARC_THIN_CH: '0' });
+		ARC_REFINE_UNCHECKED_AFTER: '1000', ARC_THIN_NO_EFFECT_REPEATS: '0' });
 	const tools = new Map<string, any>(), handlers = new Map<string, any>(); let active: string[] = [];
 	arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,
 		getActiveTools: () => active, getAllTools: () => [...tools.values()], on: (e: string, f: any) => handlers.set(e, f),

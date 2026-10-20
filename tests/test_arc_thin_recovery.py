@@ -61,7 +61,7 @@ def test_native_default_consolidation_is_disabled_and_legacy_remains_frozen():
 
 
 def test_runs_declare_image_input_unless_told_otherwise():
-    # Continual Harness sends a PNG of each grid it renders (ARC_THIN_CH attaches them when the model takes images).
+    # Image input is declared by default (the user's request, 2026-10-20); a text-only model is declared text.
     assert runner._input_modalities(None, {}) == ['text', 'image']
     assert runner._input_modalities(None, {'ARC_INPUT_MODALITIES': 'text'}) == ['text']
     assert runner._input_modalities('text', {'ARC_INPUT_MODALITIES': 'text,image'}) == ['text']

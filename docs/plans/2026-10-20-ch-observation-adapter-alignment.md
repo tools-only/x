@@ -1,5 +1,8 @@
 # Align the native observation and action adapter with Continual Harness (2026-10-20)
 
+**Status, later on 2026-10-20:** rolled back at the user's request; see [Rollback](#rollback-2026-10-20). The sections
+from "Request and claim" to "Evidence" describe the rolled-back version (`e79898f9`).
+
 ## Request and claim
 
 User, 2026-10-20: "Practically speaking, CH's observation and adapter design perform better. Therefore, please first
@@ -82,3 +85,42 @@ cache misses on it).
 - Proposed check: 1 qwen run (su15, 6M budget tokens) and 1 gpt-6.1-sol run, against su15-cb-q38-1 and su15-g61-1.
   Measure levels, budget tokens per action, uncached input per request, hand-written diff cells, list lengths and their
   truncations, ACTION7 use, and decisions ended by the 24-turn cap.
+
+## Rollback (2026-10-20)
+
+User, after the first run and a review of what this version contained: "My goal is only to keep r04's game observations
+and ARC-related predefined tools/information consistent with CH. But r04 itself is an independent architecture. I do not
+want extra mechanisms, constraints or limits leaking into r04." Then: "I prefer to first roll back the current
+CH-aligned implementation, then reimplement only the aligned components."
+
+What this version carried beyond that scope:
+
+- CH's decision loop: a fresh conversation per decision (no transcript of earlier decisions; the active prompts moved
+  out of the system prompt), TOOL RESULTS FROM PREVIOUS TURN, PREVIOUS CONVERSATION STOPPED WITHOUT ACTION, the TURN
+  block, the 24-turn cap in place of the 16-call cap, the "at most 2 tool calls per response" guideline, CH's record
+  format for every tool result, and the harness's RESET after GAME_OVER with RESET taken from the agent.
+- CH's handling of malformed calls (no repair), copied as part of "every detail".
+- r04 parts switched off or cut off: the no-effect refusal, the `then` list's stop at a missed prediction, the stop on
+  code acting after a level change; RESOURCES (P2's attempts line), the remaining-action count, prediction scores and
+  P1's overdue note no longer reached the agent; the runner's restart note was dropped with its "Decide the next
+  action." prompt.
+
+Evidence from the one real run, `runs/arc-ch-20261020/su15-ch-q38-1` (r04-ch `425536d1`, yibu qwen3.8-27b, thinking
+off, text and image): 38 decisions and one GAME_OVER review, 53 actions, 0 levels; it stopped on environment timeouts
+(`environment_outcome_unknown`) after 3,816 s. 1,617,746 budget tokens, 30.5k per action, against 15.0k in
+su15-cb-q38-1 (1 level) and 22.6k, 21.5k, 17.0k in su15-q38-1..3 of arc-models-20261019 (2, 1, 0 levels), all qwen with
+thinking off. 8 of 44 arc_action calls played nothing because `actions` arrived as malformed JSON text (brackets closed
+out of order); every one was a list whose entries carried a nested `predict`. ACTION6(48,15) was played 25 times in a
+row (#10-#34), 2 cells each, mostly in lists of 4, until GAME_OVER at #34; the no-effect refusal was off. No decision
+reached the 24-turn cap; decisions 3-5 made 18, 23 and 17 calls. No level was completed, so the level review never ran
+in this mode.
+
+Layers for this version: functional, passed (its tests); full chain, reached in one real run; adoption, lists were used
+(six lists of 4) and RESET was never sent (it could not be); net benefit, not shown, and the single run spent more per
+action than the four earlier runs (one run with confounds, not a comparison).
+
+The rollback reverts `e79898f9`: `demo/arc_thin_ch_view.ts`, `demo/prompts/arc_thin_native_ch_system.md`, the CH-mode
+tests, the goldens and their generator, and the extension, component and runner changes. Kept: this record, the
+image-input default (`425536d1`, the user's request), and the level review, which never depended on this mode. The
+native path is again the one before `e79898f9`: query observation, arc_action `{action, x, y, then}`, RESET as the
+agent's action, the transcript of earlier decisions, the 16-call cap and the no-effect refusal.

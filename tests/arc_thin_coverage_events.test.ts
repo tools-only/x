@@ -54,9 +54,8 @@ async function fixture(env: Record<string, string> = {}) {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const root = mkdtempSync(join(tmpdir(), 'coverage-events-'));
   const saved = { ...process.env };
-  // Only the events under test start refinements: no schedule, goal-test or unchecked-belief events. The earlier native
-  // action path (arc_action {action, x, y}); ARC_THIN_CH is tested in arc_thin_ch_mode.
-  Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', ARC_THIN_CH: '0',
+  // Only the events under test start refinements: no schedule, goal-test or unchecked-belief events.
+  Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment',
     PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'enabled', ARC_HARNESS_CRITIC: 'enabled',
     ARC_REFINE_EVERY: '1000', ARC_REFINE_GOAL_TEST_AFTER: '1000', ARC_REFINE_UNCHECKED_AFTER: '1000', ARC_THIN_NO_EFFECT_REPEATS: '0', ...env });
   const tools = new Map<string, any>(), handlers = new Map<string, any>(); let active: string[] = [];

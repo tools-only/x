@@ -759,8 +759,7 @@ def _level_review_default(explicit: bool | None, env: dict[str, str]) -> bool:
 
 def _input_modalities(explicit: str | None, env: dict[str, str]) -> list[str]:
     """What the model is declared to take: the argument, else ARC_INPUT_MODALITIES, else text and image (the default since
-    2026-10-20: Continual Harness sends a PNG of each grid it renders, and ARC_THIN_CH attaches them when the model takes
-    images). A text-only model needs input_modalities="text"."""
+    2026-10-20, at the user's request). A text-only model needs input_modalities="text"."""
     return list(resolve_input_modalities(explicit if explicit is not None else env.get("ARC_INPUT_MODALITIES") or "text,image"))
 
 
@@ -1044,16 +1043,10 @@ def run_arc_thin_e2e(
         stored_responses = settings["pi_api"] == "openai-responses"
         pi_env["ARC_THIN_RESPONSES_CONTINUATION"] = "1" if stored_responses else "0"
         pi_env["ARC_THIN_REASONING_MODE"] = "fields" if stored_responses else "all"
-        # The scripted smoke provider's steps call the earlier arc_action ({action, x, y, then}); Continual Harness's
-        # conventions (ARC_THIN_CH, native default on since 2026-10-20) are left to real runs and unit tests.
-        if pi_provider == "offline-arc-thin-smoke":
-            pi_env.setdefault("ARC_THIN_CH", "0")
         pi_env.update(extension_env or {})
-        chosen = pi_env.get("ARC_THIN_OBSERVATION", "query") if foundation == "native" else "inline"
-        if chosen not in ("query", "inline"):
+        observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "query") if foundation == "native" else "inline"
+        if observation_delivery not in ("query", "inline"):
             raise ValueError("ARC_THIN_OBSERVATION must be query or inline")
-        ch_view = foundation == "native" and pi_env.get("ARC_THIN_CH", "1") != "0"
-        observation_delivery = "ch" if ch_view else chosen
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    *(["--session", str(root / "session.jsonl")] if foundation == "native" else ["--no-session"]),
