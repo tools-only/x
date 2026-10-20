@@ -26,6 +26,11 @@ const EMPTY: Checkpoint = { version: 0, defs: [], blob: "", sha: "", names: [], 
 const digest = (checkpoint: Checkpoint) => createHash("sha256").update(JSON.stringify(checkpoint)).digest("hex");
 const kb = (chars: number) => `${Math.max(1, Math.round(chars / 1000))} KB`;
 const listed = (items: string[], limit = 300) => { const text = items.join(", "); return text.length > limit ? `${text.slice(0, limit)}…` : text; };
+/** A kept definition's parameters as written, "(grid, color)"; "class" for a class; "" when its source does not say. */
+const signatureOf = (name: string, source: string) => {
+  const m = new RegExp(`^\\s*(?:async\\s+)?(def|class)\\s+${name.replace(/[^\w]/g, "")}\\b\\s*(\\([^)]*\\))?`, "m").exec(source);
+  return !m ? "" : m[1] === "class" ? "class" : (m[2] ?? "").replace(/\s+/g, " ");
+};
 
 export type SessionOutcome = { receipt: string; committed: boolean; version: number; event?: string };
 
@@ -87,7 +92,7 @@ export class PythonSession {
   /** Names whose function was already reported lost to a value (once per name). */
   private overwritten = new Set<string>();
   holding(): Record<string, string> {
-    const brief = this.live ?? Object.fromEntries([...this.state.defs.map(([name]) => [`${name}()`, ""] as [string, string]),
+    const brief = this.live ?? Object.fromEntries([...this.state.defs.map(([name, source]) => [`${name}()`, signatureOf(name, source)] as [string, string]),
       ...this.state.names.map((name) => [name, this.state.brief?.[name] ?? ""] as [string, string])]);
     const names = Object.keys(brief);
     return Object.fromEntries([...names.filter((name) => name.endsWith("()")), ...names.filter((name) => !name.endsWith("()")).sort()]
@@ -95,12 +100,18 @@ export class PythonSession {
   }
   /** The live kernel ended: what it held beyond the checkpoint is gone, and the next kernel starts from the checkpoint. */
   kernelEnded() { this.live = undefined; this.noted = { over: "", unsupported: new Set() }; }
-  /** One line for the agent: the names its python code can use without rebuilding anything. Empty when there are none. */
+  /**
+   * One line for the agent: the names its python code can use without rebuilding anything, functions with their
+   * parameters (work memory: re-typed helpers were mostly helpers the agent could not see how to call). Empty when there
+   * are none.
+   */
   view(limit = 900): string {
     const entries = Object.entries(this.holding());
     if (!entries.length) return "";
     const head = "PYTHON SESSION (defined by your earlier python calls and still there; use these names instead of recomputing or re-reading): ";
-    let text = entries.map(([name, what]) => what ? `${name} ${what}` : name).join(", ");
+    const item = ([name, what]: [string, string]) => name.endsWith("()") && what.startsWith("(") ? `${name.slice(0, -2)}${what}`
+      : name.endsWith("()") && what === "class" ? `${name.slice(0, -2)} (class)` : what ? `${name} ${what}` : name;
+    let text = entries.map(item).join(", ");
     if (head.length + text.length > limit) text = entries.map(([name]) => name).join(", ");
     if (head.length + text.length > limit) {
       const shown: string[] = [];

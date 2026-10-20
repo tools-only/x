@@ -8,6 +8,7 @@ import { PythonSession } from './arc_thin_python_session.ts';
 import { TaskPythonPool } from './pi_task_python_pool.ts';
 import type { KernelRequest, PythonKernel } from './pi_task_python_kernel.ts';
 import { codeShape, componentLines, coveringComponent, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
+import { blockNote, cellRefs, codeKey, commentLines, repeatedBlocks } from './arc_thin_work_memory.ts';
 
 /** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
@@ -24,6 +25,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   pythonSession?: boolean;
   /** Run the parent's python calls in a live kernel (default true); false: a fresh sandbox per call, restored from the checkpoint. */
   pythonKernel?: boolean;
+  /** Work memory (default true): python calls get addresses, repeats name what they repeat, cell(k) runs call k again. */
+  workMemory?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
   sessionDir?: string };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
@@ -107,6 +110,33 @@ export class NativeRuntime {
     return out;
   }
   private pythonRuns: PythonRun[] = [];
+  /**
+   * Work memory (docs/plans/2026-10-20-work-memory.md): the parent's python calls by address, P1, P2, ... Every result
+   * starts with its address, a repeat names the call it repeats, lines retyped from an earlier call name that call's lines,
+   * and cell(k) (cell(k, a, b)) runs call k's code (its lines a to b) again. `n`, `session` and `workspace` are the state,
+   * session version and workspace version the call ran on (for the same-state cache).
+   */
+  private calls: Array<{ id: number; key: string; comments: string; code: string; n: number; session: number; workspace: number;
+    pure: boolean; ok: boolean; result?: string }> = [];
+  /** Calls of this run before a restart (python_calls.jsonl): their code stays runnable with cell(k). */
+  seedCalls(rows: any[]) {
+    for (const r of rows) if (Number.isInteger(r?.id) && typeof r.code === 'string')
+      this.calls.push({ id: r.id, key: codeKey(r.code), comments: commentLines(r.code).join('\n'), code: r.code, n: -1, session: -1, workspace: -1, pure: false, ok: Boolean(r.ok) });
+  }
+  /** The code of call k and of the calls it runs with cell(), for the guest's cell(). */
+  private cellSources(code: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    const todo = cellRefs(code);
+    while (todo.length) {
+      const id = todo.pop()!;
+      if (out[id] !== undefined) continue;
+      const call = this.calls.find(c => c.id === id);
+      if (!call) continue;
+      out[id] = call.code;
+      todo.push(...cellRefs(call.code));
+    }
+    return out;
+  }
   /**
    * The parent's python session: the namespace its python calls share, checkpointed after every call and restored
    * after a restart (arc_thin_python_session.ts). Saved tools and subagents do not see it.
@@ -384,9 +414,9 @@ export class NativeRuntime {
    * The tool result: what the code returned, then what it did in the game; acting ends the decision. `valueKept`: the
    * final value stays in the live session as _, so a result shortened here is still whole there.
    */
-  private finish(body: string, result: NativeResult & { acted?: Acted }, valueKept = false) {
-    let shownBody = this.host.receipt?.(body) ?? body;
-    if (valueKept && shownBody !== body) shownBody += '\n(the whole final value is _ in the python session until your next final expression: take the part you need from it)';
+  private finish(body: string, result: NativeResult & { acted?: Acted }, valueKept = false, mark = '') {
+    let shownBody = mark + (this.host.receipt?.(body) ?? body);
+    if (valueKept && shownBody !== mark + body) shownBody += '\n(the whole final value is _ in the python session until your next final expression: take the part you need from it)';
     const acted = result.acted;
     if (!acted?.lines.length) return text(shownBody + (acted?.stopped ? `\n(no action taken: ${acted.stopped})` : ''), !result.ok);
     return { ...text([shownBody, `ACTED ${acted.lines.length} action(s)${acted.stopped ? `; stopped: ${acted.stopped}` : ''}. This decision ends.`,
@@ -400,6 +430,26 @@ export class NativeRuntime {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
   }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
+    // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
+    // state (no action, no session change, no workspace write since) gets that call's result instead of a second run.
+    const parent = !readonly && session === this.session && this.host.workMemory !== false;
+    const key = codeKey(code), comments = commentLines(code).join('\n');
+    // A repeat names the first call with this code; the same-state check compares with the latest one.
+    const first = parent ? this.calls.find(c => c.key === key) : undefined;
+    const latest = parent ? this.calls.filter(c => c.key === key).at(-1) : undefined;
+    const id = parent ? Math.max(0, ...this.calls.map(c => c.id)) + 1 : 0;
+    if (first && latest && save === undefined && latest.pure && latest.ok && latest.result !== undefined && latest.n === this.host.actionCount()
+      && latest.session === (session?.version ?? 0) && latest.workspace === this.host.workspace.version) {
+      this.calls.push({ ...latest, id, comments, code });
+      this.host.log('python_calls.jsonl', { id, same: first.id, cached: true, n: latest.n, decision: this.decision(), ok: true, code });
+      return text(`[P${id} = P${first.id}: same code on the same state, not run again]\n${this.host.receipt?.(latest.result) ?? latest.result}`);
+    }
+    // A new cell that retypes whole statements of an earlier one says which lines (cell(k, a, b) runs them).
+    const blocks = parent && !first ? repeatedBlocks(code, this.calls.filter((c, i, all) => all.findIndex(o => o.key === c.key) === i)) : [];
+    const mark = !parent ? '' : first ? `[P${id} = P${first.id}: same code${first.comments === comments ? '' : ', other comments'}]\n`
+      : blocks.length ? `[P${id}: ${blockNote(blocks)}]\n` : `[P${id}]\n`;
+    const earlier = first;
+    const cells = parent ? this.cellSources(code) : {};
     const saveReceipts: string[] = [];
     let via: string | undefined = !readonly && this.host.act ? 'python' : undefined;
     if (save !== undefined && !readonly) {
@@ -416,7 +466,8 @@ export class NativeRuntime {
     }
     const snap = this.snapshot(); const started = Date.now();
     const kit = kitOf(this.host.binder.versionMap());
-    const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}) };
+    const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}),
+      ...(Object.keys(cells).length ? { cells } : {}) };
     // The parent's session runs in its live kernel; a subagent's session and saved tools keep a fresh sandbox per call.
     const live = Boolean(this.kernel && session && session === this.session);
     const result = live ? await this.executeKernel(input, signal, via) : await this.execute(input, signal, undefined, via);
@@ -461,8 +512,19 @@ export class NativeRuntime {
       this.host.log('component_runs.jsonl', { kind: 'cover_hint', path: covering, level: this.host.level(), decision, n: this.host.actionCount() });
     }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
-    return this.finish([...receipts, shown(result), sessionNotes, coverNote, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
-      live && result.ok && Boolean((result.value as any)?.has_value));
+    const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
+      live && result.ok && Boolean((result.value as any)?.has_value), mark);
+    if (parent) {
+      const acted = Boolean(result.acted?.lines.length);
+      // Only a computation that acted, wrote, remembered or saved nothing can be answered again from its result.
+      const pure = !acted && !result.ops?.length && save === undefined && !/\benv\.(act|remember|restore)\s*\(/.test(code);
+      // What the code printed and returned, without this call's notes, answers a repeat on the same state.
+      this.calls.push({ id, key, comments, code, n: this.host.actionCount(), session: session?.version ?? 0, workspace: this.host.workspace.version,
+        pure, ok: result.ok, result: shown(result) });
+      this.host.log('python_calls.jsonl', { id, ...(earlier ? { same: earlier.id } : {}), ...(Object.keys(cells).length ? { cells: Object.keys(cells).map(Number) } : {}),
+        ...(blocks.length ? { blocks } : {}), n: this.host.actionCount(), decision, ok: result.ok, acted, code });
+    }
+    return out;
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
     const component = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));

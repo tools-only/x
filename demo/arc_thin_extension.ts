@@ -53,6 +53,7 @@ import { SKILL_LIMITS, arcSkillFoundation, guestFailure, arcSkillGuestProgram, t
 import { backtestCases, renderBacktest, scoreBacktest, type GuestCaseResult, type ModelCheck } from "./arc_thin_backtest.ts";
 import { sharedTaskPythonPool } from "./pi_task_python_pool.ts";
 import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, maskedHashes, normIdea, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
+import { boardFacts, boardText, noveltyOf, objectRegions, spinStreak } from "./arc_thin_work_memory.ts";
 import {
 	CRITIC_SYSTEM, NATIVE_CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
 } from "./arc_thin_critic.ts";
@@ -187,6 +188,12 @@ type ActionRow = {
 	/** An earlier action played from the same board (status cells masked) whose result differed from this one's. */
 	diverges_from?: number;
 	/**
+	 * Work memory (docs/plans/2026-10-20-work-memory.md): whether this action told anything new. `known`: an earlier action
+	 * from the same board (status cells masked) gave the same result (`known_from`); `diverged`: every such earlier action
+	 * gave a different one; `new`: none was played from that board.
+	 */
+	novelty?: "new" | "known" | "diverged"; known_from?: number;
+	/**
 	 * Continual Harness's step record (ARC_THIN_OBSERVATION=ch): who played it (arc_action, python, tool: <name>), its
 	 * place in an action list (the list's reasoning is the first entry's note, the entries it cut its batch_rejected),
 	 * the state and levels before it, and the change as colour transitions and cells.
@@ -226,30 +233,7 @@ const tokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n
  * grid's most common colour, the member nearest the region's centre, largest regions first.
  */
 function regionCells(grid: number[][], limit = 32): Array<{ x: number; y: number }> {
-	const counts = new Map<number, number>();
-	for (const row of grid) for (const cell of row) counts.set(cell, (counts.get(cell) ?? 0) + 1);
-	const background = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
-	const width = Math.max(0, ...grid.map((row) => row.length)), seen = new Set<number>(), regions: Array<Array<[number, number]>> = [];
-	for (let y = 0; y < grid.length; y += 1) for (let x = 0; x < grid[y].length; x += 1) {
-		if (grid[y][x] === background || seen.has(y * width + x)) continue;
-		const colour = grid[y][x], cells: Array<[number, number]> = [], stack: Array<[number, number]> = [[x, y]];
-		seen.add(y * width + x);
-		while (stack.length) {
-			const [cx, cy] = stack.pop()!;
-			cells.push([cx, cy]);
-			for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]] as Array<[number, number]>) {
-				if (ny < 0 || ny >= grid.length || nx < 0 || nx >= grid[ny].length || seen.has(ny * width + nx) || grid[ny][nx] !== colour) continue;
-				seen.add(ny * width + nx);
-				stack.push([nx, ny]);
-			}
-		}
-		regions.push(cells);
-	}
-	return regions.sort((a, b) => b.length - a.length).slice(0, limit).map((cells) => {
-		const mx = cells.reduce((s, [x]) => s + x, 0) / cells.length, my = cells.reduce((s, [, y]) => s + y, 0) / cells.length;
-		const [x, y] = cells.reduce((best, cell) => Math.hypot(cell[0] - mx, cell[1] - my) < Math.hypot(best[0] - mx, best[1] - my) ? cell : best);
-		return { x, y };
-	});
+	return objectRegions(grid, limit).map(({ x, y }) => ({ x, y }));
 }
 
 export default function arcThinExtension(pi: ExtensionAPI) {
@@ -316,6 +300,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// ARC_THIN_SESSION_VIEW=0 leaves the listing out.
 	const pythonKernel = native && process.env.ARC_THIN_PYTHON_KERNEL !== "0" && process.env.ARC_THIN_PYTHON_SESSION !== "0";
 	const sessionView = native && process.env.ARC_THIN_SESSION_VIEW !== "0";
+	// Work memory (docs/plans/2026-10-20-work-memory.md): each piece of work exists once and a repeat becomes a reference.
+	// Earlier decisions show repeated python as cell(k) and identical decisions once; each action says whether its result was
+	// already known from the same board; the head shows what this board already showed and, after a decision that learned
+	// nothing new, says so and pins a move never played from it. ARC_THIN_WORK_MEMORY=0 turns all of it off.
+	const workMemory = native && process.env.ARC_THIN_WORK_MEMORY !== "0";
 	// P4 (2026-10-19): the agent called refine and consult 0 times in 10 or more su15 runs with either model. ARC_THIN_LEAN=1
 	// leaves both tools out, with the system prompt's subagent line and the long form of its skill line (one at a time:
 	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
@@ -568,7 +557,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Native receipts say what changed (the bridge's count and box) and when given coordinates were ignored.
 		return `#${row.n} ${actionLabel(row)} → ${native ? `${changeText(row)} ` : ""}level_changed=${row.level_changed} ` +
 			`state=${row.state} levels=${row.levels_completed} ${budgetText(budget)}` +
-			(resets ? ` resets=${resets}` : "") + (native && row.ignored_xy ? ` (x,y ignored: ${row.action} takes no coordinates)` : "");
+			(resets ? ` resets=${resets}` : "") + (native && row.ignored_xy ? ` (x,y ignored: ${row.action} takes no coordinates)` : "") +
+			// Work memory: a result this board had already shown, from the same action.
+			(row.novelty === "known" && row.known_from !== undefined ? ` (known: the same result as #${row.known_from} from this board)` : "");
 	}
 
 	// ---------------------------------------------------------------- per-decision state
@@ -608,6 +599,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		consultPoint: boolean; consulted: boolean;
 		/** A level or stall review saved its own file (prompts/lessons.md, prompts/review.md); if not, the one write after its last call (gate). */
 		reviewSaved: boolean; reviewWrite?: string;
+		/** Work memory: the decisions before this one in a row that learned nothing new (spinStreak), when any. */
+		spin?: ReturnType<typeof spinStreak>;
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
@@ -838,6 +831,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}
 				refinerNotices = [];
 			}
+			// Work memory: after a decision that learned nothing new, the head opens by saying so (after the call points).
+			if (run.spin?.streak) out.unshift(["spin", spinText(run.spin)]);
 			// Call points (A5) open the head: a refine point before a decision acts, a consult before a review writes. The
 			// review's record is also written where the subagent it consults can read it.
 			if (run.refinePoint && run.refinePointText) out.unshift(["refine_point", run.refinePointText]);
@@ -882,6 +877,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			try { image = renderArcFrameImage(observation).content; }
 			catch (error) { logError("context:image", error); }
 		}
+		// Work memory: on a board seen before, what was played from it and what came of it, and what never was.
+		let board = "";
+		if (workMemory && !run.consolidating && observation) {
+			try { board = boardText(boardFactsNow()); } catch (error) { logError("context:board", error); }
+		}
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
 		const body = sections.map(([, value]) => value).join("\n\n");
@@ -889,12 +889,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("working_set.jsonl", {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
-				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string]].map(([name, value]) => [name, value.length])),
+				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(board ? [["board", board] as [string, string]] : [])]
+					.map(([name, value]) => [name, value.length])),
+				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
 				...(seen ? { images: seen.images.length, rendered_grids: seen.labels } : {}),
 				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body,
 			});
 		} catch (error) { logError("context:working_set", error); }
-		return { text: `${body}\n\n${stateText}`, image, ...(seen ? { images: seen.images } : {}) };
+		return { text: `${body}\n\n${stateText}${board ? `\n\n${board}` : ""}`, image, ...(seen ? { images: seen.images } : {}) };
 	}
 
 	/** Who played an action, as CH's history labels it: arc_action, python, or tool: <name>. */
@@ -1854,6 +1856,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const available = availableActions(observation);
 		if (available.length && !available.includes(move.action)) return `${move.action} is not available (available: ${available.join(", ")})`;
 		if (move.action === "ACTION6" && (move.x === undefined || move.y === undefined)) return "ACTION6 needs its cell, as ACTION6(x,y)";
+		// Work memory: a move whose result this board has already shown, every time the same, would test nothing new.
+		if (workMemory && move.action !== "RESET" && observation) {
+			const tried = boardFactsNow().tried.find((t) => t.label === moveText(move));
+			if (tried && tried.results === 1) return `already played from this board ${tried.count} time${tried.count === 1 ? "" : "s"}, each time: ${tried.outcome}`;
+		}
 		return undefined;
 	}
 	/** The save receipt's note on a review file's test lines: how many will be pinned, and why the others will not. */
@@ -3024,17 +3031,53 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * cells and lines masked as the ledger masks them, that gave a different result. The board then does not hold all that
 	 * decides an outcome (a counter, a timer, what was done before); counting only, the meaning is the agent's.
 	 */
-	function divergentFrom(row: ActionRow, after: number[][] | undefined): number | undefined {
+	function divergentFrom(row: ActionRow, after: number[][] | undefined, hashes?: Map<number, string>): number | undefined {
 		if (!after || !grids.has(row.n - 1)) return undefined;
-		const states = new Map(grids);
-		states.set(row.n, after);
-		const { hash } = maskedHashes(states);
+		const hash = hashes ?? boardHashes([row.n, after]);
 		const before = hash.get(row.n - 1), result = hash.get(row.n), label = actionLabel(row);
 		for (let i = trajectory.length - 1; i >= 0; i -= 1) {
 			const earlier = trajectory[i];
 			if (actionLabel(earlier) === label && hash.get(earlier.n - 1) === before && hash.has(earlier.n) && hash.get(earlier.n) !== result) return earlier.n;
 		}
 		return undefined;
+	}
+
+	/** Board hashes, status cells and lines masked as the ledger masks them, over the states recorded so far (and `extra`). */
+	function boardHashes(extra?: [number, number[][]]): Map<number, string> {
+		return maskedHashes(extra ? new Map([...grids, extra]) : grids).hash;
+	}
+
+	/** Work memory: what this board already showed, for the head, when it was seen before. */
+	function boardFactsNow() {
+		return boardFacts(trajectory, boardHashes(), trajectory.length, gridOf(observation), availableActions(observation));
+	}
+
+	/**
+	 * Work memory: after a decision whose actions only repeated results this board had already shown (spinStreak), the
+	 * first candidate never played from this board becomes the next experiment, when nothing else is pinned. A computed
+	 * suggestion like B1's disagreement; what to play stays the agent's.
+	 */
+	async function pinNovelty(): Promise<void> {
+		if (pin || !workMemory || !nativeRuntime || !observation || spinStreak(trajectory).streak < 1) return;
+		const next = boardFactsNow().untried[0];
+		if (!next) return;
+		const move: Move = { action: next.action, ...(next.x !== undefined && next.y !== undefined ? { x: next.x, y: next.y } : {}) };
+		const gaps = gapsNow();
+		const id = `novel:${decision}`;
+		const old = setPin(id, move, classify(move, gaps.cov, gaps.available).kind, "never played from this board", NEXT_WITHIN, undefined,
+			{ exact: true, test: { index: 1, total: 1, text: "never played from this board", source: "this board" } });
+		toldAt.set(id, trajectory.length);
+		append("refiner.jsonl", { kind: "told", id, at: trajectory.length, decision });
+		append("work_memory.jsonl", { kind: "novelty_pin", move: moveText(move), at: trajectory.length, decision });
+		await writeStrategy(pinned(readStrategy()?.text ?? "", old));
+	}
+
+	/** Work memory: the head's first section after a decision that learned nothing new. */
+	function spinText(spin: ReturnType<typeof spinStreak>): string {
+		const novel = pin?.edit.startsWith("novel:") ? ` Next experiment pinned: ${moveText(pin.move)}, never played from this board.` : "";
+		return `NO NEW INFORMATION: your last ${spin.streak === 1 ? "decision" : `${spin.streak} decisions`} only played ` +
+			`${spin.moves.slice(0, 4).join(", ")}${spin.moves.length > 4 ? ", …" : ""}, whose results this board had already shown` +
+			`${spin.since !== undefined ? ` (first at #${spin.since})` : ""}. Playing them again shows nothing new.${novel}`;
 	}
 
 	/**
@@ -3141,7 +3184,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			return prediction && (prediction.cells || prediction.level_changed !== undefined || prediction.state !== undefined)
 				? { path, version, ...scorePrediction(prediction, outcome) } : { path, version, error: "returned no checkable field (cells, level_changed, state)" };
 		});
-		const diverges = native && !control ? divergentFrom(row, afterGrid) : undefined;
+		const hashes = native && !control && afterGrid && grids.has(row.n - 1) ? boardHashes([row.n, afterGrid]) : undefined;
+		if (workMemory && hashes) {
+			const known = noveltyOf(row, trajectory, hashes);
+			row.novelty = known.novelty;
+			if (known.known_from !== undefined) row.known_from = known.known_from;
+		}
+		const diverges = native && !control ? divergentFrom(row, afterGrid, hashes) : undefined;
 		if (diverges !== undefined) row.diverges_from = diverges;
 		trajectory.push(row);
 		actionTimes.push(Date.now());
@@ -3474,6 +3523,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					"shown after every new state; code that defines predict(state, action) predicts every action and is scored; other code is " +
 					"called later as the tool name(args={...}). " +
 					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
+						(workMemory ? "Each result starts with the call's address, [P12]; cell(12) runs that call's code again on the current state, " +
+							"cell(12, a, b) only its lines a to b, and a call that repeats an earlier one, or some of its lines, is told so. " : "") +
 						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
 							"names and print only what you need to read; the final value is also _. " : "") +
 					"Combine computation and feedback checks in code; print or return selected evidence. Saved tools run without this namespace."
@@ -3716,6 +3767,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       ...(pythonMemory ? { remember: pythonMemory } : {}),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
+      workMemory,
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
       sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),
@@ -3740,6 +3792,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         return result;
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
+    nativeRuntime.seedCalls(readRows('python_calls.jsonl'));
     nativeRuntime.seedViews(readRows('observer_runs.jsonl'));
     // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background. At a refine
     // point (every REFINE_EVERY actions) the decision acts only after this call (A5).
@@ -3790,7 +3843,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// saved since the last request are bound first, so a predictor saved in the last decision takes part.
 		if (COVERAGE && refinerActive()) {
 			binder?.boundary();
-			try { await settlePin(); await settleReviewTests(); if (!reviewing) await pinDisagreement(); }
+			try { await settlePin(); await settleReviewTests(); if (!reviewing) { await pinDisagreement(); await pinNovelty(); } }
 			catch (error) { logError("pin:settle", error); }
 		}
 		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.
@@ -3824,6 +3877,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		// Work memory: a decision after one that learned nothing new opens by saying so.
+		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review consults before it writes; every REFINE_EVERY actions since the agent's last refine
 		// call, a decision acts only after refine(focus).
 		run.consultPoint = reviewConsult && run.consolidating;
@@ -4023,7 +4078,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
 		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
-			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, collapseRepeats, ...(workspace ? { save: saveHistoryResult } : {}) }))
+			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, collapseRepeats, references: workMemory, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
 		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).
