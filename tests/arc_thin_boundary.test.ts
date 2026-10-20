@@ -5,7 +5,7 @@ import { applyRows, emptyMemory, planMemoryUpdate } from "../demo/arc_thin_memor
 
 // Shapes taken from refused memory calls in the 2026-10-09 thin-hyp runs (pi-events.jsonl).
 
-test("an action list sent as text with its brackets closed out of order plays its actions; a bad prediction is dropped", () => {
+test("an action list sent as text with its brackets closed out of order plays its actions; a bad prediction is dropped; other call shapes read as lists", () => {
 	// su15-ch-q38-1 decisions 3 and 6 (2026-10-20), as the gateway passed them on.
 	const three = repairActionList({ reasoning: "r", actions: '\n[{"name": "ACTION6", "x": 31, "y": 5, "predict": {"text": "a different effect", "cells": []}]}]\n' });
 	assert.deepEqual(three.actions, [{ name: "ACTION6", x: 31, y: 5, predict: { text: "a different effect" } }]);
@@ -17,7 +17,13 @@ test("an action list sent as text with its brackets closed out of order plays it
 		[{ name: "ACTION6", x: 12, y: 30 }, { name: "RESET" }, { name: "ACTION3" }]);
 	assert.deepEqual(repairActionList({ reasoning: "r", actions: [{ name: "ACTION6", x: 70, y: "3", predict: "a line" }] }).actions,
 		[{ name: "ACTION6", x: 63, y: 3, predict: { text: "a line" } }]);
-	// Text that is no list stays as it came, for the tool's own check to report.
+	// The earlier arc_action shape reads as the list it describes; `action` names an entry; a prediction beside a list is its
+	// first entry's.
+	assert.deepEqual(repairActionList({ action: "ACTION6", x: 3, y: 4, predict: { level_changed: false }, then: '["ACTION1", {"action": "A2"}]', note: "old" }),
+		{ reasoning: "old", actions: [{ name: "ACTION6", x: 3, y: 4, predict: { level_changed: false } }, { name: "ACTION1" }, { name: "ACTION2" }] });
+	assert.deepEqual(repairActionList({ reasoning: "r", actions: [{ action: "ACTION1" }, "ACTION2"], predict: { level_changed: true } }).actions,
+		[{ name: "ACTION1", predict: { level_changed: true } }, { name: "ACTION2" }]);
+	// Text that is no list stays as it came, for the schema check to report.
 	assert.equal(repairActionList({ reasoning: "r", actions: "move right" }).actions, "move right");
 });
 

@@ -72,7 +72,7 @@ import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClai
 	CONTEST_MIN_DECIDED, MOVE_FORM, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged, type Gaps } from "./arc_thin_claims.ts";
 import { MoveFacts, REPEAT_ATTEMPTS, attemptLine, attempts, classify, coverage, coverageText, failedUnderOneModel, kindText, modelChanges, moveKinds,
 	moveText, parseMove, rareKinds, repeatEvent, type Attempt, type Move } from "./arc_thin_coverage.ts";
-import { LESSONS_CHARS, LESSONS_PATH, LEVEL_REVIEW_CALLS, levelRecord } from "./arc_thin_level_review.ts";
+import { LESSONS_CHARS, LESSONS_PATH, LEVEL_REVIEW_CALLS, REVIEW_PATH, levelRecord } from "./arc_thin_level_review.ts";
 
 /**
  * A hypothesis check as the native memory tool describes it where the agent writes one: the keys a move carries (strict:
@@ -259,8 +259,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// prompts). ARC_THIN_COLLAPSE_REPEATS=0 keeps every copy.
 	const collapseRepeats = process.env.ARC_THIN_COLLAPSE_REPEATS !== "0";
 	// Native: an action played this many times in a row, each changing at most NO_EFFECT_CELLS cells, is refused the next
-	// time until another action is played (2026-10-17). ARC_THIN_NO_EFFECT_REPEATS=0 turns the refusal off.
-	const noEffectRepeats = !native ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? 3
+	// time until another action is played (2026-10-17). ARC_THIN_NO_EFFECT_REPEATS=0 turns the refusal off. Off by default
+	// with ARC_THIN_OBSERVATION=ch: the user judged blocking repeats neither a fundamental nor a general fix (2026-10-20);
+	// a run that makes no progress gets a stall review instead (the runner's STALL REVIEW).
+	const noEffectRepeats = !native ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? (chView ? 0 : 3)
 		: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NO_EFFECT_REPEATS) || 0));
 	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
 	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
@@ -518,6 +520,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		consolidating: boolean; forceAction: boolean; assistantMessages: number; toolCalls: number; arcSeenInMessage: number;
 		/** A review after a level change (the runner's "LEVEL REVIEW" prompt): the level record, at most LEVEL_REVIEW_CALLS calls. */
 		levelReview: boolean;
+		/** A review after many actions without a level completed (the runner's "STALL REVIEW" prompt): the level so far. */
+		stallReview: boolean;
 		/** Native decisions: calls that look things up or compute, and calls that record (see gate). */
 		budgetNote?: string;
 		endBatchAt: number; actionDone: boolean;
@@ -540,7 +544,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		answered: boolean;
 	};
 	const freshRun = (): Run => ({
-		consolidating: false, levelReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
+		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
+		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
 	});
@@ -610,9 +615,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** `shown`: actions whose receipts are already in the history in view (native mode); they are not listed again. */
 	function recentText(shown?: Set<number>): string {
 		if (trajectory.length === 0) return shown ? "" : "RECENT ACTIONS: none yet.";
-		// A consolidation turn reviews every action since the previous one, not only the last few; a level review, the level.
+		// A consolidation turn reviews every action since the previous one, not only the last few; a level review, the level;
+		// a stall review, the level being played.
 		if (run.consolidating) {
 			if (run.levelReview) return levelReviewText();
+			if (run.stallReview) return stallReviewText();
 			const rows = trajectory.slice(run.reviewFrom).slice(-REVIEW_ACTIONS);
 			return [`ACTIONS SINCE YOUR LAST REVIEW (#${rows[0]?.n ?? trajectory.length}–#${trajectory.length}, ${rows.length} of ${trajectory.length}):`,
 				...rows.map(recentLine)].join("\n");
@@ -632,8 +639,24 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		let repeated: number[] = [];
 		try { repeated = buildLedger(trajectory, [], grids).repeats.map((repeat) => repeat.n); }
 		catch (error) { logError("review:repeats", error); }
-		return levelRecord({ rows: trajectory, completed: currentLevel(), memoryRows: readRows("memory.jsonl"), checks: claimRows,
+		const record = levelRecord({ rows: trajectory, completed: currentLevel(), memoryRows: readRows("memory.jsonl"), checks: claimRows,
 			repeated, python: readRows("component_runs.jsonl") });
+		// A stall review of the level now completed is still an active prompt: what to do with it is the agent's to decide.
+		return reviewText() ? `${record}\n- ${REVIEW_PATH}, your stall review of this level, is still active: delete it, or keep in ` +
+			`${LESSONS_PATH} what still helps.` : record;
+	}
+
+	/**
+	 * What a stall review starts from (docs/plans/2026-10-20-stall-review.md): the level being played, as the level review
+	 * shows a completed one: its actions by attempt, its hypotheses, the moves that gave an earlier move's result again
+	 * (the ledger's repetitions) and python run again with the same code. What it means is the agent's to write.
+	 */
+	function stallReviewText(): string {
+		let repeated: number[] = [];
+		try { repeated = buildLedger(trajectory, [], grids).repeats.map((repeat) => repeat.n); }
+		catch (error) { logError("review:repeats", error); }
+		return levelRecord({ rows: trajectory, completed: currentLevel() + 1, ongoing: true, memoryRows: readRows("memory.jsonl"),
+			checks: claimRows, repeated, python: readRows("component_runs.jsonl") });
 	}
 
 	/**
@@ -766,7 +789,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const body = sections.map(([, value]) => value).join("\n\n");
 		try {
 			append("working_set.jsonl", {
-				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
+				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
+				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string]].map(([name, value]) => [name, value.length])),
 				...(seen ? { images: seen.images.length, rendered_grids: seen.labels } : {}),
 				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body,
@@ -1864,6 +1888,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try { return workspace.read(LESSONS_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 2 * LESSONS_CHARS); }
 		catch { return ""; }
 	}
+	/** The body of the agent's prompts/review.md (its stall review of the level being played) while it is active, or "". */
+	function reviewText(): string {
+		if (!workspace || !binder?.active().some((c) => c.kind === "prompt" && c.path === REVIEW_PATH)) return "";
+		try { return workspace.read(REVIEW_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 2 * LESSONS_CHARS); }
+		catch { return ""; }
+	}
 
 	/**
 	 * A refinement started by a level change writes each rule line it adds to the rules prompt for the level that showed it
@@ -2029,6 +2059,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
 			`CURRENT ${RULES_PATH}${rulesText() ? ` (v${binder!.versionMap()[RULES_PATH] ?? "?"})` : " (not written yet)"}:\n${rulesText() || "(empty)"}`,
 			...((lessons) => lessons ? [`THE AGENT'S ${LESSONS_PATH} (its own review of the last level it completed; refinements do not edit it):\n${lessons}`] : [])(lessonsText()),
+			...((review) => review ? [`THE AGENT'S ${REVIEW_PATH} (its own review of the level it has not completed; refinements do not edit it):\n${review}`] : [])(reviewText()),
 			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
 			`SAVED TOOLS:\n${saved.map((c) => `--- ${c.path} v${c.version}${c.view ? " (view)" : ""} ${refinedPaths.has(c.path) ? "REFINED" : "AGENT'S"}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
 			...(samples.length ? [`REPEATED PYTHON (latest calls):\n${samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n")}`] : []),
@@ -2151,9 +2182,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				return;
 			}
 			if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
-			// prompts/lessons.md is the agent's own review of its levels: refinements read it and never write it.
-			if (edit.path === LESSONS_PATH) {
-				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `${LESSONS_PATH} is the agent's level review` });
+			// prompts/lessons.md and prompts/review.md are the agent's own reviews of its levels: refinements read them and never
+			// write them.
+			if (edit.path === LESSONS_PATH || edit.path === REVIEW_PATH) {
+				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `${edit.path} is the agent's ${edit.path === LESSONS_PATH ? "level" : "stall"} review` });
 				return;
 			}
 			// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
@@ -2333,8 +2365,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
-		// A level review is bounded like a decision: its last call says so, and a call after it ends the review.
-		if (native && run.levelReview) {
+		// A level or stall review is bounded like a decision: its last call says so, and a call after it ends the review.
+		if (native && (run.levelReview || run.stallReview)) {
 			if (run.toolCalls > LEVEL_REVIEW_CALLS) return { reason: `this review used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
 			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = `(This was tool call ${LEVEL_REVIEW_CALLS} of ${LEVEL_REVIEW_CALLS} for this review: finish now.)`;
 		}
@@ -3260,9 +3292,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       nativeRuntime!.noteSave(path, receipt);
       if (toolsReady) refreshSkillSurface();
       const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
-      // The level review asks for a short file: it is sent with every decision.
-      const lessons = path === LESSONS_PATH && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path).length : 0;
-      return receipt ? receipt + (lessons > LESSONS_CHARS ? `\nnote: ${LESSONS_PATH} is ${lessons} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
+      // The level and stall reviews ask for short files: they are sent with every decision.
+      const asked = (path === LESSONS_PATH || path === REVIEW_PATH) && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path).length : 0;
+      return receipt ? receipt + (asked > LESSONS_CHARS ? `\nnote: ${path} is ${asked} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
         + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
     };
   }
@@ -3284,7 +3316,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (refinerActive()) { try { await restoreBrokenViews(); } catch (error) { logError("view:restore", error); } }
     if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
 		const prompt = String(event.prompt ?? "").trimStart();
-		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW)\b/.test(prompt);
+		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
 		// ARC_THIN_OBSERVATION=ch: observations a decision showed but the model never answered (a provider error) are shown
@@ -3306,9 +3338,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append('continuations.jsonl', {decision, n: trajectory.length, reason: 'provider length', tool_calls: run.toolCalls});
 		}
 		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…"; after a level change
-		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…".
-		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b)/.test(prompt);
+		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…"; after many actions without a level, "STALL REVIEW…" and
+		// "RECOVER STALL REVIEW…".
+		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
+		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
 		// A tool-only decision is already complete from the runner's perspective.
 		// The next turn must be an action turn; leaving memory/skill exposed here
 		// invites the model to repeat the same measurement and consumes another full

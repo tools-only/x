@@ -233,18 +233,25 @@ const actionName = (name: string) => name.toUpperCase().replace(/^A(\d)$/, "ACTI
 /**
  * arc_action's Continual Harness arguments (ARC_THIN_OBSERVATION=ch): reasoning and a list of {name, x, y, predict}.
  * A list sent as text is parsed (closing brackets closed in order if needed), one entry sent alone is a list of one,
- * an entry given as a name ("ACTION1", "ACTION6(12,30)") becomes an object, a name is cut to its action, coordinates
- * are clamped as CH clamps them, and each prediction keeps its well-formed fields. A missing reasoning reads as empty
- * (CH: args.get("reasoning") or ""). Nothing here rejects the call: a list that is still unusable is reported by the
- * tool's own check.
+ * an entry given as a name ("ACTION1", "ACTION6(12,30)") becomes an object, an entry's `action` is its name, a name is
+ * cut to its action, coordinates are clamped as CH clamps them, and each prediction keeps its well-formed fields. The
+ * earlier arc_action shape, {action, x, y, predict, then, note}, reads as the list it describes, and a prediction sent
+ * beside a list belongs to its first action. A missing reasoning reads as the note or as empty (CH: args.get("reasoning")
+ * or ""). Nothing here rejects the call: what is still unusable is reported by the schema check or the tool's own check.
  */
 export function repairActionList(args: any): any {
 	if (!isObject(args)) return args;
-	const out: Record<string, any> = { ...args };
-	out.reasoning = typeof out.reasoning === "string" ? out.reasoning : out.reasoning == null ? "" : String(out.reasoning);
-	let list = out.actions;
-	if (typeof list === "string") list = parseLooseJson(list) ?? parseReorderedJson(list) ?? list;
+	const { action, x, y, predict, then, note, ...rest } = args;
+	const out: Record<string, any> = rest;
+	const reasoning = out.reasoning ?? note;
+	out.reasoning = typeof reasoning === "string" ? reasoning : reasoning == null ? "" : String(reasoning);
+	const parsed = (value: unknown) => typeof value === "string" ? parseLooseJson(value) ?? parseReorderedJson(value) ?? value : value;
+	let list: any = parsed(out.actions);
 	if (isObject(list)) list = [list];
+	if (list === undefined && typeof action === "string") {
+		const further = parsed(then);
+		list = [{ name: action, ...(x != null ? { x } : {}), ...(y != null ? { y } : {}) }, ...(Array.isArray(further) ? further : [])];
+	}
 	if (Array.isArray(list)) list = list.map((item: unknown) => {
 		if (typeof item === "string") {
 			const named = ACTION_NAME.exec(item);
@@ -252,6 +259,7 @@ export function repairActionList(args: any): any {
 		}
 		if (!isObject(item)) return item;
 		const entry: Record<string, any> = dropNulls(item) as Record<string, any>;
+		if (typeof entry.name !== "string" && typeof entry.action === "string") { entry.name = entry.action; delete entry.action; }
 		const named = typeof entry.name === "string" ? ACTION_NAME.exec(entry.name) : null;
 		if (named) {
 			entry.name = actionName(named[1]);
@@ -261,7 +269,9 @@ export function repairActionList(args: any): any {
 		if ("predict" in entry) { const predict = normalizePrediction(entry.predict); if (predict) entry.predict = predict; else delete entry.predict; }
 		return entry;
 	});
-	out.actions = list;
+	const first = Array.isArray(list) && isObject(list[0]) && !("predict" in list[0]) && predict != null ? normalizePrediction(predict) : undefined;
+	if (first) list[0] = { ...list[0], predict: first };
+	if (list !== undefined) out.actions = list;
 	if ("predict_skill" in out) {
 		if (typeof out.predict_skill === "string" && out.predict_skill.trim()) out.predict_skill = out.predict_skill.trim().slice(0, 40);
 		else delete out.predict_skill;

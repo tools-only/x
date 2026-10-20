@@ -78,6 +78,29 @@ LEVEL_REVIEW_RECOVERY_PROMPT = (
     "RECOVER LEVEL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/lessons.md "
     "once (the frontmatter, then the five parts in a few short lines), then stop. This turn takes no action."
 )
+#: The native foundation's review after many actions without a level completed (docs/plans/2026-10-20-stall-review.md).
+#: The user, 2026-10-20, in place of refusing repeated actions: "when no task progress is observed over an extended
+#: period, the ledger, refiner, critic or similar components notify the agent to review recent and historical
+#: trajectories, summarize current problems and bottlenecks, and identify directions for improvement." The agent writes its
+#: own prompts/review.md, an active prompt, from the record of the level so far (the extension adds it below this prompt).
+STALL_REVIEW_PROMPT = (
+    "STALL REVIEW. Level {level} is still open after {since} actions ({anchor}); this turn takes no action. Review the "
+    "level's record below, the history shown and your own notes, then rewrite prompts/review.md whole, in one write call. "
+    "It is shown with every decision until you delete it, so keep it under 1,200 characters. Start it with\n---\n"
+    "active: true\n---\nthen write:\n"
+    "1. What you tried on this level and what each try showed.\n"
+    "2. The bottleneck: what you do not know, or cannot do, that keeps the level open.\n"
+    "3. What wasted actions: repeated moves, rituals, beliefs kept too long.\n"
+    "4. 2-4 directions not tested yet, each with the move that would show it.\n"
+    "Correct or delete memory entries the record contradicts. Then stop."
+)
+STALL_REVIEW_RECOVERY_PROMPT = (
+    "RECOVER STALL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/review.md "
+    "once (the frontmatter, then the four parts in a few short lines), then stop. This turn takes no action."
+)
+#: Actions without a level completed, counted from the level's first action or the last stall review, after which a
+#: native run's next turn is a stall review (0: none).
+STALL_REVIEW_AFTER = 40
 DECIDE_RECOVERY_PROMPT = (
     "RECOVER ACTION. The previous turn hit the output limit. Use the persisted working set and latest native "
     "observation; do not explain. If the working set lists a saved Skill whose result has not been explicitly "
@@ -280,6 +303,7 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
         },
         "working_set": _working_set_stats(_read_jsonl(harness / "working_set.jsonl")),
         "level_reviews": _level_review_stats(harness),
+        "stall_reviews": _review_stats(harness, "stall_review", "review"),
         "ledger": _ledger_stats(harness),
     }
 
@@ -287,22 +311,28 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
 def _level_review_stats(harness: Path) -> dict[str, Any] | None:
     """What each level review cost (the agent's requests and budget tokens in that turn) and what became of
     prompts/lessons.md (versions saved, versions that failed to load, its size now); None when no review ran."""
+    return _review_stats(harness, "level_review", "lessons")
+
+
+def _review_stats(harness: Path, flag: str, name: str) -> dict[str, Any] | None:
+    """What each review turn marked `flag` in the working-set log cost, and what became of the prompt it rewrites,
+    prompts/<name>.md; None when no such review ran."""
     reviews = sorted({int(row["decision"]) for row in _read_jsonl(harness / "working_set.jsonl")
-                      if row.get("level_review") and row.get("decision") is not None})
+                      if row.get(flag) and row.get("decision") is not None})
     if not reviews:
         return None
     usage = [row for row in _read_jsonl(harness / "usage.jsonl") if row.get("kind") == "agent"]
-    lessons = [row for row in _read_jsonl(harness.parent / ".harness" / "components.jsonl")
-               if row.get("path") == "prompts/lessons.md" and not row.get("retired")]
-    path = harness.parent / "workspace" / "prompts" / "lessons.md"
+    versions = [row for row in _read_jsonl(harness.parent / ".harness" / "components.jsonl")
+                if row.get("path") == f"prompts/{name}.md" and not row.get("retired")]
+    path = harness.parent / "workspace" / "prompts" / f"{name}.md"
     return {
         "turns": [{"decision": decision,
                    "requests": sum(1 for row in usage if row.get("decision") == decision),
                    "budget_tokens": sum(int(row.get("input") or 0) + int(row.get("output") or 0)
                                         for row in usage if row.get("decision") == decision)} for decision in reviews],
-        "lessons_versions": len(lessons),
-        "lessons_failed": sum(1 for row in lessons if row.get("error")),
-        "lessons_chars": len(path.read_text(encoding="utf-8")) if path.is_file() else None,
+        f"{name}_versions": len(versions),
+        f"{name}_failed": sum(1 for row in versions if row.get("error")),
+        f"{name}_chars": len(path.read_text(encoding="utf-8")) if path.is_file() else None,
     }
 
 
@@ -768,10 +798,41 @@ def _level_review_prompt(levels_completed: int) -> str:
     return LEVEL_REVIEW_PROMPT.format(level=levels_completed, next=levels_completed + 1)
 
 
+def _stall_review_after(foundation: str, explicit: int | None, env: dict[str, str]) -> int:
+    """Actions without a level completed before a stall review: the argument, else (for pilots, which pass only
+    environment variables) ARC_THIN_STALL_REVIEW, else STALL_REVIEW_AFTER in the native foundation; 0 turns it off. The
+    legacy foundation has no stall review."""
+    value = explicit if explicit is not None else int(env.get("ARC_THIN_STALL_REVIEW") or STALL_REVIEW_AFTER)
+    if value < 0:
+        raise ValueError("stall review interval must be nonnegative")
+    return value if foundation == "native" else 0
+
+
+def _level_start(trajectory: list[dict[str, Any]]) -> int:
+    """Actions played before the level on screen began: the number of the last action that changed the level, else 0."""
+    return max((int(row.get("n") or index + 1) for index, row in enumerate(trajectory) if row.get("level_changed")), default=0)
+
+
+def _stall_review_due(trajectory: list[dict[str, Any]], reviewed_at: int, after: int) -> bool:
+    """Whether `after` actions have been played without a level completed, counted from the later of the level's first
+    action and the last stall review (`reviewed_at`, an action count). Mechanical: it counts, it does not judge."""
+    return after > 0 and len(trajectory) - max(_level_start(trajectory), reviewed_at) >= after
+
+
+def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, levels_completed: int) -> str:
+    start = _level_start(trajectory)
+    since = len(trajectory) - max(start, reviewed_at)
+    anchor = (f"since your last stall review, at action {reviewed_at}" if reviewed_at > start
+              else f"since it began at action {start + 1}")
+    return STALL_REVIEW_PROMPT.format(level=levels_completed + 1, since=since, anchor=anchor)
+
+
 def _review_recovery(message: str) -> str | None:
     """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision."""
     if message.startswith(("LEVEL REVIEW", "RECOVER LEVEL REVIEW")):
         return LEVEL_REVIEW_RECOVERY_PROMPT
+    if message.startswith(("STALL REVIEW", "RECOVER STALL REVIEW")):
+        return STALL_REVIEW_RECOVERY_PROMPT
     if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT}:
         return CONSOLIDATE_RECOVERY_PROMPT
     return None
@@ -859,6 +920,7 @@ def run_arc_thin_e2e(
     continuity: str = "rebuild",
     continuity_decisions: int = 8,
     review_at_level_change: bool | None = None,
+    stall_review_after: int | None = None,
     extension_env: dict[str, str] | None = None,
     foundation: str = "native",
     replay_reasoning: bool = False,
@@ -896,7 +958,13 @@ def run_arc_thin_e2e(
     the legacy one the consolidation. Off, the GAME_OVER review (and the legacy 25-action one) remains; the agent's
     hypothesis checks then show on the new level's moves without a review turn
     (docs/plans/2026-10-12-falsifiable-self-harness-plan.md). A fork from the snapshot of a level-completing decision
-    starts with that level's review."""
+    starts with that level's review.
+
+    ``stall_review_after`` (native only; None reads ARC_THIN_STALL_REVIEW, else STALL_REVIEW_AFTER; 0 turns it off): once
+    that many actions have been played without a level completed, counted from the level's first action or the last
+    stall review, the next turn is a stall review without actions, in which the agent rewrites prompts/review.md from the
+    record of the level so far (STALL_REVIEW_PROMPT, docs/plans/2026-10-20-stall-review.md). A level review comes first
+    when both are due; a due stall review takes the place of the GAME_OVER consolidation."""
     if variant not in {"treatment", "control"}:
         raise ValueError("variant must be treatment or control")
     if foundation not in {"legacy", "native"}:
@@ -924,6 +992,7 @@ def run_arc_thin_e2e(
     env = load_project_dotenv(PROJECT_ROOT)
     env.pop("PI_AUTORESEARCH_OWNS_TASK", None)  # never let PiKernel.close seal a legacy task scope
     review_at_level_change = _level_review_default(review_at_level_change, env)
+    stall_review_after = _stall_review_after(foundation, stall_review_after, env) if variant == "treatment" else 0
     settings = resolve_model_settings(env)
     if max_output_tokens is not None:
         settings["max_tokens"] = max_output_tokens
@@ -952,7 +1021,7 @@ def run_arc_thin_e2e(
         "provider": pi_provider, "model": model, "thinking": thinking or "provider-default",
         "thinking_format": settings.get("thinking_format"), "thinking_reaches_provider": thinking_sent,
         "passed": False, "stop_reason": None,
-        "decisions": 0, "consolidations": 0, "level_reviews": 0, "no_action_decisions": 0,
+        "decisions": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0, "environment_restarts": [],
         "provider_errors": 0,
@@ -1077,7 +1146,7 @@ def run_arc_thin_e2e(
             "max_continuous_idle_recoveries": 2,
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
-            "review_at_level_change": review_at_level_change,
+            "review_at_level_change": review_at_level_change, "stall_review_after": stall_review_after,
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,
@@ -1147,6 +1216,9 @@ def run_arc_thin_e2e(
         consolidated_at = 0
         # A fork from the snapshot of a level-completing decision starts with the review the source run had next.
         level_changed_since_consolidation = bool(fork and fork["level_changed"])
+        # The action count at the last stall review (a fork keeps its source's, from the copied working-set log).
+        stall_reviewed_at = max((int(row.get("actions") or 0) for row in _read_jsonl(harness / "working_set.jsonl")
+                                 if row.get("stall_review")), default=0)
         no_action_streak = 0
         environment_streak = 0
         provider_errors: list[str] = []
@@ -1362,10 +1434,13 @@ def run_arc_thin_e2e(
             miss_due = review_on_miss and action_count - consolidated_at >= REVIEW_ON_MISS_GAP and any(
                 (row.get("prediction") or {}).get("misses") or (row.get("skill_prediction") or {}).get("misses")
                 for row in _read_jsonl(harness / "trajectory.jsonl")[consolidated_at:])
+            # Many actions without a level completed make the agent's stall review due (stall_review_after).
+            stall_due = _stall_review_due(_read_jsonl(harness / "trajectory.jsonl"), stall_reviewed_at, stall_review_after)
             consolidate = variant == "treatment" and action_count > consolidated_at and (
                 (level_changed_since_consolidation and review_at_level_change)
                 or str(state.get("state")) == "GAME_OVER"
                 or miss_due
+                or stall_due
                 or (consolidate_after_actions > 0 and action_count - consolidated_at >= consolidate_after_actions)
             )
             fatal_before = _fatal_errors(harness)
@@ -1373,15 +1448,20 @@ def run_arc_thin_e2e(
             errors_before = len(extension_errors)
             try:
                 if consolidate:
-                    # After a level change the native foundation reviews the level (prompts/lessons.md); otherwise the
-                    # consolidation prompt, as before.
-                    review = (_level_review_prompt(int(state.get("levels_completed") or 0))
-                              if foundation == "native" and level_changed_since_consolidation and review_at_level_change
+                    # After a level change the native foundation reviews the level (prompts/lessons.md); after many
+                    # actions without one, the level so far (prompts/review.md); otherwise the consolidation prompt.
+                    level_review = foundation == "native" and level_changed_since_consolidation and review_at_level_change
+                    review = (_level_review_prompt(int(state.get("levels_completed") or 0)) if level_review
+                              else _stall_review_prompt(_read_jsonl(harness / "trajectory.jsonl"), stall_reviewed_at,
+                                                        int(state.get("levels_completed") or 0)) if stall_due
                               else CONSOLIDATE_PROMPT)
                     events = recover_length(review, safe_turn(review))
                     summary["consolidations"] += 1
-                    if review != CONSOLIDATE_PROMPT:
+                    if level_review:
                         summary["level_reviews"] += 1
+                    elif stall_due:
+                        summary["stall_reviews"] += 1
+                        stall_reviewed_at = action_count
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
                 else:

@@ -2,7 +2,7 @@
  * ARC_THIN_OBSERVATION=ch (the runner's native default since 2026-10-20) against an HTTP stand-in for the bridge:
  * Continual Harness's game observation (RECENT HISTORY, # Step, OBSERVATIONS SINCE LAST QUERY, CURRENT STATE, PNGs) in
  * place of this harness's current-state block, and arc_action taking CH's action list, inside this harness's own
- * decision: the transcript of earlier decisions, its prompts, caps and refusals, and RESET as the agent's action. The
+ * decision: the transcript of earlier decisions, its prompts, reviews and caps, and RESET as the agent's action. The
  * renderers themselves are compared with CH's own output in arc_thin_ch_view.test.ts.
  */
 import { test } from 'node:test';
@@ -56,17 +56,18 @@ async function fixture() {
     return out;
   };
   await emit('session_start', {});
-  let system = '', calls = 0;
+  let system = '', sections: Record<string, string> = {}, calls = 0;
   /** The session as Pi keeps it: each decision's prompt, then its assistant messages and tool results. */
   const session: any[] = [];
   return {
-    submitted, tool: (name: string) => tools.get(name), system: () => system,
+    submitted, tool: (name: string) => tools.get(name), system: () => system, sections: () => sections, active: () => active,
     rows: () => readFileSync(join(root, 'harness', 'trajectory.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)),
     /** A new decision: the runner's prompt, then the messages the model receives (earlier decisions, then the head). */
     async decide(prompt = 'Decide the next action.') {
       const event: any = { prompt, systemPromptOptions: { sections: {} } };
       await emit('before_agent_start', event);
       system = String(event.systemPromptOptions.customPrompt ?? '');
+      sections = event.systemPromptOptions.sections;
       session.push({ role: 'user', content: prompt, timestamp: Date.now() });
       return (await emit('context', { messages: [...session] })).messages as any[];
     },
@@ -154,7 +155,7 @@ test('arc_action plays a list in order, cut at its first bad entry and stopped b
   } finally { await h.close(); }
 });
 
-test('a list stops at a missed prediction and at the no-effect refusal; a list that plays nothing is refused and the decision goes on', async () => {
+test('a list stops at a missed prediction, not at repeats that change nothing; a list that plays nothing is refused and the decision goes on', async () => {
   const h = await fixture();
   try {
     await h.decide();
@@ -164,13 +165,34 @@ test('a list stops at a missed prediction and at the no-effect refusal; a list t
     assert.match(missed.text, /played 1 of 2; stopped: #1's prediction missed/);
     await h.decide();
     const [repeated] = await h.respond(['arc_action', { reasoning: 'wait', actions: [{ name: 'ACTION2' }, { name: 'ACTION2' }, { name: 'ACTION2' }, { name: 'ACTION2' }] }]);
-    assert.deepEqual(h.submitted.slice(1), ['ACTION2', 'ACTION2', 'ACTION2'], 'the fourth no-effect repeat is refused, as on the earlier path');
-    assert.match(repeated.text, /played 3 of 4; stopped: ACTION2 was NOT played: the last 3 actions/);
+    assert.deepEqual(h.submitted.slice(1), ['ACTION2', 'ACTION2', 'ACTION2', 'ACTION2'],
+      'no refusal of repeats here: a level that goes long without progress gets the runner\'s stall review instead');
+    assert.doesNotMatch(repeated.text, /stopped|NOT played/);
     await h.decide();
     const [none] = await h.respond(['arc_action', { reasoning: 'try', actions: [{ name: 'ACTION6' }] }]);
     assert.equal(none.isError, true);
     assert.notEqual(none.terminate, true);
     assert.match(none.text, /arc_action executed no actions; .*entry 1: unknown action name .*available now: RESET, ACTION1, ACTION2, ACTION3, ACTION4/);
+  } finally { await h.close(); }
+});
+
+test('a list sent as text, a single entry, bare names, the earlier {action, then} shape and a name with protocol text after it are read as lists', async () => {
+  const h = await fixture();
+  try {
+    const sent: any[] = [
+      { reasoning: 'r', actions: '[{"name": "ACTION1", "predict": {"level_changed": false}}]' },
+      { reasoning: 'r', actions: { name: 'ACTION2' } },
+      { action: 'ACTION1', predict: { level_changed: false }, then: [{ action: 'ACTION2' }], note: 'old shape' },
+      { reasoning: 'r', actions: [{ name: 'ACTION2<|tool_call_end|>' }] },
+      { reasoning: 'r', actions: ['ACTION1', 'A2'], predict: { level_changed: false } },
+    ];
+    for (const args of sent) { await h.decide(); await h.respond(['arc_action', args]); }
+    assert.deepEqual(h.submitted, ['ACTION1', 'ACTION2', 'ACTION1', 'ACTION2', 'ACTION2', 'ACTION1', 'ACTION2']);
+    const rows = h.rows();
+    assert.equal(rows[0].prediction.fields[0].hit, true, 'the prediction inside the text is scored');
+    assert.equal(rows[2].note, 'old shape', 'the earlier shape\'s note is the list\'s reasoning');
+    assert.equal(rows[2].prediction.fields[0].hit, true);
+    assert.equal(rows[5].prediction.fields[0].hit, true, 'a prediction sent beside the list is its first action\'s');
   } finally { await h.close(); }
 });
 
@@ -198,5 +220,24 @@ test('observations a decision showed but the model never answered are shown agai
     assert.match(textOf(head(await h.decide())), /### ACTION step 0: RESET/, 'not delivered: the model never answered that prompt');
     await h.respond();
     assert.doesNotMatch(textOf(head(await h.decide())), /### ACTION step 0: RESET/, 'answered: shown once');
+  } finally { await h.close(); }
+});
+
+test('a stall review starts from the level\'s record and the current state, without arc_action; its review.md is a system-prompt section, and the next decision still shows what happened since the last one', async () => {
+  const h = await fixture();
+  try {
+    await h.decide();
+    await h.respond(['arc_action', { reasoning: 'walk', actions: [{ name: 'ACTION1' }, { name: 'ACTION2' }] }]);
+    const review = textOf(head(await h.decide('STALL REVIEW. Level 1 is still open after 2 actions (since it began at action 1); this turn takes no action.')));
+    assert.ok(!h.active().includes('arc_action'), h.active().join(','));
+    assert.match(review, /\nLEVEL 1 RECORD SO FAR \(the level on screen; it is not completed\)\. The runtime's counts; what they mean is yours to write\.\n- #1–#2: 2 actions in 1 attempt; no RESET; no GAME_OVER\./);
+    assert.match(review, /## CURRENT STATE\nstate: NOT_FINISHED/);
+    assert.doesNotMatch(review, /## RECENT HISTORY|### ACTION step/, 'a review sees the current state only');
+    await h.respond(['write', { path: 'prompts/review.md', content: '---\nactive: true\n---\n1. Walked right twice.\n' }]);
+    const text = textOf(head(await h.decide()));
+    assert.match(text, /### ACTION step 1: ACTION1[\s\S]*### ACTION step 2: ACTION2/, 'the review did not take them from this decision');
+    assert.match(h.sections().prompt_review ?? '', /1\. Walked right twice\./);
+    assert.doesNotMatch(text.slice(0, text.indexOf('\nHARNESS (')), /Walked right twice/,
+      'an active prompt is not part of the game\'s observation (the capability index after it lists it in one line)');
   } finally { await h.close(); }
 });

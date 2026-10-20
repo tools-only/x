@@ -88,11 +88,16 @@ test('env.act with a list plays it as one batch, as Continual Harness skills cal
   const missed = await run([one, { call: second.need_act, observation: { grid: ['1'], state: 'NOT_FINISHED', levels_completed: 0, missed: true } }]);
   assert.equal((missed.value as any).value[0], 2, 'a missed prediction ends the list, as in an arc_action list');
   const none = await executeNative({ mode: 'exec', code: 'env.act([{"x": 1}])', sources: {}, state: {}, files: {}, allow_act: true, acts: [] });
-  assert.match(String((none.value as any)?.stopped), /take_actions executed no actions/);
+  assert.match(String((none.value as any)?.stopped), /take_actions executed no actions \(entry 1: missing 'name' field\)/);
   // One entry given alone plays as that action (su15-ch-q38-1 lost an action to env.act({...}), 2026-10-20).
   const entry = await executeNative({ mode: 'exec', code: 'env.act({"name": "ACTION6", "x": 20, "y": 43})', sources: {}, state: {}, files: {},
     allow_act: true, acts: [] });
   assert.deepEqual(entry.need_act, { action: 'ACTION6', x: 20, y: 43 });
+  // Entries given as bare names or with arc_action's earlier `action` key are read as named entries.
+  const named = await executeNative({ mode: 'exec', code: 'env.act(["ACTION2", {"action": "ACTION3"}])', sources: {}, files: {}, allow_act: true,
+    state: { grid: [[0]], state: 'NOT_FINISHED', levels_completed: 0 },
+    acts: [{ call: { action: 'ACTION2', batch: [1, 2] }, observation: { grid: ['0'], state: 'NOT_FINISHED', levels_completed: 0 } }] });
+  assert.deepEqual(named.need_act, { action: 'ACTION3', batch: [2, 2] });
 });
 
 // The python session protocol: a call receives the last checkpoint and reports the next one.

@@ -2,10 +2,13 @@
 
 **Status, later on 2026-10-20:** rolled back at the user's request (`fac1e771`; see [Rollback](#rollback-2026-10-20)),
 then reimplemented with only CH's game observation and ARC action tool (see
-[Narrowed reimplementation](#narrowed-reimplementation-2026-10-20)). The sections from "Request and claim" to
-"Evidence" describe the rolled-back version (`e79898f9`).
+[Narrowed reimplementation](#narrowed-reimplementation-2026-10-20)), then merged with the other session's version of the
+same narrowing, whose stall review it keeps (see [Merge](#merge-with-the-other-sessions-version-2026-10-20)). The
+sections under "First version" describe the rolled-back version (`e79898f9`).
 
-## Request and claim
+## First version (e79898f9, superseded)
+
+### Request and claim
 
 User, 2026-10-20: "Practically speaking, CH's observation and adapter design perform better. Therefore, please first
 align our observation and adapter settings with CH. align with every detail."
@@ -26,7 +29,7 @@ meanings (the C+B run confirmed that ACTION7 is undo only at #184), RESETs at wi
 su15-q38-1 of 2026-10-20), and pays for a growing transcript (105k–156k tokens; 75% of budget tokens went to provider
 cache misses on it).
 
-## What changes (CH detail → ours)
+### What changes (CH detail → ours)
 
 | CH | Ours with `ARC_THIN_CH` |
 |---|---|
@@ -49,7 +52,7 @@ cache misses on it).
 | Sandbox state: `observations` (each action since the query, whole animation), `recent_trajectory` (last 80 records), `available_actions` without RESET | Python state adds `observations` and `recent_trajectory`; `available_actions` without RESET. |
 | System instruction: INPUT FORMAT, COORDINATE SYSTEM, action key, short lists, GAME SETTING, soft guideline | `prompts/arc_thin_native_ch_system.md`: CH's sections, our capability text, worded for our tools. |
 
-## Deviations kept on purpose (open to the user)
+### Deviations kept on purpose (open to the user)
 
 - **Tool names** stay ours (`arc_action`, `python`, `memory`; CH: `take_actions`, `run_skill`, `process_memory`).
 - **Python grids stay ints**, not hex strings: checks, views and the python session use ints. The system prompt says a
@@ -70,7 +73,13 @@ cache misses on it).
   [memory, python that acts] (memory finishing first, without arc_action) gets one more turn whose calls are refused and
   not carried. CH ends after the response.
 
-## Evidence
+### Evidence
+
+- Run of the first version: su15-ch-q38-1 (`runs/arc-ch-20261020`, worktrees/r04-ch at 425536d1, qwen3.8-27b on yibu,
+  thinking off, images, 6M budget-token cap): 53 actions, 0 levels, stopped `environment_outcome_unknown` after four
+  90 s SDK step timeouts; 1.62M budget tokens, 30.5k per action (su15-cb-q38-1 on the earlier path: 15.0k); 45 action
+  lists, 12 of which played nothing (8 sent as JSON text, refused as "actions must be a list"); the same click 25 times
+  (2 cells changed each) into GAME_OVER at #34 with the no-effect refusal off. These led to the second version.
 
 - Functional (this machine, node 22, 2026-10-20):
   - `tests/arc_thin_ch_view.test.ts` compares the port with CH's own renderers. Goldens in
@@ -131,10 +140,10 @@ agent's action, the transcript of earlier decisions, the 16-call cap and the no-
 
 Claim: the native agent sees the game as CH shows it and acts through CH's action tool; everything else is this
 harness's: the transcript of earlier decisions, active prompts in the system prompt, the runner's prompts (restart notes
-included), the 16-call cap, the loop guard, the no-effect refusal, the stop at a missed prediction, RESOURCES, receipts,
-reviews, and RESET as the agent's action. Burden addressed, as before: per-move changes re-derived by hand (21 hand diffs
-of consecutive moves in su15-cb-q38-1, 0 in su15-ch-q38-1, where the agent quoted the rendered rows) and action lists
-lost to call shape (8 of 44 in su15-ch-q38-1).
+included), the 16-call cap, the loop guard, the no-effect refusal (off in this mode since the merge below), the stop at a
+missed prediction, RESOURCES, receipts, reviews, and RESET as the agent's action. Burden addressed, as before: per-move
+changes re-derived by hand (21 hand diffs of consecutive moves in su15-cb-q38-1, 0 in su15-ch-q38-1, where the agent
+quoted the rendered rows) and action lists lost to call shape (8 of 44 in su15-ch-q38-1).
 
 Switch: `ARC_THIN_OBSERVATION=ch`, the runner's native default; the runner passes the value to the extension, whose own
 fallback stays `query` for tests that build it directly. `query` and `inline` remain; the scripted smoke provider runs
@@ -172,3 +181,34 @@ Evidence (this machine, node 22, 2026-10-20):
 - Proposed check (needs a budget): one qwen3.8-27b su15 run at 6M budget tokens, thinking off, against su15-cb-q38-1,
   su15-q38-1..3 and su15-ch-q38-1. Measure action lists lost to call shape (expect 0), hand diffs of consecutive moves,
   budget tokens per action, decisions reaching the 16-call cap, and levels.
+
+## Merge with the other session's version (2026-10-20)
+
+While this reimplementation was built, another session landed its own narrowed version on r04 (`47fd11cd`, switch
+`ARC_THIN_CH`, on by default) after the same run and the user's message to that session: "the current version violates
+the user's objectives. I only want to align the observation and pre-defined tools, information of CH, the core and main
+mechanism should always be our proposed meta-harness", and, on the run's 25 repeated clicks, "Duplicate-action blocking
+is neither a fundamental fix nor sufficiently general" (its answer: the stall review,
+`docs/plans/2026-10-20-stall-review.md`). Asked which version r04 keeps, the user answered "use yours". The merge keeps
+this reimplementation's observation, arc_action, env.act and ARC information, and takes from `47fd11cd`:
+
+- the stall review: the runner's STALL REVIEW after 40 actions without a level, `prompts/review.md`, the record of the
+  level on screen. A review here shows CURRENT STATE beside that record; the observations since the last decision stay
+  for the next one;
+- the no-effect refusal off by default with `ARC_THIN_OBSERVATION=ch`, by the user's judgment above
+  (`ARC_THIN_NO_EFFECT_REPEATS=3` turns it on; `query` and `inline` keep 3);
+- its call-shape tolerances, added to `repairActionList`: the earlier `{action, x, y, predict, then, note}` shape is read
+  as the list it describes, with its note as the reasoning; an entry's `action` is its `name`; a prediction sent beside
+  the list is its first entry's. env.act lists take bare names and `action` too.
+
+Not taken from `47fd11cd`: the `ARC_THIN_CH` switch; `demo/prompts/arc_thin_native_ch_system.md`, a second native
+template (here one template with placeholders, closed by CH's sections in `arc_thin_native_ch_arc.md`); its `## ARC`
+section, which left CH's GAME SETTING out (here it is carried verbatim as CH's ARC information); its list reader (it read
+0 of su15-ch-q38-1's 8 malformed lists, `repairActionList` reads 8); its review head with the observations; and
+`tests/arc_thin_ch_mode.test.ts`, whose cases (call shapes, the stall review, active prompts as system sections) are
+ported into `tests/arc_thin_ch_observation.test.ts`.
+
+Layers after the merge: functional, passed on this machine (node 22): the TS suite 229 of 234, whose 5 failures
+(activation 1, components 1, receipts 3) fail the same way on the rolled-back tree, and the components one on r04's tip;
+pytest 41 of 41, `tests/test_arc_thin_stall_review.py` included. Full chain, adoption and net benefit: unverified (no
+run of the merged version).
