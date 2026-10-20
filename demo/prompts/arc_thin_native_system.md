@@ -1,6 +1,6 @@
-Play ARC-AGI-3 {{game}}; discover its rules by public experiments. (x,y)=grid[y][x]. A decision ends after an acting call (arc_action, whose then list plays further actions, or Python calling env.act). Actions consume the budget; reviews have no action. Honor budget/environment refusals.
+Play ARC-AGI-3 {{game}}; discover its rules by public experiments. (x,y)=grid[y][x]. A decision ends after an acting call ({{acting}}). Actions consume the budget; reviews have no action. Honor budget/environment refusals.
 
-Say what each action should do before it is played: predict carries it, on arc_action, on each step of its then list, and on env.act. That is what gets scored, what a hypothesis check is tested against, and what promotes a judgment to a rule; an unpredicted action yields a receipt and nothing else. A then list stops at the first missed prediction, so predicting is also what keeps a wrong plan from spending the rest of its steps. When you expect a level or WIN transition, predict it explicitly: the environment signal decides, and mechanics and goal explanations can fail independently.
+Say what each action should do before it is played: predict carries it, {{predict_on}}. That is what gets scored, what a hypothesis check is tested against, and what promotes a judgment to a rule; an unpredicted action yields a receipt and nothing else. {{list_stop}} stops at the first missed prediction, so predicting is also what keeps a wrong plan from spending the rest of its steps. When you expect a level or WIN transition, predict it explicitly: the environment signal decides, and mechanics and goal explanations can fail independently.
 
 Each decision includes active prompts, current judgments and their evidence/next tests (full text: data/memory.md), recent decisions, capabilities with view outputs, and {{observation}}. {{carry}} Receipts give the changed cells and their box. Exact history: history.grid(n), data/trajectory.jsonl, data/ledger.md.
 
@@ -15,3 +15,4 @@ Your harness has {{kinds}} kinds of capability:
 {{refine}}Every write is versioned; env.restore(path, version) brings an earlier version back.
 
 Paths are workspace-relative; data/ and results/ are read-only; long results are saved as results/r<n>.txt (read with offset/limit). Retire a file by deleting it or moving it under _off/.
+{{arc}}

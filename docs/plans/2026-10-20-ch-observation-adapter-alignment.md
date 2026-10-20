@@ -1,7 +1,9 @@
 # Align the native observation and action adapter with Continual Harness (2026-10-20)
 
-**Status, later on 2026-10-20:** rolled back at the user's request; see [Rollback](#rollback-2026-10-20). The sections
-from "Request and claim" to "Evidence" describe the rolled-back version (`e79898f9`).
+**Status, later on 2026-10-20:** rolled back at the user's request (`fac1e771`; see [Rollback](#rollback-2026-10-20)),
+then reimplemented with only CH's game observation and ARC action tool (see
+[Narrowed reimplementation](#narrowed-reimplementation-2026-10-20)). The sections from "Request and claim" to
+"Evidence" describe the rolled-back version (`e79898f9`).
 
 ## Request and claim
 
@@ -124,3 +126,49 @@ tests, the goldens and their generator, and the extension, component and runner 
 image-input default (`425536d1`, the user's request), and the level review, which never depended on this mode. The
 native path is again the one before `e79898f9`: query observation, arc_action `{action, x, y, then}`, RESET as the
 agent's action, the transcript of earlier decisions, the 16-call cap and the no-effect refusal.
+
+## Narrowed reimplementation (2026-10-20)
+
+Claim: the native agent sees the game as CH shows it and acts through CH's action tool; everything else is this
+harness's: the transcript of earlier decisions, active prompts in the system prompt, the runner's prompts (restart notes
+included), the 16-call cap, the loop guard, the no-effect refusal, the stop at a missed prediction, RESOURCES, receipts,
+reviews, and RESET as the agent's action. Burden addressed, as before: per-move changes re-derived by hand (21 hand diffs
+of consecutive moves in su15-cb-q38-1, 0 in su15-ch-q38-1, where the agent quoted the rendered rows) and action lists
+lost to call shape (8 of 44 in su15-ch-q38-1).
+
+Switch: `ARC_THIN_OBSERVATION=ch`, the runner's native default; the runner passes the value to the extension, whose own
+fallback stays `query` for tests that build it directly. `query` and `inline` remain; the scripted smoke provider runs
+`query`. Source: `demo/arc_thin_ch_view.ts` (CH's renderers and action-list check only), `demo/arc_thin_extension.ts`,
+`demo/arc_thin_boundary.ts` (repairActionList), `demo/arc_thin_components.ts` (env.act lists),
+`demo/prompts/arc_thin_native_ch_arc.md` (ARC information), placeholders in `demo/prompts/arc_thin_native_system.md`.
+
+| CH (kept) | Here |
+|---|---|
+| RECENT HISTORY, `# Step`, OBSERVATIONS SINCE LAST QUERY (key frames, at most 4), CURRENT STATE (action meanings, hex grid), a PNG per rendered grid | In place of this harness's recent-action list and current-state block, at the end of the decision's working set; memory, rule checks, the python session, refinement notices, RESOURCES and the capability index stay around it. A review shows CURRENT STATE beside its own material and leaves the observations to the next decision. The bridge's first RESET is step 0. Observations a decision showed but the model never answered are shown again. |
+| `take_actions(reasoning, actions[{name, x, y}])`: checked once, cut at the first bad entry, each step rechecked, stopped at WIN, GAME_OVER or a level change | arc_action with that schema and description. This harness's `predict` per entry, `predict_skill` and `idea` stay; the list also stops at a missed prediction (the then list's rule) and plays at most 12 actions (THEN_STEPS + 1); one arc_action per decision; each step passes this harness's boundary (no-effect refusal, budget, environment errors); a list that plays nothing is refused with CH's message and the decision goes on. RESET is accepted when the environment offers it. |
+| Skills' `tools.take_actions(actions=[...])` → `{executed_count, last_frame, terminal, level_changed, state, score, available_actions}` | `env.act([...])` plays one batch and returns those fields (int grids); `env.act({name, x, y})` plays one entry; `env.act(action, x, y, predict)` is unchanged. A list also stops at a missed prediction; code still may not act after a level change in the same call. |
+| Sandbox state: `observations`, `recent_trajectory` | `state["observations"]` and `state["recent_trajectory"]` (80 step records); `available_actions` as offered, RESET included. |
+| System instruction: INPUT FORMAT, COORDINATE SYSTEM, the action key, short lists, GAME SETTING | `prompts/arc_thin_native_ch_arc.md` closes the native system prompt, RESET in the action key. Not taken: the soft guideline, "RESET is not one of your actions". |
+
+Argument repair (this harness's adapter, not CH's): a list sent as text is parsed with its closing brackets put in order
+(the 8 malformed lists of su15-ch-q38-1 parse), one entry sent alone is a list of one, names may come as text
+("ACTION6(12,30)"), a gateway's protocol text after a name is dropped (CH's own backend repair), coordinates are
+clamped, and a malformed prediction is dropped rather than the action refused.
+
+Not reimplemented (CH's loop): the fresh conversation, carried TOOL RESULTS, PREVIOUS CONVERSATION STOPPED, the TURN
+block, the 24-turn cap, CH's record format for this harness's tools, the harness's RESET after GAME_OVER, and several
+arc_action calls per response.
+
+Evidence (this machine, node 22, 2026-10-20):
+
+- Functional: `tests/arc_thin_ch_view.test.ts` against goldens regenerated with CH's own code (`tools/ch_golden.py` in
+  CH's venv; tool-result cases dropped): the observation section under a 4-grid and a 1-grid budget, recent history,
+  the state block (RESET added when offered), grid changes, PNG pixels, the list check. `tests/arc_thin_ch_observation.test.ts`
+  against an HTTP stand-in: the head's order and contents, the system prompt, list play, cut and level-change stop, the
+  missed-prediction stop, the no-effect refusal, an empty list refused, RESET as the agent's action with no automatic
+  RESET, unanswered observations shown again, the earlier decision kept as transcript. `tests/arc_thin_boundary.test.ts`:
+  the repair on the run's malformed lists. `tests/arc_thin_components.test.ts`: env.act with a list and with one entry.
+- Full chain, adoption, net benefit: unverified; no real run of this version.
+- Proposed check (needs a budget): one qwen3.8-27b su15 run at 6M budget tokens, thinking off, against su15-cb-q38-1,
+  su15-q38-1..3 and su15-ch-q38-1. Measure action lists lost to call shape (expect 0), hand diffs of consecutive moves,
+  budget tokens per action, decisions reaching the 16-call cap, and levels.

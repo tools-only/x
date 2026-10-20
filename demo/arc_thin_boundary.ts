@@ -7,6 +7,7 @@
  * reshape, clip, or infer an operation from the fields that are present.
  * Design: docs/plans/2026-10-09-thin-decision-loop-efficiency.md
  */
+import { clampCoordinate } from "./arc_thin_ch_view.ts";
 import { prepareMemoryArguments } from "./arc_thin_memory.ts";
 import { normalizePrediction } from "./arc_thin_prediction.ts";
 
@@ -188,6 +189,82 @@ export function repairActionArguments(args: any): any {
 			if ("predict" in step) { const predict = normalizePrediction(step.predict); if (predict) step.predict = predict; else delete step.predict; }
 		}
 		if (steps.length) out.then = steps; else delete out.then;
+	}
+	return out;
+}
+
+/**
+ * JSON whose closing brackets came in the wrong order: a closer that skips open brackets closes them first, closers
+ * nothing opened are dropped, and the text ends with the first complete value. su15-ch-q38-1 (2026-10-20) sent action
+ * lists such as `[{"name": "ACTION6", "x": 31, "y": 5, "predict": {"cells": []}]}]`, the entry still open when the
+ * list closed. Returns undefined when even that does not parse.
+ */
+export function parseReorderedJson(text: string): unknown {
+	const trimmed = text.trim();
+	if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return undefined;
+	const stack: string[] = [];
+	let out = "", inString = false, escaped = false;
+	for (const ch of trimmed) {
+		if (inString) {
+			out += ch;
+			if (escaped) escaped = false;
+			else if (ch === "\\") escaped = true;
+			else if (ch === "\"") inString = false;
+			continue;
+		}
+		if (ch === "\"") inString = true;
+		if (ch === "[" || ch === "{") stack.push(ch === "[" ? "]" : "}");
+		if (ch === "]" || ch === "}") {
+			if (!stack.includes(ch)) continue;
+			while (stack.at(-1) !== ch) out += stack.pop();
+			out += stack.pop();
+			if (!stack.length) break;
+			continue;
+		}
+		out += ch;
+	}
+	try { return JSON.parse(out + (inString ? "\"" : "") + stack.reverse().join("")); } catch { return undefined; }
+}
+
+/** An action named as a gateway may send it: `ACTION3'}]}}]` (vlm_backend._ACTION_PREFIX_RE), `action6`, `A6(12, 30)`. */
+const ACTION_NAME = /^\s*(RESET|ACTION[1-7]|A[1-7])\b\s*(?:\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\))?/i;
+const actionName = (name: string) => name.toUpperCase().replace(/^A(\d)$/, "ACTION$1");
+
+/**
+ * arc_action's Continual Harness arguments (ARC_THIN_OBSERVATION=ch): reasoning and a list of {name, x, y, predict}.
+ * A list sent as text is parsed (closing brackets closed in order if needed), one entry sent alone is a list of one,
+ * an entry given as a name ("ACTION1", "ACTION6(12,30)") becomes an object, a name is cut to its action, coordinates
+ * are clamped as CH clamps them, and each prediction keeps its well-formed fields. A missing reasoning reads as empty
+ * (CH: args.get("reasoning") or ""). Nothing here rejects the call: a list that is still unusable is reported by the
+ * tool's own check.
+ */
+export function repairActionList(args: any): any {
+	if (!isObject(args)) return args;
+	const out: Record<string, any> = { ...args };
+	out.reasoning = typeof out.reasoning === "string" ? out.reasoning : out.reasoning == null ? "" : String(out.reasoning);
+	let list = out.actions;
+	if (typeof list === "string") list = parseLooseJson(list) ?? parseReorderedJson(list) ?? list;
+	if (isObject(list)) list = [list];
+	if (Array.isArray(list)) list = list.map((item: unknown) => {
+		if (typeof item === "string") {
+			const named = ACTION_NAME.exec(item);
+			return named ? { name: actionName(named[1]), ...(named[2] !== undefined ? { x: Number(named[2]), y: Number(named[3]) } : {}) } : item;
+		}
+		if (!isObject(item)) return item;
+		const entry: Record<string, any> = dropNulls(item) as Record<string, any>;
+		const named = typeof entry.name === "string" ? ACTION_NAME.exec(entry.name) : null;
+		if (named) {
+			entry.name = actionName(named[1]);
+			if (named[2] !== undefined && !("x" in entry) && !("y" in entry)) { entry.x = Number(named[2]); entry.y = Number(named[3]); }
+		}
+		for (const axis of ["x", "y"]) if (axis in entry) entry[axis] = clampCoordinate(entry[axis]);
+		if ("predict" in entry) { const predict = normalizePrediction(entry.predict); if (predict) entry.predict = predict; else delete entry.predict; }
+		return entry;
+	});
+	out.actions = list;
+	if ("predict_skill" in out) {
+		if (typeof out.predict_skill === "string" && out.predict_skill.trim()) out.predict_skill = out.predict_skill.trim().slice(0, 40);
+		else delete out.predict_skill;
 	}
 	return out;
 }

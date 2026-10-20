@@ -1,5 +1,6 @@
 """Freeze a committed source tree and run one real ARC pilot (yibu, model PILOT_MODEL (default qwen3.8-27b), thinking
-PILOT_THINKING (default high), text+image, query observations) on ls20 or the game PILOT_GAME names. Budgets come from
+PILOT_THINKING (default high), text+image, the observation ARC_THIN_OBSERVATION names (the runner's default ch)) on ls20
+or the game PILOT_GAME names. Budgets come from
 argv; 0 turns a limit off, so an uncapped round is `pilot.py <label> 0 0 0`. The in-run refinements use the same model
 (the extension calls the session's model).
 
@@ -75,7 +76,8 @@ parse = subprocess.run(['node', '--experimental-strip-types', '--input-type=modu
 assert parse.returncode == 0, 'an extension does not parse:\n' + (parse.stderr or parse.stdout)
 protocol = dict(source=str(SOURCE), commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=SOURCE, text=True).strip(),
     branch=subprocess.check_output(['git', 'branch', '--show-current'], cwd=SOURCE, text=True).strip(), game=GAME,
-    provider='yibu', model=MODEL, thinking=THINKING, input_modalities='text,image', observation='query',
+    provider='yibu', model=MODEL, thinking=THINKING, input_modalities='text,image',
+    observation=os.environ.get('ARC_THIN_OBSERVATION') or 'ch',
     pi_api=PI_API or ('project setting, kept by the declared thinking dialect (route: arc-run/run-config.json)'
         if THINKING_FORMAT else 'openai-responses (native default)'), thinking_format=THINKING_FORMAT,
     python_kernel=os.environ.get('ARC_THIN_PYTHON_KERNEL', '1') != '0', session_view=os.environ.get('ARC_THIN_SESSION_VIEW', '1') != '0',

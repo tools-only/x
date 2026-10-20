@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { LIMITS, isEnvironmentFailure, parseLooseJson, repairActionArguments, repairMemoryArguments, repairSkillArguments } from "../demo/arc_thin_boundary.ts";
+import { LIMITS, isEnvironmentFailure, parseLooseJson, repairActionArguments, repairActionList, repairMemoryArguments, repairSkillArguments } from "../demo/arc_thin_boundary.ts";
 import { applyRows, emptyMemory, planMemoryUpdate } from "../demo/arc_thin_memory.ts";
 
 // Shapes taken from refused memory calls in the 2026-10-09 thin-hyp runs (pi-events.jsonl).
+
+test("an action list sent as text with its brackets closed out of order plays its actions; a bad prediction is dropped", () => {
+	// su15-ch-q38-1 decisions 3 and 6 (2026-10-20), as the gateway passed them on.
+	const three = repairActionList({ reasoning: "r", actions: '\n[{"name": "ACTION6", "x": 31, "y": 5, "predict": {"text": "a different effect", "cells": []}]}]\n' });
+	assert.deepEqual(three.actions, [{ name: "ACTION6", x: 31, y: 5, predict: { text: "a different effect" } }]);
+	const six = repairActionList({ reasoning: "r", actions: '\n[{"name": "ACTION6", "x": 10, "y": 53, "predict": {"cells": [[56, 63, 0, 5], [57, 63, 0, 5]], "text": "fills"}]\n' });
+	assert.deepEqual(six.actions, [{ name: "ACTION6", x: 10, y: 53, predict: { text: "fills", cells: [[56, 63, 5], [57, 63, 5]] } }]);
+	// One entry alone, names as text, a gateway's protocol text after a name, coordinates clamped, a missing reasoning.
+	assert.deepEqual(repairActionList({ actions: { name: "action1" } }), { reasoning: "", actions: [{ name: "ACTION1" }] });
+	assert.deepEqual(repairActionList({ reasoning: "r", actions: ["A6(12, 30)", "RESET", "ACTION3'}]}}]"] }).actions,
+		[{ name: "ACTION6", x: 12, y: 30 }, { name: "RESET" }, { name: "ACTION3" }]);
+	assert.deepEqual(repairActionList({ reasoning: "r", actions: [{ name: "ACTION6", x: 70, y: "3", predict: "a line" }] }).actions,
+		[{ name: "ACTION6", x: 63, y: 3, predict: { text: "a line" } }]);
+	// Text that is no list stays as it came, for the tool's own check to report.
+	assert.equal(repairActionList({ reasoning: "r", actions: "move right" }).actions, "move right");
+});
 
 test("a skill source sent with escaped line breaks is unescaped once; a source with real line breaks is left alone", () => {
 	const escaped = String.raw`def run(state, args):\n    return {"s": "a\\nb", "q": \"x\"}\n`;

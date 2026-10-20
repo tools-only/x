@@ -73,6 +73,28 @@ test('env.act is a closed loop by replay: each new act() is requested, recorded 
   assert.match(String(diverged.error), /must repeat the same act\(\) calls/);
 });
 
+test('env.act with a list plays it as one batch, as Continual Harness skills call take_actions, and stops at a level change', async () => {
+  const code = 'r = env.act([{"name": "action1"}, {"name": "ACTION6", "x": 70, "y": "2"}, {"name": "ACTION1"}])\n' +
+    '[r["executed_count"], r["level_changed"], r["terminal"], r["score"], r["last_frame"]["frame"]]';
+  const run = (acts: any[]) => executeNative({ mode: 'exec', code, sources: {}, files: {}, acts, allow_act: true,
+    state: { grid: [[0]], state: 'NOT_FINISHED', levels_completed: 0 } });
+  const first = await run([]);
+  assert.deepEqual(first.need_act, { action: 'ACTION1', batch: [1, 3] });
+  const one = { call: first.need_act, observation: { grid: ['0'], state: 'NOT_FINISHED', levels_completed: 0 } };
+  const second = await run([one]);
+  assert.deepEqual(second.need_act, { action: 'ACTION6', batch: [2, 3], x: 63, y: 2 }, 'coordinates clamped as CH clamps them');
+  const done = await run([one, { call: second.need_act, observation: { grid: ['1'], state: 'NOT_FINISHED', levels_completed: 1 } }]);
+  assert.deepEqual((done.value as any).value, [2, true, false, 1, [[[1]]]], 'the third entry is not played after the level changed');
+  const missed = await run([one, { call: second.need_act, observation: { grid: ['1'], state: 'NOT_FINISHED', levels_completed: 0, missed: true } }]);
+  assert.equal((missed.value as any).value[0], 2, 'a missed prediction ends the list, as in an arc_action list');
+  const none = await executeNative({ mode: 'exec', code: 'env.act([{"x": 1}])', sources: {}, state: {}, files: {}, allow_act: true, acts: [] });
+  assert.match(String((none.value as any)?.stopped), /take_actions executed no actions/);
+  // One entry given alone plays as that action (su15-ch-q38-1 lost an action to env.act({...}), 2026-10-20).
+  const entry = await executeNative({ mode: 'exec', code: 'env.act({"name": "ACTION6", "x": 20, "y": 43})', sources: {}, state: {}, files: {},
+    allow_act: true, acts: [] });
+  assert.deepEqual(entry.need_act, { action: 'ACTION6', x: 20, y: 43 });
+});
+
 // The python session protocol: a call receives the last checkpoint and reports the next one.
 const NO_SESSION = { defs: [], blob: '', sha: '', cap: 128_000 };
 const STATE = { grid: [[1, 2], [3, 4]], history: { transitions: [], base_n: 0, base_grid: [[1, 2], [3, 4]], deltas: {} } };

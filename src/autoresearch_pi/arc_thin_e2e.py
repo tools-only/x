@@ -1043,10 +1043,17 @@ def run_arc_thin_e2e(
         stored_responses = settings["pi_api"] == "openai-responses"
         pi_env["ARC_THIN_RESPONSES_CONTINUATION"] = "1" if stored_responses else "0"
         pi_env["ARC_THIN_REASONING_MODE"] = "fields" if stored_responses else "all"
+        # The scripted smoke provider's steps call the earlier arc_action ({action, x, y, then}); Continual Harness's
+        # observation and action list (ARC_THIN_OBSERVATION=ch, the native default since 2026-10-20) are left to real runs
+        # and unit tests.
+        if pi_provider == "offline-arc-thin-smoke":
+            pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
         pi_env.update(extension_env or {})
-        observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "query") if foundation == "native" else "inline"
-        if observation_delivery not in ("query", "inline"):
-            raise ValueError("ARC_THIN_OBSERVATION must be query or inline")
+        observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "ch") if foundation == "native" else "inline"
+        if observation_delivery not in ("query", "inline", "ch"):
+            raise ValueError("ARC_THIN_OBSERVATION must be query, inline or ch")
+        if foundation == "native":
+            pi_env["ARC_THIN_OBSERVATION"] = observation_delivery
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    *(["--session", str(root / "session.jsonl")] if foundation == "native" else ["--no-session"]),

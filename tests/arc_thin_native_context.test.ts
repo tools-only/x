@@ -206,7 +206,8 @@ test('the native instructions state what a prediction is for, which the native f
   // into env.act and stopped predicting, so nothing was scored, no hypothesis check was tested and no judgment was
   // promoted. The legacy prompt states the contract; the native one mentioned predict only as a parameter name.
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
-  assert.match(prompt, /predict carries it, on arc_action, on each step of its then list, and on env\.act/);
-  assert.match(prompt, /stops at the first missed prediction/);
+  // Where predict goes depends on the action tool (a then list, or CH's action list under ARC_THIN_OBSERVATION=ch).
+  assert.match(prompt, /predict carries it, \{\{predict_on\}\}\. That is what gets scored, what a hypothesis check is tested against/);
+  assert.match(prompt, /\{\{list_stop\}\} stops at the first missed prediction/);
   assert.match(prompt, /level or WIN transition, predict it explicitly/);
 });

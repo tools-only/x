@@ -92,7 +92,7 @@ test('invalid observation mode fails rather than silently changing delivery', ()
   const old = { ...process.env };
   try {
     process.env.ARC_THIN_FOUNDATION = 'native'; process.env.ARC_THIN_OBSERVATION = 'typo';
-    assert.throws(() => arcThinExtension({} as any), /must be query or inline/);
+    assert.throws(() => arcThinExtension({} as any), /must be query, inline or ch/);
   } finally { process.env = old; }
 });
 
