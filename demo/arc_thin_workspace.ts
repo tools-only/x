@@ -182,10 +182,11 @@ export class Workspace {
       } }
     ];
     return tools.map(tool => ({ ...tool, execute: async (id, args: any, signal, update, ctx) => {
-      this.path(args.path ?? '.', tool.name === 'write' || tool.name === 'edit');
+      const target = this.path(args.path ?? '.', tool.name === 'write' || tool.name === 'edit');
       const result = await tool.execute(id, args, signal, update, { ...ctx, cwd: this.root } as any);
       if ((tool.name === 'write' || tool.name === 'edit') && !result.isError) {
-        const receipt = await this.onWrite?.(args.path.replace(/\\/g, '/'));
+        // Saved by its workspace path: "./prompts/lessons.md" was bound as a plain file, not the prompt, and said nothing.
+        const receipt = await this.onWrite?.(relative(this.root, target).replace(/\\/g, '/'));
         if (receipt) return { ...result, content: [{ type: 'text', text: receipt }] };
       }
       return result;

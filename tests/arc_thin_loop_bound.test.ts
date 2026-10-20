@@ -187,6 +187,28 @@ test('a level review consults a subagent before it writes; its test lines are pi
 	} finally { await h.close(); await done(w); }
 });
 
+test('a review that has not saved its file by its last call may write it with one more call, and only it', async () => {
+	// su15-lb-cb-q38 (2026-10-20): the consult and seven python calls used the review's ten; the write of lessons was refused.
+	const w = await world();
+	const h = await attach(w);
+	try {
+		await h.begin(); await h.act({ action: 'ACTION6', x: 8, y: 8 });
+		const REVIEW = 'LEVEL REVIEW. Level 1 is complete; this turn takes no action.';
+		await h.begin(REVIEW);
+		await h.call('write', { path: 'agents/scout.md', content: '---\ndescription: reads a level record\ntools: [read]\n---\nSay what was never tried.\n' });
+		await h.request(REVIEW);
+		assert.match(await h.call('consult', { agent: 'scout', question: 'What was never tried?', refs: ['data/record.md'] }), /never tried/);
+		for (let i = 3; i < 10; i += 1) await h.call('python', { code: `${i}` });
+		assert.match(await h.call('python', { code: '10' }),
+			/\(This was tool call 10 of 10 for this review: finish now; one more call is accepted, the write of prompts\/lessons\.md\.\)/);
+		assert.match(await h.call('write', { path: './prompts/lessons.md', content: '---\nactive: true\n---\n- test: ACTION6(3,3) — the new marked cell completes the level\n' }),
+			/prompts\/lessons\.md → prompt lessons v1: saved · loaded/);
+		assert.match(await h.call('write', { path: 'prompts/rules.md', content: '- one more\n' }), /this review used its 10 tool calls; it ends here/);
+		await h.begin();
+		assert.match(h.file('workspace/prompts/strategy.md'), /- First: ACTION6\(3,3\); test 1 of 1 from prompts\/lessons\.md/);
+	} finally { await h.close(); await done(w); }
+});
+
 test('the same board and action with a different result is said in the receipt; two predictors that disagree pin the move that separates them', async () => {
 	const w = await world();
 	const h = await attach(w);

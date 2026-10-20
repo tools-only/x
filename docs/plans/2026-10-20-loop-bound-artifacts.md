@@ -258,7 +258,7 @@ as views by default, and the fork budget. Built on r04 after the Continual Harne
 | A3 tests | extension (`reviewTests`, `settleReviewTests`, `pinNextTest`, `releasePin`); runner prompts | The level and stall review prompts ask for `- test: <move> — <what it tests>` lines. A new version of `prompts/lessons.md` or `prompts/review.md` replaces the queued tests; they are pinned one at a time as exact moves (a level review's as goal tests carrying `level_changed: true`); a test move played without the agent's own prediction carries the test's. When a test is played, expires or its level ends, the next decision says so and pins the next one. The save receipt of a review file says how many of its test lines will be pinned and why the others will not (no move, a click without its cell, not available, already played on the level); a test played on the level is not pinned again when the file is rewritten (the agent rewrote `prompts/lessons.md` 10 times during one level in su15-lr-cb-q38). Test lines may carry markdown emphasis or a numbered bullet. The level review no longer asks for how the win was found, what moved progress or what wasted actions. |
 | A4 accounting | runtime (`viewStats`, view change counts); extension (`artifactUsage`, `reviewArtifactLines`, `retireBrokenPredictors`); `demo/arc_thin_binder.ts` (`index`) | The capability index says where each tool enters the decision and what it did there: a view's runs and output changes, a predictor's predictions and how many were right, a callable tool's calls since it was saved. Review records list the tools and the tests pinned on the level. Views raising on 6 states in a row are restored or retired whoever wrote them (before: only refinements' views); predictors without a prediction on 6 actions in a row are moved under `_off/`. |
 | A5 refine point | extension (`run.refinePoint`, `refinePointText`, `gate`, `actForCode`, the `refine` tool) | Every `ARC_REFINE_EVERY` (15) actions since the agent's last refine call, the decision's head opens with REFINE POINT: the last refinement's ledger line, what ran without helping, the python redone on the level. `arc_action` is refused (the decision goes on) and `env.act` stopped until `refine(focus)` is called; the runtime's own scheduled refinement no longer runs (event refinements do). `ARC_THIN_REFINE_POINT=0` turns it off. |
-| A5 consult | extension (`run.consultPoint`, `consultFirstText`, the write/edit/memory refusal, the consult wrap, `noteConsultUse`); `LEVEL_REVIEW_CALLS` 8 → 10 | Every native review (level, stall, GAME_OVER) opens with CONSULT FIRST; the record is written to `data/record.md` for the subagent; `write`, `edit` (except under `agents/`) and `memory` are refused until a consult has answered. `(from <name>)` marks left in the review files and memory are counted after the review. `ARC_THIN_REVIEW_CONSULT=0` turns it off. |
+| A5 consult | extension (`run.consultPoint`, `consultFirstText`, the write/edit/memory refusal, the consult wrap, `noteConsultUse`); `LEVEL_REVIEW_CALLS` 8 → 10 | Every native review (level, stall, GAME_OVER) opens with CONSULT FIRST; the record is written to `data/record.md` for the subagent; `write`, `edit` (except under `agents/`) and `memory` are refused until a consult has answered. `(from <name>)` marks left in the review files and memory are counted after the review. `ARC_THIN_REVIEW_CONSULT=0` turns it off. A review that has not saved its own file by its last call may still write it with one more call (Runs, below). |
 | A5 reuse hint | runtime (`runPython`) | Counts all of the level's python calls, not only those since the saved tools last changed, and names a view as a view. |
 | B1 disagreement | extension (`pinDisagreement`, `candidateActions`, `regionCells`, `disagreement`) | With two or more predictors and nothing pinned, the first candidate (offered actions other than RESET and ACTION6, then a click on each object region, largest first) on which two predictions contradict each other is pinned, once per move and predictor versions. |
 | B2 hidden state | extension (`divergentFrom`), `demo/arc_thin_level_review.ts` | When the board before an action (status cells masked as the ledger masks them) and the action equal an earlier move's but the result differs, the receipt and the review record say so. |
@@ -305,12 +305,36 @@ Checks (node 22 and pytest, this machine, 2026-10-20):
   (activation 1, components 1, receipts 3) are the same tests failing the same way on the base. pytest, the runner's 8
   files: 42 passed.
 
+## Runs (2026-10-20, `runs/arc-lb-20261020`)
+
+One fork pair within the confirmed budget, both from su15-cb-q38-1's level-1 snapshot (`after-decision-20`), qwen3.8-27b
+thinking off (qwen dialect), 1.5M budget tokens each after the fork, `MAXLEVEL=2`; launchers
+`C:/Users/qi/tmp/r04/lb/launch-*.cmd`, monitor `watch.mjs`. Off arm: `su15-lb0-cb-q38`, r04 at `305ca1b0`
+(`worktrees/run-lb-base`).
+
+**First on-arm launch, `su15-lb-cb-q38` (`0ca16629`), stopped at #22.** Its level review used the consult call point
+(it wrote `agents/reviewer.md` and consulted it), then read the record and ran seven python calls; its eleventh call, the
+write of `prompts/lessons.md` with four test lines in the asked form (`- test: ACTION6(41,37) — dot closest to red
+circle; ...`), was refused by the review's 10-call cap. The cap's last-call note came with the tenth call's result, so
+"finish now" left no call to write with (the level-review forks never met it: they wrote first and had no consult). With
+no lessons file nothing could be pinned, so the run was stopped after about 0.26M budget tokens. Its first level-2
+decision was a refine point (the 20-action prefix had no refine call): the agent called `refine`; its first focus, over
+the 300-character schema limit, was refused, the second ran.
+
+Fixed for the second launch:
+- A level or stall review that has not saved its own file by its last call may write it with one more call, and only it;
+  the tenth call's note says so. The consult-first refusal still holds for that write.
+- Write and edit receipts use the workspace-relative path: a write to `./prompts/lessons.md` was saved as a plain file,
+  not the prompt, with no receipt.
+
+Spend with the restart: about 0.26M on the stopped launch beyond the pair's 3M, so up to about 3.26M in all.
+
 ## Evidence layers
 
 | Layer | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
 | Functional | passing (tests above) | offline: node, WASI, stand-in bridge, stubbed model | the runner's loop is not run end to end |
-| Full-chain reachability | unverified | — | needs a real run |
+| Full-chain reachability | partial | real su15 (online ARC), yibu, qwen3.8-27b, the real runner, Pi, bridge and refiner | first on-arm launch: the consult point and the refine point were reached and called; the review's lessons write was refused by its cap (fixed); the rest pending the second launch |
 | Autonomous adoption | unverified | — | — |
 | Net benefit | unverified | — | — |
 
