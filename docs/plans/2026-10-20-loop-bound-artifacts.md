@@ -4,6 +4,10 @@ Date: 2026-10-20 (Asia/Shanghai). Status: plan, not built (the user: "don't buil
 `docs/templates/meta-harness-change.md`. Part A is the fix the user asked to put first; Part B (rival predictors, a
 hidden-state signal, review outputs as experiments) builds on it and was proposed earlier the same day.
 
+Revised the same day: the first version removed `refine` and `consult` from the default tools. The user: "Removal does not
+fix the root problem that these tools are never invoked. Instead, we need a mechanism to ensure they get called, because
+they can genuinely produce progress and improve the agent." A5 now gives them call points.
+
 ## Problem and claim
 
 ### One problem behind three symptoms
@@ -32,9 +36,12 @@ The same runs show what does reach the decision:
 
 ### Claim (Part A)
 
-If every artifact is bound to a fixed point of the agent loop where the runtime runs or shows it, and its outcome is
-recorded and fed back, artifacts stop dangling:
+If every artifact is bound to a fixed point of the agent loop where the runtime runs or shows it, every service the
+agent can call has a point in the loop where the call is made, and outcomes are recorded and fed back, artifacts stop
+dangling:
 - what the agent or a refinement writes is used without being recalled;
+- `refine` and `consult` are called at their call points, on the agent's own focus and question, and what they produce
+  reaches a slot;
 - review outputs become experiments the agent plays;
 - what never helps is retired.
 
@@ -42,17 +49,22 @@ On qwen's level 2, concretely:
 - review candidates are played as pinned tests that predict a level change;
 - at least 2 distinct win conditions are tested in the first 30 actions;
 - every bound artifact type shows non-zero delivered use;
+- every call point gets its call, and in each run at least one agent-focused refinement or consult answer leads to a
+  played pin or a met expectation;
 - budget tokens per action rise by under 20%.
 
 - **Burden removed:**
   - recall: the agent no longer has to remember its tools;
+  - delegation: when to refine or consult is set by the loop; what to ask stays the agent's;
   - translation: turning its own review prose into moves;
   - bookkeeping: whether a candidate was tested.
 
-  The runtime does these mechanically; the agent still decides what to write and what to play.
+  The runtime does these mechanically; the agent still decides what to write, what to ask and what to play.
 - **Falsifiers:**
   - pins from reviews expire unplayed, or are played without predicting the level change they test;
   - bound views or predictors are shown, but the actions do not change (same win-condition tests as the sources);
+  - the call points' calls are made but are empty in effect: no edit lands in a slot, no answer reaches a pin or
+    hypothesis, or what lands is never played;
   - cost per action rises by more than 20% with no rise in use;
   - qwen binds nothing itself and the refinements bind nothing new.
 - **Reasonable non-use:**
@@ -62,7 +74,7 @@ On qwen's level 2, concretely:
 - **Scope:** the native foundation's runtime (extension, binder, runner prompts for reviews). Not in scope: CH
   observation code (another session owns it), new workers, prompt reminders.
 
-## Design (Part A: bind, deliver, account, trim)
+## Design (Part A: bind, deliver, call, account)
 
 **A1. Five loop slots.** All exist today; no new one is added.
 
@@ -81,7 +93,9 @@ An artifact is a capability only when it names its slot:
   the current state. It is shown after each state, and only when its output changed.
 - **`run(state, action)` returning a partial prediction becomes a predictor** (marked `# predict: on`). The skill-predictor
   scoring that exists (`predict_skill`) scores it, but on every action, without being named.
-- **Code that needs arguments stays callable by name, but the plan does not rely on it.**
+- **Code that takes arguments stays callable by name.** Its call point is the moment of need: when a python cell
+  computes what a saved tool computes, the cell's result names the tool and the call that does it (A5, the reuse hint
+  fixed).
 - **Unbound helpers live in `lib/`:** importable from python, not listed in the capability index, no schema.
 
 The agent decides the binding; the runtime runs it at its slot. No component is chosen by the runtime
@@ -119,31 +133,64 @@ The agent decides the binding; the runtime runs it at its slot. No component is 
 - **The agent decides the rest at review:** the review record lists artifacts that fired without changing an action or
   winning a test.
 
-**A5. Trim the pull surface.**
+**A5. Call points: a moment in the loop where each callable service is called.**
 
-- **refine and consult leave the default tool list** (the existing `ARC_THIN_LEAN` path made default). Their functions
-  are reached through slots:
-  - the agent's open questions in the strategy and its review directions are already in the scheduled refinement's
-    input;
-  - a subagent gets a slot only once one has a use with evidence.
+The services stay; what they lacked is what the saved tools lacked: a moment in the loop that calls for them, and a place
+for what they produce. Today the scheduled refinement runs every 15 actions (`ARC_REFINE_EVERY`) on triggers the runtime
+picks, so `refine(focus)` only duplicates it; `consult` has had no subagent to ask (`agents/` empty in every run). The loop
+sets the moment and makes sure the call happens; the content (the focus, the question, the subagent) is the agent's.
 
-  This departs from the earlier preference for an agent-called `refine` (Prime-style); it is listed for the user's
-  decision below.
-- **The "tools/x.py already computes this" hint goes:** it fired 0 times and its advice is wrong for arg-less tools.
+- **refine: the scheduled step becomes the agent's call (Prime's /refine).**
+  - Every 15 actions, on the existing schedule, the decision opens with a refine point. Before acting, the agent calls
+    `refine(focus)`: what it wants changed in its harness now. Examples: a computation it keeps redoing, a prediction that
+    keeps missing, a check or rule to write, a candidate to test.
+  - The refine point shows what the agent can choose from:
+    - the last refinement's outcome (its edit, whether its expectation held, whether its pin was played);
+    - the artifacts that fired without helping (A4);
+    - the python it repeated.
+  - Until `refine` has been called in that decision, `arc_action` and `env.act` are refused with the reason, as a second
+    `arc_action` is.
+  - The refinement works on that focus instead of a runtime-picked one, and applies at the next turn boundary. Its edit
+    must land in a slot (A1: a view, a predictor, a check, the pin, a rule) and carries the expectation the refinement
+    ledger already checks.
+  - Event refinements (level change, contested checks, rivals) stay. A refinement in flight at the refine point makes
+    the agent's start after it (as today).
+- **consult: at every review, with a subagent made when none exists.**
+  - Level, stall and GAME_OVER reviews ask the agent to put one question about the record to a subagent before
+    writing its review. If `agents/` holds none, the agent writes one first (name, description, tools: read and
+    python). It stays for later reviews, which may reuse or rewrite it.
+  - Until `consult` has been called in the turn, the review's writes are refused with the reason. The review's call
+    bound rises from 8 to 10 to cover the subagent and the question.
+  - The subagent reads the record and the refs in its own context, so the agent's anchoring does not carry over.
+  - The answer is read in the turn. What the agent takes from it goes into the review's pins and hypotheses (A3), marked
+    with the subagent's name so its use can be counted.
+- **Saved tools that take arguments: the reuse hint, fixed.** When a python cell recomputes what a saved tool computes,
+  the cell's result names the tool and the call. Today it fired 0 times in 8 runs: every save reset its count, and its
+  advice ("call x(args={...})") was wrong for arg-less tools, which A2 turns into views.
+- **What is recorded per call point:**
+  - the call: made or not, the focus or question, its cost;
+  - its yield: the refinement's edit and its slot, the expectation met or not, its pin played or not;
+  - for consult: the subagent, the answer's size, and the pins and hypotheses that cite it.
 
-Net resident text should not grow:
-- added: view outputs when they change, and the receipt's candidate line;
-- removed: the refine and consult schemas, the hint, and most of the review files' prose.
+Cost:
+- **No extra refinement:** the agent-directed one takes the scheduled one's place, within the existing refinement share
+  (`ARC_REFINE_MAX_SHARE`, 10% of the agent's budget tokens).
+- **refine:** one more tool call per 15 actions.
+- **consult:** one subagent call per review: 2-6 per run, an estimated 20-60k budget tokens each.
+
+Resident text should not grow much:
+- added: view outputs when they change, the receipt's candidate line, the refine point's lines;
+- removed: most of the review files' prose.
 
 **Lifecycle and who advances it:**
 
 | Step | Who |
 | --- | --- |
-| Opportunity, recognition | the agent, or a refinement's trigger on repeated python |
-| Investment | the agent, or a refinement, writes the artifact |
+| Opportunity, recognition | the agent, or a refinement's trigger on repeated python; for services, the call point |
+| Investment | the agent, or a refinement, writes the artifact; at a call point, the agent's focus or question |
 | Assembly | the binding at save; the runtime validates it |
 | Semantic use | slot delivery (runtime); the action (agent) |
-| Feedback | the outcome slot (runtime) |
+| Feedback | the outcome slot (runtime); the call point's yield (runtime) |
 | Retain / revise / retire | mechanical rules (runtime); otherwise the agent at review |
 
 ## Part B, built on Part A
@@ -178,14 +225,19 @@ Order: A first. Without it, B's predictors would be one more pull artifact.
 - **Measures, from the logs:**
   - per artifact type: bound (by agent / by refinement), fired, shown, outcomes;
   - pins: set (by review / agent / refinement), played, expired, and whether the played move stated the prediction;
+  - call points: calls made out of call points reached; refinements on the agent's focus against those on the runtime's
+    triggers (edits that landed in a slot, expectations met, pins played), set beside the refinement ledger of the runs on
+    record; consult answers cited by review pins or hypotheses, and those pins played;
   - distinct win conditions tested in level 2's first 30 actions;
   - level 2 completed and actions to complete it;
   - budget tokens per action, resident characters per request.
 - **Decision rule, fixed now:**
   - **adoption:** in both qwen forks, review pins are played and at least 2 distinct win conditions are tested in the
     first 30 actions;
+  - **call points:** every call point reached gets its call, and in each qwen fork at least one agent-focused
+    refinement or consult answer leads to a played pin or a met expectation;
   - **benefit:** level 2 is completed in at least one qwen fork where its source failed, without gpt losing levels;
-  - **failure:** pins expire unplayed or the early tests repeat the sources'.
+  - **failure:** pins expire unplayed, the early tests repeat the sources', or the calls yield nothing that is played.
 
   Two forks per arm only separate large effects.
 - **Negative cases:** a fork whose level falls before any review; views that never change; a level where the first
@@ -204,8 +256,8 @@ Order: A first. Without it, B's predictors would be one more pull artifact.
 
 ## Open for the user
 
-1. Remove `refine` and `consult` from the default tool list (A5), against the earlier Prime-style preference for an
-   agent-called refine.
+1. The call points (A5): a refine point every 15 actions with acting refused until `refine` is called, and a consult at
+   every review with the review's writes refused until `consult` is called. Confirm the schedule and the refusals.
 2. Make arg-less saves views by default (A2): saved code is shown after each state when its output changes.
 3. Budget for the fork pairs.
 
