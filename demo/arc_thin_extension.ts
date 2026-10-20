@@ -41,7 +41,7 @@ import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
 import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
 import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { StringEnum, getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import { compact as piCompact, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -606,13 +606,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		 */
 		refinePoint: boolean; refineCalled: boolean; refinePointText?: string;
 		consultPoint: boolean; consulted: boolean;
+		/** A level or stall review saved its own file (prompts/lessons.md, prompts/review.md); if not, the one write after its last call (gate). */
+		reviewSaved: boolean; reviewWrite?: string;
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
-		refinePoint: false, refineCalled: false, consultPoint: false, consulted: false,
+		refinePoint: false, refineCalled: false, consultPoint: false, consulted: false, reviewSaved: false,
 	});
 	let run = freshRun();
 	/**
@@ -2760,9 +2762,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.toolCalls += 1;
 		if (name === "refine") run.refineCalled = true;
 		// A level or stall review is bounded like a decision: its last call says so, and a call after it ends the review.
+		// A review that has not saved its own file may still write it with one more call: in su15-lb-cb-q38 the consult and
+		// seven python calls used the ten, and the write of prompts/lessons.md, its test lines and all, was refused.
 		if (native && (run.levelReview || run.stallReview)) {
-			if (run.toolCalls > LEVEL_REVIEW_CALLS) return { reason: `this review used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
-			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = `(This was tool call ${LEVEL_REVIEW_CALLS} of ${LEVEL_REVIEW_CALLS} for this review: finish now.)`;
+			const file = run.levelReview ? LESSONS_PATH : REVIEW_PATH;
+			if (run.toolCalls > LEVEL_REVIEW_CALLS) {
+				if ((name === "write" || name === "edit") && !run.reviewSaved && !run.reviewWrite) { run.reviewWrite = file; return undefined; }
+				return { reason: `this review used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
+			}
+			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = `(This was tool call ${LEVEL_REVIEW_CALLS} of ${LEVEL_REVIEW_CALLS} for this review: ` +
+				`finish now${run.reviewSaved ? "" : `; one more call is accepted, the write of ${file}`}.)`;
 		}
 		const nativeCap = native && !run.consolidating && !diagnosticBudget;
 		if (!native && run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
@@ -3210,8 +3219,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
   if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
+      const path = posix.normalize(String((params as any)?.path ?? '').replace(/\\/g, '/'));
+      // The one write after a review's last call is for the review's own file (gate).
+      if (run.reviewWrite && path !== run.reviewWrite) throw new Refusal(`after this review's last call only ${run.reviewWrite} is accepted`);
       // A review writes after it has consulted (A5); making the subagent to consult is a write it may do first.
-      if ((tool.name === 'write' || tool.name === 'edit') && consultFirst(String((params as any)?.path ?? ''))) throw new Refusal(CONSULT_FIRST);
+      if ((tool.name === 'write' || tool.name === 'edit') && consultFirst(path)) throw new Refusal(CONSULT_FIRST);
       try { return await tool.execute('workspace', params as any, signal, undefined, ctx); }
       catch (error) { throw new Refusal(errorText(error)); }
     }) });
@@ -3753,6 +3765,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // The level and stall reviews ask for short files: they are sent with every decision. Their test lines are pinned as
       // the next experiments, and the receipt says which will be (A3).
       const asked = (path === LESSONS_PATH || path === REVIEW_PATH) && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path) : '';
+      if (asked && path === (run.levelReview ? LESSONS_PATH : run.stallReview ? REVIEW_PATH : '')) run.reviewSaved = true;
       return receipt ? receipt + (asked.length > LESSONS_CHARS ? `\nnote: ${path} is ${asked.length} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
         + (asked && !/: unchanged, /.test(receipt) ? testLinesNote(path, asked) : '')
         + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
