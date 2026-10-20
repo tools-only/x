@@ -19,6 +19,8 @@ export class Workspace {
   private resultIndex: string;
   private inlineChars: number;
   onWrite?: (path: string) => Promise<string | undefined>;
+  /** Counts every write, move and delete, so a computation can tell its inputs did not change (the same-state cache). */
+  version = 0;
   constructor(runRoot: string, options: { inlineChars?: number } = {}) {
     this.root = resolve(runRoot, 'workspace');
     this.inlineChars = options.inlineChars ?? 8000;
@@ -55,10 +57,12 @@ export class Workspace {
   runtimeWrite(path: string, content: string | Uint8Array) {
     const target = this.path(path, true, true); mkdirSync(resolve(target, '..'), { recursive: true });
     writeFileSync(this.path(path, true, true), content, 'utf8');
+    this.version += 1;
   }
   mutate(op: { op: string; path: string; content?: string; destination?: string }) {
     const source = this.path(op.path, true);
     if (source === this.root) throw Error('workspace root cannot be changed');
+    this.version += 1;
     if (op.op === 'write') this.runtimeWrite(op.path, op.content!);
     else if (op.op === 'delete') {
       if (!lstatSync(source).isFile()) throw Error('only workspace files can be removed');
@@ -122,6 +126,9 @@ export class Workspace {
    * the file back whole (kernel-02, 2026-10-14). If what remains fits the inline threshold it is shown whole.
    */
   receipt(body: string, status = 'ok', keyLines: string[] = [], source?: string): string {
+    // A python result's address ("[P12]", "[P15 = P12: same code]") stays its first line, whatever is done to the rest.
+    const mark = /^\[P\d+[^\]\n]*\]\n/.exec(body)?.[0];
+    if (mark) return mark + this.receipt(body.slice(mark.length), status, keyLines, source);
     if (body.length <= this.inlineChars) return body;
     const {hash, ref} = source ? {hash: createHash('sha256').update(body).digest('hex'), ref: source} : this.saveResult(body);
     const raw = body.split('\n');
@@ -152,7 +159,7 @@ export class Workspace {
   fileTools(): ToolDefinition[] {
     const safe = (p: string, write = false) => this.path(p, write, false, true);
     const readFile = async (p: string) => readFileSync(safe(p));
-    const writeFile = async (p: string, content: string) => { writeFileSync(safe(p, true), content, 'utf8'); };
+    const writeFile = async (p: string, content: string) => { writeFileSync(safe(p, true), content, 'utf8'); this.version += 1; };
     const access = async (p: string) => { if (!existsSync(safe(p))) throw Error('workspace file does not exist'); };
     const tools: ToolDefinition[] = [
       createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile, access,

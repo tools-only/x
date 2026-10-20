@@ -82,7 +82,7 @@ LEVEL_REVIEW_RECOVERY_PROMPT = (
 #: trajectories, summarize current problems and bottlenecks, and identify directions for improvement." The agent writes its
 #: own prompts/review.md, an active prompt, from the record of the level so far (the extension adds it below this prompt).
 STALL_REVIEW_PROMPT = (
-    "STALL REVIEW. Level {level} is still open after {since} actions ({anchor}); this turn takes no action. Review the "
+    "STALL REVIEW. {why}; this turn takes no action. Review the "
     "level's record below, the history shown and your own notes, then rewrite prompts/review.md whole, in one write call. "
     "It is shown with every decision until you delete it, so keep it under 1,200 characters. Start it with\n---\n"
     "active: true\n---\nthen write:\n"
@@ -102,6 +102,10 @@ STALL_REVIEW_RECOVERY_PROMPT = (
 #: Actions without a level completed, counted from the level's first action or the last stall review, after which a
 #: native run's next turn is a stall review (0: none).
 STALL_REVIEW_AFTER = 40
+#: Work memory (docs/plans/2026-10-20-work-memory.md): decisions in a row whose actions only gave results the same board
+#: had already shown (the extension's `novelty` on each trajectory row) after which the next turn is a stall review; it
+#: doubles after each such review until a decision learns something new (0: none).
+SPIN_REVIEW_AFTER = 2
 DECIDE_RECOVERY_PROMPT = (
     "RECOVER ACTION. The previous turn hit the output limit. Use the persisted working set and latest native "
     "observation; do not explain. If the working set lists a saved Skill whose result has not been explicitly "
@@ -306,7 +310,45 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
         "level_reviews": _level_review_stats(harness),
         "stall_reviews": _review_stats(harness, "stall_review", "review"),
         "loop_bound": _loop_bound_stats(harness),
+        "work_memory": _work_memory_stats(harness),
         "ledger": _ledger_stats(harness),
+    }
+
+
+def _work_memory_stats(harness: Path) -> dict[str, Any] | None:
+    """Work memory (docs/plans/2026-10-20-work-memory.md): python calls with an address, those that repeated an earlier
+    one, those answered from the same state without a run, those that retyped lines of an earlier one, those that ran
+    earlier calls with cell(k); actions by novelty; decisions that learned nothing new (spin), the longest run of them,
+    and the novelty pins set. None when it was off."""
+    calls = _read_jsonl(harness / "python_calls.jsonl")
+    trajectory = _read_jsonl(harness / "trajectory.jsonl")
+    if not calls and not any("novelty" in row for row in trajectory):
+        return None
+    novelty = {kind: sum(1 for row in trajectory if row.get("novelty") == kind) for kind in ("new", "known", "diverged")}
+    spins, longest = 0, 0
+    for end in range(1, len(trajectory) + 1):
+        streak, _ = _spin_streak(trajectory[:end])
+        if end == len(trajectory) or trajectory[end].get("decision") != trajectory[end - 1].get("decision"):
+            longest = max(longest, streak)
+    decisions: dict[int, list[dict[str, Any]]] = {}
+    for row in trajectory:
+        if row.get("decision") is not None:
+            decisions.setdefault(int(row["decision"]), []).append(row)
+    for rows in decisions.values():
+        played = [row for row in rows if row.get("action") != "RESET"]
+        if played and not any(row.get("level_changed") or row.get("novelty") != "known" for row in played):
+            spins += 1
+    pins = [row for row in _read_jsonl(harness / "work_memory.jsonl") if row.get("kind") == "novelty_pin"]
+    return {
+        "python_calls": len(calls),
+        "repeats": sum(1 for row in calls if row.get("same") is not None),
+        "answered_from_same_state": sum(1 for row in calls if row.get("cached")),
+        "retyped_lines": sum(1 for row in calls if row.get("blocks")),
+        "cell_calls": sum(1 for row in calls if row.get("cells")),
+        "actions_by_novelty": novelty,
+        "spin_decisions": spins,
+        "longest_spin_streak": longest,
+        "novelty_pins": len(pins),
     }
 
 
@@ -850,12 +892,55 @@ def _stall_review_due(trajectory: list[dict[str, Any]], reviewed_at: int, after:
     return after > 0 and len(trajectory) - max(_level_start(trajectory), reviewed_at) >= after
 
 
-def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, levels_completed: int) -> str:
+def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, levels_completed: int,
+                         spin: tuple[int, list[str]] | None = None) -> str:
+    """The stall review's prompt. `spin` (decisions in a row that learned nothing new, and their moves) says why it came
+    early: the work-memory trigger, not the action count."""
     start = _level_start(trajectory)
     since = len(trajectory) - max(start, reviewed_at)
     anchor = (f"since your last stall review, at action {reviewed_at}" if reviewed_at > start
               else f"since it began at action {start + 1}")
-    return STALL_REVIEW_PROMPT.format(level=levels_completed + 1, since=since, anchor=anchor)
+    if spin:
+        streak, moves = spin
+        shown = ", ".join(moves[:4]) + (", …" if len(moves) > 4 else "")
+        why = (f"Your last {streak} decisions only played moves whose results this board had already shown ({shown}); "
+               f"level {levels_completed + 1} has been open for {since} actions ({anchor})")
+    else:
+        why = f"Level {levels_completed + 1} is still open after {since} actions ({anchor})"
+    return STALL_REVIEW_PROMPT.format(why=why)
+
+
+def _spin_review_after(foundation: str, explicit: int | None, env: dict[str, str]) -> int:
+    """Decisions in a row that learned nothing new before a stall review (work memory): the argument, else
+    ARC_THIN_SPIN_REVIEW, else SPIN_REVIEW_AFTER in the native foundation; 0 turns it off, and so does
+    ARC_THIN_WORK_MEMORY=0 (the extension then marks no row)."""
+    value = explicit if explicit is not None else int(env.get("ARC_THIN_SPIN_REVIEW") or SPIN_REVIEW_AFTER)
+    if value < 0:
+        raise ValueError("spin review threshold must be nonnegative")
+    return value if foundation == "native" and env.get("ARC_THIN_WORK_MEMORY") != "0" else 0
+
+
+def _spin_streak(trajectory: list[dict[str, Any]]) -> tuple[int, list[str]]:
+    """Decisions in a row, latest first, whose actions all gave results the same board had already shown (the extension's
+    `novelty` == "known"), with the moves they played. A RESET, or a decision without actions, is neutral; a level change
+    or a new or diverging result ends the streak. The same rule as spinStreak in demo/arc_thin_work_memory.ts."""
+    decisions: dict[int, list[dict[str, Any]]] = {}
+    for row in trajectory:
+        if row.get("decision") is not None:
+            decisions.setdefault(int(row["decision"]), []).append(row)
+    streak, moves = 0, []
+    for decision in sorted(decisions, reverse=True):
+        played = [row for row in decisions[decision] if row.get("action") != "RESET"]
+        if not played:
+            continue
+        if any(row.get("level_changed") or row.get("novelty") != "known" for row in played):
+            break
+        streak += 1
+        for row in played:
+            move = row["action"] + (f"({row['x']},{row['y']})" if row.get("x") is not None and row.get("y") is not None else "")
+            if move not in moves:
+                moves.append(move)
+    return streak, moves
 
 
 def _review_recovery(message: str) -> str | None:
@@ -952,6 +1037,7 @@ def run_arc_thin_e2e(
     continuity_decisions: int = 8,
     review_at_level_change: bool | None = None,
     stall_review_after: int | None = None,
+    spin_review_after: int | None = None,
     extension_env: dict[str, str] | None = None,
     foundation: str = "native",
     replay_reasoning: bool = False,
@@ -995,7 +1081,12 @@ def run_arc_thin_e2e(
     that many actions have been played without a level completed, counted from the level's first action or the last
     stall review, the next turn is a stall review without actions, in which the agent rewrites prompts/review.md from the
     record of the level so far (STALL_REVIEW_PROMPT, docs/plans/2026-10-20-stall-review.md). A level review comes first
-    when both are due; a due stall review takes the place of the GAME_OVER consolidation."""
+    when both are due; a due stall review takes the place of the GAME_OVER consolidation.
+
+    ``spin_review_after`` (work memory, docs/plans/2026-10-20-work-memory.md; native only; None reads
+    ARC_THIN_SPIN_REVIEW, else SPIN_REVIEW_AFTER; 0 turns it off): once that many decisions in a row only played moves
+    whose results the same board had already shown, the next turn is the stall review, saying so; the next one needs twice
+    as many, until a decision learns something new."""
     if variant not in {"treatment", "control"}:
         raise ValueError("variant must be treatment or control")
     if foundation not in {"legacy", "native"}:
@@ -1024,6 +1115,7 @@ def run_arc_thin_e2e(
     env.pop("PI_AUTORESEARCH_OWNS_TASK", None)  # never let PiKernel.close seal a legacy task scope
     review_at_level_change = _level_review_default(review_at_level_change, env)
     stall_review_after = _stall_review_after(foundation, stall_review_after, env) if variant == "treatment" else 0
+    spin_review_after = _spin_review_after(foundation, spin_review_after, env) if variant == "treatment" else 0
     settings = resolve_model_settings(env)
     if max_output_tokens is not None:
         settings["max_tokens"] = max_output_tokens
@@ -1052,7 +1144,7 @@ def run_arc_thin_e2e(
         "provider": pi_provider, "model": model, "thinking": thinking or "provider-default",
         "thinking_format": settings.get("thinking_format"), "thinking_reaches_provider": thinking_sent,
         "passed": False, "stop_reason": None,
-        "decisions": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "no_action_decisions": 0,
+        "decisions": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "spin_reviews": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0, "environment_restarts": [],
         "provider_errors": 0,
@@ -1178,6 +1270,7 @@ def run_arc_thin_e2e(
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
             "review_at_level_change": review_at_level_change, "stall_review_after": stall_review_after,
+            "spin_review_after": spin_review_after, "work_memory": pi_env.get("ARC_THIN_WORK_MEMORY") != "0",
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,
@@ -1250,6 +1343,9 @@ def run_arc_thin_e2e(
         # The action count at the last stall review (a fork keeps its source's, from the copied working-set log).
         stall_reviewed_at = max((int(row.get("actions") or 0) for row in _read_jsonl(harness / "working_set.jsonl")
                                  if row.get("stall_review")), default=0)
+        # Work memory: decisions in a row that learn nothing new before the next stall review; doubles after each such
+        # review, back to spin_review_after once a decision learns something new.
+        spin_threshold = spin_review_after
         no_action_streak = 0
         environment_streak = 0
         provider_errors: list[str] = []
@@ -1466,12 +1562,19 @@ def run_arc_thin_e2e(
                 (row.get("prediction") or {}).get("misses") or (row.get("skill_prediction") or {}).get("misses")
                 for row in _read_jsonl(harness / "trajectory.jsonl")[consolidated_at:])
             # Many actions without a level completed make the agent's stall review due (stall_review_after).
-            stall_due = _stall_review_due(_read_jsonl(harness / "trajectory.jsonl"), stall_reviewed_at, stall_review_after)
+            trajectory_now = _read_jsonl(harness / "trajectory.jsonl")
+            stall_due = _stall_review_due(trajectory_now, stall_reviewed_at, stall_review_after)
+            # Work memory: so do decisions in a row that only replayed results the same board had already shown.
+            spin = _spin_streak(trajectory_now) if spin_review_after else (0, [])
+            if spin[0] == 0:
+                spin_threshold = spin_review_after
+            spin_due = spin_review_after > 0 and spin[0] >= spin_threshold
             consolidate = variant == "treatment" and action_count > consolidated_at and (
                 (level_changed_since_consolidation and review_at_level_change)
                 or str(state.get("state")) == "GAME_OVER"
                 or miss_due
                 or stall_due
+                or spin_due
                 or (consolidate_after_actions > 0 and action_count - consolidated_at >= consolidate_after_actions)
             )
             fatal_before = _fatal_errors(harness)
@@ -1480,19 +1583,24 @@ def run_arc_thin_e2e(
             try:
                 if consolidate:
                     # After a level change the native foundation reviews the level (prompts/lessons.md); after many
-                    # actions without one, the level so far (prompts/review.md); otherwise the consolidation prompt.
+                    # actions without one, or decisions that learned nothing new, the level so far (prompts/review.md);
+                    # otherwise the consolidation prompt.
                     level_review = foundation == "native" and level_changed_since_consolidation and review_at_level_change
+                    stall_review = not level_review and (stall_due or spin_due)
                     review = (_level_review_prompt(int(state.get("levels_completed") or 0)) if level_review
-                              else _stall_review_prompt(_read_jsonl(harness / "trajectory.jsonl"), stall_reviewed_at,
-                                                        int(state.get("levels_completed") or 0)) if stall_due
+                              else _stall_review_prompt(trajectory_now, stall_reviewed_at, int(state.get("levels_completed") or 0),
+                                                        spin if spin_due and not stall_due else None) if stall_review
                               else CONSOLIDATE_PROMPT)
                     events = recover_length(review, safe_turn(review))
                     summary["consolidations"] += 1
                     if level_review:
                         summary["level_reviews"] += 1
-                    elif stall_due:
+                    elif stall_review:
                         summary["stall_reviews"] += 1
                         stall_reviewed_at = action_count
+                        if spin_due:
+                            summary["spin_reviews"] += 1
+                            spin_threshold *= 2
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
                 else:

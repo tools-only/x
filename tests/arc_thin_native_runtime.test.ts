@@ -40,3 +40,35 @@ test('sandbox artifact globals reflect authoritative workspace JSON', async () =
     assert.equal(runtime.repetitionText(1), '');
   } finally { runtime.close(); }
 });
+
+test('work memory: a python result starts with its address, a repeat names the first call, an unchanged state answers it, cell(k) runs call k again', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-wm-')));
+  const logs: any[] = [];
+  let n = 0;
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
+    state: () => ({ grid: [[1, 2], [3, 4]] }), level: () => 0, actionCount: () => n,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  const text = async (code: string) => (await runtime.python(code)).content[0].text.trim();
+  try {
+    assert.match(await text('total = sum(map(sum, grid))\nprint(total)'), /^\[P1\]\n10\n[\s\S]*\(python session: \+total\)/);
+    assert.equal(await text('# again\ntotal = sum(map(sum, grid))\nprint(total)'), '[P2 = P1: same code on the same state, not run again]\n10\n\n→ null');
+    n = 1;
+    assert.match(await text('total = sum(map(sum, grid))\nprint(total)'), /^\[P3 = P1: same code\]\n10\n/, 'a new state: it runs again');
+    assert.match(await text('print(cell(1) is None, total)'), /^\[P4\]\n10\nTrue 10\n/, 'cell(1) ran P1 here');
+    workspace.runtimeWrite('notes/x.md', 'x');
+    assert.match(await text('# after a write\ntotal = sum(map(sum, grid))\nprint(total)'), /^\[P5 = P1: same code, other comments\]\n10\n/,
+      'a workspace write since: it runs again');
+    assert.match(await text('cell(99)'), /^\[P6\]\n[\s\S]*no python call P99/);
+    // Lines retyped from an earlier call are named; cell(k, a, b) runs them.
+    assert.match(await text('acc = []\nfor row in grid:\n    for v in row:\n        acc.append(v * 2)\nprint(sum(acc))'), /^\[P7\]\n20\n/);
+    assert.match(await text('scale = 3\nacc = []\nfor row in grid:\n    for v in row:\n        acc.append(v*2)\nprint(sum(acc) * scale)'),
+      /^\[P8: lines 2-5 = P7 lines 1-4\]\n60\n/);
+    assert.match(await text('acc = None\ncell(7, 1, 4)\nprint(len(acc))'), /^\[P9\]\n4\n/);
+    const calls = logs.filter((row) => row.file === 'python_calls.jsonl');
+    assert.deepEqual(calls.map((row) => [row.id, row.same ?? null, Boolean(row.cached)]), [[1, null, false], [2, 1, true], [3, 1, false],
+      [4, null, false], [5, 1, false], [6, null, false], [7, null, false], [8, null, false], [9, null, false]]);
+    assert.deepEqual(calls[3].cells, [1]);
+    assert.deepEqual(calls[7].blocks, [{ from: 2, to: 5, id: 7, a: 1, b: 4 }]);
+    assert.deepEqual(calls[8].cells, [7]);
+  } finally { runtime.close(); }
+});

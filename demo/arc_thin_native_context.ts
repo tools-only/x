@@ -8,6 +8,7 @@
  */
 import { LONG_LINE_CHARS, stubLongLines } from './arc_thin_workspace.ts';
 import { canonical } from './arc_thin_native_loop.ts';
+import { collapseRepeatedDecisions, referenceRepeats } from './arc_thin_work_memory.ts';
 
 /** Pair calls with results and drop thinking, over the whole list (the canonical projection). */
 export function projectNativeHistory(messages: any[], replayReasoning = false): any[] {
@@ -222,12 +223,17 @@ export function collapseRepeatedCalls(messages: any[]): any[] {
  * clipEnds and without images. A finished decision renders to the same bytes on every request, so the provider's cached
  * prefix covers it, until Pi's compaction rewrites it or a run of repeated calls it ends with goes on in the next
  * decision. Rounds that repeated the same calls show once with their count (collapseRepeatedCalls);
- * `collapseRepeats: false` keeps every copy.
+ * `collapseRepeats: false` keeps every copy. Work memory (`references`, default on): a python call that repeated an
+ * earlier one shows as cell(k), a function defined again unchanged as a stub, an arc_action repeating an earlier call's
+ * arguments without its reasoning, and consecutive identical decisions once (arc_thin_work_memory.ts).
  */
-export function freezeHistory(messages: any[], options: { resultChars?: number; save?: SaveResult; collapseRepeats?: boolean } = {}): any[] {
+export function freezeHistory(messages: any[], options: { resultChars?: number; save?: SaveResult; collapseRepeats?: boolean; references?: boolean } = {}): any[] {
   const limit = options.resultChars ?? HISTORY_RESULT_CHARS;
   const projected = projectNativeHistory(messages);
-  return (options.collapseRepeats === false ? projected : collapseRepeatedCalls(projected)).map(message => {
+  const referenced = options.references === false ? projected : referenceRepeats(projected);
+  const collapsed = options.collapseRepeats === false ? referenced
+    : collapseRepeatedCalls(options.references === false ? referenced : collapseRepeatedDecisions(referenced));
+  return collapsed.map(message => {
     if (message.role === 'user' && Array.isArray(message.content) && message.content.some((b: any) => b?.type === 'image'))
       return { ...message, content: message.content.filter((b: any) => b?.type !== 'image') };
     if (message.role !== 'toolResult') return message;

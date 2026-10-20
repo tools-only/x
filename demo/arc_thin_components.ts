@@ -403,7 +403,21 @@ def show(g=None, x0=0, y0=0, x1=None, y1=None, bg=None):
         if text:
             print(('y%d' % a if a == b else 'y%d-%d' % (a, b)) + ': ' + text)
 
-_SESSION_SKIP = {'state', 'grid', 'history', 'prev_grid', 'artifacts', 'skill', 'args', 'env', 'ActStopped', 'show'}
+def cell(k, a=None, b=None):
+    """Run your earlier python call P<k> again, here and on the current state, or only its lines a to b (work memory:
+    every python result starts with its address, [P12], and names the lines it retyped from an earlier call). Returns the
+    value of its final expression, as that call did."""
+    code = (_req.get('cells') or {}).get(str(k))
+    if code is None:
+        raise KeyError('no python call P%s to run again' % k)
+    if a is not None:
+        code = '\n'.join(code.replace('\r\n', '\n').split('\n')[int(a) - 1:int(a if b is None else b)])
+    tree = ast.parse(code, '<P%s>' % k, 'exec')
+    last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
+    exec(compile(tree, '<P%s>' % k, 'exec'), _ns)
+    return eval(compile(ast.Expression(last.value), '<P%s>' % k, 'eval'), _ns) if last is not None else None
+
+_SESSION_SKIP = {'state', 'grid', 'history', 'prev_grid', 'artifacts', 'skill', 'args', 'env', 'ActStopped', 'show', 'cell'}
 _SESSION_RAW_BYTES = 2 * 1024 * 1024
 _session_flags = {}
 _session_defs = {}
@@ -577,6 +591,19 @@ def _brief(value):
         return '%s[%dx%d]' % (type(value).__name__, size, len(first))
     return '%s[%d]' % (type(value).__name__, size)
 
+def _signature(name, source):
+    """A definition's parameters as written, '(grid, color)', so the session listing shows how to call it; 'class' for a class."""
+    try:
+        node = next(n for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == name)
+    except BaseException:
+        return ''
+    if isinstance(node, ast.ClassDef):
+        return 'class'
+    try:
+        return '(%s)' % ast.unparse(node.args)
+    except BaseException:
+        return ''
+
 def _session_dump(code, session, base, before, loaded):
     """Checkpoint the namespace as it is now. All or nothing: over capacity or unverifiable means no checkpoint."""
     lines = code.splitlines()
@@ -595,7 +622,7 @@ def _session_dump(code, session, base, before, loaded):
             del _session_defs[name]
     values = {k: _ns[k] for k in _ns if not k.startswith('_') and k not in base and k not in _SESSION_SKIP
               and (k not in _session_defs or isinstance(_ns[k], types.FunctionType))}
-    brief = {k + '()': '' for k in _session_defs}
+    brief = {k + '()': _signature(k, src) for k, src in _session_defs.items()}
     brief.update({k: _brief(v) for k, v in values.items() if k not in _session_defs})
     unsupported = []
     try:
@@ -722,6 +749,7 @@ def _cell(req):
         _req['native_env'] = True
         _ns['ActStopped'] = ActStopped
         _ns['show'] = show
+        _ns['cell'] = cell
         try:
             if _req['mode'] == 'exec':
                 _session = _req.get('session')
