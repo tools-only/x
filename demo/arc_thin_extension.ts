@@ -22,7 +22,7 @@
  * derived view from the project. Cross-frame analysis is a tool the agent writes
  * from state["prev_grid"] and state["history"] (§10.9 of that plan).
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
@@ -30,6 +30,10 @@ import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
+import { FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, MAX_CONVERSATION_TURNS, NOTHING_EXECUTED, RECENT_RESULTS_CAP, TAKE_ACTIONS_DESCRIPTION,
+	TAKE_ACTIONS_TEXT, agentActions, buildObservationSection, clampCoordinate, computeGridDelta, currentStateBlock, formatToolRecord,
+	formatToolResults, gridImage, pyDumps, renderRecentHistory, sandboxObservation, summarizeGridTransitions, turnBlock,
+	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord, type ToolRecord } from "./arc_thin_ch_view.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
@@ -167,6 +171,13 @@ type ActionRow = {
 	changed_cells: number | null; bbox?: unknown; level_changed: boolean; state: string;
 	levels_completed: number; budget: any;
 	predict?: Prediction; prediction?: ScoredPrediction; skill_prediction?: SkillPrediction;
+	/**
+	 * Continual Harness step-record fields (ARC_THIN_CH): who played it (arc_action, python, tool: <name>, auto_reset), its
+	 * place in an arc_action list (the list's reasoning is the first entry's note, the entries it rejected its
+	 * batch_rejected), the state and levels before it, and the change as colour transitions and cells.
+	 */
+	source?: string; batch_id?: string; batch_position?: number; batch_total?: number; batch_rejected?: RejectedStep[];
+	state_before?: string; levels_before?: number; grid_change?: number[][] | null; grid_delta?: number[][] | null;
 };
 /** What the environment reported for an action, as skills and history see it. */
 const reportedAction = (row: ActionRow, facts = false) => ({
@@ -243,9 +254,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// prompts (2026-10-16: a gateway refused every request carrying such a repetition; 2026-10-17: it counts across
 	// prompts). ARC_THIN_COLLAPSE_REPEATS=0 keeps every copy.
 	const collapseRepeats = process.env.ARC_THIN_COLLAPSE_REPEATS !== "0";
+	/**
+	 * Continual Harness's observation and action conventions (user, 2026-10-20, "align with every detail";
+	 * docs/plans/2026-10-20-ch-observation-adapter-alignment.md): each decision is rebuilt from a CH working prompt (recent
+	 * history, observations since the last query with key frames, carried tool results, the current state as a hex map
+	 * with action meanings, PNGs), arc_action takes CH's reasoning + actions list, and RESET is the harness's, after
+	 * GAME_OVER. ARC_THIN_CH=0 restores the earlier native path.
+	 */
+	const chView = native && process.env.ARC_THIN_CH !== "0";
 	// Native: an action played this many times in a row, each changing at most NO_EFFECT_CELLS cells, is refused the next
-	// time until another action is played (2026-10-17). ARC_THIN_NO_EFFECT_REPEATS=0 turns the refusal off.
-	const noEffectRepeats = !native ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? 3
+	// time until another action is played (2026-10-17). ARC_THIN_NO_EFFECT_REPEATS=0 turns the refusal off; CH has none.
+	const noEffectRepeats = !native || chView ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? 3
 		: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NO_EFFECT_REPEATS) || 0));
 	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
 	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
@@ -515,16 +534,31 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		startedAt: number; endedAt: number; output: number; reasoningTokens: number;
 		/** Reasoning sentences in this decision, and those locating cells or coordinates (coordinateSentences). */
 		reasoningSentences: number; coordinateSentences: number;
-		workingSet?: { text: string; image?: { type: "image"; data: string; mimeType: string } };
+		workingSet?: { text: string; image?: { type: "image"; data: string; mimeType: string }; images?: Array<{ type: "image"; data: string; mimeType: string }> };
 		/** Native: the decision's first message as built once (kept byte-identical for the provider's prefix cache). */
 		head?: any; headKey?: string;
+		/** ARC_THIN_CH: this decision's non-action tool results (carried to the next prompt), why it ended without acting. */
+		toolRecords: ToolRecord[]; noActionReason?: string; lastHadCalls: boolean;
+		/** ARC_THIN_CH: each call's arguments as the model sent them, and the action count when it started. */
+		calls: Map<string, { name: string; args: Record<string, unknown> }>; callStarts: Map<string, number>;
+		/** The assistant message whose calls played the decision's first action. */
+		actedAt?: number;
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0,
+		toolRecords: [], lastHadCalls: false, calls: new Map(), callStarts: new Map(),
 	});
 	let run = freshRun();
+	/** ARC_THIN_CH: actions since the last decision prompt (shown in its OBSERVATIONS), those it showed, carried results. */
+	let pendingObservations: PendingObservation[] = [];
+	let decisionObservations: PendingObservation[] = [];
+	let carriedToolRecords: ToolRecord[] = [];
+	let previousNoActionReason: string | undefined;
+	let batchCounter = 0;
+	/** ARC_THIN_CH: the bridge's RESET before the first frame, CH's step 0 (shown once in OBSERVATIONS, kept in RECENT HISTORY). */
+	let initialReset: { observation: PendingObservation; record: StepRecord } | undefined;
 	/** Batched results carried into the next decision's working set (shown once). */
 	let carriedResults: string[] = [];
 	const CARRIED_RESULT_CHARS = 400;
@@ -725,6 +759,121 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			});
 		} catch (error) { logError("context:working_set", error); }
 		return { text: `${body}\n\n${stateText}`, image };
+	}
+
+	/** Who played an action, as CH's history labels it: arc_action, python, tool: <name>, or auto_reset (shown as reset). */
+	const sourceLabel = (row: ActionRow) => row.source ?? (row.via
+		? row.via === "python" ? "python" : `tool: ${row.via.replace(/^tools\//, "").replace(/\.py$/, "")}` : "arc_action");
+	/** An action as Continual Harness's step record (rows recorded before ARC_THIN_CH get their change from the grids). */
+	function stepRecordOf(row: ActionRow, previous: ActionRow | undefined): StepRecord {
+		const score = row.levels_before ?? (previous ? previous.levels_completed : row.levels_completed - (row.level_changed ? 1 : 0));
+		const pre = grids.get(row.n - 1), post = grids.get(row.n);
+		return {
+			step: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { data: { x: row.x, y: row.y } } : {}),
+			source: sourceLabel(row), score, state: row.state_before ?? previous?.state ?? "NOT_FINISHED", stateAfter: row.state,
+			scoreDelta: row.levels_completed - score,
+			gridChange: row.grid_change !== undefined ? row.grid_change : summarizeGridTransitions(pre, post),
+			gridDelta: row.grid_delta !== undefined ? row.grid_delta : computeGridDelta(pre, post),
+		};
+	}
+	/** The bridge's own first RESET is CH's step 0 (main() plays it as auto_reset); a resumed run gets it from its first row. */
+	const resetRecord = (): StepRecord => initialReset?.record ?? { step: 0, action: "RESET", source: "auto_reset", score: 0,
+		state: "NOT_PLAYED", stateAfter: trajectory[0]?.state_before ?? "NOT_FINISHED", scoreDelta: 0, gridChange: null, gridDelta: null };
+	const stepRecords = (rows: ActionRow[]) => [resetRecord(), ...rows.map((row, i) => stepRecordOf(row, rows[i - 1]))];
+	/** trajectory.StepRecord as CH's sandbox lists it (asdict), with this harness's sources; colours stay ints here. */
+	const stepRecordDict = (record: StepRecord, row: ActionRow | undefined) => ({
+		game_id: game, action_counter: record.step, state: record.state, score: record.score, chosen_action: record.action,
+		chosen_action_data: record.data ?? {}, reasoning: null, tool_calls: [], vlm_attempts: 1, error: null, source: record.source,
+		batch_id: row?.batch_id ?? null, batch_position: row?.batch_position ?? null, batch_total: row?.batch_total ?? null,
+		batch_reasoning: row?.batch_position === 1 && row.source === "arc_action" ? row.note ?? null : null,
+		batch_rejected: row?.batch_rejected ?? null,
+		skill_id: row?.via && row.via !== "python" ? sourceLabel(row).replace(/^tool: /, "") : null,
+		score_delta: record.scoreDelta ?? null, state_after: record.stateAfter ?? null,
+		grid_delta: record.gridDelta ?? null, grid_change: record.gridChange ?? null,
+	});
+	/**
+	 * ARC_THIN_CH: what CH's sandbox state adds for code (SandboxState): `observations`, one entry per action shown in this
+	 * decision's OBSERVATIONS with its whole animation (hex rows here, int grids in python), and `recent_trajectory`, the
+	 * last FULL_HISTORY_MAX_LIMIT step records.
+	 */
+	const chSandboxState = () => {
+		const rows: Array<ActionRow | undefined> = [undefined, ...trajectory];
+		return {
+			observations: decisionObservations.map(sandboxObservation),
+			recent_trajectory: stepRecords(trajectory).map((record, i) => stepRecordDict(record, rows[i])).slice(-FULL_HISTORY_MAX_LIMIT),
+		};
+	};
+
+	/**
+	 * ARC_THIN_CH: the decision's prompt as Continual Harness builds it (context.build_working_prompt). The active prompts
+	 * come first, where CH puts its evolving base policy; then this harness's overviews (memory and rivals, rule checks, the
+	 * python session, refinement notices, capabilities and view outputs), RECENT HISTORY, the step, OBSERVATIONS SINCE
+	 * LAST QUERY, TOOL RESULTS FROM PREVIOUS TURN, why the previous decision stopped without an action, CURRENT STATE and
+	 * TURN. The grids rendered as text go with it as PNGs, in order.
+	 */
+	function buildChWorkingSet(ctx: ExtensionContext, capabilities: string): Run["workingSet"] {
+		if (!initialReset && trajectory.length === 0 && observation) {
+			// CH's first decision shows the RESET that started the game; its pre-frame is NOT_PLAYED's empty frame.
+			const frames = Array.isArray(observation.frames) ? observation.frames.filter((frame: unknown) => Array.isArray(frame)) : [];
+			const state = String(observation.state ?? "UNKNOWN"), score = Number(observation.levels_completed ?? 0);
+			initialReset = {
+				observation: { step: 0, action: "RESET", source: "auto_reset", preState: "NOT_PLAYED", preScore: 0, postState: state,
+					postScore: score, animation: frames, validFrame: true },
+				record: { step: 0, action: "RESET", source: "auto_reset", score: 0, state: "NOT_PLAYED", stateAfter: state, scoreDelta: score,
+					gridChange: null, gridDelta: null },
+			};
+			pendingObservations.unshift(initialReset.observation);
+		}
+		const rivals = rivalLines(checkedHypotheses(), claimRows).filter((line) => {
+			if (!COVERAGE) return true;
+			const question = line.slice(0, line.indexOf('": ') + 1), seen = line.replace(/both decided \d+ moves?/g, "both decided");
+			if (shownRivals.get(question) === seen) return false;
+			shownRivals.set(question, seen);
+			return true;
+		});
+		const sections: Array<[string, string]> = [];
+		const policy = Object.values(decisionPrompts ?? promptSections()).join("\n\n");
+		if (policy.trim()) sections.push(["prompts", policy.trim()]);
+		sections.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
+		const rules = ruleChecksText();
+		if (rules) sections.push(["rules", rules]);
+		const held = sessionView ? nativeRuntime?.sessionView() ?? "" : "";
+		if (held) sections.push(["python", held]);
+		if (refinerNotices.length) {
+			sections.push(["refiner", refinerNotices.map(({ text }) => text).join("\n")]);
+			for (const { editId } of refinerNotices) if (editId) {
+				append("refiner.jsonl", { kind: "told", id: editId, at: trajectory.length, decision });
+				toldAt.set(editId, trajectory.length);
+			}
+			refinerNotices = [];
+		}
+		if (capabilities) sections.push(["capabilities", capabilities]);
+		sections.push(["history", "## RECENT HISTORY\n" + renderRecentHistory(stepRecords(trajectory), HISTORY_MAX_CHARS)]);
+		// CH's action_counter counts the starting RESET, so it is the number the next action gets.
+		sections.push(["step", `# Step: ${trajectory.length + 1}`]);
+		// Delivered once the model has answered this prompt (message_end); after a provider error CH shows them again.
+		const observed = buildObservationSection(pendingObservations);
+		decisionObservations = [...pendingObservations];
+		if (observed.text.trim()) sections.push(["observations", "## OBSERVATIONS SINCE LAST QUERY\n" + observed.text.trimEnd()]);
+		sections.push(["tool_results", "## TOOL RESULTS FROM PREVIOUS TURN\n" + formatToolResults(carriedToolRecords)]);
+		if (previousNoActionReason) sections.push(["stopped", `## PREVIOUS CONVERSATION STOPPED WITHOUT ACTION\nReason: ${previousNoActionReason.trim()}`]);
+		const grid = gridOf(observation);
+		sections.push(["state", observation
+			? currentStateBlock(String(observation.state ?? "UNKNOWN"), Number(observation.levels_completed ?? 0), availableActions(observation), grid)
+			: "## CURRENT STATE\n(unavailable — do not act on remembered grids)"]);
+		sections.push(["turn", turnBlock(MAX_CONVERSATION_TURNS)]);
+		const rendered = [...observed.grids.map((g) => g.grid), ...(grid?.length ? [grid] : [])];
+		const images = ctx.model?.input?.includes("image") ? rendered.map(gridImage) : [];
+		const body = sections.map(([, value]) => value).join("\n\n");
+		try {
+			append("working_set.jsonl", {
+				decision, consolidating: run.consolidating, actions: trajectory.length, observation_delivery: "ch",
+				sections: Object.fromEntries(sections.map(([name, value]) => [name, value.length])), images: images.length,
+				rendered_grids: [...observed.grids.map((g) => g.label), ...(grid?.length ? ["current_state_frame"] : [])],
+				state_sha256: createHash("sha256").update(JSON.stringify(grid ?? null)).digest("hex").slice(0, 16), text: body,
+			});
+		} catch (error) { logError("context:working_set", error); }
+		return { text: body, images };
 	}
 
 	const messageText = (message: any): string => typeof message?.content === "string"
@@ -2114,7 +2263,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			...(includeFrames ? { frames: observation?.frames ?? [] } : {}),
 			state: observation?.state ?? null,
 			levels_completed: observation?.levels_completed ?? null,
-			available_actions: availableActions(observation),
+			// ARC_THIN_CH: RESET is the harness's, so code is not offered it (CH: available_game_actions).
+			available_actions: chView ? agentActions(availableActions(observation)) : availableActions(observation),
 			action_budget: observation?.action_budget ?? null,
 			recent_actions: trajectory.slice(-RECENT_ACTIONS).map((row) => reportedAction(row, native)),
 			...memoryForSkills(memory),
@@ -2171,11 +2321,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * Pi turns it into a non-terminating error result. So a refusal that must end
 	 * the decision is returned as a terminating result, marked refused.
 	 */
-	function gate(name: string): { reason: string; terminate: boolean } | undefined {
+	function gate(name: string): { reason: string; terminate: boolean; skip?: boolean } | undefined {
 		run.toolCalls += 1;
 		const nativeCap = native && !run.consolidating && !diagnosticBudget;
 		if (!native && run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
 			return { reason: `hard tool-call limit (${diagnosticBudget || HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
+		if (chView && !run.consolidating) {
+			// Continual Harness dispatches every call of a response in order (several take_actions included), stops at
+			// WIN/GAME_OVER, and ends the decision after the response that acted or after MAX_CONVERSATION_TURNS responses.
+			// Calls past those points are ones CH never runs: refused here and not carried as tool results (skip).
+			if (run.actedAt !== undefined && run.actedAt < run.assistantMessages)
+				return { reason: "this decision already acted; this call was not run", terminate: true, skip: true };
+			if (run.actionDone && /^(WIN|GAME_OVER)$/.test(String(observation?.state ?? "")))
+				return { reason: `not run: the game reached ${observation!.state} earlier in this response`, terminate: true, skip: true };
+			if (run.assistantMessages > MAX_CONVERSATION_TURNS)
+				return { reason: `not run: this decision used its ${MAX_CONVERSATION_TURNS} turns`, terminate: true, skip: true };
+			return undefined;
+		}
 		if (name === "arc_action") {
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
 			if (run.actionDone || run.arcSeenInMessage === run.assistantMessages)
@@ -2203,14 +2365,25 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return undefined;
 	}
 
-	const refused = (reason: string) => text(reason, { refused: true }, true);
+	const refused = (reason: string, skip = false) => text(reason, { refused: true, ...(skip ? { ch_skipped: true } : {}) }, true);
 	// A call that succeeded counts as a repeat when its result is the same too (2026-10-16); ARC_THIN_LOOP_RESULTS=0
 	// restores the earlier rule, under which only failed calls and reads counted.
 	const nativeLoop = new NativeLoopGuard({ results: process.env.ARC_THIN_LOOP_RESULTS !== "0" });
+	const LOOP_STOP = "Three identical observations/errors without a state or workspace change; this decision ends.";
 	const resultText = (result: any) => (Array.isArray(result?.content) ? result.content : [])
 		.map((block: any) => block?.type === "text" ? String(block.text) : String(block?.type)).join("\n");
 	const loopEpoch = () => JSON.stringify([decision, trajectory.length, binder?.versionMap(),
 		[...memory.facts], [...memory.hypotheses], [...memory.strategies]]);
+	/**
+	 * ARC_THIN_CH: a result ends the decision when its response acted or carries arc_action (Pi ends a run only when every
+	 * result of the response does), or at the decision's last turn (CH's MAX_CONVERSATION_TURNS), whose reason is kept.
+	 */
+	const chAtCap = () => {
+		if (!chView || run.consolidating || run.actionDone || run.assistantMessages < MAX_CONVERSATION_TURNS) return false;
+		run.noActionReason = `max_conversation_turns: hit MAX_CONVERSATION_TURNS=${MAX_CONVERSATION_TURNS} without an action`;
+		return true;
+	};
+	const chEnds = () => chView && !run.consolidating && (run.actionDone || endsBatch() || chAtCap());
 
 	function guardTool<P>(name: string, fn: (params: P, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any> | any) {
 		/** A result produced alongside arc_action is carried into the next decision; the agent cannot see it now. */
@@ -2226,25 +2399,33 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const verdict = gate(name);
 			if (verdict) {
 				// Sharing a message with arc_action: every result must terminate or the run continues.
-				if (verdict.terminate || (name !== "arc_action" && endsBatch())) return carry(refused(verdict.reason), true);
+				if (verdict.terminate || (name !== "arc_action" && endsBatch())) return carry(refused(verdict.reason, verdict.skip), true);
 				throw new Refusal(verdict.reason);
 			}
 			const epoch = native ? loopEpoch() : '';
 			try {
 				const result = await fn(params, signal, ctx);
-				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError), resultText(result)))
+				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError), resultText(result))) {
+					if (chView && !run.actionDone) run.noActionReason = LOOP_STOP;
 					return carry({...result, terminate:true, details:{...result.details, no_progress:true},
-						content:[...(result.content ?? []), {type:'text', text:'Three identical observations/errors without a state or workspace change; this decision ends. Use the recorded evidence or change the investigation.'}]}, Boolean(result?.isError));
+						content:[...(result.content ?? []), {type:'text', text:`${LOOP_STOP} Use the recorded evidence or change the investigation.`}]}, Boolean(result?.isError));
+				}
 				const carried = carry(result, Boolean(result?.isError));
 				const note = run.budgetNote; run.budgetNote = undefined;
-				return note && Array.isArray(carried?.content)
+				const out = note && Array.isArray(carried?.content)
 					? { ...carried, content: [...carried.content, { type: "text" as const, text: note }] } : carried;
+				// arc_action decides for itself: a list that played nothing leaves the decision open, as in CH, until its last turn.
+				const ends = name === "arc_action" ? chAtCap() : chEnds();
+				return ends && out && typeof out === "object" ? { ...out, terminate: true } : out;
 			}
 			catch (error) {
-				if (native && nativeLoop.record(name, params, epoch, true))
+				if (native && nativeLoop.record(name, params, epoch, true)) {
+					if (chView && !run.actionDone) run.noActionReason = LOOP_STOP;
 					return carry({...refused('Repeated unchanged error; decision ends: ' + errorText(error)), isError:true}, true);
+				}
 				if (!(error instanceof Refusal)) logError(`tool:${name}`, error);
 				if (name !== "arc_action" && endsBatch()) return carry(refused(errorText(error)), true);
+				if (chEnds()) return refused(errorText(error));
 				throw error;
 			}
 		};
@@ -2261,7 +2442,108 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** The action a call named, also when prepareArguments carried it past the enum check. */
 	const namedAction = (call: { action: string }) => String((call as any)[UNAVAILABLE_KEY] ?? call.action);
 
+	/** ARC_THIN_CH: the action list as the model sent it (names repaired), which CH's validation reads. */
+	const SENT_ACTIONS_KEY = "actions_as_sent";
+	/** vlm_backend._ACTION_PREFIX_RE: a gateway's protocol text after a valid name ("ACTION3'}]}}]...") is dropped. */
+	const ACTION_PREFIX = /^\s*(ACTION[1-7])\b/i;
+	/**
+	 * ARC_THIN_CH: arc_action's arguments before Pi's schema check. Action names are repaired as CH's OpenAI backend repairs
+	 * them (_sanitize_tool_arguments); a missing reasoning reads as empty (CH: args.get("reasoning") or ""). CH checks the
+	 * list itself, truncating it at the first bad entry, so the schema check sees a list it passes; the list as sent goes
+	 * to the tool under SENT_ACTIONS_KEY. Coordinates are clamped as CH clamps them; a malformed prediction is dropped.
+	 */
+	function chActionArguments(args: unknown): unknown {
+		if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+		const call = args as Record<string, any>;
+		const sent = Array.isArray(call.actions) ? call.actions.map((item: any) => {
+			if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.name !== "string") return item;
+			const match = ACTION_PREFIX.exec(item.name);
+			return match && match[1].toUpperCase() !== item.name ? { ...item, name: match[1].toUpperCase() } : item;
+		}) : call.actions;
+		const shaped = (item: any) => {
+			if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.name !== "string") return { name: "" };
+			const predict = control || item.predict === undefined ? undefined : normalizePrediction(item.predict);
+			return { name: item.name, ...(item.x != null ? { x: clampCoordinate(item.x) } : {}), ...(item.y != null ? { y: clampCoordinate(item.y) } : {}),
+				...(predict ? { predict } : {}) };
+		};
+		return { ...call, reasoning: typeof call.reasoning === "string" ? call.reasoning : call.reasoning == null ? "" : String(call.reasoning),
+			actions: Array.isArray(sent) && sent.length ? sent.map(shaped) : [{ name: "" }], [SENT_ACTIONS_KEY]: sent ?? null };
+	}
+	/** _mint_batch_id: b_<counter>_<4 hex>. */
+	const mintBatchId = () => `b_${String(++batchCounter).padStart(4, "0")}_${randomBytes(2).toString("hex")}`;
+
+	/**
+	 * ARC_THIN_CH: Continual Harness's take_actions (tools.TAKE_ACTIONS_TOOL, _dispatch_take_actions) under this harness's
+	 * name. The list is checked once (validateActionSequence: truncated at the first entry that is not an available action),
+	 * then played in order, each step rechecked against what is available now; it stops at WIN, GAME_OVER or a level change.
+	 * No length cap and no stop on a missed prediction. A list that plays nothing returns CH's record of it and the decision
+	 * goes on; one that plays ends the decision (the next prompt's observations show what ran).
+	 */
+	function registerChArcAction(): void {
+		pi.registerTool({
+			name: "arc_action",
+			label: "ARC action",
+			description: TAKE_ACTIONS_DESCRIPTION,
+			// CH dispatches a response's calls in emission order, so a call after this one sees what it played.
+			executionMode: "sequential",
+			parameters: Type.Object({
+				reasoning: Type.String({ description: TAKE_ACTIONS_TEXT.reasoning }),
+				actions: Type.Array(Type.Object({
+					name: Type.String({ description: TAKE_ACTIONS_TEXT.name }),
+					x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63, description: TAKE_ACTIONS_TEXT.x })),
+					y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63, description: TAKE_ACTIONS_TEXT.y })),
+					// This harness's scored prediction, per action (CH has none).
+					...(control ? {} : { predict: Type.Optional(predictionSchema()) }),
+				}), { minItems: 1, description: TAKE_ACTIONS_TEXT.actions }),
+				...(ledgerOn ? { idea: Type.Optional(Type.String()) } : {}),
+			}),
+			prepareArguments: chActionArguments,
+			execute: guardTool("arc_action", async (params: { reasoning: string; actions: unknown[]; idea?: unknown; [SENT_ACTIONS_KEY]?: unknown }) => {
+				const { steps, rejected } = validateActionSequence(SENT_ACTIONS_KEY in params ? params[SENT_ACTIONS_KEY] : params.actions,
+					availableActions(observation));
+				if (!steps.length) {
+					const record = { success: false, executed: 0, available_actions: agentActions(availableActions(observation)), message: NOTHING_EXECUTED };
+					append("action_sequences.jsonl", { decision, n: trajectory.length, planned: 0, played: 0, rejected });
+					return { content: [{ type: "text" as const, text: pyDumps(record) }], details: { chRecord: record, rejected } };
+				}
+				const batchId = mintBatchId(), preLevel = Number(observation?.levels_completed ?? 0);
+				const lines: string[] = [];
+				let played = 0, stopped: string | undefined, environment = false;
+				for (const step of steps) {
+					// Per-step revalidation: a level transition can change what is offered.
+					if (!agentActions(availableActions(observation)).includes(step.action)) { stopped = `${step.action} is no longer available`; break; }
+					const predict = control || step.raw.predict === undefined ? undefined : normalizePrediction(step.raw.predict);
+					const done = await submitAction({ action: step.action, ...(step.x !== undefined ? { x: step.x, y: step.y } : {}),
+						...(step.position === 1 && params.reasoning ? { note: params.reasoning } : {}), ...(predict ? { predict } : {}),
+						...(step.position === 1 && params.idea !== undefined ? { idea: params.idea } : {}) }, undefined,
+						{ source: "arc_action", batchId, batchPosition: step.position, batchTotal: steps.length,
+							...(step.position === 1 && rejected.length ? { rejected } : {}) });
+					if ("refusal" in done) { stopped = done.refusal; environment = Boolean(done.environment); break; }
+					played += 1;
+					lines.push(`${actionLine(done.row)}${predictionClause(done.row)}`);
+					if (/^(WIN|GAME_OVER)$/.test(done.row.state)) break;
+					if (done.row.levels_completed !== preLevel) break;
+				}
+				append("action_sequences.jsonl", { decision, n: trajectory.length, batch_id: batchId, planned: steps.length, played,
+					stopped: stopped ?? null, rejected: rejected.length ? rejected : null });
+				if (!played) {
+					// Every step was refused at the boundary (budget, environment): nothing ran, as in CH's executed == 0.
+					if (environment) return refused(stopped!);
+					const record = { success: false, executed: 0, available_actions: agentActions(availableActions(observation)), message: NOTHING_EXECUTED };
+					return { content: [{ type: "text" as const, text: pyDumps(record) }], details: { chRecord: record, refusal: stopped } };
+				}
+				if (played < steps.length && stopped) lines.push(`played ${played} of ${steps.length}; stopped: ${stopped}`);
+				if (rejected.length) lines.push(`not played: entry ${rejected[0].position} (${rejected[0].reason})`);
+				const overdue = COVERAGE ? pinNag() : "";
+				if (overdue) { lines.push(overdue); append("refiner.jsonl", { kind: "next_overdue", edit: pin?.edit, at: trajectory.length, decision }); }
+				const last = trajectory.at(-1)!;
+				return text(lines.join("\n"), { ...reportedAction(last, native), prediction: last.prediction, batch_id: batchId, played }, true);
+			}),
+		});
+	}
+
 	function registerArcAction(actions: string[]): void {
+		if (chView) { registerChArcAction(); return; }
 		const hasCoordinates = actions.includes("ACTION6");
 		pi.registerTool({
 			name: "arc_action",
@@ -2339,7 +2621,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	async function submitAction(params: {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
-	}, via?: string): Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
+	}, via?: string, meta: { source?: string; batchId?: string; batchPosition?: number; batchTotal?: number; rejected?: RejectedStep[] } = {}):
+		Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
 		const available = availableActions(observation);
 		const previous = trajectory.at(-1);
 		if (!available.includes(params.action))
@@ -2351,6 +2634,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const ignoredXY = native && givenXY && !takesCoordinates(params.action);
 		if (ignoredXY) params = { ...params, x: undefined, y: undefined };
 		const beforeGrid = gridOf(observation);
+		const before = observation;
 		const label = actionLabel(params);
 		// The same action again after it changed at most NO_EFFECT_CELLS cells each of the last noEffectRepeats times in a
 		// row. Every play was a new state to the loop guard, so su15-l0-2 played one click 30 times and su15-l0-1 another
@@ -2382,7 +2666,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			return { refusal: `${by} ${label} failed: ${errorText(error)}` };
 		}
-		run.actionDone = true;
+		// The harness's own RESET after GAME_OVER (ARC_THIN_CH) is not the decision's action.
+		if (meta.source !== "auto_reset") { run.actionDone = true; run.actedAt ??= run.assistantMessages; }
 		previousGrid = beforeGrid;
 		observation = value;
 		const delta = value.observation_delta ?? {};
@@ -2402,6 +2687,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			state: String(value.state ?? "UNKNOWN"),
 			levels_completed: Number(value.levels_completed ?? 0),
 			budget: value.action_budget ?? null,
+			// Continual Harness's step record (ARC_THIN_CH): source, list position, the state before, and the change.
+			...(chView ? {
+				source: meta.source ?? (via ? (via === "python" ? "python" : `tool: ${via.replace(/^tools\//, "").replace(/\.py$/, "")}`) : "arc_action"),
+				...(meta.batchId ? { batch_id: meta.batchId, batch_position: meta.batchPosition, batch_total: meta.batchTotal } : {}),
+				...(meta.rejected?.length ? { batch_rejected: meta.rejected } : {}),
+				state_before: String(before?.state ?? "UNKNOWN"), levels_before: Number(before?.levels_completed ?? 0),
+				grid_change: summarizeGridTransitions(beforeGrid, afterGrid), grid_delta: computeGridDelta(beforeGrid, afterGrid),
+			} : {}),
 		};
 		// Check what the agent, or the skill it named, said this action would produce, against what came back.
 		const outcome: Outcome = { before: beforeGrid, after: afterGrid, level_changed: row.level_changed, state: row.state };
@@ -2416,6 +2709,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		actionTimes.push(Date.now());
 		append("trajectory.jsonl", row);
 		recordState(row.n, afterGrid);
+		// Continual Harness's pending observation: the next decision's prompt shows what this action did, frame by frame.
+		if (chView) pendingObservations.push({
+			step: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { data: { x: row.x, y: row.y } } : {}),
+			source: row.source ?? "arc_action",
+			...(meta.batchId ? { batchId: meta.batchId, batchPosition: meta.batchPosition, batchTotal: meta.batchTotal } : {}),
+			preState: String(before?.state ?? "UNKNOWN"), preScore: Number(before?.levels_completed ?? 0), preGrid: beforeGrid,
+			postState: row.state, postScore: row.levels_completed,
+			animation: Array.isArray(value.frames) ? value.frames.filter((frame: unknown) => Array.isArray(frame)) : [],
+			validFrame: Array.isArray(value.frames) && value.frames.length > 0,
+		});
 		if (nativeRuntime) nativeRuntime.observe(row.n);
 		refreshActionSurface();
 		return { row };
@@ -2423,6 +2726,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Set by an action that changed the level or ended the game: later env.act calls of the same decision are refused. */
 	let actingStopped: string | undefined;
+	/** ARC_THIN_CH: the batch id of the list code is playing (env.act with a list), or of its last single env.act. */
+	let codeBatch: string | undefined;
 	/** Why a planned sequence (arc_action then) must not go on after this action, or undefined. */
 	const sequenceStop = (row: ActionRow): string | undefined => row.level_changed ? `the level changed at #${row.n}`
 		: /^(GAME_OVER|WIN|FINISHED)$/.test(row.state) ? `state ${row.state} at #${row.n}`
@@ -2434,7 +2739,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * as Continual Harness skills call take_actions); the runtime itself stops the call after a level change or a
 	 * terminal state, since what the code assumed no longer holds.
 	 */
-	async function actForCode(call: { action: string; x?: number; y?: number; predict?: unknown }, via: string):
+	async function actForCode(call: { action: string; x?: number; y?: number; predict?: unknown; batch?: unknown }, via: string):
 		Promise<{ observation?: Record<string, unknown>; stopped?: string; line?: string }> {
 		if (run.consolidating) return { stopped: "no action during a review" };
 		if (actingStopped) return { stopped: actingStopped };
@@ -2443,13 +2748,25 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const action = labelled ? `ACTION${labelled[1]}` : compact;
 		const x = labelled ? Number(labelled[2]) : Number.isInteger(call.x) ? call.x : undefined;
 		const y = labelled ? Number(labelled[3]) : Number.isInteger(call.y) ? call.y : undefined;
+		// ARC_THIN_CH: code acts as CH's skills do (tools.take_actions): RESET is the harness's, ACTION6 needs x and y, and
+		// each env.act call is one batch (a list given to env.act is one batch of its entries).
+		let batch: { batchId: string; batchPosition: number; batchTotal: number } | undefined;
+		if (chView) {
+			if (!agentActions(availableActions(observation)).includes(action) || (action === "ACTION6" && (x === undefined || y === undefined)))
+				return { stopped: `${action || "(no name)"} was not played: unknown action name / not in available_actions / invalid args (ACTION6 needs x,y in 0..63); ` +
+					`available: ${agentActions(availableActions(observation)).join(", ")}` };
+			const [position, total] = Array.isArray(call.batch) && call.batch.length === 2 ? call.batch.map(Number) : [1, 1];
+			if (position <= 1 || !codeBatch) codeBatch = mintBatchId();
+			batch = { batchId: codeBatch, batchPosition: Math.max(1, position), batchTotal: Math.max(1, total) };
+		}
 		const predict = call.predict === undefined ? undefined : normalizePrediction(call.predict);
-		const done = await submitAction({ action, ...(x !== undefined && y !== undefined ? { x, y } : {}), note: `by ${via}`, ...(predict ? { predict } : {}) }, via);
+		const done = await submitAction({ action, ...(x !== undefined && y !== undefined ? { x, y } : {}), note: `by ${via}`, ...(predict ? { predict } : {}) }, via, batch);
 		if ("refusal" in done) return { stopped: done.refusal };
 		const row = done.row;
 		const missed = Boolean(row.prediction?.fields.some((field) => field.hit === false));
 		append("played_actions.jsonl", { decision, via, n: row.n, action: actionLabel(row), changed_cells: row.changed_cells, missed });
-		if (row.level_changed) actingStopped = "the level changed";
+		// CH lets code go on after a level change (its RPC refuses only after a terminal state).
+		if (row.level_changed && !chView) actingStopped = "the level changed";
 		else if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) actingStopped = `state ${row.state}`;
 		return {
 			line: `${actionLine(row)}${predictionClause(row)}`,
@@ -2459,7 +2776,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				transition: { n: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
 					level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed },
 				level_changed: row.level_changed, changed_cells: row.changed_cells, ...(row.bbox ? { bbox: row.bbox } : {}),
-				available_actions: availableActions(observation), missed,
+				available_actions: chView ? agentActions(availableActions(observation)) : availableActions(observation), missed,
 			},
 		};
 	}
@@ -2470,17 +2787,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     }) });
 	// No action vocabulary is invented before the environment has supplied its scope.
 	registerArcAction([]);
-	let boundActionScope = "[]";
+	let boundActionScope = chView ? "ch" : "[]";
 	function refreshActionSurface(): void {
 		const actions = availableActions(observation);
-		const signature = JSON.stringify(actions);
+		// ARC_THIN_CH: one schema whatever is offered (CH's take_actions names actions in a plain string).
+		const signature = chView ? "ch" : JSON.stringify(actions);
 		if (signature !== boundActionScope) {
 			registerArcAction(actions);
 			boundActionScope = signature;
 		}
 		if (!toolsReady) return;
 		const active = pi.getActiveTools().filter(name => name !== "arc_action");
-		if (actions.length && !run.consolidating) active.unshift("arc_action");
+		if ((chView || actions.length) && !run.consolidating) active.unshift("arc_action");
 		pi.setActiveTools(active);
 	}
 
@@ -2943,7 +3261,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         artifacts: (artifactInputs(artifactLog) as any).artifacts ?? {} });
       writeFileSync(migrationMarker, JSON.stringify({ migrated, at: new Date().toISOString() }) + '\n');
     }
-    nativeRuntime = new NativeRuntime({ pi, workspace, binder, state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [] }),
+    nativeRuntime = new NativeRuntime({ pi, workspace, binder,
+      state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
       ...(pythonMemory ? { remember: pythonMemory } : {}),
@@ -3005,6 +3324,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
+		if (chView && !run.consolidating) {
+			// Continual Harness carries the decision's tool results into the next prompt and says why it ended without acting.
+			// A review is not a decision: what it called is not carried, and the decision before it stays the previous one.
+			carriedToolRecords = run.toolRecords.slice(-RECENT_RESULTS_CAP);
+			const terminal = /^(WIN|GAME_OVER)$/.test(String(observation?.state ?? ""));
+			previousNoActionReason = run.assistantMessages && !run.actionDone && !terminal
+				? run.noActionReason ?? (run.lastHadCalls ? "conversation ended without an action" : "model response contained no function calls")
+				: undefined;
+		}
 		// Keep the end of the reasoning: conclusions come last.
 		const reasoning = carryChars ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
 		carriedReasoning = reasoning.length > carryChars ? `…${reasoning.slice(-carryChars)}` : reasoning;
@@ -3035,6 +3363,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			: (expandedDecisionTools ? EXPANDED_DECISION_TOOLS : DECISION_TOOLS));
 		try { observation = await bridgeCall("/state"); }
 		catch (error) { observation = undefined; logError("before_agent_start:/state", error, true); }
+		// Continual Harness resets after GAME_OVER itself (main(): evolve, then RESET as auto_reset, and the carried tool results
+		// are dropped); RESET is not an agent action there. The runner's review of a GAME_OVER comes first, like CH's evolution.
+		if (chView && !run.consolidating && observation?.state === "GAME_OVER") {
+			try {
+				const reset = await submitAction({ action: "RESET" }, undefined, { source: "auto_reset" });
+				if ("refusal" in reset) logError("before_agent_start:auto_reset", new Error(reset.refusal));
+				else carriedToolRecords = [];
+			} catch (error) { logError("before_agent_start:auto_reset", error); }
+		}
 		refreshActionSurface();
 		recordState(trajectory.length, gridOf(observation));
 		// Model skills are checked on the transition just recorded (incremental; failures leave the decision unchanged).
@@ -3047,7 +3384,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			try { workspace.runtimeWrite("data/memory.md", renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + "\n"); }
 			catch (error) { logError("memory:file", error); }
 		}
-		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
+		const systemPrompt = native && !control ? renderPrompt(chView ? 'arc_thin_native_ch_system.md' : 'arc_thin_native_system.md', { game,
       observation: queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
@@ -3057,11 +3394,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // and a <carry-missing> note on the result: this model does not author the block. The ask is kept to one line --
       // the lift path and the note still pick one up if it ever writes one -- rather than spending the prompt's
       // attention on an instruction two rounds have shown to be inert.
-      carry: reasoningMode === 'fields'
+      carry: (reasoningMode === 'fields'
         ? 'Your reasoning is not read back to you after the call it was written for; your text, calls and results are. '
           + 'A <carry>premises / eliminated / probe / open</carry> block, in your text or your reasoning, is kept; what '
           + 'is not in it you will have to derive again.'
-        : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
+        : chView ? "Your reasoning, calls and results stay in view until the decision ends."
+        : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.')
+        // ARC_THIN_CH: each decision is a new conversation, as in Continual Harness.
+        + (chView ? ' The next decision starts from a new prompt (history, observations, the last tool results, memory).' : ''),
       refine: criticOn ? `Refinements run in the background (level changes, missing goal tests, stalls, repeated work${refineTool ? ', refine(focus)' : ''}); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ` : '',
       // P4 (ARC_THIN_LEAN, ARC_THIN_CONSULT): without consult, subagents have no way to be asked, so their line goes (below).
       kinds: consultTool ? 'five' : 'four',
@@ -3083,8 +3423,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // The active prompts are taken once per decision: the system prompt is the first thing in every request, and a
       // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14).
       decisionPrompts = promptSections();
-      for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
-        event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
+      if (!chView || run.consolidating)
+        for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
+          event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
       return;
     }
 		return { systemPrompt: rendered };
@@ -3168,21 +3509,33 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const headKey = `${decision}:${lastUser}`;
 		if (!native || run.headKey !== headKey) {
 			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
-			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 			const capabilities = binder ? [binder.index(currentLevel()),
 				nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
-			run.head = {
-				...user,
-				content: [
-					{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
-					...(run.workingSet!.image ? [run.workingSet!.image] : []),
-				],
-			};
+			if (chView && !run.consolidating) {
+				// Continual Harness's working prompt is the whole user turn; the runner's plain "Decide the next action." (or
+				// its no-action variant, now the PREVIOUS CONVERSATION STOPPED section) adds nothing to it. Reviews keep the
+				// earlier working set (CH's evolver has its own prompt) and leave the pending observations to the next decision.
+				run.workingSet = buildChWorkingSet(ctx, capabilities);
+				const said = messageText(user).trim();
+				const lead = /^Decide the next action\./.test(said) ? "" : `${said}\n\n`;
+				run.head = { ...user, content: [{ type: "text", text: `${lead}${run.workingSet!.text}` }, ...(run.workingSet!.images ?? [])] };
+			} else {
+				if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
+				run.head = {
+					...user,
+					content: [
+						{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
+						...(run.workingSet!.image ? [run.workingSet!.image] : []),
+					],
+				};
+			}
 			run.headKey = headKey;
 		}
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
-		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
+		// ARC_THIN_CH: every decision is a fresh conversation (Continual Harness); earlier decisions reach it through RECENT
+		// HISTORY, memory and the carried tool results, not as a transcript.
+		const history = chView ? [] : native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
 			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, collapseRepeats, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
@@ -3210,13 +3563,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const tools = pi.getAllTools?.().filter((tool) => active.has(tool.name))
 				.map(({ name, description, parameters }) => ({ name, description, parameters }));
 			append("context_budget.jsonl", {
-				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy', observation_delivery: observationMode,
+				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy', observation_delivery: chView ? 'ch' : observationMode,
         capability_index_chars: binder?.index(currentLevel()).length ?? 0,
         active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
         agent_tool_schemas: binder?.active().filter(c => c.kind === 'tool').map(c => ({ name: c.name, chars: JSON.stringify(c.parameters).length })) ?? [],
 				tools_json_chars: tools ? JSON.stringify(tools).length : null,
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
-				...(native ? { history_mode: summarised ? 'summary' : 'transcript' } : {}),
+				...(native ? { history_mode: chView ? 'ch' : summarised ? 'summary' : 'transcript' } : {}),
 				history_text_chars: summary ? summary.text.length : history.reduce((n, message) => n + messageText(message).length, 0),
 				...(summary ? { history_decisions: summary.decisions, history_omitted: summary.omitted } : {}),
 				message_text_chars: projected.reduce((n, message) => n + messageText(message).length, 0),
@@ -3243,7 +3596,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   let decisionPrompts: Record<string, string> | undefined;
   if (binder) pi.on('context_with_system', (event: any) => {
     const current = getCurrentSystemMessage(event.messages)?.sections ?? {};
-    const desired = native && decisionPrompts ? decisionPrompts : promptSections();
+    // ARC_THIN_CH: a decision's active prompts open its working prompt (CH's base policy), so the system prompt has none.
+    const desired = chView && !run.consolidating ? {} : native && decisionPrompts ? decisionPrompts : promptSections();
     const patch: Record<string, string | null> = {};
     for (const key of new Set([...Object.keys(current).filter(k => k.startsWith('prompt_')), ...Object.keys(desired)]))
       if (current[key] !== desired[key]) patch[key] = desired[key] ?? null;
@@ -3294,8 +3648,32 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		});
 	}
 
+	/**
+	 * ARC_THIN_CH: a tool's result as Continual Harness keeps it (models.ToolCallRecord: the call's arguments as sent, a
+	 * text result as stdout, an error as error, the actions its code played as actions_taken_inline). The decision carries
+	 * it to the next prompt's TOOL RESULTS, and, as CH answers a call with format_tool_record_md, the model reads it in that
+	 * form now. arc_action that played has no record (the next prompt's observations show what ran); calls CH would not
+	 * have run (ch_skipped) have none either.
+	 */
+	function chToolResult(message: any): any {
+		if (run.consolidating) return undefined;
+		const id = String(message.toolCallId);
+		const call = run.calls.get(id), start = run.callStarts.get(id);
+		const details = message.details ?? {};
+		if (details.ch_skipped || (message.toolName === "arc_action" && !details.chRecord)) return undefined;
+		const body = messageText(message);
+		const record: ToolRecord = { name: String(message.toolName), args: call?.args ?? {},
+			...(details.chRecord ? { result: details.chRecord } : message.isError ? { error: body } : { result: body }),
+			actionsTakenInline: start === undefined ? 0 : trajectory.slice(start).filter((row) => row.via).length };
+		run.toolRecords.push(record);
+		const others = (Array.isArray(message.content) ? message.content : []).filter((block: any) => block?.type !== "text");
+		return { message: { ...message, content: [{ type: "text", text: formatToolRecord(record) }, ...others] } };
+	}
+	pi.on("tool_execution_start", (event: any) => { if (chView) run.callStarts.set(String(event.toolCallId), trajectory.length); });
+
 	pi.on("message_end", guard("message_end", (event: any) => {
 		const message = event.message;
+		if (chView && message?.role === "toolResult") return chToolResult(message);
 		if (message?.role !== "assistant") return undefined;
 		responsesContinuation.accept(message);
 		run.assistantMessages += 1;
@@ -3303,6 +3681,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const blocks: any[] = Array.isArray(message.content) ? message.content : [];
 		if (blocks.some((block) => block?.type === "toolCall" && block.name === "arc_action"))
 			run.endBatchAt = run.assistantMessages;
+		if (chView && !run.consolidating) {
+			// What CH's record of each call keeps (fc.args), and why a decision ends without an action (vlm_error, no calls).
+			run.lastHadCalls = blocks.some((block) => block?.type === "toolCall");
+			for (const block of blocks) if (block?.type === "toolCall" && block.id !== undefined)
+				run.calls.set(String(block.id), { name: String(block.name), args: block.arguments && typeof block.arguments === "object" ? block.arguments : {} });
+			const failed = message.stopReason === "error" || message.stopReason === "aborted";
+			if (failed && !run.actionDone) run.noActionReason = `vlm_error: ${message.errorMessage ?? message.stopReason}`;
+			// The observations this decision's prompt showed are delivered once the model has answered it (CH clears them
+			// after the first successful response, so a provider error shows them again).
+			if (!failed) pendingObservations = pendingObservations.filter((shown) => !decisionObservations.includes(shown));
+		}
 		if (carryChars) {
 			const pick = (type: string, field: string) => blocks.filter((block) => block?.type === type && typeof block[field] === "string")
 				.map((block) => block[field]).join("\n").trim();
