@@ -1,7 +1,8 @@
 # Loop-bound artifacts: no dangling components, then computed experience (plan, 2026-10-20)
 
-Date: 2026-10-20 (Asia/Shanghai). Status: implemented (the user: "confirm and implement"), functional checks only, no
-run yet. Record format: `docs/templates/meta-harness-change.md`. Part A is the fix the user asked to put first; Part B
+Date: 2026-10-20 (Asia/Shanghai). Status: implemented (the user: "confirm and implement") and run as one qwen fork pair:
+adoption and call points met, benefit not shown (Runs, below). Record format: `docs/templates/meta-harness-change.md`.
+Part A is the fix the user asked to put first; Part B
 (rival predictors, a hidden-state signal, review outputs as experiments) builds on it and was proposed earlier the same
 day. Implementation and its deviations from this plan: "Implementation" below.
 
@@ -312,31 +313,91 @@ thinking off (qwen dialect), 1.5M budget tokens each after the fork, `MAXLEVEL=2
 `C:/Users/qi/tmp/r04/lb/launch-*.cmd`, monitor `watch.mjs`. Off arm: `su15-lb0-cb-q38`, r04 at `305ca1b0`
 (`worktrees/run-lb-base`).
 
-**First on-arm launch, `su15-lb-cb-q38` (`0ca16629`), stopped at #22.** Its level review used the consult call point
+**First on-arm launch, `su15-lb-cb-q38` (`0ca16629`), stopped at #30.** Its level review used the consult call point
 (it wrote `agents/reviewer.md` and consulted it), then read the record and ran seven python calls; its eleventh call, the
 write of `prompts/lessons.md` with four test lines in the asked form (`- test: ACTION6(41,37) — dot closest to red
 circle; ...`), was refused by the review's 10-call cap. The cap's last-call note came with the tenth call's result, so
 "finish now" left no call to write with (the level-review forks never met it: they wrote first and had no consult). With
-no lessons file nothing could be pinned, so the run was stopped after about 0.26M budget tokens. Its first level-2
-decision was a refine point (the 20-action prefix had no refine call): the agent called `refine`; its first focus, over
-the 300-character schema limit, was refused, the second ran.
+no lessons file nothing could be pinned, so the run was stopped; it had played 10 level-2 actions and spent 0.50M budget
+tokens after the fork by then. Its first level-2 decision was a refine point (the 20-action prefix had no refine call):
+the agent called `refine`; its first focus, over the 300-character schema limit, was refused, the second ran.
 
-Fixed for the second launch:
+Fixed for the second launch (`11c3148e`, merged into r04 at `13290920`, the second launch's source):
 - A level or stall review that has not saved its own file by its last call may write it with one more call, and only it;
   the tenth call's note says so. The consult-first refusal still holds for that write.
 - Write and edit receipts use the workspace-relative path: a write to `./prompts/lessons.md` was saved as a plain file,
   not the prompt, with no receipt.
 
-Spend with the restart: about 0.26M on the stopped launch beyond the pair's 3M, so up to about 3.26M in all.
+**Results** (`C:/Users/qi/tmp/r04/lb/compare-lb.mjs`, output `compare-final.txt`; both arms ended at the token cap; the
+yibu gateway timed out 10 and 9 times):
+
+| | On: `su15-lb-cb-q38-2` (`13290920`) | Off: `su15-lb0-cb-q38` (`305ca1b0`) | Source su15-cb-q38-1, level 2 |
+| --- | --- | --- | --- |
+| Level 2 | not completed in 29 actions (#21-#49) | not completed in 40 actions (#21-#60), 1 GAME_OVER | not completed in 210 |
+| Budget tokens after the fork, per level-2 action | 1.56M, 53.8k | 1.56M, 38.9k | (15.3k) |
+| Win conditions tested in level 2's first 30 actions | at least 3: a block inside the circle (#42, predicted the level change), the block centred on the circle (#43-#49), the blue square moved to it (#45) | 1: all dots cleared (#32, a note) | 1 (#49, predicted) |
+| Review | consulted `agents/reviewer.md`, kept "(from reviewer)"; `lessons.md` with 4 test lines | `lessons.md` with 4 candidates, no moves; a stall review at #60 | none (before the level review) |
+| Pins on level 2 | tests 1-2 played (#21, #22); tests 3-4 replaced by event refinements' pins (e10, e13); event pins e11 (ACTION7) and e13 played | 3 refinement pins: replaced, expired, open at the cap | 1, expired |
+| Call points | consult point → consult; refine points at #20 and #35 → refine both times | none | none |
+| Saved tools, predictors | none | `tools/l2_markers.py` (its own `# view: on`), 34 view runs | none |
+
+What happened on the on arm: tests 1 and 2 were played at once and showed that clicking a dot does not move the blue
+square. Test 3 then went unplayed for 8 actions (#23-#30); from #26 the agent played ACTION6(33,27) six times in a row,
+each decision copying #24's reasoning word for word (the Continual Harness mode's copying, also seen in su15-chm-q38-1,
+not this change). At #30 a rival event refinement ("ACTION7 never played") replaced test 3 with ACTION7 (e10). At the
+second refine point (#35) the agent's own focus asked for that same experiment; the goal-test event refinement already
+running pinned ACTION7 again a moment before (e11), and the agent's refinement (e12) wrote it into the strategy with an
+expectation. The agent played ACTION7 at #36-#37 (e11 played, e12's expectation met). ACTION7 moved a color-6 block, and
+the agent then found that a click moves the nearest block so that it covers the clicked cell (#38-#41). It moved a block
+into the circle predicting the level change (#42), then tried exact centring and the blue square, and was still testing
+when the cap ended the run. The first refine call (#20) asked for a check that a dot click moves the square; the
+refinement wrote a rules line carrying that check (e5). The pinned tests were played as probes of the dots, each with the
+agent's own mechanics prediction, not as predictions of the level change.
+
+Against the rule fixed before the runs (one pair, so "both qwen forks" reads as the one fork):
+- **Adoption: met.** Review pins were played and at least 2 distinct win conditions were tested in the first 30 actions
+  (off arm and source: 1 each).
+- **Call points: met as written, thin in substance.** Each call point reached got its call, and the agent-focused
+  refinement at #35 had its expectation met (e12, #36). But it restated the experiment the agent already intended and an
+  event refinement had just pinned; neither refine call added a move the agent would not otherwise have played. The
+  consult's answer reached the lessons' pattern line ("(from reviewer)"), not a test.
+- **Benefit: not met.** Level 2 was not completed in either arm within 1.5M; the gpt condition was not run.
+- **Cost:** per level-2 action +38% against the off arm. The use rose with it (pins played, call points answered), so
+  the falsifier "more than 20% with no rise in use" does not apply; part of the cost is the copying decisions, which
+  the off arm, sweeping cells by python, did not have.
+- Not reached on any real run: A2's default views and predictors (the on arm saved no tool), A4's index lines for them,
+  B1 and B2.
+
+Limits: one pair; the two arms' play differs in ways this design does not attribute (copying on, python sweeps off);
+su15 shaped the change (in-sample); the gateway's timeouts slowed both arms alike.
+
+Spend: 0.50M on the stopped launch and 1.56M on each arm, about 3.62M in all against the confirmed "roughly 3M". The caps
+are checked between decisions, so each arm ran about 0.06M over its 1.5M.
+
+Where the transitions broke on the on arm, each with one factor to change (none built; the user decides):
+- **Agent's test → played:** event refinements' pins replaced the agent's own pending review tests twice (tests 3 and 4).
+  Change: a pending review test is not replaced by an event pin, which waits behind it. Check: the review's tests are
+  played or expire on their own window.
+- **Played test → goal test:** the agent played its tests with its own mechanics predictions, so none tested the level
+  change. Change: a pinned goal test's `level_changed: true` is scored beside the agent's own prediction. Check: level 2's
+  first tests are scored as goal tests.
+- **Refine call → new capability:** both refine calls restated the agent's next move or asked for a check. What the
+  REFINE POINT showed the agent is not logged (`call_points.jsonl` keeps only that it was reached), so whether its "ran
+  without helping" and "python redone" lines had anything to offer is unknown. Check before changing anything: log the
+  point's text, and see whether later refine points (with python redone) yield views or checks.
+- Out of scope here: the copying decisions of the Continual Harness mode (the other session's record).
+
+Missing for the plan's protocol: the second qwen pair (from su15-q38-1 of 10-20) and the gpt-6.1-sol pair, both without a
+budget; a run where the agent saves code, to reach A2's default views, predictors, B1 and B2.
 
 ## Evidence layers
 
 | Layer | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
 | Functional | passing (tests above) | offline: node, WASI, stand-in bridge, stubbed model | the runner's loop is not run end to end |
-| Full-chain reachability | partial | real su15 (online ARC), yibu, qwen3.8-27b, the real runner, Pi, bridge and refiner | first on-arm launch: the consult point and the refine point were reached and called; the review's lessons write was refused by its cap (fixed); the rest pending the second launch |
-| Autonomous adoption | unverified | — | — |
-| Net benefit | unverified | — | — |
+| Full-chain reachability | partial | real su15 (online ARC), yibu, qwen3.8-27b, the real runner, Pi, bridge and refiner | reached: the consult point, both refine points, review tests pinned, played and reported, the agent-asked refinements' edits and expectations (Runs); not reached: default views, predictors, B1, B2 |
+| Autonomous adoption | partial | same | one pair: review pins played as probes, not as goal tests; the refine calls restated the agent's own next experiment; at least 3 win conditions tested in level 2's first 30 actions against 1 |
+| Net benefit | not shown | same | level 2 not completed in either arm within 1.5M; +38% budget tokens per level-2 action |
 
 ## Decisions (the user, 2026-10-20)
 
