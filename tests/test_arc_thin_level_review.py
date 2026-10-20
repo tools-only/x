@@ -17,7 +17,9 @@ def test_level_review_prompt_names_the_level_and_the_next_one():
     prompt = runner._level_review_prompt(2)
     assert prompt.startswith('LEVEL REVIEW. Level 2 is complete; this turn takes no action. Rewrite prompts/lessons.md whole')
     assert '\n---\nactive: true\n---\n' in prompt
-    assert '(level 2 only)' in prompt and '5. For level 3: 2-4 candidate win conditions' in prompt
+    assert '(level 2 only)' in prompt and '2. For level 3: 2-4 candidate win conditions' in prompt
+    # The candidates are test lines the runtime pins (docs/plans/2026-10-20-loop-bound-artifacts.md A3).
+    assert '\n- test: <move> — <the win condition it tests>\n' in prompt and 'pins them in this order' in prompt
     assert "Level 2's pattern is one candidate, not a rule." in prompt
 
 

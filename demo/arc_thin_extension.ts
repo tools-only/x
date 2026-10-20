@@ -52,7 +52,7 @@ import { evaluateTaskPython, TaskPythonError, type ValidatedTaskPythonProgram } 
 import { SKILL_LIMITS, arcSkillFoundation, guestFailure, arcSkillGuestProgram, type GuestResult } from "./arc_thin_skill_guest.ts";
 import { backtestCases, renderBacktest, scoreBacktest, type GuestCaseResult, type ModelCheck } from "./arc_thin_backtest.ts";
 import { sharedTaskPythonPool } from "./pi_task_python_pool.ts";
-import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, normIdea, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
+import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, maskedHashes, normIdea, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
 import {
 	CRITIC_SYSTEM, NATIVE_CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
 } from "./arc_thin_critic.ts";
@@ -111,6 +111,12 @@ const THEN_STEPS = 11;
  * action after it was played that way several times in a row (ARC_THIN_NO_EFFECT_REPEATS, see submitAction).
  */
 const NO_EFFECT_CELLS = 2;
+/** A refine point's answer to an action before the agent's refine call (docs/plans/2026-10-20-loop-bound-artifacts.md A5). */
+const REFINE_FIRST = "this decision is a refine point: first call refine(focus) with what your harness should change now, then act; " +
+	"this action was NOT played";
+/** A review's answer to a write before the agent has consulted a subagent (A5). */
+const CONSULT_FIRST = "this review consults first: ask one of your subagents one question with consult(agent, question, refs) before you " +
+	"write; writing agents/<name>.md to make one is allowed";
 /**
  * Pi checks arguments against the action enum of the current state before a tool runs, and its message ("must be equal
  * to one of the allowed values") does not say what is available. su15-l0-1 (2026-10-17) sent RESET 20 times in a row
@@ -143,6 +149,7 @@ const OBSERVE_BACKFILL = 200;
 /** What one skill's automatic result, and all of them together, may take in the working set. */
 const SKILL_OUTPUT_CHARS = 900;
 const SKILL_OUTPUTS_CHARS = 2400;
+const clipText = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const clipJson = (value: unknown, max: number) => {
 	let json: string;
 	try { json = JSON.stringify(value ?? null); }
@@ -157,6 +164,8 @@ const ANALYST_MAX_OUTPUT_TOKENS = 512;
 type Skill = { version: number; description: string; source: string; saved_at?: number; saved_level?: number; observe?: boolean };
 /** A skill named as the predictor of one action: its scored prediction, or why there was none. */
 type SkillPrediction = { name: string; version?: number; error?: string } & Partial<ScoredPrediction>;
+/** A predictor tool's prediction for one action: scored, or why there was none (docs/plans/2026-10-20-loop-bound-artifacts.md A2). */
+type PredictorScore = { path: string; version: number; error?: string } & Partial<ScoredPrediction>;
 /**
  * One action as stored in trajectory.jsonl. changed_cells and bbox come from the bridge. Native receipts show them
  * (since 2026-10-13: without them the agent took a 52-cell change for "nothing happened"); the legacy path keeps them
@@ -171,6 +180,12 @@ type ActionRow = {
 	changed_cells: number | null; bbox?: unknown; level_changed: boolean; state: string;
 	levels_completed: number; budget: any;
 	predict?: Prediction; prediction?: ScoredPrediction; skill_prediction?: SkillPrediction;
+	/** The predictor tools' predictions for this action (made on the state before it), scored against what came back. */
+	predictors?: PredictorScore[];
+	/** The pinned test whose prediction this action carried, the agent's own action stating none. */
+	predict_from?: string;
+	/** An earlier action played from the same board (status cells masked) whose result differed from this one's. */
+	diverges_from?: number;
 	/**
 	 * Continual Harness's step record (ARC_THIN_OBSERVATION=ch): who played it (arc_action, python, tool: <name>), its
 	 * place in an action list (the list's reasoning is the first entry's note, the entries it cut its batch_rejected),
@@ -205,6 +220,37 @@ const duration = (ms: number) => {
 	return h ? `${h}h${String(m).padStart(2, "0")}m` : m ? `${m}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 };
 const tokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+/**
+ * One cell per object region of a grid, for the candidate clicks of B1: 4-connected cells of one colour other than the
+ * grid's most common colour, the member nearest the region's centre, largest regions first.
+ */
+function regionCells(grid: number[][], limit = 32): Array<{ x: number; y: number }> {
+	const counts = new Map<number, number>();
+	for (const row of grid) for (const cell of row) counts.set(cell, (counts.get(cell) ?? 0) + 1);
+	const background = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+	const width = Math.max(0, ...grid.map((row) => row.length)), seen = new Set<number>(), regions: Array<Array<[number, number]>> = [];
+	for (let y = 0; y < grid.length; y += 1) for (let x = 0; x < grid[y].length; x += 1) {
+		if (grid[y][x] === background || seen.has(y * width + x)) continue;
+		const colour = grid[y][x], cells: Array<[number, number]> = [], stack: Array<[number, number]> = [[x, y]];
+		seen.add(y * width + x);
+		while (stack.length) {
+			const [cx, cy] = stack.pop()!;
+			cells.push([cx, cy]);
+			for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]] as Array<[number, number]>) {
+				if (ny < 0 || ny >= grid.length || nx < 0 || nx >= grid[ny].length || seen.has(ny * width + nx) || grid[ny][nx] !== colour) continue;
+				seen.add(ny * width + nx);
+				stack.push([nx, ny]);
+			}
+		}
+		regions.push(cells);
+	}
+	return regions.sort((a, b) => b.length - a.length).slice(0, limit).map((cells) => {
+		const mx = cells.reduce((s, [x]) => s + x, 0) / cells.length, my = cells.reduce((s, [, y]) => s + y, 0) / cells.length;
+		const [x, y] = cells.reduce((best, cell) => Math.hypot(cell[0] - mx, cell[1] - my) < Math.hypot(best[0] - mx, best[1] - my) ? cell : best);
+		return { x, y };
+	});
+}
 
 export default function arcThinExtension(pi: ExtensionAPI) {
   const responsesContinuation = new ResponsesContinuation();
@@ -276,6 +322,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const lean = process.env.ARC_THIN_LEAN === "1";
 	const refineTool = !lean && process.env.ARC_THIN_REFINE_TOOL !== "0";
 	const consultTool = !lean && process.env.ARC_THIN_CONSULT !== "0";
+	/**
+	 * Call points (docs/plans/2026-10-20-loop-bound-artifacts.md A5; the user, 2026-10-20: removing tools that are never
+	 * called "does not fix the root problem ... we need a mechanism to ensure they get called"). Every REFINE_EVERY
+	 * actions a decision is a refine point: it acts only after refine(focus) has been called in it, and the agent's
+	 * refinement takes the place of the scheduled one. Every native review consults a subagent before it writes.
+	 * ARC_THIN_REFINE_POINT=0 and ARC_THIN_REVIEW_CONSULT=0 turn them off.
+	 */
+	const refinePoints = native && criticOn && refineTool && process.env.ARC_THIN_REFINE_POINT !== "0";
+	const reviewConsult = native && consultTool && process.env.ARC_THIN_REVIEW_CONSULT !== "0";
+	/** Where a review's record is written for the subagent it consults (read-only to the agent, read by refs). */
+	const RECORD_PATH = "data/record.md";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -542,12 +599,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		head?: any; headKey?: string;
 		/** The model answered this decision's prompt (an assistant message that was not a provider error). */
 		answered: boolean;
+		/**
+		 * Call points (docs/plans/2026-10-20-loop-bound-artifacts.md A5): a decision that is a refine point acts only after
+		 * refine(focus) has been called in it; a review consults a subagent before it writes. What the point shows is
+		 * refinePointText.
+		 */
+		refinePoint: boolean; refineCalled: boolean; refinePointText?: string;
+		consultPoint: boolean; consulted: boolean;
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
+		refinePoint: false, refineCalled: false, consultPoint: false, consulted: false,
 	});
 	let run = freshRun();
 	/**
@@ -601,12 +666,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			})].join("\n");
 	}
 
-	/** How the predictions made with one action scored (the agent's own, and the skill it named). */
+	/**
+	 * How the predictions made with one action scored (the agent's own or the pinned test's, the skill it named, its
+	 * predictor tools), and whether the same board and action gave a different result before.
+	 */
 	function predictionClause(row: ActionRow): string {
 		const skill = row.skill_prediction;
-		return (row.prediction ? ` | predicted: ${renderScore(row.prediction)}` : "") +
+		return (row.prediction ? ` | predicted${row.predict_from ? " (the pinned test's prediction)" : ""}: ${renderScore(row.prediction)}` : "") +
 			(skill ? ` | ${skill.name}${skill.version ? ` v${skill.version}` : ""} predicted: ` +
-				(skill.fields ? renderScore(skill as ScoredPrediction) : `nothing (${skill.error})`) : "");
+				(skill.fields ? renderScore(skill as ScoredPrediction) : `nothing (${skill.error})`) : "") +
+			(row.predictors ?? []).map((p) => ` | ${p.path} v${p.version} predicted: ${p.fields ? renderScore(p as ScoredPrediction) : `nothing (${p.error})`}`).join("") +
+			(row.diverges_from !== undefined ? ` | the same board (status cells aside) and action at #${row.diverges_from} gave a different result: ` +
+				"something not on the board decides the outcome" : "");
 	}
 
 	/** One action as shown on later decisions: the facts, the agent's note, and how its predictions scored. */
@@ -640,7 +711,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try { repeated = buildLedger(trajectory, [], grids).repeats.map((repeat) => repeat.n); }
 		catch (error) { logError("review:repeats", error); }
 		const record = levelRecord({ rows: trajectory, completed: currentLevel(), memoryRows: readRows("memory.jsonl"), checks: claimRows,
-			repeated, python: readRows("component_runs.jsonl") });
+			repeated, python: readRows("component_runs.jsonl"), artifacts: reviewArtifactLines(currentLevel() - 1) });
 		// A stall review of the level now completed is still an active prompt: what to do with it is the agent's to decide.
 		return reviewText() ? `${record}\n- ${REVIEW_PATH}, your stall review of this level, is still active: delete it, or keep in ` +
 			`${LESSONS_PATH} what still helps.` : record;
@@ -656,7 +727,25 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try { repeated = buildLedger(trajectory, [], grids).repeats.map((repeat) => repeat.n); }
 		catch (error) { logError("review:repeats", error); }
 		return levelRecord({ rows: trajectory, completed: currentLevel() + 1, ongoing: true, memoryRows: readRows("memory.jsonl"),
-			checks: claimRows, repeated, python: readRows("component_runs.jsonl") });
+			checks: claimRows, repeated, python: readRows("component_runs.jsonl"), artifacts: reviewArtifactLines(currentLevel()) });
+	}
+
+	/**
+	 * A4: the review record's lines on the agent's saved tools (what each did where it enters the decision, over the run)
+	 * and the tests pinned on level `level` (0-based) with what became of each.
+	 */
+	function reviewArtifactLines(level: number): string[] {
+		if (!native || !binder) return [];
+		const { usage } = artifactUsage();
+		const tools = [...usage].map(([path, use]) => `${path}: ${use}`);
+		const rows = readRows("refiner.jsonl");
+		const tests = rows.filter((row) => row.kind === "next" && row.test && Number(row.level) === level).map((row) => {
+			const done = rows.find((other) => other.kind === "next_done" && other.edit === row.edit);
+			const name = row.test.source === "predictor tools" ? "the predictors' disagreement" : `test ${row.test.index} of ${row.test.total} (${row.test.source})`;
+			return `${name}, ${moveText(row.move)}, ${clipText(String(row.test.text), 80)}: ` +
+				(!done ? "pinned now" : done.outcome === "met" ? `played at #${done.n}` : done.outcome === "expired" ? "expired unplayed" : String(done.outcome));
+		});
+		return [...tools, ...tests];
 	}
 
 	/**
@@ -746,6 +835,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					toldAt.set(editId, trajectory.length);
 				}
 				refinerNotices = [];
+			}
+			// Call points (A5) open the head: a refine point before a decision acts, a consult before a review writes. The
+			// review's record is also written where the subagent it consults can read it.
+			if (run.refinePoint && run.refinePointText) out.unshift(["refine_point", run.refinePointText]);
+			if (run.consultPoint) {
+				out.unshift(["consult", consultFirstText()]);
+				if (workspace && recent) { try { workspace.runtimeWrite(RECORD_PATH, recent + "\n"); } catch (error) { logError("review:record", error); } }
 			}
 			return out;
 		};
@@ -1242,7 +1338,27 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const last = rows.filter((row) => row.kind === "next").at(-1);
 		pin = last && !rows.some((row) => row.kind === "next_done" && row.edit === last.edit)
 			? { edit: String(last.edit), move: last.move, kind: String(last.move_kind), line: String(last.line), within: Number(last.within) || NEXT_WITHIN,
-				level: Number(last.level) || 0, at: Number(last.at) || 0, nagged: 0 } : undefined;
+				level: Number(last.level) || 0, at: Number(last.at) || 0, nagged: 0,
+				...(last.exact ? { exact: true } : {}), ...(last.predict ? { predict: last.predict } : {}), ...(last.test ? { test: last.test } : {}) } : undefined;
+		// The review files' tests already read, the tests played, and those of the pinned test's list still to come (A3).
+		testsRead.clear();
+		for (const row of rows) if (row.kind === "tests" && row.path) testsRead.add(`${row.path}@${row.version}`);
+		playedTests.clear();
+		const testPins = new Map(rows.filter((row) => row.kind === "next" && row.test).map((row) => [String(row.edit), row]));
+		for (const row of rows) if (row.kind === "next_done" && row.outcome === "met" && testPins.has(String(row.edit))) {
+			const next = testPins.get(String(row.edit))!;
+			playedTests.add(testKey(Number(next.level) || 0, next.move));
+		}
+		testQueue = [];
+		if (pin?.test && workspace && (pin.test.source === LESSONS_PATH || pin.test.source === REVIEW_PATH)) {
+			try {
+				testQueue = reviewTests(pin.test.source, workspace.read(pin.test.source), pin.test.source === LESSONS_PATH)
+					.filter((t) => t.index > pin!.test!.index && !playedTests.has(testKey(pin!.level, t.move)));
+			}
+			catch { testQueue = []; }
+		}
+		// When the agent last called refine (A5): the next refine point is REFINE_EVERY actions after it.
+		lastRefineCallAt = Math.max(0, ...readRows("call_points.jsonl").filter((row) => row.kind === "refine").map((row) => Number(row.at) || 0));
 	}
 
 	/** Every state the agent sees is kept: skills read it as state.history, and the ledger reads it when enabled. */
@@ -1542,8 +1658,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * something, or under _off/ when none did (restoreBrokenViews); 0: off.
 	 */
 	const VIEW_RESTORE_STATES = envNumber("ARC_REFINE_VIEW_RESTORE", 6);
-	/** The next experiment a coverage event delivered: the move, its kind when pinned, and the strategy line carrying it. */
-	type Pin = { edit: string; move: Move; kind: string; line: string; within: number; level: number; at: number; nagged: number };
+	/**
+	 * The next experiment a coverage event delivered: the move, its kind when pinned, and the strategy line carrying it.
+	 * A pinned test (A3, B1) is an exact move with what it tests: a review file's test line, or the action on which the
+	 * predictor tools disagree; a goal test carries the prediction that the level changes.
+	 */
+	type Pin = { edit: string; move: Move; kind: string; line: string; within: number; level: number; at: number; nagged: number;
+		exact?: boolean; predict?: Prediction; test?: PinTest };
+	type PinTest = { index: number; total: number; text: string; source: string };
 	let pin: Pin | undefined;
 	/** The action count at which the agent was told of each edit (the decision that showed its notice). */
 	const toldAt = new Map<string, number>();
@@ -1552,6 +1674,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let refineNotes: CriticNote[] = [];
 	let refinedThrough = 0;
 	let lastRefineAt = 0;
+	/** The action count at the agent's last refine(focus) call: a refine point comes REFINE_EVERY actions after it (A5). */
+	let lastRefineCallAt = 0;
 	const refinedFamilies = new Set<string>();
 	let goalTestAskedAt = -1;
 	let viewAskedLevel = -1;
@@ -1607,16 +1731,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return undefined;
 	}
 
-	/** Whether move `row` is the pinned move's kind (a click unplaced when pinned: that same cell). */
-	const playsPin = (row: ActionRow, kinds: Map<number, string>, p: Pick<Pin, "move" | "kind">) => p.kind.endsWith(":unplaced")
+	/** Whether move `row` is the pinned move's kind (an exact pin, or a click unplaced when pinned: that same cell). */
+	const playsPin = (row: ActionRow, kinds: Map<number, string>, p: Pick<Pin, "move" | "kind" | "exact">) => p.exact || p.kind.endsWith(":unplaced")
 		? row.action === p.move.action && row.x === p.move.x && row.y === p.move.y : kinds.get(row.n) === p.kind;
 
-	/** When the agent was told of the pinned move, and the first move of its kind played since. */
+	/** When the agent was told of the pinned move, and the first move of its kind played since on the pin's level. */
 	function pinStatus(current: Pin): { told?: number; met?: number } {
 		const told = toldAt.get(current.edit);
 		if (told === undefined) return {};
 		const kinds = moveKinds(trajectory, moveFacts);
-		return { told, met: trajectory.find((row) => row.n > told && playsPin(row, kinds, current))?.n };
+		return { told, met: trajectory.find((row) => row.n > told && levelOf(row) === current.level && playsPin(row, kinds, current))?.n };
 	}
 
 	/** The strategy written by the runtime (the pinned line added or taken out), versioned like a refinement's edit. */
@@ -1628,17 +1752,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/**
 	 * Pin `move` (P3): record it and return its strategy line, which writers put first in the next experiment (pinned()).
-	 * An earlier pinned move is replaced.
+	 * An earlier pinned move is replaced. `extra`: an exact pinned test, with what it tests and the prediction it carries.
 	 */
-	function setPin(editId: string, move: Move, kind: string, why: string, within: number, rare?: boolean): Pin | undefined {
+	function setPin(editId: string, move: Move, kind: string, why: string, within: number, rare?: boolean,
+		extra: Pick<Pin, "exact" | "predict" | "test"> = {}): Pin | undefined {
 		const old = pin;
 		if (old) append("refiner.jsonl", { kind: "next_done", edit: old.edit, outcome: "replaced", at: trajectory.length });
 		const reason = why.replace(/\s+/g, " ").trim();
-		const line = `- First: ${moveText(move)}${kind.endsWith(":unplaced") ? "" : `, ${kindText(kind)}`}` +
+		const line = `- First: ${moveText(move)}${extra.exact || kind.endsWith(":unplaced") ? "" : `, ${kindText(kind)}`}` +
 			(reason ? `; ${reason.length > 240 ? `${reason.slice(0, 239)}…` : reason}` : "");
-		pin = { edit: editId, move, kind, line, within, level: currentLevel(), at: trajectory.length, nagged: 0 };
+		pin = { edit: editId, move, kind, line, within, level: currentLevel(), at: trajectory.length, nagged: 0, ...extra };
 		append("refiner.jsonl", { kind: "next", edit: editId, move, move_kind: kind, ...(rare !== undefined ? { rare } : {}), line, within,
-			level: pin.level, at: pin.at });
+			level: pin.level, at: pin.at, ...extra });
 		return old;
 	}
 
@@ -1648,7 +1773,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return pin && !text.includes(pin.line) ? withNextItem(text, pin.line) : text;
 	}
 
-	/** Drop the pinned move and its strategy line: it was played, its level ended, or its time ran out. */
+	/**
+	 * Drop the pinned move and its strategy line: it was played, its level ended, or its time ran out. A pinned test's
+	 * result is said at this decision, and the next test of its list is pinned.
+	 */
 	async function releasePin(outcome: "met" | "level" | "expired", n?: number): Promise<void> {
 		if (!pin) return;
 		const done = pin;
@@ -1656,14 +1784,27 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		append("refiner.jsonl", { kind: "next_done", edit: done.edit, outcome, at: trajectory.length, ...(n !== undefined ? { n } : {}) });
 		const strategy = readStrategy()?.text;
 		if (strategy?.includes(done.line)) await writeStrategy(withoutNextItem(strategy, done.line));
+		if (!done.test) return;
+		if (outcome === "met") playedTests.add(testKey(done.level, done.move));
+		const row = n !== undefined ? trajectory.find((r) => r.n === n) : undefined;
+		const result = outcome === "met" && row ? `played at #${row.n}: ${row.level_changed ? "the level changed" : "the level did not change"}` +
+				(row.prediction && row.predict_from === done.edit ? `, so its prediction ${row.prediction.misses ? "missed" : "held"}` : "")
+			: outcome === "expired" ? `not played in the ${PIN_EXPIRES * done.within} actions since it was pinned; dropped`
+			: "its level ended before it was played";
+		if (outcome === "level") testQueue = [];
+		else await pinNextTest();
+		const next = pin?.test ? ` Pinned next: ${moveText(pin.move)}, test ${pin.test.index} of ${pin.test.total}: ${pin.test.text}.`
+			: done.test.total > done.test.index && outcome !== "level" ? " No test of that list is left that can be played now." : "";
+		refinerNotices.push({ text: `TEST RESULT (${done.test.source}, test ${done.test.index} of ${done.test.total}): ${moveText(done.move)}, ` +
+			`${done.test.text}: ${result}.${next}` });
 	}
 
 	/** At a decision's start, before the active prompts are bound: release the pinned move once it is settled. */
 	async function settlePin(): Promise<void> {
 		if (!pin || !workspace) return;
-		if (currentLevel() !== pin.level) return releasePin("level");
 		const { told, met } = pinStatus(pin);
 		if (met !== undefined) return releasePin("met", met);
+		if (currentLevel() !== pin.level) return releasePin("level");
 		if (told !== undefined && trajectory.length - told >= PIN_EXPIRES * pin.within) return releasePin("expired");
 	}
 
@@ -1673,8 +1814,165 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const { told, met } = pinStatus(pin);
 		if (told === undefined || met !== undefined || trajectory.length - told < pin.within) return "";
 		pin.nagged += 1;
-		return `(The strategy's next experiment, ${moveText(pin.move)}${pin.kind.endsWith(":unplaced") ? "" : ` (${kindText(pin.kind)})`}, ` +
+		return `(The strategy's next experiment, ${moveText(pin.move)}${pin.exact || pin.kind.endsWith(":unplaced") ? "" : ` (${kindText(pin.kind)})`}, ` +
 			`has not been played in the ${trajectory.length - told} actions since it was set.)`;
+	}
+
+	/**
+	 * A3 (docs/plans/2026-10-20-loop-bound-artifacts.md): the tests a review file lists, one per line as
+	 * "- test: <move> — <what it tests>", become pinned next experiments one at a time, in order. A level review's tests
+	 * are goal tests: their move carries the prediction that the level changes. In the level-review forks of 2026-10-20 qwen
+	 * listed 4 candidates in prompts/lessons.md every time, and no move of level 2's first 30 predicted a level change.
+	 */
+	const TEST_LINE = /^\s*(?:[-*•]|\d+[.)])?\s*test\b\s*[:\-—–]?\s*(.+)$/i;
+	/** A line's test, read with markdown emphasis taken off ("- **test:** ACTION6(3,4) — ..."), or undefined. */
+	const testLine = (line: string) => TEST_LINE.exec(line.replace(/\*\*|__|`/g, ""))?.[1];
+	type QueuedTest = { move: Move; text: string; goal: boolean; index: number; total: number; source: string };
+	let testQueue: QueuedTest[] = [];
+	/** path@version of the review files whose tests were read (a fork or restart does not pin them again). */
+	const testsRead = new Set<string>();
+	/**
+	 * The review tests played, by level and move: a rewritten file does not pin them again (in su15-lr-cb-q38 the agent
+	 * rewrote prompts/lessons.md 10 times during one level).
+	 */
+	const playedTests = new Set<string>();
+	const testKey = (level: number, move: Move) => `${level}|${moveText(move)}`;
+	function reviewTests(source: string, body: string, goal: boolean): QueuedTest[] {
+		const tests = body.split(/\r?\n/).flatMap((line) => {
+			const rest = testLine(line);
+			const move = rest ? parseMove(rest) : undefined;
+			if (!rest || !move) return [];
+			const text = rest.replace(/^.*?\bACTION\d+\s*(\(\s*\d{1,2}\s*,\s*\d{1,2}\s*\))?\s*[—–:\-]*\s*/i, "").trim();
+			return [{ move, text, goal: goal || /\blevel change|complete[sd]? the level|\bwins? the level/i.test(text) }];
+		});
+		return tests.map((test, i) => ({ ...test, index: i + 1, total: tests.length, source }));
+	}
+	/** Why a test's move cannot be played now, or undefined. */
+	function testProblem(move: Move): string | undefined {
+		const available = availableActions(observation);
+		if (available.length && !available.includes(move.action)) return `${move.action} is not available (available: ${available.join(", ")})`;
+		if (move.action === "ACTION6" && (move.x === undefined || move.y === undefined)) return "ACTION6 needs its cell, as ACTION6(x,y)";
+		return undefined;
+	}
+	/** The save receipt's note on a review file's test lines: how many will be pinned, and why the others will not. */
+	function testLinesNote(path: string, body: string): string {
+		const lines = body.split(/\r?\n/).map(testLine).filter((rest): rest is string => rest !== undefined);
+		if (!lines.length) return `\nnote: ${path} has no "- test: <move> — <what it tests>" line, so none of it is pinned as your next experiment`;
+		const problems = lines.filter((rest) => !parseMove(rest))
+			.map((rest) => `"${clipText(rest, 50)}" names no move (write ACTIONn, or ACTION6(x,y) for a click)`);
+		for (const test of reviewTests(path, body, false)) {
+			const why = playedTests.has(testKey(currentLevel(), test.move)) ? "already played as a test on this level" : testProblem(test.move);
+			if (why) problems.push(`test ${test.index}, ${moveText(test.move)}: ${why}`);
+		}
+		return `\nnote: ${lines.length - problems.length} of ${lines.length} test line${lines.length === 1 ? "" : "s"} will be pinned one at a time ` +
+			`from your next decision${problems.length ? `; not pinned: ${problems.join("; ")}` : ""}`;
+	}
+	/** Pin the next test of the queue that can be played now; tests that cannot are logged and skipped. */
+	async function pinNextTest(): Promise<void> {
+		while (testQueue.length) {
+			const test = testQueue.shift()!;
+			const problem = testProblem(test.move);
+			if (problem) { append("refiner.jsonl", { kind: "test_skipped", source: test.source, index: test.index, move: test.move, why: problem, at: trajectory.length }); continue; }
+			const gaps = gapsNow();
+			const id = `test:${test.source}:${decision}:${test.index}`;
+			const old = setPin(id, test.move, classify(test.move, gaps.cov, gaps.available).kind,
+				`test ${test.index} of ${test.total} from ${test.source}: ${test.text}${test.goal ? " (predicts the level change)" : ""}`, NEXT_WITHIN, undefined,
+				{ exact: true, ...(test.goal ? { predict: { level_changed: true } } : {}), test: { index: test.index, total: test.total, text: test.text, source: test.source } });
+			// The agent wrote the test itself: it is told now.
+			toldAt.set(id, trajectory.length);
+			append("refiner.jsonl", { kind: "told", id, at: trajectory.length, decision });
+			await writeStrategy(pinned(readStrategy()?.text ?? "", old));
+			return;
+		}
+	}
+	/** At a decision's start: a new version of a review file replaces the queued tests, and the first one is pinned. */
+	async function settleReviewTests(): Promise<void> {
+		if (!workspace || !binder) return;
+		const versions = binder.versionMap();
+		for (const [path, goal] of [[LESSONS_PATH, true], [REVIEW_PATH, false]] as const) {
+			const version = versions[path];
+			if (version === undefined || testsRead.has(`${path}@${version}`)) continue;
+			testsRead.add(`${path}@${version}`);
+			let body = "";
+			try { body = workspace.read(path); } catch { continue; }
+			const tests = reviewTests(path, body, goal);
+			// A test already played on this level is not pinned again when its file is rewritten.
+			const fresh = tests.filter((test) => !playedTests.has(testKey(currentLevel(), test.move)));
+			append("refiner.jsonl", { kind: "tests", path, version, count: tests.length, ...(fresh.length < tests.length ? { played: tests.length - fresh.length } : {}),
+				at: trajectory.length, decision });
+			if (!fresh.length) continue;
+			testQueue = fresh;
+			// A new list replaces the tests of an earlier one, the pinned one included.
+			if (pin?.test) {
+				const old = pin;
+				pin = undefined;
+				append("refiner.jsonl", { kind: "next_done", edit: old.edit, outcome: "replaced", at: trajectory.length });
+				const strategy = readStrategy()?.text;
+				if (strategy?.includes(old.line)) await writeStrategy(withoutNextItem(strategy, old.line));
+			}
+		}
+		if (!pin && testQueue.length) await pinNextTest();
+	}
+
+	/**
+	 * B1 (docs/plans/2026-10-20-loop-bound-artifacts.md): with two or more predictor tools active and nothing pinned, the
+	 * first candidate action on which their predictions differ becomes the pinned next experiment, so playing it decides
+	 * between them (su15-g56-2's correct rival differed from the belief only for clicks off a block; the move named to
+	 * separate them was a click on a block). Candidates: the offered actions other than RESET and ACTION6, then a click on
+	 * each object region of the grid. The runtime compares predictions; which predictor is right is the next move's to show.
+	 */
+	/** The disagreements already pinned, by move and predictor versions: one that was tested is not pinned again. */
+	const disagreementsPinned = new Set<string>();
+	async function pinDisagreement(): Promise<void> {
+		if (pin || !nativeRuntime || nativeRuntime.predictors().length < 2 || !observation) return;
+		const candidates = candidateActions();
+		if (!candidates.length) return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const runs = await Promise.race([nativeRuntime.predictMany(candidates),
+			new Promise<[]>((done) => { timer = setTimeout(() => done([]), 8000); })]);
+		clearTimeout(timer);
+		const usable = runs.filter((r) => r.values?.length === candidates.length);
+		if (usable.length < 2) return;
+		const versions = usable.map((r) => `${r.path}@${r.version}`).sort().join(",");
+		for (const [i, candidate] of candidates.entries()) {
+			const move: Move = { action: candidate.name, ...(candidate.x !== undefined ? { x: candidate.x, y: candidate.y } : {}) };
+			const key = `${moveText(move)}|${versions}`;
+			if (disagreementsPinned.has(key)) continue;
+			const split = disagreement(usable.map((r) => ({ path: r.path, prediction: normalizePrediction(r.values![i]?.value) })));
+			if (!split) continue;
+			disagreementsPinned.add(key);
+			const gaps = gapsNow();
+			const id = `disagree:${decision}`;
+			const old = setPin(id, move, classify(move, gaps.cov, gaps.available).kind, `your predictors disagree on it: ${split}`, NEXT_WITHIN, undefined,
+				{ exact: true, test: { index: 1, total: 1, text: `the predictors disagree (${split})`, source: "predictor tools" } });
+			toldAt.set(id, trajectory.length);
+			append("refiner.jsonl", { kind: "told", id, at: trajectory.length, decision });
+			await writeStrategy(pinned(readStrategy()?.text ?? "", old));
+			return;
+		}
+	}
+	/** The first pair of predictions that contradict each other on a field both state, described, or undefined. */
+	function disagreement(predictions: Array<{ path: string; prediction?: Prediction }>): string | undefined {
+		const describe = (p: Prediction) => [p.level_changed !== undefined ? `level_changed=${p.level_changed}` : "", p.state ? `state=${p.state}` : "",
+			p.cells?.length ? `(${p.cells[0][0]},${p.cells[0][1]})=${p.cells[0][2]}${p.cells.length > 1 ? ` and ${p.cells.length - 1} more cell(s)` : ""}` : ""]
+			.filter(Boolean).join(", ");
+		for (let a = 0; a < predictions.length; a += 1) for (let b = a + 1; b < predictions.length; b += 1) {
+			const p = predictions[a].prediction, q = predictions[b].prediction;
+			if (!p || !q) continue;
+			const differs = (p.level_changed !== undefined && q.level_changed !== undefined && p.level_changed !== q.level_changed)
+				|| (p.state !== undefined && q.state !== undefined && p.state.toUpperCase() !== q.state.toUpperCase())
+				|| (p.cells ?? []).some(([x, y, v]) => (q.cells ?? []).some(([x2, y2, v2]) => x === x2 && y === y2 && v !== v2));
+			if (differs) return `${predictions[a].path}: ${describe(p)}; ${predictions[b].path}: ${describe(q)}`;
+		}
+		return undefined;
+	}
+	/** The candidate actions for B1: offered actions other than RESET and ACTION6, then a click on each object region. */
+	function candidateActions(): Array<{ name: string; x?: number; y?: number }> {
+		const available = availableActions(observation).filter((name) => name !== "RESET");
+		const out: Array<{ name: string; x?: number; y?: number }> = available.filter((name) => name !== "ACTION6").map((name) => ({ name }));
+		const grid = gridOf(observation);
+		if (available.includes("ACTION6") && grid) for (const cell of regionCells(grid)) out.push({ name: "ACTION6", ...cell });
+		return out.slice(0, 40);
 	}
 
 	/**
@@ -1712,7 +2010,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			// The agent calls saved tools seldom (3 calls in 9 su15 runs, 2026-10-19) but reads what a view shows.
 			triggers.push((family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
 				: `python computation \`${family.gist}\` redone ${family.calls} times`) +
-				"; if it reads the state, a view ('# view: on') shows its result at every decision, while a tool waits to be called");
+				"; saved code that takes no args is a view, its result shown at every decision, while a tool with args waits to be called");
 			samples = family.samples;
 			break;
 		}
@@ -1732,7 +2030,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			triggers.push(`about ${Math.round(100 * share)}% of the agent's reasoning sentences in its last decision located cells or coordinates, and no view tool reports them`);
 		}
 		triggers.push(...promotionEvents(refinerOverBudget()));
-		if (!triggers.length && trajectory.length - lastRefineAt >= REFINE_EVERY) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
+		// With refine points the scheduled refinement is the agent's own refine(focus) (A5), not a runtime-picked one.
+		if (!refinePoints && !triggers.length && trajectory.length - lastRefineAt >= REFINE_EVERY) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
 		refinedThrough = trajectory.length;
 		// Over the cost ceiling only a level change and a rule in dispute still start a refinement (the agent's own
 		// refine(focus) is not counted here: it starts one directly).
@@ -1836,19 +2135,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * A view a refinement wrote that keeps raising goes back to its newest version that showed something, or is moved under
-	 * _off/ when no version did; the agent is told. In su15-p13-q38-1 tools/elements.py v3 raised on all 86 remaining states:
-	 * the refinement asked to fix it returned the same file, and the event is raised once per version. The runtime only
-	 * undoes refinements' output; a view the agent wrote stays the agent's, who sees what it shows.
+	 * A view that keeps raising goes back to its newest version that showed something, or is moved under _off/ when no
+	 * version did; the agent is told. In su15-p13-q38-1 tools/elements.py v3 raised on all 86 remaining states: the
+	 * refinement asked to fix it returned the same file, and the event is raised once per version. Since 2026-10-20 the
+	 * agent's own views are treated the same way (A4: a broken artifact is retired, not left running); the agent is told and
+	 * can restore or fix it.
 	 */
 	const restoredViews = new Set<string>();
 	async function restoreBrokenViews(): Promise<void> {
 		if (!VIEW_RESTORE_STATES || !nativeRuntime || !workspace || !binder) return;
 		for (const broken of nativeRuntime.emptyViews()) {
 			const key = `${broken.path}@${broken.version}`;
-			if (broken.failed < VIEW_RESTORE_STATES || !refinedVersions.has(key) || restoredViews.has(key)) continue;
+			if (broken.failed < VIEW_RESTORE_STATES || restoredViews.has(key)) continue;
 			restoredViews.add(key);
-			const why = `view ${broken.path} v${broken.version}, a refinement's, raised on ${broken.failed} states in a row` +
+			const why = `view ${broken.path} v${broken.version}, ${refinedVersions.has(key) ? "a refinement's" : "yours"}, raised on ${broken.failed} states in a row` +
 				(broken.error ? ` (${broken.error.replace(/\s+/g, " ").slice(0, 120)})` : "");
 			const back = nativeRuntime.lastShowingVersion(broken.path, broken.version);
 			const source = back === undefined ? undefined : binder.sourceOf(broken.path, back);
@@ -1859,7 +2159,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const receipt = await binder.save(broken.path, currentLevel());
 				nativeRuntime.noteSave(broken.path, receipt);
 				const version = binder.versionMap()[broken.path];
-				if (version !== undefined) refinedVersions.add(`${broken.path}@${version}`);
+				if (version !== undefined && refinedVersions.has(key)) refinedVersions.add(`${broken.path}@${version}`);
 				append("refiner.jsonl", { kind: "view_restored", at: trajectory.length, decision, path: broken.path, from: broken.version, to: back, version,
 					states: broken.states.slice(-VIEW_RESTORE_STATES), error: broken.error?.slice(0, 300), receipt });
 				refinerNotices.push({ text: `HARNESS UPDATE by the runtime after #${trajectory.length}: ${why}; v${back}, its newest version that ` +
@@ -1872,6 +2172,27 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				refinerNotices.push({ text: `HARNESS UPDATE by the runtime after #${trajectory.length}: ${why}, and no version of it showed anything; ` +
 					`it is moved to ${destination}.` });
 			}
+		}
+	}
+
+	/**
+	 * A4: a predictor tool that gave no prediction (it raised, or returned nothing checkable) on its last VIEW_RESTORE_STATES
+	 * actions is moved under _off/, so it stops running at every action; the agent is told and can fix and restore it.
+	 */
+	const retiredPredictors = new Set<string>();
+	async function retireBrokenPredictors(): Promise<void> {
+		if (!VIEW_RESTORE_STATES || !nativeRuntime || !workspace) return;
+		for (const c of nativeRuntime.predictors()) {
+			const key = `${c.path}@${c.version}`;
+			const recent = trajectory.flatMap((row) => row.predictors?.filter((p) => p.path === c.path && p.version === c.version) ?? []).slice(-VIEW_RESTORE_STATES);
+			if (retiredPredictors.has(key) || recent.length < VIEW_RESTORE_STATES || !recent.every((p) => p.error)) continue;
+			retiredPredictors.add(key);
+			const destination = `_off/${c.path}`;
+			workspace.mutate({ op: "move", path: c.path, destination });
+			append("refiner.jsonl", { kind: "predictor_retired", at: trajectory.length, decision, path: c.path, version: c.version, destination,
+				error: String(recent.at(-1)?.error ?? "").slice(0, 300) });
+			refinerNotices.push({ text: `HARNESS UPDATE by the runtime after #${trajectory.length}: predictor ${c.path} v${c.version} gave no prediction on its ` +
+				`last ${VIEW_RESTORE_STATES} actions (${String(recent.at(-1)?.error ?? "").slice(0, 120)}); it is moved to ${destination}. Fix it and move it back to use it.` });
 		}
 	}
 
@@ -2357,6 +2678,78 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Non-action tools end the run when they share a message with arc_action. */
 	const endsBatch = () => run.endBatchAt === run.assistantMessages;
 
+	// ---------------------------------------------------------------- call points and accounting (loop-bound artifacts)
+
+	/** A review's write waits for its consult (A5); writing agents/<name>.md, the subagent to consult, does not. */
+	const consultFirst = (path = "") => run.consultPoint && !run.consulted && !path.replace(/\\/g, "/").startsWith("agents/");
+	/** The subagent the last review consulted, until the review's marks of what it took from it are counted. */
+	let consultedAgent = "";
+	/** After a review that consulted: what it kept of the answer, by the "(from <name>)" marks it was asked for (A5). */
+	function noteConsultUse(previous: Run): void {
+		if (!previous.consultPoint || !previous.consulted || !consultedAgent || !workspace) return;
+		const mark = `(from ${consultedAgent})`;
+		const fileMarks = [LESSONS_PATH, REVIEW_PATH, STRATEGY_PATH, RULES_PATH].reduce((n, path) => {
+			try { return n + workspace.read(path).split(mark).length - 1; } catch { return n; }
+		}, 0);
+		const memoryMarks = readRows("memory.jsonl").filter((row) => Number(row.at) === trajectory.length && JSON.stringify(row).includes(mark)).length;
+		append("call_points.jsonl", { kind: "consult_use", at: trajectory.length, decision, agent: consultedAgent, file_marks: fileMarks, memory_marks: memoryMarks });
+		consultedAgent = "";
+	}
+	/** What a review shows first when it consults (A5): which subagents there are, or how to make one, and the record's path. */
+	function consultFirstText(): string {
+		const agents = binder?.active().filter((c) => c.kind === "subagent").map((c) => c.name) ?? [];
+		return `CONSULT FIRST (every review): before you write, ask one of your subagents one question about this record with ` +
+			`consult(agent, question, refs=["${RECORD_PATH}"]); it reads the record in a context of its own, without your assumptions. ` +
+			(agents.length ? `Your subagents: ${agents.join(", ")}. ` : "You have none yet: first write agents/<name>.md (frontmatter: " +
+				"description, tools: [read, python]; then what it should look for). ") +
+			"Your writes wait until it has answered. Mark what you take from the answer with (from <name>).";
+	}
+
+	/**
+	 * A4: what each saved tool has done where it enters the decision (the runtime's counts): a view's runs and output
+	 * changes, a predictor's scored predictions, a callable tool's calls. `idle` names those that ran without helping.
+	 */
+	function artifactUsage(): { usage: Map<string, string>; idle: string[] } {
+		const usage = new Map<string, string>(), idle: string[] = [];
+		if (!binder || !nativeRuntime) return { usage, idle };
+		const views = nativeRuntime.viewStats();
+		const runs = readRows("component_runs.jsonl");
+		for (const c of binder.active().filter((c) => c.kind === "tool")) {
+			if (c.view) {
+				const v = views.get(c.path);
+				if (!v) continue;
+				usage.set(c.path, `ran ${v.runs}×, output changed ${v.changes}×${v.errors ? `, raised ${v.errors}×` : ""}`);
+				if (v.runs >= 5 && (2 * v.errors >= v.runs || v.changes === 0))
+					idle.push(`view ${c.path} (${2 * v.errors >= v.runs ? `raised on ${v.errors} of ${v.runs} states` : `the same output on all ${v.runs} states`})`);
+			} else if (c.predictor) {
+				const scored = trajectory.flatMap((row) => row.predictors ?? []).filter((p) => p.path === c.path && p.version === c.version);
+				const right = scored.filter((p) => p.fields && !p.misses && (p.hits ?? 0) > 0).length, none = scored.filter((p) => p.error).length;
+				usage.set(c.path, `${scored.length} prediction(s), ${right} right${none ? `, ${none} without one` : ""}`);
+				if (scored.length >= 5 && right === 0) idle.push(`predictor ${c.path} (${right} of ${scored.length} right)`);
+			} else {
+				const saved = Math.max(0, ...runs.filter((row) => row.kind === "save" && row.path === c.path).map((row) => Number(row.n) || 0));
+				const calls = runs.filter((row) => row.kind === "tool" && row.path === c.path && Number(row.n) >= saved).length;
+				usage.set(c.path, `called ${calls}× since saved at #${saved}`);
+				if (!calls && trajectory.length - saved >= REFINE_EVERY) idle.push(`tool ${c.path} (not called in the ${trajectory.length - saved} actions since it was saved)`);
+			}
+		}
+		return { usage, idle };
+	}
+
+	/** A refine point's lines (A5): the last refinement's outcome, what ran without helping, the python redone on the level. */
+	async function refinePointText(): Promise<string> {
+		let last = "";
+		try { last = (await editLedgerText()).split("\n").find((line) => line.startsWith("- after #")) ?? ""; }
+		catch (error) { logError("refine_point:ledger", error); }
+		const idle = artifactUsage().idle;
+		const repeated = (nativeRuntime?.repeatedWork(currentLevel()) ?? []).slice(0, 2).map((family) => `\`${family.gist}\` ×${family.calls}`);
+		return [`REFINE POINT (every ${REFINE_EVERY} actions; ${lastRefineCallAt ? `your last refine call was at #${lastRefineCallAt}` : "no refine call yet"}): ` +
+			"before acting, call refine(focus) with what your harness should change now. arc_action and env.act wait for that call. The refinement " +
+			"makes one edit (a view, a predictor, a check, the next experiment, a rule) and the next decision says what it changed.",
+			`- Last refinement: ${last ? last.slice(2) : "none yet"}`,
+			`- Ran without helping: ${idle.length ? idle.join("; ") : "nothing"}`,
+			`- Python redone on this level: ${repeated.length ? repeated.join("; ") : "none"}`].join("\n");
+	}
 	/**
 	 * Decision boundary, checked synchronously when a tool starts executing (Pi
 	 * starts a batch's tools in call order). A tool_call block cannot end a run:
@@ -2365,6 +2758,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
+		if (name === "refine") run.refineCalled = true;
 		// A level or stall review is bounded like a decision: its last call says so, and a call after it ends the review.
 		if (native && (run.levelReview || run.stallReview)) {
 			if (run.toolCalls > LEVEL_REVIEW_CALLS) return { reason: `this review used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
@@ -2375,6 +2769,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			return { reason: `hard tool-call limit (${diagnosticBudget || HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
 		if (name === "arc_action") {
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
+			// A refine point (A5): the action waits for the agent's refine call; the call is refused, not the decision ended.
+			if (run.refinePoint && !run.refineCalled) return { reason: REFINE_FIRST, terminate: false };
 			if (run.actionDone || run.arcSeenInMessage === run.assistantMessages)
 				return { reason: "one arc_action per decision; this call was NOT submitted", terminate: true };
 			run.arcSeenInMessage = run.assistantMessages;
@@ -2610,6 +3006,28 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		});
 	}
 
+	/** Whether an action about to be played is the move of a pinned test (which carries a prediction). */
+	const playsPinNow = (params: { action: string; x?: number; y?: number }) => Boolean(pin?.predict) && params.action === pin!.move.action
+		&& (pin!.move.x === undefined || (params.x === pin!.move.x && params.y === pin!.move.y));
+
+	/**
+	 * B2 (docs/plans/2026-10-20-loop-bound-artifacts.md): the latest earlier action played from the same board, status
+	 * cells and lines masked as the ledger masks them, that gave a different result. The board then does not hold all that
+	 * decides an outcome (a counter, a timer, what was done before); counting only, the meaning is the agent's.
+	 */
+	function divergentFrom(row: ActionRow, after: number[][] | undefined): number | undefined {
+		if (!after || !grids.has(row.n - 1)) return undefined;
+		const states = new Map(grids);
+		states.set(row.n, after);
+		const { hash } = maskedHashes(states);
+		const before = hash.get(row.n - 1), result = hash.get(row.n), label = actionLabel(row);
+		for (let i = trajectory.length - 1; i >= 0; i -= 1) {
+			const earlier = trajectory[i];
+			if (actionLabel(earlier) === label && hash.get(earlier.n - 1) === before && hash.has(earlier.n) && hash.get(earlier.n) !== result) return earlier.n;
+		}
+		return undefined;
+	}
+
 	/**
 	 * One action through the environment boundary, recorded like every other: arc_action and the actions a saved tool
 	 * returns both come here (`via` names the tool). The bridge, its budget and its refusals stay the only way to act.
@@ -2643,6 +3061,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const payload: Record<string, unknown> = { action: params.action };
 		if (params.x !== undefined && params.y !== undefined) { payload.x = params.x; payload.y = params.y; }
 		const bySkill = !control && params.predict_skill ? await predictWithSkill(params.predict_skill, { ...payload }) : undefined;
+		// A pinned test's move carries the test's prediction when the agent states none, so playing it tests the candidate.
+		const predictFrom = !control && !params.predict && pin?.predict && playsPinNow(params) ? pin.edit : undefined;
+		if (predictFrom) params = { ...params, predict: pin!.predict };
+		// The predictor tools predict this action from the state before it, while the environment answers.
+		const predicting = native && !control && nativeRuntime
+			? nativeRuntime.predict({ name: params.action, ...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}) })
+			: undefined;
 		if (params.note) payload.reasoning = params.note;
 		const idea = ledgerOn ? normIdea(params.idea) : "";
 		// The ledger keeps the informal part of the prediction as the experiment's expectation.
@@ -2697,8 +3122,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			// Text alone is kept, not checked: a score exists only when there was something to check.
 			const score = scorePrediction(params.predict, outcome);
 			if (score.fields.length) row.prediction = score;
+			if (predictFrom) row.predict_from = predictFrom;
 		}
 		if (bySkill) row.skill_prediction = { ...bySkill.row, ...(bySkill.prediction ? scorePrediction(bySkill.prediction, outcome) : {}) };
+		const predicted = predicting ? await predicting.catch((error) => { logError("predictors", error); return []; }) : [];
+		if (predicted.length) row.predictors = predicted.map(({ path, version, value, error }): PredictorScore => {
+			if (error) return { path, version, error };
+			const prediction = normalizePrediction(value);
+			return prediction && (prediction.cells || prediction.level_changed !== undefined || prediction.state !== undefined)
+				? { path, version, ...scorePrediction(prediction, outcome) } : { path, version, error: "returned no checkable field (cells, level_changed, state)" };
+		});
+		const diverges = native && !control ? divergentFrom(row, afterGrid) : undefined;
+		if (diverges !== undefined) row.diverges_from = diverges;
 		trajectory.push(row);
 		actionTimes.push(Date.now());
 		append("trajectory.jsonl", row);
@@ -2736,6 +3171,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	async function actForCode(call: { action: string; x?: number; y?: number; predict?: unknown; batch?: unknown }, via: string):
 		Promise<{ observation?: Record<string, unknown>; stopped?: string; line?: string }> {
 		if (run.consolidating) return { stopped: "no action during a review" };
+		if (run.refinePoint && !run.refineCalled) return { stopped: REFINE_FIRST };
 		if (actingStopped) return { stopped: actingStopped };
 		const compact = String(call.action ?? "").toUpperCase().replace(/\s+/g, "").replace(/^A(\d)/, "ACTION$1");
 		const labelled = /^ACTION(\d)\((\d{1,2}),(\d{1,2})\)$/.exec(compact);
@@ -2774,6 +3210,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
   if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
+      // A review writes after it has consulted (A5); making the subagent to consult is a write it may do first.
+      if ((tool.name === 'write' || tool.name === 'edit') && consultFirst(String((params as any)?.path ?? ''))) throw new Refusal(CONSULT_FIRST);
       try { return await tool.execute('workspace', params as any, signal, undefined, ctx); }
       catch (error) { throw new Refusal(errorText(error)); }
     }) });
@@ -2875,7 +3313,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}), { maxItems: MAX_STRATEGIES }), Type.String({ maxLength: 12000, description: "JSON array accepted" })])),
 			}),
 			prepareArguments: repairMemoryArguments,
-			execute: guardTool("memory", async (params: MemoryParams, signal) => text(await commitMemory(params, signal), undefined, endsBatch())),
+			execute: guardTool("memory", async (params: MemoryParams, signal) => {
+				// A review writes after it has consulted (A5).
+				if (consultFirst()) throw new Refusal(CONSULT_FIRST);
+				return text(await commitMemory(params, signal), undefined, endsBatch());
+			}),
 		});
 		/** One committed memory update, from the memory tool or python's env.remember: its receipt, or a Refusal. */
 		async function commitMemory(params: MemoryParams, signal?: AbortSignal): Promise<string> {
@@ -3016,7 +3458,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			label: "Python",
 			description: native
 				? "Run Python once. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
-					"value of a final expression. save=\"name\" also keeps this code as tools/name.py, callable later as the tool name(args={...}); " +
+					"value of a final expression. save=\"name\" also keeps this code as tools/name.py: code that takes no args becomes a view, " +
+					"shown after every new state; code that defines predict(state, action) predicts every action and is scored; other code is " +
+					"called later as the tool name(args={...}). " +
 					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
 						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
 							"names and print only what you need to read; the final value is also _. " : "") +
@@ -3272,29 +3716,45 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       },
       receipt: body => workspace.receipt(body),
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
-        try { return await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
+        let result: any;
+        try { result = await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
+        // A review's call point (A5): once a subagent has answered, the review may write.
+        if (name === 'consult') {
+          if (run.consultPoint) run.consulted = true;
+          append('call_points.jsonl', { kind: 'consult', at: trajectory.length, decision, review: run.consolidating, agent: String(params?.agent ?? ''),
+            question: String(params?.question ?? '').slice(0, 300) });
+          consultedAgent = String(params?.agent ?? '');
+        }
+        return result;
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
     nativeRuntime.seedViews(readRows('observer_runs.jsonl'));
-    // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background.
+    // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background. At a refine
+    // point (every REFINE_EVERY actions) the decision acts only after this call (A5).
     if (criticOn && refineTool) pi.registerTool({
       name: 'refine', label: 'Refine',
       description: 'Start a background refinement of your harness with a focus (e.g. "turn the route search into a tool" or ' +
-        '"write a goal test into the strategy"). It makes one edit to a prompt, memory entry, tool or skill; the next decision says what changed.',
+        '"write a goal test into the strategy"). It makes one edit to a prompt, memory entry, tool or skill; the next decision says what changed.' +
+        (refinePoints ? ` Every ${REFINE_EVERY} actions a decision is a refine point: it acts after this call.` : ''),
       parameters: Type.Object({ focus: Type.String({ minLength: 3, maxLength: 300 }) }),
-      execute: guardTool('refine', async (params: { focus: string }, _signal, ctx) =>
-        text(startRefiner(ctx, [`the agent asked: ${params.focus}`], [], true)
+      execute: guardTool('refine', async (params: { focus: string }, _signal, ctx) => {
+        lastRefineCallAt = trajectory.length;
+        append('call_points.jsonl', { kind: 'refine', at: trajectory.length, decision, point: run.refinePoint, focus: String(params.focus).slice(0, 300) });
+        return text(startRefiner(ctx, [`the agent asked: ${params.focus}`], [], true)
           ? 'Refinement started in the background; a later decision says what it changed.'
-          : 'A refinement is running; yours starts after it, and a later decision says what it changed.', undefined, endsBatch())),
+          : 'A refinement is running; yours starts after it, and a later decision says what it changed.', undefined, endsBatch());
+      }),
     });
     workspace.onWrite = async path => {
       const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
       nativeRuntime!.noteSave(path, receipt);
       if (toolsReady) refreshSkillSurface();
       const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
-      // The level and stall reviews ask for short files: they are sent with every decision.
-      const asked = (path === LESSONS_PATH || path === REVIEW_PATH) && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path).length : 0;
-      return receipt ? receipt + (asked > LESSONS_CHARS ? `\nnote: ${path} is ${asked} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
+      // The level and stall reviews ask for short files: they are sent with every decision. Their test lines are pinned as
+      // the next experiments, and the receipt says which will be (A3).
+      const asked = (path === LESSONS_PATH || path === REVIEW_PATH) && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path) : '';
+      return receipt ? receipt + (asked.length > LESSONS_CHARS ? `\nnote: ${path} is ${asked.length} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
+        + (asked && !/: unchanged, /.test(receipt) ? testLinesNote(path, asked) : '')
         + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
     };
   }
@@ -3310,15 +3770,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}));
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
-		// A pinned next experiment that was played, or whose level or time ended, leaves the strategy before it is bound (P3).
-		if (COVERAGE && refinerActive()) { try { await settlePin(); } catch (error) { logError("pin:settle", error); } }
-		// A refinement's view that keeps raising goes back to a version that showed something, before it is bound.
-		if (refinerActive()) { try { await restoreBrokenViews(); } catch (error) { logError("view:restore", error); } }
-    if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
 		const prompt = String(event.prompt ?? "").trimStart();
+		const reviewing = /^(CONSOLIDATE|RECOVER CONSOLIDATION|LEVEL REVIEW|RECOVER LEVEL REVIEW|STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		// A pinned next experiment that was played, or whose level or time ended, leaves the strategy before it is bound (P3);
+		// a review file's new tests are pinned (A3), and so is an action the predictor tools disagree on (B1). The components
+		// saved since the last request are bound first, so a predictor saved in the last decision takes part.
+		if (COVERAGE && refinerActive()) {
+			binder?.boundary();
+			try { await settlePin(); await settleReviewTests(); if (!reviewing) await pinDisagreement(); }
+			catch (error) { logError("pin:settle", error); }
+		}
+		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.
+		if (refinerActive()) { try { await restoreBrokenViews(); await retireBrokenPredictors(); } catch (error) { logError("view:restore", error); } }
+    if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
+		noteConsultUse(run);
 		// ARC_THIN_OBSERVATION=ch: observations a decision showed but the model never answered (a provider error) are shown
 		// again, as CH clears them only after a response.
 		if (chView && !run.consolidating && !run.answered && decisionObservations.length) {
@@ -3343,6 +3811,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		// Call points (A5): every review consults before it writes; every REFINE_EVERY actions since the agent's last refine
+		// call, a decision acts only after refine(focus).
+		run.consultPoint = reviewConsult && run.consolidating;
+		if (!continuing) run.refinePoint = refinePoints && !run.consolidating && refinerActive() && trajectory.length > 0
+			&& trajectory.length - lastRefineCallAt >= REFINE_EVERY;
+		if (!continuing && (run.refinePoint || run.consultPoint))
+			append("call_points.jsonl", { kind: run.refinePoint ? "refine_point" : "consult_point", at: trajectory.length, decision });
 		// A tool-only decision is already complete from the runner's perspective.
 		// The next turn must be an action turn; leaving memory/skill exposed here
 		// invites the model to repeat the same measurement and consumes another full
@@ -3384,6 +3859,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!control) { try { await refreshClaimChecks(); await refreshClaimControls(); contestByChecks(); } catch (error) { logError("claims:refresh", error); } }
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
+		if (run.refinePoint && !run.refinePointText) run.refinePointText = await refinePointText();
 		if (native && workspace) {
 			try { workspace.runtimeWrite("data/memory.md", renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + "\n"); }
 			catch (error) { logError("memory:file", error); }
@@ -3411,6 +3887,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
           + 'is not in it you will have to derive again.'
         : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
       refine: criticOn ? `Refinements run in the background (level changes, missing goal tests, stalls, repeated work${refineTool ? ', refine(focus)' : ''}); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ` : '',
+      // Call points (A5), said once where the capabilities are.
+      call_points: [refinePoints ? `Every ${REFINE_EVERY} actions a decision is a refine point: it acts after refine(focus).` : '',
+        reviewConsult ? 'Every review starts by consulting a subagent.' : ''].filter(Boolean).map(line => line + ' ').join(''),
       // P4 (ARC_THIN_LEAN, ARC_THIN_CONSULT): without consult, subagents have no way to be asked, so their line goes (below).
       kinds: consultTool ? 'five' : 'four',
       nonacting: consultTool ? 'subagents or views' : 'views',
@@ -3517,7 +3996,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!native || run.headKey !== headKey) {
 			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
-			const capabilities = binder ? [binder.index(currentLevel()),
+			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined),
 				nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,

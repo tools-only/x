@@ -1,8 +1,9 @@
 # Loop-bound artifacts: no dangling components, then computed experience (plan, 2026-10-20)
 
-Date: 2026-10-20 (Asia/Shanghai). Status: plan, not built (the user: "don't build it now"). Record format:
-`docs/templates/meta-harness-change.md`. Part A is the fix the user asked to put first; Part B (rival predictors, a
-hidden-state signal, review outputs as experiments) builds on it and was proposed earlier the same day.
+Date: 2026-10-20 (Asia/Shanghai). Status: implemented (the user: "confirm and implement"), functional checks only, no
+run yet. Record format: `docs/templates/meta-harness-change.md`. Part A is the fix the user asked to put first; Part B
+(rival predictors, a hidden-state signal, review outputs as experiments) builds on it and was proposed earlier the same
+day. Implementation and its deviations from this plan: "Implementation" below.
 
 Revised the same day: the first version removed `refine` and `consult` from the default tools. The user: "Removal does not
 fix the root problem that these tools are never invoked. Instead, we need a mechanism to ensure they get called, because
@@ -245,21 +246,83 @@ Order: A first. Without it, B's predictors would be one more pull artifact.
 - **Functional checks before any run use the recorded failure inputs**, not only synthetic fixtures. Example: 47fd11cd's
   list repair passed its fixtures and reads 0 of the 8 malformed lists recorded in su15-ch-q38-1.
 
+## Implementation (2026-10-20)
+
+The user confirmed the three open points ("confirm and implement"): the call points with their refusals, arg-less saves
+as views by default, and the fork budget. Built on r04 after the Continual Harness merge (`305ca1b0`).
+
+| Part | Where | What it does |
+| --- | --- | --- |
+| A2 binding | `demo/arc_thin_components.ts` (`_inspect`, `_reads_args`, `_predictor`, `_call`) | A saved tool that reads no args, does not act and predicts nothing is a view unless it says `# view: off`. A tool with a top-level `predict(state, action)` is a predictor; one execution answers one action or a list. |
+| A2 predictors | `demo/arc_thin_native_runtime.ts` (`predict`, `predictMany`); `demo/arc_thin_extension.ts` (`submitAction`) | The predictors run in the view pool on the state before each action, while the environment answers; each prediction is scored against the outcome, kept in the trajectory row (`predictors`) and shown in the receipt. |
+| A3 tests | extension (`reviewTests`, `settleReviewTests`, `pinNextTest`, `releasePin`); runner prompts | The level and stall review prompts ask for `- test: <move> — <what it tests>` lines. A new version of `prompts/lessons.md` or `prompts/review.md` replaces the queued tests; they are pinned one at a time as exact moves (a level review's as goal tests carrying `level_changed: true`); a test move played without the agent's own prediction carries the test's. When a test is played, expires or its level ends, the next decision says so and pins the next one. The save receipt of a review file says how many of its test lines will be pinned and why the others will not (no move, a click without its cell, not available, already played on the level); a test played on the level is not pinned again when the file is rewritten (the agent rewrote `prompts/lessons.md` 10 times during one level in su15-lr-cb-q38). Test lines may carry markdown emphasis or a numbered bullet. The level review no longer asks for how the win was found, what moved progress or what wasted actions. |
+| A4 accounting | runtime (`viewStats`, view change counts); extension (`artifactUsage`, `reviewArtifactLines`, `retireBrokenPredictors`); `demo/arc_thin_binder.ts` (`index`) | The capability index says where each tool enters the decision and what it did there: a view's runs and output changes, a predictor's predictions and how many were right, a callable tool's calls since it was saved. Review records list the tools and the tests pinned on the level. Views raising on 6 states in a row are restored or retired whoever wrote them (before: only refinements' views); predictors without a prediction on 6 actions in a row are moved under `_off/`. |
+| A5 refine point | extension (`run.refinePoint`, `refinePointText`, `gate`, `actForCode`, the `refine` tool) | Every `ARC_REFINE_EVERY` (15) actions since the agent's last refine call, the decision's head opens with REFINE POINT: the last refinement's ledger line, what ran without helping, the python redone on the level. `arc_action` is refused (the decision goes on) and `env.act` stopped until `refine(focus)` is called; the runtime's own scheduled refinement no longer runs (event refinements do). `ARC_THIN_REFINE_POINT=0` turns it off. |
+| A5 consult | extension (`run.consultPoint`, `consultFirstText`, the write/edit/memory refusal, the consult wrap, `noteConsultUse`); `LEVEL_REVIEW_CALLS` 8 → 10 | Every native review (level, stall, GAME_OVER) opens with CONSULT FIRST; the record is written to `data/record.md` for the subagent; `write`, `edit` (except under `agents/`) and `memory` are refused until a consult has answered. `(from <name>)` marks left in the review files and memory are counted after the review. `ARC_THIN_REVIEW_CONSULT=0` turns it off. |
+| A5 reuse hint | runtime (`runPython`) | Counts all of the level's python calls, not only those since the saved tools last changed, and names a view as a view. |
+| B1 disagreement | extension (`pinDisagreement`, `candidateActions`, `regionCells`, `disagreement`) | With two or more predictors and nothing pinned, the first candidate (offered actions other than RESET and ACTION6, then a click on each object region, largest first) on which two predictions contradict each other is pinned, once per move and predictor versions. |
+| B2 hidden state | extension (`divergentFrom`), `demo/arc_thin_level_review.ts` | When the board before an action (status cells masked as the ledger masks them) and the action equal an earlier move's but the result differs, the receipt and the review record say so. |
+| Accounting | runner (`_loop_bound_stats` → `summary.harness.loop_bound`); `harness/call_points.jsonl` | Refine points and calls, consult points, consults and marks, tests pinned and their outcomes, disagreement pins, predictions and how many were right, diverged moves. |
+
+Deviations from the plan above:
+- **Unchanged view output is still shown**, marked "(output unchanged since #n)". A decision sees only its own head (earlier
+  heads are not in the transcript), so hiding an unchanged output would take it away. A view whose output has been the
+  same on every state since it was saved is a snapshot: after 5 states its line keeps only its first 160 characters and
+  says so ("# view: off" makes it a tool to call). The recorded inputs below are why.
+- **Rival predictors are predictor tools**, not a field of hypotheses; a hypothesis's check is not derived from them. The
+  tool binding already runs, scores and retires them, and the agent can name the hypothesis in the tool's description.
+- **The consult refusal covers `write`, `edit` and `memory`**, not python's file writes.
+- **Agent-set pins from the strategy file** (A3, last bullet) are not built: the review files' test lines are the agent's
+  route to a pin.
+
+Checks (node 22 and pytest, this machine, 2026-10-20):
+- `tests/arc_thin_loop_bound.test.ts` (4, real extension with an HTTP stand-in bridge, the WASI sandbox and a stubbed model):
+  - a saved arg-less tool is a view, shown with the state and counted in the index; a predictor tool is scored in the
+    receipt and counted;
+  - a refine point refuses the action and stops `env.act` until `refine(focus)`, takes the scheduled refinement's place, and
+    comes back `REFINE_EVERY` actions after the call;
+  - a level review refuses `write` and `memory` until a subagent written in the turn has answered from `data/record.md`; its
+    test lines become the strategy's next experiment one at a time, the pinned test's prediction is scored when its move is
+    played, and the next decision reports the result and pins the next test;
+  - the same board and action with a different result is said in the receipt; two predictors that disagree pin the
+    separating action, and a disagreement already tested is not pinned again.
+- `tests/arc_thin_components.test.ts`: default views, predictor detection, the one-action and list predict contract.
+- `tests/test_arc_thin_loop_bound.py` (the summary's counts), `tests/test_arc_thin_level_review.py` and
+  `tests/test_arc_thin_stall_review.py` (the prompts' test lines).
+- Recorded inputs (`C:/Users/qi/tmp/r04/lb/classify.mjs`, output `classify.txt`): the last good version of every saved
+  tool in the su15 runs on record, 28 tools in 15 runs, read by this branch's validator. 10 were saved as views; 24 are
+  views under the new rule (14 newly, none lost), 2 stay callable because they act and 2 because they say "# view: off";
+  none reads args and none is a predictor. qwen's tools were already views by their own "# view: on" (one no-op helper
+  aside); 13 of the 14 new ones are gpt-5.6-sol and gpt-6.1-sol snapshots, about half of them reading fixed frames
+  (`for n in range(28,36): history.grid(n)`, `json.load(open('data/observations/2.json'))`), so their output never
+  changes: the snapshot rule above.
+- The review-file parser on the lessons the earlier qwen forks wrote: the old prompt's candidates named moves as "Move:
+  ACTION6 on a dot near blob", without a cell. Such a test line is now named in the save receipt instead of being dropped
+  silently.
+- `tests/arc_thin_action_surface.test.ts`: its installed-Pi test timed out at 20 s while Pi started, on this branch and on
+  the base `305ca1b0` alike (`worktrees/run-lb-base`, 2026-10-20), and passed in the full run below.
+- Full thin suite, one file at a time (`C:/Users/qi/tmp/r04/lb/full`): 42 files, 239 tests, 234 pass; the 5 failures
+  (activation 1, components 1, receipts 3) are the same tests failing the same way on the base. pytest, the runner's 8
+  files: 42 passed.
+
 ## Evidence layers
 
 | Layer | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
-| Functional | not built | — | — |
-| Full-chain reachability | not built | — | — |
-| Autonomous adoption | not built | — | — |
-| Net benefit | not built | — | — |
+| Functional | passing (tests above) | offline: node, WASI, stand-in bridge, stubbed model | the runner's loop is not run end to end |
+| Full-chain reachability | unverified | — | needs a real run |
+| Autonomous adoption | unverified | — | — |
+| Net benefit | unverified | — | — |
 
-## Open for the user
+## Decisions (the user, 2026-10-20)
 
 1. The call points (A5): a refine point every 15 actions with acting refused until `refine` is called, and a consult at
-   every review with the review's writes refused until `consult` is called. Confirm the schedule and the refusals.
-2. Make arg-less saves views by default (A2): saved code is shown after each state when its output changes.
-3. Budget for the fork pairs.
+   every review with the review's writes refused until `consult` is called: confirmed.
+2. Arg-less saves are views by default (A2): confirmed.
+3. Budget: confirmed as stated in the conversation, "roughly 3M budget tokens" for one fork pair: one qwen fork per arm
+   from su15-cb-q38-1's level-1 snapshot, 1.5M each. The second qwen pair (from su15-q38-1 of 10-20) and the gpt-6.1-sol
+   pair have no budget yet. With one pair, "both qwen forks" in the decision rule reads as the one fork, and the gpt
+   condition stays unverified.
 
 Related: deferred item C (hypothesis → requested experiment → new evidence → revision: A3 and B1 are its online form) and
 D (review outputs kept as tracked slots instead of prose); `docs/deferred-research-todos.md`.

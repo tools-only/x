@@ -65,18 +65,16 @@ LEVEL_REVIEW_PROMPT = (
     "LEVEL REVIEW. Level {level} is complete; this turn takes no action. Rewrite prompts/lessons.md whole, in one write "
     "call, from the level record below and your own notes. It is shown with every decision from now on and rewritten at "
     "the next level change, so keep it under 1,200 characters. Start it with\n---\nactive: true\n---\nthen write:\n"
-    "1. How the win was found: the experiment that showed it, after how many of the level's actions.\n"
-    "2. The win condition twice: literally, marked (level {level} only), and as a pattern a later level may share.\n"
-    "3. What moved progress.\n"
-    "4. What wasted actions: rituals, repeated reads, beliefs kept too long.\n"
-    "5. For level {next}: 2-4 candidate win conditions to test first, each with the move that would show it. "
-    "Level {level}'s pattern is one candidate, not a rule.\n"
-    "Keep what earlier levels taught only where it still helps; scope or delete memory entries that state level {level}'s "
-    "win as a general rule. Then stop."
+    "1. The win condition twice: literally, marked (level {level} only), and as a pattern a later level may share.\n"
+    "2. For level {next}: 2-4 candidate win conditions, the one to test first first, each on a line of its own as\n"
+    "- test: <move> — <the win condition it tests>\n"
+    "with the move as ACTION6(x,y) or ACTIONn. The runtime pins them in this order as moves that predict a level change "
+    "and reports each result. Level {level}'s pattern is one candidate, not a rule.\n"
+    "Scope or delete memory entries that state level {level}'s win as a general rule. Then stop."
 )
 LEVEL_REVIEW_RECOVERY_PROMPT = (
     "RECOVER LEVEL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/lessons.md "
-    "once (the frontmatter, then the five parts in a few short lines), then stop. This turn takes no action."
+    "once (the frontmatter, the win condition, then the - test: lines), then stop. This turn takes no action."
 )
 #: The native foundation's review after many actions without a level completed (docs/plans/2026-10-20-stall-review.md).
 #: The user, 2026-10-20, in place of refusing repeated actions: "when no task progress is observed over an extended
@@ -91,7 +89,10 @@ STALL_REVIEW_PROMPT = (
     "1. What you tried on this level and what each try showed.\n"
     "2. The bottleneck: what you do not know, or cannot do, that keeps the level open.\n"
     "3. What wasted actions: repeated moves, rituals, beliefs kept too long.\n"
-    "4. 2-4 directions not tested yet, each with the move that would show it.\n"
+    "4. 2-4 directions not tested yet, the one to test first first, each on a line of its own as\n"
+    "- test: <move> — <what it would show>\n"
+    "with the move as ACTION6(x,y) or ACTIONn; say \"(level change)\" in a direction that should complete the level. The "
+    "runtime pins them in this order and reports each result.\n"
     "Correct or delete memory entries the record contradicts. Then stop."
 )
 STALL_REVIEW_RECOVERY_PROMPT = (
@@ -304,6 +305,7 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
         "working_set": _working_set_stats(_read_jsonl(harness / "working_set.jsonl")),
         "level_reviews": _level_review_stats(harness),
         "stall_reviews": _review_stats(harness, "stall_review", "review"),
+        "loop_bound": _loop_bound_stats(harness),
         "ledger": _ledger_stats(harness),
     }
 
@@ -312,6 +314,35 @@ def _level_review_stats(harness: Path) -> dict[str, Any] | None:
     """What each level review cost (the agent's requests and budget tokens in that turn) and what became of
     prompts/lessons.md (versions saved, versions that failed to load, its size now); None when no review ran."""
     return _review_stats(harness, "level_review", "lessons")
+
+
+def _loop_bound_stats(harness: Path) -> dict[str, Any]:
+    """The call points and pinned tests of docs/plans/2026-10-20-loop-bound-artifacts.md, from their logs: refine points
+    reached and the refine calls made at them, consults in reviews and the marks the reviews left of their answers, the
+    tests pinned from review files and from the predictor tools' disagreement with what became of each, the predictor
+    tools' scored predictions, and moves whose result differed from an earlier one from the same board and action."""
+    calls = _read_jsonl(harness / "call_points.jsonl")
+    refiner = _read_jsonl(harness / "refiner.jsonl")
+    trajectory = _read_jsonl(harness / "trajectory.jsonl")
+    tests = [row for row in refiner if row.get("kind") == "next" and row.get("test")]
+    done = {row.get("edit"): row for row in refiner if row.get("kind") == "next_done"}
+    outcomes: dict[str, int] = {}
+    for row in tests:
+        outcome = str((done.get(row.get("edit")) or {}).get("outcome", "open"))
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    predictions = [p for row in trajectory for p in row.get("predictors") or []]
+    count = lambda kind, **match: sum(1 for row in calls if row.get("kind") == kind and all(bool(row.get(k)) == v for k, v in match.items()))
+    return {
+        "refine_points": count("refine_point"), "refine_calls": count("refine"), "refine_calls_at_points": count("refine", point=True),
+        "consult_points": count("consult_point"), "consults_in_reviews": count("consult", review=True),
+        "consult_marks": sum(int(row.get("file_marks") or 0) + int(row.get("memory_marks") or 0)
+                             for row in calls if row.get("kind") == "consult_use"),
+        "tests_pinned": len(tests), "tests_by_outcome": outcomes,
+        "disagreement_pins": sum(1 for row in tests if str(row.get("edit", "")).startswith("disagree:")),
+        "predictions": len(predictions),
+        "predictions_right": sum(1 for p in predictions if p.get("fields") and not p.get("misses") and p.get("hits")),
+        "diverged_moves": sum(1 for row in trajectory if row.get("diverges_from") is not None),
+    }
 
 
 def _review_stats(harness: Path, flag: str, name: str) -> dict[str, Any] | None:

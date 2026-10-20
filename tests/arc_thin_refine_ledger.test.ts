@@ -106,9 +106,11 @@ async function fixture(env: Record<string, string>, { still = [] as string[] } =
   const root = mkdtempSync(join(tmpdir(), 'refine-ledger-'));
   const saved = { ...process.env };
   // The 9 changes two cells per move, so the repeat refusal (ARC_THIN_NO_EFFECT_REPEATS) is off: these tests repeat ACTION1.
+  // They start refinements on the runtime's own schedule (ARC_REFINE_EVERY), so the refine point, which puts the agent's
+  // refine call in its place, is off (it is tested in arc_thin_loop_bound.test.ts).
   Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment',
     PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'enabled', ARC_HARNESS_CRITIC: 'enabled',
-    ARC_REFINE_EVERY: '2', ARC_THIN_NO_EFFECT_REPEATS: '0', ...env });
+    ARC_REFINE_EVERY: '2', ARC_THIN_NO_EFFECT_REPEATS: '0', ARC_THIN_REFINE_POINT: '0', ARC_THIN_REVIEW_CONSULT: '0', ...env });
   const tools = new Map<string, any>(), handlers = new Map<string, any>(); let active: string[] = [];
   arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,
     getActiveTools: () => active, getAllTools: () => [...tools.values()], on: (e: string, f: any) => handlers.set(e, f),

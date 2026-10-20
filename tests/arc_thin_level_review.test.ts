@@ -102,10 +102,11 @@ const reply = (text: string) => ({ role: 'assistant', content: [{ type: 'text', 
 /** One extension instance on `w` (a second one on the same world is a restart of the run). */
 async function attach(w: { url: string; root: string }) {
 	const saved = { ...process.env };
-	// Only the events under test start refinements: no schedule, goal-test or unchecked-belief events.
+	// Only the events under test start refinements: no schedule, goal-test or unchecked-belief events. The reviews'
+	// consult-first call point is tested in arc_thin_loop_bound.test.ts.
 	Object.assign(process.env, { ARC_RUN_ROOT: w.root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', PI_ARC_BRIDGE_URL: w.url,
 		ARC_HARNESS_LEDGER: 'enabled', ARC_HARNESS_CRITIC: 'enabled', ARC_REFINE_EVERY: '1000', ARC_REFINE_GOAL_TEST_AFTER: '1000',
-		ARC_REFINE_UNCHECKED_AFTER: '1000', ARC_THIN_NO_EFFECT_REPEATS: '0' });
+		ARC_REFINE_UNCHECKED_AFTER: '1000', ARC_THIN_NO_EFFECT_REPEATS: '0', ARC_THIN_REVIEW_CONSULT: '0' });
 	const tools = new Map<string, any>(), handlers = new Map<string, any>(); let active: string[] = [];
 	arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,
 		getActiveTools: () => active, getAllTools: () => [...tools.values()], on: (e: string, f: any) => handlers.set(e, f),
@@ -171,12 +172,12 @@ test('a level review starts from the level record without arc_action, is bounded
 		assert.match(h.inputs[1], /\nNOT APPLIED: each rule line added after a level change names the level that showed it, as "- Level 1: <the rule> \(hyp\.<name>\)"/);
 		await h.settle(reply('FILE prompts/rules.md\n- Level 1: a click on the marked cell completed it (hyp.mark)\nEND\nWHY #3'));
 		assert.match(h.file('workspace/prompts/rules.md'), /\n- Level 1: a click on the marked cell completed it \(hyp\.mark\)/);
-		// The agent's lessons, then the review's bound: the eighth call says so, a ninth ends the review.
+		// The agent's lessons, then the review's bound: the tenth call says so, an eleventh ends the review.
 		const lessons = '---\nactive: true\n---\n# Level 1 (won at #3)\n5. Next: test the new marked cell first.\n';
 		assert.match(await h.call('write', { path: 'prompts/lessons.md', content: lessons }), /prompts\/lessons\.md → prompt lessons v1: saved · loaded · active from your next decision/);
-		for (let i = 2; i < 8; i++) await h.call('memory', { op: 'set', key: `k${i}`, text: `fact ${i}` });
-		assert.match(await h.call('memory', { op: 'set', key: 'k8', text: 'fact 8' }), /\(This was tool call 8 of 8 for this review: finish now\.\)/);
-		assert.match(await h.call('memory', { op: 'set', key: 'k9', text: 'fact 9' }), /this review used its 8 tool calls; it ends here/);
+		for (let i = 2; i < 10; i++) await h.call('memory', { op: 'set', key: `k${i}`, text: `fact ${i}` });
+		assert.match(await h.call('memory', { op: 'set', key: 'k10', text: 'fact 10' }), /\(This was tool call 10 of 10 for this review: finish now\.\)/);
+		assert.match(await h.call('memory', { op: 'set', key: 'k11', text: 'fact 11' }), /this review used its 10 tool calls; it ends here/);
 		await h.begin();
 		assert.match(h.sections().prompt_lessons ?? '', /# Level 1 \(won at #3\)\n5\. Next: test the new marked cell first\./);
 		assert.ok(h.active().includes('arc_action'));

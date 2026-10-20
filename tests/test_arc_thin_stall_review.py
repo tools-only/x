@@ -35,7 +35,8 @@ def test_the_prompt_names_the_level_and_what_the_count_runs_from_and_resumes_as_
     assert prompt.startswith('STALL REVIEW. Level 2 is still open after 40 actions (since it began at action 31); '
                              'this turn takes no action.')
     assert 'rewrite prompts/review.md whole, in one write call' in prompt and '\n---\nactive: true\n---\n' in prompt
-    assert '4. 2-4 directions not tested yet, each with the move that would show it.' in prompt
+    assert '4. 2-4 directions not tested yet, the one to test first first, each on a line of its own as\n' \
+           '- test: <move> — <what it would show>\n' in prompt
     again = runner._stall_review_prompt(rows(count=80), 40, 0)
     assert again.startswith('STALL REVIEW. Level 1 is still open after 40 actions (since your last stall review, at action 40);')
     assert runner._review_recovery(prompt) == runner.STALL_REVIEW_RECOVERY_PROMPT

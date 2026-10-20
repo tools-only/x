@@ -31,6 +31,8 @@ export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
 export const MAX_ACTS = 24;
 /** Python executions of the agent and its subagents that run at once (each is one python process). */
 const MAX_PARALLEL = 4;
+/** States after which a view whose output never changed is shown as a snapshot: its head only (observe). */
+export const CONSTANT_VIEW_RUNS = 5;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
   : typeof result.value === 'object' && result.value !== null && 'stdout' in result.value
     ? [(result.value as any).stdout, (result.value as any).has_value ? '→ ' + JSON.stringify((result.value as any).value) : ''].filter(Boolean).join('\n')
@@ -78,9 +80,31 @@ export class NativeRuntime {
     for (let version = below - 1; version > 0; version--) if (this.viewShowed.has(`${path}@${version}`)) return version;
     return undefined;
   }
-  /** Which view versions showed something, from observer_runs.jsonl, after a restart. */
+  /** Which view versions showed something, from observer_runs.jsonl, after a restart; and what each view has done. */
   seedViews(rows: any[]) {
-    for (const r of rows) if (r?.ok && typeof r.key === 'string' && !isEmptyValue(r.value)) this.viewShowed.add(r.key.replace(/@\d+$/, ''));
+    for (const r of rows) {
+      if (r?.ok && typeof r.key === 'string' && !isEmptyValue(r.value)) this.viewShowed.add(r.key.replace(/@\d+$/, ''));
+      if (typeof r?.key === 'string' && Number.isInteger(r.n)) this.countView(r.key.replace(/@\d+$/, ''), r.n, r.ok ? r.value : undefined, Boolean(r.ok));
+    }
+  }
+  /** path@version → its runs, raised runs, runs whose output differed from the run before, and the last output. */
+  private viewCounts = new Map<string, { runs: number; errors: number; changes: number; changedAt: number; last?: string }>();
+  private countView(key: string, n: number, value: unknown, ok: boolean) {
+    const counts = this.viewCounts.get(key) ?? { runs: 0, errors: 0, changes: 0, changedAt: n };
+    const output = ok ? JSON.stringify(value ?? null) : undefined;
+    counts.runs += 1;
+    if (!ok) counts.errors += 1;
+    else if (output !== counts.last) { if (counts.last !== undefined) counts.changes += 1; counts.changedAt = n; counts.last = output; }
+    this.viewCounts.set(key, counts);
+  }
+  /** What each active view's current version has done: its runs, raised runs and output changes (A4 accounting). */
+  viewStats(): Map<string, { runs: number; errors: number; changes: number }> {
+    const out = new Map<string, { runs: number; errors: number; changes: number }>();
+    for (const c of this.host.binder.active()) {
+      const counts = this.viewCounts.get(`${c.path}@${c.version}`);
+      if ((c as any).view && counts) out.set(c.path, { runs: counts.runs, errors: counts.errors, changes: counts.changes });
+    }
+    return out;
   }
   private pythonRuns: PythonRun[] = [];
   /**
@@ -423,14 +447,17 @@ export class NativeRuntime {
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
     // Saved once, named once: when this call retypes what a saved component computes, its own result says so (once per
     // component and level), so the next call can use it instead (Prime: the change arrives in the next tool result).
-    const covering = readonly ? undefined : coveringComponent(this.levelRuns(this.host.level()), this.components());
+    // All of the level's calls count: counting only those since the saved tools last changed (levelRuns) let every save
+    // reset it, and it fired 0 times in 8 runs (2026-10-19).
+    const covering = readonly ? undefined : coveringComponent(this.pythonRuns.filter(r => r.level === this.host.level()), this.components());
     const coverKey = `${this.host.level()}:${covering}`;
     let coverNote = '';
     if (covering && !this.coverHinted.has(coverKey)) {
       this.coverHinted.add(coverKey);
       const c = this.host.binder.active().find(x => x.path === covering);
-      coverNote = `(${covering} already computes this: ${c?.kind === 'tool' && !c.path.startsWith('lib/') ? `call ${c.name}(args={...})` :
-        `from ${covering.replace(/\.py$/, '').replace(/\//g, '.')} import …`} instead of retyping it)`;
+      coverNote = `(${covering} already computes this: ${c?.kind === 'tool' && ((c as any).view || c.path.startsWith('observers/'))
+        ? 'it is a view, so its output is shown with each new state under HARNESS'
+        : c?.kind === 'tool' ? `call ${c.name}(args={...})` : `from ${covering.replace(/\.py$/, '').replace(/\//g, '.')} import …`} instead of retyping it)`;
       this.host.log('component_runs.jsonl', { kind: 'cover_hint', path: covering, level: this.host.level(), decision, n: this.host.actionCount() });
     }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
@@ -465,7 +492,19 @@ export class NativeRuntime {
         catch (error) { result = { ok: false, error: String(error) }; }
         if (this.host.artifacts) result = this.host.artifacts(result, c, n);
         const liveLabel = this.host.binder.label(c.path);
-        const body = `${c.name} v${c.version}${liveLabel.startsWith(`${c.name} v${c.version}`) ? liveLabel.slice(`${c.name} v${c.version}`.length) : ''} state #${n}: ${shown(result)}`;
+        this.countView(`${c.path}@${c.version}`, n, result.ok ? result.value : undefined, result.ok);
+        // An output that has not changed is still shown (a decision sees only its own head), and says so. One that has
+        // been the same on every state since the view was saved is a snapshot, not a view of the state (in the su15 runs on
+        // record: saved scripts reading fixed frames, such as history.grid(28)); after CONSTANT_VIEW_RUNS states its line
+        // keeps only its head, so it does not crowd out the views that change (loop-bound artifacts plan, A4).
+        const counts = this.viewCounts.get(`${c.path}@${c.version}`);
+        const since = counts?.changedAt;
+        const output = shown(result);
+        const constant = result.ok && counts !== undefined && counts.changes === 0 && counts.runs >= CONSTANT_VIEW_RUNS;
+        const body = `${c.name} v${c.version}${liveLabel.startsWith(`${c.name} v${c.version}`) ? liveLabel.slice(`${c.name} v${c.version}`.length) : ''} state #${n}` +
+          (constant ? ` (the same output on all ${counts.runs} states since #${since}: a snapshot, not a view of the state; "# view: off" ` +
+            `makes it a tool you call): ${output.length > 160 ? `${output.slice(0, 159)}…` : output}`
+            : `${result.ok && since !== undefined && since < n ? ` (output unchanged since #${since})` : ''}: ${output}`);
         this.outputs.set(c.path, this.host.receipt?.(body) ?? body);
         // A view that shows nothing is a saved component the agent cannot use (tc-01: a refined view returned None on
         // every state and nobody noticed); consecutive empty states are counted for the refinement trigger.
@@ -489,6 +528,38 @@ export class NativeRuntime {
     clearTimeout(timer!);
     const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => c.path));
     return [...this.outputs].filter(([path]) => live.has(path)).map(([, s]) => s.length > 900 ? s.slice(0, 900) : s).join('\n').slice(0, 2400);
+  }
+  /** The active predictor tools: they define predict(state, action) (arc_thin_components.ts). */
+  predictors() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).predictor); }
+  /**
+   * Each predictor's prediction for one action about to be played. The state is taken now, before the caller sends the
+   * action, and the predictors run in the view pool while the environment answers; they cannot act or write.
+   */
+  predict(action: { name: string; x?: number; y?: number }): Promise<Array<{ path: string; version: number; value?: unknown; error?: string }>> {
+    const due = this.predictors();
+    if (!due.length) return Promise.resolve([]);
+    const snap = this.snapshot();
+    return Promise.all(due.map(async c => {
+      try {
+        const result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} }, predict: action }, undefined, this.viewPool);
+        return result.ok ? { path: c.path, version: c.version, value: result.value }
+          : { path: c.path, version: c.version, error: [result.error, result.where].filter(Boolean).join(' · ').slice(0, 200) };
+      } catch (error) { return { path: c.path, version: c.version, error: String(error).slice(0, 200) }; }
+    }));
+  }
+  /** Each predictor's predictions for several candidate actions on the current state, one execution per predictor. */
+  predictMany(actions: Array<{ name: string; x?: number; y?: number }>):
+    Promise<Array<{ path: string; version: number; values?: Array<{ value?: unknown; error?: string }>; error?: string }>> {
+    const due = this.predictors();
+    if (!due.length || !actions.length) return Promise.resolve([]);
+    const snap = this.snapshot();
+    return Promise.all(due.map(async c => {
+      try {
+        const result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} }, predict: actions }, undefined, this.viewPool);
+        return result.ok && Array.isArray(result.value) ? { path: c.path, version: c.version, values: result.value as any[] }
+          : { path: c.path, version: c.version, error: String(result.error ?? 'no list of predictions').slice(0, 200) };
+      } catch (error) { return { path: c.path, version: c.version, error: String(error).slice(0, 200) }; }
+    }));
   }
   private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
     const agent = this.host.binder.active().find(c => c.kind === 'subagent' && c.name === args.agent);

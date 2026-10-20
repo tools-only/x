@@ -42,9 +42,10 @@ async function fixture() {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const root = mkdtempSync(join(tmpdir(), 'ch-observation-'));
   const env = { ...process.env };
+  // The reviews' consult-first call point is tested in arc_thin_loop_bound.test.ts.
   Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', ARC_THIN_OBSERVATION: 'ch',
     PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'disabled',
-    ARC_HARNESS_CRITIC: 'disabled', ARC_REFINE_EVERY: '1000000' });
+    ARC_HARNESS_CRITIC: 'disabled', ARC_REFINE_EVERY: '1000000', ARC_THIN_REVIEW_CONSULT: '0' });
   const tools = new Map<string, any>(), handlers = new Map<string, any[]>(); let active: string[] = [];
   arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,
     getActiveTools: () => active, getAllTools: () => [...tools.values()],

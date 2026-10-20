@@ -40,6 +40,28 @@ test('tool forms: script, run(args), run(args, env), older run(state, args) and 
   assert.equal(off.enabled, false);
 });
 
+test('saved code that takes no args is a view by default; predict(state, action) makes a predictor, called for one action or a list', async () => {
+  // docs/plans/2026-10-20-loop-bound-artifacts.md A2: a tool that waits to be called was called about 5 times in all su15
+  // runs; the ones agents saved took no args, so they are shown after every new state instead.
+  const view = async (path: string, source: string) => (await validatePythonComponent(path, source)).view;
+  assert.equal(await view('tools/marks.py', '# Marked cells.\ngrid[0]\n'), true);
+  assert.equal(await view('tools/k.py', '# Scaled.\ngrid[0][0] * args.get("k", 1)\n'), false, 'a script that reads args is called');
+  assert.equal(await view('tools/r.py', 'def run(args):\n    return 1\n'), true, 'run(args) that never reads args');
+  assert.equal(await view('tools/r2.py', 'def run(args):\n    return args["k"]\n'), false);
+  assert.equal(await view('tools/named.py', 'def run(x, y):\n    return x + y\n'), false);
+  assert.equal(await view('tools/acts.py', 'env.act("ACTION1")\n'), false, 'a view cannot act, so acting code stays a tool');
+  const state = { grid: [[7, 8]] };
+  const source = 'def predict(state, action):\n    return {"cells": [[action.get("x", 0), 0, state["grid"][0][0]]]}\n';
+  const spec = await validatePythonComponent('tools/p.py', source);
+  assert.deepEqual([spec.view, spec.predictor], [false, true]);
+  const one = await executeNative({ mode: 'call', path: 'tools/p.py', args: { args: {} }, predict: { name: 'ACTION6', x: 1, y: 0 },
+    sources: { 'tools/p.py': source }, state });
+  assert.deepEqual(one.value, { cells: [[1, 0, 7]] });
+  const many = await executeNative({ mode: 'call', path: 'tools/p.py', args: { args: {} }, predict: [{ name: 'ACTION1' }, { name: 'ACTION6', x: 1, y: 0 }],
+    sources: { 'tools/p.py': source }, state });
+  assert.deepEqual(many.value, [{ value: { cells: [[0, 0, 7]] } }, { value: { cells: [[1, 0, 7]] } }]);
+});
+
 test('env.act is a closed loop by replay: each new act() is requested, recorded observations are returned in order', async () => {
   const code = 'seen = []\nfor a in ("ACTION1", "ACTION4", "ACTION1"):\n    obs = env.act(a, predict={"level_changed": False})\n' +
     '    seen.append(obs["changed_cells"])\n    if obs["changed_cells"] == 0: break\nseen';

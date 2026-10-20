@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean };
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 type Entry = { path: string; version: number; hash: string; level: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
@@ -140,18 +140,21 @@ export class Binder {
   }
   /**
    * The capability index: one line per saved prompt, tool, skill and subagent (memory has its own index). Libraries
-   * and plain files are not listed.
+   * and plain files are not listed. A tool's line says where it enters the decision (a view after each new state, a
+   * predictor at each action, otherwise a call) and `usage` what it has done there (the runtime's counts, by path).
    */
-  index(level: number, failedInputs: Set<string> = new Set()): string {
+  index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map()): string {
     const order = ['prompt', 'tool', 'skill', 'subagent'];
     const listed = [...this.entries].filter(([path, e]) => !e.retired && order.includes(componentKind(path) ?? ''))
       .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
     const lines = listed.map(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;
       const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
-      const use = kind === 'tool' ? (path.startsWith('observers/') ? 'view' : `${c?.name ?? ''}(args)${c?.view ? ' · view' : ''}`)
+      const use = kind === 'tool' ? (path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
+          : c?.predictor ? 'predictor, run at each action' : `${c?.name ?? ''}(args)`)
         : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
-      return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}`;
+      return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +
+        (usage.get(path) ? ` · ${usage.get(path)}` : '');
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';

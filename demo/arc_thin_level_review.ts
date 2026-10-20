@@ -24,8 +24,8 @@ export const LESSONS_CHARS = 1200;
  * is the agent's own active prompt; refinements read it and never write it.
  */
 export const REVIEW_PATH = "prompts/review.md";
-/** Tool calls one level review may make: enough to look something up, write the file and correct memory. */
-export const LEVEL_REVIEW_CALLS = 8;
+/** Tool calls one level or stall review may make: enough to make a subagent, consult it, write the file and correct memory. */
+export const LEVEL_REVIEW_CALLS = 10;
 /** Moves listed per attempt: all of a short attempt, the first and last ones of a longer one. */
 const HEAD = 12, TAIL = 24;
 /** The same, for an attempt that did not complete the level. */
@@ -35,6 +35,8 @@ const MAX_HYPOTHESES = 10;
 export type ReviewRow = {
 	n: number; action: string; x?: number; y?: number; note?: string; changed_cells: number | null; bbox?: unknown;
 	level_changed: boolean; state: string; levels_completed: number; predict?: { text?: string; level_changed?: boolean };
+	/** An earlier move from the same board (status cells masked) and with the same action whose result differed. */
+	diverges_from?: number;
 };
 export type ReviewMemoryRow = { key?: string; hyp?: { claim?: string; status?: string; check?: string }; deleted?: boolean; at?: number; by?: string };
 export type ReviewPython = { kind?: string; level?: number; shape?: string; gist?: string };
@@ -71,11 +73,12 @@ const shown = (tokens: string[], head: number, tail: number) => tokens.length <=
  * The record for the level `completed` levels in: its rows are those played while `completed - 1` levels were complete
  * (levelOf), up to the move that completed it. `repeated`: moves that gave an earlier move's result again from the same
  * state (the ledger's repetitions); `python`: the run's python calls (component_runs.jsonl). `ongoing`: the level is the
- * one being played, not completed yet (the stall review).
+ * one being played, not completed yet (the stall review). `artifacts`: lines on the agent's saved tools and the tests
+ * pinned on the level (docs/plans/2026-10-20-loop-bound-artifacts.md A4).
  */
 export function levelRecord(input: {
 	rows: ReviewRow[]; completed: number; memoryRows?: ReviewMemoryRow[]; checks?: ClaimRow[]; repeated?: number[]; python?: ReviewPython[];
-	ongoing?: boolean;
+	ongoing?: boolean; artifacts?: string[];
 }): string {
 	const { completed, ongoing = false } = input;
 	const level = input.rows.filter((row) => levelOf(row) === completed - 1);
@@ -130,6 +133,12 @@ export function levelRecord(input: {
 	// A cell with nothing to run (comments only) has no first line: qwen with thinking off writes its reasoning that way.
 	if (again.length) lines.push(`- Python run again with the same code (numbers aside): ${again.slice(0, 3).map((family) =>
 		`${family.gist.trim() ? `\`${clip(family.gist, 60)}\`` : "cells with comments only"} ×${family.count}`).join(", ")}.`);
+	// B2: the same board and action, a different result: the board does not hold all that decides an outcome.
+	const diverged = level.filter((row) => row.diverges_from !== undefined && row.n <= last);
+	if (diverged.length) lines.push(`- ${plural(diverged.length, "move")} gave another result than an earlier move from the same board (status ` +
+		`cells aside) with the same action: ${diverged.slice(0, 6).map((row) => `#${row.n} (as #${row.diverges_from})`).join(", ")}` +
+		`${diverged.length > 6 ? ", …" : ""}; something not on the board decides those outcomes.`);
+	if (input.artifacts?.length) lines.push("- Your tools and pinned tests where they enter the decision:", ...input.artifacts.map((line) => `  - ${line}`));
 	return lines.join("\n");
 }
 
