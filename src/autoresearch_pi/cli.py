@@ -195,7 +195,9 @@ def main(argv: list[str] | None = None) -> int:
                           help="how the thinking level is sent to an OpenAI-Completions gateway (default: "
                                "ARC_PI_THINKING_FORMAT, or qwen for explicit thinking on yibu/qwen3.8-27b); "
                                "on other OpenAI-Completions routes without a format the provider's default applies")
-    arc_thin.add_argument("--input-modalities", default=None)
+    arc_thin.add_argument("--input-modalities", default=None,
+                          help="comma-separated provider input modalities (default: ARC_INPUT_MODALITIES, else text,image; "
+                               "use text for a model without image input)")
     arc_thin.add_argument("--max-output-tokens", type=int, default=None)
     arc_thin.add_argument("--ledger", action=argparse.BooleanOptionalAction, default=True,
                           help="ledger service, on by default: tracks the agent's optional idea/expect, effort per idea "

@@ -757,6 +757,13 @@ def _level_review_default(explicit: bool | None, env: dict[str, str]) -> bool:
     return env.get("ARC_THIN_LEVEL_REVIEW", "1") != "0" if explicit is None else bool(explicit)
 
 
+def _input_modalities(explicit: str | None, env: dict[str, str]) -> list[str]:
+    """What the model is declared to take: the argument, else ARC_INPUT_MODALITIES, else text and image (the default since
+    2026-10-20: Continual Harness sends a PNG of each grid it renders, and ARC_THIN_CH attaches them when the model takes
+    images). A text-only model needs input_modalities="text"."""
+    return list(resolve_input_modalities(explicit if explicit is not None else env.get("ARC_INPUT_MODALITIES") or "text,image"))
+
+
 def _level_review_prompt(levels_completed: int) -> str:
     """The native review after a level change; the level just completed is the `levels_completed`-th."""
     return LEVEL_REVIEW_PROMPT.format(level=levels_completed, next=levels_completed + 1)
@@ -921,8 +928,9 @@ def run_arc_thin_e2e(
     settings = resolve_model_settings(env)
     if max_output_tokens is not None:
         settings["max_tokens"] = max_output_tokens
-    if input_modalities is not None:
-        settings["input_modalities"] = list(resolve_input_modalities(input_modalities))
+    # The scripted smoke provider reads text only, as its scripts were written.
+    settings["input_modalities"] = _input_modalities(
+        "text" if input_modalities is None and pi_provider == "offline-arc-thin-smoke" else input_modalities, env)
     if thinking_format is not None:
         if thinking_format not in THINKING_FORMATS:
             raise ValueError(f"thinking_format must be one of {sorted(THINKING_FORMATS)}")

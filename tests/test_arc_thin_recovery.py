@@ -60,6 +60,13 @@ def test_native_default_consolidation_is_disabled_and_legacy_remains_frozen():
     assert runner._consolidation_interval('native', 25) == 25
 
 
+def test_runs_declare_image_input_unless_told_otherwise():
+    # Continual Harness sends a PNG of each grid it renders (ARC_THIN_CH attaches them when the model takes images).
+    assert runner._input_modalities(None, {}) == ['text', 'image']
+    assert runner._input_modalities(None, {'ARC_INPUT_MODALITIES': 'text'}) == ['text']
+    assert runner._input_modalities('text', {'ARC_INPUT_MODALITIES': 'text,image'}) == ['text']
+
+
 def test_recovery_keeps_consolidation_non_action_and_restarts_only_dead_pi():
     stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0)
     messages = []
