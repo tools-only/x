@@ -39,7 +39,8 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"the move contradicts it, None when the move does not bear on it. It is also run on mismatched moves; one that is True on those " +
 	"too tests nothing and is not promoted.\n" +
 	`FILE paths: prompts/rules.md (under ${RULES_CHARS} characters; one rule per line, each ending with the key of the check that ` +
-	"keeps it: '- <the rule in one sentence> (hyp.<name>)'; a goal rule only after a level change confirmed it), " +
+	"keeps it: '- <the rule in one sentence> (hyp.<name>)'; a goal rule only after a level change confirmed it, and for that level " +
+	"only: '- Level N: <how level N was won> (hyp.<name>)'; a line added after a level change names its level), " +
 	`prompts/strategy.md (under ${STRATEGY_CHARS} characters, three parts: Open questions, Next experiment, Failure modes; when no ` +
 	"step has tested how a level is won, the next experiment is a goal test), tools/<name>.py, lib/<name>.py or skills/<name>/SKILL.md " +
 	"(frontmatter name and description). A tool is a script " +

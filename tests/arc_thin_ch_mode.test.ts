@@ -180,6 +180,18 @@ test('after GAME_OVER the harness plays RESET, the next prompt starts a new atte
   } finally { await h.close(); }
 });
 
+test('active prompts open the working prompt, where CH puts its base policy, and leave the system prompt', async () => {
+  const h = await fixture();
+  try {
+    await h.decide();
+    const [saved] = await h.respond(['write', { path: 'prompts/lessons.md', content: '---\nactive: true\n---\n# Level 1\nTest the marker first.\n' }]);
+    assert.match(saved.shown, /^### TOOL RESULT\nname: write\n/);
+    const text = textOf(await h.decide());
+    assert.match(text, /^<prompt_lessons>\n# Level 1\nTest the marker first\.\n+<\/prompt_lessons>\n\n/);
+    assert.doesNotMatch(h.system(), /Test the marker first/);
+  } finally { await h.close(); }
+});
+
 test('a decision ends after its 24th turn, and the next prompt says so', async () => {
   const h = await fixture();
   try {

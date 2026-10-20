@@ -57,6 +57,27 @@ CONSOLIDATE_RECOVERY_PROMPT = (
     "Immediately call memory exactly once with only the smallest evidence-backed updates from the latest actions "
     "(include rival verdicts and a separating next_test where needed), then stop; do not call arc_action."
 )
+#: The native foundation's review after a level change (docs/plans/2026-10-20-level-review-lessons.md). The agent writes
+#: its own prompts/lessons.md, an active prompt and so in front of every later decision, from the level's record (the
+#: extension adds it below this prompt). In su15-cb-q38-1 the first level's win stood as a general rule and was the only
+#: win condition tested in the second level's first 30 actions.
+LEVEL_REVIEW_PROMPT = (
+    "LEVEL REVIEW. Level {level} is complete; this turn takes no action. Rewrite prompts/lessons.md whole, in one write "
+    "call, from the level record below and your own notes. It is shown with every decision from now on and rewritten at "
+    "the next level change, so keep it under 1,200 characters. Start it with\n---\nactive: true\n---\nthen write:\n"
+    "1. How the win was found: the experiment that showed it, after how many of the level's actions.\n"
+    "2. The win condition twice: literally, marked (level {level} only), and as a pattern a later level may share.\n"
+    "3. What moved progress.\n"
+    "4. What wasted actions: rituals, repeated reads, beliefs kept too long.\n"
+    "5. For level {next}: 2-4 candidate win conditions to test first, each with the move that would show it. "
+    "Level {level}'s pattern is one candidate, not a rule.\n"
+    "Keep what earlier levels taught only where it still helps; scope or delete memory entries that state level {level}'s "
+    "win as a general rule. Then stop."
+)
+LEVEL_REVIEW_RECOVERY_PROMPT = (
+    "RECOVER LEVEL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/lessons.md "
+    "once (the frontmatter, then the five parts in a few short lines), then stop. This turn takes no action."
+)
 DECIDE_RECOVERY_PROMPT = (
     "RECOVER ACTION. The previous turn hit the output limit. Use the persisted working set and latest native "
     "observation; do not explain. If the working set lists a saved Skill whose result has not been explicitly "
@@ -258,7 +279,30 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
                 f"{item.get('name')} v{item.get('version')}" for item in skill_rows if "history" in str(item.get("source") or "")}),
         },
         "working_set": _working_set_stats(_read_jsonl(harness / "working_set.jsonl")),
+        "level_reviews": _level_review_stats(harness),
         "ledger": _ledger_stats(harness),
+    }
+
+
+def _level_review_stats(harness: Path) -> dict[str, Any] | None:
+    """What each level review cost (the agent's requests and budget tokens in that turn) and what became of
+    prompts/lessons.md (versions saved, versions that failed to load, its size now); None when no review ran."""
+    reviews = sorted({int(row["decision"]) for row in _read_jsonl(harness / "working_set.jsonl")
+                      if row.get("level_review") and row.get("decision") is not None})
+    if not reviews:
+        return None
+    usage = [row for row in _read_jsonl(harness / "usage.jsonl") if row.get("kind") == "agent"]
+    lessons = [row for row in _read_jsonl(harness.parent / ".harness" / "components.jsonl")
+               if row.get("path") == "prompts/lessons.md" and not row.get("retired")]
+    path = harness.parent / "workspace" / "prompts" / "lessons.md"
+    return {
+        "turns": [{"decision": decision,
+                   "requests": sum(1 for row in usage if row.get("decision") == decision),
+                   "budget_tokens": sum(int(row.get("input") or 0) + int(row.get("output") or 0)
+                                        for row in usage if row.get("decision") == decision)} for decision in reviews],
+        "lessons_versions": len(lessons),
+        "lessons_failed": sum(1 for row in lessons if row.get("error")),
+        "lessons_chars": len(path.read_text(encoding="utf-8")) if path.is_file() else None,
     }
 
 
@@ -696,6 +740,7 @@ def _seed_fork(root: Path, snapshot: Path, game: str) -> dict[str, Any]:
         raise ValueError(f"snapshot trajectory has {len(trajectory)} actions, its record {meta['actions']}")
     return {"source": str(snapshot), "decision": meta["decision"], "actions": len(trajectory), "replay": replay,
             "total_used": ((trajectory[-1].get("budget") or {}).get("total_used") if trajectory else None),
+            "level_changed": bool(trajectory and trajectory[-1].get("level_changed")),
             "prefix_reported_tokens": _reported_tokens(root / "harness"),
             "prefix_budget_tokens": _budget_tokens(root / "harness")}
 
@@ -704,6 +749,26 @@ def _consolidation_interval(foundation: str, explicit: int | None) -> int:
     if explicit is not None and explicit < 0:
         raise ValueError('consolidation interval must be nonnegative')
     return (0 if foundation == 'native' else 25) if explicit is None else explicit
+
+
+def _level_review_default(explicit: bool | None, env: dict[str, str]) -> bool:
+    """Whether a review follows each level change: on unless turned off, by the argument or (for pilots, which pass only
+    environment variables) ARC_THIN_LEVEL_REVIEW=0. Native runs had it off from 2026-10-12 (decision D2) to 2026-10-20."""
+    return env.get("ARC_THIN_LEVEL_REVIEW", "1") != "0" if explicit is None else bool(explicit)
+
+
+def _level_review_prompt(levels_completed: int) -> str:
+    """The native review after a level change; the level just completed is the `levels_completed`-th."""
+    return LEVEL_REVIEW_PROMPT.format(level=levels_completed, next=levels_completed + 1)
+
+
+def _review_recovery(message: str) -> str | None:
+    """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision."""
+    if message.startswith(("LEVEL REVIEW", "RECOVER LEVEL REVIEW")):
+        return LEVEL_REVIEW_RECOVERY_PROMPT
+    if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT}:
+        return CONSOLIDATE_RECOVERY_PROMPT
+    return None
 
 
 def _reconciled_action(before: int, health: dict | None, state: dict | None, trajectory_count: int) -> bool:
@@ -749,7 +814,7 @@ def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *
             if committed:
                 return settled
             summary['idle_recoveries'] += 1
-            message = CONSOLIDATE_RECOVERY_PROMPT if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT} else (
+            message = _review_recovery(message) or (
                        'RECOVER TURN. The previous request stopped; the environment confirms no action was committed. '
                        'Continue the unfinished investigation using available tools and the current observation, '
                        'then submit one arc_action. Do not repeat completed writes or earlier actions.')
@@ -819,17 +884,19 @@ def run_arc_thin_e2e(
     docs/plans/2026-10-10-self-harness-priority-plan.md; off by default. ``continuity="session"`` keeps the
     agent's last ``continuity_decisions`` decisions from Pi's session in view (without reasoning), and recoveries
     keep that session instead of starting a new one; ``"rebuild"`` is the original per-decision working set.
-    ``review_at_level_change=False`` drops the forced review turn after a level change (the 25-action and GAME_OVER
-    reviews remain); the agent's hypothesis checks then show on the new level's moves without a review turn
-    (docs/plans/2026-10-12-falsifiable-self-harness-plan.md)."""
+    ``review_at_level_change`` (default on; None reads ARC_THIN_LEVEL_REVIEW, where 0 turns it off) makes the turn after a
+    level change a review without actions: in the native foundation the level review, in which the agent rewrites its
+    prompts/lessons.md from the level's record (LEVEL_REVIEW_PROMPT, docs/plans/2026-10-20-level-review-lessons.md), in
+    the legacy one the consolidation. Off, the GAME_OVER review (and the legacy 25-action one) remains; the agent's
+    hypothesis checks then show on the new level's moves without a review turn
+    (docs/plans/2026-10-12-falsifiable-self-harness-plan.md). A fork from the snapshot of a level-completing decision
+    starts with that level's review."""
     if variant not in {"treatment", "control"}:
         raise ValueError("variant must be treatment or control")
     if foundation not in {"legacy", "native"}:
         raise ValueError("foundation must be legacy or native")
     if foundation == "native":
         continuity = "session"
-    if review_at_level_change is None:
-        review_at_level_change = foundation == "legacy"
     consolidate_after_actions = _consolidation_interval(foundation, consolidate_after_actions)
     if decision_timeout_seconds < 0 or turn_idle_timeout_seconds < 0:
         raise ValueError('request fault timeouts must be nonnegative; 0 disables them')
@@ -850,6 +917,7 @@ def run_arc_thin_e2e(
 
     env = load_project_dotenv(PROJECT_ROOT)
     env.pop("PI_AUTORESEARCH_OWNS_TASK", None)  # never let PiKernel.close seal a legacy task scope
+    review_at_level_change = _level_review_default(review_at_level_change, env)
     settings = resolve_model_settings(env)
     if max_output_tokens is not None:
         settings["max_tokens"] = max_output_tokens
@@ -877,7 +945,7 @@ def run_arc_thin_e2e(
         "provider": pi_provider, "model": model, "thinking": thinking or "provider-default",
         "thinking_format": settings.get("thinking_format"), "thinking_reaches_provider": thinking_sent,
         "passed": False, "stop_reason": None,
-        "decisions": 0, "consolidations": 0, "no_action_decisions": 0,
+        "decisions": 0, "consolidations": 0, "level_reviews": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0, "environment_restarts": [],
         "provider_errors": 0,
@@ -1069,7 +1137,8 @@ def run_arc_thin_e2e(
         stage = "loop"
         bridge_after = 0
         consolidated_at = 0
-        level_changed_since_consolidation = False
+        # A fork from the snapshot of a level-completing decision starts with the review the source run had next.
+        level_changed_since_consolidation = bool(fork and fork["level_changed"])
         no_action_streak = 0
         environment_streak = 0
         provider_errors: list[str] = []
@@ -1156,7 +1225,7 @@ def run_arc_thin_e2e(
             if continuity != "session":
                 kernel.new_session()
             summary["length_recoveries"] += 1
-            recovery = CONSOLIDATE_RECOVERY_PROMPT if message == CONSOLIDATE_PROMPT else (
+            recovery = _review_recovery(message) or (
                 'RECOVER ACTION. The previous reply reached the provider output limit. Continue the unfinished '
                 'step using the available tools and current observation; reuse suitable components. '
                 'Do not repeat completed operations. Finish with an acting call (arc_action or Python env.act).' if foundation == 'native' else DECIDE_RECOVERY_PROMPT)
@@ -1296,8 +1365,15 @@ def run_arc_thin_e2e(
             errors_before = len(extension_errors)
             try:
                 if consolidate:
-                    events = recover_length(CONSOLIDATE_PROMPT, safe_turn(CONSOLIDATE_PROMPT))
+                    # After a level change the native foundation reviews the level (prompts/lessons.md); otherwise the
+                    # consolidation prompt, as before.
+                    review = (_level_review_prompt(int(state.get("levels_completed") or 0))
+                              if foundation == "native" and level_changed_since_consolidation and review_at_level_change
+                              else CONSOLIDATE_PROMPT)
+                    events = recover_length(review, safe_turn(review))
                     summary["consolidations"] += 1
+                    if review != CONSOLIDATE_PROMPT:
+                        summary["level_reviews"] += 1
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
                 else:

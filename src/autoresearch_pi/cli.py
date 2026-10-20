@@ -211,7 +211,8 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--continuity-decisions", type=int, default=8, metavar="N",
                           help="legacy session window size; native retains all Pi history")
     arc_thin.add_argument("--level-change-review", action=argparse.BooleanOptionalAction, default=None,
-                          help="force a review after a level change (native default off, legacy default on)")
+                          help="a review after each level change (default on, or ARC_THIN_LEVEL_REVIEW; native: the level "
+                               "review that rewrites prompts/lessons.md)")
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)

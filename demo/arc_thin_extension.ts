@@ -73,6 +73,7 @@ import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClai
 	CONTEST_MIN_DECIDED, MOVE_FORM, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged, type Gaps } from "./arc_thin_claims.ts";
 import { MoveFacts, REPEAT_ATTEMPTS, attemptLine, attempts, classify, coverage, coverageText, failedUnderOneModel, kindText, modelChanges, moveKinds,
 	moveText, parseMove, rareKinds, repeatEvent, type Attempt, type Move } from "./arc_thin_coverage.ts";
+import { LESSONS_CHARS, LESSONS_PATH, LEVEL_REVIEW_CALLS, levelRecord } from "./arc_thin_level_review.ts";
 
 /**
  * A hypothesis check as the native memory tool describes it where the agent writes one: the keys a move carries (strict:
@@ -520,6 +521,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	type Run = {
 		consolidating: boolean; forceAction: boolean; assistantMessages: number; toolCalls: number; arcSeenInMessage: number;
+		/** A review after a level change (the runner's "LEVEL REVIEW" prompt): the level record, at most LEVEL_REVIEW_CALLS calls. */
+		levelReview: boolean;
 		/** Native decisions: calls that look things up or compute, and calls that record (see gate). */
 		budgetNote?: string;
 		endBatchAt: number; actionDone: boolean;
@@ -545,7 +548,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		actedAt?: number;
 	};
 	const freshRun = (): Run => ({
-		consolidating: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
+		consolidating: false, levelReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1, endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0,
 		toolRecords: [], lastHadCalls: false, calls: new Map(), callStarts: new Map(),
@@ -615,8 +618,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** `shown`: actions whose receipts are already in the history in view (native mode); they are not listed again. */
 	function recentText(shown?: Set<number>): string {
 		if (trajectory.length === 0) return shown ? "" : "RECENT ACTIONS: none yet.";
-		// A consolidation turn reviews every action since the previous one, not only the last few.
+		// A consolidation turn reviews every action since the previous one, not only the last few; a level review, the level.
 		if (run.consolidating) {
+			if (run.levelReview) return levelReviewText();
 			const rows = trajectory.slice(run.reviewFrom).slice(-REVIEW_ACTIONS);
 			return [`ACTIONS SINCE YOUR LAST REVIEW (#${rows[0]?.n ?? trajectory.length}–#${trajectory.length}, ${rows.length} of ${trajectory.length}):`,
 				...rows.map(recentLine)].join("\n");
@@ -625,6 +629,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (shown && !recent.length) return "";
 		return [shown ? `RECENT ACTIONS not in the conversation above (${recent.length} of the last ${RECENT_ACTIONS}; ${trajectory.length} in total):`
 			: `RECENT ACTIONS (last ${recent.length} of ${trajectory.length}):`, ...recent.map(recentLine)].join("\n");
+	}
+
+	/**
+	 * What a level review starts from (arc_thin_level_review.ts): the level just completed, by attempt, with its hypotheses,
+	 * the moves that gave an earlier move's result again (the ledger's repetitions, status cells masked) and python run
+	 * again with the same code.
+	 */
+	function levelReviewText(): string {
+		let repeated: number[] = [];
+		try { repeated = buildLedger(trajectory, [], grids).repeats.map((repeat) => repeat.n); }
+		catch (error) { logError("review:repeats", error); }
+		return levelRecord({ rows: trajectory, completed: currentLevel(), memoryRows: readRows("memory.jsonl"), checks: claimRows,
+			repeated, python: readRows("component_runs.jsonl") });
 	}
 
 	/**
@@ -753,7 +770,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const body = sections.map(([, value]) => value).join("\n\n");
 		try {
 			append("working_set.jsonl", {
-				decision, consolidating: run.consolidating, actions: trajectory.length, observation_delivery: observationMode,
+				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string]].map(([name, value]) => [name, value.length])),
 				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body,
 			});
@@ -1237,8 +1254,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const refiner = readRows("refiner.jsonl").filter((row) => row.kind === "start");
 		refineNotes = refiner.map((row) => ({ at: Number(row.at) || 0, level: 0, triggers: row.triggers ?? [], lines: [], dropped: [] }));
 		lastRefineAt = Math.max(0, ...refineNotes.map((note) => note.at));
-		// After a restart, events before the restart are not refined again.
-		refinedThrough = trajectory.length;
+		// After a restart, events before the restart are not refined again, except a level change that no refinement has
+		// started since: a fork from a level's snapshot starts right after the decision that completed the level.
+		const lastLevel = trajectory.findLast((row) => row.level_changed);
+		refinedThrough = lastLevel && !refiner.some((row) => Number(row.at) >= lastLevel.n) ? lastLevel.n - 1 : trajectory.length;
 		// When the agent was told of each edit, and the next experiment still pinned when the run stopped (P3).
 		const rows = readRows("refiner.jsonl");
 		toldAt.clear();
@@ -1878,6 +1897,30 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch { return ""; }
 	}
 
+	/** The body of the agent's prompts/lessons.md (its review of the last completed level), for refinements to read. */
+	function lessonsText(): string {
+		if (!workspace) return "";
+		try { return workspace.read(LESSONS_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 2 * LESSONS_CHARS); }
+		catch { return ""; }
+	}
+
+	/**
+	 * A refinement started by a level change writes each rule line it adds to the rules prompt for the level that showed it
+	 * ("- Level 1: …"). In su15-cb-q38-1 (2026-10-19) the refinement at the first level change added "Level completes when
+	 * the blue square reaches/overlaps the red-circle region" as a rule for every level; it was the only win condition the
+	 * agent tested in the second level's first 30 actions. Why such an answer goes back once, or undefined.
+	 */
+	function unscopedRules(edit: ReturnType<typeof parseRefinerReply>, triggers: string[]): string | undefined {
+		if (edit.kind !== "file" || edit.path !== RULES_PATH || !triggers.some((trigger) => /^level \d+ reached at #\d+/.test(trigger))) return undefined;
+		const before = new Set(rulesText().split(/\r?\n/).map((line) => line.trim()));
+		const bare = edit.content.split(/\r?\n/).map((line) => line.trim())
+			.filter((line) => /^-\s+\S/.test(line) && !before.has(line) && !/\blevels?\s*\d/i.test(line));
+		if (!bare.length) return undefined;
+		return `each rule line added after a level change names the level that showed it, as "- Level ${currentLevel()}: <the rule> (hyp.<name>)": ` +
+			`a later level is not won or played the same way until its own moves show it; ${bare.length === 1 ? "this line does" : `${bare.length} lines do`} ` +
+			`not: "${bare[0].length > 120 ? `${bare[0].slice(0, 119)}…` : bare[0]}"`;
+	}
+
 	/** "14 actions (1 RESET, GAME_OVER at #92), no level change" for the recorded actions `rows`. */
 	function sinceText(rows: ActionRow[]): string {
 		if (!rows.length) return "no actions";
@@ -2024,6 +2067,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			...(ledger ? [ledger] : []),
 			`CURRENT ${STRATEGY_PATH}${strategy ? ` (v${strategy.version ?? "?"})` : " (not written yet)"}:\n${strategy?.text || "(empty)"}`,
 			`CURRENT ${RULES_PATH}${rulesText() ? ` (v${binder!.versionMap()[RULES_PATH] ?? "?"})` : " (not written yet)"}:\n${rulesText() || "(empty)"}`,
+			...((lessons) => lessons ? [`THE AGENT'S ${LESSONS_PATH} (its own review of the last level it completed; refinements do not edit it):\n${lessons}`] : [])(lessonsText()),
 			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
 			`SAVED TOOLS:\n${saved.map((c) => `--- ${c.path} v${c.version}${c.view ? " (view)" : ""} ${refinedPaths.has(c.path) ? "REFINED" : "AGENT'S"}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
 			...(samples.length ? [`REPEATED PYTHON (latest calls):\n${samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n")}`] : []),
@@ -2058,7 +2102,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// was, and was recorded and announced as an edit). Otherwise it goes back once with the reason, and the second
 		// answer is used as it comes.
 		const coverageEvent = COVERAGE && /^(rival|contested|repeat):/.test(promotionId ?? "");
-		const problem = (coverageEvent && edit.kind === "hypothesis" ? moveProblem(promotionId!, edit.predicts) : undefined) ?? unchangedFile(edit);
+		const problem = (coverageEvent && edit.kind === "hypothesis" ? moveProblem(promotionId!, edit.predicts) : undefined) ?? unchangedFile(edit)
+			?? unscopedRules(edit, triggers);
 		if (problem) {
 			append("refiner.jsonl", { kind: "returned", at: trajectory.length, decision, event: promotionId, why: problem });
 			const again = `${input}\n\nYOUR REPLY WAS:\n${answer.trim()}\n\nNOT APPLIED: ${problem}. Reply again with the whole edit in the same form.`;
@@ -2145,6 +2190,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				return;
 			}
 			if (edit.kind !== "file") { append("refiner.jsonl", { kind: edit.kind, ...base, why: edit.why }); return; }
+			// prompts/lessons.md is the agent's own review of its levels: refinements read it and never write it.
+			if (edit.path === LESSONS_PATH) {
+				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `${LESSONS_PATH} is the agent's level review` });
+				return;
+			}
 			// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
 			// tools/probe.py into an unrelated view). It may rewrite the strategy, the rules prompt and files that refinements wrote.
 			if (!ownedByRefinement(edit.path)) {
@@ -2323,6 +2373,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean; skip?: boolean } | undefined {
 		run.toolCalls += 1;
+		// A level review is bounded like a decision: its last call says so, and a call after it ends the review.
+		if (native && run.levelReview) {
+			if (run.toolCalls > LEVEL_REVIEW_CALLS) return { reason: `this review used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
+			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = `(This was tool call ${LEVEL_REVIEW_CALLS} of ${LEVEL_REVIEW_CALLS} for this review: finish now.)`;
+		}
 		const nativeCap = native && !run.consolidating && !diagnosticBudget;
 		if (!native && run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
 			return { reason: `hard tool-call limit (${diagnosticBudget || HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
@@ -3300,7 +3355,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       nativeRuntime!.noteSave(path, receipt);
       if (toolsReady) refreshSkillSurface();
       const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
-      return receipt ? receipt + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
+      // The level review asks for a short file: it is sent with every decision.
+      const lessons = path === LESSONS_PATH && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path).length : 0;
+      return receipt ? receipt + (lessons > LESSONS_CHARS ? `\nnote: ${LESSONS_PATH} is ${lessons} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
+        + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
     };
   }
 	if (ledgerOn) loadLedgerStores();
@@ -3321,7 +3379,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (refinerActive()) { try { await restoreBrokenViews(); } catch (error) { logError("view:restore", error); } }
     if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
 		const prompt = String(event.prompt ?? "").trimStart();
-		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION)\b/.test(prompt);
+		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
 		if (chView && !run.consolidating) {
@@ -3345,8 +3403,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.endedAt = 0;
 			append('continuations.jsonl', {decision, n: trajectory.length, reason: 'provider length', tool_calls: run.toolCalls});
 		}
-		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…".
-		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(prompt);
+		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…"; after a level change
+		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…".
+		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b)/.test(prompt);
+		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		// A tool-only decision is already complete from the runner's perspective.
 		// The next turn must be an action turn; leaving memory/skill exposed here
 		// invites the model to repeat the same measurement and consumes another full
