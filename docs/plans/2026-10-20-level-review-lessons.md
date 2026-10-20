@@ -1,7 +1,8 @@
 # Level review and prompts/lessons.md, 2026-10-20
 
-Date: 2026-10-20 (Asia/Shanghai). Status: implemented; evaluated on four matched-prefix forks (results at the end): the
-claim fails for qwen3.8-27b, gpt-6.1-sol kept its source's four levels in the same budget. Branch
+Date: 2026-10-20 (Asia/Shanghai). Status: kept on by default (the user's decision, 2026-10-20). Evaluated on four
+matched-prefix forks (results at the end): the claim fails for qwen3.8-27b, gpt-6.1-sol kept its source's four levels in
+the same budget. Branch
 `claude/zen-dewdney-513a92`, cut from `claude/r04-20261017` at `fd306b9c` and folded back into it (fast-forward to
 `1a1a763d`; another session then merged it into its Continual Harness alignment, `4985fedb`; the dispute fix found by the
 evaluation is `9e6a9a45` on r04).
@@ -255,12 +256,15 @@ on r04's current default is untested; two qwen forks ended on environment or gat
 
 ## Decision
 
-The pre-registered rule says the claim fails for qwen. The change stays on by default on r04 pending the user's choice:
-keep it (it does what the five points asked, costs about 45k per level, keeps the literal win out of the rules, and
-gpt-6.1-sol writes lessons that match the game), switch it off (`ARC_THIN_LEVEL_REVIEW=0` in the pilots), or revise one
-factor. A revision would target the transition that broke, candidates → goal tests, not more review content; and the size
-note could go (it costs qwen up to four rewrites). Next falsifiable check if kept: on r04's current default, a qwen fork
-from the same snapshots predicts a level change for at least one listed candidate within level 2's first 30 actions.
+The pre-registered rule says the claim fails for qwen. Asked to keep it, switch it off or revise one factor, the user
+chose to keep it on ("keep it on", 2026-10-20): it does what the five points asked, costs about 45k per level, keeps the
+literal win out of the rules, and gpt-6.1-sol writes lessons that match the game. It stays the native default
+(`ARC_THIN_LEVEL_REVIEW=0` still turns it off), with its qwen claim unsupported and its net benefit not shown.
+
+Left as they are with this decision: the size note (it costs qwen up to four rewrites) and the transition that broke,
+candidates → goal tests; a revision would change one of them. Next falsifiable check, when a run is authorized: on r04's
+current default, a qwen fork from the same snapshots predicts a level change for at least one listed candidate within
+level 2's first 30 actions.
 
 ## Related backlog
 
