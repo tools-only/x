@@ -21,10 +21,9 @@ sys.modules["agents"] = package
 sys.path.insert(0, str(ch_root))
 
 from arcengine import FrameData, GameState  # noqa: E402
-from agents.templates.continual_harness.context import (  # noqa: E402
-    build_observation_section, build_working_prompt, format_tool_results_markdown)
+from agents.templates.continual_harness.context import build_observation_section, build_working_prompt  # noqa: E402
 from agents.templates.continual_harness.helpers import grid_to_image  # noqa: E402
-from agents.templates.continual_harness.models import PendingActionObservation, ToolCallRecord  # noqa: E402
+from agents.templates.continual_harness.models import PendingActionObservation  # noqa: E402
 from agents.templates.continual_harness.trajectory import render_recent_history, summarize_grid_transitions  # noqa: E402
 from agents.templates.continual_harness_agent import _compute_grid_delta  # noqa: E402
 
@@ -91,19 +90,6 @@ history = [record(0, "RESET", "auto_reset", 0, state="NOT_PLAYED"),
 history_text = render_recent_history(history, max_chars=12000)
 history_short = render_recent_history(history, max_chars=150)
 
-# TOOL RESULTS: recap, a repeat, lifted code and text, ensure_ascii.
-long_code = "for y, row in enumerate(grid):\n    print(y, row)\nresult = 1"
-records = [ToolCallRecord(name="python", args={"code": long_code}, result={"stdout": "0 [0, 0]\n1 [0, 3]"}),
-           ToolCallRecord(name="memory", args={"op": "set", "key": "goal", "text": "reach the → corner", "reasoning": "x"},
-                          result={"stdout": "memory: set goal"}),
-           ToolCallRecord(name="python", args={"code": long_code}, result={"stdout": "0 [0, 0]\n1 [0, 3]"}),
-           ToolCallRecord(name="arc_action", args={"reasoning": "try", "actions": [{"name": "RESET"}]},
-                          result={"success": False, "executed": 0, "available_actions": ["ACTION1", "ACTION2"],
-                                  "message": "take_actions executed no actions; send a non-empty valid actions list using the currently available actions"}),
-           ToolCallRecord(name="read", args={"path": "data/memory.md"}, error="FileNotFoundError: data/memory.md " + "x" * 200)]
-tool_inputs = [{"name": r.name, "args": r.args, **({"result": r.result} if r.result is not None else {}),
-                **({"error": r.error} if r.error else {})} for r in records]
-
 # CURRENT STATE, as build_working_prompt prints it.
 latest = frame("NOT_FINISHED", 2, [base, moved], actions=[0, 1, 2, 6, 7])
 prompt = build_working_prompt(latest, action_counter=7, recent_tool_results=[], history_block="", memory_overview="",
@@ -119,14 +105,10 @@ out_path.write_text(json.dumps({
                             "score": r["score"], "state": r["state"], "stateAfter": r["state_after"], "scoreDelta": r["score_delta"],
                             "gridChange": r["grid_change"], "gridDelta": r["grid_delta"]} for r in history],
                 "text": history_text, "short": history_short},
-    "tool_results": {"inputs": tool_inputs, "text": format_tool_results_markdown(records),
-                     "two": format_tool_results_markdown(records[:2])},
     "state": {"grid": moved, "actions": ["RESET", "ACTION1", "ACTION2", "ACTION6", "ACTION7"], "levels": 2, "text": state_block},
     "transitions": {"pre": flash, "post": flash2, "change": summarize_grid_transitions(flash, flash2),
                     "delta": _compute_grid_delta(flash, flash2)},
     "image": {"grid": grid(0, {(0, 0): 15, (1, 2): 9, (3, 5): 4}), "size": list(image.size),
               "rgba": base64.b64encode(image.tobytes()).decode("ascii")},
-    "dumps": [{"value": v, "plain": json.dumps(v, default=str), "indent": json.dumps(v, default=str, indent=2)}
-              for v in [{"a": [1, 2, {"b": None}], "c": "→é\n\"q\"", "d": True}, [], {}, "x\u007fy", [1.5, -2]]],
 }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 print("wrote", out_path)

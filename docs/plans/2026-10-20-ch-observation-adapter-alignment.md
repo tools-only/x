@@ -1,6 +1,44 @@
 # Align the native observation and action adapter with Continual Harness (2026-10-20)
 
-## Request and claim
+Status: second version, the same day. The first version (e79898f9, below "First version") ported CH's whole decision
+loop; the user then limited the alignment to CH's game observation, its predefined ARC tools and its ARC information,
+with this harness's own loop kept ("Scope narrowed", next section). The tables below the first-version heading describe
+e79898f9 and are kept as the record of that version and its run.
+
+## Scope narrowed (second version)
+
+User, 2026-10-20, after su15-ch-q38-1: "the current version violates the user's objectives. I only want to align the
+observation and pre-defined tools, information of CH, the core and main mechanism should always be our proposed
+meta-harness", and in the same message, on the run's repeated clicks: "Duplicate-action blocking is neither a
+fundamental fix nor sufficiently general" (the answer is the stall review, `docs/plans/2026-10-20-stall-review.md`).
+The user had also questioned copying CH's validation quirks (no repair of a malformed list).
+
+| Part | Second version |
+|---|---|
+| Game observation (CH) | Each decision shows CH's `## RECENT HISTORY`, `# Step: n`, `## OBSERVATIONS SINCE LAST QUERY` (key frames under the 4-grid budget) and `## CURRENT STATE` (state, score, the offered actions with their meanings, the grid as a hex map), with a PNG of each grid rendered as text, all as ported in `demo/arc_thin_ch_view.ts`. They take the place of this harness's current-state block inside its own working set: memory and rivals, rule checks, the python session, recent actions not in the conversation, refiner notices, resources, then the capability index and view outputs. Observations are delivered once the model has answered an action decision's prompt; a provider error or a review turn shows them again at the next decision. |
+| ARC action tool (CH contract) | `arc_action` takes CH's `reasoning` + `actions` [{name, x, y}] with CH's description and field texts: checked once and cut at the first entry that is not offered, each step rechecked, the rest skipped at WIN, GAME_OVER or a level change. This harness's parts of it: `predict` per step (scored; a missed one ends the list, as `then` did), `idea` for the ledger, RESET as the agent's own action when the state offers it (listed first in CURRENT STATE with CH's meaning), one arc_action per decision, and a list that plays nothing refused with the reason (entry, reason, raw entry, what is offered) while the decision goes on. |
+| Repair of malformed calls | Before the schema check the call is read as this harness's adapter reads one: a list sent as JSON text is parsed, a single entry or bare names become a list, `action` reads as `name`, the earlier `{action, x, y, predict, then}` shape becomes a list, protocol text after a name is cut, coordinates are clamped as CH clamps them, a prediction beside the list goes to its first step, a missing `reasoning` reads the note or "". In su15-ch-q38-1 12 of 45 lists played nothing, 8 of them JSON strings. `env.act` reads a list's entries the same way and takes one entry given as a dict. |
+| python (CH information) | `state["observations"]` (each action this decision's prompt shows, whole animation) and `state["recent_trajectory"]` (last 80 step records); `env.act([...])` returns CH's `{executed_count, last_frame, terminal, level_changed, state, score, available_actions}`. |
+| ARC information (system prompt) | `demo/prompts/arc_thin_native_ch_system.md` is this harness's native template (the same text as `arc_thin_native_system.md`, worded for the list form) plus an `## ARC` section from CH's prompt: the game is new and its levels share the same rules, a level may have a hard action cap; how the observation is shown; the coordinate system; the action key with RESET; the arc_action and env.act list contract. CH's soft guideline (two calls per response, act after one or two analysis steps) and its GAME SETTING directives are not carried. |
+| Back to this harness | The transcript of earlier decisions (`freezeHistory`), active prompts as system-prompt sections taken once per decision, the 16-call decision cap, the loop guard, receipts with prediction scores, RESOURCES with the P2 attempt line, the runner's notes and reviews, the refiner. Removed with CH's loop: TOOL RESULTS FROM PREVIOUS TURN, PREVIOUS CONVERSATION STOPPED WITHOUT ACTION, TURN, the 24-turn cap, CH records for every tool result, the harness's RESET after GAME_OVER, `turnBlock`/`formatToolResults`/`pyDumps` and their goldens. |
+| No-effect refusal | Stays off with `ARC_THIN_CH` (the user: blocking repeats is not the fix); a run that makes no progress gets a stall review. `ARC_THIN_CH=0` keeps the earlier default (on). |
+
+RESET is the one point where CH's tool contract and this harness's mechanism conflict: CH hides it and resets after
+GAME_OVER itself; this harness offers it to the agent. It is the agent's again (deferred item A: RESET, budgets and frame
+sampling are this project's policy unless the SDK requires them). Reversible: hiding it needs only `withReset: false`.
+
+Checks of the second version (node 22, this machine, 2026-10-20): `tests/arc_thin_ch_view.test.ts` (goldens from CH's
+own code, regenerated by `tools/ch_golden.py` without the tool-results parts, plus RESET listed and accepted only when
+offered); `tests/arc_thin_ch_mode.test.ts` rewritten for this version: the head (this harness's working set with CH's
+blocks, one PNG, no CH loop blocks), the system prompt, list play and its cut and level-change stop, the earlier
+decision kept in the conversation, the repaired call shapes, the missed-prediction stop, a list that plays nothing,
+GAME_OVER with the agent's own RESET and the attempt in the history, active prompts as system sections, delivery after a
+provider error and a review; `tests/arc_thin_components.test.ts` (env.act shapes). Reachability, adoption and benefit
+of this version: unverified (no run yet).
+
+## First version (e79898f9, superseded)
+
+### Request and claim
 
 User, 2026-10-20: "Practically speaking, CH's observation and adapter design perform better. Therefore, please first
 align our observation and adapter settings with CH. align with every detail."
@@ -21,7 +59,7 @@ meanings (the C+B run confirmed that ACTION7 is undo only at #184), RESETs at wi
 su15-q38-1 of 2026-10-20), and pays for a growing transcript (105k–156k tokens; 75% of budget tokens went to provider
 cache misses on it).
 
-## What changes (CH detail → ours)
+### What changes (CH detail → ours)
 
 | CH | Ours with `ARC_THIN_CH` |
 |---|---|
@@ -44,7 +82,7 @@ cache misses on it).
 | Sandbox state: `observations` (each action since the query, whole animation), `recent_trajectory` (last 80 records), `available_actions` without RESET | Python state adds `observations` and `recent_trajectory`; `available_actions` without RESET. |
 | System instruction: INPUT FORMAT, COORDINATE SYSTEM, action key, short lists, GAME SETTING, soft guideline | `prompts/arc_thin_native_ch_system.md`: CH's sections, our capability text, worded for our tools. |
 
-## Deviations kept on purpose (open to the user)
+### Deviations kept on purpose (open to the user)
 
 - **Tool names** stay ours (`arc_action`, `python`, `memory`; CH: `take_actions`, `run_skill`, `process_memory`).
 - **Python grids stay ints**, not hex strings: checks, views and the python session use ints. The system prompt says a
@@ -65,7 +103,13 @@ cache misses on it).
   [memory, python that acts] (memory finishing first, without arc_action) gets one more turn whose calls are refused and
   not carried. CH ends after the response.
 
-## Evidence
+### Evidence
+
+- Run of the first version: su15-ch-q38-1 (`runs/arc-ch-20261020`, worktrees/r04-ch at 425536d1, qwen3.8-27b on yibu,
+  thinking off, images, 6M budget-token cap): 53 actions, 0 levels, stopped `environment_outcome_unknown` after four
+  90 s SDK step timeouts; 1.62M budget tokens, 30.5k per action (su15-cb-q38-1 on the earlier path: 15.0k); 45 action
+  lists, 12 of which played nothing (8 sent as JSON text, refused as "actions must be a list"); the same click 25 times
+  (2 cells changed each) into GAME_OVER at #34 with the no-effect refusal off. These led to the second version.
 
 - Functional (this machine, node 22, 2026-10-20):
   - `tests/arc_thin_ch_view.test.ts` compares the port with CH's own renderers. Goldens in

@@ -86,7 +86,12 @@ test('env.act with a list plays it as one batch, as Continual Harness skills cal
   const done = await run([one, { call: second.need_act, observation: { grid: ['1'], state: 'NOT_FINISHED', levels_completed: 1 } }]);
   assert.deepEqual((done.value as any).value, [2, true, false, 1, [[[1]]]], 'the third entry is not played after the level changed');
   const none = await executeNative({ mode: 'exec', code: 'env.act([{"x": 1}])', sources: {}, state: {}, files: {}, allow_act: true, acts: [] });
-  assert.match(String((none.value as any)?.stopped), /take_actions executed no actions/);
+  assert.match(String((none.value as any)?.stopped), /entry 1 names no action: \{'x': 1\}/);
+  // Read as arc_action reads a list: one entry as a dict, a bare name, 'action' for 'name'.
+  for (const shape of ['{"name": "ACTION2"}', '["ACTION2"]', '[{"action": "action2"}]']) {
+    const read = await executeNative({ mode: 'exec', code: `env.act(${shape})`, sources: {}, state: {}, files: {}, allow_act: true, acts: [] });
+    assert.deepEqual(read.need_act, { action: 'ACTION2', batch: [1, 1] }, shape);
+  }
 });
 
 // The python session protocol: a call receives the last checkpoint and reports the next one.

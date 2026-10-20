@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
-import { buildObservationSection, computeGridDelta, currentStateBlock, formatToolResults, gridPng, pyDumps, renderRecentHistory,
+import { buildObservationSection, computeGridDelta, currentStateBlock, gridPng, renderRecentHistory,
   summarizeGridTransitions, validateActionSequence } from '../demo/arc_thin_ch_view.ts';
 
 const golden = JSON.parse(readFileSync(new URL('./fixtures/ch_golden.json', import.meta.url), 'utf8'));
@@ -25,18 +25,11 @@ test('RECENT HISTORY matches CH: levels cleared, attempt summaries, run-length l
   assert.equal(renderRecentHistory(golden.history.inputs, 150), golden.history.short);
 });
 
-test('TOOL RESULTS FROM PREVIOUS TURN matches CH: recap, identical-output pointer, lifted code, Python JSON', () => {
-  assert.equal(formatToolResults(golden.tool_results.inputs), golden.tool_results.text);
-  assert.equal(formatToolResults(golden.tool_results.inputs.slice(0, 2)), golden.tool_results.two);
-  for (const { value, plain, indent } of golden.dumps) {
-    assert.equal(pyDumps(value), plain);
-    assert.equal(pyDumps(value, { indent: 2 }), indent);
-  }
-});
-
-test('CURRENT STATE matches CH: RESET never listed, ACTION6 asks for x and y, the grid as a hex map', () => {
+test('CURRENT STATE matches CH: RESET not listed, ACTION6 asks for x and y, the grid as a hex map; this harness lists RESET first', () => {
   const { grid, actions, levels, text } = golden.state;
   assert.equal(currentStateBlock('NOT_FINISHED', levels, actions, grid), text);
+  const own = currentStateBlock('NOT_FINISHED', levels, actions, grid, true);
+  assert.equal(own, text.replace('available actions: \n', `available actions: \n  RESET: Start or restart a game. Must be called first when NOT_PLAYED or after GAME_OVER to play again.\n`));
 });
 
 test('step records keep CH grid_change and grid_delta; the PNG has CH palette pixels', () => {
@@ -51,12 +44,15 @@ test('step records keep CH grid_change and grid_delta; the PNG has CH palette pi
   assert.equal(rgba.toString('base64'), golden.image.rgba);
 });
 
-test('an action list is truncated at its first bad entry; RESET is never an agent action; ACTION6 needs x and y', () => {
+test('an action list is truncated at its first bad entry; RESET is an agent action only when allowed; ACTION6 needs x and y', () => {
   const offered = ['RESET', 'ACTION1', 'ACTION6'];
   const ok = validateActionSequence([{ name: 'action1' }, { name: 'ACTION6', x: 70, y: '3' }, { name: 'RESET' }, { name: 'ACTION1' }], offered);
   assert.deepEqual(ok.steps.map(({ action, x, y, position }) => ({ action, x, y, position })),
     [{ action: 'ACTION1', x: undefined, y: undefined, position: 1 }, { action: 'ACTION6', x: 63, y: 3, position: 2 }]);
   assert.deepEqual(ok.rejected.map(({ position, reason }) => [position, reason.split(' /')[0]]), [[3, 'unknown action name']]);
+  assert.deepEqual(validateActionSequence([{ name: 'RESET' }, { name: 'ACTION1' }], offered, { withReset: true }).steps.map((s) => s.action),
+    ['RESET', 'ACTION1']);
+  assert.equal(validateActionSequence([{ name: 'RESET' }], ['ACTION1'], { withReset: true }).steps.length, 0, 'RESET only when offered');
   assert.equal(validateActionSequence([{ name: 'ACTION6' }], offered).steps.length, 0, 'CH would click (0,0); here it is refused');
   assert.deepEqual(validateActionSequence('ACTION1', offered).rejected, [{ raw: 'ACTION1', reason: 'actions must be a list', position: 0 }]);
   assert.deepEqual(validateActionSequence([{ x: 1 }], offered).rejected[0].reason, "missing 'name' field");

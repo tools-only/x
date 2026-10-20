@@ -215,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--level-change-review", action=argparse.BooleanOptionalAction, default=None,
                           help="a review after each level change (default on, or ARC_THIN_LEVEL_REVIEW; native: the level "
                                "review that rewrites prompts/lessons.md)")
+    arc_thin.add_argument("--stall-review-after", type=int, default=None, metavar="ACTIONS",
+                          help="native: a stall review (the agent rewrites prompts/review.md) after this many actions "
+                               "without a level completed (default: ARC_THIN_STALL_REVIEW, else 40; 0 = off)")
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)
@@ -442,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
             input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,
             ledger=args.ledger, critic=args.critic, carry_reasoning_chars=args.carry_reasoning,
             continuity=args.continuity, continuity_decisions=args.continuity_decisions,
-            review_at_level_change=args.level_change_review,
+            review_at_level_change=args.level_change_review, stall_review_after=args.stall_review_after,
             foundation=args.foundation, replay_reasoning=args.replay_reasoning,
             extension_env={} if args.auto_compaction is None else {"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"},
         )

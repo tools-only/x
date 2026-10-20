@@ -1,6 +1,7 @@
 /**
- * Continual Harness's observation and action conventions, ported for the native decision (user, 2026-10-20: "align our
- * observation and adapter settings with CH ... with every detail"). Source, read 2026-10-20:
+ * Continual Harness's game observation and ARC action conventions, ported for the native decision (user, 2026-10-20:
+ * "align our observation and adapter settings with CH ... with every detail"; the same day: only the observation, the
+ * predefined tools and the ARC information, never CH's loop). Source, read 2026-10-20:
  * D:/arc-agi-benchmark/Continual-Harness-ARC-AGI-3/agents/templates/continual_harness/{context,helpers,trajectory,
  * action_descriptions}.py and prompts/harness_system.md. Pure functions; the extension decides when they run.
  * Record: docs/plans/2026-10-20-ch-observation-adapter-alignment.md.
@@ -22,12 +23,9 @@ export const ACTION_DESCRIPTIONS: Record<string, string> = {
 };
 export const CURRENT_STATE_GRID_LABEL = "current_state_frame";
 export const MAX_OBSERVATION_TEXT_GRIDS = 4;
-/** ContinualHarness.HISTORY_MAX_CHARS, MAX_CONVERSATION_TURNS, RECENT_RESULTS_CAP, FULL_HISTORY_MAX_LIMIT. */
+/** ContinualHarness.HISTORY_MAX_CHARS and FULL_HISTORY_MAX_LIMIT. */
 export const HISTORY_MAX_CHARS = 12000;
-export const MAX_CONVERSATION_TURNS = 24;
-export const RECENT_RESULTS_CAP = 16;
 export const FULL_HISTORY_MAX_LIMIT = 80;
-export const TOOL_RESULTS_FULL_LAST_N = 2;
 
 // ---------------------------------------------------------------------------------------------------- hex and images
 
@@ -281,9 +279,9 @@ export function buildObservationSection(observations: PendingObservation[], maxT
 
 // ---------------------------------------------------------------------------------------------------- current state
 
-/** context._format_available_actions over helpers.available_game_actions (RESET is never listed). */
-export function formatAvailableActions(actions: string[]): string {
-  const listed = agentActions(actions);
+/** context._format_available_actions over helpers.available_game_actions (RESET listed only with `withReset`). */
+export function formatAvailableActions(actions: string[], withReset = false): string {
+  const listed = offeredActions(actions, withReset);
   if (!listed.length) return "(none — wait for the next frame)";
   return "\n" + listed.map((name) => {
     const description = name === "ACTION6" ? "Complex click — provide x (column 0-63) and y (row 0-63)." : ACTION_DESCRIPTIONS[name] ?? "";
@@ -291,162 +289,14 @@ export function formatAvailableActions(actions: string[]): string {
   }).join("\n");
 }
 
-/** context.build_working_prompt's state block. */
-export function currentStateBlock(state: string, levelsCompleted: number, actions: string[], grid: Grid | undefined): string {
+/** context.build_working_prompt's state block (`withReset`: RESET listed, with its meaning, when it is offered). */
+export function currentStateBlock(state: string, levelsCompleted: number, actions: string[], grid: Grid | undefined, withReset = false): string {
   const frameText = grid?.length ? prettyPrintGrid(grid, CURRENT_STATE_GRID_LABEL) : "(empty frame)";
   return "## CURRENT STATE\n" +
     `state: ${state}\n` +
     `score (levels completed): ${levelsCompleted}\n` +
-    `available actions: ${formatAvailableActions(actions)}\n` +
+    `available actions: ${formatAvailableActions(actions, withReset)}\n` +
     `current grid (latest_frame.frame[-1]):\n${frameText}`;
-}
-
-/** context.build_working_prompt's closing block, with this harness's acting calls named. */
-export function turnBlock(maxTurns = MAX_CONVERSATION_TURNS): string {
-  return "## TURN\n" +
-    "This is a running conversation about the frame above. The frame stays fixed until you act. " +
-    (maxTurns ? `You have at most ${maxTurns} non-action turns to decide the next action(s). ` : "") +
-    "Balance analysis with action: reason only as much as needed to predict the next useful move, then use arc_action " +
-    "or python that calls env.act. Do not repeat tools whose output is already in this conversation or recap; save " +
-    "conclusions to memory instead. Progress includes advancing the game and disproving a hypothesis; each action gives " +
-    "a fresh observation.";
-}
-
-// ---------------------------------------------------------------------------------------------------- tool results
-
-/**
- * models.ToolCallRecord. This harness's tools return text, which is kept as the record's stdout ({stdout: text});
- * a structured result (arc_action that played nothing) is kept as it is.
- */
-export type ToolRecord = { name: string; args: Record<string, unknown>; result?: string | Record<string, unknown>; error?: string;
-  actionsTakenInline?: number };
-const resultObject = (result: ToolRecord["result"]) => typeof result === "string" ? { stdout: result } : result;
-
-/**
- * Python's json.dumps(value, default=str[, indent][, sort_keys]): ", " and ": " separators without indent, "," and
- * ": " with it, and ensure_ascii (every character outside space..~ escaped as \\uXXXX), as CH's records are printed.
- */
-export function pyDumps(value: unknown, options: { indent?: number; sortKeys?: boolean } = {}): string {
-  const hex4 = (code: number) => `\\u${code.toString(16).padStart(4, "0")}`;
-  const str = (text: string) => {
-    let out = "\"";
-    for (const ch of text) {
-      const code = ch.codePointAt(0)!;
-      if (ch === "\"") out += "\\\"";
-      else if (ch === "\\") out += "\\\\";
-      else if (ch === "\n") out += "\\n";
-      else if (ch === "\r") out += "\\r";
-      else if (ch === "\t") out += "\\t";
-      else if (ch === "\b") out += "\\b";
-      else if (ch === "\f") out += "\\f";
-      else if (code < 0x20 || code > 0x7e) {
-        if (code > 0xffff) { const v = code - 0x10000; out += hex4(0xd800 + (v >> 10)) + hex4(0xdc00 + (v & 0x3ff)); }
-        else out += hex4(code);
-      } else out += ch;
-    }
-    return out + "\"";
-  };
-  const { indent, sortKeys } = options;
-  const walk = (item: unknown, depth: number): string => {
-    if (item === null || item === undefined) return "null";
-    if (typeof item === "boolean") return item ? "true" : "false";
-    if (typeof item === "number") return Number.isFinite(item) ? String(item) : Number.isNaN(item) ? "NaN" : item > 0 ? "Infinity" : "-Infinity";
-    if (typeof item === "string") return str(item);
-    const pad = indent === undefined ? "" : "\n" + " ".repeat(indent * (depth + 1));
-    const end = indent === undefined ? "" : "\n" + " ".repeat(indent * depth);
-    const comma = indent === undefined ? ", " : ",";
-    if (Array.isArray(item)) return item.length ? `[${pad}${item.map((v) => walk(v, depth + 1)).join(comma + pad)}${end}]` : "[]";
-    if (typeof item === "object") {
-      const entries = Object.entries(item as Record<string, unknown>).filter(([, v]) => v !== undefined);
-      if (sortKeys) entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-      return entries.length ? `{${pad}${entries.map(([k, v]) => `${str(k)}: ${walk(v, depth + 1)}`).join(comma + pad)}${end}}` : "{}";
-    }
-    return str(String(item));
-  };
-  return walk(value, 0);
-}
-
-const CODE_KEYS = new Set(["code"]);
-const TEXT_KEYS = new Set(["stdout", "stderr", "instructions", "body", "description", "error"]);
-/** context._lift_long_text: long code/text values become pointers to fenced blocks printed after the record. */
-function liftLongText(value: unknown, blocks: Array<[string, string, string]>, key?: string): unknown {
-  if (Array.isArray(value)) return value.map((item) => liftLongText(item, blocks, key));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, liftLongText(v, blocks, k)]));
-  if (typeof value === "string" && key && (CODE_KEYS.has(key) || TEXT_KEYS.has(key)) && (value.includes("\n") || value.length > 80)) {
-    const label = `${key} [${blocks.length + 1}]`;
-    blocks.push([label, CODE_KEYS.has(key) ? "python" : "", value]);
-    return `<${label} — printed below>`;
-  }
-  return value;
-}
-const fence = (text: string, lang = "") => `\`\`\`${lang}\n${text}\n\`\`\``;
-
-/** context.format_tool_record_md. */
-export function formatToolRecord(record: ToolRecord): string {
-  const blocks: Array<[string, string, string]> = [];
-  const args = liftLongText(record.args ?? {}, blocks);
-  const result = record.result !== undefined && record.result !== null ? liftLongText(resultObject(record.result), blocks) : undefined;
-  const lines = [
-    "### TOOL RESULT",
-    `name: ${record.name}`,
-    `args: ${pyDumps(args)}`,
-    "",
-    "result:",
-    result !== undefined ? fence(pyDumps(result, { indent: 2 }), "json") : "(none)",
-    "",
-    "error:",
-    record.error ? String(record.error) : "(none)",
-    "",
-    "actions_taken_inline:",
-    String(record.actionsTakenInline ?? 0),
-  ];
-  for (const [label, lang, text] of blocks) lines.push("", `${label}:`, fence(text, lang));
-  return lines.join("\n");
-}
-
-const withoutReasoning = (args: Record<string, unknown> | undefined) =>
-  Object.fromEntries(Object.entries(args ?? {}).filter(([k]) => k !== "reasoning"));
-function toolCallBrief(record: ToolRecord): string {
-  let text = pyDumps(withoutReasoning(record.args));
-  if (text.length > 80) text = text.slice(0, 77) + "...";
-  return `${record.name}(${text})`;
-}
-/** context._tool_outcome_brief: ok/failed/error and the start of the main output. */
-function toolOutcomeBrief(record: ToolRecord): string {
-  const result = resultObject(record.result);
-  let tag: string, raw: unknown;
-  if (record.error) [tag, raw] = ["error", String(record.error)];
-  else if (result && typeof result === "object" && !Array.isArray(result)) {
-    const r = result as Record<string, unknown>;
-    tag = ("success" in r ? r.success : true) ? "ok" : "failed";
-    raw = r.stdout || r.error || r.message || pyDumps(r);
-  } else [tag, raw] = ["ok", pyDumps(result)];
-  let text = String(raw).split(/\s+/).filter(Boolean).join(" ");
-  if (text.length > 160) text = `${text.slice(0, 160)}... [+${text.length - 160} chars]`;
-  return `${tag}: ${text}`;
-}
-const dedupKey = (record: ToolRecord) =>
-  pyDumps([record.name, withoutReasoning(record.args), resultObject(record.result) ?? null, record.error ?? null], { sortKeys: true });
-
-/** context.format_tool_results_markdown: the newest results in full, older ones recapped, repeats pointed at. */
-export function formatToolResults(records: ToolRecord[], fullLastN = TOOL_RESULTS_FULL_LAST_N): string {
-  if (!records.length) return "(none)";
-  if (fullLastN <= 0 || records.length <= fullLastN) return records.map(formatToolRecord).join("\n\n");
-  const cut = records.length - fullLastN;
-  const recap = [`${records.length} tool calls ran during the previous turn's deliberation. Recap below (oldest first); ` +
-    `the last ${fullLastN} results are printed in full. Do NOT re-run a recapped call to re-read its output — the full ` +
-    "output was already shown when it ran."];
-  const firstSeen = new Map<string, number>();
-  records.forEach((record, i) => {
-    const key = dedupKey(record);
-    if (!firstSeen.has(key)) firstSeen.set(key, i);
-    const first = firstSeen.get(key)!;
-    if (i >= cut) return;
-    recap.push(first !== i
-      ? `- ${i + 1}. ${toolCallBrief(record)} -> identical output to call ${first + 1} (re-running returned nothing new)`
-      : `- ${i + 1}. ${toolCallBrief(record)} -> ${toolOutcomeBrief(record)}`);
-  });
-  return recap.join("\n") + "\n\n" + records.slice(cut).map(formatToolRecord).join("\n\n");
 }
 
 // ---------------------------------------------------------------------------------------------------- history
@@ -625,6 +475,9 @@ export function agentActions(available: string[]): string[] {
   const listed = [...new Set(available.filter((name) => GAME_ACTIONS.includes(name) && name !== "RESET"))];
   return listed.length ? listed : GAME_ACTIONS.slice(1);
 }
+/** The actions an agent may play: CH's (agentActions), and RESET first when it is offered and the agent may reset. */
+export const offeredActions = (available: string[], withReset = false) =>
+  withReset && available.includes("RESET") ? ["RESET", ...agentActions(available)] : agentActions(available);
 
 /** tools.TAKE_ACTIONS_TOOL, verbatim (this harness calls it arc_action). */
 export const TAKE_ACTIONS_DESCRIPTION = "Advance the game by executing a list of actions in order. Each runs synchronously; if a step " +
@@ -636,8 +489,6 @@ export const TAKE_ACTIONS_TEXT = {
   x: "X coordinate for ACTION6 (column).",
   y: "Y coordinate for ACTION6 (row).",
 };
-/** _dispatch_response's record for a take_actions call that played nothing. */
-export const NOTHING_EXECUTED = "take_actions executed no actions; send a non-empty valid actions list using the currently available actions";
 
 export type ActionStep = { action: string; x?: number; y?: number; position: number; raw: Record<string, unknown> };
 export type RejectedStep = { raw: unknown; reason: string; position: number };
@@ -650,14 +501,15 @@ export const clampCoordinate = (value: unknown) => {
 };
 
 /**
- * helpers.validate_action_sequence: each entry needs a name that is an available action (RESET never is); the list is
- * truncated at the first entry that fails, and the rest is returned as rejected. One deviation: ACTION6 without x and y
- * fails here, where CH clicks at (0,0).
+ * helpers.validate_action_sequence: each entry needs a name that is an offered action (RESET only with `withReset`, which
+ * CH never allows); the list is cut at the first entry that fails, and the rest is returned as rejected. One deviation:
+ * ACTION6 without x and y fails here, where CH clicks at (0,0).
  */
-export function validateActionSequence(raw: unknown, available: string[]): { steps: ActionStep[]; rejected: RejectedStep[] } {
+export function validateActionSequence(raw: unknown, available: string[], options: { withReset?: boolean } = {}):
+  { steps: ActionStep[]; rejected: RejectedStep[] } {
   const steps: ActionStep[] = [], rejected: RejectedStep[] = [];
   if (!Array.isArray(raw)) return { steps, rejected: [{ raw, reason: "actions must be a list", position: 0 }] };
-  const usable = agentActions(available);
+  const usable = offeredActions(available, options.withReset);
   for (const [index, item] of raw.entries()) {
     const position = index + 1;
     if (!item || typeof item !== "object" || Array.isArray(item) || !("name" in item)) {

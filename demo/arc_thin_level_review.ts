@@ -17,6 +17,13 @@ import { claimVersion, levelOf, type ClaimRow } from "./arc_thin_claims.ts";
 export const LESSONS_PATH = "prompts/lessons.md";
 /** What the review asks prompts/lessons.md to stay under: it is sent with every decision. */
 export const LESSONS_CHARS = 1200;
+/**
+ * The stall review (docs/plans/2026-10-20-stall-review.md): after many actions without a level completed, the runner
+ * gives the agent one turn without actions to rewrite prompts/review.md from the record of the level so far (levelRecord
+ * with `ongoing`): what it tried, the bottleneck, what wasted actions, the directions not yet tested. Like lessons.md it
+ * is the agent's own active prompt; refinements read it and never write it.
+ */
+export const REVIEW_PATH = "prompts/review.md";
 /** Tool calls one level review may make: enough to look something up, write the file and correct memory. */
 export const LEVEL_REVIEW_CALLS = 8;
 /** Moves listed per attempt: all of a short attempt, the first and last ones of a longer one. */
@@ -63,17 +70,20 @@ const shown = (tokens: string[], head: number, tail: number) => tokens.length <=
 /**
  * The record for the level `completed` levels in: its rows are those played while `completed - 1` levels were complete
  * (levelOf), up to the move that completed it. `repeated`: moves that gave an earlier move's result again from the same
- * state (the ledger's repetitions); `python`: the run's python calls (component_runs.jsonl).
+ * state (the ledger's repetitions); `python`: the run's python calls (component_runs.jsonl). `ongoing`: the level is the
+ * one being played, not completed yet (the stall review).
  */
 export function levelRecord(input: {
 	rows: ReviewRow[]; completed: number; memoryRows?: ReviewMemoryRow[]; checks?: ClaimRow[]; repeated?: number[]; python?: ReviewPython[];
+	ongoing?: boolean;
 }): string {
-	const { completed } = input;
+	const { completed, ongoing = false } = input;
 	const level = input.rows.filter((row) => levelOf(row) === completed - 1);
-	const head = `LEVEL ${completed} RECORD (the level you just completed; level ${completed + 1} is on screen now). ` +
+	const head = (ongoing ? `LEVEL ${completed} RECORD SO FAR (the level on screen; it is not completed). `
+		: `LEVEL ${completed} RECORD (the level you just completed; level ${completed + 1} is on screen now). `) +
 		"The runtime's counts; what they mean is yours to write.";
 	if (!level.length) return `${head}\n- No action of this level is recorded.`;
-	const win = level.find((row) => row.level_changed);
+	const win = ongoing ? undefined : level.find((row) => row.level_changed);
 	const first = level[0].n, last = (win ?? level.at(-1)!).n;
 	const overs = level.filter((row) => row.state === "GAME_OVER").map((row) => `#${row.n}`);
 	const resets = level.filter((row) => row.action === "RESET").length;
@@ -84,9 +94,10 @@ export function levelRecord(input: {
 		(win.predict?.level_changed === true ? "it predicted the level change" : "it did not predict a level change") +
 		(win.note ? `; note: "${clip(win.note, 160)}"` : "") + (win.predict?.text ? `; predicted: "${clip(win.predict.text, 200)}"` : "") + ".");
 	const tests = level.filter((row) => row.predict?.level_changed === true && row !== win);
-	lines.push(tests.length ? `- Other moves that predicted a level change: ${tests.slice(0, 10).map((row) => `#${row.n} ${label(row)}` +
+	const other = win ? "Other moves" : "Moves";
+	lines.push(tests.length ? `- ${other} that predicted a level change: ${tests.slice(0, 10).map((row) => `#${row.n} ${label(row)}` +
 		(row.predict?.text ? ` ("${clip(row.predict.text, 80)}")` : "")).join("; ")}${tests.length > 10 ? `; and ${tests.length - 10} more` : ""}.`
-		: "- No other move of the level predicted a level change.");
+		: win ? "- No other move of the level predicted a level change." : "- No move of the level predicted a level change.");
 	// The level's moves by attempt; consecutive attempts that played the same moves to the same end are one line.
 	lines.push("- Moves by attempt (→n: cells the move changed; *: it predicted a level change):");
 	const listed = tries.map((attempt) => ({ attempt, tokens: runs(level.filter((row) => row.action !== "RESET" && row.n >= attempt.start
@@ -104,7 +115,7 @@ export function levelRecord(input: {
 			: `  - attempt ${i + 1}, #${attempt.start}–#${attempt.end}, ${plural(attempt.actions, "move")}, ${ending[attempt.ended]}: ${moves}`);
 		i = j + 1;
 	}
-	lines.push(...hypothesisLines(input.memoryRows ?? [], input.checks ?? [], completed - 1, first, last));
+	lines.push(...hypothesisLines(input.memoryRows ?? [], input.checks ?? [], completed - 1, first, last, ongoing));
 	const repeated = (input.repeated ?? []).filter((n) => n >= first && n <= last);
 	if (repeated.length) lines.push(`- ${plural(repeated.length, "move")} gave the same result from the same state as an earlier move of ` +
 		`their attempt: ${repeated.slice(0, 12).map((n) => `#${n}`).join(", ")}${repeated.length > 12 ? ", …" : ""}.`);
@@ -124,9 +135,9 @@ export function levelRecord(input: {
 
 /**
  * The hypotheses written, judged by their checks, or deleted while the level was played (memory rows whose action count
- * lies in [first - 1, last]), each with how it stood when the level was completed.
+ * lies in [first - 1, last]), each with how it stood when the level was completed (or now, for the level being played).
  */
-function hypothesisLines(rows: ReviewMemoryRow[], checks: ClaimRow[], level: number, first: number, last: number): string[] {
+function hypothesisLines(rows: ReviewMemoryRow[], checks: ClaimRow[], level: number, first: number, last: number, ongoing = false): string[] {
 	const keys = new Set<string>();
 	const during = (row: ReviewMemoryRow) => row.at !== undefined && row.at >= first - 1 && row.at <= last;
 	for (const row of rows) if (row.key?.startsWith("hyp.") && during(row)) keys.add(row.key);
@@ -142,7 +153,8 @@ function hypothesisLines(rows: ReviewMemoryRow[], checks: ClaimRow[], level: num
 			? `${written.find(during)!.by === "refinement" ? "a refinement's" : "yours"}, written at #${written.find(during)!.at}`
 			: `${written[0].by === "refinement" ? "a refinement's" : "yours"}, from before this level`;
 		const rejected = end.hyp?.status === "rejected" ? own.find((row) => during(row) && row.hyp?.status === "rejected") : undefined;
-		const state = end.deleted ? `deleted at #${end.at}` : rejected ? `rejected at #${rejected.at}` : `${end.hyp?.status ?? "open"} when the level was completed`;
+		const state = end.deleted ? `deleted at #${end.at}` : rejected ? `rejected at #${rejected.at}`
+			: `${end.hyp?.status ?? "open"} ${ongoing ? "now" : "when the level was completed"}`;
 		const version = latest.check ? claimVersion(latest.check) : undefined;
 		const results = version ? checks.filter((row) => row.key === key && row.version === version && row.level === level) : [];
 		const count = (value: unknown) => results.filter((row) => row.result === value).length;

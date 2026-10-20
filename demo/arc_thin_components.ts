@@ -206,8 +206,9 @@ class _Env:
     def frame(self, n):
         return self.history.grid(n)
     def act(self, action, x=None, y=None, predict=None):
-        if isinstance(action, (list, tuple)):
-            return self._act_list(action)
+        # A list plays as arc_action's list does; one entry given as a dict is a list of one.
+        if isinstance(action, (list, tuple, dict)):
+            return self._act_list([action] if isinstance(action, dict) else action)
         if _session_flags.get('loading'):
             raise PermissionError('no action while the python session is restored')
         if not _req.get('allow_act'):
@@ -218,7 +219,8 @@ class _Env:
         return self._act_call(call)
     def _act_list(self, actions):
         """Continual Harness's take_actions from code: the entries run in order as one batch; an entry without a name, or
-        one the host refuses, ends the list, and so do a level change and the game's end. Returns what CH returns."""
+        one the host refuses, ends the list, and so do a level change and the game's end. Returns what CH returns. Entries
+        are read as arc_action reads them: a bare name, or 'action' in place of 'name'."""
         if _session_flags.get('loading'):
             raise PermissionError('no action while the python session is restored')
         if not _req.get('allow_act'):
@@ -226,10 +228,15 @@ class _Env:
         def coord(value):
             try: return max(0, min(63, int(value)))
             except (TypeError, ValueError): return 0
-        total, executed, terminal, level_changed = len(actions), 0, False, False
+        total, executed, terminal, level_changed, unread = len(actions), 0, False, False, None
         levels = self.state.get('levels_completed')
         for position, item in enumerate(actions, start=1):
+            if isinstance(item, str):
+                item = {'name': item}
+            if isinstance(item, dict) and 'name' not in item and 'action' in item:
+                item = {**item, 'name': item['action']}
             if not isinstance(item, dict) or 'name' not in item:
+                unread = f'entry {position} names no action: {item!r}'[:200]
                 break
             call = {'action': str(item['name']).upper(), 'batch': [position, total]}
             if call['action'] == 'ACTION6' and item.get('x') is not None and item.get('y') is not None:
@@ -247,7 +254,7 @@ class _Env:
                 level_changed = True
                 break
         if not executed:
-            raise ActStopped(self.stopped or 'take_actions executed no actions; send a non-empty valid actions list using the currently available actions')
+            raise ActStopped(self.stopped or unread or 'take_actions executed no actions; send a non-empty valid actions list using the currently available actions')
         frame = self.state.get('frames') or ([self.grid] if self.grid else [])
         last = {'frame': frame, 'state': self.state.get('state'), 'score': self.state.get('levels_completed'),
                 'levels_completed': self.state.get('levels_completed'), 'available_actions': self.state.get('available_actions')}

@@ -51,6 +51,22 @@ test('the level record lists the level by attempt, the completing move, goal tes
 	assert.match(text, /\n- Python run again with the same code \(numbers aside\): cells with comments only ×4, `g = grid` ×3\.$/);
 });
 
+test('the record of the level being played (the stall review) has no completing move and gives its hypotheses as they stand now', () => {
+	const text = levelRecord({
+		completed: 2, ongoing: true,
+		rows: [row(1, 'ACTION6', { x: 8, y: 8, level_changed: true, levels_completed: 1 }), row(2, 'ACTION6', { x: 1, y: 1, levels_completed: 1 }),
+			row(3, 'ACTION6', { x: 1, y: 1, levels_completed: 1, state: 'GAME_OVER' }), row(4, 'RESET', { levels_completed: 1 }),
+			row(5, 'ACTION6', { x: 2, y: 2, levels_completed: 1, predict: { level_changed: true } })],
+		memoryRows: [{ key: 'hyp.a', hyp: { claim: 'the marked cell ends a level', status: 'open' }, at: 2 }],
+	});
+	assert.match(text, /^LEVEL 2 RECORD SO FAR \(the level on screen; it is not completed\)\./);
+	assert.match(text, /\n- #2–#5: 4 actions in 2 attempts; 1 RESET; GAME_OVER at #3\.\n/);
+	assert.doesNotMatch(text, /Completed by/);
+	assert.match(text, /\n- Moves that predicted a level change: #5 ACTION6\(2,2\)\.\n/);
+	assert.match(text, /\n {2}- attempt 1, #2–#3, 2 moves, ended in GAME_OVER: ACTION6\(1,1\)→2 ×2\n {2}- attempt 2, #5–#5, 1 move, not ended: ACTION6\(2,2\)\*→2\n/);
+	assert.match(text, /\n {2}- hyp\.a \(yours, written at #2\): "the marked cell ends a level" → open now; no check$/);
+});
+
 /**
  * The native extension on a 16x16 board: a click on (8,8) completes the first level (the board changes), any other click
  * toggles its cell. Refinements wait until the test settles them.

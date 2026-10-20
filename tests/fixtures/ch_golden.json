@@ -802,69 +802,6 @@
   "text": "Levels cleared: level 1 cleared in 2 steps.\n\n══ Level 2 — started at step 3 ══\nAttempt 1 (steps 3-4, 2 steps): GAME_OVER after ACTION3 at step 4.\nAttempt 2 — current (started step 6):\n[arc_action] steps 6-17  ACTION2 ×12 → no change (no progress — possible loop)\n[arc_action] step 18  ACTION4 → 3 cells changed: color 0→3 (×2): r1-2 c2-4; color 3→0: r1 c3",
   "short": "Levels cleared: level 1 cleared in 2 steps.\n\n══ Level 2 — started at step 3 ══\nAttempt 1 (steps 3-4, 2 steps): GAME_OVER after ACTION3 at step 4.\nAttempt 2 — current (started step 6):\n… (earlier steps of this attempt elided) …\n[arc_action] step 18  ACTION4 → 3 cells changed: color 0→3 (×2): r1-2 c2-4; color 3→0: r1 c3"
  },
- "tool_results": {
-  "inputs": [
-   {
-    "name": "python",
-    "args": {
-     "code": "for y, row in enumerate(grid):\n    print(y, row)\nresult = 1"
-    },
-    "result": {
-     "stdout": "0 [0, 0]\n1 [0, 3]"
-    }
-   },
-   {
-    "name": "memory",
-    "args": {
-     "op": "set",
-     "key": "goal",
-     "text": "reach the → corner",
-     "reasoning": "x"
-    },
-    "result": {
-     "stdout": "memory: set goal"
-    }
-   },
-   {
-    "name": "python",
-    "args": {
-     "code": "for y, row in enumerate(grid):\n    print(y, row)\nresult = 1"
-    },
-    "result": {
-     "stdout": "0 [0, 0]\n1 [0, 3]"
-    }
-   },
-   {
-    "name": "arc_action",
-    "args": {
-     "reasoning": "try",
-     "actions": [
-      {
-       "name": "RESET"
-      }
-     ]
-    },
-    "result": {
-     "success": false,
-     "executed": 0,
-     "available_actions": [
-      "ACTION1",
-      "ACTION2"
-     ],
-     "message": "take_actions executed no actions; send a non-empty valid actions list using the currently available actions"
-    }
-   },
-   {
-    "name": "read",
-    "args": {
-     "path": "data/memory.md"
-    },
-    "error": "FileNotFoundError: data/memory.md xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-   }
-  ],
-  "text": "5 tool calls ran during the previous turn's deliberation. Recap below (oldest first); the last 2 results are printed in full. Do NOT re-run a recapped call to re-read its output — the full output was already shown when it ran.\n- 1. python({\"code\": \"for y, row in enumerate(grid):\\n    print(y, row)\\nresult = 1\"}) -> ok: 0 [0, 0] 1 [0, 3]\n- 2. memory({\"op\": \"set\", \"key\": \"goal\", \"text\": \"reach the \\u2192 corner\"}) -> ok: memory: set goal\n- 3. python({\"code\": \"for y, row in enumerate(grid):\\n    print(y, row)\\nresult = 1\"}) -> identical output to call 1 (re-running returned nothing new)\n\n### TOOL RESULT\nname: arc_action\nargs: {\"reasoning\": \"try\", \"actions\": [{\"name\": \"RESET\"}]}\n\nresult:\n```json\n{\n  \"success\": false,\n  \"executed\": 0,\n  \"available_actions\": [\n    \"ACTION1\",\n    \"ACTION2\"\n  ],\n  \"message\": \"take_actions executed no actions; send a non-empty valid actions list using the currently available actions\"\n}\n```\n\nerror:\n(none)\n\nactions_taken_inline:\n0\n\n### TOOL RESULT\nname: read\nargs: {\"path\": \"data/memory.md\"}\n\nresult:\n(none)\n\nerror:\nFileNotFoundError: data/memory.md xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\nactions_taken_inline:\n0",
-  "two": "### TOOL RESULT\nname: python\nargs: {\"code\": \"<code [1] \\u2014 printed below>\"}\n\nresult:\n```json\n{\n  \"stdout\": \"<stdout [2] \\u2014 printed below>\"\n}\n```\n\nerror:\n(none)\n\nactions_taken_inline:\n0\n\ncode [1]:\n```python\nfor y, row in enumerate(grid):\n    print(y, row)\nresult = 1\n```\n\nstdout [2]:\n```\n0 [0, 0]\n1 [0, 3]\n```\n\n### TOOL RESULT\nname: memory\nargs: {\"op\": \"set\", \"key\": \"goal\", \"text\": \"reach the \\u2192 corner\", \"reasoning\": \"x\"}\n\nresult:\n```json\n{\n  \"stdout\": \"memory: set goal\"\n}\n```\n\nerror:\n(none)\n\nactions_taken_inline:\n0"
- },
  "state": {
   "grid": [
    [
@@ -1069,45 +1006,5 @@
    4
   ],
   "rgba": "o1bW//////////////////////////////////////8ek/////////////////////////////////////////////////////////////////////////////8zMzP/"
- },
- "dumps": [
-  {
-   "value": {
-    "a": [
-     1,
-     2,
-     {
-      "b": null
-     }
-    ],
-    "c": "→é\n\"q\"",
-    "d": true
-   },
-   "plain": "{\"a\": [1, 2, {\"b\": null}], \"c\": \"\\u2192\\u00e9\\n\\\"q\\\"\", \"d\": true}",
-   "indent": "{\n  \"a\": [\n    1,\n    2,\n    {\n      \"b\": null\n    }\n  ],\n  \"c\": \"\\u2192\\u00e9\\n\\\"q\\\"\",\n  \"d\": true\n}"
-  },
-  {
-   "value": [],
-   "plain": "[]",
-   "indent": "[]"
-  },
-  {
-   "value": {},
-   "plain": "{}",
-   "indent": "{}"
-  },
-  {
-   "value": "xy",
-   "plain": "\"x\\u007fy\"",
-   "indent": "\"x\\u007fy\""
-  },
-  {
-   "value": [
-    1.5,
-    -2
-   ],
-   "plain": "[1.5, -2]",
-   "indent": "[\n  1.5,\n  -2\n]"
-  }
- ]
+ }
 }
