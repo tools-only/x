@@ -3,8 +3,9 @@
 **Status, later on 2026-10-20:** rolled back at the user's request (`fac1e771`; see [Rollback](#rollback-2026-10-20)),
 then reimplemented with only CH's game observation and ARC action tool (see
 [Narrowed reimplementation](#narrowed-reimplementation-2026-10-20)), then merged with the other session's version of the
-same narrowing, whose stall review it keeps (see [Merge](#merge-with-the-other-sessions-version-2026-10-20)). The
-sections under "First version" describe the rolled-back version (`e79898f9`).
+same narrowing, whose stall review it keeps (see [Merge](#merge-with-the-other-sessions-version-2026-10-20)), and run once
+(su15-chm-q38-1: 0 levels; see [the run](#run-of-the-merged-version-su15-chm-q38-1-2026-10-20)). The sections under
+"First version" describe the rolled-back version (`e79898f9`).
 
 ## First version (e79898f9, superseded)
 
@@ -210,5 +211,60 @@ ported into `tests/arc_thin_ch_observation.test.ts`.
 
 Layers after the merge: functional, passed on this machine (node 22): the TS suite 229 of 234, whose 5 failures
 (activation 1, components 1, receipts 3) fail the same way on the rolled-back tree, and the components one on r04's tip;
-pytest 41 of 41, `tests/test_arc_thin_stall_review.py` included. Full chain, adoption and net benefit: unverified (no
-run of the merged version).
+pytest 41 of 41, `tests/test_arc_thin_stall_review.py` included. Full chain, adoption and net benefit: see the run below.
+
+## Run of the merged version: su15-chm-q38-1 (2026-10-20)
+
+`runs/arc-chm-20261020/su15-chm-q38-1`: r04 at `305ca1b0` (frozen copy of the detached worktree `worktrees/r04-chm`),
+su15, yibu qwen3.8-27b, thinking off (Completions, the qwen dialect), text and image, 6M budget-token cap, no time cap,
+launched 19:32 local; the studio's pelican run used the same model on the same gateway at the time. It stopped after
+1h46m on the game's own budget: level 1 allows 110 actions (22 × 5) and none completed it. Measured with
+`C:/Users/qi/tmp/r04/chm/analyze.mjs` on this run and the earlier qwen su15 runs:
+
+| | chm-q38-1 (this) | ch-q38-1 (first CH version) | cb-q38-1 | q38-1 / -2 / -3 (old path) |
+|---|---|---|---|---|
+| levels / actions / stop | 0 / 110 / level budget | 0 / 53 / environment | 1 / 230 / level budget | 2, 1, 0 / 267, 231, 110 |
+| budget tokens per action | 28.4k (3.13M) | 30.5k | 15.0k | 22.6k, 21.5k, 17.0k |
+| agent requests per action | 2.24 | 3.43 | 0.91 | 1.26, 1.15, 1.28 |
+| actions per arc_action call | 1.36 (62 of 79 played lists were one action) | 1.13 | 2.77 | 2.24, 2.85, 2.75 |
+| arc_action calls lost to call shape | 0 of 81 (none arrived malformed) | 8 of 45 | 0 | 0 |
+| one action repeated, ≤ 2 cells changed each | 30 (ACTION6(31,5), 0 cells, #81-#110); 17 before | 25 | 3 | 1, 3, 3 |
+| arc_action calls identical to the call before | 46 (30 in a row) | 0 | 0 | 0 |
+| python calls / distinct | 128 / 60 (two cells run 29 times each) | 110 / 110 | 89 / 89 | all distinct |
+| python cells comparing grids by hand (rough, distinct) | 24 | 2 | 28 | 20, 13, 11 |
+| decisions at the 16-call cap | 0 (most calls 7) | 3 over 16 (CH's 24-turn cap) | 0 | 0 |
+| failed agent requests | 8, all "Request timed out" after 5 min, decisions 51-65 | 4 | 7 | 0, 17, 0 |
+
+Stall reviews ran twice (decisions 20 and 53, at 40 and 80 actions; 98k and 170k budget tokens) and each wrote a sound
+`prompts/review.md` (1,190 characters): the 29 bar-filling clicks into GAME_OVER at #34, the one real effect (#37, a
+click that moved the purple square), "Been REPEATING known objects instead of exploring untested ones", the top square
+"confirmed dead (9 clicks, 0 change)", and four untested directions with their moves. After the first review the agent
+tested three of its directions within three actions (#41-#43); the third, the top square at (31,5), changed nothing and
+became the loop. After the second review it tested none of its four directions: it clicked (31,5) 30 times until the
+level's budget ran out, while review.md, the refiner's strategy ("Clicking (31,5) again = game over with nothing
+learned") and rules.md all said the square does nothing. RESET was the agent's (#35, after GAME_OVER); the level review
+never ran (no level).
+
+What broke: from #43 on, a click that changes nothing leaves the observation as it was, and each decision reproduced the
+one before it verbatim: the same two python cells (29 times each) and the same arc_action call, note and prediction
+included. No earlier qwen run had a single arc_action call identical to the one before it; there the no-effect refusal
+answered the fourth such click with an error the next decision had to read, and the first CH version's repeated clicks
+each changed the bar. The transcript's collapse of repeated calls (`collapseRepeatedCalls`) merges consecutive identical
+rounds only; this cycle was three different rounds per decision (python, python, arc_action), so all 29 copies stayed in
+the transcript, which reached 423 messages (about 90k prompt tokens per request) without a compaction. Advisory text in
+the system prompt did not move a decision that copies its predecessor. The 8 provider timeouts fell in that stretch; the
+gateway's known refusal of repeated calls is one candidate cause, the concurrent run's load another (not established).
+
+Claims of this version against the run: call-shape losses 0, but no call needed repair, so the repair path was not
+exercised; hand diffs did not stay at 0 (24 distinct cells compared grids by hand, against 2 in the first CH version);
+cost per action was higher than every old-path run, from more requests per action (shorter lists, as CH's "prefer 1"
+asks) and a long uncompacted transcript (39 requests over 20k uncached tokens carried 65% of the agent's budget); the
+16-call cap was never reached. Layers: functional and full chain, reached; adoption, the CH list form and RESET used,
+the stall review used once and then not; net benefit, none in this run (0 levels; one run, with the gateway's timeouts as
+a confound).
+
+Next falsifiable checks (each needs a budget; none run): (1) the same version with `ARC_THIN_NO_EFFECT_REPEATS=3`, the
+one factor that separates this run's copying from the old-path runs; (2) a change for the user to decide: the transcript
+shows consecutive decisions that repeated the same calls once, with their count, as `collapseRepeatedCalls` does for
+rounds, so a copy has one predecessor instead of 29; (3) a stronger model (gpt-6.1-sol) on the same version, to separate
+qwen's limit (thinking off) from the mechanism.

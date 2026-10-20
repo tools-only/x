@@ -2,7 +2,7 @@
 
 Date: 2026-10-20 (Asia/Shanghai). Status: implemented on `claude/r04-ch-20261020` (folded into `claude/r04-20261017`),
 on by default in native runs; kept when r04 took the other Continual Harness implementation (`ARC_THIN_OBSERVATION=ch`,
-`docs/plans/2026-10-20-ch-observation-adapter-alignment.md`, "Merge"); functional checks only, no run yet. Record format:
+`docs/plans/2026-10-20-ch-observation-adapter-alignment.md`, "Merge"); one real run, su15-chm-q38-1 (below). Record format:
 `docs/templates/meta-harness-change.md`.
 
 ## Problem and claim
@@ -96,15 +96,30 @@ on by default in native runs; kept when r04 took the other Continual Harness imp
 
 | Evidence layer | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
-| Functional | passing unit tests | none (offline) | the tests above; the runner loop's branch is not exercised end to end |
-| Full-chain reachability | unverified | — | needs a run that stalls 40 actions |
-| Autonomous adoption | unverified | — | — |
-| Net benefit | unverified | — | — |
+| Functional | passing unit tests | none (offline) | the tests above |
+| Full-chain reachability | reached twice | yibu qwen3.8-27b, thinking off, su15, r04 `305ca1b0` | `runs/arc-chm-20261020/su15-chm-q38-1`: STALL REVIEW at 40 and 80 actions (decisions 20, 53) |
+| Autonomous adoption | partial | same run | review.md written both times (6 versions, 1,190 chars) and loaded; 3 of the first review's directions tested within 3 actions; none of the second's in the 30 actions left |
+| Net benefit | none in this run | same run | 0 levels (level 1's 110-action budget ran out); one run |
+
+## Run su15-chm-q38-1 (2026-10-20)
+
+Against the falsifiers above: review.md was written and loaded (not falsified); the first review's directions were
+tested (#41-#43) but the second's were not in the 30 actions that remained (falsified for that review); repeats did not
+fall: after the second review the agent clicked ACTION6(31,5), which changes nothing, 30 times in a row (falsified); the
+reviews cost 98k and 170k budget tokens (under the 0.3M falsifier; the second over the 0.15M aim). The reviews were
+accurate: the second named the loop ("Been REPEATING known objects instead of exploring untested ones", the square
+"confirmed dead (9 clicks, 0 change)"). The decisions after it reproduced the decision before the review verbatim: the
+same two python cells and the same arc_action call, 46 calls identical to the one before them in the run, against none
+in the earlier qwen su15 runs, where the no-effect refusal answered the fourth unchanged click. A review between such
+decisions changes an active prompt, not the decision's immediate context, and here that was not enough. Details and the
+next checks: `docs/plans/2026-10-20-ch-observation-adapter-alignment.md`, "Run of the merged version".
 
 ## Decision
 
-- Supported: the trigger, prompt, record and accounting work as specified offline. Not supported: that a real run
-  reaches the review, that qwen writes review.md, tests its directions, or gains levels.
-- Next falsifiable check: the fork pair above (6M budget tokens), after the user approves the budget.
+- Supported: the trigger, prompt, record and accounting work as specified, offline and in one real run; qwen writes an
+  accurate review.md. Not supported: that the review changes what the agent does once its decisions copy each other, or
+  that it gains levels.
+- Next falsifiable check: the checks listed in the alignment record's run section, after the user chooses one and
+  approves a budget; the fork pair above is still open.
 - Backlog: relates to deferred item A (adapter boundary) only through the no-effect refusal being off by default with
   `ARC_THIN_OBSERVATION=ch`.
