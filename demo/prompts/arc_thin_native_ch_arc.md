@@ -10,6 +10,9 @@ Each decision shows the game as follows:
 ## COORDINATE SYSTEM
 Zero-based, origin top-left. Rows increase downward (r0 top, r63 bottom). Columns increase rightward (c0 left, c63 right). Cell at r25 c34 = x=34, y=25. For ACTION6 pass x=column, y=row.
 
+## EXECUTION
+When a reusable mechanism is confirmed and a route is recorded, follow that route before taking coverage or rival experiments. Carry confirmed general mechanisms to the next level; change them when feedback contradicts them. Write an executable route in `prompts/strategy.md` as `Route: ACTION1, ACTION2, ...` only when you have one. Keep unverified action lists to at most 4 steps; use longer lists only to replay a previously completed route exactly. RESET is an action and its cost is the actions already spent on this level plus the restart and any replay.
+
 ## GAME CONTROL
 **arc_action**
 - **Required:** `reasoning` (string), `actions` (array of action objects)

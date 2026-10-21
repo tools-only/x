@@ -829,7 +829,7 @@ else:
 const NATIVE_LIMITS = { ...SKILL_LIMITS, input_bytes: 512 * 1024, output_bytes: 256 * 1024 };
 const base = arcSkillGuestProgram(NATIVE_LIMITS);
 const program = { ...base, source: base.source.split('\n_src =')[0] + NATIVE };
-export type ActCall = { action: string; x?: number; y?: number; predict?: unknown };
+export type ActCall = { action: string; x?: number; y?: number; predict?: unknown; batch?: unknown };
 /** What the guest reports about the python session after a call (arc_thin_python_session.ts commits it). */
 export type SessionReport = {
   defs?: Array<[string, string]>; blob?: string; sha?: string; names?: string[]; chars?: number; raw_bytes?: number;
