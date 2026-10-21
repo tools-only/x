@@ -604,6 +604,56 @@ def _signature(name, source):
     except BaseException:
         return ''
 
+# Names a library module is given when it is imported (see _Loader.exec_module), so a function that reads them needs nothing more.
+_PROVIDED = ('state', 'grid', 'history', 'prev_grid', 'artifacts')
+
+def _free_names(node):
+    """Names a function reads that nothing inside it binds: what it needs from the module it is saved in."""
+    bound, loads = {node.name}, set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name):
+            (loads if isinstance(n.ctx, ast.Load) else bound).add(n.id)
+        elif isinstance(n, ast.arg):
+            bound.add(n.arg)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(n.name)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            bound.update((a.asname or a.name).split('.')[0] for a in n.names)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+    return sorted(loads - bound - set(dir(builtins)) - set(_PROVIDED))
+
+def _cell_def(node, lines, first):
+    """What the runtime needs to keep one function a cell just defined as lib/<name>.py: its source, a one-line description
+    (its docstring, else the comment above it or its first comment), its signature, and where each name it reads comes from:
+    an import line, another definition of the session (deps), or only the session itself (needs). Only asked for with
+    ARC_THIN_PERSIST_DEFS (the request's persist_defs)."""
+    doc = (ast.get_docstring(node) or '').strip().splitlines()
+    above = [l.strip() for l in lines[max(0, first - 4):first - 1] if l.strip().startswith('#')]
+    inside = [l.strip() for l in lines[node.lineno:node.end_lineno] if l.strip().startswith('#')]
+    imports, deps, needs = [], [], []
+    for name in _free_names(node):
+        obj = _ns.get(name)
+        home = getattr(obj, '__module__', None)
+        if isinstance(obj, types.ModuleType):
+            imports.append('import %s' % obj.__name__ if obj.__name__ == name else 'import %s as %s' % (obj.__name__, name))
+        elif obj is not None and home and home.startswith('lib.'):
+            imports.append('from %s import %s' % (home, getattr(obj, '__name__', name)) + ('' if getattr(obj, '__name__', name) == name else ' as ' + name))
+        elif obj is not None and home and home not in ('skill', '__main__', 'builtins') and getattr(sys.modules.get(home), getattr(obj, '__name__', ''), None) is obj:
+            imports.append('from %s import %s' % (home, obj.__name__) + ('' if obj.__name__ == name else ' as ' + name))
+        elif name in _session_defs and _session_own(obj, name):
+            deps.append(name)
+        else:
+            needs.append(name)
+    try:
+        sig = '(%s)' % ast.unparse(node.args)
+    except BaseException:
+        sig = ''
+    return {'name': node.name, 'source': _session_defs[node.name], 'sig': sig, 'doc': (doc[0] if doc else '')[:200],
+            'comment': (above[-1:] or inside[:1] or [''])[0].lstrip('#').strip()[:200], 'imports': imports, 'deps': deps, 'needs': needs,
+            'decorated': bool(node.decorator_list), 'asynchronous': isinstance(node, ast.AsyncFunctionDef),
+            'assigns_global': any(isinstance(n, ast.Global) for n in ast.walk(node))}
+
 def _session_dump(code, session, base, before, loaded):
     """Checkpoint the namespace as it is now. All or nothing: over capacity or unverifiable means no checkpoint."""
     lines = code.splitlines()
@@ -612,11 +662,17 @@ def _session_dump(code, session, base, before, loaded):
     except SyntaxError:
         tree = None
     statements = _session_statements(tree) if tree is not None else []
+    fresh = []
     for node in statements:
         obj = _ns.get(node.name)
         if _session_own(obj, node.name) and id(obj) != before.get(node.name):
             first = min([d.lineno for d in node.decorator_list] + [node.lineno])
             _session_defs[node.name] = textwrap.dedent('\n'.join(lines[first - 1:node.end_lineno])) + '\n'
+            if _req.get('persist_defs') and node in tree.body and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                try:
+                    fresh.append(_cell_def(node, lines, first))
+                except BaseException:
+                    pass
     for name in list(_session_defs):
         if not _session_own(_ns.get(name), name):
             del _session_defs[name]
@@ -644,6 +700,8 @@ def _session_dump(code, session, base, before, loaded):
         own |= {(a.asname or a.name).split('.')[0] for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
         uses = sorted(({n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)} & loaded) - own)
     out = {'unsupported': unsupported, 'uses': uses, 'brief': brief}
+    if _req.get('persist_defs'):
+        out['cell_defs'] = fresh
     defs = [[k, v] for k, v in _session_defs.items()]
     sha = hashlib.sha256(raw).hexdigest()
     if sha == session.get('sha') and defs == (session.get('defs') or []):
@@ -830,10 +888,15 @@ const NATIVE_LIMITS = { ...SKILL_LIMITS, input_bytes: 512 * 1024, output_bytes: 
 const base = arcSkillGuestProgram(NATIVE_LIMITS);
 const program = { ...base, source: base.source.split('\n_src =')[0] + NATIVE };
 export type ActCall = { action: string; x?: number; y?: number; predict?: unknown };
+/** A function a python cell defined, as the guest reports it for ARC_THIN_PERSIST_DEFS (see _cell_def in the guest). */
+export type CellDef = { name: string; source: string; sig: string; doc: string; comment: string; imports: string[]; deps: string[]; needs: string[];
+  decorated: boolean; asynchronous: boolean; assigns_global: boolean };
 /** What the guest reports about the python session after a call (arc_thin_python_session.ts commits it). */
 export type SessionReport = {
   defs?: Array<[string, string]>; blob?: string; sha?: string; names?: string[]; chars?: number; raw_bytes?: number;
   unchanged?: boolean; functions?: boolean; unsupported?: Array<[string, string]>; uses?: string[];
+  /** The functions this call defined or redefined, with where the names each reads come from. */
+  cell_defs?: CellDef[];
   /** What the namespace holds after the call: name -> a few characters on what it is; definitions as name() -> "". */
   brief?: Record<string, string>;
   over?: { chars: number; cap: number; raw_bytes: number; largest: Array<[string, number]> };

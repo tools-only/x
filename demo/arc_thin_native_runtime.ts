@@ -9,6 +9,7 @@ import { TaskPythonPool } from './pi_task_python_pool.ts';
 import type { KernelRequest, PythonKernel } from './pi_task_python_kernel.ts';
 import { codeShape, componentLines, coveringComponent, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 import { blockNote, cellRefs, codeKey, commentLines, repeatedBlocks } from './arc_thin_work_memory.ts';
+import { planScripts, scriptsUsed } from './arc_thin_scripts.ts';
 
 /** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
@@ -29,6 +30,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   workMemory?: boolean;
   /** ARC_THIN_KINDS=canonical: the consult tool's description states what its subagent may spend. */
   consultLimits?: boolean;
+  /** ARC_THIN_PERSIST_DEFS=1: the functions the parent's python cells define are saved as lib/<name>.py (arc_thin_scripts.ts). */
+  persistDefs?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
   sessionDir?: string };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
@@ -210,6 +213,47 @@ export class NativeRuntime {
     const ok = !/NOT loaded/.test(receipt ?? '');
     this.host.log('component_runs.jsonl', { kind: 'save', path, decision: this.decision(), n: this.host.actionCount(), ok,
       ...(ok ? {} : { error: /NOT loaded \(([^)]*)\)/.exec(receipt ?? '')?.[1]?.slice(0, 200) }) });
+  }
+  /** The scripts there are: the lib/<name>.py files the binder holds, by name. */
+  scriptNames(): Set<string> {
+    return new Set(Object.keys(this.host.binder.versionMap()).flatMap(path => /^lib\/([^/]+)\.py$/.exec(path)?.[1] ?? []));
+  }
+  /** What was already said of a function that stays in the session (name: reason), so a repeated definition is told once. */
+  private scriptSkips = new Set<string>();
+  /**
+   * ARC_THIN_PERSIST_DEFS: the functions a cell defined become lib/<name>.py through the binder's own save (arc_thin_scripts.ts
+   * decides which can stand alone). A later definition of the same name is a new version; the same one again is nothing.
+   * Returns the lines the cell's result adds, and logs one `persist` row (what was saved, skipped, left as it was).
+   */
+  private async persistScripts(result: NativeResult): Promise<string[]> {
+    const defs = result.session?.cell_defs;
+    if (!defs?.length) return [];
+    const read = (name: string) => { try { return this.host.workspace.read(`lib/${name}.py`); } catch { return undefined; } };
+    const plan = planScripts(defs, { source: read, count: [...this.scriptNames()].length });
+    const saved: string[] = [], failed: Array<{ name: string; why: string }> = [];
+    for (const file of plan.write) {
+      this.host.workspace.mutate({ op: 'write', path: file.path, content: file.content });
+      const receipt = await this.host.binder.save(file.path, this.host.level());
+      this.noteSave(file.path, receipt);
+      if (/NOT loaded/.test(receipt ?? '')) failed.push({ name: file.name, why: `it was not loaded: ${/NOT loaded \(([^)]*)\)/.exec(receipt ?? '')?.[1]?.slice(0, 120) ?? 'invalid'}` });
+      else saved.push(`${file.path} v${this.host.binder.versionMap()[file.path]}`);
+    }
+    const skipped = [...plan.skipped, ...failed].filter(s => !this.scriptSkips.has(`${s.name}: ${s.why}`));
+    for (const s of skipped) this.scriptSkips.add(`${s.name}: ${s.why}`);
+    if (saved.length || skipped.length || plan.unchanged.length)
+      this.host.log('component_runs.jsonl', { kind: 'persist', n: this.host.actionCount(), decision: this.decision(), level: this.host.level(),
+        defined: defs.map(d => d.name), saved, unchanged: plan.unchanged, skipped: skipped.map(s => `${s.name}: ${s.why}`) });
+    return [saved.length ? `(saved as scripts: ${saved.join(', ')}; import lib.<name> in a later cell or in saved code)` : '',
+      skipped.length ? `(not saved as scripts: ${skipped.map(s => `${s.name}, ${s.why}`).join('; ')})` : ''].filter(Boolean);
+  }
+  /**
+   * ARC_THIN_PERSIST_DEFS: a cell that imports a script, or uses one by the name the session already holds, is adoption of
+   * what was saved, and is logged as such (`import` row, with the level the stale marker of the HARNESS index reads).
+   */
+  private noteScriptUse(code: string, result: NativeResult, scripts: Set<string>) {
+    const { imported, named } = scriptsUsed(code, result.session?.uses ?? [], scripts);
+    if (imported.length || named.length)
+      this.host.log('component_runs.jsonl', { kind: 'import', n: this.host.actionCount(), decision: this.decision(), level: this.host.level(), imported, named });
   }
   private components() {
     return this.host.binder.active().filter(c => /^(tools|observers|lib)\//.test(c.path) && c.path.endsWith('.py')).map(c => componentLines(c.path, c.source));
@@ -473,8 +517,10 @@ export class NativeRuntime {
     }
     const snap = this.snapshot(); const started = Date.now();
     const kit = kitOf(this.host.binder.versionMap());
+    // ARC_THIN_PERSIST_DEFS: the parent's own cells report the functions they define, to be saved as scripts.
+    const persist = this.host.persistDefs === true && !readonly && session === this.session;
     const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}),
-      ...(Object.keys(cells).length ? { cells } : {}) };
+      ...(Object.keys(cells).length ? { cells } : {}), ...(persist ? { persist_defs: true } : {}) };
     // The parent's session runs in its live kernel; a subagent's session and saved tools keep a fresh sandbox per call.
     const live = Boolean(this.kernel && session && session === this.session);
     const result = live ? await this.executeKernel(input, signal, via) : await this.execute(input, signal, undefined, via);
@@ -483,6 +529,13 @@ export class NativeRuntime {
     const outcome = session?.commit(result.session, live);
     // A checkpoint that did not load must not stay half-restored in the kernel: the next call starts from the rollback.
     if (live && outcome?.event === 'rolled_back') { this.kernel!.kill('its checkpoint did not load'); session!.kernelEnded(); }
+    // The scripts this cell used (those there were before it) and the ones its own definitions become, before its call is recorded:
+    // writing them moves the workspace version, which the same-state cache of this very call must see.
+    const scriptNotes: string[] = [];
+    if (persist) {
+      this.noteScriptUse(code, result, this.scriptNames());
+      scriptNotes.push(...await this.persistScripts(result));
+    }
     const kernel = live ? (result as any).kernel as { fresh: boolean; previousExit?: string; ended?: string } | undefined : undefined;
     const sessionNotes = [
       kernel?.fresh && kernel.previousExit ? `(new python kernel: the previous one ended (${kernel.previousExit}); the session was restored from its checkpoint v${session!.version} before this call)` : '',
@@ -519,7 +572,7 @@ export class NativeRuntime {
       this.host.log('component_runs.jsonl', { kind: 'cover_hint', path: covering, level: this.host.level(), decision, n: this.host.actionCount() });
     }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
-    const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
+    const out = this.finish([...receipts, shown(result), sessionNotes, ...scriptNotes, coverNote, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
       live && result.ok && Boolean((result.value as any)?.has_value), mark);
     if (parent) {
       const acted = Boolean(result.acted?.lines.length);

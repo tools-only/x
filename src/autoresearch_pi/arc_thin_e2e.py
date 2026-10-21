@@ -1279,6 +1279,8 @@ def run_arc_thin_e2e(
             # Components as the default of problem-solving (docs/plans/2026-10-21-components-by-default-canonical-forms.md), S1:
             # the system prompt's capability block and the refiner's kind text in their canonical form (ARC_THIN_KINDS=canonical).
             "canonical_kinds": foundation == "native" and variant != "control" and pi_env.get("ARC_THIN_KINDS") == "canonical",
+            # S2: the top-level functions of the agent's python cells are saved as lib/<name>.py (ARC_THIN_PERSIST_DEFS=1).
+            "persist_defs": foundation == "native" and variant != "control" and pi_env.get("ARC_THIN_PERSIST_DEFS") == "1",
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,

@@ -330,9 +330,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const reviewConsult = native && consultTool && process.env.ARC_THIN_REVIEW_CONSULT !== "0";
 	// Components as the default of problem-solving (docs/plans/2026-10-21-components-by-default-canonical-forms.md): one flag per
 	// stage, all off by default. KINDS=canonical (S1): the system prompt's capability block and the refiner's kind text in
-	// their canonical form (arc_thin_kinds.ts); a stage's mechanism is described in them only when its own flag is on.
+	// their canonical form (arc_thin_kinds.ts). PERSIST_DEFS=1 (S2): the top-level functions of a python cell are saved as
+	// lib/<name>.py, listed under HARNESS, and their use is logged (arc_thin_scripts.ts). A stage's mechanism is described in the
+	// canonical text only when its own flag is on.
 	const kindsCanonical = native && !control && process.env.ARC_THIN_KINDS === "canonical";
-	const kindsOptions = { consult: consultTool, persist: false, skills: false };
+	const persistDefs = native && !control && process.env.ARC_THIN_PERSIST_DEFS === "1";
+	const kindsOptions = { consult: consultTool, persist: persistDefs, skills: false };
 	const canonicalTemplate = kindsCanonical ? canonicalSystemTemplate(loadPrompt("arc_thin_native_system.md"), kindsOptions) : undefined;
 	const refinerCharter = kindsCanonical ? canonicalRefinerSystem(REFINER_SYSTEM, kindsOptions) : REFINER_SYSTEM;
 	/** Where a review's record is written for the subagent it consults (read-only to the agent, read by refs). */
@@ -359,7 +362,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     }
     return archivedResults.get(key)!;
   };
-  const binder = workspace ? new Binder(workspace, validatePythonComponent) : undefined;
+  const binder = workspace ? new Binder(workspace, validatePythonComponent, { scripts: persistDefs }) : undefined;
   let nativeRuntime: NativeRuntime | undefined;
 
 	// ---------------------------------------------------------------- stores
@@ -2768,7 +2771,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				if (!calls && trajectory.length - saved >= REFINE_EVERY) idle.push(`tool ${c.path} (not called in the ${trajectory.length - saved} actions since it was saved)`);
 			}
 		}
+		// Scripts (ARC_THIN_PERSIST_DEFS): how often a cell has imported or used each since it was saved; one saved and
+		// not used in REFINE_EVERY actions is reported to the refinement like an idle tool.
+		if (persistDefs) for (const c of binder.active().filter((c) => c.kind === "library")) {
+			const saved = Math.max(0, ...runs.filter((row) => row.kind === "save" && row.path === c.path).map((row) => Number(row.n) || 0));
+			const used = runs.filter((row) => row.kind === "import" && Number(row.n) >= saved && [...(row.imported ?? []), ...(row.named ?? [])].includes(c.name)).length;
+			usage.set(c.path, `used in ${used} cell(s) since saved at #${saved}`);
+			if (!used && trajectory.length - saved >= REFINE_EVERY) idle.push(`script ${c.path} (not imported or used in the ${trajectory.length - saved} actions since it was saved)`);
+		}
 		return { usage, idle };
+	}
+	/** Scripts (ARC_THIN_PERSIST_DEFS): the paths of those a cell imported or used on the level being played. */
+	function scriptsUsedNow(): Set<string> {
+		if (!persistDefs) return new Set();
+		return new Set(readRows("component_runs.jsonl").filter((row) => row.kind === "import" && Number(row.level) === currentLevel())
+			.flatMap((row) => [...(row.imported ?? []), ...(row.named ?? [])].map((name: string) => `lib/${name}.py`)));
 	}
 
 	/** A refine point's lines (A5): the last refinement's outcome, what ran without helping, the python redone on the level. */
@@ -3795,6 +3812,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       pythonKernel,
       workMemory,
       consultLimits: kindsCanonical,
+      persistDefs,
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
       sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),
@@ -4092,7 +4110,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!native || run.headKey !== headKey) {
 			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
-			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined),
+			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, scriptsUsedNow()),
 				nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,

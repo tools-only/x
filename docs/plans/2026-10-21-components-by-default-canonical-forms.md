@@ -380,6 +380,70 @@ the same five as the base (activation:41, components:181, receipts:8/28/44). Run
 Evidence level reached by S1: functional correctness only. Reachability is shown to the extension's own prompt and
 refiner call under a stubbed provider (a test double), not through `arc-harness-smoke`; no model has read this text.
 
+### S2 — persistence by default (flag `ARC_THIN_PERSIST_DEFS=1`, default off)
+
+Entry points and actual behavior:
+
+- **Detection, in the sandbox** (`demo/arc_thin_components.ts`, the python session dump). The host is TypeScript and cannot
+  read Python, so the guest, which already knows which functions a cell defined or redefined (the object's identity
+  changed), reports each *direct top-level* `def` (`cell_defs`): source, parameters, one description line (docstring, else
+  the comment above it or its first comment), and for every name the function reads that nothing inside it binds — built-ins
+  and the five names a module is given (state, grid, history, prev_grid, artifacts) aside — where it comes from, found in
+  the live session: a module (`import math`), an imported object (`from collections import deque`, `from lib.x import x`),
+  another function of the session (a dependency), or only the session (a value such as `OFFSET`, `env`, `show`). Only with the
+  request key `persist_defs`: flag off, nothing is computed and the report has no new field.
+- **Planning, pure** (`demo/arc_thin_scripts.ts`, new): a function becomes a script when everything it uses is built in, an
+  import, or a script (an earlier one, or one of this cell's that is, in dependency order); otherwise it stays in the session
+  and the cell's result says why, once (`it uses OFFSET, defined outside it (define it inside, or pass it in)`, `it calls x,
+  which is not saved as a script`, decorated / async / assigns a global / name not lowercase snake_case). The module is a
+  description line, the runtime's mark `# saved by the runtime from your python cell`, the import lines (the cell's own
+  imports the function needs, `from lib.<dep> import <dep>`), then the source. Rules: the last definition of a name in a
+  cell stands; an identical file is left alone (the work-memory record counted 95 of 129 re-definitions identical to the one
+  they replaced; those give the same file unless the names the function reads changed); a `lib/<name>.py` without the mark is the agent's own and is never replaced; a script that would import one
+  that already imports it is refused (a cycle at import time); at most 40 scripts a run.
+- **Writing** (`demo/arc_thin_native_runtime.ts`): `workspace.mutate` + `binder.save`, i.e. the binder's own save path with kind
+  `library` (validated, versioned, restorable with `env.restore`); `save` rows as for any file; one `persist` row per cell
+  (`defined`, `saved`, `unchanged`, `skipped`); one line in the cell's result per change (`(saved as scripts: lib/hyp.py v1,
+  lib/norm.py v1; import lib.<name> in a later cell or in saved code)`). It runs before the call record is stored, so the
+  work-memory same-state cache of the very call stays valid. `save=` is untouched.
+- **Adoption** (`import` rows in `component_runs.jsonl`: `imported` = by statement, `named` = by the name the session
+  already held, only for scripts that existed before the cell): a cell that defines and calls a function in one breath is not
+  adoption. The extension turns the rows into the index's usage text (`used in N cell(s) since saved at #n`), into the
+  "ran without helping" line of a refine point (a script unused for `REFINE_EVERY` actions), and into the level's `used`
+  set. `run-config.json` records `persist_defs`.
+- **Listing** (`demo/arc_thin_binder.ts`, option `scripts`): HARNESS gains `script hyp(a, b) v1 active: length of the
+  hypotenuse · import lib.hyp · used …` lines (header "your prompts, tools, scripts, skills and subagents"), the first 8 in full
+  and the rest by name on one line. `stale` is the existing status (saved on an earlier level), except that a script imported
+  or used on the current level is `active`. Without the option libraries stay out of the index, as before. The session view
+  (`PYTHON SESSION …`) is unchanged: it lists what is live, the index what is saved. Retiring is the agent's, as for any file
+  (delete it or move it under `_off/`); the refiner's FILE replies cannot delete, and I added no path for that.
+- **Text**: with both `ARC_THIN_KINDS=canonical` and this flag the Scripts bullet says "functions you define in python persist
+  as lib/<name>.py (import lib.<name>)"; without this flag it describes hand-written scripts.
+
+Checks (`tests/arc_thin_scripts.test.ts`, 7 tests, all pass; the sandbox tests drive the real guest through `NativeRuntime`):
+(1) the planner on the cases above, pure; (2) `scriptsUsed`; (3) a cell with `hyp`, `norm` (calls `hyp`) and `shifted`
+(reads `OFFSET`) writes `lib/hyp.py` v1 and `lib/norm.py` v1 with the exact module text, leaves `shifted` in the session
+with the reason, uses the docstring as the binder's description, logs two `save` rows and one `persist` row, and says
+nothing the second time the same functions are defined in a cell that runs; (4) a later cell importing `norm` and calling
+`hyp` by name prints 2.5 and 10.0 (the saved module imports `hyp` from its own) and logs one `import` row
+(`imported: [norm]`, `named: [hyp]`), while a cell that defines and calls `twice` logs none; (5) the same name with other code
+is v2, the same code again is not a new version, and a hand-written `lib/mine.py` is not replaced; (6) flag off: no files,
+no note, no `persist`/`import`/`save` row; (7) the index lines, the cap, the stale rule. A first draft of (3) and (5) passed
+vacuously, because an identical cell is answered from the same-state cache without running; the cells now differ by a
+print so the definition really runs again.
+
+What S2 does not do (limits, not defects found): (a) free names are found by walking the function's AST, not by
+`symtable`: a name bound only inside a nested scope but read outside it counts as bound, so such a script would fail at
+its first call with a NameError (visible; fixable by the agent). (b) Values are not captured: a function reading a
+module-level constant is skipped, not rewritten. (c) Only the parent's own cells are scanned; a consult's python and the
+bodies of saved tools are not. (d) Calls of a script from a saved tool or view are not counted as use. (e) The S0 corpus
+says the input is small (1.1% of cells define a function in the 2026-10-19+ batches, none for GPT): a run in which no
+function is defined has nothing to save, which the plan counts as justified non-use.
+
+Evidence level reached by S2: functional correctness only, on the real sandbox but with no model, and not through
+`arc-harness-smoke`. Whether a model defines functions more often once the text says they persist (the leading indicator in
+the plan's protocol: defs per run, then imports per decision) is unverified.
+
 | Evidence level | Status | Provider / environment | Artifacts and conclusion boundary |
 | --- | --- | --- | --- |
 | Functional correctness | S0 script (2 tests) and S1 text (4 tests) pass; S2 and S3 not built yet | none (read-only analysis of recorded runs; S1 uses a stubbed provider) | `tools/components_baseline.py`, `tests/test_components_baseline.py`, `tests/arc_thin_kinds.test.ts`; full suite = base result |

@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { Workspace } from './arc_thin_workspace.ts';
+import { SCRIPT_LINES, scriptSignature } from './arc_thin_scripts.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
   parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean };
@@ -48,7 +49,8 @@ export class Binder {
   private bindings = new Map<string, Component>();
   private saving: Promise<unknown> = Promise.resolve();
   private log: string; private versions: string;
-  constructor(readonly workspace: Workspace, private validate?: Validator) {
+  /** `scripts`: the HARNESS index lists lib/<name>.py as scripts (ARC_THIN_PERSIST_DEFS); otherwise libraries are not listed. */
+  constructor(readonly workspace: Workspace, private validate?: Validator, private options: { scripts?: boolean } = {}) {
     const store = join(workspace.root, '..', '.harness');
     this.versions = join(store, 'versions'); mkdirSync(this.versions, { recursive: true });
     this.log = join(store, 'components.jsonl');
@@ -141,29 +143,42 @@ export class Binder {
   }
   /**
    * The capability index: one line per saved prompt, tool, skill and subagent (memory has its own index). Libraries
-   * and plain files are not listed. A tool's line says where it enters the decision (a view after each new state, a
-   * predictor at each action, otherwise a call) and `usage` what it has done there (the runtime's counts, by path).
+   * and plain files are not listed, unless the binder lists scripts (ARC_THIN_PERSIST_DEFS): then each lib/<name>.py is a
+   * line (name and parameters, description, how to import it), the first SCRIPT_LINES in full and the rest by name, and
+   * `used` names the paths used on this level, which are not stale whatever level they were saved on. A tool's line says
+   * where it enters the decision (a view after each new state, a predictor at each action, otherwise a call) and `usage`
+   * what it has done there (the runtime's counts, by path).
    */
-  index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map()): string {
-    const order = ['prompt', 'tool', 'skill', 'subagent'];
+  index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map(), used: Set<string> = new Set()): string {
+    const scripts = this.options.scripts === true;
+    const order = scripts ? ['prompt', 'tool', 'library', 'skill', 'subagent'] : ['prompt', 'tool', 'skill', 'subagent'];
     const listed = [...this.entries].filter(([path, e]) => !e.retired && order.includes(componentKind(path) ?? ''))
       .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
-    const lines = listed.map(([path, e]) => {
+    let scriptLines = 0; const scriptNames: string[] = [];
+    const lines = listed.flatMap(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;
-      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
+      const status = !c ? 'failed' : !c.enabled ? 'off' : (c.level < level && !used.has(path)) || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
+      if (kind === 'library') {
+        if (scriptLines++ >= SCRIPT_LINES) { scriptNames.push(c?.name ?? path); return []; }
+        const name = c?.name ?? path;
+        return [`script ${name}${c ? scriptSignature(c.source, name) : ''} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · import lib.${name}` +
+          (usage.get(path) ? ` · ${usage.get(path)}` : '')];
+      }
       const use = kind === 'tool' ? (path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
           : c?.predictor ? 'predictor, run at each action' : `${c?.name ?? ''}(args)`)
         : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
-      return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +
-        (usage.get(path) ? ` · ${usage.get(path)}` : '');
+      return [`${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +
+        (usage.get(path) ? ` · ${usage.get(path)}` : '')];
     });
+    if (scriptNames.length) lines.push(`${scriptNames.length} more scripts (import lib.<name>): ${scriptNames.join(', ')}`);
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';
-    const full = ['HARNESS (your prompts, tools, skills and subagents; memory is indexed above)', ...lines].join('\n');
+    const kinds = scripts && listed.some(([path]) => componentKind(path) === 'library') ? 'prompts, tools, scripts, skills and subagents' : 'prompts, tools, skills and subagents';
+    const full = [`HARNESS (your ${kinds}; memory is indexed above)`, ...lines].join('\n');
     if (full.length <= 1200) return full;
     const groups = new Map<string, string[]>();
     for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path]); }
-    return ['HARNESS (names only; read a file for its text)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
+    return ['HARNESS (names only; read a file for its text)', ...[...groups].map(([kind, names]) => `${kind === 'library' ? 'script' : kind}s: ${names.join(', ')}`),
       `${listed.filter(([, e]) => e.error).length} failed; receipts label last working versions.`].join('\n').slice(0, 1200);
   }
 }

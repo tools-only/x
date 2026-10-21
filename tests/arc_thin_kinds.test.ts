@@ -66,6 +66,7 @@ test('the canonical capability block names the seven kinds in order, and nothing
 test('flag on: the rendered system prompt states the canonical kinds and is no longer than the legacy one; flag off renders the legacy template', async () => {
   const off = await fixture();
   const on = await fixture({ ARC_THIN_KINDS: 'canonical' });
+  const withScripts = await fixture({ ARC_THIN_KINDS: 'canonical', ARC_THIN_PERSIST_DEFS: '1' });
   try {
     assert.match(off.system, /Your harness has five kinds of capability:/);
     assert.match(off.system, /- Tool: tools\/<name>\.py; python\(code, save="name"\) publishes it\./);
@@ -75,8 +76,10 @@ test('flag on: the rendered system prompt states the canonical kinds and is no l
     const lf = (text: string) => text.replace(/\r\n/g, '\n');
     assert.ok(lf(on.system).length <= lf(off.system).length, `canonical ${lf(on.system).length} chars, legacy ${lf(off.system).length}`);
     assert.ok(on.system.length <= off.system.length, `with the template's own line ends: ${on.system.length} against ${off.system.length}`);
-    // The mechanisms of S2 and S3 are not described while their flags are off.
+    // The mechanisms of S2 and S3 are not described while their flags are off, and S2's is when its flag is on.
     assert.doesNotMatch(on.system, /persist as lib|metadata\.trigger: level_start/);
+    assert.match(withScripts.system, /- Scripts: functions you define in python persist as lib\/<name>\.py \(import lib\.<name>\)\./);
+    assert.ok(withScripts.system.length <= off.system.length, `with S2's sentence: ${withScripts.system.length} against ${off.system.length}`);
     // The consult tool states what its subagent may spend, once, in its description.
     assert.match(on.tools.get('consult').description, /6 model rounds of at most 1024 output tokens each and 120 s/);
     assert.doesNotMatch(off.tools.get('consult').description, /model rounds/);
@@ -84,7 +87,7 @@ test('flag on: the rendered system prompt states the canonical kinds and is no l
     const [offCharter, onCharter] = [await off.refinerSystem(), await on.refinerSystem()];
     assert.ok(offCharter.startsWith(REFINER_SYSTEM), 'flag off: the legacy charter, as it was');
     assert.ok(onCharter.startsWith(REFINER_HEAD) && /The harness has seven kinds of capability: prompts \(/.test(onCharter) && onCharter.includes(VIEW_RULE), 'flag on: the canonical charter');
-  } finally { await off.close(); await on.close(); }
+  } finally { await off.close(); await on.close(); await withScripts.close(); }
 });
 
 test('whatever flags are on, the canonical capability block is no longer than the legacy one', () => {
