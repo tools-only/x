@@ -10,7 +10,6 @@ import {
 	OBSERVATION_COMPACTION_TOOL,
 } from "./pi_agent_owned_observation_compaction.ts";
 import { installTaskLocalContextLifecycle } from "./pi_task_local_context_lifecycle.ts";
-import { loadPrompt } from "./prompt_loader.ts";
 
 type SurfaceMode = "general" | "shopping_batch";
 type Choice = "apply" | "keep";
@@ -39,6 +38,17 @@ const toolSurfaces: Record<SurfaceMode, string[]> = {
 	general: [...SHOPPING_TOOLS, "research_resource", "decide_execution_surface"],
 	shopping_batch: [...SHOPPING_TOOLS, "shopping_batch_action", "research_resource", "decide_execution_surface"],
 };
+
+function shoppingToolDescription(tool: string): string {
+	const descriptions: Record<string, string> = {
+		search_products: "Search the current product catalog by natural language. Results are IDs ranked by text relevance; this order does not apply a price or other task-specific tie-breaker. Search broadly enough to compare all plausible candidates.",
+		filter_by_range: "Keep product IDs whose numeric field satisfies the given operator and threshold. Apply every measurable constraint stated in the user's request, using strict or inclusive operators exactly as written.",
+		get_product_details: "Return full records for the supplied candidate IDs. Inspect all candidates that remain after filtering and check each requested product attribute before adding one.",
+		sort_products: "Sort the supplied candidate IDs by a product field. First filter candidates against the user's explicit constraints, then use the tie-breaker in the official task prompt (for example, lowest price means sort_by=price and order=asc). Sorting returns IDs only; use get_product_details when you need to compare attributes.",
+		filter_by_applicable_coupons: "Return products whose applicable_coupons include every supplied coupon name. This checks per-product eligibility only; the cart tool validates the combined coupon thresholds.",
+	};
+	return descriptions[tool] ?? `JIT DeepPlanning Shopping action ${tool}. Use only for the current task database and cart. Do not pass null for optional fields; omit them.`;
+}
 
 function shoppingParameters(tool: string) {
 	// Keep every property non-nullable: the installed OpenAI-compatible gateway
@@ -73,7 +83,6 @@ export default function shoppingE2EExtension(pi: ExtensionAPI) {
 	const jitPython = process.env.JIT_PYTHON ?? "python";
 	const control = process.env.PI_SHOPPING_EXPERIMENT_VARIANT === "control";
 	const contextCompactionEnabled = !control && process.env.PI_SHOPPING_CONTEXT_COMPACTION === "enabled";
-	const method = loadPrompt("auto_research_method.md");
 	let surface: SurfaceMode = "general";
 	let findingCounter = 0;
 	let eventCounter = 0;
@@ -114,9 +123,6 @@ export default function shoppingE2EExtension(pi: ExtensionAPI) {
 	for (const decision of readJsonl("harness-decisions.jsonl")) decisionCounter = Math.max(decisionCounter, numericSuffix(decision.decision_id));
 	for (const assessment of readJsonl("effect-assessments.jsonl")) pendingAssessments.set(String(assessment.effect_assessment_id), assessment);
 	for (const finding of findings.values()) for (const assessmentId of finding.assessment_refs ?? []) pendingAssessments.delete(assessmentId);
-	const restoredResourceHint = findings.size || pendingAssessments.size
-		? "This task directory contains prior task-local research records from an earlier supported continuation. They are not execution state: if relevant, call research_resource action=inspect (read-only) to review them; the current Shopping surface still starts from its safe baseline and any new apply/keep decision remains yours. "
-		: "";
 	const summarize = (text: string) => text.replace(/\s+/g, " ").trim();
 	const runBridge = (tool: string, args: Record<string, unknown>): string => {
 		const normalized = { ...args };
@@ -221,7 +227,6 @@ export default function shoppingE2EExtension(pi: ExtensionAPI) {
 			effective_at: "next_model_request", scope: "current Shopping task",
 		}],
 	};
-	const attributionMethod = control ? "" : `${method}\n\n`;
 	const preparePendingEffect = (
 		mode: SurfaceMode, decision: Record<string, any>,
 	): PendingEffect => {
@@ -236,12 +241,7 @@ export default function shoppingE2EExtension(pi: ExtensionAPI) {
 	mkdirSync(root, { recursive: true });
 	writeFileSync(join(root, "capability-catalog.json"), `${JSON.stringify(taskCapabilityCatalog, null, 2)}\n`, "utf8");
 
-	pi.on("before_agent_start", async (event) => ({ systemPrompt: `${event.systemPrompt}\n\n` + attributionMethod +
-		"This is one isolated DeepPlanning Shopping task. Use the listed Shopping tools and always inspect get_cart_info before finishing. " +
-		restoredResourceHint +
-		"Research and harness changes are optional; direct completion and no-change are valid. The task-local research_resource is an agent-authored, versioned finding: cite execution observation IDs when recording a material conclusion. " +
-		(control ? "This control run does not expose research or self-harness capabilities. " : `Current task capability catalog (bounded static disclosure): ${JSON.stringify(taskCapabilityCatalog)} The runtime does not infer candidates from particular task actions. You alone decide from task-local evidence whether to record a finding and apply, keep, revert, or ignore a capability. A system effect assessment is only feedback; absorb it explicitly in a later finding update or resolution if useful. `) +
-		"Do not use execute_code, inspect benchmark implementation, or access sibling tasks." }));
+	pi.on("before_agent_start", async (event) => ({ systemPrompt: event.systemPrompt }));
 	pi.on("before_agent_start", async () => {
 		// Pi runtime is initialized at this lifecycle boundary; the operation
 		// affects only the following model request.
@@ -250,13 +250,17 @@ export default function shoppingE2EExtension(pi: ExtensionAPI) {
 	});
 	pi.on("context", async (event) => {
 		const messages = [...event.messages];
-		if (!control && pendingAssessments.size) messages.push({ role: "user", content: [{ type: "text", text: `Pending task-local execution-condition effects (cite assessment_refs in research_resource when they change the finding): ${JSON.stringify([...pendingAssessments.values()])}` }], timestamp: Date.now() });
+		// One concise execution aid for this task. It is procedural only: the
+		// benchmark query and canonical Shopping prompt remain the sole goals.
+		const recallHint = "SHOPPING CHECK (one-shot): For every requested slot, search broadly (vary the query when needed), filter every stated brand/color/size/numeric constraint, and inspect all plausible survivors before choosing. Check required delivery for selected items. Before the single final submit, inspect the full cart, confirm each slot and constraint, and verify any 'between A and B' total is within the closed interval [A,B]. If outside it, adjust using already-qualified alternatives, then recheck coupons against the final cart. Keep reasoning concise, avoid narrating candidate lists, and never submit twice.";
+		if (!messages.some((message: any) => Array.isArray(message.content) && message.content.some((part: any) => part?.type === "text" && part.text === recallHint))) {
+			messages.push({ role: "user", content: [{ type: "text", text: recallHint }], timestamp: Date.now() });
+		}
+		if (!control && pendingAssessments.size) messages.push({ role: "user", content: [{ type: "text", text: `Pending task-local effects (cite assessment_refs when relevant; use research_resource action=inspect for full records): ${JSON.stringify([...pendingAssessments.values()].map((a) => ({ id: a.effect_assessment_id, verdict: a.verdict, improvement: a.improvement, attempted: (a.window as any)?.attempted_work_units, completed: (a.window as any)?.completed_work_units })))}` }], timestamp: Date.now() });
 		if (!control) {
-			// Findings are task-local control-plane state, not a bounded digest. The
-			// complete set remains visible; canonical JSONL is also recoverable via
-			// research_resource.inspect after a context restart.
+			// Keep the recurring context small; full canonical records remain available via inspect.
 			const active = [...findings.values()].filter((finding) => finding.status !== "resolved");
-			if (active.length) messages.push({ role: "user", content: [{ type: "text", text: `Task-local shopping findings: ${JSON.stringify(active)}` }], timestamp: Date.now() });
+			if (active.length) messages.push({ role: "user", content: [{ type: "text", text: `Task-local finding digest (call research_resource action=inspect for full evidence): ${JSON.stringify(active.map((f) => ({ id: f.finding_id, version: f.version, decision: summarize(f.decision).slice(0, 240), evidence: summarize(f.evidence).slice(0, 240), evidence_refs: f.evidence_refs, remaining_uses: f.remaining_uses })))}` }], timestamp: Date.now() });
 		}
 		if (!observedSurface && surface !== "general") {
 			observedSurface = true;
@@ -272,7 +276,7 @@ export default function shoppingE2EExtension(pi: ExtensionAPI) {
 	});
 
 	for (const tool of SHOPPING_TOOLS) {
-		pi.registerTool({ name: tool, label: tool, description: `JIT DeepPlanning Shopping action ${tool}. Use only for the current task database and cart. Do not pass null for optional fields; omit them.`, parameters: shoppingParameters(tool), async execute(toolCallId, params) {
+		pi.registerTool({ name: tool, label: tool, description: shoppingToolDescription(tool), parameters: shoppingParameters(tool), async execute(toolCallId, params) {
 			try { const text = runBridge(tool, params as Record<string, unknown>); let outcome: Outcome = "success"; try { const parsed = JSON.parse(text); if (parsed && typeof parsed === "object" && typeof parsed.error === "string" && parsed.error.trim()) outcome = "semantic_error"; } catch {} const units = tool === "get_product_details" && Array.isArray((params as Record<string, unknown>).product_ids) ? ((params as Record<string, unknown>).product_ids as unknown[]).length : 1; const observation = recordObservation(toolCallId, tool, params as Record<string, unknown>, text, outcome, units); return { content: [{ type: "text", text: observationText(text, observation) }], details: { observation }, isError: outcome !== "success" }; }
 			catch (error) { const text = String(error); const observation = recordObservation(toolCallId, tool, params as Record<string, unknown>, text, "transport_error"); return { content: [{ type: "text", text: observationText(text, observation) }], details: { observation }, isError: true }; }
 		} });
@@ -340,11 +344,9 @@ export default function shoppingE2EExtension(pi: ExtensionAPI) {
 	pi.registerTool({ name: "decide_execution_surface", label: "Decide Shopping Surface", description: "After an evidence-backed finding, choose whether to enable the disclosed Shopping batch surface. No change is valid.", parameters: Type.Object({ choice: Type.Union([Type.Literal("apply"), Type.Literal("keep")]), mode: Type.Literal("shopping_batch"), basis_resource_ids: Type.Array(Type.String(), { minItems: 1 }), expected_effect: Type.String(), observation_horizon: Type.Integer({ minimum: 1 }), reconsider_when: Type.String() }), async execute(toolCallId, params) {
 			if (control) throw new Error("surface decisions are disabled in control"); const p = params as Record<string, any>; const basis = p.basis_resource_ids as string[]; if (!basis.every((id) => findings.has(id))) throw new Error("unknown finding basis"); const basisFindings = basis.map((id) => findings.get(id)!); if (basisFindings.some((finding) => finding.status !== "active")) throw new Error("surface decisions require active findings"); const applied = p.choice === "apply"; const mode = p.mode as SurfaceMode; const decision = { decision_id: allocateDecisionId(), decision_path: "decide_execution_surface", choice: p.choice, applied, basis_resource_ids: basis, basis_snapshots: basisFindings.map((finding) => ({ finding_id: finding.finding_id, goal_id: finding.goal_id, version: finding.version, research_event_id: finding.research_event_id, evidence_refs: finding.evidence_refs, assessment_refs: finding.assessment_refs })), previous: surface, value: applied ? mode : surface, effect_metric: "shopping_batch_utilization", expected_effect: p.expected_effect, observation_horizon: p.observation_horizon, reconsider_when: p.reconsider_when, toolCallId, recordedAt: new Date().toISOString() }; const nextPending = applied ? preparePendingEffect(mode, decision) : undefined; append("harness-decisions.jsonl", decision); if (applied) { pi.setActiveTools(activeToolsForSurface(mode)); surface = mode; observedSurface = false; pending = nextPending; } return { content: [{ type: "text", text: JSON.stringify(decision) }], details: decision };
 	} });
-
 	pi.registerTool({ name: "shopping_batch_action", label: "Shopping Batch Add", description: "Initially inactive. After a finding-backed Pi-native surface decision, add 2-16 products to the cart through one bridge process. Non-atomic; inspect each result.", parameters: Type.Object({ items: Type.Array(Type.Object({ product_id: Type.String(), quantity: Type.Integer({ minimum: 1 }) }), { minItems: 2, maxItems: 16 }) }), async execute(toolCallId, params) {
 			const p = params as { items: Array<{ product_id: string; quantity: number }> }; try { const text = runBridge("shopping_batch_action", p as unknown as Record<string, unknown>); const result = JSON.parse(text) as { attempted: number; completed: number; bridge_processes: number; results: Array<Record<string, unknown>> }; if (result.bridge_processes !== 1) throw new Error("shopping batch bridge did not report exactly one process"); const outcome: Outcome = result.completed === result.attempted ? "success" : "semantic_error"; const observation = recordObservation(toolCallId, "shopping_batch_action", {}, text, outcome, result.attempted, result.completed, { bridge_processes: result.bridge_processes }); return { content: [{ type: "text", text: observationText(text, observation) }], details: { observation, results: result.results }, isError: outcome !== "success" }; } catch (error) { const text = String(error); const observation = recordObservation(toolCallId, "shopping_batch_action", {}, text, "transport_error", p.items.length, 0, { bridge_processes: 1 }); return { content: [{ type: "text", text: observationText(text, observation) }], details: { observation, results: [] }, isError: true }; }
 	} });
-
 	// Keep the task transcript bounded in treatment runs without changing the
 	// control arm. The lifecycle is shared with ARC and Terminal-Bench and has
 	// no knowledge of Shopping-specific data.

@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     shopping.add_argument("--level", choices=("1", "2", "3"), default="3")
     shopping.add_argument("--case", default="1")
     shopping.add_argument("--variant", choices=("control", "treatment"), default="treatment")
-    shopping.add_argument("--timeout", type=float, default=900.0)
+    shopping.add_argument("--timeout", type=float, default=1800.0)
     shopping.add_argument(
         "--context-compaction", action="store_true",
         help="expose the optional Agent-selected Pi context capability for this isolated run",

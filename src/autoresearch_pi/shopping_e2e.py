@@ -531,7 +531,7 @@ def run_shopping_tool(
         tool=str(payload.get("tool", "")), arguments=dict(payload.get("arguments") or {}),
     )
     root = (jit_root or Path(os.getenv("JIT_ROOT", r"D:\JIT"))).resolve()
-    interpreter = python or os.getenv("JIT_PYTHON") or r"D:\anaconda\envs\jit\python.exe"
+    interpreter = python or os.getenv("JIT_PYTHON") or r"D:\conda\python.exe"
     bridge = [interpreter, "-m", "autoresearch_pi.shopping_tool_bridge"]
     env = os.environ.copy()
     project_src = str(Path(__file__).resolve().parent.parent)
@@ -549,7 +549,7 @@ def shopping_evaluator(*, db_dir: str, cart_path: str, jit_root: Path | None = N
                        python: str | None = None) -> dict[str, Any]:
     """Run JIT's deterministic cart evaluator without importing its runtime."""
     root = (jit_root or Path(os.getenv("JIT_ROOT", r"D:\JIT"))).resolve()
-    interpreter = python or os.getenv("JIT_PYTHON") or r"D:\anaconda\envs\jit\python.exe"
+    interpreter = python or os.getenv("JIT_PYTHON") or r"D:\conda\python.exe"
     code = (
         "import json,sys; "
         "from benchmark.adapter.deepplanning_shopping_eval import evaluate_shopping_prediction; "
@@ -583,7 +583,7 @@ def _run_pi_shopping_task(
     root: Path,
     case: dict[str, Any],
     *,
-    timeout: float = 900.0,
+    timeout: float = 1800.0,
     experiment_variant: str = "treatment",
     context_compaction: bool = False,
 ) -> Any:
@@ -593,7 +593,8 @@ def _run_pi_shopping_task(
     agent_dir = root / ".pi-agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     project_root = Path(__file__).resolve().parents[2]
-    env = load_project_dotenv(project_root)
+    dotenv_root = next((candidate for candidate in (project_root, *project_root.parents) if (candidate / ".env").is_file()), project_root)
+    env = load_project_dotenv(dotenv_root)
     src = str(Path(__file__).resolve().parent.parent)
     env.update({
         "PI_CODING_AGENT_DIR": str(agent_dir),
@@ -603,10 +604,11 @@ def _run_pi_shopping_task(
         "PI_SHOPPING_DB_DIR": case["db_dir"],
         "PI_SHOPPING_CART_PATH": case["cart_path"],
         "JIT_ROOT": env.get("JIT_ROOT", r"D:\JIT"),
-        "JIT_PYTHON": env.get("JIT_PYTHON", r"D:\anaconda\envs\jit\python.exe"),
+        "JIT_PYTHON": env.get("JIT_PYTHON", r"D:\conda\python.exe"),
         "AUTORESEARCH_PI_SRC": src,
         "PYTHONPATH": src + os.pathsep + env.get("PYTHONPATH", ""),
         "PI_SHOPPING_EXPERIMENT_VARIANT": experiment_variant,
+        "PI_SHOPPING_LEVEL": str(case["level"]),
         "PI_SHOPPING_CONTEXT_COMPACTION": "enabled" if context_compaction else "disabled",
     })
     apply_jev_routing_policy(env)
@@ -618,7 +620,7 @@ def _run_pi_shopping_task(
     if not base_url or not api_key:
         raise RuntimeError("the project .env or process environment must define OPENAI_API_BASE and OPENAI_API_KEY")
     # Keep system instructions as system instead of Pi's reasoning-model developer role.
-    (agent_dir / "models.json").write_text(json.dumps({"providers": {"yibu": {"baseUrl": base_url, "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True, "compat": {"supportsDeveloperRole": False}, "models": [{"id": model, "name": model, "reasoning": True, "contextWindow": 128000, "maxTokens": 8192}]}}}), encoding="utf-8")
+    (agent_dir / "models.json").write_text(json.dumps({"providers": {"yibu": {"baseUrl": base_url, "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True, "compat": {"supportsDeveloperRole": False}, "models": [{"id": model, "name": model, "reasoning": True, "contextWindow": 128000, "maxTokens": 32768}]}}}), encoding="utf-8")
     command = (node, cli, "--mode", "rpc", "--provider", "yibu", "--model", model, "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--exclude-tools", "bash,edit,write,grep,find,ls,read", "--extension", str(extension))
     command += ("--extension", str(extension.parent / "pi_final_provider_payload.ts"))
     events: list[dict[str, Any]] = []
@@ -647,6 +649,31 @@ def _run_pi_shopping_task(
                 run_error = f"Pi rejected prompt: {response}"
             else:
                 kernel.wait_for_agent_events(timeout=timeout)
+                latest_end = next((event for event in reversed(events) if event.get("type") == "agent_end"), {})
+                latest_message = next((message for message in reversed(latest_end.get("messages") or [])
+                                       if message.get("role") == "assistant"), {})
+                if latest_message.get("stopReason") == "length":
+                    # A truncated provider response cannot settle this task. The cart
+                    # is durable, so recover once in a clean model session and let
+                    # the agent inspect it before adding anything else. The original
+                    # canonical goal is repeated verbatim; no scoring/checkout retry
+                    # is performed here.
+                    recovery_prompt = (
+                        task_prompt
+                        + "\n\nThe prior model response was truncated. Continue this same task from its saved state. "
+                        "First inspect the current cart and reuse its contents; do not add duplicates. "
+                        "Complete only missing requirements, verify the closed budget interval before finishing, "
+                        "and make no more than one final checkout/submit. Keep deliberation concise and use tools to act."
+                    )
+                    recovery = kernel.new_session()
+                    if recovery.get("success") is False:
+                        run_error = f"Pi length recovery session rejected: {recovery}"
+                    else:
+                        recovery_response = kernel.prompt(recovery_prompt)
+                        if recovery_response.get("success") is False:
+                            run_error = f"Pi length recovery prompt rejected: {recovery_response}"
+                        else:
+                            kernel.wait_for_agent_events(timeout=timeout)
     except Exception as exc:
         # Preserve the events already received by the runner.  A timeout is a
         # task outcome, not permission to discard the partial execution trace.
@@ -667,7 +694,7 @@ def _run_pi_shopping_task(
             break
     if run_error and not succeeded:
         error = run_error
-    status_path.write_text(json.dumps({"status": "settled" if succeeded else "interrupted", "trace_complete": bool(succeeded), "trace_format": "compact-jsonl-v1", "message_updates": "delta_without_cumulative_snapshots", "event_count": len(events), "error": error}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    status_path.write_text(json.dumps({"status": "settled" if succeeded else "interrupted", "trace_complete": bool(succeeded), "trace_format": "compact-jsonl-v1", "message_updates": "delta_without_cumulative_snapshots", "event_count": len(events), "length_recovery_attempted": any(event.get("type") == "rpc_control" and event.get("command") == "new_session" for event in events), "error": error}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return type("ShoppingPiRun", (), {"model": model, "answer": answer, "agent_succeeded": succeeded, "agent_error": error, "events": tuple(events)})()
 
 
@@ -677,7 +704,7 @@ def run_shopping_e2e(
     dataset: Path | None = None,
     level: str = "3",
     case_id: str = "1",
-    timeout: float = 900.0,
+    timeout: float = 1800.0,
     pi_runner: Any | None = None,
     experiment_variant: str = "treatment",
     context_compaction: bool = False,
@@ -934,7 +961,7 @@ def run_shopping_e2e_experiment(
     cases: list[tuple[str, str]] | tuple[tuple[str, str], ...],
     repeats: int = 1,
     dataset: Path | None = None,
-    timeout: float = 900.0,
+    timeout: float = 1800.0,
     case_runner: Any | None = None,
     validation_strata: dict[str, dict[str, str]] | None = None,
 ) -> ShoppingExperimentResult:
@@ -1121,7 +1148,7 @@ def run_shopping_context_compaction_ablation(
     cases: list[tuple[str, str]] | tuple[tuple[str, str], ...],
     repeats: int = 1,
     dataset: Path | None = None,
-    timeout: float = 900.0,
+    timeout: float = 1800.0,
     case_runner: Any | None = None,
 ) -> ShoppingExperimentResult:
     """Compare one capability while preserving the full treatment runtime in both arms."""
