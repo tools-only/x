@@ -94,7 +94,13 @@ class _StrictTransition(_Transition):
     (actions without coordinates). changed_cells and bbox, which receipts and trajectory rows report, are counted from the
     two grids when a check first reads them."""
 
+    def __init__(self, *args, hidden_fields=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self._hidden_fields = set(hidden_fields)
+
     def _has(self, key):
+        if key in self._hidden_fields:
+            raise KeyError("field %r is hidden from this check" % key)
         if key in _DERIVED and not dict.__contains__(self, key):
             dict.__setitem__(self, key, _DERIVED[key](dict.get(self, "before"), dict.get(self, "after")))
         return dict.__contains__(self, key)
@@ -105,7 +111,7 @@ class _StrictTransition(_Transition):
         raise KeyError(key)
 
     def __contains__(self, key):
-        return key in _DERIVED or dict.__contains__(self, key)
+        return self._has(key)
 
     def get(self, key, default=None):
         if self._has(key) or key in ("x", "y"):
@@ -196,6 +202,7 @@ def _claims(req):
     # strict (2026-10-17, r04): t.get of a key a move does not carry fails, and a move carries changed_cells and bbox
     # (counted from its two grids when read), which the agent's receipts report and checks read.
     move = _StrictTransition if req.get("strict") else _Transition
+    hidden_fields = tuple(req.get("hidden_fields") or ())
     out = {claim["key"]: {"results": [], "error": error} for claim, _fn, error in checks}
     for segment in req.get("segments") or []:
         prev = segment["grid"]
@@ -206,7 +213,10 @@ def _claims(req):
                 cur = [row[:] for row in prev]
                 for x, y, _before, after in step.get("delta") or []:
                     cur[y][x] = after
-            t = move(dict(meta.get(str(step["n"])) or {}, n=step["n"], before=_frozen(prev), after=_frozen(cur)))
+            fields = dict(meta.get(str(step["n"])) or {}, n=step["n"], before=_frozen(prev), after=_frozen(cur))
+            for key in hidden_fields:
+                fields.pop(key, None)
+            t = move(fields, hidden_fields=hidden_fields) if req.get("strict") else move(fields)
             for claim, fn, _error in checks:
                 if fn is None:
                     continue

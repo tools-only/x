@@ -64,6 +64,7 @@ export type MemoryState = {
  * checkSources: each check's code under its hypothesis (the full memory read on demand, not the per-decision views).
  */
 export type ComponentContext = { skills?: Record<string, number>; overlay?: string; checks?: Record<string, string>; factProvenance?: boolean; checkSources?: boolean };
+export type GoalSupportCheck = (key: string, hypothesis: { question?: string; status?: Status; check?: string }) => string | undefined;
 
 export type HypothesisInput = {
 	key: string; claim?: string; question?: string; predicts?: string; status?: Status; next_test?: string; evidence?: Partial<Evidence>;
@@ -243,7 +244,7 @@ const premiseLine = (hypotheses: Map<string, Hypothesis>, key: string) => {
  * Validate a memory call against the current state and return the rows to
  * append. Nothing is applied when any part is invalid.
  */
-export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actionCount: number, ctx: ComponentContext = {}): MemoryPlan {
+export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actionCount: number, ctx: ComponentContext = {}, goalSupport?: GoalSupportCheck): MemoryPlan {
 	const op = params.op ?? (params.set || params.delete || params.hypotheses || params.tests || params.strategies ? "update"
 		: params.text !== undefined ? "set" : undefined);
 	if (op === "list") return { ok: true, rows: [], receipt: renderMemory(state, actionCount, [], ctx) };
@@ -380,6 +381,9 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 		if (existing && claim !== existing.claim) claimChanged.add(key);
 		if (item.status) explicitStatus.add(key);
 		const question = nonEmpty(item.question) ? item.question.trim().toLowerCase().slice(0, 40) : existing?.question;
+		const proposed = { key, question, status: item.status ?? existing?.status ?? "open", check: typeof item.check === "string" ? item.check : existing?.check };
+		const refusal = goalSupport?.(key, proposed);
+		if (refusal) { errors.push(refusal); continue; }
 		const next: Hypothesis = {
 			claim,
 			...(question ? { question } : {}),

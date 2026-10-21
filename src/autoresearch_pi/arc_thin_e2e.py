@@ -70,6 +70,7 @@ LEVEL_REVIEW_PROMPT = (
     "- test: <move> — <the win condition it tests>\n"
     "with the move as ACTION6(x,y) or ACTIONn. The runtime pins them in this order as moves that predict a level change "
     "and reports each result. Level {level}'s pattern is one candidate, not a rule.\n"
+    "Add a goal hypothesis with a check(t) that predicts this level change from the before grid and the winning action.\n"
     "Scope or delete memory entries that state level {level}'s win as a general rule. Then stop."
 )
 LEVEL_REVIEW_RECOVERY_PROMPT = (
@@ -123,6 +124,14 @@ PERSISTED_EVENTS = frozenset({
     "message_start", "message_end", "tool_execution_start", "tool_execution_end", "extension_error",
 })
 NORMAL_STOPS = frozenset({"win", "budget_exhausted", "max_decisions", "max_levels", "token_cap", "deadline"})
+
+
+def _idle_stall_due(last_action_at: float, now: float, max_idle_minutes: float, rows_before: int, rows_now: int) -> bool:
+    return bool(max_idle_minutes and rows_now == rows_before and now - last_action_at >= max_idle_minutes * 60)
+
+
+def _max_levels_reached(levels_completed: int, max_levels: int | None) -> bool:
+    return max_levels is not None and levels_completed >= max_levels
 # rebuild: every decision shows only the rebuilt working set (the 2026-10-08 design); session: the agent's last
 # decisions from Pi's session stay in view as well (docs/reports/2026-10-12-memory-mechanism-review.md).
 CONTINUITY_MODES = frozenset({"rebuild", "session"})
@@ -964,12 +973,14 @@ def _reconciled_action(before: int, health: dict | None, state: dict | None, tra
 
 
 def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *, max_recoveries: int = 2,
-                         settlement_timeout: float = 30.0, restart=None) -> list[dict[str, Any]]:
+                         settlement_timeout: float = 30.0, restart=None, idle_stalled=None) -> list[dict[str, Any]]:
     """A local fault group. Abort, settle and reconcile before considering another paid request."""
     for attempt in range(max_recoveries + 1):
         try:
             return turn(message)
         except (PiTurnIdleTimeout, RuntimeError, OSError) as exc:
+            if isinstance(exc, PiTurnIdleTimeout) and idle_stalled and idle_stalled():
+                raise TimeoutError("idle_stall") from exc
             dead = (not isinstance(exc, PiTurnIdleTimeout) and restart is not None
                     and (isinstance(exc,OSError) or 'Pi RPC process exited' in str(exc)) and kernel.process is not None
                     and kernel.process.poll() is not None)
@@ -1044,6 +1055,7 @@ def run_arc_thin_e2e(
     snapshot_after_decisions: tuple[int, ...] = (),
     snapshot_at_levels: tuple[int, ...] = (),
     max_levels: int | None = None,
+    max_idle_minutes: float = 45,
     fork_from: Path | None = None,
     max_environment_restarts: int = MAX_ENVIRONMENT_RESTARTS,
     max_provider_errors: int = MAX_PROVIDER_ERRORS,
@@ -1096,6 +1108,8 @@ def run_arc_thin_e2e(
     consolidate_after_actions = _consolidation_interval(foundation, consolidate_after_actions)
     if decision_timeout_seconds < 0 or turn_idle_timeout_seconds < 0:
         raise ValueError('request fault timeouts must be nonnegative; 0 disables them')
+    if not math.isfinite(max_idle_minutes) or max_idle_minutes < 0:
+        raise ValueError('max_idle_minutes must be a finite nonnegative number; 0 disables it')
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError(f"run root must be new or empty: {root}")
@@ -1266,6 +1280,7 @@ def run_arc_thin_e2e(
             "ledger": ledger_enabled, "critic": critic_enabled,
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
             "decision_timeout_seconds": decision_timeout_seconds,
+            "max_idle_minutes": max_idle_minutes,
             "max_continuous_idle_recoveries": 2,
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
@@ -1362,10 +1377,12 @@ def run_arc_thin_e2e(
             response = kernel.prompt(message)
             if response.get("success") is False:
                 raise RuntimeError(f"Pi rejected the prompt: {response.get('error')}")
+            idle_left = max_idle_minutes * 60 - (time.monotonic() - last_action_at) if max_idle_minutes else math.inf
             return kernel.wait_for_agent_events(
-                timeout=min(decision_timeout_seconds or math.inf, max(1.0, deadline - time.monotonic())),
+                timeout=min(max(0.01, idle_left) if max_idle_minutes else (decision_timeout_seconds or math.inf),
+                            max(1.0, deadline - time.monotonic())),
                 idle_timeout=(min(turn_idle_timeout_seconds, decision_timeout_seconds or math.inf)
-                              if turn_idle_timeout_seconds else None),
+                              if turn_idle_timeout_seconds and not max_idle_minutes else None),
             )
 
         def safe_turn(message: str, *, allow_idle_recovery: bool = True) -> list[dict[str, Any]]:
@@ -1391,10 +1408,15 @@ def run_arc_thin_e2e(
                         kernel.send('set_thinking_level', level=thinking)
                 return _recover_native_turn(turn, message, kernel, summary, reconcile,
                     max_recoveries=2 if allow_idle_recovery else 0,
-                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart)
+                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart,
+                    idle_stalled=lambda: _idle_stall_due(last_action_at, time.monotonic(), max_idle_minutes,
+                        last_action_rows, len(_read_jsonl(harness / "trajectory.jsonl"))))
             try:
                 return turn(message)
             except PiTurnIdleTimeout as exc:
+                if _idle_stall_due(last_action_at, time.monotonic(), max_idle_minutes, last_action_rows,
+                                   len(_read_jsonl(harness / "trajectory.jsonl"))):
+                    raise TimeoutError("idle_stall") from exc
                 summary["idle_timeouts"] += 1
                 if not allow_idle_recovery or summary["idle_recoveries"] >= 2 or time.monotonic() >= deadline - 5:
                     summary["idle_recovery_failures"] += 1
@@ -1447,6 +1469,8 @@ def run_arc_thin_e2e(
             return resumed
 
         restart_note = ""
+        last_action_at = time.monotonic()
+        last_action_rows = len(_read_jsonl(harness / "trajectory.jsonl"))
 
         def restart_environment(health: dict[str, Any] | None) -> None:
             """Replace an environment whose last step has no known outcome (or whose process ended) by a new game at the
@@ -1544,7 +1568,7 @@ def run_arc_thin_e2e(
             if _arc_terminal_or_budget_exhausted(state):
                 summary["stop_reason"] = "budget_exhausted"
                 break
-            if max_levels is not None and int(state.get("levels_completed") or 0) >= max_levels:
+            if _max_levels_reached(int(state.get("levels_completed") or 0), max_levels):
                 summary["stop_reason"] = "max_levels"
                 break
             if max_decisions is not None and summary["decisions"] >= max_decisions:
@@ -1621,7 +1645,17 @@ def run_arc_thin_e2e(
                     elif _environment_errors(harness) == environment_before:
                         no_action_streak += 1
                         summary["no_action_decisions"] += 1
+                committed_rows = _read_jsonl(harness / "trajectory.jsonl")[action_count:]
+                if committed_rows:
+                    last_action_at = time.monotonic()
+                    last_action_rows += len(committed_rows)
             except TimeoutError as exc:
+                idle_now = len(_read_jsonl(harness / "trajectory.jsonl"))
+                if _idle_stall_due(last_action_at, time.monotonic(), max_idle_minutes, last_action_rows, idle_now):
+                    summary["stop_reason"] = "idle_stall"
+                    summary["idle_minutes"] = round((time.monotonic() - last_action_at) / 60, 2)
+                    _write_summary(root, summary, final_state, started)
+                    break
                 summary["stop_reason"] = "deadline" if time.monotonic() >= deadline - 5 else "decision_timeout"
                 summary["error"] = str(exc)
                 break

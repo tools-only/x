@@ -33,7 +33,8 @@ import { observationReference, storeObservation } from "./arc_thin_observation.t
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
-import { GoalAdmission, goalAdmissionMode, goalDocument, GOAL_ADMISSION_HELP, type GoalClaim, type GoalRecord } from "./arc_thin_goal_admission.ts";
+import { GOAL_CHECK_HELP, goalAdmissionMode, goalHiddenFields, goalSupportRefusal, goalVerdict, type GoalCheckRow } from "./arc_thin_goal_admission.ts";
+import { advanceCarry, buildLevelCarry, partitionRules, renderCarry, renderDeltas, ruleScope, type CarryDelta, type CarryInput, type LevelCarry } from "./arc_thin_level_carry.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
@@ -241,6 +242,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const responsesContinuation = new ResponsesContinuation();
   const native = process.env.ARC_THIN_FOUNDATION === "native";
   const goalAdmission = goalAdmissionMode(process.env.ARC_THIN_GOAL_ADMISSION);
+  const carryMode = process.env.ARC_THIN_LEVEL_CARRY ?? 'shadow';
+  if (!['off', 'shadow', 'on'].includes(carryMode)) throw Error('ARC_THIN_LEVEL_CARRY must be off, shadow or on');
   // How the game is shown: "query" (the extension's own default, kept for tests that build it directly), "inline", or
   // "ch", Continual Harness's observation and action tool inside this harness's decision (the runner's native default
   // since 2026-10-20; arc_thin_ch_view.ts).
@@ -423,48 +426,67 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return rows;
 	}
 
-  const goals = new GoalAdmission(goalAdmission, goalAdmission === 'off' ? [] : readRows('goal_admission.jsonl').flatMap(row => row.records ?? []) as GoalRecord[]);
-  const goalSnapshot = () => JSON.stringify([...goals.records.values()]);
-  function persistGoals(kind: string, fields: Record<string, unknown> = {}) {
-    append('goal_admission.jsonl', { kind, mode: goalAdmission, at: trajectory.length, decision, ...fields,
-      records: [...goals.records.values()] });
-    workspace?.runtimeWrite('data/goal_claims.json', goalSnapshot() + '\n');
+  const goalRows: GoalCheckRow[] = readRows('goal_checks.jsonl') as GoalCheckRow[];
+  if (workspace && existsSync(workspace.path('data/goal_claims.json'))) {
+    try { append('errors.jsonl', { hook: 'goal:legacy_store_ignored', message: 'ignored leftover P0 goal store' }); } catch { /* best effort */ }
   }
-  let goalMaskAt = -1;
-  let goalMaskCache = statusMask([]);
-  function goalMask() {
-    if (goalMaskAt === trajectory.length) return goalMaskCache;
-    const start = trajectory.findLastIndex(row => row.level_changed || row.action === 'RESET') + 1;
-    const changes: Array<Array<[number, number, number | undefined, number | undefined]>> = [];
-    for (const row of trajectory.slice(start)) {
-      const before = grids.get(row.n - 1), after = grids.get(row.n);
-      if (before && after) changes.push((gridChanges(before, after) ?? []).map(([x, y]) => [x, y, before[y]?.[x], after[y]?.[x]]));
+  const goalQuestion = (question?: string) => question?.trim().toLowerCase() === 'goal';
+  function goalAdmissionCallback(key: string, hyp: { question?: string; status?: string; check?: string }) {
+    const version = claimVersion(hyp.check ?? '');
+    const reason = goalSupportRefusal(key, { ...hyp, version }, goalRows, currentLevel());
+    if (reason && goalAdmission !== 'off') append('goal_admission.jsonl', { kind: 'would_refuse', mode: goalAdmission, key, version, level: currentLevel(), at: trajectory.length, reason });
+    return goalAdmission === 'on' ? reason : undefined;
+  }
+  const goalNotices = (n: number, level: number) => goalRows.filter(row => row.n === n && row.level === level &&
+    ['win_held', 'false_win', 'missed_win'].includes(row.verdict)).map(row => `GOAL_OUTCOME hyp.${row.key}: ${row.verdict} at #${n} (level ${level + 1})`);
+  let levelCarry: LevelCarry | undefined;
+  let carryDeltaQueue: CarryDelta[] = [];
+  for (const row of readRows('level_carry.jsonl')) if (row.carry) levelCarry = row.carry as LevelCarry;
+  const carryInput = (): CarryInput => {
+    let rulesText = '';
+    try { rulesText = workspace?.read(RULES_PATH) ?? ''; } catch { /* no rules file */ }
+    return { trajectory, memoryRows: readRows('memory.jsonl'), claimRows, goalRows,
+      observerRuns: readRows('observer_runs.jsonl'), rulesText };
+  };
+  function persistCarry(kind: string, fields: Record<string, unknown> = {}) {
+    if (!levelCarry) return;
+    append('level_carry.jsonl', { kind, at: trajectory.length, decision, carry: levelCarry, ...fields });
+  }
+  function ensureLevelCarry() {
+    if (carryMode === 'off') return;
+    const level = currentLevel();
+    if (level <= 0 || levelCarry?.to_level === level) return;
+    try {
+      levelCarry = buildLevelCarry(carryInput(), level - 1);
+      persistCarry('base');
+      append('level_carry.jsonl', { kind: 'piece_counts', at: trajectory.length, level, counts: Object.fromEntries(['goal','check','view','rule'].map(kind => [kind, levelCarry!.pieces.filter(piece => piece.kind === kind).length])) });
+    } catch (error) { logError('level_carry:build', error); }
+  }
+  function advanceLevelCarry() {
+    ensureLevelCarry();
+    if (!levelCarry || currentLevel() !== levelCarry.to_level) return;
+    const advanced = advanceCarry(levelCarry, carryInput());
+    levelCarry = advanced.carry;
+    for (const delta of advanced.deltas) {
+      append('level_carry.jsonl', { kind: 'delta', delta });
+      carryDeltaQueue.push(delta);
     }
-    goalMaskAt = trajectory.length;
-    return goalMaskCache = statusMask(changes);
+    if (advanced.deltas.length) persistCarry('state');
   }
-  function admitGoalWrite(path: string, source: string) {
-    if (goalAdmission === 'off' || !goalDocument(path, source).protected) return;
-    const verdict = goals.admit(path, source, currentLevel(), trajectory.length, goalMask());
-    persistGoals('admission', { path, ...verdict });
-    if (!verdict.ok) throw new Refusal(`GOAL_ADMISSION: ${verdict.reason}.${GOAL_ADMISSION_HELP}`);
+  function carryReceipt(): string {
+    if (!carryDeltaQueue.length) return '';
+    const text = renderDeltas(carryDeltaQueue);
+    carryDeltaQueue = [];
+    return text;
   }
-  if (workspace && goalAdmission !== 'off') workspace.beforeWrite = admitGoalWrite;
-  /** Recheck assembled snapshots: old files and post-outcome stale prompts cannot bypass admission. */
-  function goalPromptBody(path: string, source: string, body: string): string {
-    if (goalAdmission === 'off' || !goalDocument(path, source).protected) return body;
-    const before = goalSnapshot();
-    const verdict = goals.admit(path, source, currentLevel(), trajectory.length, goalMask());
-    if (before !== goalSnapshot() || verdict.wouldRefuse) persistGoals('assembly', { path, ...verdict });
-    return verdict.ok ? body : `GOAL_ADMISSION withheld ${path}: ${verdict.reason}.${GOAL_ADMISSION_HELP}`;
+  function carriedPromptBody(path: string, body: string): string {
+    if (carryMode === 'off' || path !== RULES_PATH || !levelCarry) return body;
+    const partition = partitionRules(body, levelCarry, currentLevel());
+    append('level_carry.jsonl', { kind: 'partition', level: currentLevel(), at: trajectory.length, counts: partition.counts });
+    if (carryMode !== 'on') return body;
+    return partition.rules + (partition.carried ? '\n\nCARRIED RULES (prior; not active rules):\n' + partition.carried : '');
   }
-  function goalSources(): Array<{ path: string; source: string }> {
-    const sources: Array<{ path: string; source: string }> = (binder?.active() ?? []).filter(c => [STRATEGY_PATH, RULES_PATH].includes(c.path));
-    for (const path of [STRATEGY_PATH, RULES_PATH]) {
-      try { sources.push({ path, source: workspace!.read(path) }); } catch { /* No current document. */ }
-    }
-    return sources;
-  }
+
 
 	function replay(): void {
 		resetMemory(memory);
@@ -868,8 +890,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				return true;
 			});
 			const out: Array<[string, string]> = [];
+			ensureLevelCarry();
 			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
 			if (prompts) out.push(["prompts", prompts]);
+      if (carryMode === 'on' && levelCarry) out.splice(prompts ? 1 : 0, 0, ['level_carry', renderCarry(levelCarry)]);
 			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
@@ -1117,7 +1141,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// ---------------------------------------------------------------- claims (arc_thin_claims.ts)
 
 	/** The current hypotheses that carry a check, with the version their results are kept under. */
-	const claimChecks = () => [...memory.hypotheses].filter(([, h]) => h.check)
+	const claimChecks = () => [...memory.hypotheses].filter(([, h]) => h.check && !(goalAdmission === 'on' && goalQuestion(h.question)))
 		.map(([key, h]) => ({ key, source: h.check!, version: claimVersion(h.check!) }));
 
 	/**
@@ -1136,6 +1160,40 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}];
 		}));
 	}
+
+  async function refreshGoalChecks(signal?: AbortSignal): Promise<void> {
+    if (goalAdmission === 'off' || !trajectory.length) return;
+    const checks = [...memory.hypotheses].filter(([, h]) => goalQuestion(h.question) && h.check)
+      .map(([key, h]) => ({ key, version: claimVersion(h.check!), source: h.check! }));
+    if (!checks.length) return;
+    const done = new Set(goalRows.map(row => `${row.key}@${row.version}#${row.n}`));
+    const wanted = new Set<number>();
+    for (const item of checks) for (const row of trajectory)
+      if (!done.has(`${item.key}@${item.version}#${row.n}`) && !claimGridsMissing.has(row.n)) wanted.add(row.n);
+    if (!wanted.size) return;
+    const { batches, missing } = claimSegments([...wanted], grids);
+    for (const n of missing) claimGridsMissing.add(n);
+    const byN = new Map(trajectory.map(row => [row.n, row]));
+    for (const segments of batches) {
+      const ns = new Set(segments.flatMap(segment => segment.steps.map(step => step.n)));
+      const transitions = Object.fromEntries([...ns].map(n => {
+        const row = byN.get(n)!;
+        return [String(n), { action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}) }];
+      }));
+      const result = await runGuest({ mode: 'claims', strict: true, hidden_fields: [...goalHiddenFields],
+        claims: checks.map(({ key, source }) => ({ key, source })), segments, transitions }, signal);
+      if (!result.ok) { logError('goal_checks:run', new Error(guestFailure(result))); return; }
+      const value = result.value as Record<string, { results: Array<[number, ClaimValue, string?]>; error: string | null }>;
+      for (const item of checks) for (const [n, met, error] of value[item.key]?.results ?? []) {
+        if (done.has(`${item.key}@${item.version}#${n}`)) continue;
+        const transition = byN.get(n)!;
+        const row: GoalCheckRow = { key: item.key, version: item.version, n, level: levelOf(transition),
+          met: met === true || met === false ? met : null,
+          verdict: goalVerdict(met === true || met === false ? met : null, transition), ...(error ? { error } : {}) };
+        goalRows.push(row); done.add(`${item.key}@${item.version}#${n}`); append('goal_checks.jsonl', row);
+      }
+    }
+  }
 
 	/**
 	 * Run the checks of `keys` (default: every hypothesis with a check) on the recorded transitions they have no result
@@ -1222,6 +1280,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const next = { ...h, status: "contested" as const, contested_at: contest.at };
 			append("memory.jsonl", { key, hyp: next, at: trajectory.length, by: "check" });
 			applyRows(memory, [{ key, hyp: next }]);
+      advanceLevelCarry();
 			lines.push(`${key} contested: ${renderContest(contest)}`);
 		}
 		return lines;
@@ -1815,6 +1874,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		workspace!.mutate({ op: "write", path: STRATEGY_PATH, content: content.endsWith("\n") ? content : content + "\n" });
 		refinedPaths.add(STRATEGY_PATH);
 		nativeRuntime!.noteSave(STRATEGY_PATH, await binder!.save(STRATEGY_PATH, currentLevel()));
+      advanceLevelCarry();
 	}
 
 	/**
@@ -2075,7 +2135,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const triggers: string[] = [];
 		let samples: string[] = [];
 		triggers.push(...criticTriggers(state, refineNotes, refinedThrough, memory.hypotheses.size, criticConfig, touchedKeys).triggers);
-		for (const row of trajectory.slice(refinedThrough)) if (row.level_changed) triggers.push(`level ${row.levels_completed} reached at #${row.n}`);
+		for (const row of trajectory.slice(refinedThrough)) if (row.level_changed) {
+      triggers.push(`level ${row.levels_completed} reached at #${row.n}`);
+      const level = row.levels_completed - 1;
+      if (!goalRows.some(g => g.level === level && g.verdict === 'win_held'))
+        triggers.push(`no goal check predicted the win at #${row.n} (${actionLabel(row)}): write question "goal" with check(t) over the before grid and this action`);
+    }
 		for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
 			if (refinedFamilies.has(family.key)) continue;
 			refinedFamilies.add(family.key);
@@ -2230,6 +2295,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				workspace.mutate({ op: "write", path: broken.path, content: source });
 				const receipt = await binder.save(broken.path, currentLevel());
 				nativeRuntime.noteSave(broken.path, receipt);
+        advanceLevelCarry();
 				const version = binder.versionMap()[broken.path];
 				if (version !== undefined && refinedVersions.has(key)) refinedVersions.add(`${broken.path}@${version}`);
 				append("refiner.jsonl", { kind: "view_restored", at: trajectory.length, decision, path: broken.path, from: broken.version, to: back, version,
@@ -2297,8 +2363,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function unscopedRules(edit: ReturnType<typeof parseRefinerReply>, triggers: string[]): string | undefined {
 		if (edit.kind !== "file" || edit.path !== RULES_PATH || !triggers.some((trigger) => /^level \d+ reached at #\d+/.test(trigger))) return undefined;
 		const before = new Set(rulesText().split(/\r?\n/).map((line) => line.trim()));
-		const bare = edit.content.split(/\r?\n/).map((line) => line.trim())
-			.filter((line) => /^-\s+\S/.test(line) && !before.has(line) && !/\blevels?\s*\d/i.test(line));
+			const bare = edit.content.split(/\r?\n/).map((line) => line.trim())
+			.filter((line) => /^-\s+\S/.test(line) && !before.has(line) && ruleScope(line) === undefined);
 		if (!bare.length) return undefined;
 		return `each rule line added after a level change names the level that showed it, as "- Level ${currentLevel()}: <the rule> (hyp.<name>)": ` +
 			`a later level is not won or played the same way until its own moves show it; ${bare.length === 1 ? "this line does" : `${bare.length} lines do`} ` +
@@ -2461,7 +2527,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
 		const guide = refineGuide();
-		const system = REFINER_SYSTEM + (goalAdmission === 'on' ? GOAL_ADMISSION_HELP : '') + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		const system = REFINER_SYSTEM + (goalAdmission === 'on' ? GOAL_CHECK_HELP : '') + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
 		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
 		// could not: the r03b line did not keep them).
 		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
@@ -2530,7 +2596,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (edit.kind === "memory") {
 				const plan = planNativeMemoryUpdate(memory, { set: [{ key: edit.key, text: edit.text, confidence: edit.confidence,
 					...(edit.replaces ? { replaces: edit.replaces.filter((key) => memory.facts.has(key) || memory.hypotheses.has(key) || memory.strategies.has(key)) } : {}) }] },
-					trajectory.length, components());
+					trajectory.length, components(), goalAdmissionCallback);
 				if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
 				// The native plan accepts a call in part and reports what it skipped; a set it skips entirely changes nothing.
 				// su15-r04-e1 #9: "MEMORY hyp.border_cost" was refused (a hyp. key is a hypothesis's), yet recorded as an edit, the
@@ -2538,6 +2604,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
 				for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 				applyRows(memory, plan.rows);
+        advanceLevelCarry();
 				const retired = plan.rows.filter((row: any) => row.deleted).map((row) => row.key);
 				const id = `e${++refinerEdits}`;
 				append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, ...(retired.length ? { replaces: retired } : {}), ...ledgerFields(id) });
@@ -2557,11 +2624,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const question = target && target !== edit.key ? memory.hypotheses.get(target)?.question ?? edit.question : edit.question;
 				const plan = planNativeMemoryUpdate(memory, { hypotheses: [{ key: edit.key, claim: edit.claim, ...(question ? { question } : {}),
 					...(edit.predicts ? { predicts: edit.predicts } : {}), ...(edit.check ? { check: edit.check } : {}), ...(rewrote ? { status: "open" as const } : {}) }] },
-					trajectory.length, components());
+					trajectory.length, components(), goalAdmissionCallback);
 				if (!plan.ok) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.error }); return; }
 				if (!plan.rows.length) { append("refiner.jsonl", { kind: "invalid", ...base, why: plan.receipt }); return; }
 				for (const row of plan.rows) { append("memory.jsonl", { ...row, at: trajectory.length, by: "refinement" }); memoryTouches.push({ key: row.key, at: trajectory.length }); }
 				applyRows(memory, plan.rows);
+        advanceLevelCarry();
 				const id = `e${++refinerEdits}`;
 				append("refiner.jsonl", { kind: "edit", ...base, category: "memory", path: `memory:${edit.key}`, why: edit.why, loaded: true, check: Boolean(edit.check),
 					...(rewrote ? { rewrote: true } : {}), ...ledgerFields(id) });
@@ -2605,6 +2673,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			refinedPaths.add(edit.path);
 			const receipt = await binder!.save(edit.path, currentLevel());
 			nativeRuntime!.noteSave(edit.path, receipt);
+      advanceLevelCarry();
 			nativeRuntime!.register();
 			const loaded = !/NOT loaded/.test(receipt ?? "");
 			const version = binder!.versionMap()[edit.path];
@@ -3064,7 +3133,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					throw new Refusal(done.refusal);
 				}
 				const row = done.row;
-				const lines = [`${actionLine(row)}${predictionClause(row)}`];
+				const lines = [`${actionLine(row)}${predictionClause(row)}`, ...(goalAdmission === 'on' ? goalNotices(row.n, levelOf(row)) : []), ...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : [])];
 				// Further planned actions, each through the same path; the plan stops once what it assumed no longer holds.
 				const steps = native ? (params.then ?? []).slice(0, THEN_STEPS) : [];
 				let last = row, played = 0, stopped: string | undefined;
@@ -3075,7 +3144,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 						note: `then ${played + 1} of ${steps.length}`, ...(step.predict ? { predict: step.predict } : {}) });
 					if ("refusal" in next) { stopped = next.refusal; break; }
 					last = next.row; played += 1;
-					lines.push(`${actionLine(last)}${predictionClause(last)}`);
+					lines.push(`${actionLine(last)}${predictionClause(last)}`, ...(goalAdmission === 'on' ? goalNotices(last.n, levelOf(last)) : []), ...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : []));
 				}
 				if (played < steps.length) lines.push(`then: ${played} of ${steps.length} played; stopped: ${stopped}.`);
 				if (steps.length) append("action_sequences.jsonl", { decision, n: row.n, planned: steps.length + 1, played: played + 1, stopped: stopped ?? null });
@@ -3154,13 +3223,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
 	}, via?: string, meta: { batchId?: string; batchPosition?: number; batchTotal?: number; rejected?: RejectedStep[] } = {}):
 		Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
-    const goalInputs = goalAdmission === 'off' ? [] : goalSources();
-    for (const input of goalInputs) {
-      const verdict = goals.route(input.path, input.source, currentLevel(), goalDocument(input.path, input.source).route ? goalMask() : undefined);
-      if (verdict.wouldRefuse) persistGoals('route_gate', { path: input.path, ...verdict });
-      // RESET is recovery, not execution of the rejected Route.
-      if (!verdict.ok && params.action !== 'RESET') return { refusal: `GOAL_ADMISSION: ${verdict.reason}; remove Route or revise the claim/test before acting` };
-    }
+
 		const available = availableActions(observation);
 		const previous = trajectory.at(-1);
 		if (!available.includes(params.action))
@@ -3241,22 +3304,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			} : {}),
 		};
     // H2: direct environment feedback, before predictor waits or any later refiner budget/throttle checks.
-    if (goalAdmission !== 'off') {
-      const ids = goalInputs.flatMap(input => {
-        const doc = goalDocument(input.path, input.source);
-        return doc.protected && !doc.error && doc.raw ? [(doc.raw as GoalClaim).id] : [];
-      });
-      const changed = goals.outcome(ids, { n: row.n, level: Number(before?.levels_completed ?? 0), action: row.action,
-        ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}), state: row.state,
-        level_changed: row.level_changed, changed_cells: row.changed_cells, after: afterGrid,
-        predicted_level_change: params.predict?.level_changed });
-      if (changed.length) {
-        persistGoals('outcome', { n: row.n, outcomes: changed.map(r => ({ id: r.goal.id, state: r.state, reason: r.reason })) });
-        if (goalAdmission === 'on') for (const r of changed.filter(r => r.evidence_at === row.n))
-          refinerNotices.push({ text: `GOAL_OUTCOME after #${row.n}: ${r.goal.id} ${r.state}: ${r.reason}. Read data/goal_claims.json; revise or abandon contradicted goals.` });
-      }
-    }
-		// Check what the agent, or the skill it named, said this action would produce, against what came back.
+
 		const outcome: Outcome = { before: beforeGrid, after: afterGrid, level_changed: row.level_changed, state: row.state };
 		if (!control && params.predict) {
 			row.predict = params.predict;
@@ -3285,6 +3333,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		actionTimes.push(Date.now());
 		append("trajectory.jsonl", row);
 		recordState(row.n, afterGrid);
+		if (goalAdmission !== 'off') { try { await refreshGoalChecks(); } catch (error) { logError('goal_checks:refresh', error); } }
+		if (row.level_changed) ensureLevelCarry(); else advanceLevelCarry();
 		// ARC_THIN_OBSERVATION=ch: the next decision's OBSERVATIONS show what this action did, frame by frame.
 		if (chView) pendingObservations.push({
 			step: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { data: { x: row.x, y: row.y } } : {}),
@@ -3344,7 +3394,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (row.level_changed) actingStopped = "the level changed";
 		else if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) actingStopped = `state ${row.state}`;
 		return {
-			line: `${actionLine(row)}${predictionClause(row)}`,
+			line: `${actionLine(row)}${predictionClause(row)}${goalAdmission === 'on' ? '\n' + goalNotices(row.n, levelOf(row)).join('\n') : ''}${carryMode === 'on' ? '\n' + carryReceipt() : ''}`,
 			observation: {
 				n: row.n, action: actionLabel(row), grid: hexRows(gridOf(observation)), state: row.state, levels_completed: row.levels_completed,
 				frames: (observation?.frames ?? []).map((frame: any) => hexRows(frame)), action_budget: observation?.action_budget ?? null,
@@ -3390,7 +3440,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "memory",
 			label: "Memory",
-			description: native ? 'Record beliefs, hypotheses with optional checks, tests and strategies. Partial entries apply valid fields; fabricated action evidence is refused.'
+			description: native ? `Record beliefs, hypotheses with optional checks, tests and strategies. Partial entries apply valid fields; fabricated action evidence is refused.${goalAdmission === 'on' ? ' ' + GOAL_CHECK_HELP : ''}`
         : "Atomic facts/hypotheses/tests/strategies update. Invalid batches do not apply; evidence is appended.",
 			parameters: native ? Type.Object({
         op: Type.Optional(StringEnum(['set', 'delete', 'list', 'update'])),
@@ -3471,7 +3521,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		});
 		/** One committed memory update, from the memory tool or python's env.remember: its receipt, or a Refusal. */
 		async function commitMemory(params: MemoryParams, signal?: AbortSignal): Promise<string> {
-		const plan = (native ? planNativeMemoryUpdate : planMemoryUpdate)(memory, params, trajectory.length, components());
+		const plan = (native ? planNativeMemoryUpdate : planMemoryUpdate)(memory, params, trajectory.length, components(), goalAdmissionCallback);
 				if (!plan.ok) throw new Refusal(plan.error);
 				const checksBefore = new Map([...memory.hypotheses].map(([key, h]) => [key, h.check ? claimVersion(h.check) : ""]));
 				for (const row of plan.rows) {
@@ -3479,6 +3529,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					memoryTouches.push({ key: row.key, at: trajectory.length });
 				}
 				applyRows(memory, plan.rows);
+        advanceLevelCarry();
 				// A committed update does not end the decision: the agent may still need its receipt before acting.
 				// Ending the decision here (2026-10-11) turned 5 ordinary tu93 decisions into memory-only turns
 				// although the reasoning planned the action next, each followed by a forced action-only decision.
@@ -3489,13 +3540,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					.map(([key]) => key);
 				let checkLines: string[] = [];
 				if (changed.length) {
-					try { await refreshClaimChecks(changed, signal); }
+					try { await refreshClaimChecks(changed, signal); await refreshGoalChecks(signal); }
 					catch (error) { logError("claims:save", error); }
 					const lines = claimLines();
 					checkLines = changed.map((key) => `${key} ${lines[key] ?? "check: not run yet"}`);
 				}
+				advanceLevelCarry();
 				// A saved check that already fails on most of the recorded moves contests its hypothesis now (H2a).
-				return [plan.receipt, ...checkLines, ...contestByChecks()].join("\n");
+				return [plan.receipt, ...checkLines, ...contestByChecks(), carryMode === 'on' ? carryReceipt() : ''].filter(Boolean).join("\n");
 		}
 		// Python's env.remember goes through the same update as the memory tool, so bookkeeping and an action can share
 		// one cell (Prime Agent's programmatic tool calling) instead of costing a separate request each.
@@ -3870,7 +3922,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       receipt: body => workspace.receipt(body),
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         let result: any;
-        try { result = await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
+		try { result = await fn(params, signal, ctx); } catch (error) {
+          throw new Refusal(errorText(error));
+        }
         // A review's call point (A5): once a subagent has answered, the review may write.
         if (name === 'consult') {
           if (run.consultPoint) run.consulted = true;
@@ -3902,6 +3956,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     workspace.onWrite = async path => {
       const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
       nativeRuntime!.noteSave(path, receipt);
+      advanceLevelCarry();
       if (toolsReady) refreshSkillSurface();
       const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
       // The level and stall reviews ask for short files: they are sent with every decision. Their test lines are pinned as
@@ -3938,6 +3993,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.
 		if (refinerActive()) { try { await restoreBrokenViews(); await retireBrokenPredictors(); } catch (error) { logError("view:restore", error); } }
     if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
+    ensureLevelCarry();
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
@@ -4013,7 +4069,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Model skills are checked on the transition just recorded (incremental; failures leave the decision unchanged).
 		if (!control) await refreshModelChecks();
 		// So are the hypotheses' checks: each new transition is one more test of every claim.
-		if (!control) { try { await refreshClaimChecks(); await refreshClaimControls(); contestByChecks(); } catch (error) { logError("claims:refresh", error); } }
+		if (!control) { try { await refreshClaimChecks(); await refreshGoalChecks(); await refreshClaimControls(); contestByChecks(); advanceLevelCarry(); } catch (error) { logError("claims:refresh", error); } }
 		// The ledger and critic are advisory: any failure leaves the decision unchanged.
 		try { await prepareLedger(ctx); } catch (error) { ledgerText = ""; criticText = ""; logError("ledger:prepare", error); }
 		if (run.refinePoint && !run.refinePointText) run.refinePointText = await refinePointText();
@@ -4068,9 +4124,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14). With
       // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
       decisionPrompts = promptSections();
-      if (goalAdmission === 'on') event.systemPromptOptions.sections.goal_admission = GOAL_ADMISSION_HELP;
+      if (goalAdmission === 'on') event.systemPromptOptions.sections.goal_admission = GOAL_CHECK_HELP;
       if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
-        event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = goalPromptBody(prompt.path, prompt.source, prompt.body!);
+        event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = carriedPromptBody(prompt.path, prompt.body!);
       return;
     }
 		return { systemPrompt: rendered };
@@ -4225,7 +4281,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
   /** The active prompts, one tagged block each: system-prompt sections, or with contextLayout the head's opening section. */
   const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c =>
-    [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${goalPromptBody(c.path, c.source, c.body ?? '')}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+    [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${carriedPromptBody(c.path, c.body ?? '')}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
   /** The prompt sections fixed at the start of the current decision (native mode); undefined before the first. */
   let decisionPrompts: Record<string, string> | undefined;
   // With contextLayout no prompt section is wanted: sections a resumed or forked session carries are removed once.

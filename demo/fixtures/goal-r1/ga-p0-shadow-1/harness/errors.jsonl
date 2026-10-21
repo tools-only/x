@@ -1,0 +1,2 @@
+{"t":"2026-10-21T13:49:27.979Z","hook":"arc_action:environment","environment":true,"decision":59,"action":"ACTION6(41,37)","message":"ARC environment step failed: EnvironmentCallTimeout: SDK step exceeded 90.0s; outcome unknown; do not replay"}
+{"t":"2026-10-21T16:43:12.564Z","hook":"arc_action:environment","environment":true,"decision":82,"action":"ACTION7","message":"ARC environment step failed: EnvironmentReturnedNoFrame: ARC SDK environment.step returned None; the remote wrapper may have swallowed a request failure"}

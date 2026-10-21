@@ -2,6 +2,7 @@
 import { emptyMemory, applyRows, planMemoryUpdate, type MemoryState, type MemoryParams, type MemoryPlan,
   type MemoryRow, type ComponentContext, HYP_PREFIX, STATUSES, STRATEGY_STATUSES } from './arc_thin_memory.ts';
 import { withCheckDef } from './arc_thin_claims.ts';
+import type { GoalSupportCheck } from './arc_thin_memory.ts';
 
 /** Python that defines check (def check(…) or check = lambda); anything else in a check field is a sentence. */
 const definesCheck = (source: string) => /\bdef\s+check\s*\(|\bcheck\s*=\s*lambda\b/.test(source);
@@ -44,13 +45,13 @@ function claimStatus(fields: Record<string, any>): string | undefined {
   return `${key.startsWith(HYP_PREFIX) ? key : HYP_PREFIX + key}: status set to ${found[1]}, as its claim begins; status is the field that does this`;
 }
 
-export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams, actionCount: number, ctx: ComponentContext = {}): MemoryPlan {
+export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams, actionCount: number, ctx: ComponentContext = {}, goalSupport?: GoalSupportCheck): MemoryPlan {
   for (const item of [...(params.hypotheses ?? []).map(h => h?.evidence), ...(params.tests ?? [])]) {
     const action = item?.action;
     if (action !== undefined && !(Number.isInteger(Number(action)) && Number(action) >= 1 && Number(action) <= actionCount))
       return { ok: false, error: `memory NOT changed: action #${action} does not exist (actions so far: ${actionCount})` };
   }
-  if (params.op === 'list') return planMemoryUpdate(state, params, actionCount, {...ctx, factProvenance:true, checkSources:true});
+  if (params.op === 'list') return planMemoryUpdate(state, params, actionCount, {...ctx, factProvenance:true, checkSources:true}, goalSupport);
   const working = emptyMemory(); working.facts = new Map(state.facts); working.hypotheses = new Map(state.hypotheses);
   working.strategies = new Map(state.strategies); working.dropped = [...state.dropped]; working.revisions = [...state.revisions];
   const rows: MemoryRow[] = []; const receipts: string[] = []; const skipped: string[] = [];
@@ -62,7 +63,7 @@ export function planNativeMemoryUpdate(state: MemoryState, params: MemoryParams,
           if (h[key] !== undefined && typeof h[key] !== 'string') throw Error(`${key} must be a string`);
       }
       for (const s of partial.strategies ?? []) if (s.status !== undefined && !STRATEGY_STATUSES.includes(s.status)) throw Error('unknown strategy status');
-      const plan = planMemoryUpdate(working, partial, actionCount, ctx);
+      const plan = planMemoryUpdate(working, partial, actionCount, ctx, goalSupport);
       if (!plan.ok) { skipped.push(`${name}: ${plan.error}`); return false; }
       applyRows(working, plan.rows); rows.push(...plan.rows); receipts.push(plan.receipt); return true;
     } catch (error) { skipped.push(`${name}: ${String(error)}`); return false; }
