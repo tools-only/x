@@ -8,6 +8,17 @@ def idle():
     return PiTurnIdleTimeout('silent stream', events=[], idle_seconds=180)
 
 
+def test_zero_turn_idle_timeout_disables_idle_timeout_on_event_wait():
+    calls = []
+    kernel = SimpleNamespace(wait_for_agent_events=lambda **kwargs: calls.append(kwargs) or [])
+    runner._wait_for_turn_events(
+        kernel, deadline=runner.time.monotonic() + 10,
+        decision_timeout_seconds=0, turn_idle_timeout_seconds=0,
+    )
+    assert len(calls) == 1
+    assert calls[0]["idle_timeout"] is None
+
+
 def test_three_isolated_faults_have_independent_recovery_allowances():
     stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0)
     aborts = []

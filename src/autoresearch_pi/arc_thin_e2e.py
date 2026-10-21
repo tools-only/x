@@ -128,6 +128,15 @@ NORMAL_STOPS = frozenset({"win", "budget_exhausted", "max_decisions", "max_level
 
 def _max_levels_reached(levels_completed: int, max_levels: int | None) -> bool:
     return max_levels is not None and levels_completed >= max_levels
+
+
+def _wait_for_turn_events(kernel, *, deadline: float, decision_timeout_seconds: float,
+                          turn_idle_timeout_seconds: float) -> list[dict[str, Any]]:
+    return kernel.wait_for_agent_events(
+        timeout=min(decision_timeout_seconds or math.inf, max(1.0, deadline - time.monotonic())),
+        idle_timeout=(min(turn_idle_timeout_seconds, decision_timeout_seconds or math.inf)
+                      if turn_idle_timeout_seconds else None),
+    )
 # rebuild: every decision shows only the rebuilt working set (the 2026-10-08 design); session: the agent's last
 # decisions from Pi's session stay in view as well (docs/reports/2026-10-12-memory-mechanism-review.md).
 CONTINUITY_MODES = frozenset({"rebuild", "session"})
@@ -1380,9 +1389,9 @@ def run_arc_thin_e2e(
             response = kernel.prompt(message)
             if response.get("success") is False:
                 raise RuntimeError(f"Pi rejected the prompt: {response.get('error')}")
-            return kernel.wait_for_agent_events(
-                timeout=min(decision_timeout_seconds or math.inf, max(1.0, deadline - time.monotonic())),
-                idle_timeout=turn_idle_timeout_seconds,
+            return _wait_for_turn_events(
+                kernel, deadline=deadline, decision_timeout_seconds=decision_timeout_seconds,
+                turn_idle_timeout_seconds=turn_idle_timeout_seconds,
             )
 
         def safe_turn(message: str, *, allow_idle_recovery: bool = True) -> list[dict[str, Any]]:
