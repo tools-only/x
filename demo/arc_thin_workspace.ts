@@ -19,6 +19,8 @@ export class Workspace {
   private resultIndex: string;
   private inlineChars: number;
   onWrite?: (path: string) => Promise<string | undefined>;
+  /** Shared pre-write seam: parent tools, guest writes/restores, refiner and moves. */
+  beforeWrite?: (path: string, content: string) => void;
   /** Counts every write, move and delete, so a computation can tell its inputs did not change (the same-state cache). */
   version = 0;
   constructor(runRoot: string, options: { inlineChars?: number } = {}) {
@@ -55,7 +57,9 @@ export class Workspace {
     return target;
   }
   runtimeWrite(path: string, content: string | Uint8Array) {
-    const target = this.path(path, true, true); mkdirSync(resolve(target, '..'), { recursive: true });
+    const target = this.path(path, true, true);
+    this.beforeWrite?.(relative(this.root, target).replace(/\\/g, '/'), typeof content === 'string' ? content : Buffer.from(content).toString('utf8'));
+    mkdirSync(resolve(target, '..'), { recursive: true });
     writeFileSync(this.path(path, true, true), content, 'utf8');
     this.version += 1;
   }
@@ -70,6 +74,7 @@ export class Workspace {
     } else if (op.op === 'move') {
       const target = this.path(op.destination!, true);
       if (target === this.root) throw Error('workspace root cannot be changed');
+      this.beforeWrite?.(relative(this.root, target).replace(/\\/g, '/'), readFileSync(source, 'utf8'));
       mkdirSync(dirname(target), { recursive: true });
       renameSync(this.path(op.path, true), this.path(op.destination!, true));
     } else throw Error('invalid workspace mutation');
@@ -159,7 +164,10 @@ export class Workspace {
   fileTools(): ToolDefinition[] {
     const safe = (p: string, write = false) => this.path(p, write, false, true);
     const readFile = async (p: string) => readFileSync(safe(p));
-    const writeFile = async (p: string, content: string) => { writeFileSync(safe(p, true), content, 'utf8'); this.version += 1; };
+    const writeFile = async (p: string, content: string) => {
+      const target = safe(p, true);
+      this.runtimeWrite(relative(this.root, target).replace(/\\/g, '/'), content);
+    };
     const access = async (p: string) => { if (!existsSync(safe(p))) throw Error('workspace file does not exist'); };
     const tools: ToolDefinition[] = [
       createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile, access,

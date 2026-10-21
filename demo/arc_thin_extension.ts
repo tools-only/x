@@ -33,6 +33,7 @@ import { observationReference, storeObservation } from "./arc_thin_observation.t
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
+import { GoalAdmission, goalAdmissionMode, goalDocument, GOAL_ADMISSION_HELP, type GoalClaim, type GoalRecord } from "./arc_thin_goal_admission.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
@@ -52,7 +53,7 @@ import { evaluateTaskPython, TaskPythonError, type ValidatedTaskPythonProgram } 
 import { SKILL_LIMITS, arcSkillFoundation, guestFailure, arcSkillGuestProgram, type GuestResult } from "./arc_thin_skill_guest.ts";
 import { backtestCases, renderBacktest, scoreBacktest, type GuestCaseResult, type ModelCheck } from "./arc_thin_backtest.ts";
 import { sharedTaskPythonPool } from "./pi_task_python_pool.ts";
-import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, maskedHashes, normIdea, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
+import { buildLedger, explorationLine, goalCoverageLine, isGoalHypothesis, leaves, maskedHashes, statusMask, normIdea, renderLedgerView, type GoalHypothesisRef, type LedgerState, type Observation } from "./arc_thin_ledger.ts";
 import { boardFacts, boardText, noveltyOf, objectRegions, spinStreak } from "./arc_thin_work_memory.ts";
 import {
 	CRITIC_SYSTEM, NATIVE_CRITIC_SYSTEM, DEFAULT_CRITIC, IGNORED_REVIEW, buildDossier, criticTriggers, parseCriticReply, type CriticConfig, type CriticNote,
@@ -239,6 +240,7 @@ function regionCells(grid: number[][], limit = 32): Array<{ x: number; y: number
 export default function arcThinExtension(pi: ExtensionAPI) {
   const responsesContinuation = new ResponsesContinuation();
   const native = process.env.ARC_THIN_FOUNDATION === "native";
+  const goalAdmission = goalAdmissionMode(process.env.ARC_THIN_GOAL_ADMISSION);
   // How the game is shown: "query" (the extension's own default, kept for tests that build it directly), "inline", or
   // "ch", Continual Harness's observation and action tool inside this harness's decision (the runner's native default
   // since 2026-10-20; arc_thin_ch_view.ts).
@@ -420,6 +422,49 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		return rows;
 	}
+
+  const goals = new GoalAdmission(goalAdmission, goalAdmission === 'off' ? [] : readRows('goal_admission.jsonl').flatMap(row => row.records ?? []) as GoalRecord[]);
+  const goalSnapshot = () => JSON.stringify([...goals.records.values()]);
+  function persistGoals(kind: string, fields: Record<string, unknown> = {}) {
+    append('goal_admission.jsonl', { kind, mode: goalAdmission, at: trajectory.length, decision, ...fields,
+      records: [...goals.records.values()] });
+    workspace?.runtimeWrite('data/goal_claims.json', goalSnapshot() + '\n');
+  }
+  let goalMaskAt = -1;
+  let goalMaskCache = statusMask([]);
+  function goalMask() {
+    if (goalMaskAt === trajectory.length) return goalMaskCache;
+    const start = trajectory.findLastIndex(row => row.level_changed || row.action === 'RESET') + 1;
+    const changes: Array<Array<[number, number, number | undefined, number | undefined]>> = [];
+    for (const row of trajectory.slice(start)) {
+      const before = grids.get(row.n - 1), after = grids.get(row.n);
+      if (before && after) changes.push((gridChanges(before, after) ?? []).map(([x, y]) => [x, y, before[y]?.[x], after[y]?.[x]]));
+    }
+    goalMaskAt = trajectory.length;
+    return goalMaskCache = statusMask(changes);
+  }
+  function admitGoalWrite(path: string, source: string) {
+    if (goalAdmission === 'off' || !goalDocument(path, source).protected) return;
+    const verdict = goals.admit(path, source, currentLevel(), trajectory.length, goalMask());
+    persistGoals('admission', { path, ...verdict });
+    if (!verdict.ok) throw new Refusal(`GOAL_ADMISSION: ${verdict.reason}.${GOAL_ADMISSION_HELP}`);
+  }
+  if (workspace && goalAdmission !== 'off') workspace.beforeWrite = admitGoalWrite;
+  /** Recheck assembled snapshots: old files and post-outcome stale prompts cannot bypass admission. */
+  function goalPromptBody(path: string, source: string, body: string): string {
+    if (goalAdmission === 'off' || !goalDocument(path, source).protected) return body;
+    const before = goalSnapshot();
+    const verdict = goals.admit(path, source, currentLevel(), trajectory.length, goalMask());
+    if (before !== goalSnapshot() || verdict.wouldRefuse) persistGoals('assembly', { path, ...verdict });
+    return verdict.ok ? body : `GOAL_ADMISSION withheld ${path}: ${verdict.reason}.${GOAL_ADMISSION_HELP}`;
+  }
+  function goalSources(): Array<{ path: string; source: string }> {
+    const sources: Array<{ path: string; source: string }> = (binder?.active() ?? []).filter(c => [STRATEGY_PATH, RULES_PATH].includes(c.path));
+    for (const path of [STRATEGY_PATH, RULES_PATH]) {
+      try { sources.push({ path, source: workspace!.read(path) }); } catch { /* No current document. */ }
+    }
+    return sources;
+  }
 
 	function replay(): void {
 		resetMemory(memory);
@@ -2416,7 +2461,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
 		const guide = refineGuide();
-		const system = REFINER_SYSTEM + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		const system = REFINER_SYSTEM + (goalAdmission === 'on' ? GOAL_ADMISSION_HELP : '') + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
 		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
 		// could not: the r03b line did not keep them).
 		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
@@ -2568,6 +2613,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt, ...ledgerFields(id) });
 			applied = true;
 			told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}${clause}`, edit.why, id);
+    } catch (error) {
+      if (!(error instanceof Refusal)) throw error;
+      append('refiner.jsonl', { kind: 'refused', at: trajectory.length, decision, why: errorText(error) });
 		} finally {
 			settlePromotion(promotionId, applied ? edit as { kind: string; path?: string; key?: string } : { kind: "none" });
 		}
@@ -3106,6 +3154,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
 	}, via?: string, meta: { batchId?: string; batchPosition?: number; batchTotal?: number; rejected?: RejectedStep[] } = {}):
 		Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
+    const goalInputs = goalAdmission === 'off' ? [] : goalSources();
+    for (const input of goalInputs) {
+      const verdict = goals.route(input.path, input.source, currentLevel(), goalDocument(input.path, input.source).route ? goalMask() : undefined);
+      if (verdict.wouldRefuse) persistGoals('route_gate', { path: input.path, ...verdict });
+      // RESET is recovery, not execution of the rejected Route.
+      if (!verdict.ok && params.action !== 'RESET') return { refusal: `GOAL_ADMISSION: ${verdict.reason}; remove Route or revise the claim/test before acting` };
+    }
 		const available = availableActions(observation);
 		const previous = trajectory.at(-1);
 		if (!available.includes(params.action))
@@ -3185,6 +3240,22 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				grid_change: summarizeGridTransitions(beforeGrid, afterGrid), grid_delta: computeGridDelta(beforeGrid, afterGrid),
 			} : {}),
 		};
+    // H2: direct environment feedback, before predictor waits or any later refiner budget/throttle checks.
+    if (goalAdmission !== 'off') {
+      const ids = goalInputs.flatMap(input => {
+        const doc = goalDocument(input.path, input.source);
+        return doc.protected && !doc.error && doc.raw ? [(doc.raw as GoalClaim).id] : [];
+      });
+      const changed = goals.outcome(ids, { n: row.n, level: Number(before?.levels_completed ?? 0), action: row.action,
+        ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}), state: row.state,
+        level_changed: row.level_changed, changed_cells: row.changed_cells, after: afterGrid,
+        predicted_level_change: params.predict?.level_changed });
+      if (changed.length) {
+        persistGoals('outcome', { n: row.n, outcomes: changed.map(r => ({ id: r.goal.id, state: r.state, reason: r.reason })) });
+        if (goalAdmission === 'on') for (const r of changed.filter(r => r.evidence_at === row.n))
+          refinerNotices.push({ text: `GOAL_OUTCOME after #${row.n}: ${r.goal.id} ${r.state}: ${r.reason}. Read data/goal_claims.json; revise or abandon contradicted goals.` });
+      }
+    }
 		// Check what the agent, or the skill it named, said this action would produce, against what came back.
 		const outcome: Outcome = { before: beforeGrid, after: afterGrid, level_changed: row.level_changed, state: row.state };
 		if (!control && params.predict) {
@@ -3997,8 +4068,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14). With
       // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
       decisionPrompts = promptSections();
+      if (goalAdmission === 'on') event.systemPromptOptions.sections.goal_admission = GOAL_ADMISSION_HELP;
       if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
-        event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
+        event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = goalPromptBody(prompt.path, prompt.source, prompt.body!);
       return;
     }
 		return { systemPrompt: rendered };
@@ -4153,7 +4225,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
   /** The active prompts, one tagged block each: system-prompt sections, or with contextLayout the head's opening section. */
   const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c =>
-    [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+    [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${goalPromptBody(c.path, c.source, c.body ?? '')}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
   /** The prompt sections fixed at the start of the current decision (native mode); undefined before the first. */
   let decisionPrompts: Record<string, string> | undefined;
   // With contextLayout no prompt section is wanted: sections a resumed or forked session carries are removed once.
