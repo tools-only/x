@@ -27,3 +27,12 @@ def test_top_level_defs_are_found_per_cell_and_counted_again_when_redefined():
     assert [c["defs"] for c in cells] == [["snap"], ["snap", "load"], [], None]
     report = baseline.per_level(cells)[0]
     assert (report["cells_with_defs"], report["distinct_defs"], report["redefinitions"], report["unparsed_cells"]) == (2, 2, 1, 1)
+
+
+def test_adoption_counts_scripts_and_skills_from_the_logs_and_the_table_appears_only_when_there_are_any():
+    runs = [{"kind": "persist", "saved": ["lib/a.py v1", "lib/b.py v1"], "skipped": ["c: it needs a name the session holds"]},
+            {"kind": "persist", "saved": [], "unchanged": ["a"]}, {"kind": "import", "imported": ["a"]}, {"kind": "tool"}]
+    points = [{"kind": "skill_shown"}, {"kind": "skill_shown"}, {"kind": "skill_read", "review": False}, {"kind": "skill_read", "review": True},
+              {"kind": "refine_point"}]
+    assert baseline.adoption(runs, points) == {"scripts_saved": 2, "script_skips": 1, "script_cells": 1, "skills_shown": 2, "skills_read": 1}
+    assert not any(baseline.adoption([], [{"kind": "refine_point"}]).values())

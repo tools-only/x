@@ -33,8 +33,9 @@ import { observationReference, storeObservation } from "./arc_thin_observation.t
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
-import { Binder } from "./arc_thin_binder.ts";
+import { Binder, markdownSpec, skillHeaderProblems } from "./arc_thin_binder.ts";
 import { canonicalRefinerSystem, canonicalSystemTemplate } from "./arc_thin_kinds.ts";
+import { dueSkills, eventKinds, refinerSkills, renderSkillPush, type SkillPush } from "./arc_thin_skills.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
@@ -335,9 +336,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// canonical text only when its own flag is on.
 	const kindsCanonical = native && !control && process.env.ARC_THIN_KINDS === "canonical";
 	const persistDefs = native && !control && process.env.ARC_THIN_PERSIST_DEFS === "1";
-	const kindsOptions = { consult: consultTool, persist: persistDefs, skills: false };
+	// SKILLS=1 (S3): refinements and the two reviews write skills (a skill directory in one refinement reply; the procedure of a
+	// review as a skill, its findings as memory), a skill that names an event in metadata.trigger is shown once at it, skills
+	// are read as Pi reads them (a frontmatter problem is a warning), and their descriptions stay in the index.
+	const skillsOn = native && !control && process.env.ARC_THIN_SKILLS === "1";
+	const kindsOptions = { consult: consultTool, persist: persistDefs, skills: skillsOn };
 	const canonicalTemplate = kindsCanonical ? canonicalSystemTemplate(loadPrompt("arc_thin_native_system.md"), kindsOptions) : undefined;
-	const refinerCharter = kindsCanonical ? canonicalRefinerSystem(REFINER_SYSTEM, kindsOptions) : REFINER_SYSTEM;
+	const refinerCharter = (kindsCanonical ? canonicalRefinerSystem(REFINER_SYSTEM, kindsOptions) : REFINER_SYSTEM) + (skillsOn ? refinerSkills() : "");
 	/** Where a review's record is written for the subagent it consults (read-only to the agent, read by refs). */
 	const RECORD_PATH = "data/record.md";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
@@ -362,7 +367,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     }
     return archivedResults.get(key)!;
   };
-  const binder = workspace ? new Binder(workspace, validatePythonComponent, { scripts: persistDefs }) : undefined;
+  const binder = workspace ? new Binder(workspace, validatePythonComponent, { scripts: persistDefs, skills: skillsOn }) : undefined;
   let nativeRuntime: NativeRuntime | undefined;
 
 	// ---------------------------------------------------------------- stores
@@ -822,6 +827,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// ARC_THIN_CONTEXT_LAYOUT=0 they are in the system prompt); then come the memory index, a summarised history, recent
 		// actions it does not cover, what a refinement changed, and resources. The runtime's own analyses are files under
 		// data/, not resident text.
+		let skillText = "";
 		const nativeSections = (): Array<[string, string]> => {
 			// Rivals with checks, compared on the recorded moves (H3a): one line per question, shown when it is new or changed
 			// (P3: "no recorded move separates …" stood unchanged in 35 decisions of su15-g56-2 and 45 of su15-q38-2). A count
@@ -836,6 +842,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const out: Array<[string, string]> = [];
 			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
 			if (prompts) out.push(["prompts", prompts]);
+			// Skills whose event has just happened (ARC_THIN_SKILLS), each shown once. A review shows none. They count as shown when
+			// the model has answered this decision (commitSkillPush). With the context layout they close the head, before the
+			// agent's own board record (text that opens or fills the head changed nothing in the copy-attractor runs, tail text did);
+			// without it they follow the prompt files.
+			if (skillsOn && binder && !run.consolidating) {
+				const skills = binder.active().filter((c) => c.kind === "skill");
+				const due = dueSkills(skills, { level: `level:${currentLevel()}`, ...(stallEventAt !== undefined ? { stall: `stall:${stallEventAt}` } : {}) }, skillShown, trajectory.length);
+				if (due.length) {
+					skillsPushed = due;
+					const shown = renderSkillPush(due, skills, currentLevel());
+					if (contextLayout) skillText = shown; else out.push(["skill", shown]);
+				}
+			}
 			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
@@ -907,9 +926,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (workMemory && !run.consolidating && observation) {
 			try { board = boardText(boardFactsNow()); } catch (error) { logError("context:board", error); }
 		}
-		// contextLayout: the agent's own record on this board goes after everything else, the images included.
+		// contextLayout: the agent's own record on this board goes after everything else, the images included, and a skill pushed
+		// at an event goes just before it.
 		const spin = contextLayout && run.spin?.streak ? spinText(run.spin) : "";
-		const tail = contextLayout ? [spin, board].filter(Boolean).join("\n\n") : "";
+		const tail = contextLayout ? [skillText, spin, board].filter(Boolean).join("\n\n") : "";
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
 		const body = sections.map(([, value]) => value).join("\n\n");
@@ -917,8 +937,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("working_set.jsonl", {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
-				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
-					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
+				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(skillText ? [["skill", skillText] as [string, string]] : []),
+					...(spin ? [["spin", spin] as [string, string]] : []), ...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
 				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
 				...(seen ? { images: seen.images.length, rendered_grids: seen.labels } : {}),
 				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body, ...(tail ? { tail } : {}),
@@ -926,6 +946,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		} catch (error) { logError("context:working_set", error); }
 		return { text: `${body}\n\n${stateText}${board && !contextLayout ? `\n\n${board}` : ""}`, image,
 			...(seen ? { images: seen.images } : {}), ...(tail ? { tail } : {}) };
+	}
+
+	/**
+	 * Skills pushed to the decision that has just ended count as shown once the model answered it: logged as `skill_shown`
+	 * (call_points.jsonl) and not pushed again for the same event. A decision the provider never answered leaves them due.
+	 */
+	function commitSkillPush(): void {
+		if (!skillsOn || !skillsPushed.length) return;
+		if (run.answered) for (const push of skillsPushed) {
+			skillShown.set(push.path, push.event);
+			append("call_points.jsonl", { kind: "skill_shown", at: push.at, decision, path: push.path, version: push.version, trigger: push.trigger, event: push.event });
+		}
+		skillsPushed = [];
 	}
 
 	/** Who played an action, as CH's history labels it: arc_action, python, or tool: <name>. */
@@ -1392,6 +1425,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		// When the agent last called refine (A5): the next refine point is REFINE_EVERY actions after it.
 		lastRefineCallAt = Math.max(0, ...readRows("call_points.jsonl").filter((row) => row.kind === "refine").map((row) => Number(row.at) || 0));
+		// Skills already shown, for which event, and the stall review whose skills are still to be shown (ARC_THIN_SKILLS).
+		if (skillsOn) {
+			const points = readRows("call_points.jsonl");
+			skillShown.clear();
+			for (const row of points) if (row.kind === "skill_shown" && typeof row.path === "string") skillShown.set(row.path, String(row.event));
+			stallEventAt = points.filter((row) => row.kind === "stall_review").at(-1)?.at;
+		}
 	}
 
 	/** Every state the agent sees is kept: skills read it as state.history, and the ledger reads it when enabled. */
@@ -1718,7 +1758,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Edits made so far in this run (and the source run of a fork): the next edit's id is e<count + 1>. */
 	let refinerEdits = readRows("refiner.jsonl").filter((row) => row.kind === "edit").length;
 	/** Files a refinement wrote: later refinements may rewrite them; other existing files belong to the agent. */
-	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string").map((row) => row.path));
+	const refinedPaths = new Set<string>(readRows("refiner.jsonl").filter((row) => row.kind === "edit" && typeof row.path === "string")
+		.flatMap((row) => [row.path, ...(Array.isArray(row.files) ? row.files : [])]));
+	/**
+	 * Skills with a consumer (ARC_THIN_SKILLS): the event each skill with a trigger was last shown for, the stall reviews started so
+	 * far, and the skills the current decision shows (they count as shown once the model has answered it). Restored from
+	 * call_points.jsonl, so a restart or a fork neither repeats a push nor loses one.
+	 */
+	const skillShown = new Map<string, string>();
+	let stallEventAt: number | undefined;
+	let skillsPushed: SkillPush[] = [];
 	/** path@version of the versions refinements wrote, and those the runtime restored for them (restoreBrokenViews). */
 	const refinedVersions = new Set<string>(readRows("refiner.jsonl").filter((row) => (row.kind === "edit" || row.kind === "view_restored")
 		&& row.loaded !== false && typeof row.path === "string" && row.version !== undefined).map((row) => `${row.path}@${row.version}`));
@@ -2408,8 +2457,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const sourceBefore = new Map(workspace!.files().filter(path => /^(prompts|tools|lib|skills)\//.test(path)).map(path => [path, workspace!.read(path)]));
 		const strategy = readStrategy();
 		const saved = binder!.active().filter((c) => /^(tools|observers|lib)\/[^/]+\.py$/.test(c.path));
+		// S3: what an event suggests the edit should be (the refinement decides; NONE stays an answer), and the skills there are.
+		const kinds = skillsOn ? eventKinds(triggers, persistDefs) : [];
 		const input = [
 			`WHY NOW: ${triggers.join("; ")}`,
+			...(kinds.length ? [`THE KIND OF EDIT THE EVENT SUGGESTS (yours to decide):\n${kinds.map((line) => `- ${line}`).join("\n")}`] : []),
 			// The checks of the hypotheses the triggers name (a contested one, a disputed rule's), to narrow or fix them.
 			...((named) => named.length ? [`CHECKS NAMED ABOVE:\n${named.map((key) => `--- ${key}\n${memory.hypotheses.get(key)!.check!.replace(/\s+$/, "")}`).join("\n")}`] : [])(
 				[...new Set(triggers.join(" ").match(/\bhyp\.[A-Za-z0-9_.-]*[A-Za-z0-9_]/g) ?? [])].filter((key) => memory.hypotheses.get(key)?.check)),
@@ -2421,6 +2473,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			...((review) => review ? [`THE AGENT'S ${REVIEW_PATH} (its own review of the level it has not completed; refinements do not edit it):\n${review}`] : [])(reviewText()),
 			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
 			`SAVED TOOLS:\n${saved.map((c) => `--- ${c.path} v${c.version}${c.view ? " (view)" : ""} ${refinedPaths.has(c.path) ? "REFINED" : "AGENT'S"}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
+			...(skillsOn ? [`SAVED SKILLS:\n${binder!.active().filter((c) => c.kind === "skill").map((c) => `--- ${c.path} v${c.version}${c.trigger ? ` [${c.trigger}]` : ""} ` +
+				`${refinedPaths.has(c.path) ? "REFINED" : "AGENT'S"}: ${c.description}\n${(c.body ?? "").trim().slice(0, 800)}`).join("\n") || "(none)"}`] : []),
 			...(samples.length ? [`REPEATED PYTHON (latest calls):\n${samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n")}`] : []),
 			`LAST ACTIONS (with how their predictions scored):\n${trajectory.slice(-20).map(recentLine).join("\n") || "(none yet)"}`,
 			`CURRENT STATE:\n${observation ? queryObservation ? observationReference(observation, trajectory.length) : renderState(observation) : "(unavailable)"}`,
@@ -2440,13 +2494,29 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			return { reply, answer };
 		};
 		let { reply, answer } = await ask(input);
-		let edit = parseRefinerReply(answer);
-		/** Why a FILE reply would change nothing: it is the current file again (whitespace at line ends aside). */
+		let edit = parseRefinerReply(answer, { skills: skillsOn });
+		/** Why a FILE reply would change nothing: it is the current file again (whitespace at line ends aside), and so is every file beside it. */
 		const unchangedFile = (e: typeof edit): string | undefined => {
-			if (e.kind !== "file" || !workspace!.files().includes(e.path)) return undefined;
+			if (e.kind !== "file") return undefined;
 			const normal = (text: string) => text.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trimEnd();
-			return normal(workspace!.read(e.path)) === normal(e.content)
+			const same = (path: string, content: string) => workspace!.files().includes(path) && normal(workspace!.read(path)) === normal(content);
+			return same(e.path, e.content) && (e.extra ?? []).every((f) => same(f.path, f.content))
 				? `it is the same as the current ${e.path} v${binder!.versionMap()[e.path] ?? "?"}, so nothing would change` : undefined;
+		};
+		/** Why a lone file beside a skill would belong to no skill: there is no SKILL.md in its directory (a new skill is replied whole, SKILL.md first). */
+		const orphanSkillFile = (e: typeof edit): string | undefined => {
+			if (!skillsOn || e.kind !== "file") return undefined;
+			const directory = /^skills\/([^/]+)\/(?!SKILL\.md$)/.exec(e.path)?.[1];
+			return directory && !workspace!.files().includes(`skills/${directory}/SKILL.md`)
+				? `skills/${directory}/ has no SKILL.md, so the file would belong to no skill; reply with the whole skill directory, SKILL.md first` : undefined;
+		};
+		/** Why a skill the reply writes would load without what it was written for (a header that does not parse, no description, a trigger the runtime does not know). */
+		const skillHeaderProblem = (e: typeof edit): string | undefined => {
+			if (!skillsOn || e.kind !== "file" || !/^skills\/[^/]+\/SKILL\.md$/.test(e.path)) return undefined;
+			try {
+				const problems = skillHeaderProblems(markdownSpec(e.path, e.content, { lenient: true }));
+				return problems.length ? `the header of ${e.path} has ${problems.length === 1 ? "a problem" : "problems"}: ${problems.join("; ")}` : undefined;
+			} catch (error) { return `${e.path} cannot be loaded: ${errorText(error)}`; }
 		};
 		// A coverage event's answer names its test move in a form the runtime classifies, a rival's of a kind the level has
 		// not seen (P1); a FILE answer changes the file (su15-p13-q38-1 #183: the repair of a crashing view returned it as it
@@ -2454,13 +2524,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// answer is used as it comes.
 		const coverageEvent = COVERAGE && /^(rival|contested|repeat):/.test(promotionId ?? "");
 		const problem = (coverageEvent && edit.kind === "hypothesis" ? moveProblem(promotionId!, edit.predicts) : undefined) ?? unchangedFile(edit)
-			?? unscopedRules(edit, triggers);
+			?? orphanSkillFile(edit) ?? skillHeaderProblem(edit) ?? unscopedRules(edit, triggers);
 		if (problem) {
 			append("refiner.jsonl", { kind: "returned", at: trajectory.length, decision, event: promotionId, why: problem });
 			const again = `${input}\n\nYOUR REPLY WAS:\n${answer.trim()}\n\nNOT APPLIED: ${problem}. Reply again with the whole edit in the same form.`;
 			append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input: again, returned: true });
 			({ reply, answer } = await ask(again, true));
-			edit = parseRefinerReply(answer);
+			edit = parseRefinerReply(answer, { skills: skillsOn });
 		}
 		/** Pin the move `text` names (P3); the notice's clause for it, or "" when it names none the runtime can place. */
 		const pinFrom = (text: string, editId: string, why: string, within?: number): { clause: string; old?: Pin } => {
@@ -2478,9 +2548,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try {
 			const at = trajectory.length;
 			const base = { at, evidence_at: evidenceAt, evidence_level: evidenceLevel, decision, triggers, stop_reason: reply.stopReason, input_chars: input.length };
+			// A skill directory is one edit: the target is stale when any of its files changed while the refinement ran.
+			const moved = (path: string) => binder!.versionMap()[path] !== sourceVersions[path]
+				|| (workspace!.files().includes(path) ? workspace!.read(path) : undefined) !== sourceBefore.get(path);
 			if (currentLevel() !== evidenceLevel || ((edit.kind === 'memory' || edit.kind === 'hypothesis') && JSON.stringify(memoryForSkills(memory)) !== memoryBefore)
-				|| (edit.kind === 'file' && (binder!.versionMap()[edit.path] !== sourceVersions[edit.path]
-					|| (workspace!.files().includes(edit.path) ? workspace!.read(edit.path) : undefined) !== sourceBefore.get(edit.path)))) {
+				|| (edit.kind === 'file' && [edit.path, ...(edit.extra ?? []).map((f) => f.path)].some(moved))) {
 				append('refiner.jsonl', {kind: 'stale', ...base, why: 'scope or target changed while refinement was running'});
 				return;
 			}
@@ -2549,8 +2621,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			// A refinement adds; it never replaces what the agent wrote (on 2026-10-13 one turned the agent's acting tool
 			// tools/probe.py into an unrelated view). It may rewrite the strategy, the rules prompt and files that refinements wrote.
-			if (!ownedByRefinement(edit.path)) {
-				append("refiner.jsonl", { kind: "refused", ...base, path: edit.path, why: `would replace the agent's ${edit.path}` });
+			// A skill directory is one edit: if any of its files would replace one of the agent's, none is written.
+			const beside = edit.extra ?? [];
+			const notOwned = [edit.path, ...beside.map((f) => f.path)].find((path) => !ownedByRefinement(path));
+			if (notOwned) {
+				append("refiner.jsonl", { kind: "refused", ...base, path: notOwned, why: `would replace the agent's ${notOwned}` });
 				return;
 			}
 			// The same file again is not an edit: nothing is written, and the agent is not told of one.
@@ -2567,6 +2642,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				clause = from.clause;
 				content = pinned(content, from.old);
 			}
+			// The files beside a skill's SKILL.md first, so that its scripts are there when the skill becomes active.
+			for (const file of beside) {
+				workspace!.mutate({ op: "write", path: file.path, content: file.content });
+				refinedPaths.add(file.path);
+				await binder!.save(file.path, currentLevel());
+			}
 			workspace!.mutate({ op: "write", path: edit.path, content });
 			refinedPaths.add(edit.path);
 			const receipt = await binder!.save(edit.path, currentLevel());
@@ -2576,9 +2657,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const version = binder!.versionMap()[edit.path];
 			if (loaded && version !== undefined) refinedVersions.add(`${edit.path}@${version}`);
 			const id = `e${++refinerEdits}`;
-			append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt, ...ledgerFields(id) });
+			append("refiner.jsonl", { kind: "edit", ...base, category: edit.path.split("/")[0].replace(/s$/, ""), path: edit.path, version, why: edit.why, loaded, receipt,
+				...(beside.length ? { files: beside.map((f) => f.path) } : {}), ...ledgerFields(id) });
 			applied = true;
-			told(`${edit.path}${version ? ` v${version}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}${clause}`, edit.why, id);
+			told(`${edit.path}${version ? ` v${version}` : ""}${beside.length ? ` with ${beside.map((f) => f.path.replace(/^skills\/[^/]+\//, "")).join(", ")}` : ""}${loaded ? "" : " failed validation; the previous version still applies"}${clause}`, edit.why, id);
 		} finally {
 			settlePromotion(promotionId, applied ? edit as { kind: string; path?: string; key?: string } : { kind: "none" });
 		}
@@ -2778,6 +2860,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const used = runs.filter((row) => row.kind === "import" && Number(row.n) >= saved && [...(row.imported ?? []), ...(row.named ?? [])].includes(c.name)).length;
 			usage.set(c.path, `used in ${used} cell(s) since saved at #${saved}`);
 			if (!used && trajectory.length - saved >= REFINE_EVERY) idle.push(`script ${c.path} (not imported or used in the ${trajectory.length - saved} actions since it was saved)`);
+		}
+		// Skills (ARC_THIN_SKILLS): how often each has been shown at its event and read.
+		if (skillsOn) {
+			const points = readRows("call_points.jsonl");
+			for (const c of binder.active().filter((c) => c.kind === "skill")) {
+				const shown = points.filter((row) => row.kind === "skill_shown" && row.path === c.path).length;
+				const read = points.filter((row) => row.kind === "skill_read" && row.skill === c.name && !row.review).length;
+				usage.set(c.path, `${c.trigger ? `shown ${shown}×, ` : ""}read ${read}×`);
+			}
 		}
 		return { usage, idle };
 	}
@@ -3316,7 +3407,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       if (run.reviewWrite && path !== run.reviewWrite) throw new Refusal(`after this review's last call only ${run.reviewWrite} is accepted`);
       // A review writes after it has consulted (A5); making the subagent to consult is a write it may do first.
       if ((tool.name === 'write' || tool.name === 'edit') && consultFirst(path)) throw new Refusal(CONSULT_FIRST);
-      try { return await tool.execute('workspace', params as any, signal, undefined, ctx); }
+      try {
+        const result = await tool.execute('workspace', params as any, signal, undefined, ctx);
+        // A skill the agent opens (SKILL.md or a file beside it) is a read of that skill, logged as such (ARC_THIN_SKILLS).
+        const skill = skillsOn && tool.name === 'read' ? /^skills\/([^/]+)\//.exec(path)?.[1] : undefined;
+        if (skill) append('call_points.jsonl', { kind: 'skill_read', at: trajectory.length, decision, skill, path, review: run.consolidating,
+          version: binder?.versionMap()[`skills/${skill}/SKILL.md`], shown: skillShown.has(`skills/${skill}/SKILL.md`) });
+        return result;
+      }
       catch (error) { throw new Refusal(errorText(error)); }
     }) });
 	// No action vocabulary is invented before the environment has supplied its scope.
@@ -3898,6 +3996,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!continuing) {
 		carriedResults = run.batchResults;
 		noteConsultUse(run);
+		commitSkillPush();
 		// ARC_THIN_OBSERVATION=ch: observations a decision showed but the model never answered (a provider error) are shown
 		// again, as CH clears them only after a response.
 		if (chView && !run.consolidating && !run.answered && decisionObservations.length) {
@@ -3922,6 +4021,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		// The skills a stall review leaves are shown at the first decision after it (ARC_THIN_SKILLS): the event is its action count.
+		if (skillsOn && !continuing && run.stallReview) {
+			stallEventAt = trajectory.length;
+			append("call_points.jsonl", { kind: "stall_review", at: stallEventAt, decision });
+		}
 		// Work memory: a decision after one that learned nothing new opens by saying so.
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review consults before it writes; every REFINE_EVERY actions since the agent's last refine
@@ -4192,7 +4296,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       if (current[key] !== desired[key]) patch[key] = desired[key] ?? null;
     return Object.keys(patch).length ? { messages: [...event.messages, { role: 'system', content: '', sections: patch, timestamp: Date.now() }] } : undefined;
   });
-  if (nativeRuntime) pi.on('session_shutdown', () => nativeRuntime?.close());
+  if (nativeRuntime) pi.on('session_shutdown', () => { commitSkillPush(); nativeRuntime?.close(); });
 	pi.on("before_provider_request", guard("before_provider_request", (event: any, ctx: any) => {
 		if (native) {
 			if (parentRequest) requestTrace.finish(parentRequest);

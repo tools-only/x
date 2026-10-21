@@ -99,6 +99,64 @@ STALL_REVIEW_RECOVERY_PROMPT = (
     "RECOVER STALL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/review.md "
     "once (the frontmatter, then the four parts in a few short lines), then stop. This turn takes no action."
 )
+#: The same two reviews when skills have a trigger (ARC_THIN_SKILLS=1, docs/plans/2026-10-21-components-by-default-canonical-forms.md,
+#: S3(b)). Reading the saved reviews of five runs (docs/reports/2026-10-21-components-baseline-s0-reviews.md), most of each file
+#: was findings about the game, one sentence per file was a procedure, and only the "- test:" lines have a consumer (the
+#: runtime pins them). So a review writes the procedure as a skill the runtime shows once at the next event, the findings as
+#: memory, and its prompt file keeps only the test lines. How to write a skill is in demo/prompts/arc_thin_skill_authoring.md,
+#: which the refinement charter reads too, so the two cannot say different things.
+LEVEL_REVIEW_SKILLS_PROMPT = (
+    "LEVEL REVIEW. Level {level} is complete; this turn takes no action. From the level record below and your own notes, "
+    "do three things in this order.\n"
+    "1. If level {level} was won by a procedure you would follow again on another level (which scripts to run, what to "
+    "check, what the result decides), write it as skills/<name>/SKILL.md with metadata: {{trigger: level_start}}; the "
+    "runtime shows it once when the next level starts. If one of your skills already covers it, rewrite that one. If "
+    "nothing in this level repeats, write no skill.\n"
+    "2. Memory (the memory tool): the win condition literally, marked (level {level} only), what moved progress and what "
+    "wasted actions. Scope or delete entries that state level {level}'s win as a general rule.\n"
+    "3. prompts/lessons.md, whole, in one write call, under 400 characters. Start it with\n---\nactive: true\n---\nthen, for "
+    "level {next}, 2-4 candidate win conditions, the one to test first first, each on a line of its own as\n"
+    "- test: <move> — <the win condition it tests>\n"
+    "with the move as ACTION6(x,y) or ACTIONn. The runtime pins them in this order as moves that predict a level change "
+    "and reports each result. Level {level}'s pattern is one candidate, not a rule.\n"
+    "{authoring}\nThen stop."
+)
+LEVEL_REVIEW_SKILLS_RECOVERY_PROMPT = (
+    "RECOVER LEVEL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/lessons.md "
+    "once (the frontmatter, then the - test: lines), then stop. This turn takes no action."
+)
+STALL_REVIEW_SKILLS_PROMPT = (
+    "STALL REVIEW. {why}; this turn takes no action. From the level's record below, the history shown and your own notes, "
+    "do three things in this order.\n"
+    "1. If you can name a procedure that would have kept you from stalling and that you would follow again (what to check "
+    "first, which scripts to run, what to stop repeating), write it as skills/<name>/SKILL.md with metadata: "
+    "{{trigger: stall}}; the runtime shows it once after each stall review. If one of your skills already covers it, "
+    "rewrite that one. If you cannot name one, write no skill.\n"
+    "2. Memory (the memory tool): what you tried on this level and what each try showed, and the bottleneck: what you do "
+    "not know, or cannot do, that keeps the level open. Correct or delete memory entries the record contradicts.\n"
+    "3. prompts/review.md, whole, in one write call, under 400 characters. Start it with\n---\nactive: true\n---\nthen "
+    "2-4 directions not tested yet, the one to test first first, each on a line of its own as\n"
+    "- test: <move> — <what it would show>\n"
+    "with the move as ACTION6(x,y) or ACTIONn; say \"(level change)\" in a direction that should complete the level. The "
+    "runtime pins them in this order and reports each result.\n"
+    "{authoring}\nThen stop."
+)
+STALL_REVIEW_SKILLS_RECOVERY_PROMPT = (
+    "RECOVER STALL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/review.md "
+    "once (the frontmatter, then the - test: lines), then stop. This turn takes no action."
+)
+
+
+def _skill_authoring() -> str:
+    """The rules for writing a skill, from the file the refinement charter reads as well."""
+    return (PROJECT_ROOT / "demo" / "prompts" / "arc_thin_skill_authoring.md").read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+
+
+def _skills_on(env: dict[str, str], extension_env: dict[str, str] | None) -> bool:
+    """Whether ARC_THIN_SKILLS=1: the environment of the run, as the extension will see it (extension_env wins)."""
+    return {**env, **(extension_env or {})}.get("ARC_THIN_SKILLS") == "1"
+
+
 #: Actions without a level completed, counted from the level's first action or the last stall review, after which a
 #: native run's next turn is a stall review (0: none).
 STALL_REVIEW_AFTER = 40
@@ -866,8 +924,11 @@ def _input_modalities(explicit: str | None, env: dict[str, str]) -> list[str]:
     return list(resolve_input_modalities(explicit if explicit is not None else env.get("ARC_INPUT_MODALITIES") or "text,image"))
 
 
-def _level_review_prompt(levels_completed: int) -> str:
-    """The native review after a level change; the level just completed is the `levels_completed`-th."""
+def _level_review_prompt(levels_completed: int, skills: bool = False) -> str:
+    """The native review after a level change; the level just completed is the `levels_completed`-th. `skills`: the review of
+    ARC_THIN_SKILLS (a skill, memory, and a prompt file of test lines)."""
+    if skills:
+        return LEVEL_REVIEW_SKILLS_PROMPT.format(level=levels_completed, next=levels_completed + 1, authoring=_skill_authoring())
     return LEVEL_REVIEW_PROMPT.format(level=levels_completed, next=levels_completed + 1)
 
 
@@ -893,9 +954,9 @@ def _stall_review_due(trajectory: list[dict[str, Any]], reviewed_at: int, after:
 
 
 def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, levels_completed: int,
-                         spin: tuple[int, list[str]] | None = None) -> str:
+                         spin: tuple[int, list[str]] | None = None, skills: bool = False) -> str:
     """The stall review's prompt. `spin` (decisions in a row that learned nothing new, and their moves) says why it came
-    early: the work-memory trigger, not the action count."""
+    early: the work-memory trigger, not the action count. `skills`: the review of ARC_THIN_SKILLS."""
     start = _level_start(trajectory)
     since = len(trajectory) - max(start, reviewed_at)
     anchor = (f"since your last stall review, at action {reviewed_at}" if reviewed_at > start
@@ -907,7 +968,7 @@ def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, lev
                f"level {levels_completed + 1} has been open for {since} actions ({anchor})")
     else:
         why = f"Level {levels_completed + 1} is still open after {since} actions ({anchor})"
-    return STALL_REVIEW_PROMPT.format(why=why)
+    return (STALL_REVIEW_SKILLS_PROMPT.format(why=why, authoring=_skill_authoring()) if skills else STALL_REVIEW_PROMPT.format(why=why))
 
 
 def _spin_review_after(foundation: str, explicit: int | None, env: dict[str, str]) -> int:
@@ -944,11 +1005,14 @@ def _spin_streak(trajectory: list[dict[str, Any]]) -> tuple[int, list[str]]:
 
 
 def _review_recovery(message: str) -> str | None:
-    """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision."""
+    """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision. A review
+    of ARC_THIN_SKILLS (its prompt names skills/<name>/SKILL.md, and so does the recovery prompt that follows it) is resumed
+    by the matching recovery prompt."""
+    skills = "skills/<name>/SKILL.md" in message or message in {LEVEL_REVIEW_SKILLS_RECOVERY_PROMPT, STALL_REVIEW_SKILLS_RECOVERY_PROMPT}
     if message.startswith(("LEVEL REVIEW", "RECOVER LEVEL REVIEW")):
-        return LEVEL_REVIEW_RECOVERY_PROMPT
+        return LEVEL_REVIEW_SKILLS_RECOVERY_PROMPT if skills else LEVEL_REVIEW_RECOVERY_PROMPT
     if message.startswith(("STALL REVIEW", "RECOVER STALL REVIEW")):
-        return STALL_REVIEW_RECOVERY_PROMPT
+        return STALL_REVIEW_SKILLS_RECOVERY_PROMPT if skills else STALL_REVIEW_RECOVERY_PROMPT
     if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT}:
         return CONSOLIDATE_RECOVERY_PROMPT
     return None
@@ -1113,6 +1177,7 @@ def run_arc_thin_e2e(
 
     env = load_project_dotenv(PROJECT_ROOT)
     env.pop("PI_AUTORESEARCH_OWNS_TASK", None)  # never let PiKernel.close seal a legacy task scope
+    skills_on = foundation == "native" and variant == "treatment" and _skills_on(env, extension_env)
     review_at_level_change = _level_review_default(review_at_level_change, env)
     stall_review_after = _stall_review_after(foundation, stall_review_after, env) if variant == "treatment" else 0
     spin_review_after = _spin_review_after(foundation, spin_review_after, env) if variant == "treatment" else 0
@@ -1281,6 +1346,9 @@ def run_arc_thin_e2e(
             "canonical_kinds": foundation == "native" and variant != "control" and pi_env.get("ARC_THIN_KINDS") == "canonical",
             # S2: the top-level functions of the agent's python cells are saved as lib/<name>.py (ARC_THIN_PERSIST_DEFS=1).
             "persist_defs": foundation == "native" and variant != "control" and pi_env.get("ARC_THIN_PERSIST_DEFS") == "1",
+            # S3: skills have a trigger, refinements and reviews write them, the reviews' procedure leaves the prompt file
+            # (ARC_THIN_SKILLS=1). The reviews' prompts follow this value, so it is the runner's reading of the flag.
+            "skills": skills_on,
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,
@@ -1597,9 +1665,9 @@ def run_arc_thin_e2e(
                     # otherwise the consolidation prompt.
                     level_review = foundation == "native" and level_changed_since_consolidation and review_at_level_change
                     stall_review = not level_review and (stall_due or spin_due)
-                    review = (_level_review_prompt(int(state.get("levels_completed") or 0)) if level_review
+                    review = (_level_review_prompt(int(state.get("levels_completed") or 0), skills=skills_on) if level_review
                               else _stall_review_prompt(trajectory_now, stall_reviewed_at, int(state.get("levels_completed") or 0),
-                                                        spin if spin_due and not stall_due else None) if stall_review
+                                                        spin if spin_due and not stall_due else None, skills=skills_on) if stall_review
                               else CONSOLIDATE_PROMPT)
                     events = recover_length(review, safe_turn(review))
                     summary["consolidations"] += 1

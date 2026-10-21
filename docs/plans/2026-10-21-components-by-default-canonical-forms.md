@@ -219,14 +219,29 @@ drop its untracked copy before merging.
 - Suite: `node --experimental-transform-types --test --test-concurrency=1 tests/arc_thin_*.test.ts` (every
   earlier report in this repository uses `--experimental-transform-types`; the brief's `--experimental-strip-types` stops
   every file at `demo/arc_thin_binder.ts:51` with "TypeScript parameter property is not supported in strip-only mode" on
-  this machine's Node 25.5.0). Runner-side check: `python -m pytest tests/test_components_baseline.py`.
+  this machine's Node 25.5.0). Runner side: `python -m pytest tests/test_components_baseline.py tests/test_arc_thin_skills_reviews.py
+  tests/test_arc_thin_level_review.py tests/test_arc_thin_stall_review.py tests/test_arc_thin_work_memory.py
+  tests/test_arc_thin_lifecycle_stats.py tests/test_arc_thin_loop_bound.py tests/test_arc_thin_recovery.py
+  tests/test_arc_thin_request_accounting.py` (44 pass at the S3 commit; the two review files and the work-memory file are
+  the ones that call the functions S3 changed).
 - **Base result on this machine, before any change** (pristine checkout of `9a5e0536`, Node 25.5.0, 691 s): 255 tests,
   250 pass, 5 fail — `arc_thin_activation.test.ts:41` ("saved code acts in a closed loop"), `arc_thin_components.test.ts:181`
   ("python session never stores runtime objects…") and `arc_thin_receipts.test.ts:8`, `:28`, `:44`. They fail the same
   way at the work-memory record's base (`docs/plans/2026-10-20-work-memory.md`, "five fail the same way at the base:
   activation 1, components 1, receipts 3"). I did not cause them and did not touch what they test.
-- Tests of each stage are listed under its heading below; the full suite is re-run after each stage and compared with
-  this base result.
+- **The full suite after each stage** (sequential; the same five failures every time, none new):
+
+  | after | tests | pass | fail | seconds |
+  | --- | --- | --- | --- | --- |
+  | base `9a5e0536` | 255 | 250 | 5 | 691 |
+  | S1 (`46dcbb24`, with the merged `3ff04b13`: +2 tests) | 261 | 256 | 5 | 701 |
+  | S2 (`393ab527`) | 268 | 263 | 5 | 756 |
+  | S3 (the tree that became the S3 commit) | 277 | 272 | 5 | 723 |
+
+  The S1 row was run in this worktree before S2 was started, the S2 row in a spare detached checkout at the commit (so that
+  edits in progress could not race the run), the S3 row in this worktree with the code files unchanged during the run (only
+  the plan record was written). Outputs are under `tmp/test-*-full.txt` (untracked).
+- Tests of each stage are listed under its heading below.
 
 ### S0 — baseline from existing runs (done; no runtime change)
 
@@ -444,20 +459,188 @@ Evidence level reached by S2: functional correctness only, on the real sandbox b
 `arc-harness-smoke`. Whether a model defines functions more often once the text says they persist (the leading indicator in
 the plan's protocol: defs per run, then imports per decision) is unverified.
 
+### S3 — skills with a consumer (flag `ARC_THIN_SKILLS=1`, default off)
+
+Entry points and actual behavior:
+
+- **Consumer, push** (`demo/arc_thin_skills.ts`, new; wiring in `demo/arc_thin_extension.ts`). A skill whose frontmatter says
+  `metadata: {trigger: level_start}` or `{trigger: stall}` is shown in the head of the first decision after its event: the
+  first decision of each level (event `level:<levels completed>`), or the first after a stall review (`stall:<actions>`).
+  Active skills with a trigger whose last shown event is not this one are *due*; newest version first, at most 2
+  (`SKILL_PUSH_MAX`); the head carries `SKILL <path> v<n>, shown once for level <n+1> | after the stall review just made (read
+  <path> again when a step matches; whether it applies now is yours to judge): <description>` and the body clipped to 1,500
+  characters. Position: with the context layout (the default since `3ff04b13`) it closes the head, in the last text block, just
+  before the agent's own board record, because in the copy-attractor runs (`chm`, memory note of 2026-10-21) text that opens or
+  fills the head changed nothing and only tail text changed behaviour; a "does the agent follow a pushed skill" pair should not
+  be decided by where the push sat. With `ARC_THIN_CONTEXT_LAYOUT=0` it follows the prompt files. A review (level, stall,
+  consolidate) shows none.
+  A push counts as *shown* only when the model answered the decision (a non-error assistant `message_end`): the `skill_shown`
+  row (`call_points.jsonl`: path, version, trigger, event, decision) is written at the next decision's start or at shutdown,
+  so a decision the provider never answered leaves the skill due. The stall review's own start is a `stall_review` row (its
+  action count is the event's id). State is read back from those two kinds of row at start, so a restart or a fork neither
+  repeats a push nor loses one. Because "due" means "not shown for this event", a skill written by a review after the level
+  change is shown at the next decision, which is the first of the new level; a `level_start` skill the agent writes in
+  mid-level is shown once right after it.
+- **Consumer, pull.** Every skill's description stays in the HARNESS index (clipped at 200 characters, 120 for other kinds);
+  a `read` of `skills/<name>/…` is logged as `skill_read` (path, version, whether in a review, whether it had been shown), and the
+  index line carries the counts (`shown N×, read N×`). The counts are the only feedback the runtime has for a skill: a pushed
+  body is already in front of the agent, so "read 0×" is not idleness, and no "ran without helping" line is made for skills.
+- **Binder** (`demo/arc_thin_binder.ts`, option `skills`): a SKILL.md is read as Pi reads one, "most invalid fields produce
+  warnings" — no frontmatter, invalid YAML, no description, a name that is not the directory's, a trigger the runtime does not
+  know, a description over 200 characters each load with defaults (the directory's name; the first body line; no trigger; the
+  first 200 characters) and the write receipt says so (`(warning: …)`); only an empty body is refused. With the flag
+  off the strict reading is unchanged (`description is required`, `skill name must match its directory`). The index
+  (1,200-character budget) gives up detail in steps when it is over — usage text, then script lines, then prompt and tool lines
+  to names, then the descriptions that remain are clipped (80, 50, 30) — and falls back to names only last; a skill line shows its
+  trigger (`skill edge v1 active [level_start]: … · read skills/edge/SKILL.md`). Without the flag it is names only, as before.
+- **Refinement** (`demo/arc_thin_refiner.ts`, `runRefiner`). The charter gains `refinerSkills()` (when a skill is the right
+  edit, the reply format, rewrite a REFINED skill instead of adding a second, never replace the agent's) and the authoring rules;
+  the input gains `THE KIND OF EDIT THE EVENT SUGGESTS (yours to decide)`, one line for each event class it recognises
+  (`eventKinds`: a level reached → a skill for a procedure that would repeat, a rule for a confirmed goal, memory for a finding;
+  python redone → a view, a function, or a skill; no goal test → the strategy; cells located by hand → a view; a stall → the
+  strategy or a skill), and `SAVED SKILLS`. `NONE` remains an answer. A reply with several `FILE` blocks is one *skill
+  directory* (`parseRefinerReply(text, {skills: true})`: `skills/<name>/SKILL.md` and up to four text, python or json files
+  beside it, all under that directory; anything else is invalid; without the flag a second `FILE` is ignored as before). Before
+  it is applied the reply goes back once, with the reason, through the existing returned-once mechanism, if the files are all
+  the current ones, if a lone file beside a skill has no `SKILL.md`, or if the `SKILL.md` header would load without what it
+  was written for (invalid YAML, no description, an unknown trigger, no frontmatter). Application is one edit: ownership is
+  checked for every file (nothing is written if one would replace the agent's), the files beside the skill are written first,
+  then `SKILL.md`; staleness is checked over all of them; `refiner.jsonl` has one `edit` row with `files`, and the agent's
+  notice names the scripts added.
+- **Reviews** (`src/autoresearch_pi/arc_thin_e2e.py`). With the flag the runner's two review prompts become the S3(b)
+  decision: (1) a skill, with `metadata: {trigger: …}`, if the level (or the stall) shows a procedure that would repeat, else none;
+  (2) the findings as memory; (3) `prompts/lessons.md` / `prompts/review.md` of at most 400 characters (was 1,200) holding
+  only the `- test:` lines the runtime pins. The recovery prompts follow (`_review_recovery` picks them by content). The
+  authoring rules (`demo/prompts/arc_thin_skill_authoring.md`, one paragraph: description = what it does and when it
+  applies, quoted if it contains a colon; optional trigger; imperative body; deterministic work in a script beside it; one
+  procedure per skill; findings are memory) are one file read by the runner and the refinement charter and by nothing
+  resident. The reviews come only from the runner, as all review prompts do; the extension adds no review text.
+- **Text and logs**: with S1 on, the Skills bullet states `metadata.trigger` and "shown once at its trigger, else read when a
+  step matches" (sizes in the S1 section). `run-config.json` records `skills`. `tools/components_baseline.py` prints a
+  "Scripts and skills" table (scripts saved, cells using one, skills shown, skill reads) for runs that have the S2/S3 rows
+  and nothing for the rest, so the S0 report is unchanged.
+
+Checks (all pass): `tests/arc_thin_skills.test.ts` — 9 tests: (1) weak headers load with defaults and a warning, a known trigger
+is kept, only an empty body is refused, the strict reading with the flag off; (2) the index over its budget keeps clipped
+descriptions with the flag and falls back to names without it; (3) the multi-`FILE` reply is one skill directory, six kinds of
+reply are invalid, a lone file beside a skill needs the flag; (4) `dueSkills` and `eventKinds`, pure (an event is due once;
+the next level, a stall, a disabled skill, a skill without a trigger); (5) through the real extension with a stand-in model
+(a level is completed on a toy board, the refinement is settled with a skill-directory reply): the refinement's input has the
+suggested kinds and `SAVED SKILLS`, the files are written, the edit row names them, the next head has the notice, the index
+line with its description and trigger, and the push, the push is logged only after the decision is answered and not
+repeated, a `read` of the skill is logged as read after it was shown, level 2 shows it again once and the refinement then sees
+the skill listed; (6) a skill the agent writes in a stall review is shown once after it, and again after the next stall
+review; (7) a header that would lose its trigger (an unquoted colon in the description) goes back to the refinement once and
+the second reply is applied; (8) a restart does not repeat a push that was answered and does repeat one that was not, and a
+stall review's skill written before a restart is shown once after it; (9) flag off: no push, no `skill_*` row, no skill
+sections in the refinement's input, a skill-directory reply is read as the one `FILE` it always was.
+`tests/test_arc_thin_skills_reviews.py` — 3 tests (the prompts, their recovery prompts, the flag's reading, the legacy prompts
+unchanged). `tests/test_components_baseline.py` — one more (the adoption counts).
+Flags-off identity, by hash (LF-normalised) in a pristine checkout of the base `9a5e0536` against this tree, same fixture:
+the rendered system prompt, the consult description and the tool list are equal with all flags off, with S2 alone and with S3
+alone; the refinement's charter is equal with all flags off and with S2 alone (S3 adds its paragraph only with the flag, 5,271
+→ 6,582 characters of a side call's instruction); the system prompt with S1 + S3 is 4,337 characters and with S1 + S2 + S3 4,331,
+against 4,355 flags off. The HARNESS index of a fixed set of components (prompts, tools, views, a failing tool, 2/8/14
+scripts, skills, a subagent; four level / usage / used combinations each) is identical to the base's with no option and to the
+S2 commit's with the S2 option, in all 12 cases each. Reading the diff of the unified index before that comparison had found two
+differences from the earlier code (the "N more scripts" line sat after the last script instead of at the end, and a failed
+tool's name came from a different field); they were fixed first, and the comparison then showed no difference.
+
+What S3 does not do (limits, not defects found): (a) a colon inside an unquoted `description:` is not YAML; the lenient
+reading loads the skill with the first body line and no trigger, and says so in the receipt (a refinement is sent back once for
+it; an agent-written file is not repaired). (b) Only the `read` tool counts as a read of a skill; opening it from python is not
+logged (no read telemetry exists for python at all). (c) The index's `stale` (saved on an earlier level) is the old status
+word and also labels a skill at the level it is pushed. (d) Pi itself would not load a skill without a description; this binder
+does, on purpose, and says so. (e) Pi-native consumption (S5) is not built: see the finding below. (f) The reviews' skill
+instructions exist only in the runner's prompts. (g) The size of a push (two skills, 1,500 characters each) and its position
+were chosen, not varied.
+
+Evidence level reached by S3: functional correctness only, through the real extension and a stand-in provider, not through
+`arc-harness-smoke` and not with a model. Whether a refinement or a review writes a skill, whether the agent follows one, and
+whether any of it helps are unverified; this build removes the structural reason the old skills were never written for (no
+event led to one, no consumer showed one), nothing more.
+
+**S5 finding (not built; types and docs of the pinned Pi 0.87.0 only, nothing run):** an extension can contribute skill
+paths: the `resources_discover` event fires after `session_start`, at startup and at reload, and its result may carry
+`skillPaths` (`docs/extensions.md`, "Resource Events"); `ResourceLoader` has `extendResources({skillPaths})` and `reload()`
+(`dist/core/resource-loader.d.ts`); `--skill <path>` loads even with `--no-skills`, which the runner passes in the launch
+command (`src/autoresearch_pi/arc_thin_e2e.py`, next to `--no-extensions` and `--no-prompt-templates`). `reload()` for an
+extension is `ctx.reload()` of the *command* context only (`ExtensionCommandContext`, a slash command's handler): it runs the
+`/reload` flow, emits `session_shutdown` for the extension runtime and a new `session_start` and `resources_discover`
+(`reason: "reload"`), and the docs say old in-memory extension state must not be assumed afterwards. This extension keeps its
+run state in the factory's closure and the python kernel in a child process, so whether a reload from a tool or event handler
+(which have no `reload`) could preserve a run is unverified, as is whether a running Pi re-reads a skill directory without
+one. What the types support today is registration at startup (`resources_discover` or `--skill`), which would show skills
+that exist before a run begins (forks) and not the ones made during it. This binder's index stays the consumer for those.
+
+### Deviations from the design text above
+
+1. **Test command**: `--experimental-transform-types`, not `--experimental-strip-types` (Node 25.5.0 here stops at a TypeScript
+   parameter property in the binder under strip-only mode; the base fails the same way).
+2. **System prompt size**: the brief's 3,903 characters is a 2026-10-16 figure; the tree renders 4,355 for the test fixture,
+   so "no growth" is checked against that (S1 section). Every configuration with the flags is shorter.
+3. **S2 retirement**: the plan has the refiner retire an unused script at a level change "through the existing edit path".
+   The refiner's `FILE` replies cannot delete, and I added no path for it: a script unused for `REFINE_EVERY` actions is
+   reported to the refinement as "ran without helping" and to the agent in the index; deleting or moving it is the agent's.
+   Stale is the existing status (saved on an earlier level), except that a script used on this level is active.
+4. **S2 scope**: only direct top-level functions of the parent's own cells, with everything they use built in, imported or
+   already a script; a function that reads a session value stays in the session and the cell's result says why. 40 scripts a
+   run, 8 listed in full (the plan said the cap was "to set from S0").
+5. **S3(a)**: the event→kind rule is a *suggestion* in the refinement's input, one line for each event class, and `NONE`
+   stays an answer, not a rule the refinement must follow. A skill reply is up to five files; two new checks send a reply back
+   once (a lone file beside a skill with no `SKILL.md`, a header that would lose its trigger) and the existing "same file
+   again" check covers every file of the directory. The plan lists none of these; they stop a dangling file and a skill the
+   push could never show.
+6. **S3(b)**: the review prompt files are not retired; they keep only the `- test:` lines (400 characters instead of 1,200),
+   because those are the only part of them with a runtime consumer. The review instructions exist in the runner's prompts only.
+7. **S3(c)**: at most two skills are pushed to a decision and a body is clipped at 1,500 characters; a push counts as shown
+   when the model answered the decision, not when it was composed; and it sits at the end of the head (the tail block), not
+   among the sections, a choice the plan leaves open and that the copy-attractor evidence argues for.
+8. **S5**: not built; the finding is above.
+9. **Added, not in the plan**: the "Scripts and skills" table in `tools/components_baseline.py` (the reader for the S2 and S3
+   logs, which the pairs need), and tests beyond the plan's list for restart, header repair and the stall event.
+
 | Evidence level | Status | Provider / environment | Artifacts and conclusion boundary |
 | --- | --- | --- | --- |
-| Functional correctness | S0 script (2 tests) and S1 text (4 tests) pass; S2 and S3 not built yet | none (read-only analysis of recorded runs; S1 uses a stubbed provider) | `tools/components_baseline.py`, `tests/test_components_baseline.py`, `tests/arc_thin_kinds.test.ts`; full suite = base result |
-| Full-chain reachability | unverified | — | — |
-| Autonomous adoption | unverified | — | baseline only: 0 skills, 0 lib scripts, 0 component imports in 105 runs |
-| Net benefit | unverified | — | — |
+| Functional correctness | S0 script (3 tests), S1 text (4), S2 persistence (7) and S3 skills (9 + 3 Python) pass; the full `tests/arc_thin_*.test.ts` suite equals the base result with every flag off (numbers below) | none: recorded runs (S0), a stubbed provider, a toy board and the real sandbox (S1–S3) | `tools/components_baseline.py`, `tests/arc_thin_kinds.test.ts`, `tests/arc_thin_scripts.test.ts`, `tests/arc_thin_skills.test.ts`, `tests/test_arc_thin_skills_reviews.py`, `tests/test_components_baseline.py` |
+| Full-chain reachability | unverified. Each stage's text and mechanism is reached through the real extension and, for S2, the real sandbox, but with a stub in place of the model; `arc-harness-smoke` through the ARC bridge, a Pi parent loop and a real parent turn was not run (the standing acceptance rule for self-harness closure) | — | — |
+| Autonomous adoption | unverified. Baseline only: 0 skills, 0 lib scripts, 0 component imports in 105 runs, 1.1% of python cells define a function (none for GPT) | — | `docs/reports/2026-10-21-components-baseline-s0*.md`; the leading indicators for the pairs are named in the protocol and in `tools/components_baseline.py`'s "Scripts and skills" table |
+| Net benefit | unverified. No run, no cost or latency measure. What it adds, measured or by construction: nothing to the system prompt (S1, S2 and S3 text together are shorter than the legacy block); the refinement charter +1,311 characters and its input one line per recognised event and the skill list, per refinement call; each skills review prompt carries the authoring paragraph (about 650 characters), per review turn; a file write per cell with a function (S2) and one pushed skill body per event (S3) | — | — |
 
 ## Delivery decision
 
-- Supported now: the analysis of why r04 creates no skills (records above) and the mapping of CH's strengths onto
-  r04's existing mechanisms. Not supported: any adoption or benefit of the stages.
-- Decision: design; await the user's choice of stage order and run budget. Recommended order S0 → S1 → S2 → S3; S5
-  only after S3 shows skills exist.
-- Next falsifiable check: S1 text-only pair (prediction: 0 skills), then S2 pair measuring re-definitions per level
-  and imports of persisted names.
+- Supported now: the analysis of why r04 creates no skills (records above); S0's baselines; and that S1, S2 and S3 each build
+  and behave as specified under a stub provider, with every flag off equal to the base commit (hashes of the system prompt,
+  consult description, tool list, refinement charter and HARNESS index; the existing suite's result). Not supported: that a
+  model writes a skill, defines a function more often, imports a script or follows a pushed skill, and any benefit.
+- Decision: the code is on the side branch `claude/r04-components-20261021`, four commits (S0, S1, S2, S3) and a merge of
+  `3ff04b13` (the context layout), **every flag default off**; nothing is enabled in any run by this change. Whether to merge it
+  into `claude/r04-20261017`, and which flags to turn on for which pair, is the owner's. Recommended order for the pairs:
+  S1 → S2 → S3, the plan's.
+- Next falsifiable checks (owner-run; each a fork pair, the stage's flag against the current default, the same model and
+  game, forked from a snapshot where the stage's event can fire; the budget is the owner's):
+  1. **S1** (`ARC_THIN_KINDS=canonical`), prediction from the plan: text alone does not make an agent write a skill. Refuted if
+     a skill appears in either model's run; read `components.jsonl` for `skills/…` and `tools/components_baseline.py`.
+  2. **S2** (`ARC_THIN_KINDS=canonical ARC_THIN_PERSIST_DEFS=1`): `persist` rows (scripts saved) and `import` rows (cells that
+     used one), and re-definitions per level against the S0 baseline for the same model. Refuted if functions are defined as
+     rarely as in S0 (no function to persist) or are saved and never used (the leading indicator is imports per decision).
+  3. **S3** (`ARC_THIN_SKILLS=1`, with S1 and S2 on): the S3 pair needs a level-2 start or a stall review to fire the event.
+     `skill_shown`, `skill_read`, the refinement's skill edits and the review's skill; refuted if no skill is written, if one
+     is written and never shown, or if shown skills are never read or followed (read the next decisions).
+  Each pair reports cost (parent plus child tokens, uncached share, latency) next to adoption, as the plan's protocol sets,
+  and compares levels only as exploration, not as a result.
 - Backlog: `docs/deferred-research-todos.md` 2026-10-07 (skills spec tickets) and 2026-10-08 (five-kind nature and
-  direct entries) — superseded by this record if S1–S3 proceed; status unchanged until then.
+  direct entries) — superseded by this record if S1–S3 proceed; status unchanged until the owner decides.
+- Merge notes for the r04 session. (1) This file is added by the S0 commit; the copy in `worktrees/r04` is untracked and the
+  first version here is byte-identical to it, so move it away before merging or git will refuse to overwrite it. (2) The
+  stages touch `demo/arc_thin_extension.ts` (the flag block next to the Binder construction, `buildWorkingSet`'s tail,
+  `runRefiner`, `artifactUsage`, the workspace file-tool wrapper, `before_agent_start`, `session_shutdown`),
+  `demo/arc_thin_native_runtime.ts` (the consult constants, a `persistDefs` host option, `runPython` and three new methods
+  beside `noteSave`; the uncommitted edits in `callEach` that another session holds are elsewhere in that file),
+  `demo/arc_thin_binder.ts`, `demo/arc_thin_refiner.ts`, `demo/arc_thin_components.ts` (the sandbox guest's `cell_defs`),
+  `demo/prompt_loader.ts` and `src/autoresearch_pi/arc_thin_e2e.py`; new files are `demo/arc_thin_kinds.ts`,
+  `demo/arc_thin_scripts.ts`, `demo/arc_thin_skills.ts`, `demo/prompts/arc_thin_native_kinds.md`,
+  `demo/prompts/arc_thin_skill_authoring.md`, `tools/components_baseline.py` and their tests. (3) The branch already contains
+  the merge of `3ff04b13` (the context layout), so it needs nothing from that branch again. (4) `run-config.json` gains
+  `canonical_kinds`, `persist_defs` and `skills`, and `source_sha256` covers the new `arc_thin_*` files by the runner's own glob.
+  (5) The five failing tests above fail at the base too.

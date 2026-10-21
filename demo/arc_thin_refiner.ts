@@ -161,7 +161,9 @@ export function nextExperimentText(content: string): string {
 type Expects = { expect?: Expectation; expectError?: string };
 
 export type RefinerEdit =
-	| ({ kind: "file"; path: string; content: string; why: string } & Expects)
+	| ({ kind: "file"; path: string; content: string; why: string;
+		/** The files beside a skill's SKILL.md in the same reply (skills/<name>/...): a skill directory is one edit. */
+		extra?: Array<{ path: string; content: string }> } & Expects)
 	| ({ kind: "memory"; key: string; confidence: number; text: string; why: string; replaces?: string[] } & Expects)
 	| ({ kind: "hypothesis"; key: string; claim: string; question?: string; predicts?: string; check?: string; why: string } & Expects)
 	| { kind: "none"; why: string }
@@ -199,10 +201,43 @@ function parseHypothesis(match: RegExpExecArray, why: string): RefinerEdit {
 		...(predicts ? { predicts: predicts.slice(0, 300) } : {}), ...(check ? { check: check + "\n" } : {}), why };
 }
 
-/** One FILE, MEMORY or HYPOTHESIS block (fences inside it are tolerated), its WHY line and an optional EXPECT block, or NONE. */
-export function parseRefinerReply(text: string): RefinerEdit {
+/** A file under a skill's directory that a refinement may add beside SKILL.md: text, python or data, at most two levels down. */
+const SKILL_FILE = /^skills\/([a-z0-9_-]+)\/((?:[a-z0-9_-]+\/){0,2}[A-Za-z0-9_.-]+\.(?:py|md|json|txt))$/;
+/** Files in one skill reply (SKILL.md and those beside it). */
+export const SKILL_REPLY_FILES = 5;
+
+/** A body as a file: the code fence around it dropped, a final line end added. */
+const fileContent = (body: string) => {
+	const content = body.replace(/^\s*```[a-z]*\s*\r?\n/, "").replace(/\r?\n\s*```\s*$/, "");
+	return content.endsWith("\n") ? content : content + "\n";
+};
+
+/** Several FILE blocks (ARC_THIN_SKILLS): a skill directory (its SKILL.md and files beside it, all in one skills/<name>/), or invalid. */
+function parseSkillDirectory(text: string, blocks: RegExpMatchArray[]): RefinerEdit {
+	const named = blocks.map((m) => ({ path: m[1].replace(/^`|`$/g, ""), body: m[2], end: (m.index ?? 0) + m[0].length }));
+	const directory = /^skills\/([a-z0-9_-]+)\//.exec(named[0].path)?.[1];
+	const main = directory ? named.find((f) => f.path === `skills/${directory}/SKILL.md`) : undefined;
+	const beside = named.filter((f) => f !== main);
+	if (!directory || !main || named.length > SKILL_REPLY_FILES || beside.some((f) => SKILL_FILE.exec(f.path)?.[1] !== directory))
+		return { kind: "invalid", why: `several FILE blocks are accepted only for one skill directory: skills/<name>/SKILL.md and up to ${SKILL_REPLY_FILES - 1} text or python files beside it, all under skills/<name>/` };
+	if (new Set(named.map((f) => f.path)).size !== named.length) return { kind: "invalid", why: "the same path appears in two FILE blocks" };
+	if (!fileContent(main.body).trim()) return { kind: "invalid", why: "empty file content" };
+	const why = (/^\s*WHY\b[:\s]*(.*)$/m.exec(text.slice(Math.max(...named.map((f) => f.end))))?.[1]?.trim() ?? "").slice(0, 300);
+	const outside = blocks.reduce((rest, m) => rest.replace(m[0], "\n"), text);
+	return { kind: "file", path: main.path, content: fileContent(main.body), why,
+		extra: beside.filter((f) => fileContent(f.body).trim()).map((f) => ({ path: f.path, content: fileContent(f.body) })), ...parseExpect(outside) };
+}
+
+/**
+ * One FILE, MEMORY or HYPOTHESIS block (fences inside it are tolerated), its WHY line and an optional EXPECT block, or NONE.
+ * With `skills` (ARC_THIN_SKILLS) a reply may carry a skill directory: FILE blocks for skills/<name>/SKILL.md and the files
+ * beside it, one edit; a single FILE may also name a file beside a SKILL.md. Without it a second FILE block is ignored, as before.
+ */
+export function parseRefinerReply(text: string, options: { skills?: boolean } = {}): RefinerEdit {
 	const none = /^\s*NONE\b[:\s]*(.*)$/m.exec(text);
 	const file = /^\s*FILE\s+(\S+)\s*\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
+	const files = options.skills ? [...text.matchAll(/^[ \t]*FILE[ \t]+(\S+)[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*END[ \t]*$/gm)] : [];
+	if (file && files.length > 1) return parseSkillDirectory(text, files);
 	// The charter writes the optional part as "[replaces <key>, <key>]", and replies copy the brackets: all 5 invalid
 	// replies in the 2026-10-16 refinement replay (96 replies) were such MEMORY lines. Brackets are accepted.
 	const memory = /^\s*MEMORY\s+(\S+)\s+([1-5])(?:[ \t]+\[?replaces[ \t]+([^\r\n\]]+)\]?)?\s*\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
@@ -224,7 +259,7 @@ export function parseRefinerReply(text: string): RefinerEdit {
 		return { kind: "memory", key: memory![1], confidence: Number(memory![2]), text: body.slice(0, 600), why, ...(replaces.length ? { replaces } : {}), ...expects };
 	}
 	const path = file[1].replace(/^`|`$/g, "");
-	if (!EDITABLE.test(path)) return { kind: "invalid", why: `path ${path} is not a prompt, tool, library or skill file` };
+	if (!EDITABLE.test(path) && !(options.skills && SKILL_FILE.test(path))) return { kind: "invalid", why: `path ${path} is not a prompt, tool, library or skill file` };
 	let content = file[2].replace(/^\s*```[a-z]*\s*\r?\n/, "").replace(/\r?\n\s*```\s*$/, "");
 	if (!content.trim()) return { kind: "invalid", why: "empty file content" };
 	// A prompt is applied only with its frontmatter; the strategy is always active.

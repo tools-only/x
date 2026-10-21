@@ -212,6 +212,17 @@ def tokens(usage: list[dict[str, Any]]) -> dict[str, Any]:
             "output": sum(b["output"] for b in out.values()), "agent_uncached_share": round(agent["input"] / prompt, 2) if prompt else None}
 
 
+def adoption(runs: list[dict[str, Any]], call_points: list[dict[str, Any]]) -> dict[str, int]:
+    """What S2 and S3 add to a run's logs (component_runs.jsonl, call_points.jsonl): scripts the runtime saved from cells
+    (`persist` rows), cells that imported or called one (`import` rows), and the skills it showed at an event and the agent
+    read (`skill_shown`, `skill_read`). All zero in a run recorded before those flags existed or with them off."""
+    persist = [r for r in runs if r.get("kind") == "persist"]
+    return {"scripts_saved": sum(len(r.get("saved") or []) for r in persist), "script_skips": sum(len(r.get("skipped") or []) for r in persist),
+            "script_cells": sum(1 for r in runs if r.get("kind") == "import"),
+            "skills_shown": sum(1 for r in call_points if r.get("kind") == "skill_shown"),
+            "skills_read": sum(1 for r in call_points if r.get("kind") == "skill_read" and not r.get("review"))}
+
+
 def analyse(root: Path) -> dict[str, Any]:
     harness = root / "harness"
     present = {name: (harness / name).is_file() for name in ("python_calls.jsonl", "component_runs.jsonl", "observer_runs.jsonl",
@@ -259,7 +270,7 @@ def analyse(root: Path) -> dict[str, Any]:
         "prompt_versions": saved["prompt"], "prompt_versions_total": sum(v["versions"] for v in saved["prompt"].values()),
         "call_points": dict(Counter(str(r.get("kind")) for r in call_points)) if present["call_points.jsonl"] else None,
         "tokens": tokens(_rows(harness / "usage.jsonl")) if present["usage.jsonl"] else None,
-        "by_level": by_level, "persisted": sorted(persisted),
+        "by_level": by_level, "persisted": sorted(persisted), "adoption": adoption(runs, call_points),
     }
 
 
@@ -331,6 +342,14 @@ def render(reports: list[dict[str, Any]]) -> str:
     for r in reports:
         missing = [name for name, ok in r["present"].items() if not ok]
         lines.append(f"- {r['run']}: {', '.join(missing) if missing else 'none'}; cells from {r['cells_source']}")
+    # Only runs with the S2 or S3 flags have these rows; the table is left out when every count is zero, so the S0 report is unchanged.
+    flagged = [r for r in reports if any(r["adoption"].values())]
+    if flagged:
+        lines += ["", "Scripts and skills (S2, S3 logs: scripts saved from cells / not saved; cells that imported or called a script; skills shown at an event; "
+                      "skill reads outside a review):", "", "| run | scripts saved / not saved | cells using a script | skills shown | skill reads |", "|---|---|---|---|---|"]
+        for r in flagged:
+            a = r["adoption"]
+            lines.append(f"| {r['run']} | {a['scripts_saved']} / {a['script_skips']} | {a['script_cells']} | {a['skills_shown']} | {a['skills_read']} |")
     return "\n".join(lines)
 
 
