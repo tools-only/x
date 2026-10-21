@@ -126,10 +126,6 @@ PERSISTED_EVENTS = frozenset({
 NORMAL_STOPS = frozenset({"win", "budget_exhausted", "max_decisions", "max_levels", "token_cap", "deadline"})
 
 
-def _idle_stall_due(last_action_at: float, now: float, max_idle_minutes: float, rows_before: int, rows_now: int) -> bool:
-    return bool(max_idle_minutes and rows_now == rows_before and now - last_action_at >= max_idle_minutes * 60)
-
-
 def _max_levels_reached(levels_completed: int, max_levels: int | None) -> bool:
     return max_levels is not None and levels_completed >= max_levels
 # rebuild: every decision shows only the rebuilt working set (the 2026-10-08 design); session: the agent's last
@@ -227,13 +223,26 @@ def _environment_errors(harness: Path) -> int:
     return sum(1 for row in _read_jsonl(harness / "errors.jsonl") if row.get("environment"))
 
 
-def _provider_error(events: list[dict[str, Any]]) -> str | None:
-    """The error a provider ended a turn's last reply with (stop reason "error"), if it did."""
+def _provider_error_message(events: list[dict[str, Any]]) -> str | None:
+    """The raw assistant error message at the end of a turn, including transport failures."""
     for event in reversed(events or []):
         message = event.get("message") if isinstance(event, dict) else None
         if event.get("type") == "message_end" and isinstance(message, dict) and message.get("role") == "assistant":
             return str(message.get("errorMessage") or "provider error") if message.get("stopReason") == "error" else None
     return None
+
+
+def _provider_error(events: list[dict[str, Any]]) -> str | None:
+    """A provider refusal, excluding transport failures that the runner waits out."""
+    error = _provider_error_message(events)
+    return None if error and TRANSPORT_ERROR.search(error) else error
+
+
+def _provider_error_stops(errors: list[str], refusal: str | None, maximum: int) -> tuple[list[str], bool]:
+    """Update consecutive refusal history and report whether its configured stop threshold fired."""
+    current = [*errors, refusal] if refusal else []
+    stopped = bool(maximum and len(current) >= maximum and len(set(current[-maximum:])) == 1)
+    return current, stopped
 
 
 def _tool_errors(events: Path) -> dict[str, int]:
@@ -973,14 +982,12 @@ def _reconciled_action(before: int, health: dict | None, state: dict | None, tra
 
 
 def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *, max_recoveries: int = 2,
-                         settlement_timeout: float = 30.0, restart=None, idle_stalled=None) -> list[dict[str, Any]]:
+                         settlement_timeout: float = 30.0, restart=None) -> list[dict[str, Any]]:
     """A local fault group. Abort, settle and reconcile before considering another paid request."""
     for attempt in range(max_recoveries + 1):
         try:
             return turn(message)
         except (PiTurnIdleTimeout, RuntimeError, OSError) as exc:
-            if isinstance(exc, PiTurnIdleTimeout) and idle_stalled and idle_stalled():
-                raise TimeoutError("idle_stall") from exc
             dead = (not isinstance(exc, PiTurnIdleTimeout) and restart is not None
                     and (isinstance(exc,OSError) or 'Pi RPC process exited' in str(exc)) and kernel.process is not None
                     and kernel.process.poll() is not None)
@@ -1055,7 +1062,6 @@ def run_arc_thin_e2e(
     snapshot_after_decisions: tuple[int, ...] = (),
     snapshot_at_levels: tuple[int, ...] = (),
     max_levels: int | None = None,
-    max_idle_minutes: float = 45,
     fork_from: Path | None = None,
     max_environment_restarts: int = MAX_ENVIRONMENT_RESTARTS,
     max_provider_errors: int = MAX_PROVIDER_ERRORS,
@@ -1108,8 +1114,6 @@ def run_arc_thin_e2e(
     consolidate_after_actions = _consolidation_interval(foundation, consolidate_after_actions)
     if decision_timeout_seconds < 0 or turn_idle_timeout_seconds < 0:
         raise ValueError('request fault timeouts must be nonnegative; 0 disables them')
-    if not math.isfinite(max_idle_minutes) or max_idle_minutes < 0:
-        raise ValueError('max_idle_minutes must be a finite nonnegative number; 0 disables it')
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError(f"run root must be new or empty: {root}")
@@ -1280,7 +1284,6 @@ def run_arc_thin_e2e(
             "ledger": ledger_enabled, "critic": critic_enabled,
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
             "decision_timeout_seconds": decision_timeout_seconds,
-            "max_idle_minutes": max_idle_minutes,
             "max_continuous_idle_recoveries": 2,
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
@@ -1377,12 +1380,9 @@ def run_arc_thin_e2e(
             response = kernel.prompt(message)
             if response.get("success") is False:
                 raise RuntimeError(f"Pi rejected the prompt: {response.get('error')}")
-            idle_left = max_idle_minutes * 60 - (time.monotonic() - last_action_at) if max_idle_minutes else math.inf
             return kernel.wait_for_agent_events(
-                timeout=min(max(0.01, idle_left) if max_idle_minutes else (decision_timeout_seconds or math.inf),
-                            max(1.0, deadline - time.monotonic())),
-                idle_timeout=(min(turn_idle_timeout_seconds, decision_timeout_seconds or math.inf)
-                              if turn_idle_timeout_seconds and not max_idle_minutes else None),
+                timeout=min(decision_timeout_seconds or math.inf, max(1.0, deadline - time.monotonic())),
+                idle_timeout=turn_idle_timeout_seconds,
             )
 
         def safe_turn(message: str, *, allow_idle_recovery: bool = True) -> list[dict[str, Any]]:
@@ -1408,15 +1408,10 @@ def run_arc_thin_e2e(
                         kernel.send('set_thinking_level', level=thinking)
                 return _recover_native_turn(turn, message, kernel, summary, reconcile,
                     max_recoveries=2 if allow_idle_recovery else 0,
-                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart,
-                    idle_stalled=lambda: _idle_stall_due(last_action_at, time.monotonic(), max_idle_minutes,
-                        last_action_rows, len(_read_jsonl(harness / "trajectory.jsonl"))))
+                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart)
             try:
                 return turn(message)
             except PiTurnIdleTimeout as exc:
-                if _idle_stall_due(last_action_at, time.monotonic(), max_idle_minutes, last_action_rows,
-                                   len(_read_jsonl(harness / "trajectory.jsonl"))):
-                    raise TimeoutError("idle_stall") from exc
                 summary["idle_timeouts"] += 1
                 if not allow_idle_recovery or summary["idle_recoveries"] >= 2 or time.monotonic() >= deadline - 5:
                     summary["idle_recovery_failures"] += 1
@@ -1469,9 +1464,6 @@ def run_arc_thin_e2e(
             return resumed
 
         restart_note = ""
-        last_action_at = time.monotonic()
-        last_action_rows = len(_read_jsonl(harness / "trajectory.jsonl"))
-
         def restart_environment(health: dict[str, Any] | None) -> None:
             """Replace an environment whose last step has no known outcome (or whose process ended) by a new game at the
             last recorded state. Pi is idle between decisions and keeps its bridge URL and token."""
@@ -1645,17 +1637,7 @@ def run_arc_thin_e2e(
                     elif _environment_errors(harness) == environment_before:
                         no_action_streak += 1
                         summary["no_action_decisions"] += 1
-                committed_rows = _read_jsonl(harness / "trajectory.jsonl")[action_count:]
-                if committed_rows:
-                    last_action_at = time.monotonic()
-                    last_action_rows += len(committed_rows)
             except TimeoutError as exc:
-                idle_now = len(_read_jsonl(harness / "trajectory.jsonl"))
-                if _idle_stall_due(last_action_at, time.monotonic(), max_idle_minutes, last_action_rows, idle_now):
-                    summary["stop_reason"] = "idle_stall"
-                    summary["idle_minutes"] = round((time.monotonic() - last_action_at) / 60, 2)
-                    _write_summary(root, summary, final_state, started)
-                    break
                 summary["stop_reason"] = "deadline" if time.monotonic() >= deadline - 5 else "decision_timeout"
                 summary["error"] = str(exc)
                 break
@@ -1688,10 +1670,12 @@ def run_arc_thin_e2e(
             # The same refusal three turns in a row: the provider will not answer this run again (MAX_PROVIDER_ERRORS).
             # A transport error is not a refusal: it is waited out first (MAX_PROVIDER_OUTAGE_SECONDS), and the decision
             # it cost is not counted as one the agent ended without an action.
-            refusal = _provider_error(events) if len(_read_jsonl(harness / "trajectory.jsonl")) == action_count else None
+            no_action = len(_read_jsonl(harness / "trajectory.jsonl")) == action_count
+            turn_error = _provider_error_message(events) if no_action else None
+            refusal = _provider_error(events) if no_action else None
             if refusal:
                 summary["provider_errors"] += 1
-            outage = _outage_wait(refusal, waited=outage_waited, max_wait=max_provider_outage_seconds, streak=outage_streak,
+            outage = _outage_wait(turn_error, waited=outage_waited, max_wait=max_provider_outage_seconds, streak=outage_streak,
                                   base=provider_outage_backoff_seconds)
             if outage and time.monotonic() + outage < deadline - 5:
                 outage_streak += 1
@@ -1702,11 +1686,10 @@ def run_arc_thin_e2e(
                 time.sleep(outage)
             else:
                 outage_streak = 0
-                provider_errors = [*provider_errors, refusal] if refusal else []
-                if max_provider_errors and len(provider_errors) >= max_provider_errors \
-                        and len(set(provider_errors[-max_provider_errors:])) == 1:
+                provider_errors, provider_stopped = _provider_error_stops(provider_errors, refusal, max_provider_errors)
+                if provider_stopped:
                     summary["stop_reason"] = "provider_error"
-                    summary["error"] = refusal[:500]
+                    summary["error"] = (refusal or "provider error")[:500]
                     break
             if not consolidate and (summary["decisions"] in snapshot_after_decisions or any(
                     row.get("level_changed") and row.get("levels_completed") in snapshot_at_levels for row in new_rows)):

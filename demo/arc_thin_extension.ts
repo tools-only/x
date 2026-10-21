@@ -33,8 +33,9 @@ import { observationReference, storeObservation } from "./arc_thin_observation.t
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
-import { GOAL_CHECK_HELP, goalAdmissionMode, goalHiddenFields, goalSupportRefusal, goalVerdict, type GoalCheckRow } from "./arc_thin_goal_admission.ts";
+import { GOAL_CHECK_HELP, goalAdmissionMode, goalHiddenFields, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, type GoalCheckRow } from "./arc_thin_goal_admission.ts";
 import { advanceCarry, buildLevelCarry, partitionRules, renderCarry, renderDeltas, ruleScope, type CarryDelta, type CarryInput, type LevelCarry } from "./arc_thin_level_carry.ts";
+import { consultFirstBlocks, consultServiceFailure } from "./arc_thin_consult_release.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
@@ -433,20 +434,27 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const goalQuestion = (question?: string) => question?.trim().toLowerCase() === 'goal';
   function goalAdmissionCallback(key: string, hyp: { question?: string; status?: string; check?: string }) {
     const version = claimVersion(hyp.check ?? '');
-    const reason = goalSupportRefusal(key, { ...hyp, version }, goalRows, currentLevel());
+    const previousWin = trajectory.findLast(row => row.level_changed);
+    const reason = goalSupportRefusal(key, { ...hyp, version }, goalRows, currentLevel(), previousWin ? {
+      level: Number(previousWin.levels_completed) - 1, n: Number(previousWin.n), action: actionLabel(previousWin),
+    } : undefined);
     if (reason && goalAdmission !== 'off') append('goal_admission.jsonl', { kind: 'would_refuse', mode: goalAdmission, key, version, level: currentLevel(), at: trajectory.length, reason });
     return goalAdmission === 'on' ? reason : undefined;
   }
   const goalNotices = (n: number, level: number) => goalRows.filter(row => row.n === n && row.level === level &&
-    ['win_held', 'false_win', 'missed_win'].includes(row.verdict)).map(row => `GOAL_OUTCOME hyp.${row.key}: ${row.verdict} at #${n} (level ${level + 1})`);
+    ['win_held', 'false_win', 'missed_win'].includes(row.verdict)).map(formatGoalOutcome);
   let levelCarry: LevelCarry | undefined;
   let carryDeltaQueue: CarryDelta[] = [];
   for (const row of readRows('level_carry.jsonl')) if (row.carry) levelCarry = row.carry as LevelCarry;
   const carryInput = (): CarryInput => {
     let rulesText = '';
     try { rulesText = workspace?.read(RULES_PATH) ?? ''; } catch { /* no rules file */ }
-    return { trajectory, memoryRows: readRows('memory.jsonl'), claimRows, goalRows,
-      observerRuns: readRows('observer_runs.jsonl'), rulesText };
+    const now = trajectory.length;
+    const byAction = (row: any) => Number(row.n ?? String(row.key ?? '').split('@').at(-1));
+    return { trajectory: trajectory.filter(row => Number(row.n) <= now),
+      memoryRows: readRows('memory.jsonl').filter(row => Number(row.at ?? 0) <= now),
+      claimRows: claimRows.filter(row => Number(row.n) <= now), goalRows: goalRows.filter(row => Number(row.n) <= now),
+      observerRuns: readRows('observer_runs.jsonl').filter(row => byAction(row) <= now), rulesText };
   };
   function persistCarry(kind: string, fields: Record<string, unknown> = {}) {
     if (!levelCarry) return;
@@ -2138,27 +2146,26 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const row of trajectory.slice(refinedThrough)) if (row.level_changed) {
       triggers.push(`level ${row.levels_completed} reached at #${row.n}`);
       const level = row.levels_completed - 1;
-      if (!goalRows.some(g => g.level === level && g.verdict === 'win_held'))
-        triggers.push(`no goal check predicted the win at #${row.n} (${actionLabel(row)}): write question "goal" with check(t) over the before grid and this action`);
-    }
-		for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
-			if (refinedFamilies.has(family.key)) continue;
-			refinedFamilies.add(family.key);
-			// The agent calls saved tools seldom (3 calls in 9 su15 runs, 2026-10-19) but reads what a view shows.
-			triggers.push((family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
-				: `python computation \`${family.gist}\` redone ${family.calls} times`) +
-				"; saved code that takes no args is a view, its result shown at every decision, while a tool with args waits to be called");
-			samples = family.samples;
-			break;
+      const ask = levelGoalCheckAsk(goalAdmission, { level: row.levels_completed, n: Number(row.n), action: actionLabel(row) },
+        goalRows.some(g => g.level === level && g.verdict === 'win_held'));
+      if (ask) triggers.push(ask);
 		}
 		// No step on this level has predicted a level change: the moves explore, none tests how the level is won.
 		const levelStart = trajectory.findLastIndex((row) => row.level_changed) + 1;
 		const onLevel = trajectory.slice(levelStart);
-		if (onLevel.length >= GOAL_TEST_AFTER && !onLevel.some((row) => row.predict?.level_changed === true)
-			&& (goalTestAskedAt < levelStart || trajectory.length - goalTestAskedAt >= 2 * GOAL_TEST_AFTER)) {
-			goalTestAskedAt = trajectory.length;
-			triggers.push(`${onLevel.length} actions on this level and no step predicted a level change (no goal test yet)`);
-		}
+		const liveGoalCheck = [...memory.hypotheses].some(([key, hyp]) => {
+      if (!goalQuestion(hyp.question) || !hyp.check || hyp.status === 'rejected') return false;
+      const last = readRows('memory.jsonl').filter(row => row.key === key && Number(row.at ?? 0) <= trajectory.length).at(-1);
+      return Boolean(last && !last.deleted && last.hyp?.status !== 'rejected' && last.hyp?.check &&
+        claimVersion(last.hyp.check) === claimVersion(hyp.check));
+    });
+    const win = trajectory.findLast(row => row.level_changed);
+    const ask = recurringGoalCheckAsk({ mode: goalAdmission, actions: onLevel.length,
+      noPrediction: !onLevel.some(row => row.predict?.level_changed === true), hasLiveGoalCheck: liveGoalCheck,
+      levelStart, lastAskedAt: goalTestAskedAt,
+      ...(win ? { win: { level: Number(win.levels_completed), n: Number(win.n), action: actionLabel(win) } } : {}) }, GOAL_TEST_AFTER);
+    if (ask) { goalTestAskedAt = trajectory.length; triggers.push(ask); }
+
 		// Reasoning spent reading positions off the grid, with no view tool reporting them.
 		const share = lastDecisionCost?.coordinateShare ?? 0;
 		if (share >= 0.3 && (lastDecisionCost?.reasoning ?? 0) >= 3000 && viewAskedLevel !== currentLevel()
@@ -2527,7 +2534,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
 		const guide = refineGuide();
-		const system = REFINER_SYSTEM + (goalAdmission === 'on' ? GOAL_CHECK_HELP : '') + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		const system = REFINER_SYSTEM + (goalAdmission !== 'off' ? GOAL_CHECK_HELP : '') + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
 		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
 		// could not: the r03b line did not keep them).
 		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
@@ -2825,7 +2832,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// ---------------------------------------------------------------- call points and accounting (loop-bound artifacts)
 
 	/** A review's write waits for its consult (A5); writing agents/<name>.md, the subagent to consult, does not. */
-	const consultFirst = (path = "") => run.consultPoint && !run.consulted && !path.replace(/\\/g, "/").startsWith("agents/");
+	const consultFirst = (path = "") => consultFirstBlocks({ consultPoint: run.consultPoint, consulted: run.consulted }, path);
 	/** The subagent the last review consulted, until the review's marks of what it took from it are counted. */
 	let consultedAgent = "";
 	/** After a review that consulted: what it kept of the answer, by the "(from <name>)" marks it was asked for (A5). */
@@ -3440,7 +3447,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "memory",
 			label: "Memory",
-			description: native ? `Record beliefs, hypotheses with optional checks, tests and strategies. Partial entries apply valid fields; fabricated action evidence is refused.${goalAdmission === 'on' ? ' ' + GOAL_CHECK_HELP : ''}`
+			description: native ? `Record beliefs, hypotheses with optional checks, tests and strategies. Partial entries apply valid fields; fabricated action evidence is refused.${goalAdmission !== 'off' ? ' ' + GOAL_CHECK_HELP : ''}`
         : "Atomic facts/hypotheses/tests/strategies update. Invalid batches do not apply; evidence is appended.",
 			parameters: native ? Type.Object({
         op: Type.Optional(StringEnum(['set', 'delete', 'list', 'update'])),
@@ -3515,7 +3522,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			prepareArguments: repairMemoryArguments,
 			execute: guardTool("memory", async (params: MemoryParams, signal) => {
 				// A review writes after it has consulted (A5).
-				if (consultFirst()) throw new Refusal(CONSULT_FIRST);
+				if (consultFirstBlocks({ consultPoint: run.consultPoint, consulted: run.consulted }, 'memory')) throw new Refusal(CONSULT_FIRST);
 				return text(await commitMemory(params, signal), undefined, endsBatch());
 			}),
 		});
@@ -3923,7 +3930,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         let result: any;
 		try { result = await fn(params, signal, ctx); } catch (error) {
-          throw new Refusal(errorText(error));
+          const message = errorText(error);
+          if (name === 'consult' && run.consultPoint && !run.consulted && consultServiceFailure(message)) {
+            run.consulted = true;
+            append('call_points.jsonl', { kind: 'consult', at: trajectory.length, decision, review: run.consolidating,
+              agent: String(params?.agent ?? ''), question: String(params?.question ?? '').slice(0, 300),
+              outcome: 'failed', released: true, error: message.slice(0, 200) });
+            throw new Refusal(`${message} The consult service failed; this review may write without it now.`);
+          }
+          throw new Refusal(message);
         }
         // A review's call point (A5): once a subagent has answered, the review may write.
         if (name === 'consult') {
@@ -4124,7 +4139,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14). With
       // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
       decisionPrompts = promptSections();
-      if (goalAdmission === 'on') event.systemPromptOptions.sections.goal_admission = GOAL_CHECK_HELP;
+      if (goalAdmission !== 'off') event.systemPromptOptions.sections.goal_admission = GOAL_CHECK_HELP;
       if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
         event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = carriedPromptBody(prompt.path, prompt.body!);
       return;

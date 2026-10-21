@@ -36,7 +36,6 @@ SNAPSHOTS = tuple(int(k) for k in VARIABLES.pop('SNAPSHOT', '').split(',') if k)
 MAXDEC = int(VARIABLES.pop('MAXDEC')) if 'MAXDEC' in VARIABLES else None
 SNAPLEVELS = tuple(int(level) for level in VARIABLES.pop('SNAPLEVEL', '').split(',') if level)
 MAXLEVEL = int(VARIABLES.pop('MAXLEVEL')) if 'MAXLEVEL' in VARIABLES else None
-IDLEMIN = float(VARIABLES.pop('IDLEMIN')) if 'IDLEMIN' in VARIABLES else 45
 assert all(key.startswith(('ARC_THIN_', 'ARC_REFINE_')) for key in VARIABLES), VARIABLES
 os.environ.update(VARIABLES)
 # Completions-only A/B arm: a declared dialect pins openai-completions, so it stays out of the Responses baseline.
@@ -112,7 +111,6 @@ try:
     result = runner.run_arc_thin_e2e(OUT / 'arc-run', arc_root=Path('D:/arc-agi-benchmark/arc-agi-3-benchmarking'),
         game=GAME, foundation='native', variant='treatment', max_actions=ACTIONS, max_decisions=MAXDEC,
     max_reported_tokens=TOKENS, experiment_timeout_seconds=SECONDS, decision_timeout_seconds=0, turn_idle_timeout_seconds=0,
-    max_idle_minutes=IDLEMIN,
         max_no_action_decisions=float('inf'), pi_provider='yibu', pi_model=MODEL, thinking=THINKING,
         pi_api=PI_API, thinking_format=THINKING_FORMAT, input_modalities='text,image',
         ledger=True, critic=True, replay_reasoning=False,

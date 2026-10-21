@@ -7,7 +7,8 @@ import { evaluateTaskPython } from '../demo/pi_task_python.ts';
 import { arcSkillGuestProgram } from '../demo/arc_thin_skill_guest.ts';
 import { applyRows, emptyMemory, planMemoryUpdate } from '../demo/arc_thin_memory.ts';
 import { claimVersion } from '../demo/arc_thin_claims.ts';
-import { GOAL_CHECK_HELP, goalAdmissionMode, goalStanding, goalSupportRefusal, goalVerdict, type GoalCheckRow } from '../demo/arc_thin_goal_admission.ts';
+import { GOAL_CHECK_HELP, goalAdmissionMode, goalStanding, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, type GoalCheckRow } from '../demo/arc_thin_goal_admission.ts';
+import { consultBudgetError, consultFirstBlocks, consultServiceFailure } from '../demo/arc_thin_consult_release.ts';
 import { advanceCarry, buildLevelCarry, partitionRules, renderCarry, type CarryInput } from '../demo/arc_thin_level_carry.ts';
 
 const root = new URL('../demo/fixtures/goal-r1/', import.meta.url);
@@ -123,27 +124,103 @@ test('T7 only typed level scope and hyp cites affect partition; shadow leaves so
   assert.equal(partitionRules(rules, carry, 0).rules, rules.trim());
 });
 
-test('T8 missing consult records are unknown and do not become synthetic failures', () => {
-  const { read } = fixture('ga-p0-shadow-1');
-  const points = read('call_points');
-  const due = points.filter(row => row.kind === 'consult_point');
-  assert.ok(due.length > 0);
-  // Source records show which consult points have a completed consult; absence is not treated as a failure.
-  const succeeded = new Set(points.filter(row => row.kind === 'consult').map(row => `${row.at}:${row.decision}`));
-  assert.ok(due.some(row => !succeeded.has(`${row.at}:${row.decision}`)));
-  assert.equal(points.some(row => row.kind === 'consult' && row.outcome === 'failed'), false);
+test('T8 failed consult releases the same point; pre-attempt refusals remain', () => {
+  const read = (arm: string) => readFileSync(new URL('../demo/fixtures/goal-r2/consult/' + arm + '.jsonl', import.meta.url), 'utf8')
+    .split(String.fromCharCode(10)).filter(Boolean).map(line => JSON.parse(line));
+  for (const [arm, expectedR1, expectedR2] of [['on', 13, 0], ['shadow', 14, 1]] as const) {
+    let r1Refusals = 0, r2Refusals = 0, releasedPoints = 0;
+    for (const point of read(arm)) {
+      let released = false;
+      let sawConsult = false;
+      for (const result of point.results) {
+        if (result.tool === 'consult') {
+          sawConsult = true;
+          if (result.isError && consultServiceFailure(result.text)) {
+            released = true;
+            releasedPoints++;
+          }
+        }
+        if (result.isError && result.text.startsWith('this review consults first:')) {
+          r1Refusals++;
+          if (!released) r2Refusals++;
+        }
+      }
+      assert.ok(point.results.length > 0);
+      if (!sawConsult) assert.equal(released, false);
+    }
+    assert.equal(r1Refusals, expectedR1);
+    assert.equal(r2Refusals, expectedR2);
+    assert.ok(releasedPoints > 0);
+  }
+  assert.equal(consultServiceFailure('this review used its 10 tool calls; it ends here'), false);
+  assert.equal(consultServiceFailure('tool argument validation failed'), false);
 });
 
-test('T9 goal-check ask names the winning action in replay call points', () => {
-  const { input } = fixture('ga-p0-on-1');
-  const win = input.trajectory.find(row => row.level_changed);
-  assert.ok(win);
-  assert.equal(goalAdmissionMode(), 'shadow');
+test('T9 recurring and level goal-check asks name the win and preserve the off behavior', () => {
+  const win = { level: 1, n: 63, action: 'ACTION6(44,19)' };
+  for (const actions of [12, 36, 60]) {
+    const ask = recurringGoalCheckAsk({ mode: 'shadow', actions, noPrediction: true, hasLiveGoalCheck: false,
+      levelStart: 64, lastAskedAt: actions === 12 ? 0 : actions - 24, win });
+    assert.match(ask!, /write question "goal" with check\(t\)/);
+    assert.match(ask!, /level-1 win at #63 \(ACTION6\(44,19\)\)/);
+    assert.match(ask!, /every move on this level/);
+  }
+  const liveButNoPrediction = recurringGoalCheckAsk({ mode: 'shadow', actions: 12, noPrediction: true,
+    hasLiveGoalCheck: true, levelStart: 64, lastAskedAt: 0, win });
+  assert.ok(liveButNoPrediction, 'a live goal check does not silence a no-prediction branch');
+  const predictionAndLiveCheck = recurringGoalCheckAsk({ mode: 'shadow', actions: 12, noPrediction: false,
+    hasLiveGoalCheck: true, levelStart: 64, lastAskedAt: 0, win });
+  assert.equal(predictionAndLiveCheck, undefined);
+  const predictionWithoutLiveCheck = recurringGoalCheckAsk({ mode: 'shadow', actions: 12, noPrediction: false,
+    hasLiveGoalCheck: false, levelStart: 64, lastAskedAt: 0, win });
+  assert.ok(predictionWithoutLiveCheck, 'the missing live check keeps the ask active despite a predicted change');
+  assert.equal(recurringGoalCheckAsk({ mode: 'off', actions: 12, noPrediction: true, hasLiveGoalCheck: false,
+    levelStart: 64, lastAskedAt: 0, win }), '12 actions on this level and no step predicted a level change (no goal test yet)');
+  assert.equal(levelGoalCheckAsk('off', { level: 1, n: 63, action: 'ACTION6(44,19)' }, false), undefined);
+  assert.match(levelGoalCheckAsk('shadow', { level: 1, n: 63, action: 'ACTION6(44,19)' }, false)!, /judged against this win and every move on level 2/);
+});
+
+test('T10 E1 refusal cites the prior winning action and GOAL_OUTCOME is prefixed once', () => {
+  const refusal = goalSupportRefusal('hyp.exit', { question: 'goal', status: 'supported' }, [], 1,
+    { level: 0, n: 63, action: 'ACTION6(44,19)' })!;
+  assert.match(refusal, /previous level 1 win was #63 \(ACTION6\(44,19\)\)/);
+  assert.equal(formatGoalOutcome({ key: 'hyp.exit', version: 'v1', n: 63, level: 0, met: true, verdict: 'win_held' }),
+    'GOAL_OUTCOME hyp.exit: win_held at #63 (level 1)');
+});
+
+test('S1 consult failures release consult-first only for recognized service prefixes', () => {
+  for (const prefix of ['consult round budget exhausted', 'consult time budget exhausted', 'consult length continuation exhausted', 'consult aborted', 'consult error'])
+    assert.equal(consultServiceFailure(prefix + ': detail'), true);
+  assert.equal(consultBudgetError(6, false), 'consult round budget exhausted (6 rounds)');
+  assert.equal(consultBudgetError(2, true), 'consult time budget exhausted (120 s)');
+  assert.equal(consultServiceFailure('consult review call cap reached'), false);
+  assert.equal(consultServiceFailure('no active subagent analyst'), false);
+  assert.equal(consultFirstBlocks({ consultPoint: true, consulted: false }, 'prompts/lessons.md'), true);
+  assert.equal(consultFirstBlocks({ consultPoint: true, consulted: false }, 'agents/analyst.md'), false);
+  assert.equal(consultFirstBlocks({ consultPoint: true, consulted: true }, 'prompts/lessons.md'), false);
+  const fixture = (arm: string) => readFileSync(new URL('../demo/fixtures/goal-r2/consult/' + arm + '.jsonl', import.meta.url), 'utf8')
+    .split(String.fromCharCode(10)).filter(Boolean).map(line => JSON.parse(line));
+  for (const arm of ['on', 'shadow']) {
+    const points = fixture(arm);
+    assert.ok(points.length > 0);
+    const failures = points.flatMap(point => point.results).filter((result: any) => result.isError);
+    assert.ok(failures.length > 0);
+    assert.ok(failures.every((result: any) => result.text.length <= 120));
+  }
   const extension = readFileSync(new URL('../demo/arc_thin_extension.ts', import.meta.url), 'utf8');
-  assert.match(extension, /no goal check predicted the win at #\$\{row\.n\} \(\$\{actionLabel\(row\)\}\): write question "goal" with check\(t\)/);
-  const runner = readFileSync(new URL('../src/autoresearch_pi/arc_thin_e2e.py', import.meta.url), 'utf8');
-  assert.match(runner, /Add a goal hypothesis with a check\(t\) that predicts this level change from the before grid and the winning action/);
-  const action = win.action === 'ACTION6' && win.x !== undefined ? `ACTION6(${win.x},${win.y})` : win.action;
-  assert.equal(action, 'ACTION6(44,19)');
-  assert.match(extension, /actionLabel\(row\).*write question "goal" with check\(t\)/);
+  assert.ok(extension.includes('consultServiceFailure(message)')); assert.ok(extension.includes('released: true'));
+});
+
+test('T11 recorded L2 trigger counts reproduce judged goal asks for both arms', () => {
+  const records = [
+    { actions: [14, 46], win: { level: 1, n: 60, action: 'ACTION6(44,19)' } },
+    { actions: [12, 36, 60], win: { level: 1, n: 63, action: 'ACTION6(44,19)' } },
+  ];
+  for (const record of records) for (let i = 0; i < record.actions.length; i++) {
+    const actions = record.actions[i];
+    const ask = recurringGoalCheckAsk({ mode: 'on', actions, noPrediction: true, hasLiveGoalCheck: false,
+      levelStart: record.win.n + 1, lastAskedAt: i ? actions - 24 : 0, win: record.win });
+    assert.match(ask!, new RegExp('win at #' + record.win.n));
+    assert.match(ask!, /every move on this level/);
+  }
 });

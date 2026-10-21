@@ -1,3 +1,4 @@
+import { consultBudgetError } from './arc_thin_consult_release.ts';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -652,15 +653,24 @@ export class NativeRuntime {
     const started = Date.now(); const deadline = started + 120000;
     const controller = new AbortController(); const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(abort, 120000);
-    let answer = ''; let lengths = 0;
+    let answer = ''; let lengths = 0; let rounds = 0;
     try {
       for (let round = 0; round < 6 && Date.now() < deadline; round++) {
+        rounds = round + 1;
         if (signal?.aborted) throw Error('consult aborted');
         const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt: `CONSULT_ROLE ${agent.name}\n${agent.body}`, messages, tools } as any,
           { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: 1024,...(onResponse?{onResponse}:{}) } as any);
-        const reply: any = this.host.modelResult ? await this.host.modelResult(create) : await create().result();
+        let reply: any;
+        try { reply = this.host.modelResult ? await this.host.modelResult(create) : await create().result(); }
+        catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (Date.now() >= deadline) throw Error('consult time budget exhausted (120 s)');
+          if (signal?.aborted) throw Error('consult aborted: ' + message);
+          throw Error('consult error: ' + message);
+        }
         this.host.usage('consult', reply); messages.push(reply);
-        if (['error', 'aborted'].includes(reply.stopReason)) throw Error(`consult ${reply.stopReason}: ${reply.errorMessage ?? ''}`);
+        if (reply.stopReason === 'error') throw Error(`consult error: ${reply.errorMessage ?? ''}`);
+        if (reply.stopReason === 'aborted') throw Error(Date.now() >= deadline ? 'consult time budget exhausted (120 s)' : `consult aborted: ${reply.errorMessage ?? ''}`);
         answer = (reply.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
         if (reply.stopReason === 'length') {
           if (++lengths > 1) throw Error('consult length continuation exhausted');
@@ -685,7 +695,7 @@ export class NativeRuntime {
             isError: Boolean(result.isError), timestamp: Date.now() });
         }
       }
-      throw Error('consult tool/time budget exhausted');
+      throw Error(consultBudgetError(rounds, Date.now() >= deadline));
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   close() { this.viewPool.close(); this.kernel?.close(); }
