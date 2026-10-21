@@ -54,14 +54,17 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
     try { return text(await tool.execute('t', tool.prepareArguments ? tool.prepareArguments(params) : params, undefined, undefined, ctx)); }
     catch (error) { return `REFUSED: ${(error as Error).message}`; }
   };
+  let head: any;
   return {
     file: (path: string) => existsSync(join(w.root, path)) ? readFileSync(join(w.root, path), 'utf8') : '',
     rows: (name: string) => existsSync(join(w.root, 'harness', name))
       ? readFileSync(join(w.root, 'harness', name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [],
+    /** The text parts of the last head, in order. */
+    parts: (): string[] => head.content.filter((b: any) => b.type === 'text').map((b: any) => b.text),
     async begin(prompt = 'Decide the next action.') {
       await handlers.get('before_agent_start')({ prompt, systemPromptOptions: { sections: {} } }, ctx);
-      return (await handlers.get('context')({ messages: [{ role: 'user', content: prompt }] }, ctx)).messages[0]
-        .content.map((b: any) => b.text ?? '').join('\n');
+      head = (await handlers.get('context')({ messages: [{ role: 'user', content: prompt }] }, ctx)).messages[0];
+      return head.content.map((b: any) => b.text ?? '').join('\n');
     },
     act: (params: any) => call('arc_action', params),
     async close() {
@@ -73,7 +76,7 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
   };
 }
 
-test('an action whose result this board already showed is said to be known; the next head says nothing new was learned, shows the board and pins a move never played from it', async () => {
+test('an action whose result this board already showed is said to be known; the next head ends with what was learned and what the board showed, and pins a move never played from it', async () => {
   const w = await world();
   const h = await attach(w);
   try {
@@ -82,9 +85,10 @@ test('an action whose result this board already showed is said to be known; the 
     await h.begin();
     assert.match(await h.act({ action: 'ACTION1' }), /^#2 ACTION1 → changed=0 [^\n]* \(known: the same result as #1 from this board\)/);
     assert.deepEqual(h.rows('trajectory.jsonl').map((row) => [row.n, row.novelty, row.known_from ?? null]), [[1, 'new', null], [2, 'known', 1]]);
-    const head = await h.begin();
-    assert.match(head, /^Decide the next action\.\n\nNO NEW INFORMATION: your last decision only played ACTION1, whose results this board had already shown \(first at #1\)\. Playing them again shows nothing new\. Next experiment pinned: ACTION6\(3,3\), never played from this board\.\n/);
-    assert.match(head, /\n\nTHIS BOARD \(status cells masked\) was here before: the start, #1\. From it: ACTION1 ×2 → no change\. Never tried from it: clicks on 2 of 2 objects: ACTION6\(3,3\), ACTION6\(8,8\)\.(\n|$)/);
+    await h.begin();
+    // The agent's own record on this board is the head's last part, where the response starts, and nowhere before it.
+    assert.match(h.parts().at(-1)!, /^NO NEW INFORMATION: your last decision only played ACTION1, whose results this board had already shown \(first at #1\)\. Playing them again shows nothing new\. Next experiment pinned: ACTION6\(3,3\), never played from this board\.\n\nTHIS BOARD \(status cells masked\) was here before: the start, #1\. From it: ACTION1 ×2 → no change\. Never tried from it: clicks on 2 of 2 objects: ACTION6\(3,3\), ACTION6\(8,8\)\.$/);
+    assert.doesNotMatch(h.parts()[0], /NO NEW INFORMATION|THIS BOARD/);
     assert.match(h.file('workspace/prompts/strategy.md'), /- First: ACTION6\(3,3\); never played from this board/);
     assert.deepEqual(h.rows('work_memory.jsonl').map((row) => [row.kind, row.move]), [['novelty_pin', 'ACTION6(3,3)']]);
     // The pinned move is new: the streak ends, and the board after it was not seen before.
@@ -106,5 +110,18 @@ test('ARC_THIN_WORK_MEMORY=0 leaves rows, heads and pins as they were', async ()
     assert.doesNotMatch(head, /NO NEW INFORMATION|THIS BOARD/);
     assert.equal(h.rows('trajectory.jsonl').some((row) => 'novelty' in row), false);
     assert.equal(h.rows('work_memory.jsonl').length, 0);
+  } finally { await h.close(); await w.server.close(); }
+});
+
+test('ARC_THIN_CONTEXT_LAYOUT=0 puts the record where it was: NO NEW INFORMATION opens the head, THIS BOARD follows the state', async () => {
+  const w = await world();
+  const h = await attach(w, { ARC_THIN_CONTEXT_LAYOUT: '0' });
+  try {
+    await h.begin(); await h.act({ action: 'ACTION1' });
+    await h.begin(); await h.act({ action: 'ACTION1' });
+    const head = await h.begin();
+    assert.match(head, /^Decide the next action\.\n\nNO NEW INFORMATION: your last decision only played ACTION1/);
+    assert.match(head, /\n\nTHIS BOARD \(status cells masked\) was here before: the start, #1\./);
+    assert.equal(h.parts().length, 1, 'one text part, as before');
   } finally { await h.close(); await w.server.close(); }
 });

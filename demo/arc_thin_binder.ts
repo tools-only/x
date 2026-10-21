@@ -107,8 +107,9 @@ export class Binder {
    */
   private receipt(entry: Entry, unchanged = false) {
     const kind = componentKind(entry.path); const name = entry.good?.name ?? entry.path.split('/').at(-1);
-    // A prompt is part of the system prompt, which stays fixed within a decision (a change mid-decision invalidated the
-    // provider's cached prefix on every later request of it, pr-01 2026-10-14); it applies from the next decision.
+    // A prompt is shown with each decision as it stood when the decision began (the head is built once per decision, and
+    // in the system prompt a change mid-decision invalidated the provider's cached prefix on every later request of it,
+    // pr-01 2026-10-14); it applies from the next decision.
     const from = kind === 'prompt' ? 'your next decision' : 'your next request';
     const failed = entry.error
       ? `NOT loaded (${entry.error}) · ${entry.good ? `v${entry.good.version} still runs, its outputs are labelled` : 'no active version'}` : '';
