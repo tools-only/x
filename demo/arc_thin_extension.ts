@@ -26,7 +26,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
-import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
+import { REFINE_GUIDE_PATH, REFINER_HEAD, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
@@ -34,6 +34,7 @@ import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NO
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
 import { Binder } from "./arc_thin_binder.ts";
+import { canonicalRefinerSystem, canonicalSystemTemplate } from "./arc_thin_kinds.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
@@ -327,6 +328,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	const refinePoints = native && criticOn && refineTool && process.env.ARC_THIN_REFINE_POINT !== "0";
 	const reviewConsult = native && consultTool && process.env.ARC_THIN_REVIEW_CONSULT !== "0";
+	// Components as the default of problem-solving (docs/plans/2026-10-21-components-by-default-canonical-forms.md): one flag per
+	// stage, all off by default. KINDS=canonical (S1): the system prompt's capability block and the refiner's kind text in
+	// their canonical form (arc_thin_kinds.ts); a stage's mechanism is described in them only when its own flag is on.
+	const kindsCanonical = native && !control && process.env.ARC_THIN_KINDS === "canonical";
+	const kindsOptions = { consult: consultTool, persist: false, skills: false };
+	const canonicalTemplate = kindsCanonical ? canonicalSystemTemplate(loadPrompt("arc_thin_native_system.md"), kindsOptions) : undefined;
+	const refinerCharter = kindsCanonical ? canonicalRefinerSystem(REFINER_SYSTEM, kindsOptions) : REFINER_SYSTEM;
 	/** Where a review's record is written for the subagent it consults (read-only to the agent, read by refs). */
 	const RECORD_PATH = "data/record.md";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
@@ -1572,7 +1580,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, {
 			systemPrompt, messages: [{ role: "user", content, timestamp: Date.now() }],
 		} as any, { signal: options.signal, maxTokens: options.maxTokens,...(onResponse?{onResponse}:{}) } as any);
-		return native ? await requestTrace.run(systemPrompt.startsWith(REFINER_SYSTEM) ? 'refiner' : systemPrompt === CRITIC_SYSTEM || systemPrompt === NATIVE_CRITIC_SYSTEM ? 'critic' : 'analyst', decision, create) : await create().result();
+		return native ? await requestTrace.run(systemPrompt.startsWith(REFINER_HEAD) ? 'refiner' : systemPrompt === CRITIC_SYSTEM || systemPrompt === NATIVE_CRITIC_SYSTEM ? 'critic' : 'analyst', decision, create) : await create().result();
 	}
 
 	async function askCritic(ctx: ExtensionContext, dossier: string): Promise<{ reply: any; answer: string }> {
@@ -2416,7 +2424,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
 		const guide = refineGuide();
-		const system = REFINER_SYSTEM + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		const system = refinerCharter + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
 		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
 		// could not: the r03b line did not keep them).
 		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
@@ -3786,6 +3794,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
       workMemory,
+      consultLimits: kindsCanonical,
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
       sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),
@@ -3979,7 +3988,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // P4 (ARC_THIN_LEAN, ARC_THIN_CONSULT): without consult, subagents have no way to be asked, so their line goes (below).
       kinds: consultTool ? 'five' : 'four',
       nonacting: consultTool ? 'subagents or views' : 'views',
-      skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.' }) : control
+      skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.' }, canonicalTemplate) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",

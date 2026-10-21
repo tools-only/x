@@ -1276,6 +1276,9 @@ def run_arc_thin_e2e(
             # sections (ARC_THIN_CONTEXT_LAYOUT=0, the legacy foundation and the control variant).
             "context_layout": "head" if foundation == "native" and variant != "control"
                 and pi_env.get("ARC_THIN_CONTEXT_LAYOUT") != "0" else "system",
+            # Components as the default of problem-solving (docs/plans/2026-10-21-components-by-default-canonical-forms.md), S1:
+            # the system prompt's capability block and the refiner's kind text in their canonical form (ARC_THIN_KINDS=canonical).
+            "canonical_kinds": foundation == "native" and variant != "control" and pi_env.get("ARC_THIN_KINDS") == "canonical",
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,

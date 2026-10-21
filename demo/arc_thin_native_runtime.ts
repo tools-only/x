@@ -27,6 +27,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   pythonKernel?: boolean;
   /** Work memory (default true): python calls get addresses, repeats name what they repeat, cell(k) runs call k again. */
   workMemory?: boolean;
+  /** ARC_THIN_KINDS=canonical: the consult tool's description states what its subagent may spend. */
+  consultLimits?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
   sessionDir?: string };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
@@ -34,6 +36,10 @@ export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
 export const MAX_ACTS = 24;
 /** Python executions of the agent and its subagents that run at once (each is one python process). */
 const MAX_PARALLEL = 4;
+/** What one consult may spend: model rounds, output tokens in each, and time. */
+export const CONSULT_ROUNDS = 6;
+export const CONSULT_TOKENS = 1024;
+export const CONSULT_MS = 120_000;
 /** States after which a view whose output never changed is shown as a snapshot: its head only (observe). */
 export const CONSTANT_VIEW_RUNS = 5;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
@@ -166,7 +172,8 @@ export class NativeRuntime {
       if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
       if (host.pythonKernel !== false) this.kernel = nativeKernel();
     }
-    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a saved subagent (agents/<name>.md) with exact workspace refs. Subagents never act.',
+    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a saved subagent (agents/<name>.md) with exact workspace refs. Subagents never act.' +
+        (host.consultLimits ? ` It answers within ${CONSULT_ROUNDS} model rounds of at most ${CONSULT_TOKENS} output tokens each and ${CONSULT_MS / 1000} s.` : ''),
       parameters: Type.Object({ agent: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
       prepareArguments: (args: any) => args && typeof args === 'object' && args.role && !args.agent ? { ...args, agent: args.role } : args,
       execute: host.wrap('consult', (args, signal, ctx) => this.consult(args, signal, ctx)) });
@@ -649,15 +656,15 @@ export class NativeRuntime {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
     const messages: any[] = [{ role: 'user', content: [{ type: 'text', text: `Question: ${args.question}\n` +
       refs.map(ref => `${ref}:\n${this.host.workspace.read(ref)}`).join('\n') }], timestamp: Date.now() }];
-    const started = Date.now(); const deadline = started + 120000;
+    const started = Date.now(); const deadline = started + CONSULT_MS;
     const controller = new AbortController(); const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, 120000);
+    const timer = setTimeout(abort, CONSULT_MS);
     let answer = ''; let lengths = 0;
     try {
-      for (let round = 0; round < 6 && Date.now() < deadline; round++) {
+      for (let round = 0; round < CONSULT_ROUNDS && Date.now() < deadline; round++) {
         if (signal?.aborted) throw Error('consult aborted');
         const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt: `CONSULT_ROLE ${agent.name}\n${agent.body}`, messages, tools } as any,
-          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: 1024,...(onResponse?{onResponse}:{}) } as any);
+          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: CONSULT_TOKENS,...(onResponse?{onResponse}:{}) } as any);
         const reply: any = this.host.modelResult ? await this.host.modelResult(create) : await create().result();
         this.host.usage('consult', reply); messages.push(reply);
         if (['error', 'aborted'].includes(reply.stopReason)) throw Error(`consult ${reply.stopReason}: ${reply.errorMessage ?? ''}`);

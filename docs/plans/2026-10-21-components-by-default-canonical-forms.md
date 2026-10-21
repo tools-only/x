@@ -310,9 +310,79 @@ repeatable procedure produces no skill (justified non-use).
 
 Evidence level reached by S0: reads existing runs; it establishes baselines and removes none of the unverified layers.
 
+### S1 — canonical kind definitions (flag `ARC_THIN_KINDS=canonical`, default off)
+
+Entry points and actual behavior:
+
+- `demo/prompts/arc_thin_native_kinds.md` (new) and `demo/arc_thin_kinds.ts` (new). With the flag, the five-bullet block
+  of the native system prompt (Prompt, Memory, Tool, Skill, Subagent) is replaced, inside the unchanged template
+  (`canonicalSystemTemplate` swaps only the block, so nothing outside it can drift), by seven bullets in the plan's order:
+  Prompts, Memory, Scripts, Skills, Hooks, Subagents, Tools. Line 12's tool contract is gone from the prompt: the python
+  tool description already carries save / view / predict / called-by-name / names persist / saved tools run without the
+  namespace (`demo/arc_thin_extension.ts`, the `python` tool); what it did not carry moved to where it belongs — `'# view:
+  off'` and predict's return shape to Hooks, "who can act" to Tools, `check(t)`'s True/False/None stays in the memory
+  tool's `check` description. Dropped on purpose: the "rewritten at each level change" / "written when it has gone long"
+  clauses on lessons.md and review.md (the review prompts say it when they ask) and the Tool bullet's namespace sentence.
+- `demo/arc_thin_kinds.ts` `canonicalRefinerSystem`: `REFINER_SYSTEM`'s kind list and its paragraph on views are
+  replaced by the same statements. The agent and the refiner now use one sentence for views (`VIEW_RULE`: saved code
+  with no args that does not act, or `# view: on`, `# view: off` keeps a tool, run after each new state, output shown at
+  each decision) and one for predictors (`PREDICT_RULE`); before, the agent was told "no args ⇒ view" and the refiner
+  "`# view: on`". The rest of the charter (reply formats, check fields, ledger) is the legacy text.
+- `demo/arc_thin_refiner.ts`: `REFINER_HEAD`, the side-call classifier's anchor (it compared against the whole legacy
+  charter, which the canonical one no longer starts with in full). `demo/prompt_loader.ts`: `renderPrompt(name, values,
+  template?)`; two-argument calls are unchanged.
+- `demo/arc_thin_native_runtime.ts`: `CONSULT_ROUNDS` / `CONSULT_TOKENS` / `CONSULT_MS` replace the literals 6, 1024 and
+  120000 of `consult()` (same values), and with the flag the consult tool's description states them ("It answers within 6
+  model rounds of at most 1024 output tokens each and 120 s.") — the plan's "limits stated in the consult tool description".
+- `src/autoresearch_pi/arc_thin_e2e.py`: `canonical_kinds` in `run-config.json`.
+- Mechanisms are named only when their stage is on: this commit passes `persist: false, skills: false`, so the Scripts
+  and Skills bullets describe what exists today (`lib/<name>.py` written by hand and imported; a skill listed under
+  HARNESS and read). S2 and S3 switch their own sentences on in their commits.
+
+Size (the constraint: the native system prompt must not grow). The brief's 3,903 characters is the 2026-10-16 figure; this
+tree renders more, so the comparison is against today's render of the same fixture
+(`tests/arc_thin_kinds.test.ts`, `ARC_THIN_OBSERVATION=query`, LF line ends):
+
+| configuration | flags off | `ARC_THIN_KINDS=canonical` |
+| --- | --- | --- |
+| whole system prompt | 4,355 | 4,265 (−90) |
+| whole system prompt, `ARC_THIN_LEAN=1` | 4,029 | 3,956 (−73) |
+| capability block, S1 only | 1,545 | 1,455 (−90) |
+| capability block, S1 + S2 text | 1,545 | 1,449 (−96) |
+| capability block, S1 + S3 text | 1,545 | 1,527 (−18) |
+| capability block, S1 + S2 + S3 text | 1,545 | 1,521 (−24) |
+| same four, lean (no Subagents bullet) | 1,358 | 1,285 / 1,279 / 1,357 / 1,351 (−73 … −1) |
+
+The first draft was 70–106 characters over in every configuration with S3 text; the Skills sentence was cut back to
+what/when plus trigger (authoring rules belong to the refiner and review instructions, S3(e)), and the S2 sentence to one
+clause. Skill-authoring text is not in the resident prompt.
+
+Checks: `tests/arc_thin_kinds.test.ts` — 4 tests, all pass: (1) the block names the seven kinds in order and everything
+outside it is the legacy template (with and without the Subagents bullet); (2) through the real extension: the rendered
+system prompt has the canonical block, no `save="name"` sentence, nothing about S2/S3 mechanisms, is no longer than the
+legacy render, the consult description carries the limits only with the flag, and the refiner's model call (triggered
+by the `refine` tool, read and never answered) receives the legacy charter without the flag and the canonical one with it;
+(3) the canonical block is no longer than the legacy block for every combination of consult / S2 text / S3 text, and
+persistence / trigger sentences appear only with their flag; (4) the agent's Hooks line and the refiner's charter contain
+`VIEW_RULE` word for word, and the legacy charter is untouched. `tests/arc_thin_coverage_events.test.ts` (the legacy
+five-kind and lean assertions) passes unchanged, 3/3.
+
+Flags off = unchanged, measured rather than argued: the same rendering script run in a pristine checkout of `9a5e0536`
+and on this branch gives identical SHA-256 (first 16 hex digits) for the system prompt `63392d9274de6377`, the consult
+description `8120321034dcf591`, the active-tool set, the prompt sections `44136fa355b3678a` and the full list of tool
+names and descriptions `6fc1973bb8b63722` (lean: `cba329a21d7d665e` / `ef59cf581effd3bb`), and for `REFINER_SYSTEM`
+(4,598 characters, `a1ad10938337cf3d`) and `REFINER_LEDGER_SYSTEM` (673, `462d238427415f7a`). With the flag only the system
+prompt, the consult description and the refiner's charter differ. Full suite after S1 (`--experimental-transform-types`,
+sequential, 701 s): 261 tests (255 at the base + the 4 new + the 2 that came with the merged `3ff04b13`), 256 pass, 5 fail,
+the same five as the base (activation:41, components:181, receipts:8/28/44). Runner side
+(`tests/test_components_baseline.py`, `test_arc_thin_{work_memory,stall_review,level_review,loop_bound}.py`): 16 pass.
+
+Evidence level reached by S1: functional correctness only. Reachability is shown to the extension's own prompt and
+refiner call under a stubbed provider (a test double), not through `arc-harness-smoke`; no model has read this text.
+
 | Evidence level | Status | Provider / environment | Artifacts and conclusion boundary |
 | --- | --- | --- | --- |
-| Functional correctness | S0 only: the script's measures pass 2 unit tests; runtime stages not built yet | none (read-only analysis of recorded runs) | `tools/components_baseline.py`, `tests/test_components_baseline.py` |
+| Functional correctness | S0 script (2 tests) and S1 text (4 tests) pass; S2 and S3 not built yet | none (read-only analysis of recorded runs; S1 uses a stubbed provider) | `tools/components_baseline.py`, `tests/test_components_baseline.py`, `tests/arc_thin_kinds.test.ts`; full suite = base result |
 | Full-chain reachability | unverified | — | — |
 | Autonomous adoption | unverified | — | baseline only: 0 skills, 0 lib scripts, 0 component imports in 105 runs |
 | Net benefit | unverified | — | — |

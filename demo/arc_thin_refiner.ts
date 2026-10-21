@@ -15,6 +15,8 @@ export const STRATEGY_PATH = "prompts/strategy.md";
 export const REFINE_GUIDE_PATH = "prompts/refine.md";
 export const STRATEGY_CHARS = 1500;
 
+/** How every refinement charter starts, whichever kind text follows (the legacy one or ARC_THIN_KINDS=canonical's): the side-call classifier reads it. */
+export const REFINER_HEAD = "You maintain the harness of an agent playing an ARC-AGI-3 game";
 export const REFINER_SYSTEM = "You maintain the harness of an agent playing an ARC-AGI-3 game (64x64 integer grid, hidden rules and goal). " +
 	"The harness has five kinds of capability: prompts (prompts/strategy.md is the agent's current plan and prompts/rules.md holds " +
 	"the rules its checks have established; both are applied at every decision), memory (facts with a confidence 1-5, and " +
