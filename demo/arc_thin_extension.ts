@@ -305,6 +305,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// already known from the same board; the head shows what this board already showed and, after a decision that learned
 	// nothing new, says so and pins a move never played from it. ARC_THIN_WORK_MEMORY=0 turns all of it off.
 	const workMemory = native && process.env.ARC_THIN_WORK_MEMORY !== "0";
+	// Context layout (docs/plans/2026-10-21-context-layout.md). The system prompt must stay fixed for the whole run: on routes
+	// that fold system-message patches into the leading message, any change there makes the next request miss the provider's
+	// cached prefix entirely. So the active prompts open each decision's head instead, and the agent's own record on this
+	// board (NO NEW INFORMATION, THIS BOARD) is the head's last part, after the observation and its images, where the
+	// response starts. ARC_THIN_CONTEXT_LAYOUT=0 restores the earlier placement: prompts as system-prompt sections, NO NEW
+	// INFORMATION opening the head, THIS BOARD after the state.
+	const contextLayout = native && !control && process.env.ARC_THIN_CONTEXT_LAYOUT !== "0";
 	// P4 (2026-10-19): the agent called refine and consult 0 times in 10 or more su15 runs with either model. ARC_THIN_LEAN=1
 	// leaves both tools out, with the system prompt's subagent line and the long form of its skill line (one at a time:
 	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
@@ -585,7 +592,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		/** Reasoning sentences in this decision, and those locating cells or coordinates (coordinateSentences). */
 		reasoningSentences: number; coordinateSentences: number;
 		/** ARC_THIN_OBSERVATION=ch: the grids the head renders go with it as PNGs, in order. */
-		workingSet?: { text: string; image?: { type: "image"; data: string; mimeType: string }; images?: Array<{ type: "image"; data: string; mimeType: string }> };
+		workingSet?: { text: string; image?: { type: "image"; data: string; mimeType: string }; images?: Array<{ type: "image"; data: string; mimeType: string }>;
+			/** The head's last text part, after the images (contextLayout): the agent's own record on this board. */
+			tail?: string };
 		/** Native: the decision's first message as built once (kept byte-identical for the provider's prefix cache). */
 		head?: any; headKey?: string;
 		/** The model answered this decision's prompt (an assistant message that was not a provider error). */
@@ -798,9 +807,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function buildWorkingSet(ctx: ExtensionContext, historyText?: string): Run["workingSet"] {
 		const recent = recentText(historyText === undefined ? undefined : visibleActions(historyText));
 		// Native mode: the context is the harness plus the present (Continual Harness rebuilds each decision from its
-		// state; Prime keeps data out of context). The strategy and other active prompts are in the system prompt; here
-		// come the memory index, a summarised history, recent actions it does not cover, what a refinement changed, and
-		// resources. The runtime's own analyses are files under data/, not resident text.
+		// state; Prime keeps data out of context). The strategy and other active prompts open the head (with
+		// ARC_THIN_CONTEXT_LAYOUT=0 they are in the system prompt); then come the memory index, a summarised history, recent
+		// actions it does not cover, what a refinement changed, and resources. The runtime's own analyses are files under
+		// data/, not resident text.
 		const nativeSections = (): Array<[string, string]> => {
 			// Rivals with checks, compared on the recorded moves (H3a): one line per question, shown when it is new or changed
 			// (P3: "no recorded move separates …" stood unchanged in 35 decisions of su15-g56-2 and 45 of su15-q38-2). A count
@@ -812,7 +822,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				shownRivals.set(question, seen);
 				return true;
 			});
-			const out: Array<[string, string]> = [["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]];
+			const out: Array<[string, string]> = [];
+			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
+			if (prompts) out.push(["prompts", prompts]);
+			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
@@ -831,8 +844,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}
 				refinerNotices = [];
 			}
-			// Work memory: after a decision that learned nothing new, the head opens by saying so (after the call points).
-			if (run.spin?.streak) out.unshift(["spin", spinText(run.spin)]);
+			// Work memory: after a decision that learned nothing new, the head says so; with contextLayout at its end (below),
+			// otherwise first (after the call points).
+			if (run.spin?.streak && !contextLayout) out.unshift(["spin", spinText(run.spin)]);
 			// Call points (A5) open the head: a refine point before a decision acts, a consult before a review writes. The
 			// review's record is also written where the subagent it consults can read it.
 			if (run.refinePoint && run.refinePointText) out.unshift(["refine_point", run.refinePointText]);
@@ -882,6 +896,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (workMemory && !run.consolidating && observation) {
 			try { board = boardText(boardFactsNow()); } catch (error) { logError("context:board", error); }
 		}
+		// contextLayout: the agent's own record on this board goes after everything else, the images included.
+		const spin = contextLayout && run.spin?.streak ? spinText(run.spin) : "";
+		const tail = contextLayout ? [spin, board].filter(Boolean).join("\n\n") : "";
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
 		const body = sections.map(([, value]) => value).join("\n\n");
@@ -889,14 +906,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("working_set.jsonl", {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
-				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(board ? [["board", board] as [string, string]] : [])]
-					.map(([name, value]) => [name, value.length])),
+				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
+					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
 				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
 				...(seen ? { images: seen.images.length, rendered_grids: seen.labels } : {}),
-				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body,
+				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body, ...(tail ? { tail } : {}),
 			});
 		} catch (error) { logError("context:working_set", error); }
-		return { text: `${body}\n\n${stateText}${board ? `\n\n${board}` : ""}`, image, ...(seen ? { images: seen.images } : {}) };
+		return { text: `${body}\n\n${stateText}${board && !contextLayout ? `\n\n${board}` : ""}`, image,
+			...(seen ? { images: seen.images } : {}), ...(tail ? { tail } : {}) };
 	}
 
 	/** Who played an action, as CH's history labels it: arc_action, python, or tool: <name>. */
@@ -3976,9 +3994,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       event.systemPromptOptions.customPrompt = rendered;
       event.systemPromptOptions.cwd = workspace!.root;
       // The active prompts are taken once per decision: the system prompt is the first thing in every request, and a
-      // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14).
+      // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14). With
+      // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
       decisionPrompts = promptSections();
-      for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
+      if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
         event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
       return;
     }
@@ -4071,6 +4090,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				content: [
 					{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
 					...(run.workingSet!.images ?? (run.workingSet!.image ? [run.workingSet!.image] : [])),
+					...(run.workingSet!.tail ? [{ type: "text", text: run.workingSet!.tail }] : []),
 				],
 			};
 			run.headKey = headKey;
@@ -4131,14 +4151,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return { messages: projected };
 	}));
 
-  /** The active prompts as system-prompt sections. */
+  /** The active prompts, one tagged block each: system-prompt sections, or with contextLayout the head's opening section. */
   const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c =>
     [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
   /** The prompt sections fixed at the start of the current decision (native mode); undefined before the first. */
   let decisionPrompts: Record<string, string> | undefined;
+  // With contextLayout no prompt section is wanted: sections a resumed or forked session carries are removed once.
   if (binder) pi.on('context_with_system', (event: any) => {
     const current = getCurrentSystemMessage(event.messages)?.sections ?? {};
-    const desired = native && decisionPrompts ? decisionPrompts : promptSections();
+    const desired = contextLayout ? {} : native && decisionPrompts ? decisionPrompts : promptSections();
     const patch: Record<string, string | null> = {};
     for (const key of new Set([...Object.keys(current).filter(k => k.startsWith('prompt_')), ...Object.keys(desired)]))
       if (current[key] !== desired[key]) patch[key] = desired[key] ?? null;

@@ -280,6 +280,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 2026-10-09 thin 路径（续）：7 个 thin-hyp 真实运行中 24 次假设删除有 19 次没有任何反证记录（ls20 A #5 支持一个关于计数条的假设时删掉了正确的移动假设），计划事实未关联任何假设。已实现竞争假设与依赖策略的统一维护：按 question 分组对手、一次检验记录多个对手的判定、未处理反证标记 contested、删除未检验对手保留一行、前提被否定时挂起依赖策略并记录修订及后续动作分布。仅功能与离线全链路通过，自主采用和收益未验证；这为 C（假设 → 检验 → 修订）和 D（已排除解释、未完成实验跨重建保留）提供载体，不改变其状态。见 [变更记录](plans/2026-10-09-thin-hypothesis-strategy-lifecycle.md)。
 
+2026-10-21 r04 上下文布局：su15-chm-q38-1 中 7 次仅改 prompt 段的系统消息补丁（openai-completions 将其并入首条系统消息）后，下一决策首个请求均 0 缓存读取，共 9 个请求 603,590 未缓存输入（该运行预算 19%）。已将 active prompts 移出系统提示、置于每个决策 head 开头，并把 Agent 自身在本盘面的记录（NO NEW INFORMATION、THIS BOARD）置于 head 最后（图像之后）；`ARC_THIN_CONTEXT_LAYOUT=0` 恢复旧布局。仅功能测试通过，缓存节省与行为变化均未验证；见 [变更记录](plans/2026-10-21-context-layout.md)。本节各项仍未勾选。
+
 ## 后续更新
 
 2026-10-12 thin 路径：依据 tu93 round-5 真实轨迹诊断（[报告与变更记录](reports/2026-10-12-tu93-new-design-analysis.md)），实现了以下改动：

@@ -178,12 +178,11 @@ test('a level review starts from the level record without arc_action, is bounded
 		for (let i = 2; i < 10; i++) await h.call('memory', { op: 'set', key: `k${i}`, text: `fact ${i}` });
 		assert.match(await h.call('memory', { op: 'set', key: 'k10', text: 'fact 10' }), /\(This was tool call 10 of 10 for this review: finish now\.\)/);
 		assert.match(await h.call('memory', { op: 'set', key: 'k11', text: 'fact 11' }), /this review used its 10 tool calls; it ends here/);
-		await h.begin();
-		assert.match(h.sections().prompt_lessons ?? '', /# Level 1 \(won at #3\)\n5\. Next: test the new marked cell first\./);
+		assert.match(await h.begin(), /<prompt_lessons>\n+# Level 1 \(won at #3\)\n5\. Next: test the new marked cell first\./, 'it opens the next head');
+		assert.equal(h.sections().prompt_lessons, undefined, 'and is not a system-prompt section');
 		assert.ok(h.active().includes('arc_action'));
 		await h.act({ action: 'ACTION6', x: 3, y: 3 });
-		await h.begin();
-		assert.match(h.sections().prompt_lessons ?? '', /# Level 1 \(won at #3\)/, 'still there a decision later');
+		assert.match(await h.begin(), /<prompt_lessons>\n+# Level 1 \(won at #3\)/, 'still there a decision later');
 	} finally { await h.close(); await new Promise<void>((r) => w.server.close(() => r())); }
 });
 

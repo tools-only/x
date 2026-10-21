@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import arcThinExtension from '../demo/arc_thin_extension.ts';
 
-async function fixture() {
+async function fixture(extra: Record<string, string> = {}) {
   const submitted: string[] = [];
   // A marker on row 2 that ACTION1 moves right; ACTION2 does nothing; ACTION3 ends the game; ACTION4 completes the level.
   let x = 1, level = 0, state = 'NOT_FINISHED', acted = false;
@@ -45,7 +45,7 @@ async function fixture() {
   // The reviews' consult-first call point is tested in arc_thin_loop_bound.test.ts.
   Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', ARC_THIN_OBSERVATION: 'ch',
     PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'disabled',
-    ARC_HARNESS_CRITIC: 'disabled', ARC_REFINE_EVERY: '1000000', ARC_THIN_REVIEW_CONSULT: '0' });
+    ARC_HARNESS_CRITIC: 'disabled', ARC_REFINE_EVERY: '1000000', ARC_THIN_REVIEW_CONSULT: '0', ...extra });
   const tools = new Map<string, any>(), handlers = new Map<string, any[]>(); let active: string[] = [];
   arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,
     getActiveTools: () => active, getAllTools: () => [...tools.values()],
@@ -224,7 +224,7 @@ test('observations a decision showed but the model never answered are shown agai
   } finally { await h.close(); }
 });
 
-test('a stall review starts from the level\'s record and the current state, without arc_action; its review.md is a system-prompt section, and the next decision still shows what happened since the last one', async () => {
+test('a stall review starts from the level\'s record and the current state, without arc_action; its review.md opens the next decision\'s head without changing the system prompt, and the next decision still shows what happened since the last one', async () => {
   const h = await fixture();
   try {
     await h.decide();
@@ -234,11 +234,30 @@ test('a stall review starts from the level\'s record and the current state, with
     assert.match(review, /\nLEVEL 1 RECORD SO FAR \(the level on screen; it is not completed\)\. The runtime's counts; what they mean is yours to write\.\n- #1–#2: 2 actions in 1 attempt; no RESET; no GAME_OVER\./);
     assert.match(review, /## CURRENT STATE\nstate: NOT_FINISHED/);
     assert.doesNotMatch(review, /## RECENT HISTORY|### ACTION step/, 'a review sees the current state only');
+    const system = h.system();
+    await h.respond(['write', { path: 'prompts/review.md', content: '---\nactive: true\n---\n1. Walked right twice.\n' }]);
+    const parts = head(await h.decide()).content, text = textOf({ content: parts });
+    assert.match(text, /### ACTION step 1: ACTION1[\s\S]*### ACTION step 2: ACTION2/, 'the review did not take them from this decision');
+    assert.match(text, /^Decide the next action\.\n\n<prompt_review>\n[\s\S]*1\. Walked right twice\.\n[\s\S]*<\/prompt_review>\n\n/, 'the active prompt opens the head');
+    assert.doesNotMatch(text.slice(text.indexOf('## RECENT HISTORY'), text.indexOf('\nHARNESS (')), /Walked right twice/,
+      'it is not part of the game\'s observation (the capability index after it lists it in one line)');
+    assert.deepEqual(h.sections(), {}, 'no system-prompt section');
+    assert.equal(h.system(), system, 'the system prompt is the one before the write');
+    // The board was seen at #1: what was played from it is the head's last part, after the images.
+    assert.match(parts.at(-1).text ?? '', /^THIS BOARD \(status cells masked\) was here before: #1\. From it: ACTION2 → no change\./);
+    const image = parts.findIndex((b: any) => b.type === 'image');
+    assert.ok(image > 0 && image < parts.length - 1, `the record follows the images: ${parts.map((b: any) => b.type)}`);
+  } finally { await h.close(); }
+});
+
+test('ARC_THIN_CONTEXT_LAYOUT=0: an active prompt is a system-prompt section and not in the head', async () => {
+  const h = await fixture({ ARC_THIN_CONTEXT_LAYOUT: '0' });
+  try {
+    await h.decide();
     await h.respond(['write', { path: 'prompts/review.md', content: '---\nactive: true\n---\n1. Walked right twice.\n' }]);
     const text = textOf(head(await h.decide()));
-    assert.match(text, /### ACTION step 1: ACTION1[\s\S]*### ACTION step 2: ACTION2/, 'the review did not take them from this decision');
     assert.match(h.sections().prompt_review ?? '', /1\. Walked right twice\./);
     assert.doesNotMatch(text.slice(0, text.indexOf('\nHARNESS (')), /Walked right twice/,
-      'an active prompt is not part of the game\'s observation (the capability index after it lists it in one line)');
+      'the capability index after the observation lists it in one line');
   } finally { await h.close(); }
 });

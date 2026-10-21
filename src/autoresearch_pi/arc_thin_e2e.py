@@ -1271,6 +1271,11 @@ def run_arc_thin_e2e(
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
             "review_at_level_change": review_at_level_change, "stall_review_after": stall_review_after,
             "spin_review_after": spin_review_after, "work_memory": pi_env.get("ARC_THIN_WORK_MEMORY") != "0",
+            # Where the active prompts are (docs/plans/2026-10-21-context-layout.md): "head" opens each decision's head
+            # with them and ends it with the agent's own record on the board; "system" keeps them as system-prompt
+            # sections (ARC_THIN_CONTEXT_LAYOUT=0, the legacy foundation and the control variant).
+            "context_layout": "head" if foundation == "native" and variant != "control"
+                and pi_env.get("ARC_THIN_CONTEXT_LAYOUT") != "0" else "system",
             "auto_compaction": auto_compaction,
             "foundation": foundation, "replay_reasoning": replay_reasoning,
             "observation_delivery": observation_delivery,

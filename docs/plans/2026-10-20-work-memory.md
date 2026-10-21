@@ -106,6 +106,9 @@ Concretely:
 
 Nothing is refused: every action the agent sends is played.
 
+Placement since 2026-10-21 (`docs/plans/2026-10-21-context-layout.md`): NO NEW INFORMATION and THIS BOARD are the head's
+last text part, after the observation and its images; `ARC_THIN_CONTEXT_LAYOUT=0` restores the placement described above.
+
 **Burden removed:**
 - re-typing code that already ran;
 - copying the last decision;
