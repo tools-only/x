@@ -69,6 +69,7 @@ import {
 } from "./arc_thin_prediction.ts";
 import { effectOf, type StatusMask } from "./arc_thin_effects.ts";
 import { r3Config, r3State, r3Rebuild, r3Observe, r3Admit, type R3State } from "./arc_thin_r3.ts";
+import { admitWinTest, recordFailedClaim, recordFalseWin } from "./arc_thin_win_tests.ts";
 import { buildHistory, gridChanges, type CellChange } from "./arc_thin_history.ts";
 import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } from "./arc_thin_analyst.ts";
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
@@ -298,7 +299,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// time until another action is played (2026-10-17). ARC_THIN_NO_EFFECT_REPEATS=0 turns the refusal off. Off by default
 	// with ARC_THIN_OBSERVATION=ch: the user judged blocking repeats neither a fundamental nor a general fix (2026-10-20);
 	// a run that makes no progress gets a stall review instead (the runner's STALL REVIEW).
-	const noEffectRepeats = !native ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? (chView ? 0 : 3)
+	const noEffectRepeats = !native || r3.gates.fuse === 'on' ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? (chView ? 0 : 3)
 		: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NO_EFFECT_REPEATS) || 0));
 	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
 	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
@@ -438,6 +439,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
   const goalRows: GoalCheckRow[] = readRows('goal_checks.jsonl') as GoalCheckRow[];
+  const goalContestOnce = new Set(readRows('memory.jsonl').filter(row => row.by === 'goal_check').map(row => `${row.key}@${claimVersion(row.hyp?.check ?? '')}`));
+  function contestGoalCheck(row: GoalCheckRow, transition: ActionRow) {
+    if (row.verdict !== 'false_win') return;
+    recordFalseWin(r3Run.winTests, { action: transition.action, x: transition.x, y: transition.y, n: row.n }, grids.get(row.n - 1), r3Mask().mask);
+    const id = `${row.key}@${row.version}`; if (goalContestOnce.has(id)) return; goalContestOnce.add(id);
+    const h = memory.hypotheses.get(row.key); if (!h || h.status === 'rejected') return;
+    const next = { ...h, status: 'contested' as const, contested_at: row.n };
+    append('memory.jsonl', { key: row.key, hyp: next, at: trajectory.length, by: 'goal_check', version: row.version, n: row.n });
+    applyRows(memory, [{ key: row.key, hyp: next }]); advanceLevelCarry();
+  }
   if (workspace && existsSync(workspace.path('data/goal_claims.json'))) {
     try { append('errors.jsonl', { hook: 'goal:legacy_store_ignored', message: 'ignored leftover P0 goal store' }); } catch { /* best effort */ }
   }
@@ -1232,7 +1243,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         const row: GoalCheckRow = { key: item.key, version: item.version, n, level: levelOf(transition),
           met: met === true || met === false ? met : null,
           verdict: goalVerdict(met === true || met === false ? met : null, transition), ...(error ? { error } : {}) };
-        goalRows.push(row); done.add(`${item.key}@${item.version}#${n}`); append('goal_checks.jsonl', row);
+        goalRows.push(row); done.add(`${item.key}@${item.version}#${n}`); append('goal_checks.jsonl', row); contestGoalCheck(row, transition);
       }
     }
   }
@@ -3291,7 +3302,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Work memory: what this board already showed, for the head, when it was seen before. */
 	function boardFactsNow() {
-		return boardFacts(trajectory, boardHashes(), trajectory.length, gridOf(observation), availableActions(observation));
+		return boardFacts(trajectory, boardHashes(), trajectory.length, gridOf(observation), availableActions(observation), r3Mask().mask);
 	}
 
 	/** Work memory: the head's first section after a decision that learned nothing new. */
@@ -3323,6 +3334,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const beforeGrid = gridOf(observation);
 		const before = observation;
 		const label = actionLabel(params);
+    if (r3.gates.win_tests !== 'off' || r3.gates.win_lock !== 'off' || r3.gates.progress !== 'off' || r3.gates.fuse !== 'off') {
+      const derived = r3Mask();
+      const decision = r3Admit(r3Run, { n: trajectory.length + 1, level: currentLevel(), decision,
+        action: params.action, x: params.x, y: params.y, predict: params.predict }, beforeGrid, derived.mask, r3);
+      for (const gateRow of decision.rows) {
+        const verdict = derived.transitions < 8 && gateRow.verdict === 'refused' ? 'mask_pending' : gateRow.verdict;
+        append("r3_gates.jsonl", { ...gateRow, t: new Date().toISOString(), verdict });
+      }
+      if (decision.refusal && derived.transitions >= 8) return { refusal: decision.refusal };
+    }
 		// The same action again after it changed at most NO_EFFECT_CELLS cells each of the last noEffectRepeats times in a
 		// row. Every play was a new state to the loop guard, so su15-l0-2 played one click 30 times and su15-l0-1 another
 		// 20 times (2026-10-17). Any other action lifts this; a refusal ends the decision at the third, like any repeated
