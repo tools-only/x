@@ -141,3 +141,18 @@ test('first successful old-view execution is evidence of execution, not semantic
   assert.equal(advanced.carry.pieces[0].at, 11);
   assert.equal(advanced.deltas.length, 0);
 });
+
+test('carry records final-attempt operator bins and attempt cost', () => {
+  const input: CarryInput = { trajectory: [
+    { n: 1, action: 'RESET', levels_completed: 0 },
+    { n: 2, action: 'ACTION6', levels_completed: 0 },
+    { n: 3, action: 'ACTION1', levels_completed: 1, level_changed: true },
+  ], memoryRows: [], claimRows: [], goalRows: [], observerRuns: [], rulesText: '', effects: [
+    { n: 1, level: 0, kind: 'reset' }, { n: 2, level: 0, kind: 'move', dest: '2:3', steps: [2], targetBin: '4-7' },
+  ] };
+  const carry = buildLevelCarry(input, 0);
+  assert.match(carry.pieces.find(piece => piece.kind === 'operator')!.from.evidence, /"move":1/);
+  assert.match(carry.pieces.find(piece => piece.kind === 'attempt')!.from.evidence, /1 attempt/);
+  assert.match(renderCarry(carry), /operator:/);
+  assert.match(renderCarry(carry), /attempt:/);
+});

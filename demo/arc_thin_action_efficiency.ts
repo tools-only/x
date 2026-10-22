@@ -76,6 +76,8 @@ export function actionBudgetText(budget: any): string {
   if (typeof budget?.maximum === 'number') parts.push(`level_cap=${budget.maximum}`);
   if (typeof budget?.total_used === 'number' && typeof budget?.total_maximum === 'number')
     parts.push(`run=${budget.total_used}/${budget.total_maximum}`);
+  if (Number.isInteger(budget?.attempt)) parts.push(`attempt=${budget.attempt}`);
+  if (Number.isInteger(budget?.prev_level_actions)) parts.push(`prev_level_actions=${budget.prev_level_actions}`);
   return parts.join(' ');
 }
 

@@ -468,13 +468,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   let carryDeltaQueue: CarryDelta[] = [];
   let lastCarryPartitionKey = "";
   let previousLevelActions = 0;
+  const carryCheckpointKeys = new Set<string>();
+  let carryCheckpointQueue: string[] = [];
   for (const row of readRows('level_carry.jsonl')) if (row.carry) levelCarry = row.carry as LevelCarry;
   const carryInput = (): CarryInput => {
     let rulesText = '';
     try { rulesText = workspace?.read(RULES_PATH) ?? ''; } catch { /* no rules file */ }
     const now = trajectory.length;
     const byAction = (row: any) => Number(row.n ?? String(row.key ?? '').split('@').at(-1));
-    return { trajectory: trajectory.filter(row => Number(row.n) <= now),
+    return { trajectory: trajectory.filter(row => Number(row.n) <= now), effects: readRows('effects.jsonl').filter(row => Number(row.n) <= now),
       memoryRows: readRows('memory.jsonl').filter(row => Number(row.at ?? 0) <= now),
       claimRows: claimRows.filter(row => Number(row.n) <= now), goalRows: goalRows.filter(row => Number(row.n) <= now),
       observerRuns: readRows('observer_runs.jsonl').filter(row => byAction(row) <= now), rulesText };
@@ -490,7 +492,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     try {
       levelCarry = buildLevelCarry(carryInput(), level - 1);
       persistCarry('base');
-      append('level_carry.jsonl', { kind: 'piece_counts', at: trajectory.length, level, counts: Object.fromEntries(['goal','check','view','rule'].map(kind => [kind, levelCarry!.pieces.filter(piece => piece.kind === kind).length])) });
+      append('level_carry.jsonl', { kind: 'piece_counts', at: trajectory.length, level, counts: Object.fromEntries(['goal','check','view','rule','operator','attempt'].map(kind => [kind, levelCarry!.pieces.filter(piece => piece.kind === kind).length])) });
     } catch (error) { logError('level_carry:build', error); }
   }
   function advanceLevelCarry() {
@@ -505,9 +507,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     if (advanced.deltas.length) persistCarry('state');
   }
   function carryReceipt(): string {
-    if (!carryDeltaQueue.length) return '';
-    const text = renderDeltas(carryDeltaQueue);
+    if (!carryDeltaQueue.length && !carryCheckpointQueue.length) return '';
+    const text = [...carryCheckpointQueue, renderDeltas(carryDeltaQueue)].filter(Boolean).join('\n');
     carryDeltaQueue = [];
+    carryCheckpointQueue = [];
     return text;
   }
   function carriedPromptBody(path: string, body: string): string {
@@ -3460,6 +3463,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     }
 		if (goalAdmission !== 'off') { try { await refreshGoalChecks(); } catch (error) { logError('goal_checks:refresh', error); } }
 		if (row.level_changed) { previousLevelActions = trajectory.filter(item => levelOf(item) === Math.max(0, Number(row.levels_completed) - 1)).length; ensureLevelCarry(); } else advanceLevelCarry();
+		if (r3.gates.carry !== 'off') {
+			const level = levelOf(row), used = trajectory.filter(item => levelOf(item) === level).length;
+			if (row.action === 'RESET' || row.state === 'GAME_OVER' || (previousLevelActions > 0 && used >= previousLevelActions)) {
+				const key = `${level}:${r3Run.attempt}:${row.action}:${used}`;
+				if (!carryCheckpointKeys.has(key)) { carryCheckpointKeys.add(key); const verdict = r3.gates.carry === 'on' ? 'fired' : 'would_refuse';
+					append('r3_gates.jsonl', { n: row.n, level, attempt: r3Run.attempt, gate: 'G5', verdict, previous_level_actions: previousLevelActions, actions: used });
+					carryCheckpointQueue.push(`checkpoint: L${level} now ${used} actions, attempt ${r3Run.attempt}; prior level took ${previousLevelActions} actions`); }
+			}
+		}
 		// ARC_THIN_OBSERVATION=ch: the next decision's OBSERVATIONS show what this action did, frame by frame.
 		if (chView) pendingObservations.push({
 			step: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { data: { x: row.x, y: row.y } } : {}),

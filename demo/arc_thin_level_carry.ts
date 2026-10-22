@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { claimVersion } from './arc_thin_claims.ts';
 export type CarryMode = 'off' | 'shadow' | 'on';
-export type PieceKind = 'goal' | 'check' | 'view' | 'rule';
+export type PieceKind = 'goal' | 'check' | 'view' | 'rule' | 'operator' | 'attempt';
 export type PieceState = 'prior' | 'held' | 'changed' | 'dropped' | 'new';
 export type GoalVerdict = 'win_held' | 'false_win' | 'missed_win' | 'quiet';
 export type BackStanding = { level: number; win_n: number; standing: 'explains' | 'contradicts' | 'silent'; n?: number; verdict?: GoalVerdict };
@@ -11,7 +11,7 @@ export type CarryPiece = { ref: string; kind: PieceKind; from: { level: number; 
 export type LevelCarry = { from_level: number; to_level: number; win: { n: number; action: string };
   cost: { actions: number; resets: number; game_overs: number }; pieces: CarryPiece[] };
 export type CarryDelta = { at: number; level: number; ref: string; kind: PieceKind; from: PieceState; to: PieceState; why: string };
-export type CarryInput = { trajectory: any[]; memoryRows: any[]; claimRows: any[]; goalRows: any[]; observerRuns: any[]; rulesText: string };
+export type CarryInput = { trajectory: any[]; memoryRows: any[]; claimRows: any[]; goalRows: any[]; observerRuns: any[]; effects?: any[]; rulesText: string };
 export const HELD_MIN = 3, CHANGED_MIN = 2, CARRY_CHARS = 900;
 const actionLabel = (row: any) => row.action === 'ACTION6' && row.x !== undefined ? `ACTION6(${row.x},${row.y})` : row.action;
 const renderedActionLabel = (row: any) => row.action === 'ACTION6' && row.x !== undefined ? `ACTION6 ${row.x},${row.y}` : row.action;
@@ -75,6 +75,15 @@ export function buildLevelCarry(input: CarryInput, level: number): LevelCarry {
     if (ruleScope(line) !== level || !line.trim()) continue;
     pieces.push({ ref: `rule:${hash8(line)}`, kind: 'rule', from: { level, evidence: 'scoped rule' }, state: 'prior', line: line.slice(0, 160), cites: ruleCites(line) });
   }
+  const lastAttemptStart = Math.max(-1, ...fromRows.filter(row => (row.action === 'RESET' || row.state === 'GAME_OVER') && Number(row.n) < winN).map(row => Number(row.n)));
+  const effects = (input.effects ?? []).filter(row => row.level === level && row.n > lastAttemptStart && row.n <= winN);
+  const operators = new Set(effects.map(row => `${row.kind}:${row.dest ?? 'none'}`));
+  const steps = effects.flatMap(row => row.steps ?? []).filter((step: unknown) => typeof step === 'number');
+  const bins = Object.fromEntries(['0','1','2-3','4-7','8-15','16+','unplaced'].map(bin => [bin, effects.filter(row => row.targetBin === bin).length]));
+  pieces.push({ ref: `operator:${level + 1}`, kind: 'operator', from: { level, evidence: JSON.stringify({ effects: Object.fromEntries([...new Set(effects.map(row => row.kind))].map(kind => [kind, effects.filter(row => row.kind === kind).length])), classes: operators.size, step_median: steps.length ? steps.sort((a:number,b:number)=>a-b)[Math.floor(steps.length/2)] : null, bins }) }, state: 'prior' });
+  const attemptBoundaries = fromRows.filter(row => row.action === 'RESET' || row.state === 'GAME_OVER').length;
+  const attempts = Math.max(1, attemptBoundaries + (fromRows[0]?.action === 'RESET' ? 0 : 1));
+  pieces.push({ ref: `attempt:${level + 1}`, kind: 'attempt', from: { level, evidence: `${attempts} attempt(s); ${fromRows.filter(row => row.action === 'RESET').length} reset(s)` }, state: 'prior' });
   return { from_level: level, to_level: level + 1, win: { n: winN, action: actionLabel(winRow) },
     cost: { actions: fromRows.length, resets: fromRows.filter(row => row.action === 'RESET').length,
       game_overs: fromRows.filter(row => row.state === 'GAME_OVER').length }, pieces };
@@ -199,7 +208,8 @@ export function renderCarry(carry: LevelCarry, maxChars = CARRY_CHARS): string {
     } else if (piece.kind === 'goal') lines.push('- goal ' + name + ': ' + piece.from.evidence + ' → ' + piece.state);
     else if (piece.kind === 'check') lines.push('- check ' + name + ': level ' + (carry.from_level + 1) + ' ' + piece.from.evidence + ' → level ' + (carry.to_level + 1) + ': ' + piece.state.toUpperCase() + (piece.at ? ' at #' + piece.at : ''));
     else if (piece.kind === 'view') lines.push('- view ' + name + ': level ' + (carry.from_level + 1) + ' ' + piece.from.evidence + ' → level ' + (carry.to_level + 1) + ': ' + piece.state);
-    else lines.push('- rule "' + (piece.line ?? '') + '" (' + (piece.cites?.join(', ') ?? 'uncited') + '): ' + piece.state);
+    else if (piece.kind === 'rule') lines.push('- rule "' + (piece.line ?? '') + '" (' + (piece.cites?.join(', ') ?? 'uncited') + '): ' + piece.state);
+    else lines.push('- ' + piece.kind + ': ' + piece.from.evidence);
   }
   let text = lines.join('\n');
   if (text.length > maxChars) text = text.slice(0, Math.max(0, maxChars - 1)) + '…';
