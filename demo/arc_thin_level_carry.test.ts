@@ -129,3 +129,15 @@ test('rule scope and cited check partition remain typed', () => {
   assert.match(partition.rules, /held on level 2: 75/);
   assert.equal(partitionRules(lines, carry, 0).rules, lines.trim());
 });
+
+test('first successful old-view execution is evidence of execution, not semantic carry', () => {
+  const carry = { from_level: 0, to_level: 1, win: { n: 10, action: 'ACTION1' },
+    cost: { actions: 10, resets: 0, game_overs: 0 }, pieces: [{ ref: 'tools/view.py@1', kind: 'view' as const,
+      from: { level: 0, evidence: 'ran 1 ok 0 errors' }, state: 'prior' as const }] };
+  const input: CarryInput = { trajectory: [{ n: 11, action: 'ACTION1', level: 1 }], memoryRows: [], claimRows: [], goalRows: [],
+    observerRuns: [{ key: 'tools/view.py@1@11', n: 11, version: 1, ok: true, value: 'some output' }], rulesText: '' };
+  const advanced = advanceCarry(carry, input);
+  assert.equal(advanced.carry.pieces[0].state, 'prior');
+  assert.equal(advanced.carry.pieces[0].at, 11);
+  assert.equal(advanced.deltas.length, 0);
+});

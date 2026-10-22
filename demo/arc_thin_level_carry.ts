@@ -143,7 +143,9 @@ export function advanceCarry(carry: LevelCarry, input: CarryInput): { carry: Lev
         return tr && levelOf(tr) === level;
       });
       const firstOk = levelRows.find(row => row.ok);
-      if (firstOk) note(piece, 'held', nOf(firstOk), 'first ok run');
+      // Execution success is not evidence that the view's meaning carries to this level.
+      // Keep it reviewable as prior evidence; applicability remains the parent's decision.
+      if (firstOk && piece.state === 'prior') piece.at = nOf(firstOk);
     }
   }
   const priorViews = new Set(nextPieces.filter(piece => piece.kind === 'view').map(piece => piece.ref.split('@')[0]));

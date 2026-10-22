@@ -34,6 +34,8 @@ test('tool forms: script, run(args), run(args, env), older run(state, args) and 
   assert.equal((await call('tools/o.py', 'def run(state, args):\n    return state["grid"][0][1] + args["k"]\n', { k: 1 })).value, 9);
   assert.equal((await call('observers/p.py', 'def observe(state):\n    return state["grid"][0][0]\n')).value, 7);
   assert.equal((await validatePythonComponent('tools/v.py', '# Positions.\n# view: on\ngrid[0]\n')).view, true);
+  assert.equal((await validatePythonComponent('tools/v.py', '# Positions.\n# view: global\ngrid[0]\n')).viewScope, 'global');
+  assert.equal((await validatePythonComponent('tools/v.py', '# Positions.\ngrid[0]\n')).viewScope, 'level');
   assert.equal((await validatePythonComponent('tools/v.py', '# Positions.\n# view: off\ngrid[0]\n')).view, false);
   assert.equal((await validatePythonComponent('observers/p.py', 'def observe(state):\n    return 1\n')).view, true);
   const off = await validatePythonComponent('observers/p.py', '# observe: off\ndef observe(state):\n    return 1\n');

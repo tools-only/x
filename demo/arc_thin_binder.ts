@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean };
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; viewScope?: 'level' | 'global'; predictor?: boolean };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 type Entry = { path: string; version: number; hash: string; level: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
@@ -129,6 +129,10 @@ export class Binder {
     for (const [path, entry] of this.entries) if (!entry.retired && entry.good?.enabled) this.bindings.set(path, entry.good);
   }
   active(): Component[] { return [...this.bindings.values()].sort((a, b) => a.path.localeCompare(b.path)); }
+  /** Automatically run only views authored for this level; global views opt in explicitly. Old views stay callable. */
+  autoViews(level: number): Component[] {
+    return this.active().filter(c => c.kind === 'tool' && c.view && (c.viewScope === 'global' || c.level === level));
+  }
   candidates(): Component[] {
     return [...this.entries.values()].filter(e => !e.retired && e.good?.enabled).map(e => e.good!);
   }

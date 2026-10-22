@@ -58,6 +58,7 @@ def _inspect(req):
         raise ValueError('tool name is reserved by the foundation')
     head = [line.strip() for line in req['source'].splitlines()[:10]]
     off = '# view: off' in head or '# observe: off' in head
+    global_view = '# view: global' in head
     acts = 'env.act(' in req['source']
     predictor = _predictor(tree)
     # A view is a tool whose output is shown after every new state (observers/ is the older place for views). Saved code
@@ -68,7 +69,7 @@ def _inspect(req):
     if view and acts:
         raise ValueError('a view runs after every new state and cannot act: remove "# view: on" or the env.act call')
     return {'name': name, 'kind': 'tool', 'description': describe, 'parameters': TOOL_PARAMETERS, 'view': view,
-            'predictor': predictor, 'enabled': not (top == 'observers' and off)}
+            'viewScope': 'global' if global_view else 'level', 'predictor': predictor, 'enabled': not (top == 'observers' and off)}
 
 # Run as a live kernel (pi_task_python_kernel.py), the guest has _rpc: it serves cell after cell in one namespace,
 # and asks the host for actions and files where the code asks, instead of ending and being replayed.

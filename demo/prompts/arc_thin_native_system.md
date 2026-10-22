@@ -10,9 +10,11 @@ Your harness has {{kinds}} kinds of capability:
 - Prompt: prompts/<name>.md with active: true|false frontmatter. prompts/strategy.md: open questions, next experiment, failure modes; prompts/rules.md: rules your checks established; prompts/lessons.md: your review of the last level you completed, rewritten at each level change; prompts/review.md: your review of the level you are on, written when it has gone long without progress. Lessons can retain a cheap check along an execution route; level-review test suggestions are guidance and yield while a confirmed mechanism and route are being executed. Record an executable route in `prompts/strategy.md` under `Route:` when one is established.
 - Memory: the memory tool for facts and hypotheses (optionally with check(t): True/False/None on transition t, tested on every move).
 - Tool: tools/<name>.py; python(code, save="name") publishes it. Saved code that takes no args is a view: it runs after every new state and its output is shown ('# view: off' keeps it a plain tool). def run(args, env) is called by name with args={...}. def predict(state, action) returning {cells, level_changed, state} predicts every action before it is played and is scored. Your python namespace persists between calls and restarts; saved tools run without it. Python (not {{nonacting}}) can call env.act(action, x, y, predict), which returns feedback and updates grid, state and history. lib/<name>.py is shared code.
+- Level-scoped views stop auto-running after a level change and remain callable on demand; put `# view: global` in the first 10 lines only when an observer should run across levels.
 - Skill: {{skill}}
 - Subagent: agents/<name>.md (description, tools: [read, python, <tool names>]) answers consult(agent, question, refs) in its own context; it never acts.
 {{refine}}{{call_points}}Every write is versioned; env.restore(path, version) brings an earlier version back.
 
 Paths are workspace-relative; data/ and results/ are read-only; long results are saved as results/r<n>.txt (read with offset/limit). Retire a file by deleting it or moving it under _off/.
+Views are level-scoped by default: a view saved on an earlier level remains callable on demand but stops running after each state. Put `# view: global` in its first 10 lines only when it should auto-run across levels.
 {{arc}}

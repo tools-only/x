@@ -47,3 +47,15 @@ test('ordinary workspace files are versioned without component activation or ind
   b.boundary(); assert.equal(b.active().length, 0); assert.equal(b.versionMap()['artifacts/a.txt'], 2);
   assert.equal(b.index(0), '');
 });
+
+test('old views remain available but only explicit global views auto-run across levels', async () => {
+  const w = new Workspace(mkdtempSync(join(tmpdir(), 'binder-view-scope-')));
+  const b = new Binder(w, async (_path, source) => ({ kind: 'tool', name: 'view', description: source,
+    enabled: true, view: true, viewScope: source.includes('global') ? 'global' : 'level' }));
+  w.runtimeWrite('tools/old.py', 'level scoped'); await b.save('tools/old.py', 0);
+  w.runtimeWrite('tools/global.py', 'global'); await b.save('tools/global.py', 0);
+  b.boundary();
+  assert.deepEqual(b.autoViews(1).map(c => c.path), ['tools/global.py']);
+  assert.ok(b.active().some(c => c.path === 'tools/old.py'), 'the old component remains bound and callable on demand');
+  assert.deepEqual(b.autoViews(0).map(c => c.path).sort(), ['tools/global.py', 'tools/old.py']);
+});

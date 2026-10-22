@@ -76,7 +76,7 @@ export class NativeRuntime {
   private coverHinted = new Set<string>();
   /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
   emptyViews() {
-    const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => `${c.path}@${c.version}`));
+    const live = new Set(this.host.binder.autoViews(this.host.level()).map(c => `${c.path}@${c.version}`));
     return [...this.viewHealth].filter(([key, v]) => live.has(key) && v.states.length >= EMPTY_VIEW_STATES).map(([, v]) => v);
   }
   /** The newest version of `path` below `below` that showed something as a view. */
@@ -104,7 +104,7 @@ export class NativeRuntime {
   /** What each active view's current version has done: its runs, raised runs and output changes (A4 accounting). */
   viewStats(): Map<string, { runs: number; errors: number; changes: number }> {
     const out = new Map<string, { runs: number; errors: number; changes: number }>();
-    for (const c of this.host.binder.active()) {
+    for (const c of this.host.binder.autoViews(this.host.level())) {
       const counts = this.viewCounts.get(`${c.path}@${c.version}`);
       if ((c as any).view && counts) out.set(c.path, { runs: counts.runs, errors: counts.errors, changes: counts.changes });
     }
@@ -544,7 +544,7 @@ export class NativeRuntime {
   }
   /** Tools marked as views run after every new state; their outputs are shown each decision. They never act. */
   observe(n: number) {
-    const due = this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).view && !this.observed.has(`${c.path}@${c.version}@${n}`));
+    const due = this.host.binder.autoViews(this.host.level()).filter(c => !this.observed.has(`${c.path}@${c.version}@${n}`));
     if (!due.length) return;
     const snap = this.snapshot();
     for (const c of due) {
