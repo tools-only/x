@@ -3219,33 +3219,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return boardFacts(trajectory, boardHashes(), trajectory.length, gridOf(observation), availableActions(observation));
 	}
 
-	/**
-	 * Work memory: after a decision whose actions only repeated results this board had already shown (spinStreak), the
-	 * first candidate never played from this board becomes the next experiment, when nothing else is pinned. A computed
-	 * suggestion like B1's disagreement; what to play stays the agent's.
-	 */
-	async function pinNovelty(): Promise<void> {
-		if (pin || !workMemory || !nativeRuntime || !observation || spinStreak(trajectory).streak < 1
-			|| (ACTION_EFFICIENCY_ENABLED && knownResetReplay(trajectory))) return;
-		const next = boardFactsNow().untried[0];
-		if (!next) return;
-		const move: Move = { action: next.action, ...(next.x !== undefined && next.y !== undefined ? { x: next.x, y: next.y } : {}) };
-		const gaps = gapsNow();
-		const id = `novel:${decision}`;
-		const old = setPin(id, move, classify(move, gaps.cov, gaps.available).kind, "never played from this board", NEXT_WITHIN, undefined,
-			{ exact: true, test: { index: 1, total: 1, text: "never played from this board", source: "this board" } });
-		toldAt.set(id, trajectory.length);
-		append("refiner.jsonl", { kind: "told", id, at: trajectory.length, decision });
-		append("work_memory.jsonl", { kind: "novelty_pin", move: moveText(move), at: trajectory.length, decision });
-		await writeStrategy(pinned(readStrategy()?.text ?? "", old));
-	}
-
 	/** Work memory: the head's first section after a decision that learned nothing new. */
 	function spinText(spin: ReturnType<typeof spinStreak>): string {
-		const novel = pin?.edit.startsWith("novel:") ? ` Next experiment pinned: ${moveText(pin.move)}, never played from this board.` : "";
 		return `NO NEW INFORMATION: your last ${spin.streak === 1 ? "decision" : `${spin.streak} decisions`} only played ` +
 			`${spin.moves.slice(0, 4).join(", ")}${spin.moves.length > 4 ? ", …" : ""}, whose results this board had already shown` +
-			`${spin.since !== undefined ? ` (first at #${spin.since})` : ""}. Playing them again shows nothing new.${novel}`;
+			`${spin.since !== undefined ? ` (first at #${spin.since})` : ""}. Playing them again shows nothing new.`;
 	}
 
 	/**
@@ -4021,7 +3999,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// saved since the last request are bound first, so a predictor saved in the last decision takes part.
 		if (COVERAGE && refinerActive()) {
 			binder?.boundary();
-			try { await settlePin(); await settleReviewTests(); if (!reviewing) { await pinDisagreement(); await pinNovelty(); } }
+			try { await settlePin(); await settleReviewTests(); if (!reviewing) await pinDisagreement(); }
 			catch (error) { logError("pin:settle", error); }
 		}
 		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.

@@ -1,7 +1,7 @@
 /**
  * Work memory (docs/plans/2026-10-20-work-memory.md) in the native extension against an HTTP stand-in for the bridge: each
  * action says whether its result was already known from the same board, the head shows what the board already showed,
- * and after a decision that learned nothing new the next head says so and a move never played from this board is pinned.
+ * and after a decision that learned nothing new the next head says so while leaving experiment choice to the agent.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -76,7 +76,7 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
   };
 }
 
-test('an action whose result this board already showed is said to be known; the next head ends with what was learned and what the board showed, and pins a move never played from it', async () => {
+test('an action whose result this board already showed is said to be known; exact untried facts remain without pinning one as next experiment', async () => {
   const w = await world();
   const h = await attach(w);
   try {
@@ -87,15 +87,15 @@ test('an action whose result this board already showed is said to be known; the 
     assert.deepEqual(h.rows('trajectory.jsonl').map((row) => [row.n, row.novelty, row.known_from ?? null]), [[1, 'new', null], [2, 'known', 1]]);
     await h.begin();
     // The agent's own record on this board is the head's last part, where the response starts, and nowhere before it.
-    assert.match(h.parts().at(-1)!, /^NO NEW INFORMATION: your last decision only played ACTION1, whose results this board had already shown \(first at #1\)\. Playing them again shows nothing new\. Next experiment pinned: ACTION6\(3,3\), never played from this board\.\n\nTHIS BOARD \(status cells masked\) was here before: the start, #1\. From it: ACTION1 ×2 → no change\. Never tried from it: clicks on 2 of 2 objects: ACTION6\(3,3\), ACTION6\(8,8\)\.$/);
+    assert.match(h.parts().at(-1)!, /^NO NEW INFORMATION: your last decision only played ACTION1, whose results this board had already shown \(first at #1\)\. Playing them again shows nothing new\.\n\nTHIS BOARD \(status cells masked\) was here before: the start, #1\. From it: ACTION1 ×2 → no change\. Never tried from it: clicks on 2 of 2 objects: ACTION6\(3,3\), ACTION6\(8,8\)\.$/);
     assert.doesNotMatch(h.parts()[0], /NO NEW INFORMATION|THIS BOARD/);
-    assert.match(h.file('workspace/prompts/strategy.md'), /- First: ACTION6\(3,3\); never played from this board/);
-    assert.deepEqual(h.rows('work_memory.jsonl').map((row) => [row.kind, row.move]), [['novelty_pin', 'ACTION6(3,3)']]);
-    // The pinned move is new: the streak ends, and the board after it was not seen before.
+    assert.doesNotMatch(h.file('workspace/prompts/strategy.md'), /never played from this board|^- First: ACTION6\(3,3\)/m);
+    assert.deepEqual(h.rows('work_memory.jsonl'), []);
+    // The agent may choose an untried move; the runtime reports its exact novelty without preselecting it.
     assert.doesNotMatch(await h.act({ action: 'ACTION6', x: 3, y: 3 }), /known/);
     const next = await h.begin();
     assert.doesNotMatch(next, /NO NEW INFORMATION|THIS BOARD/);
-    assert.match(next, /TEST RESULT \(this board, test 1 of 1\): ACTION6\(3,3\), never played from this board: played at #3/);
+    assert.match(h.rows('trajectory.jsonl').at(-1).novelty, /new/);
   } finally { await h.close(); await w.server.close(); }
 });
 
