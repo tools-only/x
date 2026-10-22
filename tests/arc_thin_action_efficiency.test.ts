@@ -46,3 +46,13 @@ test('budget and RESET receipts expose action cost and recognize exact replay de
   assert.equal(knownResetReplay([{ action: 'RESET' }, { action: 'ACTION1', novelty: 'new' }]), false);
   assert.equal(knownResetReplay([{ action: 'ACTION1' }, { action: 'ACTION2' }, { action: 'RESET' }, { action: 'ACTION1' }, { action: 'ACTION3' }]), false);
 });
+
+test('carried route starts after the last failed attempt boundary', () => {
+  const lessons = `Mechanism (confirmed): route.
+Carried to Level 2.`;
+  const route = carriedReviewRoute(lessons, [
+    { action: 'ACTION1' }, { action: 'ACTION1', state: 'GAME_OVER' }, { action: 'RESET' },
+    { action: 'ACTION2' }, { action: 'ACTION3', level_changed: true },
+  ]);
+  assert.deepEqual(route, ['ACTION2', 'ACTION3']);
+});

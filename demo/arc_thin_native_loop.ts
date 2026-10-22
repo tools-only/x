@@ -12,14 +12,23 @@ export const canonical = (x: any): any => Array.isArray(x) ? x.map(canonical) : 
 export class NativeLoopGuard {
   private last = '';
   private count = 0;
+  private epoch = '';
+  private readonly counts = new Map<string, number>();
   private readonly results: boolean;
   constructor(options: { results?: boolean } = {}) { this.results = options.results !== false; }
-  reset() { this.last = ''; this.count = 0; }
+  reset() { this.last = ''; this.count = 0; this.epoch = ''; this.counts.clear(); }
   record(name: string, args: unknown, epoch: string, failed: boolean, result = ''): boolean {
     const readOnly = ['read', 'ls', 'grep'].includes(name);
-    if (!failed && !readOnly && !this.results) { this.reset(); return false; }
-    const signature = JSON.stringify([name, canonical(args), epoch, failed, failed || readOnly ? '' : result]);
+    if (this.epoch !== epoch) { this.last = ''; this.count = 0; this.counts.clear(); this.epoch = epoch; }
+    if (!failed && !readOnly && !this.results) { this.last = ''; this.count = 0; return false; }
+    const signature = JSON.stringify([name, canonical(args), failed, failed || readOnly ? '' : result]);
     this.count = signature === this.last ? this.count + 1 : 1; this.last = signature;
-    return this.count >= 3;
+    const count = (this.counts.get(signature) ?? 0) + 1; this.counts.set(signature, count);
+    return count >= 3;
   }
+}
+
+/** A procedure gate may refuse at most `cap` times in one decision, then releases the call. */
+export function releaseAfterRefusals(refusals: number, cap = 2): boolean {
+  return refusals > Math.max(1, Math.floor(cap));
 }

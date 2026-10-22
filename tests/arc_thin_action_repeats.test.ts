@@ -27,7 +27,7 @@ async function fixture(extra: Record<string, string> = {}) {
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   const env = { ...process.env };
   Object.assign(process.env, { ARC_RUN_ROOT: mkdtempSync(join(tmpdir(), 'action-repeats-')), ARC_THIN_FOUNDATION: 'native',
-    ARC_THIN_VARIANT: 'treatment', PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`,
+    ARC_THIN_VARIANT: 'treatment', ARC_THIN_OBSERVATION: 'query', PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`,
     ARC_HARNESS_LEDGER: 'disabled', ARC_HARNESS_CRITIC: 'disabled', ...extra });
   const tools = new Map<string, any>(), handlers = new Map<string, any>(); let active: string[] = [];
   arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,

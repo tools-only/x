@@ -83,7 +83,7 @@ test('in the transcript a repeated cell is cell(k), a function defined again unc
   assert.equal(code(5), '# the board changed?\ncell(1)', 'new comments stay, the code goes');
   assert.equal(code(7), 'def area(g): ...  # same as in P1\nprint(area(prev_grid))');
   assert.equal(out[9].content[0].arguments.reasoning, 'walk right, long reasons');
-  assert.deepEqual(out[12].content[0].arguments, { reasoning: '(as in an earlier identical call)', actions: [{ name: 'ACTION1' }] });
+  assert.deepEqual(out[12].content[0].arguments, { actions: [{ name: 'ACTION1' }] });
   assert.equal(referenceRepeats(out).length, out.length);
   assert.equal(messages[3].content[0].arguments.code.includes('def area'), true, 'the messages themselves are not changed');
 });
@@ -144,4 +144,11 @@ test('decisions in a row that only replayed known results: a RESET is neutral, a
   assert.equal(spinStreak([...rows, r(6, 5, 'ACTION2', 'known', { level_changed: true })]).streak, 0);
   assert.equal(spinStreak([...rows, r(6, 5, 'ACTION2', 'diverged')]).streak, 0);
   assert.equal(spinStreak(rows.map(({ novelty, ...rest }) => rest)).streak, 0, 'rows without novelty (older runs) never spin');
+});
+
+test('repeated arc_action omits reasoning and note instead of emitting copyable placeholder text', () => {
+  const input = [{ role: 'assistant', content: [{ type: 'toolCall', id: 'a', name: 'arc_action', arguments: { action: 'ACTION1', note: 'same' } }] },
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'b', name: 'arc_action', arguments: { action: 'ACTION1', note: 'same' } }] }];
+  const out = referenceRepeats(input);
+  assert.equal('note' in out[1].content[0].arguments, false);
 });

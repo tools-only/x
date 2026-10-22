@@ -161,6 +161,7 @@ export function unescapeSource(source: string): string {
 export function repairActionArguments(args: any): any {
 	if (!isObject(args)) return args;
 	const out: Record<string, any> = { ...args };
+	for (const field of ["reasoning", "note"]) if (typeof out[field] === "string" && out[field].trim() === "(as in an earlier identical call)") delete out[field];
 	if (typeof out.note === "string") out.note = clip(out.note.replace(/\s+/g, " ").trim(), LIMITS.note);
 	if ("expect" in out) {
 		const expect = typeof out.expect === "string" ? out.expect.trim() : "";
@@ -188,6 +189,7 @@ export function repairActionArguments(args: any): any {
 		for (const step of steps) {
 			if ("predict" in step) { const predict = normalizePrediction(step.predict); if (predict) step.predict = predict; else delete step.predict; }
 		}
+		steps = steps.slice(0, 11);
 		if (steps.length) out.then = steps; else delete out.then;
 	}
 	return out;

@@ -5,7 +5,7 @@ export const GOAL_CHECK_HELP = 'For a goal hypothesis, add check(t) that predict
   'A goal check cannot read the after grid or outcome fields.\n' +
   'Only a check that predicted a real level change supports the goal.';
 export const goalHiddenFields = ['after', 'changed_cells', 'bbox', 'level_changed', 'state', 'levels_completed', 'budget', 'state_before', 'levels_before', 'grid_change', 'grid_delta', 'diff', 'outcome'] as const;
-export type GoalCheckRow = { key: string; version: string; n: number; level: number; met: boolean | null; verdict: 'win_held' | 'false_win' | 'missed_win' | 'quiet'; error?: string };
+export type GoalCheckRow = { key: string; version: string; n: number; level: number; met: boolean | null; verdict: 'win_held' | 'false_win' | 'missed_win' | 'quiet' | 'unevaluable'; error?: string };
 
 export function goalVerdict(met: boolean | null, row: { level_changed?: boolean }): GoalCheckRow['verdict'] {
   if (met === true && row.level_changed) return 'win_held';
@@ -59,4 +59,9 @@ export function levelGoalCheckAsk(mode: GoalMode, win: { level: number; n: numbe
 
 export function formatGoalOutcome(row: Pick<GoalCheckRow, 'key' | 'verdict' | 'n' | 'level'>): string {
   return 'GOAL_OUTCOME ' + row.key + ': ' + row.verdict + ' at #' + row.n + ' (level ' + (row.level + 1) + ')';
+}
+
+/** A goal hypothesis is judged on its own level, plus the immediately preceding level's win transition. */
+export function goalScopeRows<T extends { n: number; level: number; level_changed?: boolean }>(rows: T[], ownerLevel: number): T[] {
+  return rows.filter(row => row.level === ownerLevel || (row.level_changed === true && row.level === ownerLevel - 1));
 }

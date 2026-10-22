@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {NativeLoopGuard} from '../demo/arc_thin_native_loop.ts';
+import {NativeLoopGuard, releaseAfterRefusals} from '../demo/arc_thin_native_loop.ts';
 
 test('native investigation permits distinct calls beyond six and stops only unchanged repeated observations/errors', () => {
   const guard = new NativeLoopGuard();
@@ -37,4 +37,21 @@ test('a call that succeeded repeats only with the same result and state; ARC_THI
   const earlier = new NativeLoopGuard({results: false});
   for (let n = 0; n < 5; n++) assert.equal(earlier.record('python', code, 'v1', false, 'same'), false);
   assert.equal(earlier.record('read', {path: 'x'}, 'v1', false), false);
+});
+
+test('non-contiguous repeats within one decision are counted by signature', () => {
+  const guard = new NativeLoopGuard();
+  assert.equal(guard.record('arc_action', { action: 'RESET' }, 'decision-1', true), false);
+  assert.equal(guard.record('arc_action', { action: 'ACTION1' }, 'decision-1', true), false);
+  assert.equal(guard.record('arc_action', { action: 'RESET' }, 'decision-1', true), false);
+  assert.equal(guard.record('arc_action', { action: 'ACTION1' }, 'decision-1', true), false);
+  assert.equal(guard.record('arc_action', { action: 'RESET' }, 'decision-1', true), true);
+  assert.equal(guard.record('arc_action', { action: 'RESET' }, 'decision-2', true), false);
+});
+
+test('procedure refusal cap releases on the next call and never below one refusal', () => {
+  assert.equal(releaseAfterRefusals(1, 2), false);
+  assert.equal(releaseAfterRefusals(2, 2), false);
+  assert.equal(releaseAfterRefusals(3, 2), true);
+  assert.equal(releaseAfterRefusals(2, 0), true);
 });

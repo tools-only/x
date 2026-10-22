@@ -33,13 +33,13 @@ import { observationReference, storeObservation } from "./arc_thin_observation.t
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
-import { GOAL_CHECK_HELP, goalAdmissionMode, goalHiddenFields, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, type GoalCheckRow } from "./arc_thin_goal_admission.ts";
+import { GOAL_CHECK_HELP, goalAdmissionMode, goalHiddenFields, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, goalScopeRows, type GoalCheckRow } from "./arc_thin_goal_admission.ts";
 import { advanceCarry, buildLevelCarry, partitionRules, renderCarry, renderDeltas, ruleScope, type CarryDelta, type CarryInput, type LevelCarry } from "./arc_thin_level_carry.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
-import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
+import { NativeLoopGuard, releaseAfterRefusals } from "./arc_thin_native_loop.ts";
 import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
 import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -174,7 +174,7 @@ type PredictorScore = { path: string; version: number; error?: string } & Partia
  * for evaluation only. Neither path shows a frame comparison the agent did not compute itself.
  */
 type ActionRow = {
-	n: number; decision: number; action: string; x?: number; y?: number; note?: string; idea?: string; expect?: string;
+	n: number; decision: number; action: string; trivial?: boolean; x?: number; y?: number; note?: string; idea?: string; expect?: string;
 	/** The saved tool whose returned actions included this one (native mode); absent for arc_action. */
 	via?: string;
 	/** Coordinates were given for an action that takes none; the environment ignored them. */
@@ -682,7 +682,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		 * refine(focus) has been called in it; a review consults a subagent before it writes. What the point shows is
 		 * refinePointText.
 		 */
-		refinePoint: boolean; refineCalled: boolean; refinePointText?: string;
+		refinePoint: boolean; refineCalled: boolean; refineFirstRefusals: number; refinePointText?: string;
 		/** A level or stall review saved its own file (prompts/lessons.md, prompts/review.md); if not, the one write after its last call (gate). */
 		reviewSaved: boolean; reviewWrite?: string;
 		/** Work memory: the decisions before this one in a row that learned nothing new (spinStreak), when any. */
@@ -693,7 +693,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
-		refinePoint: false, refineCalled: false, reviewSaved: false,
+		refinePoint: false, refineCalled: false, refineFirstRefusals: 0, reviewSaved: false,
 	});
 	let run = freshRun();
 	/**
@@ -1173,13 +1173,29 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       .map(([key, h]) => ({ key, version: claimVersion(h.check!), source: h.check! }));
     if (!checks.length) return;
     const done = new Set(goalRows.map(row => `${row.key}@${row.version}#${row.n}`));
+    const ownerRows = readRows('memory.jsonl');
+    const byN = new Map(trajectory.map(row => [row.n, row]));
+    const scopes = new Map<string, Set<number>>();
+    for (const item of checks) {
+      const id = `${item.key}@${item.version}`;
+      const owner = ownerRows.filter(row => row.key === item.key && row.hyp?.check &&
+        claimVersion(row.hyp.check) === item.version && Number(row.at ?? 0) <= trajectory.length).at(-1);
+      const authoredAt = Number(owner?.at ?? trajectory.length);
+      const authoredAction = trajectory.findLast(row => row.n <= authoredAt);
+      const ownerLevel = authoredAction ? levelOf(authoredAction) : currentLevel();
+      const scopedRows = goalScopeRows(trajectory.map(row => ({ ...row, level: levelOf(row) })), ownerLevel);
+      const allowed = new Set(scopedRows.map(row => row.n)); scopes.set(id, allowed);
+      if (!scopedRows.length && !goalRows.some(row => row.key === item.key && row.version === item.version && row.verdict === 'unevaluable')) {
+        const row: GoalCheckRow = { key: item.key, version: item.version, n: trajectory.at(-1)!.n, level: ownerLevel, met: null, verdict: 'unevaluable' };
+        goalRows.push(row); append('goal_checks.jsonl', row);
+      }
+    }
     const wanted = new Set<number>();
-    for (const item of checks) for (const row of trajectory)
-      if (!done.has(`${item.key}@${item.version}#${row.n}`) && !claimGridsMissing.has(row.n)) wanted.add(row.n);
+    for (const item of checks) for (const n of scopes.get(`${item.key}@${item.version}`) ?? [])
+      if (!done.has(`${item.key}@${item.version}#${n}`) && !claimGridsMissing.has(n)) wanted.add(n);
     if (!wanted.size) return;
     const { batches, missing } = claimSegments([...wanted], grids);
     for (const n of missing) claimGridsMissing.add(n);
-    const byN = new Map(trajectory.map(row => [row.n, row]));
     for (const segments of batches) {
       const ns = new Set(segments.flatMap(segment => segment.steps.map(step => step.n)));
       const transitions = Object.fromEntries([...ns].map(n => {
@@ -1191,7 +1207,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       if (!result.ok) { logError('goal_checks:run', new Error(guestFailure(result))); return; }
       const value = result.value as Record<string, { results: Array<[number, ClaimValue, string?]>; error: string | null }>;
       for (const item of checks) for (const [n, met, error] of value[item.key]?.results ?? []) {
-        if (done.has(`${item.key}@${item.version}#${n}`)) continue;
+        if (done.has(`${item.key}@${item.version}#${n}`) || !scopes.get(`${item.key}@${item.version}`)?.has(n)) continue;
         const transition = byN.get(n)!;
         const row: GoalCheckRow = { key: item.key, version: item.version, n, level: levelOf(transition),
           met: met === true || met === false ? met : null,
@@ -2221,8 +2237,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// refine(focus) is not counted here: it starts one directly).
 		if (refinerOverBudget()) {
 			const kept = triggers.filter((t) => /^level \d+ reached|the rule is in dispute/.test(t));
-			if (kept.length < triggers.length) append("refiner.jsonl", { kind: "over_budget", at: trajectory.length, dropped: triggers.filter((t) => !kept.includes(t)),
-				refiner_tokens: spentTokens.get("refiner") ?? 0, agent_tokens: spentTokens.get("agent") ?? 0 });
+			if (kept.length < triggers.length) {
+        const dropped = triggers.filter((t) => !kept.includes(t));
+        append("refiner.jsonl", { kind: "over_budget", at: trajectory.length, dropped,
+          refiner_tokens: spentTokens.get("refiner") ?? 0, agent_tokens: spentTokens.get("agent") ?? 0 });
+        for (const trigger of dropped) append("r3_gates.jsonl", { t: new Date().toISOString(), n: trajectory.length,
+          gate: "refiner_budget", verdict: "dropped", reason: trigger });
+      }
 			return { triggers: kept, samples };
 		}
 		return { triggers, samples };
@@ -2943,7 +2964,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (name === "arc_action") {
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
 			// A refine point (A5): the action waits for the agent's refine call; the call is refused, not the decision ended.
-			if (run.refinePoint && !run.refineCalled) return { reason: REFINE_FIRST, terminate: false };
+			if (run.refinePoint && !run.refineCalled) {
+        run.refineFirstRefusals += 1;
+        if (!releaseAfterRefusals(run.refineFirstRefusals, Number(process.env.ARC_THIN_R3_REFUSAL_CAP ?? 2))) return { reason: REFINE_FIRST, terminate: false };
+        append("r3_gates.jsonl", { t: new Date().toISOString(), decision, gate: "refine_first", verdict: "released", refusals: run.refineFirstRefusals });
+      }
 			if (run.actionDone || run.arcSeenInMessage === run.assistantMessages)
 				return { reason: "one arc_action per decision; this call was NOT submitted", terminate: true };
 			run.arcSeenInMessage = run.assistantMessages;
@@ -2970,6 +2995,31 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	const refused = (reason: string) => text(reason, { refused: true }, true);
+  const clipNotices = new WeakMap<object, string[]>();
+  function clipSchemaArgs(tool: string, raw: any, stringLimits: Record<string, number>, itemLimits: Record<string, number> = {}): any {
+    const clipped: Array<{ field: string; from: number; to: number }> = [];
+    const visit = (value: any, field = ""): any => {
+      if (typeof value === "string" && stringLimits[field] !== undefined && value.length > stringLimits[field]) {
+        const limit = stringLimits[field]; clipped.push({ field, from: value.length, to: limit });
+        return value.slice(0, limit);
+      }
+      if (Array.isArray(value)) {
+        const limit = itemLimits[field];
+        const values = limit !== undefined ? value.slice(0, limit) : value;
+        if (limit !== undefined && value.length > limit) clipped.push({ field, from: value.length, to: limit });
+        return values.map((item) => visit(item, field));
+      }
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child, key)]));
+      return value;
+    };
+    const out = visit(raw);
+    if (out && typeof out === "object" && clipped.length) {
+      const notices = clipped.map(({ field, to }) => `${field} clipped to ${to} ${field === "then" || field === "actions" || field === "evidence" ? "items" : "chars"}`);
+      clipNotices.set(out, notices);
+      for (const entry of clipped) append("errors.jsonl", { kind: "clipped", tool, ...entry });
+    }
+    return out;
+  }
 	// A call that succeeded counts as a repeat when its result is the same too (2026-10-16); ARC_THIN_LOOP_RESULTS=0
 	// restores the earlier rule, under which only failed calls and reads counted.
 	const nativeLoop = new NativeLoopGuard({ results: process.env.ARC_THIN_LOOP_RESULTS !== "0" });
@@ -2991,13 +3041,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return async (_id: string, params: P, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) => {
 			const verdict = gate(name);
 			if (verdict) {
+        const loopEnded = native && nativeLoop.record(name, params, loopEpoch(), true, verdict.reason);
 				// Sharing a message with arc_action: every result must terminate or the run continues.
-				if (verdict.terminate || (name !== "arc_action" && endsBatch())) return carry(refused(verdict.reason), true);
+				if (verdict.terminate || loopEnded || (name !== "arc_action" && endsBatch()))
+          return carry(refused(loopEnded ? `Three refusals of the same call in this decision; decision ends. ${verdict.reason}` : verdict.reason), true);
 				throw new Refusal(verdict.reason);
 			}
 			const epoch = native ? loopEpoch() : '';
 			try {
-				const result = await fn(params, signal, ctx);
+				let result = await fn(params, signal, ctx);
+        const notices = params && typeof params === "object" ? clipNotices.get(params as object) : undefined;
+        if (notices?.length && Array.isArray(result?.content)) result = { ...result,
+          content: [...result.content, ...notices.map((notice) => ({ type: "text", text: notice }))] };
 				if (native && nativeLoop.record(name, params, epoch, Boolean(result?.isError), resultText(result)))
 					return carry({...result, terminate:true, details:{...result.details, no_progress:true},
 						content:[...(result.content ?? []), {type:'text', text:'Three identical observations/errors without a state or workspace change; this decision ends. Use the recorded evidence or change the investigation.'}]}, Boolean(result?.isError));
@@ -3060,7 +3115,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				...(control ? {} : { predict_skill: Type.Optional(Type.String({ maxLength: 40 })) }),
 				...(ledgerOn ? { idea: Type.Optional(Type.String()) } : {}),
 			}),
-			prepareArguments: repairActionList,
+			prepareArguments: (args: unknown) => clipSchemaArgs("arc_action", repairActionList(args), { reasoning: 300, predict_skill: 40 }),
 			execute: guardTool("arc_action", async (params: { reasoning: string; actions: Array<Record<string, unknown>>; predict_skill?: string; idea?: unknown }) => {
 				const offered = availableActions(observation);
 				const { steps: valid, rejected } = validateActionSequence(params.actions, offered);
@@ -3149,7 +3204,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					idea: Type.Optional(Type.String()),
 				} : {}),
 			}),
-			prepareArguments: (args: unknown) => carryUnavailable(repairActionArguments(args)),
+			prepareArguments: (args: unknown) => carryUnavailable(clipSchemaArgs("arc_action", repairActionArguments(args), { note: 300, predict_skill: 40 }, { then: THEN_STEPS })),
 			execute: guardTool("arc_action", async (params: {
 				action: string; x?: number; y?: number; note?: string; idea?: unknown;
 				predict?: Prediction; predict_skill?: string;
@@ -3290,8 +3345,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		observation = value;
 		const delta = value.observation_delta ?? {};
 		const afterGrid = gridOf(value);
+		const checkable = Boolean(params.predict && (params.predict.cells?.length || params.predict.level_changed === true ||
+          (params.predict.state !== undefined && params.predict.state !== null && params.predict.state !== "NOT_FINISHED")));
 		const row: ActionRow = {
-			n: trajectory.length + 1, decision, action: params.action,
+			n: trajectory.length + 1, decision, action: params.action, trivial: !checkable,
 			...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}),
 			...(params.note ? { note: params.note } : {}),
 			...(idea ? { idea } : {}),
@@ -3380,7 +3437,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	async function actForCode(call: { action: string; x?: number; y?: number; predict?: unknown; batch?: unknown }, via: string):
 		Promise<{ observation?: Record<string, unknown>; stopped?: string; line?: string }> {
 		if (run.consolidating) return { stopped: "no action during a review" };
-		if (run.refinePoint && !run.refineCalled) return { stopped: REFINE_FIRST };
+		if (run.refinePoint && !run.refineCalled) {
+      run.refineFirstRefusals += 1;
+      if (!releaseAfterRefusals(run.refineFirstRefusals, Number(process.env.ARC_THIN_R3_REFUSAL_CAP ?? 2))) return { stopped: REFINE_FIRST };
+      append("r3_gates.jsonl", { t: new Date().toISOString(), decision, gate: "refine_first", verdict: "released", refusals: run.refineFirstRefusals });
+    }
 		if (actingStopped) return { stopped: actingStopped };
 		const compact = String(call.action ?? "").toUpperCase().replace(/\s+/g, "").replace(/^A(\d)/, "ACTION$1");
 		const labelled = /^ACTION(\d)\((\d{1,2}),(\d{1,2})\)$/.exec(compact);
@@ -3529,7 +3590,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					})),
 				}), { maxItems: MAX_STRATEGIES }), Type.String({ maxLength: 12000, description: "JSON array accepted" })])),
 			}),
-			prepareArguments: repairMemoryArguments,
+			prepareArguments: (args: unknown) => clipSchemaArgs("memory", repairMemoryArguments(args), { key: 48, text: 600, claim: 300, predicts: 300, next_test: 300, question: 40, condition: 200, observed: 300, plan: 300, check: 4000 }, { set: 40, delete: 40, hypotheses: MAX_HYPOTHESES * 2, strategies: 4, tests: 4, evidence: 1, depends_on: 4, uses: 6, steps: MAX_STEPS }),
 			execute: guardTool("memory", async (params: MemoryParams, signal) => {
 				return text(await commitMemory(params, signal), undefined, endsBatch());
 			}),
@@ -3583,7 +3644,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				observe: Type.Optional(Type.Boolean({ description: "Run it with args={} after every action and show the output (default true). " +
 					"set with observe and no source changes only this." })),
 			}),
-			prepareArguments: repairSkillArguments,
+			prepareArguments: (args: unknown) => clipSchemaArgs("skill", repairSkillArguments(args), { name: 40, description: 200, source: 16384 }),
 			execute: guardTool("skill", async (params: { op: string; name: string; description?: string; source?: string; observe?: boolean }, signal) => {
 				const names = () => skills.size ? [...skills.keys()].join(", ") : "(none)";
 				const existing = skills.get(params.name);
@@ -3690,8 +3751,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			parameters: native
 				? Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }), save: Type.Optional(Type.String({ maxLength: 41 })) })
 				: Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }) }),
-			prepareArguments: (args: any) => args && typeof args === "object" && typeof args.code === "string"
-				? { ...args, code: unescapeSource(args.code) } : args,
+			prepareArguments: (args: any) => clipSchemaArgs("python", args && typeof args === "object" && typeof args.code === "string"
+				? { ...args, code: unescapeSource(args.code) } : args, { code: 16384, save: 41 }),
 			execute: guardTool("python", async (params: { code: string; save?: string }, signal) => {
         if (nativeRuntime) {
           try { return await nativeRuntime.python(params.code, signal, false, params.save || undefined); }
@@ -3724,6 +3785,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				op: StringEnum(["set", "clear", "get"] as const),
 				text: Type.Optional(Type.String({ maxLength: 1500 })),
 			}),
+      prepareArguments: (args: any) => clipSchemaArgs("prompt", args, { text: 1500 }),
 			execute: guardTool("prompt", (params: { op: string; text?: string }) => {
 				if (params.op === "get") return text(overlay || "(no standing instructions)", undefined, endsBatch());
 				if (params.op === "set" && !params.text?.trim()) throw new Refusal(`prompt(op="set") needs text`);
@@ -3744,6 +3806,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				include_prev_grid: Type.Optional(Type.Boolean()),
 				include_memory: Type.Optional(Type.Boolean()),
 			}),
+      prepareArguments: (args: any) => clipSchemaArgs("ask_analyst", args, { question: 2000 }),
 			execute: guardTool("ask_analyst", async (params: { question: string; include_prev_grid?: boolean; include_memory?: boolean }, signal, ctx) => {
 				if (!ctx.model) throw new Refusal("ask_analyst unavailable: no model is selected");
 				if (!observation) throw new Refusal("ask_analyst unavailable: the current state could not be read");

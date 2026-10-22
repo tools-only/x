@@ -6,7 +6,7 @@ export const UNVERIFIED_BATCH_MAX = (() => {
 })();
 
 /** A completed level's recorded winning sequence is an executable route when the review carries its mechanism. */
-export function carriedReviewRoute(lessons: string, winningActions: Array<{ action: string; x?: number; y?: number; level_changed?: boolean }>): string[] {
+export function carriedReviewRoute(lessons: string, winningActions: Array<{ action: string; x?: number; y?: number; level_changed?: boolean; state?: string }>): string[] {
   if (!/Mechanism\s*\(confirmed\)/i.test(lessons) || !/Carried to Level\s+\d+/i.test(lessons)) return [];
   let end = -1;
   for (let index = winningActions.length - 1; index >= 0; index -= 1) {
@@ -15,7 +15,9 @@ export function carriedReviewRoute(lessons: string, winningActions: Array<{ acti
   if (end < 0) return [];
   let start = 0;
   for (let index = end - 1; index >= 0; index -= 1) {
-    if (winningActions[index].level_changed) { start = index + 1; break; }
+    if (winningActions[index].level_changed || winningActions[index].action === 'RESET' || winningActions[index].state === 'GAME_OVER') {
+      start = index + 1; break;
+    }
   }
   return winningActions.slice(start, end + 1).map(({ action, x, y }) =>
     x !== undefined && y !== undefined ? `${action}(${x},${y})` : action);

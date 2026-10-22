@@ -137,3 +137,9 @@ test("environment failures are told apart from the agent's invalid actions", () 
 	assert.equal(isEnvironmentFailure(new TypeError("fetch failed")), true);
 	assert.equal(isEnvironmentFailure(new Error("PI_ARC_BRIDGE_URL is not set")), false);
 });
+
+test('placeholder action reasoning is dropped and then is clipped to schema capacity', () => {
+  const repaired = repairActionArguments({ action: 'ACTION1', note: '(as in an earlier identical call)', then: Array.from({ length: 20 }, (_, i) => `ACTION${(i % 4) + 1}`) });
+  assert.equal('note' in repaired, false);
+  assert.equal(repaired.then.length, 11);
+});

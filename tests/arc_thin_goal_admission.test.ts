@@ -7,7 +7,7 @@ import { evaluateTaskPython } from '../demo/pi_task_python.ts';
 import { arcSkillGuestProgram } from '../demo/arc_thin_skill_guest.ts';
 import { applyRows, emptyMemory, planMemoryUpdate } from '../demo/arc_thin_memory.ts';
 import { claimVersion } from '../demo/arc_thin_claims.ts';
-import { GOAL_CHECK_HELP, goalAdmissionMode, goalStanding, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, type GoalCheckRow } from '../demo/arc_thin_goal_admission.ts';
+import { GOAL_CHECK_HELP, goalAdmissionMode, goalStanding, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, goalScopeRows, type GoalCheckRow } from '../demo/arc_thin_goal_admission.ts';
 import { consultBudgetError } from '../demo/arc_thin_consult_release.ts';
 import { advanceCarry, buildLevelCarry, partitionRules, renderCarry, type CarryInput } from '../demo/arc_thin_level_carry.ts';
 
@@ -202,4 +202,15 @@ test('T11 recorded L2 trigger counts reproduce judged goal asks for both arms', 
     assert.match(ask!, new RegExp('win at #' + record.win.n));
     assert.match(ask!, /every move on this level/);
   }
+});
+
+test('goal checks stay on the hypothesis level plus only its preceding win', () => {
+  const rows = [
+    { n: 38, level: 0, level_changed: false },
+    { n: 63, level: 0, level_changed: true },
+    { n: 70, level: 1, level_changed: false },
+    { n: 90, level: 1, level_changed: false },
+    { n: 91, level: 1, level_changed: true },
+  ];
+  assert.deepEqual(goalScopeRows(rows, 1).map(row => row.n), [63, 70, 90, 91]);
 });

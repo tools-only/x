@@ -233,7 +233,7 @@ export function referenceRepeats(messages: any[]): any[] {
         actions.add(key);
         if (!seen) return block;
         const out: Record<string, unknown> = { ...args };
-        for (const field of ['reasoning', 'note']) if (typeof out[field] === 'string' && out[field]) out[field] = '(as in an earlier identical call)';
+        for (const field of ['reasoning', 'note']) delete out[field];
         changed = true;
         return { ...block, arguments: out };
       }
