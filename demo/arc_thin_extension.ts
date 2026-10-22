@@ -3360,20 +3360,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const label = actionLabel(params);
     if (r3.gates.win_tests !== 'off' || r3.gates.win_lock !== 'off' || r3.gates.progress !== 'off' || r3.gates.fuse !== 'off') {
       const derived = r3Mask();
-      const decision = r3Admit(r3Run, { n: trajectory.length + 1, level: currentLevel(), decision,
+      const admitResult = r3Admit(r3Run, { n: trajectory.length + 1, level: currentLevel(), decision,
         action: params.action, x: params.x, y: params.y, predict: params.predict }, beforeGrid, derived.mask, r3);
-      for (const gateRow of decision.rows) {
+      for (const gateRow of admitResult.rows) {
         const verdict = derived.transitions < 8 && gateRow.verdict === 'refused' ? 'mask_pending' : gateRow.verdict;
         append("r3_gates.jsonl", { ...gateRow, t: new Date().toISOString(), verdict });
       }
-      if (decision.refusal && derived.transitions >= 8) {
-        const refused = decision.rows.find(row => row.verdict === 'refused');
+      if (admitResult.refusal && derived.transitions >= 8) {
+        const refused = admitResult.rows.find(row => row.verdict === 'refused');
         const evidence = refused?.evidence?.length ? `evidence: ${refused.evidence.map(n => `#${n}`).join(', ')}` : '';
         const alternatives = refused?.alternatives?.length ? `alternatives: ${refused.alternatives.slice(0, 3).join(', ')}` : '';
         const reAdmit = refused?.gate === 'G2' ? 're-admit when a new object class appears or omit the level-change claim'
           : refused?.gate === 'G1' ? 're-admit with a checkable cells, level_changed, or state prediction'
             : 're-admit after observed progress or with another object/distance bin';
-        return { refusal: [decision.refusal, evidence, alternatives, reAdmit].filter(Boolean).join('; ') };
+        return { refusal: [admitResult.refusal, evidence, alternatives, reAdmit].filter(Boolean).join('; ') };
       }
     }
 		// The same action again after it changed at most NO_EFFECT_CELLS cells each of the last noEffectRepeats times in a
