@@ -441,9 +441,19 @@ export class NativeRuntime {
     const id = parent ? Math.max(0, ...this.calls.map(c => c.id)) + 1 : 0;
     if (first && latest && save === undefined && latest.pure && latest.ok && latest.result !== undefined && latest.n === this.host.actionCount()
       && latest.session === (session?.version ?? 0) && latest.workspace === this.host.workspace.version) {
+      const unchangedRepeats = this.calls.filter(c => c.key === key && c.pure && c.ok && c.n === latest.n
+        && c.session === latest.session && c.workspace === latest.workspace).length;
+      const active = this.host.pi.getActiveTools?.() ?? [];
+      const forcedReview = unchangedRepeats >= 2 && active.includes('arc_action');
+      if (forcedReview) {
+        const tools = active.filter(name => name === 'arc_action' || name === 'memory');
+        this.host.pi.setActiveTools?.(tools);
+      }
       this.calls.push({ ...latest, id, comments, code });
-      this.host.log('python_calls.jsonl', { id, same: first.id, cached: true, n: latest.n, decision: this.decision(), ok: true, code });
-      return text(`[P${id} = P${first.id}: same code on the same state, not run again]\n${this.host.receipt?.(latest.result) ?? latest.result}`);
+      this.host.log('python_calls.jsonl', { id, same: first.id, cached: true, n: latest.n, decision: this.decision(), ok: true, code,
+        ...(forcedReview ? { forced_review: true, identical_same_state_calls: unchangedRepeats + 1 } : {}) });
+      return text(`[P${id} = P${first.id}: same code on the same state, not run again]\n${this.host.receipt?.(latest.result) ?? latest.result}` +
+        (forcedReview ? '\nNo new evidence after repeated identical analysis. Python is paused for this decision; use memory to revise the tested hypothesis, then choose a new checked action.' : ''));
     }
     // A new cell that retypes whole statements of an earlier one says which lines (cell(k, a, b) runs them).
     const blocks = parent && !first ? repeatedBlocks(code, this.calls.filter((c, i, all) => all.findIndex(o => o.key === c.key) === i)) : [];

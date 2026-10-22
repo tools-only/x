@@ -72,3 +72,22 @@ test('work memory: a python result starts with its address, a repeat names the f
     assert.deepEqual(calls[8].cells, [7]);
   } finally { runtime.close(); }
 });
+
+test('three identical same-state analyses force a strategy decision instead of replaying Python forever', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-loop-')));
+  const logs: any[] = [];
+  const forced: string[][] = [];
+  const pi = { registerTool() {}, getActiveTools: () => ['python', 'memory', 'arc_action'], setActiveTools: (tools: string[]) => forced.push(tools) };
+  const runtime = new NativeRuntime({ pi: pi as any, workspace, binder: new Binder(workspace), state: () => ({ grid: [[1]] }),
+    level: () => 0, actionCount: () => 0, log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    const code = 'print(sum(map(sum, grid)))';
+    await runtime.python(code);
+    await runtime.python(code);
+    const result = await runtime.python(code);
+    assert.deepEqual(forced, [['memory', 'arc_action']]);
+    assert.match(result.content[0].text, /No new evidence after repeated identical analysis/);
+    assert.equal(logs.filter(row => row.file === 'wasi_runs.jsonl').length, 1, 'repeats never rerun Python');
+    assert.equal(logs.find(row => row.file === 'python_calls.jsonl' && row.forced_review)?.identical_same_state_calls, 3);
+  } finally { runtime.close(); }
+});

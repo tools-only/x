@@ -98,11 +98,10 @@ export function renderClaimSummary(summary: ClaimSummary | undefined, compileErr
 
 // ---------------------------------------------------------------- contest by checks (plan 2026-10-17, H2a)
 //
-// A check's results changed no status: su15-l1-3's hyp.action6_moves_bottom stayed open with its check at "holds 60 ·
-// fails 158". A check that mostly fails now contests its hypothesis; narrowing, fixing or rejecting stays the agent's.
-
 /** Decided moves (holds + fails) a check needs before it can contest its hypothesis; 0 turns contesting off. */
 export const CONTEST_MIN_DECIDED = 5;
+/** An explicitly conditional check returns null out of scope; a single false is its counterexample. */
+export const COUNTEREXAMPLE_MIN_DECIDED = 1;
 
 /** A check failing on at least half its decided moves: the counts, the failing moves, and where that first held. */
 export type CheckContest = { decided: number; fails: number; failing: number[]; at: number };

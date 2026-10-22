@@ -175,6 +175,31 @@ test('CH actions retain per-step predictions, predictor tools, experiment tags a
   } finally { await h.close(); }
 });
 
+test('an applicable hypothesis counterexample is recorded, suspends its strategy and cuts the action list immediately', async () => {
+  const h = await fixture();
+  try {
+    await h.decide();
+    const [saved] = await h.respond(['memory', { hypotheses: [{ key: 'hyp.box_goal', question: 'goal', claim: 'ACTION1 wins',
+      check: "def check(t):\n    if t['action'] != 'ACTION1':\n        return None\n    return False", status: 'open' }],
+      strategies: [{ key: 'strat.box', plan: 'keep trying ACTION1', depends_on: ['hyp.box_goal'], status: 'active' }] }]);
+    assert.equal(saved.isError, false, saved.text);
+    await h.decide();
+    const [played] = await h.respond(['arc_action', { reasoning: 'test the bound win hypothesis', actions: [
+      { name: 'ACTION1', predict: { hypothesis: 'hyp.box_goal' } }, { name: 'ACTION2' }] }]);
+    assert.deepEqual(h.submitted, ['ACTION1'], 'the contradictory observation stops the remaining batch entry');
+    assert.match(played.text, /hyp\.box_goal@[^ ]+ contested: check returned false at #1/);
+    assert.match(played.text, /remaining actions withheld/);
+    const memory = h.logs('memory.jsonl');
+    const refuted = memory.findLast((row: any) => row.key === 'hyp.box_goal' && row.by === 'check');
+    assert.equal(refuted.hyp.status, 'contested');
+    assert.equal(refuted.hyp.evidence.at(-1).action, 1);
+    assert.equal(refuted.hyp.evidence.at(-1).verdict, 'refutes');
+    assert.match(refuted.hyp.evidence.at(-1).condition, /executable check/);
+    assert.equal(refuted.hyp.evidence.at(-1).observed, 'check returned false at #1');
+    assert.equal(memory.findLast((row: any) => row.key === 'strat.box').strat.status, 'suspended');
+  } finally { await h.close(); }
+});
+
 test('CH control keeps the action list and live refusal boundary without prediction or experiment fields', async () => {
   const h = await fixture({ ARC_THIN_VARIANT: 'control' });
   try {

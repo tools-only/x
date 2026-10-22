@@ -32,6 +32,18 @@ test("a strategy's planned steps are matched against the moves taken, and tracki
 	assert.doesNotMatch(renderStrategies(state, 9, {}, labels(["ACTION4", "ACTION4"])), /steps planned/);
 });
 
+test("a newly contested premise suspends the active strategy that depends on it", () => {
+	const state = emptyMemory();
+	commit(state, { hypotheses: [{ key: "hyp.goal", claim: "touching the target wins" }],
+		strategies: [{ key: "strat.touch", plan: "move the block into the target", depends_on: ["hyp.goal"], status: "active" }] }, 10);
+	const plan = planMemoryUpdate(state, { hypotheses: [{ key: "hyp.goal", status: "contested" }] }, 11);
+	assert.ok(plan.ok, plan.ok ? "" : plan.error);
+	applyRows(state, plan.rows);
+	assert.equal(state.hypotheses.get("hyp.goal")?.status, "contested");
+	assert.equal(state.strategies.get("strat.touch")?.status, "suspended");
+	assert.match(renderRevisions(state, Array(11).fill("ACTION1")), /hyp\.goal contested; strat\.touch suspended \(hyp\.goal contested after #11\)/);
+});
+
 test("legacy single-entry calls still work and old memory.jsonl rows replay as facts", () => {
 	const state = emptyMemory();
 	for (const row of [{ key: "goal", text: "clear the bar", confidence: 4 }, { key: "plan", text: "x", confidence: 3 },

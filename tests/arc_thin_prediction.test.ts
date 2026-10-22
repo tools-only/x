@@ -29,7 +29,7 @@ test("a field that cannot be compared is not scored as a miss", () => {
 test("the runtime offers no cross-frame field: comparing frames is the agent's own tool", () => {
 	// Only values readable from the returned observation are scored; change counts, unchanged cells and
 	// region movement would need a frame comparison, which the project leaves to skills the agent writes.
-	assert.deepEqual(Object.keys(predictionSchema().properties).sort(), ["cells", "level_changed", "state", "text"]);
+	assert.deepEqual(Object.keys(predictionSchema().properties).sort(), ["cells", "hypothesis", "level_changed", "state", "text"]);
 	assert.deepEqual(normalizePrediction({ changed_cells: 3, changed_cells_range: [1, 4], unchanged: [[0, 0]], moved: { dx: 1, dy: 0 }, cells: [[1, 2, 3]] }),
 		{ cells: [[1, 2, 3]] });
 	assert.equal(normalizePrediction({ moved: { dx: 1, dy: 0 }, changed_cells: 5 }), undefined);
@@ -63,4 +63,9 @@ test("one prediction surface: words go in predict.text, are kept unchecked, and 
 	assert.deepEqual(repairActionArguments({ action: "ACTION1", expect: "" }), { action: "ACTION1" });
 	// Text is not scored: a text-only prediction has no checked fields.
 	assert.equal(scorePrediction({ text: "it moves" }, { after: blank(), level_changed: false, state: "PLAYING" }).fields.length, 0);
+});
+
+test("an action prediction can bind to the current hypothesis it is testing", () => {
+	assert.deepEqual(normalizePrediction({ hypothesis: "hyp.touch", text: "crossing the target should win", level_changed: true }),
+		{ hypothesis: "hyp.touch", text: "crossing the target should win", level_changed: true });
 });

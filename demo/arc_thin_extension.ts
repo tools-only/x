@@ -75,7 +75,7 @@ import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } fr
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
 import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClaim, type ClaimRow, type ClaimValue,
 	RULES_PATH, citedKeys, controlSegments, promotionView, promotionTriggers, type ControlRecord, type PromotionView,
-	CONTEST_MIN_DECIDED, MOVE_FORM, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged, type Gaps } from "./arc_thin_claims.ts";
+	COUNTEREXAMPLE_MIN_DECIDED, MOVE_FORM, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged, type Gaps } from "./arc_thin_claims.ts";
 import { MoveFacts, REPEAT_ATTEMPTS, attemptLine, attempts, classify, coverage, coverageText, failedUnderOneModel, kindText, modelChanges, moveKinds,
 	moveText, parseMove, rareKinds, repeatEvent, type Attempt, type Move } from "./arc_thin_coverage.ts";
 import { ACTION_EFFICIENCY_ENABLED, UNVERIFIED_BATCH_MAX, actionBatchLimit, actionBudgetText, actionBudgetWithBaseline, isVerifiedReplay, knownResetReplay, resetCostText, executionRouteReady, carriedReviewRoute, shouldDeferExplorationPin, verifiedReplayPrefix } from "./arc_thin_action_efficiency.ts";
@@ -185,6 +185,10 @@ type ActionRow = {
 	changed_cells: number | null; bbox?: unknown; level_changed: boolean; state: string;
 	levels_completed: number; budget: any;
 	predict?: Prediction; prediction?: ScoredPrediction; skill_prediction?: SkillPrediction;
+	/** Applicable executable hypothesis checks that failed on this transition; stops remaining batch actions. */
+	claim_refutations?: string[];
+	/** The bound check could not be evaluated; not a refutation, but the rest of this batch must stop. */
+	claim_check_error?: string;
 	/** The predictor tools' predictions for this action (made on the state before it), scored against what came back. */
 	predictors?: PredictorScore[];
 	/** The pinned test whose prediction this action carried, the agent's own action stating none. */
@@ -464,6 +468,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   }
   const goalNotices = (n: number, level: number) => goalRows.filter(row => row.n === n && row.level === level &&
     ['win_held', 'false_win', 'missed_win'].includes(row.verdict)).map(formatGoalOutcome);
+	const checkedHypothesisKeys = () => new Set([...memory.hypotheses].flatMap(([key, h]) =>
+		h.check && (h.status === 'open' || h.status === 'supported') && !claimCompileErrors.has(`${key}@${claimVersion(h.check)}`) ? [key] : []));
   let levelCarry: LevelCarry | undefined;
   let carryDeltaQueue: CarryDelta[] = [];
   let lastCarryPartitionKey = "";
@@ -683,6 +689,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** All acting interfaces deliver the same per-action mechanism feedback, including consuming carry deltas once. */
 	function actionFeedback(row: ActionRow): string[] {
 		return [`${actionLine(row)}${predictionClause(row)}`,
+			...(row.claim_refutations ?? []),
+			...(row.claim_check_error ? [`hypothesis check unavailable: ${row.claim_check_error}; remaining batch actions withheld`] : []),
 			...(goalAdmission === 'on' ? goalNotices(row.n, levelOf(row)) : []),
 			...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : [])];
 	}
@@ -1316,7 +1324,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!h.check) return undefined;
 		const version = claimVersion(h.check);
 		if (claimCompileErrors.has(`${key}@${version}`)) return undefined;
-		return checkContest(claimRows.filter((row) => row.key === key && row.version === version), CHECK_CONTEST_MIN);
+		return checkContest(claimRows.filter((row) => row.key === key && row.version === version), COUNTEREXAMPLE_MIN_DECIDED);
 	}
 
 	/** Each hypothesis's question and status, and its check version when the check compiles (H3a, rival events). */
@@ -1324,8 +1332,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		...(h.check && !claimCompileErrors.has(`${key}@${claimVersion(h.check)}`) ? { version: claimVersion(h.check) } : {}) }]));
 
 	/**
-	 * H2a: a hypothesis whose current check fails on at least half of at least ARC_CHECK_CONTEST_MIN decided moves
-	 * becomes contested, through the memory row an unanswered refutation leads to. Once per check version and claim, so a
+	 * H2a: a hypothesis whose current check returns false on an applicable transition becomes contested. Once per check version and claim, so a
 	 * status the agent sets afterwards stands; narrowing, fixing or rejecting it stays the agent's (or a refinement's).
 	 * Returns a receipt line per hypothesis contested now.
 	 */
@@ -1335,15 +1342,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (h.status === "rejected" || contestedByCheck.has(contestId(key, h))) continue;
 			const contest = currentContest(key, h);
 			if (!contest) continue;
-			contestedByCheck.add(contestId(key, h));
+			const version = claimVersion(h.check ?? "");
 			// Already contested (by a refutation, or by an earlier version of its check): this check's contest is spent, so a
 			// status the agent sets afterwards stands.
-			if (h.status === "contested") continue;
-			const next = { ...h, status: "contested" as const, contested_at: contest.at };
-			append("memory.jsonl", { key, hyp: next, at: trajectory.length, by: "check" });
-			applyRows(memory, [{ key, hyp: next }]);
+			if (h.status === "contested") { contestedByCheck.add(contestId(key, h)); continue; }
+			const plan = planMemoryUpdate(memory, { hypotheses: [{ key, status: "contested", evidence: {
+				action: contest.at, condition: `executable check ${version}`, observed: `check returned false at #${contest.at}`, verdict: "refutes",
+			} }] }, trajectory.length, components());
+			if (!plan.ok) { logError("claims:contest", new Error(plan.error)); continue; }
+			for (const row of plan.rows) append("memory.jsonl", { ...row, at: trajectory.length, by: "check" });
+			applyRows(memory, plan.rows);
+			contestedByCheck.add(contestId(key, h));
       advanceLevelCarry();
-			lines.push(`${key} contested: ${renderContest(contest)}`);
+			lines.push(`${key}@${version} contested: check returned false at #${contest.at}; ${renderContest(contest)}`);
 		}
 		return lines;
 	}
@@ -1814,8 +1825,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** A fact rewritten this often while no hypothesis has a check: the agent restates a belief instead of testing it. */
 	const BELIEF_REWRITES = envNumber("ARC_REFINE_BELIEF_REWRITES", 3);
 	const UNCHECKED_AFTER = envNumber("ARC_REFINE_UNCHECKED_AFTER", 8);
-	/** Decided moves a check needs before it contests its hypothesis (H2a); 0 leaves check results out of status. */
-	const CHECK_CONTEST_MIN = /^\d+$/.test(process.env.ARC_CHECK_CONTEST_MIN ?? "") ? Number(process.env.ARC_CHECK_CONTEST_MIN) : CONTEST_MIN_DECIDED;
 	/** A refinement writes a rival for a hypothesis that holds unchallenged (self-evolve loop, 2026-10-19); 0: off. */
 	const RIVAL_EVENTS = process.env.ARC_REFINE_RIVALS !== "0";
 	/** Refinements' cost ceiling as a share of the agent's budget tokens (Continual Harness spends about 5%). */
@@ -1964,7 +1973,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				: r3Run.winTests.failures.some(failure => failure.key === key && !failure.released) ? 'answered' : undefined;
 			if (!rule) {
 				const trial: R3State = { ...r3Run, receipts: [...r3Run.receipts], seenConfigs: new Set(r3Run.seenConfigs), seenStates: new Set(r3Run.seenStates), falsified: new Map(r3Run.falsified), winTests: { failures: r3Run.winTests.failures.map(f => ({ ...f, cap: new Set(f.cap), rows: [...f.rows] })) } };
-				const proposed = r3Admit(trial, { n: trajectory.length + 1, level: currentLevel(), action: move.action, x: move.x, y: move.y, predict: extra.predict }, gridOf(observation), mask, r3);
+				const proposed = r3Admit(trial, { n: trajectory.length + 1, level: currentLevel(), action: move.action, x: move.x, y: move.y,
+					predict: extra.predict, checkedHypotheses: checkedHypothesisKeys() }, gridOf(observation), mask, r3);
 				if (!proposed.admit) rule = 'inadmissible';
 			}
 			if (rule) { append('r3_gates.jsonl', { n: trajectory.length, level: currentLevel(), attempt: r3Run.attempt, gate: 'G6', rule, mode: r3.gates.pins, verdict: r3.gates.pins === 'on' ? 'fired' : 'would_refuse', key }); if (r3.gates.pins === 'on') return old; }
@@ -3358,10 +3368,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const beforeGrid = gridOf(observation);
 		const before = observation;
 		const label = actionLabel(params);
+		if (params.predict?.hypothesis) {
+			const hypothesis = memory.hypotheses.get(params.predict.hypothesis);
+			if (hypothesis?.check) params = { ...params, predict: { ...params.predict, hypothesis_version: claimVersion(hypothesis.check) } };
+		}
     if (r3.gates.win_tests !== 'off' || r3.gates.win_lock !== 'off' || r3.gates.progress !== 'off' || r3.gates.fuse !== 'off') {
       const derived = r3Mask();
       const admitResult = r3Admit(r3Run, { n: trajectory.length + 1, level: currentLevel(), decision,
-        action: params.action, x: params.x, y: params.y, predict: params.predict }, beforeGrid, derived.mask, r3);
+        action: params.action, x: params.x, y: params.y, predict: params.predict, checkedHypotheses: checkedHypothesisKeys() }, beforeGrid, derived.mask, r3);
       for (const gateRow of admitResult.rows) {
         const verdict = derived.transitions < 8 && gateRow.verdict === 'refused' ? 'mask_pending' : gateRow.verdict;
         append("r3_gates.jsonl", { ...gateRow, t: new Date().toISOString(), verdict });
@@ -3371,7 +3385,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         const evidence = refused?.evidence?.length ? `evidence: ${refused.evidence.map(n => `#${n}`).join(', ')}` : '';
         const alternatives = refused?.alternatives?.length ? `alternatives: ${refused.alternatives.slice(0, 3).join(', ')}` : '';
         const reAdmit = refused?.gate === 'G2' ? 're-admit when a new object class appears or omit the level-change claim'
-          : refused?.gate === 'G1' ? 're-admit with a checkable cells, level_changed, or state prediction'
+			: refused?.gate === 'G1' ? 're-admit after memory(hypotheses=[{key, claim, check}]) defines a current check and predict.hypothesis references that key'
             : 're-admit after observed progress or with another object/distance bin';
         return { refusal: [admitResult.refusal, evidence, alternatives, reAdmit].filter(Boolean).join('; ') };
       }
@@ -3482,6 +3496,28 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       receipt.newConfig = !r3Run.seenConfigs.has(receipt.config); receipt.newState = !r3Run.seenStates.has(receipt.stateAfter);
       append("effects.jsonl", receipt); r3Observe(r3Run, receipt, row.predict, row.level_changed); r3MaskKey = maskKey;
     }
+		// Close an explicitly registered experiment before an action batch continues.
+		// A false check is a counterexample for that hypothesis version, not merely a
+		// statistic to be summarized at the next decision.
+		if (native && !control && row.predict?.hypothesis) {
+			try {
+				const key = row.predict.hypothesis, hypothesis = memory.hypotheses.get(key);
+				if (!hypothesis?.check) row.claim_check_error = `${key} has no executable check`;
+				else {
+					const version = claimVersion(hypothesis.check);
+					await refreshClaimChecks([key]);
+					const result = claimRows.find((claim) => claim.key === key && claim.version === version && claim.n === row.n);
+					if (!result || result.result === "error") row.claim_check_error = `${key}@${version}: ${result?.error ?? "no result for this transition"}`.slice(0, 240);
+					else {
+						const refutations = contestByChecks();
+						if (refutations.length) row.claim_refutations = refutations;
+					}
+				}
+			} catch (error) {
+				logError("claims:action_feedback", error);
+				row.claim_check_error = `${row.predict.hypothesis}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 240);
+			}
+		}
 		if (goalAdmission !== 'off') { try { await refreshGoalChecks(); } catch (error) { logError('goal_checks:refresh', error); } }
 		if (row.level_changed) { previousLevelActions = trajectory.filter(item => levelOf(item) === Math.max(0, Number(row.levels_completed) - 1)).length; ensureLevelCarry(); } else advanceLevelCarry();
 		if (r3.gates.carry !== 'off') {
@@ -3516,6 +3552,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Why a planned sequence (arc_action's then list, or its action list) must not go on after this action, or undefined. */
 	const sequenceStop = (row: ActionRow): string | undefined => row.level_changed ? `the level changed at #${row.n}`
 		: /^(GAME_OVER|WIN|FINISHED)$/.test(row.state) ? `state ${row.state} at #${row.n}`
+		: Array.isArray(row.claim_refutations) && row.claim_refutations.length ? `a checked hypothesis was refuted at #${row.n}; dependent strategy suspended and remaining actions withheld`
+		: row.claim_check_error ? `the bound hypothesis check could not be evaluated at #${row.n}; remaining actions withheld`
 		: row.prediction?.fields.some((field) => field.hit === false) ? `#${row.n}'s prediction missed` : undefined;
 	const hexRows = (grid: number[][] | undefined) => grid?.map((row) => row.map((cell) => (cell & 15).toString(16)).join(""));
 	/**
@@ -3560,9 +3598,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if ("refusal" in done) return { stopped: done.refusal };
 		const row = done.row;
 		const missed = Boolean(row.prediction?.fields.some((field) => field.hit === false));
-		append("played_actions.jsonl", { decision, via, n: row.n, action: actionLabel(row), changed_cells: row.changed_cells, missed });
+		const hypothesisRefuted = Boolean(row.claim_refutations?.length);
+		append("played_actions.jsonl", { decision, via, n: row.n, action: actionLabel(row), changed_cells: row.changed_cells, missed, hypothesis_refuted });
 		if (row.level_changed) actingStopped = "the level changed";
 		else if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) actingStopped = `state ${row.state}`;
+		else if (hypothesisRefuted) actingStopped = `a checked hypothesis was refuted at #${row.n}; stop this batch and revise the tested relationship`;
+		else if (row.claim_check_error) actingStopped = `the bound hypothesis check could not be evaluated at #${row.n}; stop this batch and repair the check`;
 		return {
 			line: actionFeedback(row).join('\n'),
 			observation: {
@@ -3571,7 +3612,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				transition: { n: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { x: row.x, y: row.y } : {}),
 					level_changed: row.level_changed, state: row.state, levels_completed: row.levels_completed },
 				level_changed: row.level_changed, changed_cells: row.changed_cells, ...(row.bbox ? { bbox: row.bbox } : {}),
-				available_actions: availableActions(observation), missed,
+				available_actions: availableActions(observation), missed, hypothesis_refuted: hypothesisRefuted,
 			},
 		};
 	}

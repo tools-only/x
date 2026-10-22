@@ -22,6 +22,10 @@ import { Type } from "typebox";
 export type Grid = number[][];
 export type Prediction = {
 	text?: string;
+	/** Hypothesis key this action tests; runtime pins the current checked version. */
+	hypothesis?: string;
+	/** Runtime-pinned check version; input values are ignored. */
+	hypothesis_version?: string;
 	cells?: Array<[number, number, number]>;
 	level_changed?: boolean;
 	state?: string;
@@ -41,6 +45,7 @@ export const MAX_PREDICTION_TEXT = 300;
 
 export const predictionSchema = () => Type.Object({
 	text: Type.Optional(Type.String({ description: "what you expect, in words, at any time scale (kept, not checked)" })),
+	hypothesis: Type.Optional(Type.String({ maxLength: 48, description: "existing hypothesis key with an executable check that this action tests" })),
 	cells: Type.Optional(Type.Array(Type.Array(Type.Integer(), { minItems: 3, maxItems: 4 }),
 		{ maxItems: MAX_PREDICTED_CELLS, description: "[x,y,value] after; [x,y,before,after] from an agent diff is also accepted" })),
 	level_changed: Type.Optional(Type.Boolean()),
@@ -66,6 +71,7 @@ export function normalizePrediction(raw: unknown): Prediction | undefined {
 	const source = value as Record<string, unknown>;
 	const out: Prediction = {};
 	if (typeof source.text === "string" && source.text.trim()) out.text = source.text.replace(/\s+/g, " ").trim().slice(0, MAX_PREDICTION_TEXT);
+	if (typeof source.hypothesis === "string" && source.hypothesis.trim()) out.hypothesis = source.hypothesis.trim().slice(0, 48);
 	const list = parse(source.cells);
 	const cells = Array.isArray(list)
 		? list.flatMap((item) => {

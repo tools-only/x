@@ -530,17 +530,20 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 		touch(changedStrats, key, `→ suspended (replaced by ${activated})`);
 	}
 
-	// Rejected or deleted premises suspend the active strategy that depends on them.
+	// Contested, rejected or deleted premises suspend the active strategy that depends on them.
 	// A hypothesis created already rejected is a record, not a change of course.
+	const newlyContested = [...changedHyps.keys()].filter((key) => state.hypotheses.has(key)
+		&& hypotheses.get(key)?.status === "contested" && statusBefore.get(key) !== "contested");
 	const newlyRejected = [...changedHyps.keys()].filter((key) => state.hypotheses.has(key)
 		&& hypotheses.get(key)?.status === "rejected" && statusBefore.get(key) !== "rejected");
+	for (const key of newlyContested) causes.push(`${key} contested`);
 	for (const key of newlyRejected) causes.push(`${key} rejected`);
-	for (const premise of [...newlyRejected, ...deletedHyps]) {
+	for (const premise of [...newlyContested, ...newlyRejected, ...deletedHyps]) {
 		for (const [key, s] of strategies) {
 			if (!s.depends_on.includes(premise)) continue;
 			if (deletedHyps.includes(premise) && !newlyRejected.includes(premise) && !causes.includes(`${premise} deleted`)) causes.push(`${premise} deleted`);
-			if (s.status !== "active" || explicitActive.has(key)) continue;
-			const why = `${premise} ${newlyRejected.includes(premise) ? "rejected" : "deleted"} after #${actionCount}`;
+			if (s.status !== "active" || (!newlyContested.includes(premise) && explicitActive.has(key))) continue;
+			const why = `${premise} ${newlyContested.includes(premise) ? "contested" : newlyRejected.includes(premise) ? "rejected" : "deleted"} after #${actionCount}`;
 			strategies.set(key, setStatus(key, s, "suspended", why));
 			touch(changedStrats, key, `→ suspended (${why})`);
 		}

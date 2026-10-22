@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkContest, claimSegments, claimVersion, contestEvents, levelOf, renderClaimSummary, renderContest, rivalEvents, rivalLines, summarizeClaim,
+	COUNTEREXAMPLE_MIN_DECIDED,
 	unchallenged, withCheckDef, type ClaimRow } from "../demo/arc_thin_claims.ts";
 import { parseRefinerReply } from "../demo/arc_thin_refiner.ts";
 
@@ -77,16 +78,11 @@ test("versions identify the source; the level of an action is the levels complet
 	assert.equal(levelOf({ level_changed: false, levels_completed: 1 }), 1);
 });
 
-test("a check contests its hypothesis from 5 decided moves failing on at least half, at the move where that first held", () => {
-	// su15-l1-3: hyp.action6_moves_bottom's check read "holds 60 · fails 158" in its last of 314 requests; it stayed open.
+test("one applicable false is a counterexample; null and errors are not evidence", () => {
 	const rows = (results: Array<ClaimRow["result"]>) => results.map((result, i) => row(i + 1, result));
-	// n/a and errors are not decided moves: 4 decided are too few, however they went.
-	assert.equal(checkContest(rows([false, false, false, false, null, "error"])), undefined);
-	assert.deepEqual(checkContest(rows([true, false, null, false, true, false])), { decided: 5, fails: 3, failing: [2, 4, 6], at: 6 });
-	assert.deepEqual(checkContest(rows([true, false, null, false, true, false]).reverse())?.at, 6, "rows in any order");
-	assert.deepEqual(checkContest(rows([false, true, false, true, true, false])), { decided: 6, fails: 3, failing: [1, 3, 6], at: 6 });
-	assert.equal(checkContest(rows([false, false, false, true, true, true, true, true])), undefined, "crossed at #5, below half now");
-	assert.equal(checkContest(rows([false, false, false, false, false, true]))?.at, 5);
+	assert.equal(checkContest(rows([null, "error"]), COUNTEREXAMPLE_MIN_DECIDED), undefined);
+	assert.deepEqual(checkContest(rows([null, "error", false]), COUNTEREXAMPLE_MIN_DECIDED), { decided: 1, fails: 1, failing: [3], at: 3 });
+	assert.deepEqual(checkContest(rows([true, false]).reverse(), COUNTEREXAMPLE_MIN_DECIDED)?.at, 2, "rows in any order");
 	assert.equal(checkContest(rows([false, false, false, false, false]), 0), undefined, "0 turns it off");
 	assert.equal(renderContest({ decided: 218, fails: 158, failing: [51, 52, 60, 61, 70], at: 59 }),
 		"its check fails on 158 of 218 decided moves (#51, #52, …, #70)");
