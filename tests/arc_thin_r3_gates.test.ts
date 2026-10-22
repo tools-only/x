@@ -1,0 +1,11 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { r3Admit, r3Config, r3State } from '../demo/arc_thin_r3.ts';
+import { objectRegions } from '../demo/arc_thin_work_memory.ts';
+import type { EffectReceipt, Grid, StatusMask } from '../demo/arc_thin_effects.ts';
+const mask:StatusMask={rows:new Set(),cols:new Set(),ticker:new Set()};
+const grid:Grid=[[0,0,0,0],[0,1,0,0],[0,0,0,0]];
+const receipt=(n:number):EffectReceipt=>({n,level:0,attempt:0,label:'ACTION6(1,1)',kind:'inert',masked:0,status:0,dest:'1:1',config:'1:1',newConfig:false,newState:false,steps:[],stateBefore:'board-a',stateAfter:'board-a',targetBin:'unplaced'});
+test('G4 refuses a same-bin inert target after two receipts, with bounded alternatives',()=>{const state=r3State();state.receipts.push(receipt(5),receipt(9));const cfg=r3Config({ARC_THIN_R3:'on',ARC_THIN_R3_WIN_LOCK:'shadow'});const result=r3Admit(state,{n:10,level:0,action:'ACTION6',x:1,y:1},grid,mask,cfg);assert.equal(result.admit,false);assert.equal(result.rows[0].gate,'G4');assert.ok((result.rows[0].alternatives?.length??0)<=3);});
+test('status-mask object candidates omit masked cells',()=>{const hidden={rows:new Set([1]),cols:new Set<number>(),ticker:new Set<string>()};assert.equal(objectRegions(grid,32,hidden).length,0);assert.equal(objectRegions(grid).length,1);});
+test('G1 only requires a checkable prediction after its progress window',()=>{const state=r3State();state.since=6;const cfg=r3Config({ARC_THIN_R3:'on',ARC_THIN_R3_WIN_LOCK:'shadow'});const denied=r3Admit(state,{n:7,level:0,action:'ACTION1'},grid,mask,cfg);assert.equal(denied.rows[0]?.gate,'G1');const checked=r3Admit(state,{n:7,level:0,action:'ACTION1',predict:{state:'READY'}},grid,mask,cfg);assert.equal(checked.admit,true);});
