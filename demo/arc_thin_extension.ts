@@ -1305,7 +1305,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (h.status !== "contested" || !h.check) continue;
 			const contest = currentContest(key, h);
 			notes[key] = contest
-				? `! ${renderContest(contest)}: narrow the claim and its check to where it held, fix the check, or reject it; then restate its status`
+				? `! ${renderContest(contest)}: this is counterevidence to the claim under tested conditions, not a cause. Keep the observed transition separate; choose a next_test where alternatives predict different results, and put only verified local relations in the strategy.`
 				: `! contested at #${h.contested_at ?? "?"}; its current check does not contest it: narrow the claim, reject it, or restate its status`;
 		}
 		return notes;

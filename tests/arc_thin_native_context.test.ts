@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
+import { REFINER_SYSTEM } from '../demo/arc_thin_refiner.ts';
 import {readFileSync} from 'node:fs';
 
 test('native production instructions explicitly prefer amortized offload without a creation quota', () => {
@@ -8,6 +9,11 @@ test('native production instructions explicitly prefer amortized offload without
   assert.match(prompt, /Reuse your saved components/);
   assert.match(prompt, /creation and checking cost/);
   assert.match(prompt, /applicability on current evidence/);
+  assert.match(prompt, /keep the observed transition separate from its proposed cause/);
+  assert.match(prompt, /next_test whose different outcomes would change which explanation/);
+  assert.match(prompt, /verified local relations with their conditions as intermediate states/);
+  assert.match(REFINER_SYSTEM, /do not rewrite the contested mechanism as confirmed/);
+  assert.match(REFINER_SYSTEM, /competing explanations predict different results/);
 });
 
 function decisions(count: number, resultChars = 1000): any[] {

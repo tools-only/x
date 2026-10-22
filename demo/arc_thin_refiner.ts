@@ -24,7 +24,7 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"How understanding moves: a belief the agent states (in memory or its notes) becomes a HYPOTHESIS with a check; a check " +
 	"that holds only on the moves the agent chose proves little until a rival (another explanation of the same moves, under the " +
 	"same question, whose check disagrees on a kind of move not made yet) is judged beside it; a check that keeps holding becomes a line of prompts/rules.md that cites its key; a cited check that fails puts the rule in dispute, and " +
-	"you narrow or remove that line. The runtime counts the checks; the WHY NOW line says which step is due. When WHY NOW asks for a " +
+	"you narrow or remove that line. A failed check is counterevidence under its recorded conditions, not a causal explanation: keep the observed transition separate, do not rewrite the contested mechanism as confirmed, and suggest a next test only when competing explanations predict different results. Put only verified local relations into an intermediate strategy state. The runtime counts the checks; the WHY NOW line says which step is due. When WHY NOW asks for a " +
 	"move as ACTION6(x,y) or ACTIONn, write exactly that form in predicts: the runtime makes the move the first item of the strategy's " +
 	"next experiment and checks that the agent plays it. Consolidate settled " +
 	"or contradicted memory into one MEMORY entry that replaces them, and keep the strategy's next experiment current.\n" +

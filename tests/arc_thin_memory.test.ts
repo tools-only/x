@@ -325,13 +325,14 @@ test("one test updates every rival it bears on and reports the rivals it skipped
 
 test("an unanswered refutation makes a hypothesis contested until the agent decides", () => {
 	const state = emptyMemory();
-	commit(state, { hypotheses: [{ key: "bar", question: "goal", claim: "emptying the bar wins", status: "supported" }] }, 0);
+	commit(state, { hypotheses: [{ key: "bar", question: "goal", claim: "emptying the bar wins", status: "supported", next_test: "ACTION4 with the pattern unmatched" }] }, 0);
 	const plan = commit(state, { hypotheses: [{ key: "bar",
 		evidence: { action: 7, condition: "pattern unmatched", observed: "bar empty, life lost", verdict: "refutes" } }] }, 7);
 	assert.equal(state.hypotheses.get("hyp.bar")!.status, "contested");
 	assert.match(plan.receipt, /hyp\.bar \(\+evidence #7 refutes → contested\)/);
 	assert.match(plan.receipt, /contested: hyp\.bar — narrow the claim/);
 	assert.match(renderHypotheses(state, 8), /! refuted at #7 since its last revision/);
+	assert.match(renderHypotheses(state, 8), /next test: ACTION4 with the pattern unmatched/);
 	// Narrowing the claim to where it held settles it without a status change.
 	commit(state, { hypotheses: [{ key: "bar", claim: "emptying the bar wins only once the pattern matches" }] }, 8);
 	assert.equal(state.hypotheses.get("hyp.bar")!.status, "contested");    // status is the agent's to restate
