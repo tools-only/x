@@ -1960,9 +1960,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const old = pin;
 		if (r3.gates.pins !== 'off' && move.x !== undefined && move.y !== undefined) {
 			const mask = r3Mask().mask, key = winKey(gridOf(observation), move, mask);
-			const rule = mask.rows.has(move.y) || mask.cols.has(move.x) || mask.ticker.has(`${move.x},${move.y}`) ? 'masked'
+			let rule = mask.rows.has(move.y) || mask.cols.has(move.x) || mask.ticker.has(`${move.x},${move.y}`) ? 'masked'
 				: r3Run.winTests.failures.some(failure => failure.key === key && !failure.released) ? 'answered' : undefined;
-			if (rule) { append('r3_gates.jsonl', { n: trajectory.length, level: currentLevel(), attempt: r3Run.attempt, gate: 'G6', rule, mode: r3.gates.pins, verdict: r3.gates.pins === 'on' ? 'fired' : 'would_refuse', key }); return old; }
+			if (!rule) {
+				const trial: R3State = { ...r3Run, receipts: [...r3Run.receipts], seenConfigs: new Set(r3Run.seenConfigs), seenStates: new Set(r3Run.seenStates), falsified: new Map(r3Run.falsified), winTests: { failures: r3Run.winTests.failures.map(f => ({ ...f, cap: new Set(f.cap), rows: [...f.rows] })) } };
+				const proposed = r3Admit(trial, { n: trajectory.length + 1, level: currentLevel(), action: move.action, x: move.x, y: move.y, predict: extra.predict }, gridOf(observation), mask, r3);
+				if (!proposed.admit) rule = 'inadmissible';
+			}
+			if (rule) { append('r3_gates.jsonl', { n: trajectory.length, level: currentLevel(), attempt: r3Run.attempt, gate: 'G6', rule, mode: r3.gates.pins, verdict: r3.gates.pins === 'on' ? 'fired' : 'would_refuse', key }); if (r3.gates.pins === 'on') return old; }
 		}
 		if (shouldDeferExplorationPin(executionMode())) {
 			append("refiner.jsonl", { kind: "pin_deferred", edit: editId, move, move_kind: kind, reason: "confirmed mechanism and route are being executed", at: trajectory.length });
@@ -2835,6 +2840,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (gridOf(observation)) observeState(trajectory.length, skillState(false, false));
 		await Promise.race([observer, new Promise((resolve) => setTimeout(resolve, OBSERVE_WAIT_MS))]);
 		const state = buildLedger(trajectory, observations, grids);
+		for (const gate of readRows('r3_gates.jsonl').filter(row => ['G2', 'G2b', 'G4'].includes(String(row.gate)) && row.verdict === 'refused')) {
+			const key = `r3|${gate.gate}|${gate.key ?? ''}`;
+			if (!state.repeats.some(item => item.n === Number(gate.n) && item.key === key)) state.repeats.push({ n: Number(gate.n), earlier: Array.isArray(gate.evidence) ? gate.evidence : [], key });
+		}
 		const goalRefs = goalHypothesisRefs();
 		ledgerText = renderLedgerView(state, [...memory.hypotheses.keys()], 900, goalRefs);
 		if (native && workspace) {
@@ -3477,7 +3486,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (row.level_changed) { previousLevelActions = trajectory.filter(item => levelOf(item) === Math.max(0, Number(row.levels_completed) - 1)).length; ensureLevelCarry(); } else advanceLevelCarry();
 		if (r3.gates.carry !== 'off') {
 			const level = levelOf(row), used = trajectory.filter(item => levelOf(item) === level).length;
-			if (row.action === 'RESET' || row.state === 'GAME_OVER' || (previousLevelActions > 0 && used >= previousLevelActions)) {
+			if (row.action === 'RESET' || row.state === 'GAME_OVER' || (previousLevelActions > 0 && used === previousLevelActions)) {
 				const key = `${level}:${r3Run.attempt}:${row.action}:${used}`;
 				if (!carryCheckpointKeys.has(key)) { carryCheckpointKeys.add(key); const verdict = r3.gates.carry === 'on' ? 'fired' : 'would_refuse';
 					append('r3_gates.jsonl', { n: row.n, level, attempt: r3Run.attempt, gate: 'G5', verdict, previous_level_actions: previousLevelActions, actions: used });
