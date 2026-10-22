@@ -65,17 +65,21 @@ LEVEL_REVIEW_PROMPT = (
     "LEVEL REVIEW. Level {level} is complete; this turn takes no action. Rewrite prompts/lessons.md whole, in one write "
     "call, from the level record below and your own notes. It is shown with every decision from now on and rewritten at "
     "the next level change, so keep it under 1,200 characters. Start it with\n---\nactive: true\n---\nthen write:\n"
-    "1. The win condition twice: literally, marked (level {level} only), and as a pattern a later level may share.\n"
-    "2. For level {next}: 2-4 candidate win conditions, the one to test first first, each on a line of its own as\n"
-    "- test: <move> — <the win condition it tests>\n"
-    "with the move as ACTION6(x,y) or ACTIONn. The runtime pins them in this order as moves that predict a level change "
-    "and reports each result. Level {level}'s pattern is one candidate, not a rule.\n"
+    "1. Record the win condition literally for level {level}, then state the general mechanism separately with its evidence.\n"
+    "2. Carry any mechanism already confirmed on earlier levels forward as the default for level {next}. Do not downgrade it "
+    "to a candidate solely because the level changed; revise it when current evidence contradicts it.\n"
+    "3. Keep one cheap check along the route in lessons (what observation would contradict the carried mechanism). Do not "
+    "require a single action to complete the level or list 2-4 mandatory goal tests. A check is informative guidance, not a pin.\n"
+    "4. If a reusable mechanism is confirmed and you have a route, write it in `prompts/strategy.md` under `Route:`. "
+    "The runtime also records the just-completed winning action sequence there when this review says `Mechanism (confirmed)` "
+    "and `Carried to Level N`, so you can inspect and revise that concrete starting route. Update it when feedback invalidates it.\n"
     "Add a goal hypothesis with a check(t) that predicts this level change from the before grid and the winning action.\n"
     "Scope or delete memory entries that state level {level}'s win as a general rule. Then stop."
 )
+
 LEVEL_REVIEW_RECOVERY_PROMPT = (
     "RECOVER LEVEL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/lessons.md "
-    "once (the frontmatter, the win condition, then the - test: lines), then stop. This turn takes no action."
+    "once (the frontmatter, the literal win and general mechanism, an optional cheap along-route check, and an executable Route when known), then stop. This turn takes no action."
 )
 #: The native foundation's review after many actions without a level completed (docs/plans/2026-10-20-stall-review.md).
 #: The user, 2026-10-20, in place of refusing repeated actions: "when no task progress is observed over an extended

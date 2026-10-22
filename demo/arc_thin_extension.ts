@@ -76,6 +76,7 @@ import { claimSegments, claimVersion, levelOf, renderClaimSummary, summarizeClai
 	CONTEST_MIN_DECIDED, MOVE_FORM, checkContest, contestEvents, renderContest, rivalEvents, rivalLines, unchallenged, type Gaps } from "./arc_thin_claims.ts";
 import { MoveFacts, REPEAT_ATTEMPTS, attemptLine, attempts, classify, coverage, coverageText, failedUnderOneModel, kindText, modelChanges, moveKinds,
 	moveText, parseMove, rareKinds, repeatEvent, type Attempt, type Move } from "./arc_thin_coverage.ts";
+import { ACTION_EFFICIENCY_ENABLED, UNVERIFIED_BATCH_MAX, actionBatchLimit, actionBudgetText, actionBudgetWithBaseline, isVerifiedReplay, knownResetReplay, resetCostText, executionRouteReady, carriedReviewRoute, shouldDeferExplorationPin, verifiedReplayPrefix } from "./arc_thin_action_efficiency.ts";
 import { LESSONS_CHARS, LESSONS_PATH, LEVEL_REVIEW_CALLS, REVIEW_PATH, levelRecord } from "./arc_thin_level_review.ts";
 
 /**
@@ -623,9 +624,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return row.x !== undefined && row.y !== undefined ? `${row.action}(${row.x},${row.y})` : row.action;
 	}
 
-	/** Actions left under whichever limit is nearer: the level's or the run's (pilot-01 read "1/110 (total 1/20)" as two budgets). */
+	/** Cost as actions used against the level baseline, while preserving the enforced caps. */
 	function budgetText(budget: any): string {
-		const limits = ([["level", budget.used, budget.maximum], ["run", budget.total_used, budget.total_maximum]] as const)
+		if (ACTION_EFFICIENCY_ENABLED) return actionBudgetText(budget);
+		const limits = ([ ["level", budget.used, budget.maximum], ["run", budget.total_used, budget.total_maximum] ] as const)
 			.filter(([, used, maximum]) => typeof used === "number" && typeof maximum === "number") as [string, number, number][];
 		if (!limits.length) return `actions_used=${budget.total_used ?? budget.used ?? "?"}`;
 		const [name, used, maximum] = limits.reduce((a, b) => b[2] - b[1] < a[2] - a[1] ? b : a);
@@ -634,12 +636,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** What the environment reported for an action. No frame comparison: that is a tool the agent writes. */
 	function actionLine(row: ActionRow): string {
-		const budget = row.budget ?? {};
+		const budget = actionBudgetWithBaseline(row.budget, observation?.action_budget, row.levels_completed, row.level_changed);
 		const resets = trajectory.filter((item) => item.n <= row.n && item.action === "RESET").length;
+		const lastReset = trajectory.map((item) => item.action).lastIndexOf("RESET");
+		const replayed = lastReset >= 0 ? trajectory.slice(lastReset + 1).filter((item) => item.action !== "RESET").length : 0;
 		// Native receipts say what changed (the bridge's count and box) and when given coordinates were ignored.
 		return `#${row.n} ${actionLabel(row)} → ${native ? `${changeText(row)} ` : ""}level_changed=${row.level_changed} ` +
 			`state=${row.state} levels=${row.levels_completed} ${budgetText(budget)}` +
-			(resets ? ` resets=${resets}` : "") + (native && row.ignored_xy ? ` (x,y ignored: ${row.action} takes no coordinates)` : "") +
+			(resets ? ` resets=${resets}` : "") + (ACTION_EFFICIENCY_ENABLED && row.action === "RESET" ? ` ${resetCostText(budget, 0)}` : "") + (ACTION_EFFICIENCY_ENABLED && lastReset >= 0 && row.action !== "RESET" ? ` actions_since_reset=${replayed}` : "") + (native && row.ignored_xy ? ` (x,y ignored: ${row.action} takes no coordinates)` : "") +
 			// Work memory: a result this board had already shown, from the same action.
 			(row.novelty === "known" && row.known_from !== undefined ? ` (known: the same result as #${row.known_from} from this board)` : "");
 	}
@@ -876,7 +880,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			parts.push(`the last ${times.length - 1} actions took ${duration(pace)} each` +
 				(left !== undefined && pace > 0 ? `, so the time left allows about ${Math.floor(left / pace)} more at that pace` : ""));
 		}
-		return parts.length ? `RESOURCES: ${parts.join("; ")}. Reasoning and tool calls cost time, not actions.` : "";
+		return parts.length ? `RESOURCES: ${parts.join("; ")}. Each environment action counts against the level action budget.` : "";
 	}
 
 	function buildWorkingSet(ctx: ExtensionContext, historyText?: string): Run["workingSet"] {
@@ -923,7 +927,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			// Work memory: after a decision that learned nothing new, the head says so; with contextLayout at its end (below),
 			// otherwise first (after the call points).
-			if (run.spin?.streak && !contextLayout) out.unshift(["spin", spinText(run.spin)]);
+			if (run.spin?.streak && !contextLayout && !(ACTION_EFFICIENCY_ENABLED && knownResetReplay(trajectory))) out.unshift(["spin", spinText(run.spin)]);
 			// Call points (A5) open the head: a refine point before a decision acts, a consult before a review writes. The
 			// review's record is also written where the subagent it consults can read it.
 			if (run.refinePoint && run.refinePointText) out.unshift(["refine_point", run.refinePointText]);
@@ -974,7 +978,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			try { board = boardText(boardFactsNow()); } catch (error) { logError("context:board", error); }
 		}
 		// contextLayout: the agent's own record on this board goes after everything else, the images included.
-		const spin = contextLayout && run.spin?.streak ? spinText(run.spin) : "";
+		const spin = contextLayout && run.spin?.streak && !(ACTION_EFFICIENCY_ENABLED && knownResetReplay(trajectory)) ? spinText(run.spin) : "";
 		const tail = contextLayout ? [spin, board].filter(Boolean).join("\n\n") : "";
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
@@ -1889,9 +1893,25 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * Pin `move` (P3): record it and return its strategy line, which writers put first in the next experiment (pinned()).
 	 * An earlier pinned move is replaced. `extra`: an exact pinned test, with what it tests and the prediction it carries.
 	 */
+	function executionMode(): boolean {
+		const strategy = readStrategy()?.text ?? "";
+		const routeLine = strategy.split(String.fromCharCode(10)).find((line) => /^\s*(?:[-*]\s*)?route\s*:/i.test(line)) ?? "";
+		const routeActions = [...routeLine.matchAll(/ACTION\d+(?:\(\d+,\d+\))?/gi)].length;
+		let lessons = "";
+		try { lessons = workspace?.read(LESSONS_PATH) ?? ""; } catch { /* no carried review yet */ }
+		const carriedRoute = carriedReviewRoute(lessons, trajectory);
+		const confirmedMechanism = carriedRoute.length > 0 || [...memory.facts.values()].some((fact) => Number(fact.confidence) >= 4
+			&& /\b(rule|mechanism|pattern)\b/i.test(String(fact.text)));
+		return executionRouteReady(confirmedMechanism, Math.max(routeActions, carriedRoute.length));
+	}
+
 	function setPin(editId: string, move: Move, kind: string, why: string, within: number, rare?: boolean,
 		extra: Pick<Pin, "exact" | "predict" | "test"> = {}): Pin | undefined {
 		const old = pin;
+		if (shouldDeferExplorationPin(executionMode())) {
+			append("refiner.jsonl", { kind: "pin_deferred", edit: editId, move, move_kind: kind, reason: "confirmed mechanism and route are being executed", at: trajectory.length });
+			return old;
+		}
 		if (old) append("refiner.jsonl", { kind: "next_done", edit: old.edit, outcome: "replaced", at: trajectory.length });
 		const reason = why.replace(/\s+/g, " ").trim();
 		const line = `- First: ${moveText(move)}${extra.exact || kind.endsWith(":unplaced") ? "" : `, ${kindText(kind)}`}` +
@@ -1905,6 +1925,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** A strategy text with the pinned line first in its next experiment, and a replaced pin's line taken out. */
 	function pinned(content: string, old?: Pin): string {
 		const text = old ? withoutNextItem(content, old.line) : content;
+		if (ACTION_EFFICIENCY_ENABLED && executionMode()) return pin ? withoutNextItem(text, pin.line) : text;
 		return pin && !text.includes(pin.line) ? withNextItem(text, pin.line) : text;
 	}
 
@@ -1937,6 +1958,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** At a decision's start, before the active prompts are bound: release the pinned move once it is settled. */
 	async function settlePin(): Promise<void> {
 		if (!pin || !workspace) return;
+		if (ACTION_EFFICIENCY_ENABLED && executionMode()) {
+			const deferred = pin;
+			pin = undefined;
+			append("refiner.jsonl", { kind: "next_done", edit: deferred.edit, outcome: "deferred_for_route", at: trajectory.length });
+			if (deferred.test) testQueue.unshift({ move: deferred.move, text: deferred.test.text, goal: Boolean(deferred.predict?.level_changed),
+				index: deferred.test.index, total: deferred.test.total, source: deferred.test.source });
+			const strategy = readStrategy()?.text;
+			if (strategy?.includes(deferred.line)) await writeStrategy(withoutNextItem(strategy, deferred.line));
+			return;
+		}
 		const { told, met } = pinStatus(pin);
 		if (met !== undefined) return releasePin("met", met);
 		if (currentLevel() !== pin.level) return releasePin("level");
@@ -1945,6 +1976,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** The receipt's line while the pinned move is overdue (told at least its window ago, not played), at most PIN_NAGS times. */
 	function pinNag(): string {
+		if (ACTION_EFFICIENCY_ENABLED && executionMode()) return "";
 		if (!pin || pin.nagged >= PIN_NAGS || currentLevel() !== pin.level) return "";
 		const { told, met } = pinStatus(pin);
 		if (told === undefined || met !== undefined || trajectory.length - told < pin.within) return "";
@@ -2029,7 +2061,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	async function settleReviewTests(): Promise<void> {
 		if (!workspace || !binder) return;
 		const versions = binder.versionMap();
-		for (const [path, goal] of [[LESSONS_PATH, true], [REVIEW_PATH, false]] as const) {
+		const lessonVersion = versions[LESSONS_PATH];
+		const newLevelReview = lessonVersion !== undefined && !testsRead.has(`${LESSONS_PATH}@${lessonVersion}`);
+		if (newLevelReview) testsRead.add(`${LESSONS_PATH}@${lessonVersion}`);
+		for (const [path, goal] of [[REVIEW_PATH, false]] as const) {
 			const version = versions[path];
 			if (version === undefined || testsRead.has(`${path}@${version}`)) continue;
 			testsRead.add(`${path}@${version}`);
@@ -2051,7 +2086,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				if (strategy?.includes(old.line)) await writeStrategy(withoutNextItem(strategy, old.line));
 			}
 		}
-		if (!pin && testQueue.length) await pinNextTest();
+		if (!pin && testQueue.length && !(ACTION_EFFICIENCY_ENABLED && executionMode())) await pinNextTest();
+		// Reuse the completed level's actual winning sequence when its review confirms carrying the mechanism.
+		let lessons = "";
+		try { lessons = workspace.read(LESSONS_PATH); } catch { /* review may not exist */ }
+		const route = newLevelReview ? carriedReviewRoute(lessons, trajectory) : [];
+		if (route.length) {
+			const strategy = readStrategy()?.text ?? "";
+			const routeLine = `Route: ${route.join(", ")}`;
+			const updated = /^\s*(?:[-*]\s*)?route\s*:/im.test(strategy)
+				? strategy.replace(/^\s*(?:[-*]\s*)?route\s*:[^\r\n]*/im, routeLine)
+				: `${strategy.trimEnd()}${strategy.trim() ? "\n" : ""}${routeLine}`;
+			if (updated !== strategy) await writeStrategy(updated);
+		}
 	}
 
 	/**
@@ -3030,7 +3077,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			description: `${TAKE_ACTIONS_DESCRIPTION} RESET returns the level to its starting grid and counts as one action against both budgets. ` +
 				(control ? "" : "An entry's optional predict says what that action should produce ({text, cells: [[x,y,value],...], " +
 					"level_changed, state}); the list stops at a missed prediction. ") +
-				`At most ${THEN_STEPS + 1} actions per call; the call ends this decision.`,
+				`At most ${ACTION_EFFICIENCY_ENABLED ? UNVERIFIED_BATCH_MAX : THEN_STEPS + 1} unverified actions per call; a longer exact completed-route replay may be allowed; the call ends this decision.`,
 			parameters: Type.Object({
 				reasoning: Type.String({ description: TAKE_ACTIONS_TEXT.reasoning }),
 				actions: Type.Array(Type.Object({
@@ -3047,7 +3094,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			execute: guardTool("arc_action", async (params: { reasoning: string; actions: Array<Record<string, unknown>>; predict_skill?: string; idea?: unknown }) => {
 				const offered = availableActions(observation);
 				const { steps: valid, rejected } = validateActionSequence(params.actions, offered);
-				const steps = valid.slice(0, THEN_STEPS + 1), cut = valid.length - steps.length;
+				const replay = isVerifiedReplay(valid.map((row) => ({ action: row.action, ...(row.x !== undefined ? { x: row.x, y: row.y } : {}) })), trajectory);
+				const batchLimit = ACTION_EFFICIENCY_ENABLED ? actionBatchLimit(replay, UNVERIFIED_BATCH_MAX) : THEN_STEPS + 1;
+				const steps = valid.slice(0, batchLimit), cut = valid.length - steps.length;
 				if (!steps.length)
 					throw new Refusal(`${NOTHING_EXECUTED.replace(/^take_actions/, "arc_action")}` +
 						`${rejected[0] ? ` (entry ${rejected[0].position}: ${rejected[0].reason})` : ""}; available now: ${offered.join(", ") || "none"}`);
@@ -3079,7 +3128,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				}
 				if (played < steps.length && stopped) lines.push(`played ${played} of ${steps.length}; stopped: ${stopped}`);
 				if (rejected.length) lines.push(`not played: entry ${rejected[0].position} and the rest (${rejected[0].reason})`);
-				if (cut) lines.push(`not played: the last ${cut} entr${cut === 1 ? "y" : "ies"}, past ${THEN_STEPS + 1} actions per call`);
+				if (cut) lines.push(`not played: the last ${cut} entr${cut === 1 ? "y" : "ies"}, past ${batchLimit} actions per call`);
 				append("action_sequences.jsonl", { decision, n: last!.n, batch_id: batchId, planned: steps.length, played,
 					stopped: stopped ?? null, rejected: rejected.length ? rejected : null, ...(cut ? { cut } : {}) });
 				// The strategy's pinned next experiment, once overdue (P3: its expected move not played within its window).
@@ -3142,7 +3191,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const row = done.row;
 				const lines = [`${actionLine(row)}${predictionClause(row)}`, ...(goalAdmission === 'on' ? goalNotices(row.n, levelOf(row)) : []), ...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : [])];
 				// Further planned actions, each through the same path; the plan stops once what it assumed no longer holds.
-				const steps = native ? (params.then ?? []).slice(0, THEN_STEPS) : [];
+				const requested = native ? (params.then ?? []) : [];
+				const replay = isVerifiedReplay(requested.map((step) => ({ action: namedAction(step), ...(step.x !== undefined ? { x: step.x, y: step.y } : {}) })), trajectory);
+				const batchLimit = ACTION_EFFICIENCY_ENABLED ? Math.max(0, actionBatchLimit(replay, UNVERIFIED_BATCH_MAX) - 1) : THEN_STEPS;
+				const steps = requested.slice(0, batchLimit);
 				let last = row, played = 0, stopped: string | undefined;
 				for (const step of steps) {
 					stopped = sequenceStop(last);
@@ -3154,6 +3206,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					lines.push(`${actionLine(last)}${predictionClause(last)}`, ...(goalAdmission === 'on' ? goalNotices(last.n, levelOf(last)) : []), ...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : []));
 				}
 				if (played < steps.length) lines.push(`then: ${played} of ${steps.length} played; stopped: ${stopped}.`);
+				if (requested.length > steps.length) lines.push(`then: ${requested.length - steps.length} action(s) withheld by the ${batchLimit} step unverified batch limit`);
 				if (steps.length) append("action_sequences.jsonl", { decision, n: row.n, planned: steps.length + 1, played: played + 1, stopped: stopped ?? null });
 				// The strategy's pinned next experiment, once overdue (P3: its expected move not played within its window).
 				const overdue = COVERAGE ? pinNag() : "";
@@ -3200,7 +3253,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * suggestion like B1's disagreement; what to play stays the agent's.
 	 */
 	async function pinNovelty(): Promise<void> {
-		if (pin || !workMemory || !nativeRuntime || !observation || spinStreak(trajectory).streak < 1) return;
+		if (pin || !workMemory || !nativeRuntime || !observation || spinStreak(trajectory).streak < 1
+			|| (ACTION_EFFICIENCY_ENABLED && knownResetReplay(trajectory))) return;
 		const next = boardFactsNow().untried[0];
 		if (!next) return;
 		const move: Move = { action: next.action, ...(next.x !== undefined && next.y !== undefined ? { x: next.x, y: next.y } : {}) };
@@ -3361,6 +3415,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let actingStopped: string | undefined;
 	/** ARC_THIN_OBSERVATION=ch: the batch id of the list code is playing (env.act with a list), or of its last single env.act. */
 	let codeBatch: string | undefined;
+	let codeBatchMoves: Move[] = [];
 	/** Why a planned sequence (arc_action's then list, or its action list) must not go on after this action, or undefined. */
 	const sequenceStop = (row: ActionRow): string | undefined => row.level_changed ? `the level changed at #${row.n}`
 		: /^(GAME_OVER|WIN|FINISHED)$/.test(row.state) ? `state ${row.state} at #${row.n}`
@@ -3385,10 +3440,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// ARC_THIN_OBSERVATION=ch: code acts as CH's skills do (tools.take_actions): ACTION6 needs x and y, and each env.act
 		// call is one batch (a list given to env.act is one batch of its entries).
 		let batch: { batchId: string; batchPosition: number; batchTotal: number } | undefined;
+		const batchPosition = Array.isArray(call.batch) && call.batch.length === 2 ? Number(call.batch[0]) : 1;
+		const batchTotal = Array.isArray(call.batch) && call.batch.length === 2 ? Number(call.batch[1]) : 1;
+		if (batchPosition <= 1) codeBatchMoves = [];
+		codeBatchMoves.push({ action, ...(x !== undefined ? { x, y } : {}) });
+		if (ACTION_EFFICIENCY_ENABLED && batchTotal > UNVERIFIED_BATCH_MAX && batchPosition > UNVERIFIED_BATCH_MAX
+			&& !verifiedReplayPrefix(codeBatchMoves, trajectory))
+			return { stopped: `unverified env.act batch stopped at ${UNVERIFIED_BATCH_MAX} actions; longer lists require an exact previously completed route replay` };
 		if (chView) {
 			if (action === "ACTION6" && (x === undefined || y === undefined))
 				return { stopped: "ACTION6 was not played: it needs x and y in 0..63" };
-			const [position, total] = Array.isArray(call.batch) && call.batch.length === 2 ? call.batch.map(Number) : [1, 1];
+			const [position, total] = [batchPosition, batchTotal];
 			if (position <= 1 || !codeBatch) codeBatch = mintBatchId();
 			batch = { batchId: codeBatch, batchPosition: Math.max(1, position), batchTotal: Math.max(1, total) };
 		}
