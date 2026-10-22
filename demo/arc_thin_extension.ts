@@ -4030,11 +4030,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       name: 'refine', label: 'Refine',
       description: 'Start a background refinement of your harness with a focus (e.g. "turn the route search into a tool" or ' +
         '"write a goal test into the strategy"). It makes one edit to a prompt, memory entry, tool or skill; the next decision says what changed.' +
+        ' Full focus text is passed through; keep the request within the selected model context.' +
         (refinePoints ? ` Every ${REFINE_EVERY} actions a decision is a refine point: it acts after this call.` : ''),
-      parameters: Type.Object({ focus: Type.String({ minLength: 3, maxLength: 300 }) }),
+      parameters: Type.Object({ focus: Type.String({ minLength: 3 }) }),
       execute: guardTool('refine', async (params: { focus: string }, _signal, ctx) => {
         lastRefineCallAt = trajectory.length;
-        append('call_points.jsonl', { kind: 'refine', at: trajectory.length, decision, point: run.refinePoint, focus: String(params.focus).slice(0, 300) });
+        append('call_points.jsonl', { kind: 'refine', at: trajectory.length, decision, point: run.refinePoint, focus: params.focus });
         return text(startRefiner(ctx, [`the agent asked: ${params.focus}`], [], true)
           ? 'Refinement started in the background; a later decision says what it changed.'
           : 'A refinement is running; yours starts after it, and a later decision says what it changed.', undefined, endsBatch());

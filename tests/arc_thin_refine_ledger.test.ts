@@ -227,6 +227,19 @@ test('a MEMORY line the memory component refuses is recorded as invalid: no edit
   } finally { await h.close(); }
 });
 
+test('refine.focus passes a long in-budget request intact without a 300-character rejection or truncation', async () => {
+  const h = await fixture({ ARC_REFINE_EVERY: '100' });
+  const focus = 'compare the current hypothesis with the contrary action-scoped evidence and revise only if it changes the next test; '.repeat(10);
+  try {
+    await h.begin();
+    await h.tool('refine', { focus });
+    await h.calls(1);
+    assert.ok(h.inputs[0].startsWith(`WHY NOW: the agent asked: ${focus}`));
+    assert.equal(h.rows('call_points.jsonl').find((row) => row.kind === 'refine')?.focus, focus);
+    await h.settle(reply('NONE no edit would help'));
+  } finally { await h.close(); }
+});
+
 test('a hypothesis a refinement wrote is followed by its own check results since the agent was told', async () => {
   const h = await fixture({});
   try {
