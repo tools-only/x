@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lightweight summary of R3 JSONL artifacts. Run with D:\conda\python.exe."""
+"""Lightweight summary of R3 JSONL artifacts. Use the pinned Windows Python."""
 from __future__ import annotations
 import argparse, json
 from collections import Counter
