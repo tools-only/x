@@ -562,6 +562,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const row of readRows("states.jsonl")) if (Array.isArray(row.grid)) grids.set(Number(row.n), row.grid);
     const derivedMask = r3Mask();
     r3Run = r3Rebuild(trajectory, grids, derivedMask.mask);
+    for (const outcome of goalRows.filter(row => row.verdict === 'false_win')) {
+      const transition = trajectory.find(row => row.n === outcome.n);
+      if (transition) recordFalseWin(r3Run.winTests, { action: transition.action, x: transition.x, y: transition.y, n: outcome.n }, grids.get(outcome.n - 1), derivedMask.mask);
+    }
     r3MaskKey = JSON.stringify(derivedMask.mask, (_key, value) => value instanceof Set ? [...value].sort() : value);
 		const workingSets = readRows("working_set.jsonl");
 		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating).map((row) => Number(row.actions) || 0));
@@ -3353,7 +3357,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         const verdict = derived.transitions < 8 && gateRow.verdict === 'refused' ? 'mask_pending' : gateRow.verdict;
         append("r3_gates.jsonl", { ...gateRow, t: new Date().toISOString(), verdict });
       }
-      if (decision.refusal && derived.transitions >= 8) return { refusal: decision.refusal };
+      if (decision.refusal && derived.transitions >= 8) {
+        const refused = decision.rows.find(row => row.verdict === 'refused');
+        const evidence = refused?.evidence?.length ? `evidence: ${refused.evidence.map(n => `#${n}`).join(', ')}` : '';
+        const alternatives = refused?.alternatives?.length ? `alternatives: ${refused.alternatives.slice(0, 3).join(', ')}` : '';
+        const reAdmit = refused?.gate === 'G2' ? 're-admit when a new object class appears or omit the level-change claim'
+          : refused?.gate === 'G1' ? 're-admit with a checkable cells, level_changed, or state prediction'
+            : 're-admit after observed progress or with another object/distance bin';
+        return { refusal: [decision.refusal, evidence, alternatives, reAdmit].filter(Boolean).join('; ') };
+      }
     }
 		// The same action again after it changed at most NO_EFFECT_CELLS cells each of the last noEffectRepeats times in a
 		// row. Every play was a new state to the loop guard, so su15-l0-2 played one click 30 times and su15-l0-1 another
