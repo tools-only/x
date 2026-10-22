@@ -1,7 +1,7 @@
 /** Scripted, unpaid provider for the action-scope regression. Never used by ordinary ARC runs. */
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transport.ts";
 
@@ -16,7 +16,7 @@ export default function scopeProbe(pi: ExtensionAPI) {
 		streamSimple: scriptedProviderTransport((model, context) => {
 			const parameters = calls[step++];
 			appendFileSync(join(process.env.ARC_RUN_ROOT!, "scope-provider-requests.jsonl"), JSON.stringify({
-				step, tools: context.tools, messages: context.messages, parameters,
+				step, tools: context.tools ?? getCurrentTools(context.messages), messages: context.messages, parameters,
 			}) + "\n");
 			const stream = createAssistantMessageEventStream();
 			const output: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,

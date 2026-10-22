@@ -8,7 +8,7 @@ import arcThinExtension from '../demo/arc_thin_extension.ts';
 import { repairActionArguments } from '../demo/arc_thin_boundary.ts';
 import { renderArcLatestFrameRuns } from '../demo/arc_agi_3_official_adapter.ts';
 
-async function fixture(mode?: string) {
+async function fixture(mode: string = 'query') {
   let n = 0, unavailable = false;
   const grid = (v: number) => Array.from({ length: 64 }, (_, y) => Array.from({ length: 64 }, (_, x) => (x + y + v) % 16));
   const state = () => ({ frames: unavailable ? [] : [grid(n + 1), grid(n)], state: 'PLAYING', levels_completed: 0,
@@ -49,7 +49,7 @@ async function fixture(mode?: string) {
   };
 }
 
-test('native default keeps every raw frame outside context and returns exact requested measurements/images', async () => {
+test('explicit query keeps every raw frame outside context and returns exact requested measurements/images', async () => {
   const h = await fixture();
   try {
     const messages = await h.project(), content = messages[0].content;

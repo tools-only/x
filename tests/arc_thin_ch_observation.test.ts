@@ -42,8 +42,9 @@ async function fixture(extra: Record<string, string> = {}) {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const root = mkdtempSync(join(tmpdir(), 'ch-observation-'));
   const env = { ...process.env };
+  delete process.env.ARC_THIN_OBSERVATION; // Exercise the extension's native default, not an explicit CH override.
   // The reviews' consult-first call point is tested in arc_thin_loop_bound.test.ts.
-  Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', ARC_THIN_OBSERVATION: 'ch',
+  Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment',
     PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'disabled',
     ARC_HARNESS_CRITIC: 'disabled', ARC_REFINE_EVERY: '1000000', ARC_THIN_REVIEW_CONSULT: '0', ...extra });
   const tools = new Map<string, any>(), handlers = new Map<string, any[]>(); let active: string[] = [];
@@ -63,6 +64,7 @@ async function fixture(extra: Record<string, string> = {}) {
   return {
     submitted, tool: (name: string) => tools.get(name), system: () => system, sections: () => sections, active: () => active,
     rows: () => readFileSync(join(root, 'harness', 'trajectory.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)),
+    logs: (name: string) => readFileSync(join(root, 'harness', name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)),
     /** A new decision: the runner's prompt, then the messages the model receives (earlier decisions, then the head). */
     async decide(prompt = 'Decide the next action.') {
       const event: any = { prompt, systemPromptOptions: { sections: {} } };
@@ -105,7 +107,7 @@ const head = (messages: any[]) => messages.at(-1);
 const textOf = (message: any) => message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
 const section = (text: string, name: string) => text.slice(text.indexOf(name)).split(/\n\n(?=## |# Step)/)[0];
 
-test('a decision shows the game as CH does, after this harness\'s own sections; CH\'s loop sections are absent', async () => {
+test('native defaults to CH observation and action list, after this harness\'s own sections', async () => {
   const h = await fixture();
   try {
     const messages = await h.decide(), text = textOf(head(messages));
@@ -126,6 +128,66 @@ test('a decision shows the game as CH does, after this harness\'s own sections; 
     assert.match(h.system(), /## INPUT FORMAT[\s\S]*## COORDINATE SYSTEM[\s\S]*ACTION7=Undo\/Back · RESET=restart the level[\s\S]*## GAME SETTING/);
     assert.doesNotMatch(h.system(), /Soft guideline|RESET is not one of your actions|non-action turns/);
     assert.deepEqual(Object.keys(h.tool('arc_action').parameters.properties).sort(), ['actions', 'predict_skill', 'reasoning']);
+  } finally { await h.close(); }
+});
+
+test('CH actions retain per-step predictions, predictor tools, experiment tags and immediate goal/carry feedback', async () => {
+  const h = await fixture({ ARC_HARNESS_LEDGER: 'enabled', ARC_THIN_GOAL_ADMISSION: 'on', ARC_THIN_LEVEL_CARRY: 'on' });
+  try {
+    await h.decide();
+    const results = await h.respond(
+      ['memory', { hypotheses: [{ key: 'hyp.goal', question: 'goal', claim: 'every action wins',
+        check: 'def check(t):\n    return True', status: 'open' }] }],
+      ['write', { path: 'tools/predictor.py', content: '# view: off\ndef predict(state, action):\n    return {"level_changed": False}\n' }],
+      ['write', { path: 'tools/current.py', content: '# view: on\nprint(grid[2].index(9))\n' }]);
+    assert.ok(results.every(r => !r.isError), JSON.stringify(results));
+    // Bind the tools at the next request; the view is read-only and the predictor runs before each real action.
+    await h.decide();
+    const [played] = await h.respond(['arc_action', { reasoning: 'test two steps', idea: 'first-default', actions: [
+      { name: 'ACTION1', predict: { cells: [[2, 2, 9]], level_changed: false }, predict_skill: 'missing', idea: 'move-first' },
+      { name: 'ACTION2', predict: { cells: [[2, 2, 9]], level_changed: false }, idea: 'wait-second' }] }]);
+    assert.match(played.text, /GOAL_OUTCOME hyp.goal: false_win at #1/);
+    assert.match(played.text, /GOAL_OUTCOME hyp.goal: false_win at #2/);
+    const rows = h.rows();
+    assert.deepEqual(rows.map(row => row.idea), ['move-first', 'wait-second']);
+    assert.deepEqual(rows.map(row => row.prediction.misses), [0, 0]);
+    assert.equal(rows[0].skill_prediction.name, 'missing', 'entry predictor selector reaches the existing skill boundary');
+    assert.equal(rows[0].skill_prediction.error, 'no such skill');
+    assert.ok(rows.every(row => row.predictors.some((p: any) => p.path === 'tools/predictor.py' && p.hits === 1)));
+    await h.decide();
+    const [win] = await h.respond(['arc_action', { reasoning: 'win', actions: [{ name: 'ACTION4' }, { name: 'ACTION1' }] }]);
+    assert.match(win.text, /GOAL_OUTCOME hyp.goal: win_held at #3/);
+    assert.deepEqual(h.submitted, ['ACTION1', 'ACTION2', 'ACTION4'], 'the list stops at the real level change');
+    const next = textOf(head(await h.decide()));
+    assert.match(next, /CARRIED FROM LEVEL 1/);
+    assert.match(next, /## RECENT HISTORY[\s\S]*## CURRENT STATE/);
+    await h.respond(['arc_action', { reasoning: 'observe current level', actions: [{ name: 'ACTION1' }] }]);
+    await h.decide(); // the new state's view has run and carry has advanced
+    const [continued] = await h.respond(['arc_action', { reasoning: 'continue', actions: [{ name: 'ACTION2' }] }]);
+    assert.match(continued.text, /CARRY DELTA \(level 2\): view tools\/current.py@1/);
+    assert.ok(h.logs('goal_checks.jsonl').some(row => row.n === 3 && row.verdict === 'win_held'));
+    assert.ok(h.logs('observer_runs.jsonl').some(row => row.n === 4 && row.ok));
+    await h.decide();
+    const [pythonAction] = await h.respond(['python', { code: 'print(env.act("ACTION2", predict={"level_changed": False}))' }]);
+    assert.equal(pythonAction.isError, false, pythonAction.text);
+    assert.match(pythonAction.text, /GOAL_OUTCOME hyp.goal: false_win at #6/);
+    assert.equal(h.rows().at(-1).prediction.hits, 1, 'env.act keeps the same prediction and goal feedback under CH');
+  } finally { await h.close(); }
+});
+
+test('CH control keeps the action list and live refusal boundary without prediction or experiment fields', async () => {
+  const h = await fixture({ ARC_THIN_VARIANT: 'control' });
+  try {
+    await h.decide();
+    const properties = h.tool('arc_action').parameters.properties;
+    assert.deepEqual(Object.keys(properties).sort(), ['actions', 'reasoning']);
+    assert.deepEqual(Object.keys(properties.actions.items.properties).sort(), ['name', 'x', 'y']);
+    const [refused] = await h.respond(['arc_action', { reasoning: 'unavailable', actions: [{ name: 'ACTION6', x: 0, y: 0 }] }]);
+    assert.equal(refused.isError, true);
+    assert.deepEqual(h.submitted, []);
+    const [played] = await h.respond(['arc_action', { reasoning: 'move', actions: [{ name: 'ACTION1' }] }]);
+    assert.equal(played.isError, false, played.text);
+    assert.deepEqual(h.submitted, ['ACTION1']);
   } finally { await h.close(); }
 });
 
@@ -241,7 +303,7 @@ test('a stall review starts from the level\'s record and the current state, with
     assert.match(text, /^Decide the next action\.\n\n<prompt_review>\n[\s\S]*1\. Walked right twice\.\n[\s\S]*<\/prompt_review>\n\n/, 'the active prompt opens the head');
     assert.doesNotMatch(text.slice(text.indexOf('## RECENT HISTORY'), text.indexOf('\nHARNESS (')), /Walked right twice/,
       'it is not part of the game\'s observation (the capability index after it lists it in one line)');
-    assert.deepEqual(h.sections(), {}, 'no system-prompt section');
+    assert.ok(!Object.keys(h.sections()).some(name => name.startsWith('prompt_')), 'no component prompt in system sections');
     assert.equal(h.system(), system, 'the system prompt is the one before the write');
     // The board was seen at #1: what was played from it is the head's last part, after the images.
     assert.match(parts.at(-1).text ?? '', /^THIS BOARD \(status cells masked\) was here before: #1\. From it: ACTION2 → no change\./);

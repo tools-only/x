@@ -23,6 +23,11 @@ test("an action list sent as text with its brackets closed out of order plays it
 		{ reasoning: "old", actions: [{ name: "ACTION6", x: 3, y: 4, predict: { level_changed: false } }, { name: "ACTION1" }, { name: "ACTION2" }] });
 	assert.deepEqual(repairActionList({ reasoning: "r", actions: [{ action: "ACTION1" }, "ACTION2"], predict: { level_changed: true } }).actions,
 		[{ name: "ACTION1", predict: { level_changed: true } }, { name: "ACTION2" }]);
+	assert.deepEqual(repairActionList({ action: "ACTION1", expect: "moves", then: ["ACTION2"] }).actions,
+		[{ name: "ACTION1", predict: { text: "moves" } }, { name: "ACTION2" }]);
+	assert.deepEqual(repairActionList({ actions: [{ name: "ACTION1", expect: "moves", predict_skill: " saved " },
+		{ name: "ACTION2", predict_skill: 7 }] }).actions,
+		[{ name: "ACTION1", predict: { text: "moves" }, predict_skill: "saved" }, { name: "ACTION2" }]);
 	// Text that is no list stays as it came, for the schema check to report.
 	assert.equal(repairActionList({ reasoning: "r", actions: "move right" }).actions, "move right");
 });

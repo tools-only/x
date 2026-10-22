@@ -241,7 +241,7 @@ const actionName = (name: string) => name.toUpperCase().replace(/^A(\d)$/, "ACTI
  */
 export function repairActionList(args: any): any {
 	if (!isObject(args)) return args;
-	const { action, x, y, predict, then, note, ...rest } = args;
+	const { action, x, y, predict, then, note, ...rest } = repairActionArguments(args);
 	const out: Record<string, any> = rest;
 	const reasoning = out.reasoning ?? note;
 	out.reasoning = typeof reasoning === "string" ? reasoning : reasoning == null ? "" : String(reasoning);
@@ -258,7 +258,7 @@ export function repairActionList(args: any): any {
 			return named ? { name: actionName(named[1]), ...(named[2] !== undefined ? { x: Number(named[2]), y: Number(named[3]) } : {}) } : item;
 		}
 		if (!isObject(item)) return item;
-		const entry: Record<string, any> = dropNulls(item) as Record<string, any>;
+		const entry: Record<string, any> = repairActionArguments(dropNulls(item));
 		if (typeof entry.name !== "string" && typeof entry.action === "string") { entry.name = entry.action; delete entry.action; }
 		const named = typeof entry.name === "string" ? ACTION_NAME.exec(entry.name) : null;
 		if (named) {

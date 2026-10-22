@@ -40,6 +40,8 @@ Auto-Research method resources
 
 `arc-thin-e2e` 默认使用 `--foundation native`：每次运行一个 Pi session 文件，完整保留历史，通过 workspace 文件创建、编辑和使用组件。文件工具只访问 workspace；`data/`、`results/` 只读。写入组件的回执报告版本、下一请求激活或失败后的工作版本。普通笔记写入 `notes/`；长输出保存完整结果并提供精确读取引用。
 
+native 默认使用已有 Continual Harness（CH）观测及 ARC 动作适配：近期动作与颜色转换差分、上次查询后的关键帧、当前 hex 网格，支持图像的模型同时收到 PNG；`arc_action` 接收 `reasoning/actions` 列表。每个动作继续经过本工程的预测、台账、goal/carry 和组件流水线；启用相应机制时，逐动作回执包含其反馈。`env.act` 也保留相同动作挂载。runner、直接加载的 native 扩展和离线 smoke 使用相同默认值；显式 `ARC_THIN_OBSERVATION=query|inline` 仍可用于兼容和比较，显式旧配置不会被覆盖。实现及证据边界见 [su15 分析与 CH 适配记录](docs/su15-log-comparison-2026-10-22.md#ch-默认适配实施记录2026-10-22)。
+
 native 默认同时开启历史分层与拆分工具预算：历史采用 4/16 分层，当前决策保持完整；每决策查阅/计算预算 10 次、记录预算 6 次，总工具硬限 18 次。`ARC_THIN_NATIVE_VERBATIM=0` 关闭分层，`ARC_THIN_NATIVE_SPLIT_BUDGET=0` 关闭拆分预算；Pi 原生自动压缩独立保持启用，原始 session 与压缩输入不按分层裁切。配置及验证见[默认启用记录](docs/reports/2026-10-13-foundation-fixes-native-merge.md#default-activation-requested-after-merge-2026-10-13)。
 
 当前方案使用台账 + critic；Auto-Research 已弃用并暂停其开发、验收。`consult` 是显式请求的有界角色咨询。native 默认不回放 reasoning、不强制关卡切换复盘，启用 Pi 原生自动压缩；`--no-auto-compaction` 可关闭，`--replay-reasoning`、`--level-change-review` 可用于比较。`--foundation legacy` 保留旧默认行为（自动压缩关闭）；显式 `--auto-compaction` 可开启。真实 ls20/lp85 对照尚未启动，采用和收益未验证；详见[最终方案](docs/plans/2026-10-12-harness-foundation-refactor-plan.md)及[实现验收记录](docs/reports/2026-10-12-harness-foundation-implementation.md)。

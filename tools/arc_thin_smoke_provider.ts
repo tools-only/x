@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transport.ts";
+import { repairActionList } from "../demo/arc_thin_boundary.ts";
 
 /** say: a text block sent before the tool calls (the scripted model has no reasoning channel; text stands in for it). */
 type Step = { kind: "decide" | "consolidate"; calls?: Array<[string, Record<string, unknown>]>; text?: string; say?: string; think?: string };
@@ -431,7 +432,10 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 		apiKey: "offline",
 		baseUrl: "http://unused.invalid",
 		models: [{
-			id: "scripted", name: "scripted", reasoning: false, input: process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? ["text", "image"] : ["text"],
+			id: "scripted", name: "scripted", reasoning: false,
+			input: process.env.ARC_INPUT_MODALITIES
+				? process.env.ARC_INPUT_MODALITIES.split(",").filter(value => value === "text" || value === "image") as ("text" | "image")[]
+				: process.env.ARC_THIN_OBSERVATION === 'ch' || process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? ["text", "image"] : ["text"],
 			contextWindow: 175000, maxTokens: 16384, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}],
 		streamSimple: scriptedProviderTransport((model, context, options) => {
@@ -648,6 +652,10 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
       }
       if (planned?.calls) planned = { ...planned, calls: planned.calls.map(([name, args]) => [name,
         args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/(?:r\d+|[a-f0-9]{64})\.txt/)?.[0] ?? 'missing' } : args]) };
+      // Send the schema actually offered by Pi. Legacy scripts remain usable without forcing a query-only runner.
+      const actionSchema = tools.find((tool: any) => tool.name === 'arc_action')?.parameters;
+      if (actionSchema?.properties?.actions && planned?.calls)
+        planned = { ...planned, calls: planned.calls.map(([name, args]) => [name, name === 'arc_action' ? repairActionList(args) : args]) };
 			appendFileSync(log, JSON.stringify({
 				t: new Date().toISOString(), analyst, critic, consolidating, step,
 				// With retained history the first user message is an old decision; the current one is the last.

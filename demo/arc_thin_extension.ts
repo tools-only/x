@@ -18,9 +18,9 @@
  * Scored predictions, state.history for skills, the working-set log and the
  * opt-in comparison variable ARC_THIN_CARRY_REASONING:
  * docs/plans/2026-10-10-self-harness-priority-plan.md. The agent is shown the
- * current grid and what the environment reported; it gets no frame comparison or
- * derived view from the project. Cross-frame analysis is a tool the agent writes
- * from state["prev_grid"] and state["history"] (§10.9 of that plan).
+ * current grid and what the environment reported. Native defaults to the existing
+ * CH observation/action adapter, including deterministic colour-transition differences;
+ * interpreting object relations remains the agent's task.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
@@ -246,10 +246,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const goalAdmission = goalAdmissionMode(process.env.ARC_THIN_GOAL_ADMISSION);
   const carryMode = process.env.ARC_THIN_LEVEL_CARRY ?? 'shadow';
   if (!['off', 'shadow', 'on'].includes(carryMode)) throw Error('ARC_THIN_LEVEL_CARRY must be off, shadow or on');
-  // How the game is shown: "query" (the extension's own default, kept for tests that build it directly), "inline", or
-  // "ch", Continual Harness's observation and action tool inside this harness's decision (the runner's native default
-  // since 2026-10-20; arc_thin_ch_view.ts).
-  const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'query' : 'inline';
+  // The runner and directly loaded native extension share CH's observation and ARC action adapter by default.
+  // query/inline remain explicit compatibility choices; the surrounding meta-harness is unchanged.
+  const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'ch' : 'inline';
   if (!['query', 'inline', 'ch'].includes(observationMode)) throw Error('ARC_THIN_OBSERVATION must be query, inline or ch');
   const queryObservation = native && observationMode === 'query';
   const chView = native && observationMode === 'ch';
@@ -646,6 +645,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			(resets ? ` resets=${resets}` : "") + (ACTION_EFFICIENCY_ENABLED && row.action === "RESET" ? ` ${resetCostText(budget, 0)}` : "") + (ACTION_EFFICIENCY_ENABLED && lastReset >= 0 && row.action !== "RESET" ? ` actions_since_reset=${replayed}` : "") + (native && row.ignored_xy ? ` (x,y ignored: ${row.action} takes no coordinates)` : "") +
 			// Work memory: a result this board had already shown, from the same action.
 			(row.novelty === "known" && row.known_from !== undefined ? ` (known: the same result as #${row.known_from} from this board)` : "");
+	}
+
+	/** All acting interfaces deliver the same per-action mechanism feedback, including consuming carry deltas once. */
+	function actionFeedback(row: ActionRow): string[] {
+		return [`${actionLine(row)}${predictionClause(row)}`,
+			...(goalAdmission === 'on' ? goalNotices(row.n, levelOf(row)) : []),
+			...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : [])];
 	}
 
 	// ---------------------------------------------------------------- per-decision state
@@ -3076,7 +3082,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			label: "ARC action",
 			description: `${TAKE_ACTIONS_DESCRIPTION} RESET returns the level to its starting grid and counts as one action against both budgets. ` +
 				(control ? "" : "An entry's optional predict says what that action should produce ({text, cells: [[x,y,value],...], " +
-					"level_changed, state}); the list stops at a missed prediction. ") +
+					"level_changed, state}); the list stops at a missed prediction. predict_skill selects its saved predictor. ") +
+			(ledgerOn ? "idea labels each entry's experiment. " : "") +
 				`At most ${ACTION_EFFICIENCY_ENABLED ? UNVERIFIED_BATCH_MAX : THEN_STEPS + 1} unverified actions per call; a longer exact completed-route replay may be allowed; the call ends this decision.`,
 			parameters: Type.Object({
 				reasoning: Type.String({ description: TAKE_ACTIONS_TEXT.reasoning }),
@@ -3085,7 +3092,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63, description: TAKE_ACTIONS_TEXT.x })),
 					y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63, description: TAKE_ACTIONS_TEXT.y })),
 					// A malformed prediction is dropped before validation (repairActionList), never a reason to reject the action.
-					...(control ? {} : { predict: Type.Optional(Type.Unknown()) }),
+					...(control ? {} : { predict: Type.Optional(Type.Unknown()), predict_skill: Type.Optional(Type.String({ maxLength: 40 })) }),
+					...(ledgerOn ? { idea: Type.Optional(Type.String()) } : {}),
 				}), { minItems: 1, description: TAKE_ACTIONS_TEXT.actions }),
 				...(control ? {} : { predict_skill: Type.Optional(Type.String({ maxLength: 40 })) }),
 				...(ledgerOn ? { idea: Type.Optional(Type.String()) } : {}),
@@ -3110,10 +3118,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					if (!availableActions(observation).includes(step.action)) { stopped = `${step.action} is no longer available`; break; }
 					const predict = control || step.raw.predict === undefined ? undefined : normalizePrediction(step.raw.predict);
 					const first = step.position === 1;
+					const predictSkill = control ? undefined : step.raw.predict_skill ?? (first ? params.predict_skill : undefined);
+					const idea = step.raw.idea ?? (first ? params.idea : undefined);
 					const done = await submitAction({ action: step.action, ...(step.x !== undefined ? { x: step.x, y: step.y } : {}),
 						...(first && note ? { note } : {}), ...(predict ? { predict } : {}),
-						...(first && params.predict_skill ? { predict_skill: params.predict_skill } : {}),
-						...(first && params.idea !== undefined ? { idea: params.idea } : {}) }, undefined,
+						...(typeof predictSkill === 'string' ? { predict_skill: predictSkill } : {}),
+						...(idea !== undefined ? { idea } : {}) }, undefined,
 						{ batchId, batchPosition: step.position, batchTotal: steps.length, ...(first && rejected.length ? { rejected } : {}) });
 					if ("refusal" in done) {
 						if (!played) {
@@ -3124,7 +3134,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 						break;
 					}
 					last = done.row; played += 1;
-					lines.push(`${actionLine(last)}${predictionClause(last)}`);
+					lines.push(...actionFeedback(last));
 				}
 				if (played < steps.length && stopped) lines.push(`played ${played} of ${steps.length}; stopped: ${stopped}`);
 				if (rejected.length) lines.push(`not played: entry ${rejected[0].position} and the rest (${rejected[0].reason})`);
@@ -3189,7 +3199,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					throw new Refusal(done.refusal);
 				}
 				const row = done.row;
-				const lines = [`${actionLine(row)}${predictionClause(row)}`, ...(goalAdmission === 'on' ? goalNotices(row.n, levelOf(row)) : []), ...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : [])];
+				const lines = actionFeedback(row);
 				// Further planned actions, each through the same path; the plan stops once what it assumed no longer holds.
 				const requested = native ? (params.then ?? []) : [];
 				const replay = isVerifiedReplay(requested.map((step) => ({ action: namedAction(step), ...(step.x !== undefined ? { x: step.x, y: step.y } : {}) })), trajectory);
@@ -3203,7 +3213,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 						note: `then ${played + 1} of ${steps.length}`, ...(step.predict ? { predict: step.predict } : {}) });
 					if ("refusal" in next) { stopped = next.refusal; break; }
 					last = next.row; played += 1;
-					lines.push(`${actionLine(last)}${predictionClause(last)}`, ...(goalAdmission === 'on' ? goalNotices(last.n, levelOf(last)) : []), ...(carryMode === 'on' ? [carryReceipt()].filter(Boolean) : []));
+					lines.push(...actionFeedback(last));
 				}
 				if (played < steps.length) lines.push(`then: ${played} of ${steps.length} played; stopped: ${stopped}.`);
 				if (requested.length > steps.length) lines.push(`then: ${requested.length - steps.length} action(s) withheld by the ${batchLimit} step unverified batch limit`);
@@ -3463,7 +3473,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (row.level_changed) actingStopped = "the level changed";
 		else if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) actingStopped = `state ${row.state}`;
 		return {
-			line: `${actionLine(row)}${predictionClause(row)}${goalAdmission === 'on' ? '\n' + goalNotices(row.n, levelOf(row)).join('\n') : ''}${carryMode === 'on' ? '\n' + carryReceipt() : ''}`,
+			line: actionFeedback(row).join('\n'),
 			observation: {
 				n: row.n, action: actionLabel(row), grid: hexRows(gridOf(observation)), state: row.state, levels_completed: row.levels_completed,
 				frames: (observation?.frames ?? []).map((frame: any) => hexRows(frame)), action_budget: observation?.action_budget ?? null,

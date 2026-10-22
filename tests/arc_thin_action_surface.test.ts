@@ -91,7 +91,8 @@ test("action schema follows live scope through actions, RESET, failures and reco
 test("installed Pi sends current action enums and rejects unavailable actions before HTTP submission", { timeout: 60_000 }, async () => {
 	// Match the ARC runner's installed Node/Pi resolution, with a local-package fallback.
 	const installedCli = join(dirname(realpathSync(process.execPath)), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
-	const cli = process.env.PI_SCOPE_PROBE_CLI ?? (existsSync(installedCli) ? installedCli
+	const localCli = resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+	const cli = process.env.PI_SCOPE_PROBE_CLI ?? (existsSync(localCli) ? localCli : existsSync(installedCli) ? installedCli
 		: join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "bundle", "cli.js"));
 	const root = process.env.ARC_SCOPE_PROBE_ROOT ? resolve(process.env.ARC_SCOPE_PROBE_ROOT) : mkdtempSync(join(tmpdir(), "thin-scope-pi-"));
 	mkdirSync(root, { recursive: true });

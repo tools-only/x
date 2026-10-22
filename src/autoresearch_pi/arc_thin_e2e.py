@@ -1150,9 +1150,7 @@ def run_arc_thin_e2e(
     settings = resolve_model_settings(env)
     if max_output_tokens is not None:
         settings["max_tokens"] = max_output_tokens
-    # The scripted smoke provider reads text only, as its scripts were written.
-    settings["input_modalities"] = _input_modalities(
-        "text" if input_modalities is None and pi_provider == "offline-arc-thin-smoke" else input_modalities, env)
+    settings["input_modalities"] = _input_modalities(input_modalities, env)
     if thinking_format is not None:
         if thinking_format not in THINKING_FORMATS:
             raise ValueError(f"thinking_format must be one of {sorted(THINKING_FORMATS)}")
@@ -1225,6 +1223,8 @@ def run_arc_thin_e2e(
         agent_dir = root / ".pi-agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         pi_env = dict(env)
+        # The scripted provider declares the same resolved modalities as the run config, including explicit text-only.
+        pi_env["ARC_INPUT_MODALITIES"] = ",".join(settings["input_modalities"])
         if pi_provider_extension is None:
             if not settings["base_url"] or not settings["api_key"]:
                 raise RuntimeError("define ARC_OPENAI_API_BASE/ARC_OPENAI_API_KEY or OPENAI_API_BASE/OPENAI_API_KEY")
@@ -1266,11 +1266,8 @@ def run_arc_thin_e2e(
         stored_responses = settings["pi_api"] == "openai-responses"
         pi_env["ARC_THIN_RESPONSES_CONTINUATION"] = "1" if stored_responses else "0"
         pi_env["ARC_THIN_REASONING_MODE"] = "fields" if stored_responses else "all"
-        # The scripted smoke provider's steps call the earlier arc_action ({action, x, y, then}); Continual Harness's
-        # observation and action list (ARC_THIN_OBSERVATION=ch, the native default since 2026-10-20) are left to real runs
-        # and unit tests.
-        if pi_provider == "offline-arc-thin-smoke":
-            pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
+        # Native runs, including the scripted provider, use the same CH observation/action adapter by default.
+        # An explicit observation choice is retained for compatibility and controlled comparisons.
         pi_env.update(extension_env or {})
         observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "ch") if foundation == "native" else "inline"
         if observation_delivery not in ("query", "inline", "ch"):

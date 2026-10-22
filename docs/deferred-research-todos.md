@@ -1,3 +1,5 @@
+2026-10-22 su15 历史成功/最新失败诊断与 CH 默认适配：用户要求直接默认使用完整既有 CH 观测及 ARC 动作接口。独立 Codex 分支统一 runner/扩展/smoke 默认值，补齐逐动作预测选择/实验标签、goal/carry 即时回执，保留 env.act；80 项相关 Node、16 项 Python 通过，两个实际 Pi/bridge/mock ARC 场景的输入/动作/后轮审计 20 项通过。未启动真实 provider，未合入其他 checkout；完整五类 ARC 闭环、自主利用差分、净成本及 B/C/D 仍开放，O2–O8 保持待办。见[唯一分析与实施记录](su15-log-comparison-2026-10-22.md#ch-默认适配实施记录2026-10-22)。
+
 2026-10-13 分支整合：foundation-fixes 的 workspace/reuse 优化合入 native-compaction；原生压缩保持启用，历史分层和拆分工具预算随后按用户要求默认启用，保留显式关闭。合并验证与成本边界见[变更记录](reports/2026-10-13-foundation-fixes-native-merge.md)。B/C/D 的自主采用、父子净成本和压缩认知连续性仍开放。
 
 # 延后待办：ARC 边界与 Auto-Research 模式
