@@ -3,7 +3,7 @@ export type Grid = number[][];
 export type StatusMask = { rows: Set<number>; cols: Set<number>; ticker: Set<string> };
 export type ActionRow = { n:number; action:string; x?:number; y?:number; levels_completed?:number; level_changed?:boolean; state?:string };
 export type EffectObject = { colour:number; size:number; cells:Array<[number,number]>; box:{left:number;right:number;top:number;bottom:number} };
-export type EffectReceipt = { n:number; level:number; attempt:number; label:string; kind:'level'|'game_over'|'reset'|'inert'|'move'|'struct'; masked:number; status:number; dest?:string; config:string; newConfig:boolean; newState:boolean; steps:number[]; stateBefore:string; stateAfter:string; replayOf?:number; provisional?:boolean };
+export type EffectReceipt = { n:number; level:number; attempt:number; label:string; kind:'level'|'game_over'|'reset'|'inert'|'move'|'struct'; masked:number; status:number; dest?:string; config:string; newConfig:boolean; newState:boolean; steps:number[]; stateBefore:string; stateAfter:string; replayOf?:number; provisional?:boolean; bbox?:{left:number;right:number;top:number;bottom:number}; targetBin?:string };
 const at=(x:number,y:number)=>x+','+y;
 const hidden=(m:StatusMask,x:number,y:number)=>m.rows.has(y)||m.cols.has(x)||m.ticker.has(at(x,y));
 export function objectsOf(grid:Grid|undefined,mask:StatusMask):EffectObject[]{
@@ -18,14 +18,16 @@ export function objectsOf(grid:Grid|undefined,mask:StatusMask):EffectObject[]{
 }
 export const configOf=(objects:EffectObject[])=>objects.map(o=>o.colour+':'+o.size).sort().join('|');
 const stateKey=(grid:Grid|undefined,mask:StatusMask)=>grid?.map((row,y)=>row.map((v,x)=>hidden(mask,x,y)?'_':String(v)).join(',')).join(';')??'';
-export function effectOf(before:Grid|undefined,after:Grid|undefined,row:ActionRow,mask:StatusMask,ctx:{attempt:number;previous?:EffectReceipt[];transitions?:number}={attempt:0}):EffectReceipt{
+export function effectOf(before:Grid|undefined,after:Grid|undefined,row:ActionRow,mask:StatusMask,ctx:{attempt:number;previous?:EffectReceipt[];transitions?:number;anchor?:{left:number;right:number;top:number;bottom:number}}={attempt:0}):EffectReceipt{
  const old=objectsOf(before,mask),next=objectsOf(after,mask),priorConfig=configOf(old),config=configOf(next),beforeKey=stateKey(before,mask),afterKey=stateKey(after,mask);let masked=0,status=0;
  for(let y=0;y<Math.max(before?.length??0,after?.length??0);y++)for(let x=0;x<Math.max(before?.[y]?.length??0,after?.[y]?.length??0);x++)if(before?.[y]?.[x]!==after?.[y]?.[x]){if(hidden(mask,x,y))status++;else masked++;}
+ const changedCells:Array<[number,number]>=[];for(let y=0;y<Math.max(before?.length??0,after?.length??0);y++)for(let x=0;x<Math.max(before?.[y]?.length??0,after?.[y]?.length??0);x++)if(before?.[y]?.[x]!==after?.[y]?.[x]&&!hidden(mask,x,y))changedCells.push([x,y]);const bbox=changedCells.length?{left:Math.min(...changedCells.map(c=>c[0])),right:Math.max(...changedCells.map(c=>c[0])),top:Math.min(...changedCells.map(c=>c[1])),bottom:Math.max(...changedCells.map(c=>c[1]))}:undefined;
  const label=row.x!==undefined&&row.y!==undefined?row.action+'('+row.x+','+row.y+')':row.action,object=row.x===undefined||row.y===undefined?undefined:old.find(o=>o.cells.some(([x,y])=>x===row.x&&y===row.y));
  const distance=(a:EffectObject,b:EffectObject)=>Math.max(Math.abs((a.box.left+a.box.right-b.box.left-b.box.right)/2),Math.abs((a.box.top+a.box.bottom-b.box.top-b.box.bottom)/2));
  const steps=old.flatMap(o=>{const match=next.filter(x=>x.colour===o.colour&&x.size===o.size).sort((a,b)=>distance(o,a)-distance(o,b))[0];return match?[distance(o,match)]:[];});
  const level=Math.max(0,(row.levels_completed??0)-(row.level_changed?1:0));
  const kind:EffectReceipt['kind']=row.level_changed?'level':/^(GAME_OVER|WIN|FINISHED)$/.test(row.state??'')?'game_over':row.action==='RESET'?'reset':masked===0?'inert':priorConfig===config?'move':'struct';
+ let targetBin:string|undefined;if(row.x!==undefined&&row.y!==undefined)if(ctx.anchor){const d=Math.max(Math.max(ctx.anchor.left-row.x,0,row.x-ctx.anchor.right),Math.max(ctx.anchor.top-row.y,0,row.y-ctx.anchor.bottom));targetBin=d===0?'0':d===1?'1':d<=3?'2-3':d<=7?'4-7':d<=15?'8-15':'16+';}else targetBin='unplaced';
  const replay=ctx.previous?.find(x=>x.level===level&&x.label===label&&x.stateBefore===beforeKey&&x.stateAfter===afterKey);
- return{n:row.n,level,attempt:ctx.attempt,label,kind,masked,status,...(object?{dest:object.colour+':'+object.size}:{}),config,newConfig:priorConfig!==config,newState:beforeKey!==afterKey,steps,stateBefore:beforeKey,stateAfter:afterKey,...(replay?{replayOf:replay.n}:{}),...(ctx.transitions!==undefined&&ctx.transitions<8?{provisional:true}:{})};
+ return{n:row.n,level,attempt:ctx.attempt,label,kind,masked,status,...(object?{dest:object.colour+':'+object.size}:{}),config,newConfig:priorConfig!==config,newState:beforeKey!==afterKey,steps,stateBefore:beforeKey,stateAfter:afterKey,...(replay?{replayOf:replay.n}:{}),...(bbox?{bbox}:{}),...(targetBin?{targetBin}:{}),...(ctx.transitions!==undefined&&ctx.transitions<8?{provisional:true}:{})};
 }

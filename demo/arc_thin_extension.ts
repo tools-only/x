@@ -69,7 +69,7 @@ import {
 } from "./arc_thin_prediction.ts";
 import { effectOf, type StatusMask } from "./arc_thin_effects.ts";
 import { r3Config, r3State, r3Rebuild, r3Observe, r3Admit, type R3State } from "./arc_thin_r3.ts";
-import { admitWinTest, recordFailedClaim, recordFalseWin } from "./arc_thin_win_tests.ts";
+import { admitWinTest, recordFailedClaim, recordFalseWin, winKey } from "./arc_thin_win_tests.ts";
 import { buildHistory, gridChanges, type CellChange } from "./arc_thin_history.ts";
 import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } from "./arc_thin_analyst.ts";
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
@@ -466,6 +466,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     ['win_held', 'false_win', 'missed_win'].includes(row.verdict)).map(formatGoalOutcome);
   let levelCarry: LevelCarry | undefined;
   let carryDeltaQueue: CarryDelta[] = [];
+  let lastCarryPartitionKey = "";
+  let previousLevelActions = 0;
   for (const row of readRows('level_carry.jsonl')) if (row.carry) levelCarry = row.carry as LevelCarry;
   const carryInput = (): CarryInput => {
     let rulesText = '';
@@ -511,7 +513,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   function carriedPromptBody(path: string, body: string): string {
     if (carryMode === 'off' || path !== RULES_PATH || !levelCarry) return body;
     const partition = partitionRules(body, levelCarry, currentLevel());
-    append('level_carry.jsonl', { kind: 'partition', level: currentLevel(), at: trajectory.length, counts: partition.counts });
+    const partitionKey = JSON.stringify(partition.counts); if (partitionKey !== lastCarryPartitionKey) { lastCarryPartitionKey = partitionKey; append('level_carry.jsonl', { kind: 'partition', level: currentLevel(), at: trajectory.length, counts: partition.counts }); }
     if (carryMode !== 'on') return body;
     return partition.rules + (partition.carried ? '\n\nCARRIED RULES (prior; not active rules):\n' + partition.carried : '');
   }
@@ -649,7 +651,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Cost as actions used against the level baseline, while preserving the enforced caps. */
 	function budgetText(budget: any): string {
-		if (ACTION_EFFICIENCY_ENABLED) return actionBudgetText(budget);
+		if (ACTION_EFFICIENCY_ENABLED) return actionBudgetText({ ...budget, attempt: r3Run.attempt, prev_level_actions: previousLevelActions });
 		const limits = ([ ["level", budget.used, budget.maximum], ["run", budget.total_used, budget.total_maximum] ] as const)
 			.filter(([, used, maximum]) => typeof used === "number" && typeof maximum === "number") as [string, number, number][];
 		if (!limits.length) return `actions_used=${budget.total_used ?? budget.used ?? "?"}`;
@@ -1949,6 +1951,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function setPin(editId: string, move: Move, kind: string, why: string, within: number, rare?: boolean,
 		extra: Pick<Pin, "exact" | "predict" | "test"> = {}): Pin | undefined {
 		const old = pin;
+		if (r3.gates.pins !== 'off' && move.x !== undefined && move.y !== undefined) {
+			const mask = r3Mask().mask, key = winKey(gridOf(observation), move, mask);
+			const rule = mask.rows.has(move.y) || mask.cols.has(move.x) || mask.ticker.has(`${move.x},${move.y}`) ? 'masked'
+				: r3Run.winTests.failures.some(failure => failure.key === key && !failure.released) ? 'answered' : undefined;
+			if (rule) { append('r3_gates.jsonl', { n: trajectory.length, level: currentLevel(), attempt: r3Run.attempt, gate: 'G6', rule, mode: r3.gates.pins, verdict: r3.gates.pins === 'on' ? 'fired' : 'would_refuse', key }); return old; }
+		}
 		if (shouldDeferExplorationPin(executionMode())) {
 			append("refiner.jsonl", { kind: "pin_deferred", edit: editId, move, move_kind: kind, reason: "confirmed mechanism and route are being executed", at: trajectory.length });
 			return old;
@@ -3446,12 +3454,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       const derived = r3Mask(), maskKey = JSON.stringify(derived.mask, (_key, value) => value instanceof Set ? [...value].sort() : value);
       if (derived.transitions < 8) append("r3_gates.jsonl", { n: row.n, level: levelOf(row), attempt: r3Run.attempt, gate: "G0", verdict: "mask_pending" });
       if (r3MaskKey && maskKey !== r3MaskKey) append("r3_gates.jsonl", { n: row.n, level: levelOf(row), attempt: r3Run.attempt, gate: "G0", verdict: "mask_changed" });
-      const receipt = effectOf(beforeGrid, afterGrid, row, derived.mask, { attempt: r3Run.attempt, previous: r3Run.receipts, transitions: derived.transitions });
+      const receipt = effectOf(beforeGrid, afterGrid, row, derived.mask, { attempt: r3Run.attempt, previous: r3Run.receipts, transitions: derived.transitions, anchor: r3Run.anchor });
       receipt.newConfig = !r3Run.seenConfigs.has(receipt.config); receipt.newState = !r3Run.seenStates.has(receipt.stateAfter);
       append("effects.jsonl", receipt); r3Observe(r3Run, receipt, row.predict, row.level_changed); r3MaskKey = maskKey;
     }
 		if (goalAdmission !== 'off') { try { await refreshGoalChecks(); } catch (error) { logError('goal_checks:refresh', error); } }
-		if (row.level_changed) ensureLevelCarry(); else advanceLevelCarry();
+		if (row.level_changed) { previousLevelActions = trajectory.filter(item => levelOf(item) === Math.max(0, Number(row.levels_completed) - 1)).length; ensureLevelCarry(); } else advanceLevelCarry();
 		// ARC_THIN_OBSERVATION=ch: the next decision's OBSERVATIONS show what this action did, frame by frame.
 		if (chView) pendingObservations.push({
 			step: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { data: { x: row.x, y: row.y } } : {}),

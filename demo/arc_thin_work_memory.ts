@@ -314,20 +314,21 @@ export type Region = { x: number; y: number; size: number; colour: number; cells
  * Object regions of a grid: 4-connected cells of one colour other than the grid's most common one, largest first, each with
  * the member nearest its centre as the cell to click and its cells as y*64+x.
  */
-export function objectRegions(grid: number[][], limit = 32): Region[] {
+export function objectRegions(grid: number[][], limit = 32, mask?: { rows: Set<number>; cols: Set<number>; ticker: Set<string> }): Region[] {
+  const hidden = (x: number, y: number) => Boolean(mask && (mask.rows.has(y) || mask.cols.has(x) || mask.ticker.has(`${x},${y}`)));
   const counts = new Map<number, number>();
-  for (const row of grid) for (const cell of row) counts.set(cell, (counts.get(cell) ?? 0) + 1);
+  for (let y = 0; y < grid.length; y += 1) for (let x = 0; x < grid[y].length; x += 1) if (!hidden(x, y)) counts.set(grid[y][x], (counts.get(grid[y][x]) ?? 0) + 1);
   const background = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
   const seen = new Set<number>(), regions: Array<{ colour: number; cells: Array<[number, number]> }> = [];
   for (let y = 0; y < grid.length; y += 1) for (let x = 0; x < grid[y].length; x += 1) {
-    if (grid[y][x] === background || seen.has(y * 64 + x)) continue;
+    if (hidden(x, y) || grid[y][x] === background || seen.has(y * 64 + x)) continue;
     const colour = grid[y][x], cells: Array<[number, number]> = [], stack: Array<[number, number]> = [[x, y]];
     seen.add(y * 64 + x);
     while (stack.length) {
       const [cx, cy] = stack.pop()!;
       cells.push([cx, cy]);
       for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]] as Array<[number, number]>) {
-        if (ny < 0 || ny >= grid.length || nx < 0 || nx >= grid[ny].length || seen.has(ny * 64 + nx) || grid[ny][nx] !== colour) continue;
+        if (ny < 0 || ny >= grid.length || nx < 0 || nx >= grid[ny].length || hidden(nx, ny) || seen.has(ny * 64 + nx) || grid[ny][nx] !== colour) continue;
         seen.add(ny * 64 + nx);
         stack.push([nx, ny]);
       }
@@ -354,7 +355,7 @@ export type BoardFacts = {
  * and the candidates never played from it: the offered actions other than RESET and ACTION6, then a click on each object
  * region no click from this board hit.
  */
-export function boardFacts(rows: Played[], hashes: Map<number, string>, current: number, grid: number[][] | undefined, available: string[]): BoardFacts {
+export function boardFacts(rows: Played[], hashes: Map<number, string>, current: number, grid: number[][] | undefined, available: string[], mask?: { rows: Set<number>; cols: Set<number>; ticker: Set<string> }): BoardFacts {
   const here = hashes.get(current);
   const empty: BoardFacts = { seen: [], tried: [], untried: [], objects: 0 };
   if (here === undefined) return empty;
@@ -370,7 +371,7 @@ export function boardFacts(rows: Played[], hashes: Map<number, string>, current:
       : `${last.changed_cells ?? '?'} cells changed`;
     return { label: name, count: list.length, outcome, results, last: last.n };
   }).sort((a, b) => b.count - a.count || b.last - a.last);
-  const regions = grid && available.includes('ACTION6') ? objectRegions(grid) : [];
+  const regions = grid && available.includes('ACTION6') ? objectRegions(grid, 32, mask) : [];
   const clicked = from.filter((row) => row.action === 'ACTION6' && row.x !== undefined && row.y !== undefined).map((row) => row.y! * 64 + row.x!);
   const untried = [
     ...available.filter((name) => name !== 'RESET' && name !== 'ACTION6' && !groups.has(name)).map((action) => ({ action })),

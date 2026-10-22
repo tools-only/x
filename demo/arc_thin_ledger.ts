@@ -79,11 +79,13 @@ export function ideaEffort(experiments: Experiment[]): IdeaEffort[] {
 export function repetitions(rows: LedgerRow[]): Repetition[] {
 	const seen = new Map<string, number[]>();
 	const out: Repetition[] = [];
-	let episode = 0;
+	let level = 0;
 	for (const row of rows) {
-		if (row.action === "RESET" || row.state === "GAME_OVER") { episode += 1; seen.clear(); continue; }
+		const rowLevel = Math.max(0, row.levels_completed - (row.level_changed ? 1 : 0));
+		if (rowLevel !== level) { level = rowLevel; seen.clear(); }
+		if (row.action === "RESET" || row.state === "GAME_OVER") continue;
 		if (!row.before_hash || !row.after_hash) continue;
-		const key = `${episode}|${row.before_hash}|${actionKey(row)}|${row.after_hash}`;
+		const key = `${level}|${row.before_hash}|${actionKey(row)}|${row.after_hash}`;
 		const earlier = seen.get(key) ?? [];
 		if (earlier.length) out.push({ n: row.n, earlier: [...earlier], key });
 		seen.set(key, [...earlier, row.n]);
