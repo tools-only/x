@@ -1,4 +1,4 @@
-import { consultBudgetError } from './arc_thin_consult_release.ts';
+import { consultBudgetError, consultFailureDelivery } from './arc_thin_consult_release.ts';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -658,7 +658,12 @@ export class NativeRuntime {
       for (let round = 0; round < 6 && Date.now() < deadline; round++) {
         rounds = round + 1;
         if (signal?.aborted) throw Error('consult aborted');
-        const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt: `CONSULT_ROLE ${agent.name}\n${agent.body}`, messages, tools } as any,
+        // Four rounds can gather evidence; round five is reserved for delivery, with round six available only for length continuation.
+        const finalDelivery = round >= 4;
+        if (round === 4) messages.push({ role: 'user', content: 'Use the existing evidence to return known, unknown, and exact refs now. Do not call tools or invent missing conclusions.', timestamp: Date.now() });
+        const systemPrompt = `CONSULT_ROLE ${agent.name}\n${agent.body}` + (finalDelivery
+          ? '\n\nFINAL DELIVERY: state known facts, unknowns, and exact supplied evidence refs. Say when evidence is insufficient. Do not invent conclusions. No more tools are available.' : '');
+        const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt, messages, tools: finalDelivery ? [] : tools } as any,
           { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: 1024,...(onResponse?{onResponse}:{}) } as any);
         let reply: any;
         try { reply = this.host.modelResult ? await this.host.modelResult(create) : await create().result(); }
@@ -678,9 +683,10 @@ export class NativeRuntime {
         }
         const calls = (reply.content ?? []).filter((b: any) => b.type === 'toolCall');
         if (!calls.length) {
-          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed, answer, ms: Date.now() - started });
-          const {ref}=this.host.workspace.saveResult(answer);
-          return text(`${this.host.binder.label(agent.path)} →\n${this.host.workspace.receipt(answer)}\nref: ${ref}`);
+          const delivered = `${answer}\n\nEvidence refs: ${refs.length ? refs.join(', ') : '(none supplied)'}`;
+          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed, answer: delivered, ms: Date.now() - started });
+          const {ref}=this.host.workspace.saveResult(delivered);
+          return text(`${this.host.binder.label(agent.path)} →\n${this.host.workspace.receipt(delivered)}\nref: ${ref}`);
         }
         for (const call of calls) {
           let result: any;
@@ -696,6 +702,12 @@ export class NativeRuntime {
         }
       }
       throw Error(consultBudgetError(rounds, Date.now() >= deadline));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const delivered = consultFailureDelivery(reason, answer, refs);
+      this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed,
+        answer: delivered, incomplete: true, ms: Date.now() - started });
+      return text(delivered);
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   close() { this.viewPool.close(); this.kernel?.close(); }

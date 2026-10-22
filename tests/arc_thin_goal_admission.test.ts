@@ -8,7 +8,7 @@ import { arcSkillGuestProgram } from '../demo/arc_thin_skill_guest.ts';
 import { applyRows, emptyMemory, planMemoryUpdate } from '../demo/arc_thin_memory.ts';
 import { claimVersion } from '../demo/arc_thin_claims.ts';
 import { GOAL_CHECK_HELP, goalAdmissionMode, goalStanding, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, type GoalCheckRow } from '../demo/arc_thin_goal_admission.ts';
-import { consultBudgetError, consultFirstBlocks, consultServiceFailure } from '../demo/arc_thin_consult_release.ts';
+import { consultBudgetError } from '../demo/arc_thin_consult_release.ts';
 import { advanceCarry, buildLevelCarry, partitionRules, renderCarry, type CarryInput } from '../demo/arc_thin_level_carry.ts';
 
 const root = new URL('../demo/fixtures/goal-r1/', import.meta.url);
@@ -124,36 +124,21 @@ test('T7 only typed level scope and hyp cites affect partition; shadow leaves so
   assert.equal(partitionRules(rules, carry, 0).rules, rules.trim());
 });
 
-test('T8 failed consult releases the same point; pre-attempt refusals remain', () => {
+test('T8 historical consult fixtures show the former prerequisite and exhausted attempts', () => {
   const read = (arm: string) => readFileSync(new URL('../demo/fixtures/goal-r2/consult/' + arm + '.jsonl', import.meta.url), 'utf8')
     .split(String.fromCharCode(10)).filter(Boolean).map(line => JSON.parse(line));
-  for (const [arm, expectedR1, expectedR2] of [['on', 13, 0], ['shadow', 14, 1]] as const) {
-    let r1Refusals = 0, r2Refusals = 0, releasedPoints = 0;
+  for (const arm of ['on', 'shadow']) {
+    let prerequisiteRefusals = 0, exhaustedConsults = 0;
     for (const point of read(arm)) {
-      let released = false;
-      let sawConsult = false;
       for (const result of point.results) {
-        if (result.tool === 'consult') {
-          sawConsult = true;
-          if (result.isError && consultServiceFailure(result.text)) {
-            released = true;
-            releasedPoints++;
-          }
-        }
-        if (result.isError && result.text.startsWith('this review consults first:')) {
-          r1Refusals++;
-          if (!released) r2Refusals++;
-        }
+        if (result.isError && result.text.startsWith('this review consults first:')) prerequisiteRefusals++;
+        if (result.tool === 'consult' && result.isError && /consult (?:tool\/time budget exhausted|round budget exhausted|time budget exhausted|length continuation exhausted)/.test(result.text)) exhaustedConsults++;
       }
       assert.ok(point.results.length > 0);
-      if (!sawConsult) assert.equal(released, false);
     }
-    assert.equal(r1Refusals, expectedR1);
-    assert.equal(r2Refusals, expectedR2);
-    assert.ok(releasedPoints > 0);
+    assert.ok(prerequisiteRefusals > 0);
+    assert.ok(exhaustedConsults > 0);
   }
-  assert.equal(consultServiceFailure('this review used its 10 tool calls; it ends here'), false);
-  assert.equal(consultServiceFailure('tool argument validation failed'), false);
 });
 
 test('T9 recurring and level goal-check asks name the win and preserve the off behavior', () => {
@@ -188,16 +173,9 @@ test('T10 E1 refusal cites the prior winning action and GOAL_OUTCOME is prefixed
     'GOAL_OUTCOME hyp.exit: win_held at #63 (level 1)');
 });
 
-test('S1 consult failures release consult-first only for recognized service prefixes', () => {
-  for (const prefix of ['consult round budget exhausted', 'consult time budget exhausted', 'consult length continuation exhausted', 'consult aborted', 'consult error'])
-    assert.equal(consultServiceFailure(prefix + ': detail'), true);
+test('S1 consult budget errors remain bounded without imposing a review prerequisite', () => {
   assert.equal(consultBudgetError(6, false), 'consult round budget exhausted (6 rounds)');
   assert.equal(consultBudgetError(2, true), 'consult time budget exhausted (120 s)');
-  assert.equal(consultServiceFailure('consult review call cap reached'), false);
-  assert.equal(consultServiceFailure('no active subagent analyst'), false);
-  assert.equal(consultFirstBlocks({ consultPoint: true, consulted: false }, 'prompts/lessons.md'), true);
-  assert.equal(consultFirstBlocks({ consultPoint: true, consulted: false }, 'agents/analyst.md'), false);
-  assert.equal(consultFirstBlocks({ consultPoint: true, consulted: true }, 'prompts/lessons.md'), false);
   const fixture = (arm: string) => readFileSync(new URL('../demo/fixtures/goal-r2/consult/' + arm + '.jsonl', import.meta.url), 'utf8')
     .split(String.fromCharCode(10)).filter(Boolean).map(line => JSON.parse(line));
   for (const arm of ['on', 'shadow']) {
@@ -208,7 +186,8 @@ test('S1 consult failures release consult-first only for recognized service pref
     assert.ok(failures.every((result: any) => result.text.length <= 120));
   }
   const extension = readFileSync(new URL('../demo/arc_thin_extension.ts', import.meta.url), 'utf8');
-  assert.ok(extension.includes('consultServiceFailure(message)')); assert.ok(extension.includes('released: true'));
+  assert.doesNotMatch(extension, /consultFirstBlocks|consultServiceFailure|reviewConsult/);
+  assert.match(extension, /consultTool = !lean && process\.env\.ARC_THIN_CONSULT !== "0"/);
 });
 
 test('T11 recorded L2 trigger counts reproduce judged goal asks for both arms', () => {

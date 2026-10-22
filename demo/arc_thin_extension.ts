@@ -35,7 +35,6 @@ import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NO
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
 import { GOAL_CHECK_HELP, goalAdmissionMode, goalHiddenFields, goalSupportRefusal, goalVerdict, recurringGoalCheckAsk, levelGoalCheckAsk, formatGoalOutcome, type GoalCheckRow } from "./arc_thin_goal_admission.ts";
 import { advanceCarry, buildLevelCarry, partitionRules, renderCarry, renderDeltas, ruleScope, type CarryDelta, type CarryInput, type LevelCarry } from "./arc_thin_level_carry.ts";
-import { consultFirstBlocks, consultServiceFailure } from "./arc_thin_consult_release.ts";
 import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
@@ -120,8 +119,6 @@ const NO_EFFECT_CELLS = 2;
 const REFINE_FIRST = "this decision is a refine point: first call refine(focus) with what your harness should change now, then act; " +
 	"this action was NOT played";
 /** A review's answer to a write before the agent has consulted a subagent (A5). */
-const CONSULT_FIRST = "this review consults first: ask one of your subagents one question with consult(agent, question, refs) before you " +
-	"write; writing agents/<name>.md to make one is allowed";
 /**
  * Pi checks arguments against the action enum of the current state before a tool runs, and its message ("must be equal
  * to one of the allowed values") does not say what is available. su15-l0-1 (2026-10-17) sent RESET 20 times in a row
@@ -325,16 +322,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const refineTool = !lean && process.env.ARC_THIN_REFINE_TOOL !== "0";
 	const consultTool = !lean && process.env.ARC_THIN_CONSULT !== "0";
 	/**
-	 * Call points (docs/plans/2026-10-20-loop-bound-artifacts.md A5; the user, 2026-10-20: removing tools that are never
-	 * called "does not fix the root problem ... we need a mechanism to ensure they get called"). Every REFINE_EVERY
-	 * actions a decision is a refine point: it acts only after refine(focus) has been called in it, and the agent's
-	 * refinement takes the place of the scheduled one. Every native review consults a subagent before it writes.
-	 * ARC_THIN_REFINE_POINT=0 and ARC_THIN_REVIEW_CONSULT=0 turn them off.
+	 * A refine point is the agent's own request and takes the place of the scheduled refinement.
 	 */
 	const refinePoints = native && criticOn && refineTool && process.env.ARC_THIN_REFINE_POINT !== "0";
-	const reviewConsult = native && consultTool && process.env.ARC_THIN_REVIEW_CONSULT !== "0";
-	/** Where a review's record is written for the subagent it consults (read-only to the agent, read by refs). */
+	/** Exact review material remains available to optional consults without making one a write prerequisite. */
 	const RECORD_PATH = "data/record.md";
+	let reviewRecord = "";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
@@ -690,7 +683,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		 * refinePointText.
 		 */
 		refinePoint: boolean; refineCalled: boolean; refinePointText?: string;
-		consultPoint: boolean; consulted: boolean;
 		/** A level or stall review saved its own file (prompts/lessons.md, prompts/review.md); if not, the one write after its last call (gate). */
 		reviewSaved: boolean; reviewWrite?: string;
 		/** Work memory: the decisions before this one in a row that learned nothing new (spinStreak), when any. */
@@ -701,7 +693,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
-		refinePoint: false, refineCalled: false, consultPoint: false, consulted: false, reviewSaved: false,
+		refinePoint: false, refineCalled: false, reviewSaved: false,
 	});
 	let run = freshRun();
 	/**
@@ -922,6 +914,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			// ARC_THIN_OBSERVATION=ch: a decision's actions are CH's RECENT HISTORY, in the observation below; a review keeps
 			// its own material (the actions since the last review, or the level record).
 			if (recent && (!chView || run.consolidating)) out.push(["recent", recent]);
+			if (run.consolidating) reviewRecord = recent ?? "";
 			if (refinerNotices.length) {
 				out.push(["refiner", refinerNotices.map(({ text }) => text).join("\n")]);
 				// When the agent is told of an edit: the ledger counts what it did from this decision on.
@@ -934,13 +927,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			// Work memory: after a decision that learned nothing new, the head says so; with contextLayout at its end (below),
 			// otherwise first (after the call points).
 			if (run.spin?.streak && !contextLayout && !(ACTION_EFFICIENCY_ENABLED && knownResetReplay(trajectory))) out.unshift(["spin", spinText(run.spin)]);
-			// Call points (A5) open the head: a refine point before a decision acts, a consult before a review writes. The
-			// review's record is also written where the subagent it consults can read it.
+			// A refine point opens the head before a decision acts; reviews can use consult voluntarily.
 			if (run.refinePoint && run.refinePointText) out.unshift(["refine_point", run.refinePointText]);
-			if (run.consultPoint) {
-				out.unshift(["consult", consultFirstText()]);
-				if (workspace && recent) { try { workspace.runtimeWrite(RECORD_PATH, recent + "\n"); } catch (error) { logError("review:record", error); } }
-			}
 			return out;
 		};
 		const sections: Array<[string, string]> = control ? [["recent", recent]]
@@ -2069,8 +2057,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const versions = binder.versionMap();
 		const lessonVersion = versions[LESSONS_PATH];
 		const newLevelReview = lessonVersion !== undefined && !testsRead.has(`${LESSONS_PATH}@${lessonVersion}`);
-		if (newLevelReview) testsRead.add(`${LESSONS_PATH}@${lessonVersion}`);
-		for (const [path, goal] of [[REVIEW_PATH, false]] as const) {
+		for (const [path, goal] of [[LESSONS_PATH, true], [REVIEW_PATH, false]] as const) {
 			const version = versions[path];
 			if (version === undefined || testsRead.has(`${path}@${version}`)) continue;
 			testsRead.add(`${path}@${version}`);
@@ -2884,31 +2871,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	// ---------------------------------------------------------------- call points and accounting (loop-bound artifacts)
 
-	/** A review's write waits for its consult (A5); writing agents/<name>.md, the subagent to consult, does not. */
-	const consultFirst = (path = "") => consultFirstBlocks({ consultPoint: run.consultPoint, consulted: run.consulted }, path);
-	/** The subagent the last review consulted, until the review's marks of what it took from it are counted. */
-	let consultedAgent = "";
-	/** After a review that consulted: what it kept of the answer, by the "(from <name>)" marks it was asked for (A5). */
-	function noteConsultUse(previous: Run): void {
-		if (!previous.consultPoint || !previous.consulted || !consultedAgent || !workspace) return;
-		const mark = `(from ${consultedAgent})`;
-		const fileMarks = [LESSONS_PATH, REVIEW_PATH, STRATEGY_PATH, RULES_PATH].reduce((n, path) => {
-			try { return n + workspace.read(path).split(mark).length - 1; } catch { return n; }
-		}, 0);
-		const memoryMarks = readRows("memory.jsonl").filter((row) => Number(row.at) === trajectory.length && JSON.stringify(row).includes(mark)).length;
-		append("call_points.jsonl", { kind: "consult_use", at: trajectory.length, decision, agent: consultedAgent, file_marks: fileMarks, memory_marks: memoryMarks });
-		consultedAgent = "";
-	}
-	/** What a review shows first when it consults (A5): which subagents there are, or how to make one, and the record's path. */
-	function consultFirstText(): string {
-		const agents = binder?.active().filter((c) => c.kind === "subagent").map((c) => c.name) ?? [];
-		return `CONSULT FIRST (every review): before you write, ask one of your subagents one question about this record with ` +
-			`consult(agent, question, refs=["${RECORD_PATH}"]); it reads the record in a context of its own, without your assumptions. ` +
-			(agents.length ? `Your subagents: ${agents.join(", ")}. ` : "You have none yet: first write agents/<name>.md (frontmatter: " +
-				"description, tools: [read, python]; then what it should look for). ") +
-			"Your writes wait until it has answered. Mark what you take from the answer with (from <name>).";
-	}
-
 	/**
 	 * A4: what each saved tool has done where it enters the decision (the runtime's counts): a view's runs and output
 	 * changes, a predictor's scored predictions, a callable tool's calls. `idle` names those that ran without helping.
@@ -3489,8 +3451,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       const path = posix.normalize(String((params as any)?.path ?? '').replace(/\\/g, '/'));
       // The one write after a review's last call is for the review's own file (gate).
       if (run.reviewWrite && path !== run.reviewWrite) throw new Refusal(`after this review's last call only ${run.reviewWrite} is accepted`);
-      // A review writes after it has consulted (A5); making the subagent to consult is a write it may do first.
-      if ((tool.name === 'write' || tool.name === 'edit') && consultFirst(path)) throw new Refusal(CONSULT_FIRST);
       try { return await tool.execute('workspace', params as any, signal, undefined, ctx); }
       catch (error) { throw new Refusal(errorText(error)); }
     }) });
@@ -3593,8 +3553,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}),
 			prepareArguments: repairMemoryArguments,
 			execute: guardTool("memory", async (params: MemoryParams, signal) => {
-				// A review writes after it has consulted (A5).
-				if (consultFirstBlocks({ consultPoint: run.consultPoint, consulted: run.consulted }, 'memory')) throw new Refusal(CONSULT_FIRST);
 				return text(await commitMemory(params, signal), undefined, endsBatch());
 			}),
 		});
@@ -4001,24 +3959,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       receipt: body => workspace.receipt(body),
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         let result: any;
-		try { result = await fn(params, signal, ctx); } catch (error) {
-          const message = errorText(error);
-          if (name === 'consult' && run.consultPoint && !run.consulted && consultServiceFailure(message)) {
-            run.consulted = true;
-            append('call_points.jsonl', { kind: 'consult', at: trajectory.length, decision, review: run.consolidating,
-              agent: String(params?.agent ?? ''), question: String(params?.question ?? '').slice(0, 300),
-              outcome: 'failed', released: true, error: message.slice(0, 200) });
-            throw new Refusal(`${message} The consult service failed; this review may write without it now.`);
-          }
-          throw new Refusal(message);
-        }
-        // A review's call point (A5): once a subagent has answered, the review may write.
-        if (name === 'consult') {
-          if (run.consultPoint) run.consulted = true;
-          append('call_points.jsonl', { kind: 'consult', at: trajectory.length, decision, review: run.consolidating, agent: String(params?.agent ?? ''),
-            question: String(params?.question ?? '').slice(0, 300) });
-          consultedAgent = String(params?.agent ?? '');
-        }
+		if (name === 'consult' && run.consolidating && workspace && reviewRecord) {
+			try { workspace.runtimeWrite(RECORD_PATH, reviewRecord + "\n"); } catch (error) { logError("review:record", error); }
+		}
+		try { result = await fn(params, signal, ctx); } catch (error) { throw new Refusal(errorText(error)); }
+		if (name === 'consult') append('call_points.jsonl', { kind: 'consult', at: trajectory.length, decision,
+		  review: run.consolidating, agent: String(params?.agent ?? ''), question: String(params?.question ?? '').slice(0, 300) });
         return result;
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
@@ -4085,7 +4031,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
-		noteConsultUse(run);
 		// ARC_THIN_OBSERVATION=ch: observations a decision showed but the model never answered (a provider error) are shown
 		// again, as CH clears them only after a response.
 		if (chView && !run.consolidating && !run.answered && decisionObservations.length) {
@@ -4112,13 +4057,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
 		// Work memory: a decision after one that learned nothing new opens by saying so.
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
-		// Call points (A5): every review consults before it writes; every REFINE_EVERY actions since the agent's last refine
-		// call, a decision acts only after refine(focus).
-		run.consultPoint = reviewConsult && run.consolidating;
+		// Call points: every REFINE_EVERY actions since the agent's last refine call, a decision acts only after refine(focus).
 		if (!continuing) run.refinePoint = refinePoints && !run.consolidating && refinerActive() && trajectory.length > 0
 			&& trajectory.length - lastRefineCallAt >= REFINE_EVERY;
-		if (!continuing && (run.refinePoint || run.consultPoint))
-			append("call_points.jsonl", { kind: run.refinePoint ? "refine_point" : "consult_point", at: trajectory.length, decision });
+		if (!continuing && run.refinePoint) append("call_points.jsonl", { kind: "refine_point", at: trajectory.length, decision });
 		// A tool-only decision is already complete from the runner's perspective.
 		// The next turn must be an action turn; leaving memory/skill exposed here
 		// invites the model to repeat the same measurement and consumes another full
@@ -4188,9 +4130,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
           + 'is not in it you will have to derive again.'
         : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
       refine: criticOn ? `Refinements run in the background (level changes, missing goal tests, stalls, repeated work${refineTool ? ', refine(focus)' : ''}); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ` : '',
-      // Call points (A5), said once where the capabilities are.
-      call_points: [refinePoints ? `Every ${REFINE_EVERY} actions a decision is a refine point: it acts after refine(focus).` : '',
-        reviewConsult ? 'Every review starts by consulting a subagent.' : ''].filter(Boolean).map(line => line + ' ').join(''),
+      call_points: refinePoints ? `Every ${REFINE_EVERY} actions a decision is a refine point: it acts after refine(focus). ` : '',
       // P4 (ARC_THIN_LEAN, ARC_THIN_CONSULT): without consult, subagents have no way to be asked, so their line goes (below).
       kinds: consultTool ? 'five' : 'four',
       nonacting: consultTool ? 'subagents or views' : 'views',

@@ -146,19 +146,18 @@ test('a refine point: every REFINE_EVERY actions a decision acts only after refi
 	} finally { await h.close(); await done(w); }
 });
 
-test('a level review consults a subagent before it writes; its test lines are pinned one at a time as goal tests, each result said', async () => {
+test('a level review can write without consulting and still can consult voluntarily; test lines pin one at a time', async () => {
 	const w = await world();
 	const h = await attach(w);
 	try {
 		await h.begin(); await h.act({ action: 'ACTION6', x: 1, y: 1 });
 		await h.begin(); await h.act({ action: 'ACTION6', x: 8, y: 8 });
 		const review = await h.begin('LEVEL REVIEW. Level 1 is complete; this turn takes no action.');
-		assert.match(review, /^LEVEL REVIEW[^\n]*\n\nCONSULT FIRST \(every review\): [^\n]*You have none yet: first write agents\/<name>\.md/);
+		assert.match(review, /^LEVEL REVIEW/);
+		assert.doesNotMatch(review, /CONSULT FIRST|review consults first/);
 		const lessons = '---\nactive: true\n---\n1. Level 1 only: a click on the marked cell completed it.\n' +
 			'- test: ACTION6(3,3) — the new marked cell completes the level\n- **test:** ACTION1 — the move key completes it\n' +
 			'- test: a click near the corner — it completes the level\n';
-		assert.match(await h.call('write', { path: 'prompts/lessons.md', content: lessons }), /^REFUSED: this review consults first/);
-		assert.match(await h.call('memory', { op: 'set', key: 'win', text: 'the marked cell' }), /^REFUSED: this review consults first/);
 		assert.match(await h.call('write', { path: 'agents/scout.md', content: '---\ndescription: reads a level record\ntools: [read]\n---\nSay what was never tried.\n' }),
 			/agents\/scout\.md → subagent scout v1: saved · loaded/);
 		await h.request('LEVEL REVIEW. Level 1 is complete; this turn takes no action.');
@@ -183,7 +182,19 @@ test('a level review consults a subagent before it writes; its test lines are pi
 		assert.match(h.file('workspace/prompts/strategy.md'), /- First: ACTION1; test 2 of 2 from prompts\/lessons\.md/);
 		assert.doesNotMatch(h.file('workspace/prompts/strategy.md'), /ACTION6\(3,3\); test 1/);
 		assert.deepEqual(h.rows('refiner.jsonl').filter((row) => row.kind === 'tests').map((row) => [row.version, row.count, row.played ?? 0]), [[1, 2, 0], [2, 2, 1]]);
-		assert.deepEqual(h.rows('call_points.jsonl').map((row) => row.kind), ['consult_point', 'consult', 'consult_use']);
+		assert.deepEqual(h.rows('call_points.jsonl').map((row) => row.kind), ['consult']);
+	} finally { await h.close(); await done(w); }
+});
+
+test('a review can save notes and memory without calling a subagent', async () => {
+	const w = await world(); const h = await attach(w);
+	try {
+		await h.begin(); await h.act({ action: 'ACTION6', x: 8, y: 8 });
+		const review = await h.begin('LEVEL REVIEW. Level 1 is complete; this turn takes no action.');
+		assert.doesNotMatch(review, /CONSULT FIRST/);
+		assert.match(await h.call('write', { path: 'notes/review-draft.md', content: 'Current evidence is sufficient for this note.' }), /notes\/review-draft\.md/);
+		assert.match(await h.call('memory', { op: 'set', key: 'review-note', text: 'The review may record a note without consulting.' }), /review-note/);
+		assert.deepEqual(h.rows('call_points.jsonl'), []);
 	} finally { await h.close(); await done(w); }
 });
 

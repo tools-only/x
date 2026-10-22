@@ -1,23 +1,13 @@
-/** Consult failures that release only the consult-first review gate. */
-const SERVICE_PREFIXES = [
-  'consult tool/time budget exhausted',
-  'consult round budget exhausted',
-  'consult time budget exhausted',
-  'consult length continuation exhausted',
-  'consult aborted',
-  'consult error',
-];
-
-export function consultServiceFailure(message: string): boolean {
-  const text = message.trim().toLowerCase();
-  return SERVICE_PREFIXES.some(prefix => text.startsWith(prefix));
-}
-
-export function consultFirstBlocks(state: { consultPoint?: boolean; consulted?: boolean }, tool: string): boolean {
-  const path = tool.replaceAll(String.fromCharCode(92), '/');
-  return Boolean(state.consultPoint && !state.consulted && !path.startsWith('agents/'));
-}
-
 export function consultBudgetError(rounds: number, timeExpired: boolean): string {
   return rounds >= 6 && !timeExpired ? 'consult round budget exhausted (6 rounds)' : 'consult time budget exhausted (120 s)';
+}
+
+/** A mechanical failure receipt: it labels partial text and returns only refs the caller already supplied. */
+export function consultFailureDelivery(error: string, partial: string, refs: string[]): string {
+  return [
+    `CONSULT INCOMPLETE: ${error}`,
+    `Known: ${partial.trim() ? `last child text (not a final conclusion): ${partial.trim()}` : 'no conclusion was returned'}`,
+    'Unknown: a final synthesis was not returned; the runtime did not infer one.',
+    `Evidence refs: ${refs.length ? refs.join(', ') : '(none supplied)'}`,
+  ].join('\n');
 }
