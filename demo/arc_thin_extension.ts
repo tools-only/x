@@ -67,6 +67,8 @@ import { isEnvironmentFailure, repairActionArguments, repairActionList, repairMe
 import {
 	normalizePrediction, predictionSchema, renderScore, scorePrediction, type Outcome, type Prediction, type ScoredPrediction,
 } from "./arc_thin_prediction.ts";
+import { effectOf, type StatusMask } from "./arc_thin_effects.ts";
+import { r3Config, r3State, r3Rebuild, r3Observe, r3Admit, type R3State } from "./arc_thin_r3.ts";
 import { buildHistory, gridChanges, type CellChange } from "./arc_thin_history.ts";
 import { ANALYST_SYSTEM, analystMessage, analystReceipt, type AnalystInputs } from "./arc_thin_analyst.ts";
 import { artifactHistory, artifactInputs, newArtifactRecords, renderArtifacts, splitArtifacts, type ArtifactRecord } from "./arc_thin_artifacts.ts";
@@ -241,6 +243,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const responsesContinuation = new ResponsesContinuation();
   const native = process.env.ARC_THIN_FOUNDATION === "native";
   const goalAdmission = goalAdmissionMode(process.env.ARC_THIN_GOAL_ADMISSION);
+  const r3 = r3Config(process.env);
   const carryMode = process.env.ARC_THIN_LEVEL_CARRY ?? 'shadow';
   if (!['off', 'shadow', 'on'].includes(carryMode)) throw Error('ARC_THIN_LEVEL_CARRY must be off, shadow or on');
   // The runner and directly loaded native extension share CH's observation and ARC action adapter by default.
@@ -364,6 +367,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let systemChars = 0;
 	/** grids.get(n) is the grid after action n (0 = before the first action); persisted in states.jsonl. */
 	const grids = new Map<number, number[][]>();
+  let r3Run: R3State = r3State();
+  let r3MaskKey = "";
+  function r3Mask(): { mask: StatusMask; transitions: number } {
+    const ns = [...grids.keys()].sort((a,b) => a-b), changes: Array<Array<[number,number,number|undefined,number|undefined]>> = [];
+    for (let i=1;i<ns.length;i++) {
+      if (ns[i] !== ns[i-1]+1) continue;
+      const before=grids.get(ns[i-1])!, after=grids.get(ns[i])!, delta: Array<[number,number,number|undefined,number|undefined]> = [];
+      for (let y=0;y<Math.max(before.length,after.length);y++) for(let x=0;x<Math.max(before[y]?.length??0,after[y]?.length??0);x++)
+        if(before[y]?.[x]!==after[y]?.[x]) delta.push([x,y,before[y]?.[x],after[y]?.[x]]);
+      changes.push(delta);
+    }
+    const derived = statusMask(changes);
+    return { mask: { rows: derived.rows, cols: derived.cols, ticker: derived.ticker }, transitions: changes.length };
+  }
 	const changeCache = new Map<number, CellChange[] | null>();
 	/** What each move changed, outside counter lines, for the kinds of moves made (arc_thin_coverage.ts). */
 	const moveFacts = new MoveFacts(grids);
@@ -527,6 +544,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		changeCache.clear();
 		moveFacts.clear();
 		for (const row of readRows("states.jsonl")) if (Array.isArray(row.grid)) grids.set(Number(row.n), row.grid);
+    const derivedMask = r3Mask();
+    r3Run = r3Rebuild(trajectory, grids, derivedMask.mask);
+    r3MaskKey = JSON.stringify(derivedMask.mask, (_key, value) => value instanceof Set ? [...value].sort() : value);
 		const workingSets = readRows("working_set.jsonl");
 		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating).map((row) => Number(row.actions) || 0));
 		const decisions = [...trajectory, ...readRows("usage.jsonl"), ...workingSets].map((row) => Number(row.decision) || 0);
@@ -3401,6 +3421,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		actionTimes.push(Date.now());
 		append("trajectory.jsonl", row);
 		recordState(row.n, afterGrid);
+    if (r3.gates.effects !== 'off') {
+      const derived = r3Mask(), maskKey = JSON.stringify(derived.mask, (_key, value) => value instanceof Set ? [...value].sort() : value);
+      if (derived.transitions < 8) append("r3_gates.jsonl", { n: row.n, level: levelOf(row), attempt: r3Run.attempt, gate: "G0", verdict: "mask_pending" });
+      if (r3MaskKey && maskKey !== r3MaskKey) append("r3_gates.jsonl", { n: row.n, level: levelOf(row), attempt: r3Run.attempt, gate: "G0", verdict: "mask_changed" });
+      const receipt = effectOf(beforeGrid, afterGrid, row, derived.mask, { attempt: r3Run.attempt, previous: r3Run.receipts, transitions: derived.transitions });
+      receipt.newConfig = !r3Run.seenConfigs.has(receipt.config); receipt.newState = !r3Run.seenStates.has(receipt.stateAfter);
+      append("effects.jsonl", receipt); r3Observe(r3Run, receipt, row.predict, row.level_changed); r3MaskKey = maskKey;
+    }
 		if (goalAdmission !== 'off') { try { await refreshGoalChecks(); } catch (error) { logError('goal_checks:refresh', error); } }
 		if (row.level_changed) ensureLevelCarry(); else advanceLevelCarry();
 		// ARC_THIN_OBSERVATION=ch: the next decision's OBSERVATIONS show what this action did, frame by frame.

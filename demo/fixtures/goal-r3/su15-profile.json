@@ -1,0 +1,8 @@
+{
+  "game": "su15",
+  "source_runs": ["su15-lr-g61", "su15-g61-1", "R2-A", "R2-B", "su15-chm"],
+  "statusMask": { "rows": [63], "cols": [], "costPerClick": 2 },
+  "operator": { "moveStepCells": 6, "nudgeStepCells": 2 },
+  "effectClasses": { "conversion": 5, "move": [17, 18], "fusion": 34, "win": [250, 251] },
+  "note": "evidence from recorded runs; never read by gates"
+}
