@@ -12,7 +12,7 @@
 
 使用一份 [变更记录](templates/meta-harness-change.md)，或在已有计划/报告中使用同样栏目。设计、实现、验证在同一记录增量更新，避免另建重复真值源。记录是开发产物，不是运行时必填字段。
 
-小型文档修正、局部诊断和保持行为的维护按风险缩减记录与检查。本流程不要求每次改字都启动真实 provider，也不要求每次实验覆盖全部组件；ARC 闭环声明仍执行根 AGENTS.md 的完整矩阵。
+小型文档修正、局部诊断和保持行为的维护按风险缩减记录与检查。本流程不要求每次改字都启动真实 provider，也不要求每次实验覆盖全部组件；修改冻结的旧 ARC 路径并声明其闭环时，仍执行 §3 所列 `arc-harness-smoke` 的完整矩阵。
 
 ## 2. 开发步骤与完成条件
 
@@ -38,7 +38,7 @@
 
 每层分别记录状态：未验证、通过、失败、不确定，或不适用（说明理由）。高层观察不能替代低层完整性检查；不同产物的 provider/environment 是否为真实实现、test double 或 mock 必须分别标注。
 
-ARC 全链路声明必须执行 `arc-harness-smoke`，保留五类组件、两类 provider `length` continuation、语义工具输出及后续真实父轮的既有门槛。pytest、手写 JSONL、离线父脚本和组件 fixture 是诊断证据。确定性 provider 的真实 runner smoke 证明接线，不证明真实模型行为或游戏质量。
+当前 ARC 路径是 thin/native（`demo/arc_thin_extension.ts`，CLI `arc-thin-e2e`）。其接线与全链路可达证据来自 `arc-thin-smoke`、`tools/run_foundation_smoke.py`（生产 bridge 与实际 Pi，mock ARC SDK 与脚本 provider）或真实运行产物；关卡效果只由真实 provider 运行或 matched-prefix fork 的真实 ARC 结果证明。`arc-harness-smoke` 只用于冻结的旧路径（`demo/pi_arc_agi_3_extension.ts`；Auto-Research 自 2026-10-12 起在 ARC 上弃用）：修改该路径并声明其闭环时，仍执行五类组件、两类 provider `length` continuation、语义工具输出及后续真实父轮的既有门槛。pytest、手写 JSONL、离线父脚本、离线重放和组件 fixture 是诊断证据；脚本 provider 的 smoke 证明接线，不证明真实模型行为或游戏质量。
 
 自主采用实验使用普通运行；显式闭环探针、指定必须调用某工具/创建某组件的任务、脚本替模型选调用顺序都归入诊断/接线。记录实际引导条件；窄能力任务可诊断使用问题，但不据此声称一般自主识别能力。
 
@@ -48,7 +48,7 @@ ARC 全链路声明必须执行 `arc-harness-smoke`，保留五类组件、两�
 
 沿“机会 → 识别 → 投入 → 候选 → 装配 → 语义使用 → 反馈 → 保留/修订/撤下”检查。纯研究可交付结论而不生成组件，父自主创作也不必先发起研究。组件版本回退只影响未来配置，不能回退环境或消除已获知信息。
 
-每个转移说明：推进者、可观察输入、权限、完成证据、等待/失败/过时处理及停止条件。给定职责后由 runtime 推进机械证据路由、已授权调度、版本校验和恢复；科学结论、价值判断和采用选择由获授权 Agent 承担。遵循 [Auto-Research ADR](plans/2026-10-01-auto-research-mechanism-and-workers.md) 和当前父作者/显式装配边界。
+每个转移说明：推进者、可观察输入、权限、完成证据、等待/失败/过时处理及停止条件。给定职责后由 runtime 推进机械证据路由、已授权调度、版本校验和恢复；科学结论、价值判断和采用选择由获授权 Agent 承担。当前 thin/native 路径中，runtime、refiner、台账与 critic 是服务，提供接口、执行和材料；创建、调用与行动由 Agent 决定，只有 Agent 自己创建或调用的组件计为采用（见根 AGENTS.md 的 Design invariants）。[Auto-Research ADR](plans/2026-10-01-auto-research-mechanism-and-workers.md) 与父作者/显式装配边界只适用于冻结的旧路径。
 
 诊断采用漏斗时分别计数：适用机会、识别、投入、候选、装配、实际使用、反馈。适用性基于可见证据的外部审阅或显式条件，不能用“工具存在”推断必有价值，也不能由 runtime 从自然语言猜出适用性。保留机会分母、判断理由和未知项；合理不使用、放弃及负收益样本都进入报告。
 
