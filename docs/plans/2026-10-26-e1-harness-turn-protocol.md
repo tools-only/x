@@ -273,12 +273,12 @@ not refusals in a row. The log is `guard_runs.jsonl`, with every answer, not a r
 | pytest: the 8 `test_arc_thin_*` files, `test_arc_foundation_config.py`, `test_arc_bridge_deadline.py` | 49 passed | — |
 | Scripted smoke `guard`: real Pi 0.87.0, production bridge, mock SDK, WASI, scripted provider; both flags on; a stall review after 2 actions | Every guard check passed. The review shows the contract with the guard place and a LOOP AUDIT. The saved guard has no trailer; `harness_changes` and a candidate EXPECT are recorded, and the receipt confirms them. ACTION3 is refused before the bridge with the receipt above. Trajectory: ACTION1, ACTION4, ACTION1, ACTION4. `guard_runs`: refuse, allow, allow. The run then fails the shared `system_chars <= 3000` assert, as every native smoke has since 10-16: 4,312 characters here, of which the guard line adds about 170 when it is on. | `runs/e1-smoke-20261026/guard-2` |
 | Scripted smoke `foundation`, flags off | Its own checks pass, then the same shared assert fails. | `runs/e1-smoke-20261026/foundation-1` |
-| Scripted smoke `components`, flags off | Fails at `NATIVE_STANDING_RULE in system_prompt`: the prompts have been in the head since `3ff04b13`. The view rows it checks after that line match its expectation: (1, 3), (2, 4), (4, 777), (5, 777). | `runs/e1-smoke-20261026/components-1` |
-| Fork-load S-q and S-g, `MAXDEC=0`, frozen checkout | pending | — |
+| Scripted smoke `components`, flags off | Fails at `NATIVE_STANDING_RULE in system_prompt`, and fails the same way at `73cddb12`: the prompts have been in the head since `3ff04b13`. The view rows it checks after that line match its expectation: (1, 3), (2, 4), (4, 777), (5, 777). | `runs/e1-smoke-20261026/components-1`, `components-base` |
+| Fork-load S-q and S-g, `MAXDEC=0`, frozen checkout of `5c86748d`, arm B flags, query observation | Both passed with stop `max_decisions` and 0 decisions. The prefixes replayed on the ARC environment with the scorecard verified: S-q 63 actions, S-g 22, level 1 complete in both. Reported tokens equal the prefix's (S-q 1,785,674; S-g 219,292), so no provider request was made. 0 extension errors. `run-config.json` records `harness_turn` and `guards` true. | `D:/autoresearch_pi_project/runs/arc-e1-20261026/forkload-sq-B`, `forkload-sg-B` |
 
 ## Launch (prepared, not run)
 
-- **Frozen source (R6):** the E1 commit `<E1 commit>` on `claude/r04-20261017`, checked out detached at
+- **Frozen source (R6):** the E1 commit `5c86748d` on `claude/r04-20261017`, checked out detached at
   `D:/autoresearch_pi_project/worktrees/e1-frozen`, with a `node_modules` junction to the project's. Before removing
   that worktree, run `cmd /c rmdir` on the junction first.
 - **Every run:**
@@ -293,7 +293,7 @@ not refusals in a row. The log is `guard_runs.jsonl`, with every answer, not a r
 | Evidence layer | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
 | Functional correctness | Verified (function and wiring) | node tests, pytest | Verification table; 5 failing tests also fail at `73cddb12` |
-| Full-chain reachability | Verified with the scripted provider only | real Pi 0.87.0, production bridge, mock SDK, WASI | `runs/e1-smoke-20261026/guard-2`; no real provider, no ARC game beyond the fork-load replay |
+| Full-chain reachability | Verified with the scripted provider, and fork loading on the ARC environment | real Pi 0.87.0, production bridge, mock SDK, WASI; the real bridge and ARC environment for the fork loads | `runs/e1-smoke-20261026/guard-2`; `D:/autoresearch_pi_project/runs/arc-e1-20261026/forkload-*`; no real provider request, so nothing about model behaviour |
 | Autonomous adoption | Unverified | — | E0 baseline only: 0 of 58 written reviews followed by an executable component |
 | Net benefit | Unverified | — | Not targeted by E1 |
 
