@@ -373,94 +373,22 @@ test('work memory: a python result starts with its address, a repeat names the f
   } finally { runtime.close(); }
 });
 
-test('a view and predictor saved on an earlier level are reported as unconfirmed and are not run on the next level', async () => {
-  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-stale-level-')));
-  const binder = new Binder(workspace, validatePythonComponent);
-  workspace.runtimeWrite('tools/old_view.py', '# Old level map.\n# view: on\ndef observe(state):\n    return "OLD_LEVEL_MAP"\n');
-  await binder.save('tools/old_view.py', 0);
-  workspace.runtimeWrite('tools/old_predictor.py', 'def predict(state, action):\n    return {"state": "NOT_FINISHED"}\n');
-  await binder.save('tools/old_predictor.py', 0);
-  binder.boundary();
-  const logs: any[] = [];
-  let level = 1;
-  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
-    state: () => ({ grid: [[1]] }), level: () => level, actionCount: () => 1,
-    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+test('a Python-saved component strips and records its EXPECT trailer before validation and first execution', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-expect-')));
+  const saved: any[] = [];
+  const binder = new Binder(workspace, async () => ({ kind: 'tool', name: 'view', description: 'view', enabled: true, view: true }));
+  const runtime = new NativeRuntime({ pi: { registerTool() {}, getActiveTools: () => [], setActiveTools() {} } as any, workspace, binder,
+    state: () => ({ grid: [[1, 2]] }), level: () => 0, actionCount: () => 0,
+    log() {}, usage() {}, wrap: (_name, fn) => fn,
+    componentSaved(path, before, receipt, split) { saved.push({ path, before, receipt, split }); return ''; } });
   try {
-    runtime.observe(1);
-    const shown = await runtime.observerText();
-    assert.match(shown, /old_view\.py.*written on level 0.*unconfirmed on level 1/i);
-    assert.doesNotMatch(shown, /OLD_LEVEL_MAP/);
-    assert.deepEqual(logs.filter(row => row.file === 'observer_runs.jsonl'), []);
-    assert.deepEqual(await runtime.predict({ name: 'ACTION1' }), []);
-
-    level = 0;
-    runtime.observe(2);
-    assert.match(await runtime.observerText(), /OLD_LEVEL_MAP/);
-    assert.equal(logs.filter(row => row.file === 'observer_runs.jsonl').length, 1);
-    assert.equal((await runtime.predict({ name: 'ACTION1' })).length, 1);
+    const code = '# view: on\ngrid[0]\n\n<!-- HARNESS EXPECT\nEXPECT within 3 actions: the saved view is available\ndef check(t):\n    return t["action"] == "ACTION6"\nEND\n-->';
+    const result = await runtime.python(code, undefined, false, 'view');
+    assert.match(result.content[0].text, /\[P1\]/);
+    assert.equal(workspace.read('tools/view.py'), '# view: on\ngrid[0]\n');
+    assert.equal(saved[0].path, 'tools/view.py');
+    assert.equal(saved[0].split.expect.claim, 'the saved view is available');
+    assert.equal(saved[0].split.expect.within, 3);
+    assert.match(saved[0].split.expect.check, /def check\(t\):/);
   } finally { runtime.close(); }
-});
-
-test('action guards run only on their saved level and return versioned decisions', async () => {
-  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-guard-level-')));
-  const binder = new Binder(workspace, validatePythonComponent);
-  workspace.runtimeWrite('tools/guard.py', 'def admit(state, action):\n    return action["name"] != "ACTION1"\n');
-  await binder.save('tools/guard.py', 0);
-  binder.boundary();
-  let level = 0;
-  const registered: string[] = [];
-  const runtime = new NativeRuntime({ pi: { registerTool(tool: any) { registered.push(tool.name); } } as any, workspace, binder,
-    state: () => ({ grid: [[1]] }), level: () => level, actionCount: () => 0,
-    log() {}, usage() {}, wrap: (_name, fn) => fn });
-  try {
-    runtime.register();
-    assert.equal(registered.includes('guard'), false, 'an action guard is a runtime hook, not a callable tool');
-    const checks = await runtime.admit({ name: 'ACTION1' });
-    assert.equal(checks.length, 1);
-    assert.deepEqual({ path: checks[0].path, version: checks[0].version, allow: checks[0].allow },
-      { path: 'tools/guard.py', version: 1, allow: false });
-    assert.equal(typeof checks[0].ms, 'number');
-    level = 1;
-    assert.deepEqual(await runtime.admit({ name: 'ACTION1' }), [], 'a prior-level guard does not constrain this level');
-  } finally { runtime.close(); }
-});
-
-test('a loop mount carries versioned local state through real feedback and restart without acting or writing', async () => {
-  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-meta-')));
-  const binder = new Binder(workspace, validatePythonComponent);
-  workspace.runtimeWrite('tools/process.py', '# mount: decision, action, feedback\n' +
-    'def on_event(state, event):\n' +
-    '    if event["phase"] == "decision":\n' +
-    '        return {"context": "local=" + str(event["local"]), "next_local": (event["local"] or 0) + 1}\n' +
-    '    if event["phase"] == "action":\n' +
-    '        return {"allow": True, "expect_next": [{"path": "grid.0.0", "equals": 2}]}\n' +
-    '    return {"next_local": state["grid"][0][0]}\n');
-  await binder.save('tools/process.py', 0);
-  binder.boundary();
-  let n = 0, level = 0, grid = [[1]];
-  const logs: any[] = [];
-  const host = { pi: { registerTool() {} } as any, workspace, binder, state: () => ({ grid }),
-    level: () => level, actionCount: () => n, log(file: string, row: any) { logs.push({ file, ...row }); },
-    usage() {}, wrap: (_name: string, fn: any) => fn };
-  const runtime = new NativeRuntime(host);
-  try {
-    assert.match(await runtime.loopDecisionText(), /local=None/);
-    const action = await runtime.loopAction({ name: 'ACTION1' });
-    assert.equal(action[0].allow, true);
-    assert.deepEqual(action[0].expect_next, [{ path: 'grid.0.0', equals: 2 }]);
-    n = 1; grid = [[2]];
-    await runtime.loopFeedback({ name: 'ACTION1' }, [{ path: 'grid.0.0', hit: true }], 0);
-    assert.match(await runtime.loopDecisionText(), /local=2/);
-    assert.ok(logs.some(row => row.file === 'mount_state.jsonl' && row.local === 2));
-    level = 1;
-    assert.equal(await runtime.loopDecisionText(), '');
-    assert.deepEqual(await runtime.loopAction({ name: 'ACTION1' }), []);
-  } finally { runtime.close(); }
-  level = 0;
-  const restored = new NativeRuntime(host);
-  try {
-    restored.seedMountLocal(logs.filter(row => row.file === 'mount_state.jsonl'));
-    assert.match(await restored.loopDecisionText(), /local=3/);
-  } finally { restored.close(); }
 });

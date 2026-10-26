@@ -3,15 +3,58 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { Workspace } from './arc_thin_workspace.ts';
-import { componentKind, markdownSpec, type Component, type ComponentSpec, type Validator } from './agent_component_model.ts';
-export { componentKind, markdownSpec } from './agent_component_model.ts';
-export type { Component, ComponentSpec, Validator } from './agent_component_model.ts';
-type Entry = { path: string; version: number; hash: string; level: number; kind?: string; layer?: string; by?: string; decision?: number; error?: string; retired?: boolean; good?: Component };
+
+export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean };
+export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
+type Entry = { path: string; version: number; hash: string; level: number; error?: string; retired?: boolean; good?: Component };
+export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
+const requirePi = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'));
+const { parseDocument } = requirePi('yaml'); // Pi 0.87.0's pinned YAML dependency, full Agent Skills frontmatter.
+
+/**
+ * Components that run by themselves (a view after each new state, a predictor or a guard at each action) belong to the
+ * level they were saved on: on a later level they stop running until they are saved again. A level-1 view printed "no
+ * moving 15-block found" at every decision of level 2 in su15 R2h-A (docs/plans/2026-10-26-e1-harness-turn-protocol.md).
+ * Prompts, callable tools, skills and subagents stay active on later levels; the index calls them stale.
+ */
+const runsByItself = (c: ComponentSpec) => c.kind === 'tool' && Boolean(c.view || c.predictor || c.guard);
+
+/**
+ * The five capability categories (Prompt, Memory, Tool, Skill, Subagent; Memory lives in the memory store), by
+ * workspace place. lib/ holds code tools import (a dependency, not a capability); notes/, artifacts/ and other files
+ * are plain workspace files. observers/ and roles/ are older places for view tools and subagents.
+ */
+export function componentKind(path: string): string | undefined {
+  if (path.split('/').includes('_off')) return;
+  if (/^(tools|observers)\/[^/]+\.py$/.test(path)) return 'tool';
+  if (/^lib\/[^/]+\.py$/.test(path)) return 'library';
+  if (/^skills\/[^/]+\/SKILL\.md$/.test(path)) return 'skill';
+  if (/^prompts\/[^/]+\.md$/.test(path)) return 'prompt';
+  if (/^(agents|roles)\/[^/]+\.md$/.test(path)) return 'subagent';
+}
+/** The file conventions require only scalar values and lists, not an SDK. */
+export function markdownSpec(path: string, source: string): ComponentSpec {
+  const kind = componentKind(path)!; const name = kind === 'skill' ? path.split('/')[1] : path.split('/').at(-1)!.replace(/\.md$/, '');
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(source);
+  if (!match) throw Error('markdown needs frontmatter');
+  const doc = parseDocument(match[1]); if (doc.errors.length) throw Error(doc.errors.map((e: Error) => e.message).join('; '));
+  const header: Record<string, any> = doc.toJS({ maxAliasCount: 20 });
+  if (!header || typeof header !== 'object' || Array.isArray(header)) throw Error('frontmatter must be a mapping');
+  if (kind === 'prompt' && ![true, false].includes(header.active)) throw Error('prompt active must be true or false');
+  if ((kind === 'subagent' || kind === 'skill') && !String(header.description ?? '').trim()) throw Error('description is required');
+  if (kind === 'skill' && header.name !== name) throw Error('skill name must match its directory');
+  if (kind === 'subagent' && (!Array.isArray(header.tools) || header.tools.some((t: string) => ['arc_action', 'consult', 'write', 'edit', 'memory', 'refine'].includes(t))))
+    throw Error('subagent tools must be read, python or named tools; subagents never act');
+  return { kind, name, description: String(header.description ?? match[2].split(/\r?\n/).find(s => s.trim()) ?? '').slice(0, 120),
+    enabled: kind !== 'prompt' || header.active === true, body: match[2], tools: header.tools, refs: header.refs };
+}
 
 export class Binder {
   private entries = new Map<string, Entry>();
   private bindings = new Map<string, Component>();
-  private processBinding?: Component;
+  /** Components are scoped to the level on which their saved version was created. */
+  private level = 0;
   private saving: Promise<unknown> = Promise.resolve();
   private log: string; private versions: string;
   constructor(readonly workspace: Workspace, private validate?: Validator) {
@@ -121,22 +164,17 @@ export class Binder {
       this.record({ ...entry, retired: true });
     for (const path of paths) if (componentKind(path) !== 'process') await this.save(path, level);
   }
-  boundary() {
+  boundary(level = this.level) {
+    this.level = Math.max(0, Math.floor(level));
     this.bindings.clear();
-    for (const [path, entry] of this.entries) if (!entry.retired && entry.good?.enabled && entry.good.kind !== 'process') this.bindings.set(path, entry.good);
-    if (this.processBinding) this.bindings.set(this.processBinding.path, this.processBinding);
+    for (const [path, entry] of this.entries) if (!entry.retired && entry.good?.enabled && this.current(entry.good))
+      this.bindings.set(path, entry.good);
   }
-  /** The process core selects one saved Binder component at a safe request boundary. */
-  bindProcess(component: Component) {
-    if (this.processBinding) this.bindings.delete(this.processBinding.path);
-    this.processBinding = component;
-    this.bindings.set(component.path, component);
-    this.workspace.runtimeWrite(component.path, component.source);
-    this.workspace.runtimeWrite(`components/process/${component.name}/v${component.version}.source`, component.source);
-  }
+  /** Whether a saved component takes part on the level this boundary is at (runsByItself above). */
+  private current(c: Component): boolean { return c.level >= this.level || !runsByItself(c); }
   active(): Component[] { return [...this.bindings.values()].sort((a, b) => a.path.localeCompare(b.path)); }
   candidates(): Component[] {
-    return [...this.entries.values()].filter(e => !e.retired && e.good?.enabled).map(e => e.good!);
+    return [...this.entries.values()].filter(e => !e.retired && e.good?.enabled && this.current(e.good)).map(e => e.good!);
   }
   versionMap(): Record<string, number> {
     return Object.fromEntries([...this.entries].filter(([, e]) => !e.retired && e.good).map(([path, e]) => [path, e.good!.version]));
@@ -148,7 +186,8 @@ export class Binder {
   /**
    * The capability index: one line per saved prompt, tool, skill and subagent (memory has its own index). Libraries
    * and plain files are not listed. A tool's line says where it enters the decision (a view after each new state, a
-   * predictor at each action, otherwise a call) and `usage` what it has done there (the runtime's counts, by path).
+   * predictor at each action, a guard before each action, otherwise a call) and `usage` what it has done there (the
+   * runtime's counts, by path). One that runs by itself and was saved on an earlier level says that it no longer runs.
    */
   index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map(), includeProcess = true): string {
     const order = ['prompt', 'tool', 'skill', 'subagent'];
@@ -157,10 +196,13 @@ export class Binder {
       .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
     const lines = listed.map(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;
-      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'Created';
-      if (c?.program) return `${c.name}@v${c.version} | executable skill | ${status} | ${c.description}` +
-        (c.tags?.length ? ` | ${c.tags.join(', ')}` : '');
-      return `${c?.name ?? path.split('/').at(-1)?.replace(/\.[^.]+$/, '')} | ${kind} | ${status} | ${c?.description ?? ''} | via=${usage.get(path) ?? '0'}`;
+      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level && runsByItself(c) ? 'stale, not running on this level (save it again to run it)'
+        : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
+      const use = kind === 'tool' ? (path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
+          : c?.predictor ? 'predictor, run at each action' : c?.guard ? 'guard, asked before each action is sent' : `${c?.name ?? ''}(args)`)
+        : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
+      return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +
+        (usage.get(path) ? ` · ${usage.get(path)}` : '');
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';

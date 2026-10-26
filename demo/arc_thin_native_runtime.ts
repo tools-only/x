@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto';
 import { detectSupportedImageMimeTypeFromFile } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { Component } from './agent_component_model.ts';
-import { componentKind } from './agent_component_model.ts';
+import { Binder, componentKind, type Component } from './arc_thin_binder.ts';
+import { splitHarnessExpectation, type ComponentExpectationSource } from './arc_thin_expectation.ts';
 import { Workspace } from './arc_thin_workspace.ts';
 import { executeNative, nativeKernel, type ActCall, type NativeResult } from './arc_thin_components.ts';
 import { PythonSession } from './arc_thin_python_session.ts';
@@ -30,6 +30,7 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; self: any; state(): Record
   onSaved?(path: string, receipt: string | undefined): void;
   metaDecision?(choice: string, reason: string): string;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
+  componentSaved?(path: string, before: number | undefined, receipt: string | undefined, split: ComponentExpectationSource): string | undefined;
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
   /** Run the parent's python calls in a live kernel (default true); false: a fresh sandbox per call, restored from the checkpoint. */
@@ -50,9 +51,8 @@ export const MAX_ACTS = 24;
 const MAX_PARALLEL = 4;
 /** States after which a view whose output never changed is shown as a snapshot: its head only (observe). */
 export const CONSTANT_VIEW_RUNS = 5;
-/** Host-owned limit; source declarations cannot increase it. */
-const MAX_LOOP_MOUNTS = 4;
-const MAX_LOOP_MOUNT_MS = 5000;
+/** How long a guard may take to answer for one action before the action passes without it (admit below). */
+export const GUARD_MS = 8000;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
   : typeof result.value === 'object' && result.value !== null && 'stdout' in result.value
     ? [(result.value as any).stdout, (result.value as any).has_value ? '→ ' + JSON.stringify((result.value as any).value) : ''].filter(Boolean).join('\n')
@@ -431,6 +431,8 @@ export class NativeRuntime {
     const scanStarted=performance.now(), paths=this.host.workspace.files(), scanMs=performance.now()-scanStarted;
     const readStarted=performance.now();
     for (const path of paths) {
+      if (path.endsWith('.png')) continue; // binary observations are read as images by Pi, never decoded into guest text
+      if (/^data\/loop\//.test(path)) continue; // raw audit logs are available through read, not copied into every Python snapshot
       if (/^(lib|tools|observers)\/.+\.py$/.test(path)) continue; // failed source never hides behind a working import
       if (this.host.workspace.isBinary(path)) {
         const body=this.host.workspace.readBytes(path); readBytes+=body.length;
@@ -512,10 +514,20 @@ export class NativeRuntime {
         recordWrite(op);
         continue;
       }
-      this.host.workspace.mutate(op as any);
-      recordWrite(op);
-      if (op.op === 'write') { const receipt = await this.host.self.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() }); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
-      else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'}`);
+      if (op.op === 'write') {
+        const before = this.host.binder.versionMap()[op.path];
+        const split = componentKind(op.path) ? splitHarnessExpectation(String(op.content ?? '')) : { source: String(op.content ?? '') };
+        this.host.workspace.mutate({ ...op, content: split.source } as any);
+        const receipt = await this.host.binder.save(op.path, this.host.level());
+        if (receipt) receipts.push(receipt);
+        const note = this.host.componentSaved?.(op.path, before, receipt, split);
+        if (note) receipts.push(note);
+        this.noteSave(op.path, receipt);
+      }
+      else {
+        this.host.workspace.mutate(op as any);
+        receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
+      }
     }
     if (files && typeof this.host.self.reflectSource !== 'function') {
       await this.host.self.scan(this.host.level()); this.register();
@@ -726,6 +738,8 @@ export class NativeRuntime {
     return content;
   }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
+    const savedExpectation = save !== undefined && !readonly ? splitHarnessExpectation(code) : undefined;
+    if (savedExpectation) code = savedExpectation.source;
     // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
     // state (no action, no session change, no workspace write since) gets that call's result instead of a second run.
     const parent = !readonly && session === this.session && this.host.workMemory !== false;
@@ -751,9 +765,12 @@ export class NativeRuntime {
     if (save !== undefined && !readonly) {
       if (!SAVE_NAME.test(save)) throw Error('save must be a lowercase name like route_to (letters, digits, _)');
       const path = `tools/${save}.py`;
-      const reflected = await this.reflectSource(path, code.endsWith('\n') ? code : code + '\n');
-      const receipt = reflected.receipt ?? `tool ${save} v${reflected.component?.version ?? 0}: reflected into live Agent`;
+      const before = this.host.binder.versionMap()[path];
+      this.host.workspace.mutate({ op: 'write', path, content: code.endsWith('\n') ? code : code + '\n' });
+      const receipt = await this.host.binder.save(path, this.host.level());
       if (receipt) saveReceipts.push(receipt);
+      const note = this.host.componentSaved?.(path, before, receipt, savedExpectation ?? { source: code });
+      if (note) saveReceipts.push(note);
       this.noteSave(path, receipt);
       if (typeof this.host.self.reflectSource !== 'function') {
         await this.host.self.scan(this.host.level()); this.register();
@@ -1157,10 +1174,36 @@ export class NativeRuntime {
       } catch (error) { return { path: c.path, version: c.version, error: String(error).slice(0, 200) }; }
     }));
   }
-  private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext, pinned?: Component) {
-    const available = this.host.immediateSubagent ? this.host.self.candidates() : this.host.self.active();
-    const agent = pinned ?? available.find(c => c.kind === 'subagent' && c.name === args.agent);
-    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}`);
+  /** The active guard tools: they define admit(state, action) (arc_thin_components.ts; ARC_THIN_GUARDS). */
+  guards() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).guard); }
+  /**
+   * Each guard's answer for one action about to be sent, on the state before it: `reason` when it refuses the action,
+   * nothing when it lets it pass. Guards run in the view pool and cannot act or write. A guard that fails, answers with
+   * something other than None or a string, or takes longer than GUARD_MS lets the action pass and says why (`error`): a
+   * broken guard must not hold the game. `skip` names guards suspended for the rest of the decision.
+   */
+  admit(action: { name: string; x?: number; y?: number }, skip: ReadonlySet<string> = new Set()):
+    Promise<Array<{ path: string; version: number; reason?: string; error?: string }>> {
+    const due = this.guards().filter(c => !skip.has(c.path));
+    if (!due.length) return Promise.resolve([]);
+    const snap = this.snapshot();
+    return Promise.all(due.map(async c => {
+      const stop = new AbortController(); const timer = setTimeout(() => stop.abort(), GUARD_MS);
+      try {
+        const result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} }, admit: action }, stop.signal, this.viewPool);
+        if (!result.ok) return { path: c.path, version: c.version, error: [result.error, result.where].filter(Boolean).join(' · ').slice(0, 200) };
+        const value = result.value;
+        if (value === null || value === undefined || value === false || value === '') return { path: c.path, version: c.version };
+        if (typeof value === 'string') return { path: c.path, version: c.version, reason: value.replace(/\s+/g, ' ').trim().slice(0, 300) };
+        return { path: c.path, version: c.version, error: `admit returned ${JSON.stringify(value).slice(0, 60)}; it must return None or a reason (a string)` };
+      } catch (error) {
+        return { path: c.path, version: c.version, error: stop.signal.aborted ? `no answer within ${GUARD_MS / 1000} s` : String(error).slice(0, 200) };
+      } finally { clearTimeout(timer); }
+    }));
+  }
+  private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+    const agent = this.host.binder.active().find(c => c.kind === 'subagent' && c.name === args.agent);
+    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${this.host.binder.active().filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}`);
     const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
     const tools: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
     // The subagent's python has a session of its own for this consult: it neither sees nor changes the parent's.
