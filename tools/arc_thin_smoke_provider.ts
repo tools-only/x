@@ -391,7 +391,23 @@ const STILL_SCRIPT: Step[] = [
   ...Array.from({ length: 6 }, (): Step => ({ kind: 'decide', calls: [['arc_action', { action: 'ACTION3', note: 'again' }]] })),
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'something else' }]] },
 ];
+// The harness turn and the guard place (tools/run_foundation_smoke.py guard; docs/plans/2026-10-26-e1-harness-turn-protocol.md
+// R5): two actions make a stall review due; the review, a harness turn, saves a guard with an EXPECT trailer; in the next
+// decision the guard refuses ACTION3 before the game sees it, and the decision plays ACTION1 instead.
+const GUARD_TOOL = '"""Refuses ACTION3, by my own rule."""\ndef admit(state, action):\n    if action["name"] == "ACTION3":\n' +
+  '        return "ACTION3 is refused by my rule"\n    return None\n\n<!-- HARNESS EXPECT\nEXPECT within 3 actions: no ACTION3 is played\n' +
+  'def check(t):\n    return t["action"] != "ACTION3"\nEND\n-->';
+const GUARD_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'before the review' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'before the review' }]] },
+  { kind: 'decide', calls: [['python', { code: GUARD_TOOL, save: 'no_three' }]] },
+  { kind: 'decide', text: 'Saved a guard against ACTION3.' },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION3', note: 'refused by the guard' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'after the refusal' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'the guard lets it pass' }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'guard' ? GUARD_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'repeat' ? REPEAT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'still' ? STILL_SCRIPT

@@ -40,6 +40,32 @@ test('overlapping saves retain write order and distinct receipts', async () => {
   b.boundary(); assert.equal(b.active()[0].source, 'second');
 });
 
+test('components that run by themselves (views, predictors, guards) stop on a later level until saved again; prompts and callable tools stay', async () => {
+  const w = new Workspace(mkdtempSync(join(tmpdir(), 'binder-level-scope-')));
+  const b = new Binder(w, async (path, source) => ({ kind: 'tool', name: path.split('/').at(-1)!, description: source,
+    enabled: true, view: path.startsWith('observers/'), predictor: path === 'tools/predict.py', guard: path === 'tools/guard.py' }));
+  w.runtimeWrite('observers/frame.py', 'view v1'); await b.save('observers/frame.py', 0);
+  w.runtimeWrite('tools/predict.py', 'predictor v1'); await b.save('tools/predict.py', 0);
+  w.runtimeWrite('tools/guard.py', 'guard v1'); await b.save('tools/guard.py', 0);
+  w.runtimeWrite('tools/route.py', 'callable v1'); await b.save('tools/route.py', 0);
+  w.runtimeWrite('prompts/p.md', '---\nactive: true\n---\nKEEP'); await b.save('prompts/p.md', 0);
+  b.boundary(0);
+  assert.deepEqual(b.active().map(c => c.path), ['observers/frame.py', 'prompts/p.md', 'tools/guard.py', 'tools/predict.py', 'tools/route.py']);
+  b.boundary(1);
+  assert.deepEqual(b.active().map(c => c.path), ['prompts/p.md', 'tools/route.py']);
+  assert.deepEqual(b.candidates().map(c => c.path).sort(), ['prompts/p.md', 'tools/route.py']);
+  assert.match(b.index(1), /frame\.py v1 stale, not running on this level \(save it again to run it\)/);
+  assert.match(b.index(1), /predict\.py v1 stale, not running on this level/);
+  assert.match(b.index(1), /guard\.py v1 stale, not running on this level[^\n]*guard, asked before each action is sent/);
+  assert.match(b.index(1), /tool route\.py v1 stale: callable v1 · route\.py\(args\)/);
+  assert.match(b.index(1), /prompt p v1 stale:/);
+  w.runtimeWrite('observers/frame.py', 'view v2'); await b.save('observers/frame.py', 1);
+  w.runtimeWrite('tools/predict.py', 'predictor v2'); await b.save('tools/predict.py', 1);
+  b.boundary(1);
+  assert.deepEqual(b.active().map(c => [c.path, c.version]),
+    [['observers/frame.py', 2], ['prompts/p.md', 1], ['tools/predict.py', 2], ['tools/route.py', 1]]);
+});
+
 test('ordinary workspace files are versioned without component activation or index noise', async () => {
   const w = new Workspace(mkdtempSync(join(tmpdir(), 'binder-files-'))); const b = new Binder(w);
   w.runtimeWrite('artifacts/a.txt', 'first'); assert.equal(await b.save('artifacts/a.txt', 0), undefined);

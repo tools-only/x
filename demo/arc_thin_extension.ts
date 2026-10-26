@@ -28,12 +28,13 @@ import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summa
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
+import { splitHarnessExpectation, type ComponentExpectationSource } from './arc_thin_expectation.ts';
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
-import { Binder } from "./arc_thin_binder.ts";
+import { Binder, componentKind } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
@@ -112,6 +113,11 @@ const THEN_STEPS = 11;
  * action after it was played that way several times in a row (ARC_THIN_NO_EFFECT_REPEATS, see submitAction).
  */
 const NO_EFFECT_CELLS = 2;
+/**
+ * Guards (ARC_THIN_GUARDS): a guard that refused this many actions in one decision is not asked again in that decision,
+ * so a wrong rule of the agent's own cannot hold it for longer (docs/plans/2026-10-26-e1-harness-turn-protocol.md, R3).
+ */
+const GUARD_REFUSALS_PER_DECISION = 2;
 /** A refine point's answer to an action before the agent's refine call (docs/plans/2026-10-20-loop-bound-artifacts.md A5). */
 const REFINE_FIRST = "this decision is a refine point: first call refine(focus) with what your harness should change now, then act; " +
 	"this action was NOT played";
@@ -187,6 +193,8 @@ type ActionRow = {
 	predict_from?: string;
 	/** An earlier action played from the same board (status cells masked) whose result differed from this one's. */
 	diverges_from?: number;
+	/** Guards (ARC_THIN_GUARDS) that failed on this action, so it was sent without their answer. */
+	guard_errors?: Array<{ path: string; version: number; error: string }>;
 	/**
 	 * Work memory (docs/plans/2026-10-20-work-memory.md): whether this action told anything new. `known`: an earlier action
 	 * from the same board (status cells masked) gave the same result (`known_from`); `diverged`: every such earlier action
@@ -312,6 +320,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// response starts. ARC_THIN_CONTEXT_LAYOUT=0 restores the earlier placement: prompts as system-prompt sections, NO NEW
 	// INFORMATION opening the head, THIS BOARD after the state.
 	const contextLayout = native && !control && process.env.ARC_THIN_CONTEXT_LAYOUT !== "0";
+	// The harness turn (docs/plans/2026-10-26-e1-harness-turn-protocol.md, arm B): the stall, spin and level reviews ask for
+	// one harness change (the runner's prompts), show the LOOP AUDIT and the run's loop logs under data/loop/, and report what
+	// the agent's own components' EXPECT checks found. ARC_THIN_HARNESS_TURN=1 turns it on; off, the reviews are today's.
+	const harnessTurn = native && !control && process.env.ARC_THIN_HARNESS_TURN === "1";
+	// Guards (the same plan, arm B): saved code that defines admit(state, action) is asked before every action is sent, and a
+	// reason it returns refuses that action as the agent's own rule. ARC_THIN_GUARDS=1 turns them on.
+	const guardsOn = native && !control && process.env.ARC_THIN_GUARDS === "1";
 	// P4 (2026-10-19): the agent called refine and consult 0 times in 10 or more su15 runs with either model. ARC_THIN_LEAN=1
 	// leaves both tools out, with the system prompt's subagent line and the long form of its skill line (one at a time:
 	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
@@ -419,6 +434,93 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			try { rows.push(JSON.parse(line)); } catch { /* Skip a torn line. */ }
 		}
 		return rows;
+	}
+
+	/**
+	 * The harness turn's loop record (ARC_THIN_HARNESS_TURN=1): counts from the run's own logs, no judgement. Raw copies are
+	 * readable under data/loop/, read-only to the agent. The context log (working_set.jsonl) is not copied: it is the agent's
+	 * own context and runs to megabytes.
+	 */
+	const LOOP_DATA_FILES = ["trajectory.jsonl", "python_calls.jsonl", "component_runs.jsonl", "observer_runs.jsonl", "refiner.jsonl",
+		"usage.jsonl", "errors.jsonl", "tool_refusals.jsonl", "guard_runs.jsonl", "harness_decisions.jsonl", "harness_changes.jsonl",
+		"harness_expectations.jsonl"];
+	function loopAuditText(): string {
+		const decisions = readRows("harness_decisions.jsonl");
+		const changes = readRows("harness_changes.jsonl");
+		// Reviews by the action count they began at: a review takes no action, so its recovery turn begins at the same count.
+		const reviewAts = [...new Set(decisions.filter((row) => row.kind === "review_start").map((row) => Number(row.at) || 0))];
+		const current = reviewAts.at(-1) ?? trajectory.length;
+		const earlier = reviewAts.filter((at) => at < current);
+		const changedAts = new Set(changes.filter((row) => row.review).map((row) => Number(row.at) || 0));
+		const noChangeAts = new Set(decisions.filter((row) => row.kind === "no_change").map((row) => Number(row.at) || 0));
+		// The window: the actions since the previous review began, else since the start.
+		const from = earlier.at(-1) ?? 0;
+		const since = trajectory.filter((row) => row.n > from);
+		const known = since.filter((row) => row.novelty === "known").length;
+		const still = since.filter((row) => typeof row.changed_cells === "number" && row.changed_cells <= NO_EFFECT_CELLS).length;
+		const overs = since.filter((row) => row.state === "GAME_OVER").length;
+		const resets = since.filter((row) => row.action === "RESET").length;
+		const calls = readRows("python_calls.jsonl");
+		const pins = readRows("refiner.jsonl");
+		const pinRows = pins.filter((row) => row.kind === "next");
+		const pinOutcomes: Record<string, number> = {};
+		for (const row of pins) if (row.kind === "next_done") pinOutcomes[String(row.outcome ?? "unknown")] = (pinOutcomes[String(row.outcome ?? "unknown")] ?? 0) + 1;
+		const costs = new Map<number, number>();
+		for (const row of readRows("usage.jsonl")) if (row.kind === "agent" && Number.isFinite(Number(row.decision))
+			&& (row.input !== null && row.input !== undefined || row.output !== null && row.output !== undefined)) {
+			const n = Number(row.decision); costs.set(n, (costs.get(n) ?? 0) + (Number(row.input) || 0) + (Number(row.output) || 0));
+		}
+		const mean = costs.size ? Math.round([...costs.values()].reduce((a, b) => a + b, 0) / costs.size) : undefined;
+		const guardRefusals = readRows("guard_runs.jsonl").filter((row) => row.verdict === "refuse").length;
+		// The agent's own components (its writes, not a refinement's): what each has done where it enters the decision.
+		const latest = new Map<string, any>();
+		for (const row of changes) latest.set(String(row.path), row);
+		const usage = artifactUsage().usage;
+		const active = new Set(binder?.active().map((c) => c.path) ?? []);
+		const own = [...latest.values()].slice(-6).map((row) => {
+			const path = String(row.path);
+			const what = usage.get(path) ?? (!active.has(path) ? "not active (deleted, failed, or saved on an earlier level)"
+				: componentKind(path) === "prompt" ? "in every decision while active" : "active");
+			return `${path} v${row.version}: ${what}`.slice(0, 140);
+		});
+		const lines = [
+			`LOOP AUDIT (facts only; ${trajectory.length} actions, ${decision} decisions)`,
+			`Since ${from ? `the last review (#${from})` : "the start"}: ${since.length} actions; ${known} replayed a result this board had ` +
+				`already shown; ${still} changed at most ${NO_EFFECT_CELLS} cells; ${overs} GAME_OVER; ${resets} RESET.`,
+			`Earlier reviews: ${earlier.length}; followed by a component change in the same turn: ${earlier.filter((at) => changedAts.has(at)).length}; ` +
+				`explicit no-change: ${earlier.filter((at) => noChangeAts.has(at)).length}.`,
+			`Python calls: ${calls.length}; pinned tests: ${pinRows.length} (${Object.entries(pinOutcomes).map(([k, v]) => `${k} ${v}`).join(", ") || "no outcomes logged"}).`,
+			`Tool refusals: ${readRows("tool_refusals.jsonl").length} (${guardRefusals} by your guards); mean agent input+output per recorded decision: ${mean ?? "unavailable"} tokens.`,
+			`Your components: ${own.length ? own.join("; ") : "none written yet"}.`,
+			`Raw loop logs (read-only): data/loop/ ${LOOP_DATA_FILES.filter((name) => existsSync(join(storeDir, name))).join(", ") || "none yet"}.`,
+		];
+		return lines.join("\n").slice(0, 1200);
+	}
+	function publishLoopData(): void {
+		if (!workspace) return;
+		for (const name of LOOP_DATA_FILES) {
+			const source = join(storeDir, name);
+			if (existsSync(source)) workspace.runtimeWrite(`data/loop/${name}`, readFileSync(source));
+		}
+		workspace.runtimeWrite("data/loop/audit.txt", loopAuditText() + "\n");
+	}
+	function recordComponentWrite(path: string, before: number | undefined, receipt: string | undefined,
+		split: ComponentExpectationSource): string {
+		const component = componentKind(path);
+		const version = binder?.versionMap()[path];
+		if (!component || version === undefined || /NOT loaded/.test(receipt ?? ""))
+			return split.error ? `EXPECT not recorded: ${split.error}` : "";
+		if (version !== before) append("harness_changes.jsonl", { decision, at: trajectory.length, level: currentLevel(), path,
+			component, version, review: run.levelReview ? "level" : run.stallReview ? "stall" : undefined });
+		if (split.expect && version !== before) {
+			const id = `${path}@v${version}:${decision}:${trajectory.length}`;
+			append("harness_expectations.jsonl", { kind: "candidate", id, path, version, level: currentLevel(), decision,
+				at: trajectory.length, claim: split.expect.claim, within: split.expect.within ?? 15, check: split.expect.check });
+			return `EXPECT recorded for v${version}: "${split.expect.claim.slice(0, 120)}" within ${split.expect.within ?? 15} actions` +
+				(harnessTurn ? "; the next review says what check(t) returned" : "");
+		}
+		return split.error ? `EXPECT not recorded: ${split.error}`
+			: split.expect && version === before ? "EXPECT not recorded: no new component version was saved" : "";
 	}
 
 	function replay(): void {
@@ -606,8 +708,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		 */
 		refinePoint: boolean; refineCalled: boolean; refinePointText?: string;
 		consultPoint: boolean; consulted: boolean;
-		/** A level or stall review saved its own file (prompts/lessons.md, prompts/review.md); if not, the one write after its last call (gate). */
+		/**
+		 * Today's reviews (no harness turn): a level or stall review saved its own file (prompts/lessons.md,
+		 * prompts/review.md); if not, the one write after its last call (gate).
+		 */
 		reviewSaved: boolean; reviewWrite?: string;
+		/** EXPECT results for agent-written components, evaluated for this harness turn. */
+		harnessExpectations?: string;
+		/** Native view output (contextLayout): placed after the state image, beside THIS BOARD. */
+		observerText?: string;
+		/** Guards (ARC_THIN_GUARDS): each guard's refusals in this decision, and the guards suspended for the rest of it. */
+		guardRefusals: Map<string, number>; suspendedGuards: Set<string>;
 		/** Work memory: the decisions before this one in a row that learned nothing new (spinStreak), when any. */
 		spin?: ReturnType<typeof spinStreak>;
 	};
@@ -617,6 +728,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
 		refinePoint: false, refineCalled: false, consultPoint: false, consulted: false, reviewSaved: false,
+		guardRefusals: new Map(), suspendedGuards: new Set(),
 	});
 	let run = freshRun();
 	/**
@@ -680,6 +792,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			(skill ? ` | ${skill.name}${skill.version ? ` v${skill.version}` : ""} predicted: ` +
 				(skill.fields ? renderScore(skill as ScoredPrediction) : `nothing (${skill.error})`) : "") +
 			(row.predictors ?? []).map((p) => ` | ${p.path} v${p.version} predicted: ${p.fields ? renderScore(p as ScoredPrediction) : `nothing (${p.error})`}`).join("") +
+			(row.guard_errors ?? []).map((g) => ` | guard ${g.path} v${g.version} failed (${g.error}); the action was sent without its answer`).join("") +
 			(row.diverges_from !== undefined ? ` | the same board (status cells aside) and action at #${row.diverges_from} gave a different result: ` +
 				"something not on the board decides the outcome" : "");
 	}
@@ -823,6 +936,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				return true;
 			});
 			const out: Array<[string, string]> = [];
+			// The harness turn sees its loop record first, and the raw logs are refreshed under data/loop/ for it to read.
+			if (harnessTurn && (run.levelReview || run.stallReview) && workspace) {
+				try { publishLoopData(); out.push(["loop_audit", loopAuditText()]); }
+				catch (error) { logError("review:loop_audit", error); }
+			}
 			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
 			if (prompts) out.push(["prompts", prompts]);
 			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
@@ -896,9 +1014,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (workMemory && !run.consolidating && observation) {
 			try { board = boardText(boardFactsNow()); } catch (error) { logError("context:board", error); }
 		}
-		// contextLayout: the agent's own record on this board goes after everything else, the images included.
+		// contextLayout: the views' output and the agent's own record on this board go after everything else, the images
+		// included, where the response starts (docs/plans/2026-10-26-e1-harness-turn-protocol.md: a delivered view in the
+		// head did not stop the action it warned about). ARC_THIN_CONTEXT_LAYOUT=0 keeps both where they were.
 		const spin = contextLayout && run.spin?.streak ? spinText(run.spin) : "";
-		const tail = contextLayout ? [spin, board].filter(Boolean).join("\n\n") : "";
+		const viewOutput = contextLayout ? run.observerText ?? "" : "";
+		const tail = contextLayout ? [spin, viewOutput, board].filter(Boolean).join("\n\n") : "";
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
 		const body = sections.map(([, value]) => value).join("\n\n");
@@ -907,6 +1028,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
+					...(viewOutput ? [["views", viewOutput] as [string, string]] : []),
 					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
 				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
 				...(seen ? { images: seen.images.length, rendered_grids: seen.labels } : {}),
@@ -2307,6 +2429,41 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return head + (moves >= expect.within ? `not seen in ${expect.within} actions` : `not seen yet (${moves} of ${expect.within} actions)`);
 	}
 
+	/** Agent-written component EXPECTs use the refiner check(t) evaluator and are reported as checks, not authority. */
+	async function harnessExpectationText(): Promise<string> {
+		const expectationRows = readRows("harness_expectations.jsonl");
+		const settled = new Set(expectationRows.filter((row) => row.kind === "settled").map((row) => String(row.id)));
+		const records = expectationRows.filter((row) => row.kind === "candidate" && !settled.has(String(row.id)));
+		const latest = new Map<string, any>();
+		for (const row of records) latest.set(String(row.id), row);
+		const candidates = [...latest.values()].slice(-8);
+		if (!candidates.length) return "";
+		const checks = candidates.map((row) => {
+			const start = Number(row.at) || 0, horizon = Math.max(1, Number(row.within) || 15), savedLevel = Number(row.level) || 0;
+			const firstNewLevel = trajectory.find((action) => action.n > start && Number(action.levels_completed) > savedLevel)?.n;
+			const end = Math.min(trajectory.length, start + horizon, firstNewLevel ?? Number.MAX_SAFE_INTEGER);
+			return { id: String(row.id), source: String(row.check), start, end, row };
+		});
+		const results = await expectationResults(checks.map(({ id, source, start, end }) => ({ id, source, start, end })));
+		const lines = checks.map(({ id, start, end, row }) => {
+			const moves = Math.max(0, end - start);
+			let text = expectationText({ claim: String(row.claim), within: Math.max(1, Number(row.within) || 15) }, moves, results.get(id));
+			text = text.replace(" — met at #", " — check(t) returned true at #")
+				.replace(" — contradicted at #", " — check(t) returned false at #");
+			const result = results.get(id);
+			const versionChanged = binder?.versionMap()[String(row.path)] !== Number(row.version);
+			const windowEnded = moves >= Math.max(1, Number(row.within) || 15) || end > start && Number(trajectory[end - 1]?.levels_completed) > Number(row.level);
+			const decided = Boolean(result?.error || result?.results.some(([, value]) => value === true || value === false));
+			const complete = versionChanged || decided || windowEnded;
+			append("harness_expectations.jsonl", { kind: "result", id, decision, at: trajectory.length, text,
+				complete, ...(versionChanged ? { retired: "component version changed" } : {}) });
+			if (complete) append("harness_expectations.jsonl", { kind: "settled", id, decision, at: trajectory.length,
+				reason: versionChanged ? "component version changed" : decided ? "check returned a result" : "window ended" });
+			return `- ${row.path} v${row.version}: ${text}`;
+		});
+		return `HARNESS EXPECT RESULTS (runtime checks only; world claims use predict())\n${lines.join("\n")}`.slice(0, 1200);
+	}
+
 	/**
 	 * The refinement ledger: the refinements' latest edits, what became of each (still current, rewritten, deleted), what
 	 * the agent did since it was told of it (actions, resets, GAME_OVERs, level changes, calls of a refined tool, a view's
@@ -2734,13 +2891,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/**
 	 * A4: what each saved tool has done where it enters the decision (the runtime's counts): a view's runs and output
-	 * changes, a predictor's scored predictions, a callable tool's calls. `idle` names those that ran without helping.
+	 * changes, a predictor's scored predictions, a guard's answers, a callable tool's calls. `idle` names those that ran
+	 * without helping.
 	 */
 	function artifactUsage(): { usage: Map<string, string>; idle: string[] } {
 		const usage = new Map<string, string>(), idle: string[] = [];
 		if (!binder || !nativeRuntime) return { usage, idle };
 		const views = nativeRuntime.viewStats();
 		const runs = readRows("component_runs.jsonl");
+		const guardRuns = binder.active().some((c) => c.guard) ? readRows("guard_runs.jsonl") : [];
 		for (const c of binder.active().filter((c) => c.kind === "tool")) {
 			if (c.view) {
 				const v = views.get(c.path);
@@ -2753,6 +2912,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const right = scored.filter((p) => p.fields && !p.misses && (p.hits ?? 0) > 0).length, none = scored.filter((p) => p.error).length;
 				usage.set(c.path, `${scored.length} prediction(s), ${right} right${none ? `, ${none} without one` : ""}`);
 				if (scored.length >= 5 && right === 0) idle.push(`predictor ${c.path} (${right} of ${scored.length} right)`);
+			} else if (c.guard) {
+				if (!guardsOn) { usage.set(c.path, "not asked: guards are off in this run"); continue; }
+				const asked = guardRuns.filter((row) => row.path === c.path && row.version === c.version);
+				const refused = asked.filter((row) => row.verdict === "refuse").length, failed = asked.filter((row) => row.verdict === "error").length;
+				usage.set(c.path, `asked ${asked.length}×, refused ${refused}${failed ? `, failed ${failed}×` : ""}`);
+				if (asked.length >= 5 && 2 * failed >= asked.length) idle.push(`guard ${c.path} (failed on ${failed} of ${asked.length} actions)`);
 			} else {
 				const saved = Math.max(0, ...runs.filter((row) => row.kind === "save" && row.path === c.path).map((row) => Number(row.n) || 0));
 				const calls = runs.filter((row) => row.kind === "tool" && row.path === c.path && Number(row.n) >= saved).length;
@@ -2787,16 +2952,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.toolCalls += 1;
 		if (name === "refine") run.refineCalled = true;
 		// A level or stall review is bounded like a decision: its last call says so, and a call after it ends the review.
-		// A review that has not saved its own file may still write it with one more call: in su15-lb-cb-q38 the consult and
-		// seven python calls used the ten, and the write of prompts/lessons.md, its test lines and all, was refused.
+		// Today's review (no harness turn) that has not saved its own file may still write it with one more call: in
+		// su15-lb-cb-q38 the consult and seven python calls used the ten, and the write of prompts/lessons.md, its test lines
+		// and all, was refused. A harness turn has no file it must write.
 		if (native && (run.levelReview || run.stallReview)) {
 			const file = run.levelReview ? LESSONS_PATH : REVIEW_PATH;
 			if (run.toolCalls > LEVEL_REVIEW_CALLS) {
-				if ((name === "write" || name === "edit") && !run.reviewSaved && !run.reviewWrite) { run.reviewWrite = file; return undefined; }
+				if (!harnessTurn && (name === "write" || name === "edit") && !run.reviewSaved && !run.reviewWrite) { run.reviewWrite = file; return undefined; }
 				return { reason: `this review used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
 			}
 			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = `(This was tool call ${LEVEL_REVIEW_CALLS} of ${LEVEL_REVIEW_CALLS} for this review: ` +
-				`finish now${run.reviewSaved ? "" : `; one more call is accepted, the write of ${file}`}.)`;
+				(harnessTurn ? `finish now; make a component change or state why none is justified.)`
+					: `finish now${run.reviewSaved ? "" : `; one more call is accepted, the write of ${file}`}.)`);
 		}
 		const nativeCap = native && !run.consolidating && !diagnosticBudget;
 		if (!native && run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
@@ -2852,6 +3019,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return async (_id: string, params: P, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) => {
 			const verdict = gate(name);
 			if (verdict) {
+				if (native) append("tool_refusals.jsonl", { decision, tool: name, reason: verdict.reason.slice(0, 300) });
 				// Sharing a message with arc_action: every result must terminate or the run continues.
 				if (verdict.terminate || (name !== "arc_action" && endsBatch())) return carry(refused(verdict.reason), true);
 				throw new Refusal(verdict.reason);
@@ -2868,6 +3036,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					? { ...carried, content: [...carried.content, { type: "text" as const, text: note }] } : carried;
 			}
 			catch (error) {
+				if (native && error instanceof Refusal) append("tool_refusals.jsonl", { decision, tool: name, reason: error.message.slice(0, 300) });
 				if (native && nativeLoop.record(name, params, epoch, true))
 					return carry({...refused('Repeated unchanged error; decision ends: ' + errorText(error)), isError:true}, true);
 				if (!(error instanceof Refusal)) logError(`tool:${name}`, error);
@@ -3128,6 +3297,31 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			&& typeof row.changed_cells === "number" && row.changed_cells <= NO_EFFECT_CELLS))
 			return { refusal: `${label} was NOT played: the last ${noEffectRepeats} actions (#${repeats[0].n}-#${repeats.at(-1)!.n}) were ` +
 				`this same action and each changed at most ${NO_EFFECT_CELLS} cells; play a different action` };
+		// Guards (ARC_THIN_GUARDS): the agent's own admit(state, action) rules, asked on the state before the action is sent.
+		// A refusal is the agent's rule, not the game's, and the game never sees the action. A guard that refused
+		// GUARD_REFUSALS_PER_DECISION actions in this decision is not asked again in it; one that fails lets the action pass.
+		let guardErrors: ActionRow["guard_errors"];
+		if (guardsOn && nativeRuntime) {
+			const answers = await nativeRuntime.admit({ name: params.action, ...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}) },
+				run.suspendedGuards).catch((error) => { logError("guards", error); return []; });
+			for (const answer of answers) append("guard_runs.jsonl", { n: trajectory.length + 1, decision, action: label, ...(via ? { via } : {}),
+				path: answer.path, version: answer.version, verdict: answer.reason ? "refuse" : answer.error ? "error" : "allow",
+				...(answer.reason ? { reason: answer.reason } : {}), ...(answer.error ? { error: answer.error } : {}) });
+			const refused = answers.filter((answer) => answer.reason);
+			if (refused.length) {
+				const suspended: string[] = [];
+				for (const answer of refused) {
+					const count = (run.guardRefusals.get(answer.path) ?? 0) + 1;
+					run.guardRefusals.set(answer.path, count);
+					if (count >= GUARD_REFUSALS_PER_DECISION) { run.suspendedGuards.add(answer.path); suspended.push(answer.path); }
+				}
+				return { refusal: `${label} was NOT played: refused by your guard ${refused.map((answer) => `${answer.path} v${answer.version}: ${answer.reason}`).join("; ")}. ` +
+					"This is your own rule, not the game's: the game did not see this action." +
+					(suspended.length ? ` ${suspended.join(", ")} refused ${GUARD_REFUSALS_PER_DECISION} actions in this decision and is not asked again in it.` : "") };
+			}
+			const failed = answers.filter((answer) => answer.error);
+			if (failed.length) guardErrors = failed.map(({ path, version, error }) => ({ path, version, error: error! }));
+		}
 		const payload: Record<string, unknown> = { action: params.action };
 		if (params.x !== undefined && params.y !== undefined) { payload.x = params.x; payload.y = params.y; }
 		const bySkill = !control && params.predict_skill ? await predictWithSkill(params.predict_skill, { ...payload }) : undefined;
@@ -3169,6 +3363,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			...(expect ? { expect } : {}),
 			...(via ? { via } : {}),
 			...(ignoredXY ? { ignored_xy: true } : {}),
+			...(guardErrors ? { guard_errors: guardErrors } : {}),
 			// How much the frame changed, per the bridge (shown in native receipts, evaluation only in the legacy path).
 			changed_cells: typeof delta.changed_cells === "number" ? delta.changed_cells : gridDiff(beforeGrid, afterGrid),
 			...(delta.bbox ? { bbox: delta.bbox } : {}),
@@ -3287,7 +3482,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
       const path = posix.normalize(String((params as any)?.path ?? '').replace(/\\/g, '/'));
-      // The one write after a review's last call is for the review's own file (gate).
+      // The one write after a review's last call is for the review's own file (gate; today's reviews only).
       if (run.reviewWrite && path !== run.reviewWrite) throw new Refusal(`after this review's last call only ${run.reviewWrite} is accepted`);
       // A review writes after it has consulted (A5); making the subagent to consult is a write it may do first.
       if ((tool.name === 'write' || tool.name === 'edit') && consultFirst(path)) throw new Refusal(CONSULT_FIRST);
@@ -3782,6 +3977,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
+      componentSaved: recordComponentWrite,
       ...(pythonMemory ? { remember: pythonMemory } : {}),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
@@ -3829,17 +4025,25 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       }),
     });
     workspace.onWrite = async path => {
+      // A component written with an EXPECT trailer (the harness turn's form) is saved without it, and the expectation is
+      // recorded for the next harness turn; a file without one is saved as written.
+      const before = binder.versionMap()[path];
+      const written = workspace.read(path);
+      const split = componentKind(path) ? splitHarnessExpectation(written) : { source: written };
+      if (split.source !== written) workspace.runtimeWrite(path, split.source);
       const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
       nativeRuntime!.noteSave(path, receipt);
       if (toolsReady) refreshSkillSurface();
       const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
       // The level and stall reviews ask for short files: they are sent with every decision. Their test lines are pinned as
-      // the next experiments, and the receipt says which will be (A3).
+      // the next experiments, and the receipt says which will be (A3). A harness turn asks for no file, so no length note.
       const asked = (path === LESSONS_PATH || path === REVIEW_PATH) && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path) : '';
       if (asked && path === (run.levelReview ? LESSONS_PATH : run.stallReview ? REVIEW_PATH : '')) run.reviewSaved = true;
-      return receipt ? receipt + (asked.length > LESSONS_CHARS ? `\nnote: ${path} is ${asked.length} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
+      const expectNote = recordComponentWrite(path, before, receipt, split);
+      return receipt ? receipt + (asked.length > LESSONS_CHARS && !harnessTurn ? `\nnote: ${path} is ${asked.length} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
         + (asked && !/: unchanged, /.test(receipt) ? testLinesNote(path, asked) : '')
-        + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
+        + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '')
+        + (expectNote ? `\n${expectNote}` : '') : expectNote || undefined;
     };
   }
 	if (ledgerOn) loadLedgerStores();
@@ -3860,13 +4064,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// a review file's new tests are pinned (A3), and so is an action the predictor tools disagree on (B1). The components
 		// saved since the last request are bound first, so a predictor saved in the last decision takes part.
 		if (COVERAGE && refinerActive()) {
-			binder?.boundary();
+			binder?.boundary(currentLevel());
 			try { await settlePin(); await settleReviewTests(); if (!reviewing) { await pinDisagreement(); await pinNovelty(); } }
 			catch (error) { logError("pin:settle", error); }
 		}
 		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.
 		if (refinerActive()) { try { await restoreBrokenViews(); await retireBrokenPredictors(); } catch (error) { logError("view:restore", error); } }
-    if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
+    if (binder) { await binder.scan(currentLevel()); binder.boundary(currentLevel()); nativeRuntime?.register(); }
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
@@ -3895,6 +4099,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		if (run.levelReview || run.stallReview) append("harness_decisions.jsonl", { kind: "review_start", decision,
+			type: run.levelReview ? "level" : "stall", at: trajectory.length, level: currentLevel() });
 		// Work memory: a decision after one that learned nothing new opens by saying so.
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review consults before it writes; every REFINE_EVERY actions since the agent's last refine
@@ -3979,6 +4185,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // P4 (ARC_THIN_LEAN, ARC_THIN_CONSULT): without consult, subagents have no way to be asked, so their line goes (below).
       kinds: consultTool ? 'five' : 'four',
       nonacting: consultTool ? 'subagents or views' : 'views',
+      // Guards (ARC_THIN_GUARDS): the third place a saved tool enters the decision, said where the other two are.
+      guard: guardsOn ? ' def admit(state, action) is asked before every action is sent: None lets it pass, a reason (a string) refuses it, ' +
+        'as your own rule; the game never sees a refused action.' : '',
       skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
@@ -4061,10 +4270,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("context", guard("context", async (event: any, ctx: ExtensionContext) => {
-    if (binder) binder.boundary();
+    if (binder) binder.boundary(currentLevel());
     // A view that became active at this boundary runs on the current state now, not only after the next action
     // (2026-10-13: a refinement's view showed nothing while the agent deliberated). Runs already done are skipped.
     if (nativeRuntime) nativeRuntime.observe(trajectory.length);
+		// The harness turn starts from what the agent's own components' EXPECT checks found since they were saved.
+		if (harnessTurn && (run.levelReview || run.stallReview) && run.harnessExpectations === undefined) {
+			try { run.harnessExpectations = await harnessExpectationText(); }
+			catch (error) { run.harnessExpectations = ""; logError("review:expectations", error); }
+		}
 		const messages: any[] = event.messages ?? [];
 		const lastUser = native ? nativeDecisionStart(messages) : messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
@@ -4082,9 +4296,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const headKey = `${decision}:${lastUser}`;
 		if (!native || run.headKey !== headKey) {
 			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
+			run.observerText = nativeRuntime ? await nativeRuntime.observerText() : '';
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
+			// The views' output closes the head (contextLayout, buildWorkingSet) or, without it, follows the capability index.
 			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined),
-				nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
+				contextLayout ? '' : run.observerText, run.harnessExpectations].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,
 				content: [
@@ -4218,6 +4434,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.endedAt = Date.now();
 		if (message.stopReason !== "error" && message.stopReason !== "aborted") run.answered = true;
 		const blocks: any[] = Array.isArray(message.content) ? message.content : [];
+		if ((run.levelReview || run.stallReview) && blocks.filter((block) => block?.type === "text")
+			.some((block) => /(?:^|\n)NO HARNESS CHANGE:\s*\S/i.test(String(block.text ?? "")))) {
+			const reason = blocks.filter((block) => block?.type === "text").map((block) => String(block.text ?? ""))
+				.join("\n").match(/(?:^|\n)NO HARNESS CHANGE:\s*([^\n]+)/i)?.[1]?.trim();
+			append("harness_decisions.jsonl", { kind: "no_change", decision, at: trajectory.length,
+				type: run.levelReview ? "level" : "stall", reason: String(reason ?? "").slice(0, 300) });
+		}
 		if (blocks.some((block) => block?.type === "toolCall" && block.name === "arc_action"))
 			run.endBatchAt = run.assistantMessages;
 		if (carryChars) {

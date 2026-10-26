@@ -99,14 +99,14 @@ async function world() {
 
 const reply = (text: string) => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop', usage: { input: 100, output: 50 } });
 
-/** One extension instance on `w` (a second one on the same world is a restart of the run). */
-async function attach(w: { url: string; root: string }) {
+/** One extension instance on `w` (a second one on the same world is a restart of the run); `env` adds to its environment. */
+async function attach(w: { url: string; root: string }, env: Record<string, string> = {}) {
 	const saved = { ...process.env };
 	// Only the events under test start refinements: no schedule, goal-test or unchecked-belief events. The reviews'
 	// consult-first call point is tested in arc_thin_loop_bound.test.ts.
 	Object.assign(process.env, { ARC_RUN_ROOT: w.root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', PI_ARC_BRIDGE_URL: w.url,
 		ARC_HARNESS_LEDGER: 'enabled', ARC_HARNESS_CRITIC: 'enabled', ARC_REFINE_EVERY: '1000', ARC_REFINE_GOAL_TEST_AFTER: '1000',
-		ARC_REFINE_UNCHECKED_AFTER: '1000', ARC_THIN_NO_EFFECT_REPEATS: '0', ARC_THIN_REVIEW_CONSULT: '0' });
+		ARC_REFINE_UNCHECKED_AFTER: '1000', ARC_THIN_NO_EFFECT_REPEATS: '0', ARC_THIN_REVIEW_CONSULT: '0', ...env });
 	const tools = new Map<string, any>(), handlers = new Map<string, any>(); let active: string[] = [];
 	arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,
 		getActiveTools: () => active, getAllTools: () => [...tools.values()], on: (e: string, f: any) => handlers.set(e, f),
@@ -138,6 +138,7 @@ async function attach(w: { url: string; root: string }) {
 		act: (params: any) => call('arc_action', repairActionArguments(params)),
 		call,
 		async settle(value: any) { pending.shift()!(value); await new Promise((r) => setTimeout(r, 200)); },
+		async finish(text: string) { await handlers.get('message_end')({ message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } }); },
 		async calls(count: number) { for (let i = 0; i < 200 && inputs.length < count; i += 1) await new Promise((r) => setTimeout(r, 50)); },
 		async close() {
 			for (const resolve of pending.splice(0)) resolve(reply('NONE closing'));
@@ -150,6 +151,53 @@ async function attach(w: { url: string; root: string }) {
 }
 
 const REVIEW = 'LEVEL REVIEW. Level 1 is complete; this turn takes no action. Rewrite prompts/lessons.md whole.';
+
+test('a harness turn (ARC_THIN_HARNESS_TURN=1) records either a component or explicit no-change, publishes read-only loop logs and scores EXPECT at the next review', async () => {
+	const w = await world();
+	const h = await attach(w, { ARC_THIN_HARNESS_TURN: '1' });
+	try {
+		// The third click on (1,1) replays the first: the same board and move, the same result.
+		for (let i = 0; i < 3; i++) { await h.begin(); await h.act({ action: 'ACTION6', x: 1, y: 1 }); }
+		const head = await h.begin('STALL REVIEW. A repeated loop cost was observed; this turn takes no action.');
+		const audit = /LOOP AUDIT \(facts only;[^]*?\nRaw loop logs \(read-only\): [^\n]*/.exec(head)?.[0] ?? '';
+		assert.ok(audit.length > 0 && audit.length <= 1200, `LOOP AUDIT was ${audit.length} characters`);
+		assert.match(audit, /\nSince the start: 3 actions; 1 replayed a result this board had already shown; 3 changed at most 2 cells; 0 GAME_OVER; 0 RESET\.\n/);
+		assert.match(audit, /\nEarlier reviews: 0;/);
+		assert.match(h.file('workspace/data/loop/harness_decisions.jsonl'), /review_start/);
+		assert.match(await h.call('read', { path: 'data/loop/harness_decisions.jsonl' }), /review_start/);
+		await assert.rejects(() => h.call('write', { path: 'data/loop/attempt.jsonl', content: 'overwrite' }), /read-only/);
+		await h.finish('NO HARNESS CHANGE: the record shows no distinct loop cost that one component can remove.');
+		assert.equal(h.rows('harness_decisions.jsonl').at(-1).kind, 'no_change');
+
+		await h.begin('STALL REVIEW. A later review can try one prompt change; this turn takes no action.');
+		const prompt = '---\nactive: true\n---\nUse the current loop record when deciding.\n\n' +
+			'<!-- HARNESS EXPECT\nEXPECT within 2 actions: the prompt is active on the following action\n' +
+			'def check(t):\n    return t["action"] == "ACTION6"\nEND\n-->';
+		assert.match(await h.call('write', { path: 'prompts/loop-focus.md', content: prompt }),
+			/\nEXPECT recorded for v1: "the prompt is active on the following action" within 2 actions; the next review says what check\(t\) returned$/);
+		assert.doesNotMatch(h.file('workspace/prompts/loop-focus.md'), /HARNESS EXPECT/);
+		assert.equal(h.rows('harness_changes.jsonl').at(-1).path, 'prompts/loop-focus.md');
+		assert.equal(h.rows('harness_expectations.jsonl').at(-1).kind, 'candidate');
+		await h.finish('Component saved with an expected loop effect.');
+		await h.begin(); await h.act({ action: 'ACTION6', x: 1, y: 1 });
+		const nextReview = await h.begin('STALL REVIEW. Review whether the prompt change helped; this turn takes no action.');
+		assert.match(nextReview, /HARNESS EXPECT RESULTS[^]*check\(t\) returned true at #4/);
+		// The two reviews at #3 are one review and its retry (a review takes no action).
+		assert.match(nextReview, /\nEarlier reviews: 1; followed by a component change in the same turn: 1; explicit no-change: 1\.\n/);
+		assert.match(nextReview, /\nYour components: prompts\/loop-focus\.md v1: in every decision while active\.\n/);
+	} finally { await h.close(); await new Promise<void>((r) => w.server.close(() => r())); }
+});
+
+test('without ARC_THIN_HARNESS_TURN a review has no LOOP AUDIT and no EXPECT results', async () => {
+	const w = await world();
+	const h = await attach(w);
+	try {
+		await h.begin(); await h.act({ action: 'ACTION6', x: 1, y: 1 });
+		const head = await h.begin('STALL REVIEW. Level 1 is still open; this turn takes no action.');
+		assert.doesNotMatch(head, /LOOP AUDIT|HARNESS EXPECT RESULTS/);
+		assert.equal(h.file('workspace/data/loop/harness_decisions.jsonl'), '');
+	} finally { await h.close(); await new Promise<void>((r) => w.server.close(() => r())); }
+});
 
 test('a level review starts from the level record without arc_action, is bounded, and its prompts/lessons.md is in every later decision; the rule a refinement adds after the level change names the level', async () => {
 	const w = await world();

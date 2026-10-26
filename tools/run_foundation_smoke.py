@@ -88,7 +88,7 @@ if script == "receipts":
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
     # promotion: 11 decisions since r04, whose refinements run the ledger's expectation checks in the sandbox before the
     # model call, so the dispute refinement's rule lands one decision later than before.
-    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script in ("activation", "hypotheses") else 7 if script == "components" else 6 if script == "reuse" else 4 if script == 'nativeclaims' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script in ("activation", "hypotheses") else 7 if script == "components" else 6 if script == "reuse" else 4 if script in ('nativeclaims', 'guard') else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     input_modalities="text,image" if script == "query" else None,
@@ -96,7 +96,10 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
     # The promotion path and the hypothesis loop's refinement event run through refinements, which need the ledger and
     # its trigger service.
     ledger=defaults or script in ('promotion', 'hypotheses'), critic=defaults or script in ('promotion', 'hypotheses'), review_at_level_change=False,
+    # guard: a stall review after two actions is the harness turn that saves the guard.
+    **({'stall_review_after': 2} if script == 'guard' else {}),
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
+        **({'ARC_THIN_HARNESS_TURN': '1', 'ARC_THIN_GUARDS': '1', 'ARC_THIN_REVIEW_CONSULT': '0'} if script == 'guard' else {}),
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
         # The activation script checks the other refinement events; the promotion script checks this one.
@@ -424,6 +427,35 @@ elif script == "query":
         refinements = [json.loads(s) for s in (root/'refiner-inputs.jsonl').read_text(encoding='utf-8').splitlines()]
         assert refinements and all('data/observations/' in r['input'] for r in refinements)
         assert all('Lossless coordinate runs' not in r['input'] for r in refinements)
+elif script == 'guard':
+    # The harness turn and the guard place (docs/plans/2026-10-26-e1-harness-turn-protocol.md R5) through real Pi, the
+    # production bridge, the mock SDK and WASI: the review sees its contract and loop audit, saves a guard whose EXPECT
+    # trailer is recorded and stripped, and the guard refuses ACTION3 before the game sees it.
+    assert config['harness_turn'] is True and config['guards'] is True, config
+    reviews = [r for r in parent_requests if r.get('current', '').startswith('STALL REVIEW.')]
+    assert reviews, [r.get('current', '')[:200] for r in parent_requests]
+    review = reviews[0]['current']
+    assert 'Available places are prompt, view, predictor, guard and callable tool;' in review and 'NO HARNESS CHANGE: <reason>' in review, review[:1500]
+    assert 'LOOP AUDIT (facts only; 2 actions' in review and 'prompts/review.md' not in review, review[:2500]
+    assert all('def admit(state, action) is asked before every action is sent' in r['system_prompt'] for r in parent_requests)
+    saved = (root / 'workspace/tools/no_three.py').read_text(encoding='utf-8')
+    assert 'def admit(state, action)' in saved and 'HARNESS EXPECT' not in saved, saved
+    rows = lambda name: [json.loads(s) for s in (root / 'harness' / name).read_text(encoding='utf-8').splitlines() if s.strip()]
+    assert [(r['path'], r['review']) for r in rows('harness_changes.jsonl')] == [('tools/no_three.py', 'stall')], rows('harness_changes.jsonl')
+    [expectation] = rows('harness_expectations.jsonl')
+    assert expectation['kind'] == 'candidate' and expectation['within'] == 3 and 'def check(t)' in expectation['check'], expectation
+    assert any('EXPECT recorded for v1: "no ACTION3 is played" within 3 actions' in r['text'] for r in results if r['tool'] == 'python'), \
+        [r['text'][:300] for r in results if r['tool'] == 'python']
+    guards = [(r['action'], r['verdict']) for r in rows('guard_runs.jsonl')]
+    assert guards == [('ACTION3', 'refuse'), ('ACTION1', 'allow'), ('ACTION4', 'allow')], guards
+    played = [r['action'] for r in rows('trajectory.jsonl')]
+    assert played == ['ACTION1', 'ACTION4', 'ACTION1', 'ACTION4'], played
+    refusal = 'ACTION3 was NOT played: refused by your guard tools/no_three.py v1: ACTION3 is refused by my rule. ' \
+              "This is your own rule, not the game's: the game did not see this action."
+    assert any(refusal in r['text'] for r in results if r['tool'] == 'arc_action'), [r['text'][:300] for r in results if r['tool'] == 'arc_action']
+    assert summary['stall_reviews'] == 1 and summary['actions'] == summary['actions_on_bridge'] == 4, summary
+    print(json.dumps({'guard_checks': {'review_contract': True, 'loop_audit': True, 'guard_saved': True, 'expect_recorded': True,
+                                       'guard_refused': guards[0], 'played': played}}), flush=True)
 else:
     assert "COUNTEREXAMPLE" in text and "EDITED_NOTE" in text
     assert "read-only" in text and "invalid workspace path" in text

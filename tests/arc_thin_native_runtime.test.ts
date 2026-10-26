@@ -72,3 +72,23 @@ test('work memory: a python result starts with its address, a repeat names the f
     assert.deepEqual(calls[8].cells, [7]);
   } finally { runtime.close(); }
 });
+
+test('a Python-saved component strips and records its EXPECT trailer before validation and first execution', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-expect-')));
+  const saved: any[] = [];
+  const binder = new Binder(workspace, async () => ({ kind: 'tool', name: 'view', description: 'view', enabled: true, view: true }));
+  const runtime = new NativeRuntime({ pi: { registerTool() {}, getActiveTools: () => [], setActiveTools() {} } as any, workspace, binder,
+    state: () => ({ grid: [[1, 2]] }), level: () => 0, actionCount: () => 0,
+    log() {}, usage() {}, wrap: (_name, fn) => fn,
+    componentSaved(path, before, receipt, split) { saved.push({ path, before, receipt, split }); return ''; } });
+  try {
+    const code = '# view: on\ngrid[0]\n\n<!-- HARNESS EXPECT\nEXPECT within 3 actions: the saved view is available\ndef check(t):\n    return t["action"] == "ACTION6"\nEND\n-->';
+    const result = await runtime.python(code, undefined, false, 'view');
+    assert.match(result.content[0].text, /\[P1\]/);
+    assert.equal(workspace.read('tools/view.py'), '# view: on\ngrid[0]\n');
+    assert.equal(saved[0].path, 'tools/view.py');
+    assert.equal(saved[0].split.expect.claim, 'the saved view is available');
+    assert.equal(saved[0].split.expect.within, 3);
+    assert.match(saved[0].split.expect.check, /def check\(t\):/);
+  } finally { runtime.close(); }
+});

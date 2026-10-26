@@ -99,6 +99,27 @@ STALL_REVIEW_RECOVERY_PROMPT = (
     "RECOVER STALL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/review.md "
     "once (the frontmatter, then the four parts in a few short lines), then stop. This turn takes no action."
 )
+#: The harness turn (ARC_THIN_HARNESS_TURN=1, native treatment only; docs/plans/2026-10-26-e1-harness-turn-protocol.md,
+#: folded from codex/meta-devloop-20261026): a level or stall review is a development turn inside the run. In place of the
+#: file the reviews above ask for, the agent judges its loop from the LOOP AUDIT and the read-only data/loop/ logs and makes
+#: one component change, revises or retires one that did not help, or says why none is justified. {places} names where a
+#: saved component can enter the decision; with ARC_THIN_GUARDS=1 the guard is one of them.
+HARNESS_TURN_CONTRACT = (
+    "Make the one harness change that best removes a cost in the loop record, revise or retire one that did not help, or "
+    "say why none. Use LOOP AUDIT and read-only data/loop/ logs to judge. A saved prompt "
+    "counts as a component. Available places are {places}; choose the place, do not follow "
+    "a prescribed design. For a component change, include this trailer after the component source, then stop:\n"
+    "<!-- HARNESS EXPECT\nEXPECT within <N> actions: <one observable loop/process effect>\n"
+    "def check(t):\n    ...\nEND\n-->\n"
+    "Use check(t) for the component's loop/process effect. World claims are scored only by predict(), never labelled "
+    "authoritative. If no change is justified, end with exactly `NO HARNESS CHANGE: <reason>`."
+)
+HARNESS_PLACES = "prompt, view, predictor and callable tool"
+HARNESS_PLACES_WITH_GUARDS = "prompt, view, predictor, guard and callable tool"
+HARNESS_LEVEL_REVIEW_PROMPT = "LEVEL REVIEW. Level {level} is complete; this turn takes no action.\n"
+HARNESS_LEVEL_REVIEW_RECOVERY_PROMPT = "RECOVER LEVEL REVIEW. The previous review reached the output limit. This turn takes no action.\n"
+HARNESS_STALL_REVIEW_PROMPT = "STALL REVIEW. {why}; this turn takes no action.\n"
+HARNESS_STALL_REVIEW_RECOVERY_PROMPT = "RECOVER STALL REVIEW. The previous review reached the output limit. This turn takes no action.\n"
 #: Actions without a level completed, counted from the level's first action or the last stall review, after which a
 #: native run's next turn is a stall review (0: none).
 STALL_REVIEW_AFTER = 40
@@ -866,9 +887,22 @@ def _input_modalities(explicit: str | None, env: dict[str, str]) -> list[str]:
     return list(resolve_input_modalities(explicit if explicit is not None else env.get("ARC_INPUT_MODALITIES") or "text,image"))
 
 
-def _level_review_prompt(levels_completed: int) -> str:
-    """The native review after a level change; the level just completed is the `levels_completed`-th."""
+def _level_review_prompt(levels_completed: int, contract: str | None = None) -> str:
+    """The native review after a level change; the level just completed is the `levels_completed`-th. With the harness
+    turn's `contract` (_harness_contract), the review asks for a harness change instead of prompts/lessons.md."""
+    if contract:
+        return HARNESS_LEVEL_REVIEW_PROMPT.format(level=levels_completed) + contract
     return LEVEL_REVIEW_PROMPT.format(level=levels_completed, next=levels_completed + 1)
+
+
+def _harness_contract(foundation: str, variant: str, env: dict[str, str]) -> str | None:
+    """The harness turn's contract (HARNESS_TURN_CONTRACT) when ARC_THIN_HARNESS_TURN=1 in a native treatment run, naming
+    the guard place when ARC_THIN_GUARDS=1 too (the extension reads both from the same environment); else None, and the
+    level and stall reviews are today's."""
+    if foundation != "native" or variant != "treatment" or env.get("ARC_THIN_HARNESS_TURN") != "1":
+        return None
+    places = HARNESS_PLACES_WITH_GUARDS if env.get("ARC_THIN_GUARDS") == "1" else HARNESS_PLACES
+    return HARNESS_TURN_CONTRACT.replace("{places}", places)
 
 
 def _stall_review_after(foundation: str, explicit: int | None, env: dict[str, str]) -> int:
@@ -893,9 +927,10 @@ def _stall_review_due(trajectory: list[dict[str, Any]], reviewed_at: int, after:
 
 
 def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, levels_completed: int,
-                         spin: tuple[int, list[str]] | None = None) -> str:
+                         spin: tuple[int, list[str]] | None = None, contract: str | None = None) -> str:
     """The stall review's prompt. `spin` (decisions in a row that learned nothing new, and their moves) says why it came
-    early: the work-memory trigger, not the action count."""
+    early: the work-memory trigger, not the action count. With the harness turn's `contract`, it asks for a harness
+    change instead of prompts/review.md."""
     start = _level_start(trajectory)
     since = len(trajectory) - max(start, reviewed_at)
     anchor = (f"since your last stall review, at action {reviewed_at}" if reviewed_at > start
@@ -907,6 +942,8 @@ def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, lev
                f"level {levels_completed + 1} has been open for {since} actions ({anchor})")
     else:
         why = f"Level {levels_completed + 1} is still open after {since} actions ({anchor})"
+    if contract:
+        return HARNESS_STALL_REVIEW_PROMPT.format(why=why) + contract
     return STALL_REVIEW_PROMPT.format(why=why)
 
 
@@ -943,12 +980,13 @@ def _spin_streak(trajectory: list[dict[str, Any]]) -> tuple[int, list[str]]:
     return streak, moves
 
 
-def _review_recovery(message: str) -> str | None:
-    """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision."""
+def _review_recovery(message: str, contract: str | None = None) -> str | None:
+    """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision. A
+    harness turn (`contract`) resumes as one."""
     if message.startswith(("LEVEL REVIEW", "RECOVER LEVEL REVIEW")):
-        return LEVEL_REVIEW_RECOVERY_PROMPT
+        return HARNESS_LEVEL_REVIEW_RECOVERY_PROMPT + contract if contract else LEVEL_REVIEW_RECOVERY_PROMPT
     if message.startswith(("STALL REVIEW", "RECOVER STALL REVIEW")):
-        return STALL_REVIEW_RECOVERY_PROMPT
+        return HARNESS_STALL_REVIEW_RECOVERY_PROMPT + contract if contract else STALL_REVIEW_RECOVERY_PROMPT
     if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT}:
         return CONSOLIDATE_RECOVERY_PROMPT
     return None
@@ -964,7 +1002,7 @@ def _reconciled_action(before: int, health: dict | None, state: dict | None, tra
 
 
 def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *, max_recoveries: int = 2,
-                         settlement_timeout: float = 30.0, restart=None) -> list[dict[str, Any]]:
+                         settlement_timeout: float = 30.0, restart=None, contract: str | None = None) -> list[dict[str, Any]]:
     """A local fault group. Abort, settle and reconcile before considering another paid request."""
     for attempt in range(max_recoveries + 1):
         try:
@@ -997,7 +1035,7 @@ def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *
             if committed:
                 return settled
             summary['idle_recoveries'] += 1
-            message = _review_recovery(message) or (
+            message = _review_recovery(message, contract) or (
                        'RECOVER TURN. The previous request stopped; the environment confirms no action was committed. '
                        'Continue the unfinished investigation using available tools and the current observation, '
                        'then submit one arc_action. Do not repeat completed writes or earlier actions.')
@@ -1246,6 +1284,8 @@ def run_arc_thin_e2e(
             raise ValueError("ARC_THIN_OBSERVATION must be query, inline or ch")
         if foundation == "native":
             pi_env["ARC_THIN_OBSERVATION"] = observation_delivery
+        # The harness turn and the guard place (docs/plans/2026-10-26-e1-harness-turn-protocol.md): off unless set to 1.
+        harness_contract = _harness_contract(foundation, variant, pi_env)
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    *(["--session", str(root / "session.jsonl")] if foundation == "native" else ["--no-session"]),
@@ -1271,6 +1311,10 @@ def run_arc_thin_e2e(
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
             "review_at_level_change": review_at_level_change, "stall_review_after": stall_review_after,
             "spin_review_after": spin_review_after, "work_memory": pi_env.get("ARC_THIN_WORK_MEMORY") != "0",
+            # Reviews as harness turns (ARC_THIN_HARNESS_TURN=1) and saved guards asked before each action
+            # (ARC_THIN_GUARDS=1), native treatment only.
+            "harness_turn": harness_contract is not None,
+            "guards": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_GUARDS") == "1",
             # Where the active prompts are (docs/plans/2026-10-21-context-layout.md): "head" opens each decision's head
             # with them and ends it with the agent's own record on the board; "system" keeps them as system-prompt
             # sections (ARC_THIN_CONTEXT_LAYOUT=0, the legacy foundation and the control variant).
@@ -1391,7 +1435,8 @@ def run_arc_thin_e2e(
                         kernel.send('set_thinking_level', level=thinking)
                 return _recover_native_turn(turn, message, kernel, summary, reconcile,
                     max_recoveries=2 if allow_idle_recovery else 0,
-                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart)
+                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart,
+                    contract=harness_contract)
             try:
                 return turn(message)
             except PiTurnIdleTimeout as exc:
@@ -1437,7 +1482,7 @@ def run_arc_thin_e2e(
             if continuity != "session":
                 kernel.new_session()
             summary["length_recoveries"] += 1
-            recovery = _review_recovery(message) or (
+            recovery = _review_recovery(message, harness_contract) or (
                 'RECOVER ACTION. The previous reply reached the provider output limit. Continue the unfinished '
                 'step using the available tools and current observation; reuse suitable components. '
                 'Do not repeat completed operations. Finish with an acting call (arc_action or Python env.act).' if foundation == 'native' else DECIDE_RECOVERY_PROMPT)
@@ -1592,9 +1637,9 @@ def run_arc_thin_e2e(
                     # otherwise the consolidation prompt.
                     level_review = foundation == "native" and level_changed_since_consolidation and review_at_level_change
                     stall_review = not level_review and (stall_due or spin_due)
-                    review = (_level_review_prompt(int(state.get("levels_completed") or 0)) if level_review
+                    review = (_level_review_prompt(int(state.get("levels_completed") or 0), harness_contract) if level_review
                               else _stall_review_prompt(trajectory_now, stall_reviewed_at, int(state.get("levels_completed") or 0),
-                                                        spin if spin_due and not stall_due else None) if stall_review
+                                                        spin if spin_due and not stall_due else None, harness_contract) if stall_review
                               else CONSOLIDATE_PROMPT)
                     events = recover_length(review, safe_turn(review))
                     summary["consolidations"] += 1

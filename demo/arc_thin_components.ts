@@ -46,6 +46,11 @@ def _predictor(tree):
     """A tool that defines predict(state, action): run before every action, its returned prediction is scored."""
     return any(isinstance(n, ast.FunctionDef) and n.name == 'predict' and len(n.args.args) == 2 for n in tree.body)
 
+def _guard(tree):
+    """A tool that defines admit(state, action): asked before every action is sent (ARC_THIN_GUARDS); None lets the
+    action pass, a reason (a string) refuses it."""
+    return any(isinstance(n, ast.FunctionDef) and n.name == 'admit' and len(n.args.args) == 2 for n in tree.body)
+
 def _inspect(req):
     path = req['path']
     name = path.split('/')[-1][:-3]
@@ -60,15 +65,18 @@ def _inspect(req):
     off = '# view: off' in head or '# observe: off' in head
     acts = 'env.act(' in req['source']
     predictor = _predictor(tree)
+    guard = _guard(tree)
+    if guard and acts:
+        raise ValueError('a guard is asked before each action is sent and cannot act: remove the env.act call')
     # A view is a tool whose output is shown after every new state (observers/ is the older place for views). Saved code
-    # that takes no arguments, does not act and predicts nothing is one by default: it waits for no call (2026-10-20,
-    # docs/plans/2026-10-20-loop-bound-artifacts.md A2); '# view: off' keeps it a plain tool.
-    default = top == 'tools' and not acts and not predictor and not _reads_args(tree, _entry(tree))
+    # that takes no arguments, does not act and predicts or guards nothing is one by default: it waits for no call
+    # (2026-10-20, docs/plans/2026-10-20-loop-bound-artifacts.md A2); '# view: off' keeps it a plain tool.
+    default = top == 'tools' and not acts and not predictor and not guard and not _reads_args(tree, _entry(tree))
     view = (top == 'observers' or '# view: on' in head or default) and not off
     if view and acts:
         raise ValueError('a view runs after every new state and cannot act: remove "# view: on" or the env.act call')
     return {'name': name, 'kind': 'tool', 'description': describe, 'parameters': TOOL_PARAMETERS, 'view': view,
-            'predictor': predictor, 'enabled': not (top == 'observers' and off)}
+            'predictor': predictor, 'guard': guard, 'enabled': not (top == 'observers' and off)}
 
 # Run as a live kernel (pi_task_python_kernel.py), the guest has _rpc: it serves cell after cell in one namespace,
 # and asks the host for actions and files where the code asks, instead of ending and being replayed.
@@ -672,6 +680,11 @@ def _call(req, env):
     predictor's predict(state, action) is called for that action, or for each of a list of actions in this one execution."""
     source = _sources.get(req['path'], '')
     inner = (req.get('args') or {}).get('args') or {}
+    if req.get('admit') is not None:
+        # A guard: admit(state, action) for the one action about to be sent; its answer goes back as it is.
+        module = __import__(req['path'][:-3].replace('/', '.'), fromlist=['*'])
+        env._namespace = module.__dict__
+        return _jsonable(module.admit(_state, dict(req['admit'])))
     if req.get('predict') is not None:
         module = __import__(req['path'][:-3].replace('/', '.'), fromlist=['*'])
         env._namespace = module.__dict__

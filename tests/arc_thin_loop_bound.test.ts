@@ -86,6 +86,8 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
 		},
 		/** The next request of the same decision: what was saved since is bound at its start. */
 		request: (prompt = 'Decide the next action.') => head(prompt),
+		/** The model's next message in the same decision (one arc_action per message). */
+		async message() { await handlers.get('message_end')({ message: { role: 'assistant', content: [], stopReason: 'toolUse' } }); },
 		act: (params: any) => call('arc_action', params),
 		call,
 		async close() {
@@ -206,6 +208,71 @@ test('a review that has not saved its file by its last call may write it with on
 		assert.match(await h.call('write', { path: 'prompts/rules.md', content: '- one more\n' }), /this review used its 10 tool calls; it ends here/);
 		await h.begin();
 		assert.match(h.file('workspace/prompts/strategy.md'), /- First: ACTION6\(3,3\); test 1 of 1 from prompts\/lessons\.md/);
+	} finally { await h.close(); await done(w); }
+});
+
+test('a harness turn (ARC_THIN_HARNESS_TURN=1) saves a component the agent chose within its call budget; no lessons file is asked for', async () => {
+	const w = await world();
+	const h = await attach(w, { ARC_THIN_HARNESS_TURN: '1' });
+	try {
+		await h.begin(); await h.act({ action: 'ACTION6', x: 8, y: 8 });
+		const REVIEW = 'LEVEL REVIEW. Level 1 is complete; this turn takes no action.';
+		await h.begin(REVIEW);
+		await h.call('write', { path: 'agents/scout.md', content: '---\ndescription: reads a level record\ntools: [read]\n---\nSay what was never tried.\n' });
+		await h.request(REVIEW);
+		assert.match(await h.call('consult', { agent: 'scout', question: 'What was never tried?', refs: ['data/record.md'] }), /never tried/);
+		assert.match(await h.call('write', { path: 'prompts/loop-adjustment.md', content: '---\nactive: true\n---\nReduce repeated rereads.\n' }),
+			/prompts\/loop-adjustment\.md → prompt loop-adjustment v1: saved · loaded/);
+		for (let i = 4; i < 10; i += 1) await h.call('python', { code: `${i}` });
+		assert.match(await h.call('python', { code: '10' }),
+			/\(This was tool call 10 of 10 for this review: finish now; make a component change or state why none is justified\.\)/);
+		assert.match(await h.call('write', { path: 'prompts/another.md', content: '---\nactive: true\n---\nblocked by review budget\n' }),
+			/this review used its 10 tool calls; it ends here/);
+		await h.begin();
+		assert.match(h.file('workspace/prompts/loop-adjustment.md'), /Reduce repeated rereads/);
+		assert.equal(h.file('workspace/prompts/lessons.md'), '');
+	} finally { await h.close(); await done(w); }
+});
+
+const GUARD = '"""Keeps clicks off row 2."""\ndef admit(state, action):\n    if action.get("y") == 2:\n        return "row 2 is off limits"\n';
+
+test('a guard (ARC_THIN_GUARDS=1) refuses an action before the game sees it, as the agent\'s own rule, and is not asked again in a decision after two refusals', async () => {
+	const w = await world();
+	const h = await attach(w, { ARC_THIN_GUARDS: '1' });
+	try {
+		await h.begin();
+		assert.match(await h.call('python', { code: GUARD, save: 'rowguard' }), /tools\/rowguard\.py → tool rowguard v1: saved · loaded/);
+		await h.request();
+		assert.equal(await h.act({ action: 'ACTION6', x: 1, y: 2 }), 'REFUSED: ACTION6(1,2) was NOT played: refused by your guard tools/rowguard.py v1: ' +
+			'row 2 is off limits. This is your own rule, not the game\'s: the game did not see this action.');
+		assert.equal(h.rows('trajectory.jsonl').length, 0, 'nothing was played');
+		await h.message();
+		assert.match(await h.act({ action: 'ACTION6', x: 3, y: 2 }), /off limits\. [^]* tools\/rowguard\.py refused 2 actions in this decision and is not asked again in it\.$/);
+		await h.message();
+		assert.match(await h.act({ action: 'ACTION6', x: 4, y: 2 }), /^#1 ACTION6\(4,2\)/, 'suspended for the rest of the decision');
+		await h.begin();
+		assert.match(await h.act({ action: 'ACTION6', x: 1, y: 1 }), /^#2 ACTION6\(1,1\)/, 'asked again in the next decision; it lets this one pass');
+		assert.deepEqual(h.rows('guard_runs.jsonl').map((row) => [row.action, row.verdict]),
+			[['ACTION6(1,2)', 'refuse'], ['ACTION6(3,2)', 'refuse'], ['ACTION6(1,1)', 'allow']]);
+		assert.match(await h.begin(), /tool rowguard v1 active: Keeps clicks off row 2\. · guard, asked before each action is sent · asked 3×, refused 2/);
+		// A guard's code acting is refused at save; one that fails lets the action pass, and the receipt says so.
+		assert.match(await h.call('python', { code: 'def admit(state, action):\n    env.act("ACTION1")\n', save: 'actor' }), /a guard is asked before each action is sent and cannot act/);
+		await h.call('python', { code: 'def admit(state, action):\n    return 1 / 0\n', save: 'broken' });
+		await h.request();
+		assert.match(await h.act({ action: 'ACTION6', x: 5, y: 5 }), /^#3 ACTION6\(5,5\)[^]*\| guard tools\/broken\.py v1 failed \(ZeroDivisionError[^]*\); the action was sent without its answer/);
+	} finally { await h.close(); await done(w); }
+});
+
+test('without ARC_THIN_GUARDS a tool that defines admit(state, action) is not asked', async () => {
+	const w = await world();
+	const h = await attach(w);
+	try {
+		await h.begin();
+		await h.call('python', { code: GUARD, save: 'rowguard' });
+		await h.request();
+		assert.match(await h.act({ action: 'ACTION6', x: 1, y: 2 }), /^#1 ACTION6\(1,2\)/);
+		assert.deepEqual(h.rows('guard_runs.jsonl'), []);
+		assert.match(await h.begin(), /tool rowguard v1 active: [^\n]*· not asked: guards are off in this run/);
 	} finally { await h.close(); await done(w); }
 });
 
