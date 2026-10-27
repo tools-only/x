@@ -6,9 +6,10 @@ import { createRequire } from 'node:module';
 import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean };
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean;
+  mount?: Array<'decision' | 'action' | 'feedback'> };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
-type Entry = { path: string; version: number; hash: string; level: number; error?: string; retired?: boolean; good?: Component };
+type Entry = { path: string; version: number; hash: string; level: number; by?: string; decision?: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
 const requirePi = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'));
 const { parseDocument } = requirePi('yaml'); // Pi 0.87.0's pinned YAML dependency, full Agent Skills frontmatter.
@@ -23,12 +24,14 @@ export function componentKind(path: string): string | undefined {
   if (/^(tools|observers)\/[^/]+\.py$/.test(path)) return 'tool';
   if (/^lib\/[^/]+\.py$/.test(path)) return 'library';
   if (/^skills\/[^/]+\/SKILL\.md$/.test(path)) return 'skill';
+  if (/^prompts\/process\/[^/]+\.md$/.test(path)) return 'prompt';
   if (/^prompts\/[^/]+\.md$/.test(path)) return 'prompt';
   if (/^(agents|roles)\/[^/]+\.md$/.test(path)) return 'subagent';
 }
 /** The file conventions require only scalar values and lists, not an SDK. */
 export function markdownSpec(path: string, source: string): ComponentSpec {
-  const kind = componentKind(path)!; const name = kind === 'skill' ? path.split('/')[1] : path.split('/').at(-1)!.replace(/\.md$/, '');
+  const kind = componentKind(path)!; const name = kind === 'skill' ? path.split('/')[1]
+    : `${path.startsWith('prompts/process/') ? 'process_' : ''}${path.split('/').at(-1)!.replace(/\.md$/, '')}`;
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(source);
   if (!match) throw Error('markdown needs frontmatter');
   const doc = parseDocument(match[1]); if (doc.errors.length) throw Error(doc.errors.map((e: Error) => e.message).join('; '));
@@ -78,25 +81,35 @@ export class Binder {
     const file = hash ? join(this.versions, `${hash}.txt`) : '';
     return file && existsSync(file) ? readFileSync(file, 'utf8') : undefined;
   }
-  save(path: string, level: number): Promise<string | undefined> {
+  originOf(path: string): { by?: string; decision?: number } | undefined {
+    const entry = this.entries.get(path);
+    return entry ? { by: entry.by, decision: entry.decision } : undefined;
+  }
+  save(path: string, level: number, origin: { by: string; decision?: number } = { by: 'unknown' }): Promise<string | undefined> {
     if (/^(data|results)(\/|$)/.test(path)) return Promise.resolve(undefined);
     const kind = componentKind(path) ?? 'file';
     const source = this.workspace.read(path); // Capture the write, before queued validation starts.
-    const work = this.saving.then(() => this.saveSource(path, level, kind, source));
+    const work = this.saving.then(() => this.saveSource(path, level, kind, source, origin));
     this.saving = work.catch(() => undefined); return work;
   }
-  private async saveSource(path: string, level: number, kind: string, source: string) {
+  private async saveSource(path: string, level: number, kind: string, source: string, origin: { by: string; decision?: number }) {
     const hash = createHash('sha256').update(source).digest('hex');
     const old = this.entries.get(path);
     if (old?.hash === hash && !old.retired) return kind === 'file' ? undefined : this.receipt(old, true);
     const target = join(this.versions, `${hash}.txt`);
     if (!existsSync(target)) writeFileSync(target, source, { flag: 'wx', encoding: 'utf8' });
-    const entry: Entry = { path, version: (old?.version ?? 0) + 1, hash, level, good: old?.good };
+    const entry: Entry = { path, version: (old?.version ?? 0) + 1, hash, level, by: origin.by, decision: origin.decision, good: old?.good };
     try {
       const spec = kind === 'file' ? { kind, name: path, description: '', enabled: false }
         : kind === 'tool' || kind === 'library'
           ? await this.validate?.(path, source) : markdownSpec(path, source);
       if (!spec) throw Error('Python component binder not available');
+      if (spec.kind === 'prompt') {
+        const section = `prompt_${spec.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+        const collision = [...this.entries].some(([otherPath, other]) => otherPath !== path && !other.retired && other.good?.kind === 'prompt'
+          && `prompt_${other.good.name.replace(/[^a-zA-Z0-9_]/g, '_')}` === section);
+        if (collision) throw Error(`prompt section name collision: ${section}`);
+      }
       entry.good = { ...spec, source, path, hash, level, version: entry.version };
     } catch (error) { entry.error = error instanceof Error ? error.message : String(error); }
     this.record(entry); return kind === 'file' ? undefined : this.receipt(entry);
@@ -151,7 +164,8 @@ export class Binder {
     const lines = listed.map(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;
       const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
-      const use = kind === 'tool' ? (path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
+      const use = kind === 'tool' ? (c?.mount?.length ? `loop mount at ${c.mount.join(' and ')}` : c?.guard ? 'action guard, checked before each action'
+          : path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
           : c?.predictor ? 'predictor, run at each action' : `${c?.name ?? ''}(args)`)
         : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
       return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +

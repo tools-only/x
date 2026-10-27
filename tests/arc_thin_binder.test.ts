@@ -47,3 +47,17 @@ test('ordinary workspace files are versioned without component activation or ind
   b.boundary(); assert.equal(b.active().length, 0); assert.equal(b.versionMap()['artifacts/a.txt'], 2);
   assert.equal(b.index(0), '');
 });
+
+test('process prompts bind in their own section namespace and reject collisions', async () => {
+  const w = new Workspace(mkdtempSync(join(tmpdir(), 'binder-process-'))); const b = new Binder(w);
+  w.runtimeWrite('prompts/process/reuse.md', '---\nactive: true\n---\nEXPECT within 2 actions: reuse an existing capability');
+  assert.match(await b.save('prompts/process/reuse.md', 0, { by: 'agent', decision: 4 })!, /saved.*loaded/);
+  assert.deepEqual(b.originOf('prompts/process/reuse.md'), { by: 'agent', decision: 4 });
+  b.boundary();
+  assert.equal(b.active()[0].name, 'process_reuse');
+
+  w.runtimeWrite('prompts/process_reuse.md', '---\nactive: true\n---\nconflicting section');
+  assert.match(await b.save('prompts/process_reuse.md', 0)!, /NOT loaded.*section name collision/);
+  b.boundary();
+  assert.deepEqual(b.active().map(c => c.path), ['prompts/process/reuse.md']);
+});

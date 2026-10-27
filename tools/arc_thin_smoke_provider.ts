@@ -171,6 +171,41 @@ const CONTINUITY_SCRIPT: Step[] = [
 	{ kind: "decide", say: "SMOKE-CONTINUITY-2: it moved; now left.", calls: [["arc_action", { action: "ACTION3", note: "second move" }]] },
 	{ kind: "decide", calls: [["arc_action", { action: "ACTION4", note: "third move" }]] },
 ];
+// End-to-end action-guard lifecycle. A native stall review creates and saves a
+// guard, the next action turn is refused once then changed, and the following
+// review receives the mechanically generated LOOP AUDIT before it chooses
+// `no_change`.
+const GUARD_SCRIPT: Step[] = [
+	{ kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'first move opens the review window' }]] },
+	{ kind: 'consolidate', calls: [['write', { path: 'tools/action_guard.py', content:
+		'def admit(state, action):\n    return {"allow": action["name"] != "ACTION1", "reason": "the first choice repeats a measured failure"}\n' }]] },
+	{ kind: 'consolidate', text: 'Guard saved; finish this review.' },
+	{ kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'guard should refuse this' }]] },
+	{ kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'change after refusal' }]] },
+	{ kind: 'consolidate', text: 'no_change — keep the guard for this measured window.' },
+	{ kind: 'decide', text: 'No further action in this bounded smoke.' },
+];
+const META_LOOP_SOURCE = '# mount: decision, action, feedback\n' +
+  '# EXPECT within 1 action: the next action has an independently checked state prediction\n' +
+  'def on_event(state, event):\n' +
+  '    if event["phase"] == "decision":\n' +
+  '        return {"context": "local=" + str(event["local"]), "next_local": event["local"] or 1}\n' +
+  '    if event["phase"] == "action":\n' +
+  '        return {"allow": True, "expect_next": [{"path": "state", "equals": "IMPOSSIBLE"}]}\n' +
+  '    return {"next_local": (event["local"] or 0) + 1}\n';
+// Ordinary decisions: create a process component, let the next real action test it, then close the exact version.
+const META_LOOP_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['write', { path: 'tools/process.py', content: META_LOOP_SOURCE }]] },
+  { kind: 'decide', calls: [['python', { code: 'env.meta_decide("keep", "attempt before an environment action")' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'test the saved process' }]] },
+  { kind: 'decide', calls: [['python', { code: 'env.meta_decide("keep", "checked the real action result")' }]] },
+];
+const META_LOOP_REVISE_SCRIPT: Step[] = [
+  ...META_LOOP_SCRIPT.slice(0, 3),
+  { kind: 'decide', calls: [['write', { path: 'tools/process.py', content: META_LOOP_SOURCE.replace('IMPOSSIBLE', 'PLAYING') }]] },
+  { kind: 'decide', calls: [['python', { code: 'env.meta_decide("revise", "correct the contradicted prediction")' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'test the revised process' }]] },
+];
 // Claims checked against history and one-off python (docs/plans/2026-10-12-falsifiable-self-harness-plan.md). In the
 // mock game the 9 on row 3 starts at x=2 and moves right on ACTION1/4, left on ACTION2/3. hyp.right's check holds on
 // #1, hyp.wrong's fails there, and hyp.broken's check does not compile: it is reported and the update still commits.
@@ -411,6 +446,9 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "selfharness" ? SELF_HARNESS_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "continuity" ? CONTINUITY_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "guard" ? GUARD_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "meta-loop" ? META_LOOP_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "meta-loop-revise" ? META_LOOP_REVISE_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "claims" ? CLAIMS_SCRIPT : DEFAULT_SCRIPT;
 
 const textOf = (message: any): string => typeof message?.content === "string"
@@ -597,9 +635,10 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			const adoption = systemPrompt.startsWith("You review why an agent keeps rebuilding");
 			const refiner = systemPrompt.startsWith("You maintain the harness of an agent");
 			const critic = systemPrompt.includes("You review an agent") || adoption || refiner;
-			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);
+			// Native mode retains earlier user turns; classify the active review from the newest one.
+			const head = textOf(messages.findLast((message) => message?.role === "user") ?? messages[0]);
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
-			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(head.trimStart());
+			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(head.trimStart());
 			let planned: Step | undefined;
       if (consult) {
         const result = messages.find((m: any) => m.role === 'toolResult' && m.toolName === 'compare');

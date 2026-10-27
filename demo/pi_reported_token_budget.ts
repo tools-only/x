@@ -13,20 +13,21 @@ export function reportedBudgetRequestDeclined(pi: ExtensionAPI): boolean {
 	return state?.declined === true && !state.responseSeen;
 }
 
-export function reportedUsageTokens(usage: Record<string, any> | undefined): number | undefined {
+export function reportedUsageTokens(usage: Record<string, any> | undefined, countCache = true): number | undefined {
 	if (!usage) return;
 	const total = usage.totalTokens ?? usage.total_tokens;
-	if (Number.isSafeInteger(total) && total >= 0) return total;
+	if (countCache && Number.isSafeInteger(total) && total >= 0) return total;
 	const input = usage.input ?? usage.input_tokens;
 	const output = usage.output ?? usage.output_tokens;
 	if (!Number.isSafeInteger(input) || input < 0 || !Number.isSafeInteger(output) || output < 0) return;
 	const cached = [usage.cacheRead ?? usage.cache_read ?? 0, usage.cacheWrite ?? usage.cache_write ?? 0];
 	if (cached.some(n => !Number.isSafeInteger(n) || n < 0)) return;
-	const computed = input + output + cached[0] + cached[1];
+	const computed = input + output + (countCache ? cached[0] + cached[1] : 0);
 	return Number.isSafeInteger(computed) ? computed : undefined;
 }
 
-export function installReportedTokenBudget(pi: ExtensionAPI, root: string) {
+export function installReportedTokenBudget(pi: ExtensionAPI, root: string, options: { countCache?: boolean } = {}) {
+	const countCache = options.countCache ?? true;
 	const checkpointScope = process.env.PI_ARC_NO_LEVEL_CHECKPOINT_SCOPE ?? "outer_prompt_dispatch";
 	if (!["outer_prompt_dispatch", "parent_provider_requests"].includes(checkpointScope)) throw new Error("invalid PI_ARC_NO_LEVEL_CHECKPOINT_SCOPE");
 	const configured = process.env.PI_PROVIDER_MAX_REPORTED_TOKENS;
@@ -162,7 +163,7 @@ export function installReportedTokenBudget(pi: ExtensionAPI, root: string) {
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message as any;
 		if (message.role !== "assistant") return;
-		const tokens = reportedUsageTokens(message.usage);
+		const tokens = reportedUsageTokens(message.usage, countCache);
 		const reservationId = takeReportedRequestReservation(pi);
 		const reservation = reservationId ? { reservation_id: reservationId } : {};
 		// Pi emits a synthetic aborted message for a declined request. This is

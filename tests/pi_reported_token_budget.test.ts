@@ -8,6 +8,8 @@ import { installReportedTokenBudget, readReportedTokenBudget, reportedUsageToken
 test("usage counts total once, including cache but not reasoning again", () => {
     assert.equal(reportedUsageTokens({ input: 10, cacheRead: 4, output: 8, reasoning: 6, totalTokens: 22 }), 22);
     assert.equal(reportedUsageTokens({ input: 10, cacheRead: 4, output: 8, reasoning: 6 }), 22);
+    assert.equal(reportedUsageTokens({ input: 10, cacheRead: 4, cacheWrite: 2, output: 8, totalTokens: 24 }, false), 18,
+        "the thin-run cap excludes cache reads/writes to match its usage.jsonl definition");
     assert.equal(reportedUsageTokens(undefined), undefined);
     assert.equal(reportedUsageTokens({ input: 10, output: 8, cacheRead: "4" }), undefined);
     assert.equal(reportedUsageTokens({ input: 10, output: 8, cacheWrite: -1 }), undefined);

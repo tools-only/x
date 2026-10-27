@@ -32,7 +32,7 @@ from .validation_evidence import load_validation_manifest
 from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
 from .arc_thin_e2e import (
-    run_arc_thin_claims_smoke, run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_ledger_smoke,
+    run_arc_thin_claims_smoke, run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_guard_smoke, run_arc_thin_ledger_smoke,
     run_arc_thin_self_harness_smoke, run_arc_thin_smoke,
 )
 from .arc_blind_policy import run_arc_blind_policy
@@ -234,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
                                 help="run the session-continuity scenario instead (earlier decisions kept in view)")
     arc_thin_smoke.add_argument("--claims", action="store_true",
                                 help="run the hypothesis-check and one-off python scenario instead")
+    arc_thin_smoke.add_argument("--guard", action="store_true",
+                                help="run the native review → saved action guard → refusal → LOOP AUDIT scenario")
     arc_compaction_probe = sub.add_parser("arc-thin-compaction-probe",
                                            help="offline Pi 0.87.0 native-compaction boundary probe")
     arc_compaction_probe.add_argument("--root", type=Path, default=None)
@@ -460,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = (run_arc_thin_ledger_smoke(args.root) if args.ledger
                    else run_arc_thin_environment_smoke(args.root) if args.environment
                    else run_arc_thin_continuity_smoke(args.root) if args.continuity
+                   else run_arc_thin_guard_smoke(args.root) if args.guard
                    else run_arc_thin_claims_smoke(args.root) if args.claims
                    else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))
         print(summary.read_text(encoding="utf-8"), end="")

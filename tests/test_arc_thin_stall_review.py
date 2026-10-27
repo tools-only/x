@@ -35,6 +35,10 @@ def test_the_prompt_names_the_level_and_what_the_count_runs_from_and_resumes_as_
     assert prompt.startswith('STALL REVIEW. Level 2 is still open after 40 actions (since it began at action 31); '
                              'this turn takes no action.')
     assert 'rewrite prompts/review.md whole, in one write call' in prompt and '\n---\nactive: true\n---\n' in prompt
+    assert 'LOOP AUDIT' in prompt and 'strategy, information representations, tools' in prompt
+    assert 'choose one small change to an Agent-owned component or active rule/prompt' in prompt
+    assert 'EXPECT within <N> actions' in prompt
+    assert 'DECISION: keep | revise | remove' in prompt and 'DECISION: no_change' in prompt
     assert '4. 2-4 directions not tested yet, the one to test first first, each on a line of its own as\n' \
            '- test: <move> — <what it would show>\n' in prompt
     again = runner._stall_review_prompt(rows(count=80), 40, 0)

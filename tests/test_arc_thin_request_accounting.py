@@ -1,4 +1,16 @@
-from autoresearch_pi.arc_thin_e2e import _request_accounting
+from autoresearch_pi.arc_thin_e2e import _provider_capacity_error, _provider_capacity_summary, _request_accounting
+
+
+def test_provider_credit_and_max_output_errors_are_terminal_capacity_failures():
+    error = ("This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, "
+             "but can only afford 16000.")
+    assert _provider_capacity_error(error)
+    assert _provider_capacity_error("insufficient credits for requested max output tokens")
+    assert not _provider_capacity_error("Connection error.")
+    assert not _provider_capacity_error("rate limit exceeded")
+    summary = _provider_capacity_summary(error + " See https://provider.example/keys/private-id")
+    assert summary == "provider cannot afford requested max_tokens=65536; affordable max_tokens=16000"
+    assert "private-id" not in summary
 
 
 def test_completed_cancelled_and_unsettled_requests_are_distinct_and_not_zero_cost():

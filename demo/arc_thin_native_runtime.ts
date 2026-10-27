@@ -20,6 +20,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   act?(call: ActCall, via: string): Promise<ActOutcome>;
   /** Commit a memory update made by code (env.remember) through the memory tool's own update; returns its receipt. */
   remember?(args: unknown): Promise<string>;
+  onSaved?(path: string, receipt: string | undefined): void;
+  metaDecision?(choice: string, reason: string): string;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
@@ -36,6 +38,9 @@ export const MAX_ACTS = 24;
 const MAX_PARALLEL = 4;
 /** States after which a view whose output never changed is shown as a snapshot: its head only (observe). */
 export const CONSTANT_VIEW_RUNS = 5;
+/** Host-owned limit; source declarations cannot increase it. */
+const MAX_LOOP_MOUNTS = 4;
+const MAX_LOOP_MOUNT_MS = 5000;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
   : typeof result.value === 'object' && result.value !== null && 'stdout' in result.value
     ? [(result.value as any).stdout, (result.value as any).has_value ? '→ ' + JSON.stringify((result.value as any).value) : ''].filter(Boolean).join('\n')
@@ -65,6 +70,7 @@ export class NativeRuntime {
   private registered = new Map<string, string>();
   private viewPool = new TaskPythonPool();
   private pending: Promise<unknown> = Promise.resolve();
+  private mountLocal = new Map<string, unknown>();
   private observed = new Set<string>();
   private outputs = new Map<string, string>();
   /** path@version → the states on which the view has shown nothing, in a row, and how many of the latest raised. */
@@ -73,6 +79,8 @@ export class NativeRuntime {
   private viewShowed = new Set<string>();
   /** level:path of components already named in a python result as covering a retyped computation. */
   private coverHinted = new Set<string>();
+  /** One short in-window review cue per level and canonical action count. */
+  private windowCheckHinted = new Set<string>();
   /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
   emptyViews() {
     const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => `${c.path}@${c.version}`));
@@ -104,6 +112,7 @@ export class NativeRuntime {
   viewStats(): Map<string, { runs: number; errors: number; changes: number }> {
     const out = new Map<string, { runs: number; errors: number; changes: number }>();
     for (const c of this.host.binder.active()) {
+      if (c.level !== this.host.level()) continue;
       const counts = this.viewCounts.get(`${c.path}@${c.version}`);
       if ((c as any).view && counts) out.set(c.path, { runs: counts.runs, errors: counts.errors, changes: counts.changes });
     }
@@ -172,7 +181,7 @@ export class NativeRuntime {
       execute: host.wrap('consult', (args, signal, ctx) => this.consult(args, signal, ctx)) });
   }
   /** The saved tools the agent can call by name (views under observers/ are shown, not called). */
-  private callable() { return this.host.binder.candidates().filter(c => c.kind === 'tool' && !c.path.startsWith('observers/')); }
+  private callable() { return this.host.binder.candidates().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length && !c.path.startsWith('observers/')); }
   /** Register candidates immediately; Pi advertises them only on its next request. Execution uses boundary snapshots. */
   register() {
     for (const c of this.callable()) {
@@ -182,7 +191,7 @@ export class NativeRuntime {
         prepareArguments: (args: any) => args && typeof args === 'object' && !('args' in args) && Object.keys(args).length ? { args } : args,
         execute: this.host.wrap(c.name, async (args, signal) => {
           const active = this.host.binder.active().find(x => x.path === c.path);
-          if (!active) throw Error(`${c.name} is retired or off`);
+          if (!active || active.mount?.length) throw Error(`${c.name} is retired or mounted at a loop boundary`);
           return this.call(active, args, signal);
         }) });
       this.registered.set(c.name, c.hash);
@@ -192,6 +201,8 @@ export class NativeRuntime {
   /** Earlier python runs of this run (component_runs.jsonl), after a restart. */
   seedPython(rows: any[]) {
     for (const r of rows) {
+      if (r?.kind === 'window_check' && Number.isInteger(r.level) && Number.isInteger(r.n))
+        this.windowCheckHinted.add(`${r.level}:${r.n}`);
       if (r?.kind === 'python' && !r.readonly && typeof r.shape === 'string')
         this.pythonRuns.push({ level: Number(r.level) || 0, shape: r.shape, lines: r.lines ?? [], struct: r.struct ?? [], gist: String(r.gist ?? ''), kit: String(r.kit ?? ''),
           decision: Number(r.decision) || 0, n: Number(r.n) || 0 });
@@ -199,10 +210,16 @@ export class NativeRuntime {
   }
   private decision() { return this.host.decision?.() ?? 0; }
   noteSave(path: string, receipt: string | undefined) {
-    if (!/^(tools|observers|lib)\/[^/]+\.py$/.test(path)) return;
-    const ok = !/NOT loaded/.test(receipt ?? '');
-    this.host.log('component_runs.jsonl', { kind: 'save', path, decision: this.decision(), n: this.host.actionCount(), ok,
-      ...(ok ? {} : { error: /NOT loaded \(([^)]*)\)/.exec(receipt ?? '')?.[1]?.slice(0, 200) }) });
+    if (/^(tools|observers|lib)\/[^/]+\.py$/.test(path)) {
+      const ok = !/NOT loaded/.test(receipt ?? '');
+      this.host.log('component_runs.jsonl', { kind: 'save', path, decision: this.decision(), n: this.host.actionCount(), ok,
+        ...(ok ? {} : { error: /NOT loaded \(([^)]*)\)/.exec(receipt ?? '')?.[1]?.slice(0, 200) }) });
+    }
+    this.host.onSaved?.(path, receipt);
+  }
+  seedMountLocal(rows: any[]) {
+    for (const row of rows) if (typeof row?.key === 'string' && Object.hasOwn(row, 'local'))
+      this.mountLocal.set(row.key, row.local);
   }
   private components() {
     return this.host.binder.active().filter(c => /^(tools|observers|lib)\//.test(c.path) && c.path.endsWith('.py')).map(c => componentLines(c.path, c.source));
@@ -248,11 +265,12 @@ export class NativeRuntime {
   private async applyWrites(result: NativeResult) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
     for (const op of result.ops ?? []) {
-      if (op.op === 'memory') continue;
+      if (op.op === 'memory' || op.op === 'meta_decide') continue;
       this.host.workspace.path(op.path, true);
       if (op.destination) this.host.workspace.path(op.destination, true);
     }
     const receipts: string[] = [];
+    const decisions: Array<{ choice: string; reason: string }> = [];
     let files = 0;
     for (const op of result.ops ?? []) {
       if (op.op === 'memory') {
@@ -262,17 +280,21 @@ export class NativeRuntime {
         catch (error) { receipts.push('memory refused: ' + String((error as Error)?.message ?? error)); }
         continue;
       }
+      if (op.op === 'meta_decide') {
+        decisions.push({ choice: String(op.choice ?? ''), reason: String(op.reason ?? '') });
+        continue;
+      }
       files += 1;
       if (op.op === 'restore') {
         const source = this.host.binder.sourceOf(op.path, Number(op.version));
         if (source === undefined) { receipts.push(`${op.path}: no version ${op.version} to restore`); continue; }
         this.host.workspace.mutate({ op: 'write', path: op.path, content: source });
-        const receipt = await this.host.binder.save(op.path, this.host.level());
+        const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() });
         receipts.push(`${op.path}: restored from v${op.version}${receipt ? ` · ${receipt}` : ''}`); this.noteSave(op.path, receipt);
         continue;
       }
       this.host.workspace.mutate(op as any);
-      if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level()); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
+      if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() }); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
       else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
     }
     if (files) {
@@ -281,6 +303,7 @@ export class NativeRuntime {
       const names = new Set(this.toolNames());
       this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
     }
+    for (const meta of decisions) receipts.push('meta: ' + (this.host.metaDecision?.(meta.choice, meta.reason) ?? 'unavailable'));
     return receipts;
   }
   /**
@@ -456,7 +479,7 @@ export class NativeRuntime {
       if (!SAVE_NAME.test(save)) throw Error('save must be a lowercase name like route_to (letters, digits, _)');
       const path = `tools/${save}.py`;
       this.host.workspace.mutate({ op: 'write', path, content: code.endsWith('\n') ? code : code + '\n' });
-      const receipt = await this.host.binder.save(path, this.host.level());
+      const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
       if (receipt) saveReceipts.push(receipt);
       this.noteSave(path, receipt);
       await this.host.binder.scan(this.host.level()); this.register();
@@ -465,6 +488,7 @@ export class NativeRuntime {
       if (!/NOT loaded/.test(receipt ?? '')) via = path;
     }
     const snap = this.snapshot(); const started = Date.now();
+    const windowAtStart = this.host.actionCount();
     const kit = kitOf(this.host.binder.versionMap());
     const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}),
       ...(Object.keys(cells).length ? { cells } : {}) };
@@ -511,8 +535,18 @@ export class NativeRuntime {
         : c?.kind === 'tool' ? `call ${c.name}(args={...})` : `from ${covering.replace(/\.py$/, '').replace(/\//g, '.')} import …`} instead of retyping it)`;
       this.host.log('component_runs.jsonl', { kind: 'cover_hint', path: covering, level: this.host.level(), decision, n: this.host.actionCount() });
     }
+    const windowKey = `${this.host.level()}:${windowAtStart}`;
+    const windowCalls = this.pythonRuns.filter(r => r.level === this.host.level() && r.n === windowAtStart).length;
+    let windowCheck = '';
+    if (!readonly && !result.acted?.lines.length && this.host.actionCount() === windowAtStart &&
+        windowCalls >= 3 && !this.windowCheckHinted.has(windowKey)) {
+      this.windowCheckHinted.add(windowKey);
+      windowCheck = `WINDOW CHECK: ${windowCalls} Python calls since action #${windowAtStart}. Briefly compare what they established and what remains uncertain. ` +
+        'If the next test is clear, act without deeper review. Investigate a real contradiction, blocker or tool failure; reuse or save a repeated calculation only when worthwhile.';
+      this.host.log('component_runs.jsonl', { kind: 'window_check', level: this.host.level(), n: windowAtStart, decision, calls: windowCalls });
+    }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
-    const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
+    const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, windowCheck, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
       live && result.ok && Boolean((result.value as any)?.has_value), mark);
     if (parent) {
       const acted = Boolean(result.acted?.lines.length);
@@ -527,7 +561,7 @@ export class NativeRuntime {
     return out;
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
-    const component = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
+    const component = this.host.binder.active().find(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length && c.name === name && !c.path.startsWith('observers/'));
     if (!component) throw Error(`legacy alias ${name}: tool retired or unavailable`);
     return this.call(component, { args }, signal);
   }
@@ -543,7 +577,8 @@ export class NativeRuntime {
   }
   /** Tools marked as views run after every new state; their outputs are shown each decision. They never act. */
   observe(n: number) {
-    const due = this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).view && !this.observed.has(`${c.path}@${c.version}@${n}`));
+    const due = this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).view && c.level === this.host.level()
+      && !this.observed.has(`${c.path}@${c.version}@${n}`));
     if (!due.length) return;
     const snap = this.snapshot();
     for (const c of due) {
@@ -588,11 +623,126 @@ export class NativeRuntime {
     let timer: ReturnType<typeof setTimeout>;
     await Promise.race([this.pending, new Promise<void>(done => { timer = setTimeout(done, 5000); })]);
     clearTimeout(timer!);
-    const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => c.path));
-    return [...this.outputs].filter(([path]) => live.has(path)).map(([, s]) => s.length > 900 ? s.slice(0, 900) : s).join('\n').slice(0, 2400);
+    const level = this.host.level();
+    const views = this.host.binder.active().filter(c => (c as any).view);
+    const current = new Set(views.filter(c => c.level === level).map(c => c.path));
+    const shown = [...this.outputs].filter(([path]) => current.has(path)).map(([, s]) => s.length > 900 ? s.slice(0, 900) : s);
+    const stale = views.filter(c => c.level !== level).map(c =>
+      `${c.path} v${c.version}: written on level ${c.level}; unconfirmed on level ${level}`);
+    return [...shown, ...stale].join('\n').slice(0, 2400);
+  }
+  /** One generic, read-only Agent-authored callback at a runtime boundary. Its result is evidence, not authority. */
+  private loopMounts(phase: 'decision' | 'action' | 'feedback', level = this.host.level()) {
+    return this.host.binder.active().filter(c => c.kind === 'tool' && c.level === level && c.mount?.includes(phase));
+  }
+  private async runLoopMount(c: Component, event: Record<string, unknown>) {
+    const started = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), MAX_LOOP_MOUNT_MS);
+    let result: NativeResult;
+    try {
+      const snap = this.snapshot();
+      result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} },
+        mount_event: { ...event, local: this.mountLocal.get(`${c.path}@${c.version}@${c.level}`) ?? null },
+        allow_writes: false }, controller.signal, this.viewPool);
+    } catch (error) { result = { ok: false, error: String(error) }; }
+    finally { clearTimeout(timer); }
+    const value = result.value as any;
+    if (result.ok && event.phase !== 'action' && value && typeof value === 'object' && !Array.isArray(value)
+      && Object.hasOwn(value, 'next_local')) {
+      const encoded = JSON.stringify(value.next_local);
+      if (!encoded || encoded.length > 8192) result = { ok: false, error: 'next_local must be JSON of at most 8192 characters' };
+      else {
+        const key = `${c.path}@${c.version}@${c.level}`;
+        this.mountLocal.set(key, value.next_local);
+        this.host.log('mount_state.jsonl', { key, path: c.path, version: c.version, level: c.level,
+          n: this.host.actionCount(), local: value.next_local });
+      }
+    }
+    const shownValue = result.ok && value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'context')
+      ? value.context : result.value;
+    const visible = shownValue && typeof shownValue === 'object' && !Array.isArray(shownValue)
+      ? Object.fromEntries(Object.entries(shownValue).filter(([key]) => key !== 'next_local' && key !== 'expect_next')) : shownValue;
+    const row = { kind: 'mount', path: c.path, version: c.version, level: c.level, decision: this.decision(),
+      n: this.host.actionCount(), phase: event.phase, ok: result.ok, ms: Date.now() - started,
+      ...(result.ok ? { value: JSON.stringify(visible ?? null).slice(0, 700) } : { error: String(result.error ?? '').slice(0, 300) }) };
+    this.host.log('component_runs.jsonl', row);
+    return { ...result, visible };
+  }
+  /** A free-form result enters the next decision head unasked, bounded by the host. */
+  async loopDecisionText(): Promise<string> {
+    const due = this.loopMounts('decision');
+    if (!due.length) return '';
+    const parts: string[] = [];
+    for (const c of due.slice(0, MAX_LOOP_MOUNTS)) {
+      const result = await this.runLoopMount(c, { phase: 'decision', decision: this.decision(), n: this.host.actionCount() });
+      parts.push(`${c.path} v${c.version}: ${result.ok ? JSON.stringify(result.visible ?? null).slice(0, 700) : shown(result).slice(0, 700)}`);
+    }
+    if (due.length > MAX_LOOP_MOUNTS) parts.push(`${due.length - MAX_LOOP_MOUNTS} loop mount(s) skipped by runtime limit`);
+    return `LOOP MOUNTS (Agent-authored; verify against the environment):\n${parts.join('\n')}`.slice(0, 2400);
+  }
+  /** At the action boundary only an explicit allow:false can refuse; failures also refuse, as for guards. */
+  async loopAction(action: { name: string; x?: number; y?: number }): Promise<Array<{ path: string; version: number;
+    allow: boolean; reason?: string; error?: string; expect_next?: Array<{ path: string; equals: unknown }> }>> {
+    const due = this.loopMounts('action');
+    const checks: Array<{ path: string; version: number; allow: boolean; reason?: string; error?: string;
+      expect_next?: Array<{ path: string; equals: unknown }> }> = [];
+    if (due.length > MAX_LOOP_MOUNTS) return [{ path: '(runtime)', version: 0, allow: false,
+      error: `${due.length} action mounts exceed the runtime limit of ${MAX_LOOP_MOUNTS}` }];
+    for (const c of due.slice(0, MAX_LOOP_MOUNTS)) {
+      const result = await this.runLoopMount(c, { phase: 'action', decision: this.decision(), n: this.host.actionCount(), action });
+      const value = result.value as any;
+      const predictions = value && typeof value === 'object' ? value.expect_next : undefined;
+      const validPredictions = predictions === undefined || (Array.isArray(predictions) && predictions.length <= 16
+        && JSON.stringify(predictions).length <= 8192 && predictions.every((item: any) => item && typeof item === 'object'
+          && typeof item.path === 'string' && item.path.length <= 100
+          && /^(?:[A-Za-z_][A-Za-z_0-9]*|\d+)(?:\.(?:[A-Za-z_][A-Za-z_0-9]*|\d+))*$/.test(item.path)
+          && Object.hasOwn(item, 'equals')));
+      const allow = result.ok && validPredictions && (value === true || (value && typeof value === 'object' && value.allow === true));
+      const reason = value && typeof value === 'object' && typeof value.reason === 'string' ? value.reason.slice(0, 200) : undefined;
+      checks.push({ path: c.path, version: c.version, allow, ...(reason ? { reason } : {}),
+        ...(allow && predictions ? { expect_next: predictions } : {}),
+        ...(!result.ok ? { error: String(result.error ?? '').slice(0, 200) } :
+          !validPredictions ? { error: 'expect_next must contain at most 16 bounded {path, equals} checks' } :
+          value === false || (value && typeof value === 'object' && value.allow === false) ? {} :
+          !allow ? { error: 'action mount must return bool or {allow: bool, reason?: str}' } : {}) });
+    }
+    return checks;
+  }
+  /** The post-action state is canonical; Agent code may update only its private bounded local state. */
+  async loopFeedback(action: { name: string; x?: number; y?: number }, checks: unknown[], fromLevel: number) {
+    const due = this.loopMounts('feedback', fromLevel);
+    for (const c of due.slice(0, MAX_LOOP_MOUNTS))
+      await this.runLoopMount(c, { phase: 'feedback', decision: this.decision(), n: this.host.actionCount(),
+        from_level: fromLevel, action, checks });
+    if (due.length > MAX_LOOP_MOUNTS) this.host.log('component_runs.jsonl', { kind: 'mount_limit', phase: 'feedback',
+      n: this.host.actionCount(), level: fromLevel, skipped: due.length - MAX_LOOP_MOUNTS });
   }
   /** The active predictor tools: they define predict(state, action) (arc_thin_components.ts). */
-  predictors() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).predictor); }
+  predictors() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).predictor && c.level === this.host.level()); }
+  /** Active, current-level tools that define the read-only admit(state, action) action contract. */
+  guards() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).guard && c.level === this.host.level()); }
+  /** Run each active guard against the state and exact action about to cross the environment boundary. */
+  async admit(action: { name: string; x?: number; y?: number }): Promise<Array<{ path: string; version: number; allow?: boolean; reason?: string; error?: string; ms: number }>> {
+    const due = this.guards();
+    if (!due.length) return [];
+    const snap = this.snapshot();
+    return Promise.all(due.map(async c => {
+      const started = Date.now();
+      try {
+        const result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} }, guard: action }, undefined, this.viewPool);
+        if (!result.ok) return { path: c.path, version: c.version, error: [result.error, result.where].filter(Boolean).join(' · ').slice(0, 200), ms: Date.now() - started };
+        const value = result.value as any;
+        const allow = typeof value === 'boolean' ? value : value && typeof value === 'object' && typeof value.allow === 'boolean'
+          ? value.allow : undefined;
+        const reason = value && typeof value === 'object' && typeof value.reason === 'string' ? value.reason.slice(0, 200) : undefined;
+        return { path: c.path, version: c.version, allow, ...(reason ? { reason } : {}),
+          ...(allow === undefined ? { error: 'admit must return bool or {allow: bool, reason?: str}' } : {}), ms: Date.now() - started };
+      } catch (error) {
+        return { path: c.path, version: c.version, error: String(error).slice(0, 200), ms: Date.now() - started };
+      }
+    }));
+  }
   /**
    * Each predictor's prediction for one action about to be played. The state is taken now, before the caller sends the
    * action, and the predictors run in the view pool while the environment answers; they cannot act or write.

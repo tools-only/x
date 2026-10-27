@@ -24,6 +24,8 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
+import { compareMountExpectations, metaDecisionVersionError, metaTrialFacts, parseComponentExpect, parseMetaReviewLines, stripMetaReviewControlLines,
+	type MountExpectation } from "./arc_thin_meta_trial.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
@@ -45,6 +47,8 @@ import { join, posix } from "node:path";
 import { StringEnum, getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import { compact as piCompact, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
+import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
 import { renderArcLatestFrameRuns } from "./arc_agi_3_official_adapter.ts";
 import { renderArcFrameImage } from "./pi_arc_frame_image.ts";
 import { loadPrompt, renderPrompt } from "./prompt_loader.ts";
@@ -167,6 +171,7 @@ type Skill = { version: number; description: string; source: string; saved_at?: 
 type SkillPrediction = { name: string; version?: number; error?: string } & Partial<ScoredPrediction>;
 /** A predictor tool's prediction for one action: scored, or why there was none (docs/plans/2026-10-20-loop-bound-artifacts.md A2). */
 type PredictorScore = { path: string; version: number; error?: string } & Partial<ScoredPrediction>;
+type GuardCheck = { path: string; version: number; allow?: boolean; reason?: string; error?: string; ms: number };
 /**
  * One action as stored in trajectory.jsonl. changed_cells and bbox come from the bridge. Native receipts show them
  * (since 2026-10-13: without them the agent took a 52-cell change for "nothing happened"); the legacy path keeps them
@@ -183,6 +188,9 @@ type ActionRow = {
 	predict?: Prediction; prediction?: ScoredPrediction; skill_prediction?: SkillPrediction;
 	/** The predictor tools' predictions for this action (made on the state before it), scored against what came back. */
 	predictors?: PredictorScore[];
+	/** Agent-authored action guards evaluated before the environment call. */
+	guards?: GuardCheck[];
+	after_guard_refusal?: { previous_action: string; changed: boolean };
 	/** The pinned test whose prediction this action carried, the agent's own action stating none. */
 	predict_from?: string;
 	/** An earlier action played from the same board (status cells masked) whose result differed from this one's. */
@@ -331,6 +339,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const RECORD_PATH = "data/record.md";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
 	mkdirSync(storeDir, { recursive: true });
+	if (process.env.PI_PROVIDER_MAX_REPORTED_TOKENS) {
+		installReportedTokenBudget(pi, storeDir, { countCache: false });
+		installProviderTelemetry(pi, { root: storeDir, scope: "arc-thin-parent" });
+	}
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
     inlineChars: Number(process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 8000) }) : undefined;
   const archivedResults = new Map<string, string>();
@@ -391,6 +403,53 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Wall-clock time of each action (actionTimes[n-1] for action n) and the previous decision's cost, for RESOURCES. */
 	let actionTimes: number[] = [];
 	let lastDecisionCost: { ms: number; output: number; reasoning: number; coordinateShare?: number } | undefined;
+	type MetaTrial = { id: string; level: number; start: number; startDecision: number; within: number; claim: string;
+		versionsBefore: Record<string, number>; versions: Record<string, number>; candidatePaths: string[];
+		measured?: { end: number; status: "measured" | "unknown"; reason?: string; facts: ReturnType<typeof metaTrialFacts>;
+			versions: Record<string, number> } };
+	let activeMetaTrial: MetaTrial | undefined;
+	function openMetaTrial(expect: { within: number; claim: string }, source: string, candidatePaths: string[],
+		versionsBefore: Record<string, number>, versions: Record<string, number>): string {
+		if (activeMetaTrial) return `EXPECT not opened: trial ${activeMetaTrial.id} still needs a decision`;
+		if (expect.within > 30) return "EXPECT not opened: window must be at most 30 actions";
+		if (!candidatePaths.length) return "EXPECT not opened: no candidate component version changed";
+		if (candidatePaths.length !== 1) return "EXPECT not opened: change one candidate component per trial";
+		const id = `m${readRows("meta_trials.jsonl").filter((row) => row.kind === "opened").length + 1}`;
+		activeMetaTrial = { id, level: currentLevel(), start: trajectory.length, startDecision: decision,
+			within: expect.within, claim: expect.claim.slice(0, 300), versionsBefore, versions, candidatePaths };
+		append("meta_trials.jsonl", { kind: "opened", ...activeMetaTrial, source, decision });
+		return `EXPECT recorded as ${id} for ${candidatePaths.map((path) => `${path} v${versions[path]}`).join(", ")}; due after ${expect.within} action(s)`;
+	}
+	function decideMetaTrial(choice: string, reason: string): string {
+		if (!reason.trim()) return "decision rejected: give a reason";
+		if (!["keep", "revise", "remove", "no_change"].includes(choice)) return "decision rejected: choose keep, revise, remove or no_change";
+		const trial = activeMetaTrial;
+		if (!trial) {
+			if (choice !== "no_change") return "decision rejected: no pending meta trial";
+			append("meta_trials.jsonl", { kind: "decision", id: null, choice, reason, at: trajectory.length, level: currentLevel() });
+			return "no_change recorded";
+		}
+		if (choice === "no_change") return "decision rejected: a pending candidate needs keep, revise or remove";
+		if (!trial.measured) return `decision rejected: trial ${trial.id} has not reached its measurement window`;
+		const versions = binder?.versionMap() ?? {};
+		const versionError = metaDecisionVersionError(trial.candidatePaths, trial.versions, versions, choice);
+		if (versionError) {
+			const message = `${choice} rejected: ${versionError}; ` +
+				trial.candidatePaths.map((path) => `${path} trial=v${trial.versions[path] ?? "none"}, now=v${versions[path] ?? "none"}`).join(", ");
+			append("meta_trials.jsonl", { kind: "decision_rejected", id: trial.id, choice, reason, at: trajectory.length, versions, message });
+			return message;
+		}
+		append("meta_trials.jsonl", { kind: "decision", id: trial.id, choice, reason, at: trajectory.length,
+			level: currentLevel(), versions, measured: trial.measured?.status ?? "unknown" });
+		activeMetaTrial = undefined;
+		if (choice === "revise") {
+			const path = trial.candidatePaths[0];
+			const expect = path && versions[path] !== undefined ? parseComponentExpect(workspace!.read(path)) : undefined;
+			if (expect) return `trial ${trial.id}: revise verified; ` +
+				openMetaTrial(expect, path, [path], trial.versions, versions);
+		}
+		return `trial ${trial.id}: ${choice} verified against component versions`;
+	}
 	/** Characters of the last request (system prompt and messages), shown in RESOURCES so the agent sees its context size. */
 	let lastContextChars = 0;
 	/** Budget tokens (uncached input + output) spent so far, by usage kind (agent, refiner, …). */
@@ -419,6 +478,60 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			try { rows.push(JSON.parse(line)); } catch { /* Skip a torn line. */ }
 		}
 		return rows;
+	}
+
+	function settleMetaTrial(reason?: string): void {
+		const trial = activeMetaTrial;
+		if (!trial || trial.measured) return;
+		const reached = trajectory.length >= trial.start + trial.within;
+		const scopeEnded = currentLevel() !== trial.level || Boolean(reason);
+		if (!reached && !scopeEnded) return;
+		const end = trajectory.length;
+		const facts = metaTrialFacts({ start: trial.start, end, level: trial.level, candidatePaths: trial.candidatePaths,
+			candidateVersions: trial.versions, startDecision: trial.startDecision, endDecision: decision,
+			actions: trajectory, guards: readRows("guard_runs.jsonl"), components: readRows("component_runs.jsonl"),
+			mountActions: readRows("mount_action_runs.jsonl"), mountChecks: readRows("mount_checks.jsonl"),
+			views: readRows("observer_runs.jsonl"), promptRuns: readRows("working_set.jsonl") });
+		const consumed = facts.componentCalls + facts.componentViews + facts.promptDecisions + facts.predictorChecks +
+			facts.guardChecks + facts.mountDecisionRuns + facts.mountActionChecks + facts.mountFeedbackRuns;
+		const status = reached && facts.actions && consumed ? "measured" as const : "unknown" as const;
+		const why = !reached ? (reason ?? "window ended before enough actions")
+			: !facts.actions ? "no action in the window" : !consumed ? "candidate version was not consumed" : undefined;
+		const versions = binder?.versionMap() ?? {};
+		trial.measured = { end, status, ...(why ? { reason: why } : {}), facts, versions };
+		append("meta_trials.jsonl", { kind: "measured", id: trial.id, end, status, ...(why ? { reason: why } : {}), facts, versions });
+	}
+
+	/** Review files are the existing low-frequency authoring surface for the single pending meta trial. */
+	function applyMetaReview(path: string, body: string): string[] {
+		const parsed = parseMetaReviewLines(body);
+		const notes: string[] = [];
+		if (parsed.decision) notes.push(decideMetaTrial(parsed.decision.choice, parsed.decision.reason));
+		if (parsed.expect) {
+			const versionsBefore = run.reviewVersions ?? {};
+			const versions = binder?.versionMap() ?? {};
+			const changed = [...new Set([...Object.keys(versionsBefore), ...Object.keys(versions)])]
+				.filter((componentPath) => versionsBefore[componentPath] !== versions[componentPath]);
+			const candidatePaths = changed.length > 1 ? changed.filter((candidate) => candidate !== path) : changed;
+			notes.push(openMetaTrial(parsed.expect, path, candidatePaths, versionsBefore, versions));
+		}
+		if (!parsed.expect && !parsed.decision && activeMetaTrial)
+			notes.push(`meta trial ${activeMetaTrial.id} remains open; write DECISION: keep | revise | remove | no_change`);
+		return notes;
+	}
+	function metaTrialDecisionText(): string {
+		const trial = activeMetaTrial;
+		if (!trial) return "";
+		const candidate = trial.candidatePaths.map((path) => `${path} v${trial.versions[path] ?? "removed"}`).join(", ");
+		if (!trial.measured) return `META TRIAL ${trial.id}: ${candidate}; EXPECT within ${trial.within} actions: ` +
+			`${trial.claim.slice(0, 160)} (${Math.min(trial.within, trajectory.length - trial.start)}/${trial.within} actions).`;
+		const facts = trial.measured.facts;
+		return `META TRIAL ${trial.id} ${trial.measured.status}: ${candidate}; ${facts.actions} actions, ` +
+			`${facts.mountDecisionRuns} decision mount run(s), ${facts.mountFeedbackRuns ?? 0} feedback run(s), ` +
+			`${facts.mountPredictionHits ?? 0} field match(es), ${facts.mountPredictionMisses ?? 0} mismatch(es), ` +
+			`${facts.mountErrors} mount error(s)${trial.measured.reason ? `; ${trial.measured.reason}` : ""}. ` +
+			`Judge EXPECT (${trial.claim.slice(0, 120)}); use python env.meta_decide('keep'|'revise'|'remove', reason) ` +
+			`after the corresponding file change. Version changes are checked.`;
 	}
 
 	function replay(): void {
@@ -454,6 +567,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const [key, h] of memory.hypotheses) if (h.status === "contested" && currentContest(key, h)) contestedByCheck.add(contestId(key, h));
 		overlay = readRows("prompt.jsonl").at(-1)?.text ?? "";
 		trajectory = readRows("trajectory.jsonl");
+		activeMetaTrial = undefined;
+		for (const row of readRows("meta_trials.jsonl")) {
+			if (row.kind === "opened") activeMetaTrial = { id: String(row.id), level: Number(row.level), start: Number(row.start),
+				startDecision: Number(row.startDecision) || 0,
+				within: Number(row.within), claim: String(row.claim), versionsBefore: row.versionsBefore ?? {},
+				versions: row.versions ?? {}, candidatePaths: row.candidatePaths ?? [] };
+			else if (activeMetaTrial && row.id === activeMetaTrial.id && row.kind === "measured")
+				activeMetaTrial.measured = { end: Number(row.end), status: row.status, ...(row.reason ? { reason: String(row.reason) } : {}),
+					facts: row.facts, versions: row.versions ?? {} };
+			else if (activeMetaTrial && row.id === activeMetaTrial.id && row.kind === "decision") activeMetaTrial = undefined;
+		}
 		actionTimes = trajectory.map((row: any) => Date.parse(row.t) || 0);
 		grids.clear();
 		changeCache.clear();
@@ -607,7 +731,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		refinePoint: boolean; refineCalled: boolean; refinePointText?: string;
 		consultPoint: boolean; consulted: boolean;
 		/** A level or stall review saved its own file (prompts/lessons.md, prompts/review.md); if not, the one write after its last call (gate). */
-		reviewSaved: boolean; reviewWrite?: string;
+		reviewSaved: boolean; reviewWrite?: string; reviewVersions?: Record<string, number>;
 		/** Work memory: the decisions before this one in a row that learned nothing new (spinStreak), when any. */
 		spin?: ReturnType<typeof spinStreak>;
 	};
@@ -717,8 +841,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const record = levelRecord({ rows: trajectory, completed: currentLevel(), memoryRows: readRows("memory.jsonl"), checks: claimRows,
 			repeated, python: readRows("component_runs.jsonl"), artifacts: reviewArtifactLines(currentLevel() - 1) });
 		// A stall review of the level now completed is still an active prompt: what to do with it is the agent's to decide.
-		return reviewText() ? `${record}\n- ${REVIEW_PATH}, your stall review of this level, is still active: delete it, or keep in ` +
-			`${LESSONS_PATH} what still helps.` : record;
+		const process = processEvidenceText();
+		return [record, reviewText() ? `${REVIEW_PATH}, your stall review of this level, is still active: delete it, or keep in ` +
+			`${LESSONS_PATH} what still helps.` : "", process].filter(Boolean).join("\n\n");
 	}
 
 	/**
@@ -730,8 +855,35 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		let repeated: number[] = [];
 		try { repeated = buildLedger(trajectory, [], grids).repeats.map((repeat) => repeat.n); }
 		catch (error) { logError("review:repeats", error); }
-		return levelRecord({ rows: trajectory, completed: currentLevel() + 1, ongoing: true, memoryRows: readRows("memory.jsonl"),
+		const record = levelRecord({ rows: trajectory, completed: currentLevel() + 1, ongoing: true, memoryRows: readRows("memory.jsonl"),
 			checks: claimRows, repeated, python: readRows("component_runs.jsonl"), artifacts: reviewArtifactLines(currentLevel()) });
+		return [record, processEvidenceText()].filter(Boolean).join("\n\n");
+	}
+
+	/** Optional bounded Meta feedback. Delivery and spend are reported as observations, never as semantic-use claims. */
+	function processEvidenceText(): string {
+		if (process.env.ARC_THIN_PROCESS !== "1" || !binder || !workspace) return "";
+		const active = binder.active().filter((component) => component.kind === "prompt" && component.path.startsWith("prompts/process/"));
+		const workingSets = readRows("working_set.jsonl");
+		const firstDecision = Math.min(decision, ...active.map((component) => binder!.originOf(component.path)?.decision ?? decision));
+		const usage = readRows("usage.jsonl").filter((row) => Number(row.decision) >= firstDecision && Number(row.decision) <= decision);
+		const delivered = active.map((component) => {
+			const origin = binder!.originOf(component.path);
+			const decisions = workingSets.filter((row) => row.active_prompt_versions?.[component.path] === component.version).length;
+			return `${component.path} v${component.version} by ${origin?.by ?? "unknown"}` +
+				`${origin?.decision === undefined ? "" : ` at decision ${origin.decision}`}: ${decisions} decision delivery(s); ` +
+				`${(component.body ?? "").replace(/\s+/g, " ").slice(0, 180)}`;
+		});
+		const tokenFields = ["input", "cache_read", "cache_write", "output"];
+		const knownUsage = usage.filter((row) => tokenFields.some((key) => Number.isFinite(Number(row[key]))));
+		const reportedTokens = knownUsage.reduce((sum, row) => sum + tokenFields.reduce((n, key) =>
+			n + (Number(row[key]) || 0), 0), 0);
+		const text = (`PROCESS EVIDENCE through decision ${decision}: ${active.length} active rule(s). ` +
+			(active.length ? active.join(" | ") : "No active process rules.") +
+			`Reported spend from decision ${firstDecision}: ${reportedTokens} tokens in ${knownUsage.length}/${usage.length} usage rows across agent and services; not attributed to process rules. ` +
+			"Delivery is not semantic use; inspect later choices/actions. Semantic adoption: not inferred by runtime.").slice(0, 1200);
+		workspace.runtimeWrite("data/process.md", `${text}\n`);
+		return text;
 	}
 
 	/**
@@ -740,8 +892,58 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function reviewArtifactLines(level: number): string[] {
 		if (!native || !binder) return [];
-		const { usage } = artifactUsage();
+		const { usage, idle } = artifactUsage();
 		const tools = [...usage].map(([path, use]) => `${path}: ${use}`);
+		const since = Math.max(1, trajectory.length - REVIEW_ACTIONS + 1);
+		const windowActions = trajectory.filter((row) => row.n >= since);
+		const predictorFields = windowActions.flatMap((row) => row.predictors ?? []).flatMap((predictor) => predictor.fields ?? []);
+		const processSummary = `LOOP AUDIT — actions #${since}–#${trajectory.length}: ${windowActions.length} action(s), ` +
+			`${windowActions.filter((row) => row.novelty === "known").length} repeated known-result action(s), ` +
+			`${windowActions.filter((row) => row.changed_cells === 0).length} zero-change action(s), ` +
+			`${predictorFields.filter((field) => field.hit === true).length} prediction hit(s)/${predictorFields.filter((field) => field.hit === false).length} miss(es); ` +
+			`last decision ${lastDecisionCost?.ms ?? 0} ms, ${lastDecisionCost?.output ?? 0} output token(s), ` +
+			`${lastDecisionCost?.reasoning ?? 0} reasoning token(s), coordinate-reading share ` +
+			`${Math.round(100 * (lastDecisionCost?.coordinateShare ?? 0))}%. ` +
+			`Components: ${tools.join("; ") || "none"}. ` +
+			`Observed but currently unhelpful: ${idle.slice(0, 4).join("; ") || "none"}.`;
+		const guardRows = readRows("guard_runs.jsonl").filter((row) => Number(row.level) === level && Number(row.n) >= since);
+		const followups = trajectory.filter((row) => levelAt(row.n) === level && row.n >= since && row.after_guard_refusal);
+		const guardSummary = `Action-boundary checks: ${guardRows.length} guard call(s), ` +
+			`refused ${guardRows.filter((row) => row.sent === false).length}; ` +
+			`next action changed after refusal ${followups.filter((row) => row.after_guard_refusal.changed).length} time(s); ` +
+			(guardRows.length ? [...new Set(guardRows.map((row) => `${row.path} v${row.version}`))].join(", ") : "no active guard ran") +
+			(guardRows.length ? `\n${guardRows.slice(-6).map((row) => `#${row.n} ${row.action}: ${row.sent ? "allowed" : "refused"}`).join("\n")}` : "") +
+			(followups.length ? `\nAfter refusal: ${followups.slice(-4).map((row) => `#${row.n} ${row.after_guard_refusal.previous_action} → ${row.action} (${row.after_guard_refusal.changed ? "changed" : "same"})`).join("; ")}` : "");
+		const metaTrialLine = activeMetaTrial ? (() => {
+			const trial = activeMetaTrial!;
+			const result = trial.measured;
+			const progress = Math.max(0, Math.min(trial.within, trajectory.length - trial.start));
+			const versions = binder?.versionMap() ?? {};
+			const changed = [...new Set([...Object.keys(trial.versions), ...Object.keys(versions)])]
+				.filter((path) => trial.versions[path] !== versions[path])
+				.map((path) => `${path} ${trial.versions[path] === undefined ? "new" : `v${trial.versions[path]}`}→${versions[path] === undefined ? "retired" : `v${versions[path]}`}`);
+			const candidates = trial.candidatePaths.map((path) => `${path} ${trial.versionsBefore[path] === undefined ? "new" : `v${trial.versionsBefore[path]}`}→` +
+				`${trial.versions[path] === undefined ? "retired" : `v${trial.versions[path]}`}`).join(", ") ||
+				"no component version changed during the review";
+			return `META TRIAL ${trial.id} (level ${trial.level}) — EXPECT within ${trial.within} actions: ${trial.claim}\n` +
+				(result ? `candidate: ${candidates}. measurement ${result.status}${result.reason ? ` (${result.reason})` : ""}: ` +
+					`${result.facts.actions} action(s), ${result.facts.componentCalls} component call(s) ` +
+					`(${result.facts.componentErrors} error(s)), ${result.facts.componentViews} view delivery(s) ` +
+					`(${result.facts.viewErrors} error(s)), ${result.facts.promptDecisions} decision(s) received a changed prompt, ` +
+					`${result.facts.predictorChecks} prediction(s) ` +
+					`(${result.facts.predictionHits} hit(s), ${result.facts.predictionMisses} miss(es), ${result.facts.predictionErrors} error(s)), ` +
+					`${result.facts.guardChecks} guard check(s), ${result.facts.guardRefusals} refusal(s), ` +
+					`${result.facts.actionChangesAfterRefusal} action change(s) after refusal; ` +
+					`${result.facts.mountDecisionRuns ?? 0} mounted decision run(s), ${result.facts.mountActionChecks ?? 0} mounted action check(s), ` +
+					`${result.facts.mountFeedbackRuns ?? 0} feedback run(s), ${result.facts.mountPredictionHits ?? 0} field match(es), ` +
+					`${result.facts.mountPredictionMisses ?? 0} mismatch(es), ${result.facts.mountRefusals ?? 0} mounted refusal(s), ` +
+					`${result.facts.mountErrors ?? 0} mount error(s); ` +
+					`component changes: ${changed.join(", ") || "none"}. ` +
+					`Write DECISION: keep | revise | remove | no_change — <reason>.` :
+					`candidate: ${candidates}. measurement pending (${progress}/${trial.within} actions); ` +
+					`component changes so far: ${changed.join(", ") || "none"}. ` +
+					`After measurement, decide keep, revise, remove, or no_change.`);
+		})() : "META TRIAL: none pending.";
 		const rows = readRows("refiner.jsonl");
 		const tests = rows.filter((row) => row.kind === "next" && row.test && Number(row.level) === level).map((row) => {
 			const done = rows.find((other) => other.kind === "next_done" && other.edit === row.edit);
@@ -749,7 +951,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			return `${name}, ${moveText(row.move)}, ${clipText(String(row.test.text), 80)}: ` +
 				(!done ? "pinned now" : done.outcome === "met" ? `played at #${done.n}` : done.outcome === "expired" ? "expired unplayed" : String(done.outcome));
 		});
-		return [...tools, ...tests];
+		return [processSummary, metaTrialLine, guardSummary, ...tests];
 	}
 
 	/**
@@ -906,6 +1108,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("working_set.jsonl", {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
+				active_prompt_versions: Object.fromEntries((binder?.active() ?? []).filter((component) => component.kind === "prompt")
+					.map((component) => [component.path, component.version])),
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
 					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
 				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
@@ -1711,7 +1915,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** path@version of the versions refinements wrote, and those the runtime restored for them (restoreBrokenViews). */
 	const refinedVersions = new Set<string>(readRows("refiner.jsonl").filter((row) => (row.kind === "edit" || row.kind === "view_restored")
 		&& row.loaded !== false && typeof row.path === "string" && row.version !== undefined).map((row) => `${row.path}@${row.version}`));
-	const ownedByRefinement = (path: string) => path === STRATEGY_PATH || path === RULES_PATH || refinedPaths.has(path) || !workspace!.files().includes(path);
+	const ownedByRefinement = (path: string) => !/^prompts\/process\//.test(path) && path !== REFINE_GUIDE_PATH &&
+		(path === STRATEGY_PATH || path === RULES_PATH || refinedPaths.has(path) || !workspace!.files().includes(path));
 	const refinerActive = () => Boolean(native && criticOn && nativeRuntime && binder);
 	function readStrategy(): { text: string; version?: number } | undefined {
 		if (!workspace) return undefined;
@@ -1769,7 +1974,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	async function writeStrategy(content: string): Promise<void> {
 		workspace!.mutate({ op: "write", path: STRATEGY_PATH, content: content.endsWith("\n") ? content : content + "\n" });
 		refinedPaths.add(STRATEGY_PATH);
-		nativeRuntime!.noteSave(STRATEGY_PATH, await binder!.save(STRATEGY_PATH, currentLevel()));
+		nativeRuntime!.noteSave(STRATEGY_PATH, await binder!.save(STRATEGY_PATH, currentLevel(), { by: "runtime", decision }));
 	}
 
 	/**
@@ -2034,10 +2239,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
 			if (refinedFamilies.has(family.key)) continue;
 			refinedFamilies.add(family.key);
-			// The agent calls saved tools seldom (3 calls in 9 su15 runs, 2026-10-19) but reads what a view shows.
 			triggers.push((family.covered ? `\`${family.gist}\` retyped ${family.calls} times although ${family.covered} covers it`
-				: `python computation \`${family.gist}\` redone ${family.calls} times`) +
-				"; saved code that takes no args is a view, its result shown at every decision, while a tool with args waits to be called");
+				: `python computation \`${family.gist}\` redone ${family.calls} times`));
 			samples = family.samples;
 			break;
 		}
@@ -2049,12 +2252,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			goalTestAskedAt = trajectory.length;
 			triggers.push(`${onLevel.length} actions on this level and no step predicted a level change (no goal test yet)`);
 		}
-		// Reasoning spent reading positions off the grid, with no view tool reporting them.
+		// Report the cost; the Agent chooses whether and how to change its process.
 		const share = lastDecisionCost?.coordinateShare ?? 0;
 		if (share >= 0.3 && (lastDecisionCost?.reasoning ?? 0) >= 3000 && viewAskedLevel !== currentLevel()
-			&& !binder!.active().some((c) => c.kind === "tool" && c.view)) {
+			&& !binder!.active().some((c) => c.kind === "tool" && (c.view || c.mount?.includes("decision")))) {
 			viewAskedLevel = currentLevel();
-			triggers.push(`about ${Math.round(100 * share)}% of the agent's reasoning sentences in its last decision located cells or coordinates, and no view tool reports them`);
+			triggers.push(`about ${Math.round(100 * share)}% of the agent's reasoning sentences in its last decision located cells or coordinates`);
 		}
 		triggers.push(...promotionEvents(refinerOverBudget()));
 		// With refine points the scheduled refinement is the agent's own refine(focus) (A5), not a runtime-picked one.
@@ -2183,7 +2386,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				// The same content failing again is not the view's doing (the sandbox, say): nothing to restore.
 				if (workspace.read(broken.path) === source) continue;
 				workspace.mutate({ op: "write", path: broken.path, content: source });
-				const receipt = await binder.save(broken.path, currentLevel());
+				const receipt = await binder.save(broken.path, currentLevel(), { by: "runtime", decision });
 				nativeRuntime.noteSave(broken.path, receipt);
 				const version = binder.versionMap()[broken.path];
 				if (version !== undefined && refinedVersions.has(key)) refinedVersions.add(`${broken.path}@${version}`);
@@ -2224,22 +2427,27 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	/** The agent's own guidance for refinements: the body of prompts/refine.md, whether or not that prompt is active. */
-	function refineGuide(): string {
-		if (!workspace) return "";
-		try { return workspace.read(REFINE_GUIDE_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 1500); }
-		catch { return ""; }
+	function refineGuide(): { path: string; text: string } | undefined {
+		if (!workspace) return undefined;
+		for (const path of ["prompts/process/refine.md", REFINE_GUIDE_PATH]) {
+			try {
+				const text = workspace.read(path).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 1500);
+				return { path, text };
+			} catch { /* try the legacy path when the process guide is absent */ }
+		}
+		return undefined;
 	}
 
 	/** The body of the agent's prompts/lessons.md (its review of the last completed level), for refinements to read. */
 	function lessonsText(): string {
 		if (!workspace) return "";
-		try { return workspace.read(LESSONS_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 2 * LESSONS_CHARS); }
+		try { return stripMetaReviewControlLines(workspace.read(LESSONS_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")).trim().slice(0, 2 * LESSONS_CHARS); }
 		catch { return ""; }
 	}
 	/** The body of the agent's prompts/review.md (its stall review of the level being played) while it is active, or "". */
 	function reviewText(): string {
 		if (!workspace || !binder?.active().some((c) => c.kind === "prompt" && c.path === REVIEW_PATH)) return "";
-		try { return workspace.read(REVIEW_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim().slice(0, 2 * LESSONS_CHARS); }
+		try { return stripMetaReviewControlLines(workspace.read(REVIEW_PATH).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")).trim().slice(0, 2 * LESSONS_CHARS); }
 		catch { return ""; }
 	}
 
@@ -2416,7 +2624,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
 		const guide = refineGuide();
-		const system = REFINER_SYSTEM + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
+		const system = REFINER_SYSTEM + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") +
+			(guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${guide.path}):\n${guide.text}` : "");
 		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
 		// could not: the r03b line did not keep them).
 		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
@@ -2558,7 +2767,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			workspace!.mutate({ op: "write", path: edit.path, content });
 			refinedPaths.add(edit.path);
-			const receipt = await binder!.save(edit.path, currentLevel());
+			const receipt = await binder!.save(edit.path, currentLevel(), { by: "refiner", decision });
 			nativeRuntime!.noteSave(edit.path, receipt);
 			nativeRuntime!.register();
 			const loaded = !/NOT loaded/.test(receipt ?? "");
@@ -2742,7 +2951,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const views = nativeRuntime.viewStats();
 		const runs = readRows("component_runs.jsonl");
 		for (const c of binder.active().filter((c) => c.kind === "tool")) {
-			if (c.view) {
+			if (c.mount?.length) {
+				const calls = runs.filter((row) => row.kind === "mount" && row.path === c.path && row.version === c.version);
+				const errors = calls.filter((row) => row.ok === false).length;
+				usage.set(c.path, `mounted ${calls.length}× (${calls.filter((row) => row.phase === "decision").length} decision, ` +
+					`${calls.filter((row) => row.phase === "action").length} action${errors ? `, ${errors} error` : ""})`);
+				if (calls.length >= 5 && errors * 2 >= calls.length) idle.push(`mount ${c.path} (raised on ${errors} of ${calls.length} calls)`);
+			} else if (c.view) {
 				const v = views.get(c.path);
 				if (!v) continue;
 				usage.set(c.path, `ran ${v.runs}×, output changed ${v.changes}×${v.errors ? `, raised ${v.errors}×` : ""}`);
@@ -2772,7 +2987,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const repeated = (nativeRuntime?.repeatedWork(currentLevel()) ?? []).slice(0, 2).map((family) => `\`${family.gist}\` ×${family.calls}`);
 		return [`REFINE POINT (every ${REFINE_EVERY} actions; ${lastRefineCallAt ? `your last refine call was at #${lastRefineCallAt}` : "no refine call yet"}): ` +
 			"before acting, call refine(focus) with what your harness should change now. arc_action and env.act wait for that call. The refinement " +
-			"makes one edit (a view, a predictor, a check, the next experiment, a rule) and the next decision says what it changed.",
+			"makes one Agent-chosen process or component edit; the next decision says what changed.",
 			`- Last refinement: ${last ? last.slice(2) : "none yet"}`,
 			`- Ran without helping: ${idle.length ? idle.join("; ") : "nothing"}`,
 			`- Python redone on this level: ${repeated.length ? repeated.join("; ") : "none"}`].join("\n");
@@ -3102,6 +3317,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * One action through the environment boundary, recorded like every other: arc_action and the actions a saved tool
 	 * returns both come here (`via` names the tool). The bridge, its budget and its refusals stay the only way to act.
 	 */
+	let lastGuardRefusal: { decision: number; action: string } | undefined;
 	async function submitAction(params: {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
 	}, via?: string, meta: { batchId?: string; batchPosition?: number; batchTotal?: number; rejected?: RejectedStep[] } = {}):
@@ -3118,6 +3334,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (ignoredXY) params = { ...params, x: undefined, y: undefined };
 		const beforeGrid = gridOf(observation);
 		const before = observation;
+		const beforeLevel = currentLevel();
 		const label = actionLabel(params);
 		// The same action again after it changed at most NO_EFFECT_CELLS cells each of the last noEffectRepeats times in a
 		// row. Every play was a new state to the loop guard, so su15-l0-2 played one click 30 times and su15-l0-1 another
@@ -3130,6 +3347,26 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				`this same action and each changed at most ${NO_EFFECT_CELLS} cells; play a different action` };
 		const payload: Record<string, unknown> = { action: params.action };
 		if (params.x !== undefined && params.y !== undefined) { payload.x = params.x; payload.y = params.y; }
+		const guardChecks: GuardCheck[] = native && !control && nativeRuntime
+			? await nativeRuntime.admit({ name: params.action, ...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}) })
+			: [];
+		const mountChecks = native && !control && nativeRuntime && guardChecks.every((check) => check.allow === true)
+			? await nativeRuntime.loopAction({ name: params.action, ...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}) })
+			: [];
+		const previousGuardRefusal = lastGuardRefusal?.decision === decision ? lastGuardRefusal : undefined;
+		const changedAfterRefusal = previousGuardRefusal ? label !== previousGuardRefusal.action : undefined;
+		const rejectedBy = [...guardChecks, ...mountChecks].filter((check) => check.allow !== true);
+		for (const check of guardChecks) append("guard_runs.jsonl", { decision, n: trajectory.length + 1, level: currentLevel(),
+			...check, action: label, sent: rejectedBy.length === 0,
+			...(previousGuardRefusal ? { previous_refusal_action: previousGuardRefusal.action, changed_after_refusal: changedAfterRefusal } : {}) });
+		for (const check of mountChecks) append("mount_action_runs.jsonl", { decision, n: trajectory.length + 1,
+			level: currentLevel(), ...check, action: label, sent: rejectedBy.length === 0,
+			...(previousGuardRefusal ? { previous_refusal_action: previousGuardRefusal.action, changed_after_refusal: changedAfterRefusal } : {}) });
+		if (rejectedBy.length) {
+			lastGuardRefusal = { decision, action: label };
+			const why = rejectedBy.map((check) => `${check.path} v${check.version}: ${check.error ?? check.reason ?? "refused this action"}`).join("; ");
+			return { refusal: `NOT played: mounted action check refused ${label} (${why}). Revise or remove the component if its evidence no longer applies.` };
+		}
 		const bySkill = !control && params.predict_skill ? await predictWithSkill(params.predict_skill, { ...payload }) : undefined;
 		// A pinned test's move carries the test's prediction when the agent states none, so playing it tests the candidate.
 		const predictFrom = !control && !params.predict && pin?.predict && playsPinNow(params) ? pin.edit : undefined;
@@ -3168,6 +3405,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			...(idea ? { idea } : {}),
 			...(expect ? { expect } : {}),
 			...(via ? { via } : {}),
+			...(guardChecks.length ? { guards: guardChecks } : {}),
+			...(previousGuardRefusal ? { after_guard_refusal: { previous_action: previousGuardRefusal.action, changed: changedAfterRefusal! } } : {}),
 			...(ignoredXY ? { ignored_xy: true } : {}),
 			// How much the frame changed, per the bridge (shown in native receipts, evaluation only in the legacy path).
 			changed_cells: typeof delta.changed_cells === "number" ? delta.changed_cells : gridDiff(beforeGrid, afterGrid),
@@ -3210,10 +3449,22 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		const diverges = native && !control ? divergentFrom(row, afterGrid, hashes) : undefined;
 		if (diverges !== undefined) row.diverges_from = diverges;
+		const mountEvidence = mountChecks.flatMap((check) => (check.expect_next ?? []).map((expected: MountExpectation) => ({
+			component: check.path, version: check.version,
+			...compareMountExpectations([expected], { ...value, ...(afterGrid ? { grid: afterGrid } : {}) })[0],
+		}))).map((check) => ({ ...check, n: row.n, level: beforeLevel }));
+		for (const check of mountEvidence) append("mount_checks.jsonl", { path: check.component, version: check.version,
+			n: check.n, level: check.level, field: check.path, hit: check.hit, missing: check.missing,
+			expected: (JSON.stringify(check.expected) ?? 'undefined').slice(0, 400),
+			actual: check.missing ? undefined : (JSON.stringify(check.actual) ?? 'undefined').slice(0, 400) });
 		trajectory.push(row);
+		lastGuardRefusal = undefined;
 		actionTimes.push(Date.now());
 		append("trajectory.jsonl", row);
 		recordState(row.n, afterGrid);
+		if (native && !control && nativeRuntime) await nativeRuntime.loopFeedback({ name: params.action,
+			...(params.x !== undefined && params.y !== undefined ? { x: params.x, y: params.y } : {}) }, mountEvidence, beforeLevel);
+		settleMetaTrial(row.level_changed ? "level changed" : /^(GAME_OVER|WIN|FINISHED)$/.test(row.state) ? `terminal state ${row.state}` : undefined);
 		// ARC_THIN_OBSERVATION=ch: the next decision's OBSERVATIONS show what this action did, frame by frame.
 		if (chView) pendingObservations.push({
 			step: row.n, action: row.action, ...(row.x !== undefined && row.y !== undefined ? { data: { x: row.x, y: row.y } } : {}),
@@ -3782,6 +4033,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
+      onSaved: (path, receipt) => {
+		if (!(/^tools\/[^/]+\.py$/.test(path) || /^prompts\/process\/[^/]+\.md$/.test(path)) || !receipt || /NOT loaded|: unchanged,/.test(receipt)) return;
+		if (binder!.originOf(path)?.by !== "agent") return;
+        const expect = parseComponentExpect(workspace.read(path));
+        if (!expect) return;
+        const versions = binder!.versionMap(), current = versions[path];
+        if (current === undefined) return;
+        // A measured trial can adopt this revision after its explicit revise decision.
+        if (activeMetaTrial?.measured && activeMetaTrial.candidatePaths.includes(path)) return;
+        const versionsBefore = { ...versions };
+        if (current > 1) versionsBefore[path] = current - 1;
+        else delete versionsBefore[path];
+        const note = openMetaTrial(expect, path, [path], versionsBefore, versions);
+        if (note.startsWith('EXPECT not opened')) append('meta_trials.jsonl', { kind: 'open_refused', path,
+          at: trajectory.length, decision, note });
+      },
+      metaDecision: (choice, reason) => decideMetaTrial(choice, reason),
       ...(pythonMemory ? { remember: pythonMemory } : {}),
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
@@ -3812,6 +4080,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
     nativeRuntime.seedCalls(readRows('python_calls.jsonl'));
     nativeRuntime.seedViews(readRows('observer_runs.jsonl'));
+    nativeRuntime.seedMountLocal(readRows('mount_state.jsonl'));
     // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background. At a refine
     // point (every REFINE_EVERY actions) the decision acts only after this call (A5).
     if (criticOn && refineTool) pi.registerTool({
@@ -3829,7 +4098,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       }),
     });
     workspace.onWrite = async path => {
-      const receipt = await binder.save(path, currentLevel()); nativeRuntime!.register();
+			const receipt = await binder.save(path, currentLevel(), { by: "agent", decision }); nativeRuntime!.register();
       nativeRuntime!.noteSave(path, receipt);
       if (toolsReady) refreshSkillSurface();
       const promptChars = binder.candidates().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0);
@@ -3837,8 +4106,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // the next experiments, and the receipt says which will be (A3).
       const asked = (path === LESSONS_PATH || path === REVIEW_PATH) && receipt && !/NOT loaded/.test(receipt) ? workspace.read(path) : '';
       if (asked && path === (run.levelReview ? LESSONS_PATH : run.stallReview ? REVIEW_PATH : '')) run.reviewSaved = true;
+		const metaNotes = asked && receipt && !/: unchanged, /.test(receipt) && path === (run.levelReview ? LESSONS_PATH : run.stallReview ? REVIEW_PATH : '')
+			? applyMetaReview(path, asked) : [];
       return receipt ? receipt + (asked.length > LESSONS_CHARS ? `\nnote: ${path} is ${asked.length} chars, over the ${LESSONS_CHARS} the review asks for; it is sent with every decision` : '')
         + (asked && !/: unchanged, /.test(receipt) ? testLinesNote(path, asked) : '')
+			+ (metaNotes.length ? `\n${metaNotes.join("\n")}` : '')
         + (promptChars > 2500 ? `\nwarning: active prompts ${promptChars} chars exceed the 2500-char budget` : '') : undefined;
     };
   }
@@ -3895,6 +4167,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		if (run.levelReview || run.stallReview) run.reviewVersions = binder?.versionMap() ?? {};
+		if (activeMetaTrial && !activeMetaTrial.measured &&
+			decision - activeMetaTrial.startDecision >= Math.max(4, 2 * activeMetaTrial.within))
+			settleMetaTrial("decision window expired without enough actions");
 		// Work memory: a decision after one that learned nothing new opens by saying so.
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review consults before it writes; every REFINE_EVERY actions since the agent's last refine
@@ -3998,7 +4274,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
       decisionPrompts = promptSections();
       if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
-        event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.body!;
+					event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.path.startsWith('prompts/process/')
+						? stripMetaReviewControlLines(prompt.body!) : prompt.body!;
       return;
     }
 		return { systemPrompt: rendered };
@@ -4084,7 +4361,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined),
-				nativeRuntime ? await nativeRuntime.observerText() : ''].filter(Boolean).join('\n') : '';
+				nativeRuntime ? await nativeRuntime.observerText() : '',
+				nativeRuntime ? await nativeRuntime.loopDecisionText() : '', metaTrialDecisionText()].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,
 				content: [
@@ -4152,8 +4430,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}));
 
   /** The active prompts, one tagged block each: system-prompt sections, or with contextLayout the head's opening section. */
-  const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c =>
-    [`prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}`, `<prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>\n${c.body}\n</prompt_${c.name.replace(/[^a-zA-Z0-9_]/g, '_')}>`]));
+  const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c => {
+	const name = c.name.replace(/[^a-zA-Z0-9_]/g, '_');
+	const body = c.path.startsWith('prompts/process/') ? stripMetaReviewControlLines(c.body ?? '') : c.body;
+	return [`prompt_${name}`, `<prompt_${name}>\n${body}\n</prompt_${name}>`];
+  }));
   /** The prompt sections fixed at the start of the current decision (native mode); undefined before the first. */
   let decisionPrompts: Record<string, string> | undefined;
   // With contextLayout no prompt section is wanted: sections a resumed or forked session carries are removed once.

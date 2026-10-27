@@ -41,6 +41,11 @@ EXTENSION = PROJECT_ROOT / "demo" / "arc_thin_extension.ts"
 SMOKE_PROVIDER = PROJECT_ROOT / "tools" / "arc_thin_smoke_provider.ts"
 
 DECIDE_PROMPT = "Decide the next action."
+WINDOW_DECIDE_PROMPT = (
+    "Decide the next action. Briefly check this window's recent trajectory: what changed and what remains uncertain? "
+    "If there is no real blocker, contradiction, or tool failure, act on the clearest next test without extended analysis. "
+    "Reuse repeated work when worthwhile."
+)
 NO_ACTION_PROMPT = (
     "Decide the next action. Your previous decision ended without arc_action; "
     "end this one with exactly one arc_action."
@@ -70,11 +75,21 @@ LEVEL_REVIEW_PROMPT = (
     "- test: <move> — <the win condition it tests>\n"
     "with the move as ACTION6(x,y) or ACTIONn. The runtime pins them in this order as moves that predict a level change "
     "and reports each result. Level {level}'s pattern is one candidate, not a rule.\n"
+    "Use the LOOP AUDIT to examine how you are solving the task: your strategy, information representations, tools, "
+    "rules, experiments, checks, resource use and action workflow. If the evidence supports changing your process, choose one small "
+    "change to an Agent-owned component or active rule/prompt. A tools/*.py file can use # mount: decision, action "
+    "and on_event(state, event) to enter the runtime loop; optional # EXPECT within N actions: ... on that file opens a trial now. "
+    "You choose what to change, and no change is also valid. Do not treat component creation as "
+    "the goal. If you make a change, add one line: EXPECT within <N> actions: <what you expect to change>. The runtime "
+    "records changed component versions, their observed use and mechanical action/prediction/guard results; it does not "
+    "judge the expectation's meaning. For a pending trial, decide with DECISION: keep | revise | remove — <reason>; "
+    "without a candidate, use DECISION: no_change — <why>.\n"
     "Scope or delete memory entries that state level {level}'s win as a general rule. Then stop."
 )
 LEVEL_REVIEW_RECOVERY_PROMPT = (
     "RECOVER LEVEL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/lessons.md "
-    "once (the frontmatter, the win condition, then the - test: lines), then stop. This turn takes no action."
+    "once (the frontmatter, the win condition, then the - test: lines; include the shown meta-trial DECISION line if one "
+    "is pending), then stop. This turn takes no action."
 )
 #: The native foundation's review after many actions without a level completed (docs/plans/2026-10-20-stall-review.md).
 #: The user, 2026-10-20, in place of refusing repeated actions: "when no task progress is observed over an extended
@@ -93,11 +108,21 @@ STALL_REVIEW_PROMPT = (
     "- test: <move> — <what it would show>\n"
     "with the move as ACTION6(x,y) or ACTIONn; say \"(level change)\" in a direction that should complete the level. The "
     "runtime pins them in this order and reports each result.\n"
+    "Use the LOOP AUDIT to examine how you are solving the task: your strategy, information representations, tools, "
+    "rules, experiments, checks, resource use and action workflow. If the evidence supports changing your process, choose one small "
+    "change to an Agent-owned component or active rule/prompt. A tools/*.py file can use # mount: decision, action "
+    "and on_event(state, event) to enter the runtime loop; optional # EXPECT within N actions: ... on that file opens a trial now. "
+    "You choose what to change, and no change is also valid. Do not treat component creation as "
+    "the goal. If you make a change, add one line: EXPECT within <N> actions: <what you expect to change>. The runtime "
+    "records changed component versions, their observed use and mechanical action/prediction/guard results; it does not "
+    "judge the expectation's meaning. For a pending trial, decide with DECISION: keep | revise | remove — <reason>; "
+    "without a candidate, use DECISION: no_change — <why>.\n"
     "Correct or delete memory entries the record contradicts. Then stop."
 )
 STALL_REVIEW_RECOVERY_PROMPT = (
     "RECOVER STALL REVIEW. The previous review reached the output limit. Do not reason aloud: write prompts/review.md "
-    "once (the frontmatter, then the four parts in a few short lines), then stop. This turn takes no action."
+    "once (the frontmatter, then the four parts in a few short lines; include the shown meta-trial DECISION line if one "
+    "is pending), then stop. This turn takes no action."
 )
 #: Actions without a level completed, counted from the level's first action or the last stall review, after which a
 #: native run's next turn is a stall review (0: none).
@@ -158,6 +183,8 @@ OUTAGE_BACKOFF_SECONDS = 30.0
 TRANSPORT_ERROR = re.compile(r"connection error|timed out|timeout|econnreset|econnrefused|etimedout|eai_again|enotfound|"
                              r"socket hang up|fetch failed|network|terminated|bad gateway|service unavailable|overloaded|"
                              r"rate limit|\b(?:429|50[234])\b", re.IGNORECASE)
+PROVIDER_CAPACITY_ERROR = re.compile(r"requires?\s+more\s+credits|insufficient\s+(?:credits|balance)|can only afford\s+\d+\s+tokens",
+                                     re.IGNORECASE)
 
 
 def _outage_wait(error: str | None, *, waited: float, max_wait: float, streak: int, base: float = OUTAGE_BACKOFF_SECONDS) -> float:
@@ -209,6 +236,37 @@ def _budget_tokens(harness: Path) -> int:
     return sum(int(row.get("input") or 0) + int(row.get("output") or 0) for row in _read_jsonl(harness / "usage.jsonl"))
 
 
+def _provider_admission_stop(harness: Path) -> dict[str, str] | None:
+    """Consume local fail-closed evidence before retrying a provider turn.
+
+    A missing usage settlement is a budget-integrity stop, not an outage to
+    retry. Outstanding reservations alone remain valid and are not failures.
+    """
+    ledger = harness / "provider-token-budget.jsonl"
+    try:
+        if ledger.exists():
+            for line in ledger.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("invalid budget row")
+                if row.get("event") == "unmeasured_usage" or row.get("unmeasured") is True:
+                    return {"stop_reason": "provider_usage_unknown", "error": "provider usage unknown; shared budget closed"}
+        for name in ("provider-token-budget-stop.json", "provider-window-admission-stop.json",
+                     "arc-parent-provider-admission-stop.json"):
+            path = harness / name
+            if not path.exists():
+                continue
+            row = json.loads(path.read_text(encoding="utf-8"))
+            reason = row.get("reason") or "shared budget stopped"
+            return {"stop_reason": "token_cap" if reason == "reported_request_reserve_exceeded" else "provider_admission",
+                    "error": f"provider request declined locally: {reason}"[:500]}
+    except (OSError, ValueError, AttributeError):
+        return {"stop_reason": "provider_usage_unknown", "error": "provider budget/admission evidence unreadable; refusing retry"}
+    return None
+
+
 def _fatal_errors(harness: Path) -> int:
     return sum(1 for row in _read_jsonl(harness / "errors.jsonl") if row.get("fatal"))
 
@@ -218,6 +276,13 @@ def _environment_errors(harness: Path) -> int:
     return sum(1 for row in _read_jsonl(harness / "errors.jsonl") if row.get("environment"))
 
 
+def _environment_failure_can_recover(rows: list[dict[str, Any]], health: dict[str, Any] | None) -> bool:
+    """An uncertain bridge owns its access failures; unrelated fatal errors still stop the harness."""
+    return bool(health and health.get("status") == "uncertain" and any(row.get("environment") for row in rows)
+                and all(not row.get("fatal") or (row.get("hook") == "before_agent_start:/state"
+                        and str(row.get("message", "")).startswith("ARC environment access failed:")) for row in rows))
+
+
 def _provider_error(events: list[dict[str, Any]]) -> str | None:
     """The error a provider ended a turn's last reply with (stop reason "error"), if it did."""
     for event in reversed(events or []):
@@ -225,6 +290,23 @@ def _provider_error(events: list[dict[str, Any]]) -> str | None:
         if event.get("type") == "message_end" and isinstance(message, dict) and message.get("role") == "assistant":
             return str(message.get("errorMessage") or "provider error") if message.get("stopReason") == "error" else None
     return None
+
+
+def _provider_capacity_error(error: str | None) -> bool:
+    """Whether the provider explicitly says this request exceeds available credits/output capacity.
+
+    These are terminal for the current run: retrying the same configured max_tokens cannot become affordable.
+    """
+    return bool(error and PROVIDER_CAPACITY_ERROR.search(error))
+
+
+def _provider_capacity_summary(error: str) -> str:
+    """Keep the useful token limits but omit provider URLs or credential identifiers from the run summary."""
+    limits = re.search(r"requested up to\s+([\d,]+)\s+tokens,\s*but can only afford\s+([\d,]+)", error, re.IGNORECASE)
+    if limits:
+        requested, affordable = (part.replace(',', '') for part in limits.groups())
+        return f"provider cannot afford requested max_tokens={requested}; affordable max_tokens={affordable}"
+    return "provider reports insufficient credits or output-token capacity for this request"
 
 
 def _tool_errors(events: Path) -> dict[str, int]:
@@ -1194,6 +1276,13 @@ def run_arc_thin_e2e(
         agent_dir = root / ".pi-agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         pi_env = dict(env)
+        if max_reported_tokens is not None:
+            # Reserve each provider request before it is sent. The reservation uses a deliberately conservative
+            # UTF-8-byte upper bound for text plus the declared output envelope; usage settlement remains input+output.
+            pi_env["PI_PROVIDER_MAX_REPORTED_TOKENS"] = str(max_reported_tokens)
+            pi_env["PI_PROVIDER_CONTEXT_ADMISSION"] = "enabled"
+            pi_env["PI_PROVIDER_REPORTED_ADMISSION"] = "enabled"
+            pi_env["PI_PROVIDER_TOKEN_BUDGET_ROOT"] = str((root / "harness").resolve())
         if pi_provider_extension is None:
             if not settings["base_url"] or not settings["api_key"]:
                 raise RuntimeError("define ARC_OPENAI_API_BASE/ARC_OPENAI_API_KEY or OPENAI_API_BASE/OPENAI_API_KEY")
@@ -1241,6 +1330,10 @@ def run_arc_thin_e2e(
         if pi_provider == "offline-arc-thin-smoke":
             pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
         pi_env.update(extension_env or {})
+        # Native admission sees the full serialized request. Bound completed-decision history
+        # before it can crowd out the current observation; an explicit run setting wins.
+        if foundation == "native" and pi_env.get("PI_PROVIDER_CONTEXT_ADMISSION") == "enabled":
+            pi_env.setdefault("ARC_THIN_NATIVE_HISTORY_CHARS", "12000")
         observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "ch") if foundation == "native" else "inline"
         if observation_delivery not in ("query", "inline", "ch"):
             raise ValueError("ARC_THIN_OBSERVATION must be query, inline or ch")
@@ -1253,6 +1346,8 @@ def run_arc_thin_e2e(
                    "--no-context-files", "--no-builtin-tools", "--extension", str(EXTENSION)]
         if pi_provider_extension is not None:
             command.extend(["--extension", str(pi_provider_extension.resolve())])
+        if max_reported_tokens is not None:
+            command.extend(["--extension", str((PROJECT_ROOT / "demo" / "pi_final_provider_payload.ts").resolve())])
         sources = sorted(EXTENSION.parent.glob("arc_thin_*.ts")) + sorted((EXTENSION.parent / "prompts").glob("arc_thin_*.md"))
         (root / "run-config.json").write_text(json.dumps({
             **{key: summary[key] for key in ("format", "game", "variant", "provider", "model", "thinking",
@@ -1430,6 +1525,9 @@ def run_arc_thin_e2e(
             if not length_stopped(events):
                 return events
             summary["length_stops"] += 1
+            # A missing environment result must be reconciled before any model continuation reads /state.
+            if _environment_errors(harness) > environment_before:
+                return events
             if foundation == 'native' and len(_read_jsonl(harness / 'trajectory.jsonl')) > action_count:
                 return events
             if time.monotonic() >= deadline - 5:
@@ -1515,10 +1613,14 @@ def run_arc_thin_e2e(
             summary["environment_restarts"].append(record)
             where = f"the state after action #{len(recorded)}, the last one recorded" if recorded else "the start of the game"
             restart_note = (f"(The environment stopped answering during an action and was restarted at {where}; that action "
-                            "was not applied.)" if cause == "outcome_unknown"
+                            "has an unknown outcome on the old scorecard; only confirmed actions were replayed.)" if cause == "outcome_unknown"
                             else f"(The environment's process ended; it was restarted at {where}.)")
 
         while True:
+            admission_stop = _provider_admission_stop(harness)
+            if admission_stop:
+                summary.update(admission_stop)
+                break
             state = _bridge_state(bridge_url)
             if state is None:
                 health = _bridge_health(bridge_url)
@@ -1584,6 +1686,7 @@ def run_arc_thin_e2e(
             )
             fatal_before = _fatal_errors(harness)
             environment_before = _environment_errors(harness)
+            error_rows_before = len(_read_jsonl(harness / "errors.jsonl"))
             errors_before = len(extension_errors)
             try:
                 if consolidate:
@@ -1609,7 +1712,10 @@ def run_arc_thin_e2e(
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
                 else:
-                    prompt = (NO_ACTION_PROMPT if no_action_streak else DECIDE_PROMPT) + (f" {restart_note}" if restart_note else "")
+                    base_prompt = (NO_ACTION_PROMPT if no_action_streak else
+                                   WINDOW_DECIDE_PROMPT if foundation == "native" and variant == "treatment" else
+                                   DECIDE_PROMPT)
+                    prompt = base_prompt + (f" {restart_note}" if restart_note else "")
                     restart_note = ""
                     events = recover_length(prompt, safe_turn(prompt))
                     summary["decisions"] += 1
@@ -1638,6 +1744,18 @@ def run_arc_thin_e2e(
                 summary["stop_reason"] = "extension_error"
                 summary["error"] = str(extension_errors[-1].get("error"))
                 break
+            new_errors = _read_jsonl(harness / "errors.jsonl")[error_rows_before:]
+            health = _bridge_health(bridge_url) if any(row.get("environment") for row in new_errors) else None
+            if _environment_failure_can_recover(new_errors, health):
+                if len(summary["environment_restarts"]) < max_environment_restarts:
+                    try:
+                        restart_environment(health)
+                        continue
+                    except Exception as exc:  # noqa: BLE001 - preserve the failed recovery, never retry the unknown action
+                        summary["environment_restart_error"] = f"{type(exc).__name__}: {exc}"[:2000]
+                summary["bridge_health"] = health
+                summary["stop_reason"] = "environment_outcome_unknown"
+                break
             if _fatal_errors(harness) > fatal_before:
                 summary["stop_reason"] = "harness_fatal"
                 break
@@ -1657,6 +1775,14 @@ def run_arc_thin_e2e(
             refusal = _provider_error(events) if len(_read_jsonl(harness / "trajectory.jsonl")) == action_count else None
             if refusal:
                 summary["provider_errors"] += 1
+            if _provider_capacity_error(refusal):
+                summary["stop_reason"] = "provider_capacity"
+                summary["error"] = _provider_capacity_summary(refusal)
+                break
+            admission_stop = _provider_admission_stop(harness)
+            if admission_stop:
+                summary.update(admission_stop)
+                break
             outage = _outage_wait(refusal, waited=outage_waited, max_wait=max_provider_outage_seconds, streak=outage_streak,
                                   base=provider_outage_backoff_seconds)
             if outage and time.monotonic() + outage < deadline - 5:
@@ -2205,6 +2331,68 @@ def run_arc_thin_continuity_smoke(root: Path) -> Path:
     )
     summary = json.loads(path.read_text(encoding="utf-8"))
     checks = _continuity_smoke_checks(root.resolve(), summary)
+    summary["checks"] = checks
+    summary["passed"] = all(check["ok"] for check in checks)
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _guard_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    harness = root / "harness"
+    requests = [row for row in _read_jsonl(root / "smoke-requests.jsonl") if not row.get("analyst") and not row.get("critic")]
+    reviews = [row for row in requests if row.get("consolidating")]
+    audit = next((str(row.get("head") or "") for row in reviews
+                  if "action guards checked 2" in str(row.get("head") or "")), "")
+    guard_rows = _read_jsonl(harness / "guard_runs.jsonl")
+    admission_rows = _read_jsonl(harness / "provider-window-admission.jsonl")
+    provider_budget = _read_jsonl(harness / "provider-token-budget.jsonl")
+    trajectory = _read_jsonl(harness / "trajectory.jsonl")
+    component_rows = _read_jsonl(root / ".harness" / "components.jsonl")
+    source = root / "workspace" / "tools" / "action_guard.py"
+    checks = [
+        ("run_completed_after_two_actions", summary.get("stop_reason") == "max_decisions"
+         and summary.get("decisions") == 3 and len(trajectory) == 2,
+         {"stop_reason": summary.get("stop_reason"), "decisions": summary.get("decisions"), "actions": len(trajectory)}),
+        ("review_created_saved_guard", source.exists() and any(row.get("path") == "tools/action_guard.py"
+         and row.get("version") == 1 and row.get("level") == 0 for row in component_rows),
+         {"source_exists": source.exists(), "bindings": [row for row in component_rows if row.get("path") == "tools/action_guard.py"]}),
+        ("guard_refused_before_environment_and_allowed_changed_action",
+         [row.get("action") for row in trajectory] == ["ACTION1", "ACTION4"]
+         and len(guard_rows) == 2 and sum(row.get("sent") is False for row in guard_rows) == 1
+         and sum(row.get("sent") is True for row in guard_rows) == 1
+         and bool(trajectory[1].get("after_guard_refusal", {}).get("changed")),
+         {"actions": [row.get("action") for row in trajectory], "guard_runs": guard_rows,
+          "after_refusal": trajectory[1].get("after_guard_refusal") if len(trajectory) > 1 else None}),
+        ("next_review_received_mechanical_loop_audit",
+         "action guards checked 2" in audit and "refused 1" in audit
+         and "next action changed after refusal 1 time(s)" in audit
+         and "#2 ACTION1: refused" in audit and "#2 ACTION4: allowed" in audit,
+         audit[:1600]),
+        ("provider_cap_admits_and_settles_each_request",
+         bool(admission_rows) and all(row.get("status") == "admitted" for row in admission_rows)
+         and any(row.get("event") == "reported_usage" for row in provider_budget)
+         and int(summary.get("budget_tokens") or 0) <= 100_000,
+         {"admissions": len(admission_rows), "statuses": [row.get("status") for row in admission_rows],
+          "budget_events": len(provider_budget), "budget_tokens": summary.get("budget_tokens")}),
+        ("no_harness_errors", not _read_jsonl(harness / "errors.jsonl"), _read_jsonl(harness / "errors.jsonl")[:3]),
+    ]
+    return [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
+
+
+def run_arc_thin_guard_smoke(root: Path) -> Path:
+    """Offline native lifecycle check: stall review writes a guard, the action boundary enforces it, and the next
+    review receives action/refusal feedback. Uses the real Pi, runner and bridge with a mock ARC SDK and scripted model."""
+    path = run_arc_thin_e2e(
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="native",
+        max_decisions=3, max_actions=3, consolidate_after_actions=100, stall_review_after=1,
+        max_reported_tokens=100_000,
+        experiment_timeout_seconds=600.0, decision_timeout_seconds=180.0,
+        pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
+        bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
+        ledger=False, critic=False, extension_env={"ARC_THIN_SMOKE_SCRIPT": "guard", "ARC_THIN_REVIEW_CONSULT": "0"},
+    )
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    checks = _guard_smoke_checks(root.resolve(), summary)
     summary["checks"] = checks
     summary["passed"] = all(check["ok"] for check in checks)
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

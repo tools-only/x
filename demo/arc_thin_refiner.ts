@@ -56,7 +56,10 @@ export const REFINER_SYSTEM = "You maintain the harness of an agent playing an A
 	"(a view that returns None shows nothing). Never replace a file the " +
 	"agent wrote (marked AGENT'S below): add a new path instead; you may rewrite prompts/strategy.md, prompts/rules.md and files marked REFINED. " +
 	"Never invent observations; " +
-	"a rule without evidence gets confidence 1.";
+	"a rule without evidence gets confidence 1. When WHY NOW contains the agent's refine(focus) request, " +
+	"treat its proposed test as part of the current plan. If you disagree, keep that test visible as an " +
+	"alternative in Next experiment, state the competing test and the observation that would choose between them, " +
+	"and explain the disagreement in WHY. Do not silently replace the agent's proposed test or call an untested route the only route.";
 
 /**
  * The refinement ledger (ARC_REFINE_LEDGER, on by default; ported from claude/refiner-ledger-20261016, record

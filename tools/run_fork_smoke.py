@@ -89,7 +89,7 @@ assert (root / "restart/bridge-stderr-restart1.log").is_file(), 'the first bridg
 restart_parent = [r for r in read(root / "restart/smoke-requests.jsonl") if not r.get("analyst") and not r.get("critic")]
 assert len(restart_parent) == 3 and restart_parent[-1]["current"].startswith(
     "Decide the next action. (The environment stopped answering during an action and was restarted at the state after "
-    "action #1, the last one recorded; that action was not applied.)"), [r["current"][:200] for r in restart_parent]
+    "action #1, the last one recorded; that action has an unknown outcome on the old scorecard; only confirmed actions were replayed.)"), [r["current"][:200] for r in restart_parent]
 assert "(The environment" not in restart_parent[1]["current"][:200], 'the note is given once, after the restart'
 # The mock board completes level 1 of 2 on the first step (the bridge inherits this environment).
 for name in ("MOCK_ARC_HANG_AT", "MOCK_ARC_HANG_MARKER", "MOCK_ARC_HANG_SECONDS"):

@@ -6,6 +6,41 @@ import { join } from 'node:path';
 import { Workspace } from '../demo/arc_thin_workspace.ts';
 import { Binder } from '../demo/arc_thin_binder.ts';
 import { NativeRuntime } from '../demo/arc_thin_native_runtime.ts';
+import { validatePythonComponent } from '../demo/arc_thin_components.ts';
+
+test('noteSave forwards process prompt saves to the host callback', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-process-save-')));
+  const saved: Array<[string, string | undefined]> = [];
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
+    state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => 0,
+    log() {}, usage() {}, onSaved: (path, receipt) => { saved.push([path, receipt]); }, wrap: (_name, fn) => fn });
+  try {
+    runtime.noteSave('prompts/process/reuse.md', 'saved · loaded');
+    assert.deepEqual(saved, [['prompts/process/reuse.md', 'saved · loaded']]);
+  } finally { runtime.close(); }
+});
+
+test('short window check appears once after repeated nonacting Python work and resets after an action', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-window-check-')));
+  let n = 0;
+  const logs: any[] = [];
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
+    state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => n,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    const run = async (code: string, readonly = false) => (await runtime.python(code, undefined, readonly)).content[0].text;
+    assert.doesNotMatch(await run('print(1)'), /WINDOW CHECK/);
+    assert.doesNotMatch(await run('print(2)'), /WINDOW CHECK/);
+    assert.match(await run('print(3)'), /WINDOW CHECK.*If the next test is clear, act/);
+    assert.doesNotMatch(await run('print(4)'), /WINDOW CHECK/, 'one cue per action window');
+    n = 1;
+    assert.doesNotMatch(await run('print(5)', true), /WINDOW CHECK/, 'read-only work does not advance the window');
+    assert.doesNotMatch(await run('print(6)'), /WINDOW CHECK/);
+    assert.doesNotMatch(await run('print(7)'), /WINDOW CHECK/);
+    assert.match(await run('print(8)'), /WINDOW CHECK/);
+    assert.deepEqual(logs.filter(row => row.file === 'component_runs.jsonl' && row.kind === 'window_check').map(row => row.n), [0, 1]);
+  } finally { runtime.close(); }
+});
 
 test('sandbox artifact globals reflect authoritative workspace JSON', async () => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-')));
@@ -71,4 +106,96 @@ test('work memory: a python result starts with its address, a repeat names the f
     assert.deepEqual(calls[7].blocks, [{ from: 2, to: 5, id: 7, a: 1, b: 4 }]);
     assert.deepEqual(calls[8].cells, [7]);
   } finally { runtime.close(); }
+});
+
+test('a view and predictor saved on an earlier level are reported as unconfirmed and are not run on the next level', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-stale-level-')));
+  const binder = new Binder(workspace, validatePythonComponent);
+  workspace.runtimeWrite('tools/old_view.py', '# Old level map.\n# view: on\ndef observe(state):\n    return "OLD_LEVEL_MAP"\n');
+  await binder.save('tools/old_view.py', 0);
+  workspace.runtimeWrite('tools/old_predictor.py', 'def predict(state, action):\n    return {"state": "NOT_FINISHED"}\n');
+  await binder.save('tools/old_predictor.py', 0);
+  binder.boundary();
+  const logs: any[] = [];
+  let level = 1;
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
+    state: () => ({ grid: [[1]] }), level: () => level, actionCount: () => 1,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    runtime.observe(1);
+    const shown = await runtime.observerText();
+    assert.match(shown, /old_view\.py.*written on level 0.*unconfirmed on level 1/i);
+    assert.doesNotMatch(shown, /OLD_LEVEL_MAP/);
+    assert.deepEqual(logs.filter(row => row.file === 'observer_runs.jsonl'), []);
+    assert.deepEqual(await runtime.predict({ name: 'ACTION1' }), []);
+
+    level = 0;
+    runtime.observe(2);
+    assert.match(await runtime.observerText(), /OLD_LEVEL_MAP/);
+    assert.equal(logs.filter(row => row.file === 'observer_runs.jsonl').length, 1);
+    assert.equal((await runtime.predict({ name: 'ACTION1' })).length, 1);
+  } finally { runtime.close(); }
+});
+
+test('action guards run only on their saved level and return versioned decisions', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-guard-level-')));
+  const binder = new Binder(workspace, validatePythonComponent);
+  workspace.runtimeWrite('tools/guard.py', 'def admit(state, action):\n    return action["name"] != "ACTION1"\n');
+  await binder.save('tools/guard.py', 0);
+  binder.boundary();
+  let level = 0;
+  const registered: string[] = [];
+  const runtime = new NativeRuntime({ pi: { registerTool(tool: any) { registered.push(tool.name); } } as any, workspace, binder,
+    state: () => ({ grid: [[1]] }), level: () => level, actionCount: () => 0,
+    log() {}, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    runtime.register();
+    assert.equal(registered.includes('guard'), false, 'an action guard is a runtime hook, not a callable tool');
+    const checks = await runtime.admit({ name: 'ACTION1' });
+    assert.equal(checks.length, 1);
+    assert.deepEqual({ path: checks[0].path, version: checks[0].version, allow: checks[0].allow },
+      { path: 'tools/guard.py', version: 1, allow: false });
+    assert.equal(typeof checks[0].ms, 'number');
+    level = 1;
+    assert.deepEqual(await runtime.admit({ name: 'ACTION1' }), [], 'a prior-level guard does not constrain this level');
+  } finally { runtime.close(); }
+});
+
+test('a loop mount carries versioned local state through real feedback and restart without acting or writing', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-runtime-meta-')));
+  const binder = new Binder(workspace, validatePythonComponent);
+  workspace.runtimeWrite('tools/process.py', '# mount: decision, action, feedback\n' +
+    'def on_event(state, event):\n' +
+    '    if event["phase"] == "decision":\n' +
+    '        return {"context": "local=" + str(event["local"]), "next_local": (event["local"] or 0) + 1}\n' +
+    '    if event["phase"] == "action":\n' +
+    '        return {"allow": True, "expect_next": [{"path": "grid.0.0", "equals": 2}]}\n' +
+    '    return {"next_local": state["grid"][0][0]}\n');
+  await binder.save('tools/process.py', 0);
+  binder.boundary();
+  let n = 0, level = 0, grid = [[1]];
+  const logs: any[] = [];
+  const host = { pi: { registerTool() {} } as any, workspace, binder, state: () => ({ grid }),
+    level: () => level, actionCount: () => n, log(file: string, row: any) { logs.push({ file, ...row }); },
+    usage() {}, wrap: (_name: string, fn: any) => fn };
+  const runtime = new NativeRuntime(host);
+  try {
+    assert.match(await runtime.loopDecisionText(), /local=None/);
+    const action = await runtime.loopAction({ name: 'ACTION1' });
+    assert.equal(action[0].allow, true);
+    assert.deepEqual(action[0].expect_next, [{ path: 'grid.0.0', equals: 2 }]);
+    n = 1; grid = [[2]];
+    await runtime.loopFeedback({ name: 'ACTION1' }, [{ path: 'grid.0.0', hit: true }], 0);
+    assert.match(await runtime.loopDecisionText(), /local=2/);
+    assert.ok(logs.some(row => row.file === 'mount_state.jsonl' && row.local === 2));
+    level = 1;
+    assert.equal(await runtime.loopDecisionText(), '');
+    assert.deepEqual(await runtime.loopAction({ name: 'ACTION1' }), []);
+  } finally { runtime.close(); }
+  level = 0;
+  const restored = new NativeRuntime(host);
+  try {
+    restored.seedMountLocal(logs.filter(row => row.file === 'mount_state.jsonl'));
+    assert.match(await restored.loopDecisionText(), /local=3/);
+  } finally { restored.close(); }
 });

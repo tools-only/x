@@ -62,6 +62,42 @@ test('saved code that takes no args is a view by default; predict(state, action)
   assert.deepEqual(many.value, [{ value: { cells: [[0, 0, 7]] } }, { value: { cells: [[1, 0, 7]] } }]);
 });
 
+test('admit(state, action) is a read-only action guard and only its explicit return contract is accepted at runtime', async () => {
+  const source = 'def admit(state, action):\n    return {"allow": action["name"] != "ACTION1", "reason": "try another action"}\n';
+  const spec = await validatePythonComponent('tools/guard.py', source);
+  assert.deepEqual([spec.view, spec.predictor, spec.guard], [false, false, true]);
+  const result = await executeNative({ mode: 'call', path: 'tools/guard.py', args: { args: {} }, guard: { name: 'ACTION1' },
+    sources: { 'tools/guard.py': source }, state: { grid: [[1]] } });
+  assert.deepEqual(result, { ok: true, value: { allow: false, reason: 'try another action' } });
+  await assert.rejects(validatePythonComponent('tools/bad_guard.py', 'def admit(state):\n    return True\n'), /exactly the parameters/);
+  await assert.rejects(validatePythonComponent('tools/acting_guard.py', 'def admit(state, action):\n    env.act("ACTION1")\n    return True\n'), /cannot call env.act/);
+});
+
+test('generic loop mounts keep Agent logic free while the guest forbids acting and writing', async () => {
+  const source = '# mount: decision, action, feedback\ndef on_event(state, event):\n' +
+    '    if event["phase"] == "decision":\n        return {"context": state["grid"], "next_local": 1}\n' +
+    '    return {"allow": True}\n';
+  const spec = await validatePythonComponent('tools/process.py', source);
+  assert.deepEqual(spec.mount, ['decision', 'action', 'feedback']);
+  assert.equal(spec.view, false);
+  const output = await executeNative({ mode: 'call', path: 'tools/process.py', sources: { 'tools/process.py': source },
+    state: { grid: [[7]] }, mount_event: { phase: 'decision', local: null }, files: {}, allow_writes: false, allow_act: false });
+  assert.deepEqual(output.value, { context: [[7]], next_local: 1 });
+  await assert.rejects(validatePythonComponent('tools/bad.py', '# mount: decision\ndef on_event(state):\n    return 1\n'),
+    /on_event\(state, event\)/);
+  const write = '# mount: decision\ndef on_event(state, event):\n    open("notes/x", "w").write("x")\n';
+  const blocked = await executeNative({ mode: 'call', path: 'tools/blocked.py', sources: { 'tools/blocked.py': write },
+    state: {}, mount_event: { phase: 'decision' }, files: {}, allow_writes: false, allow_act: false });
+  assert.equal(blocked.ok, false);
+  assert.match(String(blocked.error), /read-only/);
+  const decision = await executeNative({ mode: 'exec', code: 'env.meta_decide("remove", "evidence contradicted it")',
+    sources: {}, state: {}, files: {}, allow_writes: true, allow_act: false });
+  assert.deepEqual(decision.ops, [{ op: 'meta_decide', choice: 'remove', reason: 'evidence contradicted it' }]);
+  const denied = await executeNative({ mode: 'exec', code: 'env.meta_decide("keep", "unverified")',
+    sources: {}, state: {}, files: {}, allow_writes: false, allow_act: false });
+  assert.equal(denied.ok, false);
+});
+
 test('env.act is a closed loop by replay: each new act() is requested, recorded observations are returned in order', async () => {
   const code = 'seen = []\nfor a in ("ACTION1", "ACTION4", "ACTION1"):\n    obs = env.act(a, predict={"level_changed": False})\n' +
     '    seen.append(obs["changed_cells"])\n    if obs["changed_cells"] == 0: break\nseen';

@@ -35,7 +35,7 @@ def component_kind(path: str) -> str | None:
     if "_off" in path.split("/"):
         return None
     for kind, pattern in (("tool", r"(tools|observers)/[^/]+\.py"), ("library", r"lib/[^/]+\.py"), ("skill", r"skills/[^/]+/SKILL\.md"),
-                          ("prompt", r"prompts/[^/]+\.md"), ("subagent", r"(agents|roles)/[^/]+\.md")):
+                          ("prompt", r"prompts/(?:process/)?[^/]+\.md"), ("subagent", r"(agents|roles)/[^/]+\.md")):
         if re.fullmatch(pattern, path):
             return kind
     return None
@@ -234,11 +234,16 @@ def build_report(root: Path) -> dict[str, Any]:
         kind = component_kind(str(row.get("path", "")))
         if not kind:
             continue
-        item = stored.setdefault(row["path"], {"kind": kind, "versions": 0, "failed": 0, "loaded": False, "active": False})
+        item = stored.setdefault(row["path"], {"kind": kind, "versions": 0, "failed": 0, "loaded": False, "active": False,
+                                                "saved_by": set(), "unknown_origin_versions": 0})
         if not row.get("retired"):
             item["versions"] = max(item["versions"], int(row.get("version") or 0))
             item["failed"] += 1 if row.get("error") else 0
             item["loaded"] = item["loaded"] or (bool(row.get("good")) and not row.get("error"))
+            if row.get("by"):
+                item["saved_by"].add(str(row["by"]))
+            else:
+                item["unknown_origin_versions"] += 1
         item["active"] = not row.get("retired") and bool((row.get("good") or {}).get("enabled")) and not row.get("error")
     consults = [str(r.get("role")) for r in _rows(harness / "consult_runs.jsonl")]
     tool_uses = [i.get("name") or Path(str(i.get("path", ""))).stem for i in invocations] + [str(r.get("name")) for r in observer_runs]
@@ -263,6 +268,16 @@ def build_report(root: Path) -> dict[str, Any]:
                    "by_refinement": sum(1 for r in memory_rows if r.get("by") == "refinement"),
                    "by_check": sum(1 for r in memory_rows if r.get("by") == "check"), "used": None},
     }
+    prompt_deliveries: dict[str, int] = {}
+    for row in _rows(harness / "working_set.jsonl"):
+        for path, version in (row.get("active_prompt_versions") or {}).items():
+            if str(path).startswith("prompts/process/"):
+                key = f"{path}@{version}"
+                prompt_deliveries[key] = prompt_deliveries.get(key, 0) + 1
+    process_components = {path: {**item, "saved_by": sorted(item["saved_by"]),
+                                 "prompt_decisions_delivered": sum(count for key, count in prompt_deliveries.items()
+                                                                    if key.startswith(f"{path}@"))}
+                         for path, item in stored.items() if path.startswith("prompts/process/")}
 
     # Cost by kind, and the task.
     usage_rows = _rows(harness / "usage.jsonl")
@@ -311,6 +326,8 @@ def build_report(root: Path) -> dict[str, Any]:
             "refiner_edits_by_category": {c: sum(1 for r in refined if r.get("category") == c) for c in sorted({str(r.get("category")) for r in refined})},
         },
         "categories": categories,
+        "process": {"components": process_components,
+                    "note": "prompt delivery is logged per working-set decision; delivery does not prove semantic use"},
         "components": components,
         "notes": "output-token attribution splits each message's output equally among its tool calls; coordinate share counts sentences, not reasoning tokens; structural coverage is a heuristic. Missing usage remains unknown in request_accounting.",
     }
