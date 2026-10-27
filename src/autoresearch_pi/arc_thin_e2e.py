@@ -158,19 +158,20 @@ STALL_REVIEW_RECOVERY_PROMPT = (
 #: folded from codex/meta-devloop-20261026): a level or stall review is a development turn inside the run. In place of the
 #: file the reviews above ask for, the agent judges its loop from the LOOP AUDIT and the read-only data/loop/ logs and makes
 #: one component change, revises or retires one that did not help, or says why none is justified. {places} names where a
-#: saved component can enter the decision; with ARC_THIN_GUARDS=1 the guard is one of them.
+#: saved component can enter the decision; with ARC_THIN_GUARDS=1 the guard is one of them, with ARC_THIN_HOOKS=1 the hook.
+#: E1b (2026-10-27): a .py trailer may be comment lines, since gpt-6.1-sol commented its one HTML trailer out in G1-B; and
+#: the line that no component output is ever authoritative is gone (what code measures is state; predict() scores claims).
 HARNESS_TURN_CONTRACT = (
     "Make the one harness change that best removes a cost in the loop record, revise or retire one that did not help, or "
     "say why none. Use LOOP AUDIT and read-only data/loop/ logs to judge. A saved prompt "
     "counts as a component. Available places are {places}; choose the place, do not follow "
-    "a prescribed design. For a component change, include this trailer after the component source, then stop:\n"
+    "a prescribed design. For a component change, include this trailer after the component source (in a .py file, as "
+    "# comment lines), then stop:\n"
     "<!-- HARNESS EXPECT\nEXPECT within <N> actions: <one observable loop/process effect>\n"
     "def check(t):\n    ...\nEND\n-->\n"
-    "Use check(t) for the component's loop/process effect. World claims are scored only by predict(), never labelled "
-    "authoritative. If no change is justified, end with exactly `NO HARNESS CHANGE: <reason>`."
+    "Use check(t) for the component's loop/process effect; claims about what actions do are scored by predict(). "
+    "If no change is justified, end with exactly `NO HARNESS CHANGE: <reason>`."
 )
-HARNESS_PLACES = "prompt, view, predictor and callable tool"
-HARNESS_PLACES_WITH_GUARDS = "prompt, view, predictor, guard and callable tool"
 HARNESS_LEVEL_REVIEW_PROMPT = "LEVEL REVIEW. Level {level} is complete; this turn takes no action.\n"
 HARNESS_LEVEL_REVIEW_RECOVERY_PROMPT = "RECOVER LEVEL REVIEW. The previous review reached the output limit. This turn takes no action.\n"
 HARNESS_STALL_REVIEW_PROMPT = "STALL REVIEW. {why}; this turn takes no action.\n"
@@ -1551,12 +1552,13 @@ def _level_review_prompt(levels_completed: int, contract: str | None = None) -> 
 
 def _harness_contract(foundation: str, variant: str, env: dict[str, str]) -> str | None:
     """The harness turn's contract (HARNESS_TURN_CONTRACT) when ARC_THIN_HARNESS_TURN=1 in a native treatment run, naming
-    the guard place when ARC_THIN_GUARDS=1 too (the extension reads both from the same environment); else None, and the
-    level and stall reviews are today's."""
+    the guard place when ARC_THIN_GUARDS=1 and the hook place when ARC_THIN_HOOKS=1 too (the extension reads them from the
+    same environment); else None, and the level and stall reviews are today's."""
     if foundation != "native" or variant != "treatment" or env.get("ARC_THIN_HARNESS_TURN") != "1":
         return None
-    places = HARNESS_PLACES_WITH_GUARDS if env.get("ARC_THIN_GUARDS") == "1" else HARNESS_PLACES
-    return HARNESS_TURN_CONTRACT.replace("{places}", places)
+    places = ["prompt", "view", "predictor", *(["guard"] if env.get("ARC_THIN_GUARDS") == "1" else []),
+              *(["hook"] if env.get("ARC_THIN_HOOKS") == "1" else [])]
+    return HARNESS_TURN_CONTRACT.replace("{places}", ", ".join(places) + " and callable tool")
 
 
 def _stall_review_after(foundation: str, explicit: int | None, env: dict[str, str]) -> int:
@@ -2072,6 +2074,7 @@ def run_arc_thin_e2e(
             # (ARC_THIN_GUARDS=1), native treatment only.
             "harness_turn": harness_contract is not None,
             "guards": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_GUARDS") == "1",
+            "hooks": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_HOOKS") == "1",
             # Where the active prompts are (docs/plans/2026-10-21-context-layout.md): "head" opens each decision's head
             # with them and ends it with the agent's own record on the board; "system" keeps them as system-prompt
             # sections (ARC_THIN_CONTEXT_LAYOUT=0, the legacy foundation and the control variant).

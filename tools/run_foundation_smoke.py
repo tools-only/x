@@ -88,7 +88,7 @@ if script == "receipts":
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
     # promotion: 11 decisions since r04, whose refinements run the ledger's expectation checks in the sandbox before the
     # model call, so the dispute refinement's rule lands one decision later than before.
-    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script in ("activation", "hypotheses") else 7 if script == "components" else 6 if script == "reuse" else 4 if script in ('nativeclaims', 'guard') else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script in ("activation", "hypotheses") else 7 if script == "components" else 6 if script == "reuse" else 5 if script == 'meta' else 4 if script in ('nativeclaims', 'guard') else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
     input_modalities="text,image" if script == "query" else None,
@@ -96,10 +96,11 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
     # The promotion path and the hypothesis loop's refinement event run through refinements, which need the ledger and
     # its trigger service.
     ledger=defaults or script in ('promotion', 'hypotheses'), critic=defaults or script in ('promotion', 'hypotheses'), review_at_level_change=False,
-    # guard: a stall review after two actions is the harness turn that saves the guard.
-    **({'stall_review_after': 2} if script == 'guard' else {}),
+    # guard, meta: a stall review after two actions is the harness turn that saves the components.
+    **({'stall_review_after': 2} if script in ('guard', 'meta') else {}),
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
-        **({'ARC_THIN_HARNESS_TURN': '1', 'ARC_THIN_GUARDS': '1', 'ARC_THIN_REVIEW_CONSULT': '0'} if script == 'guard' else {}),
+        **({'ARC_THIN_HARNESS_TURN': '1', 'ARC_THIN_GUARDS': '1', 'ARC_THIN_REVIEW_CONSULT': '0'} if script in ('guard', 'meta') else {}),
+        **({'ARC_THIN_HOOKS': '1'} if script == 'meta' else {}),
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
         # The activation script checks the other refinement events; the promotion script checks this one.
@@ -456,6 +457,38 @@ elif script == 'guard':
     assert summary['stall_reviews'] == 1 and summary['actions'] == summary['actions_on_bridge'] == 4, summary
     print(json.dumps({'guard_checks': {'review_contract': True, 'loop_audit': True, 'guard_saved': True, 'expect_recorded': True,
                                        'guard_refused': guards[0], 'played': played}}), flush=True)
+elif script == 'meta':
+    # The meta layer's example (E1b): at a harness turn the scripted agent writes a hypothesis and an experiment for it, a
+    # hook keeping a measured map, a hook checking the experiment and backfilling the hypothesis, and a guard playing the
+    # experiment first; the harness hosts them from then on. Real Pi, production bridge, mock SDK, WASI; scripted provider.
+    assert config['harness_turn'] is True and config['guards'] is True and config['hooks'] is True, config
+    rows = lambda name: [json.loads(s) for s in (root / 'harness' / name).read_text(encoding='utf-8').splitlines() if s.strip()] \
+        if (root / 'harness' / name).is_file() else []
+    reviews = [r['current'] for r in parent_requests if r.get('current', '').startswith('STALL REVIEW.')]
+    assert len(reviews) >= 2 and 'Available places are prompt, view, predictor, guard, hook and callable tool;' in reviews[0], reviews[:1]
+    assert all('def after(state, t) runs after every action' in r['system_prompt'] for r in parent_requests)
+    saved = (root / 'workspace/tools/level_map.py').read_text(encoding='utf-8')
+    assert 'def after(state, t)' in saved and 'HARNESS EXPECT' not in saved, saved
+    assert [r['path'] for r in rows('harness_expectations.jsonl') if r.get('kind') == 'candidate'] == ['tools/level_map.py'], rows('harness_expectations.jsonl')
+    played = [r['action'] for r in rows('trajectory.jsonl')]
+    assert played == ['ACTION1', 'ACTION4', 'ACTION1', 'ACTION4', 'ACTION2'], played
+    guards = [(r['action'], r['verdict']) for r in rows('guard_runs.jsonl')]
+    assert guards == [('ACTION3', 'refuse'), ('ACTION1', 'allow'), ('ACTION4', 'allow'), ('ACTION2', 'allow')], guards
+    hooks = sorted((r['path'], r['from'], r['to'], r['ok']) for r in rows('hook_runs.jsonl'))
+    assert hooks == [('tools/experiments.py', 3, 3, True), ('tools/experiments.py', 4, 4, True),
+                     ('tools/level_map.py', 3, 3, True), ('tools/level_map.py', 4, 4, True)], hooks
+    level_map = json.loads((root / 'workspace/artifacts/level_map.json').read_text(encoding='utf-8'))
+    assert level_map == {'visited': [[5, 3], [6, 3]], 'nine': [6, 3]}, level_map
+    assert json.loads((root / 'workspace/notes/experiments.json').read_text(encoding='utf-8')) == []
+    memory_text = (root / 'harness/memory.jsonl').read_text(encoding='utf-8')
+    assert 'pinned experiment ACTION1' in memory_text and 'the 9 moved +1' in memory_text, memory_text[-1500:]
+    after_three = [r['current'] for r in parent_requests if 'level_map v1 after #3' in r.get('current', '')]
+    assert after_three and '{"checked":"ACTION1","verdict":"supports","next":null}' in after_three[0], after_three[:1]
+    assert any('HARNESS EXPECT RESULTS' in text and 'tools/level_map.py v1' in text and 'check(t) returned true at #3' in text for text in reviews[1:]), reviews[1:]
+    assert any('tools/level_map.py v1: ran on' in text for text in reviews[1:]), [t[:1500] for t in reviews[1:]]
+    assert summary['stall_reviews'] == 2 and summary['actions'] == summary['actions_on_bridge'] == 5, summary
+    print(json.dumps({'meta_checks': {'contract_names_hook': True, 'hooks_hosted': hooks, 'level_map': level_map, 'guarded': guards,
+                                      'backfilled': True, 'expect_returned': True, 'played': played}}), flush=True)
 else:
     assert "COUNTEREXAMPLE" in text and "EDITED_NOTE" in text
     assert "read-only" in text and "invalid workspace path" in text

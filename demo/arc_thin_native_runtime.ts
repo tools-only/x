@@ -53,6 +53,8 @@ const MAX_PARALLEL = 4;
 export const CONSTANT_VIEW_RUNS = 5;
 /** How long a guard may take to answer for one action before the action passes without it (admit below). */
 export const GUARD_MS = 8000;
+/** How long one hook run (its pending actions, in order) may take before it is stopped and its writes dropped (after below). */
+export const HOOK_MS = 15000;
 const shown = (result: NativeResult) => !result.ok ? [result.error, result.where].filter(Boolean).join('\n')
   : typeof result.value === 'object' && result.value !== null && 'stdout' in result.value
     ? [(result.value as any).stdout, (result.value as any).has_value ? '→ ' + JSON.stringify((result.value as any).value) : ''].filter(Boolean).join('\n')
@@ -1176,6 +1178,36 @@ export class NativeRuntime {
   }
   /** The active guard tools: they define admit(state, action) (arc_thin_components.ts; ARC_THIN_GUARDS). */
   guards() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).guard); }
+  /** The active hook tools: they define after(state, t) (arc_thin_components.ts; ARC_THIN_HOOKS). */
+  hooks() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).hook); }
+  /**
+   * One hook run: after(state, t) for each transition of `moves` (the fields a hypothesis check gets, with n), in order,
+   * in the view pool, never acting. Its file writes and memory updates are applied when it ends: plain workspace files
+   * (notes/, artifacts/ and the like) and memory only; a write to a component (prompts/, tools/, lib/, skills/,
+   * agents/) or a restore is refused and named, so a hook cannot rewrite the harness on every action. A run that fails
+   * or takes longer than HOOK_MS applies nothing.
+   */
+  async after(c: Component, moves: Array<Record<string, unknown> & { n: number }>): Promise<{ values: Array<{ n: number; value?: unknown; error?: string }>;
+    error?: string; receipts: string[]; refused: string[]; files: number; remembered: number }> {
+    const stop = new AbortController(); const timer = setTimeout(() => stop.abort(), HOOK_MS);
+    const none = { values: [], receipts: [], refused: [], files: 0, remembered: 0 };
+    try {
+      const result = await this.execute({ ...this.snapshot(), mode: 'call', path: c.path, args: { args: {} }, after: moves, allow_writes: true },
+        stop.signal, this.viewPool);
+      if (!result.ok) return { ...none, error: [result.error, result.where].filter(Boolean).join(' · ').slice(0, 200) };
+      const refused: string[] = [];
+      const ops = (result.ops ?? []).filter(op => {
+        const blocked = op.op === 'restore' || (op.op !== 'memory' && [op.path, op.destination].some(p => p && componentKind(p)));
+        if (blocked) refused.push(`${op.op} ${op.path}${op.destination ? ' → ' + op.destination : ''}`);
+        return !blocked;
+      });
+      const receipts = ops.length ? await this.applyWrites({ ...result, ops }) : [];
+      const remembered = ops.filter(op => op.op === 'memory').length;
+      return { values: Array.isArray(result.value) ? result.value as any[] : [], receipts, refused, files: ops.length - remembered, remembered };
+    } catch (error) {
+      return { ...none, error: stop.signal.aborted ? `no result within ${HOOK_MS / 1000} s` : String(error).slice(0, 200) };
+    } finally { clearTimeout(timer); }
+  }
   /**
    * Each guard's answer for one action about to be sent, on the state before it: `reason` when it refuses the action,
    * nothing when it lets it pass. Guards run in the view pool and cannot act or write. A guard that fails, answers with

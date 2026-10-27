@@ -241,6 +241,56 @@ test('a harness turn (ARC_THIN_HARNESS_TURN=1) saves a component the agent chose
 
 const GUARD = '"""Keeps clicks off row 2."""\ndef admit(state, action):\n    if action.get("y") == 2:\n        return "row 2 is off limits"\n';
 
+// A hook the agent might write: it keeps a structured record of its clicks in an artifact (every component reads it as
+// artifacts["clicks"]), backfills a hypothesis with each click's result, and returns what it keeps. Its write of a prompt
+// is refused: hooks write plain files and memory only.
+const HOOK = '"""Keeps the clicks played and what each changed."""\nimport json\ndef after(state, t):\n' +
+	'    try:\n        seen = json.load(open("artifacts/clicks.json"))\n    except FileNotFoundError:\n        seen = []\n' +
+	'    seen.append([t["n"], t["action"], t["x"], t["changed_cells"]])\n' +
+	'    with open("artifacts/clicks.json", "w") as f:\n        json.dump(seen, f)\n' +
+	'    with open("prompts/sneaky.md", "w") as f:\n        f.write("---\\nactive: true\\n---\\nnot a hook\'s to write\\n")\n' +
+	'    if t["changed_cells"]:\n        env.remember(tests=[{"action": t["n"], "condition": "a click", "observed": "%d cell(s) changed" % t["changed_cells"],\n' +
+	'                             "verdicts": {"hyp.click": "supports"}}])\n' +
+	'    return {"clicks": len(seen), "last": seen[-1]}\n';
+
+test('a hook (ARC_THIN_HOOKS=1) runs after each action before the next decision: it keeps a file, backfills a hypothesis, and what it returns is shown with the state', async () => {
+	const w = await world();
+	const h = await attach(w, { ARC_THIN_HOOKS: '1' });
+	try {
+		await h.begin();
+		await h.call('memory', { hypotheses: [{ key: 'hyp.click', question: 'what a click does', claim: 'a click changes its cell' }] });
+		assert.match(await h.call('python', { code: HOOK, save: 'clicks' }), /tools\/clicks\.py → tool clicks v1: saved · loaded/);
+		await h.request();
+		assert.match(await h.act({ action: 'ACTION6', x: 1, y: 1 }), /^#1 ACTION6\(1,1\)/);
+		const head = await h.begin();
+		assert.match(head, /clicks v1 after #1: \{"clicks":1,"last":\[1,"ACTION6",1,1\]\} \(refused, hooks write plain files and memory only: write prompts\/sneaky\.md\)/);
+		assert.deepEqual(JSON.parse(h.file('workspace/artifacts/clicks.json')), [[1, 'ACTION6', 1, 1]]);
+		assert.equal(h.file('workspace/prompts/sneaky.md'), '');
+		assert.match(JSON.stringify(h.rows('memory.jsonl')), /1 cell\(s\) changed/, 'the hook backfilled the hypothesis');
+		await h.act({ action: 'ACTION6', x: 2, y: 2 });
+		const next = await h.begin();
+		assert.match(next, /clicks v1 after #2: \{"clicks":2,"last":\[2,"ACTION6",2,1\]\}/);
+		assert.match(next, /tool clicks v1 active: Keeps the clicks played and what each changed\. · hook, run after each action \(writes files and memory\) · ran on 2 action\(s\), wrote 2 file\(s\), 2 memory update\(s\)/);
+		assert.deepEqual(h.rows('hook_runs.jsonl').map((row) => [row.from, row.to, row.ok]), [[1, 1, true], [2, 2, true]]);
+		// A hook cannot act: its save is refused.
+		assert.match(await h.call('python', { code: 'def after(state, t):\n    env.act("ACTION1")\n', save: 'actor' }), /a hook runs after each action and cannot act/);
+	} finally { await h.close(); await done(w); }
+});
+
+test('without ARC_THIN_HOOKS a tool that defines after(state, t) is not run', async () => {
+	const w = await world();
+	const h = await attach(w);
+	try {
+		await h.begin();
+		await h.call('python', { code: HOOK, save: 'clicks' });
+		await h.request();
+		await h.act({ action: 'ACTION6', x: 1, y: 1 });
+		assert.match(await h.begin(), /tool clicks v1 active: [^\n]*· not run: hooks are off in this run/);
+		assert.equal(h.file('workspace/artifacts/clicks.json'), '');
+		assert.deepEqual(h.rows('hook_runs.jsonl'), []);
+	} finally { await h.close(); await done(w); }
+});
+
 test('a guard (ARC_THIN_GUARDS=1) refuses an action before the game sees it, as the agent\'s own rule, and is not asked again in a decision after two refusals', async () => {
 	const w = await world();
 	const h = await attach(w, { ARC_THIN_GUARDS: '1' });

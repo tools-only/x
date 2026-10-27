@@ -70,20 +70,23 @@ test('overlapping saves retain write order and distinct receipts', async () => {
 test('components that run by themselves (views, predictors, guards) stop on a later level until saved again; prompts and callable tools stay', async () => {
   const w = new Workspace(mkdtempSync(join(tmpdir(), 'binder-level-scope-')));
   const b = new Binder(w, async (path, source) => ({ kind: 'tool', name: path.split('/').at(-1)!, description: source,
-    enabled: true, view: path.startsWith('observers/'), predictor: path === 'tools/predict.py', guard: path === 'tools/guard.py' }));
+    enabled: true, view: path.startsWith('observers/'), predictor: path === 'tools/predict.py', guard: path === 'tools/guard.py',
+    hook: path === 'tools/hook.py' }));
   w.runtimeWrite('observers/frame.py', 'view v1'); await b.save('observers/frame.py', 0);
   w.runtimeWrite('tools/predict.py', 'predictor v1'); await b.save('tools/predict.py', 0);
   w.runtimeWrite('tools/guard.py', 'guard v1'); await b.save('tools/guard.py', 0);
+  w.runtimeWrite('tools/hook.py', 'hook v1'); await b.save('tools/hook.py', 0);
   w.runtimeWrite('tools/route.py', 'callable v1'); await b.save('tools/route.py', 0);
   w.runtimeWrite('prompts/p.md', '---\nactive: true\n---\nKEEP'); await b.save('prompts/p.md', 0);
   b.boundary(0);
-  assert.deepEqual(b.active().map(c => c.path), ['observers/frame.py', 'prompts/p.md', 'tools/guard.py', 'tools/predict.py', 'tools/route.py']);
+  assert.deepEqual(b.active().map(c => c.path), ['observers/frame.py', 'prompts/p.md', 'tools/guard.py', 'tools/hook.py', 'tools/predict.py', 'tools/route.py']);
   b.boundary(1);
   assert.deepEqual(b.active().map(c => c.path), ['prompts/p.md', 'tools/route.py']);
   assert.deepEqual(b.candidates().map(c => c.path).sort(), ['prompts/p.md', 'tools/route.py']);
   assert.match(b.index(1), /frame\.py v1 stale, not running on this level \(save it again to run it\)/);
   assert.match(b.index(1), /predict\.py v1 stale, not running on this level/);
   assert.match(b.index(1), /guard\.py v1 stale, not running on this level[^\n]*guard, asked before each action is sent/);
+  assert.match(b.index(1), /hook\.py v1 stale, not running on this level[^\n]*hook, run after each action \(writes files and memory\)/);
   assert.match(b.index(1), /tool route\.py v1 stale: callable v1 · route\.py\(args\)/);
   assert.match(b.index(1), /prompt p v1 stale:/);
   w.runtimeWrite('observers/frame.py', 'view v2'); await b.save('observers/frame.py', 1);

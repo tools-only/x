@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean };
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean; hook?: boolean };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 type Entry = { path: string; version: number; hash: string; level: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
@@ -13,12 +13,13 @@ const requirePi = createRequire(import.meta.resolve('@earendil-works/pi-coding-a
 const { parseDocument } = requirePi('yaml'); // Pi 0.87.0's pinned YAML dependency, full Agent Skills frontmatter.
 
 /**
- * Components that run by themselves (a view after each new state, a predictor or a guard at each action) belong to the
- * level they were saved on: on a later level they stop running until they are saved again. A level-1 view printed "no
- * moving 15-block found" at every decision of level 2 in su15 R2h-A (docs/plans/2026-10-26-e1-harness-turn-protocol.md).
- * Prompts, callable tools, skills and subagents stay active on later levels; the index calls them stale.
+ * Components that run by themselves (a view after each new state, a predictor or a guard at each action, a hook after
+ * each action) belong to the level they were saved on: on a later level they stop running until they are saved again. A
+ * level-1 view printed "no moving 15-block found" at every decision of level 2 in su15 R2h-A
+ * (docs/plans/2026-10-26-e1-harness-turn-protocol.md). Prompts, callable tools, skills and subagents stay active on later
+ * levels; the index calls them stale.
  */
-const runsByItself = (c: ComponentSpec) => c.kind === 'tool' && Boolean(c.view || c.predictor || c.guard);
+const runsByItself = (c: ComponentSpec) => c.kind === 'tool' && Boolean(c.view || c.predictor || c.guard || c.hook);
 
 /**
  * The five capability categories (Prompt, Memory, Tool, Skill, Subagent; Memory lives in the memory store), by
@@ -186,8 +187,9 @@ export class Binder {
   /**
    * The capability index: one line per saved prompt, tool, skill and subagent (memory has its own index). Libraries
    * and plain files are not listed. A tool's line says where it enters the decision (a view after each new state, a
-   * predictor at each action, a guard before each action, otherwise a call) and `usage` what it has done there (the
-   * runtime's counts, by path). One that runs by itself and was saved on an earlier level says that it no longer runs.
+   * predictor at each action, a guard before each action, a hook after each action, otherwise a call) and `usage` what
+   * it has done there (the runtime's counts, by path). One that runs by itself and was saved on an earlier level says
+   * that it no longer runs.
    */
   index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map(), includeProcess = true): string {
     const order = ['prompt', 'tool', 'skill', 'subagent'];
@@ -199,7 +201,8 @@ export class Binder {
       const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level && runsByItself(c) ? 'stale, not running on this level (save it again to run it)'
         : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
       const use = kind === 'tool' ? (path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
-          : c?.predictor ? 'predictor, run at each action' : c?.guard ? 'guard, asked before each action is sent' : `${c?.name ?? ''}(args)`)
+          : c?.predictor ? 'predictor, run at each action' : c?.guard ? 'guard, asked before each action is sent'
+          : c?.hook ? 'hook, run after each action (writes files and memory)' : `${c?.name ?? ''}(args)`)
         : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
       return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +
         (usage.get(path) ? ` · ${usage.get(path)}` : '');

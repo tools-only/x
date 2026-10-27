@@ -170,6 +170,15 @@ export type RefinerEdit =
 
 /** Code fences around a python body are tolerated, as in a hypothesis check. */
 const unfence = (code: string) => code.replace(/^\s*```[a-z]*\s*\r?\n/, "").replace(/\r?\n\s*```\s*$/, "").trimEnd();
+/**
+ * The indentation every line of a check shares is taken off. In E1 G1-B (2026-10-26) gpt-6.1-sol wrote all six of its
+ * EXPECT checks as " def check(t):" with one leading space, and each failed to run on an IndentationError.
+ */
+const dedent = (code: string) => {
+	const lines = code.split(/\r?\n/);
+	const common = Math.min(...lines.filter((line) => line.trim()).map((line) => /^[ \t]*/.exec(line)![0].length));
+	return Number.isFinite(common) && common > 0 ? lines.map((line) => line.slice(Math.min(common, /^[ \t]*/.exec(line)![0].length))).join("\n") : code;
+};
 
 /** The EXPECT block in `text` (a reply with its edit block taken out), if any. */
 export function parseExpect(text: string): Expects {
@@ -177,7 +186,7 @@ export function parseExpect(text: string): Expects {
 	const match = /^\s*EXPECT\b[ \t]*(?:within[ \t]+(\d+)(?:[ \t]+actions?)?\b)?[ \t:]*([^\r\n]*)\r?\n([\s\S]*?)\r?\n\s*END\s*$/m.exec(text);
 	if (!match) return {};
 	const claim = match[2].trim().slice(0, 300);
-	const check = withCheckDef(unfence(match[3]));
+	const check = withCheckDef(dedent(unfence(match[3])));
 	if (!claim) return { expectError: "an EXPECT needs a sentence saying what the moves will show" };
 	if (!/\bdef\s+check\s*\(/.test(check)) return { expectError: "an EXPECT check must define check(t)" };
 	const within = match[1] ? Math.max(1, Math.min(EXPECT_MAX_ACTIONS, Number(match[1]))) : undefined;

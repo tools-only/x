@@ -516,8 +516,50 @@ const GUARD_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'after the refusal' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'the guard lets it pass' }]] },
 ];
+// The meta layer's example (tools/run_foundation_smoke.py meta; docs/plans/2026-10-26-e1-harness-turn-protocol.md, E1b):
+// at a harness turn the agent itself writes a hypothesis and an experiment queue for it, a hook that keeps a measured map
+// (an artifact every component reads, checked against each grid), a hook that checks the pinned experiment when it is
+// played and backfills the hypothesis, and a guard that plays the experiment first. Nothing of it is in the harness.
+const LEVEL_MAP_HOOK = '"""Where the 9 is and where it has been, measured from each grid and checked against it."""\nimport json\n' +
+  'def after(state, t):\n    try:\n        m = json.load(open("artifacts/level_map.json"))\n    except FileNotFoundError:\n        m = {"visited": []}\n' +
+  '    x = t["after"][3].index(9)\n    m["nine"] = [x, 3]\n    if [x, 3] not in m["visited"]:\n        m["visited"].append([x, 3])\n' +
+  '    assert t["after"][m["nine"][1]][m["nine"][0]] == 9\n' +
+  '    with open("artifacts/level_map.json", "w") as f:\n        json.dump(m, f)\n' +
+  '    return {"nine": m["nine"], "visited": len(m["visited"])}\n' +
+  '# <!-- HARNESS EXPECT\n# EXPECT within 2 actions: the map is kept on the moves after it was saved\n# def check(t):\n' +
+  '#     return t["action"] in ("ACTION1", "ACTION4")\n# END\n# -->\n';
+const EXPERIMENT_HOOK = '"""Checks the pinned experiment when it is played and backfills its hypothesis."""\nimport json\n' +
+  'def after(state, t):\n    queue = json.load(open("notes/experiments.json"))\n' +
+  '    if queue and t["action"] == queue[0]["move"]:\n        e = queue.pop(0)\n' +
+  '        moved = t["after"][3].index(9) - t["before"][3].index(9)\n        verdict = "supports" if moved == 1 else "refutes"\n' +
+  '        env.remember(tests=[{"action": t["n"], "condition": "pinned experiment " + e["move"], "observed": "the 9 moved %+d" % moved,\n' +
+  '                             "verdicts": {e["hyp"]: verdict}}])\n' +
+  '        with open("notes/experiments.json", "w") as f:\n            json.dump(queue, f)\n' +
+  '        return {"checked": e["move"], "verdict": verdict, "next": queue[0]["move"] if queue else None}\n' +
+  '    return {"next": queue[0]["move"] if queue else None}\n';
+const PIN_GUARD = '"""Plays the pinned experiment first."""\nimport json\ndef admit(state, action):\n' +
+  '    queue = json.load(open("notes/experiments.json"))\n    if queue and action["name"] != queue[0]["move"]:\n' +
+  '        return "the pinned experiment %s comes first" % queue[0]["move"]\n';
+const META_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'before the review' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'before the review' }]] },
+  { kind: 'decide', calls: [
+    ['memory', { hypotheses: [{ key: 'hyp.right', question: 'controls', claim: 'ACTION1 moves the 9 one cell right', check: RIGHT_CHECK }] }],
+    ['write', { path: 'notes/experiments.json', content: '[{"move": "ACTION1", "hyp": "hyp.right"}]' }],
+    ['python', { code: LEVEL_MAP_HOOK, save: 'level_map' }],
+    ['python', { code: EXPERIMENT_HOOK, save: 'experiments' }],
+    ['python', { code: PIN_GUARD, save: 'pin_guard' }]] },
+  { kind: 'decide', text: 'Saved a level map, an experiment check that backfills hyp.right, and a guard that plays the experiment first.' },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION3', note: 'refused: the experiment comes first' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'the pinned experiment' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'the guard lets it pass' }]] },
+  // The next stall review sees what its components did and what its EXPECT check returned.
+  { kind: 'decide', text: 'NO HARNESS CHANGE: the map, the experiment check and the guard did what they were saved for.' },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'after the second review' }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'guard' ? GUARD_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'meta' ? META_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'repeat' ? REPEAT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'still' ? STILL_SCRIPT
