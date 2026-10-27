@@ -1,8 +1,8 @@
 # Meta-harness change: harness turn with an action-boundary place (E1 protocol)
 
-Date: 2026-10-26 (Asia/Shanghai). Status: R1–R6 done; stage 1's G1 pair ran on 10-26 (results under Stage 1 runs). On
-10-27, E1b added the hook place and fixed the EXPECT feedback (see E1b). Q1 is held; the next paid run needs the user's
-choice.
+Date: 2026-10-26 (Asia/Shanghai). Status: R1–R6 done; stage 1's G1 pair ran on 10-26. On 10-27, E1b added the hook
+place and fixed the EXPECT feedback; G1-B′ (gpt, stopped early) and Q1-B′ (qwen low) ran on it. The results are under
+"E1b runs". No run is in flight.
 
 ## Problem and claim
 
@@ -407,19 +407,85 @@ So two transitions are broken, and both are the meta layer's, not the game's:
 This is function and wiring with a scripted agent. Whether gpt-6.1-sol or qwen writes such components unasked is the
 open question for the next pair.
 
+### E1b runs (2026-10-27, frozen `3dce172a`, all three flags, query, consult and refine points off, cap 2.5M, 6 h)
+
+- **G1-B′, gpt-6.1-sol medium from S-g:** launched at 10:53. Stopped at 11:10 by the user's switch to qwen ("go with
+  provider az and using model qwen 3.8-27b with low reasoning effort").
+  - Progress: 79 post-fork actions; levels 2, 3 and 4 at #39, #60 and #101; 207k budget tokens.
+  - Harness turns: 4 (#22, #39, #60, #101). All four wrote prose (lessons v1–v3, strategy v3); no view, hook or guard.
+  - The gateway cached 83% of the input this morning (889k cache reads against 179k uncached), against 15% and 8% for
+    G1-A and G1-B on 10-26 evening. Budget tokens per action (2.6k against 18.3k and 17.2k) are therefore not comparable
+    across these days; levels and actions are.
+- **Q1-B′, qwen3.8-27b, thinking low in the qwen dialect:** launched at 11:12, from S-q (the protocol's qwen start: qwen's
+  own level-1 prefix).
+  - The gateway is az.gptplus5.com, the same endpoint and settings as the "az" provider of Codex's runs; this pilot
+    labels it yibu.
+  - In this dialect, "low" turns thinking on (`enable_thinking: true`). No effort level is sent: the models.json compat
+    has no `supportsReasoningEffort`.
+
+#### Q1-B′ results, compared (stopped at the 2.5M cap at 13:03)
+
+| | G1-A | G1-B | G1-B′ (stopped at #101) | Q1-B′ |
+| --- | --- | --- | --- | --- |
+| model; commit; arm | gpt-6.1-sol; `5c86748d`; A | gpt-6.1-sol; `5c86748d`; B | gpt-6.1-sol; `3dce172a`; B + hooks | qwen3.8-27b low; `3dce172a`; B + hooks |
+| start | S-g | S-g | S-g | S-q |
+| levels after the fork (at action) | 4 (42, 62, 99, 133) | 3 (36, 53, 153) | 3 (39, 60, 101) | 0 |
+| post-fork actions; budget tokens | 138; 2.52M | 147; 2.53M | 79; 0.21M | 168; 2.52M |
+| cache share of input | 15% | 8% | 83% | 77% |
+| harness turns, and those followed by an executable component in the turn or within 40 actions (P1) | 5 reviews; 0 | 6; 1 | 4; 0 | 4; 2 |
+| components that run by themselves | none | `inventory` view: 19 runs | none | `color_report` view: 168 runs; `blocks6_view` view: 136 runs |
+| hooks; guards | — | —; 0 | 0; 0 | 0; 0 |
+| EXPECT checks that ran | — | 0 of 4 (indentation) | 3 of 3 that came due, each `check(t)` true | 2 came due: one returned None by design, one could not run (a claim written over several lines was read as code) |
+| known-result replays in the 20 actions after each turn | 0, 0, 0, 0, 0 | 0, 0, 1, 0, 0, 0 | 0, 0, 1, 0 | 0, 11, 1, 2 |
+
+- **Q1-B′ against the earlier qwen forks from S-q:** level 2 is still unsolved (now 0 of 6), here in 168 actions.
+- **P1:**
+  - Q1-B′ meets the protocol's "supports" threshold (2 of 4 turns, two components). Both components are views: a
+    per-colour report, and a block map with distances, reachability and clicks left — the agent's own structured state,
+    shown on every state from then on.
+  - gpt-6.1-sol wrote no executable component in G1-B′ (0 of 4 turns), and 1 of 6 in G1-B.
+  - There is no qwen arm A on this commit, so the comparison with A is historical only (E0, 0 of 58).
+- **Hooks: 0 in 8 harness turns across both models.**
+  - The place reached the model: the contract and the system prompt's hook line are in the logged provider inputs.
+  - So the meta layer's maintained-map and backfill path was available, but no agent built it. Every component the
+    agents built is read-only (views), and every other change was prose.
+  - The user's target behaviour is reachable (scripted smoke) but not adopted (these runs).
+- **P2 (binding):**
+  - (a) holds: both qwen views ran on every state after they were saved.
+  - (b) does not: 11 of the 20 actions after the turn that revised `blocks6_view` replayed known results.
+  - P2 is not supported.
+- **EXPECT:**
+  - The E1b fix works for gpt: three checks ran and reported.
+  - qwen's two checks show two remaining defects:
+    - **Window claims.** qwen wrote loop claims ("no further calls to re-derive…") that a single transition cannot
+      decide, and returned None on purpose.
+    - **Multi-line claims.** A claim continued onto three more lines, and the parser read those lines as part of the
+      check.
+- **Errors:** Q1-B′ logged 23 `claims:run` sandbox crashes. These are the existing hypothesis checks, not E1b code; the
+  run went on.
+- **Budget:** stage 1 has now spent 7.78M of 9.0M (G1 pair 5.05M, G1-B′ 0.21M, Q1-B′ 2.52M).
+
+**Next falsifiable check (not run):**
+- **Close the EXPECT channel for loop claims.**
+  - Accept a claim written over several lines.
+  - Let a check read the window: either `check(t)` gets the window's moves, or a component may define
+    `check_window(ts)`.
+- **Test whether a hook is ever chosen when the audit names the cost it removes.** Today's LOOP AUDIT counts replays,
+  but not hypotheses whose results were never recorded.
+- Both need one more arm-B run to measure. Stage 1 has 1.22M left.
+
 ## Evidence
 
 | Evidence layer | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
 | Functional correctness | Verified (function and wiring) | node tests, pytest | Both Verification tables; the failing tests also fail at `73cddb12` |
 | Full-chain reachability | Verified with the scripted provider, and fork loading on the ARC environment | real Pi 0.87.0, production bridge, mock SDK, WASI; the real bridge and ARC environment for the fork loads | `runs/e1-smoke-20261026/guard-2`, `runs/e1-smoke-20261027/meta-1`; `D:/autoresearch_pi_project/runs/arc-e1-20261026/forkload-*` |
-| Autonomous adoption | E1 (`5c86748d`): weak, one pair. E1b: unverified | yibu, gpt-6.1-sol medium, su15 from S-g | G1-B: 1 executable component in 6 harness turns; 0 guards; EXPECT 0 of 4 ran (defect, fixed in E1b). `D:/autoresearch_pi_project/runs/arc-e1-20261026/g1-a2`, `g1-b2` |
-| Net benefit | Unverified | — | Not targeted by E1; G1 levels A 4, B 3 (one pair) |
+| Autonomous adoption | E1: weak (one pair). E1b: views adopted by qwen (2 of 4 turns); hooks not adopted (0 of 8 turns, both models) | az.gptplus5.com; gpt-6.1-sol medium (S-g), qwen3.8-27b low (S-q); su15 | G1-B: 1 view in 6 turns. G1-B′ (stopped): 0 in 4. Q1-B′: 2 views in 4. `D:/autoresearch_pi_project/runs/arc-e1-20261026/g1-a2`, `g1-b2`, `g1-bp`, `q1-bp` |
+| Net benefit | Not shown | as above | G1 levels: A 4, B 3; Q1-B′ 0 levels (qwen from S-q: 0 of 6) |
 
 ## Decisions still open
 
-1. **The next paid run, on the E1b commit.** I recommend G1-B′: gpt-6.1-sol from S-g with all three flags, cap 2.5M,
-   compared with G1-A and G1-B, which are already run. It fits stage 1's remaining 3.95M; arm A is unchanged by E1b.
-   The alternative is the Q1 pair on E1b at 2 × 2.0M, which is about 0.05M over the remaining budget.
+1. **The EXPECT fixes** (multi-line claims, window checks) and the audit line that names hypotheses whose results were
+   never recorded. Both are small and free to test; measuring them needs one more arm-B run (stage 1 has 1.22M left).
 2. **Held-out game:** ls20, or ar25 (stage 2).
 3. **Stage 2:** 10.0M after the gate.
