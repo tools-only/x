@@ -327,6 +327,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// Guards (the same plan, arm B): saved code that defines admit(state, action) is asked before every action is sent, and a
 	// reason it returns refuses that action as the agent's own rule. ARC_THIN_GUARDS=1 turns them on.
 	const guardsOn = native && !control && process.env.ARC_THIN_GUARDS === "1";
+	// Hooks (docs/plans/2026-10-26-e1-harness-turn-protocol.md, E1b): saved code that defines after(state, t) runs after every
+	// action, before the next decision, on the transition a hypothesis check gets. It may write plain workspace files and
+	// memory, never act; what it returns is shown with the decision's state. The one place where the agent's code runs by
+	// itself and keeps or writes something: a map it maintains, an experiment it checks and backfills into its hypotheses.
+	// ARC_THIN_HOOKS=1 turns them on.
+	const hooksOn = native && !control && process.env.ARC_THIN_HOOKS === "1";
 	// P4 (2026-10-19): the agent called refine and consult 0 times in 10 or more su15 runs with either model. ARC_THIN_LEAN=1
 	// leaves both tools out, with the system prompt's subagent line and the long form of its skill line (one at a time:
 	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
@@ -442,7 +448,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * own context and runs to megabytes.
 	 */
 	const LOOP_DATA_FILES = ["trajectory.jsonl", "python_calls.jsonl", "component_runs.jsonl", "observer_runs.jsonl", "refiner.jsonl",
-		"usage.jsonl", "errors.jsonl", "tool_refusals.jsonl", "guard_runs.jsonl", "harness_decisions.jsonl", "harness_changes.jsonl",
+		"usage.jsonl", "errors.jsonl", "tool_refusals.jsonl", "guard_runs.jsonl", "hook_runs.jsonl", "harness_decisions.jsonl", "harness_changes.jsonl",
 		"harness_expectations.jsonl"];
 	function loopAuditText(): string {
 		const decisions = readRows("harness_decisions.jsonl");
@@ -523,6 +529,49 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			: split.expect && version === before ? "EXPECT not recorded: no new component version was saved" : "";
 	}
 
+	/**
+	 * Hooks (ARC_THIN_HOOKS): each active hook runs once on every action recorded since its last run, in order, before the
+	 * next decision's head is built, so its writes are what that decision, its guards and its predictors read. A hook
+	 * starts with the first action after it was saved. `hookDone` keeps, per hook version, the last action it ran on (from
+	 * hook_runs.jsonl after a restart); `hookShown`, what it returned there, which the next heads show with the state.
+	 */
+	const hookDone = new Map<string, number>();
+	const hookShown = new Map<string, string>();
+	/** At most this many earlier actions in one hook run; older ones are skipped and the log says how many. */
+	const HOOK_MOVES = 24;
+	async function runHooks(): Promise<string> {
+		if (!hooksOn || !nativeRuntime) return "";
+		const lines: string[] = [];
+		const saves = readRows("component_runs.jsonl").filter((row) => row.kind === "save");
+		for (const c of nativeRuntime.hooks()) {
+			const key = `${c.path}@v${c.version}`;
+			if (!hookDone.has(key))
+				hookDone.set(key, Math.max(0, ...saves.filter((row) => row.path === c.path).map((row) => Number(row.n) || 0)));
+			const pending = trajectory.filter((row) => row.n > hookDone.get(key)!);
+			if (pending.length) {
+				const moves = pending.slice(-HOOK_MOVES);
+				const ts = transitionsFor(moves.map((row) => row.n));
+				const answer = await nativeRuntime.after(c, moves.map((row) => ({ n: row.n, ...(ts[String(row.n)] as Record<string, unknown>) })));
+				hookDone.set(key, moves.at(-1)!.n);
+				const failed = answer.error ?? answer.values.find((value) => value.error)?.error;
+				const last = answer.values.at(-1);
+				append("hook_runs.jsonl", { key, path: c.path, version: c.version, decision, from: moves[0].n, to: moves.at(-1)!.n,
+					...(pending.length > moves.length ? { skipped: pending.length - moves.length } : {}),
+					ok: !failed, ...(failed ? { error: failed } : {}), values: answer.values.map(({ n, value, error }) =>
+						({ n, ...(error ? { error } : { value: JSON.stringify(value ?? null).slice(0, 400) }) })),
+					files: answer.files, remembered: answer.remembered,
+					receipts: answer.receipts.map((receipt) => receipt.slice(0, 200)), ...(answer.refused.length ? { refused: answer.refused } : {}) });
+				const shown = answer.error ? `failed (${answer.error}); nothing it wrote was kept`
+					: last?.error ? `failed at #${last.n} (${last.error})` : JSON.stringify(last?.value ?? null);
+				hookShown.set(key, `${c.name} v${c.version} after #${moves.at(-1)!.n}: ${shown.length > 900 ? `${shown.slice(0, 899)}…` : shown}` +
+					(answer.refused.length ? ` (refused, hooks write plain files and memory only: ${answer.refused.join(", ")})` : ""));
+			}
+			const shown = hookShown.get(key);
+			if (shown) lines.push(shown);
+		}
+		return lines.join("\n").slice(0, 2400);
+	}
+
 	function replay(): void {
 		resetMemory(memory);
 		memoryTouches = [];
@@ -556,6 +605,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const [key, h] of memory.hypotheses) if (h.status === "contested" && currentContest(key, h)) contestedByCheck.add(contestId(key, h));
 		overlay = readRows("prompt.jsonl").at(-1)?.text ?? "";
 		trajectory = readRows("trajectory.jsonl");
+		// Hooks resume after the last action each version ran on (a restart or a fork must not run them twice on one action).
+		hookDone.clear();
+		for (const row of readRows("hook_runs.jsonl"))
+			if (row.key) hookDone.set(String(row.key), Math.max(hookDone.get(String(row.key)) ?? 0, Number(row.to) || 0));
 		actionTimes = trajectory.map((row: any) => Date.parse(row.t) || 0);
 		grids.clear();
 		changeCache.clear();
@@ -717,6 +770,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		harnessExpectations?: string;
 		/** Native view output (contextLayout): placed after the state image, beside THIS BOARD. */
 		observerText?: string;
+		/** What the hooks returned on the latest actions (ARC_THIN_HOOKS), shown with the view output. */
+		hookText?: string;
 		/** Guards (ARC_THIN_GUARDS): each guard's refusals in this decision, and the guards suspended for the rest of it. */
 		guardRefusals: Map<string, number>; suspendedGuards: Set<string>;
 		/** Work memory: the decisions before this one in a row that learned nothing new (spinStreak), when any. */
@@ -1018,7 +1073,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// included, where the response starts (docs/plans/2026-10-26-e1-harness-turn-protocol.md: a delivered view in the
 		// head did not stop the action it warned about). ARC_THIN_CONTEXT_LAYOUT=0 keeps both where they were.
 		const spin = contextLayout && run.spin?.streak ? spinText(run.spin) : "";
-		const viewOutput = contextLayout ? run.observerText ?? "" : "";
+		const viewOutput = contextLayout ? [run.observerText ?? "", run.hookText ?? ""].filter(Boolean).join("\n") : "";
 		const tail = contextLayout ? [spin, viewOutput, board].filter(Boolean).join("\n\n") : "";
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
@@ -2891,8 +2946,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/**
 	 * A4: what each saved tool has done where it enters the decision (the runtime's counts): a view's runs and output
-	 * changes, a predictor's scored predictions, a guard's answers, a callable tool's calls. `idle` names those that ran
-	 * without helping.
+	 * changes, a predictor's scored predictions, a guard's answers, a hook's runs and writes, a callable tool's calls.
+	 * `idle` names those that ran without helping.
 	 */
 	function artifactUsage(): { usage: Map<string, string>; idle: string[] } {
 		const usage = new Map<string, string>(), idle: string[] = [];
@@ -2918,6 +2973,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const refused = asked.filter((row) => row.verdict === "refuse").length, failed = asked.filter((row) => row.verdict === "error").length;
 				usage.set(c.path, `asked ${asked.length}×, refused ${refused}${failed ? `, failed ${failed}×` : ""}`);
 				if (asked.length >= 5 && 2 * failed >= asked.length) idle.push(`guard ${c.path} (failed on ${failed} of ${asked.length} actions)`);
+			} else if (c.hook) {
+				if (!hooksOn) { usage.set(c.path, "not run: hooks are off in this run"); continue; }
+				const done = readRows("hook_runs.jsonl").filter((row) => row.path === c.path && row.version === c.version);
+				const moves = done.reduce((n, row) => n + (row.values?.length ?? 0), 0), failed = done.filter((row) => !row.ok).length;
+				const files = done.reduce((n, row) => n + (Number(row.files) || 0), 0), remembered = done.reduce((n, row) => n + (Number(row.remembered) || 0), 0);
+				usage.set(c.path, `ran on ${moves} action(s), wrote ${files} file(s), ${remembered} memory update(s)` +
+					(failed ? `, failed in ${failed} of ${done.length} runs` : ""));
+				if (done.length >= 3 && 2 * failed >= done.length) idle.push(`hook ${c.path} (failed in ${failed} of ${done.length} runs)`);
 			} else {
 				const saved = Math.max(0, ...runs.filter((row) => row.kind === "save" && row.path === c.path).map((row) => Number(row.n) || 0));
 				const calls = runs.filter((row) => row.kind === "tool" && row.path === c.path && Number(row.n) >= saved).length;
@@ -4188,6 +4251,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // Guards (ARC_THIN_GUARDS): the third place a saved tool enters the decision, said where the other two are.
       guard: guardsOn ? ' def admit(state, action) is asked before every action is sent: None lets it pass, a reason (a string) refuses it, ' +
         'as your own rule; the game never sees a refused action.' : '',
+      // Hooks (ARC_THIN_HOOKS): the one place where saved code runs by itself and writes.
+      hook: hooksOn ? ' def after(state, t) runs after every action, before your next decision, on the transition a hypothesis check(t) gets: ' +
+        'it may write notes/ and artifacts/ files (artifacts/<name>.json reaches all your code as artifacts[name]) and call env.remember, ' +
+        'never act; what it returns is shown with the state.' : '',
       skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
@@ -4295,12 +4362,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
 		const headKey = `${decision}:${lastUser}`;
 		if (!native || run.headKey !== headKey) {
+			// Hooks first: what they write (files, memory) is what this decision's memory, views' readers, guards and
+			// predictors see, and what they return is shown with the state.
+			if (hooksOn) {
+				try { run.hookText = await runHooks(); }
+				catch (error) { run.hookText = ""; logError("hooks", error); }
+			}
 			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			run.observerText = nativeRuntime ? await nativeRuntime.observerText() : '';
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 			// The views' output closes the head (contextLayout, buildWorkingSet) or, without it, follows the capability index.
 			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined),
-				contextLayout ? '' : run.observerText, run.harnessExpectations].filter(Boolean).join('\n') : '';
+				contextLayout ? '' : run.observerText, contextLayout ? '' : run.hookText, run.harnessExpectations].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,
 				content: [

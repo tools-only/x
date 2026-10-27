@@ -1,7 +1,8 @@
 # Meta-harness change: harness turn with an action-boundary place (E1 protocol)
 
-Date: 2026-10-26 (Asia/Shanghai). Status: R1–R6 approved and done (see Implementation and Verification); the free
-checks ran. Nothing paid has been launched, and no run budget is authorized.
+Date: 2026-10-26 (Asia/Shanghai). Status: R1–R6 done; stage 1's G1 pair ran on 10-26 (results under Stage 1 runs). On
+10-27, E1b added the hook place and fixed the EXPECT feedback (see E1b). Q1 is held; the next paid run needs the user's
+choice.
 
 ## Problem and claim
 
@@ -288,24 +289,137 @@ not refusals in a row. The log is `guard_runs.jsonl`, with every answer, not a r
   - variables in both arms: `ARC_THIN_OBSERVATION=query ARC_THIN_REVIEW_CONSULT=0 ARC_THIN_REFINE_POINT=0`.
 - **Arm B** adds `ARC_THIN_HARNESS_TURN=1 ARC_THIN_GUARDS=1`. Arm A adds nothing.
 
+## Stage 1 runs (approved 2026-10-26: 9.0M, G1 then Q1, the fixed conditions above)
+
+- **18:23 local, g1-a and g1-b:** launched together; both stopped at their first request with `provider_error`. The
+  project `.env` gained `ARC_OPENAI_API_BASE`/`ARC_OPENAI_API_KEY` for OpenRouter after 10-21, and those take precedence
+  for ARC runs; OpenRouter answered 402 (the key has no credits). No tokens were spent.
+- **18:40, g1-a2 and g1-b2:** the protocol's one relaunch after an infrastructure failure. ARC's endpoint is pinned to
+  yibu for these processes only by `tmp/e1/launch/yibu_pilot.py`, which copies the `.env`'s `OPENAI_API_BASE` and
+  `OPENAI_API_KEY` (yibu) into `ARC_OPENAI_*` and then runs the pilot; the `.env` is unchanged. yibu's `/models` lists
+  both E1 models. After 3 minutes: g1-a2 8 actions and 120k budget tokens; g1-b2 14 actions, 139k, and level 2.
+- **Q1:** launchers prepared (`tmp/e1/launch/q1-a.cmd`, `q1-b.cmd`, pinned to yibu the same way). Not launched: held
+  after G1 (see E1b).
+
+### G1 results (gpt-6.1-sol from S-g, frozen `5c86748d`, both runs stopped at the 2.5M cap)
+
+| | G1-A (today's reviews) | G1-B (harness turn + guard place) |
+| --- | --- | --- |
+| levels completed after the fork | 4 (2 to 5) | 3 (2 to 4) |
+| post-fork actions; budget tokens | 138; 2,523,332 | 147; 2,526,840 |
+| tokens per action (P3) | 18.3k | 17.2k (0.94 of A) |
+| review turns at action | 22, 42, 62, 99, 133 | 22, 36, 53, 93, 135, 153 |
+| what the agent wrote at them | `prompts/lessons.md` v1–v5 | lessons v1–v2, strategy v3, v9, v18; one tool: `tools/inventory.py` at #135 |
+| executable components written (P1) | 0 | 1 in 6 turns (1/6): a view, "positions are measured, not inferred" |
+| guards written; guard answers | — | 0; 0 |
+| EXPECT checks recorded; that ran | — | 5; 0 (the 4 that came due all failed: `IndentationError`) |
+
+- **Gate after G1:** passed narrowly (one executable component, not none).
+- **P1:** neither supported (needs at least 1/3 of turns and 2 components) nor refuted (1/10 or less).
+- **P2:** not computed: there is one component.
+- **P3:** met.
+- Levels: one pair, so no claim either way.
+- **What broke in arm B:**
+  - **The feedback channel never closed.** The agent wrote every trailer's check as ` def check(t):` with one leading
+    space. The parser kept it, and each check failed to run, so no harness turn ever saw a verdict.
+  - **The one tool's trailer was never recorded.** An HTML comment is not Python, so the agent wrote that trailer as
+    `#` comments, and the parser did not recognise it.
+  - **The view stopped at the next level change.** `tools/inventory.py` ran on 19 states (#135–#153); the level-scoping
+    rule then stopped it, and the agent did not save it again.
+  - **5 of the 6 changes were prose.** The agent wrote prompts, the only place where something it writes persists and
+    is pushed into later decisions.
+- **Spent:** 5.05M of stage 1's 9.0M (the first pair's 402s cost nothing). Q1 needs 4.0M at its caps.
+
+## E1b: the meta layer's missing place, and the feedback fix (2026-10-27)
+
+### Problem
+
+The user, restating the meta-layer goal after E1 ("still don't achieve this with the minimal modification"), describes the
+target behaviour:
+- At runtime, the agent recognises that it needs a Python-validated, structured level map for authoritative state.
+- It creates and maintains that map, and includes it in the decision state.
+- It changes the harness so that the harness hosts the validation of pinned experiments and backfills hypothesis
+  `check(t)` automatically.
+
+Here is that example traced against r04's places with both E1 flags on:
+
+| step of the example | can the agent do it at runtime? |
+| --- | --- |
+| analyse its own loop | yes: the harness turn, LOOP AUDIT and `data/loop/` |
+| a structured, measured map shown with the state | partly: a view can recompute one from `history` each state (G1-B wrote one) |
+| maintain the map across actions | no: views, predictors and guards are read-only functions; nothing of the agent's runs by itself and keeps or writes anything |
+| validate a pinned experiment when it is played, and backfill its hypothesis | no: the same gap. Backfilling is a memory write, and no place lets the agent's code write automatically. Pins from `- test:` lines are reported as text, with no link to a hypothesis. |
+| make the experiment come first | yes: a guard (unused in G1-B) |
+| learn whether its change worked | no: the EXPECT channel failed on whitespace (G1-B 0 of 4) |
+
+So two transitions are broken, and both are the meta layer's, not the game's:
+- **(1) Hosting.** The harness hosts agent code only as read-only functions. Developers could add stateful,
+  writing behaviour (pins, claim checks, ledgers) only in TypeScript, so that part of the developer loop cannot move into
+  the run.
+- **(2) Feedback.** The verdict on a change never reached the next harness turn.
+
+### Claim and change (minimal)
+
+- **Hook place** (`ARC_THIN_HOOKS=1`, native treatment only). A saved tool that defines `def after(state, t)` is a hook:
+  - **When it runs.** The runtime runs it once for each action recorded since its last run, in order, before the next
+    decision's head is built. A hook starts with the first action after it was saved.
+  - **What `t` is.** The same transition a hypothesis `check(t)` gets (action, x, y, level_changed, state,
+    levels_completed, n, before, after; changed_cells and bbox derived).
+  - **What it may write.** Plain workspace files: `artifacts/<name>.json` reaches every component and Python cell as
+    `artifacts[name]`. It may also update memory with `env.remember`: facts, hypotheses, tests with verdicts.
+  - **What it may not do.** It never acts. A write to a component, or a restore, is refused and named, so a hook cannot
+    rewrite the harness on every action.
+  - **Where its output goes.** What it returns is shown at the tail of the head, with the views. A failed or overtime
+    run (15 s) keeps nothing.
+  - **Like the other auto-run places,** it is level-scoped, logged (`hook_runs.jsonl`, also under `data/loop/`), counted
+    in the HARNESS index and LOOP AUDIT, named in the contract's places and on the system prompt's Tool line, and refused
+    at save if it acts.
+- **Feedback fix (both arms):**
+  - An EXPECT check loses the indentation all its lines share.
+  - A `.py` trailer may be written as `#` comment lines; the contract says so.
+  - The contract's sentence that no component output is ever "authoritative" is gone. What code measures is state;
+    `predict()` scores claims about what actions do.
+- **Not built into the harness:** no level map, no experiment queue, no pin validation, no backfill policy. These are
+  the agent's to write in the hook place. The runtime provides only the place.
+- **Burden removed:**
+  - The parent no longer re-derives its map and hand-records each experiment's result at every decision.
+  - Developers no longer add such behaviour in TypeScript.
+- **Loop-bound** (`docs/plans/2026-10-20-loop-bound-artifacts.md`):
+  - **Pushed:** its output is shown in every decision while it is active.
+  - **Feeds back:** the next real action runs it again.
+  - **Reported:** its EXPECT verdict and its counts reach the next harness turn.
+  - **Retires:** on deletion, on a move to `_off/`, on a new version, or at a level change until saved again.
+- **Refuted if:**
+  - in a real arm-B run with hooks on, harness turns still produce no component that runs by itself (view, predictor,
+    guard or hook) in at least 1/3 of turns;
+  - or the hooks the agent writes fail in at least half their runs;
+  - or EXPECT checks still do not run.
+
+### Verification (free)
+
+| check | result | where |
+| --- | --- | --- |
+| Node tests: all 45 `tests/arc_thin_*.test.ts` files | The same 5 tests fail as at `73cddb12`: activation 1, components 1, receipts 3. `action_surface` timed out in the full run (Pi did not start within 20 s) and passed when run alone. Everything else passes, including the new tests: the hook keeps a file, backfills a hypothesis, has its prompt write refused, and its output is shown; hooks off; a hook that acts is refused; scoping covers hooks; the indented and commented trailers. | per-file output under `tmp/e1/` |
+| pytest (the 10 ARC runner files) | 49 passed | — |
+| Scripted smoke `meta`: real Pi 0.87.0, production bridge, mock SDK, WASI, scripted provider; all three flags on; stall reviews every 2 actions | Every meta check passed. At the first harness turn the scripted agent wrote: hypothesis `hyp.right`; an experiment queue `notes/experiments.json`; hook `tools/level_map.py`, which keeps `artifacts/level_map.json`, asserts it against each grid, and carries a commented EXPECT trailer; hook `tools/experiments.py`, which checks the pinned experiment and backfills `hyp.right` with `env.remember`; and guard `tools/pin_guard.py`, which plays the experiment first. Then: ACTION3 was refused (the experiment comes first); ACTION1 played (#3); the next head showed `experiments v1 after #3: {"checked":"ACTION1","verdict":"supports","next":null}` and `level_map v1 after #3: {"nine":[5,3],"visited":1}`; memory holds the backfilled test; the map ended at `{"nine":[6,3],"visited":[[5,3],[6,3]]}`, and the queue ended empty. At the second harness turn: the LOOP AUDIT lists each component's runs, writes and refusals, and the EXPECT result reads "check(t) returned true at #3". The run then fails only the shared `system_chars <= 3000` assert (4,611 characters with the guard and hook lines on). | `runs/e1-smoke-20261027/meta-1` |
+| Scripted smoke `guard` (no hooks) | unchanged: every guard check passed, then the same shared assert | `runs/e1-smoke-20261027/guard-3` |
+
+This is function and wiring with a scripted agent. Whether gpt-6.1-sol or qwen writes such components unasked is the
+open question for the next pair.
+
 ## Evidence
 
 | Evidence layer | Status | Provider / environment | Artifacts and limits |
 | --- | --- | --- | --- |
-| Functional correctness | Verified (function and wiring) | node tests, pytest | Verification table; 5 failing tests also fail at `73cddb12` |
-| Full-chain reachability | Verified with the scripted provider, and fork loading on the ARC environment | real Pi 0.87.0, production bridge, mock SDK, WASI; the real bridge and ARC environment for the fork loads | `runs/e1-smoke-20261026/guard-2`; `D:/autoresearch_pi_project/runs/arc-e1-20261026/forkload-*`; no real provider request, so nothing about model behaviour |
-| Autonomous adoption | Unverified | — | E0 baseline only: 0 of 58 written reviews followed by an executable component |
-| Net benefit | Unverified | — | Not targeted by E1 |
+| Functional correctness | Verified (function and wiring) | node tests, pytest | Both Verification tables; the failing tests also fail at `73cddb12` |
+| Full-chain reachability | Verified with the scripted provider, and fork loading on the ARC environment | real Pi 0.87.0, production bridge, mock SDK, WASI; the real bridge and ARC environment for the fork loads | `runs/e1-smoke-20261026/guard-2`, `runs/e1-smoke-20261027/meta-1`; `D:/autoresearch_pi_project/runs/arc-e1-20261026/forkload-*` |
+| Autonomous adoption | E1 (`5c86748d`): weak, one pair. E1b: unverified | yibu, gpt-6.1-sol medium, su15 from S-g | G1-B: 1 executable component in 6 harness turns; 0 guards; EXPECT 0 of 4 ran (defect, fixed in E1b). `D:/autoresearch_pi_project/runs/arc-e1-20261026/g1-a2`, `g1-b2` |
+| Net benefit | Unverified | — | Not targeted by E1; G1 levels A 4, B 3 (one pair) |
 
 ## Decisions still open
 
-1. **Fixed conditions** (section "Held fixed"):
-   - query observation (cheaper, and qwen passed level 1 in 8 of 9 query runs against 0 of 3 with ch);
-   - review consult and refine points off in both arms.
-
-   Scoping and the tail view are already r04 defaults with R1.
-2. **Held-out game:** ls20, or ar25.
-3. **Budget:**
-   - Stage 1: 9.0M (G1 2 × 2.5M; Q1 2 × 2.0M).
-   - Stage 2: 10.0M after the gate.
-   - Optional: HG at 3.0M.
+1. **The next paid run, on the E1b commit.** I recommend G1-B′: gpt-6.1-sol from S-g with all three flags, cap 2.5M,
+   compared with G1-A and G1-B, which are already run. It fits stage 1's remaining 3.95M; arm A is unchanged by E1b.
+   The alternative is the Q1 pair on E1b at 2 × 2.0M, which is about 0.05M over the remaining budget.
+2. **Held-out game:** ls20, or ar25 (stage 2).
+3. **Stage 2:** 10.0M after the gate.

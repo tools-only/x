@@ -34,6 +34,9 @@ def test_on_the_reviews_ask_for_one_harness_change_and_the_guard_place_only_with
     guarded = runner._harness_contract('native', 'treatment', {'ARC_THIN_HARNESS_TURN': '1', 'ARC_THIN_GUARDS': '1'})
     assert 'Available places are prompt, view, predictor, guard and callable tool;' in guarded
     assert '{places}' not in guarded
+    hooked = runner._harness_contract('native', 'treatment', {'ARC_THIN_HARNESS_TURN': '1', 'ARC_THIN_GUARDS': '1', 'ARC_THIN_HOOKS': '1'})
+    assert 'Available places are prompt, view, predictor, guard, hook and callable tool;' in hooked
+    assert '(in a .py file, as # comment lines)' in hooked and 'authoritative' not in hooked
 
 
 def test_a_harness_turn_resumes_as_a_harness_turn():
