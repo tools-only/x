@@ -807,7 +807,7 @@ export class NativeRuntime {
       for (let round = 0; round < 6 && Date.now() < deadline; round++) {
         if (signal?.aborted) throw Error('consult aborted');
         const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt: `CONSULT_ROLE ${agent.name}\n${agent.body}`, messages, tools } as any,
-          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: 1024,...(onResponse?{onResponse}:{}) } as any);
+          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: ctx.model!.maxTokens, ...(onResponse?{onResponse}:{}) } as any);
         const reply: any = this.host.modelResult ? await this.host.modelResult(create) : await create().result();
         this.host.usage('consult', reply); messages.push(reply);
         if (['error', 'aborted'].includes(reply.stopReason)) throw Error(`consult ${reply.stopReason}: ${reply.errorMessage ?? ''}`);

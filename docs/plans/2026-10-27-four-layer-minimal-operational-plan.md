@@ -56,17 +56,16 @@
 2. 内容不变时沿用现有 unchanged 行为，不新造版本，也不改掉原版本作者。异步保存记录发起时传入的 decision。
 3. Meta/Self 归属按路径推导，回合情境从现有状态读取；复用现有 working_set、调用与 usage。旧记录缺来源记 unknown。
 4. 增加 `processEvidenceText()`，只汇总近期修改来源、有效 process 版本、组件运行/展示/错误、服务成本和待决 trial。摘要最多 1200 字符。
-5. `ARC_THIN_PROCESS` 默认关闭，仅控制新增摘要及 `data/process.md`；开启时在既有 review/consolidate 中推送同文快照，标明截止 decision。task 拍不刷新该快照。
+5. `ARC_THIN_PROCESS` 默认关闭，仅控制既有 review/consolidate 中按需投递的摘要；不另写 `data/process.md`，避免同一过程事实产生第二份快照。
 6. 报告区分保存、装配、执行、展示与可审阅的语义使用。成本没有足够关联信息时标未知，不补猜组件成本或语义采用。
 
 | 用例 | 预期结果 |
 | --- | --- |
 | 父写、Refiner 写、pin/restore、scan | 来源分别准确；scan 不将已有版本作者改成 scan |
 | review 中修 tool / task 中写 process | 分别表达 review 情境下的 Self 改动 / task 情境下的 Meta 改动 |
-| 开启过程摘要 | 摘要计数与原账一致，长度受限；文件内容与当次投递一致且带截止点 |
+| 开启过程摘要 | 摘要按上次 review 到当前决策汇总真实写入、运行和报告用量，长度受限 |
 | 关闭摘要 | 无新增过程摘要投递；process 文件仍可保存与激活 |
-| task 拍读取旧快照 | 截止点保持原值，不能伪装成当前过程事实 |
-| Agent/Refiner 写 data/process.md | 沿现有只读边界拒绝 |
+| review 期间 Refiner 改组件 | 不被算作父 Agent 的试用候选 |
 | 旧日志 / 缺失 usage | 报告可生成，来源或成本标 unknown，不记成零 |
 
 ## 4. 保存后试用与既有消费者贯通
@@ -144,7 +143,7 @@
 - Binder 接受 `prompts/process/<name>.md`，装配为 `process_<name>` section；冲突 section 拒绝新版本并保留旧有效绑定。process 的 EXPECT/DECISION 行不注入常驻正文。
 - Refiner 宿主拒写 process 规则和新旧 refine guide；父 Agent 仍走现有 write/edit 路径。`prompts/process/refine.md` 优先于旧 `prompts/refine.md`，Refiner 输入记录显示实际路径。
 - Binder 版本记录增加 `by` 与 `decision`；保存通知覆盖 process Markdown，只有 Agent 来源的新有效版本进入现有 EXPECT trial；Refiner/runtime 来源不误开父候选。trial 事实继续复用现有 working-set、动作、调用与版本记录。
-- `ARC_THIN_PROCESS=1` 时，级别/停滞 review 获得最多 1200 字符的过程摘要，并把同一带 decision 截止点的快照写至 `data/process.md`；默认关闭。摘要报告 prompt 投递和时间窗内已报告 token，不把二者推断为语义使用或规则归因成本。
+- `ARC_THIN_PROCESS=1` 时，级别/停滞 review 获得最多 1200 字符的过程摘要；默认关闭。摘要报告 prompt 投递和时间窗内已报告 token，不把二者推断为语义使用或规则归因成本。
 - reuse report 分类过程 prompt，并记录版本来源、未知来源版本及 working-set 中按版本观察到的投递次数；明确投递不等于使用。
 
 **定向检查：**
@@ -177,6 +176,29 @@
 - **Self：部分生命周期证据，语义效果未验证**——Refiner 保存并激活 `tools/locate.py`；`observer_runs.jsonl` 记录了其后 4 次成功观察输出。对应动作发生在这些输出之后，但现有证据不能确认输出是否改变了动作选择。`agents/reviewer.md` 有两次无效保存后才成功，报告显示未被 consult 使用。
 - **Meta：入口可达，作用未证明**——两次 review 确实收到摘要，但未产生 process 规则，也无后续规则适用与行为对比。
 - **净收益：未验证**——单次探索运行、无 matched control，任务未完成；不能从 token/组件数推断收益。
+
+### Consult-first 门槛修订（2026-10-27）
+
+- **触发证据：** 本次运行两次 stall review 都触发 consult；子请求多次以 `stop_reason=length` 到达固定 1024 输出上限，也有 aborted 请求。父 Agent 的写入因此被拒，最后 review 写入机会也受同一门槛影响。见本目录 `runs/arc-thin-process-20261027-retry1/harness/usage.jsonl` 与 `pi-events.jsonl`。
+- **改动：** review 仍先尝试 consult；状态区分“已尝试”和“成功返回”。失败会在 `call_points.jsonl` 记为 `consult_failed`，此后父 Agent 可基于现有证据继续写 review。原有最后一次限定 review 文件写入可在 consult 尚未成功时执行。consult 成功仍单独记为 `consult`，并保留后续使用标记核算。
+- **请求预算：** 移除子请求写死的 1024 `maxTokens` 上限，改用当前模型注册的最大输出值；保留现有一次 length continuation、6 轮工具循环及 120 秒子请求期限。失败路径不因预算不足而封锁 review 提交。
+- **验证状态：** 按用户要求，本次未运行测试或 ARC 实验。代码行为、全链路、自主采用及净收益均未因本次实现而验证；需要后续真实 ARC 运行检查 consult 失败后保存、成功意见的实际利用，以及总成本和任务进展。
+
+### 最小 Meta → Self 运行闭环（2026-10-27）
+
+- **触发机会：** `runs/arc-thin-process-20261027-retry1` 的两次 review 都显示 0 tokens / 0 usage rows；父的过程规则没有明确入口；review 窗口选候选时未过滤 Refiner 来源。此前实现还把同一摘要额外写入 `data/process.md`。
+- **窄主张：** 在既有 review 中说明 process 的职责和复用原则，正确呈现两次 review 之间已有的写入、能力运行和报告成本，并只把父 Agent 写入的改变交给现有单候选 trial，可以让后续真实父轮基于完整证据改变造用选择并检查效果。
+- **减轻负担：** 不新增 review、worker、账本、trial 类型或 `data/process.md` 副本；复用 Binder、components/usage/working-set 日志及现有 decision/action/feedback 消费者。
+- **改动：** review 提示介绍 `prompts/process/` 并要求先考虑复用；过程摘要以最近一次 review 为窗口起点，纳入来源标记的近期保存、组件调用/视图和已报告总用量，未知用量继续标未知；process 规则只在 review 输入展示；review trial 排除 review 自身文件和非父作者组件；trial 回执展示普通工具、view、prompt 的实际消费数；memory 摘要不再把 Refiner 候选标作父作者判断。
+- **负例与停止：** 没有合理适用机会时 `no_change` 有效；来源未知不计为父采用；无消费、无任务结果或未知成本不判收益；不自动延长 run。
+- **验证协议：** 先做针对性功能检查；随后按本计划既有有界真实 ARC 协议运行一次普通父 Agent，观察父选择、能力输出是否改变行动、真实反馈是否触发修订/保留/撤下。该样本只判定行为链是否可达和有无采用迹象；净收益仍需可比预算对照。
+- **当前状态：** 定向功能检查通过（`arc_thin_meta_trial.test.ts` 5/5、`arc_thin_native_runtime.test.ts` 7/7、Python `py_compile`、`git diff --check`）。之后启动真实 ARC 运行 `runs/meta-self-minimal-20261027`，但 provider 连续返回 13 次 HTTP 429；运行仅产生 1 个环境动作，未到 review 窗口。按重复限流停止，没有触发 review，也未产生新的规则、trial 或反馈。因此本次代码改动的 review 输入行为尚未由真实运行验证；全链路、自主采用和净收益仍未证明。复跑需待 provider 限流恢复，再使用同一有界协议；不自动延长。相关父子结果到行动、总成本和压缩认知连续性仍见[延后事项](../deferred-research-todos.md) B/C/D，状态保持开放。
+
+### 独立于关卡复盘的 Meta 机会触发（2026-10-27）
+
+- **断点与窄主张：** 上述改动只澄清了已有复盘的规则写入位置，没有在 Self 过程反复失败时主动提示父 Agent 检查造用方法。本次只增加一个可核实的触发条件：同一关卡、同一 Self 组件在相近决策中出现至少两次真实保存失败；下一正常父决策提示判断应继续 Task、修一项 Self 能力，还是修改 Meta 过程规则。历史 `agents/reviewer.md` 在一次决策里两次无效保存，是该条件的实例；失败次数本身不证明 Meta 是正确选择。
+- **实现与成本：** 读取 Binder 的实际 `.harness/components.jsonl`，仅在 `ARC_THIN_PROCESS=1` 下工作。每个路径每关最多投递一次短 `META OPPORTUNITY`，由既有 `call_points.jsonl` 去重并留下版本/路径回执；不新增 Agent、复盘轮、工具、门禁或自动规则写入。既有关卡/停滞复盘提示也明确 Task / Self / Meta 三种问题的边界，沿用原 review 与 process 写入合同。
+- **负例与验证边界：** 一次失败、不同组件各失败一次、过程规则文件保存失败或已经提示过的路径不触发。触发后父认为只是一次格式修复、选择继续 Self 或 Task，均属合理结果。按用户此前要求，本次未运行测试或新 ARC 实验；仅实现触发与输入路径，真实父是否判断、修改规则并使 Self 行为改变仍未验证。
 
 **日志暴露的具体运行问题：**
 

@@ -889,7 +889,7 @@ export function renderDecisionMemory(state: MemoryState, actionCount: number, ch
  const unselected = [...state.hypotheses].filter(([k]) => !selected.some(([key]) => key === k));
  for (const [k, h] of unselected) blocks.push(`- ${k} [${h.status}] details: data/memory.md`);
  if (!blocks.length) return 'MEMORY: empty.';
- const out = ['CURRENT KNOWLEDGE (parent-authored judgments; full evidence: data/memory.md):'];
+	const out = ['CURRENT KNOWLEDGE (source is recorded in data/memory.md):'];
  let omitted = 0;
  for (const block of blocks) {
   if (out.join('\n').length + block.length + 100 > maxChars) { omitted++; continue; }
