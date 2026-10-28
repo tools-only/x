@@ -8,7 +8,7 @@ import type { ComponentSpec } from './arc_thin_binder.ts';
 const NATIVE = String.raw`
 import ast, io, sys, importlib.abc, importlib.util, builtins
 
-RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'self_component')
+RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'self_component', 'promote_session_function')
 # Every tool has one interface: a dict of arguments (Continual Harness's run(state, args) contract; Prime calls plain
 # python). No schema is derived from type hints, so there is no annotation to get wrong.
 TOOL_PARAMETERS = {'type': 'object', 'properties': {'args': {'type': 'object'}}, 'additionalProperties': False}
@@ -765,6 +765,47 @@ def _session_cell(env):
     _req['session_ns'] = True
     return base, loaded, {name: id(_ns.get(name)) for name in _session_defs}, set(_ns) - base
 
+def _export_session_function(req, env):
+    """Return one checkpointed definition and its external names without calling or changing it."""
+    if req.get('session') is None:
+        return {'ok': False, 'error': 'the Python session is unavailable'}
+    _base, loaded, _before, _restored = _session_cell(env)
+    if loaded.get('load_error'):
+        return {'ok': False, 'error': 'the Python session could not be restored: ' + str(loaded['load_error'])[:200]}
+    name = str(req.get('function') or '')
+    source = _session_defs.get(name)
+    if source is None:
+        return {'ok': False, 'error': 'no saved session function named ' + name}
+    tree = ast.parse(source)
+    node = next((item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name), None)
+    if node is None or not callable(_ns.get(name)):
+        return {'ok': False, 'error': name + ' is not a callable session function'}
+    local_names = {name} | {arg.arg for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]}
+    if node.args.vararg: local_names.add(node.args.vararg.arg)
+    if node.args.kwarg: local_names.add(node.args.kwarg.arg)
+    for item in ast.walk(node):
+        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store):
+            local_names.add(item.id)
+        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item is not node:
+            local_names.add(item.name)
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                local_names.update(arg.arg for arg in [*item.args.posonlyargs, *item.args.args, *item.args.kwonlyargs]
+                                   if arg is not None)
+                if item.args.vararg: local_names.add(item.args.vararg.arg)
+                if item.args.kwarg: local_names.add(item.args.kwarg.arg)
+    global_refs = {item.id for item in ast.walk(node) if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load)} - local_names
+    runtime_inputs = {'state', 'grid', 'prev_grid', 'history', 'artifacts', 'args', 'env'}
+    known_session = ({str(item).removesuffix('()') for item in req.get('session_names') or []} | (set(_ns) - _base)) - runtime_inputs
+    session_dependencies = sorted(global_refs & known_session)
+    dynamic_inputs = sorted(global_refs & runtime_inputs)
+    other_globals = sorted((global_refs & set(_ns)) - known_session - runtime_inputs)
+    unresolved = sorted(global_refs - set(_ns) - set(dir(builtins)))
+    parameters = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]]
+    return {'ok': True, 'value': {'name': name, 'source': source, 'parameters': parameters,
+        'session_dependencies': session_dependencies, 'runtime_inputs': dynamic_inputs,
+        'other_globals': other_globals, 'unresolved_names': unresolved,
+        'portable': not (session_dependencies or dynamic_inputs or other_globals or unresolved)}}
+
 def _cell(req):
     _begin(req)
     try:
@@ -788,6 +829,8 @@ def _cell(req):
         _ns['ActStopped'] = ActStopped
         _ns['show'] = show
         _ns['cell'] = cell
+        if _req['mode'] == 'session_export':
+            return _export_session_function(_req, env)
         try:
             if _req['mode'] == 'exec':
                 _session = _req.get('session')

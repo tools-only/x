@@ -454,6 +454,18 @@ export class NativeRuntime {
   async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
   }
+  /** Read a session function's definition and dependency names without publishing or invoking the function. */
+  async sessionFunction(name: string, signal?: AbortSignal): Promise<NativeResult> {
+    if (!this.session) return { ok: false, error: 'the Python session is disabled' };
+    return this.session.exclusive(async () => {
+      const input = { ...this.snapshot(), mode: 'session_export', function: name, session: this.session!.payload(),
+        session_names: this.session!.names() } as ReturnType<NativeRuntime['snapshot']> & Record<string, any>;
+      const result = this.kernel ? await this.executeKernel(input, signal, undefined) : await this.execute(input, signal);
+      this.host.log('component_runs.jsonl', { kind: 'session_export', function: name, decision: this.decision(), n: this.host.actionCount(),
+        ok: result.ok, ...(result.ok ? {} : { error: String(result.error ?? '').slice(0, 200) }) });
+      return result;
+    });
+  }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
     // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
     // state (no action, no session change, no workspace write since) gets that call's result instead of a second run.

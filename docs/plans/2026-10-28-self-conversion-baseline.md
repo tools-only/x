@@ -82,4 +82,18 @@
 
 窄命题：在 `--self-baseline` 普通任务决策中，明确将 Agent 为派生任务证据而编写的 Python 代码视作 Self 候选，并默认使用现有 `python(code, save=name)` 同步运行、保存为 view/tool；无需等待重复检测或启用独立 CONVERT 层。Agent 仍决定代码怎么封装、何时调用，以及后续是否修订/退役。只做真正短暂的算术或调试时，可用不保存的 `python(code)`。推翻条件：真实普通运行仍持续把面向任务证据的已写代码留作临时分析，或保存入口增加的执行/上下文成本抵消后续复用。
 
-这次只调整现有 Python 工具描述与 Self-baseline 提示，没有增加提示事件、信号阈值、schema、管理轮或 Refiner；创作时由现有 `save` 立即运行并经过 Binder，后轮工具调用及任务动作仍提供反馈，现有版本、修改和退役路径不变。因未运行真实 provider，提示是否改变自主采用、语义复用和净收益均未验证；后续用真实普通 ARC 运行审阅“代码创作→保存→后轮调用→行动反馈”，无需先补找本地轨迹。
+该提示假设被后续检查推翻：`python(save)` 原样保存提交代码，不能提升读取 session 活变量的函数。只更新提示并默认 `save` 会把 session 依赖直接送入 Binder，因此不作为有效转化实现。
+
+### Session 函数辅助提升（2026-10-28，已授权实施）
+
+**目标：** 减少将 session 工作记忆提升为 Self 时重复抄写/重建代码的成本，同时不把绑定当前 session 值的函数误发布为跨状态组件。
+
+**方案：** 在 opt-in Self-baseline 提供 `promote_session_function(function)` 入口。Runtime 从当前 Python session 取回 Agent 命名函数的原始定义，并在只读检查步骤中列出其引用的 session 符号和动态运行时输入。该入口返回源码和依赖诊断，不自动保存；Agent 将适用输入改成显式参数/由当前 state 重算后，继续用既有 Self/Binder 保存及校验。Session 内的原函数不改动。用“纯函数显式输入”提示减少未来提升所需修改。技术栈仅复用现有 TypeScript NativeRuntime、WASI Python guest、PythonSession 与 Binder，不增加依赖、worker 或管理轮。
+
+**不做：** 自动捕获/序列化当前数据、猜测 session 值应如何重新计算、自动改写闭包语义、改变默认 runtime 或重复工作阈值。上述行为会把状态快照伪装成可复用算法，或把语义决定交给 runtime。
+
+**实现步骤：** (1) 在 NativeRuntime 序列化调用边界内增加 session 函数检查；WASI guest 仅恢复 namespace、提取精确函数定义并报告 AST 可见的外部名称；不执行被检查函数、不提交新 session 内容。 (2) 仅在 Self-baseline 暴露 `promote_session_function` 工具，返回原始源码、session 依赖和 runtime 输入类别；无 session、缺失函数、非函数和提取失败均返回明确回执，不更改 Binder。 (3) 修正已推送的默认保存提示，说明 session 与 Self 的边界、鼓励用显式输入编写可提升函数，并让 Agent 通过新入口取源码后再决定适配/保存。 (4) 更新本变更记录；保持 Binder 校验、五类组件入口、工具执行和动作边界不变。
+
+**评审重点：** 检查点恢复后的函数源码与依赖是否一致；无 session/未知符号不会产生写入；session 变量与 `state/grid/history` 等 runtime 输入不会混为一类；被检查函数不会被调用；提取不改变工作内存、Binder 版本或任务动作。此回合只实施，不运行或新增测试；功能、全链路、自主采用、净收益均保留未验证，真实 provider ARC 运行用于后续采用与收益判断。
+
+**实施结果：** `demo/arc_thin_native_runtime.ts` 增加串行 session 检查入口；`demo/arc_thin_components.ts` 通过现有 WASI guest 恢复函数定义并返回源码、参数、session依赖、runtime输入、其他全局名与未解析名；`demo/arc_thin_extension.ts` 仅在 Self-baseline 暴露 `promote_session_function`。新提示移除“默认保存”建议，明确 `save` 是原样发布，并描述显式参数/提升入口。未执行测试或真实 provider 运行；因此只记录为代码实现，功能正确、接线、自主采用和净收益均未验证。

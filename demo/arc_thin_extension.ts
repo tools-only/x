@@ -1577,7 +1577,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       }
       // Keep the core list fixed; newly saved tools and a saved subagent's consult enter on the next provider request.
       // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
-      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(selfBaseline ? ['self_component'] : []),
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(selfBaseline ? ['self_component', 'promote_session_function'] : []),
         ...(consultTool && (!selfBaseline || binder?.candidates().some(c => c.kind === 'subagent')) ? ['consult'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
@@ -3828,6 +3828,27 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// one cell (Prime Agent's programmatic tool calling) instead of costing a separate request each.
 		pythonMemory = (params, signal) => commitMemory(repairMemoryArguments(params) as MemoryParams, signal);
 		if (selfBaseline) pi.registerTool({
+			name: "promote_session_function",
+			label: "Promote session function",
+			description: "Extract a named function from the current Python session for possible Self reuse. Returns its exact source and external names; it does not call or publish the function. Adapt session/runtime dependencies before saving with self_component(kind=\"tool\", ...).",
+			parameters: Type.Object({ function: Type.String({ pattern: "^[a-zA-Z_][a-zA-Z0-9_]{0,79}$" }) }),
+			execute: guardTool("promote_session_function", async (params: { function: string }) => {
+				const result = await nativeRuntime!.sessionFunction(params.function);
+				if (!result.ok) return text(`session function ${params.function}: ${result.error ?? "extraction failed"}`, true);
+				const info = result.value as { name: string; source: string; parameters: string[]; session_dependencies: string[];
+					runtime_inputs: string[]; other_globals: string[]; unresolved_names: string[]; portable: boolean };
+				return text([`SESSION FUNCTION ${info.name}(${info.parameters.join(", ")}) — source extracted; function not called or saved`,
+					`session dependencies: ${info.session_dependencies.join(", ") || "none detected"}`,
+					`runtime inputs: ${info.runtime_inputs.join(", ") || "none detected"}`,
+					`other globals: ${info.other_globals.join(", ") || "none detected"}`,
+					`unresolved names: ${info.unresolved_names.join(", ") || "none detected"}`,
+					`mechanically portable: ${info.portable ? "yes; still adapt to the Self tool contract" : "no; adapt the listed dependencies or keep it session-local"}`,
+					`exact source:\n\`\`\`python\n${info.source}\n\`\`\``,
+					`To publish, make changing inputs explicit in state/args or recompute them from the current state, then save the adapted code with self_component(kind="tool", name="..."). The original session function remains available.`].join("\n"));
+			}),
+		});
+
+		if (selfBaseline) pi.registerTool({
 			name: "self_component",
 			label: "Self component",
 			description: "Create or revise one of your five harness components by name. Tool code runs now; memory updates now; prompts apply next decision; skills can be read; saved subagents can be consulted. Retire by name when no longer useful.",
@@ -3978,10 +3999,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			label: "Python",
 			description: native
 				? "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
-					"value of a final expression. For code you author to derive task evidence, pass save=\"name\" by default: it runs now and keeps this code as tools/name.py. Code that takes no args becomes a view, " +
+					"value of a final expression. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
 					"shown after every new state; code that defines predict(state, action) predicts every action and is scored; other code is " +
 					"called later as the tool name(args={...}). " +
 					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
+					(selfBaseline ? "In Self-baseline, promote_session_function(function=\"name\") returns an existing session function's source and external-name report; adapt it before publishing with self_component. " : "") +
 						(workMemory ? "Each result starts with the call's address, [P12]; cell(12) runs that call's code again on the current state, " +
 							"cell(12, a, b) only its lines a to b, and a call that repeats an earlier one, or some of its lines, is told so. " : "") +
 						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
