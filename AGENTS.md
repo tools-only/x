@@ -22,12 +22,12 @@ User decisions binding every harness change; the linked records give the reasons
 
 # Self conversion contract
 
-- Self conversion lifts repeated transient Python or notes into Binder Components (tools, skills, prompts); it is not specific to Daemon responses.
-- Host: detect repeatedWork and proactively deliver CONVERT in the ordinary Decide process/Self evidence, with target path templates, minimum legal skeletons and recent samples; mirror it in data/convert.md and record shown. This replaces reconstructing authoring conventions, not agent judgment.
-- Agent: adapt and write a valid target through Binder, or explain reasonable non-use. Adoption means parent creation/calling; creation and delivery alone do not prove semantic use or benefit.
-- The next real component save/call and task action provide feedback through component/version, run and working-set logs. Coverage removes a family from CONVERT and offers reuse instead; actual use/outcomes belong in Successes and retirement review. Candidates also expire with the existing repetition window, level and kit boundaries. Do not label coverage alone a success.
-- Never auto-promote/save, put conversion procedure in control-core strategy, or substitute higher REVIEW frequency for conversion. Keep repository AGENTS.md out of gameplay.
-- Implementation: demo/arc_thin_extension.ts (CONVERT delivery), demo/arc_thin_reuse.ts and arc_thin_native_runtime.ts repeatedWork (facts), demo/arc_thin_binder.ts (validation), demo/prompts/arc_thin_native_system.md (gameplay guidance).
+- Agent owns CONVERT: choose useful logic, its contract, adaptation and retirement; repeatedWork is factual telemetry, not a conversion author.
+- Author Python functions as checked, parameterized logic prototypes first, then bind live workspace values at a separate call site. In Self-baseline, promote_session_function extracts source without executing/saving; Agent adapts to Self and publishes through existing Binder paths.
+- Optional agent-written notes/convert.md carries unfinished intent into ordinary Decide (baseline requires --self-convert). Host only delivers a bounded excerpt and records shown with owner/path/hash. Legacy data/convert.md is ignored; no host candidate generation or automatic migration.
+- Next component save/call and task action provide feedback through existing component/version, run and working-set evidence. Agent clears completed/stale notes and revises/retires components. Delivery, saving and coverage alone are not semantic use or benefit.
+- No automatic promotion/save, mandatory conversion report, action gate or extra review. Keep repository AGENTS.md out of gameplay.
+- Implementation and evidence: [agent-held conversion](docs/plans/2026-10-28-self-convert-guide.md).
 
 # Current code (checked 2026-10-23)
 

@@ -1,5 +1,7 @@
 # Self 转化基线：先闭合最短路径，再逐层加回机制
 
+> Current contract (later on 2026-10-28): [Agent-held conversion](2026-10-28-self-convert-guide.md) supersedes the host-generated CONVERT descriptions below. `--self-convert` now transports optional agent-authored `notes/convert.md`; baseline always teaches prototype-first then live binding. Earlier results below describe their historical implementation, not this revision.
+
 日期：2026-10-28（Asia/Shanghai）。起点：`codex/meta-daemon-response-20261028` / `3ac02314`。实施分支：`codex/self-harness-minimal-path`。状态：基线、CONVERT 加层和五类组件入口已实现；真实模型行为及净收益未验证。遵循 [开发流程](../development-workflow.md)。
 
 ## 问题与可证伪命题

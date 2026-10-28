@@ -396,10 +396,17 @@ const FORK_SCRIPT: Step[] = [
 // and a refinement revises the rule. A computation retyped after it was saved as a tool is named in its own result.
 // One scripted step per request: a non-acting call and the action that ends its decision are separate steps.
 const act = (action: string): Step => ({ kind: 'decide', calls: [['arc_action', { action }]] });
+const SELF_PROTOTYPE = 'def total(values):\n    return sum(values)\n';
+const SELF_CONVERT_NOTE = 'SELF_CONVERT_INTENT: preserve total(values) to reuse the checked calculation; retire this note after the next call.';
 const SELF_BASELINE_SCRIPT: Step[] = [
-  { kind: 'decide', calls: [['python', { code: 'print(6 * 7)', save: 'answer' }]] },
+  { kind: 'decide', calls: [['python', { code: SELF_PROTOTYPE + 'assert total([2, 3]) == 5\nvalues = [20, 22]\nprint(total(values))' }]] },
+  { kind: 'decide', calls: [['write', { path: 'notes/convert.md', content: SELF_CONVERT_NOTE }]] },
+  { kind: 'decide', calls: [['promote_session_function', { function: 'total' }]] },
+  { kind: 'decide', calls: [['self_component', { kind: 'tool', name: 'answer', content:
+    SELF_PROTOTYPE + 'def run(state, args):\n    return total(args.get("values", [20, 22]))\nprint(run(state, {}))\n' }]] },
   act('ACTION1'),
-  { kind: 'decide', calls: [['answer', { args: {} }]] },
+  { kind: 'decide', calls: [['answer', { args: { values: [19, 23] } }]] },
+  { kind: 'decide', calls: [['write', { path: 'notes/convert.md', content: '' }]] },
   act('ACTION2'),
 ];
 const SELF_COMPONENTS_SCRIPT: Step[] = [

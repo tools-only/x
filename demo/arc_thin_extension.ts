@@ -896,23 +896,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function processEvidenceText(sinceDecision?: number): string {
 		if (selfBaseline && !selfConvert) return "";
 		if (!binder || !workspace) return "";
-		const repeated = nativeRuntime?.repeatedWork(currentLevel()) ?? [];
-		const uncovered = repeated.filter(f => !f.covered).slice(0, 3);
-		const guides = uncovered.map(f => {
-			const slug = `reuse_${f.key}`;
-			const target = `tools/${slug}.py`;
-			return `- family: ${f.gist} \u00d7${f.calls}\n  target: ${target}\n` +
-				`  write this path, or adapt the sample with python(save="${slug}"). Replace the placeholder with reusable computation.\n` +
-				`  skeleton:\n\`\`\`python\n# Reusable computation; adapt before use.\ndef run():\n    """Return the reusable result."""\n    return None\n\`\`\`\n` +
-				`  sample (recent, truncated):\n\`\`\`python\n${(f.samples.at(-1) ?? '').slice(0, 600)}\n\`\`\`\n` +
-				`  done when: Binder accepts path and later shown/called (creation is not use). Convert if worthwhile, or explain a reasonable skip.`;
-		});
-		const reuse = repeated.filter(f => f.covered).slice(0, 3).map(f => `- reuse ${f.covered}: ${f.gist} \u00d7${f.calls}; do not duplicate.`);
-		const conversion = [guides.length ? `CONVERT (Self harness; you decide):\n${guides.join('\n')}` : '',
-			reuse.length ? `COVERED (reuse existing paths):\n${reuse.join('\n')}` : ''].filter(Boolean).join('\n\n');
-		workspace.runtimeWrite('data/convert.md', conversion + '\n');
-		for (const f of uncovered) append('convert.jsonl', { kind: 'shown', decision, level: currentLevel(), key: f.key,
-			target: `tools/reuse_${f.key}.py`, calls: f.calls });
+		// The agent authors intent in its writable notes; the host only transports it.
+		const path = 'notes/convert.md';
+		const note = existsSync(workspace.path(path)) ? workspace.read(path).trim() : '';
+		const excerpt = note.slice(0, 2000);
+		const conversion = note ? `CONVERT (agent-authored; ${path}):\n${excerpt}` +
+			(note.length > excerpt.length ? `\nRead ${path} for the rest.` : '') : '';
+		if (note) append('convert.jsonl', { kind: 'shown', owner: 'agent', decision, level: currentLevel(), path,
+			sha256: createHash('sha256').update(note).digest('hex'), shown_chars: excerpt.length });
 		if (process.env.ARC_THIN_PROCESS !== "1") return conversion;
 		const active = binder.active().filter((component) => component.kind === "prompt" && component.path.startsWith("prompts/process/"));
 		const workingSets = readRows("working_set.jsonl");
@@ -3830,7 +3821,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (selfBaseline) pi.registerTool({
 			name: "promote_session_function",
 			label: "Promote session function",
-			description: "Extract a named function from the current Python session for possible Self reuse. Returns its exact source and external names; it does not call or publish the function. Adapt session/runtime dependencies before saving with self_component(kind=\"tool\", ...).",
+			description: "Extract your named logic prototype from the current Python session for possible Self reuse. Returns its exact source and external names; it does not call or publish the function. Adapt session/runtime dependencies before saving with self_component(kind=\"tool\", ...).",
 			parameters: Type.Object({ function: Type.String({ pattern: "^[a-zA-Z_][a-zA-Z0-9_]{0,79}$" }) }),
 			execute: guardTool("promote_session_function", async (params: { function: string }) => {
 				const result = await nativeRuntime!.sessionFunction(params.function);
@@ -3844,14 +3835,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					`unresolved names: ${info.unresolved_names.join(", ") || "none detected"}`,
 					`mechanically portable: ${info.portable ? "yes; still adapt to the Self tool contract" : "no; adapt the listed dependencies or keep it session-local"}`,
 					`exact source:\n\`\`\`python\n${info.source}\n\`\`\``,
-					`To publish, make changing inputs explicit in state/args or recompute them from the current state, then save the adapted code with self_component(kind="tool", name="..."). The original session function remains available.`].join("\n"));
+					`To publish, keep the prototype parameterized and include its dependencies; add a run(state,args) adapter that binds current inputs, then save the adapted code with self_component(kind="tool", name="..."). The original session function remains available.`].join("\n"));
 			}),
 		});
 
 		if (selfBaseline) pi.registerTool({
 			name: "self_component",
 			label: "Self component",
-			description: "Create or revise one of your five harness components by name. Tool code runs now; memory updates now; prompts apply next decision; skills can be read; saved subagents can be consulted. Retire by name when no longer useful.",
+			description: "Create or revise one of your five harness components by name. Submitted tool source executes now; call the saved tool to invoke its entry point. Memory updates now; prompts apply next decision; skills can be read; saved subagents can be consulted. Retire by name when no longer useful.",
 			parameters: Type.Object({
 				kind: StringEnum(["tool", "memory", "prompt", "skill", "subagent"] as const),
 				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),
@@ -4003,7 +3994,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					"shown after every new state; code that defines predict(state, action) predicts every action and is scored; other code is " +
 					"called later as the tool name(args={...}). " +
 					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
-					(selfBaseline ? "In Self-baseline, promote_session_function(function=\"name\") returns an existing session function's source and external-name report; adapt it before publishing with self_component. " : "") +
+					(selfBaseline ? "In Self-baseline, author and check a parameterized logic prototype before binding live session values at its call site. promote_session_function(function=\"name\") returns an existing session function's source and external-name report; adapt it before publishing with self_component. " : "") +
 						(workMemory ? "Each result starts with the call's address, [P12]; cell(12) runs that call's code again on the current state, " +
 							"cell(12, a, b) only its lines a to b, and a call that repeats an earlier one, or some of its lines, is told so. " : "") +
 						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
@@ -4495,6 +4486,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		} else { ledgerText = ""; criticText = ""; }
 		const systemPrompt = selfBaseline ? renderPrompt('arc_thin_self_baseline.md', { game,
+			convert: selfConvert ? 'Your optional notes/convert.md is delivered in the next decision. Write/edit it to carry unfinished conversion intent; clear it when completed, abandoned or stale.' : 'Conversion needs no separate mode or note. Optional notes/convert.md is not automatically delivered in this run.',
 			arc: chView ? loadPrompt("arc_thin_native_ch_arc.md") : "" }) : native && !control ? renderPrompt('arc_thin_native_system.md', { game,
       observation: chView ? "the game as described under INPUT FORMAT below" : queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"

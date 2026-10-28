@@ -278,49 +278,59 @@ test('A/B: ordinary Task with daemon and no pending creates and receives Self/Me
 });
 
 
-test('ordinary Task receives CONVERT targets and Binder-valid skeletons without process or daemon mode', async () => {
+for (const profile of ['native', 'baseline', 'convert']) test(`${profile}: only agent-authored conversion is delivered`, async () => {
     const saved = { ...process.env };
-    Object.assign(process.env, { ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
-    const w = await world(); const h = await attach(w);
-    try {
-        await h.begin();
-        assert.doesNotMatch(h.file('workspace/data/convert.md'), /CONVERT/);
-        for (const n of [1, 2, 3]) await h.call('python', { code: `values = [${n}]\nprint(sum(values))` });
-        const head = await h.begin();
-        const guide = h.file('workspace/data/convert.md');
-        assert.match(head, /CONVERT \(Self harness; you decide\)/);
-        assert.match(guide, /target: tools\/reuse_[a-f0-9]+\.py/);
-        assert.match(guide, /skeleton:[\s\S]*def run\(\):/);
-        assert.match(guide, /sample[\s\S]*values = \[3\]/);
-        assert.ok(h.rows('convert.jsonl').some(r => r.kind === 'shown' && r.target.startsWith('tools/')));
-        const path = /target: (tools\/[^\s]+)/.exec(guide)![1];
-        assert.equal(h.file(`workspace/${path}`), '', 'delivery must not auto-save');
-        const skeleton = /```python\n([\s\S]*?)\n```/.exec(guide)![1];
-        assert.match(await h.call('write', { path, content: skeleton }), /saved.*loaded/);
-        assert.ok(h.active().includes('arc_action'), 'CONVERT never gates actions');
-        await h.begin();
-        assert.doesNotMatch(h.file('workspace/data/convert.md'), /CONVERT/, 'kit boundary retires old candidates');
-    } finally {
-        await h.close(); w.server.close();
-        for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
-        Object.assign(process.env, saved);
-    }
-});
-
-test('Self baseline can add CONVERT without making it a creation gate', async () => {
-    const saved = { ...process.env };
-    Object.assign(process.env, { ARC_THIN_SELF_BASELINE: '1', ARC_THIN_SELF_CONVERT: '1',
-        ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
+    Object.assign(process.env, { ARC_THIN_SELF_BASELINE: profile === 'native' ? '0' : '1',
+        ARC_THIN_SELF_CONVERT: profile === 'convert' ? '1' : '0', ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
     const w = await world(); const h = await attach(w);
     try {
         await h.begin();
         for (const n of [1, 2, 3]) await h.call('python', { code: `values = [${n}]\nprint(sum(values))` });
+        assert.doesNotMatch(await h.begin(), /CONVERT \(/);
+        assert.equal(h.file('workspace/data/convert.md'), '', 'host creates no guide');
+        assert.equal(h.rows('convert.jsonl').length, 0);
+        writeFileSync(join(w.root, 'workspace/data/convert.md'), 'LEGACY_HOST_CANDIDATE');
+        const intent = 'Preserve total(values); next use replaces rebuilding the calculation.';
+        await h.call('write', { path: 'notes/convert.md', content: intent });
         const head = await h.begin();
-        assert.match(head, /CONVERT \(Self harness; you decide\)/);
-        assert.match(await h.call('python', { code: 'print(6 * 7)', save: 'answer' }), /42/);
+        assert.doesNotMatch(head, /LEGACY_HOST_CANDIDATE/);
+        if (profile === 'baseline') {
+            assert.doesNotMatch(head, /CONVERT \(/);
+            assert.equal(h.rows('convert.jsonl').length, 0);
+        } else {
+            assert.ok(head.includes(`CONVERT (agent-authored; notes/convert.md):\n${intent}`));
+            const delivery = h.rows('convert.jsonl').at(-1);
+            assert.equal(delivery.owner, 'agent');
+            assert.equal(delivery.path, 'notes/convert.md');
+            assert.equal(delivery.shown_chars, intent.length);
+            assert.match(delivery.sha256, /^[a-f0-9]{64}$/);
+            await h.call('write', { path: 'notes/convert.md', content: 'Deferred: no remaining reuse.' });
+            const revised = await h.begin();
+            assert.match(revised, /Deferred: no remaining reuse/);
+            assert.ok(!revised.includes(intent));
+            await h.call('write', { path: 'notes/convert.md', content: 'x'.repeat(2100) });
+            assert.match(await h.begin(), /Read notes\/convert.md for the rest/);
+            assert.equal(h.rows('convert.jsonl').at(-1).shown_chars, 2000);
+        }
+        await h.call('write', { path: 'notes/convert.md', content: '' });
+        assert.doesNotMatch(await h.begin(), /CONVERT \(/);
         assert.ok(h.active().includes('arc_action'));
-        assert.doesNotMatch(head, /META TRIAL|DAEMON RESPONSE/);
-        assert.equal(h.rows('convert.jsonl').some(r => r.kind === 'shown'), true);
+        if (profile !== 'native') {
+            const prototype = 'def total(values):\n    return sum(values)\n';
+            await h.call('python', { code: prototype + 'assert total([2, 3]) == 5\nvalues = [6, 7]\nprint(total(values))' });
+            const exported = await h.call('promote_session_function', { function: 'total' });
+            assert.match(exported, /source extracted; function not called or saved/);
+            assert.match(exported, /session dependencies: none detected/);
+            assert.ok(exported.includes(prototype.trim()));
+            assert.equal(h.file('workspace/tools/total.py'), '');
+            assert.match(await h.call('promote_session_function', { function: 'missing' }), /session function missing:/);
+            assert.match(await h.call('self_component', { kind: 'tool', name: 'total', content:
+                prototype + 'def run(state, args):\n    return total(args.get("values", [6, 7]))\n' }), /saved.*loaded/);
+            await h.begin();
+            assert.match(await h.call('total', { args: {} }), /13/);
+            assert.match(await h.call('total', { args: { values: [20, 22] } }), /42/);
+            assert.doesNotMatch(h.file('workspace/tools/total.py'), /values = /);
+        }
     } finally {
         await h.close(); w.server.close();
         for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];

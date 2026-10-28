@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--self-baseline", action="store_true",
                           help="native Self baseline: direct create, run, call and act without advisory services or review turns")
     arc_thin.add_argument("--self-convert", action="store_true",
-                          help="add CONVERT guidance to --self-baseline while keeping its create/run/call path")
+                          help="deliver agent-authored notes/convert.md in --self-baseline (no host candidates)")
     arc_thin.add_argument("--replay-reasoning", action="store_true", help="native comparison: retain thinking blocks in replay")
     arc_thin.add_argument("--auto-compaction", action=argparse.BooleanOptionalAction, default=None,
                           help="Pi automatic compaction: native defaults on, legacy defaults off; --no-auto-compaction disables it")
@@ -237,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin_smoke.add_argument("--self-baseline", action="store_true",
                                 help="run the shortest native create → run → later call → action scenario")
     arc_thin_smoke.add_argument("--self-convert", action="store_true",
-                                help="add CONVERT to the shortest Self smoke")
+                                help="exercise agent-authored CONVERT delivery in the shortest Self smoke")
     arc_thin_smoke.add_argument("--self-components", action="store_true",
                                 help="exercise the five-component Self entry through the native runner")
     arc_thin_smoke.add_argument("--continuity", action="store_true",

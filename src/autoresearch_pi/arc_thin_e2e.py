@@ -1995,7 +1995,7 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
          {key: config.get(key) for key in ("self_baseline", "ledger", "critic", "daemon")}),
         ("direct_authoring", any(row.get("path") == "tools/answer.py" and row.get("by") == "agent"
                                  and not row.get("error") for row in components), components[-3:]),
-        ("save_runs_now", any(result.get("tool") in ("python", "self_component") and "42" in str(result.get("text"))
+        ("save_runs_now", any(result.get("tool") == "self_component" and "42" in str(result.get("text"))
                               for result in results), None),
         ("same_decision_saved_call" if all_components else "later_saved_call",
          any(row.get("kind") == "tool" and row.get("path") == "tools/answer.py"
@@ -2012,6 +2012,19 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
             and (all_components or "consult" not in {tool.get("name") for tool in row.get("tools", [])})
             for row in requests), None),
     ]
+    if not all_components:
+        deliveries = _read_jsonl(run_root / "harness" / "convert.jsonl")
+        checks.extend([
+            ("prototype_extracted", any(result.get("tool") == "promote_session_function"
+                and "source extracted; function not called or saved" in str(result.get("text"))
+                and "session dependencies: none detected" in str(result.get("text")) for result in results), None),
+            ("agent_convert_delivery", bool(deliveries) is self_convert and all(
+                row.get("owner") == "agent" and row.get("path") == "notes/convert.md" for row in deliveries), deliveries),
+            ("convert_in_decision", any("CONVERT (agent-authored; notes/convert.md):" in str(row.get("head"))
+                for row in requests) is self_convert, None),
+            ("convert_retired", (run_root / "workspace" / "notes" / "convert.md").read_text(encoding="utf-8") == "", None),
+            ("no_host_guide", not (run_root / "workspace" / "data" / "convert.md").exists(), None),
+        ])
     if all_components:
         saved = {row.get("path") for row in components if row.get("by") == "agent" and not row.get("error")}
         checks.extend([
