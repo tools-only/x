@@ -40,14 +40,14 @@
 - 同命令改为 `--self-components`、输出 `<job>/smoke-five-kinds-final`：2 decisions、2 actions、20/20 检查通过。五类原能力和同决策调用/反馈仍可达。
 - `git diff --check` 通过。
 
-产物位置：[job VERIFY](C:/Users/qi/tmp/r04/self-harness-fix21-20261029/VERIFY.md)、[转换 smoke](C:/Users/qi/tmp/r04/self-harness-fix21-20261029/smoke-convert-final/summary.json)、[五类 smoke](C:/Users/qi/tmp/r04/self-harness-fix21-20261029/smoke-five-kinds-final/summary.json)。provider 为 `offline-arc-thin-smoke / scripted`，没有真实模型实验；只读本次新生成的 mock 产物。普通 native 仅 fixture 验证，未单独做真实 Pi smoke。#2 的真实 provider 长窗口验证不在本次补丁内。
+产物位置：[job VERIFY](C:/Users/qi/tmp/r04/self-harness-fix21-20261029/VERIFY.md)、[转换 smoke](C:/Users/qi/tmp/r04/self-harness-fix21-20261029/smoke-convert-final/summary.json)、[五类 smoke](C:/Users/qi/tmp/r04/self-harness-fix21-20261029/smoke-five-kinds-final/summary.json)。provider 为 `offline-arc-thin-smoke / scripted`，没有真实模型实验；只读本次新生成的 mock 产物。普通 native 后补了 scoped 真实 Pi 检查，见下节；#2 的真实 provider 长窗口验证不在本次补丁内。
 
 自查修正：重复 cue 先插到原始输出前导致格式回归，现独立附在结果后且不被缩略；脚本型可调用工具原被反馈过滤排除，现纳入。宽回归 `arc_thin_components.test.ts` 有一条既有 restore 断言失败：预期 failed_defs 仅 Bad，实际还有被正确禁止写入的 Writer。该测试及唯一导入的组件实现均未修改；证据在 job `runtime-tests.txt`，本次不扩改它，不声称全仓测试全绿。
 
 | 证据层 | 状态 | 环境与边界 |
 | --- | --- | --- |
 | 功能正确 | 本次 targeted checks 通过 | Windows Node/WASI fixtures；宽回归既有失败保留如上 |
-| 全链路可达 | baseline scripted/mock 通过 | 实际 Pi/bridge/Binder/WASI 指定序列；native 仅 fixture |
+| 全链路可达 | baseline scripted/mock 通过，native SELF scoped 通过 | 实际 Pi/bridge/Binder/WASI 指定序列；native 总 foundation 脚本仍有既有断言失败，见下节 |
 | 自主采用 | 未验证 | 不启动付费或远程 ARC |
 | 净收益 | 未验证 | 无真实对照，不能称零转换已解决 |
 
