@@ -33,7 +33,7 @@ from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
 from .arc_thin_e2e import (
     run_arc_thin_claims_smoke, run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_guard_smoke, run_arc_thin_ledger_smoke,
-    run_arc_thin_self_harness_smoke, run_arc_thin_smoke,
+    run_arc_thin_self_baseline_smoke, run_arc_thin_self_harness_smoke, run_arc_thin_smoke,
 )
 from .arc_blind_policy import run_arc_blind_policy
 from .arc_agi_3_e2e import _pi_cli_version, _resolve_pi_cli
@@ -172,6 +172,10 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--game", default="ls20")
     arc_thin.add_argument("--foundation", choices=("legacy", "native"), default="native",
                           help="native: workspace files and full Pi session; legacy: frozen comparator")
+    arc_thin.add_argument("--self-baseline", action="store_true",
+                          help="native Self baseline: direct create, run, call and act without advisory services or review turns")
+    arc_thin.add_argument("--self-convert", action="store_true",
+                          help="add CONVERT guidance to --self-baseline while keeping its create/run/call path")
     arc_thin.add_argument("--replay-reasoning", action="store_true", help="native comparison: retain thinking blocks in replay")
     arc_thin.add_argument("--auto-compaction", action=argparse.BooleanOptionalAction, default=None,
                           help="Pi automatic compaction: native defaults on, legacy defaults off; --no-auto-compaction disables it")
@@ -230,6 +234,10 @@ def main(argv: list[str] | None = None) -> int:
                                 help="run the environment-failure scenario instead (mock steps return no frame)")
     arc_thin_smoke.add_argument("--self-harness", action="store_true",
                                 help="run the predictions / history / working-set / carried-reasoning scenario instead")
+    arc_thin_smoke.add_argument("--self-baseline", action="store_true",
+                                help="run the shortest native create → run → later call → action scenario")
+    arc_thin_smoke.add_argument("--self-convert", action="store_true",
+                                help="add CONVERT to the shortest Self smoke")
     arc_thin_smoke.add_argument("--continuity", action="store_true",
                                 help="run the session-continuity scenario instead (earlier decisions kept in view)")
     arc_thin_smoke.add_argument("--claims", action="store_true",
@@ -454,16 +462,21 @@ def main(argv: list[str] | None = None) -> int:
             review_at_level_change=args.level_change_review, stall_review_after=args.stall_review_after,
             spin_review_after=args.spin_review_after,
             foundation=args.foundation, replay_reasoning=args.replay_reasoning,
+            self_baseline=args.self_baseline,
+            self_convert=args.self_convert,
             extension_env={} if args.auto_compaction is None else {"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"},
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
     if args.command == "arc-thin-smoke":
+        if args.self_convert and not args.self_baseline:
+            parser.error("--self-convert requires --self-baseline")
         summary = (run_arc_thin_ledger_smoke(args.root) if args.ledger
                    else run_arc_thin_environment_smoke(args.root) if args.environment
                    else run_arc_thin_continuity_smoke(args.root) if args.continuity
                    else run_arc_thin_guard_smoke(args.root) if args.guard
                    else run_arc_thin_claims_smoke(args.root) if args.claims
+                   else run_arc_thin_self_baseline_smoke(args.root, self_convert=args.self_convert) if args.self_baseline
                    else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1

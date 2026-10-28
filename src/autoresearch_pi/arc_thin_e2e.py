@@ -1148,6 +1148,8 @@ def run_arc_thin_e2e(
     spin_review_after: int | None = None,
     extension_env: dict[str, str] | None = None,
     foundation: str = "native",
+    self_baseline: bool = False,
+    self_convert: bool = False,
     replay_reasoning: bool = False,
     snapshot_after_decisions: tuple[int, ...] = (),
     snapshot_at_levels: tuple[int, ...] = (),
@@ -1199,6 +1201,14 @@ def run_arc_thin_e2e(
         raise ValueError("variant must be treatment or control")
     if foundation not in {"legacy", "native"}:
         raise ValueError("foundation must be legacy or native")
+    if self_baseline and (foundation != "native" or variant != "treatment"):
+        raise ValueError("self baseline requires the native treatment")
+    if self_convert and not self_baseline:
+        raise ValueError("self conversion layer requires the self baseline")
+    if self_baseline:
+        ledger = critic = review_on_miss = False
+        review_at_level_change = False
+        stall_review_after = spin_review_after = consolidate_after_actions = 0
     if foundation == "native":
         continuity = "session"
     consolidate_after_actions = _consolidation_interval(foundation, consolidate_after_actions)
@@ -1358,10 +1368,12 @@ def run_arc_thin_e2e(
         if pi_provider == "offline-arc-thin-smoke":
             pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
         pi_env.update(extension_env or {})
+        pi_env["ARC_THIN_SELF_BASELINE"] = "1" if self_baseline else "0"
+        pi_env["ARC_THIN_SELF_CONVERT"] = "1" if self_convert else "0"
         native_treatment = foundation == "native" and variant == "treatment"
-        daemon_enabled = native_treatment and pi_env.get("ARC_THIN_DAEMON", "1") != "0"
+        daemon_enabled = native_treatment and not self_baseline and pi_env.get("ARC_THIN_DAEMON", "1") != "0"
         pi_env["ARC_THIN_DAEMON"] = "1" if daemon_enabled else "0"
-        pi_env["ARC_THIN_PROCESS"] = "1" if native_treatment and pi_env.get("ARC_THIN_PROCESS", "1") != "0" else "0"
+        pi_env["ARC_THIN_PROCESS"] = "1" if native_treatment and not self_baseline and pi_env.get("ARC_THIN_PROCESS", "1") != "0" else "0"
         daemon = DaemonService(root) if daemon_enabled else None
         if daemon:
             attach_arc_monitors(daemon)
@@ -1397,6 +1409,8 @@ def run_arc_thin_e2e(
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
             "ledger": ledger_enabled, "critic": critic_enabled,
             "daemon": daemon_enabled, "process_evidence": pi_env["ARC_THIN_PROCESS"] == "1",
+            "self_baseline": self_baseline,
+            "self_convert": self_convert,
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
             "decision_timeout_seconds": decision_timeout_seconds,
             "max_continuous_idle_recoveries": 2,
@@ -1716,7 +1730,7 @@ def run_arc_thin_e2e(
             if spin[0] == 0:
                 spin_threshold = spin_review_after
             spin_due = spin_review_after > 0 and spin[0] >= spin_threshold
-            consolidate = variant == "treatment" and action_count > consolidated_at and (
+            consolidate = variant == "treatment" and not self_baseline and action_count > consolidated_at and (
                 (level_changed_since_consolidation and review_at_level_change)
                 or str(state.get("state")) == "GAME_OVER"
                 or miss_due
@@ -1950,6 +1964,54 @@ def _run_skill_names(row: dict[str, Any]) -> list[str] | None:
         if isinstance(tool, dict) and tool.get("name") == "run_skill":
             return list(((tool.get("parameters") or {}).get("properties") or {}).get("name", {}).get("enum") or [])
     return None
+
+
+def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False) -> Path:
+    """Exercise the shortest Self path through the real runner, Pi and bridge with a scripted provider."""
+    path = run_arc_thin_e2e(
+        root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
+        self_baseline=True, self_convert=self_convert,
+        max_decisions=2, max_actions=2, experiment_timeout_seconds=600.0,
+        decision_timeout_seconds=180.0,
+        pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
+        bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
+        extension_env={"ARC_THIN_SMOKE_SCRIPT": "self-baseline"},
+    )
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    run_root = root.resolve()
+    requests = _read_jsonl(run_root / "smoke-requests.jsonl")
+    components = _read_jsonl(run_root / ".harness" / "components.jsonl")
+    runs = _read_jsonl(run_root / "harness" / "component_runs.jsonl")
+    actions = _read_jsonl(run_root / "harness" / "trajectory.jsonl")
+    config = json.loads((run_root / "run-config.json").read_text(encoding="utf-8"))
+    results = [result for row in requests for result in row.get("last_tool_results", [])]
+    checks = [
+        ("minimal_profile", config.get("self_baseline") is True and
+         config.get("self_convert") is self_convert and
+         not any(config.get(name) for name in ("ledger", "critic", "daemon", "process_evidence",
+                                               "review_at_level_change", "stall_review_after", "spin_review_after")),
+         {key: config.get(key) for key in ("self_baseline", "ledger", "critic", "daemon")}),
+        ("direct_authoring", any(row.get("path") == "tools/answer.py" and row.get("by") == "agent"
+                                 and not row.get("error") for row in components), components[-3:]),
+        ("save_runs_now", any(result.get("tool") == "python" and "42" in str(result.get("text"))
+                              for result in results), None),
+        ("later_saved_call", any(row.get("kind") == "tool" and row.get("path") == "tools/answer.py"
+                                 and row.get("ok") for row in runs) and
+         any(result.get("tool") == "answer" and "42" in str(result.get("text"))
+             for result in results), [row for row in runs if row.get("path") == "tools/answer.py"]),
+        ("task_continues", [row.get("action") for row in actions] == ["ACTION1", "ACTION2"],
+         [row.get("action") for row in actions]),
+        ("no_management_round", not any(row.get("consolidating") or row.get("critic") or row.get("analyst")
+                                        for row in requests), None),
+        ("core_tools_only", bool(requests) and all(
+            "consult" not in {tool.get("name") for tool in row.get("tools", [])}
+            and "refine" not in {tool.get("name") for tool in row.get("tools", [])}
+            for row in requests), None),
+    ]
+    summary["checks"] = [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
+    summary["passed"] = all(check["ok"] for check in summary["checks"])
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:

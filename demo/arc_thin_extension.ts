@@ -247,6 +247,8 @@ function regionCells(grid: number[][], limit = 32): Array<{ x: number; y: number
 export default function arcThinExtension(pi: ExtensionAPI) {
   const responsesContinuation = new ResponsesContinuation();
   const native = process.env.ARC_THIN_FOUNDATION === "native";
+  const selfBaseline = native && process.env.ARC_THIN_SELF_BASELINE === "1";
+  const selfConvert = selfBaseline && process.env.ARC_THIN_SELF_CONVERT === "1";
   // How the game is shown: "query" (the extension's own default, kept for tests that build it directly), "inline", or
   // "ch", Continual Harness's observation and action tool inside this harness's decision (the runner's native default
   // since 2026-10-20; arc_thin_ch_view.ts).
@@ -277,8 +279,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     && JSON.parse(readFileSync(scriptedConfig, 'utf8')).provider === 'offline-arc-thin-smoke' ? scriptedBudget : 0;
 	// The ledger and the critic are services to the agent's self-harness and run by default in the treatment
 	// variant. ARC_HARNESS_LEDGER / ARC_HARNESS_CRITIC = "disabled" turns one off; the critic needs the ledger.
-	const criticOn = !control && process.env.ARC_HARNESS_CRITIC !== "disabled";
-	const ledgerOn = !control && (process.env.ARC_HARNESS_LEDGER !== "disabled" || criticOn);
+	const criticOn = !control && !selfBaseline && process.env.ARC_HARNESS_CRITIC !== "disabled";
+	const ledgerOn = !control && !selfBaseline && (process.env.ARC_HARNESS_LEDGER !== "disabled" || criticOn);
 	const game = process.env.ARC_GAME ?? "unknown";
 	// Comparison variable, off unless the run asks for it (the runner records it in run-config.json).
 	const carryChars = control ? 0 : Math.max(0, Math.floor(Number(process.env.ARC_THIN_CARRY_REASONING) || 0));
@@ -312,7 +314,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// Earlier decisions show repeated python as cell(k) and identical decisions once; each action says whether its result was
 	// already known from the same board; the head shows what this board already showed and, after a decision that learned
 	// nothing new, says so and pins a move never played from it. ARC_THIN_WORK_MEMORY=0 turns all of it off.
-	const workMemory = native && process.env.ARC_THIN_WORK_MEMORY !== "0";
+	const workMemory = native && !selfBaseline && process.env.ARC_THIN_WORK_MEMORY !== "0";
 	// Context layout (docs/plans/2026-10-21-context-layout.md). The system prompt must stay fixed for the whole run: on routes
 	// that fold system-message patches into the leading message, any change there makes the next request miss the provider's
 	// cached prefix entirely. So the active prompts open each decision's head instead, and the agent's own record on this
@@ -320,13 +322,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// response starts. ARC_THIN_CONTEXT_LAYOUT=0 restores the earlier placement: prompts as system-prompt sections, NO NEW
 	// INFORMATION opening the head, THIS BOARD after the state.
 	const contextLayout = native && !control && process.env.ARC_THIN_CONTEXT_LAYOUT !== "0";
-	const daemonOn = native && !control && process.env.ARC_THIN_DAEMON === "1";
+	const daemonOn = native && !control && !selfBaseline && process.env.ARC_THIN_DAEMON === "1";
 	// P4 (2026-10-19): the agent called refine and consult 0 times in 10 or more su15 runs with either model. ARC_THIN_LEAN=1
 	// leaves both tools out, with the system prompt's subagent line and the long form of its skill line (one at a time:
 	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
 	const lean = process.env.ARC_THIN_LEAN === "1";
-	const refineTool = !lean && process.env.ARC_THIN_REFINE_TOOL !== "0";
-	const consultTool = !lean && process.env.ARC_THIN_CONSULT !== "0";
+	const refineTool = !selfBaseline && !lean && process.env.ARC_THIN_REFINE_TOOL !== "0";
+	const consultTool = !selfBaseline && !lean && process.env.ARC_THIN_CONSULT !== "0";
 	/**
 	 * Call points (docs/plans/2026-10-20-loop-bound-artifacts.md A5; the user, 2026-10-20: removing tools that are never
 	 * called "does not fix the root problem ... we need a mechanism to ensure they get called"). Every REFINE_EVERY
@@ -892,6 +894,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Optional bounded Meta feedback. Delivery and spend are reported as observations, never as semantic-use claims. */
 	function processEvidenceText(sinceDecision?: number): string {
+		if (selfBaseline && !selfConvert) return "";
 		if (!binder || !workspace) return "";
 		const repeated = nativeRuntime?.repeatedWork(currentLevel()) ?? [];
 		const uncovered = repeated.filter(f => !f.covered).slice(0, 3);
@@ -4424,7 +4427,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			catch (error) { logError("memory:file", error); }
 		}
 		} else { ledgerText = ""; criticText = ""; }
-		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
+		const systemPrompt = selfBaseline ? renderPrompt('arc_thin_self_baseline.md', { game,
+			arc: chView ? loadPrompt("arc_thin_native_ch_arc.md") : "" }) : native && !control ? renderPrompt('arc_thin_native_system.md', { game,
       observation: chView ? "the game as described under INPUT FORMAT below" : queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
@@ -4562,8 +4566,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),
 				nativeRuntime && !run.daemonResponse ? await nativeRuntime.observerText() : '',
-				nativeRuntime && !run.daemonResponse ? await nativeRuntime.loopDecisionText() : '',
-				run.daemonResponse ? '' : metaTrialDecisionText(),
+				nativeRuntime && !run.daemonResponse && !selfBaseline ? await nativeRuntime.loopDecisionText() : '',
+				run.daemonResponse || selfBaseline ? '' : metaTrialDecisionText(),
 				processEvidenceText(run.daemonResponse ? run.daemonState?.pending?.from_decision : undefined)].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,

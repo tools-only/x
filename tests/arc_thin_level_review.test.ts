@@ -306,3 +306,24 @@ test('ordinary Task receives CONVERT targets and Binder-valid skeletons without 
         Object.assign(process.env, saved);
     }
 });
+
+test('Self baseline can add CONVERT without making it a creation gate', async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { ARC_THIN_SELF_BASELINE: '1', ARC_THIN_SELF_CONVERT: '1',
+        ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
+    const w = await world(); const h = await attach(w);
+    try {
+        await h.begin();
+        for (const n of [1, 2, 3]) await h.call('python', { code: `values = [${n}]\nprint(sum(values))` });
+        const head = await h.begin();
+        assert.match(head, /CONVERT \(Self harness; you decide\)/);
+        assert.match(await h.call('python', { code: 'print(6 * 7)', save: 'answer' }), /42/);
+        assert.ok(h.active().includes('arc_action'));
+        assert.doesNotMatch(head, /META TRIAL|DAEMON RESPONSE/);
+        assert.equal(h.rows('convert.jsonl').some(r => r.kind === 'shown'), true);
+    } finally {
+        await h.close(); w.server.close();
+        for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+        Object.assign(process.env, saved);
+    }
+});

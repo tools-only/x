@@ -396,6 +396,12 @@ const FORK_SCRIPT: Step[] = [
 // and a refinement revises the rule. A computation retyped after it was saved as a tool is named in its own result.
 // One scripted step per request: a non-acting call and the action that ends its decision are separate steps.
 const act = (action: string): Step => ({ kind: 'decide', calls: [['arc_action', { action }]] });
+const SELF_BASELINE_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: 'print(6 * 7)', save: 'answer' }]] },
+  act('ACTION1'),
+  { kind: 'decide', calls: [['answer', { args: {} }]] },
+  act('ACTION2'),
+];
 const believe = (text: string): Step => ({ kind: 'decide', calls: [['memory', { set: [{ key: 'belief.move', text }] }]] });
 const PROMOTION_SCRIPT: Step[] = [
   believe('ACTION1 moves the 9 right'), act('ACTION1'),
@@ -452,6 +458,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'promotion' ? PROMOTION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' ? SELF_BASELINE_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
