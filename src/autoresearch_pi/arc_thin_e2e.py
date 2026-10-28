@@ -1988,6 +1988,17 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
     config = json.loads((run_root / "run-config.json").read_text(encoding="utf-8"))
     results = [result for row in requests for result in row.get("last_tool_results", [])]
     checks = [
+        ("fixed_self_entry", bool(requests) and all(
+            len(entries := [line for line in str(row.get("current", "")).splitlines() if line.startswith("SELF:")]) == 1
+            and len(entries[0]) <= 320 and entries[0].isascii()
+            and "self_component" in entries[0] and "promote_session_function" in entries[0]
+            for row in requests if not row.get("analyst") and not row.get("critic")), None),
+        ("simple_tool_save_schema", any(tool.get("name") == "self_component"
+            for row in requests for tool in row.get("tools", [])) and all(
+            "kind" not in tool.get("parameters", {}).get("required", [])
+            for row in requests for tool in row.get("tools", []) if tool.get("name") == "self_component"), None),
+        ("post_save_feedback", any("SELF FEEDBACK: answer v1: 1 calls OK, 0 failed" in str(row.get("current"))
+                                   for row in requests if not row.get("analyst") and not row.get("critic")), None),
         ("minimal_profile", config.get("self_baseline") is True and
          config.get("self_convert") is self_convert and
          not any(config.get(name) for name in ("ledger", "critic", "daemon", "process_evidence",
@@ -1997,9 +2008,13 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
                                  and not row.get("error") for row in components), components[-3:]),
         ("save_runs_now", any(result.get("tool") == "self_component" and "42" in str(result.get("text"))
                               for result in results), None),
-        ("same_decision_saved_call" if all_components else "later_saved_call",
+        ("immediate_save_feedback", any(result.get("tool") == "self_component"
+            and "SELF FEEDBACK: answer v1: not called yet" in str(result.get("text")) for result in results), None),
+        ("immediate_call_feedback", any(result.get("tool") == "answer"
+            and "SELF FEEDBACK: answer v1: 1 calls OK, 0 failed" in str(result.get("text")) for result in results), None),
+        ("same_decision_saved_call",
          any(row.get("kind") == "tool" and row.get("path") == "tools/answer.py"
-             and row.get("ok") and (not all_components or row.get("decision") == 1) for row in runs) and
+             and row.get("ok") and row.get("decision") == 1 for row in runs) and
          any(result.get("tool") == "answer" and "42" in str(result.get("text"))
              for result in results), [row for row in runs if row.get("path") == "tools/answer.py"]),
         ("task_continues", [row.get("action") for row in actions] == ["ACTION1", "ACTION2"],

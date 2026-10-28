@@ -31,6 +31,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   workMemory?: boolean;
   /** A baseline subagent may be consulted after its save, on the next provider request of this decision. */
   immediateSubagent?: boolean;
+  /** Baseline exposes the component shortcut and session source extractor. */
+  selfBaseline?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
   sessionDir?: string };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
@@ -83,6 +85,8 @@ export class NativeRuntime {
   private coverHinted = new Set<string>();
   /** One short in-window review cue per level and canonical action count. */
   private windowCheckHinted = new Set<string>();
+  private conversionHintDecision = -1;
+  private savedFeedback = new Map<string, { version: number; n: number; ok: number; failed: number }>();
   /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
   emptyViews() {
     const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => `${c.path}@${c.version}`));
@@ -203,6 +207,14 @@ export class NativeRuntime {
   /** Earlier python runs of this run (component_runs.jsonl), after a restart. */
   seedPython(rows: any[]) {
     for (const r of rows) {
+      if (r.kind === 'save' && r.ok && r.by === 'agent') {
+        const previous = this.savedFeedback.get(r.path);
+        if (previous?.version !== r.version) this.savedFeedback.set(r.path, { version: r.version, n: r.n, ok: 0, failed: 0 });
+      }
+      if (r.kind === 'tool' && !r.readonly) {
+        const saved = this.savedFeedback.get(r.path);
+        if (saved?.version === r.version) saved[r.ok ? 'ok' : 'failed']++;
+      }
       if (r?.kind === 'window_check' && Number.isInteger(r.level) && Number.isInteger(r.n))
         this.windowCheckHinted.add(`${r.level}:${r.n}`);
       if (r?.kind === 'python' && !r.readonly && typeof r.shape === 'string')
@@ -211,10 +223,24 @@ export class NativeRuntime {
     }
   }
   private decision() { return this.host.decision?.() ?? 0; }
+  /** Updated at save/call events; ordinary heads never rescan the run log. */
+  selfFeedbackText(path?: string) {
+    const lines = (path ? this.host.binder.candidates() : this.host.binder.active()).filter(c => c.kind === 'tool' && c.path.startsWith('tools/') &&
+      !c.mount?.length && !c.guard && (!path || c.path === path)).flatMap(c => {
+      const saved = this.savedFeedback.get(c.path);
+      if (!saved || saved.version !== c.version) return [];
+      return [`${c.name} v${c.version}: ${saved.ok + saved.failed ? `${saved.ok} calls OK, ${saved.failed} failed` : 'not called yet'}; ${Math.max(0, this.host.actionCount() - saved.n)} actions since save`];
+    }).slice(-3);
+    return lines.length ? `SELF FEEDBACK: ${lines.join('; ')}. Call results only; replacement of rewriting and task benefit are unmeasured.` : '';
+  }
   noteSave(path: string, receipt: string | undefined) {
     if (/^(tools|observers|lib)\/[^/]+\.py$/.test(path)) {
       const ok = !/NOT loaded/.test(receipt ?? '');
+      const version = this.host.binder.versionMap()[path];
+      if (ok && this.host.binder.originOf(path)?.by === 'agent' && this.savedFeedback.get(path)?.version !== version)
+        this.savedFeedback.set(path, { version, n: this.host.actionCount(), ok: 0, failed: 0 });
       this.host.log('component_runs.jsonl', { kind: 'save', path, decision: this.decision(), n: this.host.actionCount(), ok,
+        version: this.host.binder.versionMap()[path], by: this.host.binder.originOf(path)?.by,
         ...(ok ? {} : { error: /NOT loaded \(([^)]*)\)/.exec(receipt ?? '')?.[1]?.slice(0, 200) }) });
     }
     this.host.onSaved?.(path, receipt);
@@ -448,8 +474,8 @@ export class NativeRuntime {
       ...acted.lines].join('\n'), !result.ok), terminate: true };
   }
   /**
-   * Foreground Python uses the parent's namespace and action boundary. With `save`, publication is optional and
-   * this run is the saved tool's first call. Calls that share a session run one at a time.
+   * Foreground Python uses the parent's namespace and action boundary. With `save`, the exact submitted source is
+   * published before execution; this is separate from invoking the saved entry point. Session calls run one at a time.
    */
   async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
@@ -550,18 +576,40 @@ export class NativeRuntime {
       this.host.log('component_runs.jsonl', { kind: 'cover_hint', path: covering, level: this.host.level(), decision, n: this.host.actionCount() });
     }
     const windowKey = `${this.host.level()}:${windowAtStart}`;
+    let conversionNote = '';
+    const family = this.conversionHintDecision !== decision && !readonly && !save && result.ok ? repeatedFamilies(this.levelRuns(this.host.level()), this.components())
+      .find(f => f.runs.includes(this.pythonRuns.at(-1)!)) : undefined;
+    if (family && this.conversionHintDecision !== decision) {
+      this.conversionHintDecision = decision;
+      const existing = family.covered && this.host.binder.active().find(c => c.path === family.covered && this.toolNames().includes(c.name));
+      const names = [...new Set(family.runs.flatMap(r => [...(r.code ?? r.gist).matchAll(/(?:^|\n)\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/g)].map(m => m[1])))].slice(-3);
+      conversionNote = `SELF REUSE: repeat/near-duplicate Python detected (${family.recent} calls). ` + (existing
+        ? `Call ${existing.name}(args={...}) now instead of rebuilding it.`
+        : 'Save reusable checked logic as a tool now: ' + (this.host.selfBaseline
+          ? 'promote_session_function(function="..."); adapt dependencies and run(state,args); self_component(name, content); call the saved name.'
+          : 'adapt dependencies and run(state,args), then python(code="...", save="...").')) +
+        (names.length ? ` Recent definitions: ${names.join(', ')}.` : '') +
+        ' You choose; skip one-offs or no remaining use without a report.';
+      this.host.log('component_runs.jsonl', { kind: 'conversion_hint', level: this.host.level(), decision, n: this.host.actionCount(), calls: family.recent });
+    }
     const windowCalls = this.pythonRuns.filter(r => r.level === this.host.level() && r.n === windowAtStart).length;
     let windowCheck = '';
     if (!readonly && !result.acted?.lines.length && this.host.actionCount() === windowAtStart &&
         windowCalls >= 3 && !this.windowCheckHinted.has(windowKey)) {
       this.windowCheckHinted.add(windowKey);
       windowCheck = `WINDOW CHECK: ${windowCalls} Python calls since action #${windowAtStart}. Briefly compare what they established and what remains uncertain. ` +
-        'If the next test is clear, act without deeper review. Investigate a real contradiction, blocker or tool failure; reuse or save a repeated calculation only when worthwhile.';
+        'If the next test is clear, act without deeper review. Investigate a real contradiction, blocker or tool failure. Save checked reusable logic, then call the saved version instead of rebuilding it.';
       this.host.log('component_runs.jsonl', { kind: 'window_check', level: this.host.level(), n: windowAtStart, decision, calls: windowCalls });
     }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
     const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, windowCheck, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
       live && result.ok && Boolean((result.value as any)?.has_value), mark);
+    // Keep the cue visible even when the Python output is shortened to a receipt.
+    if (conversionNote) out.content.push({ type: 'text', text: conversionNote });
+    if (save) {
+      const feedback = this.selfFeedbackText(`tools/${save}.py`);
+      if (feedback) out.content.push({ type: 'text', text: feedback });
+    }
     if (parent) {
       const acted = Boolean(result.acted?.lines.length);
       // Only a computation that acted, wrote, remembered or saved nothing can be answered again from its result.
@@ -586,8 +634,13 @@ export class NativeRuntime {
     if (!readonly && this.host.artifacts) result = { ...this.host.artifacts(result, c, this.host.actionCount()), acted: result.acted };
     this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, path: c.path, decision: this.decision(), readonly, n: this.host.actionCount(), version: c.version,
       versions: snap.versions, ok: result.ok, ms: Date.now() - started, acted: result.acted?.lines.length ?? 0 });
+    const saved = this.savedFeedback.get(c.path);
+    if (!readonly && saved?.version === c.version) saved[result.ok ? 'ok' : 'failed']++;
     const fallback = this.host.binder.active().filter(x => x.path !== c.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
-    return this.finish([`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n'), result);
+    const out = this.finish([`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n'), result);
+    const feedback = !readonly && this.selfFeedbackText(c.path);
+    if (feedback) out.content.push({ type: 'text', text: feedback });
+    return out;
   }
   /** Tools marked as views run after every new state; their outputs are shown each decision. They never act. */
   observe(n: number) {

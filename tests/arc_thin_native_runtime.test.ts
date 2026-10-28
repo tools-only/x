@@ -28,6 +28,23 @@ test('B: parent Python save records creation separately from a later component c
     const called = await tools.get('answer').execute({ args: {} });
     assert.match(called.content[0].text, /42/);
     assert.ok(logs.some(r => r.file === 'component_runs.jsonl' && r.kind === 'tool' && r.path === 'tools/answer.py' && r.version === 1 && r.ok));
+    assert.match(runtime.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/);
+    const replay = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
+      state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {}, wrap: (_name, fn) => fn });
+    try {
+      replay.seedPython(logs.filter(row => row.file === 'component_runs.jsonl'));
+      assert.equal(replay.selfFeedbackText(), runtime.selfFeedbackText(), 'restart reconstructs current-version feedback');
+    } finally { replay.close(); }
+    const restarted = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
+      state: () => ({}), level: () => 0, actionCount: () => 0,
+      log() {}, usage() {}, wrap: (_name, fn) => fn });
+    try {
+      restarted.seedPython(logs.filter(r => r.file === 'component_runs.jsonl'));
+      assert.match(restarted.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/);
+      restarted.seedPython([{ kind: 'save', path: 'tools/answer.py', version: 1, by: 'agent', n: 0, ok: true },
+        { kind: 'tool', path: 'tools/answer.py', version: 1, readonly: true, ok: false }]);
+      assert.match(restarted.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/, 'unchanged saves and readonly calls retain the counts');
+    } finally { restarted.close(); }
   } finally { runtime.close(); }
 });
 
@@ -62,6 +79,29 @@ test('short window check appears once after repeated nonacting Python work and r
     assert.doesNotMatch(await run('print(7)'), /WINDOW CHECK/);
     assert.match(await run('print(8)'), /WINDOW CHECK/);
     assert.deepEqual(logs.filter(row => row.file === 'component_runs.jsonl' && row.kind === 'window_check').map(row => row.n), [0, 1]);
+  } finally { runtime.close(); }
+});
+
+test('conversion cue survives a shortened result, stays once per decision, and excludes readonly work', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-convert-cue-')));
+  let decision = 1;
+  const logs: any[] = [];
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
+    state: () => ({}), level: () => 0, actionCount: () => 0, decision: () => decision, selfBaseline: true,
+    workMemory: false, receipt: () => 'SHORTENED OUTPUT',
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  const run = (name: string, readonly = false) => runtime.python(`def ${name}(items):\n    return sum(items)\nprint('x' * 10000)`, undefined, readonly);
+  try {
+    await run('subtotal');
+    const repeated = await run('renamed_subtotal');
+    assert.match(repeated.content[0].text, /^SHORTENED OUTPUT/);
+    assert.match(repeated.content[1].text, /SELF REUSE:.*promote_session_function.*self_component/);
+    assert.equal((await run('third_subtotal')).content.length, 1);
+    decision = 2;
+    assert.equal((await run('readonly_subtotal', true)).content.length, 1);
+    assert.equal((await run('later_subtotal')).content.length, 2);
+    assert.equal(logs.filter(row => row.kind === 'save').length, 0);
+    assert.equal(logs.filter(row => row.kind === 'conversion_hint').length, 2);
   } finally { runtime.close(); }
 });
 

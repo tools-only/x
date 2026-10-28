@@ -402,8 +402,9 @@ const SELF_BASELINE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: SELF_PROTOTYPE + 'assert total([2, 3]) == 5\nvalues = [20, 22]\nprint(total(values))' }]] },
   { kind: 'decide', calls: [['write', { path: 'notes/convert.md', content: SELF_CONVERT_NOTE }]] },
   { kind: 'decide', calls: [['promote_session_function', { function: 'total' }]] },
-  { kind: 'decide', calls: [['self_component', { kind: 'tool', name: 'answer', content:
+  { kind: 'decide', calls: [['self_component', { name: 'answer', content:
     SELF_PROTOTYPE + 'def run(state, args):\n    return total(args.get("values", [20, 22]))\nprint(run(state, {}))\n' }]] },
+  { kind: 'decide', calls: [['answer', { args: { values: [18, 24] } }]] },
   act('ACTION1'),
   { kind: 'decide', calls: [['answer', { args: { values: [19, 23] } }]] },
   { kind: 'decide', calls: [['write', { path: 'notes/convert.md', content: '' }]] },

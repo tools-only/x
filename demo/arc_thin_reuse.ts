@@ -27,7 +27,9 @@ const structure = (line: string) => line.replace(/\b\d+(\.\d+)?\b/g, '_')
  */
 export function codeShape(code: string): CodeShape {
   const raw = code.split(/\r?\n/).map(line => line.replace(/(^|\s)#.*$/, '').trim()).filter(Boolean);
-  const norm = raw.map(line => line.replace(/\b\d+(\.\d+)?\b/g, '0').replace(/\s+/g, ' '));
+  // Renaming a helper alone does not make its implementation new work.
+  const norm = raw.map(line => line.replace(/^(async\s+)?def\s+[A-Za-z_]\w*(?=\s*\()/, '$1def _')
+    .replace(/\b\d+(\.\d+)?\b/g, '0').replace(/\s+/g, ' '));
   const hash = (s: string, n: number) => createHash('sha256').update(s).digest('hex').slice(0, n);
   const gist = raw.find(line => !/^(import|from)\s/.test(line)) ?? raw[0] ?? '';
   return { shape: hash(norm.join('\n'), 12), lines: [...new Set(norm.map(line => hash(line, 8)))],

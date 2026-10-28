@@ -125,6 +125,9 @@ async function attach(w: { url: string; root: string }) {
 	const call = async (name: string, params: any) => text(await tools.get(name).execute('t', params, undefined, undefined, ctx));
 	return {
 		inputs, active: () => active, sections: () => sections,
+		schema: (name: string) => tools.get(name)?.parameters,
+		context: async (messages: any[]) => (await handlers.get('context')({ messages }, ctx)).messages,
+		start: async (prompt: string) => handlers.get('before_agent_start')({ prompt, systemPromptOptions: { sections: {} } }, ctx),
 		file: (path: string) => existsSync(join(w.root, path)) ? readFileSync(join(w.root, path), 'utf8') : '',
 		rows: (name: string) => existsSync(join(w.root, 'harness', name))
 			? readFileSync(join(w.root, 'harness', name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [],
@@ -284,7 +287,37 @@ for (const profile of ['native', 'baseline', 'convert']) test(`${profile}: only 
         ARC_THIN_SELF_CONVERT: profile === 'convert' ? '1' : '0', ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
     const w = await world(); const h = await attach(w);
     try {
+        const firstHead = await h.begin();
+        const entry = firstHead.split('\n').filter(line => line.startsWith('SELF:'));
+        assert.equal(entry.length, 1);
+        assert.ok(entry[0].length <= 320 && /^[\x20-\x7e]+$/.test(entry[0]));
+        assert.match(entry[0], profile === 'native' ? /python\(save=/ : /self_component.*promote_session_function/);
+        assert.doesNotMatch(firstHead, /SELF FEEDBACK:/);
+        const messages: any[] = [{ role: 'user', content: 'Decide the next action.' }];
+        const before = await h.context(messages);
+        await h.call('python', { code: 'print(1)' });
+        messages.push({ role: 'assistant', content: [{ type: 'toolCall', id: 'r', name: 'python', arguments: { code: 'print(1)' } }] },
+            { role: 'toolResult', toolCallId: 'r', toolName: 'python', content: [{ type: 'text', text: '1' }] });
+        assert.deepEqual((await h.context(messages))[0], before[0], 'tool rounds keep the fixed head');
+        messages.push({ role: 'user', content: 'RECOVER ACTION. Continue the unfinished decision.' });
+        await h.start('RECOVER ACTION. Continue the unfinished decision.');
+        const recovered = (await h.context(messages))[0];
+        const recoveredText = recovered.content.map((b: any) => b.text ?? '').join('\n');
+        assert.equal(recoveredText.split('\n').filter((line: string) => line.startsWith('SELF:')).length, 1);
+        assert.ok(recoveredText.startsWith(before[0].content[0].text), 'recovery retains the original head');
+        assert.equal((await h.begin()).split('\n').filter(line => line.startsWith('SELF:')).length, 1, 'new no-action decision has an entry');
+        await h.call('python', { code: 'def subtotal(items):\n    return sum(items)\n' });
+        const repeated = await h.call('python', { code: 'def subtotal_copy(items):\n    return sum(items)\n' });
+        assert.match(repeated, /SELF REUSE:.*Save reusable checked logic as a tool now/);
+        assert.match(repeated, /Recent definitions: subtotal, subtotal_copy/);
+        assert.match(repeated, profile === 'native' ? /python\(code=.*save=/ : /promote_session_function.*self_component/);
+        assert.ok(h.active().includes('python'));
+        if (profile !== 'native') assert.ok(h.active().includes('self_component') && h.active().includes('promote_session_function'));
+        assert.doesNotMatch(await h.call('python', { code: 'def subtotal_again(items):\n    return sum(items)\n' }), /SELF REUSE:/);
         await h.begin();
+        assert.match(await h.call('python', { code: 'def subtotal_later(items):\n    return sum(items)\n' }), /SELF REUSE:/,
+            'same repeat can cue once in the next logical decision');
+        assert.equal(h.file('workspace/tools/subtotal.py'), '', 'repeat never publishes a candidate');
         for (const n of [1, 2, 3]) await h.call('python', { code: `values = [${n}]\nprint(sum(values))` });
         assert.doesNotMatch(await h.begin(), /CONVERT \(/);
         assert.equal(h.file('workspace/data/convert.md'), '', 'host creates no guide');
@@ -324,12 +357,35 @@ for (const profile of ['native', 'baseline', 'convert']) test(`${profile}: only 
             assert.ok(exported.includes(prototype.trim()));
             assert.equal(h.file('workspace/tools/total.py'), '');
             assert.match(await h.call('promote_session_function', { function: 'missing' }), /session function missing:/);
-            assert.match(await h.call('self_component', { kind: 'tool', name: 'total', content:
-                prototype + 'def run(state, args):\n    return total(args.get("values", [6, 7]))\n' }), /saved.*loaded/);
-            await h.begin();
+            assert.ok(!h.schema('self_component').required.includes('kind'));
+            for (const kind of ['tool', 'memory', 'prompt', 'skill', 'subagent'])
+                assert.ok(JSON.stringify(h.schema('self_component').properties.kind).includes(`"${kind}"`));
+            assert.match(await h.call('self_component', { name: 'total', content:
+                prototype + 'def run(state, args):\n    return total(args.get("values", [6, 7]))\n' }), /SELF FEEDBACK: total v1: not called yet/);
+            assert.ok(h.active().includes('total'), 'save advertises the tool immediately');
+            const savedHead = await h.context([{ role: 'user', content: 'Decide the next action.' }]);
+            assert.doesNotMatch(savedHead[0].content[0].text, /SELF FEEDBACK:/, 'save does not rewrite the frozen head');
+            assert.match(await h.call('total', { args: { values: [1, 2] } }), /SELF FEEDBACK: total v1: 1 calls OK, 0 failed/,
+                'same-decision call returns feedback without rebuilding the head');
+            assert.match(await h.begin(), /SELF FEEDBACK: total v1: 1 calls OK, 0 failed/);
+            await h.act({ action: 'RESET' });
+            assert.match(await h.begin(), /total v1: 1 calls OK, 0 failed; 1 actions since save/);
             assert.match(await h.call('total', { args: {} }), /13/);
             assert.match(await h.call('total', { args: { values: [20, 22] } }), /42/);
             assert.doesNotMatch(h.file('workspace/tools/total.py'), /values = /);
+            await h.call('total', { args: { values: null } });
+            assert.match(await h.begin(), /total v1: 3 calls OK, 1 failed/);
+            await h.call('self_component', { name: 'total', content: prototype + 'def run(state, args):\n    return total(args["values"])\n' });
+            assert.match(await h.begin(), /total v2: not called yet/);
+            assert.match(await h.call('total', { args: {} }), /values/);
+            assert.match(await h.call('total', { args: { values: [10, 11] } }), /21/);
+            assert.match(await h.begin(), /total v2: 1 calls OK, 1 failed/);
+            assert.match(await h.call('self_component', { name: 'total', content: 'def run(:' }), /NOT loaded/);
+            assert.match(await h.begin(), /total v2: 1 calls OK, 1 failed/, 'failed revision retains current version feedback');
+            await h.call('self_component', { name: 'broken', content: 'def run(:' });
+            assert.doesNotMatch(await h.begin(), /SELF FEEDBACK:.*broken/);
+            await h.call('self_component', { name: 'total', op: 'retire' });
+            assert.doesNotMatch(await h.begin(), /SELF FEEDBACK:/);
         }
     } finally {
         await h.close(); w.server.close();

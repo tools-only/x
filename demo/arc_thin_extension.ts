@@ -3842,9 +3842,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (selfBaseline) pi.registerTool({
 			name: "self_component",
 			label: "Self component",
-			description: "Create or revise one of your five harness components by name. Submitted tool source executes now; call the saved tool to invoke its entry point. Memory updates now; prompts apply next decision; skills can be read; saved subagents can be consulted. Retire by name when no longer useful.",
+			description: "Save checked task logic now: self_component(name, content) defaults to a Python tool. Include dependencies and run(state,args); call the saved name with args on the next request. Use kind for memory, prompt, skill or subagent. Retire by name when no longer useful.",
 			parameters: Type.Object({
-				kind: StringEnum(["tool", "memory", "prompt", "skill", "subagent"] as const),
+				kind: Type.Optional(StringEnum(["tool", "memory", "prompt", "skill", "subagent"] as const)),
 				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),
 				content: Type.Optional(Type.String({ maxLength: 16384 })),
 				description: Type.Optional(Type.String({ maxLength: 200 })),
@@ -3852,9 +3852,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				op: Type.Optional(StringEnum(["set", "retire"] as const)),
 			}),
 			execute: guardTool("self_component", async (params: {
-				kind: "tool" | "memory" | "prompt" | "skill" | "subagent";
+				kind?: "tool" | "memory" | "prompt" | "skill" | "subagent";
 				name: string; content?: string; description?: string; allowed_tools?: string[]; op?: "set" | "retire";
 			}, signal) => {
+				params = { ...params, kind: params.kind ?? "tool" };
 				const op = params.op ?? "set";
 				if (op === "set" && !params.content?.trim()) throw new Refusal(`${params.kind} content is required`);
 				if (params.kind === "memory") return text(await commitMemory(op === "retire"
@@ -4258,6 +4259,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       pythonKernel,
       workMemory,
       immediateSubagent: selfBaseline,
+      selfBaseline,
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
       sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),
@@ -4623,7 +4625,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!native || run.headKey !== headKey) {
 			if (native && workspace && !run.daemonResponse) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
-			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),
+			const taskSelf = native && !control && !run.daemonResponse && !run.consolidating && !run.levelReview && !run.stallReview;
+			const selfEntry = !taskSelf ? '' : selfBaseline
+				? 'SELF: Save checked reusable task logic by default, especially after repeats: self_component(name, content) saves a tool; promote_session_function extracts source to adapt. Call the saved name with new inputs. You own the choice and contract; one-offs or no remaining use can skip without a report.'
+				: 'SELF: Save checked reusable task logic by default, especially after repeats, with python(save=...) or writable component files. Call the saved version with new inputs. You own the choice and contract; one-offs or no remaining use can skip without a report.';
+			const capabilities = binder ? [selfEntry, taskSelf ? nativeRuntime?.selfFeedbackText() : '', binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),
 				nativeRuntime && !run.daemonResponse ? await nativeRuntime.observerText() : '',
 				nativeRuntime && !run.daemonResponse && !selfBaseline ? await nativeRuntime.loopDecisionText() : '',
 				run.daemonResponse || selfBaseline ? '' : metaTrialDecisionText(),
