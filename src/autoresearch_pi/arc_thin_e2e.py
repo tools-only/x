@@ -34,6 +34,8 @@ from .arc_agi_3_e2e import (
     _wait_for_bridge,
 )
 from .pi_kernel import PiKernel, PiTurnIdleTimeout
+from .arc_thin_daemon import attach_arc_monitors
+from .daemon_service import DaemonService
 from .project import load_project_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +43,22 @@ EXTENSION = PROJECT_ROOT / "demo" / "arc_thin_extension.ts"
 SMOKE_PROVIDER = PROJECT_ROOT / "tools" / "arc_thin_smoke_provider.ts"
 
 DECIDE_PROMPT = "Decide the next action."
+DAEMON_RESPONSE_PROMPT = (
+    "DAEMON RESPONSE. Handle the pending maintenance notification before resuming Task. This turn takes no "
+    "environment action. Read the daemon evidence below and data/maintenance.md; inspect details as needed. "
+    "Leave task experiments to the next Task turn; repair or reuse a capability for Self, and change one general "
+    "prompts/process/<name>.md rule for a recurring capability-making/using problem (Meta). "
+    "Check later behavior of earlier rule versions, not only their delivery. Make one bounded improvement when "
+    "supported; a reasoned no_change or waiting for an applicable opportunity is valid. Report control-kernel "
+    "issues outside your write permissions. Writes are staged in separate Self/Meta workspaces; publish one "
+    "validated component with daemon_reply(summary, publish=path), or omit publish for no_change. State what "
+    "remains to observe. No EXPECT marker is required. Then stop."
+)
+DAEMON_RECOVERY_PROMPT = (
+    "RECOVER DAEMON RESPONSE. Continue the pending maintenance response using persisted evidence and completed "
+    "writes. Do not repeat changes or take an environment action. Finish with daemon_reply(summary, publish=path) "
+    "for one staged component, or omit publish for justified no_change. Include unresolved work; then stop."
+)
 WINDOW_DECIDE_PROMPT = (
     "Decide the next action. Briefly check this window's recent trajectory: what changed and what remains uncertain? "
     "If there is no real blocker, contradiction, or tool failure, act on the clearest next test without extended analysis. "
@@ -187,7 +205,8 @@ OUTAGE_BACKOFF_SECONDS = 30.0
 TRANSPORT_ERROR = re.compile(r"connection error|timed out|timeout|econnreset|econnrefused|etimedout|eai_again|enotfound|"
                              r"socket hang up|fetch failed|network|terminated|bad gateway|service unavailable|overloaded|"
                              r"rate limit|\b(?:429|50[234])\b", re.IGNORECASE)
-PROVIDER_CAPACITY_ERROR = re.compile(r"requires?\s+more\s+credits|insufficient\s+(?:credits|balance)|can only afford\s+\d+\s+tokens",
+PROVIDER_CAPACITY_ERROR = re.compile(r"requires?\s+more\s+credits|insufficient\s+(?:credits|balance)|can only afford\s+\d+\s+tokens|"
+                                     r"free-models-per-day|add\s+\d+\s+credits\s+to\s+unlock",
                                      re.IGNORECASE)
 
 
@@ -875,7 +894,7 @@ def _request_accounting(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 #: What a snapshot keeps: the Pi session, the extension's stores, the agent's workspace, and the binder and python
 #: session checkpoints. Bridge, provider and smoke logs belong to the run that wrote them.
-FORK_ITEMS = ("session.jsonl", "harness", "workspace", ".harness")
+FORK_ITEMS = ("session.jsonl", "harness", "workspace", ".harness", "maintenance")
 
 
 def _copy_items(source: Path, target: Path) -> None:
@@ -952,9 +971,14 @@ def _input_modalities(explicit: str | None, env: dict[str, str]) -> list[str]:
     return list(resolve_input_modalities(explicit if explicit is not None else env.get("ARC_INPUT_MODALITIES") or "text,image"))
 
 
-def _level_review_prompt(levels_completed: int) -> str:
+def _task_only_review(prompt: str, final_instruction: str) -> str:
+    return prompt[:prompt.index("Use the LOOP AUDIT")] + prompt[prompt.index(final_instruction):]
+
+
+def _level_review_prompt(levels_completed: int, include_process: bool = True) -> str:
     """The native review after a level change; the level just completed is the `levels_completed`-th."""
-    return LEVEL_REVIEW_PROMPT.format(level=levels_completed, next=levels_completed + 1)
+    prompt = LEVEL_REVIEW_PROMPT if include_process else _task_only_review(LEVEL_REVIEW_PROMPT, "Scope or delete memory")
+    return prompt.format(level=levels_completed, next=levels_completed + 1)
 
 
 def _stall_review_after(foundation: str, explicit: int | None, env: dict[str, str]) -> int:
@@ -979,7 +1003,7 @@ def _stall_review_due(trajectory: list[dict[str, Any]], reviewed_at: int, after:
 
 
 def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, levels_completed: int,
-                         spin: tuple[int, list[str]] | None = None) -> str:
+                         spin: tuple[int, list[str]] | None = None, include_process: bool = True) -> str:
     """The stall review's prompt. `spin` (decisions in a row that learned nothing new, and their moves) says why it came
     early: the work-memory trigger, not the action count."""
     start = _level_start(trajectory)
@@ -993,7 +1017,8 @@ def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, lev
                f"level {levels_completed + 1} has been open for {since} actions ({anchor})")
     else:
         why = f"Level {levels_completed + 1} is still open after {since} actions ({anchor})"
-    return STALL_REVIEW_PROMPT.format(why=why)
+    prompt = STALL_REVIEW_PROMPT if include_process else _task_only_review(STALL_REVIEW_PROMPT, "Correct or delete memory")
+    return prompt.format(why=why)
 
 
 def _spin_review_after(foundation: str, explicit: int | None, env: dict[str, str]) -> int:
@@ -1031,6 +1056,8 @@ def _spin_streak(trajectory: list[dict[str, Any]]) -> tuple[int, list[str]]:
 
 def _review_recovery(message: str) -> str | None:
     """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision."""
+    if message.startswith(("DAEMON RESPONSE", "RECOVER DAEMON RESPONSE")):
+        return DAEMON_RECOVERY_PROMPT
     if message.startswith(("LEVEL REVIEW", "RECOVER LEVEL REVIEW")):
         return LEVEL_REVIEW_RECOVERY_PROMPT
     if message.startswith(("STALL REVIEW", "RECOVER STALL REVIEW")):
@@ -1233,7 +1260,7 @@ def run_arc_thin_e2e(
         "decisions": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "spin_reviews": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0, "environment_restarts": [],
-        "provider_errors": 0,
+        "provider_errors": 0, "daemon_responses": 0,
         **({"fork": {key: fork[key] for key in ("source", "decision", "actions", "prefix_reported_tokens", "prefix_budget_tokens")}}
            if fork else {}),
     }
@@ -1334,6 +1361,13 @@ def run_arc_thin_e2e(
         if pi_provider == "offline-arc-thin-smoke":
             pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
         pi_env.update(extension_env or {})
+        native_treatment = foundation == "native" and variant == "treatment"
+        daemon_enabled = native_treatment and pi_env.get("ARC_THIN_DAEMON", "1") != "0"
+        pi_env["ARC_THIN_DAEMON"] = "1" if daemon_enabled else "0"
+        pi_env["ARC_THIN_PROCESS"] = "1" if native_treatment and pi_env.get("ARC_THIN_PROCESS", "1") != "0" else "0"
+        daemon = DaemonService(root) if daemon_enabled else None
+        if daemon:
+            attach_arc_monitors(daemon)
         # Native admission sees the full serialized request. Bound completed-decision history
         # before it can crowd out the current observation; an explicit run setting wins.
         if foundation == "native" and pi_env.get("PI_PROVIDER_CONTEXT_ADMISSION") == "enabled":
@@ -1353,6 +1387,8 @@ def run_arc_thin_e2e(
         if max_reported_tokens is not None:
             command.extend(["--extension", str((PROJECT_ROOT / "demo" / "pi_final_provider_payload.ts").resolve())])
         sources = sorted(EXTENSION.parent.glob("arc_thin_*.ts")) + sorted((EXTENSION.parent / "prompts").glob("arc_thin_*.md"))
+        sources += [Path(__file__), Path(__file__).with_name("arc_thin_daemon.py"),
+                    Path(__file__).with_name("daemon_service.py")]
         (root / "run-config.json").write_text(json.dumps({
             **{key: summary[key] for key in ("format", "game", "variant", "provider", "model", "thinking",
                                              "thinking_format", "thinking_reaches_provider")},
@@ -1363,6 +1399,7 @@ def run_arc_thin_e2e(
             "max_output_tokens": settings.get("max_tokens"), "command": command,
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
             "ledger": ledger_enabled, "critic": critic_enabled,
+            "daemon": daemon_enabled, "process_evidence": pi_env["ARC_THIN_PROCESS"] == "1",
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
             "decision_timeout_seconds": decision_timeout_seconds,
             "max_continuous_idle_recoveries": 2,
@@ -1422,6 +1459,8 @@ def run_arc_thin_e2e(
             if kind in PERSISTED_EVENTS:
                 trace.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
                 trace.flush()
+            if daemon and kind in {"message_end", "tool_execution_end", "agent_end", "agent_settled"}:
+                daemon.refresh()
 
         kernel = PiKernel(
             command, cwd=str(root), env=pi_env, timeout=120.0, deadline=deadline if math.isfinite(deadline) else None, event_sink=persist,
@@ -1688,20 +1727,28 @@ def run_arc_thin_e2e(
                 or spin_due
                 or (consolidate_after_actions > 0 and action_count - consolidated_at >= consolidate_after_actions)
             )
+            notification = daemon.refresh() if daemon else None
+            response_turn = notification is not None
+            task_turn = not consolidate and not response_turn
             fatal_before = _fatal_errors(harness)
             environment_before = _environment_errors(harness)
             error_rows_before = len(_read_jsonl(harness / "errors.jsonl"))
             errors_before = len(extension_errors)
             try:
-                if consolidate:
+                if response_turn:
+                    events = recover_length(DAEMON_RESPONSE_PROMPT, safe_turn(DAEMON_RESPONSE_PROMPT))
+                    summary["daemon_responses"] += 1
+                    daemon.refresh()
+                elif consolidate:
                     # After a level change the native foundation reviews the level (prompts/lessons.md); after many
                     # actions without one, or decisions that learned nothing new, the level so far (prompts/review.md);
                     # otherwise the consolidation prompt.
                     level_review = foundation == "native" and level_changed_since_consolidation and review_at_level_change
                     stall_review = not level_review and (stall_due or spin_due)
-                    review = (_level_review_prompt(int(state.get("levels_completed") or 0)) if level_review
+                    review = (_level_review_prompt(int(state.get("levels_completed") or 0), include_process=not daemon_enabled) if level_review
                               else _stall_review_prompt(trajectory_now, stall_reviewed_at, int(state.get("levels_completed") or 0),
-                                                        spin if spin_due and not stall_due else None) if stall_review
+                                                        spin if spin_due and not stall_due else None,
+                                                        include_process=not daemon_enabled) if stall_review
                               else CONSOLIDATE_PROMPT)
                     events = recover_length(review, safe_turn(review))
                     summary["consolidations"] += 1
@@ -1793,7 +1840,7 @@ def run_arc_thin_e2e(
                 outage_streak += 1
                 outage_waited += outage
                 summary["provider_outage_seconds"] = round(outage_waited, 2)
-                if not consolidate and no_action_streak:
+                if task_turn and no_action_streak:
                     no_action_streak -= 1
                 time.sleep(outage)
             else:
@@ -1804,11 +1851,15 @@ def run_arc_thin_e2e(
                     summary["stop_reason"] = "provider_error"
                     summary["error"] = refusal[:500]
                     break
-            if not consolidate and (summary["decisions"] in snapshot_after_decisions or any(
+            if response_turn and not refusal and daemon.refresh():
+                summary["stop_reason"] = "daemon_response_incomplete"
+                summary["error"] = "Maintenance response ended without daemon_reply; pending notification is preserved."
+                break
+            if task_turn and (summary["decisions"] in snapshot_after_decisions or any(
                     row.get("level_changed") and row.get("levels_completed") in snapshot_at_levels for row in new_rows)):
                 # Pi is idle between turns: the session, harness stores, workspace and python session are consistent.
                 summary.setdefault("snapshots", []).append(str(_snapshot_run(root, summary["decisions"], game, fork)))
-            if summary["decisions"] and summary["decisions"] % PARTIAL_SUMMARY_EVERY == 0 and not consolidate:
+            if summary["decisions"] and summary["decisions"] % PARTIAL_SUMMARY_EVERY == 0 and task_turn:
                 _write_summary(root, summary, final_state, started, partial=True)
         latest = _bridge_state(bridge_url, attempts=1)
         if latest is not None:

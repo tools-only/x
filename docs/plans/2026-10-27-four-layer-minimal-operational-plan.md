@@ -200,6 +200,59 @@
 - **实现与成本：** 读取 Binder 的实际 `.harness/components.jsonl`，仅在 `ARC_THIN_PROCESS=1` 下工作。每个路径每关最多投递一次短 `META OPPORTUNITY`，由既有 `call_points.jsonl` 去重并留下版本/路径回执；不新增 Agent、复盘轮、工具、门禁或自动规则写入。既有关卡/停滞复盘提示也明确 Task / Self / Meta 三种问题的边界，沿用原 review 与 process 写入合同。
 - **负例与验证边界：** 一次失败、不同组件各失败一次、过程规则文件保存失败或已经提示过的路径不触发。触发后父认为只是一次格式修复、选择继续 Self 或 Task，均属合理结果。按用户此前要求，本次未运行测试或新 ARC 实验；仅实现触发与输入路径，真实父是否判断、修改规则并使 Self 行为改变仍未验证。
 
+### Daemon 通知与同一 Agent 的响应轮（2026-10-28）
+
+- **问题与窄命题：** 当前过程检查主要寄托在关卡/停滞复盘和一次组件失败提示上；父可以继续执行 Task 而不处理过程问题。用户要求普通 daemon 持续维护证据和通知，同一个 Agent 在 Task 轮之前优先进入独立响应轮。窄命题是：已有日志出现具体过程信号时，daemon 生成通知；未取得处理回执前，后续 Task 动作不可执行。
+- **最小设计与职责：** 在现有 Python runner 中增加一个随运行存续的普通服务，由运行事件和轮次边界推进，增量读取既有日志并原子保存消费位置、通知、最近处理摘要、kernel checkpoint 状态和 process 版本。复用同一个 Pi Agent 与 Python session；通知先于普通 Task/阶段复盘调度。响应轮允许检查与修改能力/过程规则，环境动作关闭，以一次 daemon_reply(summary) 回执结束；合理 no_change 可完成响应，不强制创建组件或规则。控制核问题只能在既有授权范围修复或报告。
+- **触发与后续：** 按事件就绪调度：重复保存/运行错误、checkpoint 问题，或现有检测器发现同一关卡的 Python 工作重复至少三次时生成通知；没有信号就不消耗响应轮。daemon 在已提交事件和轮次边界刷新，runner 在下一安全轮次先处理待响应通知，不打断正在运行的 cell。初版沿用 ARC_THIN_PROCESS 开关；后文已拆为独立的 ARC_THIN_DAEMON 开关。process 版本变化进入持久跟踪，后续响应可见版本和使用事实，无需 EXPECT。已有 trial 仍是可选的具体预期试用，不承担通知入口。
+- **减负与成本：** 持续取证、游标和待观察状态交给 daemon；语义判断仍由同一个 Agent 承担，仅从 Task 轮移入响应轮。增加一次有界响应和一个仅响应轮暴露的终结工具，不增加模型 worker、系统进程、消息队列或新的组件出版路径。用户授权了响应前的动作限制；不得把 ACK 当成方法改善或语义采用证据。
+- **放弃与恢复：** 消费状态落在 harness/daemon.json，处理回执追加到既有 call_points.jsonl；重启保留未处理通知。响应的 length/idle 恢复沿用 runner，恢复仍不得变为 Task 动作。用尽既有恢复后仍未回复时停止本次运行并保留通知，避免无界响应或静默绕过。任务结束和既有权限/预算/环境停止条件保持最高边界。
+- **实现步骤：** 1）普通 daemon 与持久通知；2）runner 优先响应调度；3）扩展中的动作边界、回执和证据入口；4）修改实际运行加载的 Agent system prompt，而非开发用仓库 AGENTS.md。
+- **有界验收协议：** 本次遵循此前“不需要测试”的要求，不启动测试或付费 ARC。后续在用户给定预算下，以同模型/provider/游戏和相近预算比较 process=0 与 process=1；覆盖无信号时连续 Task、有重复工作但零异常/零 EXPECT 时的通知、正常处理/no_change、拒绝动作、未回复、恢复后通知保留、规则无适用机会、版本后续行为以及成本。功能正确、全链可达、自主采用和净收益目前均未验证；B/C/D 的总成本和连续性仍保持开放。
+- **实现与静态检查：** `arc_thin_daemon.py` 在 runner 的已提交事件和轮次边界增量消费日志；`daemon.json` 是服务自身状态，`call_points.jsonl` 保存 Agent 回执。runner 优先选择响应轮，扩展在该轮隐藏 arc_action 并在直接调用与 Python env.act 两条动作入口拒绝执行；daemon_reply 是终结回执，之后的批内调用也被拒绝。响应与既有 review 的消费截止点分开，恢复提示和上下文投影包含 DAEMON RESPONSE。运行时 system prompt 增加通知优先和轮次规则，未修改开发 AGENTS.md。2026-10-28 进一步移除了每 10 个 Task 决策一次的固定触发，复用现有重复 Python 工作检测输出 `daemon_signals.jsonl` 作为成功但可能低效的过程信号；无需新增模型 worker。Python AST 解析、两个 TypeScript 文件的 Node 语法检查、git diff --check 均通过；这些仅是静态检查，未运行功能测试、smoke 或 ARC。
+
+### Daemon 作为底层持续状态服务（2026-10-28）
+
+- **问题与窄主张：** 上一实现将游标、通知和 Meta/Self 信号都放在 `ProcessDaemon`，使底层服务看起来只服务过程复盘。改为独立的 `daemon_service.py` 中的 `DaemonService`：统一消费已提交日志、持久化每个挂载项的派生状态，并排队通知；`arc_thin_daemon.py` 只注册 ARC 的具体检测。以后新增持续追踪内容只需声明日志源和状态更新函数，仍由同一个 Agent 判断和响应。
+- **最小挂载：** `capabilities` 保存过程规则版本、组件失败计数和已报告的重复工作信号；`runtime` 保存最新 Python checkpoint 回执与运行错误计数。二者共享持久事件游标和通知协议，但状态分别保存在 `daemon.json.monitors.<name>`。Pi session、Python namespace checkpoint、Binder 版本和原始 JSONL 仍由原有机制保存，daemon 只持久化用于跟踪和调度的派生状态，避免第二份权威副本。
+- **通用持久化边界：** daemon 是持续追踪与持久化维护的底层服务，并不限于 Self/Meta。任何后续需要跨轮维护的内容可挂载一个名称、事件源和 JSON 状态槽；状态、消费位置和待处理通知一起原子落盘。挂载项若拥有新内容，可把该内容保存在自己的状态槽；对已有 Pi session、Python checkpoint、Binder 版本及原始日志，则挂载其变化、健康与恢复信号，继续使用现有权威存储。Self/Meta 是当前两个用途，Task 连续性、预算或运行健康也可按实际缺口挂载，无需再造一套计时器、轮次触发器或持久化账本。
+- **调度与入口：** `ARC_THIN_DAEMON` 控制底层服务与响应轮，native treatment 默认启用；`ARC_THIN_PROCESS` 只控制已有 review 的过程证据投递。挂载项报告具体事件后生成持久通知，runner 在下一安全轮次优先调度响应；无事件时不增加 Agent 轮。`daemon_reply` 清除当前通知，状态和游标跨 Pi 重启继续。
+- **进入任务循环与退出：** 挂载项的派生状态只在通知响应的 `data/maintenance.md` 中按需展示；通知进入 runner 的优先响应轮，Agent 的保存或调用仍经现有 Binder/runtime，下一真实 Task 动作及其日志回到同一监视项。`daemon_reply` 确认该通知后移除待响应项；已消费事件不再重放，后续新证据可再次触发。运行结束后该 run 的 daemon 状态随 run 归档。
+- **验收预期与边界：** 单个来源在多个挂载项需要时只读取一次；重启后不会重播已消费信号；运行错误和重复工作分别能生成通知；回复后 Task 继续；关闭过程摘要不关闭底层 daemon，关闭 daemon 不改变原有日志与 checkpoint 写入。挂载项可以把需持续保存的 JSON 派生状态放在自己的状态槽；已有原始内容仍保留原存储位置。Python AST、两个 TypeScript 文件的 Node 语法检查和 `git diff --check` 均通过；未运行功能测试或 ARC，功能正确、全链可达、自主采用、净收益均未验证。独立 OS 后台进程和通用内容存储 API 不在本次最小实现中。
+
+### g50t 完整目标与响应隔离（2026-10-28）
+
+- **真实缺口：** 之前的响应轮虽无环境动作，却仍与 Task 共用文件写入、Python session 和 Pi 历史；仅凭 daemon 通知无法证明 offload 后互不干扰。真实 g50t 还没有在此工作树运行，新机制对 Self、Meta、harness 和任务效果均无真实证据。
+- **窄改动：** 每条通知有 `maintenance/<id>/self/workspace` 与 `maintenance/<id>/meta/workspace` 两个持久暂存区。响应轮只暴露 `read/write/edit/daemon_reply`；写入按路径归属暂存，Task 的 Python、memory、refine、组件调用和 ARC 动作被拒。`daemon_reply(publish=<one component path>)` 才把暂存源码提交给原 Task Binder，失败回滚 Task 文件并保留暂存稿；不发布的草稿不会影响 Task。下一 Task 历史投影略过完整响应轮，但 Pi 原 session 保留审计证据；通知的证据快照写到维护区而非 Task 工作区。fork 快照复制维护区。现有 Task 文件路径和工具合同不改。
+- **最小功能预期：** Meta 草稿只在 meta 暂存区，Self 草稿只在 self 暂存区；Task 工作区、Python namespace、动作计数和普通历史在发布前不变。有效发布出现 Binder 版本与 `daemon_publications.jsonl` 回执，下一 Task 决策才能看见并使用；错误版本不激活且原文件回滚。回复后 daemon 清除通知，后续真实动作及组件运行回到既有账本。
+- **真实 g50t 协议：** 先核对本地模型/ARC连接和共享预算，再以新 root 运行普通任务，记录 Task / 响应轮数、两种暂存区文件、发布版本、后续实际消费、规则对 Self 选择的影响、组件结果对任务行动的影响及总代价。对照需要相同 g50t、模型、近似预算的独立 run；不能把一个通知或一次保存称为优化成功。固定停止条件在启动前写入本记录。当前功能、全链、自主采用、净收益均未验证；B/C/D 的成本与认知连续性待核对。
+- **首个真实探索窗口（启动前固定）：** g50t、native treatment、OpenRouter 的 `nvidia/nemotron-3.5-super-vl:free`、Completions/high/openai、图像与文本、daemon 与过程摘要开启；最多 8 个环境动作、12 个父决策、15 分钟、单次输出 15,000 tokens，不设总 token 上限。此窗口先检查真实服务能启动、Task 原动作路径正常、通知是否出现，以及响应区与 Task 的实际文件/历史边界；无通知时不把缺少 Meta/Self 行为当作隔离验证。单样本不能证明收益，后续是否改用更强 provider 或做匹配对照须由本次事实决定。
+
+### 接线与首个真实 g50t 结果（2026-10-28）
+
+- **定向功能接线：** [脚本运行](../../runs/daemon-isolation-chain-20261028b/summary.json) 用生产 Pi/bridge/native 扩展与 mock ARC SDK，脚本 provider 模拟两次实际错误及 Agent 的响应选择。3 个 Task 决策完成 3 个动作，2 个 daemon 响应；[发布回执](../../runs/daemon-isolation-chain-20261028b/harness/daemon_publications.jsonl) 分别是 Meta 的 `prompts/process/reuse.md` 和 Self 的 `tools/reuse.py`。两条通知各有独立暂存目录；Task `workspace/data/maintenance.md` 不存在，Python 执行仅在 Task 决策 3 发生。Meta 规则在后续 Self 响应中出现，在 Task 轮不投递；Self 工具在后续 Task 工具表出现。Task 输入没有包含两次响应的历史文本。脚本选择不代表真实模型自主采用，工具出现不代表 Task 语义使用。
+- **真实 g50t：** [首个探索 summary](../../runs/daemon-g50t-openrouter-20261028/summary.json) 为 OpenRouter 免费模型每日额度 429，15 分钟截止：7 个父决策、0 环境动作、0 daemon 响应、31 次失败请求。ARC bridge 已启动并关闭，但 provider 未给出可用模型输出；真实 Meta/Self、Task 等价和收益均无法判断。请求账本的 31 次 usage 未报告，不能把零已知 token 当成零真实成本。
+- **控制核修正：** 这 31 次错误消息相同，却因旧 `TRANSPORT_ERROR` 把所有 429 都当暂时断流，反复退避到截止。增加 `free-models-per-day`/明确充值解锁的永久额度识别，使该实际错误走已有 `provider_capacity` 停止；直接用此次错误文本检查为 true，一般暂时 429 仍为 false。未重启同一免费配额的真实 run。
+- **响应隔离修正：** 现有后台 Refiner 可能在 Task 决策结束后仍提交文件或 memory 编辑，且 `before_agent_start` 原先会在响应轮执行 Task 的 pin、视图恢复和 Binder 扫描。响应轮现在先等待已经启动的 Refiner 完成，并跳过这些 Task 维护操作；下一 Task 轮照常执行。等待可能增加该次响应的延迟，需在真实运行中计入；此修正尚只有 TypeScript 语法与 diff 检查，未证明 Pi 自动压缩摘要不会泄漏响应历史。
+- **下一证伪关口：** 获得可用且有明确预算的 provider 后，新 g50t 普通运行必须观察 Agent 自己在响应轮判断、暂存、发布、后续 Self 选择和 Task 实际消费；随后做同模型/相近预算对照，检查 Task 进展与父子总成本。当前四层结论：所测脚本接线通过；真实全链、自主采用与净收益均未验证。既有后台 Refiner 仍可能并行修改 Task 工作区，跨压缩摘要也可能混合历史；这两项是隔离验收的未关闭风险，不能用当前脚本结果宣称完全互不影响。
+
+### AZ/Qwen g50t 探索窗口（2026-10-28，启动前固定）
+
+- 用户明确选择 AZ provider，且此前要求不设 token 上限。本次只运行一个新 g50t 普通探索样本：native treatment、AZ 的 `qwen3.8-27b`、OpenAI Completions/qwen thinking dialect、thinking low、文本与图像、daemon/process 开启；Refiner 与 ledger 保持默认。AZ 凭据仅从主 checkout 的 `.env` 装入进程，不复制到报告或命令输出。
+- 资源边界：最多 8 个环境动作、12 个 Task 决策、15 分钟墙钟；连续 6 个无动作 Task 决策也停止；单次输出上限 12,000 tokens（低于上次网关报告的可负担 16,000），无总 token cap。provider 容量错误即停，未知用量保留未知；不因没有触发 Meta/Self 而自动追加运行。这个窗口是探索样本，不声称净收益。
+- 主要观察：第一项是真实 Task 动作是否继续正常；第二项是通知、响应、暂存/发布、后续 Self 行为与 Task 使用是否逐段发生。隔离检查 Task 历史与文件、响应区写入、Python namespace、后台 Refiner；成本包括父/Refiner/响应轮和等待时间。若没有信号，只能判断普通 Task 路径；若有信号但未处理，定位停在哪个转移。后续要证明优化，需按观察到的机会另预定同模型、相近预算的独立对照。
+- 启动前定向接线 `runs/daemon-isolation-chain-20261028c`：生产 Pi/bridge/native 扩展加脚本 provider、mock ARC SDK，3 Task 动作、2 daemon 响应、0 provider 错误；确认刚修的响应入口仍可达。该结果不代替真实 provider 证据。
+
+| 关键链路 | 后续验证预期（本次均未执行） |
+| --- | --- |
+| 正常运行，无具体信号 | 不生成响应轮，Task 连续推进 |
+| 重复工作，无异常、无 EXPECT | 同关卡重复 Python 工作达到既有检测条件后持久生成通知，下一安全轮进入 DAEMON RESPONSE |
+| 响应期尝试 arc_action / env.act | 两条入口均不提交环境动作；canonical trajectory 不增长 |
+| 回复改动结果或有理由的 no_change | 回执引用当前通知，通知清除；随后 Task 沿用原 Pi/Python session 继续 |
+| 未回复、length / idle、Pi 重启 | 恢复仍为响应轮；恢复额度用尽而无回执时停止，未处理通知留存 |
+| process 保存未带 EXPECT | 版本进入 daemon 的持续状态，后续响应获得版本和行为证据；未出现适用机会不能判定失效或获益 |
+| 语义效果与成本 | 分别审阅规则是否改变 Self 选择、能力是否影响 Task 行动，以及响应新增成本是否被任务收益抵消 |
+
 **日志暴露的具体运行问题：**
 
 - 首次错误路由：Responses 网关拒绝 `store: true`，导致 3 次 provider 请求失败、0 个动作；重试使用 Completions 后 provider 错误为 0。

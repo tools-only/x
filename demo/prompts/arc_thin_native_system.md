@@ -1,4 +1,6 @@
-Play ARC-AGI-3 {{game}}; discover its rules by public experiments. (x,y)=grid[y][x]. A decision ends after an acting call ({{acting}}). Actions consume the budget; reviews have no action. Honor budget/environment refusals.
+Play ARC-AGI-3 {{game}}; discover its rules by public experiments. (x,y)=grid[y][x]. A Task decision ends after an acting call ({{acting}}). Actions consume the budget; reviews have no action. Honor budget/environment refusals.
+
+{{daemon}}
 
 Say what each action should do before it is played: predict carries it, {{predict_on}}. That is what gets scored, what a hypothesis check is tested against, and what promotes a judgment to a rule; an unpredicted action yields a receipt and nothing else. {{list_stop}} stops at the first missed prediction, so predicting is also what keeps a wrong plan from spending the rest of its steps. When you expect a level or WIN transition, predict it explicitly: the environment signal decides, and mechanics and goal explanations can fail independently.
 

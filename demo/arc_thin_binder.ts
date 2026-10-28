@@ -157,9 +157,10 @@ export class Binder {
    * and plain files are not listed. A tool's line says where it enters the decision (a view after each new state, a
    * predictor at each action, otherwise a call) and `usage` what it has done there (the runtime's counts, by path).
    */
-  index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map()): string {
+  index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map(), includeProcess = true): string {
     const order = ['prompt', 'tool', 'skill', 'subagent'];
-    const listed = [...this.entries].filter(([path, e]) => !e.retired && order.includes(componentKind(path) ?? ''))
+    const listed = [...this.entries].filter(([path, e]) => !e.retired && order.includes(componentKind(path) ?? '')
+		&& (includeProcess || !path.startsWith('prompts/process/')))
       .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
     const lines = listed.map(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;

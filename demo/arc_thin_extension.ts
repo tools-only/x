@@ -26,7 +26,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { compareMountExpectations, metaDecisionVersionError, metaTrialFacts, parseComponentExpect, parseMetaReviewLines, stripMetaReviewControlLines,
 	type MountExpectation } from "./arc_thin_meta_trial.ts";
-import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, taskHistory, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
@@ -35,7 +35,7 @@ import { observationReference, storeObservation } from "./arc_thin_observation.t
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
-import { Binder } from "./arc_thin_binder.ts";
+import { Binder, componentKind } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
@@ -320,6 +320,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// response starts. ARC_THIN_CONTEXT_LAYOUT=0 restores the earlier placement: prompts as system-prompt sections, NO NEW
 	// INFORMATION opening the head, THIS BOARD after the state.
 	const contextLayout = native && !control && process.env.ARC_THIN_CONTEXT_LAYOUT !== "0";
+	const daemonOn = native && !control && process.env.ARC_THIN_DAEMON === "1";
 	// P4 (2026-10-19): the agent called refine and consult 0 times in 10 or more su15 runs with either model. ARC_THIN_LEAN=1
 	// leaves both tools out, with the system prompt's subagent line and the long form of its skill line (one at a time:
 	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
@@ -345,6 +346,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
     inlineChars: Number(process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 8000) }) : undefined;
+  const maintenanceRoots = new Map<string, { self: Workspace; meta: Workspace }>();
+  function maintenanceWorkspaces() {
+    if (!daemonOn || !run.daemonState?.pending) throw new Refusal('no pending maintenance notification');
+    const id = run.daemonState.pending.id;
+    let roots = maintenanceRoots.get(id);
+    if (!roots) {
+      const base = join(process.env.ARC_RUN_ROOT ?? process.cwd(), 'maintenance', id);
+      roots = { self: new Workspace(join(base, 'self')), meta: new Workspace(join(base, 'meta')) };
+      maintenanceRoots.set(id, roots);
+    }
+    return roots;
+  }
   const archivedResults = new Map<string, string>();
   const historyRefs = new Map<string, string>();
   const saveHistoryResult = (text: string): string => {
@@ -587,7 +600,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		moveFacts.clear();
 		for (const row of readRows("states.jsonl")) if (Array.isArray(row.grid)) grids.set(Number(row.n), row.grid);
 		const workingSets = readRows("working_set.jsonl");
-		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating).map((row) => Number(row.actions) || 0));
+		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating && !row.daemon_response).map((row) => Number(row.actions) || 0));
 		const decisions = [...trajectory, ...readRows("usage.jsonl"), ...workingSets].map((row) => Number(row.decision) || 0);
 		decision = Math.max(0, ...decisions);
 		spentTokens.clear();
@@ -698,8 +711,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	// ---------------------------------------------------------------- per-decision state
 
+	type DaemonState = {
+		pending: { id: string; from_decision: number; through_decision: number; reasons: string[] } | null;
+		handled_through: number; last_response?: { decision: number; summary: string };
+		monitors: {
+			capabilities?: { process_rules?: Record<string, unknown> };
+			runtime?: { python_session?: Record<string, unknown> };
+		};
+	};
+	function daemonState(): DaemonState | undefined {
+		const file = join(storeDir, "daemon.json");
+		return daemonOn && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;
+	}
 	type Run = {
 		consolidating: boolean; forceAction: boolean; assistantMessages: number; toolCalls: number; arcSeenInMessage: number;
+		daemonResponse: boolean; daemonReplied: boolean; daemonState?: DaemonState;
 		/** A review after a level change (the runner's "LEVEL REVIEW" prompt): the level record, at most LEVEL_REVIEW_CALLS calls. */
 		levelReview: boolean;
 		/** A review after many actions without a level completed (the runner's "STALL REVIEW" prompt): the level so far. */
@@ -740,6 +766,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
+		daemonResponse: false, daemonReplied: false,
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
@@ -864,12 +891,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	/** Optional bounded Meta feedback. Delivery and spend are reported as observations, never as semantic-use claims. */
-	function processEvidenceText(): string {
-		if (process.env.ARC_THIN_PROCESS !== "1" || !binder || !workspace) return "";
+	function processEvidenceText(sinceDecision?: number): string {
+		if (process.env.ARC_THIN_PROCESS !== "1" || daemonOn && !run.daemonResponse || !binder || !workspace) return "";
 		const active = binder.active().filter((component) => component.kind === "prompt" && component.path.startsWith("prompts/process/"));
 		const workingSets = readRows("working_set.jsonl");
 		const previousReview = workingSets.filter((row) => Number(row.decision) < decision && (row.level_review || row.stall_review)).at(-1);
-		const firstDecision = Number(previousReview?.decision) || 0;
+		const firstDecision = sinceDecision ?? (Number(previousReview?.decision) || 0);
+		const firstAction = Number(workingSets.filter((row) => Number(row.decision) <= firstDecision).at(-1)?.actions) || 0;
 		const usage = readRows("usage.jsonl").filter((row) => Number(row.decision) > firstDecision && Number(row.decision) <= decision);
 		const delivered = active.map((component) => {
 			const origin = binder!.originOf(component.path);
@@ -882,10 +910,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const recentChanges = changes.slice(-5).map((row) => `${row.path} v${row.version ?? "?"} by ${row.by ?? "unknown"}` +
 			(row.error ? ` failed: ${String(row.error).slice(0, 90)}` : ""));
 		const runs = readRows("component_runs.jsonl").filter((row) => Number(row.decision) > firstDecision && Number(row.decision) <= decision);
-		const views = readRows("observer_runs.jsonl").filter((row) => Number(row.n) > Number(previousReview?.actions ?? 0) && Number(row.n) <= trajectory.length);
+		const views = readRows("observer_runs.jsonl").filter((row) => Number(row.n) > firstAction && Number(row.n) <= trajectory.length);
 		const knownUsage = usage.filter((row) => row.cost_status === "reported" || (row.cost_status === undefined && Number(row.total) > 0));
 		const reportedTokens = knownUsage.reduce((sum, row) => sum + (Number(row.total) || 0), 0);
-		const text = (`PROCESS EVIDENCE since review ${firstDecision || "start"}, through decision ${decision}. ` +
+		const text = (`PROCESS EVIDENCE since decision ${firstDecision || "start"}, through decision ${decision}. ` +
 			`Active rules: ${delivered.length ? delivered.join(" | ") : "No active process rules."} ` +
 			`Recent saves: ${recentChanges.length ? recentChanges.join("; ") : "no component saves"}. ` +
 			`Existing capabilities: ${runs.length} run(s), ${views.length} view(s) in this action window. ` +
@@ -894,27 +922,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return text;
 	}
 
-	/** A narrow Meta opportunity outside scheduled reviews: repeated failed saves of one Self component. */
-	function metaOpportunityText(): string {
-		if (process.env.ARC_THIN_PROCESS !== "1" || run.consolidating) return "";
-		const failures = readRows("../.harness/components.jsonl").filter((row) => row.error &&
-			/^(tools|observers|lib|skills|agents)\//.test(String(row.path)) &&
-			(row.by === "agent" || row.by === "refiner") && Number(row.level) === currentLevel() &&
-			Number(row.decision) > 0);
-		const reported = new Set(readRows("call_points.jsonl").filter((row) => row.kind === "meta_opportunity" &&
-			row.level === currentLevel()).map((row) => row.path));
-		const latest = [...failures].reverse().find((row) => !reported.has(row.path) &&
-			decision > Number(row.decision) && decision <= Number(row.decision) + 2 &&
-			failures.filter((other) => other.path === row.path && Number(other.decision) >= Number(row.decision) - 2).length >= 2);
-		if (!latest) return "";
-		const repeated = failures.filter((row) => row.path === latest.path &&
-			Number(row.decision) >= Number(latest.decision) - 2);
-		append("call_points.jsonl", { kind: "meta_opportunity", at: trajectory.length, decision, level: currentLevel(),
-			path: latest.path, failed_versions: repeated.map((row) => row.version) });
-		return `META OPPORTUNITY: ${latest.path} had ${repeated.length} failed saves (versions ${repeated.map((row) => row.version).join(", ")}). ` +
-			`Decide whether this needs one Self component repair, a Meta change to how capabilities are made and checked, ` +
-			`or simply the next Task experiment. If the method is the problem, write one Agent-owned prompts/process/<name>.md rule; ` +
-			`otherwise continue. No extra review or write is required.`;
+	/** A response has its own evidence surface and action boundary, before the next Task turn. */
+	function daemonEvidenceText(): string {
+		if (!run.daemonResponse) return "";
+		const state = run.daemonState;
+		if (!state?.pending) return "DAEMON RESPONSE: this notification was already handled. Call daemon_reply(summary) and stop.";
+		const notice = state.pending;
+		const evidence = [
+			`DAEMON RESPONSE ${notice.id}, evidence since decision ${notice.from_decision}: ${notice.reasons.join("; ")}.`,
+			state.last_response ? `Previous response at decision ${state.last_response.decision}: ${state.last_response.summary}` : "First maintenance response.",
+			`Python checkpoint: ${JSON.stringify(state.monitors.runtime?.python_session ?? "not reported")}.`,
+			`Tracked process versions (delivery is not semantic use): ${JSON.stringify(state.monitors.capabilities?.process_rules ?? {})}.`,
+			processEvidenceText(notice.from_decision), ...reviewArtifactLines(currentLevel()),
+		].join("\n\n");
+		maintenanceWorkspaces().meta.runtimeWrite("data/maintenance.md", evidence + "\n");
+		return evidence.slice(0, 3000) + "\nFull evidence: data/maintenance.md. Handle the notified issue or explain no_change; finish with daemon_reply(summary).";
 	}
 
 	/**
@@ -1056,10 +1078,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				return true;
 			});
 			const out: Array<[string, string]> = [];
+			const maintenance = daemonEvidenceText();
+			if (maintenance) out.push(["daemon_response", maintenance]);
 			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
 			if (prompts) out.push(["prompts", prompts]);
-			const metaOpportunity = metaOpportunityText();
-			if (metaOpportunity) out.push(["meta_opportunity", metaOpportunity]);
 			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
@@ -1140,8 +1162,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try {
 			append("working_set.jsonl", {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
+				...(run.daemonResponse ? { daemon_response: true, daemon_notification: run.daemonState?.pending?.id } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
-				active_prompt_versions: Object.fromEntries((binder?.active() ?? []).filter((component) => component.kind === "prompt")
+				active_prompt_versions: Object.fromEntries((binder?.active() ?? []).filter((component) => component.kind === "prompt"
+					&& (run.daemonResponse || !component.path.startsWith('prompts/process/')))
 					.map((component) => [component.path, component.version])),
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
 					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
@@ -1522,9 +1546,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (control) return;
     if (nativeRuntime && toolsReady) {
       nativeRuntime.register();
+      if (run.daemonResponse) {
+        pi.setActiveTools(['read', 'write', 'edit', 'daemon_reply']);
+        return;
+      }
       // One fixed list for the whole decision: the built-in tools and the agent's saved tools. ls and grep are left
       // out (python lists and searches the workspace, and every schema is resent on each call).
-      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), 'memory', 'python', 'read', 'write', 'edit', ...(consultTool ? ['consult'] : []),
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(consultTool ? ['consult'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
     }
@@ -1936,6 +1964,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** The action count at the agent's last refine(focus) call: a refine point comes REFINE_EVERY actions after it (A5). */
 	let lastRefineCallAt = 0;
 	const refinedFamilies = new Set<string>();
+	const daemonFamilies = new Set(readRows("daemon_signals.jsonl").map((row) => String(row.key)));
 	let goalTestAskedAt = -1;
 	let viewAskedLevel = -1;
 	let refinerInFlight: Promise<void> | undefined;
@@ -2841,6 +2870,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** Before each decision: bounded wait for observations, the ledger view, and the critic when triggered. */
 	async function prepareLedger(ctx: ExtensionContext | undefined): Promise<void> {
 		ledgerText = ""; criticText = "";
+		if (daemonOn && !run.daemonResponse) for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
+			const key = `repeated:${currentLevel()}:${family.key}`;
+			if (daemonFamilies.has(key)) continue;
+			daemonFamilies.add(key);
+			append("daemon_signals.jsonl", { key, decision, reason: family.covered
+				? `python work ${family.gist} repeated ${family.calls} times despite ${family.covered} coverage`
+				: `python work ${family.gist} repeated ${family.calls} times without a reusable component` });
+			break;
+		}
 		if (!ledgerOn) return;
 		// The state itself is recorded for every run (before_agent_start); observeOne skips states already observed.
 		if (gridOf(observation)) observeState(trajectory.length, skillState(false, false));
@@ -2855,7 +2893,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			catch (error) { logError("ledger:file", error); }
 			ledgerText = "";
 			// While a refinement runs, events wait for the next decision instead of being dropped.
-			if (refinerActive() && !refinerInFlight) {
+			if (!run.daemonResponse && refinerActive() && !refinerInFlight) {
 				const { triggers, samples } = refinerTriggers(state);
 				if (triggers.length) startRefiner(ctx, triggers, samples);
 			}
@@ -3033,6 +3071,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
+		if (run.daemonReplied) return { reason: "daemon response completed; Task resumes in the next turn", terminate: true };
+		if (run.daemonResponse) {
+			if (name === "arc_action") return { reason: "no environment action during a daemon response", terminate: true };
+			if (!['read', 'write', 'edit', 'daemon_reply'].includes(name))
+				return { reason: `${name} belongs to the Task session; use the isolated maintenance workspace`, terminate: true };
+			if (run.toolCalls > LEVEL_REVIEW_CALLS && name !== "daemon_reply")
+				return { reason: `this response used its ${LEVEL_REVIEW_CALLS} tool calls; finish with daemon_reply(summary)`, terminate: run.toolCalls > LEVEL_REVIEW_CALLS + 2 };
+			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = "Finish this response now with daemon_reply(summary); unresolved work may wait.";
+		}
 		if (name === "refine") run.refineCalled = true;
 		// A level or stall review is bounded like a decision: its last call says so, and a call after it ends the review.
 		// A review that has not saved its own file may still write it with one more call: in su15-lb-cb-q38 the consult and
@@ -3050,6 +3097,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!native && run.toolCalls > (diagnosticBudget || HARD_TOOL_CALLS))
 			return { reason: `hard tool-call limit (${diagnosticBudget || HARD_TOOL_CALLS}) for this decision reached; the decision ends`, terminate: true };
 		if (name === "arc_action") {
+			if (run.daemonState?.pending) return { reason: "pending daemon notification must be handled in a response turn before Task", terminate: true };
 			if (run.consolidating) return { reason: "no action during consolidation", terminate: true };
 			// A refine point (A5): the action waits for the agent's refine call; the call is refused, not the decision ended.
 			if (run.refinePoint && !run.refineCalled) return { reason: REFINE_FIRST, terminate: false };
@@ -3531,6 +3579,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	async function actForCode(call: { action: string; x?: number; y?: number; predict?: unknown; batch?: unknown }, via: string):
 		Promise<{ observation?: Record<string, unknown>; stopped?: string; line?: string }> {
 		if (run.consolidating) return { stopped: "no action during a review" };
+		if (run.daemonState?.pending) return { stopped: "handle the pending daemon notification before Task" };
 		if (run.refinePoint && !run.refineCalled) return { stopped: REFINE_FIRST };
 		if (actingStopped) return { stopped: actingStopped };
 		const compact = String(call.action ?? "").toUpperCase().replace(/\s+/g, "").replace(/^A(\d)/, "ACTION$1");
@@ -3568,9 +3617,48 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			},
 		};
 	}
+  const maintenanceTools = new Map<string, { self: Map<string, any>; meta: Map<string, any> }>();
+  const stagedTool = (scope: 'self' | 'meta', name: string) => {
+    const id = run.daemonState!.pending!.id;
+    let tools = maintenanceTools.get(id);
+    if (!tools) {
+      const roots = maintenanceWorkspaces();
+      tools = {
+        self: new Map(roots.self.fileTools().map(tool => [tool.name, tool])),
+        meta: new Map(roots.meta.fileTools().map(tool => [tool.name, tool])),
+      };
+      maintenanceTools.set(id, tools);
+    }
+    return tools[scope].get(name)!;
+  };
+  const maintenanceTarget = (path: string) => {
+    const scope: 'self' | 'meta' | undefined = path.startsWith('prompts/process/') || path.startsWith('notes/meta/') ? 'meta'
+      : /^(tools|lib|skills|agents|observers)\//.test(path) || /^prompts\/(?!process\/|review\.md$|lessons\.md$)/.test(path)
+        || path.startsWith('notes/self/') ? 'self' : undefined;
+    if (!scope) throw new Refusal('maintenance writes must target a Self component or prompts/process/ rule');
+    return { scope, workspace: maintenanceWorkspaces()[scope] };
+  };
   if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
       const path = posix.normalize(String((params as any)?.path ?? '').replace(/\\/g, '/'));
+      if (run.daemonResponse) {
+        if (tool.name === 'read') {
+				if (path === 'data/maintenance.md')
+					return stagedTool('meta', 'read').execute('maintenance', params as any, signal, undefined, ctx);
+          const staged = path.startsWith('data/') || path.startsWith('results/') ? undefined : (() => {
+            try { return maintenanceTarget(path); } catch { return undefined; }
+          })();
+          if (staged && existsSync(staged.workspace.path(path)))
+            return stagedTool(staged.scope, 'read').execute('maintenance', params as any, signal, undefined, ctx);
+          return tool.execute('workspace', params as any, signal, undefined, ctx);
+        }
+        if (tool.name !== 'write' && tool.name !== 'edit') throw new Refusal('maintenance tools are read, write and edit only');
+        const staged = maintenanceTarget(path);
+        if (tool.name === 'edit' && !existsSync(staged.workspace.path(path)) && existsSync(workspace.path(path)))
+          staged.workspace.runtimeWrite(path, workspace.read(path));
+        const result = await stagedTool(staged.scope, tool.name).execute('maintenance', params as any, signal, undefined, ctx);
+        return { ...result, content: [...(result.content ?? []), { type: 'text', text: `Staged in ${staged.scope} workspace; publish with daemon_reply.` }] };
+      }
       // The one write after a review's last call is for the review's own file (gate).
       if (run.reviewWrite && path !== run.reviewWrite) throw new Refusal(`after this review's last call only ${run.reviewWrite} is accepted`);
       // A review makes one consult attempt (A5); the reserved final review write is the recovery path.
@@ -4119,6 +4207,41 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     nativeRuntime.seedCalls(readRows('python_calls.jsonl'));
     nativeRuntime.seedViews(readRows('observer_runs.jsonl'));
     nativeRuntime.seedMountLocal(readRows('mount_state.jsonl'));
+    if (daemonOn) pi.registerTool({
+      name: 'daemon_reply', label: 'Reply to maintenance daemon',
+      description: 'Finish the response. Optionally publish one staged Self component or Meta process rule into the Task harness; other staged files stay private.',
+      parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: 2000 }),
+        publish: Type.Optional(Type.String({ maxLength: 200 })) }),
+      execute: guardTool('daemon_reply', async (params: { summary: string; publish?: string }) => {
+        if (!run.daemonResponse) throw new Refusal('daemon_reply is only available during a daemon response');
+        if (!params.summary.trim()) throw new Refusal('give the evidence-based outcome or reason for no_change');
+        if (params.publish) {
+          const path = posix.normalize(params.publish.replace(/\\/g, '/'));
+          if (!componentKind(path)) throw new Refusal('publish a recognized component path');
+          const staged = maintenanceTarget(path);
+          if (!existsSync(staged.workspace.path(path))) throw new Refusal(`no staged ${staged.scope} file at ${path}`);
+          const previous = existsSync(workspace!.path(path)) ? workspace!.read(path) : undefined;
+          workspace!.mutate({ op: 'write', path, content: staged.workspace.read(path) });
+          let receipt: string | undefined;
+          try { receipt = await binder!.save(path, currentLevel(), { by: 'agent', decision }); }
+          catch (error) {
+            workspace!.mutate(previous === undefined ? { op: 'delete', path } : { op: 'write', path, content: previous });
+            throw new Refusal(errorText(error));
+          }
+          if (!receipt || receipt.includes('NOT loaded')) {
+            workspace!.mutate(previous === undefined ? { op: 'delete', path } : { op: 'write', path, content: previous });
+            throw new Refusal(receipt ?? `${path} did not publish`);
+          }
+          nativeRuntime!.register();
+          append('daemon_publications.jsonl', { notification: run.daemonState?.pending?.id, decision, scope: staged.scope, path, receipt });
+        }
+        const notification = run.daemonState?.pending?.id;
+        if (notification) append('call_points.jsonl', { kind: 'daemon_reply', notification, decision,
+          at: trajectory.length, summary: params.summary.trim(), versions: binder!.versionMap() });
+        run.daemonReplied = true;
+        return text('Daemon response recorded. Stop; Task resumes in the next turn.', undefined, true);
+      }),
+    });
     // refine(focus): the agent starts a refinement itself (Prime's refine.run); it runs in the background. At a refine
     // point (every REFINE_EVERY actions) the decision acts only after this call (A5).
     if (criticOn && refineTool) pi.registerTool({
@@ -4165,19 +4288,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
 		const prompt = String(event.prompt ?? "").trimStart();
-		const reviewing = /^(CONSOLIDATE|RECOVER CONSOLIDATION|LEVEL REVIEW|RECOVER LEVEL REVIEW|STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		const maintenancePrompt = daemonOn && /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
+		const reviewing = /^(CONSOLIDATE|RECOVER CONSOLIDATION|LEVEL REVIEW|RECOVER LEVEL REVIEW|STALL REVIEW|RECOVER STALL REVIEW|DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
+		// A Task refinement already running may still commit a file or memory edit. Finish it at this safe
+		// boundary before opening the maintenance workspace; queued explicit refinements finish here too.
+		if (maintenancePrompt) while (refinerInFlight) await refinerInFlight;
 		// A pinned next experiment that was played, or whose level or time ended, leaves the strategy before it is bound (P3);
 		// a review file's new tests are pinned (A3), and so is an action the predictor tools disagree on (B1). The components
 		// saved since the last request are bound first, so a predictor saved in the last decision takes part.
-		if (COVERAGE && refinerActive()) {
+		if (!maintenancePrompt && COVERAGE && refinerActive()) {
 			binder?.boundary();
 			try { await settlePin(); await settleReviewTests(); if (!reviewing) { await pinDisagreement(); await pinNovelty(); } }
 			catch (error) { logError("pin:settle", error); }
 		}
 		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.
-		if (refinerActive()) { try { await restoreBrokenViews(); await retireBrokenPredictors(); } catch (error) { logError("view:restore", error); } }
-    if (binder) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
-		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
+		if (!maintenancePrompt && refinerActive()) { try { await restoreBrokenViews(); await retireBrokenPredictors(); } catch (error) { logError("view:restore", error); } }
+    if (binder && !maintenancePrompt) { await binder.scan(currentLevel()); binder.boundary(); nativeRuntime?.register(); }
+		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW|DAEMON RESPONSE)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
 		noteConsultUse(run);
@@ -4203,17 +4330,24 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…"; after many actions without a level, "STALL REVIEW…" and
 		// "RECOVER STALL REVIEW…".
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
+		run.daemonResponse = daemonOn && /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
+		run.daemonState = daemonState();
+		if (run.daemonResponse) {
+			run.consolidating = true;
+			run.reviewFrom = Number(readRows("working_set.jsonl").filter((row) =>
+				Number(row.decision) <= (run.daemonState?.handled_through ?? 0)).at(-1)?.actions) || 0;
+		}
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
 		if (run.levelReview || run.stallReview) run.reviewVersions = binder?.versionMap() ?? {};
-		if (activeMetaTrial && !activeMetaTrial.measured &&
+		if (!run.daemonResponse && activeMetaTrial && !activeMetaTrial.measured &&
 			decision - activeMetaTrial.startDecision >= Math.max(4, 2 * activeMetaTrial.within))
 			settleMetaTrial("decision window expired without enough actions");
 		// Work memory: a decision after one that learned nothing new opens by saying so.
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review attempts a consult before writing; every REFINE_EVERY actions since the agent's last refine
 		// call, a decision acts only after refine(focus).
-		run.consultPoint = reviewConsult && run.consolidating;
+		run.consultPoint = reviewConsult && run.consolidating && !run.daemonResponse;
 		if (!continuing) run.refinePoint = refinePoints && !run.consolidating && refinerActive() && trajectory.length > 0
 			&& trajectory.length - lastRefineCallAt >= REFINE_EVERY;
 		if (!continuing && (run.refinePoint || run.consultPoint))
@@ -4223,7 +4357,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// invites the model to repeat the same measurement and consumes another full
 		// provider request before it can reach the native action boundary.
 		run.forceAction = !run.consolidating && /previous decision ended without arc_action|^RECOVER ACTION\b/.test(prompt);
-		if (run.consolidating) {
+		if (run.consolidating && !run.daemonResponse) {
 			run.reviewFrom = reviewedThrough;
 			reviewedThrough = trajectory.length;
 		}
@@ -4232,8 +4366,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		else refreshSkillSurface(run.consolidating
 			? CONSOLIDATION_TOOLS
 			: (expandedDecisionTools ? EXPANDED_DECISION_TOOLS : DECISION_TOOLS));
-		try { observation = await bridgeCall("/state"); }
-		catch (error) { observation = undefined; logError("before_agent_start:/state", error, true); }
+		if (!run.daemonResponse) {
+			try { observation = await bridgeCall("/state"); }
+			catch (error) { observation = undefined; logError("before_agent_start:/state", error, true); }
+		}
 		if (chView && !continuing && !run.consolidating) {
 			// CH's first decision shows the RESET that started the game; its pre-frame is NOT_PLAYED's empty frame.
 			if (!initialReset && trajectory.length === 0 && observation) {
@@ -4251,6 +4387,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			decisionObservations = pendingObservations;
 			pendingObservations = [];
 		}
+		if (!run.daemonResponse) {
 		refreshActionSurface();
 		recordState(trajectory.length, gridOf(observation));
 		// Model skills are checked on the transition just recorded (incremental; failures leave the decision unchanged).
@@ -4264,6 +4401,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			try { workspace.runtimeWrite("data/memory.md", renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + "\n"); }
 			catch (error) { logError("memory:file", error); }
 		}
+		} else { ledgerText = ""; criticText = ""; }
 		const systemPrompt = native && !control ? renderPrompt('arc_thin_native_system.md', { game,
       observation: chView ? "the game as described under INPUT FORMAT below" : queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
@@ -4290,6 +4428,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // Call points (A5), said once where the capabilities are.
       call_points: [refinePoints ? `Every ${REFINE_EVERY} actions a decision is a refine point: it acts after refine(focus).` : '',
         reviewConsult ? 'Every review attempts to consult a subagent before writing.' : ''].filter(Boolean).map(line => line + ' ').join(''),
+      daemon: run.daemonResponse ? 'This is a DAEMON RESPONSE. Inspect the notification, stage Self/Meta changes in the isolated maintenance workspace, and use daemon_reply(summary, publish?) to finish. Environment actions and the Task Python session are unavailable.' : '',
       // P4 (ARC_THIN_LEAN, ARC_THIN_CONSULT): without consult, subagents have no way to be asked, so their line goes (below).
       kinds: consultTool ? 'five' : 'four',
       nonacting: consultTool ? 'subagents or views' : 'views',
@@ -4311,7 +4450,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14). With
       // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
       decisionPrompts = promptSections();
-      if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
+		if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt'
+			&& (run.daemonResponse || !c.path.startsWith('prompts/process/'))) ?? [])
 					event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.path.startsWith('prompts/process/')
 						? stripMetaReviewControlLines(prompt.body!) : prompt.body!;
       return;
@@ -4376,19 +4516,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("context", guard("context", async (event: any, ctx: ExtensionContext) => {
-    if (binder) binder.boundary();
+		if (binder && !run.daemonResponse) binder.boundary();
     // A view that became active at this boundary runs on the current state now, not only after the next action
     // (2026-10-13: a refinement's view showed nothing while the agent deliberated). Runs already done are skipped.
-    if (nativeRuntime) nativeRuntime.observe(trajectory.length);
+		if (nativeRuntime && !run.daemonResponse) nativeRuntime.observe(trajectory.length);
 		const messages: any[] = event.messages ?? [];
 		const lastUser = native ? nativeDecisionStart(messages) : messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
 		const user = messages[lastUser];
+		const earlier = run.daemonResponse ? [] : taskHistory(messages.slice(0, lastUser));
 		// Native mode: earlier decisions are a transcript in front of the current head (freezeHistory), so they stay
 		// byte-identical and cacheable; ARC_THIN_NATIVE_HISTORY_CHARS > 0 puts a summary inside the head instead.
 		// A compaction summary Pi made stays in front either way.
 		const summarised = native && nativeHistoryChars > 0;
-		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser),
+		const summary = summarised ? summarizeHistory(earlier,
 			{ budget: nativeHistoryChars, resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
 		// Native mode builds the head of a decision once and keeps it byte-identical until the decision ends: the
 		// provider reuses its cached prefix only while everything before the newest message is unchanged. Rebuilding it
@@ -4396,11 +4537,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
 		const headKey = `${decision}:${lastUser}`;
 		if (!native || run.headKey !== headKey) {
-			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
+			if (native && workspace && !run.daemonResponse) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
-			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined),
-				nativeRuntime ? await nativeRuntime.observerText() : '',
-				nativeRuntime ? await nativeRuntime.loopDecisionText() : '', metaTrialDecisionText()].filter(Boolean).join('\n') : '';
+			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, run.daemonResponse),
+				nativeRuntime && !run.daemonResponse ? await nativeRuntime.observerText() : '',
+				nativeRuntime && !run.daemonResponse ? await nativeRuntime.loopDecisionText() : '',
+				run.daemonResponse ? '' : metaTrialDecisionText()].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,
 				content: [
@@ -4412,9 +4554,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.headKey = headKey;
 		}
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
-		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
-		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
-			: freezeHistory(messages.slice(0, lastUser), { resultChars: historyResultChars, collapseRepeats, references: workMemory, ...(workspace ? { save: saveHistoryResult } : {}) }))
+		const prefix = summarised ? earlier.filter((message) => message?.role === "compactionSummary").slice(-1) : [];
+		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(earlier, true)
+			: freezeHistory(earlier, { resultChars: historyResultChars, collapseRepeats, references: workMemory, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
 		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).
@@ -4442,8 +4584,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				.map(({ name, description, parameters }) => ({ name, description, parameters }));
 			append("context_budget.jsonl", {
 				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy', observation_delivery: observationMode,
-        capability_index_chars: binder?.index(currentLevel()).length ?? 0,
-        active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
+        capability_index_chars: binder?.index(currentLevel(), undefined, undefined, run.daemonResponse).length ?? 0,
+				active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt'
+					&& (run.daemonResponse || !c.path.startsWith('prompts/process/'))).reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
         agent_tool_schemas: binder?.active().filter(c => c.kind === 'tool').map(c => ({ name: c.name, chars: JSON.stringify(c.parameters).length })) ?? [],
 				tools_json_chars: tools ? JSON.stringify(tools).length : null,
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
@@ -4468,7 +4611,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}));
 
   /** The active prompts, one tagged block each: system-prompt sections, or with contextLayout the head's opening section. */
-  const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? []).filter(c => c.kind === 'prompt').map(c => {
+  const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? [])
+	.filter(c => c.kind === 'prompt' && (run.daemonResponse || !c.path.startsWith('prompts/process/'))).map(c => {
 	const name = c.name.replace(/[^a-zA-Z0-9_]/g, '_');
 	const body = c.path.startsWith('prompts/process/') ? stripMetaReviewControlLines(c.body ?? '') : c.body;
 	return [`prompt_${name}`, `<prompt_${name}>\n${body}\n</prompt_${name}>`];

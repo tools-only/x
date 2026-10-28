@@ -206,6 +206,20 @@ const META_LOOP_REVISE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: 'env.meta_decide("revise", "correct the contradicted prediction")' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'test the revised process' }]] },
 ];
+// One response for a process rule, then one for a reusable tool. Each draft stays private until daemon_reply publishes it.
+const DAEMON_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['write', { path: 'prompts/process/reuse.md', content: 'invalid draft A' }]] },
+  { kind: 'decide', calls: [['write', { path: 'prompts/process/reuse.md', content: 'invalid draft B' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['write', { path: 'prompts/process/reuse.md', content: '---\nactive: true\n---\nCheck existing capabilities before creating a new one.\n' }]] },
+  { kind: 'decide', calls: [['daemon_reply', { summary: 'published process rule', publish: 'prompts/process/reuse.md' }]] },
+  { kind: 'decide', calls: [['python', { code: '1 / 0' }]] },
+  { kind: 'decide', calls: [['python', { code: '2 / 0' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION2' }]] },
+  { kind: 'decide', calls: [['write', { path: 'tools/reuse.py', content: '# view: off\ndef run(args, env):\n    return {"value": args.get("value", 0)}\n' }]] },
+  { kind: 'decide', calls: [['daemon_reply', { summary: 'published reusable tool', publish: 'tools/reuse.py' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION3' }]] },
+];
 // Claims checked against history and one-off python (docs/plans/2026-10-12-falsifiable-self-harness-plan.md). In the
 // mock game the 9 on row 3 starts at x=2 and moves right on ACTION1/4, left on ACTION2/3. hyp.right's check holds on
 // #1, hyp.wrong's fails there, and hyp.broken's check does not compile: it is reported and the update still commits.
@@ -449,6 +463,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "guard" ? GUARD_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "meta-loop" ? META_LOOP_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "meta-loop-revise" ? META_LOOP_REVISE_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === "daemon" ? DAEMON_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "claims" ? CLAIMS_SCRIPT : DEFAULT_SCRIPT;
 
 const textOf = (message: any): string => typeof message?.content === "string"

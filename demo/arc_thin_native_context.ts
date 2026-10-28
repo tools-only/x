@@ -107,7 +107,7 @@ export function projectNativeDecision(messages: any[], options: {
 /** A length recovery remains in the unfinished decision's projection, rather than moving its thinking before a new user. */
 export function nativeDecisionStart(messages: any[]): number {
  let at = messages.findLastIndex(m => m.role === 'user');
- while (at >= 0 && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(textOf(messages[at])))
+ while (at >= 0 && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW|DAEMON RESPONSE)\b/.test(textOf(messages[at])))
   at = messages.findLastIndex((m, i) => i < at && m.role === 'user');
  return at;
 }
@@ -121,6 +121,14 @@ const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}… <${text.length} chars>` : text;
 const textOf = (message: any) => typeof message?.content === 'string' ? message.content
   : (Array.isArray(message?.content) ? message.content : []).filter((b: any) => b?.type === 'text').map((b: any) => String(b.text)).join('\n');
+/** Response turns stay in Pi's durable session, but are absent from later Task model history. */
+export function taskHistory(messages: any[]): any[] {
+  let maintenance = false;
+  return messages.filter(message => {
+    if (message?.role === 'user') maintenance = /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(textOf(message));
+    return !maintenance;
+  });
+}
 /** Lines of a result that record an action ("#12 ACTION1 → ..."): always kept whole. */
 const actionLines = (text: string) => text.split('\n').filter(line => /^#\d+ (?:ACTION\d|RESET)\b/.test(line));
 
