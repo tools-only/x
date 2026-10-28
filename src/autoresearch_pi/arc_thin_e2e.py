@@ -784,11 +784,8 @@ def _resolve_pi_api(settings: dict[str, Any], foundation: str, pi_api: str | Non
                     declared_format: str | None) -> str:
     """Choose the provider protocol for this run.
 
-    A native run defaults to OpenAI Responses, whatever the project environment says: within one decision the stored
-    response carries the reasoning the model already produced, so the later queries of that decision continue from its
-    ID instead of re-sending that text.  ``pi_api`` selects the route explicitly, which is how the arms of an A/B are
-    set and how a gateway without Responses is used.  A declared chat-template thinking dialect exists only on
-    Completions, so it keeps that route rather than being dropped without notice.
+    Native runs default to Completions because a generic OpenAI-compatible gateway need not store Responses.
+    Responses remains an explicit opt-in for providers that support continuation by response ID.
     """
     if pi_api is not None:
         if pi_api not in PI_APIS:
@@ -796,9 +793,7 @@ def _resolve_pi_api(settings: dict[str, Any], foundation: str, pi_api: str | Non
         if pi_api != "openai-completions" and declared_format:
             raise ValueError("a declared thinking format requires pi_api=openai-completions")
         return pi_api
-    if foundation == "native" and not declared_format:
-        return "openai-responses"
-    return str(settings["pi_api"])
+    return "openai-completions" if foundation == "native" else str(settings["pi_api"])
 
 
 def _write_models_json(agent_dir: Path, provider: str, model: str, settings: dict[str, Any]) -> None:
@@ -1239,10 +1234,10 @@ def run_arc_thin_e2e(
         if thinking_format not in THINKING_FORMATS:
             raise ValueError(f"thinking_format must be one of {sorted(THINKING_FORMATS)}")
         settings["thinking_format"] = thinking_format
-    # A native run takes the OpenAI Responses route by default (ARC's official runtime): a stored response keeps the
-    # decision's reasoning server-side, so its later queries do not have to re-send that text.
+    # Use the bounded local projection by default; an explicitly selected Responses route can use stored continuation.
     settings["pi_api"] = _resolve_pi_api(
-        settings, foundation, pi_api, thinking_format or env.get("ARC_PI_THINKING_FORMAT"))
+        settings, foundation, pi_api if pi_api is not None else env.get("ARC_PI_API"),
+        thinking_format or env.get("ARC_PI_THINKING_FORMAT"))
     model = str(pi_model or settings["model"])
     resolved_format = _thinking_format_for_route(settings, pi_provider, model, thinking)
     if resolved_format:
