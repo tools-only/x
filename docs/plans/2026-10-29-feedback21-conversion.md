@@ -51,6 +51,14 @@
 | 自主采用 | 未验证 | 不启动付费或远程 ARC |
 | 净收益 | 未验证 | 无真实对照，不能称零转换已解决 |
 
+### 本轮续接补充验收
+
+续接检查另外完成 focused Node（level_review、native_runtime、binder）22/22、补充重启/readonly/unchanged-save 反馈测试后的 runtime 9/9、pytest test_arc_thin_level_review.py 5/5。产物为 job 的 node-focused.log、node-runtime-final.log；verify-baseline-v2、verify-convert、verify-components 的 summary.json 分别为 17/17、17/17、20/20，全部通过。
+
+普通 native 也实际运行了真实 Pi/bridge + scripted/mock 的 foundation 场景：新生成的 8 次父请求均恰有一条 <=320 字符的 native SELF，工具面指向 python(save)，任务继续；见 native-self-check.json 和 verify-native/summary.json。foundation 总脚本退出 1，原因是 line 122 仍期望 history summary_chars=0，而当前默认 12000；本次未改该配置。仅 SELF 的 scoped 接线通过，不能称 foundation 总验收全绿。
+
+调试失败保留：首次 verify-baseline 的 immediate_save_feedback 未显示，改为从 Binder 已保存候选生成保存回执后修复；同决策调用 fixture 原绕过下一请求 context 边界，补真实边界并检查固定头不改写后，最终 focused 全过。没有读取既有本地 ARC 轨迹，以上仅本次新 mock 测试产物。
+
 ## 交付决定与后续
 
 实现、验收与限制写入指定 job 的 CHANGES.md、VERIFY.md、RESULT.md。按授权保留本次实现并提交推送，保持当前分支。功能/接线通过不等于零转化的真实行为问题已经解决。

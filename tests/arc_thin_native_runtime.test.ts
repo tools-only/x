@@ -34,17 +34,10 @@ test('B: parent Python save records creation separately from a later component c
     try {
       replay.seedPython(logs.filter(row => row.file === 'component_runs.jsonl'));
       assert.equal(replay.selfFeedbackText(), runtime.selfFeedbackText(), 'restart reconstructs current-version feedback');
-    } finally { replay.close(); }
-    const restarted = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
-      state: () => ({}), level: () => 0, actionCount: () => 0,
-      log() {}, usage() {}, wrap: (_name, fn) => fn });
-    try {
-      restarted.seedPython(logs.filter(r => r.file === 'component_runs.jsonl'));
-      assert.match(restarted.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/);
-      restarted.seedPython([{ kind: 'save', path: 'tools/answer.py', version: 1, by: 'agent', n: 0, ok: true },
+      replay.seedPython([{ kind: 'save', path: 'tools/answer.py', version: 1, by: 'agent', n: 0, ok: true },
         { kind: 'tool', path: 'tools/answer.py', version: 1, readonly: true, ok: false }]);
-      assert.match(restarted.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/, 'unchanged saves and readonly calls retain the counts');
-    } finally { restarted.close(); }
+      assert.match(replay.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/, 'unchanged saves and readonly calls retain the counts');
+    } finally { replay.close(); }
   } finally { runtime.close(); }
 });
 
