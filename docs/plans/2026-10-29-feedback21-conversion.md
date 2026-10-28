@@ -30,7 +30,7 @@
 
 ## 实现与验证
 
-实现文件：`demo/arc_thin_extension.ts` 的默认 kind 与固定头；`demo/arc_thin_native_runtime.ts` 的每决策重复提示、事件更新的当前版本调用反馈；`demo/arc_thin_reuse.ts` 的 helper 改名归一；baseline prompt 的默认保存预期。反馈在保存/调用结果后即时可见，后续头读取内存中的计数；重启从既有日志恢复，不每头扫描日志。五类仍走原 Binder 路径。
+实现文件：`demo/arc_thin_extension.ts` 的默认 kind 与固定头；`demo/arc_thin_native_runtime.ts` 的每决策重复提示、具名原型提取指令、事件更新的当前版本调用反馈；`demo/arc_thin_reuse.ts` 的 helper 改名归一；baseline prompt 的默认保存预期。重复提示把最近原型名直接放进 `promote_session_function(function="...")` 示例，保存步骤使用真实参数形式；反馈在保存/调用结果后即时可见，后续头读取内存中的计数；重启从既有日志恢复，不每头扫描日志。五类仍走原 Binder 路径。
 
 最终命令与结果：
 

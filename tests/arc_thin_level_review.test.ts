@@ -309,7 +309,7 @@ for (const profile of ['native', 'baseline', 'convert']) test(`${profile}: only 
         await h.call('python', { code: 'def subtotal(items):\n    return sum(items)\n' });
         const repeated = await h.call('python', { code: 'def subtotal_copy(items):\n    return sum(items)\n' });
         assert.match(repeated, /SELF REUSE:.*Save reusable checked logic as a tool now/);
-        assert.match(repeated, /Recent definitions: subtotal, subtotal_copy/);
+        assert.match(repeated, /Prototype names to promote: subtotal, subtotal_copy/);
         assert.match(repeated, profile === 'native' ? /python\(code=.*save=/ : /promote_session_function.*self_component/);
         assert.ok(h.active().includes('python'));
         if (profile !== 'native') assert.ok(h.active().includes('self_component') && h.active().includes('promote_session_function'));

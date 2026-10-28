@@ -586,9 +586,9 @@ export class NativeRuntime {
       conversionNote = `SELF REUSE: repeat/near-duplicate Python detected (${family.recent} calls). ` + (existing
         ? `Call ${existing.name}(args={...}) now instead of rebuilding it.`
         : 'Save reusable checked logic as a tool now: ' + (this.host.selfBaseline
-          ? 'promote_session_function(function="..."); adapt dependencies and run(state,args); self_component(name, content); call the saved name.'
-          : 'adapt dependencies and run(state,args), then python(code="...", save="...").')) +
-        (names.length ? ` Recent definitions: ${names.join(', ')}.` : '') +
+          ? 'promote_session_function(function="NAME"); adapt dependencies and run(state,args); self_component(name="NAME", content="..."); call the saved name.'
+          : 'adapt dependencies and run(state,args), then python(code="...", save="NAME").')) +
+        (names.length ? ` Prototype names to promote: ${names.join(', ')}.` : '') +
         ' You choose; skip one-offs or no remaining use without a report.';
       this.host.log('component_runs.jsonl', { kind: 'conversion_hint', level: this.host.level(), decision, n: this.host.actionCount(), calls: family.recent });
     }
