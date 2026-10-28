@@ -282,6 +282,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 2026-10-21 r04 上下文布局：su15-chm-q38-1 中 7 次仅改 prompt 段的系统消息补丁（openai-completions 将其并入首条系统消息）后，下一决策首个请求均 0 缓存读取，共 9 个请求 603,590 未缓存输入（该运行预算 19%）。已将 active prompts 移出系统提示、置于每个决策 head 开头，并把 Agent 自身在本盘面的记录（NO NEW INFORMATION、THIS BOARD）置于 head 最后（图像之后）；`ARC_THIN_CONTEXT_LAYOUT=0` 恢复旧布局。仅功能测试通过，缓存节省与行为变化均未验证；见 [变更记录](plans/2026-10-21-context-layout.md)。本节各项仍未勾选。
 
+2026-10-28 Completions 本地有界投影：真实 AZ/Qwen g50t 探索运行将旧决策压为摘要、仅重发最近推理并归档旧结果；单请求 input 峰值及投影字符峰值下降，但缓存读取减少，未缓存 input + output 略高，15 分钟内同为 2 动作、0 关。第三决策仍有未知成本请求，关键反证跨摘要后的认知连续性未核对；本节各项仍未勾选。见 [同一变更记录](plans/2026-10-27-four-layer-minimal-operational-plan.md#completions-的本地上下文上限2026-10-28)。
+
 ## 后续更新
 
 2026-10-12 thin 路径：依据 tu93 round-5 真实轨迹诊断（[报告与变更记录](reports/2026-10-12-tu93-new-design-analysis.md)），实现了以下改动：

@@ -4573,7 +4573,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
 			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
         reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'fields' | 'none' : 'none',
-        fullResults: 2, carryChars: carryFieldChars, ...(archiveResults ? { archive: archiveResult } : {}) })]
+        fullResults: 2, carryChars: carryFieldChars, ...(archiveResults && !run.daemonResponse ? { archive: archiveResult } : {}) })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		lastContextChars = projected.reduce((n, message) => n + messageText(message).length, 0) + systemChars;
 		// Developer-only accounting, never added to the model context.

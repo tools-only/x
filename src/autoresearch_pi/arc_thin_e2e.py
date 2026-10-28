@@ -1348,13 +1348,15 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_FOUNDATION"] = foundation
         pi_env["ARC_THIN_PARENT_OUTPUT_TOKENS"] = str(settings.get("max_tokens") or 0)
         pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
-        # On the Responses route the stored response holds the decision's reasoning, so a later query of the same
-        # decision continues from its ID and the projection replays the agent's own short <carry> fields instead of its
-        # reasoning prose.  A Completions gateway has no stored response, so the decision keeps that text ("all"); an
-        # explicit extension_env below still decides either, which is how the arms of an A/B are set.
+        # Responses can continue from a stored response ID. Completions resends its local projection on every request;
+        # bound that projection with the existing recent-reasoning, history-summary and exact-result-ref paths. The
+        # complete Pi session remains on disk, and extension_env can override these defaults for comparison runs.
         stored_responses = settings["pi_api"] == "openai-responses"
         pi_env["ARC_THIN_RESPONSES_CONTINUATION"] = "1" if stored_responses else "0"
-        pi_env["ARC_THIN_REASONING_MODE"] = "fields" if stored_responses else "all"
+        pi_env["ARC_THIN_REASONING_MODE"] = "fields" if stored_responses else "recent"
+        if not stored_responses and foundation == "native":
+            pi_env.setdefault("ARC_THIN_NATIVE_HISTORY_CHARS", "12000")
+            pi_env.setdefault("ARC_THIN_ARCHIVE_RESULTS", "1")
         # The scripted smoke provider's steps call the earlier arc_action ({action, x, y, then}); Continual Harness's
         # observation and action list (ARC_THIN_OBSERVATION=ch, the native default since 2026-10-20) are left to real runs
         # and unit tests.
