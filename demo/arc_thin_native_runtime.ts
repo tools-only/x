@@ -29,6 +29,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   pythonKernel?: boolean;
   /** Work memory (default true): python calls get addresses, repeats name what they repeat, cell(k) runs call k again. */
   workMemory?: boolean;
+  /** A baseline subagent may be consulted after its save, on the next provider request of this decision. */
+  immediateSubagent?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
   sessionDir?: string };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
@@ -774,8 +776,9 @@ export class NativeRuntime {
     }));
   }
   private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
-    const agent = this.host.binder.active().find(c => c.kind === 'subagent' && c.name === args.agent);
-    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${this.host.binder.active().filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}`);
+    const available = this.host.immediateSubagent ? this.host.binder.candidates() : this.host.binder.active();
+    const agent = available.find(c => c.kind === 'subagent' && c.name === args.agent);
+    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${available.filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}`);
     const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
     const tools: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
     // The subagent's python has a session of its own for this consult: it neither sees nor changes the parent's.

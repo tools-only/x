@@ -328,7 +328,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// ARC_THIN_REFINE_TOOL=0, ARC_THIN_CONSULT=0). The scheduled refinements and the views stay: what they show is acted on.
 	const lean = process.env.ARC_THIN_LEAN === "1";
 	const refineTool = !selfBaseline && !lean && process.env.ARC_THIN_REFINE_TOOL !== "0";
-	const consultTool = !selfBaseline && !lean && process.env.ARC_THIN_CONSULT !== "0";
+	const consultTool = !lean && process.env.ARC_THIN_CONSULT !== "0";
 	/**
 	 * Call points (docs/plans/2026-10-20-loop-bound-artifacts.md A5; the user, 2026-10-20: removing tools that are never
 	 * called "does not fix the root problem ... we need a mechanism to ensure they get called"). Every REFINE_EVERY
@@ -337,7 +337,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * ARC_THIN_REFINE_POINT=0 and ARC_THIN_REVIEW_CONSULT=0 turn them off.
 	 */
 	const refinePoints = native && criticOn && refineTool && process.env.ARC_THIN_REFINE_POINT !== "0";
-	const reviewConsult = native && consultTool && process.env.ARC_THIN_REVIEW_CONSULT !== "0";
+	const reviewConsult = native && !selfBaseline && consultTool && process.env.ARC_THIN_REVIEW_CONSULT !== "0";
 	/** Where a review's record is written for the subagent it consults (read-only to the agent, read by refs). */
 	const RECORD_PATH = "data/record.md";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
@@ -1575,9 +1575,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         pi.setActiveTools(['read', 'write', 'edit', 'daemon_reply']);
         return;
       }
-      // One fixed list for the whole decision: the built-in tools and the agent's saved tools. ls and grep are left
-      // out (python lists and searches the workspace, and every schema is resent on each call).
-      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(consultTool ? ['consult'] : []),
+      // Keep the core list fixed; newly saved tools and a saved subagent's consult enter on the next provider request.
+      // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(selfBaseline ? ['self_component'] : []),
+        ...(consultTool && (!selfBaseline || binder?.candidates().some(c => c.kind === 'subagent')) ? ['consult'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
     }
@@ -3826,6 +3827,49 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Python's env.remember goes through the same update as the memory tool, so bookkeeping and an action can share
 		// one cell (Prime Agent's programmatic tool calling) instead of costing a separate request each.
 		pythonMemory = (params, signal) => commitMemory(repairMemoryArguments(params) as MemoryParams, signal);
+		if (selfBaseline) pi.registerTool({
+			name: "self_component",
+			label: "Self component",
+			description: "Create or revise one of your five harness components by name. Tool code runs now; memory updates now; prompts apply next decision; skills can be read; saved subagents can be consulted. Retire by name when no longer useful.",
+			parameters: Type.Object({
+				kind: StringEnum(["tool", "memory", "prompt", "skill", "subagent"] as const),
+				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),
+				content: Type.Optional(Type.String({ maxLength: 16384 })),
+				description: Type.Optional(Type.String({ maxLength: 200 })),
+				allowed_tools: Type.Optional(Type.Array(Type.String({ maxLength: 40 }), { maxItems: 8 })),
+				op: Type.Optional(StringEnum(["set", "retire"] as const)),
+			}),
+			execute: guardTool("self_component", async (params: {
+				kind: "tool" | "memory" | "prompt" | "skill" | "subagent";
+				name: string; content?: string; description?: string; allowed_tools?: string[]; op?: "set" | "retire";
+			}, signal) => {
+				const op = params.op ?? "set";
+				if (op === "set" && !params.content?.trim()) throw new Refusal(`${params.kind} content is required`);
+				if (params.kind === "memory") return text(await commitMemory(op === "retire"
+					? { op: "delete", key: params.name }
+					: { op: "set", key: params.name, text: params.content }, signal), undefined, endsBatch());
+				const path = params.kind === "tool" ? `tools/${params.name}.py`
+					: params.kind === "prompt" ? `prompts/${params.name}.md`
+					: params.kind === "skill" ? `skills/${params.name}/SKILL.md` : `agents/${params.name}.md`;
+				if (op === "retire") {
+					workspace!.mutate({ op: "delete", path });
+					await binder!.scan(currentLevel());
+					refreshSkillSurface();
+					return text(`${path}: retired; no longer advertised from the next request.`, undefined, endsBatch());
+				}
+				const content = params.content!;
+				if (params.kind === "tool") return nativeRuntime!.python(content, signal, false, params.name);
+				const description = params.description?.trim() || content.trim().split("\n")[0].slice(0, 120);
+				const source = params.kind === "prompt" ? `---\nactive: true\n---\n${content}\n`
+					: params.kind === "skill" ? `---\nname: ${params.name}\ndescription: ${JSON.stringify(description)}\n---\n${content}\n`
+					: `---\ndescription: ${JSON.stringify(description)}\ntools: ${JSON.stringify(params.allowed_tools ?? ["read", "python"])}\n---\n${content}\n`;
+				workspace!.mutate({ op: "write", path, content: source });
+				const receipt = await binder!.save(path, currentLevel(), { by: "agent", decision });
+				refreshSkillSurface();
+				return text(`${receipt ?? path}${params.kind === "skill" ? `\nRead ${path} to use its procedure.` : params.kind === "subagent" ? `\nCall consult(agent="${params.name}", question=...) to use it.` : ""}`,
+					Boolean(receipt?.includes("NOT loaded")), endsBatch());
+			}),
+		});
 
 		pi.registerTool({
 			name: "skill",
@@ -4200,6 +4244,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       pythonSession: process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
       workMemory,
+      immediateSubagent: selfBaseline,
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
       sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),

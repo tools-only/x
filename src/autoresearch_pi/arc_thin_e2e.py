@@ -1966,7 +1966,7 @@ def _run_skill_names(row: dict[str, Any]) -> list[str] | None:
     return None
 
 
-def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False) -> Path:
+def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, all_components: bool = False) -> Path:
     """Exercise the shortest Self path through the real runner, Pi and bridge with a scripted provider."""
     path = run_arc_thin_e2e(
         root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
@@ -1975,13 +1975,15 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False) 
         decision_timeout_seconds=180.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
         bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
-        extension_env={"ARC_THIN_SMOKE_SCRIPT": "self-baseline"},
+        extension_env={"ARC_THIN_SMOKE_SCRIPT": "self-components" if all_components else "self-baseline"},
     )
     summary = json.loads(path.read_text(encoding="utf-8"))
     run_root = root.resolve()
     requests = _read_jsonl(run_root / "smoke-requests.jsonl")
     components = _read_jsonl(run_root / ".harness" / "components.jsonl")
     runs = _read_jsonl(run_root / "harness" / "component_runs.jsonl")
+    call_points = _read_jsonl(run_root / "harness" / "call_points.jsonl")
+    memory = _read_jsonl(run_root / "harness" / "memory.jsonl")
     actions = _read_jsonl(run_root / "harness" / "trajectory.jsonl")
     config = json.loads((run_root / "run-config.json").read_text(encoding="utf-8"))
     results = [result for row in requests for result in row.get("last_tool_results", [])]
@@ -1993,21 +1995,45 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False) 
          {key: config.get(key) for key in ("self_baseline", "ledger", "critic", "daemon")}),
         ("direct_authoring", any(row.get("path") == "tools/answer.py" and row.get("by") == "agent"
                                  and not row.get("error") for row in components), components[-3:]),
-        ("save_runs_now", any(result.get("tool") == "python" and "42" in str(result.get("text"))
+        ("save_runs_now", any(result.get("tool") in ("python", "self_component") and "42" in str(result.get("text"))
                               for result in results), None),
-        ("later_saved_call", any(row.get("kind") == "tool" and row.get("path") == "tools/answer.py"
-                                 and row.get("ok") for row in runs) and
+        ("same_decision_saved_call" if all_components else "later_saved_call",
+         any(row.get("kind") == "tool" and row.get("path") == "tools/answer.py"
+             and row.get("ok") and (not all_components or row.get("decision") == 1) for row in runs) and
          any(result.get("tool") == "answer" and "42" in str(result.get("text"))
              for result in results), [row for row in runs if row.get("path") == "tools/answer.py"]),
         ("task_continues", [row.get("action") for row in actions] == ["ACTION1", "ACTION2"],
          [row.get("action") for row in actions]),
-        ("no_management_round", not any(row.get("consolidating") or row.get("critic") or row.get("analyst")
+        ("no_management_round", not any(row.get("consolidating") or row.get("critic")
+                                        or (row.get("analyst") and not all_components)
                                         for row in requests), None),
         ("core_tools_only", bool(requests) and all(
-            "consult" not in {tool.get("name") for tool in row.get("tools", [])}
-            and "refine" not in {tool.get("name") for tool in row.get("tools", [])}
+            "refine" not in {tool.get("name") for tool in row.get("tools", [])}
+            and (all_components or "consult" not in {tool.get("name") for tool in row.get("tools", [])})
             for row in requests), None),
     ]
+    if all_components:
+        saved = {row.get("path") for row in components if row.get("by") == "agent" and not row.get("error")}
+        checks.extend([
+            ("five_components_saved", {"tools/answer.py", "prompts/strategy.md", "skills/probe/SKILL.md",
+                                       "agents/reviewer.md"}.issubset(saved)
+             and any(row.get("key") == "probe_note" and row.get("text") for row in memory), sorted(saved)),
+            ("prompt_next_decision", any("SELF_PROMPT_MARK" in str(row.get("latest_user")) for row in requests), None),
+            ("skill_read", any(result.get("tool") == "read" and "SELF_SKILL_MARK" in str(result.get("text"))
+                               for result in results), None),
+            ("memory_read", any(result.get("tool") == "memory" and "probe_note" in str(result.get("text"))
+                                for result in results), None),
+            ("subagent_used", any(result.get("tool") == "consult" and "SUBAGENT_SEMANTIC_MARK: 42" in str(result.get("text"))
+                                   for result in results)
+             and any(row.get("kind") == "consult" and row.get("decision") == 1 for row in call_points), None),
+            ("consult_available_after_save", any("consult" in {tool.get("name") for tool in row.get("tools", [])}
+                                                 for row in requests), None),
+            ("invalid_subagent_keeps_version", any(row.get("path") == "agents/reviewer.md" and row.get("error")
+                                                   and row.get("good", {}).get("version") == 1 for row in components), None),
+            ("skill_retired_after_use", any(row.get("path") == "skills/probe/SKILL.md" and row.get("retired")
+                                            for row in components)
+             and not (run_root / "workspace" / "skills" / "probe" / "SKILL.md").exists(), None),
+        ])
     summary["checks"] = [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
     summary["passed"] = all(check["ok"] for check in summary["checks"])
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

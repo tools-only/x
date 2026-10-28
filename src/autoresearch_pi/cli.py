@@ -238,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
                                 help="run the shortest native create → run → later call → action scenario")
     arc_thin_smoke.add_argument("--self-convert", action="store_true",
                                 help="add CONVERT to the shortest Self smoke")
+    arc_thin_smoke.add_argument("--self-components", action="store_true",
+                                help="exercise the five-component Self entry through the native runner")
     arc_thin_smoke.add_argument("--continuity", action="store_true",
                                 help="run the session-continuity scenario instead (earlier decisions kept in view)")
     arc_thin_smoke.add_argument("--claims", action="store_true",
@@ -471,12 +473,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "arc-thin-smoke":
         if args.self_convert and not args.self_baseline:
             parser.error("--self-convert requires --self-baseline")
+        if args.self_components and not args.self_baseline:
+            parser.error("--self-components requires --self-baseline")
         summary = (run_arc_thin_ledger_smoke(args.root) if args.ledger
                    else run_arc_thin_environment_smoke(args.root) if args.environment
                    else run_arc_thin_continuity_smoke(args.root) if args.continuity
                    else run_arc_thin_guard_smoke(args.root) if args.guard
                    else run_arc_thin_claims_smoke(args.root) if args.claims
-                   else run_arc_thin_self_baseline_smoke(args.root, self_convert=args.self_convert) if args.self_baseline
+                   else run_arc_thin_self_baseline_smoke(args.root, self_convert=args.self_convert,
+                                                        all_components=args.self_components) if args.self_baseline
                    else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1

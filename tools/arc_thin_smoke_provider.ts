@@ -402,6 +402,21 @@ const SELF_BASELINE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['answer', { args: {} }]] },
   act('ACTION2'),
 ];
+const SELF_COMPONENTS_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['self_component', { kind: 'memory', name: 'probe_note', content: 'A reusable calculation can be checked later.' }]] },
+  { kind: 'decide', calls: [['self_component', { kind: 'prompt', name: 'strategy', content: 'SELF_PROMPT_MARK: check saved evidence before acting.' }]] },
+  { kind: 'decide', calls: [['self_component', { kind: 'skill', name: 'probe', description: 'A reusable checking procedure', content: 'SELF_SKILL_MARK: read the current observation, compare it with the prior result, and report the difference.' }]] },
+  { kind: 'decide', calls: [['self_component', { kind: 'subagent', name: 'reviewer', description: 'Answer a bounded arithmetic question', content: 'Answer the assigned question using the provided evidence.' }]] },
+  { kind: 'decide', calls: [['self_component', { kind: 'tool', name: 'answer', content: 'print(6 * 7)' }]] },
+  { kind: 'decide', calls: [['consult', { agent: 'reviewer', question: 'What is 6 * 7?' }]] },
+  { kind: 'decide', calls: [['answer', { args: {} }]] },
+  act('ACTION1'),
+  { kind: 'decide', calls: [['self_component', { kind: 'subagent', name: 'reviewer', content: 'Invalid role update.', allowed_tools: ['arc_action'] }]] },
+  { kind: 'decide', calls: [['read', { path: 'skills/probe/SKILL.md' }]] },
+  { kind: 'decide', calls: [['memory', { op: 'list' }]] },
+  { kind: 'decide', calls: [['self_component', { kind: 'skill', name: 'probe', op: 'retire' }]] },
+  act('ACTION2'),
+];
 const believe = (text: string): Step => ({ kind: 'decide', calls: [['memory', { set: [{ key: 'belief.move', text }] }]] });
 const PROMOTION_SCRIPT: Step[] = [
   believe('ACTION1 moves the 9 right'), act('ACTION1'),
@@ -459,6 +474,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'promotion' ? PROMOTION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' ? SELF_BASELINE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components' ? SELF_COMPONENTS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
@@ -662,7 +678,8 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
 			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(head.trimStart());
 			let planned: Step | undefined;
-      if (consult) {
+      if (consult && process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components') planned = { kind: 'decide', text: 'SUBAGENT_SEMANTIC_MARK: 42' };
+      else if (consult) {
         const result = messages.find((m: any) => m.role === 'toolResult' && m.toolName === 'compare');
         planned = result ? { kind: 'decide', text: 'CONSULT_SEMANTIC: ' + textOf(result) }
           : { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }], ['compare', { x: 40 }]] };
@@ -723,7 +740,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 				// Reasoning the request carries from earlier assistant turns (kept within the current decision only).
 				reasoning_in_context: messages.filter((m: any) => m?.role === "assistant").flatMap((m: any) => Array.isArray(m.content) ? m.content : [])
 					.filter((b: any) => b?.type === "thinking").map((b: any) => String(b.thinking)),
-        ...(process.env.ARC_THIN_SMOKE_SCRIPT==='nativeclaims' ? {latest_user:textOf(messages.findLast((m:any)=>m.role==='user'))} : {}),
+        ...(['nativeclaims', 'self-components'].includes(process.env.ARC_THIN_SMOKE_SCRIPT ?? '') ? {latest_user:textOf(messages.findLast((m:any)=>m.role==='user'))} : {}),
 				last_tool_results: messages.filter((message) => message?.role === "toolResult")
 					.map((message) => ({ tool: message.toolName, is_error: message.isError, text: textOf(message).slice(0, 1200) })),
 				// What earlier messages the request carried (continuity checks): user prompts, assistant text and calls.

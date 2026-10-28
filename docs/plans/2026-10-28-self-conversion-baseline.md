@@ -1,6 +1,6 @@
 # Self 转化基线：先闭合最短路径，再逐层加回机制
 
-日期：2026-10-28（Asia/Shanghai）。起点：`codex/meta-daemon-response-20261028` / `3ac02314`。实施分支：`codex/self-harness-minimal-path`。状态：基线与首个加层已实现；真实模型行为及净收益未验证。遵循 [开发流程](../development-workflow.md)。
+日期：2026-10-28（Asia/Shanghai）。起点：`codex/meta-daemon-response-20261028` / `3ac02314`。实施分支：`codex/self-harness-minimal-path`。状态：基线、CONVERT 加层和五类组件入口已实现；真实模型行为及净收益未验证。遵循 [开发流程](../development-workflow.md)。
 
 ## 问题与可证伪命题
 
@@ -45,6 +45,27 @@
 | 净收益 | 未验证 | 无匹配预算独立对照 | 不知道任务进展或父子总成本是否改善 |
 
 ## 下一层的进入条件与决定
+
+### 五类组件入口扩展（2026-10-28，实施前）
+
+新的机会：最短基线只把 Tool 的 `python(save)` 说明与接线验收完整覆盖；Memory 虽有专用工具，Prompt、Skill 和 Subagent 仍要由 Agent 重建目录与 frontmatter，Subagent 在基线中无法调用。CH 的普通决策提供 `process_memory/process_skill/process_subagent` 与 `run_skill/run_subagent`，而其策略 Prompt 由独立 Refiner 修改。借鉴其按组件类型管理和即时调用的入口，不复制其自动代替 Agent 编辑的权限。
+
+窄命题：一个按类型的 `self_component` 保存入口复用现有 Binder、memory store、Python 与 consult，使普通 Task 可直接创建或修改 Tool、Memory、Prompt、Skill、Subagent；Tool 当次执行，Memory 当次回执，Prompt 下一决策生效，Skill 可按需读取，Subagent 可由 Agent 调用。省去手写路径、frontmatter 和额外管理轮。仅送达/保存/调用不证明实际语义利用。
+
+该工具只在 `--self-baseline` 暴露，字段为 kind、name、content 及按需 description/allowed_tools；同名保存即修改。runtime 生成规范文件并继续执行 Binder 的权限、版本和校验，Memory 复用原 commit，Subagent 保持只读/计算的工具授权。Agent 仍判断创作价值和后续采用；Prompt 不在当前决策中偷偷改写缓存的 head。若某类保存成功却无法在其既定消费边界进入下一真实父轮，或新入口阻断原 Tool 路径，命题失败。
+
+有界免费验收：本地工具契约检查与 scripted provider/mock ARC SDK 的真实 thin runner/bridge/Pi smoke，最多两 Task 决策、两环境动作；核对五类各自的有效回执、Tool 输出、Memory 下一轮读回、Prompt 下一轮投递、Skill 正文可读、Subagent 的实际语义回答，以及后续真实动作。另跑既有最短基线 smoke 防回归。真实 provider 自主采用与净收益仍待另行预定预算。
+
+实施与结果：`demo/arc_thin_extension.ts` 仅在基线激活单个 `self_component(kind,name,content)` 工具，按类型调用现有 Memory commit、NativeRuntime Python 或 Binder；同名可改，`op="retire"` 可停用。Prompt 使用 active overlay 并在下一决策送达，固定控制核系统提示不由这个入口改写。Subagent 仅在已有有效定义后向父决策暴露 `consult`；基线允许同一决策内保存后发起咨询，子 Agent 仍不能执行环境动作。`demo/arc_thin_components.ts` 保留新工具名，防止同名 Python 组件覆盖入口。常驻新增一个工具 schema；实测 token 代价尚未知。
+
+最终 scripted/mock smoke 在 `runs/self-components-accepted-20261028/summary.json`：15/15 检查通过，2 个父 Task 决策、2 个真实 bridge 动作、13 次 scripted parent 请求、1 次同模型 consult 请求、0 个管理轮/报错。Tool 同决策保存并显式调用，结果均为 42；Memory 后轮读回，Prompt 后轮实际进入父输入，Skill 后轮正文可读且使用后停用，Subagent 同决策返回语义文本。一次非法 Subagent 授权被 Binder 拒绝，原有效 v1 留存。最短 Tool 与 CONVERT 两组回归均通过（`runs/self-baseline-five-entry-regression-20261028/`、`runs/self-convert-five-entry-regression-20261028/`）；相关 Binder/NativeRuntime/决策装配 Node 检查 20/20，Python 编译、TS 语法和 diff 检查通过。脚本指定了全部调用顺序，因此 Prompt/Skill/Memory 的送达或读取不代表 Agent 据此改变行动。
+
+| 五类入口的证据层级 | 状态 | Provider / environment | 边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 通过 | 本地 Node/Python、Binder 校验、拒绝后保留旧版本 | 五类可提交，非法子 Agent 工具授权不替换有效版本 |
+| 全链路可达 | 通过（指定路径） | scripted provider、mock ARC SDK；实际 runner/bridge/Pi/Binder/WASI | 五类保存/回执/既定消费边界可达，Subagent 有实际语义答复、父继续动作 |
+| 自主采用 | 未验证 | 无真实 provider 普通 ARC 运行 | 不知 Agent 是否会选择合适类型、合理跳过或真正使用 Prompt/Skill/Memory |
+| 净收益 | 未验证 | 无匹配预算独立对照 | 未知任务进展、父加子总成本及延迟影响 |
 
 保留 opt-in 基线和 CONVERT 加层，作为以后每层的回归锚。先观察真实普通运行的主要损耗转移，再**一次只加入一个因素**：
 
