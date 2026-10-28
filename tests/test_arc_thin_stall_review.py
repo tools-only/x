@@ -36,7 +36,7 @@ def test_the_prompt_names_the_level_and_what_the_count_runs_from_and_resumes_as_
                              'this turn takes no action.')
     assert 'rewrite prompts/review.md whole, in one write call' in prompt and '\n---\nactive: true\n---\n' in prompt
     assert 'LOOP AUDIT' in prompt and 'strategy, information representations, tools' in prompt
-    assert 'choose one small change to an Agent-owned component or active rule/prompt' in prompt
+    assert 'capability to Self' in prompt and 'prompts/process/<name>.md' in prompt
     assert 'EXPECT within <N> actions' in prompt
     assert 'DECISION: keep | revise | remove' in prompt and 'DECISION: no_change' in prompt
     assert '4. 2-4 directions not tested yet, the one to test first first, each on a line of its own as\n' \

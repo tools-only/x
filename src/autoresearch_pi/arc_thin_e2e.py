@@ -1742,10 +1742,11 @@ def run_arc_thin_e2e(
                     # otherwise the consolidation prompt.
                     level_review = foundation == "native" and level_changed_since_consolidation and review_at_level_change
                     stall_review = not level_review and (stall_due or spin_due)
-                    review = (_level_review_prompt(int(state.get("levels_completed") or 0), include_process=not daemon_enabled) if level_review
+                    # A: process reasoning is available without a pending daemon notification.
+                    review = (_level_review_prompt(int(state.get("levels_completed") or 0), include_process=True) if level_review
                               else _stall_review_prompt(trajectory_now, stall_reviewed_at, int(state.get("levels_completed") or 0),
                                                         spin if spin_due and not stall_due else None,
-                                                        include_process=not daemon_enabled) if stall_review
+                                                        include_process=True) if stall_review
                               else CONSOLIDATE_PROMPT)
                     events = recover_length(review, safe_turn(review))
                     summary["consolidations"] += 1

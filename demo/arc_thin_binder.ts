@@ -9,7 +9,7 @@ export type ComponentSpec = { kind: string; name: string; description: string; e
   parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean;
   mount?: Array<'decision' | 'action' | 'feedback'> };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
-type Entry = { path: string; version: number; hash: string; level: number; by?: string; decision?: number; error?: string; retired?: boolean; good?: Component };
+type Entry = { path: string; version: number; hash: string; level: number; kind?: string; layer?: string; by?: string; decision?: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
 const requirePi = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'));
 const { parseDocument } = requirePi('yaml'); // Pi 0.87.0's pinned YAML dependency, full Agent Skills frontmatter.
@@ -98,7 +98,9 @@ export class Binder {
     if (old?.hash === hash && !old.retired) return kind === 'file' ? undefined : this.receipt(old, true);
     const target = join(this.versions, `${hash}.txt`);
     if (!existsSync(target)) writeFileSync(target, source, { flag: 'wx', encoding: 'utf8' });
-    const entry: Entry = { path, version: (old?.version ?? 0) + 1, hash, level, by: origin.by, decision: origin.decision, good: old?.good };
+    const entry: Entry = { path, version: (old?.version ?? 0) + 1, hash, level, kind,
+      // B: ownership is recorded at save; layer follows the path, never an Agent declaration.
+      layer: path.startsWith('prompts/process/') ? 'meta' : componentKind(path) ? 'self' : undefined, by: origin.by, decision: origin.decision, good: old?.good };
     try {
       const spec = kind === 'file' ? { kind, name: path, description: '', enabled: false }
         : kind === 'tool' || kind === 'library'

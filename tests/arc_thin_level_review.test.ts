@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import arcThinExtension from '../demo/arc_thin_extension.ts';
@@ -231,4 +231,78 @@ test('a rule in dispute starts one refinement per check version and level, not o
 		assert.equal(disputes.length, 1, JSON.stringify(disputes.map((row) => row.triggers)));
 		assert.match(h.file('workspace/prompts/rules.md'), /seen to #1 \(hyp\.never\)/);
 	} finally { await h.close(); await new Promise<void>((r) => w.server.close(() => r())); }
+});
+
+
+test('A/B: ordinary Task with daemon and no pending creates and receives Self/Meta prompts', async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { ARC_THIN_DAEMON: '1', ARC_THIN_PROCESS: '1' });
+    const w = await world(); const h = await attach(w);
+    try {
+        assert.match(await h.begin(), /PROCESS EVIDENCE/);
+        writeFileSync(join(w.root, 'harness/process.md'), '## Failures\n- fixture error\n## Successes\n- fixture reuse signal\n');
+        for (const path of ['prompts/reusable.md', 'prompts/process/local.md']) {
+            assert.match(await h.call('write', { path, content: `---\nactive: true\n---\nLOCAL_REUSE_RULE ${path}` }), /saved.*loaded/);
+        }
+        const head = await h.begin();
+        assert.match(head, /PROCESS EVIDENCE/);
+        assert.match(head, /## Failures[\s\S]*fixture error[\s\S]*## Successes[\s\S]*fixture reuse signal/);
+        assert.ok(head.includes('LOCAL_REUSE_RULE') || Object.values(h.sections()).some(s => s.includes('LOCAL_REUSE_RULE')), head);
+        const changes = readFileSync(join(w.root, '.harness/components.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        assert.ok(changes.some((r: any) => r.path === 'prompts/reusable.md' && r.by === 'agent' && r.layer === 'self' && r.kind === 'prompt' && !r.error));
+        assert.ok(changes.some((r: any) => r.path === 'prompts/process/local.md' && r.by === 'agent' && r.layer === 'meta'));
+        assert.ok(h.rows('working_set.jsonl').some((r: any) => r.active_prompt_versions?.['prompts/reusable.md'] === 1));
+        assert.match(h.file('workspace/data/process.md'), /PROCESS EVIDENCE/);
+        // A: reviews and consolidation receive the same evidence and active rules.
+        for (const prompt of ['CONSOLIDATE. No action this turn.', REVIEW, 'STALL REVIEW. Review the current level.']) {
+            const review = await h.begin(prompt);
+            assert.match(review, /PROCESS EVIDENCE/);
+            assert.match(review, /LOCAL_REUSE_RULE/);
+            assert.ok(!h.active().includes('arc_action'));
+        }
+        writeFileSync(join(w.root, 'harness/daemon.json'), JSON.stringify({ format: 'daemon-v1', monitors: {},
+            handled_through: 0, pending: { id: 'd1', from_decision: 0, through_decision: 5, reasons: ['fixture failure'] } }));
+        const response = await h.begin('DAEMON RESPONSE. Handle pending maintenance.');
+        assert.match(response, /PROCESS EVIDENCE/);
+        assert.match(response, /LOCAL_REUSE_RULE/);
+        assert.ok(!h.active().includes('arc_action') && h.active().includes('daemon_reply'));
+        assert.match(await h.call('write', { path: 'prompts/process/staged.md', content: '---\nactive: true\n---\nSTAGED_RULE' }), /Staged/);
+        assert.equal(h.file('workspace/prompts/process/staged.md'), '', 'maintenance stays isolated until publish');
+        assert.match(await h.call('daemon_reply', { summary: 'fixture publication', publish: 'prompts/process/staged.md' }), /recorded/);
+        assert.match(h.file('workspace/prompts/process/staged.md'), /STAGED_RULE/);
+    } finally {
+        await h.close(); w.server.close();
+        for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+        Object.assign(process.env, saved);
+    }
+});
+
+
+test('ordinary Task receives CONVERT targets and Binder-valid skeletons without process or daemon mode', async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
+    const w = await world(); const h = await attach(w);
+    try {
+        await h.begin();
+        assert.doesNotMatch(h.file('workspace/data/convert.md'), /CONVERT/);
+        for (const n of [1, 2, 3]) await h.call('python', { code: `values = [${n}]\nprint(sum(values))` });
+        const head = await h.begin();
+        const guide = h.file('workspace/data/convert.md');
+        assert.match(head, /CONVERT \(Self harness; you decide\)/);
+        assert.match(guide, /target: tools\/reuse_[a-f0-9]+\.py/);
+        assert.match(guide, /skeleton:[\s\S]*def run\(\):/);
+        assert.match(guide, /sample[\s\S]*values = \[3\]/);
+        assert.ok(h.rows('convert.jsonl').some(r => r.kind === 'shown' && r.target.startsWith('tools/')));
+        const path = /target: (tools\/[^\s]+)/.exec(guide)![1];
+        assert.equal(h.file(`workspace/${path}`), '', 'delivery must not auto-save');
+        const skeleton = /```python\n([\s\S]*?)\n```/.exec(guide)![1];
+        assert.match(await h.call('write', { path, content: skeleton }), /saved.*loaded/);
+        assert.ok(h.active().includes('arc_action'), 'CONVERT never gates actions');
+        await h.begin();
+        assert.doesNotMatch(h.file('workspace/data/convert.md'), /CONVERT/, 'kit boundary retires old candidates');
+    } finally {
+        await h.close(); w.server.close();
+        for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+        Object.assign(process.env, saved);
+    }
 });

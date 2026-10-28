@@ -871,9 +871,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const record = levelRecord({ rows: trajectory, completed: currentLevel(), memoryRows: readRows("memory.jsonl"), checks: claimRows,
 			repeated, python: readRows("component_runs.jsonl"), artifacts: reviewArtifactLines(currentLevel() - 1) });
 		// A stall review of the level now completed is still an active prompt: what to do with it is the agent's to decide.
-		const process = processEvidenceText();
+		// A: the shared capability section delivers process evidence once in every profile.
 		return [record, reviewText() ? `${REVIEW_PATH}, your stall review of this level, is still active: delete it, or keep in ` +
-			`${LESSONS_PATH} what still helps.` : "", process].filter(Boolean).join("\n\n");
+			`${LESSONS_PATH} what still helps.` : ""].filter(Boolean).join("\n\n");
 	}
 
 	/**
@@ -887,12 +887,30 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch (error) { logError("review:repeats", error); }
 		const record = levelRecord({ rows: trajectory, completed: currentLevel() + 1, ongoing: true, memoryRows: readRows("memory.jsonl"),
 			checks: claimRows, repeated, python: readRows("component_runs.jsonl"), artifacts: reviewArtifactLines(currentLevel()) });
-		return [record, processEvidenceText()].filter(Boolean).join("\n\n");
+		return record;
 	}
 
 	/** Optional bounded Meta feedback. Delivery and spend are reported as observations, never as semantic-use claims. */
 	function processEvidenceText(sinceDecision?: number): string {
-		if (process.env.ARC_THIN_PROCESS !== "1" || daemonOn && !run.daemonResponse || !binder || !workspace) return "";
+		if (!binder || !workspace) return "";
+		const repeated = nativeRuntime?.repeatedWork(currentLevel()) ?? [];
+		const uncovered = repeated.filter(f => !f.covered).slice(0, 3);
+		const guides = uncovered.map(f => {
+			const slug = `reuse_${f.key}`;
+			const target = `tools/${slug}.py`;
+			return `- family: ${f.gist} \u00d7${f.calls}\n  target: ${target}\n` +
+				`  write this path, or adapt the sample with python(save="${slug}"). Replace the placeholder with reusable computation.\n` +
+				`  skeleton:\n\`\`\`python\n# Reusable computation; adapt before use.\ndef run():\n    """Return the reusable result."""\n    return None\n\`\`\`\n` +
+				`  sample (recent, truncated):\n\`\`\`python\n${(f.samples.at(-1) ?? '').slice(0, 600)}\n\`\`\`\n` +
+				`  done when: Binder accepts path and later shown/called (creation is not use). Convert if worthwhile, or explain a reasonable skip.`;
+		});
+		const reuse = repeated.filter(f => f.covered).slice(0, 3).map(f => `- reuse ${f.covered}: ${f.gist} \u00d7${f.calls}; do not duplicate.`);
+		const conversion = [guides.length ? `CONVERT (Self harness; you decide):\n${guides.join('\n')}` : '',
+			reuse.length ? `COVERED (reuse existing paths):\n${reuse.join('\n')}` : ''].filter(Boolean).join('\n\n');
+		workspace.runtimeWrite('data/convert.md', conversion + '\n');
+		for (const f of uncovered) append('convert.jsonl', { kind: 'shown', decision, level: currentLevel(), key: f.key,
+			target: `tools/reuse_${f.key}.py`, calls: f.calls });
+		if (process.env.ARC_THIN_PROCESS !== "1") return conversion;
 		const active = binder.active().filter((component) => component.kind === "prompt" && component.path.startsWith("prompts/process/"));
 		const workingSets = readRows("working_set.jsonl");
 		const previousReview = workingSets.filter((row) => Number(row.decision) < decision && (row.level_review || row.stall_review)).at(-1);
@@ -919,7 +937,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			`Existing capabilities: ${runs.length} run(s), ${views.length} view(s) in this action window. ` +
 			`Reported spend: ${reportedTokens} tokens in ${knownUsage.length}/${usage.length} usage rows across agent and services; ` +
 			"unreported usage is unknown, spend is not attributed to a rule. Delivery/calls do not prove semantic use; judge whether results changed a task choice/action.").slice(0, 1200);
-		return text;
+		// A/B/C: ordinary decisions receive the same bounded material, without a notification license.
+		const daemon = join(storeDir, 'process.md');
+		const material = daemonOn && existsSync(daemon) ? readFileSync(daemon, 'utf8') : '';
+		const evidence = [text, conversion, material].filter(Boolean).join('\n\n');
+		workspace.runtimeWrite('data/process.md', evidence + '\n');
+		return evidence;
 	}
 
 	/** A response has its own evidence surface and action boundary, before the next Task turn. */
@@ -933,7 +956,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			state.last_response ? `Previous response at decision ${state.last_response.decision}: ${state.last_response.summary}` : "First maintenance response.",
 			`Python checkpoint: ${JSON.stringify(state.monitors.runtime?.python_session ?? "not reported")}.`,
 			`Tracked process versions (delivery is not semantic use): ${JSON.stringify(state.monitors.capabilities?.process_rules ?? {})}.`,
-			processEvidenceText(notice.from_decision), ...reviewArtifactLines(currentLevel()),
+			...reviewArtifactLines(currentLevel()),
 		].join("\n\n");
 		maintenanceWorkspaces().meta.runtimeWrite("data/maintenance.md", evidence + "\n");
 		return evidence.slice(0, 3000) + "\nFull evidence: data/maintenance.md. Handle the notified issue or explain no_change; finish with daemon_reply(summary).";
@@ -1164,8 +1187,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.daemonResponse ? { daemon_response: true, daemon_notification: run.daemonState?.pending?.id } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
-				active_prompt_versions: Object.fromEntries((binder?.active() ?? []).filter((component) => component.kind === "prompt"
-					&& (run.daemonResponse || !component.path.startsWith('prompts/process/')))
+				active_prompt_versions: Object.fromEntries((binder?.active() ?? []).filter((component) => component.kind === "prompt")
 					.map((component) => [component.path, component.version])),
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
 					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
@@ -4450,8 +4472,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14). With
       // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
       decisionPrompts = promptSections();
-		if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt'
-			&& (run.daemonResponse || !c.path.startsWith('prompts/process/'))) ?? [])
+		if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
 					event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.path.startsWith('prompts/process/')
 						? stripMetaReviewControlLines(prompt.body!) : prompt.body!;
       return;
@@ -4539,10 +4560,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!native || run.headKey !== headKey) {
 			if (native && workspace && !run.daemonResponse) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
-			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, run.daemonResponse),
+			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),
 				nativeRuntime && !run.daemonResponse ? await nativeRuntime.observerText() : '',
 				nativeRuntime && !run.daemonResponse ? await nativeRuntime.loopDecisionText() : '',
-				run.daemonResponse ? '' : metaTrialDecisionText()].filter(Boolean).join('\n') : '';
+				run.daemonResponse ? '' : metaTrialDecisionText(),
+				processEvidenceText(run.daemonResponse ? run.daemonState?.pending?.from_decision : undefined)].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,
 				content: [
@@ -4584,9 +4606,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				.map(({ name, description, parameters }) => ({ name, description, parameters }));
 			append("context_budget.jsonl", {
 				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy', observation_delivery: observationMode,
-        capability_index_chars: binder?.index(currentLevel(), undefined, undefined, run.daemonResponse).length ?? 0,
-				active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt'
-					&& (run.daemonResponse || !c.path.startsWith('prompts/process/'))).reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
+        capability_index_chars: binder?.index(currentLevel(), undefined, undefined, true).length ?? 0,
+				active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
         agent_tool_schemas: binder?.active().filter(c => c.kind === 'tool').map(c => ({ name: c.name, chars: JSON.stringify(c.parameters).length })) ?? [],
 				tools_json_chars: tools ? JSON.stringify(tools).length : null,
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
@@ -4611,8 +4632,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}));
 
   /** The active prompts, one tagged block each: system-prompt sections, or with contextLayout the head's opening section. */
+  // A: process prompts cross the same decision boundary as Self prompts.
   const promptSections = (): Record<string, string> => Object.fromEntries((binder?.active() ?? [])
-	.filter(c => c.kind === 'prompt' && (run.daemonResponse || !c.path.startsWith('prompts/process/'))).map(c => {
+	.filter(c => c.kind === 'prompt').map(c => {
 	const name = c.name.replace(/[^a-zA-Z0-9_]/g, '_');
 	const body = c.path.startsWith('prompts/process/') ? stripMetaReviewControlLines(c.body ?? '') : c.body;
 	return [`prompt_${name}`, `<prompt_${name}>\n${body}\n</prompt_${name}>`];

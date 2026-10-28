@@ -88,6 +88,16 @@ class DaemonService:
         reasons = []
         for name, (_, update) in self.mounts.items():
             reasons.extend(update(rows, self.state["monitors"][name], acknowledged))
+        # C: refresh material through the existing mounts; successes never create pending.
+        failures = []
+        successes = []
+        for monitor in self.state["monitors"].values():
+            failures.extend(f"- {key[:240]} ({count} occurrences)" for key, count in monitor.get("failures", {}).items())
+            successes.extend(f"- {item[:240]}" for item in monitor.get("successes", []))
+        material = "PROCESS EVIDENCE (deterministic observations; delivery is not semantic use)\n\n## Failures\n"
+        material += "\n".join(failures[-8:]) or "- None recorded in the current window."
+        material += "\n\n## Successes\n" + ("\n".join(successes[-8:]) or "- None recorded yet.")
+        (self.path.parent / "process.md").write_text(material + "\n", encoding="utf-8")
         if self.state["pending"]:
             for reason in reasons:
                 if reason not in self.state["pending"]["reasons"]:

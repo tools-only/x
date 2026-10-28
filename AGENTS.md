@@ -20,6 +20,15 @@ User decisions binding every harness change; the linked records give the reasons
 - `arc_action` stays an action call: add no memory, plan or other side-channel fields to it (user, 2026-10-12); fix forgotten actions or lost progress outside the action.
 - Mechanisms run in the online runtime and are judged in real runs or matched-prefix forks; offline rigs (local game judge, offline fits, replays) are development measurements only (`docs/plans/2026-10-20-loop-bound-artifacts.md`).
 
+# Self conversion contract
+
+- Self conversion lifts repeated transient Python or notes into Binder Components (tools, skills, prompts); it is not specific to Daemon responses.
+- Host: detect repeatedWork and proactively deliver CONVERT in the ordinary Decide process/Self evidence, with target path templates, minimum legal skeletons and recent samples; mirror it in data/convert.md and record shown. This replaces reconstructing authoring conventions, not agent judgment.
+- Agent: adapt and write a valid target through Binder, or explain reasonable non-use. Adoption means parent creation/calling; creation and delivery alone do not prove semantic use or benefit.
+- The next real component save/call and task action provide feedback through component/version, run and working-set logs. Coverage removes a family from CONVERT and offers reuse instead; actual use/outcomes belong in Successes and retirement review. Candidates also expire with the existing repetition window, level and kit boundaries. Do not label coverage alone a success.
+- Never auto-promote/save, put conversion procedure in control-core strategy, or substitute higher REVIEW frequency for conversion. Keep repository AGENTS.md out of gameplay.
+- Implementation: demo/arc_thin_extension.ts (CONVERT delivery), demo/arc_thin_reuse.ts and arc_thin_native_runtime.ts repeatedWork (facts), demo/arc_thin_binder.ts (validation), demo/prompts/arc_thin_native_system.md (gameplay guidance).
+
 # Current code (checked 2026-10-23)
 
 - ARC work is on the thin/native path: `demo/arc_thin_extension.ts`, `demo/arc_thin_native_runtime.ts` and the other `demo/arc_thin_*.ts`, `demo/prompts/arc_thin_native_system.md`, runner `src/autoresearch_pi/arc_thin_e2e.py` (CLI `arc-thin-e2e`).

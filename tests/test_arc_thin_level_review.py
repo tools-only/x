@@ -22,7 +22,7 @@ def test_level_review_prompt_names_the_level_and_the_next_one():
     assert '\n- test: <move> — <the win condition it tests>\n' in prompt and 'pins them in this order' in prompt
     assert "Level 2's pattern is one candidate, not a rule." in prompt
     assert 'LOOP AUDIT' in prompt and 'strategy, information representations, tools' in prompt
-    assert 'choose one small change to an Agent-owned component or active rule/prompt' in prompt
+    assert 'capability to Self' in prompt and 'prompts/process/<name>.md' in prompt
     assert 'EXPECT within <N> actions' in prompt
     assert 'DECISION: keep | revise | remove' in prompt and 'DECISION: no_change' in prompt
 

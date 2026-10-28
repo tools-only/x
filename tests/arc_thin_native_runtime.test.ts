@@ -1,12 +1,35 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Workspace } from '../demo/arc_thin_workspace.ts';
 import { Binder } from '../demo/arc_thin_binder.ts';
 import { NativeRuntime } from '../demo/arc_thin_native_runtime.ts';
 import { validatePythonComponent } from '../demo/arc_thin_components.ts';
+
+test('B: parent Python save records creation separately from a later component call', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'native-self-save-'));
+  const workspace = new Workspace(root);
+  const binder = new Binder(workspace, validatePythonComponent);
+  const tools = new Map<string, any>(); let active: string[] = [];
+  const logs: any[] = [];
+  const runtime = new NativeRuntime({ pi: { registerTool(t: any) { tools.set(t.name, t); },
+    getActiveTools: () => active, setActiveTools(names: string[]) { active = names; } } as any,
+    workspace, binder, state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => 0,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    const result = await runtime.python('print(6 * 7)', undefined, false, 'answer');
+    assert.match(result.content[0].text, /saved.*loaded/);
+    const rows = readFileSync(join(root, '.harness/components.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(rows.some(r => r.path === 'tools/answer.py' && r.by === 'agent' && r.kind === 'tool' && r.layer === 'self' && !r.error));
+    assert.equal(logs.filter(r => r.kind === 'tool').length, 0, 'saving/running the cell is not a saved tool call');
+    binder.boundary(); runtime.register();
+    const called = await tools.get('answer').execute({ args: {} });
+    assert.match(called.content[0].text, /42/);
+    assert.ok(logs.some(r => r.file === 'component_runs.jsonl' && r.kind === 'tool' && r.path === 'tools/answer.py' && r.version === 1 && r.ok));
+  } finally { runtime.close(); }
+});
 
 test('noteSave forwards process prompt saves to the host callback', async () => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-process-save-')));
