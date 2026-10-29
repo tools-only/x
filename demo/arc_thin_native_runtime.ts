@@ -14,6 +14,7 @@ import { blockNote, cellRefs, codeKey, commentLines, repeatedBlocks } from './ar
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
 type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): Record<string, unknown>;
   level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
+  hookTurn?(): boolean;
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
   /** Take one action for foreground code through the environment boundary (closed loop: env.act). */
@@ -204,6 +205,13 @@ export class NativeRuntime {
     }
   }
   toolNames() { return this.callable().filter(c => this.registered.has(c.name)).map(c => c.name); }
+  hookFacts(actionId: number, taskDecision: number) {
+    return this.pythonRuns.filter(r => r.decision === taskDecision && (r.n === actionId - 1 || r.n === actionId)).slice(-4).map(r => ({
+      ref: `component_runs.jsonl kind=python decision=${r.decision ?? 'unknown'} n=${r.n ?? 'unknown'}`,
+      code_excerpt: (r.code ?? '').slice(0, 900), result_excerpt: ((r as PythonRun & { result?: string }).result ?? 'unknown').slice(0, 500),
+      definitions: r.lines, names_used: r.used ?? [], ok: r.ok ?? 'unknown',
+    }));
+  }
   /** Earlier python runs of this run (component_runs.jsonl), after a restart. */
   seedPython(rows: any[]) {
     for (const r of rows) {
@@ -530,6 +538,7 @@ export class NativeRuntime {
     const snap = this.snapshot(); const started = Date.now();
     const windowAtStart = this.host.actionCount();
     const kit = kitOf(this.host.binder.versionMap());
+    const priorDefs = new Map(session?.payload().defs ?? []);
     const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}),
       ...(Object.keys(cells).length ? { cells } : {}) };
     // The parent's session runs in its live kernel; a subagent's session and saved tools keep a fresh sandbox per call.
@@ -555,9 +564,11 @@ export class NativeRuntime {
     const shape = codeShape(code);
     // A consult's read-only python is not the parent's own work.
     const decision = this.decision();
-    if (!readonly) this.pythonRuns.push({ level: this.host.level(), ...shape, kit, decision, n: this.host.actionCount(), code: code.slice(0, 2000) });
+    if (!readonly) this.pythonRuns.push({ level: this.host.level(), ...shape, kit, decision, n: this.host.actionCount(), ok: result.ok,
+      used: result.session?.uses ?? [], code: code.slice(0, 2000), result: shown(result).slice(0, 1000) } as PythonRun & { result: string });
     this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started,
-      ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit, ...(save ? { saved_as: `tools/${save}.py` } : {}) }),
+      ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit, code_excerpt: code.slice(0, 1200),
+        output_excerpt: shown(result).slice(0, 600), ...(save ? { saved_as: `tools/${save}.py` } : {}) }),
       acted: result.acted?.lines.length ?? 0, ...(outcome ? { session_version: outcome.version, session_event: outcome.event ?? 'unchanged' } : {}) });
     const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
     // Saved once, named once: when this call retypes what a saved component computes, its own result says so (once per
@@ -577,7 +588,7 @@ export class NativeRuntime {
     }
     const windowKey = `${this.host.level()}:${windowAtStart}`;
     let conversionNote = '';
-    const family = this.conversionHintDecision !== decision && !readonly && !save && result.ok ? repeatedFamilies(this.levelRuns(this.host.level()), this.components())
+    const family = this.host.hookTurn?.() && this.conversionHintDecision !== decision && !readonly && !save && result.ok ? repeatedFamilies(this.levelRuns(this.host.level()), this.components())
       .find(f => f.runs.includes(this.pythonRuns.at(-1)!)) : undefined;
     if (family && this.conversionHintDecision !== decision) {
       this.conversionHintDecision = decision;
@@ -586,11 +597,24 @@ export class NativeRuntime {
       conversionNote = `SELF REUSE: repeat/near-duplicate Python detected (${family.recent} calls). ` + (existing
         ? `Call ${existing.name}(args={...}) now instead of rebuilding it.`
         : 'Save reusable checked logic as a tool now: ' + (this.host.selfBaseline
-          ? 'promote_session_function(function="NAME"); adapt dependencies and run(state,args); self_component(name="NAME", content="..."); call the saved name.'
-          : 'adapt dependencies and run(state,args), then python(code="...", save="NAME").')) +
+          ? 'keep the parameterized function; add def run(state,args) returning its result; write/edit tools/NAME.py, then call NAME(args={"value":...}).'
+          : 'keep the parameterized function; add def run(state,args) returning its result; python(code="...",save="NAME"); then call NAME(args={"value":...}).')) +
         (names.length ? ` Prototype names to promote: ${names.join(', ')}.` : '') +
         ' You choose; skip one-offs or no remaining use without a report.';
       this.host.log('component_runs.jsonl', { kind: 'conversion_hint', level: this.host.level(), decision, n: this.host.actionCount(), calls: family.recent });
+    }
+    const reusedFunction = this.host.hookTurn?.() && !conversionNote && this.conversionHintDecision !== decision && !readonly && !save && result.ok &&
+      [...priorDefs.keys()].find(name => this.pythonRuns.filter(r => r.level === this.host.level() && r.ok !== false &&
+        r.used?.includes(name)).length >= 2);
+    if (reusedFunction) {
+      this.conversionHintDecision = decision;
+      conversionNote = `SELF REUSE: the existing session function ${reusedFunction} was called from at least two successful Python cells. ` +
+        (this.host.selfBaseline
+          ? `call promote_session_function(function="${reusedFunction}") only if its source is useful; adapt a standalone def run(state,args) with no session globals, write/edit tools/NAME.py, then call NAME(args={...}). `
+          : `publish a standalone def run(state,args) with python(code="...",save="NAME"), then call NAME(args={...}). `) +
+        'Only do this if the next task check will reuse it; otherwise keep it in the session.';
+      this.host.log('component_runs.jsonl', { kind: 'conversion_hint', trigger: 'session_function_reuse', level: this.host.level(), decision,
+        n: this.host.actionCount(), function: reusedFunction, cells: 2 });
     }
     const windowCalls = this.pythonRuns.filter(r => r.level === this.host.level() && r.n === windowAtStart).length;
     let windowCheck = '';
@@ -605,10 +629,10 @@ export class NativeRuntime {
     const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, windowCheck, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
       live && result.ok && Boolean((result.value as any)?.has_value), mark);
     // Keep the cue visible even when the Python output is shortened to a receipt.
-    if (conversionNote) out.content.push({ type: 'text', text: conversionNote });
+    if (conversionNote && this.host.hookTurn?.()) out.content.push({ type: 'text', text: conversionNote });
     if (save) {
       const feedback = this.selfFeedbackText(`tools/${save}.py`);
-      if (feedback) out.content.push({ type: 'text', text: feedback });
+      if (feedback) out.content.push({ type: 'text', text: `${feedback} Next request: call ${save}(args={}) to run the saved version; supply any inputs in args.` });
     }
     if (parent) {
       const acted = Boolean(result.acted?.lines.length);

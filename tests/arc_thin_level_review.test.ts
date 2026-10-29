@@ -281,112 +281,82 @@ test('A/B: ordinary Task with daemon and no pending creates and receives Self/Me
 });
 
 
-for (const profile of ['native', 'baseline', 'convert']) test(`${profile}: only agent-authored conversion is delivered`, async () => {
+test('after-action self_harness_hook is an isolated turn and reaches save, named use, then Task', async () => {
     const saved = { ...process.env };
-    Object.assign(process.env, { ARC_THIN_SELF_BASELINE: profile === 'native' ? '0' : '1',
-        ARC_THIN_SELF_CONVERT: profile === 'convert' ? '1' : '0', ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
+    Object.assign(process.env, { ARC_THIN_SELF_BASELINE: '1', ARC_THIN_SELF_CONVERT: '0', ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
     const w = await world(); const h = await attach(w);
     try {
-        const firstHead = await h.begin();
-        const entry = firstHead.split('\n').filter(line => line.startsWith('SELF:'));
-        assert.equal(entry.length, 1);
-        assert.ok(entry[0].length <= 320 && /^[\x20-\x7e]+$/.test(entry[0]));
-        assert.match(entry[0], profile === 'native' ? /python\(save=/ : /self_component.*promote_session_function/);
-        assert.doesNotMatch(firstHead, /SELF FEEDBACK:/);
-        const messages: any[] = [{ role: 'user', content: 'Decide the next action.' }];
-        const before = await h.context(messages);
-        await h.call('python', { code: 'print(1)' });
-        messages.push({ role: 'assistant', content: [{ type: 'toolCall', id: 'r', name: 'python', arguments: { code: 'print(1)' } }] },
-            { role: 'toolResult', toolCallId: 'r', toolName: 'python', content: [{ type: 'text', text: '1' }] });
-        assert.deepEqual((await h.context(messages))[0], before[0], 'tool rounds keep the fixed head');
-        messages.push({ role: 'user', content: 'RECOVER ACTION. Continue the unfinished decision.' });
-        await h.start('RECOVER ACTION. Continue the unfinished decision.');
-        const recovered = (await h.context(messages))[0];
-        const recoveredText = recovered.content.map((b: any) => b.text ?? '').join('\n');
-        assert.equal(recoveredText.split('\n').filter((line: string) => line.startsWith('SELF:')).length, 1);
-        assert.ok(recoveredText.startsWith(before[0].content[0].text), 'recovery retains the original head');
-        assert.equal((await h.begin()).split('\n').filter(line => line.startsWith('SELF:')).length, 1, 'new no-action decision has an entry');
-        await h.call('python', { code: 'def subtotal(items):\n    return sum(items)\n' });
-        const repeated = await h.call('python', { code: 'def subtotal_copy(items):\n    return sum(items)\n' });
-        assert.match(repeated, /SELF REUSE:.*Save reusable checked logic as a tool now/);
-        assert.match(repeated, /Prototype names to promote: subtotal, subtotal_copy/);
-        assert.match(repeated, profile === 'native' ? /python\(code=.*save=/ : /promote_session_function.*self_component/);
-        assert.ok(h.active().includes('python'));
-        if (profile !== 'native') assert.ok(h.active().includes('self_component') && h.active().includes('promote_session_function'));
-        assert.doesNotMatch(await h.call('python', { code: 'def subtotal_again(items):\n    return sum(items)\n' }), /SELF REUSE:/);
-        await h.begin();
-        assert.match(await h.call('python', { code: 'def subtotal_later(items):\n    return sum(items)\n' }), /SELF REUSE:/,
-            'same repeat can cue once in the next logical decision');
-        assert.equal(h.file('workspace/tools/subtotal.py'), '', 'repeat never publishes a candidate');
-        for (const n of [1, 2, 3]) await h.call('python', { code: `values = [${n}]\nprint(sum(values))` });
-        assert.doesNotMatch(await h.begin(), /CONVERT \(/);
-        assert.equal(h.file('workspace/data/convert.md'), '', 'host creates no guide');
-        assert.equal(h.rows('convert.jsonl').length, 0);
-        writeFileSync(join(w.root, 'workspace/data/convert.md'), 'LEGACY_HOST_CANDIDATE');
-        const intent = 'Preserve total(values); next use replaces rebuilding the calculation.';
-        await h.call('write', { path: 'notes/convert.md', content: intent });
-        const head = await h.begin();
-        assert.doesNotMatch(head, /LEGACY_HOST_CANDIDATE/);
-        if (profile === 'baseline') {
-            assert.doesNotMatch(head, /CONVERT \(/);
-            assert.equal(h.rows('convert.jsonl').length, 0);
-        } else {
-            assert.ok(head.includes(`CONVERT (agent-authored; notes/convert.md):\n${intent}`));
-            const delivery = h.rows('convert.jsonl').at(-1);
-            assert.equal(delivery.owner, 'agent');
-            assert.equal(delivery.path, 'notes/convert.md');
-            assert.equal(delivery.shown_chars, intent.length);
-            assert.match(delivery.sha256, /^[a-f0-9]{64}$/);
-            await h.call('write', { path: 'notes/convert.md', content: 'Deferred: no remaining reuse.' });
-            const revised = await h.begin();
-            assert.match(revised, /Deferred: no remaining reuse/);
-            assert.ok(!revised.includes(intent));
-            await h.call('write', { path: 'notes/convert.md', content: 'x'.repeat(2100) });
-            assert.match(await h.begin(), /Read notes\/convert.md for the rest/);
-            assert.equal(h.rows('convert.jsonl').at(-1).shown_chars, 2000);
-        }
-        await h.call('write', { path: 'notes/convert.md', content: '' });
-        assert.doesNotMatch(await h.begin(), /CONVERT \(/);
+        const task = await h.begin();
+        assert.doesNotMatch(task, /SELF:|SELF REUSE|save checked reusable/i, 'task turn has no conversion cue');
+        assert.match(await h.act({ action: 'RESET' }), /RESET/);
+        const categoryContract = 'categories: strategies/plans, skills, tools, memory/lessons, subagents; skip any or all.';
+        const hook = await h.begin(`SELF_HARNESS_HOOK action_id=1. BEGIN COMPLETE ORDERED TASK TRACE\n{"n":1,"source":"harness.trajectory.jsonl"}\nFULL_TRACE_SENTINEL\nEND COMPLETE ORDERED TASK TRACE\n${categoryContract}`);
+        assert.match(hook, /HOOK RUNTIME FACTS/);
+        assert.match(hook, /FULL_TRACE_SENTINEL/, 'the hook projection keeps the supplied full trace');
+        assert.match(hook, /strategies\/plans.*skills.*tools.*memory\/lessons.*subagents/);
+        assert.match(hook, /"n":1/);
+        assert.doesNotMatch(hook, /arc_action|current grid|available actions/i);
+        assert.equal(h.rows('component_runs.jsonl').filter(row => row.kind === 'save').length, 0,
+            'a hook with no new function does not trigger host-side save');
+        assert.ok(!h.active().includes('arc_action'), 'hook has no environment action tool');
+        assert.ok(h.active().includes('self_component'));
+        assert.equal(h.schema('arc_action').properties.then.maxItems, 11, 'native then is bounded at eleven follow-up actions');
+        const afterSkip = await h.begin('Decide the next action.');
+        assert.ok(h.active().includes('arc_action'), 'a skipped hook returns control to Task');
+        assert.doesNotMatch(afterSkip, /SELF REUSE|SELF:/);
+        await h.call('python', { code: 'def shift(values, delta):\n    return [value + delta for value in values]\n' });
+        await h.call('python', { code: 'print(shift([3, 4], 2))' });
+        assert.match(await h.act({ action: 'RESET' }), /RESET/);
+        const saveHook = await h.begin(`SELF_HARNESS_HOOK action_id=2. BEGIN COMPLETE ORDERED TASK TRACE\n{"n":2,"source":"harness.trajectory.jsonl"}\n{"source":"pi.session.jsonl","tool":"python","code":"def shift(values, delta): return [value + delta for value in values]","result":"5, 6"}\n${categoryContract}`);
+        assert.match(saveHook, /HOOK RUNTIME FACTS/);
+        assert.match(saveHook, /"n":2/);
+        assert.match(saveHook, /shift\(values, delta\)/, 'the function creation reaches the hook');
+        assert.match(saveHook, /5, 6/, 'the first-use output reaches the hook');
+        assert.ok(!h.active().includes('arc_action'));
+        assert.match(await h.call('self_component', { name: 'increment', content:
+            'def run(state, args):\n    return {"value": args["value"] + 1}\n' }), /increment v1/);
+        await h.context([{ role: 'user', content: 'continue hook request' }]);
+        assert.ok(h.active().includes('increment'), 'saved version is registered for the next provider request');
+        assert.match(await h.call('increment', { args: { value: 8 } }), /9/);
+        const nextTask = await h.begin('Decide the next action.');
         assert.ok(h.active().includes('arc_action'));
-        if (profile !== 'native') {
-            const prototype = 'def total(values):\n    return sum(values)\n';
-            await h.call('python', { code: prototype + 'assert total([2, 3]) == 5\nvalues = [6, 7]\nprint(total(values))' });
-            const exported = await h.call('promote_session_function', { function: 'total' });
-            assert.match(exported, /source extracted; function not called or saved/);
-            assert.match(exported, /session dependencies: none detected/);
-            assert.ok(exported.includes(prototype.trim()));
-            assert.equal(h.file('workspace/tools/total.py'), '');
-            assert.match(await h.call('promote_session_function', { function: 'missing' }), /session function missing:/);
-            assert.ok(!h.schema('self_component').required.includes('kind'));
-            for (const kind of ['tool', 'memory', 'prompt', 'skill', 'subagent'])
-                assert.ok(JSON.stringify(h.schema('self_component').properties.kind).includes(`"${kind}"`));
-            assert.match(await h.call('self_component', { name: 'total', content:
-                prototype + 'def run(state, args):\n    return total(args.get("values", [6, 7]))\n' }), /SELF FEEDBACK: total v1: not called yet/);
-            assert.ok(h.active().includes('total'), 'save advertises the tool immediately');
-            const savedHead = await h.context([{ role: 'user', content: 'Decide the next action.' }]);
-            assert.doesNotMatch(savedHead[0].content[0].text, /SELF FEEDBACK:/, 'save does not rewrite the frozen head');
-            assert.match(await h.call('total', { args: { values: [1, 2] } }), /SELF FEEDBACK: total v1: 1 calls OK, 0 failed/,
-                'same-decision call returns feedback without rebuilding the head');
-            assert.match(await h.begin(), /SELF FEEDBACK: total v1: 1 calls OK, 0 failed/);
-            await h.act({ action: 'RESET' });
-            assert.match(await h.begin(), /total v1: 1 calls OK, 0 failed; 1 actions since save/);
-            assert.match(await h.call('total', { args: {} }), /13/);
-            assert.match(await h.call('total', { args: { values: [20, 22] } }), /42/);
-            assert.doesNotMatch(h.file('workspace/tools/total.py'), /values = /);
-            await h.call('total', { args: { values: null } });
-            assert.match(await h.begin(), /total v1: 3 calls OK, 1 failed/);
-            await h.call('self_component', { name: 'total', content: prototype + 'def run(state, args):\n    return total(args["values"])\n' });
-            assert.match(await h.begin(), /total v2: not called yet/);
-            assert.match(await h.call('total', { args: {} }), /values/);
-            assert.match(await h.call('total', { args: { values: [10, 11] } }), /21/);
-            assert.match(await h.begin(), /total v2: 1 calls OK, 1 failed/);
-            assert.match(await h.call('self_component', { name: 'total', content: 'def run(:' }), /NOT loaded/);
-            assert.match(await h.begin(), /total v2: 1 calls OK, 1 failed/, 'failed revision retains current version feedback');
-            await h.call('self_component', { name: 'broken', content: 'def run(:' });
-            assert.doesNotMatch(await h.begin(), /SELF FEEDBACK:.*broken/);
-            await h.call('self_component', { name: 'total', op: 'retire' });
-            assert.doesNotMatch(await h.begin(), /SELF FEEDBACK:/);
-        }
+        assert.ok(h.active().includes('increment'));
+        assert.doesNotMatch(nextTask, /SELF REUSE|SELF:/);
+        assert.ok(h.rows('self_harness_hook.jsonl').some(row => row.event === 'turn_start' && row.action_id === 1));
+        assert.ok(h.rows('self_harness_hook.jsonl').some(row => row.event === 'turn_start' && row.action_id === 2));
+        const shown = h.rows('self_harness_hook.jsonl').find(row => row.event === 'shown' && row.action_id === 2);
+        assert.match(shown.header, /independent self_harness_hook turn with a clean context/);
+        assert.match(shown.head_text, /FULL_TRACE_SENTINEL|harness\.trajectory\.jsonl/);
+        assert.match(shown.sha256, /^[a-f0-9]{64}$/);
+        assert.ok(!shown.tool_names.includes('arc_action'));
+    } finally {
+        await h.close(); w.server.close();
+        for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+        Object.assign(process.env, saved);
+    }
+});
+
+test('direct workspace skill and strategy writes bind on the next request and reject bad frontmatter without losing the last good version', async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { ARC_THIN_SELF_BASELINE: '1', ARC_THIN_SELF_CONVERT: '0', ARC_THIN_PROCESS: '0', ARC_THIN_DAEMON: '0' });
+    const w = await world(); const h = await attach(w);
+    try {
+        await h.begin();
+        const skillBody = '---\nname: probe\ndescription: A reusable check.\n---\nCheck the input, then compare the result.';
+        assert.match(await h.call('write', { path: 'skills/probe/SKILL.md', content: skillBody }), /skills\/probe\/SKILL\.md.*v1: saved/);
+        const next = await h.begin('Use any relevant saved method.');
+        assert.match(next, /skill probe v1 active: A reusable check.*read skills\/probe\/SKILL\.md/);
+        assert.match(await h.call('read', { path: 'skills/probe/SKILL.md' }), /A reusable check/);
+
+        const strategy = '---\nactive: true\n---\nDIRECT_STRATEGY_FOR_NEXT_DECISION';
+        assert.match(await h.call('write', { path: 'prompts/strategy.md', content: strategy }), /prompts\/strategy\.md.*v1: saved/);
+        assert.match(await h.begin('Make the next decision.'), /DIRECT_STRATEGY_FOR_NEXT_DECISION/);
+
+        const badReceipt = await h.call('write', { path: 'skills/probe/SKILL.md', content: '---\nname: wrong\ndescription: broken\n---\nBAD' });
+        assert.match(badReceipt, /NOT loaded/);
+        const afterFailure = await h.begin('Continue.');
+        assert.match(afterFailure, /skill probe v1 active \(v2 failed\): A reusable check/);
+        assert.match(await h.call('read', { path: 'skills/probe/SKILL.md' }), /name: wrong/);
     } finally {
         await h.close(); w.server.close();
         for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];

@@ -21,6 +21,7 @@ test('B: parent Python save records creation separately from a later component c
   try {
     const result = await runtime.python('print(6 * 7)', undefined, false, 'answer');
     assert.match(result.content[0].text, /saved.*loaded/);
+    assert.match(result.content[1].text, /Next request: call answer\(args=\{\}\) to run the saved version/);
     const rows = readFileSync(join(root, '.harness/components.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(rows.some(r => r.path === 'tools/answer.py' && r.by === 'agent' && r.kind === 'tool' && r.layer === 'self' && !r.error));
     assert.equal(logs.filter(r => r.kind === 'tool').length, 0, 'saving/running the cell is not a saved tool call');
@@ -75,12 +76,13 @@ test('short window check appears once after repeated nonacting Python work and r
   } finally { runtime.close(); }
 });
 
-test('conversion cue survives a shortened result, stays once per decision, and excludes readonly work', async () => {
+test('ordinary task Python calls do not receive a conversion cue', async () => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-convert-cue-')));
   let decision = 1;
   const logs: any[] = [];
   const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
     state: () => ({}), level: () => 0, actionCount: () => 0, decision: () => decision, selfBaseline: true,
+    pythonSession: false,
     workMemory: false, receipt: () => 'SHORTENED OUTPUT',
     log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
   const run = (name: string, readonly = false) => runtime.python(`def ${name}(items):\n    return sum(items)\nprint('x' * 10000)`, undefined, readonly);
@@ -88,13 +90,30 @@ test('conversion cue survives a shortened result, stays once per decision, and e
     await run('subtotal');
     const repeated = await run('renamed_subtotal');
     assert.match(repeated.content[0].text, /^SHORTENED OUTPUT/);
-    assert.match(repeated.content[1].text, /SELF REUSE:.*promote_session_function.*self_component/);
+    assert.doesNotMatch(repeated.content.map((part: any) => part.text ?? '').join('\n'), /SELF REUSE/);
     assert.equal((await run('third_subtotal')).content.length, 1);
     decision = 2;
     assert.equal((await run('readonly_subtotal', true)).content.length, 1);
-    assert.equal((await run('later_subtotal')).content.length, 2);
+    assert.equal((await run('later_subtotal')).content.length, 1);
     assert.equal(logs.filter(row => row.kind === 'save').length, 0);
-    assert.equal(logs.filter(row => row.kind === 'conversion_hint').length, 2);
+    assert.equal(logs.filter(row => row.kind === 'conversion_hint').length, 0);
+  } finally { runtime.close(); }
+});
+
+test('ordinary task session function reuse does not emit conversion guidance', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-prototype-cue-')));
+  const logs: any[] = [];
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
+    state: () => ({}), level: () => 0, actionCount: () => 0, decision: () => 1, selfBaseline: true,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    const defined = await runtime.python('def shift_rows(rows, delta):\n    return [row + delta for row in rows]');
+    assert.doesNotMatch(defined.content.map((part: any) => part.text ?? '').join('\n'), /SELF REUSE/);
+    const firstUse = await runtime.python("result = shift_rows([1, 2], 3)\nprint('first', result[0])");
+    assert.doesNotMatch(firstUse.content.map((part: any) => part.text ?? '').join('\n'), /SELF REUSE/);
+    const reused = await runtime.python("rows = shift_rows([4, 5], 2)\nprint('last', rows[-1])\nprint('count', len(rows))");
+    assert.doesNotMatch(reused.content.map((part: any) => part.text ?? '').join('\n'), /SELF REUSE/);
+    assert.deepEqual(logs.filter(row => row.kind === 'conversion_hint'), []);
   } finally { runtime.close(); }
 });
 

@@ -37,7 +37,7 @@ export function codeShape(code: string): CodeShape {
     gist: gist.length > 60 ? gist.slice(0, 59) + '…' : gist };
 }
 
-export type PythonRun = CodeShape & { level: number; kit: string; decision?: number; n?: number; code?: string };
+export type PythonRun = CodeShape & { level: number; kit: string; decision?: number; n?: number; code?: string; ok?: boolean; used?: string[] };
 /** A saved component's line structures. */
 export type ComponentLines = { path: string; lines: Set<string> };
 export const componentLines = (path: string, source: string): ComponentLines => ({ path, lines: new Set(codeShape(source).struct) });

@@ -25,6 +25,61 @@ def test_three_isolated_faults_have_independent_recovery_allowances():
     assert len(aborts) == stats['idle_recoveries'] == 3
 
 
+def test_decision_timeout_is_observable_and_recovers_after_settlement():
+    stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0,
+                 decision_timeouts=0, decision_recoveries=0)
+    aborts = []
+    kernel = SimpleNamespace(abort=lambda: aborts.append(1),
+        wait_for_agent_events=lambda **kw: [{'type':'agent_settled'}])
+    calls = []
+    def turn(message):
+        calls.append(message)
+        if len(calls) == 1:
+            raise runner.PiDecisionTimeout('timed out waiting for Pi agent turn')
+        return [{'type':'agent_settled'}]
+
+    result = runner._recover_native_turn(turn, 'DECIDE', kernel, stats, lambda: False)
+
+    assert result == [{'type':'agent_settled'}]
+    assert calls[1].startswith('RECOVER TURN.')
+    assert aborts == [1]
+    assert stats['decision_timeouts'] == stats['decision_recoveries'] == 1
+    assert stats['idle_timeouts'] == stats['idle_recoveries'] == 0
+
+
+def test_decision_timeout_with_committed_action_does_not_repeat_the_action():
+    stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0,
+                 decision_timeouts=0, decision_recoveries=0)
+    kernel = SimpleNamespace(abort=lambda: None,
+        wait_for_agent_events=lambda **kw: [{'type':'agent_settled'}])
+    calls = []
+    def turn(message):
+        calls.append(message)
+        raise runner.PiDecisionTimeout('timed out waiting for Pi agent turn')
+
+    events = runner._recover_native_turn(turn, 'DECIDE', kernel, stats, lambda: True)
+
+    assert len(calls) == 1
+    assert events == [{'type':'agent_settled'}]
+    assert stats['decision_timeouts'] == 1
+    assert stats['decision_recoveries'] == 0
+
+
+def test_experiment_deadline_timeout_is_not_reclassified_as_turn_recovery():
+    stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0,
+                 decision_timeouts=0, decision_recoveries=0)
+    aborts = []
+    kernel = SimpleNamespace(abort=lambda: aborts.append(1))
+    def turn(message):
+        raise TimeoutError('experiment deadline elapsed')
+
+    with pytest.raises(TimeoutError, match='experiment deadline'):
+        runner._recover_native_turn(turn, 'DECIDE', kernel, stats, lambda: False)
+
+    assert aborts == []
+    assert stats['decision_timeouts'] == stats['decision_recoveries'] == 0
+
+
 def test_permanent_fault_is_finite_and_committed_action_needs_no_new_model_request():
     stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0)
     kernel = SimpleNamespace(abort=lambda: None,

@@ -31,6 +31,7 @@ import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
 import { Workspace } from "./arc_thin_workspace.ts";
+import { gitTool } from "./arc_thin_git.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
@@ -728,6 +729,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	type Run = {
 		consolidating: boolean; forceAction: boolean; assistantMessages: number; toolCalls: number; arcSeenInMessage: number;
 		daemonResponse: boolean; daemonReplied: boolean; daemonState?: DaemonState;
+		hookTurn: boolean; hookActionId?: number; hookActionIds?: number[]; hookBatchId?: string; hookShown: boolean;
 		/** A review after a level change (the runner's "LEVEL REVIEW" prompt): the level record, at most LEVEL_REVIEW_CALLS calls. */
 		levelReview: boolean;
 		/** A review after many actions without a level completed (the runner's "STALL REVIEW" prompt): the level so far. */
@@ -768,13 +770,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
-		daemonResponse: false, daemonReplied: false,
+		daemonResponse: false, daemonReplied: false, hookTurn: false, hookShown: false,
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
 		refinePoint: false, refineCalled: false, consultPoint: false, consultAttempted: false, consulted: false, reviewSaved: false,
 	});
 	let run = freshRun();
+	let hookSystemHeader = '';
 	/**
 	 * ARC_THIN_OBSERVATION=ch: the actions since the last decision's prompt (its OBSERVATIONS SINCE LAST QUERY), those the
 	 * current decision shows (python's state["observations"]), and the counter of action-list ids.
@@ -1187,7 +1190,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
 				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
 				...(seen ? { images: seen.images.length, rendered_grids: seen.labels } : {}),
-				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body, ...(tail ? { tail } : {}),
+				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16),
+				text: body, observation_text: stateText, ...(board ? { board_text: board } : {}), ...(tail ? { tail } : {}),
+				// Persist the exact visual observations shown to Task so a later clean hook can replay them whole.
+				observation_images: seen?.images ?? (image ? [image] : []),
 			});
 		} catch (error) { logError("context:working_set", error); }
 		return { text: `${body}\n\n${stateText}${board && !contextLayout ? `\n\n${board}` : ""}`, image,
@@ -1564,6 +1570,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       nativeRuntime.register();
       if (run.daemonResponse) {
         pi.setActiveTools(['read', 'write', 'edit', 'daemon_reply']);
+        return;
+      }
+      if (run.hookTurn) {
+        pi.setActiveTools(['python', 'read', 'write', 'edit', ...(selfBaseline ? ['self_component', 'promote_session_function'] : []),
+          ...nativeRuntime.toolNames()]);
         return;
       }
       // Keep the core list fixed; newly saved tools and a saved subagent's consult enter on the next provider request.
@@ -3088,6 +3099,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
+		if (run.hookTurn && name === 'arc_action') return { reason: 'self_harness_hook has no environment actions', terminate: true };
 		if (run.daemonReplied) return { reason: "daemon response completed; Task resumes in the next turn", terminate: true };
 		if (run.daemonResponse) {
 			if (name === "arc_action") return { reason: "no environment action during a daemon response", terminate: true };
@@ -3228,7 +3240,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63, description: TAKE_ACTIONS_TEXT.y })),
 					// A malformed prediction is dropped before validation (repairActionList), never a reason to reject the action.
 					...(control ? {} : { predict: Type.Optional(Type.Unknown()) }),
-				}), { minItems: 1, description: TAKE_ACTIONS_TEXT.actions }),
+				}), { minItems: 1, maxItems: THEN_STEPS + 1, description: `Submit up to ${THEN_STEPS + 1} actions; every executed action receives a receipt.` }),
 				...(control ? {} : { predict_skill: Type.Optional(Type.String({ maxLength: 40 })) }),
 				...(ledgerOn ? { idea: Type.Optional(Type.String()) } : {}),
 			}),
@@ -3286,10 +3298,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "arc_action",
 			label: "ARC action",
-			description: `Submit one available action and end this decision.${hasCoordinates ? " ACTION6 accepts x,y." : ""} ` +
+			description: `Submit one available action and end this decision. Optional then carries up to ${THEN_STEPS} further actions; each receives a receipt.${hasCoordinates ? " ACTION6 accepts x,y." : ""} ` +
 				// Environment fact, checked in the bridge and the recorded runs: RESET is counted like any action.
 				(actions.includes("RESET") ? "RESET returns the level to its starting grid and counts as one action against both budgets. " : "") +
-				(native ? `then: up to ${THEN_STEPS} further actions played in order after it, stopping at a missed prediction, a level change or the game's end. ` : "") +
+			(native ? `The completed action sequence is followed by one separate self-harness hook. ` : "") +
 				"Optional note, prediction and memory/idea updates are recorded for the next decision.",
 			parameters: Type.Object({
 				action: StringEnum(actions),
@@ -3297,14 +3309,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
 					y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })),
 				} : {}),
+				then: Type.Optional(Type.Array(Type.Object({
+					action: StringEnum(actions),
+					...(hasCoordinates ? { x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })), y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })) } : {}),
+					...(control ? {} : { predict: Type.Optional(predictionSchema()) }),
+				}), { maxItems: THEN_STEPS })),
 				// Continual Harness's take_actions: a planned sequence costs one decision, not one per action.
-				...(native ? {
-					then: Type.Optional(Type.Array(Type.Object({
-						action: StringEnum(actions),
-						...(hasCoordinates ? { x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })), y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })) } : {}),
-						predict: Type.Optional(Type.Unknown()),
-					}), { maxItems: THEN_STEPS })),
-				} : {}),
 				note: Type.Optional(Type.String({ maxLength: 300 })),
 				// A malformed prediction is dropped before validation (repairActionArguments), never a reason to reject the action.
 				...(control ? {} : {
@@ -3323,7 +3333,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				predict?: Prediction; predict_skill?: string;
 				then?: Array<{ action: string; x?: number; y?: number; predict?: Prediction }>;
 			}) => {
-				const done = await submitAction({ ...params, action: namedAction(params) });
+				const batchId = mintBatchId();
+				const planned = [params, ...(params.then ?? [])].slice(0, THEN_STEPS + 1);
+				const done = await submitAction({ ...params, action: namedAction(params) }, undefined,
+					{ batchId, batchPosition: 1, batchTotal: planned.length });
 				if ("refusal" in done) {
 					if (done.environment) return refused(done.refusal);
 					throw new Refusal(done.refusal);
@@ -3331,19 +3344,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const row = done.row;
 				const lines = [`${actionLine(row)}${predictionClause(row)}`];
 				// Further planned actions, each through the same path; the plan stops once what it assumed no longer holds.
-				const steps = native ? (params.then ?? []).slice(0, THEN_STEPS) : [];
+				const steps: Array<{ action: string; x?: number; y?: number; predict?: Prediction }> = planned.slice(1);
 				let last = row, played = 0, stopped: string | undefined;
 				for (const step of steps) {
 					stopped = sequenceStop(last);
 					if (stopped) break;
 					const next = await submitAction({ action: namedAction(step), ...(step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : {}),
-						note: `then ${played + 1} of ${steps.length}`, ...(step.predict ? { predict: step.predict } : {}) });
+						note: `then ${played + 1} of ${steps.length}`, ...(step.predict ? { predict: step.predict } : {}) }, undefined,
+						{ batchId, batchPosition: played + 2, batchTotal: planned.length });
 					if ("refusal" in next) { stopped = next.refusal; break; }
 					last = next.row; played += 1;
 					lines.push(`${actionLine(last)}${predictionClause(last)}`);
 				}
 				if (played < steps.length) lines.push(`then: ${played} of ${steps.length} played; stopped: ${stopped}.`);
-				if (steps.length) append("action_sequences.jsonl", { decision, n: row.n, planned: steps.length + 1, played: played + 1, stopped: stopped ?? null });
+				if (steps.length) append("action_sequences.jsonl", { decision, n: row.n, batch_id: batchId, planned: steps.length + 1, played: played + 1, stopped: stopped ?? null });
 				// The strategy's pinned next experiment, once overdue (P3: its expected move not played within its window).
 				const overdue = COVERAGE ? pinNag() : "";
 				if (overdue) { lines.push(overdue); append("refiner.jsonl", { kind: "next_overdue", edit: pin?.edit, at: trajectory.length, decision }); }
@@ -3420,6 +3434,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
 	}, via?: string, meta: { batchId?: string; batchPosition?: number; batchTotal?: number; rejected?: RejectedStep[] } = {}):
 		Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
+		if (run.hookTurn) return { refusal: 'self_harness_hook cannot submit environment actions' };
 		const available = availableActions(observation);
 		const previous = trajectory.at(-1);
 		if (!available.includes(params.action))
@@ -3513,14 +3528,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			state: String(value.state ?? "UNKNOWN"),
 			levels_completed: Number(value.levels_completed ?? 0),
 			budget: value.action_budget ?? null,
+			...(meta.batchId ? { batch_id: meta.batchId, batch_position: meta.batchPosition, batch_total: meta.batchTotal } : {}),
 			// Continual Harness's step record (ARC_THIN_OBSERVATION=ch): source, list position, the state before, and the change.
 			...(chView ? {
-				source: via ? (via === "python" ? "python" : `tool: ${via.replace(/^tools\//, "").replace(/\.py$/, "")}`) : "arc_action",
-				...(meta.batchId ? { batch_id: meta.batchId, batch_position: meta.batchPosition, batch_total: meta.batchTotal } : {}),
-				...(meta.rejected?.length ? { batch_rejected: meta.rejected } : {}),
-				state_before: String(before?.state ?? "UNKNOWN"), levels_before: Number(before?.levels_completed ?? 0),
-				grid_change: summarizeGridTransitions(beforeGrid, afterGrid), grid_delta: computeGridDelta(beforeGrid, afterGrid),
-			} : {}),
+                state_before: String(before?.state ?? "UNKNOWN"), levels_before: Number(before?.levels_completed ?? 0),
+                grid_change: summarizeGridTransitions(beforeGrid, afterGrid), grid_delta: computeGridDelta(beforeGrid, afterGrid),
+            } : {}),
 		};
 		// Check what the agent, or the skill it named, said this action would produce, against what came back.
 		const outcome: Outcome = { before: beforeGrid, after: afterGrid, level_changed: row.level_changed, state: row.state };
@@ -3615,13 +3628,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			batch = { batchId: codeBatch, batchPosition: Math.max(1, position), batchTotal: Math.max(1, total) };
 		}
 		const predict = call.predict === undefined ? undefined : normalizePrediction(call.predict);
-		const done = await submitAction({ action, ...(x !== undefined && y !== undefined ? { x, y } : {}), note: `by ${via}`, ...(predict ? { predict } : {}) }, via, batch);
+		const codeBatchId = chView ? codeBatch?.batchId : mintBatchId();
+		const done = await submitAction({ action, ...(x !== undefined && y !== undefined ? { x, y } : {}), note: `by ${via}`, ...(predict ? { predict } : {}) }, via, chView ? batch : { batchId: codeBatchId!, batchPosition: 1, batchTotal: 1 });
 		if ("refusal" in done) return { stopped: done.refusal };
 		const row = done.row;
+		actingStopped = undefined;
 		const missed = Boolean(row.prediction?.fields.some((field) => field.hit === false));
 		append("played_actions.jsonl", { decision, via, n: row.n, action: actionLabel(row), changed_cells: row.changed_cells, missed });
 		if (row.level_changed) actingStopped = "the level changed";
 		else if (/^(GAME_OVER|WIN|FINISHED)$/.test(row.state)) actingStopped = `state ${row.state}`;
+		else if (missed) actingStopped = `prediction missed at #${row.n}`;
 		return {
 			line: `${actionLine(row)}${predictionClause(row)}`,
 			observation: {
@@ -3655,7 +3671,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     if (!scope) throw new Refusal('maintenance writes must target a Self component or prompts/process/ rule');
     return { scope, workspace: maintenanceWorkspaces()[scope] };
   };
-  if (workspace) for (const tool of workspace.fileTools()) pi.registerTool({ ...tool,
+  if (workspace) for (const tool of [...workspace.fileTools(), gitTool(workspace)]) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
       const path = posix.normalize(String((params as any)?.path ?? '').replace(/\\/g, '/'));
       if (run.daemonResponse) {
@@ -3821,7 +3837,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (selfBaseline) pi.registerTool({
 			name: "promote_session_function",
 			label: "Promote session function",
-			description: "Extract your named logic prototype from the current Python session for possible Self reuse. Returns its exact source and external names; it does not call or publish the function. Adapt session/runtime dependencies before saving with self_component(kind=\"tool\", ...).",
+			description: "Extract your named logic prototype from the current Python session for possible reuse. Returns its exact source and external names; it does not call or publish the function. Adapt session/runtime dependencies before writing a workspace file.",
 			parameters: Type.Object({ function: Type.String({ pattern: "^[a-zA-Z_][a-zA-Z0-9_]{0,79}$" }) }),
 			execute: guardTool("promote_session_function", async (params: { function: string }) => {
 				const result = await nativeRuntime!.sessionFunction(params.function);
@@ -3835,14 +3851,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					`unresolved names: ${info.unresolved_names.join(", ") || "none detected"}`,
 					`mechanically portable: ${info.portable ? "yes; still adapt to the Self tool contract" : "no; adapt the listed dependencies or keep it session-local"}`,
 					`exact source:\n\`\`\`python\n${info.source}\n\`\`\``,
-					`To publish, keep the prototype parameterized and include its dependencies; add a run(state,args) adapter that binds current inputs, then save the adapted code with self_component(kind="tool", name="..."). The original session function remains available.`].join("\n"));
+					`To publish, keep the prototype parameterized and include its dependencies; add a run(state,args) adapter that binds current inputs, then write/edit tools/NAME.py. The original session function remains available.`].join("\n"));
 			}),
 		});
 
 		if (selfBaseline) pi.registerTool({
 			name: "self_component",
 			label: "Self component",
-			description: "Save checked task logic now: self_component(name, content) defaults to a Python tool. Include dependencies and run(state,args); call the saved name with args on the next request. Use kind for memory, prompt, skill or subagent. Retire by name when no longer useful.",
+			description: "Compatibility path for older saved components. For new reusable methods or strategy, directly write/edit prompts/strategy.md, skills/NAME/SKILL.md, or agents/NAME.md; Binder validates and versions workspace writes. A saved skill can be read by exact path; consult a saved agent only when useful. Retire an old component when evidence says it is no longer useful.",
 			parameters: Type.Object({
 				kind: Type.Optional(StringEnum(["tool", "memory", "prompt", "skill", "subagent"] as const)),
 				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),
@@ -4234,6 +4250,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       writeFileSync(migrationMarker, JSON.stringify({ migrated, at: new Date().toISOString() }) + '\n');
     }
     nativeRuntime = new NativeRuntime({ pi, workspace, binder,
+		hookTurn: () => run.hookTurn,
       state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
@@ -4373,6 +4390,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
 		const prompt = String(event.prompt ?? "").trimStart();
+		run.hookTurn = /^SELF_HARNESS_HOOK\b/.test(prompt);
+			run.hookActionIds = run.hookTurn ? (prompt.match(/action_ids=([\d,]+)/)?.[1].split(',').map(Number) ?? []) : undefined;
+			run.hookActionId = run.hookTurn ? Number(prompt.match(/action_id=(\d+)/)?.[1] ?? run.hookActionIds?.[0]) : undefined;
+			run.hookBatchId = run.hookTurn ? prompt.match(/batch_id=([^\s]+)/)?.[1] : undefined;
+		if (run.hookTurn) append('self_harness_hook.jsonl', { event: 'turn_start', phase: 'self_harness_hook',
+			action_id: run.hookActionId ?? 'unknown', turn_id: `self_harness_hook:${run.hookActionId ?? 'unknown'}`,
+			request_id: randomBytes(8).toString('hex'), decision });
 		const maintenancePrompt = daemonOn && /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
 		const reviewing = /^(CONSOLIDATE|RECOVER CONSOLIDATION|LEVEL REVIEW|RECOVER LEVEL REVIEW|STALL REVIEW|RECOVER STALL REVIEW|DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
 		// A Task refinement already running may still commit a file or memory edit. Finish it at this safe
@@ -4411,6 +4435,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.endedAt = 0;
 			append('continuations.jsonl', {decision, n: trajectory.length, reason: 'provider length', tool_calls: run.toolCalls});
 		}
+		run.hookTurn = /^SELF_HARNESS_HOOK\b/.test(prompt);
+		run.hookActionIds = run.hookTurn ? (prompt.match(/action_ids=([\d,]+)/)?.[1].split(',').map(Number) ?? []) : undefined;
+		run.hookActionId = run.hookTurn ? Number(prompt.match(/action_id=(\d+)/)?.[1] ?? run.hookActionIds?.[0]) : undefined;
+		run.hookBatchId = run.hookTurn ? prompt.match(/batch_id=([^\s]+)/)?.[1] : undefined;
 		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…"; after a level change
 		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…"; after many actions without a level, "STALL REVIEW…" and
 		// "RECOVER STALL REVIEW…".
@@ -4447,11 +4475,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			reviewedThrough = trajectory.length;
 		}
 		toolsReady = true;
-		if (control || run.forceAction && !native) pi.setActiveTools(["arc_action"]);
+		if (run.hookTurn) refreshSkillSurface();
+		else if (control || run.forceAction && !native) pi.setActiveTools(["arc_action"]);
 		else refreshSkillSurface(run.consolidating
 			? CONSOLIDATION_TOOLS
 			: (expandedDecisionTools ? EXPANDED_DECISION_TOOLS : DECISION_TOOLS));
-		if (!run.daemonResponse) {
+		if (!run.daemonResponse && !run.hookTurn) {
 			try { observation = await bridgeCall("/state"); }
 			catch (error) { observation = undefined; logError("before_agent_start:/state", error, true); }
 		}
@@ -4472,7 +4501,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			decisionObservations = pendingObservations;
 			pendingObservations = [];
 		}
-		if (!run.daemonResponse) {
+		if (!run.daemonResponse && !run.hookTurn) {
 		refreshActionSurface();
 		recordState(trajectory.length, gridOf(observation));
 		// Model skills are checked on the transition just recorded (incremental; failures leave the decision unchanged).
@@ -4487,7 +4516,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			catch (error) { logError("memory:file", error); }
 		}
 		} else { ledgerText = ""; criticText = ""; }
-		const systemPrompt = selfBaseline ? renderPrompt('arc_thin_self_baseline.md', { game,
+		const systemPrompt = run.hookTurn
+			? 'You are in an independent self_harness_hook turn with a clean context. The user message contains the complete persisted task trace and a short direct-file authoring hint. Use only the supplied trace and current component/budget facts; do not rely on earlier task dialogue or summaries. Write/edit workspace files directly if useful; Binder validates and versions them. Do not choose an environment action.'
+			: selfBaseline ? renderPrompt('arc_thin_self_baseline.md', { game,
 			convert: selfConvert ? 'Your optional notes/convert.md is delivered in the next decision. Write/edit it to carry unfinished conversion intent; clear it when completed, abandoned or stale.' : 'Conversion needs no separate mode or note. Optional notes/convert.md is not automatically delivered in this run.',
 			arc: chView ? loadPrompt("arc_thin_native_ch_arc.md") : "" }) : native && !control ? renderPrompt('arc_thin_native_system.md', { game,
       observation: chView ? "the game as described under INPUT FORMAT below" : queryObservation
@@ -4495,10 +4526,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         : "current grid" + (ctx.model?.input?.includes('image') ? " and its PNG" : ""),
       // ARC_THIN_OBSERVATION=ch: arc_action takes CH's action list, and the ARC information CH's system instruction gives
       // (input format, coordinates, the action key, the game setting) closes the prompt (arc_thin_native_ch_arc.md).
-      acting: chView ? "arc_action, which plays its list of actions in order, or Python calling env.act"
-        : "arc_action, whose then list plays further actions, or Python calling env.act",
-      predict_on: chView ? "on each entry of arc_action's list and on env.act" : "on arc_action, on each step of its then list, and on env.act",
-      list_stop: chView ? "An action list" : "A then list",
+		acting: "arc_action for one action per request, or Python calling env.act",
+		predict_on: "on arc_action or env.act",
+		list_stop: "An action list",
       arc: chView ? loadPrompt("arc_thin_native_ch_arc.md") : "",
       // What of a decision's own thinking comes back to it on its next call, and what the agent must write to keep the
       // rest. The requirement is a short field block the agent authors; nothing summarises or rewrites its reasoning.
@@ -4529,6 +4559,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					: "Earlier conversation and unsaved reasoning are not carried forward.",
 			});
 		const rendered = (native && !consultTool ? systemPrompt.replace(/^- Subagent:.*\r?\n/m, "") : systemPrompt).trimEnd() + "\n";
+		if (run.hookTurn) hookSystemHeader = systemPrompt;
 		systemChars = rendered.length;
     if (native) {
       event.systemPromptOptions.customPrompt = rendered;
@@ -4536,7 +4567,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // The active prompts are taken once per decision: the system prompt is the first thing in every request, and a
       // change mid-decision made each later request of that decision miss the provider's cache (pr-01, 2026-10-14). With
       // contextLayout they are in the head instead (built once per decision), and the system prompt has no sections.
-      decisionPrompts = promptSections();
+		decisionPrompts = run.hookTurn ? {} : promptSections();
 		if (!contextLayout) for (const prompt of binder?.active().filter(c => c.kind === 'prompt') ?? [])
 					event.systemPromptOptions.sections[`prompt_${prompt.name.replace(/[^a-zA-Z0-9_]/g, '_')}`] = prompt.path.startsWith('prompts/process/')
 						? stripMetaReviewControlLines(prompt.body!) : prompt.body!;
@@ -4605,7 +4636,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (binder && !run.daemonResponse) binder.boundary();
     // A view that became active at this boundary runs on the current state now, not only after the next action
     // (2026-10-13: a refinement's view showed nothing while the agent deliberated). Runs already done are skipped.
-		if (nativeRuntime && !run.daemonResponse) nativeRuntime.observe(trajectory.length);
+		if (nativeRuntime && !run.daemonResponse && !run.hookTurn) nativeRuntime.observe(trajectory.length);
 		const messages: any[] = event.messages ?? [];
 		const lastUser = native ? nativeDecisionStart(messages) : messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
@@ -4623,13 +4654,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
 		const headKey = `${decision}:${lastUser}`;
 		if (!native || run.headKey !== headKey) {
-			if (native && workspace && !run.daemonResponse) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
-			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
-			const taskSelf = native && !control && !run.daemonResponse && !run.consolidating && !run.levelReview && !run.stallReview;
-			const selfEntry = !taskSelf ? '' : selfBaseline
-				? 'SELF: Save checked reusable task logic by default, especially after repeats: self_component(name, content) saves a tool; promote_session_function extracts source to adapt. Call the saved name with new inputs. You own the choice and contract; one-offs or no remaining use can skip without a report.'
-				: 'SELF: Save checked reusable task logic by default, especially after repeats, with python(save=...) or writable component files. Call the saved version with new inputs. You own the choice and contract; one-offs or no remaining use can skip without a report.';
-			const capabilities = binder ? [selfEntry, taskSelf ? nativeRuntime?.selfFeedbackText() : '', binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),
+			if (native && workspace && !run.daemonResponse && !run.hookTurn) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
+			if (!run.hookTurn && (native || !run.workingSet)) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
+			const taskSelf = native && !run.hookTurn && !control && !run.daemonResponse && !run.consolidating && !run.levelReview && !run.stallReview;
+			const selfEntry = '';
+			const hookRows = run.hookTurn ? trajectory.filter(item => (run.hookActionIds?.length ? run.hookActionIds : [run.hookActionId]).includes(item.n)) : [];
+			const hookRow = hookRows.at(-1);
+			const hookFacts = run.hookTurn ? `HOOK RUNTIME FACTS (not a replacement for the full trace above)\n` +
+				`component versions=${binder?.index(currentLevel(), undefined, undefined, true) ?? 'unknown'}\n` +
+				`remaining action budget=${clipJson(hookRow?.budget ?? 'unknown', 300)}; time/token budget supplied by runner when available\n` : '';
+			const capabilities = binder ? [selfEntry, hookFacts, run.hookTurn ? nativeRuntime?.selfFeedbackText() : '', run.hookTurn ? '' : binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),
 				nativeRuntime && !run.daemonResponse ? await nativeRuntime.observerText() : '',
 				nativeRuntime && !run.daemonResponse && !selfBaseline ? await nativeRuntime.loopDecisionText() : '',
 				run.daemonResponse || selfBaseline ? '' : metaTrialDecisionText(),
@@ -4637,16 +4671,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.head = {
 				...user,
 				content: [
-					{ type: "text", text: `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
-					...(run.workingSet!.images ?? (run.workingSet!.image ? [run.workingSet!.image] : [])),
-					...(run.workingSet!.tail ? [{ type: "text", text: run.workingSet!.tail }] : []),
+					{ type: "text", text: run.hookTurn ? `${messageText(user)}\n\n${hookFacts}` : `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
+					...(!run.hookTurn ? (run.workingSet!.images ?? (run.workingSet!.image ? [run.workingSet!.image] : [])) : []),
+					...(!run.hookTurn && run.workingSet!.tail ? [{ type: "text", text: run.workingSet!.tail }] : []),
 				],
 			};
 			run.headKey = headKey;
 		}
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? earlier.filter((message) => message?.role === "compactionSummary").slice(-1) : [];
-		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(earlier, true)
+		const history = run.hookTurn ? [] : native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(earlier, true)
 			: freezeHistory(earlier, { resultChars: historyResultChars, collapseRepeats, references: workMemory, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
@@ -4666,6 +4700,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'fields' | 'none' : 'none',
         fullResults: 2, carryChars: carryFieldChars, ...(archiveResults && !run.daemonResponse ? { archive: archiveResult } : {}) })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
+		if (run.hookTurn) {
+			const shownHead = `${hookSystemHeader}\n${messageText(head)}`;
+			if (!run.hookShown) { run.hookShown = true; append('self_harness_hook.jsonl', { event: 'shown', phase: 'self_harness_hook', action_id: run.hookActionId ?? 'unknown',
+				turn_id: `self_harness_hook:${run.hookActionId ?? 'unknown'}`, header: hookSystemHeader,
+				head_text: messageText(head), head_excerpt: clipText(messageText(head), 6000),
+				sha256: createHash('sha256').update(shownHead).digest('hex'), tool_names: pi.getActiveTools().filter(name => name !== 'arc_action') }); }
+		}
 		lastContextChars = projected.reduce((n, message) => n + messageText(message).length, 0) + systemChars;
 		// Developer-only accounting, never added to the model context.
 		// JSON characters exclude image bytes and are not a tokenizer estimate.
@@ -4780,6 +4821,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const said = pick("thinking", "thinking") || pick("text", "text");
 			if (said) run.reasoning.push(said);
 		}
+		if (!run.hookTurn) append('self_harness_task_facts.jsonl', { kind: 'assistant', decision, n: trajectory.length,
+			text: clipText(blocks.filter(block => block?.type === 'text').map(block => String(block.text ?? '')).join('\n'), 1000),
+			tool_calls: blocks.filter(block => block?.type === 'toolCall').map(block => block.name).slice(0, 12) });
 		for (const block of blocks) if (block?.type === "thinking" && typeof block.thinking === "string") {
 			const counted = coordinateSentences(block.thinking);
 			run.reasoningSentences += counted.sentences; run.coordinateSentences += counted.coordinate;
@@ -4791,11 +4835,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// Refusals returned as terminating results are still errors to the model.
 	pi.on("tool_result", guard("tool_result", (event: any) =>
 		(event.details as { refused?: boolean } | undefined)?.refused ? { isError: true } : undefined));
-  if (workspace) pi.on('tool_result', (event: any) => {
+	if (workspace) pi.on('tool_result', (event: any) => {
     // Exact readback is explicitly ranged by the caller; do not replace it with another receipt. An unranged read is
     // capped like any other result and points back at the file itself (kernel-02: one unranged read of an 18k-char
     // result was re-sent in six requests).
-    if (event.toolName === 'read' && (event.input?.offset != null || event.input?.limit != null)) return;
+		if (!run.hookTurn) append('self_harness_task_facts.jsonl', { kind: 'tool', decision, n: trajectory.length,
+			tool: event.toolName ?? 'unknown', input: clipJson(event.input ?? 'unknown', 700),
+			output: clipText((Array.isArray(event.content) ? event.content : []).filter((block: any) => block?.type === 'text')
+				.map((block: any) => String(block.text ?? '')).join('\n'), 900), is_error: Boolean(event.isError) });
+		if (event.toolName === 'read' && (event.input?.offset != null || event.input?.limit != null)) return;
     const source = event.toolName === 'read' ? String(event.input?.path ?? '').replace(/\\/g, '/') || undefined : undefined;
     const content = event.content.map((block: any) => block.type === 'text'
       ? { ...block, text: workspace.receipt(block.text, event.isError ? 'error' : 'ok', [], source) } : block);

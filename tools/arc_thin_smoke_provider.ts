@@ -410,6 +410,16 @@ const SELF_BASELINE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'notes/convert.md', content: '' }]] },
   act('ACTION2'),
 ];
+const SELF_HOOK_SCRIPT: Step[] = [
+  { kind: 'decide', think: 'SELF_HOOK_ANALYSIS_MARK: the calculation is checked; compare action receipts before retaining anything.',
+    calls: [['python', { code: 'print(sum([2, 3, 5]))' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', then: [{ action: 'ACTION4' }, { action: 'ACTION2' }], note: 'three-step batch after a one-off calculation' }]] },
+  { kind: 'decide', think: 'SELF_HOOK_PLAN_MARK: the checked function accepts changing inputs and can support another calculation.',
+    calls: [['python', { code: 'def summarize_values(values):\n    return sum(values)\nprint(summarize_values([4, 6]))' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after checking a parameterized function' }]] },
+  { kind: 'decide', calls: [['summarize_values', { args: { values: [10, 11] } }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'use saved named component on a later task input' }]] },
+];
 const SELF_COMPONENTS_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['self_component', { kind: 'memory', name: 'probe_note', content: 'A reusable calculation can be checked later.' }]] },
   { kind: 'decide', calls: [['self_component', { kind: 'prompt', name: 'strategy', content: 'SELF_PROMPT_MARK: check saved evidence before acting.' }]] },
@@ -482,6 +492,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'promotion' ? PROMOTION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' ? SELF_BASELINE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook' || process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' ? SELF_HOOK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components' ? SELF_COMPONENTS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
@@ -686,7 +697,27 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
 			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(head.trimStart());
 			let planned: Step | undefined;
-      if (consult && process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components') planned = { kind: 'decide', text: 'SUBAGENT_SEMANTIC_MARK: 42' };
+      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' && head.startsWith('SELF_HARNESS_HOOK')) {
+        const ids = /action_ids=([\d,]+)/.exec(head)?.[1] ?? '';
+        const results = messages.filter((m: any) => m?.role === 'toolResult').map((m: any) => ({ tool: m.toolName, text: textOf(m) }));
+        if (ids === '1,2,3') planned = { kind: 'decide', text: 'Skip; no reusable function was created in this window.' };
+        else if (ids === '4') {
+          const savedSkill = results.some((r: any) => r.tool === 'write' && /skills\/convert_probe\/SKILL\.md.*v1: saved/.test(r.text));
+          if (!savedSkill) planned = { kind: 'decide', calls: [['write', { path: 'skills/convert_probe/SKILL.md',
+            content: '---\nname: convert_probe\ndescription: A short procedure for checking a fresh input against the measured result.\n---\nSELF_SKILL_TRIAL_MARK: read the new input, compare it with the measured result, and report the difference.' }]] };
+          else planned = { kind: 'decide', text: 'The skill is saved for a later Task; finish this hook.' };
+        } else planned = { kind: 'decide', text: 'Skip; no new work remains to retain.' };
+      }
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' && !head.startsWith('SELF_HARNESS_HOOK') &&
+        (existsSync(join(process.env.ARC_RUN_ROOT!, 'workspace', 'skills', 'convert_probe', 'SKILL.md')) ||
+          messages.some((m: any) => m?.role === 'toolResult' && m.toolName === 'self_component' &&
+            /skills\/convert_probe\/SKILL\.md: retired/.test(textOf(m))))) {
+          const results = messages.filter((m: any) => m?.role === 'toolResult').map((m: any) => ({ tool: m.toolName, text: textOf(m) }));
+          const skillRead = results.some((r: any) => r.tool === 'read' && r.text.includes('SELF_SKILL_TRIAL_MARK'));
+          if (!skillRead) planned = { kind: 'decide', calls: [['read', { path: 'skills/convert_probe/SKILL.md' }]] };
+          else planned = { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'SELF_SKILL_TRIAL_MARK: applied the named procedure to the next task input' }]] };
+      }
+      else if (consult && process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components') planned = { kind: 'decide', text: 'SUBAGENT_SEMANTIC_MARK: 42' };
       else if (consult) {
         const result = messages.find((m: any) => m.role === 'toolResult' && m.toolName === 'compare');
         planned = result ? { kind: 'decide', text: 'CONSULT_SEMANTIC: ' + textOf(result) }

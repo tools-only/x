@@ -12,12 +12,12 @@ Zero-based, origin top-left. Rows increase downward (r0 top, r63 bottom). Column
 
 ## GAME CONTROL
 **arc_action**
-- **Required:** `reasoning` (string), `actions` (array of action objects)
+- **Required:** `reasoning` (string), `actions` (array of 1–12 action objects)
 - Each action object: `{name, x?, y?, predict?}` — `name` is required; `x` and `y` (0-63) required only for ACTION6.
 - **Action key:** ACTION1=Up/W · ACTION2=Down/S · ACTION3=Left/A · ACTION4=Right/D · ACTION5=Enter/Space/Delete · ACTION6=Click(x,y) · ACTION7=Undo/Back · RESET=restart the level
 - The current frame's prompt lists which actions are available this turn — calling an unavailable action is rejected.
-- Keep lists **SHORT** (1-4 actions, prefer 1 when the next state is hard to predict). Long sequences are risky: a single wrong assumption mid-batch wastes every action after it. If a step becomes invalid mid-sequence (level transition, game ended), the remainder is skipped.
-- Python acts the same way: env.act(action, x, y, predict) plays one action and returns its feedback; env.act([{"name": ..., "x": ..., "y": ...}, ...]) plays a list like arc_action and returns {executed_count, last_frame, terminal, level_changed, state, score, available_actions}. Re-check `terminal` and `level_changed` before acting again: a level transition makes any precomputed plan stale.
+- Submit a sequence when you judge its steps safe to continue. Every executed action receives its own observation receipt; one independent self-harness hook follows the completed sequence.
+- Python env.act(action, x, y, predict) plays one action and returns its feedback. Continue only while the returned state and prediction support the next step; one hook follows the completed sequence.
 
 ## GAME SETTING
 Multiple levels share the SAME underlying rule. The game is completely new — do NOT hallucinate rules from known games. Pay close attention to environment feedback: how the grid changes after each action is your primary signal.

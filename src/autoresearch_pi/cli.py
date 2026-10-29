@@ -33,7 +33,7 @@ from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
 from .arc_thin_e2e import (
     run_arc_thin_claims_smoke, run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_guard_smoke, run_arc_thin_ledger_smoke,
-    run_arc_thin_self_baseline_smoke, run_arc_thin_self_harness_smoke, run_arc_thin_smoke,
+    run_arc_thin_self_baseline_smoke, run_arc_thin_self_harness_smoke, run_arc_thin_self_hook_smoke, run_arc_thin_smoke,
 )
 from .arc_blind_policy import run_arc_blind_policy
 from .arc_agi_3_e2e import _pi_cli_version, _resolve_pi_cli
@@ -236,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
                                 help="run the predictions / history / working-set / carried-reasoning scenario instead")
     arc_thin_smoke.add_argument("--self-baseline", action="store_true",
                                 help="run the shortest native create → run → later call → action scenario")
+    arc_thin_smoke.add_argument("--self-hook", action="store_true",
+                                help="run scripted after-action self-harness hook lifecycle acceptance")
     arc_thin_smoke.add_argument("--self-convert", action="store_true",
                                 help="exercise agent-authored CONVERT delivery in the shortest Self smoke")
     arc_thin_smoke.add_argument("--self-components", action="store_true",
@@ -480,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
                    else run_arc_thin_continuity_smoke(args.root) if args.continuity
                    else run_arc_thin_guard_smoke(args.root) if args.guard
                    else run_arc_thin_claims_smoke(args.root) if args.claims
+                   else run_arc_thin_self_hook_smoke(args.root) if args.self_hook
                    else run_arc_thin_self_baseline_smoke(args.root, self_convert=args.self_convert,
                                                         all_components=args.self_components) if args.self_baseline
                    else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))

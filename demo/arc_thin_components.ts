@@ -6,7 +6,7 @@ import { PythonKernel } from './pi_task_python_kernel.ts';
 import type { ComponentSpec } from './arc_thin_binder.ts';
 
 const NATIVE = String.raw`
-import ast, io, sys, importlib.abc, importlib.util, builtins
+import ast, io, re, sys, importlib.abc, importlib.util, builtins
 
 RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'self_component', 'promote_session_function')
 # Every tool has one interface: a dict of arguments (Continual Harness's run(state, args) contract; Prime calls plain
@@ -59,7 +59,16 @@ def _inspect(req):
     path = req['path']
     name = path.split('/')[-1][:-3]
     top = path.split('/')[0]
-    tree = ast.parse(req['source'], path)
+    source = req['source']
+    lines = [line.strip() for line in source.splitlines() if line.strip()]
+    has_markdown_shape = any(re.match(r'^#{1,6}\s+\S', line) for line in lines) and any(
+        re.match(r'^(?:[-*+]\s+|\d+[.)]\s+)', line) for line in lines)
+    has_python_statement = any(re.match(
+        r'^(?:async\s+def|def|class|from|import|if|elif|else:|for|while|try:|except|with|return|raise|pass|break|continue|@|[A-Za-z_]\w*\s*=)',
+        line) for line in lines)
+    if has_markdown_shape and not has_python_statement:
+        raise ValueError('looks like Markdown/notes, not executable Python; write notes to memory/ or prompts/, not tools/*.py or lib/*.py')
+    tree = ast.parse(source, path)
     describe = (ast.get_docstring(tree) or _first_comment(req['source']) or ('saved python ' + name)).splitlines()[0][:120]
     if top == 'lib':
         return {'name': name, 'kind': 'library', 'description': describe, 'enabled': True}
@@ -933,6 +942,12 @@ export async function executeNative(input: Record<string, unknown>, signal?: Abo
 export function nativeKernel(): PythonKernel { return new PythonKernel(program); }
 export async function validatePythonComponent(path: string, source: string): Promise<ComponentSpec> {
   const reply = await executeNative({ mode: 'inspect', path, source });
-  if (!reply.ok) throw Error([reply.error, reply.where].filter(Boolean).join(' · '));
+  if (!reply.ok) {
+    const syntax = /SyntaxError:/.test(reply.error ?? '');
+    const line = /line (\d+)/.exec(reply.where ?? '')?.[1];
+    const detail = (reply.error ?? 'Python validation failed').replace(/^(?:SyntaxError:\s*)+/, '');
+    if (syntax) throw Error(`Python SyntaxError${line ? ` at line ${line}` : ''}: ${detail}`);
+    throw Error([reply.error, reply.where].filter(Boolean).join(' · '));
+  }
   return reply.value as ComponentSpec;
 }
