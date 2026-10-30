@@ -2,20 +2,31 @@
 
 > 权威交互版：[Self-Harness 开发设计方案](https://cursor.com/canvas/store-8893191a-ab9c-47ae-b7b4-2879ba51529a/7694319b-bb75-49f4-9a38-af5eec1a77b3)  
 > 发布：2026-10-31 Asia/Shanghai · 编码管理 · 约束后续 Solo / Luna / AZ 与编码管理迭代  
-> 修订：2026-10-31 ~00:42 · workspace 不得成封闭独立空间（透明沙盒/容器）
+> 修订：2026-10-31 ~00:42 · workspace 不得成封闭独立空间（透明沙盒/容器）  
+> 修订：2026-10-31 ~00:51 · Agent（内容+决策）/ Runtime（转化装配）硬边界
 
 ## 北极星
 
-给 agent **短路径与干净上下文**，让它**自主**做有功能语义的沉淀与复用；**runner 只触发与接住**，不替它判断、不堆脆弱中间层。
+给 agent **短路径与干净上下文**，让它**自主**做有功能语义的**内容**与沉淀/使用**决策**；**Runtime** 负责转化与装配，**runner 只触发与接住**，不替它判断、不堆脆弱中间层。
 
 要验的是 **沉淀 → 复用 → 推进任务** 是否通，不是造了多少基础设施函数。
+
+
+## Agent / Runtime 模块边界（硬边界）
+
+| 角色 | 负责 | 不负责 |
+|------|------|--------|
+| **Agent** | harness components **内容**实现与生成；**沉淀决策**与**使用决策**；发挥智能（创造、agent-native 判断与试用） | 感知/管理 workspace 边界；底层基建与服务直交互；规则匹配；过长转化链路；装配细节 |
+| **Runtime** | workspace 作**底层容器**（对 agent 不可感知）；代码→具体 harness **类别**的转化与装配；沉淀落地细节；简洁接口把琐碎挡在基层 | 替 agent 做沉淀/使用判断；用脆弱协议逼 agent 当格式机 |
+
+**接口原则：** 对 agent 暴露的服务尽量短、少字段、少步骤；细节与琐碎交付基础设施与 runtime。链路过长、规则匹配、底层服务交互进 agent 回合 → 脆弱且浪费智能。
 
 ## 七条原则
 
 1. **Agent-native** — 提供接口与证据；agent 决定是否沉淀、沉淀什么、落到哪类 component；遍历类别。反对机械强制首次沉淀。
 2. **独立 Hook + 干净窗** — 动作回执后独立沉淀 turn；窗=上次沉淀→现在（无则 task start）；摘要+薄索引+按需 read；全文落盘不塞 hook。
 3. **短转化 · 零勘探捷径** — 已见函数直接 `write tools/<name>.py` 或 `promote(name)`；禁格式/匹配/协议中间层；Git commit message 作开放摘要；runner 不加脆弱校验。
-4. **Workspace = 透明沙盒 / 组件车间** — workspace 只作容器与底层基建（稳定服务），**不是** agent 的封闭独立空间；agent 应对 workspace 边界无感，「works with」不可变成额外勘探/生成开销与瓶颈。产出用 Git 短路径挂载；把内容当可试用工具库；造码即剥离硬编码/活变量与可复用逻辑。
+4. **Workspace = 透明底层容器；Runtime 转化装配** — workspace 对 agent **不可感知**，只作基础容器/工作空间。Agent 只做 components **内容**与沉淀/使用**决策**；**Runtime** 负责把 workspace 代码转化并装配进具体 harness 类别及沉淀细节。接口短路径；禁把底层服务、规则匹配、长链路塞给 agent。
 5. **沉淀要对解题有用** — skills / tools / strategies；重复→模式→component；一次性可 Skip，重复可参数化探针应标候选。
 6. **高行动密度** — 优先 `arc_action` 批多步；留 Response/本地链；反对 Python 造码占满决策回合。
 7. **分模块 · 最小链路优先** — 核心链路悬空时禁堆上层；Daemon 可后台触发但不强约束；Binder 重校验后置。
@@ -29,7 +40,8 @@
 | prefer Save/promote，不强制 | 脆弱协议中间层 |
 | 负例诚实 Skip | 一律 Skip 可参数化重复探针 |
 | 禁 push 除非点名 | 核心链路未通堆上层 |
-| workspace 透明基建 | 把 workspace 做成封闭独立空间 / 强迫 agent 感知边界 |
+| workspace 透明基建；Runtime 转化装配 | 把 workspace 做成封闭独立空间 / 强迫 agent 感知边界 |
+| Agent 内容+决策；接口短简洁 | agent 直交互底层服务 / 规则匹配 / 过长脆弱链路 |
 
 ### Hook 应遍历的类别
 
@@ -64,6 +76,7 @@
 - [ ] 单因子；非目标含强制沉淀/脆弱协议/并行堆刀  
 - [ ] 转化路径 write/promote/Git，无新协议  
 - [ ] workspace 只作沙盒基建，不引入封闭空间或额外勘探负担  
+- [ ] Agent/Runtime 边界清晰：内容+决策归 agent，转化装配归 runtime  
 - [ ] Hook 独立；任务 turn 不混沉淀  
 - [ ] 证伪可观测  
 - [ ] 禁 push（除非点名）；禁未授权 AZ  
