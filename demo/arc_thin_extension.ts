@@ -4517,7 +4517,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		} else { ledgerText = ""; criticText = ""; }
 		const systemPrompt = run.hookTurn
-			? 'You are in an independent self_harness_hook turn with a clean context. The user message contains the complete persisted task trace and a short direct-file authoring hint. Use only the supplied trace and current component/budget facts; do not rely on earlier task dialogue or summaries. Write/edit workspace files directly if useful; Binder validates and versions them. Do not choose an environment action.'
+			? 'You are in an independent self_harness_hook turn with a clean context. The user message contains a bounded task summary, indexes, and exact pointers to persisted evidence. Use the indexes first, then read only specific evidence that matters; do not expect the full session or grids in the prompt. Write/edit workspace files directly if useful; Binder validates and versions them. Do not choose an environment action.'
 			: selfBaseline ? renderPrompt('arc_thin_self_baseline.md', { game,
 			convert: selfConvert ? 'Your optional notes/convert.md is delivered in the next decision. Write/edit it to carry unfinished conversion intent; clear it when completed, abandoned or stale.' : 'Conversion needs no separate mode or note. Optional notes/convert.md is not automatically delivered in this run.',
 			arc: chView ? loadPrompt("arc_thin_native_ch_arc.md") : "" }) : native && !control ? renderPrompt('arc_thin_native_system.md', { game,
@@ -4660,7 +4660,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const selfEntry = '';
 			const hookRows = run.hookTurn ? trajectory.filter(item => (run.hookActionIds?.length ? run.hookActionIds : [run.hookActionId]).includes(item.n)) : [];
 			const hookRow = hookRows.at(-1);
-			const hookFacts = run.hookTurn ? `HOOK RUNTIME FACTS (not a replacement for the full trace above)\n` +
+			const hookFacts = run.hookTurn ? `HOOK RUNTIME FACTS (summary projection and pointers are supplied above)\n` +
 				`component versions=${binder?.index(currentLevel(), undefined, undefined, true) ?? 'unknown'}\n` +
 				`remaining action budget=${clipJson(hookRow?.budget ?? 'unknown', 300)}; time/token budget supplied by runner when available\n` : '';
 			const capabilities = binder ? [selfEntry, hookFacts, run.hookTurn ? nativeRuntime?.selfFeedbackText() : '', run.hookTurn ? '' : binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),

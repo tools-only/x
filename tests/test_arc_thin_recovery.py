@@ -80,6 +80,26 @@ def test_experiment_deadline_timeout_is_not_reclassified_as_turn_recovery():
     assert stats['decision_timeouts'] == stats['decision_recoveries'] == 0
 
 
+def test_experiment_deadline_reserve_prevents_starting_pi_turn(tmp_path, monkeypatch):
+    import inspect
+    source = inspect.getsource(runner)
+    assert runner.HOOK_DECISION_START_RESERVE_SECONDS == 300.0
+    assert "experiment deadline reached before starting Pi turn" in source
+    assert "experiment deadline reached while waiting for Pi agent turn" in source
+    assert "deadline_settlement" in source
+
+
+def test_deadline_during_pi_wait_has_distinct_error_and_no_timeout_counter():
+    stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0,
+                 decision_timeouts=0, decision_recoveries=0)
+    kernel = SimpleNamespace(abort=lambda: None)
+    def turn(message):
+        raise TimeoutError('experiment deadline reached while waiting for Pi agent turn')
+    with pytest.raises(TimeoutError, match='experiment deadline'):
+        runner._recover_native_turn(turn, 'DECIDE', kernel, stats, lambda: False)
+    assert stats['decision_timeouts'] == stats['decision_recoveries'] == 0
+
+
 def test_permanent_fault_is_finite_and_committed_action_needs_no_new_model_request():
     stats = dict(idle_timeouts=0, idle_recoveries=0, idle_recovery_failures=0)
     kernel = SimpleNamespace(abort=lambda: None,

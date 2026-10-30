@@ -3,11 +3,29 @@ import assert from 'node:assert/strict';
 import { carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
 
-test('native production instructions explicitly prefer amortized offload without a creation quota', () => {
+test('native production instructions prefer reuse and evidence-led applicability without a creation quota', () => {
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
-  assert.match(prompt, /Reuse your saved components/);
-  assert.match(prompt, /creation and checking cost/);
+  assert.match(prompt, /Reuse your saved components before re-deriving or rewriting anything/);
   assert.match(prompt, /applicability on current evidence/);
+});
+
+test('Self Task prompt exposes the short path for each reusable component category without requiring a save', () => {
+  const prompt = readFileSync(new URL('../demo/prompts/arc_thin_self_baseline.md', import.meta.url), 'utf8');
+  for (const path of ['prompts/strategy.md', 'skills/method/SKILL.md', 'tools/helper.py', 'agents/helper.md'])
+    assert.ok(prompt.includes(path), `missing Task path ${path}`);
+  assert.match(prompt, /briefly consider each kind and Skip any without it/i);
+  assert.match(prompt, /No component is required\./);
+  assert.match(prompt, /check the active component index before recreating work/i);
+  assert.match(prompt, /At the next related solving decision, first read the relevant skill or call the saved tool with current state\/arguments/i);
+  assert.match(prompt, /If it does not apply, briefly skip it and act; if a trial fails, revise or retire it/i);
+  assert.match(prompt, /The live grid is `state\["grid"\]`/);
+  assert.match(prompt, /After a KeyError.*stop repeating that failed probe/i);
+  assert.match(prompt, /Do not repeat an equivalent Python probe/i);
+  assert.match(prompt, /After a probe and one feedback confirm the same effect or displacement rule/i);
+  assert.match(prompt, /Do not spend another decision re-proving the confirmed effect just to earn permission to batch/i);
+  assert.match(prompt, /3.7 predictable actions total, including the first action/i);
+  assert.match(prompt, /If an intermediate result could change the next action, submit one action and check it first/i);
+
 });
 
 function decisions(count: number, resultChars = 1000): any[] {

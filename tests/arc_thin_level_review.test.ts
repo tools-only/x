@@ -289,13 +289,31 @@ test('after-action self_harness_hook is an isolated turn and reaches save, named
         const task = await h.begin();
         assert.doesNotMatch(task, /SELF:|SELF REUSE|save checked reusable/i, 'task turn has no conversion cue');
         assert.match(await h.act({ action: 'RESET' }), /RESET/);
-        const categoryContract = 'categories: strategies/plans, skills, tools, memory/lessons, subagents; skip any or all.';
-        const hook = await h.begin(`SELF_HARNESS_HOOK action_id=1. BEGIN COMPLETE ORDERED TASK TRACE\n{"n":1,"source":"harness.trajectory.jsonl"}\nFULL_TRACE_SENTINEL\nEND COMPLETE ORDERED TASK TRACE\n${categoryContract}`);
+        const categoryContract = 'Review the bounded task summary and indexes first. If they show no concrete reusable candidate, Skip immediately. For a candidate, read only one piece of key evidence needed to check it, then save or Skip and finish this hook. Choose the component and whether it is worth keeping; no component is required. Write/edit the existing workspace path directly and preserve its required frontmatter; Binder validates and versions writes. Do not reconstruct the game, inspect every candidate, or continue after save/Skip. No environment action. Finish now.';
+        const projectedHook = JSON.stringify({ version: 'hook-summary-v1', window: { from: 1, through: 1 },
+            complete: true, gaps: [], source_events: 3, source_chars: 1200,
+            actions: [{ n: 1, action: 'RESET', changed_cells: 1, bbox: { top: 0, left: 0, bottom: 0, right: 0 },
+                level_changed: false, state: 'PLAYING', levels_completed: 0 }],
+            component_events: [], decision_and_tool_index: [{ event_id: 'e1', role: 'toolResult',
+                text_excerpt: 'RESET completed', tool_calls: [{ name: 'arc_action', id: 'a1' }] }],
+            read_pointers: ['harness/trajectory.jsonl (action receipts; filter n by action IDs)',
+                'harness/working_set.jsonl (observation refs and per-decision summaries)',
+                'harness/python_session.jsonl (Python definitions and execution events)',
+                'harness/component_runs.jsonl (save/use/version events)',
+                'session.jsonl (Pi event IDs listed above; audit pointer if read is unavailable)'] });
+        assert.match(projectedHook, /hook-summary-v1/);
+        assert.doesNotMatch(projectedHook, /FULL_TRACE_SENTINEL|BEGIN COMPLETE ORDERED TASK TRACE/);
+        const hook = await h.begin(`SELF_HARNESS_HOOK action_id=1. BEGIN PROJECTED TASK TRACE\n${projectedHook}\nEND PROJECTED TASK TRACE\n${categoryContract}`);
         assert.match(hook, /HOOK RUNTIME FACTS/);
-        assert.match(hook, /FULL_TRACE_SENTINEL/, 'the hook projection keeps the supplied full trace');
-        assert.match(hook, /strategies\/plans.*skills.*tools.*memory\/lessons.*subagents/);
+        assert.doesNotMatch(hook, /FULL_TRACE_SENTINEL/, 'the default hook request omits full task trace text');
+        assert.match(hook, /Skip immediately/);
+        assert.match(hook, /one piece of key evidence/);
+        assert.match(hook, /finish this hook/);
         assert.match(hook, /"n":1/);
-        assert.doesNotMatch(hook, /arc_action|current grid|available actions/i);
+        assert.match(hook, /hook-summary-v1/);
+        assert.match(hook, /read_pointers/);
+        assert.doesNotMatch(hook, /current grid|available actions/i,
+            'the projected tool index may name arc_action, but the hook receives no live grid or action menu');
         assert.equal(h.rows('component_runs.jsonl').filter(row => row.kind === 'save').length, 0,
             'a hook with no new function does not trigger host-side save');
         assert.ok(!h.active().includes('arc_action'), 'hook has no environment action tool');
@@ -307,11 +325,22 @@ test('after-action self_harness_hook is an isolated turn and reaches save, named
         await h.call('python', { code: 'def shift(values, delta):\n    return [value + delta for value in values]\n' });
         await h.call('python', { code: 'print(shift([3, 4], 2))' });
         assert.match(await h.act({ action: 'RESET' }), /RESET/);
-        const saveHook = await h.begin(`SELF_HARNESS_HOOK action_id=2. BEGIN COMPLETE ORDERED TASK TRACE\n{"n":2,"source":"harness.trajectory.jsonl"}\n{"source":"pi.session.jsonl","tool":"python","code":"def shift(values, delta): return [value + delta for value in values]","result":"5, 6"}\n${categoryContract}`);
+        const saveProjection = JSON.stringify({ version: 'hook-summary-v1', window: { from: 2, through: 2 },
+            complete: true, gaps: [], source_events: 5, source_chars: 1800,
+            actions: [{ n: 2, action: 'RESET', changed_cells: 1, level_changed: false, state: 'PLAYING', levels_completed: 0 }],
+            component_events: [], decision_and_tool_index: [
+                { event_id: 'e2', role: 'assistant', text_excerpt: 'Define shift(values, delta) and check it.', tool_calls: [{ name: 'python', id: 'p1' }] },
+                { event_id: 'e3', role: 'toolResult', text_excerpt: '5, 6', tool_calls: [] }],
+            read_pointers: ['harness/trajectory.jsonl (action receipts; filter n by action IDs)',
+                'harness/python_session.jsonl (Python definitions and execution events)',
+                'session.jsonl (Pi event IDs listed above; audit pointer if read is unavailable)'] });
+        const saveHook = await h.begin(`SELF_HARNESS_HOOK action_id=2. BEGIN PROJECTED TASK TRACE\n${saveProjection}\nEND PROJECTED TASK TRACE\n${categoryContract}`);
         assert.match(saveHook, /HOOK RUNTIME FACTS/);
         assert.match(saveHook, /"n":2/);
-        assert.match(saveHook, /shift\(values, delta\)/, 'the function creation reaches the hook');
-        assert.match(saveHook, /5, 6/, 'the first-use output reaches the hook');
+        assert.match(saveHook, /shift\(values, delta\)/, 'the indexed decision excerpt reaches the hook');
+        assert.match(saveHook, /5, 6/, 'the indexed tool result reaches the hook');
+        assert.doesNotMatch(saveHook, /FULL_TRACE_SENTINEL|"code":"def shift/,
+            'the default hook receives projection excerpts rather than full trace text');
         assert.ok(!h.active().includes('arc_action'));
         assert.match(await h.call('self_component', { name: 'increment', content:
             'def run(state, args):\n    return {"value": args["value"] + 1}\n' }), /increment v1/);
@@ -326,7 +355,7 @@ test('after-action self_harness_hook is an isolated turn and reaches save, named
         assert.ok(h.rows('self_harness_hook.jsonl').some(row => row.event === 'turn_start' && row.action_id === 2));
         const shown = h.rows('self_harness_hook.jsonl').find(row => row.event === 'shown' && row.action_id === 2);
         assert.match(shown.header, /independent self_harness_hook turn with a clean context/);
-        assert.match(shown.head_text, /FULL_TRACE_SENTINEL|harness\.trajectory\.jsonl/);
+        assert.match(shown.head_text, /hook-summary-v1|harness\.trajectory\.jsonl/);
         assert.match(shown.sha256, /^[a-f0-9]{64}$/);
         assert.ok(!shown.tool_names.includes('arc_action'));
     } finally {

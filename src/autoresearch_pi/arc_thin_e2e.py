@@ -170,13 +170,19 @@ IDLE_RECOVERY_PROMPT = (
     "operation: call memory once if a consolidation is due, otherwise call exactly one arc_action, then stop."
 )
 SELF_HARNESS_HOOK_PROMPT = (
-    "Review the complete task trace above in its original event order. If a method or strategy is worth keeping, "
-    "directly write/edit the workspace file: prompts/strategy.md (frontmatter active: true), "
-    "skills/<name>/SKILL.md (name and description frontmatter), or agents/<name>.md "
-    "(description and tools frontmatter). Read the existing file first when revising. A successful write returns "
-    "a Binder receipt; the next request exposes the saved version, and you can read a skill by its exact path or "
-    "consult an agent when useful. Skip this when nothing is worth keeping. No environment action. Finish now."
+    "Review the bounded task summary and indexes first. Local prints, hardcoded coordinates, one-off probes that cannot be parameterized, "
+    "or insufficient evidence mean Skip. Repeated same-shape Python probes within the window (such as locating player/target, "
+    "coarsely checking obstacles, or checking path reachability) may be considered as candidates when current state can be a parameter; "
+    "this is only a suggestion, never auto-generated and never required to save. No gain, stale, or unreliable work may still be skipped. "
+    "For a candidate, read only one piece of key evidence needed to check it, then save or Skip and finish this hook. "
+    "Choose the component and whether it is worth keeping; no component is required. Write/edit the existing workspace "
+    "path directly and preserve its required frontmatter; Binder validates and versions writes. Do not reconstruct the "
+    "game, inspect every candidate, or continue after save/Skip. No environment action. Finish now."
 )
+HOOK_PROJECTION_MAX_CHARS = 24_000
+# Run14's longest hook took 165s; retain a further 120s for the final task turn.
+HOOK_DECISION_START_RESERVE_SECONDS = 300.0
+HOOK_FULL_TRACE_ENV = "ARC_THIN_SELF_HOOK_FULL_TRACE"
 # Streaming deltas repeat the whole partial message per token; keep lifecycle only.
 PERSISTED_EVENTS = frozenset({
     "response", "turn_start", "turn_end", "agent_start", "agent_end", "agent_settled",
@@ -217,21 +223,19 @@ def _assemble_self_hook_trace(root: Path, action_ids: list[int], batch_id: str |
     current_index = next((index for index, row in enumerate(session)
                           if row.get("type") == "message" and row.get("message", {}).get("role") == "user"
                           and message_text(row).startswith(current_prompt)), len(session))
-    if completion and completion.get("session_end_event_id"):
-        lower_index = next((index for index, row in enumerate(session)
-                            if row.get("id") == completion["session_end_event_id"]), None)
-        if lower_index is None:
-            lower_index = -1
-            gaps.append(f"previous hook completion event {completion['session_end_event_id']} is absent from session.jsonl")
-    elif completion:
-        lower_index = -1
-        gaps.append("previous completed hook has no persisted session event boundary")
-    else:
-        lower_index = next((index for index, row in enumerate(session)
-                            if row.get("type") == "message" and row.get("message", {}).get("role") == "user"), -1) - 1
-
-    # A later explicit self_component set narrows the window at its exact Pi receipt, for every saved kind.
-    lower_time = _hook_event_time(completion.get("t")) if completion else None
+    first_task_index = next((index for index, row in enumerate(session)
+                             if row.get("type") == "message" and row.get("message", {}).get("role") == "user"
+                             and not message_text(row).startswith("SELF_HARNESS_HOOK")), None)
+    task_start_index = (first_task_index - 1) if first_task_index is not None else -1
+    if completion and completion.get("session_end_event_id") and not any(
+            row.get("id") == completion["session_end_event_id"] for row in session):
+        gaps.append(f"previous hook completion event {completion['session_end_event_id']} is absent from session.jsonl; using task start")
+    elif completion and not completion.get("session_end_event_id"):
+        gaps.append("previous completed hook has no persisted session event boundary; using task start")
+    # A save counts only when its successful Pi receipt is present; missing receipts force task-start fallback.
+    lower_index = task_start_index
+    lower_label = "task start"
+    lower_time = None
     save_boundary: tuple[int, dict[str, Any]] | None = None
     tool_calls = {str(block.get("id")): block for event in session[:current_index]
                   if event.get("type") == "message" and event.get("message", {}).get("role") == "assistant"
@@ -248,19 +252,23 @@ def _assemble_self_hook_trace(root: Path, action_ids: list[int], batch_id: str |
         if args.get("op") == "retire" or not args.get("content"):
             continue
         event_time = _hook_event_time(event.get("timestamp"))
-        if lower_time is None or (event_time is not None and event_time > lower_time):
+        if event_time is not None:
             save_receipts.append((index, event))
     if save_receipts:
         save_boundary = save_receipts[-1]
-        lower_index = max(lower_index, save_boundary[0])
+        lower_index = save_boundary[0]
+        lower_label = "after last agent save"
+        lower_time = _hook_event_time(save_boundary[1].get("timestamp"))
 
     # Detect telemetry that claims an Agent save but whose full Pi receipt is unavailable.
     for save in _read_jsonl(root / "harness" / "component_runs.jsonl"):
         if (save.get("kind") == "save" and save.get("by") == "agent"
-                and (lower_time is None or (_hook_event_time(save.get("t")) or 0) > lower_time)):
+                and (_hook_event_time(save.get("t")) is None or lower_time is None or _hook_event_time(save.get("t")) > lower_time)):
             if not any(str(save.get("path")) in json.dumps(event, ensure_ascii=False)
                        for _, event in save_receipts):
                 gaps.append(f"Agent component save {save.get('path', 'unknown')} has no matching Pi save receipt")
+                if save_boundary is not None:
+                    lower_index, lower_label, lower_time, save_boundary = task_start_index, "task start", None, None
 
     events: list[tuple[float, int, int, dict[str, Any]]] = []
     sequence = 0
@@ -339,8 +347,8 @@ def _assemble_self_hook_trace(root: Path, action_ids: list[int], batch_id: str |
     first_task_event = next((row.get("id") for row in session if row.get("type") == "message"
                              and row.get("message", {}).get("role") == "user"), None)
     boundaries = {
-        "lower": ("after completed hook" if completion else "task start"),
-        "lower_event_id": (completion or {}).get("session_end_event_id") or first_task_event,
+        "lower": lower_label,
+        "lower_event_id": session[lower_index].get("id") if lower_index >= 0 else first_task_event,
         "save_event_id": session[save_boundary[0]].get("id") if save_boundary else None,
         "upper": "immediately before current hook request",
         "upper_event_id": unique[-1].get("event_id") if unique else None,
@@ -367,6 +375,127 @@ def _self_hook_rough_tokens(trace: dict[str, Any]) -> int:
 
 def _self_hook_overflow(trace: dict[str, Any], context_window: int | None) -> bool:
     return bool(context_window and _self_hook_rough_tokens(trace) > int(context_window * 0.7))
+
+
+def _project_self_hook_trace(root: Path, trace: dict[str, Any], action_ids: list[int],
+                             batch_id: str | None, max_chars: int = HOOK_PROJECTION_MAX_CHARS) -> dict[str, Any]:
+    """Bound hook input while keeping canonical files and event IDs available for targeted reads."""
+    if os.environ.get(HOOK_FULL_TRACE_ENV) == "1":
+        return {"text": trace["text"], "char_count": trace["char_count"], "truncated": False, "source": "full_trace"}
+    session = trace["events"]
+    trajectory = [event["event"] for event in session if event.get("source") == "harness.trajectory.jsonl"]
+    components = [event["event"] for event in session if event.get("source") == "harness.component_runs.jsonl"]
+    session_rows = [event for event in session if event.get("source") == "pi.session.jsonl"]
+    recent_commits: list[str] = []
+    git_state = "unavailable"
+    try:
+        inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=root, capture_output=True,
+                                text=True, timeout=3, check=True).stdout.strip() == "true"
+        if inside:
+            git_state = "available"
+            log = subprocess.run(["git", "log", "-6", "--format=%h%x09%s", "--name-only"], cwd=root,
+                                 capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+            diff = subprocess.run(["git", "diff", "--stat", "HEAD"], cwd=root, capture_output=True,
+                                  text=True, timeout=5, check=True).stdout.strip()
+            recent_commits = [line[:240] for line in log.splitlines() if line][:24]
+        else:
+            git_state = "not_a_repository"
+    except (OSError, subprocess.SubprocessError):
+        git_state = "read_failed"
+        diff = ""
+    diff = locals().get("diff", "")
+    if git_state == "available" and not recent_commits:
+        git_state = "no_commits"
+    action_index = []
+    for row in trajectory:
+        if row.get("n") not in action_ids:
+            continue
+        action_index.append({key: row.get(key) for key in (
+            "n", "action", "note", "changed_cells", "bbox", "level_changed", "state", "levels_completed",
+            "error", "batch_id", "batch_position") if key in row})
+    decision_index = []
+    for item in session_rows:
+        message = item.get("message", {})
+        role = message.get("role")
+        content = message.get("content", "")
+        if isinstance(content, list):
+            text = " ".join(str(block.get("text", "")) for block in content
+                            if isinstance(block, dict) and block.get("type") == "text")
+            calls = [block for block in content if isinstance(block, dict) and block.get("type") == "toolCall"]
+        else:
+            text, calls = str(content), []
+        if role == "assistant" or role == "toolResult":
+            decision_index.append({"event_id": item.get("event_id"), "role": role,
+                "text_excerpt": text[:180], "tool_calls": [{"name": call.get("name"),
+                    "id": call.get("id")} for call in calls[:8]]})
+    component_index = [{key: row.get(key) for key in ("kind", "name", "path", "version", "by", "event", "n")
+                       if key in row} for row in components]
+    python_rows = [event for event in session if
+                   (event.get("source") == "harness.component_runs.jsonl" and
+                    isinstance(event.get("event"), dict) and event["event"].get("kind") == "python") or
+                   (event.get("source") == "harness.python_session.jsonl") or
+                   (event.get("source") == "pi.session.jsonl" and isinstance(event.get("message"), dict) and
+                    (event["message"].get("toolName") == "python" or any(
+                        isinstance(block, dict) and block.get("type") == "toolCall" and block.get("name") == "python"
+                        for block in event["message"].get("content", []) if isinstance(event["message"].get("content"), list))))]
+    reuse_groups: dict[str, list[dict[str, Any]]] = {}
+    seen_python_evidence: set[tuple[str, str]] = set()
+    for item in python_rows:
+        raw = item.get("event", {}) if isinstance(item.get("event"), dict) else item.get("message", {})
+        source = item.get("source", "unknown")
+        if source == "harness.python_session.jsonl":
+            source = "python_session.jsonl"
+        code = str(raw.get("code") or raw.get("source") or raw.get("name") or raw.get("gist") or "")
+        if not code and isinstance(raw.get("content"), list):
+            code = next((str(block.get("arguments", {}).get("code", "")) for block in raw["content"]
+                         if isinstance(block, dict) and block.get("type") == "toolCall" and
+                         block.get("name") == "python" and isinstance(block.get("arguments"), dict)), "")
+        if source == "python_session.jsonl" and not code:
+            continue
+        if source == "pi.session.jsonl" and raw.get("role") == "toolResult" and not code:
+            continue
+        shape = " ".join(code.split())[:160] or "unclassified Python event"
+        identity = (shape, str(raw.get("decision") or raw.get("n") or ""))
+        if source == "python_session.jsonl" and identity in seen_python_evidence:
+            continue
+        if source == "python_session.jsonl":
+            seen_python_evidence.add(identity)
+        group = reuse_groups.setdefault(shape, [])
+        group.append({"source": source, "event_id": item.get("event_id"), "gist": code[:180],
+                      "decision": raw.get("decision"), "action": raw.get("action"),
+                      "parameterizable_fact": "inspect whether current state is an explicit input; no value judgment"})
+    python_reuse_index = [{"count": len(rows), "shape": shape[:100], "gist": rows[-1].get("gist", ""),
+                           "evidence": rows[-8:]} for shape, rows in reuse_groups.items()]
+    payload = {
+        "version": "hook-summary-v1", "window": trace["boundaries"], "complete": trace["complete"],
+        "gaps": trace["gaps"], "source_events": trace["event_count"], "source_chars": trace["char_count"],
+        "git": {"state": git_state, "recent_log": recent_commits,
+                "working_tree_diff_stat": diff[:1800], "pointer": "git log and git diff (workspace root)"},
+        "actions": action_index, "component_events": component_index[-24:],
+        "python_reuse_index": python_reuse_index[:24],
+        "decision_and_tool_index": decision_index[-48:],
+        "read_pointers": [
+            "harness/trajectory.jsonl (action receipts; filter n by action IDs)",
+            "harness/working_set.jsonl (observation refs and per-decision summaries)",
+            "harness/python_session.jsonl (Python definitions and execution events)",
+            "harness/component_runs.jsonl (save/use/version events)",
+            "session.jsonl (Pi event IDs listed above; audit pointer if read is unavailable)",
+        ],
+    }
+    if git_state == "available" and recent_commits:
+        payload["git"]["diff_pointer"] = "git show <commit>:<path> or git diff <commit>^ <commit> -- <path>"
+    projection = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    truncated = len(projection) > max_chars
+    if truncated:
+        payload["decision_and_tool_index"] = decision_index[-12:]
+        payload["component_events"] = component_index[-12:]
+        payload["git"]["recent_log"] = recent_commits[:8]
+        projection = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(projection) > max_chars:
+        projection = projection[:max_chars - 40] + '…[projection truncated; see pointers]'
+        truncated = True
+    return {"text": projection, "char_count": len(projection), "truncated": truncated,
+            "source": "full_trace" if os.environ.get(HOOK_FULL_TRACE_ENV) == "1" else "summary"}
 NORMAL_STOPS = frozenset({"win", "budget_exhausted", "max_decisions", "max_levels", "token_cap", "deadline"})
 # rebuild: every decision shows only the rebuilt working set (the 2026-10-08 design); session: the agent's last
 # decisions from Pi's session stay in view as well (docs/reports/2026-10-12-memory-mechanism-review.md).
@@ -1717,10 +1846,14 @@ def run_arc_thin_e2e(
         pending_hook_receipt = ""
 
         def turn(message: str) -> list[dict[str, Any]]:
+            remaining = deadline - time.monotonic()
+            if remaining <= HOOK_DECISION_START_RESERVE_SECONDS:
+                raise TimeoutError(f"experiment deadline reached before starting Pi turn ({remaining:.1f}s remaining)")
             response = kernel.prompt(message)
             if response.get("success") is False:
                 raise RuntimeError(f"Pi rejected the prompt: {response.get('error')}")
-            timeout = min(decision_timeout_seconds or math.inf, max(1.0, deadline - time.monotonic()))
+            timeout = min(decision_timeout_seconds or math.inf,
+                          max(1.0, deadline - time.monotonic() - HOOK_DECISION_START_RESERVE_SECONDS))
             try:
                 return kernel.wait_for_agent_events(
                     timeout=timeout,
@@ -1730,8 +1863,8 @@ def run_arc_thin_e2e(
             except PiTurnIdleTimeout:
                 raise
             except TimeoutError as exc:
-                if time.monotonic() >= deadline - 1:
-                    raise
+                if time.monotonic() >= deadline - HOOK_DECISION_START_RESERVE_SECONDS:
+                    raise TimeoutError(f"experiment deadline reached while waiting for Pi agent turn: {exc}") from exc
                 raise PiDecisionTimeout(str(exc)) from exc
 
         def safe_turn(message: str, *, allow_idle_recovery: bool = True) -> list[dict[str, Any]]:
@@ -1818,6 +1951,14 @@ def run_arc_thin_e2e(
         def self_harness_hook(action_ids: list[int], batch_id: str | None = None) -> str:
             """One independent Pi request after a settled action sequence."""
             ids = ",".join(map(str, action_ids))
+            if deadline - time.monotonic() <= HOOK_DECISION_START_RESERVE_SECONDS:
+                with (harness / "self_harness_hook.jsonl").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"action_ids": action_ids, "batch_id": batch_id,
+                        "phase": "self_harness_hook", "event": "turn_complete", "outcome": "skipped",
+                        "error": "experiment deadline reserve reached before hook prompt",
+                        "disposition": "skipped_by_deadline", "arc_action_exposed": False,
+                        "projection_version": "hook-summary-v1"}, ensure_ascii=False) + "\n")
+                return "SELF_HARNESS_HOOK_RECEIPT skipped_by_deadline"
             trace = _assemble_self_hook_trace(root, action_ids, batch_id)
             reported_used = max(0, _budget_tokens(harness) - budget_offset)
             remaining_seconds = round(max(0.0, deadline - time.monotonic()), 1) if math.isfinite(deadline) else None
@@ -1827,23 +1968,25 @@ def run_arc_thin_e2e(
                 "reported_tokens_used": reported_used,
                 "reported_tokens_remaining": max(0, max_reported_tokens - reported_used) if max_reported_tokens is not None else None,
             }
+            projection = _project_self_hook_trace(root, trace, action_ids, batch_id)
             prompt = (
                 f"SELF_HARNESS_HOOK batch_id={batch_id or 'single'} action_ids={ids}.\n"
                 f"WINDOW={json.dumps(trace['boundaries'], ensure_ascii=False)}\n"
                 f"RUNNER_BUDGET={json.dumps(budget_facts, ensure_ascii=False)}\n"
                 f"TRACE_STATUS={'complete' if trace['complete'] else 'INCOMPLETE'} "
-                f"events={trace['event_count']} chars={trace['char_count']} gaps={json.dumps(trace['gaps'], ensure_ascii=False)}\n"
-                "BEGIN COMPLETE ORDERED TASK TRACE (JSONL; each event names its source)\n"
-                f"{trace['text']}\nEND COMPLETE ORDERED TASK TRACE\n\n"
+                f"events={trace['event_count']} trace_char_count={trace['char_count']} "
+                f"projection_char_count={projection['char_count']} projection_truncated={projection['truncated']} "
+                f"gaps={json.dumps(trace['gaps'], ensure_ascii=False)}\n"
+                "BOUNDED TASK SUMMARY AND INDEX (canonical evidence remains in the pointed files)\n"
+                f"{projection['text']}\nEND SUMMARY PROJECTION\n\n"
                 f"{SELF_HARNESS_HOOK_PROMPT}"
             )
-            # Account for text and image blocks separately; this is conservative and never truncates the trace.
-            rough_tokens = _self_hook_rough_tokens(trace)
-            overflow = _self_hook_overflow(trace, pi_context_window)
+            # Overflow applies to what the hook will actually receive, not its larger audit source.
+            projected_trace = {"text": projection["text"], "events": [], "char_count": projection["char_count"]}
+            rough_tokens = _self_hook_rough_tokens(projected_trace)
+            overflow = _self_hook_overflow(projected_trace, pi_context_window)
             if overflow:
-                trace["complete"] = False
-                trace["gaps"].append("full trace exceeds the conservative 70% context-window estimate; nothing was truncated")
-                prompt = prompt.replace("TRACE_STATUS=complete", "TRACE_STATUS=OVERFLOW_UNVERIFIED")
+                prompt = prompt.replace("projection_truncated=False", "projection_truncated=True")
             hook_started = time.monotonic()
             hook_log = harness / "self_harness_hook.jsonl"
             before_requests = len(_read_jsonl(harness / "request-events.jsonl"))
@@ -1871,6 +2014,8 @@ def run_arc_thin_e2e(
                     "error": error, "arc_action_exposed": False, "disposition": disposition,
                     "event": "turn_complete", "trace_complete": trace["complete"], "trace_overflow": overflow,
                     "trace_event_count": trace["event_count"], "trace_char_count": trace["char_count"],
+                    "projection_version": "hook-summary-v1", "projection_char_count": projection["char_count"],
+                    "projection_truncated": projection["truncated"], "projection_source": projection["source"],
                     "trace_sha256": hashlib.sha256(trace["text"].encode("utf-8")).hexdigest(),
                     "trace_boundaries": trace["boundaries"], "trace_gaps": trace["gaps"],
                     "context_window": pi_context_window, "rough_trace_tokens": rough_tokens,
@@ -2105,8 +2250,20 @@ def run_arc_thin_e2e(
                         no_action_streak += 1
                         summary["no_action_decisions"] += 1
             except TimeoutError as exc:
-                summary["stop_reason"] = "deadline" if time.monotonic() >= deadline - 5 else "decision_timeout"
-                summary["error"] = str(exc)
+                deadline_stop = "experiment deadline" in str(exc) or time.monotonic() >= deadline - HOOK_DECISION_START_RESERVE_SECONDS
+                if deadline_stop and foundation == "native":
+                    try:
+                        kernel.abort()
+                        settled = kernel.wait_for_agent_events(timeout=min(15.0, max(1.0, deadline - time.monotonic())))
+                        if not any(event.get("type") == "agent_settled" for event in settled):
+                            summary["deadline_settlement"] = "not_settled"
+                        else:
+                            summary["deadline_settlement"] = "settled"
+                    except Exception as settle_error:
+                        summary["deadline_settlement"] = f"failed: {type(settle_error).__name__}: {settle_error}"[:300]
+                summary["stop_reason"] = "deadline" if deadline_stop else "decision_timeout"
+                summary["error"] = (f"experiment deadline reached while waiting for Pi; turn aborted and settlement "
+                                     f"attempted ({exc})" if deadline_stop else str(exc))
                 break
             except RuntimeError as exc:
                 summary["stop_reason"] = "environment_outcome_unknown" if 'environment outcome' in str(exc) else "pi_failed"
@@ -2424,11 +2581,12 @@ def run_arc_thin_self_hook_smoke(root: Path) -> Path:
          len({row.get("batch_id") for row in trajectory[:3]}) == 1 and all(row.get("batch_position") == index and row.get("batch_total") == 3
          for index, row in enumerate(trajectory[:3], 1)),
          [row.get("action") for row in trajectory]),
-        ("first_hook_has_complete_task_trace_and_direct_file_entry", hook_action_windows == {"1,2,3", "4"} and len(shown) == 2 and
+        ("first_hook_has_bounded_projection_and_direct_file_entry", hook_action_windows == {"1,2,3", "4"} and len(shown) == 2 and
          all(token in str(first_hook_request.get("current")) for token in
-             ("SELF_HOOK_ANALYSIS_MARK", "print(sum([2, 3, 5]))", "changed_cells", "RUNNER_BUDGET=", "BEGIN COMPLETE ORDERED TASK TRACE")) and
+             ("changed_cells", "RUNNER_BUDGET=", "BOUNDED TASK SUMMARY", "projection_char_count=", "session.jsonl")) and
+         "BEGIN COMPLETE ORDERED TASK TRACE" not in str(first_hook_request.get("current")) and
          all(token in str(first_hook_request.get("current")) for token in
-             ("directly write/edit the workspace file", "prompts/strategy.md", "skills/<name>/SKILL.md", "agents/<name>.md")),
+             ("Write/edit the existing workspace path directly", "one-off probes that cannot be parameterized", "one piece of key evidence", "finish this hook")),
          first_hook_request),
         ("hook_has_no_arc_action", hook_action_windows == {"1,2,3", "4"} and all(
          "arc_action" not in [tool.get("name") for tool in row.get("tools", [])] for row in hook_requests), hook_requests),

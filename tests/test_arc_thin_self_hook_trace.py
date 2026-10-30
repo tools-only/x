@@ -1,7 +1,22 @@
 import json
 from pathlib import Path
 
-from autoresearch_pi.arc_thin_e2e import _assemble_self_hook_trace, _self_hook_overflow
+from autoresearch_pi.arc_thin_e2e import (
+    SELF_HARNESS_HOOK_PROMPT,
+    _assemble_self_hook_trace,
+    _project_self_hook_trace,
+    _self_hook_overflow,
+)
+
+
+def test_hook_prompt_skips_without_candidates_and_finishes_after_one_evidence_check() -> None:
+    assert "Local prints, hardcoded coordinates, one-off probes that cannot be parameterized" in SELF_HARNESS_HOOK_PROMPT
+    assert "may be considered as candidates" in SELF_HARNESS_HOOK_PROMPT
+    assert "never auto-generated and never required to save" in SELF_HARNESS_HOOK_PROMPT
+    assert "read only one piece of key evidence" in SELF_HARNESS_HOOK_PROMPT
+    assert "then save or Skip and finish this hook" in SELF_HARNESS_HOOK_PROMPT
+    assert "no component is required" in SELF_HARNESS_HOOK_PROMPT
+    assert "Do not reconstruct the game, inspect every candidate" in SELF_HARNESS_HOOK_PROMPT
 
 
 def _write(path: Path, rows: list[dict]) -> None:
@@ -14,7 +29,7 @@ def _session_message(event_id: str, timestamp: str, role: str, content, **extra)
     return {"type": "message", "id": event_id, "parentId": None, "timestamp": timestamp, "message": message}
 
 
-def test_first_hook_includes_full_ordered_session_and_harness_observations(tmp_path: Path) -> None:
+def test_first_hook_trace_remains_auditable_and_projection_uses_indexes_and_pointers(tmp_path: Path) -> None:
     root = tmp_path
     session = [
         {"type": "session", "id": "session", "timestamp": "2026-10-29T10:00:00Z"},
@@ -48,6 +63,12 @@ def test_first_hook_includes_full_ordered_session_and_harness_observations(tmp_p
     full_text = trace["text"]
     assert _self_hook_overflow(trace, 10), "a tiny context window detects overflow"
     assert trace["text"] == full_text, "overflow detection never clips the transcript"
+    projection = _project_self_hook_trace(root, trace, [1], "b1", max_chars=5000)
+    assert projection["char_count"] <= 5000
+    assert '"n":1' in projection["text"] and "session.jsonl" in projection["text"]
+    assert "full-image-bytes" not in projection["text"] and "strategy analysis full" not in projection["text"]
+    assert "full receipt and delta" not in projection["text"]
+    assert "ACTION1" in projection["text"]
 
 
 def test_adjacent_hook_uses_latest_completed_hook_or_later_save_boundary(tmp_path: Path) -> None:
@@ -75,11 +96,34 @@ def test_adjacent_hook_uses_latest_completed_hook_or_later_save_boundary(tmp_pat
 
     trace = _assemble_self_hook_trace(root, [2], "b2")
     assert trace["complete"] is True
-    assert trace["boundaries"]["lower_event_id"] == "hook-end"
+    assert trace["boundaries"]["lower"] == "after last agent save"
     assert trace["boundaries"]["save_event_id"] == "strategy-save", "the later prompt save advances the lower bound"
     assert "OLD WINDOW" not in trace["text"]
     assert "POST HOOK WORK" not in trace["text"]
     assert "AFTER SAVE WORK" in trace["text"]
+
+
+def test_no_save_crosses_completed_hooks_and_indexes_repeated_python(tmp_path: Path) -> None:
+    root = tmp_path
+    _write(root / "session.jsonl", [
+        {"type": "session", "id": "session", "timestamp": "2026-10-29T10:00:00Z"},
+        _session_message("task", "2026-10-29T10:00:01Z", "user", "Decide."),
+        _session_message("py1", "2026-10-29T10:00:02Z", "assistant", [{"type": "toolCall", "id": "p1", "name": "python", "arguments": {"code": "def probe(state): return state['player']"}}]),
+        _session_message("py1r", "2026-10-29T10:00:02.500Z", "toolResult", "player=(2,3)", toolCallId="p1", toolName="python"),
+        _session_message("action", "2026-10-29T10:00:03Z", "assistant", [{"type": "text", "text": "move"}]),
+        _session_message("hook-user", "2026-10-29T10:00:04Z", "user", "SELF_HARNESS_HOOK batch_id=b action_ids=1."),
+    ])
+    _write(root / "harness/self_harness_hook.jsonl", [{"event": "turn_complete", "outcome": "completed",
+        "session_end_event_id": "old-hook", "t": "2026-10-29T09:59:59Z"}])
+    _write(root / "harness/python_session.jsonl", [{"t": "2026-10-29T10:00:02.4Z", "event": "committed", "code": "def probe(state): return state['player']", "decision": 1}])
+    for name in ("trajectory.jsonl", "working_set.jsonl", "memory.jsonl", "component_runs.jsonl"):
+        _write(root / "harness" / name, [])
+    trace = _assemble_self_hook_trace(root, [1], "b")
+    assert trace["boundaries"]["lower"] == "task start"
+    assert "def probe(state)" in trace["text"]
+    projection = _project_self_hook_trace(root, trace, [1], "b")
+    assert '"python_reuse_index"' in projection["text"]
+    assert '"count":2' in projection["text"]
 
 
 def test_missing_boundary_is_reported_and_never_called_complete(tmp_path: Path) -> None:
