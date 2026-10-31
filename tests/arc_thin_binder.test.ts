@@ -15,7 +15,8 @@ test('Python tool receipts explain Markdown and syntax failures and load valid t
   const notes = await save('tools/level1_layout.py', '# Level 1 Layout\n\n- Top row is blocked\n- Path bends left\n');
   assert.match(notes!, /NOT loaded/);
   assert.match(notes!, /looks like Markdown\/notes, not executable Python/);
-  assert.match(notes!, /memory\/ or prompts\//);
+  assert.match(notes!, /body must contain executable logic/);
+  assert.doesNotMatch(notes!, /tools\/|memory\/|prompts\//);
   assert.match(notes!, /no active version/);
 
   const syntax = await save('tools/broken.py', 'def run(state, args):\n    return (\n');

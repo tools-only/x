@@ -22,12 +22,12 @@ User decisions binding every harness change; the linked records give the reasons
 
 # Self conversion contract
 
-- Agent owns CONVERT: choose useful logic, its contract, adaptation and retirement; repeatedWork is factual telemetry, not a conversion author.
-- Author Python functions as checked, parameterized logic prototypes first, then bind live workspace values at a separate call site. In Self-baseline, promote_session_function extracts source without executing/saving; Agent adapts to Self and publishes through existing Binder paths.
-- Optional agent-written notes/convert.md carries unfinished intent into ordinary Decide (baseline requires --self-convert). Host only delivers a bounded excerpt and records shown with owner/path/hash. Legacy data/convert.md is ignored; no host candidate generation or automatic migration.
-- Next component save/call and task action provide feedback through existing component/version, run and working-set evidence. Agent clears completed/stale notes and revises/retires components. Delivery, saving and coverage alone are not semantic use or benefit.
-- No automatic promotion/save, mandatory conversion report, action gate or extra review. Keep repository AGENTS.md out of gameplay.
-- Implementation and evidence: [agent-held conversion](docs/plans/2026-10-28-self-convert-guide.md).
+- Agent chooses whether to publish and which logical name to call. `promote(name?)` publishes an existing parameterized Python function with a Runtime-filled Binder shell; `save_tool(name, body)` handles complete implementations. Runtime owns storage and assembly. Generic file mutation redirects harness changes to these tools.
+- Runtime candidates are factual function fingerprints, never semantic conversion decisions. No publication happens without an explicit Agent call. Keep live values at the call site; unresolved dependencies require Agent adaptation.
+- Task and Hook receive bounded resident Failures/Successes. Hook only exposes promote, save_tool, read_component and skip, with four calls charged to the Task budget. No conversion note or Maintenance identity is required. Legacy daemon_reply is an optional compatibility path.
+- Self ledger means Created | Shown | Called | Covered. Saved or shown is not successful use. Actual component_runs ok=true is the hard gate. Agent revises/retires components based on task feedback.
+- Acceptance ladder: L0 >=1 Agent-created tool followed by a successful recorded call; L1 the same version called successfully again (via++); L2 resident feedback changes the next turn's save/call behavior; L3 a Meta process-rule change demonstrably improves results. AR, critic and process governance cannot substitute for L0/L1. L2/L3 require real-provider evidence, not fixtures. See [implementation job](docs/jobs/2026-10-31-P1-P6-SELF-HARNESS-IMPL.md).
+- Keep repository AGENTS.md out of gameplay. Critic, Refiner and LEVEL REVIEW remain independently switchable.
 
 # Current code (checked 2026-10-23)
 

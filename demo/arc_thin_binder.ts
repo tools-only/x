@@ -121,16 +121,16 @@ export class Binder {
    * was saved (su15-p13-q38-1 #183: a repair that returned a crashing view as it was read "v3: saved · loaded").
    */
   private receipt(entry: Entry, unchanged = false) {
-    const kind = componentKind(entry.path); const name = entry.good?.name ?? entry.path.split('/').at(-1);
+    const kind = componentKind(entry.path); const name = entry.good?.name ?? entry.path.split('/').at(-1)?.replace(/\.[^.]+$/, '');
     // A prompt is shown with each decision as it stood when the decision began (the head is built once per decision, and
     // in the system prompt a change mid-decision invalidated the provider's cached prefix on every later request of it,
     // pr-01 2026-10-14); it applies from the next decision.
     const from = kind === 'prompt' ? 'your next decision' : 'your next request';
     const failed = entry.error
-      ? `NOT loaded (${entry.error}) · ${entry.good ? `v${entry.good.version} still runs, its outputs are labelled` : 'no active version'}` : '';
-    if (unchanged) return `${entry.path} → ${kind} ${name} v${entry.version}: unchanged, the same content as before · ` +
+      ? `NOT loaded (body: ${entry.error.replaceAll(entry.path, "component")} ) · ${entry.good ? `v${entry.good.version} still runs, its outputs are labelled` : 'no active version'}` : '';
+    if (unchanged) return `${kind} ${name} v${entry.version}: unchanged, the same content as before · ` +
       (failed || (entry.good?.enabled ? 'loaded' : 'off'));
-    return `${entry.path} → ${kind} ${name} v${entry.version}: saved · ` + (failed
+    return `${kind} ${name} v${entry.version}: saved · ` + (failed
       || (entry.good?.enabled ? `loaded · active from ${from}` : `off · not active from ${from}`));
   }
   async scan(level: number) {
@@ -166,21 +166,16 @@ export class Binder {
       .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
     const lines = listed.map(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;
-      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'active';
-      const use = kind === 'tool' ? (c?.mount?.length ? `loop mount at ${c.mount.join(' and ')}` : c?.guard ? 'action guard, checked before each action'
-          : path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
-          : c?.predictor ? 'predictor, run at each action' : `${c?.name ?? ''}(args)`)
-        : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
-      return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +
-        (usage.get(path) ? ` · ${usage.get(path)}` : '');
+      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'Created';
+      return `${c?.name ?? path.split('/').at(-1)?.replace(/\.[^.]+$/, '')} | ${kind} | ${status} | via=${usage.get(path) ?? '0'}`;
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';
     const full = ['HARNESS (your prompts, tools, skills and subagents; memory is indexed above)', ...lines].join('\n');
     if (full.length <= 1200) return full;
     const groups = new Map<string, string[]>();
-    for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path]); }
-    return ['HARNESS (names only; read a file for its text)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
+    for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path.split('/').at(-1)!.replace(/\.[^.]+$/, '')]); }
+    return ['HARNESS (logical names; read_component for content)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
       `${listed.filter(([, e]) => e.error).length} failed; receipts label last working versions.`].join('\n').slice(0, 1200);
   }
 }

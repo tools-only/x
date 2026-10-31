@@ -233,8 +233,9 @@ test('python session never stores runtime objects and never acts or writes while
     { allow_act: true, allow_writes: true, acts: [] });
   assert.equal(acting.need_act, undefined);
   assert.equal(acting.ops, undefined);
-  assert.deepEqual(acting.session.failed_defs, [['Bad', 'PermissionError: no action while the python session is restored']]);
-  assert.deepEqual(acting.session.defs.map(([name]: [string]) => name), ['Writer', 'fine']);
+  assert.deepEqual(acting.session.failed_defs, [['Bad', 'PermissionError: no action while the python session is restored'],
+    ['Writer', 'PermissionError: no workspace writes while the python session is restored or checkpointed']]);
+  assert.deepEqual(acting.session.defs.map(([name]: [string]) => name), ['fine']);
   // A checkpoint that does not load is reported as such, and the call does not offer a replacement for it.
   const broken = await sessionRun('z = 1', { ...NO_SESSION, blob: 'bm90IGEgcGlja2xl', sha: 'x' });
   assert.match(broken.session.load_error, /Error/);

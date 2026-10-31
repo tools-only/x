@@ -182,7 +182,7 @@ test('related active components are shown with version and evidence; read and tr
     runtime.register();
     assert.equal(registered.has('sum_rows'), true, `candidate=${JSON.stringify(binder.candidates().map(c => ({ path: c.path, name: c.name, kind: c.kind, view: (c as any).view, level: c.level })))} names=${runtime.toolNames()}`);
     const result = await runtime.python('rows = [[1, 2], [3, 4]]\nprint(sum(sum(row) for row in rows))');
-    assert.match(result.content.map((part: any) => part.text ?? '').join('\n'), /RELATED COMPONENTS[\s\S]*tools\/sum_rows\.py@1 sum_rows\(args=\{\.\.\.\}\).*\d+\/\d+ normalized computation lines match/);
+    assert.match(result.content.map((part: any) => part.text ?? '').join('\n'), /RELATED COMPONENTS[\s\S]*sum_rows@1 sum_rows\(args=\{\.\.\.\}\).*\d+\/\d+ normalized computation lines match/);
     runtime.noteReuseRead('tools/sum_rows.py');
     assert.ok(logs.some(row => row.kind === 'reuse_shown' && row.paths.includes('tools/sum_rows.py@1')));
     assert.ok(logs.some(row => row.kind === 'reuse_shown' && row.evidence[0].matched > 0));

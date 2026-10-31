@@ -86,7 +86,6 @@ export class NativeRuntime {
   private coverHinted = new Set<string>();
   /** One short in-window review cue per level and canonical action count. */
   private windowCheckHinted = new Set<string>();
-  private conversionHintDecision = -1;
   private savedFeedback = new Map<string, { version: number; n: number; ok: number; failed: number }>();
   /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
   emptyViews() {
@@ -205,6 +204,84 @@ export class NativeRuntime {
     }
   }
   toolNames() { return this.callable().filter(c => this.registered.has(c.name)).map(c => c.name); }
+  /** Runtime-owned drafts: names come from successful Python cells, never a second model. */
+  private candidateShown = new Map<string, number>();
+  private promoted = new Set<string>();
+  private lastSaveRun = 0;
+  promotionCandidates() {
+    const names = new Map<string, string>();
+    for (const call of this.pythonRuns.slice(this.lastSaveRun).filter(c => c.ok && c.level === this.host.level()))
+      for (const match of (call.code ?? '').matchAll(/^def ([a-z][a-z0-9_]{0,39})\(/gm))
+        if (!this.promoted.has(match[1]) && !this.host.binder.candidates().some(c => c.name === match[1]))
+          names.set(match[1], `python:${call.shape}; checked at #${call.n}`);
+    return [...names].map(([name, fingerprint]) => ({ name, fingerprint })).slice(-8).reverse();
+  }
+  seedSelfMaterials(rows: any[]) {
+    for (const row of rows) for (const name of row.candidates ?? [])
+      if (!this.candidateShown.has(name)) this.candidateShown.set(name, row.decision);
+  }
+  /** Bounded resident sensing, shared by Task and Hook. No response identity is required. */
+  selfMaterials() {
+    const decision = this.decision();
+    const candidates = this.promotionCandidates();
+    const failures: string[] = [], successes: string[] = [], mounted: string[] = [];
+    for (const c of candidates) {
+      if (!this.candidateShown.has(c.name)) this.candidateShown.set(c.name, decision);
+      const age = decision - this.candidateShown.get(c.name)!;
+      if (age >= 3) failures.push(`${c.name} | candidate_uncalled | shown ${age} turns; promote available`);
+      else failures.push(`${c.name} | reusable_function | ${c.fingerprint}; promote available`);
+    }
+    for (const c of this.host.binder.candidates().filter(c => c.kind === 'tool')) {
+      const saved = this.savedFeedback.get(c.path);
+      if (!saved || saved.version !== c.version) continue;
+      if (!saved.ok && !saved.failed) mounted.push(`${c.name} | tool | Shown | via=0`);
+      if (!saved.ok && !saved.failed && this.host.actionCount() - saved.n >= 3) failures.push(`${c.name} | mounted_uncalled | shown without a call`);
+      if (saved.failed >= 2) failures.push(`${c.name} | repeated_call_failure | ${saved.failed} failed calls`);
+      if (saved.ok) successes.push(`${c.name} | Covered | via=${saved.ok}; component_runs ok=true`);
+    }
+    for (const family of this.repeatedWork(this.host.level()).filter(f => !f.covered)) {
+      const candidate = candidates.find(c => family.samples.some(source => source.includes(`def ${c.name}(`)));
+      failures.push(`${candidate?.name ?? `reuse_${family.key.slice(0, 8)}`} | repeated_work_without_component | ${family.calls} cells; ` +
+        (candidate ? 'promote available' : 'save_tool available; no standalone prototype'));
+    }
+    const body = [
+      ...candidates.map(c => `candidate ${c.name} | ${c.fingerprint}`),
+      ...mounted.slice(-8),
+      'Failures', ...failures.slice(-3), 'Successes', ...successes.slice(-3),
+    ].join('\n').slice(0, 2400);
+    this.host.log('self_materials.jsonl', { decision, n: this.host.actionCount(), candidates: candidates.map(c => c.name),
+      failures: failures.slice(-3), successes: successes.slice(-3), shown: mounted });
+    return body;
+  }
+  async saveTool(name: string, body: string, signal?: AbortSignal) {
+    if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error('name: use a logical identifier');
+    const source = await this.toolSource(body, undefined, signal);
+    const path = `tools/${name}.py`;
+    this.host.workspace.mutate({ op: 'write', path, content: source + '\n' });
+    const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
+    this.noteSave(path, receipt);
+    if (receipt?.includes('NOT loaded')) throw Error(receipt);
+    this.lastSaveRun = this.pythonRuns.length;
+    this.register();
+    return receipt ?? `${name}: Created`;
+  }
+  async promote(name?: string, signal?: AbortSignal) {
+    const chosen = name ?? this.promotionCandidates()[0]?.name;
+    if (!chosen) throw Error('name: no promote candidate; save_tool accepts a complete body');
+    const result = await this.sessionFunction(chosen, signal);
+    if (!result.ok) throw Error(`name: ${result.error ?? 'session function unavailable'}`);
+    const info = result.value as { source: string; promote_source: string; invocation: string; parameters: string[]; session_dependencies: string[];
+      runtime_inputs: string[]; other_globals: string[]; unresolved_names: string[] };
+    const dependencies = [...info.session_dependencies, ...info.runtime_inputs, ...info.other_globals, ...info.unresolved_names];
+    if (dependencies.length) throw Error(`body: unresolved inputs ${dependencies.join(', ')}; use save_tool with explicit inputs`);
+    const invocation = info.parameters.join(',') === 'args,env' ? `${chosen}(args, env)` : info.invocation;
+    const body = chosen === 'run' && info.parameters.join(',') === 'args,env' ? info.source
+      : `${info.promote_source}\n\ndef run(args, env):\n    """${chosen}: parameterized session logic."""\n    return ${invocation}\n`;
+    const receipt = await this.saveTool(chosen, body, signal);
+    this.promoted.add(chosen);
+    this.host.log('self_materials.jsonl', { event: 'Called', via: 'promote', name: chosen, decision: this.decision() });
+    return receipt;
+  }
   hookFacts(actionId: number, taskDecision: number) {
     return this.pythonRuns.filter(r => r.decision === taskDecision && (r.n === actionId - 1 || r.n === actionId)).slice(-4).map(r => ({
       ref: `component_runs.jsonl kind=python decision=${r.decision ?? 'unknown'} n=${r.n ?? 'unknown'}`,
@@ -216,6 +293,7 @@ export class NativeRuntime {
   seedPython(rows: any[]) {
     for (const r of rows) {
       if (r.kind === 'save' && r.ok && r.by === 'agent') {
+        this.lastSaveRun = this.pythonRuns.length;
         const previous = this.savedFeedback.get(r.path);
         if (previous?.version !== r.version) this.savedFeedback.set(r.path, { version: r.version, n: r.n, ok: 0, failed: 0 });
       }
@@ -227,7 +305,7 @@ export class NativeRuntime {
         this.windowCheckHinted.add(`${r.level}:${r.n}`);
       if (r?.kind === 'python' && !r.readonly && typeof r.shape === 'string')
         this.pythonRuns.push({ level: Number(r.level) || 0, shape: r.shape, lines: r.lines ?? [], struct: r.struct ?? [], gist: String(r.gist ?? ''), kit: String(r.kit ?? ''),
-          decision: Number(r.decision) || 0, n: Number(r.n) || 0 });
+          decision: Number(r.decision) || 0, n: Number(r.n) || 0, ok: r.ok, code: r.code_excerpt });
     }
   }
   private decision() { return this.host.decision?.() ?? 0; }
@@ -245,6 +323,7 @@ export class NativeRuntime {
     if (/^(tools|observers|lib)\/[^/]+\.py$/.test(path)) {
       const ok = !/NOT loaded/.test(receipt ?? '');
       const version = this.host.binder.versionMap()[path];
+      if (ok) this.lastSaveRun = this.pythonRuns.length;
       if (ok && this.host.binder.originOf(path)?.by === 'agent' && this.savedFeedback.get(path)?.version !== version)
         this.savedFeedback.set(path, { version, n: this.host.actionCount(), ok: 0, failed: 0 });
       this.host.log('component_runs.jsonl', { kind: 'save', path, decision: this.decision(), n: this.host.actionCount(), ok,
@@ -302,6 +381,8 @@ export class NativeRuntime {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
     for (const op of result.ops ?? []) {
       if (op.op === 'memory' || op.op === 'meta_decide') continue;
+      if ([op.path, op.destination].some(path => path && /^(tools|lib|observers|skills|agents|roles|prompts)(\/|$)/.test(path.replace(/\\/g, '/'))))
+        throw Error('Use save_tool(name, body) or promote(name) for harness changes.');
       this.host.workspace.path(op.path, true);
       if (op.destination) this.host.workspace.path(op.destination, true);
     }
@@ -564,7 +645,6 @@ export class NativeRuntime {
     const snap = this.snapshot(); const started = Date.now();
     const windowAtStart = this.host.actionCount();
     const kit = kitOf(this.host.binder.versionMap());
-    const priorDefs = new Map(session?.payload().defs ?? []);
     const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}),
       ...(Object.keys(cells).length ? { cells } : {}) };
     // The parent's session runs in its live kernel; a subagent's session and saved tools keep a fresh sandbox per call.
@@ -607,41 +687,12 @@ export class NativeRuntime {
     if (covering && !this.coverHinted.has(coverKey)) {
       this.coverHinted.add(coverKey);
       const c = this.host.binder.active().find(x => x.path === covering);
-      coverNote = `(${covering} already computes this: ${c?.kind === 'tool' && ((c as any).view || c.path.startsWith('observers/'))
+      coverNote = `(${c?.name ?? "saved component"} already computes this: ${c?.kind === 'tool' && ((c as any).view || c.path.startsWith('observers/'))
         ? 'it is a view, so its output is shown with each new state under HARNESS'
         : c?.kind === 'tool' ? `call ${c.name}(args={...})` : `from ${covering.replace(/\.py$/, '').replace(/\//g, '.')} import …`} instead of retyping it)`;
       this.host.log('component_runs.jsonl', { kind: 'cover_hint', path: covering, level: this.host.level(), decision, n: this.host.actionCount() });
     }
     const windowKey = `${this.host.level()}:${windowAtStart}`;
-    let conversionNote = '';
-    const family = this.host.hookTurn?.() && this.conversionHintDecision !== decision && !readonly && !save && result.ok ? repeatedFamilies(this.levelRuns(this.host.level()), this.components())
-      .find(f => f.runs.includes(this.pythonRuns.at(-1)!)) : undefined;
-    if (family && this.conversionHintDecision !== decision) {
-      this.conversionHintDecision = decision;
-      const existing = family.covered && this.host.binder.active().find(c => c.path === family.covered && this.toolNames().includes(c.name));
-      const names = [...new Set(family.runs.flatMap(r => [...(r.code ?? r.gist).matchAll(/(?:^|\n)\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/g)].map(m => m[1])))].slice(-3);
-      conversionNote = `SELF REUSE: repeat/near-duplicate Python detected (${family.recent} calls). ` + (existing
-        ? `Call ${existing.name}(args={...}) now instead of rebuilding it.`
-        : 'Save reusable checked logic as a tool now: ' + (this.host.selfBaseline
-          ? 'keep the parameterized function; save a complete run(args, env) with kind="tool", then call NAME(args={"value":...}).'
-          : 'keep the parameterized function; save a complete run(args, env) with kind="tool", then call NAME(args={"value":...}).')) +
-        (names.length ? ` Prototype names to promote: ${names.join(', ')}.` : '') +
-        ' You choose; skip one-offs or no remaining use without a report.';
-      this.host.log('component_runs.jsonl', { kind: 'conversion_hint', level: this.host.level(), decision, n: this.host.actionCount(), calls: family.recent });
-    }
-    const reusedFunction = this.host.hookTurn?.() && !conversionNote && this.conversionHintDecision !== decision && !readonly && !save && result.ok &&
-      [...priorDefs.keys()].find(name => this.pythonRuns.filter(r => r.level === this.host.level() && r.ok !== false &&
-        r.used?.includes(name)).length >= 2);
-    if (reusedFunction) {
-      this.conversionHintDecision = decision;
-      conversionNote = `SELF REUSE: the existing session function ${reusedFunction} was called from at least two successful Python cells. ` +
-        (this.host.selfBaseline
-          ? `call promote_session_function(function="${reusedFunction}") only to inspect it; use save(kind="tool", name="NAME", ref="${reusedFunction}") when it already accepts (args, env), otherwise provide complete adapted content. `
-          : `save a complete run(args, env) with kind="tool", then call NAME(args={...}). `) +
-        'Only do this if the next task check will reuse it; otherwise keep it in the session.';
-      this.host.log('component_runs.jsonl', { kind: 'conversion_hint', trigger: 'session_function_reuse', level: this.host.level(), decision,
-        n: this.host.actionCount(), function: reusedFunction, cells: 2 });
-    }
     const windowCalls = this.pythonRuns.filter(r => r.level === this.host.level() && r.n === windowAtStart).length;
     let windowCheck = '';
     if (!readonly && !result.acted?.lines.length && this.host.actionCount() === windowAtStart &&
@@ -660,14 +711,12 @@ export class NativeRuntime {
         const matched = [...relevance].filter(line => component.lines.has(line)).length;
         return { c, matched, total: relevance.size };
       }).filter(item => item.matched > 0).sort((a, b) => b.matched - a.matched || a.c.path.localeCompare(b.c.path));
-    const reuseIndex = !readonly && related.length ? 'RELATED COMPONENTS (optional; read path or try a callable tool; no commit-based loading):\n' +
-      related.map(({ c, matched, total }) => `${c.path}@${c.version} ${c.name}(args={...}) — ${matched}/${total} normalized computation lines match; inspect signature/outputs before reuse.`).join('\n') : '';
+    const reuseIndex = !readonly && related.length ? 'RELATED COMPONENTS (read_component(name) or call a tool):\n' +
+      related.map(({ c, matched, total }) => `${c.name}@${c.version} ${c.name}(args={...}) — ${matched}/${total} normalized computation lines match; inspect signature/outputs before reuse.`).join('\n') : '';
     if (reuseIndex) this.host.log('component_runs.jsonl', { kind: 'reuse_shown', level: this.host.level(), decision, n: this.host.actionCount(),
       paths: related.map(({ c }) => `${c.path}@${c.version}`), evidence: related.map(({ matched, total }) => ({ matched, total })) });
     const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, reuseIndex, windowCheck, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
       live && result.ok && Boolean((result.value as any)?.has_value), mark);
-    // Keep the cue visible even when the Python output is shortened to a receipt.
-    if (conversionNote && this.host.hookTurn?.()) out.content.push({ type: 'text', text: conversionNote });
     if (save) {
       const feedback = this.selfFeedbackText(`tools/${save}.py`);
       if (feedback) out.content.push({ type: 'text', text: `${feedback} Next request: call ${save}(args={}) to run the saved version; supply any inputs in args.` });

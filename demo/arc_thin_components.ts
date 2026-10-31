@@ -8,7 +8,7 @@ import type { ComponentSpec } from './arc_thin_binder.ts';
 const NATIVE = String.raw`
 import ast, io, re, sys, importlib.abc, importlib.util, builtins
 
-RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'save', 'self_component', 'promote_session_function')
+RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'save', 'save_tool', 'promote', 'read_component', 'skip', 'self_component', 'promote_session_function')
 # Every tool has one interface: a dict of arguments (Continual Harness's run(state, args) contract; Prime calls plain
 # python). No schema is derived from type hints, so there is no annotation to get wrong.
 TOOL_PARAMETERS = {'type': 'object', 'properties': {'args': {'type': 'object'}}, 'additionalProperties': False}
@@ -67,7 +67,7 @@ def _inspect(req):
         r'^(?:async\s+def|def|class|from|import|if|elif|else:|for|while|try:|except|with|return|raise|pass|break|continue|@|[A-Za-z_]\w*\s*=)',
         line) for line in lines)
     if has_markdown_shape and not has_python_statement:
-        raise ValueError('looks like Markdown/notes, not executable Python; write notes to memory/ or prompts/, not tools/*.py or lib/*.py')
+        raise ValueError('looks like Markdown/notes, not executable Python; body must contain executable logic')
     tree = ast.parse(source, path)
     describe = (ast.get_docstring(tree) or _first_comment(req['source']) or ('saved python ' + name)).splitlines()[0][:120]
     if top == 'lib':
@@ -810,7 +810,25 @@ def _export_session_function(req, env):
     other_globals = sorted((global_refs & set(_ns)) - known_session - runtime_inputs)
     unresolved = sorted(global_refs - set(_ns) - set(dir(builtins)))
     parameters = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]]
+    # Prepare a callable draft without executing it. Preserve defaults and positional-only inputs.
+    target = '_self_prototype_run' if name == 'run' and parameters != ['args', 'env'] else name
+    if target != name:
+        node.name = target
+        for item in ast.walk(node):
+            if isinstance(item, ast.Name) and item.id == name: item.id = target
+    prototype = ast.unparse(tree)
+    positional = [*node.args.posonlyargs, *node.args.args]
+    required = len(positional) - len(node.args.defaults)
+    passed = ["args[" + repr(arg.arg) + "]" if i < required else
+              "args.get(" + repr(arg.arg) + ", " + target + ".__defaults__[" + str(i-required) + "])"
+              for i, arg in enumerate(positional)]
+    if node.args.vararg: passed.append("*args.get(" + repr(node.args.vararg.arg) + ", [])")
+    if node.args.kwonlyargs:
+        passed.append("**{k: args[k] for k in " + repr([arg.arg for arg in node.args.kwonlyargs]) + " if k in args}")
+    if node.args.kwarg: passed.append("**args.get(" + repr(node.args.kwarg.arg) + ", {})")
+    invocation = target + '(' + ', '.join(passed) + ')'
     return {'ok': True, 'value': {'name': name, 'source': source, 'parameters': parameters,
+        'promote_source': prototype, 'invocation': invocation,
         'session_dependencies': session_dependencies, 'runtime_inputs': dynamic_inputs,
         'other_globals': other_globals, 'unresolved_names': unresolved,
         'portable': not (session_dependencies or dynamic_inputs or other_globals or unresolved)}}

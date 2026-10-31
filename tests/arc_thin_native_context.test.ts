@@ -9,22 +9,11 @@ test('native production instructions prefer reuse and evidence-led applicability
   assert.match(prompt, /applicability on current evidence/);
 });
 
-test('Self Task prompt exposes the short path for each reusable component category without requiring a save', () => {
+test('Self Task prompt uses logical tools and four states without filesystem or diagnostic teaching', () => {
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_self_baseline.md', import.meta.url), 'utf8');
-  for (const path of ['prompts/strategy.md', 'skills/method/SKILL.md', 'tools/helper.py', 'agents/helper.md'])
-    assert.ok(prompt.includes(path), `missing Task path ${path}`);
-  assert.match(prompt, /briefly consider each kind and Skip any without it/i);
-  assert.match(prompt, /No component is required\./);
-  assert.match(prompt, /parameterized `def`s whose inputs come from `state` or explicit arguments/i);
-  assert.match(prompt, /Keep hard-coded coordinates and current-level values at the call site as arguments/i);
-  assert.match(prompt, /One-off exploration such as `os\.walk`.*can stay inline/i);
-  assert.match(prompt, /first write a parameterized prototype.*do not save a whole solving script with dead coordinates unchanged/i);
-  assert.match(prompt, /check the active component index before recreating work/i);
-  assert.match(prompt, /At the next related solving decision, first read the relevant skill or call the saved tool with current state\/arguments/i);
-  assert.match(prompt, /If it does not apply, briefly skip it and act; if a trial fails, revise or retire it/i);
-  assert.match(prompt, /The live grid is `state\["grid"\]`/);
-  assert.match(prompt, /After a KeyError.*stop repeating that failed probe/i);
-  assert.match(prompt, /Do not repeat an equivalent Python probe/i);
+  for (const token of ['promote(name)', 'save_tool(name, body)', 'Created | Shown | Called | Covered', 'Saving is optional.'])
+    assert.ok(prompt.includes(token));
+  assert.doesNotMatch(prompt, /tools\/|prompts\/|skills\/|os.walk|hypothesis|stall|convert.md/);
   assert.match(prompt, /After a probe and one feedback confirm the same effect or displacement rule/i);
   assert.match(prompt, /Do not spend another decision re-proving the confirmed effect just to earn permission to batch/i);
   assert.match(prompt, /3.7 predictable actions total, including the first action/i);
@@ -229,7 +218,7 @@ test('the native instructions state what a prediction is for, which the native f
   // promoted. The legacy prompt states the contract; the native one mentioned predict only as a parameter name.
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
   // Where predict goes depends on the action tool (a then list, or CH's action list under ARC_THIN_OBSERVATION=ch).
-  assert.match(prompt, /predict carries it, \{\{predict_on\}\}\. That is what gets scored, what a hypothesis check is tested against/);
+  assert.match(prompt, /predict carries it, \{\{predict_on\}\}\. That is what gets scored, what a check is tested against/);
   assert.match(prompt, /\{\{list_stop\}\} stops at the first missed prediction/);
   assert.match(prompt, /level or WIN transition, predict it explicitly/);
 });

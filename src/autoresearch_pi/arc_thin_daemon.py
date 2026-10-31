@@ -23,15 +23,10 @@ def track_capabilities(rows: Rows, state: dict[str, Any], acknowledged: bool) ->
         if row.get("error"):
             key = f"component save: {path}: {row['error']}"[:240]
             failures[key] = failures.get(key, 0) + 1
-    # C: delivery/calls are positive observations, not semantic adoption or task success.
-    for row in rows["harness/working_set.jsonl"]:
-        for path, version in row.get("active_prompt_versions", {}).items():
-            label = f"shown {path} v{version}"[:240]
-            if label not in successes:
-                successes.append(label)
+    # Shown is delivery evidence only; Successes require successful tool executions.
     for row in rows["harness/component_runs.jsonl"]:
-        if row.get("kind") == "tool" and row.get("ok") is True:
-            label = f"called {row.get('path')} v{row.get('version', '?')} successfully"[:240]
+        if row.get("kind") == "tool" and row.get("ok") is True and not row.get("readonly"):
+            label = f"Covered {row.get('name') or str(row.get('path', '')).split('/')[-1].removesuffix('.py')} v{row.get('version', '?')} successfully"[:240]
             if label not in successes:
                 successes.append(label)
         if row.get("ok") is False:
@@ -47,7 +42,7 @@ def track_capabilities(rows: Rows, state: dict[str, Any], acknowledged: bool) ->
         if key not in seen:
             seen.add(key)
             if row.get("outcome") == "success":
-                successes.append(str(row["reason"])[:240])
+                pass  # A signal alone cannot establish successful component use.
             else:
                 reasons.append(str(row["reason"]))
                 failures[str(row["reason"])[:240]] = 1

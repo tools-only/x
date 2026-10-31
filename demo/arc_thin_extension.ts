@@ -897,7 +897,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** Optional bounded Meta feedback. Delivery and spend are reported as observations, never as semantic-use claims. */
 	function processEvidenceText(sinceDecision?: number): string {
-		if (selfBaseline && !selfConvert) return "";
+		if (selfBaseline) return "";
 		if (!binder || !workspace) return "";
 		// The agent authors intent in its writable notes; the host only transports it.
 		const path = 'notes/convert.md';
@@ -1568,18 +1568,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (control) return;
     if (nativeRuntime && toolsReady) {
       nativeRuntime.register();
-      if (run.daemonResponse) {
-        pi.setActiveTools(['read', 'write', 'edit', 'daemon_reply']);
-        return;
-      }
       if (run.hookTurn) {
-        pi.setActiveTools(['python', 'read', 'write', 'edit', 'save', ...(selfBaseline ? ['self_component', 'promote_session_function'] : []),
-          ...nativeRuntime.toolNames()]);
+        pi.setActiveTools(['promote', 'save_tool', 'read_component', 'skip']);
         return;
       }
       // Keep the core list fixed; newly saved tools and a saved subagent's consult enter on the next provider request.
       // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
-      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(selfBaseline ? ['save', 'self_component', 'promote_session_function'] : []),
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', 'promote', 'save_tool', 'read_component', 'self_component', ...(selfBaseline ? ['save'] : []),
         ...(consultTool && (!selfBaseline || binder?.candidates().some(c => c.kind === 'subagent')) ? ['consult'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
@@ -2917,7 +2912,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (native && workspace) {
 			// Native mode keeps the runtime's own analyses out of the resident context: the ledger is a file the agent,
 			// its components and its refiner can read, and the refiner replaces the critic's advisory notes.
-			try { workspace.runtimeWrite("data/ledger.md", renderLedgerView(state, [...memory.hypotheses.keys()], 6000, goalRefs) + "\n"); }
+			try { workspace.runtimeWrite("data/experiment-diagnostics.md", renderLedgerView(state, [...memory.hypotheses.keys()], 6000, goalRefs) + "\n"); }
 			catch (error) { logError("ledger:file", error); }
 			ledgerText = "";
 			// While a refinement runs, events wait for the next decision instead of being dropped.
@@ -3099,16 +3094,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	function gate(name: string): { reason: string; terminate: boolean } | undefined {
 		run.toolCalls += 1;
-		if (run.hookTurn && name === 'arc_action') return { reason: 'self_harness_hook has no environment actions', terminate: true };
+		if (run.hookTurn && (!['promote', 'save_tool', 'read_component', 'skip'].includes(name) || run.toolCalls > 4))
+          return { reason: 'Hook permits four calls: promote, save_tool, read_component, skip.', terminate: true };
 		if (run.daemonReplied) return { reason: "daemon response completed; Task resumes in the next turn", terminate: true };
-		if (run.daemonResponse) {
-			if (name === "arc_action") return { reason: "no environment action during a daemon response", terminate: true };
-			if (!['read', 'write', 'edit', 'daemon_reply'].includes(name))
-				return { reason: `${name} belongs to the Task session; use the isolated maintenance workspace`, terminate: true };
-			if (run.toolCalls > LEVEL_REVIEW_CALLS && name !== "daemon_reply")
-				return { reason: `this response used its ${LEVEL_REVIEW_CALLS} tool calls; finish with daemon_reply(summary)`, terminate: run.toolCalls > LEVEL_REVIEW_CALLS + 2 };
-			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = "Finish this response now with daemon_reply(summary); unresolved work may wait.";
-		}
+
 		if (name === "refine") run.refineCalled = true;
 		// A level or stall review is bounded like a decision: its last call says so, and a call after it ends the review.
 		// A review that has not saved its own file may still write it with one more call: in su15-lb-cb-q38 the consult and
@@ -3674,6 +3663,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   if (workspace) for (const tool of [...workspace.fileTools(), gitTool(workspace)]) pi.registerTool({ ...tool,
     execute: guardTool(tool.name, async (params, signal, ctx) => {
       const path = posix.normalize(String((params as any)?.path ?? '').replace(/\\/g, '/'));
+      if (tool.name === 'read' && /(?:^|\/)(tools|lib|observers|skills|agents|roles|prompts|\.harness)(?:\/|$)/.test(path)) {
+        const component = binder?.candidates().find(c => c.path === path);
+        const name = component?.name ?? path.split('/').at(-1)!.replace(/\.[^.]+$/, '');
+        throw new Refusal(`Use read_component(name="${name}", kind="${component?.kind ?? 'tool'}").`);
+      }
+      if (['write', 'edit'].includes(tool.name) && /(?:^|\/)(tools|lib|observers|skills|agents|roles|prompts|\.harness)(?:\/|$)/.test(path)
+          && path !== run.reviewWrite && ![REVIEW_PATH, LESSONS_PATH].includes(path)) {
+        const suggested = path.split('/').at(-1)!.replace(/\.[^.]+$/, '').replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+        throw new Refusal(`Use save_tool(name="${suggested || 'helper'}", body=...) or promote(name).`);
+      }
       if (run.daemonResponse) {
         if (tool.name === 'read') {
 				if (path === 'data/maintenance.md')
@@ -3838,6 +3837,34 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Python's env.remember goes through the same update as the memory tool, so bookkeeping and an action can share
 		// one cell (Prime Agent's programmatic tool calling) instead of costing a separate request each.
 		pythonMemory = (params, signal) => commitMemory(repairMemoryArguments(params) as MemoryParams, signal);
+        pi.registerTool({ name: 'save_tool', label: 'Save tool',
+          description: 'Publish parameterized Python run(args, env). Runtime validates and mounts the named tool.',
+          parameters: Type.Object({ name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), body: Type.String({ maxLength: 16384 }) }),
+          execute: guardTool('save_tool', async (params: { name: string; body: string }, signal) => {
+            const receipt = await nativeRuntime!.saveTool(params.name, params.body, signal);
+            refreshSkillSurface(); return text(receipt);
+          }) });
+        pi.registerTool({ name: 'promote', label: 'Promote',
+          description: 'Publish a session function by logical name; omit name for the top candidate. Runtime fills the callable shell.',
+          parameters: Type.Object({ name: Type.Optional(Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' })) }),
+          execute: guardTool('promote', async (params: { name?: string }, signal) => {
+            const receipt = await nativeRuntime!.promote(params.name, signal);
+            refreshSkillSurface(); return text(receipt);
+          }) });
+        pi.registerTool({ name: 'read_component', label: 'Read component', description: 'Read a saved tool by logical name.',
+          parameters: Type.Object({ name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), kind: Type.Optional(Type.String()) }),
+          execute: guardTool('read_component', async (params: { name: string; kind?: string }) => {
+            const component = binder!.candidates().find(c => c.name === params.name && c.kind === (params.kind ?? 'tool'));
+            if (!component) throw new Refusal('name: no saved tool with this name');
+            return text(component.source);
+          }) });
+        pi.registerTool({ name: 'skip', label: 'Skip', description: 'End this Hook without publishing.',
+          parameters: Type.Object({ reason_code: StringEnum(['no_reusable_logic', 'already_covered', 'need_more_task_signal'] as const) }),
+          execute: guardTool('skip', async (params: { reason_code: string }) => {
+            append('self_harness_hook.jsonl', { event: 'skip', decision, reason_code: params.reason_code });
+            return text(`Skip: ${params.reason_code}`, undefined, true);
+          }) });
+
 		pi.registerTool({
 			name: "save",
 			label: "Save",
@@ -3909,12 +3936,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}),
 		});
 
-		if (selfBaseline) pi.registerTool({
+		pi.registerTool({
 			name: "self_component",
 			label: "Self component",
-			description: "Compatibility path for older saved components. New tool, skill, or strategy content can use save(kind, name, content); saved skills remain callable through run_skill. Retire an old component when evidence says it is no longer useful.",
+			description: "Compatibility path for older saved components. For new tools prefer promote(name) or save_tool(name, body); saved skills remain callable through run_skill. Retire an old component when evidence says it is no longer useful.",
 			parameters: Type.Object({
-				kind: Type.Optional(StringEnum(["tool", "memory", "prompt", "skill", "subagent"] as const)),
+				kind: Type.Optional(StringEnum(["tool", "memory", "prompt", "process", "skill", "subagent"] as const)),
 				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),
 				content: Type.Optional(Type.String({ maxLength: 16384 })),
 				description: Type.Optional(Type.String({ maxLength: 200 })),
@@ -3922,7 +3949,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				op: Type.Optional(StringEnum(["set", "retire"] as const)),
 			}),
 			execute: guardTool("self_component", async (params: {
-				kind?: "tool" | "memory" | "prompt" | "skill" | "subagent";
+				kind?: "tool" | "memory" | "prompt" | "process" | "skill" | "subagent";
 				name: string; content?: string; description?: string; allowed_tools?: string[]; op?: "set" | "retire";
 			}, signal) => {
 				params = { ...params, kind: params.kind ?? "tool" };
@@ -3932,24 +3959,26 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					? { op: "delete", key: params.name }
 					: { op: "set", key: params.name, text: params.content }, signal), undefined, endsBatch());
 				const path = params.kind === "tool" ? `tools/${params.name}.py`
+					: params.kind === "process" ? `prompts/process/${params.name}.md`
 					: params.kind === "prompt" ? `prompts/${params.name}.md`
 					: params.kind === "skill" ? `skills/${params.name}/SKILL.md` : `agents/${params.name}.md`;
 				if (op === "retire") {
 					workspace!.mutate({ op: "delete", path });
 					await binder!.scan(currentLevel());
 					refreshSkillSurface();
-					return text(`${path}: retired; no longer advertised from the next request.`, undefined, endsBatch());
+					return text(`${params.name}: retired; no longer advertised from the next request.`, undefined, endsBatch());
 				}
 				const content = params.content!;
 				if (params.kind === "tool") return nativeRuntime!.python(content, signal, false, params.name);
 				const description = params.description?.trim() || content.trim().split("\n")[0].slice(0, 120);
-				const source = params.kind === "prompt" ? `---\nactive: true\n---\n${content}\n`
+				const source = ["prompt", "process"].includes(params.kind!) ? `---\nactive: true\n---\n${content}\n`
 					: params.kind === "skill" ? `---\nname: ${params.name}\ndescription: ${JSON.stringify(description)}\n---\n${content}\n`
 					: `---\ndescription: ${JSON.stringify(description)}\ntools: ${JSON.stringify(params.allowed_tools ?? ["read", "python"])}\n---\n${content}\n`;
 				workspace!.mutate({ op: "write", path, content: source });
 				const receipt = await binder!.save(path, currentLevel(), { by: "agent", decision });
+				nativeRuntime!.noteSave(path, receipt);
 				refreshSkillSurface();
-				return text(`${receipt ?? path}${params.kind === "skill" ? `\nRead ${path} to use its procedure.` : params.kind === "subagent" ? `\nCall consult(agent="${params.name}", question=...) to use it.` : ""}`,
+				return text(`${receipt ?? params.name}${params.kind === "skill" ? `\nUse the named component when useful.` : params.kind === "subagent" ? `\nCall consult(agent="${params.name}", question=...) to use it.` : ""}`,
 					Boolean(receipt?.includes("NOT loaded")), endsBatch());
 			}),
 		});
@@ -4360,6 +4389,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         return result;
       }) });
     nativeRuntime.seedPython(readRows('component_runs.jsonl'));
+    nativeRuntime.seedSelfMaterials(readRows('self_materials.jsonl'));
     nativeRuntime.seedCalls(readRows('python_calls.jsonl'));
     nativeRuntime.seedViews(readRows('observer_runs.jsonl'));
     nativeRuntime.seedMountLocal(readRows('mount_state.jsonl'));
@@ -4451,7 +4481,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (run.hookTurn) append('self_harness_hook.jsonl', { event: 'turn_start', phase: 'self_harness_hook',
 			action_id: run.hookActionId ?? 'unknown', turn_id: `self_harness_hook:${run.hookActionId ?? 'unknown'}`,
 			request_id: randomBytes(8).toString('hex'), decision });
-		const maintenancePrompt = daemonOn && /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
+		const maintenancePrompt = process.env.ARC_THIN_DAEMON_RESPONSE_COMPAT === "1" && daemonOn && /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
 		const reviewing = /^(CONSOLIDATE|RECOVER CONSOLIDATION|LEVEL REVIEW|RECOVER LEVEL REVIEW|STALL REVIEW|RECOVER STALL REVIEW|DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
 		// A Task refinement already running may still commit a file or memory edit. Finish it at this safe
 		// boundary before opening the maintenance workspace; queued explicit refinements finish here too.
@@ -4497,7 +4527,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…"; after many actions without a level, "STALL REVIEW…" and
 		// "RECOVER STALL REVIEW…".
 		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
-		run.daemonResponse = daemonOn && /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
+		run.daemonResponse = process.env.ARC_THIN_DAEMON_RESPONSE_COMPAT === "1" && daemonOn && /^(DAEMON RESPONSE|RECOVER DAEMON RESPONSE)\b/.test(prompt);
 		run.daemonState = daemonState();
 		if (run.daemonResponse) {
 			run.consolidating = true;
@@ -4571,9 +4601,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		} else { ledgerText = ""; criticText = ""; }
 		const systemPrompt = run.hookTurn
-			? 'You are in an independent self_harness_hook turn with a clean context. The user message contains a bounded task summary, indexes, and exact pointers to persisted evidence. Use the indexes first, then read only specific evidence that matters; do not expect the full session or grids in the prompt. Write/edit workspace files directly if useful; Binder validates and versions them. Do not choose an environment action.'
+			? 'SELF HARNESS: choose promote, save_tool, read_component(name), or skip(reason_code). Four tool calls maximum, charged to the Task budget. This turn only decides reusable tooling.'
 			: selfBaseline ? renderPrompt('arc_thin_self_baseline.md', { game,
-			convert: selfConvert ? 'Your optional notes/convert.md is delivered in the next decision. Write/edit it to carry unfinished conversion intent; clear it when completed, abandoned or stale.' : 'Conversion needs no separate mode or note. Optional notes/convert.md is not automatically delivered in this run.',
+			convert: 'Use promote(name?) for session logic or save_tool(name, body).',
 			arc: chView ? loadPrompt("arc_thin_native_ch_arc.md") : "" }) : native && !control ? renderPrompt('arc_thin_native_system.md', { game,
       observation: chView ? "the game as described under INPUT FORMAT below" : queryObservation
         ? "the current grid as row runs; show(g, x0, y0, x1, y1) prints any grid or region so (digit rows cost a token per cell)"
@@ -4695,7 +4725,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const lastUser = native ? nativeDecisionStart(messages) : messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
 		const user = messages[lastUser];
-		const earlier = run.daemonResponse ? [] : taskHistory(messages.slice(0, lastUser));
+		const earlier = taskHistory(messages.slice(0, lastUser));
 		// Native mode: earlier decisions are a transcript in front of the current head (freezeHistory), so they stay
 		// byte-identical and cacheable; ARC_THIN_NATIVE_HISTORY_CHARS > 0 puts a summary inside the head instead.
 		// A compaction summary Pi made stays in front either way.
@@ -4711,21 +4741,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (native && workspace && !run.daemonResponse && !run.hookTurn) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			if (!run.hookTurn && (native || !run.workingSet)) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 			const taskSelf = native && !run.hookTurn && !control && !run.daemonResponse && !run.consolidating && !run.levelReview && !run.stallReview;
-			const selfEntry = '';
-			const hookRows = run.hookTurn ? trajectory.filter(item => (run.hookActionIds?.length ? run.hookActionIds : [run.hookActionId]).includes(item.n)) : [];
-			const hookRow = hookRows.at(-1);
-			const hookFacts = run.hookTurn ? `HOOK RUNTIME FACTS (summary projection and pointers are supplied above)\n` +
-				`component versions=${binder?.index(currentLevel(), undefined, undefined, true) ?? 'unknown'}\n` +
-				`remaining action budget=${clipJson(hookRow?.budget ?? 'unknown', 300)}; time/token budget supplied by runner when available\n` : '';
-			const capabilities = binder ? [selfEntry, hookFacts, run.hookTurn ? nativeRuntime?.selfFeedbackText() : '', run.hookTurn ? '' : binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, true),
-				nativeRuntime && !run.daemonResponse ? await nativeRuntime.observerText() : '',
+			const selfEntry = nativeRuntime?.selfMaterials() ?? '';
+			const hookFacts = run.hookTurn ? selfEntry : '';
+			const capabilities = binder ? [selfEntry, hookFacts, run.hookTurn ? nativeRuntime?.selfFeedbackText() : '', run.hookTurn ? '' : binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, !selfBaseline),
+				nativeRuntime && !run.daemonResponse && !run.hookTurn ? await nativeRuntime.observerText() : '',
 				nativeRuntime && !run.daemonResponse && !selfBaseline ? await nativeRuntime.loopDecisionText() : '',
 				run.daemonResponse || selfBaseline ? '' : metaTrialDecisionText(),
 				processEvidenceText(run.daemonResponse ? run.daemonState?.pending?.from_decision : undefined)].filter(Boolean).join('\n') : '';
 			run.head = {
 				...user,
 				content: [
-					{ type: "text", text: run.hookTurn ? `${messageText(user)}\n\n${hookFacts}` : `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
+					{ type: "text", text: run.hookTurn ? `SELF_HARNESS_HOOK action_ids=${(run.hookActionIds ?? []).join(',')}\n${hookFacts}` : `${messageText(user)}\n\n${run.workingSet!.text}${capabilities ? '\n\n' + capabilities : ''}` },
 					...(!run.hookTurn ? (run.workingSet!.images ?? (run.workingSet!.image ? [run.workingSet!.image] : [])) : []),
 					...(!run.hookTurn && run.workingSet!.tail ? [{ type: "text", text: run.workingSet!.tail }] : []),
 				],

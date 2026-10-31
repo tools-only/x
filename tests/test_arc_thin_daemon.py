@@ -21,14 +21,14 @@ def test_success_material_does_not_interrupt_and_failure_is_visible(tmp_path):
     assert daemon.refresh() is None
     material = (tmp_path / "harness/process.md").read_text(encoding="utf-8")
     assert "## Failures\n- python: fixture failure" in material
-    assert "## Successes\n- shown prompts/process/reuse.md v1" in material
-    assert "called tools/reuse.py v1 successfully" in material
+    assert "shown prompts/process/reuse.md" not in material
+    assert "Covered reuse v1 successfully" in material
     append("harness/errors.jsonl", {"hook": "python", "message": "fixture failure"})
     assert daemon.refresh() is not None
     restarted = DaemonService(tmp_path)
     attach_arc_monitors(restarted)
     restarted.refresh()
-    assert "called tools/reuse.py" in (tmp_path / "harness/process.md").read_text(encoding="utf-8")
+    assert "Covered reuse" in (tmp_path / "harness/process.md").read_text(encoding="utf-8")
 
 
 def test_success_signal_and_checkpoint_use_existing_mounts(tmp_path):
@@ -37,7 +37,7 @@ def test_success_signal_and_checkpoint_use_existing_mounts(tmp_path):
     signals = tmp_path / "harness/daemon_signals.jsonl"
     signals.write_text(json.dumps({"key": "reuse-positive", "outcome": "success", "reason": "reuse observed"}) + "\n", encoding="utf-8")
     assert daemon.refresh() is None
-    assert "reuse observed" in (tmp_path / "harness/process.md").read_text(encoding="utf-8")
+    assert "reuse observed" not in (tmp_path / "harness/process.md").read_text(encoding="utf-8")
     checkpoint = tmp_path / "harness/python_session.jsonl"
     checkpoint.write_text(json.dumps({"event": "not_saved"}) + "\n", encoding="utf-8")
     assert daemon.refresh() is None

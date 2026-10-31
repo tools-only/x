@@ -9,20 +9,12 @@ from autoresearch_pi.arc_thin_e2e import (
 )
 
 
-def test_hook_prompt_skips_without_candidates_and_finishes_after_one_evidence_check() -> None:
-    assert "Reusable action rule verifiable now? Save its first minimal `run(args, env)` with a conditional `env.act` path early; preserve that path when revising. Else read-only or Skip." in SELF_HARNESS_HOOK_PROMPT
-    assert "Else read-only or Skip" in SELF_HARNESS_HOOK_PROMPT
-    assert "Candidate fields are recorded facts" in SELF_HARNESS_HOOK_PROMPT
-    assert "run(args, env)" in SELF_HARNESS_HOOK_PROMPT
-    assert "Call `env.act(action)` with one positional argument; do not pass `reason` or other keyword arguments." in SELF_HARNESS_HOOK_PROMPT
-    assert "save(kind, name, content|ref)" in SELF_HARNESS_HOOK_PROMPT
-    assert "or Skip, then finish this hook" in SELF_HARNESS_HOOK_PROMPT
-    assert "Skip is text, not a save call." in SELF_HARNESS_HOOK_PROMPT
-    assert "direct_target" not in SELF_HARNESS_HOOK_PROMPT
-    assert "workspace root" not in SELF_HARNESS_HOOK_PROMPT
-    assert "promote_session_function" not in SELF_HARNESS_HOOK_PROMPT
-    assert "Do not inspect unrelated evidence" in SELF_HARNESS_HOOK_PROMPT
-    assert len(SELF_HARNESS_HOOK_PROMPT) < 700
+def test_hook_prompt_offers_only_short_logical_entry_and_explicit_budget() -> None:
+    for token in ('promote(name?)', 'save_tool(name, body)', 'read_component(name)', 'skip(reason_code)', 'Four tool calls', 'Task budget'):
+        assert token in SELF_HARNESS_HOOK_PROMPT
+    for token in ('workspace', 'path', 'env.act', 'save(kind', 'hypothesis', 'stall'):
+        assert token not in SELF_HARNESS_HOOK_PROMPT
+    assert len(SELF_HARNESS_HOOK_PROMPT) < 300
 
 
 def _write(path: Path, rows: list[dict]) -> None:
