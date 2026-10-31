@@ -396,14 +396,13 @@ const FORK_SCRIPT: Step[] = [
 // and a refinement revises the rule. A computation retyped after it was saved as a tool is named in its own result.
 // One scripted step per request: a non-acting call and the action that ends its decision are separate steps.
 const act = (action: string): Step => ({ kind: 'decide', calls: [['arc_action', { action }]] });
-const SELF_PROTOTYPE = 'def total(values):\n    return sum(values)\n';
+const SELF_PROTOTYPE = 'def total(args, env):\n    return sum(args["values"])\n';
 const SELF_CONVERT_NOTE = 'SELF_CONVERT_INTENT: preserve total(values) to reuse the checked calculation; retire this note after the next call.';
 const SELF_BASELINE_SCRIPT: Step[] = [
-  { kind: 'decide', calls: [['python', { code: SELF_PROTOTYPE + 'assert total([2, 3]) == 5\nvalues = [20, 22]\nprint(total(values))' }]] },
+  { kind: 'decide', calls: [['python', { code: SELF_PROTOTYPE + 'assert total({"values": [2, 3]}, env) == 5\nprint(total({"values": [20, 22]}, env))' }]] },
   { kind: 'decide', calls: [['write', { path: 'notes/convert.md', content: SELF_CONVERT_NOTE }]] },
   { kind: 'decide', calls: [['promote_session_function', { function: 'total' }]] },
-  { kind: 'decide', calls: [['self_component', { name: 'answer', content:
-    SELF_PROTOTYPE + 'def run(state, args):\n    return total(args.get("values", [20, 22]))\nprint(run(state, {}))\n' }]] },
+  { kind: 'decide', calls: [['save', { kind: 'tool', name: 'answer', ref: 'total' }]] },
   { kind: 'decide', calls: [['answer', { args: { values: [18, 24] } }]] },
   act('ACTION1'),
   { kind: 'decide', calls: [['answer', { args: { values: [19, 23] } }]] },
@@ -697,7 +696,9 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
 			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(head.trimStart());
 			let planned: Step | undefined;
-      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' && head.startsWith('SELF_HARNESS_HOOK')) {
+      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' && head.startsWith('SELF_HARNESS_HOOK'))
+        planned = { kind: 'decide', text: 'Skip: no new reusable content was produced in this action window.' };
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' && head.startsWith('SELF_HARNESS_HOOK')) {
         const ids = /action_ids=([\d,]+)/.exec(head)?.[1] ?? '';
         const results = messages.filter((m: any) => m?.role === 'toolResult').map((m: any) => ({ tool: m.toolName, text: textOf(m) }));
         if (ids === '1,2,3') planned = { kind: 'decide', text: 'Skip; no reusable function was created in this window.' };

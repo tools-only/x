@@ -15,6 +15,10 @@ test('Self Task prompt exposes the short path for each reusable component catego
     assert.ok(prompt.includes(path), `missing Task path ${path}`);
   assert.match(prompt, /briefly consider each kind and Skip any without it/i);
   assert.match(prompt, /No component is required\./);
+  assert.match(prompt, /parameterized `def`s whose inputs come from `state` or explicit arguments/i);
+  assert.match(prompt, /Keep hard-coded coordinates and current-level values at the call site as arguments/i);
+  assert.match(prompt, /One-off exploration such as `os\.walk`.*can stay inline/i);
+  assert.match(prompt, /first write a parameterized prototype.*do not save a whole solving script with dead coordinates unchanged/i);
   assert.match(prompt, /check the active component index before recreating work/i);
   assert.match(prompt, /At the next related solving decision, first read the relevant skill or call the saved tool with current state\/arguments/i);
   assert.match(prompt, /If it does not apply, briefly skip it and act; if a trial fails, revise or retire it/i);

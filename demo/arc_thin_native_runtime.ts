@@ -488,6 +488,11 @@ export class NativeRuntime {
   async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
   }
+  noteReuseRead(path: string) {
+    const component = this.host.binder.active().find(c => c.path === path && /^(tools|observers|lib)\/.+\.py$/.test(c.path));
+    if (component) this.host.log('component_runs.jsonl', { kind: 'reuse_read', path: component.path, version: component.version,
+      level: this.host.level(), decision: this.decision(), n: this.host.actionCount() });
+  }
   /** Read a session function's definition and dependency names without publishing or invoking the function. */
   async sessionFunction(name: string, signal?: AbortSignal): Promise<NativeResult> {
     if (!this.session) return { ok: false, error: 'the Python session is disabled' };
@@ -495,10 +500,31 @@ export class NativeRuntime {
       const input = { ...this.snapshot(), mode: 'session_export', function: name, session: this.session!.payload(),
         session_names: this.session!.names() } as ReturnType<NativeRuntime['snapshot']> & Record<string, any>;
       const result = this.kernel ? await this.executeKernel(input, signal, undefined) : await this.execute(input, signal);
-      this.host.log('component_runs.jsonl', { kind: 'session_export', function: name, decision: this.decision(), n: this.host.actionCount(),
-        ok: result.ok, ...(result.ok ? {} : { error: String(result.error ?? '').slice(0, 200) }) });
+      const exported = result.ok ? result.value as { name: string; parameters: string[] } : undefined;
+      this.host.log('component_runs.jsonl', { kind: 'session_export', function: exported?.name ?? name, decision: this.decision(), n: this.host.actionCount(),
+        ok: result.ok, ...(exported ? { parameters: exported.parameters } : {}),
+        ...(result.ok ? {} : { error: String(result.error ?? '').slice(0, 200) }) });
       return result;
     });
+  }
+  /** Publish only a complete callable or an exact, portable session function with the same callable signature. */
+  async toolSource(content: string | undefined, ref: string | undefined, signal?: AbortSignal): Promise<string> {
+    if (content?.trim() && ref) throw Error('provide content or ref, not both');
+    if (ref) {
+      const exported = await this.sessionFunction(ref, signal);
+      if (!exported.ok) throw Error(`session ref '${ref}' unavailable: ${exported.error ?? 'extraction failed'}`);
+      const info = exported.value as { name: string; source: string; parameters: string[]; session_dependencies: string[];
+        other_globals: string[]; unresolved_names: string[] };
+      const missing = [...info.session_dependencies, ...info.other_globals, ...info.unresolved_names];
+      if (missing.length) throw Error(`session ref '${ref}' is not self-contained; provide content with its dependencies included (unresolved: ${missing.join(', ')})`);
+      if (info.parameters.join(',') !== 'args,env') throw Error(`session ref '${ref}' must accept exactly (args, env) to preserve its callable contract; provide adapted content`);
+      if (ref === 'run') return info.source;
+      return `${info.source}\n\ndef run(args, env):\n    return ${ref}(args, env)\n`;
+    }
+    if (!content?.trim()) throw Error('tool requires content or an exact session ref');
+    if (!/^\s*def\s+run\(args, env\):\s*$/m.test(content))
+      throw Error('tool content must define run(args, env); include the callable implementation and any needed dependencies');
+    return content;
   }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
     // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
@@ -597,8 +623,8 @@ export class NativeRuntime {
       conversionNote = `SELF REUSE: repeat/near-duplicate Python detected (${family.recent} calls). ` + (existing
         ? `Call ${existing.name}(args={...}) now instead of rebuilding it.`
         : 'Save reusable checked logic as a tool now: ' + (this.host.selfBaseline
-          ? 'keep the parameterized function; add def run(state,args) returning its result; write/edit tools/NAME.py, then call NAME(args={"value":...}).'
-          : 'keep the parameterized function; add def run(state,args) returning its result; python(code="...",save="NAME"); then call NAME(args={"value":...}).')) +
+          ? 'keep the parameterized function; save a complete run(args, env) with kind="tool", then call NAME(args={"value":...}).'
+          : 'keep the parameterized function; save a complete run(args, env) with kind="tool", then call NAME(args={"value":...}).')) +
         (names.length ? ` Prototype names to promote: ${names.join(', ')}.` : '') +
         ' You choose; skip one-offs or no remaining use without a report.';
       this.host.log('component_runs.jsonl', { kind: 'conversion_hint', level: this.host.level(), decision, n: this.host.actionCount(), calls: family.recent });
@@ -610,8 +636,8 @@ export class NativeRuntime {
       this.conversionHintDecision = decision;
       conversionNote = `SELF REUSE: the existing session function ${reusedFunction} was called from at least two successful Python cells. ` +
         (this.host.selfBaseline
-          ? `call promote_session_function(function="${reusedFunction}") only if its source is useful; adapt a standalone def run(state,args) with no session globals, write/edit tools/NAME.py, then call NAME(args={...}). `
-          : `publish a standalone def run(state,args) with python(code="...",save="NAME"), then call NAME(args={...}). `) +
+          ? `call promote_session_function(function="${reusedFunction}") only to inspect it; use save(kind="tool", name="NAME", ref="${reusedFunction}") when it already accepts (args, env), otherwise provide complete adapted content. `
+          : `save a complete run(args, env) with kind="tool", then call NAME(args={...}). `) +
         'Only do this if the next task check will reuse it; otherwise keep it in the session.';
       this.host.log('component_runs.jsonl', { kind: 'conversion_hint', trigger: 'session_function_reuse', level: this.host.level(), decision,
         n: this.host.actionCount(), function: reusedFunction, cells: 2 });
@@ -626,7 +652,19 @@ export class NativeRuntime {
       this.host.log('component_runs.jsonl', { kind: 'window_check', level: this.host.level(), n: windowAtStart, decision, calls: windowCalls });
     }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
-    const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, windowCheck, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
+    const relevance = new Set(shape.struct);
+    const callableNames = new Set(this.toolNames());
+    const related = this.host.binder.active().filter(c => c.kind === 'tool' && callableNames.has(c.name) && c.level === this.host.level() && !((c as any).view) &&
+      /^(tools|observers|lib)\/.+\.py$/.test(c.path)).map(c => {
+        const component = componentLines(c.path, c.source);
+        const matched = [...relevance].filter(line => component.lines.has(line)).length;
+        return { c, matched, total: relevance.size };
+      }).filter(item => item.matched > 0).sort((a, b) => b.matched - a.matched || a.c.path.localeCompare(b.c.path));
+    const reuseIndex = !readonly && related.length ? 'RELATED COMPONENTS (optional; read path or try a callable tool; no commit-based loading):\n' +
+      related.map(({ c, matched, total }) => `${c.path}@${c.version} ${c.name}(args={...}) — ${matched}/${total} normalized computation lines match; inspect signature/outputs before reuse.`).join('\n') : '';
+    if (reuseIndex) this.host.log('component_runs.jsonl', { kind: 'reuse_shown', level: this.host.level(), decision, n: this.host.actionCount(),
+      paths: related.map(({ c }) => `${c.path}@${c.version}`), evidence: related.map(({ matched, total }) => ({ matched, total })) });
+    const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, reuseIndex, windowCheck, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
       live && result.ok && Boolean((result.value as any)?.has_value), mark);
     // Keep the cue visible even when the Python output is shortened to a receipt.
     if (conversionNote && this.host.hookTurn?.()) out.content.push({ type: 'text', text: conversionNote });

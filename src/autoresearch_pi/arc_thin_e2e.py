@@ -10,6 +10,7 @@ docs/plans/2026-10-08-thin-arc-self-harness-extension.md
 from __future__ import annotations
 
 import hashlib
+import ast
 import json
 import math
 import os
@@ -67,7 +68,12 @@ DAEMON_RECOVERY_PROMPT = (
 WINDOW_DECIDE_PROMPT = (
     "Decide the next action. Briefly check this window's recent trajectory: what changed and what remains uncertain? "
     "If there is no real blocker, contradiction, or tool failure, act on the clearest next test without extended analysis. "
-    "Reuse repeated work when worthwhile."
+    "If a saved callable tool still fits and you choose its rule for the next real move, call it by name in Decide "
+    "with the action args its own env.act needs, including later moves; use empty args or dry_run only for inspection, "
+    "otherwise revise it, use it read-only, or act directly; keep its action path when revising. "
+    "When a saved tool's result matters to the next experiment, use it to choose "
+    "and take the next action now. Keep observation-only tools read-only. If the same parameterized observation-to-action "
+    "rule is worth repeating, adapt it into a callable run(args, env) that can use env.act; otherwise act with arc_action."
 )
 NO_ACTION_PROMPT = (
     "Decide the next action. Your previous decision ended without arc_action; "
@@ -170,14 +176,12 @@ IDLE_RECOVERY_PROMPT = (
     "operation: call memory once if a consolidation is due, otherwise call exactly one arc_action, then stop."
 )
 SELF_HARNESS_HOOK_PROMPT = (
-    "Review the bounded task summary and indexes first. Local prints, hardcoded coordinates, one-off probes that cannot be parameterized, "
-    "or insufficient evidence mean Skip. Repeated same-shape Python probes within the window (such as locating player/target, "
-    "coarsely checking obstacles, or checking path reachability) may be considered as candidates when current state can be a parameter; "
-    "this is only a suggestion, never auto-generated and never required to save. No gain, stale, or unreliable work may still be skipped. "
-    "For a candidate, read only one piece of key evidence needed to check it, then save or Skip and finish this hook. "
-    "Choose the component and whether it is worth keeping; no component is required. Write/edit the existing workspace "
-    "path directly and preserve its required frontmatter; Binder validates and versions writes. Do not reconstruct the "
-    "game, inspect every candidate, or continue after save/Skip. No environment action. Finish now."
+    "Review the bounded summary and evidence pointer. Candidate fields are recorded facts: function, source and existing coverage. "
+    "Reusable action rule verifiable now? Save its first minimal `run(args, env)` with a conditional `env.act` path early; preserve that path when revising. Else read-only or Skip. "
+    "For tools, provide complete logic as run(args, env), or an exact session function ref with that signature; "
+    "Call `env.act(action)` with one positional argument; do not pass `reason` or other keyword arguments. "
+    "Use save(kind, name, content|ref), or Skip, then finish this hook. "
+    "Skip is text, not a save call. Do not inspect unrelated evidence or take an environment action in this hook."
 )
 HOOK_PROJECTION_MAX_CHARS = 24_000
 # Run14's longest hook took 165s; retain a further 120s for the final task turn.
@@ -462,17 +466,220 @@ def _project_self_hook_trace(root: Path, trace: dict[str, Any], action_ids: list
             seen_python_evidence.add(identity)
         group = reuse_groups.setdefault(shape, [])
         group.append({"source": source, "event_id": item.get("event_id"), "gist": code[:180],
-                      "decision": raw.get("decision"), "action": raw.get("action"),
-                      "parameterizable_fact": "inspect whether current state is an explicit input; no value judgment"})
+                      "decision": raw.get("decision"), "action": raw.get("action")})
     python_reuse_index = [{"count": len(rows), "shape": shape[:100], "gist": rows[-1].get("gist", ""),
                            "evidence": rows[-8:]} for shape, rows in reuse_groups.items()]
+    candidates = []
+    candidate_shapes: set[str] = set()
+    last_session_commit = max((index for index, item in enumerate(session)
+                               if item.get("source") == "harness.python_session.jsonl"
+                               and item.get("event", {}).get("event") == "committed"), default=-1)
+    exported_refs = {item["event"].get("function") for index, item in enumerate(session)
+                     if index > last_session_commit and item.get("source") == "harness.component_runs.jsonl"
+                     and isinstance(item.get("event"), dict)
+                     and item["event"].get("kind") == "session_export" and item["event"].get("ok") is True
+                     and item["event"].get("parameters") == ["args", "env"]}
+    for item in python_reuse_index:
+        evidence = item["evidence"]
+        function = next((str(row.get("function")) for row in reversed(evidence) if row.get("function")), None)
+        if function is None:
+            match = re.search(r"(?m)^\s*def\s+([A-Za-z_]\w*)\s*\(", item["gist"])
+            function = match.group(1) if match else None
+        if function:
+            covered = [str(row.get("path")) for row in component_index if row.get("kind") in {"tool", "save"}
+                       and (row.get("name") == function or Path(str(row.get("path", ""))).stem == function)]
+            candidate = {"source": "Python session", "function": function,
+                         "coverage": covered, "evidence": evidence}
+            if function in exported_refs:
+                candidate["fact"] = f'save(kind="tool", name="{function}", ref="{function}")'
+            candidates.append(candidate)
+            candidate_shapes.add(item["shape"])
+    # A narrow, auditable no-def family: count each grid value across rows of the
+    # explicit state grid. Require separate successful decisions and retain exact
+    # component-run pointers so the agent can inspect the original code.
+    component_python = [event for event in session if event.get("source") == "harness.component_runs.jsonl"
+                        and isinstance(event.get("event"), dict) and event["event"].get("kind") == "python"]
+    histogram_groups: dict[str, list[dict[str, Any]]] = {}
+    weak_candidates: list[dict[str, Any]] = []
+    operation_groups: dict[str, dict[str, list[dict[str, Any]]]] = {"find_cells": {}, "check_region": {}, "check_path": {}, "find_player": {}}
+    for event in component_python:
+        row = event["event"]
+        code = str(row.get("code_excerpt") or "")
+        if row.get("ok") is not True or row.get("decision") is None or re.search(r"(?m)^\s*def\s+", code):
+            continue
+        # Truncated excerpts cannot establish a complete operation contract.
+        if row.get("truncated") is True or row.get("code_truncated") is True or len(code) >= 1200:
+            continue
+        # Match only self-contained operation fragments. Surrounding print/reporting
+        # code is allowed; literals may vary only in predicate value or bounds.
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            continue
+        grid_aliases = {node.targets[0].id for node in ast.walk(tree)
+                        if isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Subscript)
+                        and isinstance(node.value.value, ast.Name) and node.value.value.id == "state"
+                        and isinstance(node.value.slice, ast.Constant) and node.value.slice.value == "grid"}
+        # Weak frequency-to-coordinate family: count grid values, then select
+        # coordinates from the same grid using a computed value/count. Do not
+        # treat a bare histogram or display scan as reusable work.
+        has_counter = any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                          and node.func.id == "Counter" for node in ast.walk(tree))
+        has_frequency_table = any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                                  and node.func.attr in {"get", "most_common"} for node in ast.walk(tree))
+        coordinate_scan = any(isinstance(node, ast.ListComp) and isinstance(node.elt, ast.Tuple)
+                              and len(node.elt.elts) == 2 and len(node.generators) == 2
+                              and all(isinstance(gen.iter, ast.Call) and isinstance(gen.iter.func, ast.Name)
+                                      and gen.iter.func.id == "range" for gen in node.generators)
+                              and any(isinstance(child, ast.Subscript) and isinstance(child.value, ast.Subscript)
+                                      and isinstance(child.value.value, ast.Name)
+                                      and child.value.value.id in grid_aliases for child in ast.walk(node))
+                              for node in ast.walk(tree)) or any(
+                                  isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                                  and node.func.attr == "append" and isinstance(node.args[0], ast.Tuple)
+                                  and len(node.args[0].elts) == 2
+                                  and any(isinstance(child, ast.Subscript) and isinstance(child.value, ast.Subscript)
+                                          and isinstance(child.value.value, ast.Name)
+                                          and child.value.value.id in grid_aliases
+                                          for child in ast.walk(tree)) for node in ast.walk(tree))
+        computed_value_selection = any(isinstance(node, (ast.Assign, ast.AnnAssign))
+                                       and any(isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                                               and child.func.attr in {"most_common", "max"}
+                                               for child in ast.walk(node)) for node in ast.walk(tree))
+        if grid_aliases and has_counter and has_frequency_table and coordinate_scan and computed_value_selection:
+            histogram_groups.setdefault("frequency_to_coordinates", []).append({"pointer": event, "row": row})
+        if not grid_aliases:
+            continue
+        # A path-check operation must combine grid indexing in a bounded scan,
+        # a walkability predicate, and a movement/result contract. Comments,
+        # labels, and display-only row scans do not satisfy these AST checks.
+        grid_reads = [node for node in ast.walk(tree) if isinstance(node, ast.Subscript)
+                      and isinstance(node.value, ast.Subscript)
+                      and isinstance(node.value.value, ast.Name) and node.value.value.id in grid_aliases]
+        bounded_scan = any(isinstance(node, (ast.For, ast.comprehension)) and
+                           isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
+                           and node.iter.func.id == "range" for node in ast.walk(tree))
+        walkability_test = any(isinstance(node, ast.Compare) and
+                               any(isinstance(child, ast.Subscript) and isinstance(child.value, ast.Subscript)
+                                   and isinstance(child.value.value, ast.Name) and child.value.value.id in grid_aliases
+                                   for child in ast.walk(node)) and
+                               (any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops) or
+                                any(isinstance(child, ast.Name) and "walkable" in child.id.lower()
+                                    for child in ast.walk(node)))
+                               for node in ast.walk(tree))
+        result_contract = any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                              and node.func.id in {"any", "all"} for node in ast.walk(tree)) or any(
+                                  isinstance(node, ast.Name) and node.id.lower() in {
+                                      "blocked", "blocked_at", "can_move", "canmove", "max_steps", "maxsteps"}
+                                  for node in ast.walk(tree))
+        loop_names = {node.target.id for node in ast.walk(tree)
+                      if isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.target, ast.Name)}
+        directional_scan = any(
+            any(isinstance(child, ast.Name) and child.id in loop_names
+                for index in (read.value.slice, read.slice) for child in ast.walk(index))
+            for read in grid_reads)
+        directional_scan = directional_scan and bool(loop_names & {"direction", "dx", "dy", "step", "offset"})
+        extrema = {node.func.id for node in ast.walk(tree)
+                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id in {"min", "max"}}
+        bbox_contract = (any(isinstance(node, ast.Name) and "bbox" in node.id.lower()
+                             for node in ast.walk(tree)) or {"min", "max"} <= extrema)
+        if (directional_scan and bounded_scan and walkability_test and result_contract
+                and bbox_contract):
+            operation_groups["check_path"].setdefault("bounded_directional_walkability", []).append(
+                {"pointer": event, "row": row})
+        # Grouped positions require nested bounded scans, group-size bounds,
+        # and a position/bbox result in the same complete excerpt.
+        nested_scans = [node for node in ast.walk(tree) if isinstance(node, ast.For)
+                        and isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
+                        and node.iter.func.id == "range" and any(isinstance(child, ast.For)
+                        and isinstance(child.iter, ast.Call) and isinstance(child.iter.func, ast.Name)
+                        and child.iter.func.id == "range" for child in ast.walk(node))]
+        grouped = any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and node.func.attr == "append" and isinstance(node.func.value, ast.Call) and isinstance(node.func.value.func, ast.Attribute)
+                      and node.func.value.func.attr == "setdefault" and node.func.value.args
+                      and isinstance(node.func.value.args[0], ast.Subscript)
+                      and isinstance(node.func.value.args[0].value, ast.Subscript)
+                      and isinstance(node.func.value.args[0].value.value, ast.Name)
+                      and node.func.value.args[0].value.value.id in grid_aliases
+                      for node in ast.walk(tree))
+        size_predicate = any(isinstance(node, ast.Compare)
+                             and any(isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                                     and child.func.id == "len" for child in ast.walk(node))
+                             and any(isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)) for op in node.ops)
+                             for node in ast.walk(tree))
+        position_result = any(isinstance(node, (ast.Return, ast.Assign, ast.AnnAssign))
+                              and any(isinstance(child, ast.Name) and any(token in child.id.lower()
+                                      for token in ("pos", "coord", "candidate", "bbox", "location"))
+                                      for child in ast.walk(node)) for node in ast.walk(tree))
+        if nested_scans and grouped and size_predicate and position_result:
+            operation_groups["find_player"].setdefault("grouped_positions_size_filter", []).append(
+                {"pointer": event, "row": row})
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ListComp) or len(node.generators) != 2:
+                continue
+            elt = node.elt
+            if not isinstance(elt, ast.Tuple) or len(elt.elts) not in (2, 3):
+                continue
+            if any(not isinstance(gen.iter, ast.Call) or not isinstance(gen.iter.func, ast.Name)
+                   or gen.iter.func.id != "range" for gen in node.generators):
+                continue
+            y_name = node.generators[0].target.id if isinstance(node.generators[0].target, ast.Name) else None
+            x_name = node.generators[1].target.id if isinstance(node.generators[1].target, ast.Name) else None
+            if not y_name or not x_name or not any(
+                    isinstance(test, ast.Compare) and isinstance(test.left, ast.Subscript)
+                    and isinstance(test.left.value, ast.Subscript)
+                    and isinstance(test.left.value.value, ast.Name) and test.left.value.value.id in grid_aliases
+                    and isinstance(test.left.value.slice, ast.Name) and test.left.value.slice.id == y_name
+                    and isinstance(test.left.slice, ast.Name) and test.left.slice.id == x_name
+                    for gen in node.generators for test in gen.ifs):
+                continue
+            if len(elt.elts) == 2:
+                operation_groups["find_cells"].setdefault("grid_value_coordinate_scan", []).append({"pointer": event, "row": row})
+            elif len(elt.elts) == 3:
+                operation_groups["check_region"].setdefault("bounded_grid_cell_filter", []).append({"pointer": event, "row": row})
+    existing_paths = {str(row.get("path", "")) for row in components}
+    existing_functions = {str(row.get("name", "")) for row in components}
+    for shape, rows in histogram_groups.items():
+        distinct: dict[Any, dict[str, Any]] = {}
+        for item in rows:
+            distinct.setdefault(item["row"].get("decision"), item)
+        if len(distinct) < 2 or shape in candidate_shapes:
+            continue
+        if "tools/find_cells.py" in existing_paths or "find_cells" in existing_functions:
+            continue
+        evidence = [{"source": "harness.component_runs.jsonl", "event_id": item["pointer"].get("event_id"),
+                     "decision": item["row"].get("decision"), "gist": str(item["row"].get("gist") or "")[:180]}
+                    for item in list(distinct.values())[:2]]
+        weak_candidates.append({"source": "Python probe family", "function": "find_cells",
+                                "evidence": evidence, "coverage": []})
+    for function, groups in operation_groups.items():
+        for shape, rows in groups.items():
+            distinct: dict[Any, dict[str, Any]] = {}
+            for item in rows:
+                distinct.setdefault(item["row"].get("decision"), item)
+            if len(distinct) < 2 or shape in candidate_shapes:
+                continue
+            covered = [str(row.get("path")) for row in component_index if row.get("kind") in {"tool", "save"}
+                       and (row.get("name") == function or Path(str(row.get("path", ""))).stem == function)]
+            if covered:
+                continue
+            evidence = [{"source": "harness.component_runs.jsonl", "event_id": item["pointer"].get("event_id"),
+                         "decision": item["row"].get("decision"), "gist": str(item["row"].get("gist") or "")[:180]}
+                        for item in list(distinct.values())[:2]]
+            candidates.append({"source": "Python probe family", "function": function, "evidence": evidence,
+                               "coverage": covered})
+    if not any(row.get("function") == "find_cells" for row in candidates):
+        candidates.extend(weak_candidates)
     payload = {
         "version": "hook-summary-v1", "window": trace["boundaries"], "complete": trace["complete"],
         "gaps": trace["gaps"], "source_events": trace["event_count"], "source_chars": trace["char_count"],
         "git": {"state": git_state, "recent_log": recent_commits,
                 "working_tree_diff_stat": diff[:1800], "pointer": "git log and git diff (workspace root)"},
         "actions": action_index, "component_events": component_index[-24:],
-        "python_reuse_index": python_reuse_index[:24],
+        "python_reuse_index": python_reuse_index,
+        "python_session_candidates": candidates,
         "decision_and_tool_index": decision_index[-48:],
         "read_pointers": [
             "harness/trajectory.jsonl (action receipts; filter n by action IDs)",
@@ -2460,15 +2667,16 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
     results = [result for row in requests for result in row.get("last_tool_results", [])]
     checks = [
         ("fixed_self_entry", bool(requests) and all(
-            len(entries := [line for line in str(row.get("current", "")).splitlines() if line.startswith("SELF:")]) == 1
-            and len(entries[0]) <= 450 and entries[0].isascii()
-            and ("self_component" in entries[0] or "python(save=" in entries[0])
-            and "call name(args=" in entries[0]
-            for row in requests if not row.get("analyst") and not row.get("critic")), None),
-        ("simple_tool_save_schema", any(tool.get("name") == "self_component"
+            len(entries := [line for line in str(row.get("system_prompt", "")).splitlines()
+                            if line.startswith("When reusable work is useful,")]) == 1
+            and len(entries[0]) <= 1100 and "save(kind" in entries[0] and "run(args, env)" in entries[0]
+            and "tools/NAME" not in entries[0] and "frontmatter" not in entries[0]
+            for row in requests if not row.get("analyst") and not row.get("critic")
+            and not str(row.get("head", "")).startswith("SELF_HARNESS_HOOK")), None),
+        ("simple_tool_save_schema", any(tool.get("name") == "save"
             for row in requests for tool in row.get("tools", [])) and all(
-            "kind" not in tool.get("parameters", {}).get("required", [])
-            for row in requests for tool in row.get("tools", []) if tool.get("name") == "self_component"), None),
+            set(tool.get("parameters", {}).get("required", [])) == {"kind", "name"}
+            for row in requests for tool in row.get("tools", []) if tool.get("name") == "save"), None),
         ("post_save_feedback", any("SELF FEEDBACK: answer v1: 1 calls OK, 0 failed" in str(row.get("current"))
                                    for row in requests if not row.get("analyst") and not row.get("critic")), None),
         ("minimal_profile", config.get("self_baseline") is True and
@@ -2478,9 +2686,9 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
          {key: config.get(key) for key in ("self_baseline", "ledger", "critic", "daemon")}),
         ("direct_authoring", any(row.get("path") == "tools/answer.py" and row.get("by") == "agent"
                                  and not row.get("error") for row in components), components[-3:]),
-        ("save_runs_now", any(result.get("tool") == "self_component" and "42" in str(result.get("text"))
+        ("save_runs_now", any(result.get("tool") == "save" and "saved · loaded" in str(result.get("text"))
                               for result in results), None),
-        ("immediate_save_feedback", any(result.get("tool") == "self_component"
+        ("immediate_save_feedback", any(result.get("tool") == "save"
             and "SELF FEEDBACK: answer v1: not called yet" in str(result.get("text")) for result in results), None),
         ("immediate_call_feedback", any(result.get("tool") == "answer"
             and "SELF FEEDBACK: answer v1: 1 calls OK, 0 failed" in str(result.get("text")) for result in results), None),
@@ -2586,7 +2794,7 @@ def run_arc_thin_self_hook_smoke(root: Path) -> Path:
              ("changed_cells", "RUNNER_BUDGET=", "BOUNDED TASK SUMMARY", "projection_char_count=", "session.jsonl")) and
          "BEGIN COMPLETE ORDERED TASK TRACE" not in str(first_hook_request.get("current")) and
          all(token in str(first_hook_request.get("current")) for token in
-             ("Write/edit the existing workspace path directly", "one-off probes that cannot be parameterized", "one piece of key evidence", "finish this hook")),
+             ("Candidate fields are recorded facts", "Reusable action rule verifiable now?", "conditional `env.act` path early; preserve that path when revising.", "Else read-only or Skip.", "Skip is text, not a save call.", "finish this hook")),
          first_hook_request),
         ("hook_has_no_arc_action", hook_action_windows == {"1,2,3", "4"} and all(
          "arc_action" not in [tool.get("name") for tool in row.get("tools", [])] for row in hook_requests), hook_requests),

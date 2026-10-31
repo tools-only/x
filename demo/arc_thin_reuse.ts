@@ -19,6 +19,10 @@ const KEYWORDS = new Set(('False None True and as assert async await break class
  */
 const structure = (line: string) => line.replace(/\b\d+(\.\d+)?\b/g, '_')
   .replace(/(?<![.\w'"])([A-Za-z_]\w*)\b(?!\s*\()/g, (name) => KEYWORDS.has(name) ? name : '_').replace(/\s+/g, ' ');
+const computation = (line: string) => {
+  const body = line.replace(/^return\s+/, '').replace(/^print\((.*)\)$/, '$1');
+  return body.includes('(') ? body : '';
+};
 
 /**
  * A python call's code with comments, blank lines and number literals normalised, so calls that differ only in
@@ -33,12 +37,13 @@ export function codeShape(code: string): CodeShape {
   const hash = (s: string, n: number) => createHash('sha256').update(s).digest('hex').slice(0, n);
   const gist = raw.find(line => !/^(import|from)\s/.test(line)) ?? raw[0] ?? '';
   return { shape: hash(norm.join('\n'), 12), lines: [...new Set(norm.map(line => hash(line, 8)))],
-    struct: [...new Set(raw.filter(line => !/^(import|from|def|return|""")/.test(line)).map(line => hash(structure(line), 8)))],
+    struct: [...new Set(raw.filter(line => !/^(import|from|def|""")/.test(line))
+      .flatMap(line => [hash(structure(line), 8), ...(computation(line) ? [hash(structure(computation(line)), 8)] : [])]))],
     gist: gist.length > 60 ? gist.slice(0, 59) + '…' : gist };
 }
 
 export type PythonRun = CodeShape & { level: number; kit: string; decision?: number; n?: number; code?: string; ok?: boolean; used?: string[] };
-/** A saved component's line structures. */
+/** A saved component's normalized computation lines. */
 export type ComponentLines = { path: string; lines: Set<string> };
 export const componentLines = (path: string, source: string): ComponentLines => ({ path, lines: new Set(codeShape(source).struct) });
 
@@ -55,7 +60,7 @@ function overlap(a: Set<string>, b: string[]): number {
 
 /**
  * Calls grouped by computation; a family's key is its first call's shape. A component covers a family when its
- * source has the structure of at least half of the family's lines (numbers and variable names aside), so a tool
+ * source has the structure of at least half of the family's computation lines (numbers and variable names aside), so a tool
  * that turned the call's constants into parameters is credited and an unrelated one is not.
  */
 export function families(runs: PythonRun[], components: ComponentLines[] = []): Family[] {
@@ -94,7 +99,7 @@ export function repetitionText(runs: PythonRun[], components: ComponentLines[] =
   const recent = Math.min(runs.length, REPETITION_WINDOW);
   const redone = repeated.reduce((n, f) => n + f.recent - 1, 0);
   return `REPEATED WORK: ${redone} of your last ${recent} python calls on this level redid one computation ` +
-    `(${repeated.slice(0, 3).map(f => `\`${f.gist}\` ×${f.recent}${f.covered ? `, ${f.covered} already covers it` : ''}`).join('; ')}). ` +
+    `(${repeated.map(f => `\`${f.gist}\` ×${f.recent}${f.covered ? `, ${f.covered} already covers it` : ''}`).join('; ')}). ` +
     `Saved once as a tool or observer, it runs exactly every time and leaves your reasoning for what is new.`;
 }
 

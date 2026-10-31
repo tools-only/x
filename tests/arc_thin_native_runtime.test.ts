@@ -12,6 +12,7 @@ test('B: parent Python save records creation separately from a later component c
   const root = mkdtempSync(join(tmpdir(), 'native-self-save-'));
   const workspace = new Workspace(root);
   const binder = new Binder(workspace, validatePythonComponent);
+  const registered = new Set<string>();
   const tools = new Map<string, any>(); let active: string[] = [];
   const logs: any[] = [];
   const runtime = new NativeRuntime({ pi: { registerTool(t: any) { tools.set(t.name, t); },
@@ -42,6 +43,55 @@ test('B: parent Python save records creation separately from a later component c
   } finally { runtime.close(); }
 });
 
+test('AGENT-RUNTIME-IFACE: save adapts an exact session ref and rejects incomplete tool content', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'native-save-intent-'));
+  const workspace = new Workspace(root);
+  const binder = new Binder(workspace, validatePythonComponent);
+  const tools = new Map<string, any>();
+  let actions = 0;
+  const runtime = new NativeRuntime({ pi: { registerTool(t: any) { tools.set(t.name, t); },
+    getActiveTools: () => [], setActiveTools() {} } as any,
+    workspace, binder, state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => 0,
+    act: async call => { actions++; return { line: `played ${call.action}`, observation: { state: 'PLAYING' } }; },
+    log() {}, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    await runtime.python('def candidate(args, env):\n    if args.get("act"):\n        return env.act(args["action"])\n    return {"value": args.get("value")}');
+    const source = await runtime.toolSource(undefined, 'candidate');
+    assert.match(source, /def run\(args, env\):\n    return candidate\(args, env\)/);
+    await assert.rejects(runtime.toolSource('def inspect(state):\n    return state', undefined),
+      /must define run\(args, env\)/);
+    workspace.mutate({ op: 'write', path: 'tools/candidate.py', content: source });
+    const receipt = await binder.save('tools/candidate.py', 0, { by: 'agent' });
+    assert.match(receipt ?? '', /saved.*loaded/);
+    binder.boundary(); runtime.register();
+    const result = await tools.get('candidate').execute({ args: { value: 7 } });
+    assert.match(result.content[0].text, /7/);
+    const acted = await tools.get('candidate').execute({ args: { act: true, action: 'ACTION1' } });
+    assert.equal(actions, 1);
+    assert.match(acted.content[0].text, /ACTED 1 action/);
+  } finally { runtime.close(); }
+});
+
+test('CANDIDATE-TOOL-REF: session export confirms exact ref and rejects non-callable definitions', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'native-session-ref-'));
+  const workspace = new Workspace(root);
+  const logs: any[] = [];
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
+    state: () => ({}), level: () => 0, actionCount: () => 0,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    await runtime.python('def candidate(args, env):\n    return {"ok": True}');
+    const exported = await runtime.sessionFunction('candidate');
+    assert.equal(exported.ok, true);
+    assert.deepEqual(logs.filter(row => row.file === 'component_runs.jsonl' && row.kind === 'session_export')
+      .map(row => ({ function: row.function, parameters: row.parameters, ok: row.ok })),
+      [{ function: 'candidate', parameters: ['args', 'env'], ok: true }]);
+    const missing = await runtime.sessionFunction('missing');
+    assert.equal(missing.ok, false);
+    assert.match(missing.error ?? '', /no saved session function named missing/);
+  } finally { runtime.close(); }
+});
+
 test('noteSave forwards process prompt saves to the host callback', async () => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-process-save-')));
   const saved: Array<[string, string | undefined]> = [];
@@ -59,7 +109,7 @@ test('short window check appears once after repeated nonacting Python work and r
   let n = 0;
   const logs: any[] = [];
   const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
-    state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => n,
+    state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => n, pythonSession: false,
     log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
   try {
     const run = async (code: string, readonly = false) => (await runtime.python(code, undefined, readonly)).content[0].text;
@@ -114,6 +164,31 @@ test('ordinary task session function reuse does not emit conversion guidance', a
     const reused = await runtime.python("rows = shift_rows([4, 5], 2)\nprint('last', rows[-1])\nprint('count', len(rows))");
     assert.doesNotMatch(reused.content.map((part: any) => part.text ?? '').join('\n'), /SELF REUSE/);
     assert.deepEqual(logs.filter(row => row.kind === 'conversion_hint'), []);
+  } finally { runtime.close(); }
+});
+
+test('related active components are shown with version and evidence; read and trial remain optional telemetry', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-reuse-index-')));
+  const binder = new Binder(workspace, validatePythonComponent);
+  const registered = new Set<string>();
+  workspace.runtimeWrite('tools/sum_rows.py', '# view: off\ndef run(state, args):\n    rows = args["rows"]\n    return sum(sum(row) for row in rows)\n\ndef summarize(rows):\n    return sum(sum(row) for row in rows)\n');
+  await binder.save('tools/sum_rows.py', 0, { by: 'agent' }); binder.boundary();
+  const logs: any[] = [];
+  let n = 0;
+  const runtime = new NativeRuntime({ pi: { registerTool(tool: any) { registered.add(tool.name); } } as any, workspace, binder,
+    state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => n,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    runtime.register();
+    assert.equal(registered.has('sum_rows'), true, `candidate=${JSON.stringify(binder.candidates().map(c => ({ path: c.path, name: c.name, kind: c.kind, view: (c as any).view, level: c.level })))} names=${runtime.toolNames()}`);
+    const result = await runtime.python('rows = [[1, 2], [3, 4]]\nprint(sum(sum(row) for row in rows))');
+    assert.match(result.content.map((part: any) => part.text ?? '').join('\n'), /RELATED COMPONENTS[\s\S]*tools\/sum_rows\.py@1 sum_rows\(args=\{\.\.\.\}\).*\d+\/\d+ normalized computation lines match/);
+    runtime.noteReuseRead('tools/sum_rows.py');
+    assert.ok(logs.some(row => row.kind === 'reuse_shown' && row.paths.includes('tools/sum_rows.py@1')));
+    assert.ok(logs.some(row => row.kind === 'reuse_shown' && row.evidence[0].matched > 0));
+    assert.ok(logs.some(row => row.kind === 'reuse_read' && row.path === 'tools/sum_rows.py' && row.version === 1));
+    n++;
+    assert.doesNotMatch((await runtime.python('x = 2\nprint(x + 1)')).content.map((part: any) => part.text ?? '').join('\n'), /RELATED COMPONENTS/);
   } finally { runtime.close(); }
 });
 

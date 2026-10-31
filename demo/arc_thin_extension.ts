@@ -1573,13 +1573,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         return;
       }
       if (run.hookTurn) {
-        pi.setActiveTools(['python', 'read', 'write', 'edit', ...(selfBaseline ? ['self_component', 'promote_session_function'] : []),
+        pi.setActiveTools(['python', 'read', 'write', 'edit', 'save', ...(selfBaseline ? ['self_component', 'promote_session_function'] : []),
           ...nativeRuntime.toolNames()]);
         return;
       }
       // Keep the core list fixed; newly saved tools and a saved subagent's consult enter on the next provider request.
       // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
-      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(selfBaseline ? ['self_component', 'promote_session_function'] : []),
+      pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory', 'python', 'read', 'write', 'edit', ...(selfBaseline ? ['save', 'self_component', 'promote_session_function'] : []),
         ...(consultTool && (!selfBaseline || binder?.candidates().some(c => c.kind === 'subagent')) ? ['consult'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
@@ -3696,7 +3696,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       if (run.reviewWrite && path !== run.reviewWrite) throw new Refusal(`after this review's last call only ${run.reviewWrite} is accepted`);
       // A review makes one consult attempt (A5); the reserved final review write is the recovery path.
       if ((tool.name === 'write' || tool.name === 'edit') && consultFirst(path) && path !== run.reviewWrite) throw new Refusal(CONSULT_FIRST);
-      try { return await tool.execute('workspace', params as any, signal, undefined, ctx); }
+      try {
+        const result = await tool.execute('workspace', params as any, signal, undefined, ctx);
+        if (tool.name === 'read' && !run.daemonResponse) nativeRuntime?.noteReuseRead(path);
+        return result;
+      }
       catch (error) { throw new Refusal(errorText(error)); }
     }) });
 	// No action vocabulary is invented before the environment has supplied its scope.
@@ -3834,10 +3838,60 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Python's env.remember goes through the same update as the memory tool, so bookkeeping and an action can share
 		// one cell (Prime Agent's programmatic tool calling) instead of costing a separate request each.
 		pythonMemory = (params, signal) => commitMemory(repairMemoryArguments(params) as MemoryParams, signal);
+		pi.registerTool({
+			name: "save",
+			label: "Save",
+			description: "Save reusable content you chose as a tool, skill, or strategy. Give content or an exact session function ref. Runtime handles its file format and Binder loading; nothing is saved unless you call this.",
+			parameters: Type.Object({
+				kind: StringEnum(["tool", "skill", "strategy"] as const),
+				name: Type.String({ pattern: "^(?:[a-z][a-z0-9_]{0,39}|\\s*[sS][kK][iI][pP]\\s*)$", maxLength: 40 }),
+				content: Type.Optional(Type.String({ maxLength: 16384 })),
+				ref: Type.Optional(Type.String({ pattern: "^[a-zA-Z_][a-zA-Z0-9_]{0,79}$" })),
+				description: Type.Optional(Type.String({ maxLength: 200 })),
+			}),
+			execute: guardTool("save", async (params: { kind: "tool" | "skill" | "strategy"; name: string;
+				content?: string; ref?: string; description?: string }, signal) => {
+				const firstContentLine = params.content?.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? "";
+				if (params.name.trim().toLowerCase() === "skip" || /^SKIP(?:\s*[:—-]|\s*$)/i.test(firstContentLine))
+					throw new Refusal("Skip is text, not a save call. End the hook with Skip: <reason>.");
+				if (params.kind === "tool") {
+					const source = await nativeRuntime!.toolSource(params.content, params.ref, signal);
+					const path = `tools/${params.name}.py`;
+					workspace!.mutate({ op: "write", path, content: source.endsWith("\n") ? source : source + "\n" });
+					const receipt = await binder!.save(path, currentLevel(), { by: "agent", decision });
+					nativeRuntime!.noteSave(path, receipt);
+					await binder!.scan(currentLevel()); nativeRuntime!.register();
+					pi.setActiveTools([...new Set([...pi.getActiveTools(), ...nativeRuntime!.toolNames()])]);
+					if (receipt?.includes("NOT loaded")) throw new Refusal(`${receipt}\nFix the Python error and call save again, or Skip.`);
+					const envActFact = source.includes("env.act") ? undefined
+						: "此版本未引用 env.act；调用它只返回计算结果。若要让工具按自身条件执行环境动作，可在内容中从 env 读取当前状态、必要时调用 env.act，再保存新版。";
+					return text([`${receipt ?? `${path}: saved`}; call ${params.name}(args={...}) when useful.`,
+						nativeRuntime!.selfFeedbackText(path), envActFact].filter(Boolean).join("\n"), undefined, endsBatch());
+				}
+				if (params.ref || !params.content?.trim()) throw new Refusal(`${params.kind} requires complete content; session refs are supported for tools only. Provide content or Skip.`);
+				if (params.kind === "skill") {
+					const description = params.description?.trim() || params.content.trim().split("\n")[0].slice(0, 120);
+					const path = `skills/${params.name}/SKILL.md`;
+					const source = `---\nname: ${params.name}\ndescription: ${JSON.stringify(description)}\n---\n${params.content.trim()}\n`;
+					workspace!.mutate({ op: "write", path, content: source });
+					const receipt = await binder!.save(path, currentLevel(), { by: "agent", decision });
+					nativeRuntime!.noteSave(path, receipt);
+					if (receipt?.includes("NOT loaded")) throw new Refusal(`${receipt}\nFix the skill content and call save again, or Skip.`);
+					return text(`${receipt ?? `${path}: saved`}; read ${path} when useful.`, undefined, endsBatch());
+				}
+				const source = /^---\r?\n/.test(params.content) ? params.content : `---\nactive: true\n---\n${params.content.trim()}\n`;
+				workspace!.mutate({ op: "write", path: STRATEGY_PATH, content: source }); refinedPaths.add(STRATEGY_PATH);
+				const receipt = await binder!.save(STRATEGY_PATH, currentLevel(), { by: "agent", decision });
+				nativeRuntime!.noteSave(STRATEGY_PATH, receipt);
+				if (receipt?.includes("NOT loaded")) throw new Refusal(`${receipt}\nFix the strategy content and call save again, or Skip.`);
+				return text(`${receipt ?? `${STRATEGY_PATH}: saved`}`, undefined, endsBatch());
+			}),
+		});
+
 		if (selfBaseline) pi.registerTool({
 			name: "promote_session_function",
 			label: "Promote session function",
-			description: "Extract your named logic prototype from the current Python session for possible reuse. Returns its exact source and external names; it does not call or publish the function. Adapt session/runtime dependencies before writing a workspace file.",
+			description: "Extract a named logic function from this Python session without calling or saving it. Use the exact function ref with save(kind='tool', ...) if it already matches the callable contract.",
 			parameters: Type.Object({ function: Type.String({ pattern: "^[a-zA-Z_][a-zA-Z0-9_]{0,79}$" }) }),
 			execute: guardTool("promote_session_function", async (params: { function: string }) => {
 				const result = await nativeRuntime!.sessionFunction(params.function);
@@ -3851,14 +3905,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					`unresolved names: ${info.unresolved_names.join(", ") || "none detected"}`,
 					`mechanically portable: ${info.portable ? "yes; still adapt to the Self tool contract" : "no; adapt the listed dependencies or keep it session-local"}`,
 					`exact source:\n\`\`\`python\n${info.source}\n\`\`\``,
-					`To publish, keep the prototype parameterized and include its dependencies; add a run(state,args) adapter that binds current inputs, then write/edit tools/NAME.py. The original session function remains available.`].join("\n"));
+					`To publish, use save(kind="tool", name="...", ref="${info.name}") only when the extracted function is self-contained and accepts (args, env); otherwise provide adapted complete content. The original session function remains available.`].join("\n"));
 			}),
 		});
 
 		if (selfBaseline) pi.registerTool({
 			name: "self_component",
 			label: "Self component",
-			description: "Compatibility path for older saved components. For new reusable methods or strategy, directly write/edit prompts/strategy.md, skills/NAME/SKILL.md, or agents/NAME.md; Binder validates and versions workspace writes. A saved skill can be read by exact path; consult a saved agent only when useful. Retire an old component when evidence says it is no longer useful.",
+			description: "Compatibility path for older saved components. New tool, skill, or strategy content can use save(kind, name, content); saved skills remain callable through run_skill. Retire an old component when evidence says it is no longer useful.",
 			parameters: Type.Object({
 				kind: Type.Optional(StringEnum(["tool", "memory", "prompt", "skill", "subagent"] as const)),
 				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),

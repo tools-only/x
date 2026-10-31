@@ -289,7 +289,7 @@ test('after-action self_harness_hook is an isolated turn and reaches save, named
         const task = await h.begin();
         assert.doesNotMatch(task, /SELF:|SELF REUSE|save checked reusable/i, 'task turn has no conversion cue');
         assert.match(await h.act({ action: 'RESET' }), /RESET/);
-        const categoryContract = 'Review the bounded task summary and indexes first. If they show no concrete reusable candidate, Skip immediately. For a candidate, read only one piece of key evidence needed to check it, then save or Skip and finish this hook. Choose the component and whether it is worth keeping; no component is required. Write/edit the existing workspace path directly and preserve its required frontmatter; Binder validates and versions writes. Do not reconstruct the game, inspect every candidate, or continue after save/Skip. No environment action. Finish now.';
+        const categoryContract = 'Review the bounded task summary and indexes first. If they show no concrete reusable candidate, Skip immediately. Consider Python code a candidate when its reusable logic is parameterized and can carry across levels; if its function body is bound to coordinates or current-level constants that cannot be lightly separated, Skip or first rewrite it as parameterized logic. For a candidate, read only one piece of key evidence needed to check it, then save or Skip and finish this hook. Choose the component and whether it is worth keeping; no component is required. Write/edit the existing workspace path directly and preserve its required frontmatter; Binder validates and versions writes. Do not reconstruct the game, inspect every candidate, or continue after save/Skip. No environment action. Finish now.';
         const projectedHook = JSON.stringify({ version: 'hook-summary-v1', window: { from: 1, through: 1 },
             complete: true, gaps: [], source_events: 3, source_chars: 1200,
             actions: [{ n: 1, action: 'RESET', changed_cells: 1, bbox: { top: 0, left: 0, bottom: 0, right: 0 },
@@ -307,6 +307,8 @@ test('after-action self_harness_hook is an isolated turn and reaches save, named
         assert.match(hook, /HOOK RUNTIME FACTS/);
         assert.doesNotMatch(hook, /FULL_TRACE_SENTINEL/, 'the default hook request omits full task trace text');
         assert.match(hook, /Skip immediately/);
+        assert.match(hook, /reusable logic is parameterized/);
+        assert.match(hook, /bound to coordinates or current-level constants.*Skip or first rewrite it as parameterized logic/);
         assert.match(hook, /one piece of key evidence/);
         assert.match(hook, /finish this hook/);
         assert.match(hook, /"n":1/);
