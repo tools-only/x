@@ -31,15 +31,18 @@ def prepare(root: Path, source: Path) -> None:
         raise ValueError("Use a new run directory")
     data = root / "workspace" / "data"
     data.mkdir(parents=True)
-    for name in ("material.txt", "instructions.md", "statistics.yaml"):
-        shutil.copy2(source / name, data / name)
+    shutil.copy2(source / "material.txt", data / "material.txt")
+    shutil.copy2(source / "production_brief.md", data / "instructions.md")
     (data / "environment.md").write_text(ENVIRONMENT, encoding="utf-8")
     evaluation = root / "evaluation"
     evaluation.mkdir()
     shutil.copy2(source / "judge_prompt.json", evaluation / "judge_prompt.json")
+    shutil.copy2(source / "instructions.md", evaluation / "presentbench_generation_instructions.md")
+    shutil.copy2(source / "statistics.yaml", evaluation / "statistics.yaml")
     revision = "3c6e01f563165d3a364a459f9777cd7286f42cd8"
     provenance = {"dataset": "PresentBench/PresentBench", "revision": revision,
                   "case": "economics/JPMorgan_Chase/Earning3",
+                  "task_mode": "production-demo brief derived from the case's source material; benchmark generation instructions retained separately because they contain unrelated space-exploration wording",
                   "material_source": "https://www.sec.gov/Archives/edgar/data/19617/000001961721000446/a3q21erfexhibit991narrative.htm",
                   "instructions_source": f"https://huggingface.co/datasets/PresentBench/PresentBench/tree/{revision}/economics/JPMorgan_Chase/Earning3/generation_task/instructions.md"}
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")

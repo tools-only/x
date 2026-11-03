@@ -1,6 +1,6 @@
 # PresentBench: JPMorgan Chase Q3 2021 earnings
 
-This is the end-to-end task case used by the PPT production demo. Its generation inputs and evaluation files are bundled under `assets/`, so preparing a run does not fetch task data. The agent receives the original generation instructions and earnings-release text, then creates a 15–20 slide editable presentation. The benchmark judge prompt is copied to the run's `evaluation/` directory and never placed in the agent's task workspace.
+This is the end-to-end task case used by the PPT production demo. Its source material and task files are bundled under `assets/`, so preparing a run does not fetch task data. The production run uses `production_brief.md` and the earnings-release text to create a 15-slide editable presentation. The source PresentBench instructions and judge prompt are retained in the run's separate `evaluation/` directory, never in the agent's task workspace. The generation instructions contain unrelated space-exploration wording, so this production demo does not claim a benchmark score.
 
 ## Prepare and run from bundled resources
 
@@ -17,10 +17,11 @@ Add `--run --official-openai` to start generation with the existing OpenAI Codex
 
 ## Case identity
 
-- Benchmark: PresentBench (238 presentation-generation tasks)
+- Source case: PresentBench (238 presentation-generation tasks)
 - Case: `economics/JPMorgan_Chase/Earning3`
 - Task: explain JPMorgan Chase's Q3 2021 financial results to media and non-specialists, using only the supplied release
-- Expected output: 15–20 slides
+- Production brief: an edited, task-specific 15-slide financial-results deck brief derived from the supplied source and case requirements
+- Benchmark status: no score claimed; source judge prompt retained outside task context
 - Pinned dataset revision: `3c6e01f563165d3a364a459f9777cd7286f42cd8`
 - Dataset card and benchmark data terms: <https://huggingface.co/datasets/PresentBench/PresentBench>
 - Benchmark implementation: <https://github.com/PresentBench/PresentBench>

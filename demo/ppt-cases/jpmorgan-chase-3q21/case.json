@@ -16,7 +16,11 @@
     "instructions.md": {
       "path": "economics/JPMorgan_Chase/Earning3/generation_task/instructions.md",
       "sha256": "efe516b50d3bb29ee5f5d6f7f1b7cfe80c41601f7f5f4eea29c659630273a145",
-      "role": "generation input; PresentBench CC BY-NC 4.0"
+      "role": "source PresentBench generation instructions; retained for provenance and evaluation, not used for this production run"
+    },
+    "production_brief.md": {
+      "sha256": "c387a2f4f8214b8ba8855a39be9ffac4d3fab54b0ff0070f9b6dff997f30c519",
+      "role": "generation input; locally authored coherent task brief based on the source release"
     },
     "statistics.yaml": {
       "path": "economics/JPMorgan_Chase/Earning3/generation_task/statistics.yaml",

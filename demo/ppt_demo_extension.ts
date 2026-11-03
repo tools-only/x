@@ -39,7 +39,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       return result;
     } });
   for (const tool of workspace.fileTools()) pi.registerTool({ ...tool, execute: async (id, args: any, signal, update, ctx) => {
-    if (state.phase === 'adapt' && ['write', 'edit'].includes(tool.name) && !/^(notes|prompts|skills)\//.test(args.path))
+    if (state.phase === 'adapt' && ['write', 'edit'].includes(tool.name) && !/^(notes|prompts|skills|agents)\//.test(args.path))
       throw Error('ADAPT changes methods or memory; return to TASK to modify the deck.');
     if (['write', 'edit'].includes(tool.name) && /^(tools|lib)\//.test(args.path)) throw Error('Use save_program for executable harness changes.');
     return tool.execute(id, args, signal, update, ctx);
@@ -58,11 +58,16 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (!c) throw Error('No active component by this name');
     return text(`${c.name}@v${c.version}\n${c.source}`);
   });
-  register('self_component', 'Save a prompt, text skill or memory. Content becomes available next batch; no component quota.',
-    Type.Object({ kind: Type.Union([Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('memory')]), name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), content: Type.String() }),
+  register('self_component', 'Create or revise a task-local prompt, skill, memory entry, or read-only subagent role. Changes become available at the next batch boundary.',
+    Type.Object({ kind: Type.Union([Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('memory'), Type.Literal('subagent')]),
+      name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), content: Type.String(),
+      description: Type.Optional(Type.String()), tools: Type.Optional(Type.Array(Type.String())) }),
     async (a: any) => {
-      const path = a.kind === 'memory' ? 'notes/memory.md' : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : `prompts/${a.name}.md`;
-      const content = a.kind === 'memory' ? a.content : a.kind === 'prompt' ? `---\nactive: true\n---\n${a.content}` : `---\nname: ${a.name}\ndescription: ${a.name}\n---\n${a.content}`;
+      const path = a.kind === 'memory' ? 'notes/memory.md' : a.kind === 'skill' ? `skills/${a.name}/SKILL.md`
+        : a.kind === 'subagent' ? `agents/${a.name}.md` : `prompts/${a.name}.md`;
+      const content = a.kind === 'memory' ? a.content : a.kind === 'prompt' ? `---\nactive: true\n---\n${a.content}`
+        : a.kind === 'subagent' ? `---\ndescription: ${JSON.stringify(a.description ?? a.name)}\ntools: ${JSON.stringify(a.tools ?? ['read'])}\n---\n${a.content}`
+        : `---\nname: ${a.name}\ndescription: ${a.name}\n---\n${a.content}`;
       workspace.mutate({ op: 'write', path, content });
       const receipt = await binder.save(path, 0, { by: 'agent', decision: state.batch });
       return text(receipt ?? `Saved ${path}; next batch uses it.`);
@@ -93,7 +98,15 @@ export default function pptDemo(pi: ExtensionAPI) {
       for (const c of components) { const path = join(delivery, 'harness', c.path); mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, c.source); }
       if (existsSync(workspace.path('notes/memory.md'))) { mkdirSync(join(delivery, 'harness', 'notes'), { recursive: true }); cpSync(workspace.path('notes/memory.md'), join(delivery, 'harness', 'notes', 'memory.md')); }
       writeFileSync(join(delivery, 'harness.json'), JSON.stringify({ base: 'codex/agent-native-program-loop', components: components.map(c => ({ name: c.name, kind: c.kind, version: c.version, path: c.path, hash: c.hash })), load: 'Copy harness/ into a new PPT demo workspace; Binder loads and runs the saved programs with fresh state/args.' }, null, 2));
+      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/usage.jsonl',
+        'harness/consult_runs.jsonl', 'harness/model-usage.jsonl', 'harness/provider-requests.jsonl', 'session.jsonl']) {
+        const source = join(root, relative);
+        if (!existsSync(source)) continue;
+        const target = join(delivery, 'harness-evidence', relative.replace(/^\.harness\//, ''));
+        mkdirSync(join(target, '..'), { recursive: true }); cpSync(source, target);
+      }
       state.complete = true; state.deliveredRevision = revision; persist(); log('lifecycle.jsonl', { event: 'delivered', revision });
+      cpSync(join(root, 'harness', 'lifecycle.jsonl'), join(delivery, 'harness-evidence', 'harness', 'lifecycle.jsonl'));
       return text({ delivered: revision, directory: 'delivery/' }, true);
     });
   register('checkpoint', 'End a meaningful work batch with a short continuation note. Optionally request an ADAPT window now, including before making slides. No fixed slide/action count. In ADAPT, return to TASK.',
@@ -107,12 +120,13 @@ export default function pptDemo(pi: ExtensionAPI) {
     resumed = event.prompt === 'PPT_RESUME';
     if (!resumed) { state.phase = state.nextPhase; state.batch++; binder.boundary(); persist(); }
     const selected = ['read', 'write', 'edit', 'ls', 'grep', 'save_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'office', 'checkpoint'];
+    if (binder.active().some(c => c.kind === 'subagent')) selected.push('consult');
     pi.setActiveTools(state.phase === 'adapt' ? selected.filter(x => !['write', 'edit'].includes(x)) : selected);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt').map(c => c.body).join('\n');
     const systemPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8') + '\n' + activePrompts;
     const current = JSON.stringify(snapshot());
     log('lifecycle.jsonl', { event: resumed ? 'resume' : 'batch_started', catalog: binder.programCatalog(0) });
-    return { systemPrompt, message: { customType: 'ppt-work-state', content: `PHASE ${state.phase.toUpperCase()} BATCH ${state.batch}\nContinuation: ${state.note}\nCurrent state: ${current}\n${binder.programCatalog(0)}\n${binder.active().filter(c => c.kind === 'skill').map(c => `Method ${c.name}: ${c.body}`).join('\n')}`, display: false } };
+    return { systemPrompt, message: { customType: 'ppt-work-state', content: `PHASE ${state.phase.toUpperCase()} BATCH ${state.batch}\nContinuation: ${state.note}\nCurrent state: ${current}\n${binder.index(0)}\n${binder.programCatalog(0)}\n${binder.active().filter(c => c.kind === 'skill').map(c => `Method ${c.name}: ${c.body}`).join('\n')}`, display: false } };
   });
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   const previousRequests = existsSync(join(root, 'harness/provider-requests.jsonl'))
