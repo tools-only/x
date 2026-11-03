@@ -1,20 +1,19 @@
 # PresentBench: JPMorgan Chase Q3 2021 earnings
 
-This is the end-to-end task case used by the PPT production demo. The agent receives the original generation instructions and earnings release, then creates a 15–20 slide editable presentation. The separate benchmark judge prompt is copied to the run's `evaluation/` directory and never placed in the agent's task workspace.
+This is the end-to-end task case used by the PPT production demo. Its generation inputs and evaluation files are bundled under `assets/`, so preparing a run does not fetch task data. The agent receives the original generation instructions and earnings-release text, then creates a 15–20 slide editable presentation. The benchmark judge prompt is copied to the run's `evaluation/` directory and never placed in the agent's task workspace.
 
-## Reproduce the case
+## Prepare and run from bundled resources
 
-The PresentBench dataset declares `license: other`; this repository therefore records the case identity and pinned source revision but does not redistribute the PDF, benchmark instructions, statistics, or judge prompt. Fetch the original files into a local directory when preparing a run:
+Run the following from the repository root. No case-resource download step is needed:
 
 ```powershell
-python demo/ppt-cases/jpmorgan-chase-3q21/prepare_case.py --output D:/ppt-demo/jpmorgan-chase-3q21-source
 $env:PYTHONPATH = 'src'
-python -m autoresearch_pi.ppt_demo --root runs/ppt-jpm-3q21 --source D:/ppt-demo/jpmorgan-chase-3q21-source
+python -m autoresearch_pi.ppt_demo --root runs/ppt-jpm-3q21 --source demo/ppt-cases/jpmorgan-chase-3q21/assets
 ```
 
-The download script pins the PresentBench repository revision and verifies each file against its SHA-256 digest. It also extracts the release text into `material.txt`, which is used by the demo's text tools. The repository's ordinary source URL is not used because it can move; every download uses the pinned commit.
+The packaged `material.txt` is the text of the JPMorgan Chase 3Q21 earnings release furnished as SEC EDGAR Exhibit 99.1. SEC says public EDGAR filing content is free to access and reuse. The original PresentBench PDF is not redistributed; its text is provided from the SEC filing, with the source and benchmark revision recorded in `case.json` and the run's `task-provenance.json`.
 
-To start the real-provider run, add `--run` to the second command. This demo is configured for the already authorized AZ Qwen route and budget; it refuses a different API base. If the previous run stopped and its provider issue has been resolved, use the documented resume command for that same run instead of creating a fresh paid run.
+Add `--run` to start generation. The scope of this offline bundle is the task and evaluation resources; model-provider configuration remains the existing demo configuration.
 
 ## Case identity
 
@@ -23,7 +22,8 @@ To start the real-provider run, add `--run` to the second command. This demo is 
 - Task: explain JPMorgan Chase's Q3 2021 financial results to media and non-specialists, using only the supplied release
 - Expected output: 15–20 slides
 - Pinned dataset revision: `3c6e01f563165d3a364a459f9777cd7286f42cd8`
-- Dataset card: <https://huggingface.co/datasets/PresentBench/PresentBench>
+- Dataset card and benchmark data terms: <https://huggingface.co/datasets/PresentBench/PresentBench>
 - Benchmark implementation: <https://github.com/PresentBench/PresentBench>
+- SEC source release: <https://www.sec.gov/Archives/edgar/data/19617/000001961721000446/a3q21erfexhibit991narrative.htm>
 
-The PDF and task instructions are benchmark inputs, not content authored for this repository. A run must cite the benchmark source through its generated `task-provenance.json`.
+The bundled PresentBench instructions and evaluation rubric are attributed to PresentBench and provided under CC BY-NC 4.0. See `ASSET-ATTRIBUTION.md`. The SEC source is used for the earnings-release text; source page screenshots and the JPMorgan-hosted PDF are not bundled. A run records both its benchmark case and SEC content source in `task-provenance.json`.

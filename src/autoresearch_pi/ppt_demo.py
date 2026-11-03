@@ -20,7 +20,7 @@ The native scene is JSON at artifacts/deck.json, with width=13.333333, height=7.
 - rect or line: fill RGB. line is a thin rectangle; set suitable w,h.
 - chart: type column/bar/line/pie, categories list, series [{name,values}], unit (value axis title), colors RGB list optional, labels boolean. These are native editable charts with embedded data, not raster charts.
 - table: rows (rectangular list including header), size optional, header_fill RGB optional. Native editable cells.
-- image: path inside data/, e.g. data/source-page-01.png. Original source pages are available as images for faithful excerpts. Supply x,y,w,h.
+- image: path inside data/, e.g. data/source-page-01.png. Source page images are optional in this case bundle. Supply x,y,w,h.
 Use RGB strings without #. Use only the supplied source for facts. The renderer does no financial interpretation or narrative evaluation. It reports native PowerPoint text-height overflow and outside-canvas geometry. Some intended overlap and non-overflow legibility remain your judgment. office(render) creates immutable exports/vNNN/deck.pptx, deck.pdf, slide PNGs, source snapshot, contact sheet and receipt. office(look,pages=[...],revision=N) shows up to four full-size pages. office(deliver) checks the export is current and 15–20 pages, then packages current components and final files.
 Programs run fresh in WASI, using stdlib, json, state,args,env. Python open handles confined workspace text reads/writes, e.g. json.load(open('artifacts/deck.json')) or json.dump(deck,open('artifacts/deck.json','w')). They cannot import pptx/PIL or use arbitrary host files. They can transform document content, calculate, build editable scene JSON, or check evidence. state includes current deck, last_feedback, memory, revision and batch. Keep data as arguments or workspace content; reusable logic belongs in programs. Ordinary artifacts belong under artifacts/ or notes/. Prefix tools/ is managed by save_program. Source input data/ and runtime results/ are read-only.
 """
@@ -31,22 +31,17 @@ def prepare(root: Path, source: Path) -> None:
         raise ValueError("Use a new run directory")
     data = root / "workspace" / "data"
     data.mkdir(parents=True)
-    for name in ("material.pdf", "material.txt", "instructions.md", "statistics.yaml"):
+    for name in ("material.txt", "instructions.md", "statistics.yaml"):
         shutil.copy2(source / name, data / name)
     (data / "environment.md").write_text(ENVIRONMENT, encoding="utf-8")
     evaluation = root / "evaluation"
     evaluation.mkdir()
     shutil.copy2(source / "judge_prompt.json", evaluation / "judge_prompt.json")
-    import fitz
-    doc = fitz.open(data / "material.pdf")
-    for n, page in enumerate(doc, 1):
-        page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).save(data / f"source-page-{n:02d}.png")
     revision = "3c6e01f563165d3a364a459f9777cd7286f42cd8"
-    base = f"https://huggingface.co/datasets/PresentBench/PresentBench/resolve/{revision}/"
     provenance = {"dataset": "PresentBench/PresentBench", "revision": revision,
                   "case": "economics/JPMorgan_Chase/Earning3",
-                  "material": base + "economics/JPMorgan_Chase/Earning3/material.pdf",
-                  "instructions": base + "economics/JPMorgan_Chase/Earning3/generation_task/instructions.md"}
+                  "material_source": "https://www.sec.gov/Archives/edgar/data/19617/000001961721000446/a3q21erfexhibit991narrative.htm",
+                  "instructions_source": f"https://huggingface.co/datasets/PresentBench/PresentBench/tree/{revision}/economics/JPMorgan_Chase/Earning3/generation_task/instructions.md"}
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 

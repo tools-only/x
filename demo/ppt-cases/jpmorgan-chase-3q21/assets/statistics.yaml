@@ -1,0 +1,25 @@
+case_path: economics/JPMorgan_Chase/Earning3
+category: economics
+input_metrics:
+  total_input_tokens: 6504
+  generation_prompt_tokens: 2024
+  materials_total_tokens: 4480
+  material_count: 1
+  pdf_total_pages: 8
+  file_details:
+  - name: material.pdf
+    tokens: 4480
+    pages: 8
+checklist_counts:
+  common:
+    details:
+      Presentation Fundamentals: 13
+      Visual Design and Layout: 17
+    sum: 30
+  specific:
+    details:
+      Content Completeness: 14
+      Content Correctness: 13
+      Content Fidelity (per-slide-deck dynamic): 0
+    sum: 27
+  total_count: 57
