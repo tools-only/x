@@ -1,0 +1,70 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import pptDemo from '../demo/ppt_demo_extension.ts';
+
+test('unknown provider usage remains charged across process reload', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-budget-'));
+  process.env.PPT_DEMO_ROOT = root;
+  process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  for (let i=0; i<2; i++) {
+    const hooks = new Map<string, any>();
+    pptDemo({ registerTool() {}, on: (n: string, f: any) => hooks.set(n, f), setActiveTools() {}, getActiveTools: () => [] } as any);
+    hooks.get('before_provider_request')({ payload: { messages: [] } });
+    hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'error' } });
+  }
+  const rows = readFileSync(join(root, 'harness/model-usage.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.equal(rows[1].usage_status, 'unknown_reserved');
+  assert.equal(rows[1].conservative_usd, 7.04);
+});
+
+test('real named-program execution, ADAPT read-only, revision use, PowerPoint export and current delivery', { timeout: 240000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-native-'));
+  process.env.PPT_DEMO_ROOT = root;
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f), setActiveTools() {}, getActiveTools: () => [...tools.keys()] } as any);
+  const call = (name: string, args: any) => tools.get(name).execute('test', args, undefined, undefined, {});
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  const body = `import json\nslides=[]\nfor i in range(15):\n    slides.append({'elements':[{'kind':'text','x':0.5,'y':0.5,'w':10,'h':1,'text':args['title']+' '+str(i+1),'size':28}]})\nslides[0]['elements'].extend([{'kind':'chart','x':1,'y':2,'w':5,'h':3,'categories':['A','B'],'series':[{'name':'Revenue','values':[3,4]}],'unit':'USD bn'},{'kind':'table','x':7,'y':2,'w':5,'h':2,'rows':[['Metric','Value'],['A','3']]}])\njson.dump({'slides':slides},open('artifacts/deck.json','w'))\nprint('created',len(slides))`;
+  await call('save_program', { name: 'page_builder', description: 'Parameterised diagnostic page generator', body });
+  const first = await call('run_program', { name: 'page_builder', args: { title: 'Initial' } });
+  assert.equal(first.isError, false);
+  const manifest = join(root, 'workspace/artifacts/deck.json');
+  assert.match(readFileSync(manifest, 'utf8'), /Initial/);
+  await call('checkpoint', { note: 'Test revised method before continuing', adapt: true });
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  const rejected = await call('run_program', { name: 'page_builder', args: { title: 'Forbidden' } });
+  assert.equal(rejected.isError, true);
+  assert.doesNotMatch(readFileSync(manifest, 'utf8'), /Forbidden/);
+  await call('save_program', { name: 'page_builder', description: 'Updated method', body: body+'\nprint("updated method")', expected_version: 1 });
+  await call('checkpoint', { note: 'Use updated program in TASK' });
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  await call('run_program', { name: 'page_builder', args: { title: 'Updated' } });
+  await call('office', { op: 'render' });
+  const receipt = JSON.parse(readFileSync(join(root, 'exports/v001/receipt.json'), 'utf8'));
+  assert.equal(receipt.slides, 15);
+  assert.equal(receipt.native_objects.chart, 1);
+  assert.equal(receipt.renderer, 'Microsoft PowerPoint 16 COM');
+  const look = await call('office', { op: 'look', pages: [1] });
+  assert.equal(look.content[0].type, 'image');
+  const source = JSON.parse(readFileSync(manifest, 'utf8'));
+  source.slides[0].elements[0].text = 'Changed';
+  writeFileSync(manifest, JSON.stringify(source));
+  await assert.rejects(() => call('office', { op: 'deliver' }), /changed since render/);
+  await call('office', { op: 'render' });
+  await call('office', { op: 'deliver' });
+  const harness = JSON.parse(readFileSync(join(root, 'delivery/harness.json'), 'utf8'));
+  assert.equal(harness.components[0].version, 2);
+  const fresh = mkdtempSync(join(tmpdir(), 'ppt-reload-'));
+  cpSync(join(root, 'delivery/harness'), join(fresh, 'workspace'), { recursive: true });
+  process.env.PPT_DEMO_ROOT = fresh;
+  const reloaded = new Map<string, any>(), freshHooks = new Map<string, any>();
+  pptDemo({ registerTool: (t: any) => reloaded.set(t.name, t), on: (n: string, f: any) => freshHooks.set(n, f), setActiveTools() {}, getActiveTools: () => [...reloaded.keys()] } as any);
+  await freshHooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  const run = await reloaded.get('run_program').execute('reload', { name: 'page_builder', args: { title: 'Fresh data' } }, undefined, undefined, {});
+  assert.equal(run.isError, false);
+  assert.match(readFileSync(join(fresh, 'workspace/artifacts/deck.json'), 'utf8'), /Fresh data/);
+  console.log('Actual PowerPoint test artifacts:', root);
+});
