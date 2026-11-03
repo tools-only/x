@@ -186,8 +186,16 @@ export class NativeRuntime {
       prepareArguments: (args: any) => args && typeof args === 'object' && args.role && !args.agent ? { ...args, agent: args.role } : args,
       execute: host.wrap('consult', (args, signal, ctx) => this.consult(args, signal, ctx)) });
   }
-  /** The saved tools the agent can call by name (views under observers/ are shown, not called). */
-  private callable() { return this.host.binder.candidates().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length && !c.path.startsWith('observers/')); }
+  /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text. */
+  private callable() {
+    return this.host.binder.active().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length
+      && !c.path.startsWith('observers/'));
+  }
+  /** Facts about the exact callable schema that Pi is about to submit to its provider. */
+  callableSchema(tools: any[]) {
+    const actNames = new Set(this.callable().filter(c => c.source.includes('env.act(')).map(c => c.name));
+    return tools.map(tool => ({ name: String(tool.name), act_capable: actNames.has(String(tool.name)) }));
+  }
   /** Register candidates immediately; Pi advertises them only on its next request. Execution uses boundary snapshots. */
   register() {
     for (const c of this.callable()) {
@@ -264,6 +272,45 @@ export class NativeRuntime {
     this.lastSaveRun = this.pythonRuns.length;
     this.register();
     return receipt ?? `${name}: Created`;
+  }
+  /** Agent-authored script: the program is the saved source itself, not a wrapper extracted from a Python session. */
+  async saveProgram(name: string, body: string, description: string, tags: string[] = [], expectedVersion?: number) {
+    if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error('name: use a logical identifier');
+    if (!body.trim()) throw Error('program: provide executable Python source');
+    if (!description.trim() || description.length > 120 || /[\r\n]/.test(description)) throw Error('description: use one meaningful line (1-120 characters)');
+    if (tags.length > 5 || tags.some(tag => !/^[a-z][a-z0-9_-]{0,23}$/.test(tag)))
+      throw Error('tags: use up to five short lowercase identifiers');
+    const path = `tools/${name}.py`;
+    const currentVersion = this.host.binder.versionMap()[path] ?? 0;
+    if (expectedVersion !== undefined && expectedVersion !== currentVersion)
+      throw Error(`program ${name}: expected v${expectedVersion}, current version is v${currentVersion}; read the active source before revising`);
+    const code = body.trim().startsWith('# program: on\n')
+      ? body.trim().replace(/^# program: on\r?\n(?:# description:[^\r\n]*\r?\n)?(?:# tags:[^\r\n]*\r?\n)?/, '')
+      : body.trim();
+    const source = `# program: on\n# description: ${description.trim()}\n${tags.length ? `# tags: ${tags.join(', ')}\n` : ''}${code}\n`;
+    this.host.workspace.mutate({ op: 'write', path, content: source });
+    const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
+    this.noteSave(path, receipt);
+    if (receipt?.includes('NOT loaded')) throw Error(receipt);
+    await this.host.binder.scan(this.host.level());
+    this.host.binder.boundary();
+    this.register();
+    this.host.log('component_runs.jsonl', { kind: 'program_save', name, path, version: this.host.binder.versionMap()[path],
+      decision: this.decision(), n: this.host.actionCount(), ok: true });
+    return receipt ?? `${name}: Created`;
+  }
+  /** Run the active named version on a fresh authoritative state snapshot. ADAPT calls are read-only. */
+  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
+    const component = this.host.binder.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
+    if (!component) throw Error(`program ${name}: no active named program`);
+    this.host.log('component_runs.jsonl', { kind: 'program_call', name, path: component.path, version: component.version,
+      decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task' });
+    const result = await this.call(component, { args }, signal, Boolean(this.host.hookTurn?.()));
+    const output = (result?.content ?? []).filter((part: any) => part?.type === 'text').map((part: any) => String(part.text ?? '')).join('\n');
+    this.host.log('component_runs.jsonl', { kind: 'program_result', name, path: component.path, version: component.version,
+      decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task', ok: !result?.isError,
+      output_excerpt: output.slice(0, 600) });
+    return result;
   }
   async promote(name?: string, signal?: AbortSignal) {
     const chosen = name ?? this.promotionCandidates()[0]?.name;
@@ -569,10 +616,16 @@ export class NativeRuntime {
   async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
   }
-  noteReuseRead(path: string) {
-    const component = this.host.binder.active().find(c => c.path === path && /^(tools|observers|lib)\/.+\.py$/.test(c.path));
-    if (component) this.host.log('component_runs.jsonl', { kind: 'reuse_read', path: component.path, version: component.version,
-      level: this.host.level(), decision: this.decision(), n: this.host.actionCount() });
+  noteReuseRead(path: string, version?: number) {
+    const component = this.host.binder.active().find(c => c.path === path && (version === undefined || c.version === version) && c.kind === 'tool'
+      && !c.guard && !c.mount?.length && !c.path.startsWith('observers/'));
+    if (component) {
+      const contractLines = component.source.split(/\r?\n/).filter(line => /\bargs\s*\[/.test(line)).slice(0, 2);
+      this.host.log('component_runs.jsonl', { kind: 'reuse_read', path: component.path, name: component.name,
+        tool_name: component.name, version: component.version,
+        args_contract: (contractLines.length ? contractLines.join(' | ') : `read_component("${component.name}") body` ).slice(0, 240),
+        level: this.host.level(), decision: this.decision(), n: this.host.actionCount() });
+    }
   }
   /** Read a session function's definition and dependency names without publishing or invoking the function. */
   async sessionFunction(name: string, signal?: AbortSignal): Promise<NativeResult> {
@@ -695,7 +748,7 @@ export class NativeRuntime {
     const windowKey = `${this.host.level()}:${windowAtStart}`;
     const windowCalls = this.pythonRuns.filter(r => r.level === this.host.level() && r.n === windowAtStart).length;
     let windowCheck = '';
-    if (!readonly && !result.acted?.lines.length && this.host.actionCount() === windowAtStart &&
+    if (this.host.workMemory !== false && !readonly && !result.acted?.lines.length && this.host.actionCount() === windowAtStart &&
         windowCalls >= 3 && !this.windowCheckHinted.has(windowKey)) {
       this.windowCheckHinted.add(windowKey);
       windowCheck = `WINDOW CHECK: ${windowCalls} Python calls since action #${windowAtStart}. Briefly compare what they established and what remains uncertain. ` +
@@ -711,8 +764,11 @@ export class NativeRuntime {
         const matched = [...relevance].filter(line => component.lines.has(line)).length;
         return { c, matched, total: relevance.size };
       }).filter(item => item.matched > 0).sort((a, b) => b.matched - a.matched || a.c.path.localeCompare(b.c.path));
-    const reuseIndex = !readonly && related.length ? 'RELATED COMPONENTS (read_component(name) or call a tool):\n' +
-      related.map(({ c, matched, total }) => `${c.name}@${c.version} ${c.name}(args={...}) — ${matched}/${total} normalized computation lines match; inspect signature/outputs before reuse.`).join('\n') : '';
+    const reuseIndex = !readonly && related.length ? 'RELATED COMPONENTS (mounted tools; matching is a lead only):\n' +
+      related.map(({ c, matched, total }) => `${c.name}@${c.version} - ${c.description || 'no Agent-written description'}; parameters: ${JSON.stringify(c.parameters)}; ` +
+        `${Object.keys(c.parameters?.properties ?? {}).length === 1 && Object.keys(c.parameters?.properties ?? {})[0] === 'args'
+          ? 'schema only exposes an args dictionary; use read_component(name) to inspect the body for its parameter contract. ' : ''}` +
+        `normalized computation lines match: ${matched}/${total} (lead only).`).join('\n') : '';
     if (reuseIndex) this.host.log('component_runs.jsonl', { kind: 'reuse_shown', level: this.host.level(), decision, n: this.host.actionCount(),
       paths: related.map(({ c }) => `${c.path}@${c.version}`), evidence: related.map(({ matched, total }) => ({ matched, total })) });
     const out = this.finish([...receipts, shown(result), sessionNotes, coverNote, reuseIndex, windowCheck, ...failed.map(s => 'bindings: ' + s)].filter(Boolean).join('\n'), result,
@@ -739,6 +795,9 @@ export class NativeRuntime {
     return this.call(component, { args }, signal);
   }
   private async call(c: Component, args: any, signal?: AbortSignal, readonly = false) {
+    const resolved = await this.resolveSessionArgs(args, signal);
+    if (!resolved.ok) return text(`${c.name}: ${resolved.error}`, true);
+    args = resolved.value;
     const snap = this.snapshot(); const started = Date.now(); const label = this.host.binder.label(c.path);
     let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : c.path);
     const receipts = result.ok ? await this.applyWrites(result) : [];
@@ -752,6 +811,29 @@ export class NativeRuntime {
     const feedback = !readonly && this.selfFeedbackText(c.path);
     if (feedback) out.content.push({ type: 'text', text: feedback });
     return out;
+  }
+  /** Resolve only explicit top-level value references against the current live Task kernel. */
+  private async resolveSessionArgs(args: any, signal?: AbortSignal): Promise<{ ok: true; value: any } | { ok: false; error: string }> {
+    if (!args || typeof args !== 'object' || Array.isArray(args) || !args.args || typeof args.args !== 'object' || Array.isArray(args.args))
+      return { ok: true, value: args };
+    const entries = Object.entries(args.args);
+    const refs = entries.filter(([, value]) => value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.keys(value).length === 1 && typeof (value as any).$python_session === 'string');
+    if (entries.some(([, value]) => value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.hasOwn(value, '$python_session') && !(Object.keys(value).length === 1 && typeof (value as any).$python_session === 'string')))
+      return { ok: false, error: 'invalid $python_session reference; expected {"$python_session":"name"}' };
+    if (!refs.length) return { ok: true, value: args };
+    if (!this.session || !this.kernel?.alive || this.kernel.lastExit) return { ok: false, error: 'Python session is unavailable or has ended; run Python again before referencing a value' };
+    const values: Record<string, unknown> = {};
+    for (const [key, ref] of refs) {
+      const name = (ref as any).$python_session as string;
+      const input = { ...this.snapshot(), mode: 'exec', session_value_request: true, name, code: '', session: this.session.payload() } as ReturnType<NativeRuntime['snapshot']> & Record<string, any>;
+      const result = await this.executeKernel(input, signal, undefined);
+      if (result.kernel?.ended) return { ok: false, error: 'Python session is unavailable or has ended; run Python again before referencing a value' };
+      if (!result.ok) return { ok: false, error: `Python session reference ${name}: ${String(result.error ?? 'could not read value')}` };
+      values[key] = result.value;
+    }
+    return { ok: true, value: { ...args, args: { ...args.args, ...values } } };
   }
   /** Tools marked as views run after every new state; their outputs are shown each decision. They never act. */
   observe(n: number) {

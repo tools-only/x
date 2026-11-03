@@ -7,7 +7,7 @@ import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
   parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean;
-  mount?: Array<'decision' | 'action' | 'feedback'> };
+  mount?: Array<'decision' | 'action' | 'feedback'>; program?: boolean; tags?: string[] };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 type Entry = { path: string; version: number; hash: string; level: number; kind?: string; layer?: string; by?: string; decision?: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
@@ -154,6 +154,22 @@ export class Binder {
     const active = this.bindings.get(path); const entry = this.entries.get(path);
     return `${active?.name ?? path} v${active?.version ?? 'none'}${entry?.error ? ` (v${entry.version} failed)` : ''}`;
   }
+  /** Executable skills are stored as Python tools, but discovered as named programs. */
+  programCatalog(level: number, query = ''): string {
+    const term = query.trim().toLowerCase();
+    const rows = [...this.entries].filter(([, e]) => !e.retired && e.good?.program)
+      .map(([path, e]) => {
+        const c = e.good!;
+        const status = c.level < level ? 'stale for this level' : e.error ? `v${e.version} failed; v${c.version} active` : 'active';
+        return { path, c, status };
+      }).filter(({ c }) => !term || [c.name, c.description, ...(c.tags ?? [])].some(value => value.toLowerCase().includes(term)))
+      .sort((a, b) => a.c.name.localeCompare(b.c.name));
+    if (!rows.length) return `No named programs match ${JSON.stringify(query)}.`;
+    const shown = rows.slice(0, 20).map(({ c, status }) =>
+      `${c.name}@v${c.version} | ${status} | ${c.description}${c.tags?.length ? ` | tags: ${c.tags.join(', ')}` : ''}`);
+    return [`NAMED PROGRAMS (${rows.length} matches; run_program(name, args), read_component(name) for source)`,
+      ...shown, ...(rows.length > shown.length ? [`${rows.length - shown.length} more; narrow list_programs(query).`] : [])].join('\n');
+  }
   /**
    * The capability index: one line per saved prompt, tool, skill and subagent (memory has its own index). Libraries
    * and plain files are not listed. A tool's line says where it enters the decision (a view after each new state, a
@@ -167,6 +183,8 @@ export class Binder {
     const lines = listed.map(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;
       const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'Created';
+      if (c?.program) return `${c.name}@v${c.version} | executable skill | ${status} | ${c.description}` +
+        (c.tags?.length ? ` | ${c.tags.join(', ')}` : '');
       return `${c?.name ?? path.split('/').at(-1)?.replace(/\.[^.]+$/, '')} | ${kind} | ${status} | via=${usage.get(path) ?? '0'}`;
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
@@ -175,7 +193,7 @@ export class Binder {
     if (full.length <= 1200) return full;
     const groups = new Map<string, string[]>();
     for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path.split('/').at(-1)!.replace(/\.[^.]+$/, '')]); }
-    return ['HARNESS (logical names; read_component for content)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
+    return ['HARNESS (logical names; read_component for content; list_programs(query) for program descriptions and versions)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
       `${listed.filter(([, e]) => e.error).length} failed; receipts label last working versions.`].join('\n').slice(0, 1200);
   }
 }

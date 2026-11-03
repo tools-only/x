@@ -1,0 +1,7 @@
+{
+  "mode": "on_demand",
+  "checkpoint_every_batches": 6,
+  "rules": [
+    { "event": "prediction_miss", "count": 2, "within_actions": 8 }
+  ]
+}

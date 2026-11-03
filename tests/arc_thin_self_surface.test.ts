@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import extension from '../demo/arc_thin_extension.ts';
 
-test('Hook strips injected diary/path instructions, gates all other tools, and enforces four calls', async () => {
+test('Hook keeps only bounded projection, gates all other tools, and enforces four calls', async () => {
   const previous = { ...process.env };
   Object.assign(process.env, { ARC_RUN_ROOT: mkdtempSync(join(tmpdir(), 'self-surface-')),
     ARC_THIN_FOUNDATION: 'native', ARC_THIN_SELF_BASELINE: '1' });
@@ -20,12 +20,13 @@ test('Hook strips injected diary/path instructions, gates all other tools, and e
     await assert.rejects(call('write', { path: 'tools/wrong.py', content: 'x' }), /save_tool.*wrong/);
     await assert.rejects(call('read', { path: 'tools/wrong.py' }), /read_component/);
     await call('save_tool', { name: 'sample', body: 'def run(args, env):\n    return args' });
-    const prompt = 'SELF_HARNESS_HOOK action_ids=1.\nDIARY_INJECTION D:/private/workspace/tools; solve a puzzle';
+    const prompt = 'SELF_HARNESS_HOOK action_ids=1.\nDIARY_INJECTION D:/private/workspace/tools; solve a puzzle\nhook-summary-v1 workspace/puzzle read_pointers';
     await handlers.get('before_agent_start')({ prompt, systemPromptOptions: { sections: {} } }, ctx);
-    assert.deepEqual(active, ['promote', 'save_tool', 'read_component', 'skip']);
+    assert.deepEqual(active, ['promote', 'save_tool', 'read_component', 'self_component', 'skip']);
     const messages = (await handlers.get('context')({ messages: [{ role: 'user', content: prompt }] }, ctx)).messages;
     const head = JSON.stringify(messages[0]);
-    assert.doesNotMatch(head, /DIARY_INJECTION|private|puzzle|hypothesis|stall|workspace/);
+    assert.match(head, /workspace\/puzzle read_pointers/);
+    assert.doesNotMatch(head, /DIARY_INJECTION|D:\\/i);
     assert.match(head, /Failures.*Successes/);
     for (let i = 0; i < 4; i++) assert.match(JSON.stringify(await call('read_component', { name: 'sample' })), /def run/);
     const capped = await call('promote', {});

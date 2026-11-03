@@ -2,11 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
+import { renderPrompt } from '../demo/prompt_loader.ts';
 
 test('native production instructions prefer reuse and evidence-led applicability without a creation quota', () => {
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
   assert.match(prompt, /Reuse your saved components before re-deriving or rewriting anything/);
   assert.match(prompt, /applicability on current evidence/);
+  const assembled = renderPrompt('arc_thin_native_system.md', { game: 'test', acting: 'test', observation: 'test', carry: '', predict_on: 'test', list_stop: '', daemon: '', refine: '', call_points: '', arc: '' });
+  assert.match(assembled, /call its same-named Task tool with parameters in `args`/);
+  assert.match(assembled, /\{"\$python_session":"variable_name"\}/);
+  assert.match(assembled, /`promote` and `save_tool` publish only; `read_component` only inspects; none runs a mounted tool/);
 });
 
 test('Self Task prompt uses logical tools and four states without filesystem or diagnostic teaching', () => {

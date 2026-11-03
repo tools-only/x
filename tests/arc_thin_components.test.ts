@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validatePythonComponent, executeNative } from '../demo/arc_thin_components.ts';
 
-const ARGS = { type: 'object', properties: { args: { type: 'object' } }, additionalProperties: false };
+const ARGS = { type: 'object', properties: { args: { type: 'object', description: 'For any direct parameter value in args, you may write {"$python_session":"variable_name"} to pass that top-level JSON value from the current Task Python session.' } }, additionalProperties: false };
 
 test('every tool has one args contract and executes exact injected sources in isolated fresh WASI', async () => {
   const source = '"""Compare measured values."""\ndef run(x: int, bias: int = 2):\n    from lib.offset import plus\n    return plus(x, bias)\n';
@@ -35,6 +35,8 @@ test('tool forms: script, run(args), run(args, env), older run(state, args) and 
   assert.equal((await call('observers/p.py', 'def observe(state):\n    return state["grid"][0][0]\n')).value, 7);
   assert.equal((await validatePythonComponent('tools/v.py', '# Positions.\n# view: on\ngrid[0]\n')).view, true);
   assert.equal((await validatePythonComponent('tools/v.py', '# Positions.\n# view: off\ngrid[0]\n')).view, false);
+  assert.equal((await validatePythonComponent('tools/program.py', '# program: on\ngrid[0]\n')).view, false,
+    'an explicit program stays callable even when its body has no args reference');
   assert.equal((await validatePythonComponent('observers/p.py', 'def observe(state):\n    return 1\n')).view, true);
   const off = await validatePythonComponent('observers/p.py', '# observe: off\ndef observe(state):\n    return 1\n');
   assert.equal(off.enabled, false);

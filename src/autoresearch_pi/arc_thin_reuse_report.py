@@ -78,6 +78,59 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _use_ledger(root: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read-only use classification; absent historical request schemas remain explicitly unknown."""
+    harness = root / "harness"
+    requests = _rows(harness / "request-events.jsonl")
+    schemas = [r for r in requests if r.get("stage") == "decide_callable_schema"]
+    runs = [r for r in _rows(harness / "component_runs.jsonl") if r.get("kind") == "tool"]
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        message = event.get("message") or {}
+        if message.get("role") != "assistant":
+            continue
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "toolCall":
+                by_name.setdefault(str(block.get("name")), []).append(block.get("arguments") or {})
+    args_classes: dict[str, int] = {}
+    for run in runs:
+        candidates = by_name.get(str(run.get("name")), [])
+        args = candidates.pop(0) if candidates else None
+        if not isinstance(args, dict):
+            kind = "unknown"
+        elif not args:
+            kind = "empty"
+        elif "$python_session" in json.dumps(args, ensure_ascii=False):
+            kind = "python_session"
+        elif any(isinstance(v, (list, dict)) and len(json.dumps(v, ensure_ascii=False)) > 256 for v in args.values()):
+            kind = "literal_big"
+        elif "args" not in args:
+            kind = "missing_key"
+        else:
+            kind = "other"
+        args_classes[kind] = args_classes.get(kind, 0) + 1
+    ok_true = sum(bool(r.get("ok")) for r in runs)
+    ok_false = sum(r.get("ok") is False for r in runs)
+    unknown_reason = "历史 run 未持久化 Decide 实际 callable schema，无法恢复挂载清单与机会窗"
+    if schemas:
+        mounted = [row.get("tools", []) for row in schemas]
+        act_count = [int(row.get("act_capable_count", sum(t.get("act_capable") is True for t in row.get("tools", []))))
+                     for row in schemas]
+        opportunities: int | str = sum(count > 0 for count in act_count)
+        mounted_count: int | str = max((len(tools) for tools in mounted), default=0)
+        act_capable_count: int | str = max(act_count, default=0)
+        reasons = None
+    else:
+        mounted_count = act_capable_count = opportunities = "unknown"
+        reasons = {"tools_mounted": unknown_reason, "act_capable_count": unknown_reason,
+                   "opportunity_windows": unknown_reason}
+    return {"tools_mounted": mounted_count, "act_capable_count": act_capable_count,
+            "kind_tool_attempts": len(runs), "uses": len(runs), "ok_true": ok_true, "ok_false": ok_false,
+            "tool_call_args_classes": args_classes, "opportunity_windows": opportunities,
+            "alt_action_mix": {"status": "unknown", "reason": "Pi/harness 尚未把各类行动与每个 Decide schema 窗口稳定关联"},
+            "unknown_reasons": reasons, "decide_schema_records": len(schemas)}
+
+
 def _text(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):
@@ -292,6 +345,7 @@ def build_report(root: Path) -> dict[str, Any]:
     times = [datetime.fromisoformat(str(r["t"]).replace("Z", "+00:00")) for r in trajectory if r.get("t")]
     hours = (times[-1] - times[0]).total_seconds() / 3600 if len(times) > 1 else 0.0
     summary = json.loads((root / "summary.json").read_text(encoding="utf-8")) if (root / "summary.json").is_file() else {}
+    use_ledger = _use_ledger(root, events)
     accounting = summary.get("request_accounting")
     total = accounting["known_tokens_lower_bound"] if accounting else sum(
         k["input"] + k["cache_read"] + k["cache_write"] + k["output"] for k in by_kind.values())
@@ -326,6 +380,7 @@ def build_report(root: Path) -> dict[str, Any]:
             "refiner_edits_by_category": {c: sum(1 for r in refined if r.get("category") == c) for c in sorted({str(r.get("category")) for r in refined})},
         },
         "categories": categories,
+        "use_ledger": use_ledger,
         "process": {"components": process_components,
                     "note": "prompt delivery is logged per working-set decision; delivery does not prove semantic use"},
         "components": components,

@@ -37,6 +37,7 @@ from .arc_agi_3_e2e import (
 )
 from .pi_kernel import PiKernel, PiTurnIdleTimeout
 from .arc_thin_daemon import attach_arc_monitors
+from .arc_thin_adapt_config import DEFAULT_ADAPT_CONFIG, due_adapt_reason, read_adapt_config, validate_adapt_config
 from .daemon_service import DaemonService
 from .project import load_project_dotenv
 
@@ -68,12 +69,8 @@ DAEMON_RECOVERY_PROMPT = (
 WINDOW_DECIDE_PROMPT = (
     "Decide the next action. Briefly check this window's recent trajectory: what changed and what remains uncertain? "
     "If there is no real blocker, contradiction, or tool failure, act on the clearest next test without extended analysis. "
-    "If a saved callable tool still fits and you choose its rule for the next real move, call it by name in Decide "
-    "with the action args its own env.act needs, including later moves; use empty args or dry_run only for inspection, "
-    "otherwise revise it, use it read-only, or act directly; keep its action path when revising. "
-    "When a saved tool's result matters to the next experiment, use it to choose "
-    "and take the next action now. Keep observation-only tools read-only. If the same parameterized observation-to-action "
-    "rule is worth repeating, adapt it into a callable run(args, env) that can use env.act; otherwise act with arc_action."
+    "When a registered saved tool fits the analysis or next move you are about to do, call it by its name with current args now; "
+    "use its result to choose the next action. If it does not fit, continue directly or revise it."
 )
 NO_ACTION_PROMPT = (
     "Decide the next action. Your previous decision ended without arc_action; "
@@ -176,8 +173,9 @@ IDLE_RECOVERY_PROMPT = (
     "operation: call memory once if a consolidation is due, otherwise call exactly one arc_action, then stop."
 )
 SELF_HARNESS_HOOK_PROMPT = (
-    "Choose promote(name?), save_tool(name, body), read_component(name), or "
-    "skip(reason_code). Four tool calls maximum, charged to the Task budget."
+    "ADAPT TURN. Review recent task evidence, memory and active prompts. Changes are optional; prompt/memory edits load "
+    "on the next task decision. No environment action. Choose promote(name?), save_tool(name, body), read_component(name), "
+    "self_component(...), or skip(reason_code). Four tool calls maximum, charged to the Task budget."
 )
 HOOK_PROJECTION_MAX_CHARS = 24_000
 # Run14's longest hook took 165s; retain a further 120s for the final task turn.
@@ -225,7 +223,7 @@ def _assemble_self_hook_trace(root: Path, action_ids: list[int], batch_id: str |
                           and message_text(row).startswith(current_prompt)), len(session))
     first_task_index = next((index for index, row in enumerate(session)
                              if row.get("type") == "message" and row.get("message", {}).get("role") == "user"
-                             and not message_text(row).startswith("SELF_HARNESS_HOOK")), None)
+                             and not message_text(row).startswith(("SELF_HARNESS_HOOK", "RECOVER SELF_HARNESS_HOOK"))), None)
     task_start_index = (first_task_index - 1) if first_task_index is not None else -1
     if completion and completion.get("session_end_event_id") and not any(
             row.get("id") == completion["session_end_event_id"] for row in session):
@@ -280,7 +278,7 @@ def _assemble_self_hook_trace(root: Path, action_ids: list[int], batch_id: str |
         role = message.get("role")
         if role not in {"user", "assistant", "toolResult"}:
             continue
-        if role == "user" and message_text(row).startswith("SELF_HARNESS_HOOK"):
+        if role == "user" and message_text(row).startswith(("SELF_HARNESS_HOOK", "RECOVER SELF_HARNESS_HOOK")):
             continue
         # The harness trajectory below is the complete action receipt; keep the Agent's call, avoid a duplicate result.
         if role == "toolResult" and message.get("toolName") == "arc_action":
@@ -371,6 +369,31 @@ def _self_hook_rough_tokens(trace: dict[str, Any]) -> int:
     image_count = sum(len(event.get("event", {}).get("observation_images", []))
                       for event in trace["events"] if isinstance(event.get("event"), dict))
     return (max(0, trace["char_count"] - image_chars) + 2) // 3 + image_count * 1500
+
+
+def _inspect_to_call_card(root: Path, hook_component_rows: list[dict[str, Any]]) -> str:
+    """Return one bounded handoff for the last successfully inspected version still callable by Task."""
+    latest: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl(root / ".harness" / "components.jsonl"):
+        if row.get("path"):
+            latest[row["path"]] = row
+    reads = [row for row in hook_component_rows if row.get("kind") == "reuse_read"]
+    for read in reversed(reads):
+        current = latest.get(str(read.get("path", "")), {})
+        component = current.get("good") or {}
+        if (current.get("retired") or component.get("version") != read.get("version")
+                or not component.get("enabled") or component.get("kind") != "tool"
+                or component.get("name") != read.get("name")
+                or component.get("guard") or component.get("mount")
+                or str(read.get("path", "")).startswith("observers/")):
+            continue
+        name = str(read.get("name", ""))
+        contract = str(read.get("args_contract") or f'read_component("{name}") body')[:240]
+        return ("INSPECTED COMPONENT (one Task only)\n"
+                f"logical call name: {name}\nversion: {read.get('version')}\n"
+                "Agent inspected its body in the preceding Hook.\n"
+                f"body args[...] contract entry: {contract}\nTask tool name: {read.get('tool_name', name)}")[:700]
+    return ""
 
 
 def _self_hook_overflow(trace: dict[str, Any], context_window: int | None) -> bool:
@@ -1580,7 +1603,14 @@ def _spin_streak(trajectory: list[dict[str, Any]]) -> tuple[int, list[str]]:
 
 
 def _review_recovery(message: str) -> str | None:
-    """The prompt that resumes a review turn after a length stop or a stalled request; None for an action decision."""
+    """Return a continuation prompt for a non-action turn, or None for a task action."""
+    if message.startswith(("SELF_HARNESS_HOOK", "RECOVER SELF_HARNESS_HOOK")):
+        batch_id = re.search(r"\bbatch_id=([^\s]+)", message)
+        action_ids = re.search(r"\baction_ids=([\d,]+)", message)
+        return (f"RECOVER SELF_HARNESS_HOOK batch_id={batch_id.group(1) if batch_id else 'single'} "
+                f"action_ids={action_ids.group(1) if action_ids else ''}. The previous ADAPT response reached the output limit. "
+                "Continue the adjustment from current memory and prompt versions. Check completed tool receipts before repeating "
+                "a change. Make at most the remaining useful change, or finish without one. Do not take an environment action.")
     if message.startswith(("DAEMON RESPONSE", "RECOVER DAEMON RESPONSE")):
         return DAEMON_RECOVERY_PROMPT
     if message.startswith(("LEVEL REVIEW", "RECOVER LEVEL REVIEW")):
@@ -1602,7 +1632,7 @@ def _reconciled_action(before: int, health: dict | None, state: dict | None, tra
 
 
 def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *, max_recoveries: int = 2,
-                         settlement_timeout: float = 30.0, restart=None) -> list[dict[str, Any]]:
+                         settlement_timeout: float = 30.0, restart=None, fixed_recovery_message: str | None = None) -> list[dict[str, Any]]:
     """A local fault group. Abort, settle and reconcile before considering another paid request."""
     for attempt in range(max_recoveries + 1):
         try:
@@ -1642,11 +1672,39 @@ def _recover_native_turn(turn, message: str, kernel, summary: dict, reconcile, *
                 summary['idle_recoveries'] += 1
             else:
                 summary['decision_recoveries'] = summary.get('decision_recoveries', 0) + 1
-            message = _review_recovery(message) or (
+            message = fixed_recovery_message or _review_recovery(message) or (
                        'RECOVER TURN. The previous request stopped; the environment confirms no action was committed. '
                        'Continue the unfinished investigation using available tools and the current observation, '
                        'then submit one arc_action. Do not repeat completed writes or earlier actions.')
     raise AssertionError('unreachable')
+
+
+def _typescript_phase(root: Path) -> str | None:
+    """Read the TypeScript owner's phase for runner accounting only; never choose or advance it here."""
+    try:
+        state = json.loads((root / ".harness" / "self-harness-loop.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    phase = state.get("phase") if isinstance(state, dict) else None
+    return phase if phase in {"task", "adapt", "stop"} else None
+
+
+def _typescript_stop_reason(root: Path) -> str | None:
+    try:
+        state = json.loads((root / ".harness" / "self-harness-loop.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    reason = state.get("stopReason") if isinstance(state, dict) else None
+    return str(reason) if reason else None
+
+
+def _typescript_adapt_pending(root: Path) -> bool:
+    """Let a settled Task's due ADAPT run before the runner applies its Task-decision ceiling."""
+    try:
+        state = json.loads((root / ".harness" / "self-harness-loop.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(state, dict) and state.get("status") == "settled" and state.get("nextPhase") == "adapt"
 
 
 def run_arc_thin_e2e(
@@ -1687,6 +1745,7 @@ def run_arc_thin_e2e(
     foundation: str = "native",
     self_baseline: bool = False,
     self_convert: bool = False,
+    adapt_config: Path | None = None,
     replay_reasoning: bool = False,
     snapshot_after_decisions: tuple[int, ...] = (),
     snapshot_at_levels: tuple[int, ...] = (),
@@ -1742,6 +1801,13 @@ def run_arc_thin_e2e(
         raise ValueError("self baseline requires the native treatment")
     if self_convert and not self_baseline:
         raise ValueError("self conversion layer requires the self baseline")
+    if adapt_config is not None and (foundation != "native" or variant != "treatment" or self_baseline):
+        raise ValueError("adapt config requires native treatment without self baseline")
+    initial_adapt_config = (read_adapt_config(Path(adapt_config)) if adapt_config is not None
+                            else validate_adapt_config(DEFAULT_ADAPT_CONFIG))
+    typescript_phase_owner = bool(extension_env and extension_env.get("ARC_THIN_PHASE_OWNER") == "typescript")
+    if typescript_phase_owner and (foundation != "native" or variant != "treatment" or self_baseline):
+        raise ValueError("TypeScript phase ownership requires the native treatment path")
     if self_baseline:
         ledger = critic = review_on_miss = False
         review_at_level_change = False
@@ -1759,6 +1825,10 @@ def run_arc_thin_e2e(
     # fork_from: start from another run's snapshot (a matched prefix for comparisons). Its stores are copied, the bridge
     # replays its actions and checks every grid, and only what happens after the fork counts toward the token cap.
     fork = _seed_fork(root, Path(fork_from), game) if fork_from is not None else None
+    adapt_config_path = root / "adapt-config.json"
+    if fork is not None and adapt_config is None and adapt_config_path.is_file():
+        initial_adapt_config = read_adapt_config(adapt_config_path)
+    adapt_config_path.write_text(json.dumps(initial_adapt_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     budget_offset = fork["prefix_budget_tokens"] if fork else 0
     snapshot_after_decisions = tuple(int(d) for d in snapshot_after_decisions)
     snapshot_at_levels = tuple(int(level) for level in snapshot_at_levels)
@@ -1799,7 +1869,7 @@ def run_arc_thin_e2e(
         "provider": pi_provider, "model": model, "thinking": thinking or "provider-default",
         "thinking_format": settings.get("thinking_format"), "thinking_reaches_provider": thinking_sent,
         "passed": False, "stop_reason": None,
-        "decisions": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "spin_reviews": 0, "no_action_decisions": 0,
+        "decisions": 0, "adapt_turns": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "spin_reviews": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0,
         "decision_timeouts": 0, "decision_recoveries": 0, "environment_restarts": [],
@@ -1906,6 +1976,16 @@ def run_arc_thin_e2e(
         if pi_provider == "offline-arc-thin-smoke":
             pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
         pi_env.update(extension_env or {})
+        pi_env["ARC_THIN_IMAGE_INPUT"] = "1" if "image" in settings["input_modalities"] else "0"
+        if typescript_phase_owner:
+            # The opt-in agent-native program slice excludes the old Python-cell, Refiner and context-prompt loop.
+            ledger_enabled = critic_enabled = False
+            pi_env.update({
+                "ARC_HARNESS_LEDGER": "disabled", "ARC_HARNESS_CRITIC": "disabled",
+                "ARC_THIN_DAEMON": "0", "ARC_THIN_PROCESS": "0", "ARC_THIN_REFINE_POINT": "0",
+                "ARC_THIN_PYTHON_SESSION": "0", "ARC_THIN_PYTHON_KERNEL": "0",
+                "ARC_THIN_SESSION_VIEW": "0", "ARC_THIN_WORK_MEMORY": "0",
+            })
         pi_env["ARC_THIN_SELF_BASELINE"] = "1" if self_baseline else "0"
         pi_env["ARC_THIN_SELF_CONVERT"] = "1" if self_convert else "0"
         native_treatment = foundation == "native" and variant == "treatment"
@@ -1934,7 +2014,8 @@ def run_arc_thin_e2e(
         if max_reported_tokens is not None:
             command.extend(["--extension", str((PROJECT_ROOT / "demo" / "pi_final_provider_payload.ts").resolve())])
         sources = sorted(EXTENSION.parent.glob("arc_thin_*.ts")) + sorted((EXTENSION.parent / "prompts").glob("arc_thin_*.md"))
-        sources += [Path(__file__), Path(__file__).with_name("arc_thin_daemon.py"),
+        sources += [Path(__file__), Path(__file__).with_name("arc_thin_adapt_config.py"),
+                    Path(__file__).with_name("arc_thin_daemon.py"),
                     Path(__file__).with_name("daemon_service.py")]
         (root / "run-config.json").write_text(json.dumps({
             **{key: summary[key] for key in ("format", "game", "variant", "provider", "model", "thinking",
@@ -1948,7 +2029,9 @@ def run_arc_thin_e2e(
             "ledger": ledger_enabled, "critic": critic_enabled,
             "daemon": daemon_enabled, "process_evidence": pi_env["ARC_THIN_PROCESS"] == "1",
             "self_baseline": self_baseline,
+            "typescript_phase_owner": typescript_phase_owner,
             "self_convert": self_convert,
+            "initial_adapt_config": initial_adapt_config,
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
             "decision_timeout_seconds": decision_timeout_seconds,
             "max_continuous_idle_recoveries": 2,
@@ -2047,6 +2130,10 @@ def run_arc_thin_e2e(
         outage_waited = 0.0
         outage_streak = 0
         pending_hook_receipt = ""
+        pending_inspect_to_call = ""
+        effective_adapt_config = initial_adapt_config
+        last_adapt_action = len(_read_jsonl(harness / "trajectory.jsonl"))
+        batches_since_adapt = 0
 
         def turn(message: str) -> list[dict[str, Any]]:
             remaining = deadline - time.monotonic()
@@ -2093,7 +2180,8 @@ def run_arc_thin_e2e(
                         kernel.send('set_thinking_level', level=thinking)
                 return _recover_native_turn(turn, message, kernel, summary, reconcile,
                     max_recoveries=2 if allow_idle_recovery else 0,
-                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart)
+                    settlement_timeout=min(30.0, max(1.0, deadline - time.monotonic())), restart=restart,
+                    fixed_recovery_message="ARC_THIN_PHASE_RESUME" if typescript_phase_owner else None)
             try:
                 return turn(message)
             except PiTurnIdleTimeout as exc:
@@ -2127,15 +2215,15 @@ def run_arc_thin_e2e(
                     return True
             return False
 
-        def recover_length(message: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        def recover_length(message: str, events: list[dict[str, Any]], *, adapt_turn: bool = False) -> list[dict[str, Any]]:
             """Rotate only the model session after length; durable harness state remains authoritative."""
             if not length_stopped(events):
                 return events
             summary["length_stops"] += 1
             # A missing environment result must be reconciled before any model continuation reads /state.
-            if _environment_errors(harness) > environment_before:
+            if not adapt_turn and _environment_errors(harness) > environment_before:
                 return events
-            if foundation == 'native' and len(_read_jsonl(harness / 'trajectory.jsonl')) > action_count:
+            if not adapt_turn and foundation == 'native' and len(_read_jsonl(harness / 'trajectory.jsonl')) > action_count:
                 return events
             if time.monotonic() >= deadline - 5:
                 return events
@@ -2146,13 +2234,14 @@ def run_arc_thin_e2e(
                 'RECOVER ACTION. The previous reply reached the provider output limit. Continue the unfinished '
                 'step using the available tools and current observation; reuse suitable components. '
                 'Do not repeat completed operations. Finish with an acting call (arc_action or Python env.act).' if foundation == 'native' else DECIDE_RECOVERY_PROMPT)
-            resumed = safe_turn(recovery)
+            resumed = safe_turn("ARC_THIN_PHASE_RESUME" if typescript_phase_owner else recovery)
             if length_stopped(resumed):
                 summary["length_recovery_failures"] += 1
             return resumed
 
-        def self_harness_hook(action_ids: list[int], batch_id: str | None = None) -> str:
-            """One independent Pi request after a settled action sequence."""
+        def self_harness_hook(action_ids: list[int], batch_id: str | None = None, *, reason: str = "after_batch") -> str:
+            """One independent Pi request after a settled task turn."""
+            nonlocal pending_inspect_to_call
             ids = ",".join(map(str, action_ids))
             if deadline - time.monotonic() <= HOOK_DECISION_START_RESERVE_SECONDS:
                 with (harness / "self_harness_hook.jsonl").open("a", encoding="utf-8") as stream:
@@ -2171,13 +2260,21 @@ def run_arc_thin_e2e(
                 "reported_tokens_used": reported_used,
                 "reported_tokens_remaining": max(0, max_reported_tokens - reported_used) if max_reported_tokens is not None else None,
             }
-            projection = {"text": "", "char_count": 0, "truncated": False, "source": "runtime-logical-window"}  # Runtime supplies the <=2400-char logical window.
+            projection = _project_self_hook_trace(root, trace, action_ids, batch_id, max_chars=2400)
+            window = _read_jsonl(harness / "trajectory.jsonl")[last_adapt_action:]
+            window_misses = sum(bool((row.get("prediction") or {}).get("misses")) for row in window)
+            window_levels = sum(bool(row.get("level_changed")) for row in window)
             prompt = (
                 f"SELF_HARNESS_HOOK batch_id={batch_id or 'single'} action_ids={ids}.\n"
+                f"trigger={reason}\n"
+                f"since_last_adapt: actions={len(window)} prediction_misses={window_misses} level_changes={window_levels}; "
+                f"action_range={window[0].get('n') if window else 'none'}..{window[-1].get('n') if window else 'none'}\n"
+                f"projection_truncated={projection['truncated']}\n"
+                f"{projection['text']}\n"
                 f"{SELF_HARNESS_HOOK_PROMPT}"
             )
             # Overflow applies to what the hook will actually receive, not its larger audit source.
-            projected_trace = {"text": prompt + " " * 2400, "events": [], "char_count": len(prompt) + 2400}
+            projected_trace = {"text": prompt, "events": [], "char_count": len(prompt)}
             rough_tokens = _self_hook_rough_tokens(projected_trace)
             overflow = _self_hook_overflow(projected_trace, pi_context_window)
             if overflow:
@@ -2187,26 +2284,34 @@ def run_arc_thin_e2e(
             before_requests = len(_read_jsonl(harness / "request-events.jsonl"))
             before_components = len(_read_jsonl(harness / "component_runs.jsonl"))
             before_binder_components = len(_read_jsonl(root / ".harness" / "components.jsonl"))
+            before_memory = len(_read_jsonl(harness / "memory.jsonl"))
             try:
-                safe_turn(prompt, allow_idle_recovery=False)
-                outcome, error = "completed", None
+                hook_events = recover_length(prompt, safe_turn(prompt, allow_idle_recovery=False), adapt_turn=True)
+                outcome = "failed" if length_stopped(hook_events) else "completed"
+                error = "ADAPT remained incomplete after one provider length continuation" if outcome == "failed" else None
             except Exception as exc:
                 outcome = "failed"
                 error = f"{type(exc).__name__}: {exc}"[:500]
             component_rows = _read_jsonl(harness / "component_runs.jsonl")[before_components:]
             binder_rows = _read_jsonl(root / ".harness" / "components.jsonl")[before_binder_components:]
+            memory_updates = max(0, len(_read_jsonl(harness / "memory.jsonl")) - before_memory)
+            pending_inspect_to_call = _inspect_to_call_card(root, component_rows)
             saves = [row for row in component_rows if row.get("kind") == "save" and row.get("by") == "agent"]
             saves.extend(row for row in binder_rows if row.get("by") == "agent" and not row.get("retired"))
             named_calls = [row for row in component_rows if row.get("kind") == "tool" and
                            any(row.get("path") == save.get("path") and row.get("version") == save.get("version") for save in saves)]
-            disposition = "saved_and_named_trial" if named_calls else "saved_untried" if saves else "no_save"
-            receipt = (f"SELF_HARNESS_HOOK_RECEIPT batch_id={batch_id or 'single'} action_ids={ids} disposition={disposition}; " +
-                       ", ".join(f"{str(row.get('path', 'unknown')).split('/')[-1].removesuffix('.py')} v{row.get('version', 'unknown')}" for row in saves))
+            disposition = ("saved_and_named_trial" if named_calls else "saved_untried" if saves else
+                           "memory_updated" if memory_updates else "no_save")
+            receipt = (f"SELF_HARNESS_HOOK_RECEIPT batch_id={batch_id or 'single'} action_ids={ids} outcome={outcome} disposition={disposition}; " +
+                       ", ".join([*(f"{str(row.get('path', 'unknown')).split('/')[-1].removesuffix('.py')} v{row.get('version', 'unknown')}" for row in saves),
+                                  *([f"{memory_updates} memory update(s)"] if memory_updates else [])]))
             with hook_log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"action_ids": action_ids, "batch_id": batch_id, "phase": "self_harness_hook",
-                    "outcome": outcome, "turn_id": f"self_harness_hook:{batch_id or action_ids[0]}",
+                    "outcome": outcome, "trigger": reason,
+                    "turn_id": f"self_harness_hook:{batch_id or (action_ids[0] if action_ids else 'request')}",
                     "request_events_before": before_requests, "elapsed_seconds": round(time.monotonic() - hook_started, 3),
                     "error": error, "arc_action_exposed": False, "disposition": disposition,
+                    "memory_updates": memory_updates,
                     "event": "turn_complete", "trace_complete": trace["complete"], "trace_overflow": overflow,
                     "trace_event_count": trace["event_count"], "trace_char_count": trace["char_count"],
                     "projection_version": "hook-logical-v2", "projection_char_count": projection["char_count"],
@@ -2293,6 +2398,9 @@ def run_arc_thin_e2e(
                             else f"(The environment's process ended; it was restarted at {where}.)")
 
         while True:
+            if typescript_phase_owner and _typescript_phase(root) == "stop":
+                summary["stop_reason"] = _typescript_stop_reason(root) or "typescript_phase_stopped"
+                break
             admission_stop = _provider_admission_stop(harness)
             if admission_stop:
                 summary.update(admission_stop)
@@ -2325,7 +2433,8 @@ def run_arc_thin_e2e(
             if max_levels is not None and int(state.get("levels_completed") or 0) >= max_levels:
                 summary["stop_reason"] = "max_levels"
                 break
-            if max_decisions is not None and summary["decisions"] >= max_decisions:
+            pending_adapt = typescript_phase_owner and _typescript_adapt_pending(root)
+            if max_decisions is not None and summary["decisions"] >= max_decisions and not pending_adapt:
                 summary["stop_reason"] = "max_decisions"
                 break
             if max_reported_tokens is not None and _budget_tokens(harness) - budget_offset >= max_reported_tokens:
@@ -2334,25 +2443,26 @@ def run_arc_thin_e2e(
             if time.monotonic() >= deadline - 5:
                 summary["stop_reason"] = "deadline"
                 break
-            if no_action_streak >= max_no_action_decisions:
+            if no_action_streak >= max_no_action_decisions and not pending_adapt:
                 summary["stop_reason"] = "no_action_streak"
                 break
 
             action_count = len(_read_jsonl(harness / "trajectory.jsonl"))
             # Optional (review_on_miss): a scored prediction miss is unrecorded evidence, so it makes a review due,
             # at most every REVIEW_ON_MISS_GAP actions. Mechanical: it reads the scores, never judges them.
-            miss_due = review_on_miss and action_count - consolidated_at >= REVIEW_ON_MISS_GAP and any(
+            single_loop = foundation == "native" and variant == "treatment" and not self_baseline
+            miss_due = not single_loop and review_on_miss and action_count - consolidated_at >= REVIEW_ON_MISS_GAP and any(
                 (row.get("prediction") or {}).get("misses") or (row.get("skill_prediction") or {}).get("misses")
                 for row in _read_jsonl(harness / "trajectory.jsonl")[consolidated_at:])
             # Many actions without a level completed make the agent's stall review due (stall_review_after).
             trajectory_now = _read_jsonl(harness / "trajectory.jsonl")
-            stall_due = _stall_review_due(trajectory_now, stall_reviewed_at, stall_review_after)
+            stall_due = not single_loop and _stall_review_due(trajectory_now, stall_reviewed_at, stall_review_after)
             # Work memory: so do decisions in a row that only replayed results the same board had already shown.
-            spin = _spin_streak(trajectory_now) if spin_review_after else (0, [])
+            spin = _spin_streak(trajectory_now) if not single_loop and spin_review_after else (0, [])
             if spin[0] == 0:
                 spin_threshold = spin_review_after
             spin_due = spin_review_after > 0 and spin[0] >= spin_threshold
-            consolidate = variant == "treatment" and not self_baseline and action_count > consolidated_at and (
+            consolidate = not single_loop and variant == "treatment" and not self_baseline and action_count > consolidated_at and (
                 (level_changed_since_consolidation and review_at_level_change)
                 or str(state.get("state")) == "GAME_OVER"
                 or miss_due
@@ -2360,17 +2470,36 @@ def run_arc_thin_e2e(
                 or spin_due
                 or (consolidate_after_actions > 0 and action_count - consolidated_at >= consolidate_after_actions)
             )
-            notification = daemon.refresh() if daemon else None
+            notification = daemon.refresh() if daemon and not typescript_phase_owner else None
             if os.environ.get("ARC_THIN_DAEMON_RESPONSE_COMPAT") != "1":
                 notification = None
-            response_turn = notification is not None
+            response_turn = notification is not None and not typescript_phase_owner
             task_turn = not consolidate and not response_turn
             fatal_before = _fatal_errors(harness)
             environment_before = _environment_errors(harness)
             error_rows_before = len(_read_jsonl(harness / "errors.jsonl"))
             errors_before = len(extension_errors)
             try:
-                if response_turn:
+                if typescript_phase_owner:
+                    transport = "ARC_THIN_PHASE_NEXT"
+                    events = recover_length(transport, safe_turn(transport))
+                    phase = _typescript_phase(root) or "task"
+                    task_turn = phase == "task"
+                    response_turn = False
+                    if task_turn:
+                        summary["decisions"] += 1
+                    elif phase == "adapt":
+                        summary["adapt_turns"] += 1
+                    if phase == "stop":
+                        summary["stop_reason"] = _typescript_stop_reason(root) or "typescript_phase_stopped"
+                        break
+                    new_rows = _read_jsonl(harness / "trajectory.jsonl")[action_count:]
+                    if new_rows:
+                        no_action_streak = 0
+                    elif task_turn and _environment_errors(harness) == environment_before:
+                        no_action_streak += 1
+                        summary["no_action_decisions"] += 1
+                elif response_turn:
                     events = recover_length(DAEMON_RESPONSE_PROMPT, safe_turn(DAEMON_RESPONSE_PROMPT))
                     summary["daemon_responses"] += 1
                     daemon.refresh()
@@ -2402,8 +2531,11 @@ def run_arc_thin_e2e(
                     base_prompt = (NO_ACTION_PROMPT if no_action_streak else
                                    WINDOW_DECIDE_PROMPT if foundation == "native" and variant == "treatment" else
                                    DECIDE_PROMPT)
-                    prompt = base_prompt + (f" {restart_note}" if restart_note else "") + (f"\n{pending_hook_receipt}" if pending_hook_receipt else "")
+                    prompt = (base_prompt + (f" {restart_note}" if restart_note else "")
+                              + (f"\n{pending_hook_receipt}" if pending_hook_receipt else "")
+                              + (f"\n{pending_inspect_to_call}" if pending_inspect_to_call else ""))
                     pending_hook_receipt = ""
+                    pending_inspect_to_call = ""
                     restart_note = ""
                     events = recover_length(prompt, safe_turn(prompt))
                     summary["decisions"] += 1
@@ -2411,41 +2543,67 @@ def run_arc_thin_e2e(
                     if new_rows:
                         no_action_streak = 0
                         level_changed_since_consolidation |= any(row.get("level_changed") for row in new_rows)
-                        state_after = _bridge_state(bridge_url) or {}
-                        budget = state_after.get("action_budget") or {}
-                        hard_budget_exhausted = (
-                            (budget.get("maximum") is not None and int(budget.get("used", 0) or 0) >= int(budget["maximum"])) or
-                            (budget.get("total_maximum") is not None and int(budget.get("total_used", 0) or 0) >= int(budget["total_maximum"]))
-                        )
-                        boundary = (str(state_after.get("state", "")) == "WIN" or hard_budget_exhausted or
-                                    (max_levels is not None and int(state_after.get("levels_completed") or 0) >= max_levels) or
-                                    (max_decisions is not None and summary["decisions"] > max_decisions) or
-                                    (max_reported_tokens is not None and _budget_tokens(harness) - budget_offset >= max_reported_tokens) or
-                                    time.monotonic() >= deadline - 5)
-                        # A terminal or hard-budget boundary suppresses an empty follow-up turn. A
-                        # non-terminal, partial batch still gets its one hook for executed actions.
-                        action_ids = [int(row["n"]) for row in new_rows]
-                        batch_ids = sorted({str(row.get("batch_id")) for row in new_rows if row.get("batch_id")})
-                        batch_id = batch_ids[-1] if batch_ids else None
-                        with (harness / "self_harness_hook.jsonl").open("a", encoding="utf-8") as stream:
-                            if boundary:
-                                for row in new_rows:
-                                    stream.write(json.dumps({"action_id": row.get("n"), "batch_id": row.get("batch_id"),
-                                        "batch_position": row.get("batch_position"), "receipt_n": row.get("n"),
-                                        "phase": "self_harness_hook", "disposition": "skipped_by_boundary",
-                                        "arc_action_exposed": False}, ensure_ascii=False) + "\n")
-                        if not boundary:
-                            pending_hook_receipt = self_harness_hook(action_ids, batch_id)
-                            with (harness / "self_harness_hook.jsonl").open("a", encoding="utf-8") as stream:
-                                for row in new_rows:
-                                    stream.write(json.dumps({"action_id": row.get("n"), "batch_id": row.get("batch_id"),
-                                        "batch_position": row.get("batch_position"), "receipt_n": row.get("n"),
-                                        "phase": "self_harness_hook", "disposition": "shown_in_batch_hook",
-                                        "arc_action_exposed": False}, ensure_ascii=False) + "\n")
                     # A decision the environment ended is not one without an action (environment_streak below).
                     elif _environment_errors(harness) == environment_before:
                         no_action_streak += 1
                         summary["no_action_decisions"] += 1
+                    if single_loop and not length_stopped(events) and _environment_errors(harness) == environment_before:
+                        requests = _read_jsonl(harness / "adapt_requests.jsonl")
+                        handled = {str(row.get("id")) for row in requests if row.get("event") == "handled"}
+                        pending = [row for row in requests if row.get("event") == "requested" and str(row.get("id")) not in handled]
+                        try:
+                            effective_adapt_config = read_adapt_config(adapt_config_path)
+                        except (OSError, ValueError, json.JSONDecodeError) as exc:
+                            pending_hook_receipt = f"ADAPT config invalid; using previous valid version: {exc}"
+                            with (harness / "adapt_schedule.jsonl").open("a", encoding="utf-8") as stream:
+                                stream.write(json.dumps({"event": "invalid_config", "error": str(exc)[:300]}) + "\n")
+                        if new_rows:
+                            batches_since_adapt += 1
+                        trajectory_now = _read_jsonl(harness / "trajectory.jsonl")
+                        reason = ("agent_request" if pending else due_adapt_reason(effective_adapt_config,
+                                  trajectory_now, _read_jsonl(harness / "claim_checks.jsonl"),
+                                  last_adapt_action, batches_since_adapt) if new_rows else None)
+                        if reason:
+                            state_after = _bridge_state(bridge_url) or {}
+                            budget = state_after.get("action_budget") or {}
+                            hard_budget_exhausted = (
+                                (budget.get("maximum") is not None and int(budget.get("used", 0) or 0) >= int(budget["maximum"])) or
+                                (budget.get("total_maximum") is not None and int(budget.get("total_used", 0) or 0) >= int(budget["total_maximum"]))
+                            )
+                            boundary = (str(state_after.get("state", "")) in {"WIN", "GAME_OVER", "FINISHED"} or hard_budget_exhausted or
+                                        (max_levels is not None and int(state_after.get("levels_completed") or 0) >= max_levels) or
+                                        (max_decisions is not None and summary["decisions"] >= max_decisions) or
+                                        (max_reported_tokens is not None and _budget_tokens(harness) - budget_offset >= max_reported_tokens) or
+                                        time.monotonic() >= deadline - HOOK_DECISION_START_RESERVE_SECONDS)
+                            action_ids = [int(row["n"]) for row in new_rows]
+                            batch_ids = sorted({str(row.get("batch_id")) for row in new_rows if row.get("batch_id")})
+                            batch_id = batch_ids[-1] if batch_ids else None
+                            focus = "; ".join(str(row.get("focus", "")) for row in pending)[:1000]
+                            disposition = "skipped_by_boundary" if boundary else "shown"
+                            if not boundary:
+                                pending_hook_receipt = self_harness_hook(action_ids, batch_id,
+                                    reason=f"{reason}: {focus}" if focus else reason)
+                                if pending_hook_receipt.startswith("SELF_HARNESS_HOOK_RECEIPT skipped_by_deadline"):
+                                    disposition = "skipped_by_deadline"
+                                else:
+                                    last_adapt_action = len(trajectory_now)
+                                    batches_since_adapt = 0
+                                    no_action_streak = 0
+                            with (harness / "adapt_schedule.jsonl").open("a", encoding="utf-8") as stream:
+                                stream.write(json.dumps({"event": "due", "reason": reason, "focus": focus,
+                                    "action_ids": action_ids, "outcome": disposition}, ensure_ascii=False) + "\n")
+                            if pending:
+                                with (harness / "adapt_requests.jsonl").open("a", encoding="utf-8") as stream:
+                                    for row in pending:
+                                        stream.write(json.dumps({"event": "handled", "id": row["id"],
+                                            "outcome": disposition}) + "\n")
+                            if new_rows:
+                                with (harness / "self_harness_hook.jsonl").open("a", encoding="utf-8") as stream:
+                                    for row in new_rows:
+                                        stream.write(json.dumps({"action_id": row.get("n"), "batch_id": row.get("batch_id"),
+                                            "batch_position": row.get("batch_position"), "receipt_n": row.get("n"),
+                                            "phase": "self_harness_hook", "disposition": "shown_in_batch_hook" if disposition == "shown" else disposition,
+                                            "arc_action_exposed": False}, ensure_ascii=False) + "\n")
             except TimeoutError as exc:
                 deadline_stop = "experiment deadline" in str(exc) or time.monotonic() >= deadline - HOOK_DECISION_START_RESERVE_SECONDS
                 if deadline_stop and foundation == "native":
@@ -2600,11 +2758,24 @@ def _write_summary(root: Path, summary: dict[str, Any], final_state: dict[str, A
         "harness": _harness_stats(harness),
         "updated_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     })
+    try:
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=PROJECT_ROOT,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=3, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--short"], cwd=PROJECT_ROOT,
+                               capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=3, check=True).stdout.splitlines()
+        out["source_state"] = {"head": head, "dirty_count": len(dirty), "dirty_summary": dirty[:30]}
+    except (OSError, subprocess.SubprocessError):
+        out["source_state"] = {"head": "unknown", "dirty_count": "unknown", "dirty_summary": "unknown",
+                               "reason": "git revision/status unavailable"}
     requests = _read_jsonl(harness / 'request-events.jsonl')
     if requests:
         out['request_accounting'] = _request_accounting(requests)
         out['reported_tokens'] = out['request_accounting']['known_tokens_lower_bound']
         out['cost_status'] = 'reported' if out['request_accounting']['complete_cost_known'] else 'partial'
+    from .arc_thin_reuse_report import _use_ledger
+    out['use_ledger'] = _use_ledger(root, _read_jsonl(root / 'pi-events.jsonl'))
     if partial:
         out["partial"] = True
         out["stop_reason"] = out.get("stop_reason") or "running"
@@ -2648,6 +2819,8 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
     summary = json.loads(path.read_text(encoding="utf-8"))
     run_root = root.resolve()
     requests = _read_jsonl(run_root / "smoke-requests.jsonl")
+    schema_events = [row for row in _read_jsonl(run_root / "harness" / "request-events.jsonl")
+                     if row.get("stage") == "decide_callable_schema"]
     components = _read_jsonl(run_root / ".harness" / "components.jsonl")
     runs = _read_jsonl(run_root / "harness" / "component_runs.jsonl")
     call_points = _read_jsonl(run_root / "harness" / "call_points.jsonl")
@@ -2666,6 +2839,14 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
         ("resident_successes", any("Successes" in str(row.get("current")) and "Covered" in str(row.get("current")) for row in requests), None),
         ("no_convert_note", not (run_root / "workspace" / "notes" / "convert.md").exists(), None),
         ("task_continues", len(actions) == 2, len(actions)),
+        ("use_ledger_schema", all(key in summary.get("use_ledger", {}) for key in (
+            "tools_mounted", "act_capable_count", "kind_tool_attempts", "uses", "ok_true", "ok_false",
+            "tool_call_args_classes", "opportunity_windows", "alt_action_mix")), summary.get("use_ledger")),
+        ("decide_schema_persisted", bool(schema_events) and all(
+            isinstance(tool.get("act_capable"), bool) for row in schema_events for tool in row.get("tools", []))
+         and any(row.get("act_capable_count") == 1 for row in schema_events)
+         and all(row.get("act_capable_count", 0) <= 1 for row in schema_events),
+         {"records": len(schema_events), "first": schema_events[0] if schema_events else None}),
     ]
     summary["self_acceptance"] = ladder
     summary["checks"] = [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
@@ -2674,14 +2855,19 @@ def run_arc_thin_self_baseline_smoke(root: Path, *, self_convert: bool = False, 
     return path
 
 
-def run_arc_thin_self_hook_smoke(root: Path) -> Path:
-    """Scripted acceptance for complete hook context, category save/use, and a budget-boundary skip."""
+def run_arc_thin_self_hook_smoke(root: Path, *, profile: str = "self-hook") -> Path:
+    """Scripted same-run acceptance for Hook save, mounted Decide call, and Hook completion."""
+    if profile not in ("self-hook", "self-hook-python-negative", "self-hook-components", "min-loop", "inspect-to-call",
+                       "inspect-to-call-python-negative", "inspect-to-call-read-failure", "inspect-to-call-no-read"):
+        raise ValueError(f"unsupported self-hook smoke profile: {profile}")
     path = run_arc_thin_e2e(
         root, arc_root=PROJECT_ROOT, game="ls20", foundation="native", self_baseline=True,
-        max_decisions=3, max_actions=5, experiment_timeout_seconds=600.0, decision_timeout_seconds=90.0,
+        max_decisions=2 if profile == "self-hook-components" else 4, max_actions=6,
+        experiment_timeout_seconds=600.0, decision_timeout_seconds=90.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
         bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
-        extension_env={"ARC_THIN_SMOKE_SCRIPT": "self-batch-hook", "ARC_THIN_SELF_CONVERT": "0"},
+        extension_env={"ARC_THIN_SMOKE_SCRIPT": profile, "ARC_THIN_SELF_CONVERT": "0",
+                       "ARC_THIN_SCRIPTED_TOOL_BUDGET": "12"},
     )
     summary = json.loads(path.read_text(encoding="utf-8"))
     run_root = root.resolve()
@@ -2694,37 +2880,211 @@ def run_arc_thin_self_hook_smoke(root: Path) -> Path:
     hook_requests = [row for row in requests if str(row.get("current", "")).startswith("SELF_HARNESS_HOOK")]
     hook_action_windows = {match.group(1) for row in hook_requests
                            if (match := re.search(r"action_ids=([\d,]+)", str(row.get("current", ""))))}
-    first_hook_request = next((row for row in hook_requests if "action_ids=1,2,3" in str(row.get("current", ""))), {})
     shown = [row for row in hooks if row.get("event") == "shown"]
     completions = [row for row in hooks if row.get("event") == "turn_complete"]
-    boundary_root = root.resolve().with_name(root.name + "-boundary")
-    boundary_path = run_arc_thin_e2e(
-        boundary_root, arc_root=PROJECT_ROOT, game="ls20", foundation="native", self_baseline=True,
-        max_decisions=2, max_actions=3, experiment_timeout_seconds=600.0, decision_timeout_seconds=90.0,
-        pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
-        bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
-        extension_env={"ARC_THIN_SMOKE_SCRIPT": "self-batch-hook", "ARC_THIN_SELF_CONVERT": "0"},
-    )
-    boundary_summary = json.loads(boundary_path.read_text(encoding="utf-8"))
-    boundary_requests = _read_jsonl(boundary_root / "smoke-requests.jsonl")
-    boundary_hooks = _read_jsonl(boundary_root / "harness" / "self_harness_hook.jsonl")
-    boundary_trajectory = _read_jsonl(boundary_root / "harness" / "trajectory.jsonl")
-    boundary_hook_requests = [row for row in boundary_requests if str(row.get("current", "")).startswith("SELF_HARNESS_HOOK")]
     from .arc_thin_self_acceptance import self_acceptance
     ladder = self_acceptance(components, runs)
-    checks = [
-        ("L0_created_called_ok", ladder["L0"], ladder),
+    saves = [row for row in runs if row.get("kind") == "save" and row.get("by") == "agent" and row.get("ok")]
+    saved_paths = {row.get("path") for row in saves}
+    tool_runs = [row for row in runs if row.get("kind") == "tool" and row.get("path") in saved_paths
+                 and row.get("ok")]
+    component = next((row for row in components if row.get("path") in saved_paths and not row.get("deleted")), {})
+    component_body_path = run_root / "workspace" / str(component.get("path") or "")
+    component_body = component_body_path.read_text(encoding="utf-8") if component_body_path.is_file() else ""
+    component_text = json.dumps(component, ensure_ascii=False)
+    component_name = (component.get("good") or {}).get("name")
+    schema_row = next((row for row in requests if str(row.get("current", "")).startswith("Decide the next action.")
+                       and any(name == component_name for name in _tool_names(row))), {})
+    tool_schema_names = {tool.get("name") for tool in schema_row.get("tools", [])}
+    save_run = saves[0] if saves else {}
+    tool_run = tool_runs[0] if tool_runs else {}
+    completed_hooks = [row for row in hooks if row.get("event") == "turn_complete"]
+    last_completion = completed_hooks[-1] if completed_hooks else {}
+    last_completion_index = next((i for i in range(len(hooks) - 1, -1, -1)
+                                  if hooks[i].get("event") == "turn_complete"), -1)
+    last_completion_start_index = next((i for i in range(last_completion_index - 1, -1, -1)
+                                        if hooks[i].get("event") == "turn_start"), -1)
+    last_completion_skip = last_completion_start_index >= 0 and any(
+        row.get("event") == "skip" for row in hooks[last_completion_start_index + 1:last_completion_index])
+    request_bytes = (run_root / "smoke-requests.jsonl").stat().st_size if (run_root / "smoke-requests.jsonl").exists() else 0
+    if profile == "inspect-to-call":
+        from .arc_thin_reuse_report import write_report
+        reuse_report = json.loads(write_report(run_root).read_text(encoding="utf-8"))
+        reads = [row for row in runs if row.get("kind") == "reuse_read"]
+        card_requests = [row for row in requests if "INSPECTED COMPONENT (one Task only)" in str(row.get("current", ""))]
+        card_request = card_requests[-1] if card_requests else {}
+        card_text = str(card_request.get("current", "")).split("INSPECTED COMPONENT (one Task only)\n", 1)[-1].split("\n\n", 1)[0]
+        last_card_index = max((i for i, row in enumerate(requests)
+                               if "INSPECTED COMPONENT (one Task only)" in str(row.get("current", ""))), default=-1)
+        later_task_requests = [row for row in requests[last_card_index + 1:]
+                               if str(row.get("current", "")).startswith("Decide the next action.")]
+        task_calls = [call for row in requests if str(row.get("current", "")).startswith("Decide the next action.")
+                      for call in row.get("planned", {}).get("calls", [])]
+        checks = [
+            ("hook_successful_read", bool(reads) and reads[-1].get("name") == "summarize_values" and reads[-1].get("version") == 1, reads),
+            ("one_bounded_card_in_next_task", len({str(row.get("current", "")) for row in card_requests}) == 1 and len(card_text) < 700
+             and "Agent inspected its body" in str(card_request.get("current", "")), card_requests),
+            ("card_retires_after_that_task", bool(later_task_requests)
+             and all("INSPECTED COMPONENT (one Task only)" not in str(row.get("current", "")) for row in later_task_requests),
+             later_task_requests),
+            ("card_facts_and_exact_task_schema", all(token in str(card_request.get("current", "")) for token in
+             ("logical call name: summarize_values", "version: 1", 'args["values"]', "Task tool name: summarize_values"))
+             and "summarize_values" in _tool_names(card_request),
+             {"current": card_request.get("current", ""), "tools": _tool_names(card_request)}),
+            ("agent_named_call_and_component_run_ok", any(call and call[0] == "summarize_values" for call in task_calls)
+             and any(row.get("kind") == "tool" and row.get("name") == "summarize_values" and row.get("ok") for row in runs),
+             {"calls": task_calls, "runs": runs}),
+            ("reuse_uses_at_least_one", (reuse_report.get("categories", {}).get("tool") or {}).get("uses", 0) >= 1,
+             reuse_report.get("categories", {}).get("tool")),
+            ("no_errors", summary.get("provider_errors", 0) == 0 and (summary.get("harness") or {}).get("errors", 0) == 0
+             and not summary.get("error"), {"provider_errors": summary.get("provider_errors"), "harness": summary.get("harness", {}).get("errors"), "error": summary.get("error")}),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
+        ]
+    elif profile in ("inspect-to-call-python-negative", "inspect-to-call-read-failure", "inspect-to-call-no-read"):
+        from .arc_thin_reuse_report import write_report
+        reuse_report = json.loads(write_report(run_root).read_text(encoding="utf-8"))
+        reads = [row for row in runs if row.get("kind") == "reuse_read"]
+        card_requests = [row for row in requests if "INSPECTED COMPONENT (one Task only)" in str(row.get("current", ""))]
+        task_calls = [call for row in requests if str(row.get("current", "")).startswith("Decide the next action.")
+                      for call in row.get("planned", {}).get("calls", [])]
+        tool_uses = (reuse_report.get("categories", {}).get("tool") or {}).get("uses", 0)
+        last_card_index = max((i for i, row in enumerate(requests)
+                               if "INSPECTED COMPONENT (one Task only)" in str(row.get("current", ""))), default=-1)
+        later_task_requests = [row for row in requests[last_card_index + 1:]
+                               if str(row.get("current", "")).startswith("Decide the next action.")]
+        checks = [
+            ("successful_read_only_for_python_negative", bool(reads) if profile == "inspect-to-call-python-negative" else not reads, reads),
+            ("card_matches_read_outcome", len({str(row.get("current", "")) for row in card_requests}) == 1
+             if profile == "inspect-to-call-python-negative" else not card_requests, card_requests),
+            ("card_retires_after_that_task", profile != "inspect-to-call-python-negative" or (
+                bool(later_task_requests) and all("INSPECTED COMPONENT (one Task only)" not in str(row.get("current", ""))
+                                                  for row in later_task_requests)), later_task_requests),
+            ("read_failure_was_reported", profile != "inspect-to-call-read-failure" or (
+                any(call and call[0] == "read_component" and call[1].get("name") == "missing_component"
+                    for row in requests for call in row.get("planned", {}).get("calls", []))
+                and any(result.get("tool") == "read_component" and result.get("is_error")
+                        for row in requests for result in row.get("last_tool_results", []))), requests),
+            ("no_read_was_skipped", profile != "inspect-to-call-no-read" or any(
+                call and call[0] == "skip" for row in requests for call in row.get("planned", {}).get("calls", [])), requests),
+            ("no_named_saved_tool_call", not any(call and call[0] == "summarize_values" for call in task_calls), task_calls),
+            ("reuse_uses_zero", tool_uses == 0, reuse_report.get("categories", {}).get("tool")),
+            ("python_path_was_executed", any(row.get("kind") == "python" and row.get("ok") for row in runs), runs),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
+        ]
+    elif profile == "min-loop":
+        checks = [
+            ("created_agent_save_v1_component", len(saves) >= 1 and component.get("version") == 1, {"saves": saves, "component": component}),
+            ("act_capable_body", 'env.act(args["action"])' in component_body, {"path": str(component.get("path") or ""), "body": component_body}),
+            ("decide_schema_and_active_visible", bool(schema_row) and component_name == "hook_act" and component_name in tool_schema_names and '"enabled": true' in component_text, {"schema": sorted(tool_schema_names), "component": component}),
+            ("decide_named_action_call", any(row.get("planned", {}).get("calls") and any(call[0] == component_name and call[1].get("args", {}).get("action") == "ACTION2" for call in row["planned"]["calls"]) for row in requests if str(row.get("current", "")).startswith("Decide the next action.")), [row.get("planned") for row in requests if str(row.get("current", "")).startswith("Decide the next action.")]),
+            ("component_run_ok_acted", any(row.get("name") == "hook_act" and row.get("version") == 1 and row.get("ok") and row.get("acted", 0) > 0 for row in tool_runs), tool_runs),
+            ("save_once_before_decide_call", len(saves) == 1 and bool(save_run) and bool(tool_run) and int(save_run.get("n", -1)) <= int(tool_run.get("n", -1)) and tool_run.get("version") == save_run.get("version"), {"save_run": save_run, "tool_run": tool_run}),
+            ("covered_component_skip", any(row.get("event") == "shown" and "hook_act | Covered" in str(row.get("head_text", "")) for row in hooks) and any(row.get("event") == "skip" and row.get("reason_code") == "already_covered" and row.get("decision", 0) > int(tool_run.get("decision", 0)) for row in hooks) and any(row.get("event") == "turn_complete" and row.get("disposition") == "no_save" and row.get("outcome") == "completed" for row in hooks), hooks),
+            ("no_errors", summary.get("provider_errors", 0) == 0 and (summary.get("harness") or {}).get("errors", 0) == 0 and not summary.get("error"), {"provider_errors": summary.get("provider_errors"), "harness": summary.get("harness", {}).get("errors"), "error": summary.get("error")}),
+            ("normal_expected_stop", summary.get("stop_reason") == "max_decisions" and len(trajectory) == 3 and bool(last_completion) and last_completion.get("outcome") == "completed" and last_completion.get("error") is None, {"stop_reason": summary.get("stop_reason"), "decisions": summary.get("decisions"), "actions": len(trajectory), "last_turn_complete": last_completion}),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("hook_bounded", bool(hook_requests) and all(len(str(row.get("current"))) < 3000 for row in hook_requests), None),
+            ("no_unprojected_diary_or_absolute_private_paths", all(not re.search(r"(?im)^\s*(?:DIARY_INJECTION|DIARY(?:_ENTRY)?)\b", str(row.get("current", ""))) and not re.search(r"(?i)(?:[A-Z]:\\|/)(?:[^\s\"']*[\\/])*private[\\/]", str(row.get("current", ""))) for row in hook_requests), None),
+            ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
+        ]
+    elif profile == "self-hook-python-negative":
+        from .arc_thin_reuse_report import write_report
+        report_path = write_report(run_root)
+        reuse_report = json.loads(report_path.read_text(encoding="utf-8"))
+        manifest_active = bool(component) and component_name == "summarize_values" and component.get("version") == 1 \
+            and bool(component.get("good", {}).get("enabled"))
+        post_save_decides = [row for row in requests
+                             if str(row.get("current", "")).startswith("Decide the next action.")
+                             and row.get("planned", {}).get("kind") == "decide"
+                             and save_run and row.get("step", -1) >= save_run.get("decision", -1)]
+        post_save_tools = [call[0] for row in post_save_decides for call in row.get("planned", {}).get("calls", [])
+                           if call and call[0] == component_name]
+        post_save_python = [call for row in post_save_decides for call in row.get("planned", {}).get("calls", [])
+                            if call and call[0] == "python"]
+        python_results = [result for row in requests for result in row.get("last_tool_results", [])
+                          if result.get("tool") == "python" and not result.get("is_error")]
+        python_logged = [row for row in _read_jsonl(harness / "python_runs.jsonl") if row.get("ok")]
+        checks = [
+            ("created_agent_save_v1", len(saves) == 1 and save_run.get("version") == 1, saves),
+            ("manifest_active", manifest_active, component),
+            ("post_save_decide_nudge_and_schema_name", bool(schema_row) and component_name == "summarize_values"
+             and component_name in tool_schema_names and "registered saved tool fits" in str(schema_row.get("current", "")),
+             {"schema": sorted(tool_schema_names), "current": schema_row.get("current", "")}),
+            ("python_recomputed_successfully", bool(post_save_python)
+             and "summarize_values([10, 11])" in str(post_save_python[0][1].get("code", ""))
+             and any("21" in str(result.get("text", "")) for result in python_results)
+             and any(row.get("ok") for row in runs if row.get("kind") == "python" and row.get("decision") > save_run.get("decision", -1)),
+             {"results": python_results, "python_runs": python_logged}),
+            ("no_named_tool_call", not post_save_tools, post_save_tools),
+            ("no_component_tool_run", not any(row.get("kind") == "tool" and row.get("path") in saved_paths for row in runs), runs),
+            ("no_read_no_card", not any(row.get("kind") == "reuse_read" for row in runs)
+             and not any("INSPECTED COMPONENT (one Task only)" in str(row.get("current", "")) for row in requests),
+             {"reads": [row for row in runs if row.get("kind") == "reuse_read"],
+              "requests_with_card": [row.get("current") for row in requests if "INSPECTED COMPONENT (one Task only)" in str(row.get("current", ""))]}),
+            ("reuse_tool_uses_zero", (reuse_report.get("categories", {}).get("tool") or {}).get("uses", 0) == 0, reuse_report.get("categories", {}).get("tool")),
+            ("hook_save_completed", bool(completions) and any(row.get("event") == "skip" for row in hooks), hooks),
+            ("no_errors", summary.get("provider_errors", 0) == 0 and (summary.get("harness") or {}).get("errors", 0) == 0
+             and not summary.get("error"), {"provider_errors": summary.get("provider_errors"), "harness": summary.get("harness", {}).get("errors"), "error": summary.get("error")}),
+            ("normal_expected_stop", summary.get("stop_reason") == "max_decisions" and len(trajectory) == 5
+             and bool(last_completion) and last_completion.get("outcome") == "completed" and last_completion.get("error") is None,
+             {"stop_reason": summary.get("stop_reason"), "decisions": summary.get("decisions"), "last_turn_complete": last_completion}),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("hook_bounded", bool(hook_requests) and all(len(str(row.get("current"))) < 3000 for row in hook_requests), None),
+            ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
+        ]
+    elif profile == "self-hook-components":
+        component = next((row for row in components if row.get("path") == "prompts/hook_rule.md"), {})
+        hook_index = next((i for i, row in enumerate(requests) if str(row.get("current", "")).startswith("SELF_HARNESS_HOOK")), -1)
+        later = requests[hook_index + 1:] if hook_index >= 0 else []
+        used = next((row for row in later if "SELF_HOOK_COMPONENT_MARK" in str(row.get("head", ""))), {})
+        calls = [call for call in (used.get("planned", {}).get("calls") or []) if call and call[0] == "arc_action"]
+        checks = [
+            ("hook_exposed_non_tool_entry", hook_index >= 0 and "self_component" in _tool_names(requests[hook_index]), _tool_names(requests[hook_index]) if hook_index >= 0 else []),
+            ("prompt_saved_and_active", component.get("good", {}).get("kind") == "prompt" and component.get("good", {}).get("enabled") is True
+             and "SELF_HOOK_COMPONENT_MARK" in (run_root / "workspace" / "prompts" / "hook_rule.md").read_text(encoding="utf-8"), component),
+            ("next_task_received_and_used_prompt", bool(used) and bool(calls)
+             and "SELF_HOOK_COMPONENT_MARK" in str(calls[0][1].get("reasoning", "")), {"system_prompt": used.get("system_prompt", ""), "calls": calls}),
+            ("two_real_runner_action_boundaries", len(trajectory) == 2 and summary.get("stop_reason") == "max_decisions", {"actions": len(trajectory), "stop_reason": summary.get("stop_reason")}),
+            ("hook_kept_action_and_tool_execution_out", hook_index >= 0 and not ({"arc_action", "python"} & set(_tool_names(requests[hook_index]))), _tool_names(requests[hook_index]) if hook_index >= 0 else []),
+            ("no_errors", summary.get("provider_errors", 0) == 0 and (summary.get("harness") or {}).get("errors", 0) == 0 and not summary.get("error"), {"provider_errors": summary.get("provider_errors"), "harness": summary.get("harness", {}).get("errors"), "error": summary.get("error")}),
+        ]
+    else:
+        checks = [
+        ("created_agent_save_v1_component", len(saves) >= 1 and component.get("version") == 1, {"saves": saves, "component": component}),
+        ("created_component_visible_in_manifest", bool(component) and component_name == "summarize_values"
+         and component.get("version") == 1 and bool(component_body), component),
+        ("decide_schema_and_active_visible", bool(schema_row) and component_name in tool_schema_names
+         and '"enabled": true' in component_text,
+         {"schema": sorted(tool_schema_names), "component": component}),
+        ("component_run_ok", bool(tool_runs), tool_runs),
+        ("save_before_named_call", len(saves) == 1 and bool(save_run) and bool(tool_run)
+         and int(save_run.get("n", -1)) <= int(tool_run.get("n", -1))
+         and component_name == "summarize_values"
+         and any(result.get("tool") == component_name and not result.get("is_error")
+                 for row in requests for result in row.get("last_tool_results", [])),
+         {"save_run": save_run, "tool_run": tool_run}),
+        ("hook_has_save_and_later_completion", len(saves) == 1 and bool(completions)
+         and any(row.get("event") == "skip" for row in hooks), hooks),
+        ("no_errors", summary.get("provider_errors", 0) == 0 and (summary.get("harness") or {}).get("errors", 0) == 0
+         and not summary.get("error"), {"provider_errors": summary.get("provider_errors"), "harness": summary.get("harness", {}).get("errors"), "error": summary.get("error")}),
+        ("normal_expected_stop", summary.get("stop_reason") == "max_decisions" and summary.get("decisions") == 4
+         and len(trajectory) == 4 and bool(last_completion)
+         and len([row for row in hooks if row.get("event") == "turn_start"]) >= 2
+         and last_completion.get("outcome") == "completed" and last_completion.get("error") is None,
+         {"stop_reason": summary.get("stop_reason"), "decisions": summary.get("decisions"),
+          "actions": len(trajectory), "last_turn_complete": last_completion, "last_completion_skip": last_completion_skip}),
         ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
         ("hook_bounded", bool(hook_requests) and all(len(str(row.get("current"))) < 3000 for row in hook_requests), None),
-        ("no_diary_or_paths", all(not any(word in str(row.get("current")) for word in ("session.jsonl", "changed_cells", "BOUNDED TASK SUMMARY", "hypothesis", "stall")) for row in hook_requests), None),
-        ("skip_enum_recorded", any(row.get("event") == "skip" and row.get("reason_code") == "no_reusable_logic" for row in hooks), hooks),
-        ("one_hop_promote", any(result.get("tool") == "promote" and "saved" in str(result.get("text")) for row in requests for result in row.get("last_tool_results", [])), None),
-        ("boundary_batch_skips_hook_without_request", len(boundary_trajectory) == 3 and not boundary_hook_requests, boundary_hooks),
+        ("no_unprojected_diary_or_absolute_private_paths", all(
+            not re.search(r"(?im)^\s*(?:DIARY_INJECTION|DIARY(?:_ENTRY)?)\b", str(row.get("current", "")))
+            and not re.search(r"(?i)(?:[A-Z]:\\|/)(?:[^\s\"']*[\\/])*private[\\/]", str(row.get("current", "")))
+            for row in hook_requests), None),
+        ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
     ]
     summary["self_acceptance"] = ladder
     summary["checks"] = [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
-    summary["boundary_run"] = {"root": str(boundary_root), "stop_reason": boundary_summary.get("stop_reason"),
-                               "actions": boundary_summary.get("actions")}
     summary["passed"] = all(check["ok"] for check in summary["checks"])
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
@@ -2879,6 +3239,83 @@ def run_arc_thin_smoke(root: Path) -> Path:
     checks = _smoke_checks(root.resolve(), summary)
     summary["checks"] = checks
     summary["passed"] = all(check["ok"] for check in checks)
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def run_arc_thin_agent_program_smoke(root: Path) -> Path:
+    """Wiring check for the opt-in agent-native program → ADAPT revision → later Task path."""
+    path = run_arc_thin_e2e(
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment", foundation="native",
+        max_actions=2, max_decisions=3, experiment_timeout_seconds=600.0, decision_timeout_seconds=90.0,
+        pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
+        bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
+        ledger=False, critic=False, input_modalities="text,image",
+        extension_env={"ARC_THIN_PHASE_OWNER": "typescript", "ARC_THIN_SMOKE_SCRIPT": "agent-program-loop"},
+    )
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    root = root.resolve()
+    requests = _read_jsonl(root / "smoke-requests.jsonl")
+    runs = _read_jsonl(root / "harness" / "component_runs.jsonl")
+    components = _read_jsonl(root / ".harness" / "components.jsonl")
+    program = next((row for row in reversed(components) if row.get("path") == "tools/track_object.py"), {})
+    program_calls = [row for row in runs if row.get("kind") == "program_call"]
+    adapt = next((row for row in requests if str(row.get("current", "")).startswith("ADAPT TURN")), {})
+    run_config = json.loads((root / "run-config.json").read_text(encoding="utf-8"))
+    adapt_revision = next((row for row in runs if row.get("kind") == "program_save" and row.get("decision") == 2), {})
+    task_requests = [row for row in requests if not row.get("analyst") and not row.get("critic")
+                     and not str(row.get("head", "")).startswith("ADAPT TURN")]
+    task_calls_before = [row for row in program_calls if row.get("phase") == "task" and row.get("version") == 1
+                         and row.get("decision") == 1]
+    task_calls_after = [row for row in program_calls if row.get("phase") == "task" and row.get("version") == 2
+                        and row.get("decision") >= 2]
+    checks = [
+        ("task_created_and_used_v1", bool(task_calls_before), [(row.get("phase"), row.get("version")) for row in program_calls]),
+        ("program_catalog_discovered", any("track_object@v2 | executable skill" in str(row.get("head", ""))
+         and "Locate the tracked object with a position offset" in str(row.get("head", "")) for row in task_requests)
+         and any(result.get("tool") == "list_programs" and "tags: tracking, position" in str(result.get("text", ""))
+                 for row in task_requests for result in row.get("last_tool_results", []))
+         and any(result.get("tool") == "read_component" and "# active version: v1" in str(result.get("text", ""))
+                 and "grid[3].index(9)" in str(result.get("text", ""))
+                 for row in task_requests for result in row.get("last_tool_results", [])),
+         {"catalog_in_head": any("track_object@v2 | executable skill" in str(row.get("head", "")) for row in task_requests),
+          "list_called": any(result.get("tool") == "list_programs" for row in task_requests
+                             for result in row.get("last_tool_results", [])),
+          "source_read": any(result.get("tool") == "read_component" for row in task_requests
+                             for result in row.get("last_tool_results", []))}),
+        ("adapt_published_same_name_v2", adapt_revision.get("version") == 2,
+         {"version": adapt_revision.get("version"), "ok": adapt_revision.get("ok")}),
+        ("later_task_used_v2", bool(task_calls_after), [(row.get("phase"), row.get("version")) for row in program_calls]),
+        ("adapt_received_task_program_evidence", "program_call" in str(adapt.get("current", ""))
+         and "output_excerpt" in str(adapt.get("current", "")), adapt.get("current", "")[:2400]),
+        ("adapt_received_current_image", bool(adapt.get("image_blocks")), adapt.get("image_blocks")),
+        ("python_session_not_implied", all(
+            "python" not in " ".join(str(tool.get("name", "")) for tool in row.get("tools", [])).lower()
+            and "use python to combine" not in str(row.get("system_prompt", "")).lower()
+            and "history.grid(n)" not in str(row.get("system_prompt", ""))
+            and "python: grid" not in str(row.get("head", "")).lower()
+            for row in task_requests),
+         [{"tools": [tool.get("name") for tool in row.get("tools", [])],
+           "has_python_guidance": "Use Python to combine" in str(row.get("system_prompt", "")),
+           "has_python_observation_hint": "Python: grid" in str(row.get("head", ""))}
+          for row in task_requests[:3]]),
+        ("same_name_revision_active", (program.get("good") or {}).get("version") == 2
+         and "args.get(\"offset\", 0)" in (root / "workspace" / "tools" / "track_object.py").read_text(encoding="utf-8"),
+         {"version": (program.get("good") or {}).get("version"), "error": program.get("error")}),
+        ("legacy_services_isolated", run_config.get("typescript_phase_owner") is True
+         and run_config.get("daemon") is False and run_config.get("process_evidence") is False
+         and run_config.get("ledger") is False and run_config.get("critic") is False
+         and run_config.get("python_session") is False and run_config.get("work_memory") is False,
+         {key: run_config.get(key) for key in ("typescript_phase_owner", "daemon", "process_evidence", "ledger", "critic", "python_session", "work_memory")}),
+        ("no_provider_or_harness_errors", summary.get("provider_errors", 0) == 0
+         and not summary.get("error") and not _read_jsonl(root / "harness" / "errors.jsonl"),
+         {"provider_errors": summary.get("provider_errors"), "error": summary.get("error"), "stop_reason": summary.get("stop_reason")}),
+    ]
+    expected_budget_stop = summary.get("stop_reason") == "total_action_budget_exhausted" and summary.get("actions") == 2
+    checks.append(("expected_two_action_budget_stop", expected_budget_stop,
+                   {"stop_reason": summary.get("stop_reason"), "actions": summary.get("actions")}))
+    summary["agent_program_checks"] = [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
+    summary["passed"] = all(ok for _, ok, _ in checks)
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 

@@ -32,7 +32,7 @@ from .validation_evidence import load_validation_manifest
 from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
 from .arc_thin_e2e import (
-    run_arc_thin_claims_smoke, run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_guard_smoke, run_arc_thin_ledger_smoke,
+    run_arc_thin_agent_program_smoke, run_arc_thin_claims_smoke, run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_guard_smoke, run_arc_thin_ledger_smoke,
     run_arc_thin_self_baseline_smoke, run_arc_thin_self_harness_smoke, run_arc_thin_self_hook_smoke, run_arc_thin_smoke,
 )
 from .arc_blind_policy import run_arc_blind_policy
@@ -176,6 +176,10 @@ def main(argv: list[str] | None = None) -> int:
                           help="native Self baseline: direct create, run, call and act without advisory services or review turns")
     arc_thin.add_argument("--self-convert", action="store_true",
                           help="deliver agent-authored notes/convert.md in --self-baseline (no host candidates)")
+    arc_thin.add_argument("--adapt-config", type=Path, default=None,
+                          help="JSON policy for native treatment ADAPT scheduling; the Agent may override it at workspace/config/adapt-config.json")
+    arc_thin.add_argument("--typescript-phase-owner", action="store_true",
+                          help="let the TypeScript extension own TASK/ADAPT transitions; Python sends a fixed transport")
     arc_thin.add_argument("--replay-reasoning", action="store_true", help="native comparison: retain thinking blocks in replay")
     arc_thin.add_argument("--auto-compaction", action=argparse.BooleanOptionalAction, default=None,
                           help="Pi automatic compaction: native defaults on, legacy defaults off; --no-auto-compaction disables it")
@@ -186,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin.add_argument("--max-reported-tokens", type=int, default=None)
     arc_thin.add_argument("--experiment-timeout", type=float, default=None,
                           help="run deadline in seconds; 0 disables the experiment deadline, None retains the official default")
+    arc_thin.add_argument("--decision-timeout", type=float, default=900.0,
+                          help="maximum seconds for one Pi turn; 0 disables the per-turn deadline")
     arc_thin.add_argument("--turn-idle-timeout", type=float, default=180.0,
                           help="seconds without a native Pi event before one bounded turn recovery")
     arc_thin.add_argument("--consolidate-after", type=int, default=None,
@@ -229,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)
+    arc_thin_smoke.add_argument("--agent-program-loop", action="store_true",
+                                help="run the opt-in direct named-program → ADAPT revision → later Task wiring check")
     arc_thin_smoke.add_argument("--ledger", action="store_true", help="run the ledger + critic scenario instead")
     arc_thin_smoke.add_argument("--environment", action="store_true",
                                 help="run the environment-failure scenario instead (mock steps return no frame)")
@@ -238,6 +246,10 @@ def main(argv: list[str] | None = None) -> int:
                                 help="run the shortest native create → run → later call → action scenario")
     arc_thin_smoke.add_argument("--self-hook", action="store_true",
                                 help="run scripted after-action self-harness hook lifecycle acceptance")
+    arc_thin_smoke.add_argument("--inspect-to-call", choices=("positive", "python-negative", "read-failure", "no-read"),
+                                help="run the one-Task Hook inspection handoff acceptance")
+    arc_thin_smoke.add_argument("--min-loop", action="store_true",
+                                help="run the covered-Skip min-loop regression for the self-hook smoke")
     arc_thin_smoke.add_argument("--self-convert", action="store_true",
                                 help="exercise agent-authored CONVERT delivery in the shortest Self smoke")
     arc_thin_smoke.add_argument("--self-components", action="store_true",
@@ -457,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
             root, arc_root=args.arc_root or paths.arc_agi_3_root, game=args.game, variant=args.variant,
             max_actions=args.max_actions, max_decisions=args.max_decisions,
             max_reported_tokens=args.max_reported_tokens, experiment_timeout_seconds=args.experiment_timeout,
-            turn_idle_timeout_seconds=args.turn_idle_timeout,
+            decision_timeout_seconds=args.decision_timeout, turn_idle_timeout_seconds=args.turn_idle_timeout,
             consolidate_after_actions=args.consolidate_after, review_on_miss=args.review_on_miss, pi_provider=args.provider, pi_model=args.model,
             thinking=args.thinking, thinking_format=args.thinking_format,
             input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,
@@ -468,7 +480,9 @@ def main(argv: list[str] | None = None) -> int:
             foundation=args.foundation, replay_reasoning=args.replay_reasoning,
             self_baseline=args.self_baseline,
             self_convert=args.self_convert,
-            extension_env={} if args.auto_compaction is None else {"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"},
+            adapt_config=args.adapt_config,
+            extension_env={**({} if args.auto_compaction is None else {"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"}),
+                           **({"ARC_THIN_PHASE_OWNER": "typescript"} if args.typescript_phase_owner else {})},
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
@@ -477,12 +491,18 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--self-convert requires --self-baseline")
         if args.self_components and not args.self_baseline:
             parser.error("--self-components requires --self-baseline")
-        summary = (run_arc_thin_ledger_smoke(args.root) if args.ledger
+        if args.min_loop and not args.self_hook:
+            parser.error("--min-loop requires --self-hook")
+        summary = (run_arc_thin_agent_program_smoke(args.root) if args.agent_program_loop
+                   else run_arc_thin_ledger_smoke(args.root) if args.ledger
                    else run_arc_thin_environment_smoke(args.root) if args.environment
                    else run_arc_thin_continuity_smoke(args.root) if args.continuity
                    else run_arc_thin_guard_smoke(args.root) if args.guard
                    else run_arc_thin_claims_smoke(args.root) if args.claims
-                   else run_arc_thin_self_hook_smoke(args.root) if args.self_hook
+                    else run_arc_thin_self_hook_smoke(args.root, profile={"positive": "inspect-to-call",
+                         "python-negative": "inspect-to-call-python-negative", "read-failure": "inspect-to-call-read-failure",
+                         "no-read": "inspect-to-call-no-read"}[args.inspect_to_call]) if args.inspect_to_call
+                    else run_arc_thin_self_hook_smoke(args.root, profile="min-loop" if args.min_loop else "self-hook") if args.self_hook
                    else run_arc_thin_self_baseline_smoke(args.root, self_convert=args.self_convert,
                                                         all_components=args.self_components) if args.self_baseline
                    else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))

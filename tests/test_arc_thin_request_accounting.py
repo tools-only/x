@@ -70,3 +70,49 @@ def test_a_contest_by_a_check_is_not_counted_as_a_memory_write(tmp_path):
     assert stats["hypotheses"]["final"] == {"hyp.a": "contested"}
     memory = build_report(tmp_path)["categories"]["memory"]
     assert (memory["writes"], memory["by_check"]) == (1, 1)
+
+
+def test_use_ledger_keeps_unrecoverable_history_unknown_and_counts_replayed_tool_calls(tmp_path):
+    import json
+    from autoresearch_pi.arc_thin_reuse_report import build_report
+
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    (harness / "component_runs.jsonl").write_text(json.dumps({"kind": "tool", "name": "large", "ok": False}) + "\n", encoding="utf-8")
+    event = {"type": "message_end", "message": {"role": "assistant", "content": [
+        {"type": "toolCall", "name": "large", "arguments": {"args": {"grid": [[1] * 30 for _ in range(30)]}}}]}}
+    (tmp_path / "pi-events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+    ledger = build_report(tmp_path)["use_ledger"]
+    assert ledger["tools_mounted"] == "unknown"
+    assert "未持久化" in ledger["unknown_reasons"]["opportunity_windows"]
+    assert ledger["kind_tool_attempts"] == ledger["uses"] == 1
+    assert ledger["ok_true"] == 0 and ledger["ok_false"] == 1
+    assert ledger["tool_call_args_classes"] == {"literal_big": 1}
+
+    (harness / "request-events.jsonl").write_text(json.dumps({"stage": "decide_callable_schema", "tools": [
+        {"name": "large", "act_capable": True}], "act_capable_count": 1}) + "\n", encoding="utf-8")
+    live = build_report(tmp_path)["use_ledger"]
+    assert live["tools_mounted"] == live["act_capable_count"] == live["opportunity_windows"] == 1
+
+
+def test_use_ledger_keeps_unrecoverable_history_unknown_and_counts_replayed_tool_calls(tmp_path):
+    import json
+    from autoresearch_pi.arc_thin_reuse_report import build_report
+
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    (harness / "component_runs.jsonl").write_text(json.dumps({"kind": "tool", "name": "large", "ok": False}) + "\n", encoding="utf-8")
+    event = {"type": "message_end", "message": {"role": "assistant", "content": [
+        {"type": "toolCall", "name": "large", "arguments": {"args": {"grid": [[1] * 30 for _ in range(30)]}}}]}}
+    (tmp_path / "pi-events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+    ledger = build_report(tmp_path)["use_ledger"]
+    assert ledger["tools_mounted"] == "unknown"
+    assert "未持久化" in ledger["unknown_reasons"]["opportunity_windows"]
+    assert ledger["kind_tool_attempts"] == ledger["uses"] == 1
+    assert ledger["ok_true"] == 0 and ledger["ok_false"] == 1
+    assert ledger["tool_call_args_classes"] == {"literal_big": 1}
+
+    (harness / "request-events.jsonl").write_text(json.dumps({"stage": "decide_callable_schema", "tools": [
+        {"name": "large", "act_capable": True}], "act_capable_count": 1}) + "\n", encoding="utf-8")
+    live = build_report(tmp_path)["use_ledger"]
+    assert live["tools_mounted"] == live["act_capable_count"] == live["opportunity_windows"] == 1

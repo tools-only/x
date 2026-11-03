@@ -1,0 +1,5 @@
+{
+  "mode": "manual",
+  "checkpoint_every_batches": 0,
+  "rules": []
+}

@@ -22,14 +22,29 @@ export class RequestTrace {
   start(kind:string, decision:number):string {
     const request_id=randomUUID(), logical_request=`${kind}:${decision}`;
     const attempt=(this.attempts.get(logical_request) ?? 0)+1; this.attempts.set(logical_request,attempt);
-    const row={request_id,logical_request,attempt,kind,decision,stream_chars:0,stream_events:0,last_stream_ms:null};
+    const row={request_id,logical_request,attempt,kind,decision,stream_chars:0,stream_events:0,
+      delta_chars_by_type:{} as Record<string,number>,delta_events:0,last_delta_ms:null,last_delta_gap_ms:null,
+      max_delta_gap_ms:0,next_progress_chars:512};
     this.active.set(request_id,row);
     this.event({...row,stage:'request_prepared',http_send:'unobserved',http_headers:'unobserved',raw_transport_chunk:'unobserved'});
     return request_id;
   }
-  chunk(id:string, chars:number) {
+  chunk(id:string, chars:number, deltaType='unknown') {
     const row=this.active.get(id); if (!row) return;
-    row.stream_chars+=chars; row.stream_events++; row.last_stream_ms=performance.now();
+    const now=performance.now();
+    row.stream_chars+=chars; row.stream_events++; row.last_stream_ms=now;
+    if (chars>0) {
+      if (row.last_delta_ms!==null) {
+        row.last_delta_gap_ms=now-row.last_delta_ms;
+        row.max_delta_gap_ms=Math.max(row.max_delta_gap_ms,row.last_delta_gap_ms);
+      }
+      row.last_delta_ms=now; row.delta_events++;
+      row.delta_chars_by_type[deltaType]=(row.delta_chars_by_type[deltaType] ?? 0)+chars;
+      if (row.stream_chars>=row.next_progress_chars) {
+        this.event({...row,stage:'stream_progress'});
+        row.next_progress_chars=(Math.floor(row.stream_chars/512)+1)*512;
+      }
+    }
     if (row.stream_events===1) this.event({...row,stage:'first_stream_event'});
   }
   note(id:string, stage:string) { const row=this.active.get(id); if (row) this.event({...row,stage}); }
@@ -52,7 +67,7 @@ export class RequestTrace {
   async result(kind:string, decision:number, stream:any, id=this.start(kind,decision)) {
     try {
       if (stream[Symbol.asyncIterator]) for await (const event of stream) {
-        this.chunk(id,typeof event.delta==='string' ? event.delta.length : 0);
+        this.chunk(id,typeof event.delta==='string' ? event.delta.length : 0,typeof event.type==='string' ? event.type : 'unknown');
       }
       const reply=await stream.result(); this.finish(id,reply); return reply;
     } catch (error) { this.finish(id,{stopReason:'error'}); throw error; }

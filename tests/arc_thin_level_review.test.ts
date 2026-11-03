@@ -280,6 +280,40 @@ test('A/B: ordinary Task with daemon and no pending creates and receives Self/Me
     }
 });
 
+test('pending daemon notifications gate Task actions only when compatibility response turns are enabled', async () => {
+	const saved = { ...process.env };
+	const notification = JSON.stringify({ format: 'daemon-v1', monitors: {}, handled_through: 0,
+		pending: { id: 'd-pending', from_decision: 0, through_decision: 1, reasons: ['fixture'] } });
+	const w = await world();
+	process.env.ARC_THIN_DAEMON = '1';
+	process.env.ARC_THIN_DAEMON_RESPONSE_COMPAT = '0';
+	const task = await attach(w);
+	try {
+		writeFileSync(join(w.root, 'harness/daemon.json'), notification);
+		await task.begin();
+		assert.ok(task.active().includes('arc_action'));
+		assert.match(await task.act({ action: 'ACTION6', x: 1, y: 1 }), /ACTION6/);
+	} finally { await task.close(); }
+
+	const compatWorld = await world();
+	process.env.ARC_THIN_DAEMON = '1';
+	process.env.ARC_THIN_DAEMON_RESPONSE_COMPAT = '1';
+	const compat = await attach(compatWorld);
+	try {
+		writeFileSync(join(compatWorld.root, 'harness/daemon.json'), notification);
+		await compat.begin();
+		assert.match(await compat.act({ action: 'ACTION6', x: 1, y: 1 }), /pending daemon notification/);
+		await compat.begin('DAEMON RESPONSE. Handle pending maintenance.');
+		assert.ok(!compat.active().includes('arc_action'));
+		assert.ok(compat.active().includes('daemon_reply'));
+	} finally {
+		await compat.close(); compatWorld.server.close();
+		for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+		Object.assign(process.env, saved);
+		w.server.close();
+	}
+});
+
 
 test('after-action self_harness_hook is an isolated turn and reaches save, named use, then Task', async () => {
     const saved = { ...process.env };

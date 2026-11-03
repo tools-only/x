@@ -18,9 +18,9 @@ test('B: parent Python save records creation separately from a later component c
   const runtime = new NativeRuntime({ pi: { registerTool(t: any) { tools.set(t.name, t); },
     getActiveTools: () => active, setActiveTools(names: string[]) { active = names; } } as any,
     workspace, binder, state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => 0,
-    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+    act: async () => ({ line: '42' }), log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
   try {
-    const result = await runtime.python('print(6 * 7)', undefined, false, 'answer');
+    const result = await runtime.python('def answer(args, env):\n    return env.act({"action": "ACTION1"})', undefined, false, 'answer');
     assert.match(result.content[0].text, /saved.*loaded/);
     assert.match(result.content[1].text, /Next request: call answer\(args=\{\}\) to run the saved version/);
     const rows = readFileSync(join(root, '.harness/components.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -28,7 +28,7 @@ test('B: parent Python save records creation separately from a later component c
     assert.equal(logs.filter(r => r.kind === 'tool').length, 0, 'saving/running the cell is not a saved tool call');
     binder.boundary(); runtime.register();
     const called = await tools.get('answer').execute({ args: {} });
-    assert.match(called.content[0].text, /42/);
+    assert.match(called.content[0].text, /answer v1/);
     assert.ok(logs.some(r => r.file === 'component_runs.jsonl' && r.kind === 'tool' && r.path === 'tools/answer.py' && r.version === 1 && r.ok));
     assert.match(runtime.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/);
     const replay = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
@@ -40,6 +40,39 @@ test('B: parent Python save records creation separately from a later component c
         { kind: 'tool', path: 'tools/answer.py', version: 1, readonly: true, ok: false }]);
       assert.match(replay.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/, 'unchanged saves and readonly calls retain the counts');
     } finally { replay.close(); }
+  } finally { runtime.close(); }
+});
+
+test('USE-CHANNEL: only one act-capable saved tool is callable; no act-capable tool yields an empty callable schema', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'native-use-channel-'));
+  const workspace = new Workspace(root);
+  const binder = new Binder(workspace, validatePythonComponent);
+  const registered = new Set<string>();
+  const runtime = new NativeRuntime({ pi: { registerTool(t: any) { registered.add(t.name); } } as any,
+    workspace, binder, state: () => ({}), level: () => 0, actionCount: () => 0,
+    log() {}, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    for (const [path, content] of [
+      ['tools/view.py', 'def run(args, env):\n    return 1'],
+      ['tools/act_one.py', 'def run(args, env):\n    return env.act({"action": "ACTION1"})'],
+      ['tools/act_two.py', 'def run(args, env):\n    return env.act({"action": "ACTION2"})'],
+    ]) {
+      workspace.mutate({ op: 'write', path, content });
+      await binder.save(path, 0, { by: 'agent', decision: path.endsWith('act_two.py') ? 2 : 1 });
+    }
+    binder.boundary(); runtime.register();
+    assert.equal(runtime.toolNames().length, 1);
+    assert.equal(runtime.toolNames()[0], 'act_two', 'the newest untried agent-created act tool wins');
+    assert.equal(runtime.callableSchema(runtime.toolNames().map(name => ({ name }))).filter(tool => tool.act_capable).length, 1);
+    const emptyRoot = mkdtempSync(join(tmpdir(), 'native-use-channel-empty-'));
+    const emptyWorkspace = new Workspace(emptyRoot);
+    const emptyBinder = new Binder(emptyWorkspace, validatePythonComponent);
+    emptyWorkspace.mutate({ op: 'write', path: 'tools/view_only.py', content: 'def run(args, env):\n    return 1' });
+    await emptyBinder.save('tools/view_only.py', 0, { by: 'agent' }); emptyBinder.boundary();
+    const empty = new NativeRuntime({ pi: { registerTool() {} } as any, workspace: emptyBinder.workspace, binder: emptyBinder,
+      state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {}, wrap: (_name, fn) => fn });
+    try { empty.register(); assert.deepEqual(empty.toolNames(), []); }
+    finally { empty.close(); }
   } finally { runtime.close(); }
 });
 
@@ -167,11 +200,46 @@ test('ordinary task session function reuse does not emit conversion guidance', a
   } finally { runtime.close(); }
 });
 
+test('agent-native named programs run on fresh states, revise by name, and preserve the last valid version', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-program-')));
+  const binder = new Binder(workspace, validatePythonComponent);
+  const logs: any[] = [];
+  let grid = [[4]];
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
+    state: () => ({ grid }), level: () => 0, actionCount: () => 2, decision: () => 3,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    const created = await runtime.saveProgram('measure', 'grid[0][0] + args.get("delta", 0)', 'Measure the current grid cell', ['measurement', 'grid']);
+    assert.match(created, /measure v1: saved/);
+    assert.match(binder.index(0), /measure@v1 \| executable skill \| Created \| Measure the current grid cell \| measurement, grid/);
+    assert.match(binder.programCatalog(0, 'grid'), /measure@v1 \| active \| Measure the current grid cell/);
+    assert.match(new Binder(workspace).programCatalog(0, 'measurement'), /measure@v1/, 'program metadata survives a Binder restart');
+    assert.match(binder.candidates().find(c => c.name === 'measure')?.source ?? '', /# description: Measure the current grid cell\n# tags: measurement, grid/);
+    await assert.rejects(runtime.saveProgram('measure', '0', 'Wrong version', [], 0), /expected v0, current version is v1/);
+    const first = await runtime.runProgram('measure', { delta: 2 });
+    assert.match(first.content.map((part: any) => part.text ?? '').join('\n'), /6/);
+    await runtime.python('old_measure = 999');
+    grid = [[9]];
+    const second = await runtime.runProgram('measure', { delta: 1 });
+    assert.match(second.content.map((part: any) => part.text ?? '').join('\n'), /10/);
+    await assert.rejects(runtime.saveProgram('measure', 'def broken(:\n    pass', 'Broken candidate'), /NOT loaded/);
+    const retained = await runtime.runProgram('measure', { delta: 1 });
+    assert.match(retained.content.map((part: any) => part.text ?? '').join('\n'), /10/);
+    const revised = await runtime.saveProgram('measure', 'grid[0][0] * args.get("scale", 2)', 'Scale the current grid cell', ['measurement']);
+    assert.match(revised, /measure v3: saved/);
+    assert.match(binder.programCatalog(0, 'scale'), /measure@v3 \| active \| Scale the current grid cell/);
+    assert.doesNotMatch(binder.programCatalog(0, 'scale'), /Measure the current grid cell/);
+    const third = await runtime.runProgram('measure', { scale: 3 });
+    assert.match(third.content.map((part: any) => part.text ?? '').join('\n'), /27/);
+    assert.deepEqual(logs.filter(row => row.kind === 'program_call').map(row => row.version), [1, 1, 1, 3]);
+  } finally { runtime.close(); }
+});
+
 test('related active components are shown with version and evidence; read and trial remain optional telemetry', async () => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-reuse-index-')));
   const binder = new Binder(workspace, validatePythonComponent);
   const registered = new Set<string>();
-  workspace.runtimeWrite('tools/sum_rows.py', '# view: off\ndef run(state, args):\n    rows = args["rows"]\n    return sum(sum(row) for row in rows)\n\ndef summarize(rows):\n    return sum(sum(row) for row in rows)\n');
+  workspace.runtimeWrite('tools/sum_rows.py', '# view: off\ndef run(state, args):\n    if args.get("act"):\n        return env.act(args["act"])\n    rows = args["rows"]\n    return sum(sum(row) for row in rows)\n\ndef summarize(rows):\n    return sum(sum(row) for row in rows)\n');
   await binder.save('tools/sum_rows.py', 0, { by: 'agent' }); binder.boundary();
   const logs: any[] = [];
   let n = 0;
@@ -182,13 +250,57 @@ test('related active components are shown with version and evidence; read and tr
     runtime.register();
     assert.equal(registered.has('sum_rows'), true, `candidate=${JSON.stringify(binder.candidates().map(c => ({ path: c.path, name: c.name, kind: c.kind, view: (c as any).view, level: c.level })))} names=${runtime.toolNames()}`);
     const result = await runtime.python('rows = [[1, 2], [3, 4]]\nprint(sum(sum(row) for row in rows))');
-    assert.match(result.content.map((part: any) => part.text ?? '').join('\n'), /RELATED COMPONENTS[\s\S]*sum_rows@1 sum_rows\(args=\{\.\.\.\}\).*\d+\/\d+ normalized computation lines match/);
+    assert.match(result.content.map((part: any) => part.text ?? '').join('\n'), /RELATED COMPONENTS[\s\S]*sum_rows@1 - .*parameters: .*schema only exposes an args dictionary; use read_component\(name\) to inspect the body[\s\S]*normalized computation lines match: \d+\/\d+ \(lead only\)/);
     runtime.noteReuseRead('tools/sum_rows.py');
     assert.ok(logs.some(row => row.kind === 'reuse_shown' && row.paths.includes('tools/sum_rows.py@1')));
     assert.ok(logs.some(row => row.kind === 'reuse_shown' && row.evidence[0].matched > 0));
     assert.ok(logs.some(row => row.kind === 'reuse_read' && row.path === 'tools/sum_rows.py' && row.version === 1));
+    assert.ok(logs.some(row => row.kind === 'reuse_read' && row.name === 'sum_rows' && row.tool_name === 'sum_rows'
+      && row.args_contract.includes('args["rows"]')));
+    assert.equal(logs.some(row => row.kind === 'tool'), false, 'inspection is not a component use');
     n++;
     assert.doesNotMatch((await runtime.python('x = 2\nprint(x + 1)')).content.map((part: any) => part.text ?? '').join('\n'), /RELATED COMPONENTS/);
+  } finally { runtime.close(); }
+});
+
+test('CARD-ADOPT: named calls resolve explicit current-session values and reject unavailable values without use accounting', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-card-adopt-')));
+  const binder = new Binder(workspace, validatePythonComponent);
+  const logs: any[] = [];
+  workspace.runtimeWrite('tools/measure.py', '# view: off\ndef run(args, env):\n    if args.get("act"):\n        return env.act(args["act"])\n    return {"value": args["value"]}\n');
+  await binder.save('tools/measure.py', 0, { by: 'agent' }); binder.boundary();
+  const tools = new Map<string, any>();
+  const runtime = new NativeRuntime({ pi: { registerTool(t: any) { tools.set(t.name, t); },
+    getActiveTools: () => [], setActiveTools() {} } as any, workspace, binder,
+    state: () => ({}), level: () => 0, actionCount: () => 0,
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    runtime.register();
+    assert.match(tools.get('measure').parameters.properties.args.description,
+      /direct parameter value in args.*\{\"\$python_session\":\"variable_name\"\}.*top-level JSON value from the current Task Python session/);
+    await runtime.python('current_value = {"rows": [[1, 2], [3, 4]]}\nprint("ready")');
+    const literal = await tools.get('measure').execute({ args: { value: 17 } });
+    assert.match(literal.content[0].text, /17/);
+    assert.equal(logs.filter(row => row.kind === 'tool' && row.ok).length, 1);
+    const referenced = await tools.get('measure').execute({ args: { value: { $python_session: 'current_value' } } });
+    assert.match(referenced.content[0].text, /\[\[1,2\],\[3,4\]\]/);
+    assert.deepEqual(logs.filter(row => row.kind === 'tool').map(row => row.ok), [true, true]);
+    assert.equal(logs.filter(row => row.kind === 'tool' && row.ok).length, 2);
+    const missing = await tools.get('measure').execute({ args: { value: { $python_session: 'absent' } } });
+    assert.match(missing.content[0].text, /no current value named absent/);
+    const invalid = await tools.get('measure').execute({ args: { value: { $python_session: 'current_value', extra: true } } });
+    assert.match(invalid.content[0].text, /invalid \$python_session reference/);
+    await runtime.python('not_json = {"value": object()}\nprint("ready")');
+    const nonJson = await tools.get('measure').execute({ args: { value: { $python_session: 'not_json' } } });
+    assert.match(nonJson.content[0].text, /not JSON-compatible/);
+    await runtime.python('too_large = "x" * 1000001\nprint("ready")');
+    const oversized = await tools.get('measure').execute({ args: { value: { $python_session: 'too_large' } } });
+    assert.match(oversized.content[0].text, /exceeds the 1000000-character limit/);
+    assert.equal(logs.filter(row => row.kind === 'tool').length, 2, 'failed references do not create tool-use records');
+    runtime.kernel?.kill('test session reset');
+    const expired = await tools.get('measure').execute({ args: { value: { $python_session: 'current_value' } } });
+    assert.match(expired.content[0].text, /session is unavailable or has ended/);
+    assert.equal(logs.filter(row => row.kind === 'tool').length, 2);
   } finally { runtime.close(); }
 });
 

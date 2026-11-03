@@ -8,14 +8,16 @@ import type { ComponentSpec } from './arc_thin_binder.ts';
 const NATIVE = String.raw`
 import ast, io, re, sys, importlib.abc, importlib.util, builtins
 
-RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'save', 'save_tool', 'promote', 'read_component', 'skip', 'self_component', 'promote_session_function')
+RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'save', 'save_tool', 'save_program', 'run_program', 'list_programs', 'promote', 'read_component', 'skip', 'self_component', 'promote_session_function')
 # Every tool has one interface: a dict of arguments (Continual Harness's run(state, args) contract; Prime calls plain
 # python). No schema is derived from type hints, so there is no annotation to get wrong.
-TOOL_PARAMETERS = {'type': 'object', 'properties': {'args': {'type': 'object'}}, 'additionalProperties': False}
+TOOL_PARAMETERS = {'type': 'object', 'properties': {'args': {'type': 'object', 'description': 'For any direct parameter value in args, you may write {"$python_session":"variable_name"} to pass that top-level JSON value from the current Task Python session.'}}, 'additionalProperties': False}
 
 def _first_comment(source):
     for line in source.splitlines():
         if line.strip().startswith('#'):
+            if line.strip().startswith(('# program:', '# description:', '# tags:')):
+                continue
             return line.strip().lstrip('#').strip()
         if line.strip():
             return ''
@@ -75,6 +77,11 @@ def _inspect(req):
     if name in RESERVED:
         raise ValueError('tool name is reserved by the foundation')
     head = [line.strip() for line in req['source'].splitlines()[:10]]
+    program = '# program: on' in head
+    if program:
+        describe = next((line[len('# description:'):].strip() for line in head if line.startswith('# description:')), describe)
+    tags = next((line[len('# tags:'):].strip().split(',') for line in head if line.startswith('# tags:')), []) if program else []
+    tags = [tag.strip() for tag in tags if tag.strip()]
     mount_lines = [line[8:].strip() for line in head if line.startswith('# mount:')]
     if len(mount_lines) > 1:
         raise ValueError('one # mount: declaration is allowed')
@@ -96,12 +103,13 @@ def _inspect(req):
     # A view is a tool whose output is shown after every new state (observers/ is the older place for views). Saved code
     # that takes no arguments, does not act and predicts nothing is one by default: it waits for no call (2026-10-20,
     # docs/plans/2026-10-20-loop-bound-artifacts.md A2); '# view: off' keeps it a plain tool.
-    default = top == 'tools' and not acts and not predictor and not guard and not mount and not _reads_args(tree, _entry(tree))
+    default = top == 'tools' and not program and not acts and not predictor and not guard and not mount and not _reads_args(tree, _entry(tree))
     view = not mount and (top == 'observers' or '# view: on' in head or default) and not off
     if view and acts:
         raise ValueError('a view runs after every new state and cannot act: remove "# view: on" or the env.act call')
     return {'name': name, 'kind': 'tool', 'description': describe, 'parameters': TOOL_PARAMETERS, 'view': view,
-            'predictor': predictor, 'guard': guard, 'mount': mount, 'enabled': not (top == 'observers' and off)}
+            'predictor': predictor, 'guard': guard, 'mount': mount, 'program': program, 'tags': tags,
+            'enabled': not (top == 'observers' and off)}
 
 # Run as a live kernel (pi_task_python_kernel.py), the guest has _rpc: it serves cell after cell in one namespace,
 # and asks the host for actions and files where the code asks, instead of ending and being replayed.
@@ -858,6 +866,20 @@ def _cell(req):
         _ns['cell'] = cell
         if _req['mode'] == 'session_export':
             return _export_session_function(_req, env)
+        if _req['mode'] == 'session_value':
+            name = _req.get('name')
+            if not isinstance(name, str) or not name.isidentifier() or name.startswith('_'):
+                return {'ok': False, 'error': 'session value name must be a public Python identifier'}
+            if name not in globals():
+                return {'ok': False, 'error': 'Python session has no current value named ' + name}
+            value = globals()[name]
+            try:
+                encoded = json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(',', ':'))
+            except (TypeError, ValueError, OverflowError):
+                return {'ok': False, 'error': 'Python session value ' + name + ' is not JSON-compatible'}
+            if len(encoded) > 1_000_000:
+                return {'ok': False, 'error': 'Python session value ' + name + ' exceeds the 1000000-character limit'}
+            return {'ok': True, 'value': json.loads(encoded)}
         try:
             if _req['mode'] == 'exec':
                 _session = _req.get('session')
@@ -867,7 +889,18 @@ def _cell(req):
                 try:
                     if _session is not None and _loaded.get('load_error'):
                         raise RuntimeError('python session could not be restored; user code was not executed')
-                    result = {'ok': True, 'value': _exec(_req)}
+                    if _req.get('session_value_request'):
+                        name = _req.get('name')
+                        if not isinstance(name, str) or not name.isidentifier() or name.startswith('_'):
+                            raise ValueError('session value name must be a public Python identifier')
+                        if name not in _ns: raise KeyError('Python session has no current value named ' + name)
+                        _value = _ns[name]
+                        try: _encoded = json.dumps(_value, ensure_ascii=True, allow_nan=False, separators=(',', ':'))
+                        except (TypeError, ValueError, OverflowError): raise ValueError('Python session value ' + name + ' is not JSON-compatible')
+                        if len(_encoded) > 1_000_000: raise ValueError('Python session value ' + name + ' exceeds the 1000000-character limit')
+                        result = {'ok': True, 'value': json.loads(_encoded)}
+                    else:
+                        result = {'ok': True, 'value': _exec(_req)}
                 except (_NeedFile, _NeedAct):
                     raise
                 except ActStopped as stopped:

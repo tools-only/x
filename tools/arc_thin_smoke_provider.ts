@@ -261,7 +261,7 @@ const QUERY_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
   { kind: 'decide', calls: [['python', { code: '[grid[3].index(9), prev_grid[3].index(9), history.grid(0)[3].index(9)]' }]] },
   { kind: 'decide', calls: [['read', { path: 'data/frames/1.png' }]] },
-  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', then: [{ action: 'ACTION2' }] }]] },
   { kind: 'decide', calls: [['read', { path: 'data/observations/0.json' }],
     ['python', { code: '[grid[3].index(9), history.grid(1)[3].index(9)]' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
@@ -400,7 +400,7 @@ const SELF_PROTOTYPE = 'def total(args, env):\n    return sum(args["values"])\n'
 const SELF_CONVERT_NOTE = 'SELF_CONVERT_INTENT: preserve total(values) to reuse the checked calculation; retire this note after the next call.';
 const SELF_BASELINE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['write', { path: 'tools/answer.py', content: 'bad path injection' }]] },
-  { kind: 'decide', calls: [['save_tool', { name: 'answer', body: 'def run(args, env):\n    """Sum current inputs."""\n    return sum(args["values"])' }]] },
+  { kind: 'decide', calls: [['save_tool', { name: 'answer', body: 'def run(args, env):\n    """Sum current inputs; optionally act when explicitly asked."""\n    if args.get("act"):\n        return env.act(args["act"])\n    return sum(args["values"])' }]] },
   { kind: 'decide', calls: [['answer', { args: { values: [18, 24] } }]] },
   act('ACTION1'),
   { kind: 'decide', calls: [['answer', { args: { values: [19, 23] } }]] },
@@ -415,6 +415,32 @@ const SELF_HOOK_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after checking a parameterized function' }]] },
   { kind: 'decide', calls: [['summarize_values', { args: { values: [10, 11] } }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'use saved named component on a later task input' }]] },
+];
+const SELF_HOOK_PYTHON_NEGATIVE_SCRIPT: Step[] = [
+  ...SELF_HOOK_SCRIPT.slice(0, 4),
+  { kind: 'decide', calls: [['python', { code: 'print(summarize_values([10, 11]))' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'after recomputing with the Python session' }]] },
+];
+const SELF_HOOK_COMPONENTS_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'create evidence for the separate Hook' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', reasoning: 'SELF_HOOK_COMPONENT_MARK: I checked the prior visible change before choosing this move.' }]] },
+];
+const INSPECT_TO_CALL_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'first Task turn leads to a Hook save' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'second Task turn leads to a Hook read' }]] },
+  { kind: 'decide', calls: [['summarize_values', { args: { values: [10, 11] } }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'next Task after the one-time card' }]] },
+];
+const INSPECT_TO_CALL_PYTHON_NEGATIVE_SCRIPT: Step[] = [
+  ...INSPECT_TO_CALL_SCRIPT.slice(0, 2),
+  { kind: 'decide', calls: [['python', { code: 'print(sum([10, 11]))' }]] },
+  INSPECT_TO_CALL_SCRIPT[3],
+];
+const MIN_LOOP_SCRIPT: Step[] = [
+  { kind: 'decide', think: 'SELF_HOOK_PLAN_MARK: I repeated an action pattern. I can reuse a parameterized function for it.',
+    calls: [['python', { code: 'def run(args, env):\n    return env.act(args["action"])\nprint("ready")' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', then: [{ action: 'ACTION4' }] }]] },
+  { kind: 'decide', calls: [['hook_act', { args: { action: 'ACTION2' } }]] },
 ];
 const SELF_COMPONENTS_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['self_component', { kind: 'memory', name: 'probe_note', content: 'A reusable calculation can be checked later.' }]] },
@@ -475,7 +501,26 @@ const STILL_SCRIPT: Step[] = [
   ...Array.from({ length: 6 }, (): Step => ({ kind: 'decide', calls: [['arc_action', { action: 'ACTION3', note: 'again' }]] })),
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'something else' }]] },
 ];
-const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
+const ADAPT_REQUEST_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['request_adapt', { focus: 'Review the method after this observation.' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'continue task after queuing ADAPT' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'task resumed after ADAPT' }]] },
+];
+const AGENT_PROGRAM_LOOP_SCRIPT: Step[] = [
+	{ kind: 'decide', calls: [['save_program', { name: 'track_object', description: 'Locate the tracked object in the current grid', tags: ['tracking', 'position'], body: 'grid[3].index(9)' }]] },
+	{ kind: 'decide', calls: [
+		['run_program', { name: 'track_object', args: {} }],
+		['request_adapt', { focus: 'Check whether track_object remains useful on the next state.' }],
+		['arc_action', { action: 'ACTION1', note: 'move the tracked object right', predict: { cells: [[3, 3, 9]], level_changed: false } }],
+	] },
+	{ kind: 'decide', calls: [
+		['run_program', { name: 'track_object', args: { offset: 1 } }],
+		['arc_action', { action: 'ACTION2', note: 'use the revised program result', predict: { cells: [[2, 3, 9]], level_changed: false } }],
+	] },
+];
+	const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'agent-program-loop' ? AGENT_PROGRAM_LOOP_SCRIPT
+	: process.env.ARC_THIN_SMOKE_SCRIPT === 'adapt-request' ? ADAPT_REQUEST_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'repeat' ? REPEAT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'still' ? STILL_SCRIPT
@@ -488,6 +533,11 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'promotion' ? PROMOTION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' ? SELF_BASELINE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'min-loop' ? MIN_LOOP_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'inspect-to-call' ? INSPECT_TO_CALL_SCRIPT
+  : ['inspect-to-call-python-negative', 'inspect-to-call-read-failure', 'inspect-to-call-no-read'].includes(process.env.ARC_THIN_SMOKE_SCRIPT ?? '') ? INSPECT_TO_CALL_PYTHON_NEGATIVE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook-python-negative' ? SELF_HOOK_PYTHON_NEGATIVE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook-components' ? SELF_HOOK_COMPONENTS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook' || process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' ? SELF_HOOK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components' ? SELF_COMPONENTS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
@@ -515,6 +565,10 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 	let toolCall = 0;
 	let probeOrdinary = 0;
 	let checkpoints = 0;
+	let selfHookNegativePythonPlanned = false;
+	let selfHookNegativeActionPlanned = false;
+	let inspectToCallHookHead = '';
+	let inspectToCallHookCount = 0;
 	const idleFaults=new Set<number>();
 
 	pi.registerProvider("offline-arc-thin-smoke", {
@@ -522,7 +576,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 		apiKey: "offline",
 		baseUrl: "http://unused.invalid",
 		models: [{
-			id: "scripted", name: "scripted", reasoning: false, input: process.env.ARC_THIN_SMOKE_SCRIPT === 'query' ? ["text", "image"] : ["text"],
+			id: "scripted", name: "scripted", reasoning: false, input: ['query', 'agent-program-loop'].includes(process.env.ARC_THIN_SMOKE_SCRIPT ?? '') ? ["text", "image"] : ["text"],
 			contextWindow: 175000, maxTokens: 16384, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		}],
 		streamSimple: scriptedProviderTransport((model, context, options) => {
@@ -693,13 +747,94 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
 			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(head.trimStart());
 			let planned: Step | undefined;
-      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' && head.startsWith('SELF_HARNESS_HOOK'))
+      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'agent-program-loop') {
+        const lastUserIndex = messages.findLastIndex((message: any) => message?.role === 'user');
+        const turnResults = messages.slice(lastUserIndex + 1).filter((message: any) => message?.role === 'toolResult');
+        const resultNames = new Set(turnResults.map((message: any) => message?.toolName));
+        if (head.startsWith('ADAPT TURN')) {
+          planned = resultNames.has('save_program')
+            ? { kind: 'decide', text: 'ADAPT revised the program from the current state and Task evidence.' }
+            : { kind: 'decide', calls: [['save_program', { name: 'track_object', description: 'Locate the tracked object with a position offset', tags: ['tracking', 'position'], expected_version: 1,
+                body: 'grid[3].index(9) + args.get("offset", 0)' }]] };
+        } else {
+          const savedRevision = existsSync(join(process.env.ARC_RUN_ROOT!, 'harness', 'component_runs.jsonl'))
+            && readFileSync(join(process.env.ARC_RUN_ROOT!, 'harness', 'component_runs.jsonl'), 'utf8').includes('"kind":"program_save","name":"track_object"');
+          const runLog = join(process.env.ARC_RUN_ROOT!, 'harness', 'component_runs.jsonl');
+          const versionTwo = existsSync(runLog) && readFileSync(runLog, 'utf8')
+            .includes('"kind":"program_save","name":"track_object","path":"tools/track_object.py","version":2');
+          if (!savedRevision) planned = { kind: 'decide', calls: [['save_program', { name: 'track_object', description: 'Locate the tracked object in the current grid', tags: ['tracking', 'position'], body: 'grid[3].index(9)' }]] };
+          else if (!versionTwo && !resultNames.has('list_programs') && !resultNames.has('run_program'))
+            planned = { kind: 'decide', calls: [['list_programs', { query: 'tracking' }]] };
+          else if (!versionTwo && !resultNames.has('read_component') && !resultNames.has('run_program'))
+            planned = { kind: 'decide', calls: [['read_component', { name: 'track_object' }]] };
+          else if (!resultNames.has('run_program')) planned = { kind: 'decide', calls: [['run_program', { name: 'track_object', args: versionTwo ? { offset: 1 } : {} }]] };
+          else if (!resultNames.has('request_adapt') && !versionTwo) planned = { kind: 'decide', calls: [['request_adapt', { focus: 'Check whether track_object remains useful on the next state.' }]] };
+          else if (!resultNames.has('arc_action')) planned = { kind: 'decide', calls: [['arc_action', {
+            action: 'ACTION1', note: versionTwo ? 'use the revised program result' : 'move the tracked object right',
+            predict: versionTwo ? { cells: [[4, 3, 9]], level_changed: false } : { cells: [[3, 3, 9]], level_changed: false },
+          }]] };
+          else planned = { kind: 'decide', text: 'Script complete; wait for the next phase.' };
+        }
+      }
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'adapt-request' && head.startsWith('SELF_HARNESS_HOOK'))
+        planned = { kind: 'decide', calls: [['skip', { reason_code: 'need_more_task_signal' }]] };
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' && head.startsWith('SELF_HARNESS_HOOK'))
         planned = { kind: 'decide', calls: [['skip', { reason_code: 'already_covered' }]] };
-      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' && head.startsWith('SELF_HARNESS_HOOK')) {
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook-components' && head.startsWith('SELF_HARNESS_HOOK')) {
+        const hookResult = messages.findLast((m: any) => m?.role === 'toolResult' && m.toolName === 'self_component');
+        planned = hookResult ? { kind: 'decide', text: 'Hook save complete; resume Task.' }
+          : { kind: 'decide', calls: [['self_component', { kind: 'prompt', name: 'hook_rule',
+            content: 'SELF_HOOK_COMPONENT_MARK: compare the prior reported change with the current grid before choosing a move.' }]] };
+      }
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook-components'
+          && !head.startsWith('SELF_HARNESS_HOOK') && head.includes('SELF_HOOK_COMPONENT_MARK'))
+        planned = SELF_HOOK_COMPONENTS_SCRIPT[1];
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'min-loop' && head.startsWith('SELF_HARNESS_HOOK')) {
+        if (head.includes('hook_act | Covered'))
+          planned = { kind: 'decide', calls: [['skip', { reason_code: 'already_covered' }]] };
+        else if (messages.some((m: any) => m?.toolName === 'save_tool'))
+          planned = { kind: 'decide', text: 'Saved the parameterized action function; return to Task.' };
+        else if (head.includes('run | reusable_function') && head.includes('promote available'))
+          planned = { kind: 'decide', calls: [['save_tool', { name: 'hook_act', body: 'def run(args, env):\n    return env.act(args["action"])' }]] };
+        else
+          planned = { kind: 'decide', calls: [['skip', { reason_code: 'no_reusable_logic' }]] };
+      }
+      else if (['inspect-to-call', 'inspect-to-call-python-negative', 'inspect-to-call-read-failure', 'inspect-to-call-no-read'].includes(process.env.ARC_THIN_SMOKE_SCRIPT ?? '')
+          && head.startsWith('SELF_HARNESS_HOOK')) {
+        if (inspectToCallHookHead !== head) {
+          inspectToCallHookHead = head;
+          inspectToCallHookCount += 1;
+        }
+        const lastUserIndex = messages.findLastIndex((message: any) => message?.role === 'user');
+        const currentHookResults = messages.slice(lastUserIndex + 1).filter((message: any) => message?.role === 'toolResult');
+        if (currentHookResults.length) planned = { kind: 'decide', text: 'Hook operation complete; return to Task.' };
+        else if (inspectToCallHookCount === 1)
+          planned = { kind: 'decide', calls: [['save_tool', { name: 'summarize_values', body: 'def run(args, env):\n    return sum(args["values"])' }]] };
+        else if (inspectToCallHookCount === 2 && process.env.ARC_THIN_SMOKE_SCRIPT === 'inspect-to-call-no-read')
+          planned = { kind: 'decide', calls: [['skip', { reason_code: 'no_reusable_logic' }]] };
+        else if (inspectToCallHookCount === 2)
+          planned = { kind: 'decide', calls: [['read_component', { name: process.env.ARC_THIN_SMOKE_SCRIPT === 'inspect-to-call-read-failure' ? 'missing_component' : 'summarize_values' }]] };
+        else planned = { kind: 'decide', calls: [['skip', { reason_code: 'already_covered' }]] };
+      }
+      else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook-python-negative'
+          && !head.startsWith('SELF_HARNESS_HOOK') && head.includes('SELF_HARNESS_HOOK_RECEIPT')
+          && head.includes('summarize_values v1')) {
+        if (!selfHookNegativePythonPlanned) {
+          selfHookNegativePythonPlanned = true;
+          planned = SELF_HOOK_PYTHON_NEGATIVE_SCRIPT[4];
+        } else if (!selfHookNegativeActionPlanned) {
+          selfHookNegativeActionPlanned = true;
+          planned = SELF_HOOK_PYTHON_NEGATIVE_SCRIPT[5];
+        } else planned = { kind: 'decide', text: 'Script complete; stop normally.' };
+      }
+      else if (['self-hook', 'self-batch-hook', 'self-hook-python-negative'].includes(process.env.ARC_THIN_SMOKE_SCRIPT ?? '') && head.startsWith('SELF_HARNESS_HOOK')) {
         const results = messages.filter((m: any) => m?.role === 'toolResult').map((m: any) => ({ tool: m.toolName, text: textOf(m) }));
-        if (results.some((r: any) => r.tool === 'promote' && r.text.includes('saved')))
+        if (results.some((r: any) => r.tool === 'save_tool' && r.text.includes('saved'))
+            || results.some((r: any) => r.tool === 'promote' && r.text.includes('saved')))
           planned = { kind: 'decide', text: 'Published; return to Task.' };
-        else if (head.includes('candidate summarize_values')) planned = { kind: 'decide', calls: [['promote', {}]] };
+        else if (head.includes('SELF_HOOK_ANALYSIS_MARK')) planned = { kind: 'decide', calls: [['skip', { reason_code: 'no_reusable_logic' }]] };
+        else if (head.includes('"function":"summarize_values"') && head.includes('"coverage":[]'))
+          planned = { kind: 'decide', calls: [['promote', { name: 'summarize_values' }]] };
         else planned = { kind: 'decide', calls: [['skip', { reason_code: 'no_reusable_logic' }]] };
       }
       else if (consult && process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components') planned = { kind: 'decide', text: 'SUBAGENT_SEMANTIC_MARK: 42' };
@@ -739,10 +874,17 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			else {
 				planned = SCRIPT[step];
 				if (planned && (planned.kind === "consolidate") === consolidating) step += 1;
+				else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'min-loop') planned = { kind: 'decide', text: 'Script complete; stop normally.' };
 				else planned = consolidating
 					? { kind: "consolidate", text: "Script exhausted or out of order during consolidation." }
 					: { kind: "decide", calls: [["arc_action", { action: "ACTION1", note: "fallback after script" }]] };
 			}
+      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook' && !head.startsWith('SELF_HARNESS_HOOK')
+          && step >= SELF_HOOK_SCRIPT.length)
+        planned = { kind: 'decide', text: 'Script complete; stop normally.' };
+      if (process.env.ARC_THIN_SMOKE_SCRIPT === 'min-loop' && !head.startsWith('SELF_HARNESS_HOOK')
+          && head.startsWith('Decide the next action.') && messages.some((m: any) => m?.toolName === 'hook_act'))
+        planned = { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] };
       // A tool the run does not offer (refine without refinements) is left out of the scripted message.
       if (planned?.calls && !analyst && !critic) {
         const offered = new Set(tools.map((tool: any) => tool.name ?? tool.function?.name));

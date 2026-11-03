@@ -29,7 +29,7 @@ export class Workspace {
     this.resultIndex = join(privateRoot, 'result-index.jsonl');
     mkdirSync(this.root, { recursive: true });
     if (lstatSync(this.root).isSymbolicLink()) throw Error('workspace root cannot be a link');
-    for (const dir of ['data/frames', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results'])
+    for (const dir of ['data/frames', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results', 'config'])
       mkdirSync(this.path(dir, true, true), { recursive: true });
   }
   /** Also called by operations with Pi-resolved paths; callers must prevalidate raw arguments. */

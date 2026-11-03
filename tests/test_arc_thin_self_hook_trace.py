@@ -4,6 +4,7 @@ from pathlib import Path
 from autoresearch_pi.arc_thin_e2e import (
     SELF_HARNESS_HOOK_PROMPT,
     _assemble_self_hook_trace,
+    _inspect_to_call_card,
     _project_self_hook_trace,
     _self_hook_overflow,
 )
@@ -25,6 +26,40 @@ def _write(path: Path, rows: list[dict]) -> None:
 def _session_message(event_id: str, timestamp: str, role: str, content, **extra) -> dict:
     message = {"role": role, "content": content, **extra}
     return {"type": "message", "id": event_id, "parentId": None, "timestamp": timestamp, "message": message}
+
+
+def test_inspect_to_call_card_is_bounded_and_uses_last_read_still_mounted(tmp_path: Path) -> None:
+    entries = [
+        {"path": "tools/first.py", "version": 1, "good": {"kind": "tool", "name": "first", "enabled": True, "version": 1}},
+        {"path": "tools/stale.py", "version": 2, "good": {"kind": "tool", "name": "stale", "enabled": True, "version": 2}},
+    ]
+    _write(tmp_path / ".harness/components.jsonl", entries)
+    reads = [
+        {"kind": "reuse_read", "path": "tools/first.py", "name": "first", "tool_name": "first", "version": 1,
+         "args_contract": 'return args["value"]'},
+        {"kind": "reuse_read", "path": "tools/stale.py", "name": "stale", "tool_name": "stale", "version": 1,
+         "args_contract": 'return args["ignored"]'},
+    ]
+    card = _inspect_to_call_card(tmp_path, reads)
+    assert len(card) < 700
+    assert "logical call name: first" in card
+    assert "version: 1" in card and 'args["value"]' in card and "Task tool name: first" in card
+    assert "stale" not in card
+    # A failed replacement keeps the old working Binder version mounted.
+    _write(tmp_path / ".harness/components.jsonl", [
+        {"path": "tools/first.py", "version": 2, "error": "validation failed",
+         "good": {"kind": "tool", "name": "first", "enabled": True, "version": 1}},
+    ])
+    assert "version: 1" in _inspect_to_call_card(tmp_path, reads[:1])
+
+
+def test_inspect_to_call_card_omits_no_read_failed_read_and_replaced_versions(tmp_path: Path) -> None:
+    _write(tmp_path / ".harness/components.jsonl", [
+        {"path": "tools/saved.py", "version": 2, "good": {"kind": "tool", "name": "saved", "enabled": True}},
+    ])
+    assert _inspect_to_call_card(tmp_path, []) == ""  # includes a failed read: it emits no successful read event
+    assert _inspect_to_call_card(tmp_path, [{"kind": "reuse_read", "path": "tools/saved.py", "name": "saved",
+        "tool_name": "saved", "version": 1, "args_contract": 'return args["value"]'}]) == ""
 
 
 def test_first_hook_trace_remains_auditable_and_projection_uses_indexes_and_pointers(tmp_path: Path) -> None:

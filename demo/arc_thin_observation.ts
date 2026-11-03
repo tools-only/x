@@ -59,7 +59,7 @@ export function gridRuns(grid: number[][], limit = 6000): string {
   return body.length <= limit ? body : `${head}\n(${lines.length} row groups, ${body.length} characters: too varied to show here; use show() in python)`;
 }
 
-export function observationReference(value: any, n: number): string {
+export function observationReference(value: any, n: number, options: { pythonSession?: boolean } = {}): string {
   const snapshot = publicObservation(value, n), grid = snapshot.frames.at(-1);
   if (!grid?.length) return 'CURRENT STATE: unavailable — do not act on remembered grids.';
   return `CURRENT STATE #${n}: ${snapshot.state}; levels_completed=${snapshot.levels_completed}; ` +
@@ -67,5 +67,6 @@ export function observationReference(value: any, n: number): string {
     `${gridRuns(grid)}\n` +
     `animation_frames=${snapshot.frames.length}; grid_sha256=${snapshot.grid_sha256}. ` +
     `Exact data: data/observations/${n}.json (all frames and image refs); data/frames/${n}.json (latest grid); ` +
-    `data/frames/${n}.png (latest image). Python: grid, prev_grid, state['frames'], history.grid(n), show().`;
+    `data/frames/${n}.png (latest image).` +
+    (options.pythonSession === false ? '' : ` Python: grid, prev_grid, state['frames'], history.grid(n), show().`);
 }

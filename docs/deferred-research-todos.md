@@ -286,6 +286,12 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 ## 后续更新
 
+2026-11-02 第一阶段 MEMORY-A1：真实 `self-harness-bounded-20261102-103200` 中 ADAPT 写入 memory，runtime 持久化且下一 TASK 工作集包含 memory section；下一行动没有遵循该条 memory 的具体建议，日志无法判定是否有意修订或语义采用，实际 provider 请求内容也未单独留证。后续核对真实输入与下一轮判断/行动/反馈，合理不使用单列；收益声明需对照。此项仍开放，见[第一阶段记录](plans/2026-11-02-minimal-self-harness-agent-system.md#2026-11-02-第一阶段真实路径补记)。
+
+2026-11-02 按需 ADAPT 真实运行遗留：scripted provider 路径到达 TASK request → ADAPT skip → TASK，证明接线；OpenRouter/Nemotron 真实 `ls20` 样本取消 token 上限后运行 635 秒、1 动作时因连续决策恢复额度耗尽停止，未见 `request_adapt`，因此自主触发与真实 TASK→ADAPT→TASK 均未验证。另有 3 次 decision timeout、2 次恢复、3 次中断请求用量未知。待追踪：provider schema 中请求工具是否可见；超时与恢复耗尽原因及中断重复执行边界；配置规则独立触发与生效；ADAPT 修改进入并改变后续 TASK；manual/on-demand 对 after_batch 的任务进展与父子成本对照；终态/预算/失败等边界回归。下一次真实 provider 运行需单独预算授权。详见[同一计划记录](plans/2026-11-02-minimal-self-harness-agent-system.md#2026-11-02-真实运行结果与待追踪项)及[验收分析指南](self-harness-test-acceptance-guide.md)。
+
+2026-11-02 TypeScript phase-owner 真实 run：AZ/Qwen3.8-27B / 真实 `ls20`，授权 50 actions、无时间/token 上限；6-batch checkpoint 到达一次 ADAPT，Agent 写入 `task_state` 并返回 Task。decision 8 后 working set 持续含 memory，但建议 Right 后 action #7–#10 为 ACTION1，Covered 未证实；无 Agent-created tool 调用，L0 未达。run 在 action #11 前后的 provider error recovery 中，TS 已锁定 `action_receipt_unknown`，随后 runner attempt 3 仍提交 action #11，phase state 与最终 bridge/trajectory 不一致；未重复提交，scorecard verified。源码已修改为只对完整 turn 的未回执动作停止，尚未复验；该真实 run 以 11/50 actions、0 levels 提前停止，832,087 reported tokens，1 failed request 用量未知，净收益不适用/未验证。memory A1 仍开放。下一真实复验需新的独立预算授权，不做对照；见[验收记录](plans/2026-11-02-minimal-self-harness-agent-system.md#2026-11-02-typescript-phase-owner-真实-arc-验收记录)。
+
 2026-10-12 thin 路径：依据 tu93 round-5 真实轨迹诊断（[报告与变更记录](reports/2026-10-12-tu93-new-design-analysis.md)），实现了以下改动：
 - skill 产物（artifacts）存储，记录产出者、状态与关卡，并作为 `state["artifacts"]` 供后续 skill 读取；
 - skill 写于旧关卡时给出标记；
