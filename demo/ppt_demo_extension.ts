@@ -120,14 +120,20 @@ export default function pptDemo(pi: ExtensionAPI) {
   const previousUsage = existsSync(join(root, 'harness/model-usage.jsonl'))
     ? readFileSync(join(root, 'harness/model-usage.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
   const lastUsage = previousUsage.at(-1);
+  const reserve = Number(process.env.PPT_DEMO_REQUEST_RESERVE_USD ?? 3.52);
+  const cap = Number(process.env.PPT_DEMO_BUDGET_USD ?? 12);
+  const inputRate = Number(process.env.PPT_DEMO_INPUT_USD_PER_MILLION ?? 20);
+  const outputRate = Number(process.env.PPT_DEMO_OUTPUT_USD_PER_MILLION ?? 80);
+  const cacheReadRate = Number(process.env.PPT_DEMO_CACHE_READ_USD_PER_MILLION ?? inputRate);
+  const cacheWriteRate = Number(process.env.PPT_DEMO_CACHE_WRITE_USD_PER_MILLION ?? inputRate);
   let requests = previousRequests.at(-1)?.request ?? 0, reserved = 0;
-  let spent = (lastUsage?.conservative_usd ?? 0) + Math.max(0, requests-(lastUsage?.request ?? 0))*3.52;
+  let spent = (lastUsage?.conservative_usd ?? 0) + Math.max(0, requests-(lastUsage?.request ?? 0))*reserve;
   pi.on('before_provider_request', (event: any) => {
-    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + 3.52 > 12 || requests >= 50) {
+    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap || requests >= 50) {
       writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, reason: 'authorized budget boundary' }));
       process.exit(0); // Extension event exceptions are fail-open in Pi; stop before the HTTP call.
     }
-    spent += 3.52; reserved = 3.52;
+    spent += reserve; reserved = reserve;
     const payload = event.payload as any;
     log('provider-requests.jsonl', { request: ++requests, phase: state.phase, estimated_usd_so_far: spent,
       payload: JSON.stringify(payload, (key, value) => key === 'url' && typeof value === 'string' && value.startsWith('data:') ? '(image)' : value) });
@@ -137,7 +143,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (m.role === 'assistant') {
       const u = m.usage ?? {};
       const known = Number.isFinite(u.input) && Number.isFinite(u.output) && (u.input+u.output)>0;
-      if (known) spent += ((u.input ?? 0)+(u.cacheRead ?? 0)+(u.cacheWrite ?? 0))*20/1e6+(u.output ?? 0)*80/1e6-reserved;
+      if (known) spent += ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6-reserved;
       reserved = 0; // Missing usage keeps its full request reserve charged.
       log('model-usage.jsonl', { request: requests, usage: known ? u : null, conservative_usd: spent, usage_status: known ? 'reported' : 'unknown_reserved', stopReason: m.stopReason });
     }

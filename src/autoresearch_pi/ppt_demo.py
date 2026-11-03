@@ -45,10 +45,9 @@ def prepare(root: Path, source: Path) -> None:
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 
-def run(root: Path, seconds: int = 7200, resume: bool = False) -> dict:
-    values = load_project_dotenv(Path("D:/autoresearch_pi_project"))
-    # The user authorized AZ, not the separate ARC-scoped OpenRouter route.
-    if values.get("OPENAI_API_BASE", "").rstrip("/") != "https://az.gptplus5.com/v1":
+def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False) -> dict:
+    values = {} if official_openai else load_project_dotenv(Path("D:/autoresearch_pi_project"))
+    if not official_openai and values.get("OPENAI_API_BASE", "").rstrip("/") != "https://az.gptplus5.com/v1":
         raise ValueError("This demo is authorized for the configured AZ route only")
     previous_protocol = json.loads((root / "protocol.json").read_text()) if resume else {}
     started = previous_protocol.get("started_at", time.time())
@@ -56,25 +55,60 @@ def run(root: Path, seconds: int = 7200, resume: bool = False) -> dict:
     if remaining <= 0:
         raise ValueError("Original two-hour deadline reached")
     deadline = time.monotonic() + remaining
-    agent = root / ".pi-agent"
-    agent.mkdir(exist_ok=resume)
-    model = {"id": "qwen3.8-27b", "name": "qwen3.8-27b", "reasoning": True, "input": ["text", "image"],
-             "contextWindow": 128000, "maxTokens": 12000, "cost": {"input": 20, "output": 80, "cacheRead": 20, "cacheWrite": 20}}
-    (agent / "models.json").write_text(json.dumps({"providers": {"az-demo": {"baseUrl": values["OPENAI_API_BASE"],
-        "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True,
-        "compat": {"supportsDeveloperRole": False, "thinkingFormat": "qwen"}, "models": [model]}}}), encoding="utf-8")
-    (agent / "settings.json").write_text(json.dumps({"compaction": {"enabled": False}, "retry": {"enabled": False}}))
-    env = {**os.environ, "OPENAI_API_KEY": values["OPENAI_API_KEY"], "PI_CODING_AGENT_DIR": str(agent),
+    agent = Path.home() / ".pi" / "agent" if official_openai else root / ".pi-agent"
+    agent.mkdir(exist_ok=resume or official_openai)
+    provider_id = "openai-codex" if official_openai else "az-demo"
+    model_id = "gpt-6-luna" if official_openai else "qwen3.8-27b"
+    if official_openai:
+        model = {"id": model_id, "name": "GPT-6 Luna", "api": "openai-codex-responses", "provider": provider_id,
+                 "baseUrl": "https://chatgpt.com/backend-api", "reasoning": True, "input": ["text", "image"],
+                 "contextWindow": 272000, "maxTokens": 12000,
+                 "cost": {"input": 0.1, "output": 0.5, "cacheRead": 0.01, "cacheWrite": 0.125},
+                 "thinkingLevelMap": {"off": None, "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"},
+                 "compat": {"supportsOpenAIGrammarTools": True, "supportsAdditionalTools": True,
+                            "supportsToolSearch": True, "supportsMidConvoSystemMessages": True}}
+        models_path, settings_path = agent / "models.json", agent / "settings.json"
+        original_models = models_path.read_bytes() if models_path.exists() else None
+        original_settings = settings_path.read_bytes() if settings_path.exists() else None
+        model_config = json.loads(original_models) if original_models else {}
+        providers = model_config.setdefault("providers", {})
+        codex_config = providers.setdefault(provider_id, {})
+        current_models = codex_config.get("models", [])
+        codex_config["models"] = [item for item in current_models if item.get("id") != model_id] + [model]
+        models_path.write_text(json.dumps(model_config, indent=2), encoding="utf-8")
+        settings_config = json.loads(original_settings) if original_settings else {}
+        settings_config.setdefault("compaction", {})["enabled"] = False
+        settings_config.setdefault("retry", {})["enabled"] = False
+        settings_path.write_text(json.dumps(settings_config, indent=2), encoding="utf-8")
+    else:
+        agent.mkdir(exist_ok=resume)
+        model = {"id": model_id, "name": model_id, "reasoning": True, "input": ["text", "image"],
+                 "contextWindow": 128000, "maxTokens": 12000, "cost": {"input": 20, "output": 80, "cacheRead": 20, "cacheWrite": 20}}
+        (agent / "models.json").write_text(json.dumps({"providers": {provider_id: {"baseUrl": values["OPENAI_API_BASE"],
+            "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True,
+            "compat": {"supportsDeveloperRole": False, "thinkingFormat": "qwen"}, "models": [model]}}}), encoding="utf-8")
+        (agent / "settings.json").write_text(json.dumps({"compaction": {"enabled": False}, "retry": {"enabled": False}}))
+    env = {**{key: value for key, value in os.environ.items() if key != "OPENAI_API_KEY"},
+           **({"OPENAI_API_KEY": values["OPENAI_API_KEY"]} if not official_openai else {}),
+           "PI_CODING_AGENT_DIR": str(agent),
            "PPT_DEMO_ROOT": str(root), "PPT_DEMO_PYTHON": os.sys.executable,
-           "PPT_DEMO_DEADLINE": str(int((time.time()+remaining)*1000))}
+           "PPT_DEMO_DEADLINE": str(int((time.time()+remaining)*1000)),
+           "PPT_DEMO_REQUEST_RESERVE_USD": "0.10" if official_openai else "3.52",
+           "PPT_DEMO_BUDGET_USD": "12", "PPT_DEMO_INPUT_USD_PER_MILLION": "0.10" if official_openai else "20",
+           "PPT_DEMO_OUTPUT_USD_PER_MILLION": "0.50" if official_openai else "80",
+           "PPT_DEMO_CACHE_READ_USD_PER_MILLION": "0.01" if official_openai else "20",
+           "PPT_DEMO_CACHE_WRITE_USD_PER_MILLION": "0.125" if official_openai else "20"}
     command = ["node", str(PROJECT / "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
         "--mode", "rpc", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates",
         "--no-builtin-tools", "--extension", str(PROJECT / "demo/ppt_demo_extension.ts"),
-        "--provider", "az-demo", "--model", "qwen3.8-27b", "--thinking", "low", "--session", str(root / "session.jsonl")]
+        "--provider", provider_id, "--model", model_id, "--thinking", "low", "--session", str(root / "session.jsonl")]
     protocol = {"started_at": started, "base_branch": "codex/agent-native-program-loop", "task": "PresentBench/economics/JPMorgan_Chase/Earning3",
-        "provider": "AZ https://az.gptplus5.com/v1", "model": "qwen3.8-27b", "thinking": "low", "max_seconds": min(seconds,7200),
-        "authorized_cny": 100, "budget_guard": "USD12 conservative token estimate, reserve USD3.52 before each request; 50 requests maximum",
-        "rates": {"input_usd_per_million": 20, "output_usd_per_million": 80, "source": "Conservative guard above AZ public /api/pricing: model_ratio=1.2, completion_ratio=4; not verified account billing"},
+        "provider": "OpenAI Codex OAuth (official)" if official_openai else "AZ https://az.gptplus5.com/v1",
+        "model": model_id, "thinking": "low", "max_seconds": min(seconds,7200),
+        "authorized_cny": 100, "budget_guard": "USD12 cumulative API-equivalent cap, USD0.10 reserve/request, 50 requests maximum" if official_openai else "USD12 conservative token estimate, reserve USD3.52 before each request; 50 requests maximum",
+        "rates": {"input_usd_per_million": 0.10, "output_usd_per_million": 0.50, "cache_read_usd_per_million": 0.01,
+                  "cache_write_usd_per_million": 0.125, "source": "OpenAI GPT-6 Luna published API rates; Codex OAuth usage is subscription quota, not API billing equivalent"} if official_openai else
+                 {"input_usd_per_million": 20, "output_usd_per_million": 80, "source": "Conservative guard above AZ public /api/pricing: model_ratio=1.2, completion_ratio=4; not verified account billing"},
         "scope": "one exploratory production demo; no claim of causal net benefit", "guidance": "Explicit dual artifact+harness goal; no required program count, no forced revision, no critic worker",
         "command": command}
     protocol["source_hashes"] = {str(p.relative_to(PROJECT)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -83,6 +117,8 @@ def run(root: Path, seconds: int = 7200, resume: bool = False) -> dict:
                   PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts"]}
     if resume:
         protocol["resumes"] = [*previous_protocol.get("resumes", []), {"at": time.time(), "remaining_seconds": remaining}]
+        protocol["previous_provider"] = previous_protocol.get("provider")
+        protocol["previous_model"] = previous_protocol.get("model")
         protocol["previous_source_hashes"] = previous_protocol.get("source_hashes", {})
     (root / "protocol.json").write_text(json.dumps(protocol, indent=2), encoding="utf-8")
     summary = {"complete": False, "stop": "running", "batches": 0, "provider": protocol["provider"], "model": protocol["model"]}
@@ -116,6 +152,15 @@ def run(root: Path, seconds: int = 7200, resume: bool = False) -> dict:
         summary["stop"] = "budget" if (root / "budget-stop.json").exists() else "runtime_error"
         summary["error"] = str(error)
     finally:
+        if official_openai:
+            if original_models is None:
+                models_path.unlink(missing_ok=True)
+            else:
+                models_path.write_bytes(original_models)
+            if original_settings is None:
+                settings_path.unlink(missing_ok=True)
+            else:
+                settings_path.write_bytes(original_settings)
         (root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 
@@ -126,8 +171,9 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=Path)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--official-openai", action="store_true", help="resume with the existing OpenAI Codex OAuth session and GPT-6 Luna")
     args = parser.parse_args()
     root = args.root.resolve()
     if args.source:
         prepare(root, args.source.resolve())
-    print(json.dumps(run(root, resume=args.resume) if args.run else {"prepared": str(root)}, ensure_ascii=False))
+    print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai) if args.run else {"prepared": str(root)}, ensure_ascii=False))

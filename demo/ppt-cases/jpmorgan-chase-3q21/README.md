@@ -13,7 +13,7 @@ python -m autoresearch_pi.ppt_demo --root runs/ppt-jpm-3q21 --source demo/ppt-ca
 
 The packaged `material.txt` is the text of the JPMorgan Chase 3Q21 earnings release furnished as SEC EDGAR Exhibit 99.1. SEC says public EDGAR filing content is free to access and reuse. The original PresentBench PDF is not redistributed; its text is provided from the SEC filing, with the source and benchmark revision recorded in `case.json` and the run's `task-provenance.json`.
 
-Add `--run` to start generation. The scope of this offline bundle is the task and evaluation resources; model-provider configuration remains the existing demo configuration.
+Add `--run --official-openai` to start generation with the existing OpenAI Codex OAuth login and GPT-6 Luna. Pi must already be logged in to OpenAI Codex on that machine. This provider option keeps the same task loop and uses the run's existing budget/deadline guard; the task files themselves are read locally.
 
 ## Case identity
 
