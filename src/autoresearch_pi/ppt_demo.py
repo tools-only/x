@@ -48,7 +48,8 @@ def prepare(root: Path, source: Path) -> None:
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 
-def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False, continue_prompt: str | None = None) -> dict:
+def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False,
+        continue_prompt: str | None = None, thinking: str = "low") -> dict:
     values = {} if official_openai else load_project_dotenv(Path("D:/autoresearch_pi_project"))
     if not official_openai and values.get("OPENAI_API_BASE", "").rstrip("/") != "https://az.gptplus5.com/v1":
         raise ValueError("This demo is authorized for the configured AZ route only")
@@ -109,10 +110,10 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
     command = ["node", str(PROJECT / "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
         "--mode", "rpc", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates",
         "--no-builtin-tools", "--extension", str(PROJECT / "demo/ppt_demo_extension.ts"),
-        "--provider", provider_id, "--model", model_id, "--thinking", "low", "--session", str(root / "session.jsonl")]
+        "--provider", provider_id, "--model", model_id, "--thinking", thinking, "--session", str(root / "session.jsonl")]
     protocol = {"started_at": started, "base_branch": "codex/agent-native-program-loop", "task": "PresentBench/economics/JPMorgan_Chase/Earning3",
         "provider": "OpenAI Codex OAuth (official)" if official_openai else "AZ https://az.gptplus5.com/v1",
-        "model": model_id, "thinking": "low", "max_seconds": min(seconds,7200),
+        "model": model_id, "thinking": thinking, "max_seconds": min(seconds,7200),
         "authorized_cny": 100, "budget_guard": "USD12 cumulative API-equivalent cap, USD0.10 reserve/request, 2-hour deadline" if official_openai else "USD12 conservative token estimate, reserve USD3.52 before each request, 2-hour deadline",
         "rates": {"input_usd_per_million": 0.10, "output_usd_per_million": 0.50, "cache_read_usd_per_million": 0.01,
                   "cache_write_usd_per_million": 0.125, "source": "OpenAI GPT-6 Luna published API rates; Codex OAuth usage is subscription quota, not API billing equivalent"} if official_openai else
@@ -183,8 +184,10 @@ if __name__ == "__main__":
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--official-openai", action="store_true", help="resume with the existing OpenAI Codex OAuth session and GPT-6 Luna")
     parser.add_argument("--continue-prompt", help="continue an existing run with a concrete task update; keeps the original deadline and budget")
+    parser.add_argument("--thinking", choices=["low", "medium", "high", "xhigh", "max"], default="low")
     args = parser.parse_args()
     root = args.root.resolve()
     if args.source:
         prepare(root, args.source.resolve())
-    print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai, continue_prompt=args.continue_prompt) if args.run else {"prepared": str(root)}, ensure_ascii=False))
+    print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai,
+        continue_prompt=args.continue_prompt, thinking=args.thinking) if args.run else {"prepared": str(root)}, ensure_ascii=False))
