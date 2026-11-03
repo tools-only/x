@@ -19,7 +19,7 @@
       "role": "source PresentBench generation instructions; retained for provenance and evaluation, not used for this production run"
     },
     "production_brief.md": {
-      "sha256": "641d8fedaee59e4c8a8244c511354afd95bd9ffec179880aa69a40f582d19813",
+      "sha256": "c75f2efa3253adccdca281616f8ad491464cdea3801f39a63357b0ffc873268d",
       "role": "generation input; locally authored coherent task brief based on the source release"
     },
     "statistics.yaml": {

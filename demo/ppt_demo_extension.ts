@@ -22,10 +22,20 @@ export default function pptDemo(pi: ExtensionAPI) {
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
   const log = (file: string, row: any) => appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), batch: state.batch, phase: state.phase, ...row })+'\n');
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
-  const snapshot = () => ({ task: 'PPT production', phase: state.phase, batch: state.batch,
-    revision: state.revision, last_feedback: state.lastFeedback ?? null,
-    memory: existsSync(workspace.path('notes/memory.md')) ? workspace.read('notes/memory.md') : '',
-    ...(existsSync(workspace.path('artifacts/deck.json')) ? { deck: JSON.parse(workspace.read('artifacts/deck.json')) } : {}) });
+  const snapshot = () => {
+    const deckPath = 'artifacts/deck.json';
+    const deck = existsSync(workspace.path(deckPath)) ? JSON.parse(workspace.read(deckPath)) : null;
+    const memory = workspace.files('notes').filter(path => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))
+      .map(path => ({ path, summary: workspace.read(path).split(/\r?\n/).find((line: string) => line.trim())?.slice(0, 240) ?? '' }));
+    const feedback = state.lastFeedback;
+    return { task: 'PPT production', phase: state.phase, batch: state.batch, revision: state.revision,
+      last_feedback: feedback ? { revision: feedback.revision, slides: feedback.slides,
+        native_objects: feedback.native_objects, warnings: feedback.warnings, source_path: feedback.source_path } : null,
+      rendered_revisions: (state.renderedRevisions ?? []).slice(-8),
+      memory,
+      ...(deck ? { deck: { path: deckPath, slides: deck.slides.length,
+        titles: deck.slides.map((slide: any) => slide.elements.find((el: any) => el.kind === 'text')?.text ?? '') } } : {}) };
+  };
   const runtime = new NativeRuntime({ pi, workspace, binder, state: snapshot, level: () => 0,
     actionCount: () => state.batch, decision: () => state.batch, hookTurn: () => state.phase === 'adapt',
     pythonSession: false, pythonKernel: false, workMemory: false, log, usage: (kind, message) => log('usage.jsonl', { kind, message }),
@@ -63,25 +73,33 @@ export default function pptDemo(pi: ExtensionAPI) {
       name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), content: Type.String(),
       description: Type.Optional(Type.String()), tools: Type.Optional(Type.Array(Type.String())) }),
     async (a: any) => {
-      const path = a.kind === 'memory' ? 'notes/memory.md' : a.kind === 'skill' ? `skills/${a.name}/SKILL.md`
+      const path = a.kind === 'memory' ? `notes/memory/${a.name}.md` : a.kind === 'skill' ? `skills/${a.name}/SKILL.md`
         : a.kind === 'subagent' ? `agents/${a.name}.md` : `prompts/${a.name}.md`;
       const content = a.kind === 'memory' ? a.content : a.kind === 'prompt' ? `---\nactive: true\n---\n${a.content}`
         : a.kind === 'subagent' ? `---\ndescription: ${JSON.stringify(a.description ?? a.name)}\ntools: ${JSON.stringify(a.tools ?? ['read'])}\n---\n${a.content}`
-        : `---\nname: ${a.name}\ndescription: ${a.name}\n---\n${a.content}`;
+        : `---\nname: ${a.name}\ndescription: ${JSON.stringify(a.description ?? a.name)}\n---\n${a.content}`;
       workspace.mutate({ op: 'write', path, content });
       const receipt = await binder.save(path, 0, { by: 'agent', decision: state.batch });
       return text(receipt ?? `Saved ${path}; next batch uses it.`);
     });
-  register('office', 'Render current deck through actual PowerPoint, view full-size pages, or deliver. Read data/environment.md for the editable object format. Render returns native checks and contact sheet; look returns up to 4 pages.',
-    Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('deliver')]), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1, maximum: 30 }), { maxItems: 4 })), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
+  register('office', 'Render the canonical deck or a candidate JSON under artifacts/ in actual PowerPoint, inspect rendered pages, or deliver the current canonical deck. Each render gets an immutable revision; use look with that revision to compare candidates.',
+    Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('deliver')]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1, maximum: 30 }), { maxItems: 4 })), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
     (a: any) => {
       if (state.phase === 'adapt' && a.op !== 'look') throw Error('ADAPT is read-only; use TASK to render/deliver.');
       if (a.op === 'render') {
+        const sourcePath = a.source_path ?? 'artifacts/deck.json';
+        if (!sourcePath.startsWith('artifacts/') || !sourcePath.endsWith('.json')) throw Error('Render source must be a JSON file under artifacts/.');
+        const source = workspace.path(sourcePath);
+        if (!existsSync(source)) throw Error(`Render source does not exist: ${sourcePath}`);
         const revision = ++state.revision; persist();
         const helper = fileURLToPath(new URL('../src/autoresearch_pi/ppt_demo_artifact.py', import.meta.url));
-        const child = spawnSync(process.env.PPT_DEMO_PYTHON ?? 'python', [helper, root, workspace.path('artifacts/deck.json'), String(revision)], { encoding: 'utf8', timeout: 180000, maxBuffer: 2*1024*1024, windowsHide: true });
+        const child = spawnSync(process.env.PPT_DEMO_PYTHON ?? 'python', [helper, root, source, String(revision)], { encoding: 'utf8', timeout: 180000, maxBuffer: 2*1024*1024, windowsHide: true });
         if (child.error || child.status !== 0) throw Error((child.stderr || String(child.error)).slice(-5000));
-        state.lastFeedback = JSON.parse(child.stdout); state.events.push({ batch: state.batch, type: 'render', ...state.lastFeedback }); persist();
+        const receipt = JSON.parse(child.stdout);
+        state.lastFeedback = { revision, slides: receipt.slides, native_objects: receipt.native_objects,
+          warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath };
+        state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
+        state.events.push({ batch: state.batch, type: 'render', ...state.lastFeedback }); persist();
         log('renders.jsonl', state.lastFeedback);
         return { content: [...text(state.lastFeedback).content, { type: 'image', data: readFileSync(join(root, 'exports', `v${String(revision).padStart(3, '0')}`, 'contact-sheet.png')).toString('base64'), mimeType: 'image/png' }] };
       }
@@ -96,9 +114,11 @@ export default function pptDemo(pi: ExtensionAPI) {
       cpSync(out, join(delivery, 'presentation'), { recursive: true });
       const components = binder.active();
       for (const c of components) { const path = join(delivery, 'harness', c.path); mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, c.source); }
-      if (existsSync(workspace.path('notes/memory.md'))) { mkdirSync(join(delivery, 'harness', 'notes'), { recursive: true }); cpSync(workspace.path('notes/memory.md'), join(delivery, 'harness', 'notes', 'memory.md')); }
+      for (const memoryPath of workspace.files('notes').filter(path => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))) {
+        const target = join(delivery, 'harness', memoryPath); mkdirSync(join(target, '..'), { recursive: true }); cpSync(workspace.path(memoryPath), target);
+      }
       writeFileSync(join(delivery, 'harness.json'), JSON.stringify({ base: 'codex/agent-native-program-loop', components: components.map(c => ({ name: c.name, kind: c.kind, version: c.version, path: c.path, hash: c.hash })), load: 'Copy harness/ into a new PPT demo workspace; Binder loads and runs the saved programs with fresh state/args.' }, null, 2));
-      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/usage.jsonl',
+      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/renders.jsonl', 'harness/usage.jsonl',
         'harness/consult_runs.jsonl', 'harness/model-usage.jsonl', 'harness/provider-requests.jsonl', 'session.jsonl']) {
         const source = join(root, relative);
         if (!existsSync(source)) continue;
@@ -124,9 +144,11 @@ export default function pptDemo(pi: ExtensionAPI) {
     pi.setActiveTools(state.phase === 'adapt' ? selected.filter(x => !['write', 'edit'].includes(x)) : selected);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt').map(c => c.body).join('\n');
     const systemPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8') + '\n' + activePrompts;
+    const skillIndex = binder.active().filter(c => c.kind === 'skill')
+      .map(c => `${c.name}@v${c.version} | ${c.description} | read_component(name) for full method`).join('\n');
     const current = JSON.stringify(snapshot());
     log('lifecycle.jsonl', { event: resumed ? 'resume' : 'batch_started', catalog: binder.programCatalog(0) });
-    return { systemPrompt, message: { customType: 'ppt-work-state', content: `PHASE ${state.phase.toUpperCase()} BATCH ${state.batch}\nContinuation: ${state.note}\nCurrent state: ${current}\n${binder.index(0)}\n${binder.programCatalog(0)}\n${binder.active().filter(c => c.kind === 'skill').map(c => `Method ${c.name}: ${c.body}`).join('\n')}`, display: false } };
+    return { systemPrompt, message: { customType: 'ppt-work-state', content: `PHASE ${state.phase.toUpperCase()} BATCH ${state.batch}\nContinuation: ${state.note}\nCurrent state: ${current}\n${binder.index(0)}\n${skillIndex}\n${binder.programCatalog(0)}`, display: false } };
   });
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   const previousRequests = existsSync(join(root, 'harness/provider-requests.jsonl'))

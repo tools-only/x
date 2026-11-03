@@ -117,3 +117,24 @@ The system prompt and production brief now make the selected-dimension lifecycle
 - Reusable harness output: `delivery/harness/` contains `earnings_story` Skill v1, `financial_layout` Skill v3, `number_audit` Skill v3, `earnings_scene_builder` tool v6, and supporting memory. This run demonstrates guided construction, later activation, revision and semantic application across visual layout and source/number fidelity (with narrative/data separation in `story.json`). No subagent was created; there is no adoption claim for that component category.
 - **Evidence assessment:** execution and artifact correctness were confirmed on the real OpenAI OAuth + Pi loop + Microsoft PowerPoint COM path; active harness components were reused during the task; edits responded to real renderer and source-semantic evidence. This was a user-guided single-run demo, not proof of unprompted autonomous opportunity recognition or generalization. No PresentBench score was run; its prompt mismatch remains. There is no controlled baseline comparison, so net benefit is unverified. Source fidelity was manually checked on the key significant-item bridge and reported/managed labels; the artifact is not a full financial-statement audit.
 - The task inputs remain local and offline under `demo/ppt-cases/jpmorgan-chase-3q21/assets/`; provider/model connectivity is a separate runtime requirement. The generated deliverable is local under the run root. No generated deck is published to GitHub.
+
+## User-directed implementation: Agent-owned production engineering
+
+### Opportunity and burden
+
+The last run's adapter instructed the Agent to create methods in three developer-selected dimensions, injected every active Skill body and the entire slide deck into each batch, and exposed rendering only for the canonical deck. These choices biased component creation toward a checklist, crowded the task context, and made early visual exploration harder. The burden to choose what to investigate, compare and improve then fell back to the user and developer.
+
+### Narrow claim
+
+Removing prescriptive component dimensions while giving the Agent a practical way to render and compare independent candidates will make the production environment more capable of supporting Agent-owned preparation, method development, experimentation and adoption. This change itself cannot establish that the Agent will use those capabilities autonomously or produce a more beautiful deck.
+
+### Implementation
+
+- Reframed the system prompt and offline case brief around an Agent-owned approach, with no required method categories, component types or component count. The task still specifies the audience, source constraints, editable output and slide count.
+- Added `office(render, source_path=...)` for candidate JSON files under `artifacts/`; each candidate is rendered through the same real PowerPoint path and can be inspected by immutable revision. Delivery continues to verify that the chosen render matches canonical `artifacts/deck.json`.
+- Reduced repeated context by replacing the full deck and full Skill bodies at every batch boundary with slide titles, compact render feedback, a concise skill catalog and the existing `read_component` method. Named memory files can coexist and are packaged with the delivered harness.
+- Kept renderer warnings in their proper role as geometry feedback; the Agent owns semantic and visual quality judgment. No evaluator or quality gate was added.
+
+### Bounded evaluation and current evidence
+
+No tests or paid provider run were performed, per the user's instruction. `git diff --check` and manual review of the edits are the only checks completed. Functional behavior, actual PowerPoint candidate comparison, component selection/adoption, task quality and net benefit remain unverified. The next falsifiable check is a no-charge local runner/render check with two materially different candidate decks, followed—only when authorized—by a real-provider run in which the Agent receives the goal and sources but chooses its own process. Record whether the Agent initiates meaningful exploration, what methods it chooses, how those methods change later production, the resulting artifact quality, management turns and parent/child cost. A run that waits for the developer to name methods or design directions does not support the autonomy claim.
