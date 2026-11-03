@@ -48,7 +48,7 @@ def prepare(root: Path, source: Path) -> None:
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 
-def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False) -> dict:
+def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False, continue_prompt: str | None = None) -> dict:
     values = {} if official_openai else load_project_dotenv(Path("D:/autoresearch_pi_project"))
     if not official_openai and values.get("OPENAI_API_BASE", "").rstrip("/") != "https://az.gptplus5.com/v1":
         raise ValueError("This demo is authorized for the configured AZ route only")
@@ -60,6 +60,11 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
     deadline = time.monotonic() + remaining
     agent = Path.home() / ".pi" / "agent" if official_openai else root / ".pi-agent"
     agent.mkdir(exist_ok=resume or official_openai)
+    if resume and continue_prompt:
+        loop_state = root / ".harness" / "ppt-loop.json"
+        saved_state = json.loads(loop_state.read_text())
+        saved_state["complete"] = False
+        loop_state.write_text(json.dumps(saved_state, indent=2), encoding="utf-8")
     provider_id = "openai-codex" if official_openai else "az-demo"
     model_id = "gpt-6-luna" if official_openai else "qwen3.8-27b"
     if official_openai:
@@ -132,7 +137,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                 stream.write(json.dumps(event, ensure_ascii=False)+"\n")
     try:
         with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=90, deadline=deadline, event_sink=record) as kernel:
-            transport = "PPT_RESUME" if resume else "Create the complete requested deck. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
+            transport = continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else "Create the complete requested deck. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
             while time.monotonic() < deadline:
                 response = kernel.prompt(transport)
                 if response.get("success") is False:
@@ -175,8 +180,9 @@ if __name__ == "__main__":
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--official-openai", action="store_true", help="resume with the existing OpenAI Codex OAuth session and GPT-6 Luna")
+    parser.add_argument("--continue-prompt", help="continue an existing run with a concrete task update; keeps the original deadline and budget")
     args = parser.parse_args()
     root = args.root.resolve()
     if args.source:
         prepare(root, args.source.resolve())
-    print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai) if args.run else {"prepared": str(root)}, ensure_ascii=False))
+    print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai, continue_prompt=args.continue_prompt) if args.run else {"prepared": str(root)}, ensure_ascii=False))
