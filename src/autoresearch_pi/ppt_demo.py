@@ -41,9 +41,12 @@ def prepare(root: Path, source: Path) -> None:
     doc = fitz.open(data / "material.pdf")
     for n, page in enumerate(doc, 1):
         page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).save(data / f"source-page-{n:02d}.png")
-    provenance = {"dataset": "PresentBench/PresentBench", "case": "economics/JPMorgan_Chase/Earning3",
-                  "material": "https://huggingface.co/datasets/PresentBench/PresentBench/resolve/main/economics/JPMorgan_Chase/Earning3/material.pdf",
-                  "instructions": "https://huggingface.co/datasets/PresentBench/PresentBench/resolve/main/economics/JPMorgan_Chase/Earning3/generation_task/instructions.md"}
+    revision = "3c6e01f563165d3a364a459f9777cd7286f42cd8"
+    base = f"https://huggingface.co/datasets/PresentBench/PresentBench/resolve/{revision}/"
+    provenance = {"dataset": "PresentBench/PresentBench", "revision": revision,
+                  "case": "economics/JPMorgan_Chase/Earning3",
+                  "material": base + "economics/JPMorgan_Chase/Earning3/material.pdf",
+                  "instructions": base + "economics/JPMorgan_Chase/Earning3/generation_task/instructions.md"}
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 

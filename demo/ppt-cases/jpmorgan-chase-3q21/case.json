@@ -1,0 +1,30 @@
+{
+  "benchmark": "PresentBench",
+  "dataset": "PresentBench/PresentBench",
+  "revision": "3c6e01f563165d3a364a459f9777cd7286f42cd8",
+  "case": "economics/JPMorgan_Chase/Earning3",
+  "title": "JPMorgan Chase Q3 2021 earnings",
+  "task_summary": "Create a complete 15–20 slide presentation explaining the financial results to media, the public, and non-specialists, based only on the supplied earnings release.",
+  "files": {
+    "material.pdf": {
+      "path": "economics/JPMorgan_Chase/Earning3/material.pdf",
+      "sha256": "b34e4142332fadcba6baf6ec202a194115b0635602b139e0068d13a1d531d973",
+      "role": "generation input"
+    },
+    "instructions.md": {
+      "path": "economics/JPMorgan_Chase/Earning3/generation_task/instructions.md",
+      "sha256": "efe516b50d3bb29ee5f5d6f7f1b7cfe80c41601f7f5f4eea29c659630273a145",
+      "role": "generation input"
+    },
+    "statistics.yaml": {
+      "path": "economics/JPMorgan_Chase/Earning3/generation_task/statistics.yaml",
+      "sha256": "296c20d70e049a7a88a4730c898cf7e6bf539b5d64463a2bd2eed2ac2ce23df2",
+      "role": "evaluation metadata"
+    },
+    "judge_prompt.json": {
+      "path": "economics/JPMorgan_Chase/Earning3/generation_task/judge_prompt.json",
+      "sha256": "b42d29568a28583a58a81bfccc1ca5f1cb0098eb67cc9d886672e71914cefe17",
+      "role": "evaluation only; never expose in agent workspace"
+    }
+  }
+}
