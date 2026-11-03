@@ -1,10 +1,12 @@
 # PresentBench: JPMorgan Chase Q3 2021 earnings
 
-This is the end-to-end task case used by the PPT production demo. Its source material and task files are bundled under `assets/`, so preparing a run does not fetch task data. The production run uses `production_brief.md` and the earnings-release text to create a 15-slide editable presentation. The task Agent decides what preparation, exploration, production methods and quality checks to use, and which reusable harness methods are worth developing. The source PresentBench instructions and judge prompt are retained in the run's separate `evaluation/` directory, never in the agent's task workspace. The generation instructions contain unrelated space-exploration wording, so this production demo does not claim a benchmark score. A task run can provide evidence about autonomous harness engineering; the task brief itself does not establish that autonomy.
+This is the primary task case used by the PPT production demo. Its source material and task files are bundled under `assets/`, so preparing a run does not fetch task data. The neutral production brief specifies the audience, purpose and delivery constraints; the task Agent must discover the narrative and production challenges from the earnings release. The source PresentBench instructions and judge prompt are retained in the run's separate `evaluation/` directory, never in the agent's task workspace. Those generation instructions contain unrelated space-exploration wording, so this production demo does not claim a benchmark score. A separate [Bank of America case](../bank-of-america-3q21/README.md) is held out for a later transfer check.
 
 ## Prepare and run from bundled resources
 
 Run the following from the repository root. No case-resource download step is needed:
+
+The renderer requires Microsoft PowerPoint on Windows and `pip install -e ".[ppt-demo]"` in the active Python environment.
 
 ```powershell
 $env:PYTHONPATH = 'src'

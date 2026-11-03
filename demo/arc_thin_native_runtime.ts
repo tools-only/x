@@ -1,4 +1,5 @@
 import { validateToolArguments } from '@earendil-works/pi-ai';
+import { readFileSync } from 'node:fs';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Binder, type Component } from './arc_thin_binder.ts';
@@ -32,6 +33,7 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   workMemory?: boolean;
   /** A baseline subagent may be consulted after its save, on the next provider request of this decision. */
   immediateSubagent?: boolean;
+  consultReasoning?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Baseline exposes the component shortcut and session source extractor. */
   selfBaseline?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
@@ -300,17 +302,34 @@ export class NativeRuntime {
     return receipt ?? `${name}: Created`;
   }
   /** Run the active named version on a fresh authoritative state snapshot. ADAPT calls are read-only. */
-  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
+  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal, version?: number) {
     const component = this.host.binder.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
     if (!component) throw Error(`program ${name}: no active named program`);
+    const source = version === undefined ? undefined : this.host.binder.sourceOf(component.path, version);
+    if (version !== undefined && source === undefined) throw Error(`program ${name}: version ${version} does not exist`);
     this.host.log('component_runs.jsonl', { kind: 'program_call', name, path: component.path, version: component.version,
-      decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task' });
-    const result = await this.call(component, { args }, signal, Boolean(this.host.hookTurn?.()));
+      requested_version: version, decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task' });
+    const result = await this.call(component, { args }, signal, Boolean(this.host.hookTurn?.()), source);
     const output = (result?.content ?? []).filter((part: any) => part?.type === 'text').map((part: any) => String(part.text ?? '')).join('\n');
     this.host.log('component_runs.jsonl', { kind: 'program_result', name, path: component.path, version: component.version,
       decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task', ok: !result?.isError,
       output_excerpt: output.slice(0, 600) });
     return result;
+  }
+  /** Execute an Agent-owned acceptance program against immutable evidence, without permitting writes. */
+  async checkProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
+    const component = this.host.binder.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
+    if (!component) throw Error(`acceptance program ${name} is not active`);
+    const snap = this.snapshot();
+    const result = await this.execute({ ...snap, mode: 'call', path: component.path, args: { args }, allow_writes: false }, signal);
+    const value = result.value as any;
+    const verdict = value?.has_value ? value.value : value;
+    this.host.log('component_runs.jsonl', { kind: 'delivery_check', name, version: component.version,
+      decision: this.decision(), n: this.host.actionCount(), ok: result.ok, verdict });
+    if (!result.ok) throw Error(`acceptance program failed: ${result.error ?? 'execution error'}`);
+    if (!verdict || typeof verdict !== 'object' || typeof verdict.ok !== 'boolean' || !String(verdict.reason ?? '').trim())
+      throw Error('acceptance program must return {"ok": boolean, "reason": "evidence-based explanation"}');
+    return { name, version: component.version, ...verdict };
   }
   async promote(name?: string, signal?: AbortSignal) {
     const chosen = name ?? this.promotionCandidates()[0]?.name;
@@ -794,11 +813,12 @@ export class NativeRuntime {
     if (!component) throw Error(`legacy alias ${name}: tool retired or unavailable`);
     return this.call(component, { args }, signal);
   }
-  private async call(c: Component, args: any, signal?: AbortSignal, readonly = false) {
+  private async call(c: Component, args: any, signal?: AbortSignal, readonly = false, source?: string) {
     const resolved = await this.resolveSessionArgs(args, signal);
     if (!resolved.ok) return text(`${c.name}: ${resolved.error}`, true);
     args = resolved.value;
-    const snap = this.snapshot(); const started = Date.now(); const label = this.host.binder.label(c.path);
+    const snap = this.snapshot(); const started = Date.now(); const label = source === undefined ? this.host.binder.label(c.path) : `${c.name} historical`;
+    if (source !== undefined) snap.sources[c.path] = source;
     let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : c.path);
     const receipts = result.ok ? await this.applyWrites(result) : [];
     if (!readonly && this.host.artifacts) result = { ...this.host.artifacts(result, c, this.host.actionCount()), acted: result.acted };
@@ -1036,7 +1056,7 @@ export class NativeRuntime {
   private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
     const available = this.host.immediateSubagent ? this.host.binder.candidates() : this.host.binder.active();
     const agent = available.find(c => c.kind === 'subagent' && c.name === args.agent);
-    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${available.filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}`);
+    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${available.filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}. Create one with self_component(kind="subagent", name="${args.agent}", content="...", description="...") and consult it after the next batch boundary.`);
     const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
     const tools: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
     // The subagent's python has a session of its own for this consult: it neither sees nor changes the parent's.
@@ -1058,8 +1078,15 @@ export class NativeRuntime {
       }
     }
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-    const messages: any[] = [{ role: 'user', content: [{ type: 'text', text: `Question: ${args.question}\n` +
-      refs.map(ref => `${ref}:\n${this.host.workspace.read(ref)}`).join('\n') }], timestamp: Date.now() }];
+    const content: any[] = [{ type: 'text', text: `Question: ${args.question}\n` }];
+    for (const ref of refs) {
+      const path = this.host.workspace.path(ref);
+      if (ref.toLowerCase().endsWith('.png')) {
+        content.push({ type: 'text', text: `Image ref: ${ref}` });
+        content.push({ type: 'image', data: readFileSync(path).toString('base64'), mimeType: 'image/png' });
+      } else content.push({ type: 'text', text: `${ref}:\n${this.host.workspace.read(ref)}` });
+    }
+    const messages: any[] = [{ role: 'user', content, timestamp: Date.now() }];
     const started = Date.now(); const deadline = started + 120000;
     const controller = new AbortController(); const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(abort, 120000);
@@ -1068,7 +1095,7 @@ export class NativeRuntime {
       for (let round = 0; round < 6 && Date.now() < deadline; round++) {
         if (signal?.aborted) throw Error('consult aborted');
         const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt: `CONSULT_ROLE ${agent.name}\n${agent.body}`, messages, tools } as any,
-          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: 'off', maxTokens: ctx.model!.maxTokens, ...(onResponse?{onResponse}:{}) } as any);
+          { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: this.host.consultReasoning ?? 'off', maxTokens: ctx.model!.maxTokens, ...(onResponse?{onResponse}:{}) } as any);
         const reply: any = this.host.modelResult ? await this.host.modelResult(create) : await create().result();
         this.host.usage('consult', reply); messages.push(reply);
         if (['error', 'aborted'].includes(reply.stopReason)) throw Error(`consult ${reply.stopReason}: ${reply.errorMessage ?? ''}`);

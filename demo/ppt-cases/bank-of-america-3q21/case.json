@@ -1,0 +1,9 @@
+{
+  "case": "bank-of-america-3q21",
+  "role": "held-out same-class production case",
+  "title": "Bank of America Q3 2021 earnings",
+  "material_source": "https://www.sec.gov/Archives/edgar/data/70858/000007085821000098/bac09302021ex991.htm",
+  "material_format": "Text extracted from SEC EDGAR Exhibit 99.1",
+  "benchmark": "held-out case; no PresentBench score claimed",
+  "material_sha256": "493262215dcf09d678387ed416c6c168df27042d95467f45799e5d830545f1fe"
+}

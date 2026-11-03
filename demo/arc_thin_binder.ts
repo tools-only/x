@@ -156,14 +156,17 @@ export class Binder {
   }
   /** Executable skills are stored as Python tools, but discovered as named programs. */
   programCatalog(level: number, query = ''): string {
-    const term = query.trim().toLowerCase();
+    const terms = query.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [];
     const rows = [...this.entries].filter(([, e]) => !e.retired && e.good?.program)
       .map(([path, e]) => {
         const c = e.good!;
         const status = c.level < level ? 'stale for this level' : e.error ? `v${e.version} failed; v${c.version} active` : 'active';
         return { path, c, status };
-      }).filter(({ c }) => !term || [c.name, c.description, ...(c.tags ?? [])].some(value => value.toLowerCase().includes(term)))
-      .sort((a, b) => a.c.name.localeCompare(b.c.name));
+      }).map(row => ({ ...row, score: terms.reduce((score, term) => {
+        const fields = [row.c.name, row.c.description, ...(row.c.tags ?? [])].join(' ').toLowerCase();
+        return score + (fields.includes(term) ? 1 : 0);
+      }, 0) })).filter(row => !terms.length || row.score > 0)
+      .sort((a, b) => b.score - a.score || a.c.name.localeCompare(b.c.name));
     if (!rows.length) return `No named programs match ${JSON.stringify(query)}.`;
     const shown = rows.slice(0, 20).map(({ c, status }) =>
       `${c.name}@v${c.version} | ${status} | ${c.description}${c.tags?.length ? ` | tags: ${c.tags.join(', ')}` : ''}`);
@@ -185,7 +188,7 @@ export class Binder {
       const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'Created';
       if (c?.program) return `${c.name}@v${c.version} | executable skill | ${status} | ${c.description}` +
         (c.tags?.length ? ` | ${c.tags.join(', ')}` : '');
-      return `${c?.name ?? path.split('/').at(-1)?.replace(/\.[^.]+$/, '')} | ${kind} | ${status} | via=${usage.get(path) ?? '0'}`;
+      return `${c?.name ?? path.split('/').at(-1)?.replace(/\.[^.]+$/, '')} | ${kind} | ${status} | ${c?.description ?? ''} | via=${usage.get(path) ?? '0'}`;
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';

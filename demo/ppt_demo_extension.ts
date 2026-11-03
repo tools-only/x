@@ -22,6 +22,19 @@ export default function pptDemo(pi: ExtensionAPI) {
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
   const log = (file: string, row: any) => appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), batch: state.batch, phase: state.phase, ...row })+'\n');
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
+  const previousRequests = existsSync(join(root, 'harness/provider-requests.jsonl'))
+    ? readFileSync(join(root, 'harness/provider-requests.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
+  const previousUsage = existsSync(join(root, 'harness/model-usage.jsonl'))
+    ? readFileSync(join(root, 'harness/model-usage.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
+  const lastUsage = previousUsage.at(-1);
+  const reserve = Number(process.env.PPT_DEMO_REQUEST_RESERVE_USD ?? 3.52);
+  const cap = Number(process.env.PPT_DEMO_BUDGET_USD ?? 12);
+  const inputRate = Number(process.env.PPT_DEMO_INPUT_USD_PER_MILLION ?? 20);
+  const outputRate = Number(process.env.PPT_DEMO_OUTPUT_USD_PER_MILLION ?? 80);
+  const cacheReadRate = Number(process.env.PPT_DEMO_CACHE_READ_USD_PER_MILLION ?? inputRate);
+  const cacheWriteRate = Number(process.env.PPT_DEMO_CACHE_WRITE_USD_PER_MILLION ?? inputRate);
+  let requests = previousRequests.at(-1)?.request ?? 0, reserved = 0;
+  let spent = (lastUsage?.conservative_usd ?? 0) + Math.max(0, requests-(lastUsage?.request ?? 0))*reserve;
   const snapshot = () => {
     const deckPath = 'artifacts/deck.json';
     const deck = existsSync(workspace.path(deckPath)) ? JSON.parse(workspace.read(deckPath)) : null;
@@ -30,7 +43,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     const feedback = state.lastFeedback;
     return { task: 'PPT production', phase: state.phase, batch: state.batch, revision: state.revision,
       last_feedback: feedback ? { revision: feedback.revision, slides: feedback.slides,
-        native_objects: feedback.native_objects, warnings: feedback.warnings, source_path: feedback.source_path } : null,
+        native_objects: feedback.native_objects, warnings: feedback.warnings, source_path: feedback.source_path,
+        evidence: feedback.evidence } : null,
       rendered_revisions: (state.renderedRevisions ?? []).slice(-8),
       memory,
       ...(deck ? { deck: { path: deckPath, slides: deck.slides.length,
@@ -38,6 +52,22 @@ export default function pptDemo(pi: ExtensionAPI) {
   };
   const runtime = new NativeRuntime({ pi, workspace, binder, state: snapshot, level: () => 0,
     actionCount: () => state.batch, decision: () => state.batch, hookTurn: () => state.phase === 'adapt',
+    consultReasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
+    modelResult: async create => {
+      if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
+        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, reason: 'consult budget boundary' }));
+        process.exit(0);
+      }
+      spent += reserve;
+      log('provider-requests.jsonl', { request: ++requests, kind: 'consult', estimated_usd_so_far: spent });
+      const reply = await create().result();
+      const u = reply.usage ?? {};
+      const known = Number.isFinite(u.input) && Number.isFinite(u.output) && u.input + u.output > 0;
+      if (known) spent += ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6-reserve;
+      log('model-usage.jsonl', { request: requests, kind: 'consult', usage: known ? u : null, conservative_usd: spent,
+        usage_status: known ? 'reported' : 'unknown_reserved', stopReason: reply.stopReason });
+      return reply;
+    },
     pythonSession: false, pythonKernel: false, workMemory: false, log, usage: (kind, message) => log('usage.jsonl', { kind, message }),
     wrap: (_name, fn) => async (_id: string, args: any, signal: any, _update: any, ctx: any) => fn(args, signal, ctx),
   });
@@ -58,9 +88,17 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('save_program', 'Create/revise a reusable Python program. Same branch API and fresh WASI execution. Complete source; state, args, env injected. Use open/json for workspace text. No host imports.',
     Type.Object({ name: Type.String(), description: Type.String(), tags: Type.Optional(Type.Array(Type.String())), body: Type.String(), expected_version: Type.Optional(Type.Integer()) }),
     async (a: any) => text(await runtime.saveProgram(a.name, a.body, a.description, a.tags ?? [], a.expected_version)));
-  register('run_program', 'Run the active named version against current deck/state. Writes allowed in TASK; read-only in ADAPT. Python source may use open("artifacts/deck.json", "w") and json.dump. Print compact results.',
-    Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
-    (a: any, signal: any) => runtime.runProgram(a.name, a.args ?? {}, signal));
+  register('run_program', 'Run a named version against current deck/state. Omit version for active. Writes allowed in TASK; read-only in ADAPT. Python source may use open("artifacts/deck.json", "w") and json.dump.',
+    Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())), version: Type.Optional(Type.Integer({ minimum: 1 })) }),
+    (a: any, signal: any) => runtime.runProgram(a.name, a.args ?? {}, signal, a.version));
+  register('edit_program', 'Revise one exact text span in an active program while preserving its version history. Use read_component first.',
+    Type.Object({ name: Type.String(), old_text: Type.String(), new_text: Type.String(), expected_version: Type.Integer({ minimum: 1 }) }),
+    async (a: any) => {
+      const c = binder.active().find(c => c.program && c.name === a.name);
+      if (!c || c.version !== a.expected_version) throw Error('Program version changed; read_component and retry.');
+      if (!a.old_text || c.source.split(a.old_text).length !== 2) throw Error('old_text must occur exactly once in the active source.');
+      return text(await runtime.saveProgram(a.name, c.source.replace(a.old_text, a.new_text), c.description, c.tags ?? [], c.version));
+    });
   register('list_programs', 'Find available executable methods and versions by purpose.', Type.Object({ query: Type.Optional(Type.String()) }),
     (a: any) => text(binder.programCatalog(0, a.query ?? '')));
   register('read_component', 'Inspect a named method source and exact active version.', Type.Object({ name: Type.String() }), (a: any) => {
@@ -82,9 +120,16 @@ export default function pptDemo(pi: ExtensionAPI) {
       const receipt = await binder.save(path, 0, { by: 'agent', decision: state.batch });
       return text(receipt ?? `Saved ${path}; next batch uses it.`);
     });
+  register('acceptance_check', 'Bind an Agent-authored named program as the delivery check. It must read current evidence and return {ok:boolean,reason:string}. Delivery executes it read-only on the latest render.',
+    Type.Object({ name: Type.String() }), (a: any) => {
+      const c = binder.active().find(c => c.program && c.name === a.name);
+      if (!c) throw Error('Save the acceptance program before binding it.');
+      state.acceptance = a.name; persist(); log('lifecycle.jsonl', { event: 'acceptance_bound', name: a.name, version: c.version });
+      return text({ bound: a.name, version: c.version });
+    });
   register('office', 'Render the canonical deck or a candidate JSON under artifacts/ in actual PowerPoint, inspect rendered pages, or deliver the current canonical deck. Each render gets an immutable revision; use look with that revision to compare candidates.',
     Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('deliver')]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1, maximum: 30 }), { maxItems: 4 })), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
-    (a: any) => {
+    async (a: any) => {
       if (state.phase === 'adapt' && a.op !== 'look') throw Error('ADAPT is read-only; use TASK to render/deliver.');
       if (a.op === 'render') {
         const sourcePath = a.source_path ?? 'artifacts/deck.json';
@@ -101,7 +146,16 @@ export default function pptDemo(pi: ExtensionAPI) {
         state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
         state.events.push({ batch: state.batch, type: 'render', ...state.lastFeedback }); persist();
         log('renders.jsonl', state.lastFeedback);
-        return { content: [...text(state.lastFeedback).content, { type: 'image', data: readFileSync(join(root, 'exports', `v${String(revision).padStart(3, '0')}`, 'contact-sheet.png')).toString('base64'), mimeType: 'image/png' }] };
+        const out = join(root, 'exports', `v${String(revision).padStart(3, '0')}`);
+        const evidence = `results/renders/v${String(revision).padStart(3, '0')}`;
+        workspace.runtimeWrite(`${evidence}/receipt.json`, readFileSync(join(out, 'receipt.json')));
+        workspace.runtimeWrite(`${evidence}/contact-sheet.png`, readFileSync(join(out, 'contact-sheet.png')));
+        for (let n = 1; n <= receipt.slides; n++) workspace.runtimeWrite(`${evidence}/slide-${String(n).padStart(2, '0')}.png`, readFileSync(join(out, `slide-${String(n).padStart(2, '0')}.png`)));
+        state.lastFeedback.evidence = evidence;
+        if (!state.firstRenderReviewed) { state.awaitingFirstRenderDecision = true; state.nextPhase = 'adapt'; state.note = 'First representative render is available. Decide continue, explore, revise, or no_change with evidence before scaling production.'; }
+        persist();
+        return { content: [...text(state.lastFeedback).content, { type: 'image', data: readFileSync(join(out, 'contact-sheet.png')).toString('base64'), mimeType: 'image/png' }],
+          terminate: !state.firstRenderReviewed };
       }
       const revision = a.revision ?? state.lastFeedback?.revision;
       if (!revision || !existsSync(join(root, 'exports', `v${String(revision).padStart(3, '0')}`, 'receipt.json'))) throw Error('No successful rendered revision');
@@ -110,6 +164,11 @@ export default function pptDemo(pi: ExtensionAPI) {
       const receipt = JSON.parse(readFileSync(join(out, 'receipt.json'), 'utf8'));
       if (JSON.stringify(receipt.source) !== JSON.stringify(JSON.parse(workspace.read('artifacts/deck.json')))) throw Error('Deck changed since render; render current version before delivery.');
       if (receipt.slides < 15 || receipt.slides > 20) throw Error('Original task requires 15–20 slides.');
+      if (!state.firstRenderReviewed) throw Error('Complete the first-render engineering decision before delivery.');
+      if (!state.acceptance) throw Error('Bind an Agent-authored acceptance_check before delivery.');
+      const verdict = await runtime.checkProgram(state.acceptance, { revision, receipt: `results/renders/v${String(revision).padStart(3, '0')}/receipt.json` });
+      log('lifecycle.jsonl', { event: 'delivery_check', revision, verdict });
+      if (!verdict.ok) throw Error(`Agent-authored acceptance refused delivery: ${verdict.reason}`);
       const delivery = join(root, 'delivery'); mkdirSync(delivery, { recursive: true });
       cpSync(out, join(delivery, 'presentation'), { recursive: true });
       const components = binder.active();
@@ -129,8 +188,14 @@ export default function pptDemo(pi: ExtensionAPI) {
       cpSync(join(root, 'harness', 'lifecycle.jsonl'), join(delivery, 'harness-evidence', 'harness', 'lifecycle.jsonl'));
       return text({ delivered: revision, directory: 'delivery/' }, true);
     });
-  register('checkpoint', 'End a meaningful work batch with a short continuation note. Optionally request an ADAPT window now, including before making slides. No fixed slide/action count. In ADAPT, return to TASK.',
-    Type.Object({ note: Type.String(), adapt: Type.Optional(Type.Boolean()) }), (a: any) => {
+  register('checkpoint', 'End a meaningful work batch. In ADAPT record an evidence-based engineering decision: continue, explore, revise, or no_change. TASK may request another ADAPT window.',
+    Type.Object({ note: Type.String(), adapt: Type.Optional(Type.Boolean()), decision: Type.Optional(Type.Union([Type.Literal('continue'), Type.Literal('explore'), Type.Literal('revise'), Type.Literal('no_change')])), reason: Type.Optional(Type.String()) }), (a: any) => {
+      if (state.phase === 'adapt') {
+        if (!a.decision || !String(a.reason ?? '').trim()) throw Error('ADAPT requires decision and evidence-based reason.');
+        state.engineeringTurnSeen = true;
+        if (state.awaitingFirstRenderDecision) { state.firstRenderReviewed = true; state.awaitingFirstRenderDecision = false; }
+        log('lifecycle.jsonl', { event: 'engineering_decision', decision: a.decision, reason: a.reason });
+      }
       state.note = a.note; state.nextPhase = state.phase === 'task' && a.adapt ? 'adapt' : 'task';
       log('lifecycle.jsonl', { event: 'batch_settled', nextPhase: state.nextPhase, note: a.note }); persist();
       return text({ next: state.nextPhase, note: state.note }, true);
@@ -139,8 +204,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (!initialized) { await binder.scan(0); binder.boundary(); runtime.register(); initialized = true; }
     resumed = event.prompt === 'PPT_RESUME';
     if (!resumed) { state.phase = state.nextPhase; state.batch++; binder.boundary(); persist(); }
-    const selected = ['read', 'write', 'edit', 'ls', 'grep', 'save_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'office', 'checkpoint'];
-    if (binder.active().some(c => c.kind === 'subagent')) selected.push('consult');
+    const selected = ['read', 'write', 'edit', 'ls', 'grep', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'acceptance_check', 'office', 'checkpoint'];
+    selected.push('consult');
     pi.setActiveTools(state.phase === 'adapt' ? selected.filter(x => !['write', 'edit'].includes(x)) : selected);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt').map(c => c.body).join('\n');
     const systemPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8') + '\n' + activePrompts;
@@ -151,19 +216,6 @@ export default function pptDemo(pi: ExtensionAPI) {
     return { systemPrompt, message: { customType: 'ppt-work-state', content: `PHASE ${state.phase.toUpperCase()} BATCH ${state.batch}\nContinuation: ${state.note}\nCurrent state: ${current}\n${binder.index(0)}\n${skillIndex}\n${binder.programCatalog(0)}`, display: false } };
   });
   // Guard each actual provider request, including automatic tool continuations and length resumes.
-  const previousRequests = existsSync(join(root, 'harness/provider-requests.jsonl'))
-    ? readFileSync(join(root, 'harness/provider-requests.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
-  const previousUsage = existsSync(join(root, 'harness/model-usage.jsonl'))
-    ? readFileSync(join(root, 'harness/model-usage.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
-  const lastUsage = previousUsage.at(-1);
-  const reserve = Number(process.env.PPT_DEMO_REQUEST_RESERVE_USD ?? 3.52);
-  const cap = Number(process.env.PPT_DEMO_BUDGET_USD ?? 12);
-  const inputRate = Number(process.env.PPT_DEMO_INPUT_USD_PER_MILLION ?? 20);
-  const outputRate = Number(process.env.PPT_DEMO_OUTPUT_USD_PER_MILLION ?? 80);
-  const cacheReadRate = Number(process.env.PPT_DEMO_CACHE_READ_USD_PER_MILLION ?? inputRate);
-  const cacheWriteRate = Number(process.env.PPT_DEMO_CACHE_WRITE_USD_PER_MILLION ?? inputRate);
-  let requests = previousRequests.at(-1)?.request ?? 0, reserved = 0;
-  let spent = (lastUsage?.conservative_usd ?? 0) + Math.max(0, requests-(lastUsage?.request ?? 0))*reserve;
   pi.on('before_provider_request', (event: any) => {
     if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
       writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, reason: 'authorized budget boundary' }));

@@ -24,7 +24,7 @@ def render(root: Path, manifest: Path, revision: int) -> dict:
     prs.slide_width, prs.slide_height = Inches(width), Inches(height)
     out = root / "exports" / f"v{revision:03d}"
     out.mkdir(parents=True, exist_ok=False)
-    warnings, counts = [], {"text": 0, "rect": 0, "line": 0, "chart": 0, "table": 0, "image": 0}
+    warnings, counts = [], {"text": 0, "rect": 0, "line": 0, "shape": 0, "chart": 0, "table": 0, "image": 0}
     for number, page in enumerate(slides, 1):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         slide.background.fill.solid()
@@ -46,20 +46,34 @@ def render(root: Path, manifest: Path, revision: int) -> dict:
                 tf.margin_left = tf.margin_right = Inches(el.get("margin", .03))
                 tf.margin_top = tf.margin_bottom = Inches(el.get("margin", .03))
                 tf.vertical_anchor = {"top": MSO_ANCHOR.TOP, "middle": MSO_ANCHOR.MIDDLE, "bottom": MSO_ANCHOR.BOTTOM}[el.get("valign", "top")]
-                for j, line in enumerate(str(el["text"]).split("\n")):
+                lines = el.get("paragraphs") or [{"runs": el.get("runs", [{"text": line}])} for line in str(el.get("text", "")).split("\n")]
+                for j, line in enumerate(lines):
                     p = tf.paragraphs[0] if j == 0 else tf.add_paragraph()
-                    p.text = line
-                    p.font.name = el.get("font", spec.get("font", "Aptos"))
-                    p.font.size = Pt(el.get("size", 20))
-                    p.font.bold = el.get("bold", False)
-                    p.font.color.rgb = RGBColor.from_string(el.get("color", "172B4D").lstrip("#"))
+                    for part in line["runs"]:
+                        run = p.add_run()
+                        run.text = str(part["text"])
+                        run.font.name = part.get("font", el.get("font", spec.get("font", "Aptos")))
+                        run.font.size = Pt(part.get("size", el.get("size", 20)))
+                        run.font.bold = part.get("bold", el.get("bold", False))
+                        run.font.italic = part.get("italic", el.get("italic", False))
+                        run.font.color.rgb = RGBColor.from_string(part.get("color", el.get("color", "172B4D")).lstrip("#"))
                     p.alignment = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}[el.get("align", "left")]
                     p.space_after = Pt(el.get("space_after", 5))
-            elif kind in ("rect", "line"):
-                shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, *box)
+            elif kind in ("rect", "line", "shape"):
+                geometry = {"rect": MSO_SHAPE.RECTANGLE, "line": MSO_SHAPE.RECTANGLE,
+                            "ellipse": MSO_SHAPE.OVAL, "rounded_rect": MSO_SHAPE.ROUNDED_RECTANGLE,
+                            "chevron": MSO_SHAPE.CHEVRON, "triangle": MSO_SHAPE.ISOSCELES_TRIANGLE}
+                form = el.get("shape", "rect") if kind == "shape" else kind
+                if form not in geometry:
+                    raise ValueError(f"unsupported shape: {form}")
+                shape = slide.shapes.add_shape(geometry[form], *box)
                 shape.fill.solid()
                 shape.fill.fore_color.rgb = RGBColor.from_string(el.get("fill", "DCE6F1").lstrip("#"))
-                shape.line.fill.background()
+                if el.get("stroke"):
+                    shape.line.color.rgb = RGBColor.from_string(el["stroke"].lstrip("#"))
+                    shape.line.width = Pt(el.get("stroke_width", 1))
+                else:
+                    shape.line.fill.background()
             elif kind == "chart":
                 data = CategoryChartData()
                 data.categories = el["categories"]
@@ -69,20 +83,38 @@ def render(root: Path, manifest: Path, revision: int) -> dict:
                     data.add_series(series["name"], series["values"])
                 chart = slide.shapes.add_chart({"bar": XL_CHART_TYPE.BAR_CLUSTERED, "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
                     "line": XL_CHART_TYPE.LINE, "pie": XL_CHART_TYPE.PIE}[el.get("type", "column")], *box, data).chart
-                chart.has_legend = len(el["series"]) > 1
+                chart.has_legend = el.get("show_legend", len(el["series"]) > 1)
                 if chart.has_legend:
-                    chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+                    chart.legend.position = {"bottom": XL_LEGEND_POSITION.BOTTOM, "right": XL_LEGEND_POSITION.RIGHT,
+                                             "top": XL_LEGEND_POSITION.TOP, "left": XL_LEGEND_POSITION.LEFT}[el.get("legend_position", "bottom")]
+                chart.has_title = el.get("show_title", bool(el.get("title")))
+                if chart.has_title:
+                    chart.chart_title.text_frame.text = el.get("title", "")
                 if el.get("type") != "pie":
-                    chart.value_axis.has_title = True
-                    chart.value_axis.axis_title.text_frame.text = el.get("unit", "")
+                    chart.value_axis.has_title = bool(el.get("unit"))
+                    if chart.value_axis.has_title:
+                        chart.value_axis.axis_title.text_frame.text = el["unit"]
+                    if "axis_min" in el:
+                        chart.value_axis.minimum_scale = el["axis_min"]
+                    if "axis_max" in el:
+                        chart.value_axis.maximum_scale = el["axis_max"]
+                    if "number_format" in el:
+                        chart.value_axis.tick_labels.number_format = el["number_format"]
                     chart.category_axis.tick_labels.font.size = Pt(12)
                     chart.value_axis.tick_labels.font.size = Pt(11)
                 for j, series in enumerate(chart.series):
                     series.format.fill.solid()
                     series.format.fill.fore_color.rgb = RGBColor.from_string(el.get("colors", ["0E4D64", "C8A45D", "4E8A8A"])[j % len(el.get("colors", [1, 2, 3]))].lstrip("#"))
+                    if el.get("negative_color") and el.get("type", "column") in ("column", "bar"):
+                        for i, value in enumerate(el["series"][j]["values"]):
+                            if value < 0:
+                                series.points[i].format.fill.solid()
+                                series.points[i].format.fill.fore_color.rgb = RGBColor.from_string(el["negative_color"].lstrip("#"))
                 chart.plots[0].has_data_labels = el.get("labels", True)
                 if chart.plots[0].has_data_labels:
                     chart.plots[0].data_labels.font.size = Pt(12)
+                    if "number_format" in el:
+                        chart.plots[0].data_labels.number_format = el["number_format"]
             elif kind == "table":
                 rows = el["rows"]
                 if not rows or any(len(r) != len(rows[0]) for r in rows):
@@ -132,6 +164,30 @@ def render(root: Path, manifest: Path, revision: int) -> dict:
         if app.Presentations.Count == 0:
             app.Quit()
         pythoncom.CoUninitialize()
+    # Read the fonts PowerPoint actually wrote to PDF; this detects substitutions that geometry checks miss.
+    import pymupdf
+    document = pymupdf.open(out / "deck.pdf")
+    for n, page in enumerate(document, 1):
+        actual = set()
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line["spans"]:
+                    name = span["font"].split("+")[-1]
+                    try:
+                        name = name.encode("latin1").decode("utf-8")
+                    except UnicodeError:
+                        pass
+                    actual.add(name.lower())
+        requested = {part.get("font", el.get("font", spec.get("font", "Aptos"))) for el in slides[n-1]["elements"]
+                     if el["kind"] == "text" for line in (el.get("paragraphs") or [{"runs": el.get("runs", [{}])}])
+                     for part in line["runs"]}
+        if any(el["kind"] == "table" for el in slides[n-1]["elements"]):
+            requested.add(spec.get("font", "Aptos"))
+        for font in requested:
+            if not any(font.lower().replace(" ", "") in used.replace(" ", "") for used in actual):
+                warnings.append({"page": n, "issue": "font_substituted", "requested": font,
+                                 "actual_pdf_fonts": sorted(actual)})
+    document.close()
     from PIL import Image, ImageOps, ImageDraw
     thumb_w, thumb_h, columns = 480, 270, 3
     canvas = Image.new("RGB", (columns*thumb_w, ((len(slides)+columns-1)//columns)*(thumb_h+24)), "#dfe5e9")
@@ -153,4 +209,4 @@ if __name__ == "__main__":
     parser.add_argument("manifest", type=Path)
     parser.add_argument("revision", type=int)
     args = parser.parse_args()
-    print(json.dumps(render(args.root.resolve(), args.manifest.resolve(), args.revision), ensure_ascii=False))
+    print(json.dumps(render(args.root.resolve(), args.manifest.resolve(), args.revision)))

@@ -16,13 +16,13 @@ PROJECT = Path(__file__).resolve().parents[2]
 
 ENVIRONMENT = """# Editable PPT environment
 The native scene is JSON at artifacts/deck.json, with width=13.333333, height=7.5 (inches), font optional, slides list. Each slide has background (6-digit RGB), elements list, optional notes. All positions are in inches, font sizes in points. Every element has kind,x,y,w,h. No layout/template is imposed. Element order is z-order.
-- text: text (newline paragraphs), size (default20), font, color, bold, align left/center/right, valign top/middle/bottom, margin (inches default .03), space_after (pt default5).
-- rect or line: fill RGB. line is a thin rectangle; set suitable w,h.
-- chart: type column/bar/line/pie, categories list, series [{name,values}], unit (value axis title), colors RGB list optional, labels boolean. These are native editable charts with embedded data, not raster charts.
+- text: text (newline paragraphs) or paragraphs [{runs:[{text,font,size,color,bold,italic}]}]; size (default20), font, color, bold, align left/center/right, valign top/middle/bottom, margin (inches default .03), space_after (pt default5). A single line can use runs:[...].
+- rect or line: fill RGB. line is a thin rectangle; set suitable w,h. shape: shape ellipse/rounded_rect/chevron/triangle/rect, fill, optional stroke and stroke_width.
+- chart: type column/bar/line/pie, categories list, series [{name,values}], unit, colors RGB list, labels boolean, optional axis_min/axis_max, number_format, title/show_title, show_legend/legend_position, negative_color. These are native editable charts with embedded data.
 - table: rows (rectangular list including header), size optional, header_fill RGB optional. Native editable cells.
 - image: path inside data/, e.g. data/source-page-01.png. Source page images are optional in this case bundle. Supply x,y,w,h.
-Use RGB strings without #. Use only the supplied source for facts. Render the canonical deck or a candidate JSON under artifacts/ with office(op='render',source_path=...). Each render creates an immutable exports/vNNN revision; inspect it with office(op='look',revision=N,pages=[...]) to compare alternatives. Only the current canonical artifacts/deck.json can be delivered. The renderer checks PowerPoint geometry and text overflow, not financial interpretation, narrative or design quality; those remain your judgment.
-Programs run fresh in WASI, using stdlib, json, state,args,env. Python open handles confined workspace text reads/writes, e.g. json.load(open('artifacts/deck.json')) or json.dump(deck,open('artifacts/deck.json','w')). They cannot import pptx/PIL or use arbitrary host files. They can transform document content, calculate, build editable scene JSON, or check evidence. State carries a compact deck summary, recent render checks, memory paths, revision and batch; read the workspace file for full content. Keep data as arguments or workspace content; reusable logic belongs in programs. Ordinary artifacts belong under artifacts/ or notes/. Prefix tools/ is managed by save_program. Source input data/ and runtime results/ are read-only.
+Use RGB strings without #. Available local fonts are listed in data/available-fonts.json. Use only the supplied source for facts. Render the canonical deck or a candidate JSON under artifacts/ with office(op='render',source_path=...). Each render creates an immutable revision. Full source receipt and every PNG are readable under results/renders/vNNN/. office(op='look',revision=N,pages=[...]) displays selected pages. Consult refs can include these PNG paths and the receipt. The first render opens an ADAPT engineering turn; record continue/explore/revise/no_change with evidence using checkpoint. Only the current canonical artifacts/deck.json can be delivered. PowerPoint reports geometry, text overflow, and font substitution facts; financial interpretation, narrative and design quality remain your judgment.
+Programs run fresh in WASI, using stdlib, json, state,args,env. Python open handles confined workspace text reads/writes, e.g. json.load(open('artifacts/deck.json')) or json.dump(deck,open('artifacts/deck.json','w')). They cannot import pptx/PIL or use arbitrary host files. They can transform document content, calculate, build editable scene JSON, or check evidence. run_program(version=N) runs a historical source; edit_program applies one exact span to the active source. State carries a compact deck summary, recent render checks, memory paths, revision and batch; read the workspace file for full content. Keep data as arguments or workspace content; reusable logic belongs in programs. Ordinary artifacts belong under artifacts/ or notes/. Prefix tools/ is managed by save_program. Source input data/ and runtime results/ are read-only. Before delivery, bind your own named acceptance program with acceptance_check(name=...). The runtime runs it read-only against the current render; it must return {"ok": bool, "reason": str}.
 """
 
 
@@ -34,17 +34,20 @@ def prepare(root: Path, source: Path) -> None:
     shutil.copy2(source / "material.txt", data / "material.txt")
     shutil.copy2(source / "production_brief.md", data / "instructions.md")
     (data / "environment.md").write_text(ENVIRONMENT, encoding="utf-8")
+    import winreg
+    fonts = set()
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts") as key:
+        for i in range(winreg.QueryInfoKey(key)[1]):
+            name, _, _ = winreg.EnumValue(key, i)
+            fonts.add(name.split(" (")[0])
+    (data / "available-fonts.json").write_text(json.dumps(sorted(fonts), ensure_ascii=False, indent=2), encoding="utf-8")
     evaluation = root / "evaluation"
     evaluation.mkdir()
-    shutil.copy2(source / "judge_prompt.json", evaluation / "judge_prompt.json")
-    shutil.copy2(source / "instructions.md", evaluation / "presentbench_generation_instructions.md")
-    shutil.copy2(source / "statistics.yaml", evaluation / "statistics.yaml")
-    revision = "3c6e01f563165d3a364a459f9777cd7286f42cd8"
-    provenance = {"dataset": "PresentBench/PresentBench", "revision": revision,
-                  "case": "economics/JPMorgan_Chase/Earning3",
-                  "task_mode": "production-demo brief derived from the case's source material; benchmark generation instructions retained separately because they contain unrelated space-exploration wording",
-                  "material_source": "https://www.sec.gov/Archives/edgar/data/19617/000001961721000446/a3q21erfexhibit991narrative.htm",
-                  "instructions_source": f"https://huggingface.co/datasets/PresentBench/PresentBench/tree/{revision}/economics/JPMorgan_Chase/Earning3/generation_task/instructions.md"}
+    for name, target in [("judge_prompt.json", "judge_prompt.json"), ("instructions.md", "presentbench_generation_instructions.md"),
+                         ("statistics.yaml", "statistics.yaml")]:
+        if (source / name).exists():
+            shutil.copy2(source / name, evaluation / target)
+    provenance = json.loads((source.parent / "case.json").read_text(encoding="utf-8"))
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 
@@ -101,6 +104,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
            **({"OPENAI_API_KEY": values["OPENAI_API_KEY"]} if not official_openai else {}),
            "PI_CODING_AGENT_DIR": str(agent),
            "PPT_DEMO_ROOT": str(root), "PPT_DEMO_PYTHON": os.sys.executable,
+           "PPT_DEMO_THINKING": thinking,
            "PPT_DEMO_DEADLINE": str(int((time.time()+remaining)*1000)),
            "PPT_DEMO_REQUEST_RESERVE_USD": "0.10" if official_openai else "3.52",
            "PPT_DEMO_BUDGET_USD": "12", "PPT_DEMO_INPUT_USD_PER_MILLION": "0.10" if official_openai else "20",
@@ -111,7 +115,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         "--mode", "rpc", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates",
         "--no-builtin-tools", "--extension", str(PROJECT / "demo/ppt_demo_extension.ts"),
         "--provider", provider_id, "--model", model_id, "--thinking", thinking, "--session", str(root / "session.jsonl")]
-    protocol = {"started_at": started, "base_branch": "codex/agent-native-program-loop", "task": "PresentBench/economics/JPMorgan_Chase/Earning3",
+    protocol = {"started_at": started, "base_branch": "codex/agent-native-program-loop", "task": json.loads((root / "task-provenance.json").read_text())["case"],
         "provider": "OpenAI Codex OAuth (official)" if official_openai else "AZ https://az.gptplus5.com/v1",
         "model": model_id, "thinking": thinking, "max_seconds": min(seconds,7200),
         "authorized_cny": 100, "budget_guard": "USD12 cumulative API-equivalent cap, USD0.10 reserve/request, 2-hour deadline" if official_openai else "USD12 conservative token estimate, reserve USD3.52 before each request, 2-hour deadline",
