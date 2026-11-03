@@ -1,6 +1,6 @@
 # PresentBench: JPMorgan Chase Q3 2021 earnings
 
-This is the end-to-end task case used by the PPT production demo. Its source material and task files are bundled under `assets/`, so preparing a run does not fetch task data. The production run uses `production_brief.md` and the earnings-release text to create a 15-slide editable presentation. The source PresentBench instructions and judge prompt are retained in the run's separate `evaluation/` directory, never in the agent's task workspace. The generation instructions contain unrelated space-exploration wording, so this production demo does not claim a benchmark score.
+This is the end-to-end task case used by the PPT production demo. Its source material and task files are bundled under `assets/`, so preparing a run does not fetch task data. The production run uses `production_brief.md` and the earnings-release text to create a 15-slide editable presentation and a self-harness with reused methods across at least three PPT-production dimensions. The source PresentBench instructions and judge prompt are retained in the run's separate `evaluation/` directory, never in the agent's task workspace. The generation instructions contain unrelated space-exploration wording, so this production demo does not claim a benchmark score. It is a guided self-harness production run, not evidence of unprompted general autonomy.
 
 ## Prepare and run from bundled resources
 

@@ -143,7 +143,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   let requests = previousRequests.at(-1)?.request ?? 0, reserved = 0;
   let spent = (lastUsage?.conservative_usd ?? 0) + Math.max(0, requests-(lastUsage?.request ?? 0))*reserve;
   pi.on('before_provider_request', (event: any) => {
-    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap || requests >= 50) {
+    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
       writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, reason: 'authorized budget boundary' }));
       process.exit(0); // Extension event exceptions are fail-open in Pi; stop before the HTTP call.
     }

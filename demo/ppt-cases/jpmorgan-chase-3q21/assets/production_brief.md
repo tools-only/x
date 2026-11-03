@@ -23,3 +23,7 @@ Use only `material.txt`. Keep every number exactly as supplied, including units,
 Build a clear narrative rather than a topic dump. Use a consistent, restrained financial identity with a deliberate title/body type scale, strong alignment, and ample whitespace. Vary compositions where the content changes: include at least three editable native charts for meaningful comparisons, a bridge or other clear native diagram for the significant-item context, and typography or simple diagrams for qualitative material. Keep charts fully labeled with units, periods, and legends. Avoid repeating a card grid as the default layout. Keep body copy concise and readable when projected. Include at least five slides with specific quantitative details.
 
 Deliver exactly 15 slides as editable PowerPoint objects. The requested audience, source facts, and clear visual communication take priority over generic benchmark wording that does not match this financial-results case.
+
+## Self-harness goal for this demo
+
+Improve reusable Agent methods while the deck is being made. Build and use reusable methods across at least three relevant dimensions: narrative/sequencing, visual language/layout, quantitative storytelling, and source/number fidelity. Choose the branch's component types that fit each method; the methods must become active and affect later slide production. Keep JPMorgan-specific story facts in task data, separate from reusable tool code. Develop through creation and use, not only by asking a critic to inspect a completed deck and patching its findings.
