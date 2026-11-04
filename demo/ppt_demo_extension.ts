@@ -1,5 +1,6 @@
 /** PPT host for the branch's Binder + NativeRuntime named-program implementation. */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync, cpSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,33 @@ import { Workspace } from './arc_thin_workspace.ts';
 import { Binder } from './arc_thin_binder.ts';
 import { validatePythonComponent } from './arc_thin_components.ts';
 import { NativeRuntime } from './arc_thin_native_runtime.ts';
+
+function readLastJsonlRecord(path: string): any | undefined {
+  const fd = openSync(path, 'r');
+  try {
+    let position = statSync(fd).size;
+    const chunks: Buffer[] = [];
+    let first = true;
+    while (position > 0) {
+      const length = Math.min(64 * 1024, position);
+      position -= length;
+      const buffer = Buffer.allocUnsafe(length);
+      const read = readSync(fd, buffer, 0, length, position);
+      let end = read;
+      if (first) while (end > 0 && (buffer[end - 1] === 10 || buffer[end - 1] === 13)) end--;
+      first = false;
+      const boundary = buffer.lastIndexOf(10, end - 1);
+      if (boundary >= 0) {
+        chunks.unshift(buffer.subarray(boundary + 1, end));
+        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      }
+      chunks.unshift(buffer.subarray(0, end));
+    }
+    return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 export default function pptDemo(pi: ExtensionAPI) {
   const root = process.env.PPT_DEMO_ROOT!;
@@ -22,28 +50,32 @@ export default function pptDemo(pi: ExtensionAPI) {
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
   const log = (file: string, row: any) => appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), batch: state.batch, phase: state.phase, ...row })+'\n');
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
-  const previousRequests = existsSync(join(root, 'harness/provider-requests.jsonl'))
-    ? readFileSync(join(root, 'harness/provider-requests.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
-  const previousUsage = existsSync(join(root, 'harness/model-usage.jsonl'))
-    ? readFileSync(join(root, 'harness/model-usage.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
-  const lastUsage = previousUsage.at(-1);
+  const requestLog = join(root, 'harness/provider-requests.jsonl');
+  const usageLog = join(root, 'harness/model-usage.jsonl');
+  const lastRequest = existsSync(requestLog) ? readLastJsonlRecord(requestLog) : undefined;
+  const lastUsage = existsSync(usageLog) ? readLastJsonlRecord(usageLog) : undefined;
   const reserve = Number(process.env.PPT_DEMO_REQUEST_RESERVE_USD ?? 3.52);
+  const imageReserve = Number(process.env.PPT_DEMO_IMAGE_RESERVE_USD ?? 1);
   const cap = Number(process.env.PPT_DEMO_BUDGET_USD ?? 12);
   const inputRate = Number(process.env.PPT_DEMO_INPUT_USD_PER_MILLION ?? 20);
   const outputRate = Number(process.env.PPT_DEMO_OUTPUT_USD_PER_MILLION ?? 80);
   const cacheReadRate = Number(process.env.PPT_DEMO_CACHE_READ_USD_PER_MILLION ?? inputRate);
   const cacheWriteRate = Number(process.env.PPT_DEMO_CACHE_WRITE_USD_PER_MILLION ?? inputRate);
-  let requests = previousRequests.at(-1)?.request ?? 0, reserved = 0;
+  let requests = lastRequest?.request ?? 0, reserved = 0;
   let spent = (lastUsage?.conservative_usd ?? 0) + Math.max(0, requests-(lastUsage?.request ?? 0))*reserve;
+  const imageLog = join(root, 'harness', 'image-generation.jsonl');
+  let imageCalls = existsSync(imageLog) ? readFileSync(imageLog, 'utf8').trim().split('\n').filter(Boolean)
+    .map(line => JSON.parse(line)).filter(row => row.status === 'started').length : 0;
+  let imageSpent = imageCalls * imageReserve;
   const snapshot = () => {
     const deckPath = 'artifacts/deck.json';
     const deck = existsSync(workspace.path(deckPath)) ? JSON.parse(workspace.read(deckPath)) : null;
     const memory = workspace.files('notes').filter(path => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))
       .map(path => ({ path, summary: workspace.read(path).split(/\r?\n/).find((line: string) => line.trim())?.slice(0, 240) ?? '' }));
     const feedback = state.lastFeedback;
-    return { task: 'PPT production', phase: state.phase, batch: state.batch, revision: state.revision,
+    return { task: 'HTML slide production', phase: state.phase, batch: state.batch, revision: state.revision,
       last_feedback: feedback ? { revision: feedback.revision, slides: feedback.slides,
-        native_objects: feedback.native_objects, warnings: feedback.warnings, source_path: feedback.source_path,
+        elements: feedback.elements, warnings: feedback.warnings, source_path: feedback.source_path,
         evidence: feedback.evidence } : null,
       rendered_revisions: (state.renderedRevisions ?? []).slice(-8),
       memory,
@@ -53,9 +85,58 @@ export default function pptDemo(pi: ExtensionAPI) {
   const runtime = new NativeRuntime({ pi, workspace, binder, state: snapshot, level: () => 0,
     actionCount: () => state.batch, decision: () => state.batch, hookTurn: () => state.phase === 'adapt',
     consultReasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
+    ...(process.env.PPT_DEMO_IMAGE_GENERATION === 'true' ? { generateImage: async (a: { prompt: string }, signal: AbortSignal | undefined, ctx: any) => {
+      if (ctx.model?.api !== 'openai-codex-responses') throw Error('Image generation requires GPT-6 Luna on the OpenAI Responses provider for this PPT task.');
+      if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + imageSpent + imageReserve > cap) {
+        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, image_spent: imageSpent, image_calls: imageCalls, reason: 'image-generation budget boundary' }));
+        throw Error('Image generation stopped at the authorized budget or deadline boundary.');
+      }
+      imageSpent += imageReserve;
+      const call = ++imageCalls;
+      const row = { call, model: 'gpt-image-2.5-sunburst', reserved_usd: imageReserve, status: 'started', prompt: a.prompt.slice(0, 500) };
+      appendFileSync(imageLog, JSON.stringify({ time: new Date().toISOString(), batch: state.batch, ...row })+'\n');
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+      const tokenPayload = JSON.parse(Buffer.from(auth.apiKey.split('.')[1], 'base64url').toString('utf8'));
+      const accountId = tokenPayload?.['https://api.openai.com/auth']?.chatgpt_account_id;
+      if (!accountId) throw Error('Image generation could not identify the authenticated Codex account.');
+      const baseUrl = String(ctx.model.baseUrl ?? 'https://chatgpt.com/backend-api').replace(/\/+$/, '');
+      const endpoint = baseUrl.endsWith('/codex/responses') ? baseUrl : `${baseUrl}/codex/responses`;
+      const headers = new Headers(auth.headers ?? {});
+      headers.set('Authorization', `Bearer ${auth.apiKey}`);
+      headers.set('chatgpt-account-id', accountId);
+      headers.set('originator', 'pi');
+      headers.set('User-Agent', 'pi/PPT-Demo');
+      headers.set('OpenAI-Beta', 'responses=experimental');
+      headers.set('accept', 'text/event-stream');
+      headers.set('content-type', 'application/json');
+      const requestId = randomUUID();
+      headers.set('session-id', requestId);
+      headers.set('x-client-request-id', requestId);
+      const response = await fetch(endpoint, { method: 'POST', headers, signal,
+        body: JSON.stringify({ model: ctx.model.id, store: false, stream: true,
+          instructions: 'Generate exactly one polished visual asset for an HTML slide. Keep text out of the image unless the prompt explicitly asks for it.',
+          input: [{ role: 'user', content: [{ type: 'input_text', text: a.prompt }] }],
+          tools: [{ type: 'image_generation', model: 'gpt-image-2.5-sunburst', size: '1536x1024', quality: 'high', background: 'opaque' }],
+          tool_choice: { type: 'image_generation' }, reasoning: { effort: 'low' } }) });
+      const payload = await response.text();
+      if (!response.ok) throw Error(`Image generation request failed (${response.status}): ${payload.slice(-1200)}`);
+      const events = payload.split(/\r?\n\r?\n/).flatMap(frame => frame.split(/\r?\n/)
+        .filter(line => line.startsWith('data:') && line.slice(5).trim() !== '[DONE]')
+        .map(line => JSON.parse(line.slice(5).trim())));
+      const completed = [...events].reverse().find((event: any) => ['response.completed', 'response.done'].includes(event.type));
+      const output = completed?.response?.output ?? events.filter((event: any) => event.type === 'response.output_item.done').map((event: any) => event.item);
+      const encoded = output.find((item: any) => item?.type === 'image_generation_call' && item.result)?.result;
+      if (!encoded) throw Error('Image generation completed without an image result.');
+      const data = encoded;
+      const path = `artifacts/visuals/image-${String(call).padStart(3, '0')}.png`;
+      workspace.runtimeWrite(path, Buffer.from(data, 'base64'));
+      appendFileSync(imageLog, JSON.stringify({ time: new Date().toISOString(), batch: state.batch, call, path, status: 'completed' })+'\n');
+      return { content: [{ type: 'text', text: `Generated image saved at ${path}. Add this path to an image element in artifacts/deck.json.` },
+        { type: 'image', data, mimeType: 'image/png' }], generatedAsset: { path, data, mimeType: 'image/png' } };
+    } } : {}),
     modelResult: async create => {
-      if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
-        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, reason: 'consult budget boundary' }));
+      if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + imageSpent + reserve > cap) {
+        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, image_spent: imageSpent, requests, reason: 'consult budget boundary' }));
         process.exit(0);
       }
       spent += reserve;
@@ -127,7 +208,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       state.acceptance = a.name; persist(); log('lifecycle.jsonl', { event: 'acceptance_bound', name: a.name, version: c.version });
       return text({ bound: a.name, version: c.version });
     });
-  register('office', 'Render the canonical deck or a candidate JSON under artifacts/ in actual PowerPoint, inspect rendered pages, or deliver the current canonical deck. Each render gets an immutable revision; use look with that revision to compare candidates.',
+  register('office', 'Render the canonical deck or a candidate JSON under artifacts/ as self-contained HTML slides in Chromium, inspect rendered pages, or deliver the current HTML deck. Each render gets an immutable revision; use look with that revision to compare candidates.',
     Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('deliver')]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1, maximum: 30 }), { maxItems: 4 })), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
     async (a: any) => {
       if (state.phase === 'adapt' && a.op !== 'look') throw Error('ADAPT is read-only; use TASK to render/deliver.');
@@ -137,11 +218,11 @@ export default function pptDemo(pi: ExtensionAPI) {
         const source = workspace.path(sourcePath);
         if (!existsSync(source)) throw Error(`Render source does not exist: ${sourcePath}`);
         const revision = ++state.revision; persist();
-        const helper = fileURLToPath(new URL('../src/autoresearch_pi/ppt_demo_artifact.py', import.meta.url));
+        const helper = fileURLToPath(new URL('../src/autoresearch_pi/ppt_demo_html_artifact.py', import.meta.url));
         const child = spawnSync(process.env.PPT_DEMO_PYTHON ?? 'python', [helper, root, source, String(revision)], { encoding: 'utf8', timeout: 180000, maxBuffer: 2*1024*1024, windowsHide: true });
         if (child.error || child.status !== 0) throw Error((child.stderr || String(child.error)).slice(-5000));
         const receipt = JSON.parse(child.stdout);
-        state.lastFeedback = { revision, slides: receipt.slides, native_objects: receipt.native_objects,
+        state.lastFeedback = { revision, slides: receipt.slides, elements: receipt.elements,
           warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath };
         state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
         state.events.push({ batch: state.batch, type: 'render', ...state.lastFeedback }); persist();
@@ -149,6 +230,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const out = join(root, 'exports', `v${String(revision).padStart(3, '0')}`);
         const evidence = `results/renders/v${String(revision).padStart(3, '0')}`;
         workspace.runtimeWrite(`${evidence}/receipt.json`, readFileSync(join(out, 'receipt.json')));
+        workspace.runtimeWrite(`${evidence}/deck.html`, readFileSync(join(out, 'deck.html')));
         workspace.runtimeWrite(`${evidence}/contact-sheet.png`, readFileSync(join(out, 'contact-sheet.png')));
         for (let n = 1; n <= receipt.slides; n++) workspace.runtimeWrite(`${evidence}/slide-${String(n).padStart(2, '0')}.png`, readFileSync(join(out, `slide-${String(n).padStart(2, '0')}.png`)));
         state.lastFeedback.evidence = evidence;
@@ -171,13 +253,15 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (!verdict.ok) throw Error(`Agent-authored acceptance refused delivery: ${verdict.reason}`);
       const delivery = join(root, 'delivery'); mkdirSync(delivery, { recursive: true });
       cpSync(out, join(delivery, 'presentation'), { recursive: true });
+      const visuals = workspace.path('artifacts/visuals');
+      if (existsSync(visuals)) cpSync(visuals, join(delivery, 'presentation', 'visual-assets'), { recursive: true });
       const components = binder.active();
       for (const c of components) { const path = join(delivery, 'harness', c.path); mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, c.source); }
       for (const memoryPath of workspace.files('notes').filter(path => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))) {
         const target = join(delivery, 'harness', memoryPath); mkdirSync(join(target, '..'), { recursive: true }); cpSync(workspace.path(memoryPath), target);
       }
-      writeFileSync(join(delivery, 'harness.json'), JSON.stringify({ base: 'codex/agent-native-program-loop', components: components.map(c => ({ name: c.name, kind: c.kind, version: c.version, path: c.path, hash: c.hash })), load: 'Copy harness/ into a new PPT demo workspace; Binder loads and runs the saved programs with fresh state/args.' }, null, 2));
-      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/renders.jsonl', 'harness/usage.jsonl',
+      writeFileSync(join(delivery, 'harness.json'), JSON.stringify({ base: 'codex/agent-native-program-loop', components: components.map(c => ({ name: c.name, kind: c.kind, version: c.version, path: c.path, hash: c.hash, origin: binder.originOf(c.path)?.by ?? 'unknown' })), load: 'Copy harness/ into a new HTML slide workspace; Binder loads and runs the saved programs with fresh state/args.' }, null, 2));
+      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/renders.jsonl', 'harness/usage.jsonl', 'harness/image-generation.jsonl',
         'harness/consult_runs.jsonl', 'harness/model-usage.jsonl', 'harness/provider-requests.jsonl', 'session.jsonl']) {
         const source = join(root, relative);
         if (!existsSync(source)) continue;
@@ -188,20 +272,43 @@ export default function pptDemo(pi: ExtensionAPI) {
       cpSync(join(root, 'harness', 'lifecycle.jsonl'), join(delivery, 'harness-evidence', 'harness', 'lifecycle.jsonl'));
       return text({ delivered: revision, directory: 'delivery/' }, true);
     });
-  register('checkpoint', 'End a meaningful work batch. In ADAPT record an evidence-based engineering decision: continue, explore, revise, or no_change. TASK may request another ADAPT window.',
-    Type.Object({ note: Type.String(), adapt: Type.Optional(Type.Boolean()), decision: Type.Optional(Type.Union([Type.Literal('continue'), Type.Literal('explore'), Type.Literal('revise'), Type.Literal('no_change')])), reason: Type.Optional(Type.String()) }), (a: any) => {
+  register('checkpoint', 'End a meaningful work batch. In ADAPT record an evidence-based decision: continue, explore, revise, or no_change. Optionally name the preconfigured design_review role or your own read-only reviewer when a second opinion could change remaining production; its finding enters the next TASK. Omit it when it would not help. TASK may request another ADAPT window.',
+    Type.Object({ note: Type.String(), adapt: Type.Optional(Type.Boolean()), decision: Type.Optional(Type.Union([Type.Literal('continue'), Type.Literal('explore'), Type.Literal('revise'), Type.Literal('no_change')])), reason: Type.Optional(Type.String()), reviewer: Type.Optional(Type.String({ description: 'Optional active read-only subagent name. The preconfigured design_review role is available; its visual review will be included in the next TASK.' })) }), async (a: any, signal: AbortSignal | undefined, ctx: any) => {
+      if (state.phase === 'adapt' && (!a.decision || !String(a.reason ?? '').trim())) throw Error('ADAPT requires decision and evidence-based reason.');
+      let note = a.note;
+      if (a.reviewer) {
+        if (state.phase !== 'adapt') throw Error('A visual reviewer may be selected only from ADAPT.');
+        const revision = state.lastFeedback?.revision;
+        const agent = binder.active().find(c => c.kind === 'subagent' && c.name === a.reviewer);
+        if (!revision || !agent) throw Error(`No latest render or active reviewer named ${a.reviewer}.`);
+        if ((agent.tools ?? []).some((tool: string) => tool !== 'read')) throw Error('The selected reviewer may have no tools or the read-only read tool.');
+        const render = `results/renders/v${String(revision).padStart(3, '0')}`;
+        const refs = ['data/instructions.md', 'data/material.txt', `${render}/receipt.json`, `${render}/contact-sheet.png`];
+        try {
+          const result = await runtime.qualityConsult({ agent: a.reviewer,
+            question: 'Review the actual rendered presentation against the task and source. Identify at most the single highest-impact issue that should change subsequent production, or say none. Give the slide number and concrete evidence; distinguish source-fact errors from design judgments. Keep the result concise.',
+            refs }, signal, ctx);
+          const summary = (result?.content ?? []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n').slice(0, 2000);
+          if (result?.isError) throw Error(summary || 'consult returned an error');
+          note += `\n\nAgent-requested visual review (${a.reviewer}@v${agent.version}, render ${revision}):\n${summary || 'No text result returned.'}`;
+          log('lifecycle.jsonl', { event: 'visual_review', reviewer: a.reviewer, origin: binder.originOf(agent.path)?.by ?? 'unknown', version: agent.version, revision, refs, result: summary, failed: false });
+        } catch (error) {
+          const failure = String(error).slice(0, 400);
+          note += `\n\nAgent-requested visual review (${a.reviewer}@v${agent.version}, render ${revision}) failed; continue without it: ${failure}`;
+          log('lifecycle.jsonl', { event: 'visual_review', reviewer: a.reviewer, origin: binder.originOf(agent.path)?.by ?? 'unknown', version: agent.version, revision, refs, error: failure, failed: true });
+        }
+      }
       if (state.phase === 'adapt') {
-        if (!a.decision || !String(a.reason ?? '').trim()) throw Error('ADAPT requires decision and evidence-based reason.');
         state.engineeringTurnSeen = true;
         if (state.awaitingFirstRenderDecision) { state.firstRenderReviewed = true; state.awaitingFirstRenderDecision = false; }
         log('lifecycle.jsonl', { event: 'engineering_decision', decision: a.decision, reason: a.reason });
       }
-      state.note = a.note; state.nextPhase = state.phase === 'task' && a.adapt ? 'adapt' : 'task';
-      log('lifecycle.jsonl', { event: 'batch_settled', nextPhase: state.nextPhase, note: a.note }); persist();
+      state.note = note; state.nextPhase = state.phase === 'task' && a.adapt ? 'adapt' : 'task';
+      log('lifecycle.jsonl', { event: 'batch_settled', nextPhase: state.nextPhase, note: state.note }); persist();
       return text({ next: state.nextPhase, note: state.note }, true);
     });
   pi.on('before_agent_start', async (event: any) => {
-    if (!initialized) { await binder.scan(0); binder.boundary(); runtime.register(); initialized = true; }
+    if (!initialized) { await binder.scan(0, { by: 'preconfigured' }); binder.boundary(); runtime.register(); initialized = true; }
     resumed = event.prompt === 'PPT_RESUME';
     if (!resumed) { state.phase = state.nextPhase; state.batch++; binder.boundary(); persist(); }
     const selected = ['read', 'write', 'edit', 'ls', 'grep', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'acceptance_check', 'office', 'checkpoint'];
@@ -217,14 +324,14 @@ export default function pptDemo(pi: ExtensionAPI) {
   });
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   pi.on('before_provider_request', (event: any) => {
-    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
-      writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, reason: 'authorized budget boundary' }));
+    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + imageSpent + reserve > cap) {
+      writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, image_spent: imageSpent, requests, reason: 'authorized budget boundary' }));
       process.exit(0); // Extension event exceptions are fail-open in Pi; stop before the HTTP call.
     }
     spent += reserve; reserved = reserve;
     const payload = event.payload as any;
     log('provider-requests.jsonl', { request: ++requests, phase: state.phase, estimated_usd_so_far: spent,
-      payload: JSON.stringify(payload, (key, value) => key === 'url' && typeof value === 'string' && value.startsWith('data:') ? '(image)' : value) });
+      payload_chars: JSON.stringify(payload).length });
   });
   pi.on('message_end', (event: any) => {
     const m = event.message;

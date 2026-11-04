@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import pptDemo from '../demo/ppt_demo_extension.ts';
 
 test('unknown provider usage remains charged across process reload', async () => {
@@ -20,16 +21,24 @@ test('unknown provider usage remains charged across process reload', async () =>
   assert.equal(rows[1].conservative_usd, 7.04);
 });
 
-test('real named-program execution, ADAPT read-only, revision use, PowerPoint export and current delivery', { timeout: 240000 }, async () => {
+test('real named-program execution, ADAPT read-only, revision use, HTML slide export and current delivery', { timeout: 240000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-native-'));
   process.env.PPT_DEMO_ROOT = root;
   process.env.PPT_DEMO_DEADLINE = String(Date.now()+240000);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  cpSync(fileURLToPath(new URL('../demo/ppt-roles', import.meta.url)), join(root, 'workspace/roles'), { recursive: true });
+  mkdirSync(join(root, 'workspace/data'), { recursive: true });
+  writeFileSync(join(root, 'workspace/data/instructions.md'), 'Create 15 source-grounded slides.');
+  writeFileSync(join(root, 'workspace/data/material.txt'), 'Diagnostic source: Revenue rose.');
   const tools = new Map<string, any>(), hooks = new Map<string, any>();
   let activeTools: string[] = [];
   pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f), setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
   const call = (name: string, args: any) => tools.get(name).execute('test', args, undefined, undefined, {});
-  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  const opening = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   assert.ok(activeTools.includes('consult'));
+  for (const name of ['research', 'design_review', 'visual_asset'])
+    assert.match(opening.message.content, new RegExp(`${name} \\| subagent \\| Preconfigured`));
+  assert.equal(JSON.parse(readFileSync(join(root, '.harness/components.jsonl'), 'utf8').split('\n').find(line => line.includes('roles/design_review.md'))!).by, 'preconfigured');
   await assert.rejects(() => tools.get('consult').execute('test', { agent: 'visual_review', question: 'Review a slide' }, undefined, undefined, { model: { maxTokens: 1000 } }), /Create one with self_component/);
   const body = `import json\nslides=[]\nfor i in range(15):\n    slides.append({'elements':[{'kind':'text','x':0.5,'y':0.5,'w':10,'h':1,'text':args['title']+' '+str(i+1),'size':28}]})\nslides[0]['elements'].extend([{'kind':'chart','x':1,'y':2,'w':5,'h':3,'categories':['A','B'],'series':[{'name':'Revenue','values':[3,4]}],'unit':'USD bn'},{'kind':'table','x':7,'y':2,'w':5,'h':2,'rows':[['Metric','Value'],['A','3']]}])\njson.dump({'slides':slides},open('artifacts/deck.json','w'))\nprint('created',len(slides))`;
   await call('save_program', { name: 'page_builder', description: 'Parameterised diagnostic page generator', body });
@@ -52,12 +61,21 @@ test('real named-program execution, ADAPT read-only, revision use, PowerPoint ex
   assert.match(readFileSync(manifest, 'utf8'), /Historical/);
   await call('edit_program', { name: 'page_builder', old_text: 'print("updated method")', new_text: 'print("patched method")', expected_version: 2 });
   await call('run_program', { name: 'page_builder', args: { title: 'Updated' } });
+  mkdirSync(join(root, 'workspace/artifacts/visuals'), { recursive: true });
+  writeFileSync(join(root, 'workspace/artifacts/visuals/mark.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><circle cx="40" cy="40" r="30" fill="#0e4d64"/></svg>');
+  const scene = JSON.parse(readFileSync(manifest, 'utf8'));
+  scene.slides[0].elements.push({ kind: 'image', path: 'artifacts/visuals/mark.svg', x: 11, y: 5, w: 1, h: 1 });
+  writeFileSync(manifest, JSON.stringify(scene));
   const firstRender = await call('office', { op: 'render' });
   assert.equal(firstRender.terminate, true);
   const receipt = JSON.parse(readFileSync(join(root, 'exports/v001/receipt.json'), 'utf8'));
   assert.equal(receipt.slides, 15);
-  assert.equal(receipt.native_objects.chart, 1);
-  assert.equal(receipt.renderer, 'Microsoft PowerPoint 16 COM');
+  assert.equal(receipt.elements.chart, 1);
+  assert.equal(receipt.format, 'self-contained HTML slides');
+  assert.equal(receipt.renderer, 'Microsoft Edge Chromium headless');
+  assert.match(readFileSync(join(root, 'exports/v001/deck.html'), 'utf8'), /ArrowRight/);
+  assert.match(readFileSync(join(root, 'exports/v001/deck.html'), 'utf8'), /data:image\/svg\+xml;base64/);
+  assert.ok(readFileSync(join(root, 'exports/v001/slide-01.png')).length > 1000);
   assert.match(readFileSync(join(root, 'workspace/results/renders/v001/receipt.json'), 'utf8'), /"source"/);
   const look = await call('office', { op: 'look', pages: [1] });
   assert.equal(look.content[0].type, 'image');
@@ -67,7 +85,7 @@ test('real named-program execution, ADAPT read-only, revision use, PowerPoint ex
   await assert.rejects(() => call('office', { op: 'deliver' }), /changed since render/);
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   let consultRequest: any, consultOptions: any;
-  await tools.get('consult').execute('test', { agent: 'visual_review', question: 'What is visible?', refs: ['results/renders/v001/slide-01.png'] }, undefined, undefined, {
+  const consultContext = {
     model: { maxTokens: 1000 }, modelRegistry: {
       getApiKeyAndHeaders: async () => ({ apiKey: 'local-test' }),
       streamSimple: (_model: any, request: any, options: any) => {
@@ -75,18 +93,26 @@ test('real named-program execution, ADAPT read-only, revision use, PowerPoint ex
         return { result: async () => ({ role: 'assistant', content: [{ type: 'text', text: 'Visible slide.' }], stopReason: 'stop', usage: { input: 1, output: 1 } }) };
       },
     },
-  });
+  };
+  await tools.get('consult').execute('test', { agent: 'visual_review', question: 'What is visible?', refs: ['results/renders/v001/slide-01.png'] }, undefined, undefined, consultContext);
   assert.equal(consultOptions.reasoning, 'high');
   assert.equal(consultRequest.messages[0].content.some((block: any) => block.type === 'image' && block.mimeType === 'image/png'), true);
-  await call('checkpoint', { note: 'Render changed deck', decision: 'continue', reason: 'First render has editable chart and table, with no warnings.' });
-  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  await tools.get('checkpoint').execute('test', { note: 'Render changed deck', decision: 'continue', reason: 'First render has editable chart and table, with no warnings.', reviewer: 'design_review' }, undefined, undefined, consultContext);
+  const afterReview = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  assert.match(afterReview.message.content, /Agent-requested visual review \(design_review@v1/);
+  assert.match(afterReview.message.content, /Visible slide\./);
+  const reviewEvent = JSON.parse(readFileSync(join(root, 'harness/lifecycle.jsonl'), 'utf8').split('\n').find(line => line.includes('"event":"visual_review"'))!);
+  assert.equal(reviewEvent.origin, 'preconfigured');
+  assert.equal(reviewEvent.failed, false);
   await call('save_program', { name: 'accept_deck', description: 'Check current render evidence for slide count and geometry',
     body: `import json\ndef run(args, env):\n    receipt=json.load(open(args['receipt']))\n    ok=len(receipt['source']['slides'])==15 and all(w['issue']=='font_substituted' for w in receipt['warnings'])\n    return {'ok':ok,'reason':'Current receipt has 15 pages and no geometry warnings' if ok else 'Current receipt failed required checks'}` });
   await call('acceptance_check', { name: 'accept_deck' });
   await call('office', { op: 'render' });
   await call('office', { op: 'deliver' });
+  assert.ok(readFileSync(join(root, 'delivery/presentation/deck.html')).length > 1000);
   const harness = JSON.parse(readFileSync(join(root, 'delivery/harness.json'), 'utf8'));
   assert.equal(harness.components.find((c: any) => c.name === 'page_builder').version, 3);
+  assert.equal(harness.components.find((c: any) => c.name === 'design_review').origin, 'preconfigured');
   const fresh = mkdtempSync(join(tmpdir(), 'ppt-reload-'));
   cpSync(join(root, 'delivery/harness'), join(fresh, 'workspace'), { recursive: true });
   process.env.PPT_DEMO_ROOT = fresh;
@@ -96,5 +122,5 @@ test('real named-program execution, ADAPT read-only, revision use, PowerPoint ex
   const run = await reloaded.get('run_program').execute('reload', { name: 'page_builder', args: { title: 'Fresh data' } }, undefined, undefined, {});
   assert.equal(run.isError, false);
   assert.match(readFileSync(join(fresh, 'workspace/artifacts/deck.json'), 'utf8'), /Fresh data/);
-  console.log('Actual PowerPoint test artifacts:', root);
+  console.log('Actual HTML slide test artifacts:', root);
 });

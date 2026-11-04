@@ -25,6 +25,7 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   onSaved?(path: string, receipt: string | undefined): void;
   metaDecision?(choice: string, reason: string): string;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
+  generateImage?(args: { prompt: string }, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<any>;
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
   /** Run the parent's python calls in a live kernel (default true); false: a fresh sandbox per call, restored from the checkpoint. */
@@ -1053,6 +1054,9 @@ export class NativeRuntime {
       } catch (error) { return { path: c.path, version: c.version, error: String(error).slice(0, 200) }; }
     }));
   }
+  qualityConsult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+    return this.consult(args, signal, ctx);
+  }
   private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
     const available = this.host.immediateSubagent ? this.host.binder.candidates() : this.host.binder.active();
     const agent = available.find(c => c.kind === 'subagent' && c.name === args.agent);
@@ -1070,6 +1074,10 @@ export class NativeRuntime {
       } else if (name === 'python') {
         tools.push({ name, description: 'Read-only one-off Python', parameters: Type.Object({ code: Type.String() }) });
         runTools.set(name, args => this.python(args.code, signal, true, undefined, childSession));
+      } else if (name === 'generate_image' && this.host.generateImage) {
+        tools.push({ name, description: 'Generate one slide visual as a PNG image and save it under artifacts/visuals/. Returns the image for inspection.',
+          parameters: Type.Object({ prompt: Type.String({ minLength: 1, maxLength: 4000 }) }) });
+        runTools.set(name, args => this.host.generateImage!(args, signal, ctx));
       } else {
         const c = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
         if (!c) throw Error(`subagent tool ${name} unavailable`);
@@ -1090,7 +1098,7 @@ export class NativeRuntime {
     const started = Date.now(); const deadline = started + 120000;
     const controller = new AbortController(); const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(abort, 120000);
-    let answer = ''; let lengths = 0;
+    let answer = ''; let lengths = 0; const generatedImages: Array<{path: string; data: string; mimeType: string}> = [];
     try {
       for (let round = 0; round < 6 && Date.now() < deadline; round++) {
         if (signal?.aborted) throw Error('consult aborted');
@@ -1106,18 +1114,20 @@ export class NativeRuntime {
         }
         const calls = (reply.content ?? []).filter((b: any) => b.type === 'toolCall');
         if (!calls.length) {
-          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed, answer, ms: Date.now() - started });
-          const {ref}=this.host.workspace.saveResult(answer);
-          return text(`${this.host.binder.label(agent.path)} →\n${this.host.workspace.receipt(answer)}\nref: ${ref}`);
+          const finalAnswer = [answer, ...generatedImages.map(image => `Generated image: ${image.path}`)].filter(Boolean).join('\n');
+          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed, answer: finalAnswer, generated_images: generatedImages.map(({path, mimeType}) => ({path, mimeType})), ms: Date.now() - started });
+          const {ref}=this.host.workspace.saveResult(finalAnswer);
+          return { content: [{ type: 'text', text: `${this.host.binder.label(agent.path)} →\n${this.host.workspace.receipt(finalAnswer)}\nref: ${ref}` }, ...generatedImages.map(({data, mimeType}) => ({ type: 'image', data, mimeType }))] };
         }
         for (const call of calls) {
           let result: any;
           try {
             const def = tools.find(t => t.name === call.name); if (!def) throw Error(`Tool ${call.name} not granted`);
             // A saved tool takes args={...}; inputs sent at the top level become args, as for the parent.
-            const named = call.name !== 'read' && call.name !== 'python' && call.arguments && typeof call.arguments === 'object'
+            const named = !['read', 'python', 'generate_image'].includes(call.name) && call.arguments && typeof call.arguments === 'object'
               && !('args' in call.arguments) && Object.keys(call.arguments).length;
             result = await runTools.get(call.name)!(validateToolArguments(def, named ? { ...call, arguments: { args: call.arguments } } : call));
+            if (result?.generatedAsset) generatedImages.push(result.generatedAsset);
           } catch (error) { result = text(String(error), true); }
           messages.push({ role: 'toolResult', toolCallId: call.id, toolName: call.name, content: result.content,
             isError: Boolean(result.isError), timestamp: Date.now() });

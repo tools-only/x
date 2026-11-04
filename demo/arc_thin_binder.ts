@@ -133,11 +133,11 @@ export class Binder {
     return `${kind} ${name} v${entry.version}: saved · ` + (failed
       || (entry.good?.enabled ? `loaded · active from ${from}` : `off · not active from ${from}`));
   }
-  async scan(level: number) {
+  async scan(level: number, origin: { by: string; decision?: number } = { by: 'unknown' }) {
     const paths = new Set(this.workspace.files().filter(p => !/^(data|results)(\/|$)/.test(p)));
     for (const [path, entry] of this.entries) if (!paths.has(path) && !entry.retired)
       this.record({ ...entry, retired: true });
-    for (const path of paths) await this.save(path, level);
+    for (const path of paths) await this.save(path, level, origin);
   }
   boundary() {
     this.bindings.clear();
@@ -185,14 +185,14 @@ export class Binder {
       .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
     const lines = listed.map(([path, e]) => {
       const c = e.good; const kind = componentKind(path)!;
-      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : 'Created';
+      const status = !c ? 'failed' : !c.enabled ? 'off' : c.level < level || c.refs?.some(r => failedInputs.has(r)) ? 'stale' : e.by === 'preconfigured' ? 'Preconfigured' : 'Created';
       if (c?.program) return `${c.name}@v${c.version} | executable skill | ${status} | ${c.description}` +
         (c.tags?.length ? ` | ${c.tags.join(', ')}` : '');
       return `${c?.name ?? path.split('/').at(-1)?.replace(/\.[^.]+$/, '')} | ${kind} | ${status} | ${c?.description ?? ''} | via=${usage.get(path) ?? '0'}`;
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';
-    const full = ['HARNESS (your prompts, tools, skills and subagents; memory is indexed above)', ...lines].join('\n');
+    const full = ['HARNESS (saved prompts, tools, skills and subagents; memory is indexed above)', ...lines].join('\n');
     if (full.length <= 1200) return full;
     const groups = new Map<string, string[]>();
     for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path.split('/').at(-1)!.replace(/\.[^.]+$/, '')]); }
