@@ -1,8 +1,10 @@
 # Meta-harness 变更记录：PPT 自由手脚（剔除人为限制，释放 agent）
 
-日期：2026-11-04（Asia/Shanghai）。状态：实现（免费功能/回归检查完成；provider 行为与收益未验证）。
+日期：2026-11-04（Asia/Shanghai）。状态：实现并合并（免费功能/回归检查完成；provider 行为与收益未验证）。
 分支 `claude/ppt-free-hands-20261104`，worktree `D:\autoresearch_pi_project\worktrees\ppt-free-hands`，
 基线 = 快照提交 9383dafb（Codex 在 adapt-config 的未提交 PPT 工作状态，`codex/ppt-native-production-demo`@97970122）。
+合并：2026-11-04 以 `d2f7bfc8`（Codex 基线，树等于 9383dafb）+ 三个提交 `0800194c` / `1ddd8a1a` / `c377043c`
+快进合入 `codex/ppt-native-production-demo`（现指向 `c377043c`）；合并后的 worktree 跑 82/82 免费测试通过。
 
 ## 问题与命题
 
@@ -143,7 +145,7 @@
 
 - 已支持的声明：限制已按上述清单剔除；硬边界保留；免费功能与接线检查通过。
   未支持的声明：任何关于 agent 实际行为、采用率、质量或成本的结论。
-- 决定与依据：保留改动在 `claude/ppt-free-hands-20261104`（未提交，除快照提交 9383dafb）。
+- 决定与依据：已合入 `codex/ppt-native-production-demo`（快进，`c377043c`）。
   下一因素 = 一次真实 PPT run，看 agent 在无人预设 workflow 下是否自发建立质量闭环并沉淀组件。
 - 剩余验证与下一可证伪检查：需要用户授权预算（每次 run 的 token/美元上限须先声明）。建议首个检查：
   同一 case（JPM）在新分支与快照各跑一次，比较交付完整度（相对资源是否可用、是否出现非文本产物）、
