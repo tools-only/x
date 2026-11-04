@@ -20,7 +20,7 @@ test('unknown provider usage remains charged across process reload', async () =>
   assert.equal(rows[1].conservative_usd, 7.04);
 });
 
-test('real named-program execution, ADAPT read-only, revision use, PowerPoint export and current delivery', { timeout: 240000 }, async () => {
+test('real named-program execution, ADAPT read-only, revision use, HTML browser rendering and current delivery', { timeout: 240000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-native-'));
   process.env.PPT_DEMO_ROOT = root;
   process.env.PPT_DEMO_DEADLINE = String(Date.now()+240000);
@@ -57,7 +57,8 @@ test('real named-program execution, ADAPT read-only, revision use, PowerPoint ex
   const receipt = JSON.parse(readFileSync(join(root, 'exports/v001/receipt.json'), 'utf8'));
   assert.equal(receipt.slides, 15);
   assert.equal(receipt.native_objects.chart, 1);
-  assert.equal(receipt.renderer, 'Microsoft PowerPoint 16 COM');
+  assert.match(receipt.renderer, /headless HTML/);
+  assert.match(readFileSync(join(root, 'exports/v001/presentation.html'), 'utf8'), /Quarterly results|Updated/);
   assert.match(readFileSync(join(root, 'workspace/results/renders/v001/receipt.json'), 'utf8'), /"source"/);
   const look = await call('office', { op: 'look', pages: [1] });
   assert.equal(look.content[0].type, 'image');
@@ -96,5 +97,5 @@ test('real named-program execution, ADAPT read-only, revision use, PowerPoint ex
   const run = await reloaded.get('run_program').execute('reload', { name: 'page_builder', args: { title: 'Fresh data' } }, undefined, undefined, {});
   assert.equal(run.isError, false);
   assert.match(readFileSync(join(fresh, 'workspace/artifacts/deck.json'), 'utf8'), /Fresh data/);
-  console.log('Actual PowerPoint test artifacts:', root);
+  console.log('Actual HTML presentation artifacts:', root);
 });

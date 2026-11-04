@@ -4,7 +4,7 @@
   "revision": "3c6e01f563165d3a364a459f9777cd7286f42cd8",
   "case": "economics/JPMorgan_Chase/Earning3",
   "title": "JPMorgan Chase Q3 2021 earnings",
-  "task_summary": "Create exactly 15 editable slides explaining the financial results to non-specialist business readers, using only the supplied release and slide-level source citations.",
+  "task_summary": "Create a self-contained, navigable 15-slide HTML presentation explaining the financial results to non-specialist business readers, using only the supplied release and slide-level source citations.",
   "material_source": "https://www.sec.gov/Archives/edgar/data/19617/000001961721000446/a3q21erfexhibit991narrative.htm",
   "resource_bundle": "assets/",
   "files": {
@@ -19,8 +19,8 @@
       "role": "source PresentBench generation instructions; retained for provenance and evaluation, not used for this production run"
     },
     "production_brief.md": {
-      "sha256": "6b4d6c3d662022e6e22aef188d3cab8ed220680bdf2961c88f4b926ce67e7046",
-      "role": "generation input; neutral audience, purpose and constraints"
+      "sha256": "d7b74cb9e0530465e605515b3e95a4420b062e2dbae1c8f153e6184940a35820",
+      "role": "generation input; neutral audience, purpose and HTML delivery constraints"
     },
     "statistics.yaml": {
       "path": "economics/JPMorgan_Chase/Earning3/generation_task/statistics.yaml",

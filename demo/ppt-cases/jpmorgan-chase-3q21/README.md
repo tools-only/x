@@ -6,7 +6,7 @@ This is the primary task case used by the PPT production demo. Its source materi
 
 Run the following from the repository root. No case-resource download step is needed:
 
-The renderer requires Microsoft PowerPoint on Windows and `pip install -e ".[ppt-demo]"` in the active Python environment.
+The renderer creates a self-contained HTML presentation and PNG previews. It requires Microsoft Edge or Google Chrome for headless browser rendering, plus `pip install -e ".[ppt-demo]"` in the active Python environment. Set `PPT_DEMO_BROWSER` to the browser executable if it is not installed in a standard location. The delivered deck is `delivery/presentation.html` and opens directly in a browser.
 
 ```powershell
 $env:PYTHONPATH = 'src'

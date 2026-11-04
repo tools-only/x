@@ -14,15 +14,10 @@ from .pi_kernel import PiKernel
 
 PROJECT = Path(__file__).resolve().parents[2]
 
-ENVIRONMENT = """# Editable PPT environment
-The native scene is JSON at artifacts/deck.json, with width=13.333333, height=7.5 (inches), font optional, slides list. Each slide has background (6-digit RGB), elements list, optional notes. All positions are in inches, font sizes in points. Every element has kind,x,y,w,h. No layout/template is imposed. Element order is z-order.
-- text: text (newline paragraphs) or paragraphs [{runs:[{text,font,size,color,bold,italic}]}]; size (default20), font, color, bold, align left/center/right, valign top/middle/bottom, margin (inches default .03), space_after (pt default5). A single line can use runs:[...].
-- rect or line: fill RGB. line is a thin rectangle; set suitable w,h. shape: shape ellipse/rounded_rect/chevron/triangle/rect, fill, optional stroke and stroke_width.
-- chart: type column/bar/line/pie, categories list, series [{name,values}], unit, colors RGB list, labels boolean, optional axis_min/axis_max, number_format, title/show_title, show_legend/legend_position, negative_color. These are native editable charts with embedded data.
-- table: rows (rectangular list including header), size optional, header_fill RGB optional. Native editable cells.
-- image: path inside data/, e.g. data/source-page-01.png. Source page images are optional in this case bundle. Supply x,y,w,h.
-Use RGB strings without #. Available local fonts are listed in data/available-fonts.json. Use only the supplied source for facts. Render the canonical deck or a candidate JSON under artifacts/ with office(op='render',source_path=...). Each render creates an immutable revision. Full source receipt and every PNG are readable under results/renders/vNNN/. office(op='look',revision=N,pages=[...]) displays selected pages. Consult refs can include these PNG paths and the receipt. The first render opens an ADAPT engineering turn; record continue/explore/revise/no_change with evidence using checkpoint. Only the current canonical artifacts/deck.json can be delivered. PowerPoint reports geometry, text overflow, and font substitution facts; financial interpretation, narrative and design quality remain your judgment.
-Programs run fresh in WASI, using stdlib, json, state,args,env. Python open handles confined workspace text reads/writes, e.g. json.load(open('artifacts/deck.json')) or json.dump(deck,open('artifacts/deck.json','w')). They cannot import pptx/PIL or use arbitrary host files. They can transform document content, calculate, build editable scene JSON, or check evidence. run_program(version=N) runs a historical source; edit_program applies one exact span to the active source. State carries a compact deck summary, recent render checks, memory paths, revision and batch; read the workspace file for full content. Keep data as arguments or workspace content; reusable logic belongs in programs. Ordinary artifacts belong under artifacts/ or notes/. Prefix tools/ is managed by save_program. Source input data/ and runtime results/ are read-only. Before delivery, bind your own named acceptance program with acceptance_check(name=...). The runtime runs it read-only against the current render; it must return {"ok": bool, "reason": str}.
+ENVIRONMENT = """# HTML presentation environment
+The requested output is authored at artifacts/presentation.html. Mark each slide container with class="slide". Inline CSS/SVG/JavaScript and embedded assets make the delivered file self-contained. The browser renderer adds navigation, a slide counter, fullscreen and print-to-PDF; it creates one-slide browser previews at exports/vNNN/?slide=N. Receipts and PNG previews are readable under results/renders/vNNN/.
+The renderer also accepts scene JSON at artifacts/deck.json and converts it to standalone HTML. JSON scenes use width, height, slides; each slide has background and elements with kind,x,y,w,h. Supported elements are text, rect, line, shape, chart, table and image. See the tool result for renderer facts and warnings.
+The task files are data/instructions.md and data/material.txt. Read and write paths are confined to the workspace. data/ and results/ are read-only. Browser output is written under exports/ and results/; the current deliverable is delivery/presentation.html.
 """
 
 
@@ -31,6 +26,8 @@ def prepare(root: Path, source: Path) -> None:
         raise ValueError("Use a new run directory")
     data = root / "workspace" / "data"
     data.mkdir(parents=True)
+    task_guidance = PROJECT / "demo/prompts/ppt_demo_agents.md"
+    (root / "workspace" / "AGENTS.md").write_text(task_guidance.read_text(encoding="utf-8"), encoding="utf-8")
     shutil.copy2(source / "material.txt", data / "material.txt")
     shutil.copy2(source / "production_brief.md", data / "instructions.md")
     (data / "environment.md").write_text(ENVIRONMENT, encoding="utf-8")
@@ -52,30 +49,46 @@ def prepare(root: Path, source: Path) -> None:
 
 
 def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False,
-        continue_prompt: str | None = None, thinking: str = "low") -> dict:
+        continue_prompt: str | None = None, thinking: str = "low", fresh_batch: bool = False,
+        batch_requests: int = 10, unbounded: bool = False, model_override: str | None = None) -> dict:
+    if batch_requests < 0:
+        raise ValueError("batch_requests must be zero (unlimited) or a positive integer")
     values = {} if official_openai else load_project_dotenv(Path("D:/autoresearch_pi_project"))
     if not official_openai and values.get("OPENAI_API_BASE", "").rstrip("/") != "https://az.gptplus5.com/v1":
         raise ValueError("This demo is authorized for the configured AZ route only")
-    previous_protocol = json.loads((root / "protocol.json").read_text()) if resume else {}
+    previous_protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8")) if resume else {}
     started = previous_protocol.get("started_at", time.time())
-    remaining = min(seconds, 7200) - max(0, time.time()-started)
+    remaining = float("inf") if unbounded else min(seconds, 7200) - max(0, time.time()-started)
     if remaining <= 0:
         raise ValueError("Original two-hour deadline reached")
-    deadline = time.monotonic() + remaining
+    (root / "budget-stop.json").unlink(missing_ok=True)
+    deadline = None if unbounded else time.monotonic() + remaining
     agent = Path.home() / ".pi" / "agent" if official_openai else root / ".pi-agent"
     agent.mkdir(exist_ok=resume or official_openai)
     if resume and continue_prompt:
         loop_state = root / ".harness" / "ppt-loop.json"
-        saved_state = json.loads(loop_state.read_text())
+        saved_state = json.loads(loop_state.read_text(encoding="utf-8"))
         saved_state["complete"] = False
         loop_state.write_text(json.dumps(saved_state, indent=2), encoding="utf-8")
     provider_id = "openai-codex" if official_openai else "az-demo"
-    model_id = "gpt-6-luna" if official_openai else "qwen3.8-27b"
     if official_openai:
-        model = {"id": model_id, "name": "GPT-6 Luna", "api": "openai-codex-responses", "provider": provider_id,
+        model_id = model_override or "gpt-6-luna"
+        if model_id == "gpt-6-sol":
+            model_name, context_window, max_tokens = "GPT-6 Sol", 1_050_000, 128_000
+            model_cost = {"input": 2, "output": 10, "cacheRead": 0.2, "cacheWrite": 2.5}
+        elif model_id == "gpt-6-luna":
+            model_name, context_window, max_tokens = "GPT-6 Luna", 272_000, None
+            model_cost = {"input": 0.1, "output": 0.5, "cacheRead": 0.01, "cacheWrite": 0.125}
+        else:
+            raise ValueError("Official OpenAI model must be gpt-6-luna or gpt-6-sol")
+    else:
+        if model_override:
+            raise ValueError("--model is currently supported only with --official-openai")
+        model_id = "qwen3.8-27b"
+    if official_openai:
+        model = {"id": model_id, "name": model_name, "api": "openai-codex-responses", "provider": provider_id,
                  "baseUrl": "https://chatgpt.com/backend-api", "reasoning": True, "input": ["text", "image"],
-                 "contextWindow": 272000, "maxTokens": 12000,
-                 "cost": {"input": 0.1, "output": 0.5, "cacheRead": 0.01, "cacheWrite": 0.125},
+                 "contextWindow": context_window, **({"maxTokens": max_tokens} if max_tokens else {}), "cost": model_cost,
                  "thinkingLevelMap": {"off": None, "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"},
                  "compat": {"supportsOpenAIGrammarTools": True, "supportsAdditionalTools": True,
                             "supportsToolSearch": True, "supportsMidConvoSystemMessages": True}}
@@ -95,7 +108,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
     else:
         agent.mkdir(exist_ok=resume)
         model = {"id": model_id, "name": model_id, "reasoning": True, "input": ["text", "image"],
-                 "contextWindow": 128000, "maxTokens": 12000, "cost": {"input": 20, "output": 80, "cacheRead": 20, "cacheWrite": 20}}
+                 "contextWindow": 128000, "cost": {"input": 20, "output": 80, "cacheRead": 20, "cacheWrite": 20}}
         (agent / "models.json").write_text(json.dumps({"providers": {provider_id: {"baseUrl": values["OPENAI_API_BASE"],
             "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True,
             "compat": {"supportsDeveloperRole": False, "thinkingFormat": "qwen"}, "models": [model]}}}), encoding="utf-8")
@@ -105,9 +118,10 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
            "PI_CODING_AGENT_DIR": str(agent),
            "PPT_DEMO_ROOT": str(root), "PPT_DEMO_PYTHON": os.sys.executable,
            "PPT_DEMO_THINKING": thinking,
-           "PPT_DEMO_DEADLINE": str(int((time.time()+remaining)*1000)),
-           "PPT_DEMO_REQUEST_RESERVE_USD": "0.10" if official_openai else "3.52",
-           "PPT_DEMO_BUDGET_USD": "12", "PPT_DEMO_INPUT_USD_PER_MILLION": "0.10" if official_openai else "20",
+           "PPT_FRESH_BATCH": "1" if fresh_batch else "0", "PPT_BATCH_REQUESTS": str(batch_requests),
+           "PPT_DEMO_DEADLINE": "Infinity" if unbounded else str(int((time.time()+remaining)*1000)),
+           "PPT_DEMO_REQUEST_RESERVE_USD": "0" if unbounded else ("0.10" if official_openai else "3.52"),
+           "PPT_DEMO_BUDGET_USD": "Infinity" if unbounded else "12", "PPT_DEMO_INPUT_USD_PER_MILLION": "0.10" if official_openai else "20",
            "PPT_DEMO_OUTPUT_USD_PER_MILLION": "0.50" if official_openai else "80",
            "PPT_DEMO_CACHE_READ_USD_PER_MILLION": "0.01" if official_openai else "20",
            "PPT_DEMO_CACHE_WRITE_USD_PER_MILLION": "0.125" if official_openai else "20"}
@@ -115,21 +129,26 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         "--mode", "rpc", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates",
         "--no-builtin-tools", "--extension", str(PROJECT / "demo/ppt_demo_extension.ts"),
         "--provider", provider_id, "--model", model_id, "--thinking", thinking, "--session", str(root / "session.jsonl")]
-    protocol = {"started_at": started, "base_branch": "codex/agent-native-program-loop", "task": json.loads((root / "task-provenance.json").read_text())["case"],
+    protocol = {"started_at": started, "base_branch": "codex/agent-native-program-loop", "task": json.loads((root / "task-provenance.json").read_text(encoding="utf-8"))["case"],
         "provider": "OpenAI Codex OAuth (official)" if official_openai else "AZ https://az.gptplus5.com/v1",
-        "model": model_id, "thinking": thinking, "max_seconds": min(seconds,7200),
-        "authorized_cny": 100, "budget_guard": "USD12 cumulative API-equivalent cap, USD0.10 reserve/request, 2-hour deadline" if official_openai else "USD12 conservative token estimate, reserve USD3.52 before each request, 2-hour deadline",
-        "rates": {"input_usd_per_million": 0.10, "output_usd_per_million": 0.50, "cache_read_usd_per_million": 0.01,
-                  "cache_write_usd_per_million": 0.125, "source": "OpenAI GPT-6 Luna published API rates; Codex OAuth usage is subscription quota, not API billing equivalent"} if official_openai else
+        "model": model_id, "thinking": thinking, "max_seconds": None if unbounded else min(seconds,7200),
+        "unbounded": unbounded,
+        "fresh_batch": fresh_batch, "batch_requests": batch_requests,
+        "token_limit": "none; provider/model native limits apply",
+        "authorized_cny": None if unbounded else 100, "budget_guard": "none; user-authorized unbounded run" if unbounded else ("USD12 cumulative API-equivalent cap, USD0.10 reserve/request, 2-hour deadline" if official_openai else "USD12 conservative token estimate, reserve USD3.52 before each request, 2-hour deadline"),
+        "rates": {"input_usd_per_million": model["cost"]["input"], "output_usd_per_million": model["cost"]["output"],
+                  "cache_read_usd_per_million": model["cost"]["cacheRead"], "cache_write_usd_per_million": model["cost"]["cacheWrite"],
+                  "source": f"OpenAI {model_name} published API rates; Codex OAuth usage is subscription quota, not API billing equivalent"} if official_openai else
                  {"input_usd_per_million": 20, "output_usd_per_million": 80, "source": "Conservative guard above AZ public /api/pricing: model_ratio=1.2, completion_ratio=4; not verified account billing"},
-        "scope": "one exploratory production demo; no claim of causal net benefit", "guidance": "Explicit dual artifact+harness goal; no required program count, no forced revision, no critic worker",
+        "scope": "one exploratory HTML presentation production demo; no claim of causal net benefit", "guidance": "Generic harness-learning guidance; no preseeded task criteria, methods, or components",
         "command": command}
     protocol["source_hashes"] = {str(p.relative_to(PROJECT)): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [PROJECT / "demo/ppt_demo_extension.ts", PROJECT / "demo/prompts/ppt_demo_system.md",
-                  PROJECT / "src/autoresearch_pi/ppt_demo.py", PROJECT / "src/autoresearch_pi/ppt_demo_artifact.py",
+                  PROJECT / "demo/prompts/ppt_demo_agents.md",
+                  PROJECT / "src/autoresearch_pi/ppt_demo.py", PROJECT / "src/autoresearch_pi/ppt_demo_html.py",
                   PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts"]}
     protocol["task_hashes"] = {str(p.relative_to(root)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in [root / "workspace/data/instructions.md", root / "workspace/data/material.txt", root / "workspace/data/environment.md"]}
+        for p in [root / "workspace/AGENTS.md", root / "workspace/data/instructions.md", root / "workspace/data/material.txt", root / "workspace/data/environment.md"]}
     if resume:
         protocol["resumes"] = [*previous_protocol.get("resumes", []), {"at": time.time(), "remaining_seconds": remaining}]
         protocol["previous_provider"] = previous_protocol.get("provider")
@@ -144,22 +163,24 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                 stream.write(json.dumps(event, ensure_ascii=False)+"\n")
     try:
         with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=90, deadline=deadline, event_sink=record) as kernel:
-            transport = continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else "Create the complete requested deck. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
-            while time.monotonic() < deadline:
+            transport = continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else "Complete the requested deliverable using the supplied brief and source material."
+            while deadline is None or time.monotonic() < deadline:
                 response = kernel.prompt(transport)
                 if response.get("success") is False:
                     raise RuntimeError(f"Pi rejected prompt: {response}")
-                events = kernel.wait_for_agent_events(timeout=max(1, deadline-time.monotonic()), idle_timeout=300)
+                events = kernel.wait_for_agent_events(
+                    timeout=float("inf") if deadline is None else max(1, deadline-time.monotonic()),
+                    idle_timeout=None if deadline is None else 300)
                 messages = [e["message"] for e in events if e.get("type") == "message_end" and e.get("message", {}).get("role") == "assistant"]
                 latest = messages[-1] if messages else {}
-                state = json.loads((root / ".harness/ppt-loop.json").read_text())
+                state = json.loads((root / ".harness/ppt-loop.json").read_text(encoding="utf-8"))
                 summary["batches"] = state["batch"]
                 if state["complete"]:
                     summary.update(complete=True, stop="delivered", revision=state.get("deliveredRevision"))
                     break
                 if latest.get("stopReason") in ("error", "aborted"):
                     raise RuntimeError(latest.get("errorMessage", latest.get("stopReason")))
-                transport = "PPT_RESUME" if latest.get("stopReason") == "length" else "PPT_NEXT"
+                transport = "PPT_RESUME" if latest.get("stopReason") == "length" and not (fresh_batch and state.get("batchRequests", 0) >= batch_requests) else "PPT_NEXT"
                 (root / "summary.json").write_text(json.dumps(summary, indent=2))
             else:
                 summary["stop"] = "time_budget"
@@ -186,12 +207,17 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=Path)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--official-openai", action="store_true", help="resume with the existing OpenAI Codex OAuth session and GPT-6 Luna")
+    parser.add_argument("--official-openai", action="store_true", help="use the existing OpenAI Codex OAuth session; defaults to GPT-6 Luna")
+    parser.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"], help="select the model used with --official-openai")
     parser.add_argument("--continue-prompt", help="continue an existing run with a concrete task update; keeps the original deadline and budget")
     parser.add_argument("--thinking", choices=["low", "medium", "high", "xhigh", "max"], default="low")
+    parser.add_argument("--fresh-batch", action="store_true", help="start each new batch with a fresh conversation and carry only workspace and harness")
+    parser.add_argument("--batch-requests", type=int, default=10, help="maximum provider requests per fresh batch; use 0 for unlimited")
+    parser.add_argument("--unbounded", action="store_true", help="disable runner-level cumulative spend and wall-clock limits")
     args = parser.parse_args()
     root = args.root.resolve()
     if args.source:
         prepare(root, args.source.resolve())
     print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai,
-        continue_prompt=args.continue_prompt, thinking=args.thinking) if args.run else {"prepared": str(root)}, ensure_ascii=False))
+        continue_prompt=args.continue_prompt, thinking=args.thinking, fresh_batch=args.fresh_batch,
+        batch_requests=args.batch_requests, unbounded=args.unbounded, model_override=args.model) if args.run else {"prepared": str(root)}, ensure_ascii=False))

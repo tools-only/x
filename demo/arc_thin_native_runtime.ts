@@ -183,7 +183,7 @@ export class NativeRuntime {
       if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
       if (host.pythonKernel !== false) this.kernel = nativeKernel();
     }
-    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a saved subagent (agents/<name>.md) with exact workspace refs. Subagents never act.',
+    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a task-authored read-only subagent (agents/<name>.md) with exact workspace refs. PNG refs are sent as images in an independent context using the same model. Create a role with self_component(kind="subagent") before consulting it. Subagents never act.',
       parameters: Type.Object({ agent: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
       prepareArguments: (args: any) => args && typeof args === 'object' && args.role && !args.agent ? { ...args, agent: args.role } : args,
       execute: host.wrap('consult', (args, signal, ctx) => this.consult(args, signal, ctx)) });
@@ -1125,6 +1125,10 @@ export class NativeRuntime {
       }
       throw Error('consult tool/time budget exhausted');
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+  }
+  /** Run an Agent-authored quality reviewer with explicit refs, without exposing the parent workspace to a write tool. */
+  qualityConsult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+    return this.consult(args, signal, ctx);
   }
   close() { this.viewPool.close(); this.kernel?.close(); }
   /** The line listing what the parent's python session holds, for the decision's working set. */
