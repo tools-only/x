@@ -1,5 +1,6 @@
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { readFileSync } from 'node:fs';
+import { detectSupportedImageMimeTypeFromFile } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Binder, type Component } from './arc_thin_binder.ts';
@@ -183,14 +184,16 @@ export class NativeRuntime {
       if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
       if (host.pythonKernel !== false) this.kernel = nativeKernel();
     }
-    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a task-authored read-only subagent (agents/<name>.md) with exact workspace refs. PNG refs are sent as images in an independent context using the same model. Create a role with self_component(kind="subagent") before consulting it. Subagents never act.',
+    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a task-authored subagent (agents/<name>.md) with exact workspace refs. Image refs of any type are sent as images in an independent context using the same model. Create a role with self_component(kind="subagent") before consulting it. Its tools are the ones its frontmatter grants (read, write, edit, ls, grep, python, named tools); it cannot take environment actions.',
       parameters: Type.Object({ agent: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
       prepareArguments: (args: any) => args && typeof args === 'object' && args.role && !args.agent ? { ...args, agent: args.role } : args,
       execute: host.wrap('consult', (args, signal, ctx) => this.consult(args, signal, ctx)) });
   }
-  /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text. */
+  /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text.
+   * candidates(), not active(): a save or removal inside a decision is visible immediately (as on r04), while
+   * Pi's advertised tool list still follows the request boundary. */
   private callable() {
-    return this.host.binder.active().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length
+    return this.host.binder.candidates().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length
       && !c.path.startsWith('observers/'));
   }
   /** Facts about the exact callable schema that Pi is about to submit to its provider. */
@@ -277,11 +280,12 @@ export class NativeRuntime {
   }
   /** Agent-authored script: the program is the saved source itself, not a wrapper extracted from a Python session. */
   async saveProgram(name: string, body: string, description: string, tags: string[] = [], expectedVersion?: number) {
-    if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error('name: use a logical identifier');
+    // A name is a file path, nothing more: letters, digits, _ and -, up to 64 characters.
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(name)) throw Error('name: use a logical identifier (letters, digits, _ and -)');
     if (!body.trim()) throw Error('program: provide executable Python source');
-    if (!description.trim() || description.length > 120 || /[\r\n]/.test(description)) throw Error('description: use one meaningful line (1-120 characters)');
-    if (tags.length > 5 || tags.some(tag => !/^[a-z][a-z0-9_-]{0,23}$/.test(tag)))
-      throw Error('tags: use up to five short lowercase identifiers');
+    if (!description.trim() || description.length > 300) throw Error('description: one meaningful line (1-300 characters)');
+    if (tags.length > 10 || tags.some(tag => !/^[a-zA-Z0-9_-]{0,31}$/.test(tag)))
+      throw Error('tags: use up to ten short identifiers');
     const path = `tools/${name}.py`;
     const currentVersion = this.host.binder.versionMap()[path] ?? 0;
     if (expectedVersion !== undefined && expectedVersion !== currentVersion)
@@ -289,7 +293,7 @@ export class NativeRuntime {
     const code = body.trim().startsWith('# program: on\n')
       ? body.trim().replace(/^# program: on\r?\n(?:# description:[^\r\n]*\r?\n)?(?:# tags:[^\r\n]*\r?\n)?/, '')
       : body.trim();
-    const source = `# program: on\n# description: ${description.trim()}\n${tags.length ? `# tags: ${tags.join(', ')}\n` : ''}${code}\n`;
+    const source = `# program: on\n# description: ${description.trim().replace(/[\r\n]+/g, ' ')}\n${tags.length ? `# tags: ${tags.join(', ')}\n` : ''}${code}\n`;
     this.host.workspace.mutate({ op: 'write', path, content: source });
     const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
     this.noteSave(path, receipt);
@@ -423,12 +427,18 @@ export class NativeRuntime {
     const started=performance.now(); let readBytes=0;
     const sources: Record<string, string> = {};
     const files: Record<string, string> = {};
+    // Binary files of any type travel to the guest as base64; the guest's open(path,'rb'/'wb') speaks real bytes.
+    const binaries: Record<string, string> = {};
     for (const c of this.host.binder.active()) if (c.path.endsWith('.py')) sources[c.path] = c.source;
     const scanStarted=performance.now(), paths=this.host.workspace.files(), scanMs=performance.now()-scanStarted;
     const readStarted=performance.now();
     for (const path of paths) {
-      if (path.endsWith('.png')) continue; // binary observations are read as images by Pi, never decoded into guest text
       if (/^(lib|tools|observers)\/.+\.py$/.test(path)) continue; // failed source never hides behind a working import
+      if (this.host.workspace.isBinary(path)) {
+        const body=this.host.workspace.readBytes(path); readBytes+=body.length;
+        binaries[path] = Buffer.from(body).toString('base64');
+        continue;
+      }
       const body=this.host.workspace.read(path); readBytes+=Buffer.byteLength(body);
       if (/^skills\/.+\.py$/.test(path)) sources[path] = body;
       else files[path] = body;
@@ -439,16 +449,16 @@ export class NativeRuntime {
     for (const [path, body] of Object.entries(files)) if (/^artifacts\/[^/]+\.json$/.test(path)) {
       try { artifacts[path.slice(10, -5)] = JSON.parse(body); } catch { /* Non-JSON artifacts remain readable files. */ }
     }
-    return { sources, files, state: { ...this.host.state(), artifacts }, versions,
+    return { sources, files, binaries, state: { ...this.host.state(), artifacts }, versions,
       snapshotMetrics:{snapshot_ms:performance.now()-started, scan_ms:scanMs, read_ms:performance.now()-readStarted,
         snapshot_read_bytes:readBytes, scanned_files:paths.length} };
   }
   private async applyWrites(result: NativeResult) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
+    // Harness directories are writable: the write lands in the workspace and the Binder versions it like any
+    // component save, so a program can build or revise components itself (a failed bind is reported, not silent).
     for (const op of result.ops ?? []) {
       if (op.op === 'memory' || op.op === 'meta_decide') continue;
-      if ([op.path, op.destination].some(path => path && /^(tools|lib|observers|skills|agents|roles|prompts)(\/|$)/.test(path.replace(/\\/g, '/'))))
-        throw Error('Use save_tool(name, body) or promote(name) for harness changes.');
       this.host.workspace.path(op.path, true);
       if (op.destination) this.host.workspace.path(op.destination, true);
     }
@@ -476,6 +486,12 @@ export class NativeRuntime {
         receipts.push(`${op.path}: restored from v${op.version}${receipt ? ` · ${receipt}` : ''}`); this.noteSave(op.path, receipt);
         continue;
       }
+      if (op.op === 'write' && (op as any).encoding === 'base64') {
+        // A binary write from the guest: real bytes land in the workspace, any file type.
+        this.host.workspace.mutate({ op: 'write', path: op.path, content: Buffer.from(String(op.content ?? ''), 'base64') } as any);
+        receipts.push(`${op.path}: written (binary) · bindings rebuilt next request`);
+        continue;
+      }
       this.host.workspace.mutate(op as any);
       if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() }); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
       else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
@@ -498,9 +514,11 @@ export class NativeRuntime {
     via?: string): Promise<NativeResult & { acted?: Acted }> {
     const started=performance.now(); const attempts:any[]=[];
     // Store growth must not consume every call's WASI allowance. Reads fetch only exact confined snapshot files.
-    const all = input.files; const files: Record<string, string> = {};
+    const all = { ...input.files, ...input.binaries }; const files: Record<string, string> = {};
+    const binaries: Record<string, string> = {};
     const source = input.code ?? input.sources[input.path] ?? '';
-    for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.files)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.binaries ?? {})) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) binaries[path] = body;
     const acts: Array<{ call: ActCall; observation?: unknown; stopped?: string }> = [];
     const acted: Acted = { lines: [] };
     const controller = new AbortController(); const abort = () => controller.abort();
@@ -511,7 +529,7 @@ export class NativeRuntime {
     try {
       for (let rounds = 0; rounds <= 32 + MAX_ACTS; rounds++) {
         const {snapshotMetrics, ...request}=input;
-        const payload={...request,files,file_names:Object.keys(all),acts,allow_act:Boolean(via)};
+        const payload={...request,files,binaries,file_names:Object.keys(all),acts,allow_act:Boolean(via)};
         const queued=performance.now();
         const release = pool ? () => {} : await this.slot();
         const at=performance.now();
@@ -536,13 +554,15 @@ export class NativeRuntime {
         }
         if (!result.need_file) return { ...result, acted };
         this.host.workspace.path(result.need_file);
-        if (!Object.hasOwn(all, result.need_file) || Object.hasOwn(files, result.need_file)) throw Error('invalid workspace read request');
-        files[result.need_file] = all[result.need_file];
+        if (!Object.hasOwn(all, result.need_file) || Object.hasOwn(files, result.need_file) || Object.hasOwn(binaries, result.need_file)) throw Error('invalid workspace read request');
+        if (Object.hasOwn(input.binaries ?? {}, result.need_file)) binaries[result.need_file] = input.binaries[result.need_file];
+        else files[result.need_file] = all[result.need_file];
         const folder = result.need_file.slice(0, result.need_file.lastIndexOf('/') + 1);
         let room = 120_000;
         for (const [path, body] of Object.entries(all)) {
-          if (!folder || !path.startsWith(folder) || Object.hasOwn(files, path) || body.length > room) continue;
-          files[path] = body; room -= body.length;
+          if (!folder || !path.startsWith(folder) || Object.hasOwn(files, path) || Object.hasOwn(binaries, path) || body.length > room) continue;
+          if (Object.hasOwn(input.binaries ?? {}, path)) binaries[path] = body; else files[path] = body;
+          room -= body.length;
         }
       }
       throw Error('workspace read or action budget exceeded; use history.grid(n) or env.frame(n) for frames');
@@ -565,11 +585,14 @@ export class NativeRuntime {
   private async executeKernel(input: ReturnType<NativeRuntime['snapshot']> & Record<string, any>, signal: AbortSignal | undefined,
     via: string | undefined): Promise<NativeResult & { acted?: Acted; kernel?: { fresh: boolean; previousExit?: string; ended?: string } }> {
     const started = performance.now();
-    const all = input.files; const files: Record<string, string> = {};
+    const all = { ...input.files, ...input.binaries }; const files: Record<string, string> = {};
+    const binaries: Record<string, string> = {};
     const source = input.code ?? '';
-    for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.files)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.binaries ?? {})) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) binaries[path] = body;
     const acted: Acted = { lines: [] };
     let played = 0, fetched = 0;
+    const isBinary = (path: string) => Object.hasOwn(input.binaries ?? {}, path);
     const answer = async (request: KernelRequest): Promise<unknown> => {
       if (request.t === 'act') {
         if (!via || !this.host.act) return { error: 'this code cannot act' };
@@ -588,19 +611,21 @@ export class NativeRuntime {
         if (!Object.hasOwn(all, path)) return { error: 'not in the workspace' };
         if (++fetched > 32) return { error: 'workspace read budget exceeded; use history.grid(n) or env.frame(n) for frames' };
         // The rest of its folder comes along, so a loop over frames is one request, not one per file.
-        const out: Record<string, string> = { [path]: all[path] };
+        const out: Record<string, string> = {}; const outBin: Record<string, string> = {};
+        const place = (name: string, body: string) => { if (isBinary(name)) outBin[name] = body; else out[name] = body; };
+        place(path, all[path]);
         const folder = path.slice(0, path.lastIndexOf('/') + 1);
         let room = 120_000;
         for (const [other, body] of Object.entries(all)) {
           if (!folder || !other.startsWith(folder) || other === path || body.length > room) continue;
-          out[other] = body; room -= body.length;
+          place(other, body); room -= body.length;
         }
-        return { files: out };
+        return { files: out, binaries: outBin };
       }
       return { error: 'unknown request' };
     };
     const { snapshotMetrics, ...request } = input;
-    const payload = { ...request, files, file_names: Object.keys(all), acts: [], allow_act: Boolean(via) };
+    const payload = { ...request, files, binaries, file_names: Object.keys(all), acts: [], allow_act: Boolean(via) };
     let metrics: Record<string, unknown> = {}, ended: string | undefined;
     try {
       const run = await this.kernel!.run(payload, answer, signal);
@@ -670,13 +695,13 @@ export class NativeRuntime {
         other_globals: string[]; unresolved_names: string[] };
       const missing = [...info.session_dependencies, ...info.other_globals, ...info.unresolved_names];
       if (missing.length) throw Error(`session ref '${ref}' is not self-contained; provide content with its dependencies included (unresolved: ${missing.join(', ')})`);
-      if (info.parameters.join(',') !== 'args,env') throw Error(`session ref '${ref}' must accept exactly (args, env) to preserve its callable contract; provide adapted content`);
+      if (info.parameters.join(',') !== 'args,env' && ref !== 'main' && ref !== 'handler') throw Error(`session ref '${ref}' must accept exactly (args, env) to preserve its callable contract; provide adapted content`);
       if (ref === 'run') return info.source;
+      if (ref === 'main' || ref === 'handler') return info.source;
       return `${info.source}\n\ndef run(args, env):\n    return ${ref}(args, env)\n`;
     }
     if (!content?.trim()) throw Error('tool requires content or an exact session ref');
-    if (!/^\s*def\s+run\(args, env\):\s*$/m.test(content))
-      throw Error('tool content must define run(args, env); include the callable implementation and any needed dependencies');
+    // Any tool shape the guest accepts: run(args[, env]), main(...), handler(...) or a plain script.
     return content;
   }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
@@ -1063,10 +1088,11 @@ export class NativeRuntime {
     const childSession = this.session ? new PythonSession() : undefined;
     for (const name of allowed) {
       if (name === 'arc_action') throw Error('arc_action cannot be granted');
-      if (name === 'read') {
-        const def = this.host.workspace.fileTools().find(t => t.name === 'read')!;
-        tools.push({ name, description: def.description, parameters: def.parameters });
-        runTools.set(name, args => def.execute('consult', args, signal, undefined, ctx));
+      const fileTool = ['read', 'write', 'edit', 'ls', 'grep'].includes(name)
+        ? this.host.workspace.fileTools().find(t => t.name === name) : undefined;
+      if (fileTool) {
+        tools.push({ name, description: fileTool.description, parameters: fileTool.parameters });
+        runTools.set(name, args => fileTool.execute('consult', args, signal, undefined, ctx));
       } else if (name === 'python') {
         tools.push({ name, description: 'Read-only one-off Python', parameters: Type.Object({ code: Type.String() }) });
         runTools.set(name, args => this.python(args.code, signal, true, undefined, childSession));
@@ -1081,9 +1107,11 @@ export class NativeRuntime {
     const content: any[] = [{ type: 'text', text: `Question: ${args.question}\n` }];
     for (const ref of refs) {
       const path = this.host.workspace.path(ref);
-      if (ref.toLowerCase().endsWith('.png')) {
+      // Any image type the provider accepts goes in as an image, detected by content; everything else as text.
+      const mime = await detectSupportedImageMimeTypeFromFile(path);
+      if (mime) {
         content.push({ type: 'text', text: `Image ref: ${ref}` });
-        content.push({ type: 'image', data: readFileSync(path).toString('base64'), mimeType: 'image/png' });
+        content.push({ type: 'image', data: readFileSync(path).toString('base64'), mimeType: mime });
       } else content.push({ type: 'text', text: `${ref}:\n${this.host.workspace.read(ref)}` });
     }
     const messages: any[] = [{ role: 'user', content, timestamp: Date.now() }];
@@ -1115,7 +1143,7 @@ export class NativeRuntime {
           try {
             const def = tools.find(t => t.name === call.name); if (!def) throw Error(`Tool ${call.name} not granted`);
             // A saved tool takes args={...}; inputs sent at the top level become args, as for the parent.
-            const named = call.name !== 'read' && call.name !== 'python' && call.arguments && typeof call.arguments === 'object'
+            const named = !['read', 'write', 'edit', 'ls', 'grep', 'python'].includes(call.name) && call.arguments && typeof call.arguments === 'object'
               && !('args' in call.arguments) && Object.keys(call.arguments).length;
             result = await runTools.get(call.name)!(validateToolArguments(def, named ? { ...call, arguments: { args: call.arguments } } : call));
           } catch (error) { result = text(String(error), true); }
