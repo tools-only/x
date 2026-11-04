@@ -1,7 +1,7 @@
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { readFileSync } from 'node:fs';
 import { Type } from 'typebox';
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { detectSupportedImageMimeTypeFromFile, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Binder, type Component } from './arc_thin_binder.ts';
 import { Workspace } from './arc_thin_workspace.ts';
 import { executeNative, nativeKernel, type ActCall, type NativeResult } from './arc_thin_components.ts';
@@ -20,11 +20,14 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
   /** Take one action for foreground code through the environment boundary (closed loop: env.act). */
   act?(call: ActCall, via: string): Promise<ActOutcome>;
+  agent?(request: Record<string, unknown>, signal: AbortSignal | undefined, ctx: ExtensionContext | undefined): Promise<unknown>;
+  render?(request: Record<string, unknown>): Promise<unknown>;
   /** Commit a memory update made by code (env.remember) through the memory tool's own update; returns its receipt. */
   remember?(args: unknown): Promise<string>;
   onSaved?(path: string, receipt: string | undefined): void;
   metaDecision?(choice: string, reason: string): string;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
+  generateImage?(args: { prompt: string }, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<any>;
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
   /** Run the parent's python calls in a live kernel (default true); false: a fresh sandbox per call, restored from the checkpoint. */
@@ -302,14 +305,14 @@ export class NativeRuntime {
     return receipt ?? `${name}: Created`;
   }
   /** Run the active named version on a fresh authoritative state snapshot. ADAPT calls are read-only. */
-  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal, version?: number) {
+  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal, version?: number, ctx?: ExtensionContext) {
     const component = this.host.binder.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
     if (!component) throw Error(`program ${name}: no active named program`);
     const source = version === undefined ? undefined : this.host.binder.sourceOf(component.path, version);
     if (version !== undefined && source === undefined) throw Error(`program ${name}: version ${version} does not exist`);
     this.host.log('component_runs.jsonl', { kind: 'program_call', name, path: component.path, version: component.version,
       requested_version: version, decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task' });
-    const result = await this.call(component, { args }, signal, Boolean(this.host.hookTurn?.()), source);
+    const result = await this.call(component, { args }, signal, Boolean(this.host.hookTurn?.()), source, ctx);
     const output = (result?.content ?? []).filter((part: any) => part?.type === 'text').map((part: any) => String(part.text ?? '')).join('\n');
     this.host.log('component_runs.jsonl', { kind: 'program_result', name, path: component.path, version: component.version,
       decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task', ok: !result?.isError,
@@ -495,13 +498,23 @@ export class NativeRuntime {
    * replayed with the observation (closed loop, at most MAX_ACTS per call).
    */
   private async execute(input: ReturnType<NativeRuntime['snapshot']> & Record<string, any>, signal?: AbortSignal, pool?: TaskPythonPool,
-    via?: string): Promise<NativeResult & { acted?: Acted }> {
+    via?: string, ctx?: ExtensionContext): Promise<NativeResult & { acted?: Acted }> {
     const started=performance.now(); const attempts:any[]=[];
     // Store growth must not consume every call's WASI allowance. Reads fetch only exact confined snapshot files.
-    const all = input.files; const files: Record<string, string> = {};
+    let all = input.files; const files: Record<string, string> = {};
     const source = input.code ?? input.sources[input.path] ?? '';
     for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
     const acts: Array<{ call: ActCall; observation?: unknown; stopped?: string }> = [];
+    const agentResults: any[] = [], renderResults: any[] = [];
+    let appliedOps: string[] = [];
+    const flushOps = async (result: NativeResult) => {
+      const current = (result.ops ?? []).map(op => JSON.stringify(op));
+      if (appliedOps.some((op, index) => current[index] !== op)) throw Error('workflow changed earlier workspace writes while resuming');
+      const pending = (result.ops ?? []).slice(appliedOps.length);
+      if (pending.length) await this.applyWrites({ ...result, ops: pending });
+      appliedOps = current;
+      return { ...result, ops: [] };
+    };
     const acted: Acted = { lines: [] };
     const controller = new AbortController(); const abort = () => controller.abort();
     signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
@@ -509,9 +522,10 @@ export class NativeRuntime {
     // action, and a message with many python calls must not spend their allowances waiting for the CPU.
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      for (let rounds = 0; rounds <= 32 + MAX_ACTS; rounds++) {
+      for (let rounds = 0; this.host.agent || this.host.render || rounds <= 32 + MAX_ACTS; rounds++) {
         const {snapshotMetrics, ...request}=input;
-        const payload={...request,files,file_names:Object.keys(all),acts,allow_act:Boolean(via)};
+        const payload={...request,files,file_names:Object.keys(all),acts,allow_act:Boolean(via),
+          ...(this.host.agent ? { agent_results: agentResults } : {}), ...(this.host.render ? { render_results: renderResults } : {})};
         const queued=performance.now();
         const release = pool ? () => {} : await this.slot();
         const at=performance.now();
@@ -534,7 +548,32 @@ export class NativeRuntime {
           acts.push({ call: result.need_act, ...(outcome.stopped ? { stopped: outcome.stopped } : { observation: outcome.observation }) });
           continue;
         }
-        if (!result.need_file) return { ...result, acted };
+        if (result.need_agent) {
+          if (!this.host.agent) throw Error('env.agent is unavailable in this runtime');
+          clearTimeout(timer);
+          result = await flushOps(result);
+          const call = result.need_agent;
+          try { agentResults.push({ request: call, value: await this.host.agent(call, signal, ctx) }); }
+          catch (error) { agentResults.push({ request: call, error: String(error).slice(0, 1000) }); }
+          all = this.snapshot().files;
+          for (const path of Object.keys(files)) if (Object.hasOwn(all, path)) files[path] = all[path];
+          continue;
+        }
+        if (result.need_render) {
+          if (!this.host.render) throw Error('env.render is unavailable in this runtime');
+          clearTimeout(timer);
+          result = await flushOps(result);
+          const call = result.need_render;
+          try { renderResults.push({ request: call, value: await this.host.render(call) }); }
+          catch (error) { renderResults.push({ request: call, error: String(error).slice(0, 1000) }); }
+          all = this.snapshot().files;
+          for (const path of Object.keys(files)) if (Object.hasOwn(all, path)) files[path] = all[path];
+          continue;
+        }
+        if (!result.need_file) {
+          const pendingOps = (result.ops ?? []).slice(appliedOps.length);
+          return { ...result, ops: pendingOps, acted };
+        }
         this.host.workspace.path(result.need_file);
         if (!Object.hasOwn(all, result.need_file) || Object.hasOwn(files, result.need_file)) throw Error('invalid workspace read request');
         files[result.need_file] = all[result.need_file];
@@ -632,8 +671,10 @@ export class NativeRuntime {
    * Foreground Python uses the parent's namespace and action boundary. With `save`, the exact submitted source is
    * published before execution; this is separate from invoking the saved entry point. Session calls run one at a time.
    */
-  async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
-    return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
+  async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session,
+    visibleFiles?: string[]) {
+    return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session, visibleFiles))
+      : this.runPython(code, signal, readonly, save, undefined, visibleFiles);
   }
   noteReuseRead(path: string, version?: number) {
     const component = this.host.binder.active().find(c => c.path === path && (version === undefined || c.version === version) && c.kind === 'tool'
@@ -679,7 +720,8 @@ export class NativeRuntime {
       throw Error('tool content must define run(args, env); include the callable implementation and any needed dependencies');
     return content;
   }
-  private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
+  private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined,
+    session: PythonSession | undefined, visibleFiles?: string[]) {
     // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
     // state (no action, no session change, no workspace write since) gets that call's result instead of a second run.
     const parent = !readonly && session === this.session && this.host.workMemory !== false;
@@ -714,7 +756,9 @@ export class NativeRuntime {
       this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
       if (!/NOT loaded/.test(receipt ?? '')) via = path;
     }
-    const snap = this.snapshot(); const started = Date.now();
+    const snap = this.snapshot();
+    if (visibleFiles) snap.files = Object.fromEntries(visibleFiles.filter(path => Object.hasOwn(snap.files, path)).map(path => [path, snap.files[path]]));
+    const started = Date.now();
     const windowAtStart = this.host.actionCount();
     const kit = kitOf(this.host.binder.versionMap());
     const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}),
@@ -813,13 +857,13 @@ export class NativeRuntime {
     if (!component) throw Error(`legacy alias ${name}: tool retired or unavailable`);
     return this.call(component, { args }, signal);
   }
-  private async call(c: Component, args: any, signal?: AbortSignal, readonly = false, source?: string) {
+  private async call(c: Component, args: any, signal?: AbortSignal, readonly = false, source?: string, ctx?: ExtensionContext) {
     const resolved = await this.resolveSessionArgs(args, signal);
     if (!resolved.ok) return text(`${c.name}: ${resolved.error}`, true);
     args = resolved.value;
     const snap = this.snapshot(); const started = Date.now(); const label = source === undefined ? this.host.binder.label(c.path) : `${c.name} historical`;
     if (source !== undefined) snap.sources[c.path] = source;
-    let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : c.path);
+    let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : c.path, ctx);
     const receipts = result.ok ? await this.applyWrites(result) : [];
     if (!readonly && this.host.artifacts) result = { ...this.host.artifacts(result, c, this.host.actionCount()), acted: result.acted };
     this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, path: c.path, decision: this.decision(), readonly, n: this.host.actionCount(), version: c.version,
@@ -1053,12 +1097,37 @@ export class NativeRuntime {
       } catch (error) { return { path: c.path, version: c.version, error: String(error).slice(0, 200) }; }
     }));
   }
-  private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+  runAgent(args: { agent: string; task: string; refs?: string[]; uses?: string[]; save_as?: string }, signal: AbortSignal | undefined,
+    ctx: ExtensionContext, activePrompts: string | (() => string) = '') {
+    return this.consult({ agent: args.agent, question: args.task, refs: [...(args.refs ?? []), ...(args.uses ?? [])] }, signal, ctx,
+      { writable: true, activePrompts, saveAs: args.save_as });
+  }
+  private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext,
+    options: { writable?: boolean; activePrompts?: string | (() => string); saveAs?: string; authority?: { tools: string[]; read: string[]; write: string[] } } = {}) {
     const available = this.host.immediateSubagent ? this.host.binder.candidates() : this.host.binder.active();
     const agent = available.find(c => c.kind === 'subagent' && c.name === args.agent);
     if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${available.filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}. Create one with self_component(kind="subagent", name="${args.agent}", content="...", description="...") and consult it after the next batch boundary.`);
-    const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
+    const allowed = agent.tools ?? []; const refs = options.writable
+      ? [...new Set([...(agent.refs ?? []), ...(args.refs ?? [])])]
+      : [...(agent.refs ?? []), ...(args.refs ?? [])];
+    const writeScopes = (agent.write_scope ?? []).map(scope => scope.replace(/\\/g, '/').replace(/^\.\//, ''));
+    if (options.writable) for (const scope of writeScopes) this.host.workspace.path(scope.replace(/\/$/, ''), true);
+    if (options.authority) {
+      const within = (path: string, scopes: string[]) => scopes.some(scope => scope.endsWith('/') ? path.startsWith(scope) : path === scope);
+      if (allowed.some(name => !options.authority!.tools.includes(name))) throw Error('Nested role requests tools outside the parent role.');
+      if (writeScopes.some(scope => !within(scope, options.authority!.write))) throw Error('Nested role requests write scope outside the parent role.');
+      if (refs.some(ref => !within(ref.replace(/\\/g, '/').replace(/^\.\//, ''), options.authority!.read))) throw Error('Nested role requests material outside the parent role.');
+    }
+
+    const savePath = options.saveAs?.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (savePath) {
+      this.host.workspace.path(savePath, true);
+      if (/^delivery(?:\/|$)/i.test(savePath) || !writeScopes.some(scope => scope.endsWith('/') ? savePath.startsWith(scope) : savePath === scope))
+        throw Error(`save_as is outside the role write_scope or targets delivery/: ${savePath}`);
+    }
     const tools: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
+    const changed = new Set<string>();
+    const generatedImages: Array<{ path: string; data: string; mimeType: string }> = [];
     // The subagent's python has a session of its own for this consult: it neither sees nor changes the parent's.
     const childSession = this.session ? new PythonSession() : undefined;
     for (const name of allowed) {
@@ -1066,56 +1135,133 @@ export class NativeRuntime {
       if (name === 'read') {
         const def = this.host.workspace.fileTools().find(t => t.name === 'read')!;
         tools.push({ name, description: def.description, parameters: def.parameters });
-        runTools.set(name, args => def.execute('consult', args, signal, undefined, ctx));
+        runTools.set(name, args => {
+          if (options.writable) {
+            const path = String(args.path ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+            const permitted = [...refs, ...writeScopes].some(ref => ref.endsWith('/') ? path.startsWith(ref) : path === ref);
+            if (!permitted) throw Error(`read scope does not include ${path}`);
+          }
+          return def.execute('consult', args, signal, undefined, ctx);
+        });
+      } else if (options.writable && ['write', 'edit'].includes(name)) {
+        if (!writeScopes.length) throw Error(`${name} needs a declared write_scope on the role`);
+        const def = this.host.workspace.fileTools().find(t => t.name === name)!;
+        tools.push({ name, description: def.description, parameters: def.parameters });
+        runTools.set(name, async args => {
+          const path = String(args.path ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+          this.host.workspace.path(path, true);
+          const permitted = writeScopes.some(ref => ref.endsWith('/') ? path.startsWith(ref) : path === ref);
+          if (!permitted) throw Error(`write scope does not include ${path}`);
+          const result = await def.execute('run_agent', args, signal, undefined, ctx);
+          if (!result?.isError) changed.add(path);
+          return result;
+        });
       } else if (name === 'python') {
         tools.push({ name, description: 'Read-only one-off Python', parameters: Type.Object({ code: Type.String() }) });
-        runTools.set(name, args => this.python(args.code, signal, true, undefined, childSession));
+        runTools.set(name, args => this.python(args.code, signal, true, undefined, childSession, options.writable ? refs : undefined));
+      } else if (name === 'run_agent' && options.writable && this.host.agent) {
+        tools.push({ name: 'run_agent', description: 'Delegate to a role whose tools and file access stay within your own scope.', parameters: Type.Object({
+          agent: Type.String(), task: Type.String(), refs: Type.Optional(Type.Array(Type.String())), independent: Type.Optional(Type.Boolean()),
+        }) });
+        runTools.set(name, async args => {
+          return this.consult({ agent: args.agent, question: args.task, refs: args.refs ?? [] }, signal, ctx, {
+            writable: true, activePrompts: args.independent ? '' : options.activePrompts,
+            authority: { tools: allowed, read: [...refs, ...writeScopes], write: writeScopes },
+          });
+        });
+      } else if (name === 'office' && options.writable && this.host.render) {
+        tools.push({ name: 'office', description: 'Render a presentation source and see its contact sheet. This tool cannot deliver.', parameters: Type.Object({ source_path: Type.Optional(Type.String()) }) });
+        runTools.set(name, async args => {
+          const value: any = await this.host.render!(args);
+          const path = this.host.workspace.path(value.evidence + '/contact-sheet.png');
+          return { content: [{ type: 'text', text: JSON.stringify(value) }, { type: 'image', data: readFileSync(path).toString('base64'), mimeType: 'image/png' }] };
+        });
+      } else if (name === 'generate_image' && this.host.generateImage) {
+        if (!writeScopes.some(scope => scope.endsWith('/') ? 'artifacts/visuals/image.png'.startsWith(scope) : scope === 'artifacts/visuals'))
+          throw Error('generate_image requires the role write_scope to include artifacts/visuals/');
+        tools.push({ name, description: 'Generate one polished slide visual, save it under artifacts/visuals/, and return it for inspection.',
+          parameters: Type.Object({ prompt: Type.String({ minLength: 1, maxLength: 4000 }) }) });
+        runTools.set(name, async args => {
+          const result = await this.host.generateImage!(args, signal, ctx);
+          const asset = result?.generatedAsset;
+          if (asset?.path && asset?.data && asset?.mimeType) {
+            generatedImages.push(asset);
+            changed.add(asset.path);
+          }
+          return result;
+        });
       } else {
         const c = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
         if (!c) throw Error(`subagent tool ${name} unavailable`);
         tools.push({ name, description: c.description, parameters: c.parameters });
-        runTools.set(name, args => this.call(c, args, signal, true));
+        runTools.set(name, args => {
+          const current = this.host.binder.active().find(item => item.path === c.path && item.kind === 'tool');
+          if (!current) throw Error(`subagent tool ${name} is no longer active`);
+          return this.call(current, args, signal, true);
+        });
       }
     }
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
     const content: any[] = [{ type: 'text', text: `Question: ${args.question}\n` }];
     for (const ref of refs) {
       const path = this.host.workspace.path(ref);
-      if (ref.toLowerCase().endsWith('.png')) {
+      const mimeType = await detectSupportedImageMimeTypeFromFile(path);
+      if (mimeType) {
         content.push({ type: 'text', text: `Image ref: ${ref}` });
-        content.push({ type: 'image', data: readFileSync(path).toString('base64'), mimeType: 'image/png' });
+        content.push({ type: 'image', data: readFileSync(path).toString('base64'), mimeType });
       } else content.push({ type: 'text', text: `${ref}:\n${this.host.workspace.read(ref)}` });
     }
     const messages: any[] = [{ role: 'user', content, timestamp: Date.now() }];
     const started = Date.now(); const deadline = started + 120000;
     const controller = new AbortController(); const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, 120000);
-    let answer = ''; let lengths = 0;
+    const timer = options.writable ? undefined : setTimeout(abort, 120000);
+    let answer = ''; let lengths = 0; const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }; let usageKnown = false;
     try {
-      for (let round = 0; round < 6 && Date.now() < deadline; round++) {
+      for (let round = 0; options.writable || round < 6 && Date.now() < deadline; round++) {
         if (signal?.aborted) throw Error('consult aborted');
-        const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt: `CONSULT_ROLE ${agent.name}\n${agent.body}`, messages, tools } as any,
+        const activePrompts = typeof options.activePrompts === 'function' ? options.activePrompts() : options.activePrompts ?? '';
+        const currentRole = this.host.binder.active().find(c => c.path === agent.path && c.kind === 'subagent') ?? agent;
+        const systemPrompt = `${options.writable ? `${activePrompts}\n` : ''}CONSULT_ROLE ${currentRole.name}\n${currentRole.body}`;
+        const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt, messages, tools } as any,
           { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: this.host.consultReasoning ?? 'off', maxTokens: ctx.model!.maxTokens, ...(onResponse?{onResponse}:{}) } as any);
         const reply: any = this.host.modelResult ? await this.host.modelResult(create) : await create().result();
         this.host.usage('consult', reply); messages.push(reply);
+        if (Number.isFinite(reply.usage?.input) && Number.isFinite(reply.usage?.output)) {
+          usageKnown = true;
+          for (const key of Object.keys(usage) as Array<keyof typeof usage>) usage[key] += Number(reply.usage[key] ?? 0);
+        }
         if (['error', 'aborted'].includes(reply.stopReason)) throw Error(`consult ${reply.stopReason}: ${reply.errorMessage ?? ''}`);
         answer = (reply.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
         if (reply.stopReason === 'length') {
-          if (++lengths > 1) throw Error('consult length continuation exhausted');
+          if (!options.writable && ++lengths > 1) throw Error('consult length continuation exhausted');
           messages.push({ role: 'user', content: 'Continue with the core conclusion and exact references.', timestamp: Date.now() }); continue;
         }
         const calls = (reply.content ?? []).filter((b: any) => b.type === 'toolCall');
         if (!calls.length) {
-          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed, answer, ms: Date.now() - started });
-          const {ref}=this.host.workspace.saveResult(answer);
-          return text(`${this.host.binder.label(agent.path)} →\n${this.host.workspace.receipt(answer)}\nref: ${ref}`);
+          const finalAnswer = [answer, ...generatedImages.map(image => `Generated image: ${image.path}`)].filter(Boolean).join('\n');
+          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed, answer: finalAnswer,
+            generated_images: generatedImages.map(({ path, mimeType }) => ({ path, mimeType })), ms: Date.now() - started });
+          const {ref}=this.host.workspace.saveResult(finalAnswer);
+          if (savePath) {
+            this.host.workspace.mutate({ op: 'write', path: savePath, content: finalAnswer });
+            const receipt = await this.host.binder.save(savePath, this.host.level(), { by: 'agent', decision: this.decision() });
+            this.host.binder.boundary(); changed.add(savePath);
+          }
+          const versions = refs.map(ref => this.host.binder.active().some(c => c.path === ref) ? this.host.binder.label(ref) : ref);
+          const attachments = generatedImages.map(({ data, mimeType }) => ({ type: 'image', data, mimeType }));
+          if (!options.writable) return { content: [{ type: 'text', text: `${this.host.binder.label(agent.path)} →\n${this.host.workspace.receipt(finalAnswer)}\nref: ${ref}` }, ...attachments] };
+          return { content: [{ type: 'text', text: JSON.stringify({ role: this.host.binder.label(agent.path), loaded: versions,
+            active_prompt_versions: this.host.binder.active().filter(c => c.kind === 'prompt').map(c => this.host.binder.label(c.path)),
+            changed_files: [...changed], usage: usageKnown ? usage : null, usage_status: usageKnown ? 'reported' : 'unknown', answer: finalAnswer, answer_ref: ref }) }, ...attachments] };
         }
         for (const call of calls) {
           let result: any;
           try {
+            const liveRole = (this.host.immediateSubagent ? this.host.binder.candidates() : this.host.binder.active()).find(c => c.path === agent.path && c.kind === 'subagent');
+            if (!liveRole || !(liveRole.tools ?? []).includes(call.name)) throw Error(`Tool ${call.name} is no longer granted by the active role`);
             const def = tools.find(t => t.name === call.name); if (!def) throw Error(`Tool ${call.name} not granted`);
             // A saved tool takes args={...}; inputs sent at the top level become args, as for the parent.
-            const named = call.name !== 'read' && call.name !== 'python' && call.arguments && typeof call.arguments === 'object'
+            const named = !['read', 'python', 'write', 'edit', 'generate_image', 'office', 'run_agent'].includes(call.name) && call.arguments && typeof call.arguments === 'object'
               && !('args' in call.arguments) && Object.keys(call.arguments).length;
             result = await runTools.get(call.name)!(validateToolArguments(def, named ? { ...call, arguments: { args: call.arguments } } : call));
           } catch (error) { result = text(String(error), true); }
@@ -1124,7 +1270,7 @@ export class NativeRuntime {
         }
       }
       throw Error('consult tool/time budget exhausted');
-    } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+    } finally { if (timer) clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   close() { this.viewPool.close(); this.kernel?.close(); }
   /** The line listing what the parent's python session holds, for the decision's working set. */

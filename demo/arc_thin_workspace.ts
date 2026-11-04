@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdir
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition,
-  createGrepToolDefinition, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+  createGrepToolDefinition, detectSupportedImageMimeTypeFromFile, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 /** A receipt line longer than this is a stub. A 64-cell grid row printed as a list is about 190 characters. */
 export const LONG_LINE_CHARS = 400;
@@ -56,7 +56,7 @@ export class Workspace {
   }
   runtimeWrite(path: string, content: string | Uint8Array) {
     const target = this.path(path, true, true); mkdirSync(resolve(target, '..'), { recursive: true });
-    writeFileSync(this.path(path, true, true), content, 'utf8');
+    writeFileSync(target, content, typeof content === 'string' ? 'utf8' : undefined);
     this.version += 1;
   }
   mutate(op: { op: string; path: string; content?: string; destination?: string }) {
@@ -87,6 +87,7 @@ export class Workspace {
     return out;
   }
   read(path: string): string { return readFileSync(this.path(path), 'utf8'); }
+  isBinary(path: string): boolean { return readFileSync(this.path(path)).subarray(0, 8192).includes(0); }
   saveResult(body: string): { ref: string; hash: string } {
     const hash = createHash('sha256').update(body).digest('hex');
     const records = new Map<string, string>(); const mapped = new Set<string>();
@@ -163,7 +164,7 @@ export class Workspace {
     const access = async (p: string) => { if (!existsSync(safe(p))) throw Error('workspace file does not exist'); };
     const tools: ToolDefinition[] = [
       createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile, access,
-        detectImageMimeType: async p => readFileSync(safe(p)).subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? 'image/png' : null } }),
+        detectImageMimeType: async p => detectSupportedImageMimeTypeFromFile(safe(p)) } }),
       createWriteToolDefinition(this.root, { operations: { writeFile, mkdir: async p => { mkdirSync(safe(p, true), { recursive: true }); } } }),
       createEditToolDefinition(this.root, { operations: { readFile, writeFile, access: async p => { safe(p, true); await access(p); } } }),
       createLsToolDefinition(this.root, { operations: { exists: p => existsSync(safe(p)), stat: p => lstatSync(safe(p)),
@@ -175,7 +176,7 @@ export class Workspace {
         const glob = args.glob ? new RegExp('^' + args.glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$') : null;
         const found: string[] = []; const limit = Math.min(1000, Math.max(1, args.limit ?? 100));
         for (const file of this.files(args.path ?? '.')) {
-          if (file.endsWith('.png')) continue;
+          if (this.isBinary(file)) continue;
           if (glob && !glob.test(file) && !glob.test(file.split('/').at(-1)!)) continue;
           const lines = this.read(file).split('\n');
           for (let n = 0; n < lines.length && found.length < limit; n++) if (regex.test(lines[n])) {
