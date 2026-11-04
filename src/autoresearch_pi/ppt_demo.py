@@ -15,9 +15,9 @@ from .pi_kernel import PiKernel
 PROJECT = Path(__file__).resolve().parents[2]
 
 ENVIRONMENT = """# HTML presentation environment
-The requested output is authored at artifacts/presentation.html. Mark each slide container with class="slide". Inline CSS/SVG/JavaScript and embedded assets make the delivered file self-contained. The browser renderer adds navigation, a slide counter, fullscreen and print-to-PDF; it creates one-slide browser previews at exports/vNNN/?slide=N. Receipts and PNG previews are readable under results/renders/vNNN/.
-The renderer also accepts scene JSON at artifacts/deck.json and converts it to standalone HTML. JSON scenes use width, height, slides; each slide has background and elements with kind,x,y,w,h. Supported elements are text, rect, line, shape, chart, table and image. See the tool result for renderer facts and warnings.
-The task files are data/instructions.md and data/material.txt. Read and write paths are confined to the workspace. data/ and results/ are read-only. Browser output is written under exports/ and results/; the current deliverable is delivery/presentation.html.
+The deliverable is a presentation you author; the typical form is artifacts/presentation.html with each slide container marked class="slide". Inline CSS/SVG/JavaScript and embedded assets make it self-contained, and relative assets (images, css, js next to the source under artifacts/) resolve: the renderer screenshots a copy placed next to your source files. The renderer adds navigation, a slide counter, fullscreen and print-to-PDF; it creates one-slide browser previews. Receipts and page images are readable under results/renders/vNNN/.
+The renderer also accepts scene JSON at artifacts/deck.json and converts it to standalone HTML. JSON scenes use width, height, slides; each slide has background and elements with kind,x,y,w,h. Element kinds include text, rect, line, shape, chart, table and image; an element may also carry raw HTML/SVG in an "html" field. Images reference any workspace path; their type is detected from content (png, jpeg, gif, webp, bmp). See the tool result for renderer facts and warnings.
+Python (the python tool and programs) reads and writes workspace files as text or binary; you can create images and other binary assets yourself. The task files are data/instructions.md and data/material.txt. Read and write paths are confined to the workspace. data/ and results/ are read-only. Browser output is written under exports/ and results/; delivery copies the rendered revision to delivery/.
 """
 
 
@@ -102,8 +102,6 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         codex_config["models"] = [item for item in current_models if item.get("id") != model_id] + [model]
         models_path.write_text(json.dumps(model_config, indent=2), encoding="utf-8")
         settings_config = json.loads(original_settings) if original_settings else {}
-        settings_config.setdefault("compaction", {})["enabled"] = False
-        settings_config.setdefault("retry", {})["enabled"] = False
         settings_path.write_text(json.dumps(settings_config, indent=2), encoding="utf-8")
     else:
         agent.mkdir(exist_ok=resume)
@@ -112,7 +110,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         (agent / "models.json").write_text(json.dumps({"providers": {provider_id: {"baseUrl": values["OPENAI_API_BASE"],
             "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True,
             "compat": {"supportsDeveloperRole": False, "thinkingFormat": "qwen"}, "models": [model]}}}), encoding="utf-8")
-        (agent / "settings.json").write_text(json.dumps({"compaction": {"enabled": False}, "retry": {"enabled": False}}))
+        (agent / "settings.json").write_text(json.dumps({}))
     env = {**{key: value for key, value in os.environ.items() if key != "OPENAI_API_KEY"},
            **({"OPENAI_API_KEY": values["OPENAI_API_KEY"]} if not official_openai else {}),
            "PI_CODING_AGENT_DIR": str(agent),
@@ -170,7 +168,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                     raise RuntimeError(f"Pi rejected prompt: {response}")
                 events = kernel.wait_for_agent_events(
                     timeout=float("inf") if deadline is None else max(1, deadline-time.monotonic()),
-                    idle_timeout=None if deadline is None else 300)
+                    idle_timeout=None if deadline is None else 900)
                 messages = [e["message"] for e in events if e.get("type") == "message_end" and e.get("message", {}).get("role") == "assistant"]
                 latest = messages[-1] if messages else {}
                 state = json.loads((root / ".harness/ppt-loop.json").read_text(encoding="utf-8"))

@@ -35,14 +35,18 @@ test('binder versions writes, labels failed fallback, activates next boundary an
   assert.match(await save('prompts/p.md', '---\nactive: true\n---\nKEEP_HYPOTHESIS'), /v1.*saved.*loaded.*next decision/);
   assert.equal(b.active().length, 0);
   b.boundary(); assert.equal(b.active()[0].version, 1);
-  assert.match(await save('prompts/p.md', 'missing header'), /v2.*NOT loaded.*v1 still runs/);
+  // Frontmatter is optional now: a plain markdown prompt binds active with its first line as the description.
+  assert.match(await save('prompts/plain.md', 'A plain active prompt with no header'), /v1.*saved.*loaded/);
+  b.boundary(); assert.equal(b.active().find(c => c.path === 'prompts/plain.md')!.enabled, true);
+  // A frontmatter that states an invalid value still fails and falls back to the last good version.
+  assert.match(await save('prompts/p.md', '---\nactive: maybe\n---\nBAD'), /v2.*NOT loaded.*v1 still runs/);
   b.boundary(); assert.match(b.label('prompts/p.md'), /v1 \(v2 failed\)/);
-  b = new Binder(w); await b.scan(0); b.boundary(); assert.equal(b.active()[0].source.includes('KEEP_HYPOTHESIS'), true);
+  b = new Binder(w); await b.scan(0); b.boundary(); assert.equal(b.active().find(c => c.path === 'prompts/p.md')!.source.includes('KEEP_HYPOTHESIS'), true);
   assert.match(b.index(1), /stale/);
-  await save('prompts/p.md', '---\nactive: false\n---\nDISABLED'); b.boundary(); assert.equal(b.active().length, 0);
+  await save('prompts/p.md', '---\nactive: false\n---\nDISABLED'); b.boundary(); assert.equal(b.active().find(c => c.path === 'prompts/p.md'), undefined);
   assert.match(b.index(0), /off/);
-  await save('prompts/p.md', '---\nactive: true\n---\nFIXED'); b.boundary(); assert.equal(b.active()[0].version, 4);
-  rmSync(w.path('prompts/p.md')); await b.scan(0); b.boundary(); assert.equal(b.active().length, 0);
+  await save('prompts/p.md', '---\nactive: true\n---\nFIXED'); b.boundary(); assert.equal(b.active().find(c => c.path === 'prompts/p.md')!.version, 4);
+  rmSync(w.path('prompts/p.md')); rmSync(w.path('prompts/plain.md')); await b.scan(0); b.boundary(); assert.equal(b.active().length, 0);
   b = new Binder(w); await b.scan(0); b.boundary(); assert.equal(b.active().length, 0);
   for (let n = 0; n < 40; n++) await save(`notes/n${n}.md`, `note ${n}`);
   assert.ok(b.index(0).length <= 1200);

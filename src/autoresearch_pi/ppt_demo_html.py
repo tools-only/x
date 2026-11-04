@@ -72,43 +72,72 @@ def _browser() -> Path:
     raise RuntimeError("HTML previews require Microsoft Edge or Google Chrome; set PPT_DEMO_BROWSER to its executable.")
 
 
+def _mime_of(path: Path) -> str:
+    """Image MIME by content, not by suffix; any type the browser accepts works."""
+    head = path.read_bytes()[:16]
+    if head.startswith(b"\x89PNG\r\n\x1a\n"): return "image/png"
+    if head.startswith(b"\xff\xd8\xff"): return "image/jpeg"
+    if head[:6] in (b"GIF87a", b"GIF89a"): return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP": return "image/webp"
+    if head[:2] == b"BM": return "image/bmp"
+    if head[:4] == b"\x00\x00\x01\x00": return "image/x-icon"
+    return "image/png"
+
+
 def render(root: Path, manifest: Path, revision: int) -> dict:
     raw = manifest.read_bytes(); source_path = manifest.resolve().relative_to((root/"workspace").resolve()).as_posix()
     source_hash = hashlib.sha256(raw).hexdigest(); source = raw.decode("utf-8")
+    warnings: list = []
     if manifest.suffix.lower() == ".html":
         parser=Slides(); parser.feed(source); count=parser.count
-        if not 1 <= count <= 30: raise ValueError("HTML source must contain 1..30 elements with class=slide")
-        source_info={"format":"html","path":source_path,"sha256":source_hash,"slides":[{} for _ in range(count)]}
+        if count < 1: raise ValueError("HTML source must contain at least one element with class=slide")
+        source_info={"format":"html","path":source_path,"slides":[{} for _ in range(count)]}
         title=parser.title; html=_with_navigation(source); counts={"html":1}
     else:
         spec=json.loads(source); slides=spec["slides"]
-        if not isinstance(slides,list) or not 1 <= len(slides) <= 30: raise ValueError("slides must contain 1..30 pages")
+        if not isinstance(slides,list) or not slides: raise ValueError("slides must contain at least one page")
         count=len(slides); html_spec=json.loads(json.dumps(spec)); width,height=float(spec.get("width",13.333333)),float(spec.get("height",7.5))
-        counts={kind:0 for kind in ("text","rect","line","shape","chart","table","image")}; warnings=[]
+        counts={};
         for page_no,page in enumerate(html_spec["slides"],1):
             for index,el in enumerate(page["elements"]):
                 kind=el["kind"]
-                if kind not in counts: raise ValueError(f"unsupported element kind: {kind}")
                 x,y,w,h=(float(el[k]) for k in ("x","y","w","h"))
                 if w<=0 or h<=0: raise ValueError("element width/height must be positive")
                 if x<0 or y<0 or x+w>width+.02 or y+h>height+.02: warnings.append({"page":page_no,"element":index,"issue":"outside_canvas"})
                 if kind=="image":
+                    # Any workspace image, by content; no directory or suffix whitelist.
                     image=(root/"workspace"/el["path"]).resolve()
-                    if not image.is_relative_to((root/"workspace"/"data").resolve()): raise ValueError("images must come from data/")
-                    mime="image/png" if image.suffix.lower()==".png" else "image/jpeg"
+                    if not image.is_relative_to((root/"workspace").resolve()): raise ValueError("image path leaves the workspace")
+                    mime=_mime_of(image)
                     el["data_uri"]=f"data:{mime};base64,"+base64.b64encode(image.read_bytes()).decode("ascii")
-                counts[kind]+=1
+                if "html" in el:
+                    # Free-form content: any element may carry raw HTML/SVG; unknown kinds render it directly.
+                    kind = kind if kind in ("text","rect","line","shape","chart","table","image") else "html"
+                counts[kind]=counts.get(kind,0)+1
         html=HTML.replace("RATIO",str(width/height)).replace("DATA",json.dumps(html_spec,ensure_ascii=False).replace("</","<\\/"))
         title=spec.get("title","Presentation"); source_info=spec
-    if 'warnings' not in locals(): warnings=[]
     out = root / "exports" / f"v{revision:03d}"; out.mkdir(parents=True, exist_ok=False)
-    html_path=out/"presentation.html"; html_path.write_text(html,encoding="utf-8")
+    # Render in place next to the source, so relative assets (images, css, js) resolve; the navigation overlay is a
+    # separate file, and the pristine source itself is never rewritten.
+    render_root = out / "render"
+    src_dir = manifest.parent
+    import shutil
+    shutil.copytree(src_dir, render_root)
+    html_name = "presentation.html" if manifest.suffix.lower() == ".html" else "deck.html"
+    html_path = render_root / (manifest.name if manifest.suffix.lower() == ".html" else html_name)
+    if manifest.suffix.lower() == ".html":
+        html_path.write_text(html, encoding="utf-8")
+        shutil.copyfile(html_path, out / "presentation.html")
+    else:
+        html_path.write_text(html, encoding="utf-8")
+        shutil.copyfile(html_path, out / "presentation.html")
     browser=_browser(); profile=out/"browser-profile"; profile.mkdir()
+    window=os.environ.get("PPT_DEMO_WINDOW_SIZE","1600,900"); vtb=os.environ.get("PPT_DEMO_VIRTUAL_TIME_MS","10000")
     for n in range(1,count+1):
         shot=out/f"slide-{n:02d}.png"
         subprocess.run([str(browser),"--headless=new","--disable-gpu","--no-first-run","--no-default-browser-check",
-            "--hide-scrollbars","--window-size=1600,900","--virtual-time-budget=1200",f"--user-data-dir={profile}",
-            f"--screenshot={shot}",f"{html_path.as_uri()}?slide={n}"],check=True,capture_output=True,timeout=30)
+            "--hide-scrollbars",f"--window-size={window}",f"--virtual-time-budget={vtb}",f"--user-data-dir={profile}",
+            f"--screenshot={shot}",f"{html_path.as_uri()}?slide={n}"],check=True,capture_output=True,timeout=60)
     from PIL import Image, ImageDraw
     tw,th,cols=480,270,3; sheet=Image.new("RGB",(cols*tw,((count+cols-1)//cols)*(th+24)),"#dfe5e9"); draw=ImageDraw.Draw(sheet)
     for i in range(count):

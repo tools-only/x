@@ -43,7 +43,7 @@ test('B: parent Python save records creation separately from a later component c
   } finally { runtime.close(); }
 });
 
-test('USE-CHANNEL: only one act-capable saved tool is callable; no act-capable tool yields an empty callable schema', async () => {
+test('USE-CHANNEL: every saved tool is callable, act-capable or not; the schema reports which can act', async () => {
   const root = mkdtempSync(join(tmpdir(), 'native-use-channel-'));
   const workspace = new Workspace(root);
   const binder = new Binder(workspace, validatePythonComponent);
@@ -61,9 +61,9 @@ test('USE-CHANNEL: only one act-capable saved tool is callable; no act-capable t
       await binder.save(path, 0, { by: 'agent', decision: path.endsWith('act_two.py') ? 2 : 1 });
     }
     binder.boundary(); runtime.register();
-    assert.equal(runtime.toolNames().length, 1);
-    assert.equal(runtime.toolNames()[0], 'act_two', 'the newest untried agent-created act tool wins');
-    assert.equal(runtime.callableSchema(runtime.toolNames().map(name => ({ name }))).filter(tool => tool.act_capable).length, 1);
+    // Free hands: a view is not auto-classified here (run(args, env) reads args), and no act tool displaces another.
+    assert.deepEqual([...runtime.toolNames()].sort(), ['act_one', 'act_two', 'view']);
+    assert.equal(runtime.callableSchema(runtime.toolNames().map(name => ({ name }))).filter(tool => tool.act_capable).length, 2);
     const emptyRoot = mkdtempSync(join(tmpdir(), 'native-use-channel-empty-'));
     const emptyWorkspace = new Workspace(emptyRoot);
     const emptyBinder = new Binder(emptyWorkspace, validatePythonComponent);
@@ -71,7 +71,7 @@ test('USE-CHANNEL: only one act-capable saved tool is callable; no act-capable t
     await emptyBinder.save('tools/view_only.py', 0, { by: 'agent' }); emptyBinder.boundary();
     const empty = new NativeRuntime({ pi: { registerTool() {} } as any, workspace: emptyBinder.workspace, binder: emptyBinder,
       state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {}, wrap: (_name, fn) => fn });
-    try { empty.register(); assert.deepEqual(empty.toolNames(), []); }
+    try { empty.register(); assert.deepEqual(empty.toolNames(), ['view_only']); }
     finally { empty.close(); }
   } finally { runtime.close(); }
 });
@@ -91,8 +91,9 @@ test('AGENT-RUNTIME-IFACE: save adapts an exact session ref and rejects incomple
     await runtime.python('def candidate(args, env):\n    if args.get("act"):\n        return env.act(args["action"])\n    return {"value": args.get("value")}');
     const source = await runtime.toolSource(undefined, 'candidate');
     assert.match(source, /def run\(args, env\):\n    return candidate\(args, env\)/);
-    await assert.rejects(runtime.toolSource('def inspect(state):\n    return state', undefined),
-      /must define run\(args, env\)/);
+    // Free hands: tool content is not shape-gated at the interface; the guest's own entry rules decide what runs.
+    const other = await runtime.toolSource('def inspect(state):\n    return state', undefined);
+    assert.match(other, /def inspect\(state\)/);
     workspace.mutate({ op: 'write', path: 'tools/candidate.py', content: source });
     const receipt = await binder.save('tools/candidate.py', 0, { by: 'agent' });
     assert.match(receipt ?? '', /saved.*loaded/);
