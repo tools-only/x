@@ -326,7 +326,7 @@ except BaseException as _error:
     result = {"ok": False, "error": (type(_error).__name__ + ": " + str(_error))[:600], "where": _where(_error, _src)}
 `;
 
-export const SKILL_LIMITS = { input_bytes: 384 * 1024, output_bytes: 64 * 1024, fuel: 4_000_000_000, timeout_ms: 20_000 };
+export const SKILL_LIMITS = { input_bytes: 384 * 1024, output_bytes: 1024 * 1024, fuel: 4_000_000_000, timeout_ms: 20_000 };
 
 export type GuestResult = { ok: true; value?: unknown; warnings?: string[] } | { ok: false; error: string; where?: string };
 
