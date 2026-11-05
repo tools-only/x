@@ -28,26 +28,27 @@ export function componentKind(path: string): string | undefined {
   if (/^prompts\/[^/]+\.md$/.test(path)) return 'prompt';
   if (/^(agents|roles)\/[^/]+\.md$/.test(path)) return 'subagent';
 }
-/** The file conventions require only scalar values and lists, not an SDK. */
+/** The file conventions require only scalar values and lists, not an SDK. Frontmatter is optional: a plain markdown
+ * file binds with defaults (prompt active, description from its first line, skill named by its directory), so writing
+ * a component is just writing a file. What frontmatter states, it overrides. */
 export function markdownSpec(path: string, source: string): ComponentSpec {
   const kind = componentKind(path)!; const name = kind === 'skill' ? path.split('/')[1]
     : `${path.startsWith('prompts/process/') ? 'process_' : ''}${path.split('/').at(-1)!.replace(/\.md$/, '')}`;
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(source);
-  if (!match) throw Error('markdown needs frontmatter');
-  const doc = parseDocument(match[1]); if (doc.errors.length) throw Error(doc.errors.map((e: Error) => e.message).join('; '));
+  const body = match ? match[2] : source;
+  const doc = parseDocument(match ? match[1] : '{}'); if (doc.errors.length) throw Error(doc.errors.map((e: Error) => e.message).join('; '));
   const header: Record<string, any> = doc.toJS({ maxAliasCount: 20 });
   if (!header || typeof header !== 'object' || Array.isArray(header)) throw Error('frontmatter must be a mapping');
-  if (kind === 'prompt' && ![true, false].includes(header.active)) throw Error('prompt active must be true or false');
-  if ((kind === 'subagent' || kind === 'skill') && !String(header.description ?? '').trim()) throw Error('description is required');
-  if (kind === 'skill' && header.name !== name) throw Error('skill name must match its directory');
-  if (kind === 'subagent' && (!Array.isArray(header.tools) || header.tools.some((t: string) => !['read', 'python', 'write', 'edit'].includes(t) && !/^[a-z][a-z0-9_]{0,40}$/.test(t)) || header.tools.some((t: string) => ['arc_action', 'consult', 'memory', 'refine'].includes(t))))
+  if (kind === 'prompt' && header.active !== undefined && ![true, false].includes(header.active)) throw Error('prompt active must be true or false');
+  if (kind === 'skill' && header.name !== undefined && header.name !== name) throw Error('skill name must match its directory');
+  if (kind === 'subagent' && (header.tools !== undefined && (!Array.isArray(header.tools) || header.tools.some((t: string) => !['read', 'python', 'write', 'edit'].includes(t) && !/^[a-z][a-z0-9_]{0,40}$/.test(t)) || header.tools.some((t: string) => ['arc_action', 'consult', 'memory', 'refine'].includes(t)))))
     throw Error('subagent tools must be read, python, write, edit or named non-delivery tools; subagents never act or deliver');
   if (kind === 'subagent' && header.write_scope !== undefined && (!Array.isArray(header.write_scope) || header.write_scope.some((p: unknown) => typeof p !== 'string' || !p.trim())))
     throw Error('subagent write_scope must be a list of workspace paths or directories');
   if (kind === 'subagent' && (header.write_scope ?? []).some((p: string) => /^\/?delivery(?:\/|$)/i.test(p.replace(/\\/g, '/'))))
     throw Error('subagent write_scope cannot include delivery/');
-  return { kind, name, description: String(header.description ?? match[2].split(/\r?\n/).find(s => s.trim()) ?? '').slice(0, 120),
-    enabled: kind !== 'prompt' || header.active === true, body: match[2], tools: header.tools, refs: header.refs, write_scope: header.write_scope };
+  return { kind, name, description: String(header.description ?? body.split(/\r?\n/).find(s => s.trim()) ?? '').slice(0, 120),
+    enabled: kind !== 'prompt' || header.active !== false, body, tools: header.tools, refs: header.refs, write_scope: header.write_scope };
 }
 
 export class Binder {

@@ -21,7 +21,7 @@ export class Workspace {
   onWrite?: (path: string) => Promise<string | undefined>;
   /** Counts every write, move and delete, so a computation can tell its inputs did not change (the same-state cache). */
   version = 0;
-  constructor(runRoot: string, options: { inlineChars?: number } = {}) {
+  constructor(runRoot: string, options: { inlineChars?: number; dirs?: string[] } = {}) {
     this.root = resolve(runRoot, 'workspace');
     this.inlineChars = options.inlineChars ?? 8000;
     if (!Number.isInteger(this.inlineChars) || this.inlineChars < 0) throw Error('invalid inline result threshold');
@@ -29,7 +29,8 @@ export class Workspace {
     this.resultIndex = join(privateRoot, 'result-index.jsonl');
     mkdirSync(this.root, { recursive: true });
     if (lstatSync(this.root).isSymbolicLink()) throw Error('workspace root cannot be a link');
-    for (const dir of ['data/frames', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results', 'config'])
+    // The ARC hosts start from this skeleton; another host names its own (PPT: only what it writes itself).
+    for (const dir of options.dirs ?? ['data/frames', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results', 'config'])
       mkdirSync(this.path(dir, true, true), { recursive: true });
   }
   /** Also called by operations with Pi-resolved paths; callers must prevalidate raw arguments. */
@@ -87,7 +88,12 @@ export class Workspace {
     return out;
   }
   read(path: string): string { return readFileSync(this.path(path), 'utf8'); }
-  isBinary(path: string): boolean { return readFileSync(this.path(path)).subarray(0, 8192).includes(0); }
+  readBytes(path: string): Uint8Array { return readFileSync(this.path(path)); }
+  /** A file whose first 8 KiB contain a NUL byte is binary: grep skips it, readers decode it deliberately. */
+  isBinary(path: string): boolean {
+    const fd = readFileSync(this.path(path));
+    return fd.subarray(0, 8192).includes(0);
+  }
   saveResult(body: string): { ref: string; hash: string } {
     const hash = createHash('sha256').update(body).digest('hex');
     const records = new Map<string, string>(); const mapped = new Set<string>();
@@ -164,6 +170,7 @@ export class Workspace {
     const access = async (p: string) => { if (!existsSync(safe(p))) throw Error('workspace file does not exist'); };
     const tools: ToolDefinition[] = [
       createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile, access,
+        // Pi's own detector: jpg, png, gif, webp, bmp — whatever the provider accepts, by content, not by suffix.
         detectImageMimeType: async p => detectSupportedImageMimeTypeFromFile(safe(p)) } }),
       createWriteToolDefinition(this.root, { operations: { writeFile, mkdir: async p => { mkdirSync(safe(p, true), { recursive: true }); } } }),
       createEditToolDefinition(this.root, { operations: { readFile, writeFile, access: async p => { safe(p, true); await access(p); } } }),

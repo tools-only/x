@@ -12,8 +12,11 @@ export const TASK_PYTHON_DEFAULT_LIMITS = Object.freeze({
 	allocation_bytes: 8 * 1024 * 1024, memory_bytes: 128 * 1024 * 1024,
 	fuel: 1_000_000_000, timeout_ms: 20_000,
 });
+// Transport ceilings. The sandbox boundaries (memory, fuel, timeout, no preopened dirs) stay below; these only bound
+// what crosses in and out. Base64 binaries (+33%) must fit, so the byte caps sit above the WASI memory ceiling's
+// useful range rather than at it.
 const HARD_LIMITS = Object.freeze({
-	input_bytes: 512 * 1024, output_bytes: 256 * 1024, json_depth: 64,
+	input_bytes: 4 * 1024 * 1024, output_bytes: 1024 * 1024, json_depth: 64,
 	allocation_bytes: 32 * 1024 * 1024, memory_bytes: 256 * 1024 * 1024,
 	fuel: 4_000_000_000, timeout_ms: 30_000,
 });

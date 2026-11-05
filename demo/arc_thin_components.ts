@@ -6,7 +6,7 @@ import { PythonKernel } from './pi_task_python_kernel.ts';
 import type { ComponentSpec } from './arc_thin_binder.ts';
 
 const NATIVE = String.raw`
-import ast, io, re, sys, importlib.abc, importlib.util, builtins
+import ast, base64, io, re, sys, importlib.abc, importlib.util, builtins
 
 RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'save', 'save_tool', 'save_program', 'run_program', 'list_programs', 'promote', 'read_component', 'skip', 'self_component', 'promote_session_function')
 # Every tool has one interface: a dict of arguments (Continual Harness's run(state, args) contract; Prime calls plain
@@ -25,7 +25,12 @@ def _first_comment(source):
 
 def _entry(tree):
     names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
-    return 'run' if 'run' in names else 'observe' if 'observe' in names else None
+    # run/observe keep their contracts; a plain main(...) or handler(...) is accepted too (a script with no entry
+    # still runs top to bottom), so the agent's own idiom needs no adapter.
+    for candidate in ('run', 'observe', 'main', 'handler'):
+        if candidate in names:
+            return candidate
+    return None
 
 def _reads_args(tree, entry):
     """Whether a tool takes arguments when called: a script that reads args, or a run() that reads its args or has
@@ -36,7 +41,7 @@ def _reads_args(tree, entry):
         return reads(tree)
     if entry == 'observe':
         return False
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == entry)
     params = [a.arg for a in fn.args.args]
     if fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs:
         return True
@@ -122,10 +127,12 @@ class _StateDict(dict):
 
 def _begin(req):
     """What belongs to one cell. In a live kernel the namespace, definitions and the runtime's own modules stay."""
-    global _req, _sources, _files, _writes, _ops, _available, _state, _warnings
+    global _req, _sources, _files, _binaries, _writes, _ops, _available, _state, _warnings
     _req = req
     _sources = req.get('sources') or {}
     _files = dict(req.get('files') or {})
+    # Binary workspace files travel as base64 (any file type: png, jpeg, xlsx, zip — no suffix whitelist).
+    _binaries = dict(req.get('binaries') or {})
     _writes = {}
     _ops = []
     _available = set(req.get('file_names') or [])
@@ -150,6 +157,7 @@ def _need(path):
     if reply.get('error'):
         raise FileNotFoundError('%s: %s' % (path, reply['error']))
     _files.update(reply.get('files') or {})
+    _binaries.update(reply.get('binaries') or {})
 
 def _path(path):
     path = str(path).replace('\\', '/')
@@ -165,27 +173,55 @@ class _Writer(io.StringIO):
         if not self.closed:
             _writes[self.path] = self.getvalue()
             _files[self.path] = self.getvalue()
+            _binaries.pop(self.path, None)
             _available.add(self.path)
             _ops.append({'op': 'write', 'path': self.path, 'content': self.getvalue()})
         super().close()
 
+class _BinaryWriter(io.BytesIO):
+    """A binary workspace write: real bytes, transported to the host as base64. Any file type; no suffix whitelist."""
+    def __init__(self, path, initial=b''):
+        super().__init__(initial)
+        self.path = path
+    def close(self):
+        if not self.closed:
+            data = self.getvalue()
+            encoded = base64.b64encode(data).decode('ascii')
+            _binaries[self.path] = encoded
+            _files.pop(self.path, None)
+            _available.add(self.path)
+            _ops.append({'op': 'write', 'path': self.path, 'content': encoded, 'encoding': 'base64'})
+        super().close()
+
+def _present(path):
+    return path in _files or path in _sources or path in _binaries
+
 def _open(path, mode='r', *args, **kwargs):
     path = _path(path)
-    if path in _available and path not in _files and path not in _sources and ('a' in mode or 'r' in mode):
+    binary = 'b' in mode
+    if path in _available and not _present(path) and ('a' in mode or 'r' in mode):
         _need(path)
     if any(c in mode for c in 'wax+'):
         if _session_flags.get('loading'):
             raise PermissionError('no workspace writes while the python session is restored or checkpointed')
         if not _req.get('allow_writes') or path.split('/')[0] in ('data', 'results'):
             raise PermissionError('workspace path is read-only in this execution')
-        if 'b' in mode: raise ValueError('workspace writes must be text')
-        if 'x' in mode and (path in _available or path in _files or path in _sources): raise FileExistsError(path)
+        if binary:
+            if 'x' in mode and (path in _available or _present(path)): raise FileExistsError(path)
+            initial = b''
+            if 'a' in mode:
+                initial = base64.b64decode(_binaries[path]) if path in _binaries else _files.get(path, '').encode('utf-8')
+            stream = _BinaryWriter(path, initial)
+            if 'a' in mode: stream.seek(0, 2)
+            return stream
+        if 'x' in mode and (path in _available or _present(path)): raise FileExistsError(path)
         stream = _Writer(path, _files.get(path, '') if 'a' in mode else '')
         if 'a' in mode: stream.seek(0, 2)
         return stream
-    if path not in _files and path not in _sources: raise FileNotFoundError(path)
-    text = _files.get(path, _sources.get(path, ''))
-    return io.BytesIO(text.encode('utf-8')) if 'b' in mode else io.StringIO(text)
+    if not _present(path): raise FileNotFoundError(path)
+    if binary:
+        return io.BytesIO(base64.b64decode(_binaries[path]) if path in _binaries else _files.get(path, _sources.get(path, '')).encode('utf-8'))
+    return io.StringIO(_files.get(path, _sources.get(path, '')))
 
 class _Loader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def find_spec(self, fullname, path=None, target=None):
@@ -205,8 +241,9 @@ def _remove(path):
     path = _path(path)
     if not _req.get('allow_writes') or path.split('/')[0] in ('data', 'results'):
         raise PermissionError('workspace path is read-only in this execution')
-    if path not in _files and path not in _sources and path not in _available: raise FileNotFoundError(path)
+    if not _present(path) and path not in _available: raise FileNotFoundError(path)
     _files.pop(path, None)
+    _binaries.pop(path, None)
     _sources.pop(path, None)
     _available.discard(path)
     _ops.append({'op': 'delete', 'path': path})
@@ -216,10 +253,14 @@ def _rename(src, dst):
     src, dst = _path(src), _path(dst)
     if not _req.get('allow_writes') or any(p.split('/')[0] in ('data', 'results') for p in (src, dst)):
         raise PermissionError('workspace path is read-only in this execution')
-    if src in _available and src not in _files and src not in _sources: _need(src)
-    if src not in _files and src not in _sources: raise FileNotFoundError(src)
-    _files[dst] = _files.get(src, _sources.get(src, ''))
+    if src in _available and not _present(src): _need(src)
+    if not _present(src): raise FileNotFoundError(src)
+    if src in _binaries:
+        _binaries[dst] = _binaries.pop(src)
+    else:
+        _files[dst] = _files.get(src, _sources.get(src, ''))
     _files.pop(src, None)
+    _binaries.pop(src, None)
     _sources.pop(src, None)
     _sources.pop(dst, None)
     _available.discard(src)
@@ -227,7 +268,7 @@ def _rename(src, dst):
     _ops.append({'op': 'move', 'path': src, 'destination': dst})
 
 def _names():
-    return set(_available) | set(_files) | set(_sources)
+    return set(_available) | set(_files) | set(_sources) | set(_binaries)
 
 # The workspace's file names are known without their contents, so listing needs no file transfer. Without this,
 # os.listdir('data') failed with ENOENT in the 2026-10-12 real run and the agent concluded data/ did not exist.
@@ -782,6 +823,13 @@ def _call(req, env):
     env._namespace = module.__dict__
     if entry == 'observe':
         return _jsonable(module.observe(_state))
+    if entry in ('main', 'handler'):
+        fn = getattr(module, entry)
+        params = [a.arg for a in next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == entry).args.args]
+        if not params: return _jsonable(fn())
+        if params[0] in ('args', 'req', 'request', 'params', 'input'):
+            return _jsonable(fn(inner, env) if len(params) >= 2 else fn(inner))
+        return _jsonable(fn(**inner))
     params = [a.arg for a in next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'run').args.args]
     if params[:1] == ['args'] and len(params) <= 2:
         value = module.run(inner, env) if len(params) == 2 else module.run(inner)
@@ -881,7 +929,25 @@ def _cell(req):
         if _req['mode'] == 'inspect':
             return {'ok': True, 'value': _inspect(_req)}
         builtins.open = _open
-        import os, random
+        import os, random, io as _io
+        # pathlib and io.open route to the same confined backend, so Path.read_bytes()/write_text() work and no
+        # library that reaches for io.open escapes the workspace view.
+        _io.open = _open
+        import pathlib as _pathlib
+        def _pw(self, data, mode):
+            stream = _open(str(self), mode)
+            try: stream.write(data)
+            finally: stream.close()
+            return len(data)
+        _pathlib.Path.open = lambda self, mode='r', *a, **k: _open(str(self), mode, *a, **k)
+        _pathlib.Path.read_text = lambda self, *a, **k: _open(str(self), 'r').read()
+        _pathlib.Path.read_bytes = lambda self: _open(str(self), 'rb').read()
+        _pathlib.Path.write_text = lambda self, data, *a, **k: _pw(self, data, 'w')
+        _pathlib.Path.write_bytes = lambda self, data, *a, **k: _pw(self, data, 'wb')
+        _pathlib.Path.exists = lambda self: _isfile(str(self)) or _isdir(str(self))
+        _pathlib.Path.is_file = lambda self: _isfile(str(self))
+        _pathlib.Path.is_dir = lambda self: _isdir(str(self))
+        _pathlib.Path.iterdir = lambda self: [_pathlib.Path(('/'.join(filter(None, [str(self), name])))) for name in _listdir(str(self) or '.')]
         os.remove = os.unlink = _remove
         os.rename = os.replace = _rename
         os.listdir = _listdir
@@ -1009,7 +1075,8 @@ else:
 `;
 
 // A python call carries the session checkpoint in and out, so the native guest gets the runtime's largest transport.
-const NATIVE_LIMITS = { ...SKILL_LIMITS, input_bytes: 512 * 1024, output_bytes: 256 * 1024 };
+// input_bytes must hold binary files as base64 (images, decks), so it sits at the transport ceiling.
+const NATIVE_LIMITS = { ...SKILL_LIMITS, input_bytes: 4 * 1024 * 1024, output_bytes: 1024 * 1024 };
 const base = arcSkillGuestProgram(NATIVE_LIMITS);
 const program = { ...base, source: base.source.split('\n_src =')[0] + NATIVE };
 export type ActCall = { action: string; x?: number; y?: number; predict?: unknown };
@@ -1023,7 +1090,7 @@ export type SessionReport = {
   error?: string; load_error?: string; failed_defs?: Array<[string, string]>; gone?: string[]; gone_refs?: string[];
 };
 export type NativeResult = GuestResult & { need_file?: string; need_act?: ActCall; need_agent?: Record<string, unknown>; need_render?: Record<string, unknown>; session?: SessionReport;
-  ops?: Array<{ op: 'write' | 'move' | 'delete' | 'restore'; path: string; content?: string; destination?: string; version?: number }
+  ops?: Array<{ op: 'write' | 'move' | 'delete' | 'restore'; path: string; content?: string; encoding?: 'base64'; destination?: string; version?: number }
     | { op: 'memory'; args: unknown; path?: undefined; destination?: undefined }> };
 export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool,
   onMetrics?: (metrics:Record<string,unknown>)=>void): Promise<NativeResult> {

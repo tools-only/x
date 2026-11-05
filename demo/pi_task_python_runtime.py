@@ -159,7 +159,9 @@ def main() -> None:
         if sys.argv[1] == "--check":
             print(json.dumps({"ok": True, "runtime": identity(module_path)}))
         elif sys.argv[1] == "--run":
-            request = json.loads(sys.stdin.buffer.read(1024 * 1024 + 1))
+            # The request carries the guest source plus its input (input_bytes up to 512K, binaries as base64),
+            # so the transport cap sits above the guest's own input ceiling, not below it.
+            request = json.loads(sys.stdin.buffer.read(8 * 1024 * 1024 + 1))
             print(json.dumps(execute(module_path, request), ensure_ascii=True, allow_nan=False))
         else:
             raise ValueError("Unknown trusted runner mode")

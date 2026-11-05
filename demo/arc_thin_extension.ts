@@ -623,6 +623,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (kind === "agent") { run.output += Number(usage.output) || 0; run.reasoningTokens += Number(usage.reasoning) || 0; }
 		// Budget tokens (uncached input + output) by kind, for the refinements' cost ceiling.
 		spentTokens.set(kind, (spentTokens.get(kind) ?? 0) + (Number(usage.input) || 0) + (Number(usage.output) || 0));
+		nativeRuntime?.recordUsage(kind, message);
 		if (native) {
 			if (kind === 'agent' && parentRequest) { requestTrace.finish(parentRequest,message); parentRequest=undefined; }
 			// The model that answered, per row: the agent's and its side calls' tokens can be told apart afterwards.
@@ -3195,6 +3196,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			return result;
 		};
 		return async (_id: string, params: P, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) => {
+			const contextStop = nativeRuntime?.contextStopReason();
+			if (contextStop && name !== 'context_manage') {
+				const stopped = refused(contextStop);
+				if (name !== "arc_action" && endsBatch()) return carry(stopped, true);
+				throw new Refusal(contextStop);
+			}
 			const verdict = gate(name);
 			if (verdict) {
 				// Sharing a message with arc_action: every result must terminate or the run continues.
@@ -4435,6 +4442,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       workMemory,
       immediateSubagent: selfBaseline,
       selfBaseline,
+      adaptContext: process.env.ARC_THIN_ADAPT_CONTEXT === "1",
       // Checkpoints of the python namespace sit with the binder's version store, outside the agent's workspace.
       sessionDir: join(storeDir, '..', '.harness', 'python_session'),
       modelResult:create => requestTrace.run('consult', decision, create),
@@ -4866,6 +4874,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				nativeRuntime?.selfFeedbackText() ?? "",
 			].filter(Boolean).join("\n\n") : '';
 			const capabilities = binder ? [selfEntry, hookFacts, run.hookTurn ? nativeRuntime?.selfFeedbackText() : '', run.hookTurn ? '' : binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined, !selfBaseline),
+				nativeRuntime && !run.hookTurn ? nativeRuntime.compiledContextText() : '',
 				nativeRuntime && !run.daemonResponse && !run.hookTurn ? await nativeRuntime.observerText() : '',
 				nativeRuntime && !agentNativeProgramLoop && !run.daemonResponse && !selfBaseline ? await nativeRuntime.loopDecisionText() : '',
 				run.daemonResponse || selfBaseline || agentNativeProgramLoop ? '' : metaTrialDecisionText(),

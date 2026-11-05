@@ -10,6 +10,8 @@ import { TaskPythonPool } from './pi_task_python_pool.ts';
 import type { KernelRequest, PythonKernel } from './pi_task_python_kernel.ts';
 import { codeShape, componentLines, coveringComponent, kitOf, repeatedFamilies, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 import { blockNote, cellRefs, codeKey, commentLines, repeatedBlocks } from './arc_thin_work_memory.ts';
+import { compileContext, emptySessionState, evidenceRef, hydrateEvidence, observeBudget, observeUsage, parseSessionState, resultEnvelope,
+  type SessionState } from './pi_adapt_context.ts';
 
 /** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
@@ -40,7 +42,9 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   /** Baseline exposes the component shortcut and session source extractor. */
   selfBaseline?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
-  sessionDir?: string };
+  sessionDir?: string;
+  /** Optional structured SessionState and CompiledView support for ADAPT runs. */
+  adaptContext?: boolean };
 export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
 /** At most this many env.act calls in one tool call. */
 export const MAX_ACTS = 24;
@@ -78,6 +82,7 @@ type Acted = { lines: string[]; stopped?: string };
 
 export class NativeRuntime {
   private programRunSerial = 0;
+  private contextState: SessionState = emptySessionState();
   private registered = new Map<string, string>();
   private viewPool = new TaskPythonPool();
   private pending: Promise<unknown> = Promise.resolve();
@@ -182,19 +187,118 @@ export class NativeRuntime {
     };
   }
   constructor(private host: Host) {
+    if (host.adaptContext && host.workspace.files('artifacts').includes('artifacts/adapt-session-state.json')) {
+      this.contextState = parseSessionState(host.workspace.read('artifacts/adapt-session-state.json'));
+    }
+    if (host.adaptContext) {
+      const soft = Number(process.env.ARC_THIN_CONTEXT_SOFT_CHARS);
+      const hard = Number(process.env.ARC_THIN_CONTEXT_HARD_CHARS);
+      if (Number.isFinite(soft) && soft > 0) this.contextState.budget.softLimitChars = Math.floor(soft);
+      if (Number.isFinite(hard) && hard > 0) this.contextState.budget.hardLimitChars = Math.floor(hard);
+    }
     if (host.pythonSession !== false) {
       this.session = new PythonSession(host.sessionDir);
       if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
       if (host.pythonKernel !== false) this.kernel = nativeKernel();
     }
-    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a saved subagent (agents/<name>.md) with exact workspace refs. Subagents never act.',
+    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a task-authored subagent (agents/<name>.md) with exact workspace refs. Image refs of any type are sent as images in an independent context using the same model. Create a role with self_component(kind="subagent") before consulting it. Its tools are the ones its frontmatter grants (read, write, edit, ls, grep, python, named tools); it cannot take environment actions.',
       parameters: Type.Object({ agent: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
       prepareArguments: (args: any) => args && typeof args === 'object' && args.role && !args.agent ? { ...args, agent: args.role } : args,
       execute: host.wrap('consult', (args, signal, ctx) => this.consult(args, signal, ctx)) });
+    if (host.adaptContext) host.pi.registerTool({
+      name: 'context_manage', label: 'Context',
+      description: 'Record task context, offload source text, hydrate an exact versioned slice, or inspect the compiled view and budget.',
+      parameters: Type.Object({
+        action: Type.Union([Type.Literal('snapshot'), Type.Literal('project'), Type.Literal('record'),
+          Type.Literal('offload'), Type.Literal('hydrate'), Type.Literal('budget.observe')]),
+        kind: Type.Optional(Type.String()), payload: Type.Optional(Type.Any()), text: Type.Optional(Type.String()),
+        ref: Type.Optional(Type.Any()), offset: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20000 })),
+        budget_chars: Type.Optional(Type.Integer({ minimum: 256, maximum: 30000 })),
+      }),
+      execute: host.wrap('context_manage', async args => this.manageContext(args)),
+    });
   }
-  /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text. */
+  compiledContextText() {
+    if (!this.host.adaptContext) return '';
+    const toolSurface = this.host.binder.active()
+      .filter(component => component.kind === 'tool')
+      .map(component => ({ name: component.name, schema: component.parameters }));
+    if (JSON.stringify(toolSurface) !== JSON.stringify(this.contextState.toolSurface)) {
+      this.contextState.toolSurface = toolSurface;
+      this.contextState.revision += 1;
+    }
+    const view = compileContext(this.contextState);
+    this.contextState.budget = observeBudget(this.contextState.budget, { kind: 'input', chars: JSON.stringify(view).length });
+    this.host.log('adapt_context_budget.jsonl', { kind: 'input', chars: JSON.stringify(view).length, ...this.contextState.budget });
+    this.persistContext();
+    return `COMPILED SESSION VIEW\n${JSON.stringify({ ...view, budget: this.contextState.budget })}`;
+  }
+  recordUsage(kind: string, message: any) {
+    if (!this.host.adaptContext) return;
+    this.contextState.budget = observeUsage(this.contextState.budget, kind, message?.usage ?? {});
+    this.host.log('adapt_context_budget.jsonl', { kind: 'provider_usage', source: kind, ...this.contextState.budget });
+    this.persistContext();
+  }
+  contextStopReason() { return this.contextState.budget.stop; }
+  private persistContext() {
+    this.host.workspace.runtimeWrite('artifacts/adapt-session-state.json', JSON.stringify(this.contextState) + '\n');
+  }
+  private manageContext(args: any) {
+    if (args.action === 'snapshot') return text(JSON.stringify(this.contextState));
+    if (args.action === 'project') return text(JSON.stringify(compileContext(this.contextState, args.budget_chars)));
+    if (args.action === 'record') {
+      const payload = args.payload && typeof args.payload === 'object' && !Array.isArray(args.payload) ? args.payload : {};
+      const kind = String(args.kind ?? '');
+      if (kind === 'goal') this.contextState.goal = String(payload.goal ?? '');
+      else if (kind === 'constraint') this.contextState.constraints = [...this.contextState.constraints, payload].slice(-32);
+      else if (kind === 'acceptance') this.contextState.acceptance = [...this.contextState.acceptance, payload].slice(-32);
+      else if (kind === 'open_item') this.contextState.openItems = [...this.contextState.openItems, String(payload.summary ?? '')].slice(-32);
+      else if (kind === 'decision') this.contextState.decisions = [...this.contextState.decisions, payload].slice(-64);
+      else if (kind === 'claim') this.contextState.claims = [...this.contextState.claims, payload].slice(-64);
+      else if (kind === 'evidence') this.contextState.evidence = [...this.contextState.evidence, payload].slice(-64);
+      else if (kind === 'failure') this.contextState.failures = [...this.contextState.failures, payload].slice(-64);
+      else if (kind === 'artifact') this.contextState.artifacts = [...this.contextState.artifacts, payload].slice(-64);
+      else if (kind === 'active_method') this.contextState.activeMethod = payload;
+      else if (kind === 'observation') this.contextState.recentObs = [...this.contextState.recentObs, payload].slice(-16);
+      else if (kind === 'tool_surface') this.contextState.toolSurface = [...this.contextState.toolSurface, payload].slice(-64);
+      else throw Error(`unsupported context record kind '${kind}'`);
+      this.contextState.revision += 1;
+      this.persistContext();
+      this.host.log('adapt_context_state.jsonl', { revision: this.contextState.revision, kind, payload });
+      return text(JSON.stringify({ ok: true, revision: this.contextState.revision }));
+    }
+    if (args.action === 'offload') {
+      if (typeof args.text !== 'string') throw Error('offload requires text');
+      const saved = this.host.workspace.saveResult(args.text);
+      const pointer = evidenceRef(saved.ref, args.text);
+      this.host.log('adapt_context_offload.jsonl', { ref: pointer.ref, digest: pointer.digest, chars: pointer.chars });
+      return text(JSON.stringify({ ...resultEnvelope({ code: 'ok', summary: `Offloaded ${pointer.chars} chars`, evidence: pointer,
+        next: 'Hydrate exact slices with ref, offset and limit.' }), pointer }));
+    }
+    if (args.action === 'hydrate') {
+      if (!args.ref || typeof args.ref.ref !== 'string' || typeof args.ref.digest !== 'string')
+        throw Error('hydrate requires an evidence pointer');
+      const result = hydrateEvidence(args.ref, ref => {
+        try { return this.host.workspace.read(ref); } catch { return undefined; }
+      }, args.offset ?? 0, args.limit ?? 4000);
+      if (!result.ok) return text(JSON.stringify(result), true);
+      this.contextState.budget = observeBudget(this.contextState.budget, { kind: 'hydrate', chars: result.text.length });
+      this.host.log('adapt_context_budget.jsonl', { kind: 'hydrate', chars: result.text.length, ...this.contextState.budget });
+      this.persistContext();
+      return text(JSON.stringify(result));
+    }
+    if (args.action === 'budget.observe') return text(JSON.stringify(this.contextState.budget));
+    throw Error(`unsupported context action '${args.action}'`);
+  }
+  private enforceContextBudget() {
+    if (this.contextState.budget.stop) throw Error(this.contextState.budget.stop);
+  }
+  /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text.
+   * candidates(), not active(): a save or removal inside a decision is visible immediately (as on r04), while
+   * Pi's advertised tool list still follows the request boundary. */
   private callable() {
-    return this.host.binder.active().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length
+    return this.host.binder.candidates().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length
       && !c.path.startsWith('observers/'));
   }
   /** Facts about the exact callable schema that Pi is about to submit to its provider. */
@@ -281,11 +385,12 @@ export class NativeRuntime {
   }
   /** Agent-authored script: the program is the saved source itself, not a wrapper extracted from a Python session. */
   async saveProgram(name: string, body: string, description: string, tags: string[] = [], expectedVersion?: number) {
-    if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error('name: use a logical identifier');
+    // A name is a file path, nothing more: letters, digits, _ and -, up to 64 characters.
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(name)) throw Error('name: use a logical identifier (letters, digits, _ and -)');
     if (!body.trim()) throw Error('program: provide executable Python source');
-    if (!description.trim() || description.length > 120 || /[\r\n]/.test(description)) throw Error('description: use one meaningful line (1-120 characters)');
-    if (tags.length > 5 || tags.some(tag => !/^[a-z][a-z0-9_-]{0,23}$/.test(tag)))
-      throw Error('tags: use up to five short lowercase identifiers');
+    if (!description.trim() || description.length > 300) throw Error('description: one meaningful line (1-300 characters)');
+    if (tags.length > 10 || tags.some(tag => !/^[a-zA-Z0-9_-]{0,31}$/.test(tag)))
+      throw Error('tags: use up to ten short identifiers');
     const path = `tools/${name}.py`;
     const currentVersion = this.host.binder.versionMap()[path] ?? 0;
     if (expectedVersion !== undefined && expectedVersion !== currentVersion)
@@ -293,7 +398,7 @@ export class NativeRuntime {
     const code = body.trim().startsWith('# program: on\n')
       ? body.trim().replace(/^# program: on\r?\n(?:# description:[^\r\n]*\r?\n)?(?:# tags:[^\r\n]*\r?\n)?/, '')
       : body.trim();
-    const source = `# program: on\n# description: ${description.trim()}\n${tags.length ? `# tags: ${tags.join(', ')}\n` : ''}${code}\n`;
+    const source = `# program: on\n# description: ${description.trim().replace(/[\r\n]+/g, ' ')}\n${tags.length ? `# tags: ${tags.join(', ')}\n` : ''}${code}\n`;
     this.host.workspace.mutate({ op: 'write', path, content: source });
     const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
     this.noteSave(path, receipt);
@@ -439,12 +544,18 @@ export class NativeRuntime {
     const started=performance.now(); let readBytes=0;
     const sources: Record<string, string> = {};
     const files: Record<string, string> = {};
+    // Binary files of any type travel to the guest as base64; the guest's open(path,'rb'/'wb') speaks real bytes.
+    const binaries: Record<string, string> = {};
     for (const c of this.host.binder.active()) if (c.path.endsWith('.py')) sources[c.path] = c.source;
     const scanStarted=performance.now(), paths=this.host.workspace.files(), scanMs=performance.now()-scanStarted;
     const readStarted=performance.now();
     for (const path of paths) {
-      if (path.endsWith('.png')) continue; // binary observations are read as images by Pi, never decoded into guest text
       if (/^(lib|tools|observers)\/.+\.py$/.test(path)) continue; // failed source never hides behind a working import
+      if (this.host.workspace.isBinary(path)) {
+        const body=this.host.workspace.readBytes(path); readBytes+=body.length;
+        binaries[path] = Buffer.from(body).toString('base64');
+        continue;
+      }
       const body=this.host.workspace.read(path); readBytes+=Buffer.byteLength(body);
       if (/^skills\/.+\.py$/.test(path)) sources[path] = body;
       else files[path] = body;
@@ -455,16 +566,16 @@ export class NativeRuntime {
     for (const [path, body] of Object.entries(files)) if (/^artifacts\/[^/]+\.json$/.test(path)) {
       try { artifacts[path.slice(10, -5)] = JSON.parse(body); } catch { /* Non-JSON artifacts remain readable files. */ }
     }
-    return { sources, files, state: { ...this.host.state(), artifacts }, versions,
+    return { sources, files, binaries, state: { ...this.host.state(), artifacts }, versions,
       snapshotMetrics:{snapshot_ms:performance.now()-started, scan_ms:scanMs, read_ms:performance.now()-readStarted,
         snapshot_read_bytes:readBytes, scanned_files:paths.length} };
   }
   private async applyWrites(result: NativeResult) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
+    // Harness directories are writable: the write lands in the workspace and the Binder versions it like any
+    // component save, so a program can build or revise components itself (a failed bind is reported, not silent).
     for (const op of result.ops ?? []) {
       if (op.op === 'memory' || op.op === 'meta_decide') continue;
-      if ([op.path, op.destination].some(path => path && /^(tools|lib|observers|skills|agents|roles|prompts)(\/|$)/.test(path.replace(/\\/g, '/'))))
-        throw Error('Use save_tool(name, body) or promote(name) for harness changes.');
       this.host.workspace.path(op.path, true);
       if (op.destination) this.host.workspace.path(op.destination, true);
     }
@@ -492,6 +603,12 @@ export class NativeRuntime {
         receipts.push(`${op.path}: restored from v${op.version}${receipt ? ` · ${receipt}` : ''}`); this.noteSave(op.path, receipt);
         continue;
       }
+      if (op.op === 'write' && (op as any).encoding === 'base64') {
+        // A binary write from the guest: real bytes land in the workspace, any file type.
+        this.host.workspace.mutate({ op: 'write', path: op.path, content: Buffer.from(String(op.content ?? ''), 'base64') } as any);
+        receipts.push(`${op.path}: written (binary) · bindings rebuilt next request`);
+        continue;
+      }
       this.host.workspace.mutate(op as any);
       if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() }); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
       else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
@@ -514,9 +631,11 @@ export class NativeRuntime {
     via?: string, ctx?: ExtensionContext): Promise<NativeResult & { acted?: Acted }> {
     const started=performance.now(); const attempts:any[]=[];
     // Store growth must not consume every call's WASI allowance. Reads fetch only exact confined snapshot files.
-    let all = input.files; const files: Record<string, string> = {};
+    let all = { ...input.files, ...input.binaries }; const files: Record<string, string> = {};
+    const binaries: Record<string, string> = {};
     const source = input.code ?? input.sources[input.path] ?? '';
-    for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.files)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.binaries ?? {})) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) binaries[path] = body;
     const acts: Array<{ call: ActCall; observation?: unknown; stopped?: string }> = [];
     const agentResults: any[] = [], renderResults: any[] = [];
     let appliedOps: string[] = [];
@@ -537,7 +656,7 @@ export class NativeRuntime {
     try {
       for (let rounds = 0; this.host.agent || this.host.render || rounds <= 32 + MAX_ACTS; rounds++) {
         const {snapshotMetrics, ...request}=input;
-        const payload={...request,files,file_names:Object.keys(all),acts,allow_act:Boolean(via),
+        const payload={...request,files,binaries,file_names:Object.keys(all),acts,allow_act:Boolean(via),
           ...(this.host.agent ? { agent_results: agentResults } : {}), ...(this.host.render ? { render_results: renderResults } : {})};
         const queued=performance.now();
         const release = pool ? () => {} : await this.slot();
@@ -569,7 +688,10 @@ export class NativeRuntime {
           const call = result.need_agent;
           try { agentResults.push({ request: call, value: await this.host.agent(call, signal, ctx) }); }
           catch (error) { agentResults.push({ request: call, error: String(error).slice(0, 1000) }); }
-          all = this.snapshot().files;
+          const refreshed = this.snapshot();
+          input.binaries = refreshed.binaries;
+          all = { ...refreshed.files, ...refreshed.binaries };
+          for (const path of Object.keys(binaries)) if (Object.hasOwn(refreshed.binaries, path)) binaries[path] = refreshed.binaries[path];
           for (const path of Object.keys(files)) if (Object.hasOwn(all, path)) files[path] = all[path];
           continue;
         }
@@ -581,7 +703,10 @@ export class NativeRuntime {
           const call = result.need_render;
           try { renderResults.push({ request: call, value: await this.host.render(call) }); }
           catch (error) { renderResults.push({ request: call, error: String(error).slice(0, 1000) }); }
-          all = this.snapshot().files;
+          const refreshed = this.snapshot();
+          input.binaries = refreshed.binaries;
+          all = { ...refreshed.files, ...refreshed.binaries };
+          for (const path of Object.keys(binaries)) if (Object.hasOwn(refreshed.binaries, path)) binaries[path] = refreshed.binaries[path];
           for (const path of Object.keys(files)) if (Object.hasOwn(all, path)) files[path] = all[path];
           continue;
         }
@@ -590,13 +715,15 @@ export class NativeRuntime {
           return { ...result, ops: pendingOps, acted };
         }
         this.host.workspace.path(result.need_file);
-        if (!Object.hasOwn(all, result.need_file) || Object.hasOwn(files, result.need_file)) throw Error('invalid workspace read request');
-        files[result.need_file] = all[result.need_file];
+        if (!Object.hasOwn(all, result.need_file) || Object.hasOwn(files, result.need_file) || Object.hasOwn(binaries, result.need_file)) throw Error('invalid workspace read request');
+        if (Object.hasOwn(input.binaries ?? {}, result.need_file)) binaries[result.need_file] = input.binaries[result.need_file];
+        else files[result.need_file] = all[result.need_file];
         const folder = result.need_file.slice(0, result.need_file.lastIndexOf('/') + 1);
         let room = 120_000;
         for (const [path, body] of Object.entries(all)) {
-          if (!folder || !path.startsWith(folder) || Object.hasOwn(files, path) || body.length > room) continue;
-          files[path] = body; room -= body.length;
+          if (!folder || !path.startsWith(folder) || Object.hasOwn(files, path) || Object.hasOwn(binaries, path) || body.length > room) continue;
+          if (Object.hasOwn(input.binaries ?? {}, path)) binaries[path] = body; else files[path] = body;
+          room -= body.length;
         }
       }
       throw Error('workspace read or action budget exceeded; use history.grid(n) or env.frame(n) for frames');
@@ -619,11 +746,14 @@ export class NativeRuntime {
   private async executeKernel(input: ReturnType<NativeRuntime['snapshot']> & Record<string, any>, signal: AbortSignal | undefined,
     via: string | undefined): Promise<NativeResult & { acted?: Acted; kernel?: { fresh: boolean; previousExit?: string; ended?: string } }> {
     const started = performance.now();
-    const all = input.files; const files: Record<string, string> = {};
+    const all = { ...input.files, ...input.binaries }; const files: Record<string, string> = {};
+    const binaries: Record<string, string> = {};
     const source = input.code ?? '';
-    for (const [path, body] of Object.entries(all)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.files)) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) files[path] = body;
+    for (const [path, body] of Object.entries(input.binaries ?? {})) if (source.includes(`'${path}'`) || source.includes(`"${path}"`)) binaries[path] = body;
     const acted: Acted = { lines: [] };
     let played = 0, fetched = 0;
+    const isBinary = (path: string) => Object.hasOwn(input.binaries ?? {}, path);
     const answer = async (request: KernelRequest): Promise<unknown> => {
       if (request.t === 'act') {
         if (!via || !this.host.act) return { error: 'this code cannot act' };
@@ -642,19 +772,21 @@ export class NativeRuntime {
         if (!Object.hasOwn(all, path)) return { error: 'not in the workspace' };
         if (++fetched > 32) return { error: 'workspace read budget exceeded; use history.grid(n) or env.frame(n) for frames' };
         // The rest of its folder comes along, so a loop over frames is one request, not one per file.
-        const out: Record<string, string> = { [path]: all[path] };
+        const out: Record<string, string> = {}; const outBin: Record<string, string> = {};
+        const place = (name: string, body: string) => { if (isBinary(name)) outBin[name] = body; else out[name] = body; };
+        place(path, all[path]);
         const folder = path.slice(0, path.lastIndexOf('/') + 1);
         let room = 120_000;
         for (const [other, body] of Object.entries(all)) {
           if (!folder || !other.startsWith(folder) || other === path || body.length > room) continue;
-          out[other] = body; room -= body.length;
+          place(other, body); room -= body.length;
         }
-        return { files: out };
+        return { files: out, binaries: outBin };
       }
       return { error: 'unknown request' };
     };
     const { snapshotMetrics, ...request } = input;
-    const payload = { ...request, files, file_names: Object.keys(all), acts: [], allow_act: Boolean(via) };
+    const payload = { ...request, files, binaries, file_names: Object.keys(all), acts: [], allow_act: Boolean(via) };
     let metrics: Record<string, unknown> = {}, ended: string | undefined;
     try {
       const run = await this.kernel!.run(payload, answer, signal);
@@ -675,7 +807,20 @@ export class NativeRuntime {
    * final value stays in the live session as _, so a result shortened here is still whole there.
    */
   private finish(body: string, result: NativeResult & { acted?: Acted }, valueKept = false, mark = '') {
-    let shownBody = mark + (this.host.receipt?.(body) ?? body);
+    let shownBody = mark + (this.host.receipt?.(body) ?? (this.host.adaptContext ? this.host.workspace.receipt(body) : body));
+    if (this.host.adaptContext) {
+      const envelope = resultEnvelope({ code: result.ok ? 'ok' : 'error',
+        summary: result.ok ? 'Tool execution completed' : String(result.error ?? 'Tool execution failed'),
+        keyFields: { outputChars: body.length, valueType: result.ok ? Array.isArray(result.value) ? 'array'
+          : result.value === null ? 'null' : typeof result.value : 'unavailable',
+          ...(result.acted?.lines.length ? { actionsTaken: result.acted.lines.length } : {}) },
+        ...(body.length > 8000 ? { evidence: evidenceRef(this.host.workspace.saveResult(body).ref, body),
+          next: 'Use context_manage(action="hydrate", ref=..., offset=..., limit=...) for exact source text.' } : {}) });
+      shownBody = `${JSON.stringify(envelope)}\n${shownBody}`;
+      this.contextState.budget = observeBudget(this.contextState.budget, { kind: 'output', chars: body.length });
+      this.host.log('adapt_context_budget.jsonl', { kind: 'output', chars: body.length, ...this.contextState.budget });
+      this.persistContext();
+    }
     if (valueKept && shownBody !== mark + body) shownBody += '\n(the whole final value is _ in the python session until your next final expression: take the part you need from it)';
     const acted = result.acted;
     if (!acted?.lines.length) return text(shownBody + (acted?.stopped ? `\n(no action taken: ${acted.stopped})` : ''), !result.ok);
@@ -688,6 +833,7 @@ export class NativeRuntime {
    */
   async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session,
     visibleFiles?: string[]) {
+    this.enforceContextBudget();
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session, visibleFiles))
       : this.runPython(code, signal, readonly, save, undefined, visibleFiles);
   }
@@ -726,13 +872,13 @@ export class NativeRuntime {
         other_globals: string[]; unresolved_names: string[] };
       const missing = [...info.session_dependencies, ...info.other_globals, ...info.unresolved_names];
       if (missing.length) throw Error(`session ref '${ref}' is not self-contained; provide content with its dependencies included (unresolved: ${missing.join(', ')})`);
-      if (info.parameters.join(',') !== 'args,env') throw Error(`session ref '${ref}' must accept exactly (args, env) to preserve its callable contract; provide adapted content`);
+      if (info.parameters.join(',') !== 'args,env' && ref !== 'main' && ref !== 'handler') throw Error(`session ref '${ref}' must accept exactly (args, env) to preserve its callable contract; provide adapted content`);
       if (ref === 'run') return info.source;
+      if (ref === 'main' || ref === 'handler') return info.source;
       return `${info.source}\n\ndef run(args, env):\n    return ${ref}(args, env)\n`;
     }
     if (!content?.trim()) throw Error('tool requires content or an exact session ref');
-    if (!/^\s*def\s+run\(args, env\):\s*$/m.test(content))
-      throw Error('tool content must define run(args, env); include the callable implementation and any needed dependencies');
+    // Any tool shape the guest accepts: run(args[, env]), main(...), handler(...) or a plain script.
     return content;
   }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined,
@@ -772,7 +918,10 @@ export class NativeRuntime {
       if (!/NOT loaded/.test(receipt ?? '')) via = path;
     }
     const snap = this.snapshot();
-    if (visibleFiles) snap.files = Object.fromEntries(visibleFiles.filter(path => Object.hasOwn(snap.files, path)).map(path => [path, snap.files[path]]));
+    if (visibleFiles) {
+      snap.files = Object.fromEntries(visibleFiles.filter(path => Object.hasOwn(snap.files, path)).map(path => [path, snap.files[path]]));
+      snap.binaries = Object.fromEntries(visibleFiles.filter(path => Object.hasOwn(snap.binaries, path)).map(path => [path, snap.binaries[path]]));
+    }
     const started = Date.now();
     const windowAtStart = this.host.actionCount();
     const kit = kitOf(this.host.binder.versionMap());
@@ -874,6 +1023,7 @@ export class NativeRuntime {
   }
   private async call(c: Component, args: any, signal?: AbortSignal, readonly = false, source?: string, ctx?: ExtensionContext,
     executionVersion?: number) {
+    this.enforceContextBudget();
     const resolved = await this.resolveSessionArgs(args, signal);
     if (!resolved.ok) return text(`${c.name}: ${resolved.error}`, true);
     args = resolved.value;
@@ -1308,7 +1458,7 @@ export class NativeRuntime {
             if (!liveRole || !(liveRole.tools ?? []).includes(call.name)) throw Error(`Tool ${call.name} is no longer granted by the active role`);
             const def = tools.find(t => t.name === call.name); if (!def) throw Error(`Tool ${call.name} not granted`);
             // A saved tool takes args={...}; inputs sent at the top level become args, as for the parent.
-            const named = !['read', 'python', 'write', 'edit', 'generate_image', 'office', 'run_agent'].includes(call.name) && call.arguments && typeof call.arguments === 'object'
+            const named = !['read', 'ls', 'grep', 'python', 'write', 'edit', 'generate_image', 'office', 'run_agent'].includes(call.name) && call.arguments && typeof call.arguments === 'object'
               && !('args' in call.arguments) && Object.keys(call.arguments).length;
             result = await runTools.get(call.name)!(validateToolArguments(def, named ? { ...call, arguments: { args: call.arguments } } : call));
           } catch (error) { result = text(String(error), true); }
@@ -1318,6 +1468,10 @@ export class NativeRuntime {
       }
       throw Error('consult tool/time budget exhausted');
     } finally { if (timer) clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+  }
+  /** Run an Agent-authored quality reviewer with explicit refs, without exposing the parent workspace to a write tool. */
+  qualityConsult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+    return this.consult(args, signal, ctx);
   }
   close() { this.viewPool.close(); this.kernel?.close(); }
   /** The line listing what the parent's python session holds, for the decision's working set. */

@@ -49,7 +49,7 @@ test('B: parent Python save records creation separately from a later component c
   } finally { runtime.close(); }
 });
 
-test('USE-CHANNEL: only one act-capable saved tool is callable; no act-capable tool yields an empty callable schema', async () => {
+test('USE-CHANNEL: every saved tool is callable, act-capable or not; the schema reports which can act', async () => {
   const root = mkdtempSync(join(tmpdir(), 'native-use-channel-'));
   const workspace = new Workspace(root);
   const binder = new Binder(workspace, validatePythonComponent);
@@ -67,9 +67,9 @@ test('USE-CHANNEL: only one act-capable saved tool is callable; no act-capable t
       await binder.save(path, 0, { by: 'agent', decision: path.endsWith('act_two.py') ? 2 : 1 });
     }
     binder.boundary(); runtime.register();
-    assert.equal(runtime.toolNames().length, 1);
-    assert.equal(runtime.toolNames()[0], 'act_two', 'the newest untried agent-created act tool wins');
-    assert.equal(runtime.callableSchema(runtime.toolNames().map(name => ({ name }))).filter(tool => tool.act_capable).length, 1);
+    // Free hands: a view is not auto-classified here (run(args, env) reads args), and no act tool displaces another.
+    assert.deepEqual([...runtime.toolNames()].sort(), ['act_one', 'act_two', 'view']);
+    assert.equal(runtime.callableSchema(runtime.toolNames().map(name => ({ name }))).filter(tool => tool.act_capable).length, 2);
     const emptyRoot = mkdtempSync(join(tmpdir(), 'native-use-channel-empty-'));
     const emptyWorkspace = new Workspace(emptyRoot);
     const emptyBinder = new Binder(emptyWorkspace, validatePythonComponent);
@@ -77,7 +77,7 @@ test('USE-CHANNEL: only one act-capable saved tool is callable; no act-capable t
     await emptyBinder.save('tools/view_only.py', 0, { by: 'agent' }); emptyBinder.boundary();
     const empty = new NativeRuntime({ pi: { registerTool() {} } as any, workspace: emptyBinder.workspace, binder: emptyBinder,
       state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {}, wrap: (_name, fn) => fn });
-    try { empty.register(); assert.deepEqual(empty.toolNames(), []); }
+    try { empty.register(); assert.deepEqual(empty.toolNames(), ['view_only']); }
     finally { empty.close(); }
   } finally { runtime.close(); }
 });
@@ -97,8 +97,9 @@ test('AGENT-RUNTIME-IFACE: save adapts an exact session ref and rejects incomple
     await runtime.python('def candidate(args, env):\n    if args.get("act"):\n        return env.act(args["action"])\n    return {"value": args.get("value")}');
     const source = await runtime.toolSource(undefined, 'candidate');
     assert.match(source, /def run\(args, env\):\n    return candidate\(args, env\)/);
-    await assert.rejects(runtime.toolSource('def inspect(state):\n    return state', undefined),
-      /must define run\(args, env\)/);
+    // Free hands: tool content is not shape-gated at the interface; the guest's own entry rules decide what runs.
+    const other = await runtime.toolSource('def inspect(state):\n    return state', undefined);
+    assert.match(other, /def inspect\(state\)/);
     workspace.mutate({ op: 'write', path: 'tools/candidate.py', content: source });
     const receipt = await binder.save('tools/candidate.py', 0, { by: 'agent' });
     assert.match(receipt ?? '', /saved.*loaded/);
@@ -239,6 +240,43 @@ test('agent-native named programs run on fresh states, revise by name, and prese
     assert.match(third.content.map((part: any) => part.text ?? '').join('\n'), /27/);
     assert.deepEqual(logs.filter(row => row.kind === 'program_call').map(row => row.version), [1, 1, 1, 3]);
   } finally { runtime.close(); }
+});
+
+test('optional ADAPT context persists records, injects a compiled view, offloads and hydrates exact slices', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-adapt-context-')));
+  const tools = new Map<string, any>();
+  const logs: any[] = [];
+  const host = { pi: { registerTool(tool: any) { tools.set(tool.name, tool); } } as any, workspace, binder: new Binder(workspace),
+    state: () => ({}), level: () => 0, actionCount: () => 0, adaptContext: true,
+    log(file: string, row: any) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name: string, fn: any) => fn };
+  const runtime = new NativeRuntime(host);
+  const run = async (args: any) => tools.get('context_manage').execute(args);
+  try {
+    assert.equal(tools.has('context_manage'), true);
+    await run({ action: 'record', kind: 'goal', payload: { goal: 'finish the task' } });
+    await run({ action: 'record', kind: 'failure', payload: { summary: 'failed once', preconditions: 'missing input' } });
+    const projected = runtime.compiledContextText();
+    assert.match(projected, /finish the task/);
+    assert.match(projected, /missing input/);
+    const large = 'EXACT_SOURCE_' + 'x'.repeat(9000);
+    const offloaded = await run({ action: 'offload', text: large });
+    const envelope = JSON.parse(offloaded.content[0].text);
+    assert.equal(envelope.code, 'ok');
+    assert.doesNotMatch(offloaded.content[0].text, /EXACT_SOURCE_/);
+    const slice = await run({ action: 'hydrate', ref: envelope.pointer, offset: 0, limit: 14 });
+    assert.equal(JSON.parse(slice.content[0].text).text, 'EXACT_SOURCE_x');
+    assert.ok(logs.some(row => row.file === 'adapt_context_budget.jsonl' && row.kind === 'hydrate'));
+    const toolResult = await runtime.python("print('RESULT_BODY_' + 'x' * 9000)");
+    assert.match(toolResult.content[0].text, /\"code\":\"ok\"/);
+    assert.match(toolResult.content[0].text, /\"outputChars\":\d+/);
+    assert.doesNotMatch(toolResult.content[0].text, /RESULT_BODY_x{100}/);
+    assert.match(toolResult.content[0].text, /evidence:results\//);
+  } finally { runtime.close(); }
+  const restored = new NativeRuntime(host);
+  try {
+    assert.match(restored.compiledContextText(), /finish the task/);
+    assert.match(restored.compiledContextText(), /failed once/);
+  } finally { restored.close(); }
 });
 
 test('related active components are shown with version and evidence; read and trial remain optional telemetry', async () => {

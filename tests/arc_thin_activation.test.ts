@@ -38,16 +38,19 @@ const runtimeFor = (played: Played[], options: { levelAt?: number; quiet?: boole
 const LOOP = '# Walk until nothing changes.\nseen = []\nfor a in ("ACTION1", "ACTION4", "ACTION1"):\n    obs = env.act(a)\n' +
   '    seen.append(obs["changed_cells"])\n    if obs["changed_cells"] == 0: break\n{"seen": seen, "bias": args.get("bias", 0)}';
 
-test('saved code acts in a closed loop: python(save=) saves the code as a tool and runs it; unsaved code cannot act', async () => {
+test('saved code acts in a closed loop: python(save=) saves the code as a tool and runs it; read-only calls cannot act', async () => {
   const played: Played[] = [];
   const { workspace, binder, runtime, registered, tools } = runtimeFor(played);
   try {
+    // Free hands (2026-11-04): an unsaved parent python call may act too; acting still ends the decision.
     const unsaved: any = await runtime.python(LOOP);
-    assert.equal(played.length, 0);
-    assert.match(unsaved.content[0].text, /only saved code acts/);
-    assert.notEqual(unsaved.terminate, true);
+    assert.equal(played.length, 2);
+    assert.match(unsaved.content[0].text, /"seen":\[3,0\]/);
+    assert.equal(unsaved.terminate, true);
+    assert.deepEqual(played.map(p => [p.call.action, p.via]), [['ACTION1', 'python'], ['ACTION4', 'python']]);
+    played.length = 0;
     const saved: any = await runtime.python(LOOP, undefined, false, 'walk');
-    assert.match(saved.content[0].text, /tools\/walk\.py → tool walk v1: saved · loaded/);
+    assert.match(saved.content[0].text, /tool walk v1: saved · loaded/);
     // The code saw the second observation (nothing changed) and stopped itself: two actions, not three.
     assert.match(saved.content[0].text, /"seen":\[3,0\]/);
     assert.match(saved.content[0].text, /ACTED 2 action\(s\)\. This decision ends\.\n#1 ACTION1 → changed\n#2 ACTION4 → changed/);
@@ -58,7 +61,8 @@ test('saved code acts in a closed loop: python(save=) saves the code as a tool a
     // The saved tool takes a dict of arguments and is callable without a rewrite.
     binder.boundary();
     const component = binder.active().find(c => c.path === 'tools/walk.py')!;
-    assert.deepEqual(component.parameters, { type: 'object', properties: { args: { type: 'object' } }, additionalProperties: false });
+    assert.deepEqual(Object.keys(component.parameters.properties), ['args']);
+    assert.equal(component.parameters.additionalProperties, false);
     assert.equal(component.description, 'Walk until nothing changes.');
     const called: any = await (runtime as any).call(component, { args: { bias: 2 } });
     assert.match(called.content[0].text, /"bias":2/);
@@ -66,7 +70,7 @@ test('saved code acts in a closed loop: python(save=) saves the code as a tool a
     assert.equal(played.length, 4);
     // A read-only (subagent) call never acts.
     const readonly: any = await (runtime as any).call(component, { args: {} }, undefined, true);
-    assert.match(readonly.content[0].text, /only saved code acts/);
+    assert.match(readonly.content[0].text, /read-only or has no action capability/);
     assert.equal(played.length, 4);
     await assert.rejects(runtime.python('1', undefined, false, 'Bad Name'), /save must be a lowercase name/);
   } finally { runtime.close(); }
@@ -99,7 +103,8 @@ test('every write is versioned and env.restore brings a version back; tools are 
     await runtime.python('def run(args):\n    return 2\n', undefined, false, 'pick');
     assert.equal(binder.versionMap()['tools/pick.py'], 2);
     const restored: any = await runtime.python('env.restore("tools/pick.py", 1)');
-    assert.match(restored.content[0].text, /tools\/pick\.py: restored from v1 · tools\/pick\.py → tool pick v3: saved · loaded/);
+    // Free hands: a program/python call may restore and rewrite harness paths itself (Binder versions the write).
+    assert.match(restored.content[0].text, /tools\/pick\.py: restored from v1 · tool pick v3: saved · loaded/);
     assert.equal(workspace.read('tools/pick.py'), 'def run(args):\n    return 1\n');
     const missing: any = await runtime.python('env.restore("tools/pick.py", 9)');
     assert.match(missing.content[0].text, /tools\/pick\.py: no version 9 to restore/);
