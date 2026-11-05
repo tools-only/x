@@ -17,6 +17,7 @@ import { Workspace } from './arc_thin_workspace.ts';
 import { Binder } from './arc_thin_binder.ts';
 import { validatePythonComponent } from './arc_thin_components.ts';
 import { NativeRuntime } from './arc_thin_native_runtime.ts';
+import { Trials } from './ppt_trials.ts';
 
 export default function pptDemo(pi: ExtensionAPI) {
   const root = process.env.PPT_DEMO_ROOT!;
@@ -43,9 +44,35 @@ export default function pptDemo(pi: ExtensionAPI) {
   // Counters are per process (a resumed process starts at zero).
   const evidence = { revision: Number(state.lastFeedback?.revision ?? 0), programRuns: 0, consults: 0, artifactWrites: 0 };
   const evidenceLine = () => `Since render v${evidence.revision}: ${evidence.programRuns} program runs, ${evidence.consults} consults, ${evidence.artifactWrites} artifact writes; current revision checked: ${evidence.programRuns + evidence.consults > 0 ? 'yes' : 'no'}.`;
+  // Work lineage: which component versions actually ran, and which files they touched, since the last render. It is
+  // built from execution facts the host already records; it attributes nothing and grades nothing. Its only job is to
+  // save the agent from reconstructing "what produced this revision" out of the conversation and the logs.
+  type LineageUse = { name: string; kind: string; version: number | string; ok: number; failed: number; via: string };
+  const lineage: { revision: number; uses: Map<string, LineageUse>; writes: Map<string, number>; unattributed: Set<string> } =
+    { revision: Number(state.lastFeedback?.revision ?? 0), uses: new Map(), writes: new Map(), unattributed: new Set() };
+  const lineageUse = (row: any) => {
+    const name = String(row.name ?? row.role ?? ''), version = row.version ?? '?';
+    if (!name) return;
+    const kind = row.role ? 'subagent' : row.kind === 'program_call' ? 'program' : row.kind === 'save' || row.kind === 'program_save' ? 'save' : 'tool';
+    const key = `${kind}:${name}@${version}`;
+    const use = lineage.uses.get(key) ?? { name, kind, version, ok: 0, failed: 0, via: row.readonly ? 'read-only call' : 'call' };
+    if (row.kind === 'program_call' || row.kind === 'tool') { if (row.ok === false) use.failed += 1; else use.ok += 1; }
+    lineage.uses.set(key, use);
+  };
+  const lineageLine = () => {
+    const uses = [...lineage.uses.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+    const writes = [...lineage.writes].sort((a, b) => b[1] - a[1]).map(([path, n]) => `${path}${n > 1 ? `×${n}` : ''}`);
+    if (!uses.length && !writes.length) return `Lineage since render v${lineage.revision}: nothing recorded.`;
+    return [`Lineage since render v${lineage.revision} (execution facts, not a causal or quality claim):`,
+      uses.length ? `ran: ${uses.map(u => `${u.kind} ${u.name}@v${u.version}${u.ok + u.failed ? ` (${u.ok} ok, ${u.failed} failed)` : ''}`).join('; ')}` : 'ran: nothing',
+      writes.length ? `wrote: ${writes.slice(0, 12).join(', ')}${writes.length > 12 ? `, +${writes.length - 12} more` : ''}` : 'wrote: nothing',
+      lineage.unattributed.size ? `changed outside a recorded run: ${[...lineage.unattributed].slice(0, 8).join(', ')}` : ''].filter(Boolean).join('\n');
+  };
   const log = (file: string, row: any) => {
     if (file === 'component_runs.jsonl' && row?.kind === 'program_call') evidence.programRuns += 1;
     if (file === 'consult_runs.jsonl') evidence.consults += 1;
+    if (file === 'component_runs.jsonl' && ['program_call', 'tool', 'save', 'program_save'].includes(row?.kind)) lineageUse(row);
+    if (file === 'consult_runs.jsonl' && row?.role) lineageUse({ ...row, role: row.role });
     appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), batch: state.batch, ...row })+'\n');
   };
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
@@ -140,6 +167,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       feedback ? `Last render: revision ${feedback.revision} of ${feedback.source_path}, ${feedback.slides} slide(s), ${feedback.warnings?.length ?? 0} warning(s); evidence in ${feedback.evidence}.` : 'No render yet.',
       `Rendered revisions: ${(state.renderedRevisions ?? []).map((r: any) => r.revision).join(', ') || 'none'}.`,
       evidenceLine(),
+      lineageLine(),
       `Memory files: ${memoryPaths.join(', ') || 'none'}.`,
       budget].join('\n');
   };
@@ -153,6 +181,9 @@ export default function pptDemo(pi: ExtensionAPI) {
   for (const tool of workspace.fileTools()) pi.registerTool(tool);
   workspace.onWrite = async path => {
     if (path.startsWith('artifacts/')) evidence.artifactWrites += 1;
+    // A direct file write is an agent edit with no recorded run behind it; lineage says so instead of guessing.
+    lineage.writes.set(path, (lineage.writes.get(path) ?? 0) + 1);
+    if (!/^(tools|lib|skills|agents|prompts|notes)\//.test(path)) lineage.unattributed.add(path);
     const result = await binder.save(path, 0, { by: 'agent', decision: state.batch }); binder.boundary();
     return result;
   };
@@ -225,6 +256,36 @@ export default function pptDemo(pi: ExtensionAPI) {
       log('lifecycle.jsonl', { event: 'component_lifecycle', op: a.op, path });
       return text({ op: a.op, path, state: statusText() });
     });
+  const trials = new Trials({ root, workspace, binder, log, usage: (kind, message) => log('usage.jsonl', { kind, message }),
+    modelResult: async create => {
+      if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
+        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, reason: 'trial budget boundary' }));
+        process.exit(0);
+      }
+      spent += reserve;
+      log('provider-requests.jsonl', { request: ++requests, kind: 'trial', estimated_usd_so_far: spent });
+      const reply = await create().result();
+      const u = reply.usage ?? {};
+      const known = Number.isFinite(u.input) && Number.isFinite(u.output) && u.input + u.output > 0;
+      const usedTokens = known ? reportedTokens(u) : unknownUsageReserveTokens;
+      tokensSpent += usedTokens;
+      if (known) spent += ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6-reserve;
+      log('model-usage.jsonl', { request: requests, kind: 'trial', usage: known ? u : null, tokens_used: usedTokens, tokens_total: tokensSpent, conservative_usd: spent,
+        usage_status: known ? 'reported' : 'unknown_reserved', stopReason: reply.stopReason });
+      return reply;
+    },
+    reasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
+    maxTrials: Number(process.env.PPT_DEMO_MAX_TRIALS ?? 3), maxRounds: Number(process.env.PPT_DEMO_TRIAL_ROUNDS ?? 12),
+    timeoutMs: Number(process.env.PPT_DEMO_TRIAL_MS ?? 300000) });
+  register('trials', 'Run one or more independent trials: each gets its own scratch workspace and its own context (no parent prompts unless you name components to copy in) and works on the instruction you give it, with file, python and program tools. Trials cannot touch the main workspace; their files stay under .harness/trials until apply_trial copies chosen files in. Same model, counted against the task budget. Each trial returns its answer and the files it wrote. No automatic selection or merge.',
+    Type.Object({ trials: Type.Array(Type.Object({ id: Type.Optional(Type.String()), instruction: Type.String({ minLength: 1 }),
+      materials: Type.Optional(Type.Array(Type.String())), components: Type.Optional(Type.Array(Type.String())) }), { minItems: 1 }) }),
+    async (a: any, signal: AbortSignal, ctx: any) => text((await trials.run(a.trials, ctx, signal)).content[0].text));
+  register('apply_trial', 'Copy files a trial wrote into the main workspace, where components are versioned like any write. Omit paths to copy every file the trial changed; paths picks specific files.',
+    Type.Object({ id: Type.String(), paths: Type.Optional(Type.Array(Type.String())) }),
+    async (a: any) => { const result = await trials.apply(a.id, a.paths); await binder.scan(0); binder.boundary(); runtime.register(); return text(result.content[0].text); });
+  register('trial_files', 'List the files a trial changed relative to the main workspace, before applying any.',
+    Type.Object({ id: Type.String() }), (a: any) => text({ id: a.id, changed: trials.changed(a.id) }));
   register('office', 'Render the current presentation or prototype (HTML or scene JSON under artifacts/), look at rendered pages as images, or deliver. Rendering takes a screenshot of every slide; delivery copies the rendered revision and your harness.',
     Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('deliver')]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
     async (a: any, signal: AbortSignal, ctx: any) => {
@@ -256,8 +317,10 @@ export default function pptDemo(pi: ExtensionAPI) {
         persist();
         // Facts about the period that just ended (how the previous revision was checked), then the new period starts.
         const sincePrevious = evidenceLine();
+        const lineageSince = lineageLine();
         evidence.revision = revision; evidence.programRuns = 0; evidence.consults = 0; evidence.artifactWrites = 0;
-        return { content: [...text({ render: state.lastFeedback, evidence: sincePrevious, state: statusText() }).content,
+        lineage.revision = revision; lineage.uses.clear(); lineage.writes.clear(); lineage.unattributed.clear();
+        return { content: [...text({ render: state.lastFeedback, evidence: sincePrevious, lineage: lineageSince, state: statusText() }).content,
           { type: 'image', data: readFileSync(join(out, 'contact-sheet.png')).toString('base64'), mimeType: 'image/png' }] };
       }
       const revision = a.revision ?? state.lastFeedback?.revision;
@@ -325,7 +388,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       binder.boundary(); persist();
     }
     // Agent-created tools stay active across batches: setActiveTools unions in everything registered.
-    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'component_lifecycle', 'checkpoint', 'office', 'consult']);
+    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'component_lifecycle', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt').map(c => c.body).join('\n');
     const taskGuidancePath = workspace.path('AGENTS.md');
