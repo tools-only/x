@@ -1,0 +1,156 @@
+# PPT 在线工作机制：设计与实现委托
+
+## 用户授权优化并重启（2026-11-04）
+
+沿用上节失败事实，新增 length continuation 的具体恢复信息，替代只有 PPT_RESUME 的空标记：明确不完整调用没有执行、以真实存盘/回执为准、下一步缩小写入而非重写全稿。扩展识别带说明的恢复前缀；不自动重试 terminated、不增 provider token 上限、不引入固定任务循环。短指令仅截断后产生，旨在减少此前 6 次 length 的重复工作，实际收益待测。基础提示补明失败保存不改变旧版、数值出现不能证实语义，仍由 Agent 设计校准试验，不预装检查器。
+
+本次重启已获用户授权。新目录 runs/ppt-qwen-high-feedback-restart-20261104，AZ/qwen3.8-27b/high，同一 JPMorgan 15 页任务、全新会话、沿用无总费用/运行期限上限。该运行是探索样本；相对前次同时包含发布失败送达、schema、恢复说明与方法校准提示变化，不能作单因素因果对照。观察真实发布/调用/反馈/修订/后续再用及实际作品变化；自述成功、仅作品修改和组件计数不算能力提升。保留截断、拒绝、未知费用与负收益，不自动启动第二次付费运行。运行结束后分别报告功能、接线、自主闭环和质量/总成本，未发生明确记失败。
+
+启动前实际 Pi scripted lifecycle 通过，Python 编译及 diff 检查通过；既有失败事实路由已有上一轮定向回归证据。本轮 length 恢复行为尚未获真实 provider 验证，须检查新运行实际输入。
+
+## Qwen high 失败诊断与修复（2026-11-04）
+
+补充结果：新增失败日志/下一 provider payload 的失败事实/同名成功后清除断言，目标测试 1/1 通过（55.16 秒）；真实 PowerPoint 产物 C:/Users/qi/AppData/Local/Temp/ppt-native-bMJXeS。git diff --check 通过。
+
+真实样本 `runs/ppt-qwen-high-feedback-20261104`，AZ/qwen3.8-27b/high，用户授权单次无总费用/运行期限。终态 complete=false/runtime_error/terminated，14 次请求，6 次 length（各报告 output=12000），没有 render/deliver。最终请求 usage 未知，保守账本 16.522 USD 包含未知请求预留，不是实际账单。terminated 的底层来源未知，不能归为模型能力或宣称已修复网络；本轮不自动重试付费任务。
+
+生命周期：Agent 主动提出 fact-check loop 并提交 factcheck_deck，说明出现方法构造尝试。description 过长导致 saveProgram 拒绝，没有发布或装配，更没有 run_program。随后文本说 Program saved，与实际 toolResult 矛盾。后续作品文件分段写入只是输出截断后的操作调整，没有检查法的执行、反馈、修订或再次验证。没有自身能力提高或交付质量提高的证据；尚未交付也限制了本样本对最终质量的判断。早前 low 样本为全稿后 render/look/自评；其中 rerun 有一次作品修改，均不等于方法闭环。
+
+候选方法源码存在未验证缺陷：mat_chars 删除所有非数字/点/百分号字符再做子串查找，可跨原始数字边界命中；数值出现不能保证单位、指标、期间、符号和会计限定相符。正则切分嵌套 div 不可靠；固定 15 页仅适用于该任务。代码中无问题报告不代表事实准确，重复页脚检测也未完整实现。没有执行证据，以上为静态分析，不能声称它实际误报/漏报了某一页。创建方法与校准方法之间仍未到达。
+
+窄修复：PPT save_program schema 公开现有 description 单行/1–120 长度及 name 格式约束，避免隐藏约束到执行才暴露。统一工具 wrapper 记录抛出的错误（此前因先 await 后 log 漏记失败），错误仍抛回 Pi，不自动当成功。最近一次发布失败的 name/error 以有界事实进入下一实际 provider system；同名发布成功或退休成功后清除，不阻断制作、不自动重试、不创建 reviewer。只保留最近失败，不是完整未解决列表；模型仍可放弃该方法。catch 用于记录真实工具错误后原样 rethrow，非吞错。
+
+生命周期/成本：状态随既有 ppt-loop 保存并在后续请求读取；替代反复查工具日志的机械工作；下一真实保存结果可消除错误状态。失败时增加不足 400 字符错误加短解释，每次请求持续占用，后续成功即退出；语义误判是否改善仍未验证。没有新增调用或管理轮。程序发布不会自动运行；修复不能证明自主闭环成立。
+
+本轮检查：PPT 6/6 与实际 Pi scripted lifecycle 1/1（11.45 秒）通过；新增失败日志/下一 provider payload 出现失败事实/同名成功后清除的断言另跑目标测试。脚本接线不能证明真实模型读懂错误或提升质量。功能正确与接线分别记录，真实自主采用、任务质量收益和父子净成本仍待授权实验。B/C/D 的语义反馈和跨上下文连续性仍开放。
+
+## 后续修订：检查方法的可判别性（2026-11-04）
+
+本轮验证结果：Node PPT 测试 6/6 通过，包括 source_path 发布后执行、版本历史、参数互斥、越界拒绝与实际 Edge/PowerPoint 渲染（产物 `C:/Users/qi/AppData/Local/Temp/ppt-native-dhs8ow`）。实际 Pi scripted provider 接线 1/1 通过，10.46 秒。首次脚本断言依赖已替换的旧提示原文而失败，更新目标指令断言后通过；没有放宽方法创建/调用/反馈/修订/退休的序列断言。git diff --check 通过。功能正确与局部接线通过；真实采用及净收益未验证，未启动新的付费运行。
+
+用户拒绝 live-method 真实运行的自进化及作品质量结果。本轮范围为优化实现，不自动扩大为新的无上限付费运行。
+
+实证：`runs/ppt-qwen-live-method-20261104` 仅 render v1，查看 8 页后交付。session 中 write 和 save_program 各有一次输出长度截断而未执行；不能将 attempted save 计作发布。自评 excellent 未附检查方法能区分好坏的证据。开发侧检查 contact sheet/source：第 12 页 Corporate 净亏损与第 15 页“All segments profitable”的概括存在未解释的范围差异，非专业读者容易误解；多个正文样式为 12–13px，页面仍大量留白。这里是具体待检质量问题，不是全稿质量评分或预置运行时规则。
+
+此前接线本已存在，退休入口未解决发现方法失效的问题。此次主要行为假设改为：Agent 需要主动检验其反馈是否可判别，并将发现的漏检用于修订方法及后续作品。删除“what quality means”交由 Agent 自定及“no loop required”的表述；用 brief/audience 锚定质量，把在线改进作为任务目标。只规定目标与证据要求，实验、角色、顺序、停止均由 Agent 决定；不预装 reviewer 或生成固定缺陷，不设置交付门禁。该行为变化仍然是提示干预，不能称为已经实现能力提升。
+
+伴随的独立可用性修复：save_program 接受 body/source_path 二选一。Agent 可以分段写草稿，再显式发布；同一 WASI 校验、版本及发布权限仍生效，发布不会自动运行。它减少长代码重新生成的输出负担，但不能保证解决所有截断，更不直接产生自进化。效果研究必须把这项修复与提示因素区分，不能归因给单一改变。
+
+生命周期：方法由 Agent 创作，经已有 active prompt 或显式 program 调用影响下一实际工作；原始工具结果进入后续父请求；Agent 判断方法是否漏检、据证据修改或停用。实验材料不得污染原始素材或最终交付。拒绝、放弃和无增益应保留，不能以增加检查次数作收益。没有新增回执、常驻台账、worker 或管理轮；提示 token 成本尚未测量。
+
+验收协议：沿用实际 Pi scripted provider 接线测试，以及真实 Edge/PowerPoint 的 PPT 定向测试；新增 source_path 发布后真实运行及互斥参数、越界路径拒绝检查。功能与接线结果在执行后补记。真实采用和净收益未验证。下一真实运行需观察 Agent 自创的检查曾遗漏/误报什么、新版如何改变后续判断、作品有什么可核对改善；只保存方法或赞美作品仍判失败。开发发现不作为运行中的答案注入。旧失败案例为探索基线，因任务阶段和随机性不同不能证明因果收益。净收益还需要独立对照，计入父子全部成本和质量退化。
+
+状态：实现及局部接线验收完成（2026-11-04）；真实模型自主采用与净收益未验证。
+
+## 真实失败与可证伪命题
+
+普通 Qwen 运行 `runs/ppt-qwen-self-improve-20261104-rerun` 完成全稿后两次渲染，观察后补充第 5 页内容；没有观察到 Agent 创造并修订工作方法。前一运行见 `runs/ppt-qwen-self-improve-20261104-final`。这些轨迹支持“作品反馈发生、方法反馈未发生”，不证明模型完全没有方法层面的思考，也不证明具体根因。
+
+主要假设：现有 harness 更像可选存储，Agent 创造的方法与下一次实际工作、下一次反馈没有稳定连接。把它作为在线执行中可见、可修改的工作机制，并自动交还该机制执行后的原始结果，可降低连接负担。只增加倡议或组件目录不足以检验此命题。
+
+窄命题：Agent 自己选择的方法，经现有组件机制绑定后，真实进入下一 provider 输入/执行；执行结果无需额外查询即可返回父 Agent，父可修改或停用该方法，下一实际请求使用新版或停止使用。自主识别方法缺陷和任务收益仍需另行真实运行证明。
+
+## 设计：可修改的方法，机械连接，语义由 Agent 决定
+
+1. **工作机制就是现有可执行/生效组件。** 优先复用 active prompt 表达当前组织方法，program 表达可执行流程，skill/role 表达按需方法；不要新造 loop DSL、管理 Agent 或单独规划文件。组件只存档不算在线方法；实现必须指出每种实际支持的载体如何改变下一步工作。首版聚焦 active prompt 与它显式调用的 program，不全面扩展组件系统。
+2. **明确在线责任，保留自主设计。** 基础指令简短说明：在完成作品过程中构造并按实际结果修订自己的工作机制；当问题来自生成、取证或判断方法时，可改机制并在后续实际工作试用；机制也可修改自己如何发现问题、提出改进及验证改进。具体时机、证据、角色、流程、实现形式及停止由 Agent 决定。没有“必须先保存组件才能制作/交付”的门禁，也不要求每次反馈都修改方法。
+3. **装配直接作用于下一请求。** 复用 self_component/save_program 与 Binder 版本。确认父连续工具轮中 prompt 实际刷新、program 调用采用当前版本；不要只检查 before_agent_start 或内存。修改不热换已经执行中的 Python 调用；旧调用保持其绑定版本，后续新调用才用新版本。执行失败原样返回，不自动换策略。
+4. **把现有反馈送回工作位置。** 先审计 office/run_program/run_agent 当前回执及 provider 输入，已有结果直接利用。只对真实缺失的转移增加小型、去重、有界的事实回执：组件路径/绑定版本、调用成败、结果或结果引用、关联渲染版本。事实回执随现有工具结果或下一模型请求进入父上下文，无须 Agent 另做台账查询；不新增独立 review 回合。不要从“之后调用了工具”推断“这个 prompt 导致此行动”；关联只记录可证明的绑定和调用来源。图像仍用现有图片通路，不用文字摘要冒充视觉反馈。
+5. **允许修订和退出。** 确认现有 prompt/program 的修订、停用、恢复入口真实可用；仅修补缺失部分。下一请求不保留已停用方法的指令或陈旧回执。执行历史留存；退休仅停止未来使用，不撤销作品变化。反馈不判定方法优劣，不自动发布、修订或强制再次调用。
+
+抽象关系是“Agent 创造的方法参与工作 → 工作产生证据 → Agent 可改变方法 → 后续工作试用变更”。这是实现必须支持的关系，不是运行时预设的工具调用顺序。Agent 可以用单父、子 Agent、程序或其组合自行创造 loop，不预装 reviewer、评分器、对抗角色或固定迭代轮数。
+
+## 取舍、负担与生命周期
+
+- 相比继续添加工具，复用现有接口；相比要求写计划与反思报告，直接把活动方法和真实工具结果连接到下一次工作。禁止要求每轮填写假设、评分或收益字段。
+- Agent 负责发现机会、选择方法、语义判断、修订/停用；runtime 仅负责版本装配、执行、反馈路由与权限/预算/环境完整性。反馈判别标准可以由 Agent 修订，但事实、原始材料和实际渲染不随其自评改变。
+- 增加成本应限制为短提示及必要事实差量，不建立第二份全量历史。实现记录提示字符差、额外 provider 请求/管理轮、回执大小；父子真实 token 和净收益未测写未知。
+- 方法不适用、证据不足、执行失败、剩余任务不足以摊销或成本过高时，可直接制作、修作品、放弃候选或交付。不得用强制创建、调用次数、组件数量证明提升。
+- 本次不做持久 Python 栈、通用调度平台、ARC 路径重构或固定质量分析。跨压缩语义连续性、父子净成本对应 deferred-research-todos B/C/D，仍开放；本次只验证直接后续轮次的实际送达和使用接线。
+
+## 实现验收与有界评估
+
+开发先读 AGENTS.md、docs/development-workflow.md 及现有代码，保留工作树已有改动。在本记录追加结果，避免覆盖历史记录。允许按代码审计简化实现；若所有路由已有，不复制机制，但须用真实请求证据说明本次主要变量到底是什么，不把提示修改包装成架构闭环。
+
+使用实际 Pi parent + extension + 本地 scripted provider，禁止联网付费。单例最多 8 个 provider 请求/180 秒，失败后先诊断再调整，不重复盲跑。脚本仅用于接线，不计自主采用：
+
+- 创建 Agent-authored 方法 v1，核对它进入下一真实 provider payload；执行它产生当前作品或检查结果，而非仅列目录。
+- 将执行结果返回父下一轮；脚本指定修订为 v2，核对后续新调用/请求用 v2，v1 历史版本仍可识别。例中可让 v1 检查遗漏一项材料，v2 扩展检查；不得声称脚本设计的改进是模型发明。
+- 停用方法后核对后续 provider payload 不再注入；无活动方法仍可正常制作/交付，不能因未“自进化”阻断。
+- 失败程序、陈旧渲染或缺失证据原样失败/保留未知，不自动写成成功或改进；既有权限和原始材料保护不退化。若触及共享 runtime，补跑相应定向回归。
+- 若修改 active prompt，仅凭 payload 送达可证明接线，不能证明语义使用。程序调用成功也不证明质量收益。
+
+真实验证方案留待用户启动：相同 Qwen/provider/thinking/任务，普通运行，无指定必须创建组件或固定 loop；主要变量为本次在线方法连接。观察方法缺陷识别 → 方法变更 → 后续实际使用 → 后续结果对保留/修订/放弃的影响。只有作品变更、只保存方法、方法未参与后续工作，或反馈不影响任何决策，均不支持自主闭环主张。一次完整轨迹只证明存在性，不能证明净收益或递归能力不断增强；净收益需后续独立对照并同时审阅任务质量和父子总成本。
+
+## 交付要求
+
+GPT-6 Luna high 完成窄实现、必要定向检查和上述实际 Pi 接线验证；记录修改文件、命令、证据路径、失败及限制。功能正确/全链路可达/自主采用/净收益分别报告。不得启动新的付费 Qwen 运行，不自动提交或推送。当前设计交付时四层均未因本设计新增验证。
+
+## 2026-11-04 实现与实际 Pi 接线结果
+
+### 审计结论与改动
+
+- 真实 Qwen 旧运行和 ppt-qwen-self-improve-20261104-rerun 支持“作品观察/修订出现，但未观察到工作方法创建和试用”。这是轨迹观察，不证明模型内部没有方法层思考。当前入口审计发现：active prompt 已在每次实际 provider 请求前重新装配；save_program 经 Binder 保存当前版本并在未来由 run_program 执行；run_program 原样把 WASI 结果作为当前 tool result 返回，因此后续父请求无需另查账。两项主要在线连接已经存在，未复制成 DSL、hook 或新管理回合。
+- 实际缺口：prompt 可用 active:false 停用，但 named program 没有 Agent-facing 的退休入口；继续不调用虽可停止采用，方法仍留在活动目录。新增 retire_program(name, expected_version)：校验当前版本，将源移入 tools_off/，让 Binder 在边界扫描中退休原组件并重建活动绑定；源及历史留存，版本不符时拒绝操作。
+- 将 PPT 基础提示更新为方法 affordance：Agent 可把 task-local 工作方法写成 active prompt/program，在后续请求使用；遇到生成、检查或判断方法问题，可修改方法及其问题发现/检查方法，再用后续结果判断是否保留、修订或退休。具体选择仍由 Agent 决定，不强制创作、调用、交付门禁或固定顺序。相对上轮已修改提示段从 528 增至 633 字符（+105）；provider token/cache 成本未测。没有新增父子 worker、管理轮或运行时语义回执。
+- 原有 office 和方法结果直接 tool-result 路径足够；不把图像摘要改成事实，也不添加结果 ledger。现有 SELF FEEDBACK 回执会提示 call 成功/失败及“收益未测”，其调用数不计语义收益。
+
+### 有界脚本验收
+
+- 命令：$env:PYTHONPATH='src'; python -m pytest tests/test_ppt_live_method_pi.py -q。实际启动本工作树内 Pi CLI、PPT extension、NativeRuntime / Binder / WASI 和 tests/ppt_live_method_provider.ts 本地 scripted provider；provider 未联网。通过，单会话 8 个请求、约 10.7 秒；无 child agent；provider 费用/token 是脚本的 1+1 固定假 usage，不能作为模型成本测量。
+- 顺序证据：请求 0 创建 prompt v1；请求 1 收到含 v1 的 provider Context 并保存程序 v1；请求 2 调用 v1；请求 3 读取其“Revenue present=True”结果后修订 v2；请求 4 用当前 v2 扩展为同时检查 Revenue 和 Net income；请求 5 再调用 v1 历史版本并得到 v1 输出；请求 6 退休当前 program 且停用 prompt；请求 7 的 system prompt 不含 v1 方法，父会话以普通文本正常结束。provider 断言每一步在先前结果到达后才发下一项操作；这是脚本规定的顺序，不是模型自主发现或改进。
+- 实际证据目录：C:/Users/qi/AppData/Local/Temp/pytest-of-qi/pytest-3389/test_agent_authored_method_run0/ppt-live-method/，含 provider-checks.jsonl（8/8）、harness/provider-requests.jsonl（8 requests）、harness/tools.jsonl（实际的保存、v1/v2/历史调用和退休回执）、harness/component_runs.jsonl（执行版本与结果）、.harness/components.jsonl（v1/v2 及 retired 事件）、workspace/tools_off/live_check.py（保留的退休源码）及 workspace/prompts/live_method.md（inactive）。程序结果确实出现在紧接的 provider Context：v1/v2/历史结果分别约 203/223/211 字符，回执还含既有“task benefit unmeasured”说明。
+- 首次探针结果保留：第一次 pytest 启动实际 Pi 后，scripted transport 的 context.systemPrompt 是空字符串，provider 断言失败于请求 1；当时 Pi 扩展已记录 provider payload，但 fixture 没检查 Context 的 system-role messages。按 Pi Context 形态改为优先读 systemPrompt、否则检视 system-role messages 后，在同一 8 请求/180 秒边界重新运行并通过。首轮没有创建或调用组件，不作为成功样本。
+- 定向回归：node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts，6/6 通过。使用 Windows Edge + PowerPoint 的实际部分草稿渲染、既有 PPT extension 测试；provider 行为由 stub/mock。新增断言覆盖 retire_program 工具可见、旧版本号拒绝退休且当前 presentation 不受影响。git diff --check 通过。
+- 未运行 src/autoresearch_pi/ppt_demo.py 的真实任务 runner，也未用真实 provider。本 Pi 测试直接以 Pi CLI + 真实 PPT extension 建立请求链，证明该局部父请求/工具/Binder/WASI/后续父请求可达，不证明 production 启动配置的全部环境或 provider 兼容性。
+
+### 证据状态与边界
+
+| 验收层 | 状态 | Provider / environment | 能说明什么 |
+| --- | --- | --- | --- |
+| 功能正确 | 通过 | 本地 Pi CLI、真实 PPT extension/NativeRuntime/Binder/WASI + scripted provider；另有 Windows Edge/PowerPoint 回归 | 保存/绑定、实际执行、结果回返、v2 生效、历史 v1 可调、版本保护和退休路径按该情境工作 |
+| 全链路可达 | 局部通过 | 实际 Pi parent + extension + provider request hook + program runner + WASI + 下一父请求；非付费 provider | 设计要求的局部在线方法生命周期已经连通；PPT Python 启动包装和生产 provider 未覆盖 |
+| 自主采用 | 未验证 | 新版提示尚无真实模型普通任务样本 | provider 按脚本创建、修改、调用，不能说 Agent 自主识别、发明或采纳 |
+| 净收益 | 未验证 | 无真实模型匹配对照、无子任务样本 | 程序检查替代了哪些重复工作、是否改善作品/受众理解、父子总成本与延迟均未知 |
+
+真实结果后续语义使用的证据标准：方法的输出必须先到达父请求；父随后应以可核对的事实改变作品文字/组织、取证或判断方法，或根据阴性/不确定结果明确维持现状/停止。只见 prompt、调用 run_program、ok=true、版本数或自述“有帮助”不算。自主实验保留无机会/合理不使用、运行失败、被丢弃的方法、陈旧结果及负收益；独立对照再报告作品质量与父子总请求/输入输出/图像成本/运行时间和管理往返。
+
+本次没有观察到生产 runner 路径、真实模型自主 adoption 或因果净收益。下一可证伪检查仍是用户授权的真实普通 Qwen PPT 任务；不要求创建组件或首轮 render。DEFERRED B/C/D（父子语义反馈、父子净成本、跨上下文认知连续性）仍开放。
+
+## 2026-11-05：一次调用的独立探索批次
+
+### 失败/机会与窄命题
+
+前述 Qwen 普通运行在作品完成和复渲后补过作品内容，但没有观察到 Agent 自建、跨候选探索并迭代自身工作方法。已有 `run_agent` 要先有具名 role，逐个调用并承受 role/frontmatter、工具授权和往返管理；本次审计确认它复用 `NativeRuntime.consult`，但并不适合无需持久角色的短候选。该观察不说明运行中 Agent 完全没有探索，也未测量本次新增调用能否改善作品。
+
+窄命题：当 Agent 能明确写出若干候选指令及所需材料时，一个有界的父级 `explore` 调用会免去先建持久 role 和逐候选发起多个父级工具调用的手续，并把每项原始回答或失败直接交还同一父轮；Agent 仍自行比较、采纳、修改方法或放弃。若真实任务中没有适用机会、候选答复重复/不足以影响决定、Agent 未后续使用结果，或调用成本超过其节省/收益，则不支持命题。
+
+本设计不预设 generation-review、角色轴、遗传算法、评价器、差异方向、赢家或调用时机；一次模型采样既不证明候选多样，也不构成证据独立性。Agent 可用自身保存的 prompt、skill 或 program 写探索候选/选择方法，并在结果反馈后改它；服务本身没有这类内建方法或自动发布。
+
+### 设计、边界与成本
+
+- 在 `NativeRuntime` 复用 Pi 当前 `ctx.model`、PPT `modelResult` 预算/usage 路由及 provider 日志；不另建模型、环境或 broker。每候选是新的一次无工具上下文，只包含短只读系统身份、Agent 的 instruction 和其显式 refs；不继承父消息、active prompt 或相邻候选。候选须自行给齐上下文，父可显式把自己的方法组件或结果作为 ref。
+- PPT 暴露 `explore({candidates:[{instruction, refs?}]})`：每次 1–4 项，每项至多 8 refs；按顺序运行，以控制单次调用的并行冲突，延迟因此相加。候选使用任务活跃模型和配置的 `PPT_DEMO_THINKING`（本次真实任务配置 high），受相同 request reserve/cap 约束，每候选一次 provider 请求，不重试。服务不提供 read/write/office/其他工具，因此结果只能来自 instruction 与 refs。
+- 每一项在父工具结果中保留序号、指令、refs、原答复与 answer_ref，或 error；空答、length、aborted、provider error 均是失败而非候选成功。结果按 item 写入 `explore_runs.jsonl`，模型请求和 usage 用 provider request id 关联；失败的未知 usage 保留已预留费用。服务不综合结论、不评分、不选优、不改共享文件、不发布组件。父工具结果直接进入 Pi 下一轮输入；方法后续是否保存、使用和修改由 Agent 自行决定。
+- 相比建角色/逐项调用，预期减少 Agent 的准备和父层管理步骤；新增每候选一次同模型请求、相加的串行延迟及有界 answer refs。候选 token、延迟的真实 provider 分布和父子净成本未知。单次 tool invocation 上限是 4 个候选；Pi 若并行接受多个 `explore` 工具调用，单次 schema 不形成全轮总量上限，实际请求仍受共享预算 reserve/cap 限制。此次不加 scheduler 或全局角色数/探索轮门禁。
+- 来源边界：基础提示向 Agent 告知服务存在并由 Agent 自选调用；候选方法可以成为普通 prompt/skill/program，后续按既有工作路径生效。`explore` 是父级 Pi tool，当前没有暴露给 `env.agent`/program 子调用；子程序是否需要该能力是未决范围，不以当前可达性作泛化声明。未提供 refs 的环境材料不可见；这会导致合理无结果，而不自动扩大读取范围。
+- 输出是一次调用产生的运行材料，进入其紧邻父轮并在那里被判断/使用；它不常驻。父如认为一种探索方法可复用，可自行创建普通组件，让后续 provider 请求按 Binder 生命周期收到它；实际后续使用结果再反馈给父，父决定修订/退休。只生成探索回答但没有下一步使用/语义反馈时，该探索结果在父轮后即退出，不形成额外账本义务。该路径与 deferred B/C 的父子研究模式、证据回传和总成本，以及 D 的跨上下文保留仍有关联；未关闭任何待办。
+
+### 有界接线检查
+
+命令：`$env:PYTHONPATH='src'; python -m pytest tests/test_ppt_explore_pi.py -q`，通过 1/1（约 1 秒）。本地脚本启动实际 Pi CLI + PPT extension + `NativeRuntime`，共 4 个 scripted provider request：父请求调用一次含两项的 batch；第一候选收到仅含自身 instruction 和显式 material ref 的新 Context 并返回 `CANDIDATE_ONE_RAW`；第二候选以 provider error 失败；下一父请求同时收到第一项原文与第二项失败并正常收尾。usage/request 对应关系为父 1、候选 2 和 3、父 4；候选 request ID 与 `explore_runs.jsonl` 一致，子 usage `kind=explore`。答复原文单独有 `results/` ref。workspace 的 tools/agents 由 Pi 初始化为空目录，未创建组件或候选 role。Scripted provider 没有真实网络或费用；它只验证功能与这段实际 Pi 工具接线，不验证真实模型选择/独立性/语义利用。
+
+定向附加检查 `node --experimental-transform-types --test --test-concurrency=1 tests/arc_thin_native_runtime.test.ts`：15/16 通过；`USE-CHANNEL` 一例失败（断言实际 callable count `3`、期望 `1`，位置 `tests/arc_thin_native_runtime.test.ts:64`）。该断言未涉及新方法，但本轮没有运行基线证明其原先也失败，因此状态记作未判定，不归因或宣称无关。新 PPT explore 接线自身 pytest 复跑通过。未完成的 PPT `ppt_demo.test.ts`/真实 PowerPoint 回归没有由此轮新功能触及；真实 provider 行为、agent 自主采用和净收益也都未验证。
+
+| 验收层 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 局部通过 | 本地 Pi CLI / PPT extension / NativeRuntime + scripted provider | 成功回答、失败留存、精确请求号、refs 限制 schema 与直接父轮回传按测试情境工作；独立 runtime 套件另有 1 个未判定失败 |
+| 全链路可达 | 局部通过 | 实际 Pi 父轮、PPT tool wrapper、NativeRuntime child stream、下一父轮 | 覆盖本地 scripted 父-child-父链路；真实 provider、runner 与 `env.agent` 程序内调用不在范围 |
+| 自主采用 | 未验证 | 无真实模型证据 | 脚本指定何时调用及候选指令，不能证明真实模型会识别机会、形成或选择候选、用结果改变后续任务 |
+| 净收益 | 未验证 | 无对照 | 真实候选差异/质量、减少的父管理动作、请求 token/费用与串行延迟、作品效果未知 |
+
+### 真实检查与决策
+
+接下来已准备一项用户授权的真实 high-thinking Qwen PPT 普通任务：`runs/ppt-qwen-meta-explore-20261105`，协议在其 `evaluation/meta-protocol.md`。父 Agent 启动/观察；本实现未向该 run 写文件或发起 provider 请求。重点读日志看 Agent 是否自发选择 `explore`，候选是否体现它对工作方法或产物的真实问题，失败/冗余是否保留，父是否根据原结果改了普通方法组件并在后续真实工作使用，结果如何改变作品或停止决定；未调用也记录适用机会与理由。不得以候选数、创建/调用次数、单次答复或自评替代语义收益。父子全部 usage、费用 reserve、总延迟和管理动作纳入成本；真实任务单例仅为自主采用/接线存在性样本，不足以证明净收益，后者仍需相近预算匹配对照。
+
+实现/局部接线保持实验状态。该 scripted 样本支持功能和局部可达，不支持真实模型采用或收益；后续真实运行按证据补结果，不改变本记录的先验门槛，也不因未使用自动强制调用。

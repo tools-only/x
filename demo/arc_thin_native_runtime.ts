@@ -26,7 +26,7 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   remember?(args: unknown): Promise<string>;
   onSaved?(path: string, receipt: string | undefined): void;
   metaDecision?(choice: string, reason: string): string;
-  receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
+  receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any, kind?: string):Promise<any>;
   generateImage?(args: { prompt: string }, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<any>;
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
@@ -1101,6 +1101,35 @@ export class NativeRuntime {
     ctx: ExtensionContext, activePrompts: string | (() => string) = '') {
     return this.consult({ agent: args.agent, question: args.task, refs: [...(args.refs ?? []), ...(args.uses ?? [])] }, signal, ctx,
       { writable: true, activePrompts, saveAs: args.save_as });
+  }
+  /** One independent, read-only exploration using only the caller's instruction and explicit material. */
+  async explore(instruction: string, refs: string[], signal: AbortSignal | undefined, ctx: ExtensionContext) {
+    if (!ctx.model) throw Error('explore needs the active model context');
+    const content: any[] = [{ type: 'text', text: `Explore this candidate independently. Return your unedited findings and exact source references; do not claim work you could not perform.\n\nInstruction:\n${instruction}` }];
+    for (const ref of refs) {
+      const path = this.host.workspace.path(ref);
+      const mimeType = await detectSupportedImageMimeTypeFromFile(path);
+      if (mimeType) {
+        content.push({ type: 'text', text: `Image ref: ${ref}` });
+        content.push({ type: 'image', data: readFileSync(path).toString('base64'), mimeType });
+      } else content.push({ type: 'text', text: `${ref}:\n${this.host.workspace.read(ref)}` });
+    }
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    const create = () => ctx.modelRegistry.streamSimple(ctx.model!, {
+      systemPrompt: 'EXPLORE: independent read-only candidate; only the instruction and explicitly supplied refs are available. No tools or workspace mutation are available.',
+      messages: [{ role: 'user', content, timestamp: Date.now() }], tools: [],
+    } as any, { apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: this.host.consultReasoning ?? 'off', maxTokens: ctx.model!.maxTokens } as any);
+    const reply: any = this.host.modelResult ? await this.host.modelResult(create, 'explore') : await create().result();
+    this.host.usage('explore', reply);
+    if (['error', 'aborted'].includes(reply.stopReason)) throw Object.assign(
+      Error(`explore ${reply.stopReason}: ${reply.errorMessage ?? ''}`), { providerRequestId: reply.autoresearchRequestId ?? null });
+    if (reply.stopReason === 'length') throw Object.assign(Error('explore answer reached the model output limit'),
+      { providerRequestId: reply.autoresearchRequestId ?? null });
+    const answer = (reply.content ?? []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n');
+    if (!answer.trim()) throw Object.assign(Error('explore returned no text answer'),
+      { providerRequestId: reply.autoresearchRequestId ?? null });
+    const { ref } = this.host.workspace.saveResult(answer);
+    return { answer, refs, answer_ref: ref, stop_reason: reply.stopReason, provider_request_id: reply.autoresearchRequestId ?? null };
   }
   private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext,
     options: { writable?: boolean; activePrompts?: string | (() => string); saveAs?: string; authority?: { tools: string[]; read: string[]; write: string[] } } = {}) {

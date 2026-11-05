@@ -12,7 +12,7 @@ export default function(pi: any) {
     streamSimple: scriptedProviderTransport((model: any, context: any) => {
       const n = turn++;
       const prompt = context.systemPrompt ?? JSON.stringify(context.messages.filter((m: any) => m.role === 'system'));
-      assert.match(prompt, /construct your own short feedback-and-improvement loop/);
+      assert.match(prompt, /you can shape a task-local method/);
       if (n === 1) assert.match(prompt, /PPT_LIVE_METHOD_ONE/);
       if (n === 2) { assert.match(prompt, /PPT_LIVE_METHOD_TWO/); assert.doesNotMatch(prompt, /PPT_LIVE_METHOD_ONE/); }
       if (n === 3) assert.doesNotMatch(prompt, /PPT_LIVE_METHOD_(ONE|TWO)/);

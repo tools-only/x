@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import pptDemo from '../demo/ppt_demo_extension.ts';
@@ -116,10 +116,23 @@ test('agent-owned workflow, scoped workers, PowerPoint export and source-checked
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   assert.ok(activeTools.includes('consult'));
   assert.ok(activeTools.includes('run_agent'));
+  assert.ok(activeTools.includes('retire_program'));
   assert.ok(!activeTools.includes('acceptance_check'));
   await assert.rejects(() => tools.get('consult').execute('test', { agent: 'visual_review', question: 'Review a slide' }, undefined, undefined, { model: { maxTokens: 1000 } }), /Create one with self_component/);
   const body = `import json\nslides=[]\nfor i in range(15):\n    slides.append({'elements':[{'kind':'text','x':0.5,'y':0.5,'w':10,'h':1,'text':args['title']+' '+str(i+1),'size':28}]})\nslides[0]['elements'].extend([{'kind':'chart','x':1,'y':2,'w':5,'h':3,'categories':['A','B'],'series':[{'name':'Revenue','values':[3,4]}],'unit':'USD bn'},{'kind':'table','x':7,'y':2,'w':5,'h':2,'rows':[['Metric','Value'],['A','3']]}])\njson.dump({'slides':slides},open('artifacts/deck.json','w'))\nprint('created',len(slides))`;
-  await call('save_program', { name: 'page_builder', description: 'Parameterised diagnostic page generator', body });
+  await call('write', { path: 'drafts/page_builder.py', content: body });
+  await assert.rejects(() => call('save_program', { name: 'page_builder', description: 'ambiguous', body, source_path: 'drafts/page_builder.py' }), /exactly one/);
+  await assert.rejects(() => call('save_program', { name: 'page_builder', description: 'missing' }), /exactly one/);
+  const failedPayload = { messages: [{ role: 'system', content: 'You own both the presentation' }] };
+  hooks.get('before_provider_request')({ payload: failedPayload });
+  assert.match(failedPayload.messages[0].content, /Latest unresolved program publication failure/);
+  const failedTools = readFileSync(join(root, 'harness/tools.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(failedTools.some(row => row.name === 'save_program' && row.isError && /exactly one/.test(row.error)));
+  await assert.rejects(() => call('save_program', { name: 'page_builder', description: 'outside', source_path: '../outside.py' }));
+  await call('save_program', { name: 'page_builder', description: 'Parameterised diagnostic page generator', source_path: 'drafts/page_builder.py' });
+  const recoveredPayload = { messages: [{ role: 'system', content: 'You own both the presentation' }] };
+  hooks.get('before_provider_request')({ payload: recoveredPayload });
+  assert.doesNotMatch(recoveredPayload.messages[0].content, /Latest unresolved program publication failure/);
   await call('self_component', { kind: 'subagent', name: 'visual_review', description: 'Read-only slide visual assessment', content: 'Inspect the requested rendered slide.', tools: [] });
   const first = await call('run_program', { name: 'page_builder', args: { title: 'Initial' } });
   assert.equal(first.isError, false);
@@ -132,6 +145,8 @@ test('agent-owned workflow, scoped workers, PowerPoint export and source-checked
   assert.match(readFileSync(manifest, 'utf8'), /Historical/);
   await call('edit_program', { name: 'page_builder', old_text: 'print("updated method")', new_text: 'print("patched method")', expected_version: 2 });
   await call('run_program', { name: 'page_builder', args: { title: 'Updated' } });
+  await assert.rejects(() => call('retire_program', { name: 'page_builder', expected_version: 2 }), /expected v2, current version is v3/);
+  assert.match(readFileSync(manifest, 'utf8'), /Updated/);
   const firstRender = await call('office', { op: 'render' });
   assert.equal(firstRender.terminate, false);
   const receipt = JSON.parse(readFileSync(join(root, 'exports/v001/receipt.json'), 'utf8'));
@@ -235,4 +250,21 @@ test('agent-owned workflow, scoped workers, PowerPoint export and source-checked
   assert.equal(run.isError, false);
   assert.match(readFileSync(join(fresh, 'workspace/artifacts/deck.json'), 'utf8'), /Fresh data/);
   console.log('Actual PowerPoint test artifacts:', root);
+});
+
+test('a representative partial HTML draft renders to a real PowerPoint image', { timeout: 120000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-partial-render-'));
+  process.env.PPT_DEMO_ROOT = root;
+  process.env.PPT_DEMO_DEADLINE = String(Date.now()+120000);
+  mkdirSync(join(root, 'workspace/data'), { recursive: true });
+  writeFileSync(join(root, 'workspace/data/instructions.md'), 'The final brief requires 15 slides.');
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn), setActiveTools() {}, getActiveTools: () => [] } as any);
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  await tools.get('write').execute('partial', { path: 'artifacts/partial.html', content: '<!doctype html><style>[data-slide]{width:1280px;height:720px;display:flex;align-items:center;justify-content:center;font:48px sans-serif}</style><div data-slide>Representative page</div>' }, undefined, undefined, {});
+  const rendered = await tools.get('office').execute('partial', { op: 'render', source_path: 'artifacts/partial.html' }, undefined, undefined, {});
+  const receipt = JSON.parse(rendered.content[0].text);
+  assert.equal(receipt.slides, 1);
+  assert.equal(receipt.renderer, 'Microsoft Edge HTML + Microsoft PowerPoint 16 COM');
+  assert.ok(existsSync(join(root, 'workspace/results/renders/v001/slide-01.png')));
 });

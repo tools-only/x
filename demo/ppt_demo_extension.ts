@@ -61,18 +61,26 @@ export default function pptDemo(pi: ExtensionAPI) {
   const runtime = new NativeRuntime({ pi, workspace, binder, state: snapshot, level: () => 0,
     actionCount: () => requests, decision: () => requests, hookTurn: () => false, immediateSubagent: true,
     consultReasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
-    modelResult: async create => {
+    modelResult: async (create, kind = 'consult') => {
       if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
         writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, reason: 'consult budget boundary' }));
         process.exit(0);
       }
       spent += reserve;
-      log('provider-requests.jsonl', { request: ++requests, kind: 'consult', estimated_usd_so_far: spent });
-      const reply = await create().result();
+      const request = ++requests;
+      log('provider-requests.jsonl', { request, kind, estimated_usd_so_far: spent });
+      let reply;
+      try { reply = await create().result(); reply.autoresearchRequestId = request; }
+      catch (error) {
+        log('model-usage.jsonl', { request, kind, usage: null, conservative_usd: spent,
+          usage_status: 'unknown_reserved', error: String(error).slice(0, 1200) });
+        if (error && typeof error === 'object') (error as any).providerRequestId = request;
+        throw error;
+      }
       const u = reply.usage ?? {};
       const known = Number.isFinite(u.input) && Number.isFinite(u.output) && u.input + u.output > 0;
       if (known) spent += ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6-reserve;
-      log('model-usage.jsonl', { request: requests, kind: 'consult', usage: known ? u : null, conservative_usd: spent,
+      log('model-usage.jsonl', { request, kind, usage: known ? u : null, conservative_usd: spent,
         usage_status: known ? 'reported' : 'unknown_reserved', stopReason: reply.stopReason });
       return reply;
     },
@@ -152,7 +160,20 @@ export default function pptDemo(pi: ExtensionAPI) {
   };
   const register = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name,
     description, parameters, execute: async (_id: string, args: any, signal: any, _update: any, ctx: any) => {
-      const result = await fn(args, signal, ctx);
+      let result;
+      try {
+        result = await fn(args, signal, ctx);
+        if (['save_program', 'retire_program'].includes(name) && state.failedProgramSave?.name === args.name) {
+          delete state.failedProgramSave; persist();
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (name === 'save_program') {
+          state.failedProgramSave = { name: args.name, error: message.slice(0, 400) }; persist();
+        }
+        log('tools.jsonl', { name, args: name === 'save_program' ? { ...args, body: '(rejected source is in session)' } : args, isError: true, error: message });
+        throw error;
+      }
       log('tools.jsonl', { name, args: name === 'save_program' ? { ...args, body: '(see versioned source)' } : args,
         result: result?.content?.filter((x: any) => x.type === 'text'), isError: result?.isError ?? false });
       return result;
@@ -164,12 +185,31 @@ export default function pptDemo(pi: ExtensionAPI) {
     return tool.execute(id, args, signal, update, ctx);
   } });
   workspace.onWrite = async path => { const result = await binder.save(path, 0, { by: 'agent', decision: requests }); binder.boundary(); return result; };
-  register('save_program', 'Create/revise a reusable Python program. Same branch API and fresh WASI execution. Complete source; state, args, env injected. Use open/json for workspace text. No host imports.',
-    Type.Object({ name: Type.String(), description: Type.String(), tags: Type.Optional(Type.Array(Type.String())), body: Type.String(), expected_version: Type.Optional(Type.Integer()) }),
-    async (a: any) => text(await runtime.saveProgram(a.name, a.body, a.description, a.tags ?? [], a.expected_version)));
+  register('save_program', 'Create/revise a reusable Python program. Supply exactly one of body or source_path. For long source, write/edit a draft file in small pieces, then publish its source_path without repeating the code. Fresh WASI; state, args, env injected. Use open/json for workspace text. No host imports.',
+    Type.Object({ name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), description: Type.String({ minLength: 1, maxLength: 120, pattern: '^[^\\r\\n]+$' }), tags: Type.Optional(Type.Array(Type.String())), body: Type.Optional(Type.String()), source_path: Type.Optional(Type.String()), expected_version: Type.Optional(Type.Integer()) }),
+    async (a: any) => {
+      if ((a.body === undefined) === (a.source_path === undefined)) throw Error('Supply exactly one of body or source_path.');
+      const body = a.source_path === undefined ? a.body : workspace.read(a.source_path);
+      return text(await runtime.saveProgram(a.name, body, a.description, a.tags ?? [], a.expected_version));
+    });
   register('run_program', 'Run an Agent-authored tool or workflow against the current task state. Omit version for active. Python source may write artifacts/presentation.html (preferred) or artifacts/deck.json; env.agent(...) runs a declared task-local agent and env.render(...) renders the current presentation.',
     Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())), version: Type.Optional(Type.Integer({ minimum: 1 })) }),
     (a: any, signal: any, ctx: any) => runtime.runProgram(a.name, a.args ?? {}, signal, a.version, ctx));
+  register('retire_program', 'Retire an active named program from future use while keeping its source under tools_off/ and its version history. Supply the current version.',
+    Type.Object({ name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), expected_version: Type.Integer({ minimum: 1 }) }),
+    async (a: any) => {
+      const path = 'tools/' + a.name + '.py';
+      const component = binder.active().find(c => c.path === path && c.program);
+      if (!component) throw Error('program ' + a.name + ': no active named program');
+      if (component.version !== a.expected_version) throw Error('program ' + a.name + ': expected v' + a.expected_version + ', current version is v' + component.version);
+      const destination = 'tools_off/' + a.name + '.py';
+      if (existsSync(workspace.path(destination))) throw Error('program ' + a.name + ': retired source already exists at ' + destination);
+      workspace.mutate({ op: 'move', path, destination });
+      await binder.scan(0);
+      binder.boundary();
+      runtime.register();
+      return text({ retired: a.name, version: component.version, source: destination });
+    });
   register('edit_program', 'Revise one exact text span in an active program while preserving its version history. Use read_component first.',
     Type.Object({ name: Type.String(), old_text: Type.String(), new_text: Type.String(), expected_version: Type.Integer({ minimum: 1 }) }),
     async (a: any) => {
@@ -209,6 +249,30 @@ export default function pptDemo(pi: ExtensionAPI) {
         if (!existsSync(workspace.path(ref))) throw Error(`run_agent uses missing file ${ref}`);
       }
       return runtime.runAgent({ ...a, uses }, signal, ctx, a.independent ? '' : () => `${basePrompt}\n${activePromptText()}`);
+    });
+  register('explore', 'Run up to four independent, read-only candidate explorations in fresh contexts using your instructions and explicit refs. Same active model and task budget; candidates run sequentially. Returns each raw answer or failure separately. No candidate can use tools, change files, synthesize others, publish components or choose a winner.',
+    Type.Object({ candidates: Type.Array(Type.Object({ instruction: Type.String({ minLength: 1, maxLength: 4000 }), refs: Type.Optional(Type.Array(Type.String({ maxLength: 240 }), { maxItems: 8 })) }), { minItems: 1, maxItems: 4 }) }),
+    async (a: any, signal: any, ctx: any) => {
+      if (!ctx) throw Error('explore needs the active Pi request context');
+      const results = [];
+      if (a.candidates.some((candidate: any) => (candidate.refs ?? []).length > 8)) throw Error('Each candidate may use at most 8 refs.');
+      for (let index = 0; index < a.candidates.length; index++) {
+        const candidate = a.candidates[index];
+        const refs = [...new Set(candidate.refs ?? [])];
+        const requestBefore = requests;
+        try {
+          const result = await runtime.explore(candidate.instruction, refs, signal, ctx);
+          results.push({ index, instruction: candidate.instruction, ...result });
+          log('explore_runs.jsonl', { index, instruction: candidate.instruction, refs, request: result.provider_request_id,
+            request_observed: requests, status: 'ok', answer_ref: result.answer_ref });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results.push({ index, instruction: candidate.instruction, refs, error: message });
+          log('explore_runs.jsonl', { index, instruction: candidate.instruction, refs, request: (error as any)?.providerRequestId ?? null,
+            request_observed: requests, usage_status: requests > requestBefore ? 'see_model-usage.jsonl' : 'not_started', status: 'error', error: message });
+        }
+      }
+      return text({ candidates: results, selection: 'agent_decides' });
     });
   register('office', 'Render the canonical HTML presentation (preferred; artifacts/presentation.html) or JSON fallback/candidate under artifacts/ through Edge and PowerPoint, inspect rendered pages, or deliver the current source and deck. Each render stores its source and assets. Use look to inspect revisions or recover to copy a revision into a new artifacts/ directory.',
     Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('recover'), Type.Literal('deliver')]), source_path: Type.Optional(Type.String()), destination: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
@@ -270,9 +334,9 @@ export default function pptDemo(pi: ExtensionAPI) {
     });
   pi.on('before_agent_start', async (event: any) => {
     if (!initialized) { await binder.scan(0); binder.boundary(); runtime.register(); initialized = true; }
-    resumed = event.prompt === 'PPT_RESUME';
+    resumed = event.prompt === 'PPT_RESUME' || event.prompt.startsWith('PPT_RESUME\n');
     if (!resumed) { binder.boundary(); persist(); }
-    const selected = ['read', 'write', 'edit', 'ls', 'grep', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'run_agent', 'office'];
+    const selected = ['read', 'write', 'edit', 'ls', 'grep', 'save_program', 'edit_program', 'run_program', 'retire_program', 'list_programs', 'read_component', 'self_component', 'run_agent', 'explore', 'office'];
     selected.push('consult');
     pi.setActiveTools(selected);
     const systemPrompt = `${basePrompt}\n${activePromptText()}`;
@@ -302,7 +366,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     spent += reserve; reserved = reserve;
     const payload = event.payload as any;
     binder.boundary();
-    const prompt = `${basePrompt}\n${activePromptText()}`;
+    const failedSave = state.failedProgramSave;
+    const prompt = `${basePrompt}\n${activePromptText()}${failedSave ? `\nLatest unresolved program publication failure: ${JSON.stringify(failedSave)}. That save did not create or update the program; no successful execution follows from it. You may correct it or continue without that method.` : ''}`;
     if (Array.isArray(payload.system)) {
       const block = payload.system.find((part: any) => typeof part.text === 'string' && part.text.includes('You own both the presentation'));
       if (block) block.text = prompt;

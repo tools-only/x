@@ -1,18 +1,27 @@
 # PPT 在线自我改进：补齐与底座审计
 
-2026-11-04。状态：提示已修改；在线 prompt 接线未通过，停止重复尝试。代码审计不是自主行为证据。
+2026-11-04。状态：实现窄提示 affordance；本地渲染验证通过，真实模型采用与净收益待验证。
 
 ## 问题与命题
 
-用户观察：PPT 生产与 self-harness 沉淀脱节，缺少发现作品不足的反馈条件。目标是在同一任务中由 Agent 自主创造、使用、修改反馈循环；不预设 reviewer、博弈角色、固定阶段或人类运行中介入。
-窄命题：明确构造反馈循环的意图，并让已保存 prompt 在下一次实际模型调用中生效，消除等待新会话的负担。新版未到达 provider 即推翻接线命题；到达也不证明自主采用或净收益。
+- 真实机会/观察：真实 provider 运行 `runs/ppt-qwen-self-improve-20261104-final` 成功交付 15 页。`harness/renders.jsonl` 与 session 显示直到全稿完成才 render；父调用 `look` 查看 1、2、4、15 页后直接交付，没有创建或语义使用 harness 组件。session 的 completion 请求 4 与 5 以 `length` 结束；此前一次 `save_program` 未执行，不能据此断言是采用循环的失败证据。用户报告此前无上限续跑同会话；中断请求用量未知。以上是轨迹观察。质量不确定性未识别或未能设计可辨别反馈是待测解释，非已证根因。
+- 窄命题：当尚未完成的 HTML 草稿已有代表性页面时，提示明示 1–30 页可直接 render，可能减少 Agent 首次观察实际呈现并按证据试验的寻找成本；随后 Agent 可依据受众理解相关的不确定性，自主选择试验对象与方法，也可调整检查方法本身。若普通真实运行仍只在完成后 render，或早期 render 后没有改变后续决策/产物，这一行为命题不受支持。实现/fixture 通过不能证明命题。
+- 减少的负担：识别完整交付流程是否必须结束后才能 render 的搜索与顾虑；复用既有 office/render/look、`env.render()` 与 agent 图像 refs。一个短常驻提示替换原来较长的“主动识别不确定性、如何循环”的指示，净 token 影响未计量。
+- 合理不使用/推翻条件：任务很短、无实质性理解不确定性、部分结果不能代表全稿、观察成本超过潜在收益、预算/剩余时间不足、或证据无法区分方案时，不试验属合理；多次在可判别适用情境下没有早期观察或后续语义行动，反驳降低成本的主张。
+- 范围/非目标：仅更改 PPT 基础提示及本记录。不改原任务/素材/受众，不增加阶段、角色、worker、manager、语义门禁、必保存组件或强制渲染，不改 runtime。真实模型任务留给用户之后统一检查，不启动付费运行。
 
 ## 设计与成本
 
-复用现有 Pi context_with_system、Binder、五类组件和任务内工具。新增一段短常驻意图，不新增 worker、门禁、必填记录或强制循环。Agent 决定机会、投入、方法及停止；Runtime 负责版本装配；实际产物及使用结果供 Agent 判断是否继续。
-本次修改限 PPT 提示和刷新钩子，保留已有未提交改动。任务目标、材料事实、预算及权限不由自创 loop 改写。prompt 刷新可能减少前缀缓存复用，成本未测。
+- 选择：删除重复的主动循环指示，并在同一处说明可对部分 HTML 草稿直接 render；复用已存在的工具和证据交接，无新增接口/提示 token 总量意图为收缩，不新增 runtime 决策。父不需要先选 reviewer 或保存程序；模型仍自主决定是否观察、如何验证和何时停。
+- 生命周期：Agent 决定是否存在影响受众理解的不确定点；可用当前草稿、brief/material 和实际图像作为证据，直接改作品或检查法并立即使用；成功取决于后续语义决策，不以保存或调用本身计算。无机会或不合比例时可不投入；负面/含糊证据可停止或撤回其候选改动。当前 render revision/source snapshot 已提供可恢复的候选源。
+- 成本：没有增加模型管理轮、字段、组件维护义务或角色上下文。可能成本是早期 render 的渲染耗时/图像输入与少量新提示；当前日志未量化首次代表性观察的父子总成本。session 没有建立子 agent 或方法组件，仍可能是单父模型主路径；这不是必然要求加入 worker 的理由。
+- 边界：原任务简报、事实、标签、单位、期间和引文仍为证据锚点；现有预算、deadline、revision 与交付新鲜度校验不变。部分草稿 render 可达范围已由 `ppt_demo_extension.ts` 和 `ppt_demo_artifact.py` 确认。
 
 ## 运行前实验协议与实际结果
+
+- 本次实际实现评估只到功能/接线层，不运行真实 provider。真实自主采用试验应使用普通 PPT 任务、无强制首轮 render/角色/组件要求；记录适用机会及合理不使用，检查 render 图像具体揭示了什么、子 Agent 或父 Agent 后续如何使用其语义结果、后续决策/幻灯片是否因此改变，并审阅未行动、放弃与负收益样本。
+- 主要变量为短提示中“partial draft 可 render + 自主验证/改法选择” affordance；比较器是同 provider/model/task 类型的既有提示运行或后续对照。单例只作探索，不证实效果。指标同时包括理解与事实准确性证据、可审阅的后续行动归因，以及父子总请求/输入输出/图像 tokens/渲染时间/管理往返。可接受结果包括合理不使用；若投入只增加成本、观察内容不影响下一决策、或格式更早渲染导致质量/正确性退化，则不支持净收益。中断请求用量未知须保留为未知。
+- “语义使用”必须由观察所得的可核对结论及后续文字、版式、事实取舍、查证方案或明确停止决策之间的联系体现；读取/附图/运行/保存/调用次数/成功状态均不算。
 
 使用本地真实 Pi CLI + PPT extension + deterministic scripted provider；无付费网络请求。单样本最多四个 provider 回合、120 秒：创建 prompt → 下一轮核查 → 替换并核查旧版消失 → 停用并核查消失。不渲染、不交付 PPT，不声称完整生产验收。实际两次均在第二轮旧 prompt 检查失败后结束。
 新增 tests/ppt_prompt_refresh_provider.ts 为诊断 provider。runs/ppt-online-refresh-20261104 与 runs/ppt-online-refresh-20261104-b 为证据，CLI 输出为 runs-ppt-refresh-output.jsonl 和 runs-ppt-refresh-output-b.jsonl。
@@ -76,3 +85,20 @@ PPT 测试实际 PowerPoint + mock provider 2/2 通过，子任务真实执行 o
 
 允许已获 run_agent 的子任务调用已保存角色；被调用角色的工具、读取材料、写入范围必须包含于调用者当前初始授权范围。测试覆盖子任务获得证据、结果返还与拒绝超出父权限的角色。运行中角色正文在下一模型请求刷新，已声明工具在每次调用时使用当前活动版本；角色撤销的工具不能再调用。角色新增工具及权限范围调整仍需重启该子任务，尚未实现动态能力重装。mock provider 定向测试通过，不代表真实模型自主采用或净收益。
 进程中断后的 workflow 自动续接仍未实现，不将回放机制称作持久恢复。
+
+## 2026-11-04 本次提示 affordance 与局部验证
+
+- 改动：`demo/prompts/ppt_demo_system.md` 以短段落替换“actively identify uncertainties”及较长循环描述，说明部分 1–30 页 HTML 可以先 render；Agent 可对影响 audience understanding 的不确定点选择小检查，并可选择改作品、检查法、两者或不改。仍由 Agent 决定是否开始、何时开始、证据和停止；brief/material 是锚点，组件保存可选。无 runtime、schema、工具权限或角色变化。
+- 测试：`tests/ppt_demo.test.ts` 新增 1 页、明显未达最终 15 页简报要求的 HTML 部分草稿测试。真实 Windows Edge HTML 渲染和 Microsoft PowerPoint 16 COM 导出成功，回执 `slides=1`，`results/renders/v001/slide-01.png` 实际存在；测试临时目录由测试打印。该测试提供给定输入的本地真实渲染功能证据。
+- 总检查：`node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts`，6/6 通过。既有测试的一些 Pi/provider 请求使用 stub/mock；与上面的实际 PowerPoint 渲染合起来也没有走 `src/autoresearch_pi/ppt_demo.py` 启动的真实 Pi parent loop 或真实 provider。未运行付费任务。
+- 原轨迹的可核查语义使用：须记录可辨别的受众理解假设/疑问、实际看的页面证据、证据具体改变（或未改变）什么后续决定，以及由此产生的文本/结构/查证/停止变化；单纯 render/look、PNG 存在、子任务读取、组件写入/调用、tool status 成功均不满足。失败、中断、reasonable non-use、已试方法被放弃及负收益样本仍需保留；目标运行的中断请求用量未知。
+
+| 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 通过（本地部分草稿渲染） | Windows Edge + Microsoft PowerPoint 16 COM；PPT extension，provider 未参与 | `tests/ppt_demo.test.ts`；证明 1 页候选可渲染并取图，不证明主 runner 全链路 |
+| 全链路可达 | 未验证 | 测试中的 extension 是直接装配；部分 Pi/provider 行为使用 stub/mock | 未跑真实 `ppt_demo.py` → Pi parent → provider → task 的完整链路 |
+| 自主采用 | 未验证 | 真实 Qwen 3.8-27B 运行是旧提示/旧代码样本 | `runs/ppt-qwen-self-improve-20261104-final` 只能描述旧行为，不能判断新提示采用 |
+| 净收益 | 未验证 | 无匹配对照 | 无效果与父子总成本对照；更早 render 也可能增加成本或提供无用反馈 |
+
+- 下一检查：用户后续统一检查真实模型普通任务中是否出现“有适用机会 → Agent 自选部分观察/反馈 → 可核对后续语义行动或合理不使用”的轨迹；若观察或成本没有影响后续决策，或质量/事实准确性退化，则不支持保留该 affordance 的收益主张。对该设计不设置首轮 render、固定 reviewer、组件创建或轮数目标。
+- 延后事项：`docs/deferred-research-todos.md` 中 B/C 的父子反馈与总成本、D 的跨上下文认知连续性仍开放；它们关联图像证据如何进入后续语义决策及中断/续跑时保留什么，本次不扩展处理。

@@ -150,13 +150,14 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         protocol["previous_source_hashes"] = previous_protocol.get("source_hashes", {})
     (root / "protocol.json").write_text(json.dumps(protocol, indent=2), encoding="utf-8")
     summary = {"complete": False, "stop": "running", "batches": 0, "provider": protocol["provider"], "model": protocol["model"]}
+    (root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     def record(event):
         # Preserve complete semantic events without repeating streaming cumulative content.
         if event.get("type") != "message_update":
             with (root / "pi-events.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, ensure_ascii=False)+"\n")
     try:
-        with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=90, deadline=deadline, event_sink=record) as kernel:
+        with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=300 if unbounded else 90, deadline=deadline, event_sink=record) as kernel:
             transport = continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else (
                 "Create the presentation described in data/instructions.md. Use artifacts/presentation.html as the required canonical authoring source, with exactly one data-slide element per slide and 16:9 sizing. Use only the supplied facts and preserve their figures, units, periods, accounting labels, caveats and slide-level source citations. The deliverable includes the HTML source, its local assets, and a PowerPoint export. You choose how to organize, explore, assess and revise the work. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
                 if html_first else
@@ -177,7 +178,14 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                     break
                 if latest.get("stopReason") in ("error", "aborted"):
                     raise RuntimeError(latest.get("errorMessage", latest.get("stopReason")))
-                transport = "PPT_RESUME" if latest.get("stopReason") == "length" else "PPT_NEXT"
+                transport = (
+                    "PPT_RESUME\nThe previous response reached its output token limit. "
+                    "An incomplete tool call was not executed. Continue from actual saved files and tool receipts, "
+                    "not from intended writes. Make the next step small enough to complete: "
+                    "write or edit a bounded piece, or publish an already written program by source_path. "
+                    "Do not regenerate the whole presentation or repeat a long plan."
+                    if latest.get("stopReason") == "length" else "PPT_NEXT"
+                )
                 (root / "summary.json").write_text(json.dumps(summary, indent=2))
             else:
                 summary["stop"] = "time_budget"
