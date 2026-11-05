@@ -39,6 +39,12 @@ test('B: parent Python save records creation separately from a later component c
       replay.seedPython([{ kind: 'save', path: 'tools/answer.py', version: 1, by: 'agent', n: 0, ok: true },
         { kind: 'tool', path: 'tools/answer.py', version: 1, readonly: true, ok: false }]);
       assert.match(replay.selfFeedbackText(), /answer v1: 1 calls OK, 0 failed/, 'unchanged saves and readonly calls retain the counts');
+      await runtime.saveTool('answer', 'def run(args, env):\n    return "v2"');
+      binder.boundary();
+      replay.seedPython(logs.filter(row => row.file === 'component_runs.jsonl'));
+      assert.match(replay.selfFeedbackText(), /answer v2: not called yet/);
+      replay.seedPython([{ kind: 'tool', path: 'tools/answer.py', version: 2, executed_version: 1, readonly: false, ok: false }]);
+      assert.match(replay.selfFeedbackText(), /answer v2: not called yet/, 'historical v1 calls do not count as v2 feedback');
     } finally { replay.close(); }
   } finally { runtime.close(); }
 });

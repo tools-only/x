@@ -246,6 +246,10 @@ def _isfile(path):
 
 class _NeedAct(BaseException):
     pass
+class _NeedAgent(BaseException):
+    pass
+class _NeedRender(BaseException):
+    pass
 class ActStopped(Exception):
     """The runtime stopped acting for this call (level change, game end, the action limit); the actions taken stand."""
 
@@ -264,6 +268,8 @@ class _Env:
         self.artifacts = _state.get('artifacts') or {}
         self.memory = {'facts': _state.get('memory'), 'hypotheses': _state.get('hypotheses'), 'strategies': _state.get('strategies')}
         self.acted = 0
+        self.agents_used = 0
+        self.renders_used = 0
         self.stopped = None
         self._namespace = _ns
     def __getitem__(self, key):
@@ -272,6 +278,34 @@ class _Env:
         return self.state.get(key, default)
     def frame(self, n):
         return self.history.grid(n)
+    def agent(self, agent, task, uses=None, refs=None, save_as=None, independent=False):
+        request = {'agent': str(agent), 'task': str(task), 'uses': uses or [], 'refs': refs or []}
+        if save_as is not None: request['save_as'] = str(save_as)
+        if independent: request['independent'] = True
+        if _kernel['live']:
+            result = _rpc({'t': 'agent', 'request': request})
+            if result.get('error'): raise RuntimeError(result['error'])
+            return result.get('value')
+        results = _req.get('agent_results') or []
+        if self.agents_used >= len(results): raise _NeedAgent(request)
+        result = results[self.agents_used]
+        if result['request'] != request: raise RuntimeError('workflow must repeat the same env.agent() calls when resumed')
+        self.agents_used += 1
+        if result.get('error'): raise RuntimeError(result['error'])
+        return result.get('value')
+    def render(self, source_path=None):
+        request = {'source_path': source_path}
+        if _kernel['live']:
+            result = _rpc({'t': 'render', 'request': request})
+            if result.get('error'): raise RuntimeError(result['error'])
+            return result.get('value')
+        results = _req.get('render_results') or []
+        if self.renders_used >= len(results): raise _NeedRender(request)
+        result = results[self.renders_used]
+        if result['request'] != request: raise RuntimeError('workflow must repeat the same env.render() calls when resumed')
+        self.renders_used += 1
+        if result.get('error'): raise RuntimeError(result['error'])
+        return result.get('value')
     def act(self, action, x=None, y=None, predict=None):
         if isinstance(action, (list, tuple)):
             return self._act_list(action)
@@ -901,7 +935,7 @@ def _cell(req):
                         result = {'ok': True, 'value': json.loads(_encoded)}
                     else:
                         result = {'ok': True, 'value': _exec(_req)}
-                except (_NeedFile, _NeedAct):
+                except (_NeedFile, _NeedAct, _NeedAgent, _NeedRender):
                     raise
                 except ActStopped as stopped:
                     result = {'ok': True, 'value': {'stopped': str(stopped)}}
@@ -935,6 +969,14 @@ def _cell(req):
         return {'ok': False, 'error': 'workspace file requested', 'need_file': str(error)}
     except _NeedAct as error:
         return {'ok': False, 'error': 'action requested', 'need_act': error.args[0]}
+    except _NeedAgent as error:
+        result = {'ok': False, 'error': 'agent requested', 'need_agent': error.args[0]}
+        if _ops: result['ops'] = _ops
+        return result
+    except _NeedRender as error:
+        result = {'ok': False, 'error': 'render requested', 'need_render': error.args[0]}
+        if _ops: result['ops'] = _ops
+        return result
     except BaseException as error:
         return {'ok': False, 'error': type(error).__name__ + ': ' + str(error),
                 'where': ('line %s' % error.lineno) if isinstance(error, SyntaxError) else _where(error, _req.get('source') or _req.get('code') or '')}
@@ -980,7 +1022,7 @@ export type SessionReport = {
   over?: { chars: number; cap: number; raw_bytes: number; largest: Array<[string, number]> };
   error?: string; load_error?: string; failed_defs?: Array<[string, string]>; gone?: string[]; gone_refs?: string[];
 };
-export type NativeResult = GuestResult & { need_file?: string; need_act?: ActCall; session?: SessionReport;
+export type NativeResult = GuestResult & { need_file?: string; need_act?: ActCall; need_agent?: Record<string, unknown>; need_render?: Record<string, unknown>; session?: SessionReport;
   ops?: Array<{ op: 'write' | 'move' | 'delete' | 'restore'; path: string; content?: string; destination?: string; version?: number }
     | { op: 'memory'; args: unknown; path?: undefined; destination?: undefined }> };
 export async function executeNative(input: Record<string, unknown>, signal?: AbortSignal, pool?: TaskPythonPool,

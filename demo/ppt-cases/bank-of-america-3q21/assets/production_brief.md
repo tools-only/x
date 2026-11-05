@@ -1,3 +1,3 @@
-Create an editable 15-slide PowerPoint presentation for a business audience that explains Bank of America's third-quarter 2021 earnings to readers who are not finance specialists.
+Create an 15-slide HTML presentation with editable source and a PowerPoint export for a business audience that explains Bank of America's third-quarter 2021 earnings to readers who are not finance specialists.
 
-Use only `material.txt` for facts. Preserve the source's figures, units, periods, accounting labels, and caveats. Cite the relevant earnings-release section on slides containing sourced figures. The final deck must have exactly 15 slides and use editable PowerPoint text, shapes, charts, and tables where appropriate.
+Use only `material.txt` for facts. Preserve the source's figures, units, periods, accounting labels, and caveats. Cite the relevant earnings-release section on slides containing sourced figures. The final deck must have exactly 15 slides and communicate clearly through content selection, narrative, typography, layout, visual hierarchy and a coherent visual style. Choose visual media and methods that serve the audience.

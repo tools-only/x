@@ -1,7 +1,8 @@
-"""Native editable PPTX objects and actual PowerPoint rendering for the PPT demo."""
+"""Render HTML-first or JSON-fallback presentation sources to PowerPoint."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -15,22 +16,72 @@ from pptx.util import Inches, Pt
 
 
 def render(root: Path, manifest: Path, revision: int) -> dict:
-    spec = json.loads(manifest.read_text(encoding="utf-8"))
-    slides = spec["slides"]
+    artifacts = root / "workspace" / "artifacts"
+    digest = hashlib.sha256()
+    for path in sorted(p for p in artifacts.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(artifacts).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    source_hash = digest.hexdigest()
+    source_bytes = manifest.read_bytes()
+    html_source = manifest.suffix.lower() in (".html", ".htm")
+    browser_warnings = []
+    out = root / "exports" / f"v{revision:03d}"
+    out.mkdir(parents=True, exist_ok=False)
+    if html_source:
+        from playwright.sync_api import sync_playwright
+        rendered_slides = out / "html-slides"
+        rendered_slides.mkdir()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel="msedge", headless=True)
+            page = browser.new_page(viewport={"width": 1600, "height": 900}, device_scale_factor=1,
+                                    java_script_enabled=False)
+            page.route("https://**/*", lambda route: route.abort())
+            page.route("http://**/*", lambda route: route.abort())
+            page.goto(manifest.resolve().as_uri(), wait_until="load", timeout=60000)
+            elements = page.locator("[data-slide]")
+            slide_count = elements.count()
+            if not 1 <= slide_count <= 30:
+                browser.close()
+                raise ValueError("HTML must contain 1..30 elements marked data-slide")
+            slides = []
+            for index in range(slide_count):
+                element = elements.nth(index)
+                box = element.bounding_box()
+                if not box or box["width"] <= 0 or box["height"] <= 0:
+                    browser.close()
+                    raise ValueError(f"HTML slide {index + 1} has no visible size")
+                ratio = box["width"] / box["height"]
+                if abs(ratio - 16 / 9) > 0.02:
+                    browser_warnings.append({"page": index + 1, "issue": "slide_aspect_ratio", "actual": ratio, "expected": "16:9"})
+                overflow = element.evaluate("el => ({width: el.scrollWidth > el.clientWidth + 1, height: el.scrollHeight > el.clientHeight + 1})")
+                if overflow["width"] or overflow["height"]:
+                    browser_warnings.append({"page": index + 1, "issue": "content_overflow", **overflow})
+                image_path = rendered_slides / f"slide-{index + 1:02d}.png"
+                element.screenshot(path=str(image_path), animations="disabled", timeout=30000)
+                slides.append({"elements": [{"kind": "rendered_image", "path": str(image_path)}]})
+            browser.close()
+        spec = {"slides": slides, "width": 13.333333, "height": 7.5, "source_format": "html"}
+    else:
+        spec = json.loads(source_bytes)
+        slides = spec["slides"]
     if not isinstance(slides, list) or not 1 <= len(slides) <= 30:
         raise ValueError("slides must contain 1..30 pages")
     width, height = spec.get("width", 13.333333), spec.get("height", 7.5)
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(width), Inches(height)
-    out = root / "exports" / f"v{revision:03d}"
-    out.mkdir(parents=True, exist_ok=False)
-    warnings, counts = [], {"text": 0, "rect": 0, "line": 0, "shape": 0, "chart": 0, "table": 0, "image": 0}
+    warnings, counts = browser_warnings, {"text": 0, "rect": 0, "line": 0, "shape": 0, "chart": 0, "table": 0, "image": 0, "rendered_image": 0}
     for number, page in enumerate(slides, 1):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = RGBColor.from_string(page.get("background", "FFFFFF").lstrip("#"))
         for index, el in enumerate(page["elements"]):
             kind = el["kind"]
+            if kind == "rendered_image":
+                slide.shapes.add_picture(el["path"], 0, 0, prs.slide_width, prs.slide_height)
+                counts[kind] += 1
+                continue
             if kind not in counts:
                 raise ValueError(f"unsupported element kind: {kind}")
             x, y, w, h = [float(el[k]) for k in ("x", "y", "w", "h")]
@@ -198,7 +249,9 @@ def render(root: Path, manifest: Path, revision: int) -> dict:
         draw.text(((i % columns)*thumb_w+6, (i//columns)*(thumb_h+24)+thumb_h+4), str(i+1), fill="black")
     canvas.save(out / "contact-sheet.png")
     result = {"revision": revision, "slides": len(slides), "native_objects": counts, "warnings": warnings,
-              "renderer": "Microsoft PowerPoint 16 COM", "output": str(out), "source": spec}
+              "renderer": "Microsoft Edge HTML + Microsoft PowerPoint 16 COM" if html_source else "Microsoft PowerPoint 16 COM",
+              "source_format": "html" if html_source else "json", "source_sha256": source_hash,
+              "output": str(out), "source": spec}
     (out / "receipt.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return {k: v for k, v in result.items() if k != "source"}
 

@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean;
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; write_scope?: string[]; view?: boolean; predictor?: boolean; guard?: boolean;
   mount?: Array<'decision' | 'action' | 'feedback'>; program?: boolean; tags?: string[] };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 type Entry = { path: string; version: number; hash: string; level: number; kind?: string; layer?: string; by?: string; decision?: number; error?: string; retired?: boolean; good?: Component };
@@ -40,10 +40,14 @@ export function markdownSpec(path: string, source: string): ComponentSpec {
   if (kind === 'prompt' && ![true, false].includes(header.active)) throw Error('prompt active must be true or false');
   if ((kind === 'subagent' || kind === 'skill') && !String(header.description ?? '').trim()) throw Error('description is required');
   if (kind === 'skill' && header.name !== name) throw Error('skill name must match its directory');
-  if (kind === 'subagent' && (!Array.isArray(header.tools) || header.tools.some((t: string) => ['arc_action', 'consult', 'write', 'edit', 'memory', 'refine'].includes(t))))
-    throw Error('subagent tools must be read, python or named tools; subagents never act');
+  if (kind === 'subagent' && (!Array.isArray(header.tools) || header.tools.some((t: string) => !['read', 'python', 'write', 'edit'].includes(t) && !/^[a-z][a-z0-9_]{0,40}$/.test(t)) || header.tools.some((t: string) => ['arc_action', 'consult', 'memory', 'refine'].includes(t))))
+    throw Error('subagent tools must be read, python, write, edit or named non-delivery tools; subagents never act or deliver');
+  if (kind === 'subagent' && header.write_scope !== undefined && (!Array.isArray(header.write_scope) || header.write_scope.some((p: unknown) => typeof p !== 'string' || !p.trim())))
+    throw Error('subagent write_scope must be a list of workspace paths or directories');
+  if (kind === 'subagent' && (header.write_scope ?? []).some((p: string) => /^\/?delivery(?:\/|$)/i.test(p.replace(/\\/g, '/'))))
+    throw Error('subagent write_scope cannot include delivery/');
   return { kind, name, description: String(header.description ?? match[2].split(/\r?\n/).find(s => s.trim()) ?? '').slice(0, 120),
-    enabled: kind !== 'prompt' || header.active === true, body: match[2], tools: header.tools, refs: header.refs };
+    enabled: kind !== 'prompt' || header.active === true, body: match[2], tools: header.tools, refs: header.refs, write_scope: header.write_scope };
 }
 
 export class Binder {
@@ -134,7 +138,7 @@ export class Binder {
       || (entry.good?.enabled ? `loaded · active from ${from}` : `off · not active from ${from}`));
   }
   async scan(level: number) {
-    const paths = new Set(this.workspace.files().filter(p => !/^(data|results)(\/|$)/.test(p)));
+    const paths = new Set(this.workspace.files().filter(p => !/^(data|results)(\/|$)/.test(p) && !this.workspace.isBinary(p)));
     for (const [path, entry] of this.entries) if (!paths.has(path) && !entry.retired)
       this.record({ ...entry, retired: true });
     for (const path of paths) await this.save(path, level);
