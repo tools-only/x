@@ -23,19 +23,21 @@ export default function(pi: any) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 2048 }],
     streamSimple: scriptedProviderTransport((model: any, context: any) => {
       const n = request++;
-      assert.ok(n < 4, 'provider request limit exceeded');
+      assert.ok(n < 7, 'provider request limit exceeded');
       let content: any[];
       let stopReason = 'stop';
       let errorMessage: string | undefined;
       if (n === 0) {
         content = [{ type: 'toolCall', id: 'explore-batch', name: 'explore', arguments: { candidates: [
-          { instruction: 'Compare two possible ways to structure the supplied findings.', refs: ['data/material.txt'] },
+          { instruction: 'Compare two possible ways to structure the supplied findings.', refs: ['data/material.txt', ...Array.from({ length: 8 }, (_, i) => `data/extra-${i}.txt`)] },
           { instruction: 'Find a potential omission in the supplied findings.', refs: ['data/material.txt'] },
+          ...Array.from({ length: 3 }, (_, i) => ({ instruction: `Additional candidate ${i}: ` + 'x'.repeat(4100), refs: ['data/material.txt'] })),
         ] } }];
         stopReason = 'toolUse';
       } else if (n === 1) {
         assert.match(texts(context), /Compare two possible ways/);
         assert.match(texts(context), /Revenue was \$30B/);
+        assert.match(texts(context), /EXTRA_MATERIAL_7/);
         assert.match(system(context), /independent read-only candidate/);
         assert.doesNotMatch(system(context), /You own both the presentation/);
         content = [{ type: 'text', text: 'CANDIDATE_ONE_RAW: lead with the revenue trend.' }];
@@ -44,9 +46,15 @@ export default function(pi: any) {
         assert.match(system(context), /independent read-only candidate/);
         content = [{ type: 'text', text: 'candidate provider failure' }];
         stopReason = 'error'; errorMessage = 'scripted candidate failure';
+      } else if (n <= 5) {
+        assert.match(texts(context), new RegExp(`Additional candidate ${n - 3}:`));
+        assert.ok(texts(context).includes('x'.repeat(4100)));
+        assert.doesNotMatch(texts(context), /CANDIDATE_ONE_RAW/);
+        content = [{ type: 'text', text: `ADDITIONAL_RAW_${n - 3}` }];
       } else {
         const prior = texts(context);
         assert.match(prior, /CANDIDATE_ONE_RAW/);
+        assert.match(prior, /ADDITIONAL_RAW_2/);
         assert.match(prior, /explore error: scripted candidate failure/);
         content = [{ type: 'text', text: 'EXPLORE_PARENT_RECEIVED_BOTH_OUTCOMES' }];
       }

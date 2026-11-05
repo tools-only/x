@@ -77,6 +77,7 @@ export const EMPTY_VIEW_STATES = 2;
 type Acted = { lines: string[]; stopped?: string };
 
 export class NativeRuntime {
+  private programRunSerial = 0;
   private registered = new Map<string, string>();
   private viewPool = new TaskPythonPool();
   private pending: Promise<unknown> = Promise.resolve();
@@ -305,17 +306,29 @@ export class NativeRuntime {
     return receipt ?? `${name}: Created`;
   }
   /** Run the active named version on a fresh authoritative state snapshot. ADAPT calls are read-only. */
-  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal, version?: number, ctx?: ExtensionContext) {
+  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal, version?: number, ctx?: ExtensionContext, readonly = false) {
     const component = this.host.binder.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
     if (!component) throw Error(`program ${name}: no active named program`);
     const source = version === undefined ? undefined : this.host.binder.sourceOf(component.path, version);
     if (version !== undefined && source === undefined) throw Error(`program ${name}: version ${version} does not exist`);
-    this.host.log('component_runs.jsonl', { kind: 'program_call', name, path: component.path, version: component.version,
-      requested_version: version, decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task' });
-    const result = await this.call(component, { args }, signal, Boolean(this.host.hookTurn?.()), source, ctx);
+    const executedVersion = version ?? component.version;
+    const phase = this.host.hookTurn?.() ? 'adapt' : 'task';
+    const readOnlyExecution = readonly || phase === 'adapt';
+    const runId = `program-${Date.now()}-${++this.programRunSerial}`;
+    this.host.log('component_runs.jsonl', { kind: 'program_call', run_id: runId, name, path: component.path,
+      version: component.version, executed_version: executedVersion, requested_version: version, readonly: readOnlyExecution,
+      decision: this.decision(), n: this.host.actionCount(), phase });
+    let result;
+    try {
+      result = await this.call(component, { args }, signal, readOnlyExecution, source, ctx, executedVersion);
+    } catch (error) {
+      result = text(`${name}: ${String(error)}`, true);
+    }
+    result.content.push({ type: 'text', text: `METHOD RUN ${runId}: ${name}@v${executedVersion}; ${readOnlyExecution ? 'read-only' : 'writable'}; current workspace state.` });
     const output = (result?.content ?? []).filter((part: any) => part?.type === 'text').map((part: any) => String(part.text ?? '')).join('\n');
-    this.host.log('component_runs.jsonl', { kind: 'program_result', name, path: component.path, version: component.version,
-      decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task', ok: !result?.isError,
+    this.host.log('component_runs.jsonl', { kind: 'program_result', run_id: runId, name, path: component.path,
+      version: component.version, executed_version: executedVersion, requested_version: version, readonly: readOnlyExecution,
+      decision: this.decision(), n: this.host.actionCount(), phase, ok: !result?.isError,
       output_excerpt: output.slice(0, 600) });
     return result;
   }
@@ -368,7 +381,7 @@ export class NativeRuntime {
       }
       if (r.kind === 'tool' && !r.readonly) {
         const saved = this.savedFeedback.get(r.path);
-        if (saved?.version === r.version) saved[r.ok ? 'ok' : 'failed']++;
+        if (saved?.version === (r.executed_version ?? r.version)) saved[r.ok ? 'ok' : 'failed']++;
       }
       if (r?.kind === 'window_check' && Number.isInteger(r.level) && Number.isInteger(r.n))
         this.windowCheckHinted.add(`${r.level}:${r.n}`);
@@ -549,6 +562,7 @@ export class NativeRuntime {
           continue;
         }
         if (result.need_agent) {
+          if (!input.allow_writes) throw Error('env.agent is unavailable in a read-only execution');
           if (!this.host.agent) throw Error('env.agent is unavailable in this runtime');
           clearTimeout(timer);
           result = await flushOps(result);
@@ -560,6 +574,7 @@ export class NativeRuntime {
           continue;
         }
         if (result.need_render) {
+          if (!input.allow_writes) throw Error('env.render is unavailable in a read-only execution');
           if (!this.host.render) throw Error('env.render is unavailable in this runtime');
           clearTimeout(timer);
           result = await flushOps(result);
@@ -857,19 +872,22 @@ export class NativeRuntime {
     if (!component) throw Error(`legacy alias ${name}: tool retired or unavailable`);
     return this.call(component, { args }, signal);
   }
-  private async call(c: Component, args: any, signal?: AbortSignal, readonly = false, source?: string, ctx?: ExtensionContext) {
+  private async call(c: Component, args: any, signal?: AbortSignal, readonly = false, source?: string, ctx?: ExtensionContext,
+    executionVersion?: number) {
     const resolved = await this.resolveSessionArgs(args, signal);
     if (!resolved.ok) return text(`${c.name}: ${resolved.error}`, true);
     args = resolved.value;
-    const snap = this.snapshot(); const started = Date.now(); const label = source === undefined ? this.host.binder.label(c.path) : `${c.name} historical`;
+    const snap = this.snapshot(); const started = Date.now(); const label = source === undefined ? this.host.binder.label(c.path) : `${c.name}@v${executionVersion ?? 'historical'}`;
     if (source !== undefined) snap.sources[c.path] = source;
     let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : c.path, ctx);
-    const receipts = result.ok ? await this.applyWrites(result) : [];
+    if (readonly && result.ops?.length) throw Error('read-only execution returned workspace writes; refusing to apply them');
+    const receipts = result.ok && !readonly ? await this.applyWrites(result) : [];
     if (!readonly && this.host.artifacts) result = { ...this.host.artifacts(result, c, this.host.actionCount()), acted: result.acted };
-    this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, path: c.path, decision: this.decision(), readonly, n: this.host.actionCount(), version: c.version,
+    this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, path: c.path, decision: this.decision(), readonly, n: this.host.actionCount(),
+      version: c.version, ...(executionVersion === undefined ? {} : { executed_version: executionVersion }),
       versions: snap.versions, ok: result.ok, ms: Date.now() - started, acted: result.acted?.lines.length ?? 0 });
     const saved = this.savedFeedback.get(c.path);
-    if (!readonly && saved?.version === c.version) saved[result.ok ? 'ok' : 'failed']++;
+    if (!readonly && saved?.version === (executionVersion ?? c.version)) saved[result.ok ? 'ok' : 'failed']++;
     const fallback = this.host.binder.active().filter(x => x.path !== c.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
     const out = this.finish([`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n'), result);
     const feedback = !readonly && this.selfFeedbackText(c.path);

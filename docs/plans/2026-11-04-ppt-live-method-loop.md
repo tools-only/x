@@ -154,3 +154,94 @@ GPT-6 Luna high 完成窄实现、必要定向检查和上述实际 Pi 接线验
 接下来已准备一项用户授权的真实 high-thinking Qwen PPT 普通任务：`runs/ppt-qwen-meta-explore-20261105`，协议在其 `evaluation/meta-protocol.md`。父 Agent 启动/观察；本实现未向该 run 写文件或发起 provider 请求。重点读日志看 Agent 是否自发选择 `explore`，候选是否体现它对工作方法或产物的真实问题，失败/冗余是否保留，父是否根据原结果改了普通方法组件并在后续真实工作使用，结果如何改变作品或停止决定；未调用也记录适用机会与理由。不得以候选数、创建/调用次数、单次答复或自评替代语义收益。父子全部 usage、费用 reserve、总延迟和管理动作纳入成本；真实任务单例仅为自主采用/接线存在性样本，不足以证明净收益，后者仍需相近预算匹配对照。
 
 实现/局部接线保持实验状态。该 scripted 样本支持功能和局部可达，不支持真实模型采用或收益；后续真实运行按证据补结果，不改变本记录的先验门槛，也不因未使用自动强制调用。
+
+## 2026-11-05：历史方法的只读运行与回执
+
+### 失败/机会与窄命题
+
+此前真实 Pi 接线已支持显式调用历史版本，但没有明确的只读选项，可能把检查动作与当前工作区写入混在一起；调用日志的 `version` 只记录 active 版本，无法准确说明实际执行版本。此次补齐安全重跑与版本归属，不新增历史版本调用能力。
+
+窄命题：父 Agent 显式请求某一历史版本并选择只读时，runtime 执行该绑定源码、拒绝工作区写入及 `env.agent`/`env.render`，并将请求版本、实际版本、只读状态、成败和唯一调用回执写入紧邻结果。若受阻调用不返回可读错误、仍产生副作用、日志仍把 active 版本当执行版本，或历史调用污染 active 版本反馈计数，则命题不成立。该接口减少为了检查旧方法而复制发布的步骤；实际质量或成本收益不在此接线验收中。
+
+### 改动与责任
+
+- `run_program` 可选 `readonly`；Pi 注册入口传给 `NativeRuntime.runProgram`。常规 call 仍沿用现有写入流程，适应阶段仍自动只读。只读模式读取当前 workspace 状态，不承诺历史状态快照。
+- `program_call`/`program_result` 与内部 tool 记录均带 `executed_version`；request 版另保留 `requested_version`。每次调用带一个 run ID，成功或失败工具结果均回传一条 METHOD RUN 回执。
+- WASI 已有只读写入拒绝继续负责 workspace 文件边界；本次补齐只读执行中拒绝 `env.agent`/`env.render`。这些拒绝会从执行层抛出，因此 `runProgram` 仅在其 program 调用边界捕获该错误，作为失败工具结果返回并记录，不吞错或自动重试。
+- 历史执行的即时与进程重启后反馈计数都按 `executed_version` 对齐；旧版执行不计入 active 版反馈。
+
+### 有界真实接线验证
+
+首次真实 Pi 测试启动成功，但因失败执行抛出后跳过 `program_result`，六次调用只产出四条结果，测试失败。对具体执行错误路径补充失败回执后重跑；又在运行日志发现该错误路径的回执重复一次，移除重复文本并加入唯一性断言。
+
+最终命令：`$env:PYTHONPATH='src'; python -m pytest tests/test_ppt_live_method_pi.py -q`，通过 1/1，32.08 秒。它通过本地 Pi CLI、真实 PPT extension、Binder、NativeRuntime 与 WASI 启动 11 个 scripted provider turns；不联网、不产生真实 provider 费用。provider-checks.jsonl 为 11/11。最终产物：`C:/Users/qi/AppData/Local/Temp/pytest-of-qi/pytest-3408/test_agent_authored_method_run0/ppt-live-method/`。
+
+实际 `component_runs.jsonl` 有六组配对 call/result，active v1、active v2、历史 v1 readonly，以及三个负例（文件写、env.agent、env.render）。六组 `executed_version` 是 1、2、1、1、1、1；历史请求 active 记录为 version 2、requested/executed version 为 1。六条 output_excerpt 各只有一个 METHOD RUN。写入探针返回 `PermissionError: workspace path is read-only in this execution`；agent/render 分别返回只读不可用错误。`harness/tools.jsonl` 没有产生 agent/render 子调用；测试断言只读写入未创建 `workspace/artifacts/readonly-write.txt`。后续父 turn 接收失败结果后正常退休组件并停用 prompt。该次 scripted fixture 指定了调用顺序，不证明模型自主选择方法或只读策略。
+
+定向回归：`node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts` 通过 6/6，其中包含实际 Windows Edge + PowerPoint 渲染；`node --experimental-transform-types --test --test-concurrency=1 --test-name-pattern='B:' tests/arc_thin_native_runtime.test.ts` 通过 1/1，覆盖 active v2 的重启回放不会把显式 historical v1 失败计入 v2。完整 `arc_thin_native_runtime.test.ts` 未在本轮重跑；该套件既有探索结果曾为 15/16，`USE-CHANNEL` 断言失败未做基线复现，仍未归类，本轮不处理该行为。
+
+| 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 通过 | 本地 Pi CLI、真实 PPT extension / NativeRuntime / Binder / WASI + scripted provider；Edge/PowerPoint 定向回归 | 版本、只读拒绝、错误回执、唯一 run ID 和历史反馈计数按测试条件工作；真实 provider 未覆盖 |
+| 全链路可达 | 局部通过 | 实际 Pi 父轮 → 工具 → program/WASI → 下一父轮；本地 scripted provider | read-only 历史调用与其结果对父轮可达；不覆盖 production Python runner 或真实 provider |
+| 自主采用 | 未验证 | 无真实模型普通任务证据 | 调用、版本、只读选择由 provider fixture 指定 |
+| 净收益 | 未验证 | 无真实模型对照 | 复制旧方法的负担是否减少、任务质量、总成本和延迟均未测 |
+
+保持实验状态。没有 ARC harness closure 声明，也没有启动付费运行。下一项可证伪检查仍需授权的真实普通任务观察 Agent 是否会在有适用需要时选择历史只读运行、是否使用其语义结果，以及是否避免影响当前方法计数；本次接线不证明这些行为或收益。
+
+## 2026-11-05：探索规模交还 Agent
+
+用户要求移除人为设定的探索规模。窄命题：Agent 提供的非空候选列表、引用集合与指令不再因 4 候选、8 refs、4000 字符指令或 240 字符引用路径的固定阈值被拒绝。此次只改 explore 的 schema/重复 refs 数量检查及工具说明，不改变权限、工作区路径约束、预算或 provider 原生容量；执行仍为串行，增加候选会增加请求和延迟，未引入新默认配额。
+
+实际本地 Pi 检查：PYTHONPATH=src python -m pytest tests/test_ppt_explore_pi.py -q，通过 1/1，2.15 秒。脚本父一次提交 5 候选，其中一项使用 9 个不同引用、三项指令超过 4000 字符；实际候选请求接收这些输入，4 成功、1 失败，下一父轮收到各项原答复或失败。7 个 scripted provider 请求，不联网收费。此检查只验收上限解除及局部路由，不验收自主迭代。功能通过；全链路局部通过（实际 Pi/PPT extension/native explore/下一父轮，不含 production runner）；自主采用与净收益未验证。git diff --check 通过。
+
+本轮重新读取既有真实轨迹：harness/component_runs.jsonl 在 2026-11-05T02:23:24.059Z 记录 factcheck v10 的错误注入自测 caught=true，02:46:41.632Z 再用于更新后的作品（411→415 numeric tokens）。因此此前“没有方法迭代”的泛化判断不准确；有真实方法修改及后续使用。源码 workspace/tools/factcheck.py 的 in_mat 仍主要按数字字符串是否在原材料中出现判断，忽略多数语义关系；抓住 11.8/12.8 两个注入样例不能证明标签、单位、时期和归属检查有效，也不能证明净收益。explore 部分实际请求因 provider Arrearage 失败，不能当成有效候选审查。
+
+下一优化建议仅为设计，未新增 runtime 规则：复用现有 program/run_agent/explore/render/revision snapshot，让 Agent 用真实任务材料建立能推翻当前方法的试验，检查原始证据与结论是否对应；反馈须能引用实际产物及方法版本，结果直接回父，由父决定修订或放弃。候选数、样本数、角色和迭代次数由 Agent 决定，工具执行成功不充当质量得分。先用普通真实模型任务核查“发现方法盲点→修改方法→后续使用→结果影响再次判断”，再对任务质量和父子总成本做独立对照。不得脚本指定修订路径后称自主迭代，也不增加常驻评审 Agent、强制反思或交付门禁。父子语义反馈、总成本、跨上下文连续性对应 deferred B/C/D，继续开放；这份设计不关闭它们。
+
+## 2026-11-05：预置 ADAPT，Agent 决定进入时机和上下文
+
+用户明确要求先走通控制权，不增加复杂版本、失败回执或调度平台。当前 PPT 中 Agent 只能在普通任务上下文中改组件；旧 ARC ADAPT 的四次调用及受限工具集不符合本次目标，因此不搬用。窄命题是同一实际 Pi session 可由 Agent 主动切入预置 ADAPT，选择文字与 workspace refs，保留 ADAPT 内的连续工具对话，修改组件后切回完整任务历史，后续任务请求收到生效修改。
+
+实现：PPT 父工具 adapt(op=enter, context?, refs?) / adapt(op=exit)。refs 复用现有工作区 read 工具，支持其文本和图像读取；不自动带入旧任务历史或 active prompts。Pi context hook 投影所选材料和进入后的对话，原 session 历史保留；before_provider_request 装配 ADAPT 指令，退出后恢复普通任务及活动 prompt。现有工具与权限保持，无固定调用次数、周期、强制修改、评分表、额外模型进程或自建 hook 调度。本次没有把任意 loop 源码改写或持久调度开放出去。Agent 可再次 enter 选择新上下文。阶段选择是内存态，进程重启回到普通任务；未新增恢复机制。
+
+选择时机与材料、修改/不修改及退出由 Agent 推进；runtime 仅投影上下文、沿用组件装配并恢复任务历史。新增成本为工具 schema、简短入口说明和被 Agent 选择的 ADAPT 请求/材料，不自动增加模型请求。ADAPT 对话随退出回到任务历史，可影响后续工作；不额外生成永久反思文档。跨压缩连续性和父子总成本仍对应 deferred B/C/D 的开放问题，不由此宣称完成。
+
+本地实际验证：PYTHONPATH=src python -m pytest tests/test_ppt_adapt_pi.py tests/test_ppt_explore_pi.py -q，通过 2/2（2.75 秒）。ADAPT 例由真实 Pi CLI、PPT extension、Binder 和本地 scripted provider 执行六个请求：TASK→enter(选中文字与材料)→self_component 创建 prompt→exit→TASK 收到新 prompt→再次 enter(新上下文，不含旧材料/活动 prompt)→exit→TASK 结束。检查了 ADAPT 不含 TASK_HISTORY_ONLY、第二次不含第一次材料、任务恢复完整历史、prompt 文件及实际父请求生效、进入/退出事件。脚本规定行为，仅证明控制路径，不证明自主进化。explore 既有实际 Pi 回归通过；现有 refreshes active prompts 定向 Node 回归 1/1 通过；git diff --check 通过。
+
+证据：功能通过；全链路局部通过（实际 Pi session/PPT extension/请求上下文/组件保存及后续父请求，不含 production Python runner 和真实 provider）；自主采用未验证；高层方法迭代与净收益未验证。无付费运行。下一真实行为检查应观察普通任务中的自主进入/材料选择/方法调整/后续使用，不能指定动作顺序再称自主迭代。
+
+### 纠正：ADAPT 使用独立模型/工具对话（取代上面的同 session 投影方案）
+
+用户明确 ADAPT 必须是独立 turn 或 session，避免停留在任务上下文。撤掉原来的 context hook、enter/exit 模式切换及其状态；父工具现在是 adapt(context?, refs?)，一次调用启动新的 messages 列表和独立 ADAPT system prompt，同一任务模型执行独立工具循环。只自动加载调用者选定的文字和 refs，不继承父任务历史或 active prompts。ADAPT 正常结束即返回其最终结论；中间助手/工具对话保留在 adapt_messages.jsonl，不插入父任务历史。共享现有组件工具与存储，修改沿 Binder 生效，后续父请求使用新配置。每次再次调用建立新上下文；没有单独进程、持久 Pi session、新版本机制或恢复平台。ADAPT 不递归调用自身；调用时机与材料由任务 Agent 决定。
+
+抽出原有 modelResult 供 consult/explore/ADAPT 共用，保留现有请求预留、usage 和预算检查；ADAPT 请求记 kind=adapt，包含后续工具回合与 length continuation。没有引入独立费用额度或固定迭代上限。工具参数使用现有 validateToolArguments 边界校验，工具错误返回当前 ADAPT 对话；未扩建失败恢复体系。
+
+最终验证：PYTHONPATH=src python -m pytest tests/test_ppt_adapt_pi.py tests/test_ppt_explore_pi.py -q，2/2 通过，2.83 秒。实际 Pi 父进程 + 本地 scripted provider 的六个请求分别为父、ADAPT、ADAPT、父、第二次 ADAPT、父；usage kind 顺序为 task/adapt/adapt/task/adapt/task。第一 ADAPT 收到所选材料、未收到父历史，调用 self_component 后在自身下一轮收到回执并结束；父收到最终结论和生效 prompt，未收到 ADAPT_PRIVATE_THOUGHT。第二 ADAPT 不含第一次上下文/材料/新 prompt，父任务正常继续。普通 prompt 刷新及未知 provider 用量预留回归 2/2 通过，git diff --check 通过。该独立对话与共享组件接线已验证；真实 provider 自主进入、方法层演进及交付质量收益仍未验证，不作自进化成功声明。无付费调用。
+
+## 2026-11-05：ADAPT 自演化训练与可变方法
+
+ADAPT 已可独立调用，但普通入口与 core instruction 过于薄，Agent 难以判断可变对象、实际可见上下文和方法边界。改动目标是让 task prompt 简短说明自演化目标与选择权，按需提供实际工具手册，并让 Agent 作者的 `adapt_method` 只在以后 ADAPT 调用开始时读取。可证伪条件：ADAPT 继承 task history/active prompt；方法变更影响已开始的当次指令；同名用户训练 skill 被覆盖；或文案描述了 host 未开放的能力。
+
+- 将 ADAPT 的不可变 core instruction 放入独立 prompt 文件。handler 开始时经 Binder 捕获 `adapt_method` 的当前 body/path/version，并在该调用全部 provider turns 中固定；本次中途改动只对未来调用生效，缺少该 skill 时仍运行 core。
+- PPT 普通 prompt 说明自演化服务于 presentation 及其约束，Agent 自选时机/上下文/调查/修改；无固定顺序、候选数/轮数、编辑、评审、rubric、周期触发或报告要求。完整 `self_evolution` skill 通过 `read_component` 按需访问，不自动注入全文。
+- 新训练 skill 由 direct Pi startup 和 Python runner `prepare` 在同路径缺失时 seed，先检查路径以保留用户已有内容。指南按真实代码描述：ADAPT 仅收到所选 context+refs，不继承任务历史/活动 prompt；同一模型与共享预算，`kind=adapt`；taskTools 派生并过滤自身 `adapt`，包含可能可调用的 `office`/deliver，不含 NativeRuntime `consult`；工具错误回到内部循环。可变组件包括 prompt/skill/memory/tools/subagent 与其组织方式；host core、权限、预算与调用循环不可变且不可自调。
+- 手册提供 `self_component`, `read_component`, `save_program`/`run_program`/`retire_program`, `run_agent`, `explore`, `office` 示例与限制，并指导用反证/负例和后续语义使用判断价值，不建立固定方法流程。
+
+本地验证：`$env:PYTHONPATH='src'; python -m pytest tests/test_ppt_adapt_pi.py -q`，通过 1/1（1.65 秒）。这是本地 Pi CLI、PPT extension、Binder 与 scripted provider 的实际独立 ADAPT 调用路径，不联网收费。provider fixture 已断言新的独立 core prompt；它没有证明真实模型自主选择、方法自写/未来版本载入或收益。Python runner seeding 目前为源码实现，未单独实跑 `prepare`。功能及 direct Pi 局部接线通过；生产 runner 路径、真实 provider 自主采用与净收益未验证。deferred B/C/D 父子反馈/总成本/跨上下文连续性保持开放。
+
+后续增强同一 provider fixture，实际在第一 ADAPT 中经 `self_component(kind="skill", name="adapt_method")` 保存方法，断言当前 ADAPT 的 core 不变、第二个独立 ADAPT 才加载该方法，且仍不继承前一调用私有对话和原任务历史。GPT-6 Luna high 重跑同一 Pi 路径：`PYTHONPATH=src python -m pytest tests/test_ppt_adapt_pi.py -q`，1/1 通过（1.32 秒）；`git diff --check` 通过。该检查证明可作者化方法的跨调用装配，不证明 Agent 自主决定自我培训、方法质量或真实作品净收益。`ppt_demo.py prepare` 单独路径仍未运行。
+
+### 定义纠正：持续能力发展是正向目标
+
+前版把“不必修改/创建组件”放在定义显眼位置，使 self-evolution 容易被理解为只有偶尔方法微调才发生。按用户澄清，改为把 Agent 在当前任务中持续发展完成任务所需能力与工作系统作为正向目标；范围包括组件创建/修改/组合/简化/移除、方法与策略，以及架构/runtime/process 设计（仅在真实开放且授权的实现路径内）。可从成功、预期、分析、失败、新需求或策略构想发现机会，不要求等待反复失败。Agent 自主决定 ADAPT 时机、上下文、方法及退出；没有固定顺序、频率、数量、组件、评审、rubric 或报告。仍分开判断变更是否生效、是否进入后续真实工作、是否有证据表明能力/交付确有改善。当前 PPT runtime 可改 harness 组件但不支持任意 host 源码/权限/预算/core loop 改写，因此提示词只允许把架构/流程列为设计范围，不宣称该系统已开放这些实现能力。
+
+本次仅改 task prompt、ADAPT core、`self_evolution` skill 及其文案断言，并更新本记录；scripted provider 路径已按新 core 正文调整。定义改动后的实际本地 Pi 检查：`$env:PYTHONPATH='src'; python -m pytest tests/test_ppt_adapt_pi.py -q`，1/1 通过（18.12 秒）。该 fixture 继续覆盖一轮调用中保存 `adapt_method`、下一独立 ADAPT 读取它，以及 task context/历史隔离；无真实 provider 费用。`git diff --check` 通过。该检查只证明 scripted 接线和新提示兼容，不证明 Agent 自主采纳、架构能力实际可写或能力/作品净收益。
+
+### 目标与运行 affordance 对齐
+
+后续审阅指出，task goal 仍挤入了具体 ADAPT/skill 使用操作和探索/局部修订提示。将定义改为系统级能力发展：Agent 可从不同起点主动设计/创建/调整/替换模块、关系、协作、控制流、整体组织及演化机制；既有架构/流程是可调整起点而非模板，并自主选择在任务内整合或独立探索、实现与试用时机，以及继续/修订/放弃。保留生效→后续使用→证据改善的区分及无固定入口/模式。具体 `adapt(context?, refs?)` 可见性和运作事实转到注册工具描述，完整 `self_evolution` 与 explore 方法留在环境技能索引/按需 skill；文案严格标明当前工具集过滤、可能 callable 的 office/deliver、不含 native consult、没有显式 exit，及 host/core/权限/预算不可编辑，不暗示开放任意 runtime 架构写入。
+
+按新 target prompt 和 task-tool descriptions 扩展 scripted provider 断言后重跑真实 Pi path：`$env:PYTHONPATH='src'; python -m pytest tests/test_ppt_adapt_pi.py -q`，1/1 通过（20.55 秒）。`git diff --check` 通过。Provider 仍为本地 scripted；不证明自主选择/采用或收益，无付费调用。
+
+随后将 target 文案中的 “No fixed entry point” 改为小写衔接句并调整 autonomy wording。首轮重跑因 provider fixture 的大小写敏感断言未命中而在发请求前退出（没有 provider-checks 记录）；改为忽略大小写后，本地重跑通过 1/1（1.32 秒），`git diff --check` 通过。失败属于 fixture 文案断言，不是 ADAPT 运行链失败。

@@ -8,6 +8,13 @@ import { scriptedProviderTransport } from './pi_scripted_provider_transport.ts';
 const programV1 = `def run(args, env):
     with open('data/material.txt') as source:
         material = source.read()
+    if args.get('write'):
+        with open('artifacts/readonly-write.txt', 'w') as output:
+            output.write('must not persist')
+    if args.get('agent'):
+        env.agent('diagnostic', 'must not run')
+    if args.get('render'):
+        env.render()
     terms = ['Revenue']
     present = {term: term in material for term in terms}
     return 'METHOD_RESULT_V' + str(len(terms)) + ': ' + str(present)
@@ -29,7 +36,7 @@ export default function(pi: any) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 2048 }],
     streamSimple: scriptedProviderTransport((model: any, context: any) => {
       const n = turn++;
-      assert.ok(n < 8, 'provider request limit exceeded');
+      assert.ok(n < 11, 'provider request limit exceeded');
       const system = context.systemPrompt || JSON.stringify((context.messages ?? []).filter((message: any) => message.role === 'system'));
       const results = toolResultText(context);
       let content: any[];
@@ -61,9 +68,25 @@ export default function(pi: any) {
         content = [{ type: 'toolCall', id: 'run-v2', name: 'run_program', arguments: { name: 'live_check' } }];
       } else if (n === 5) {
         assert.match(results, /METHOD_RESULT_V2:/);
-        content = [{ type: 'toolCall', id: 'run-history-v1', name: 'run_program', arguments: { name: 'live_check', version: 1 } }];
+        content = [{ type: 'toolCall', id: 'run-history-v1-readonly', name: 'run_program', arguments: { name: 'live_check', version: 1, readonly: true } }];
       } else if (n === 6) {
         assert.match(results, /METHOD_RESULT_V1: .*Revenue.*True/);
+        assert.match(results, /METHOD RUN program-[^:]+: live_check@v1; read-only; current workspace state/);
+        content = [{ type: 'toolCall', id: 'run-history-v1-write-probe', name: 'run_program', arguments: {
+          name: 'live_check', version: 1, readonly: true, args: { write: true },
+        } }];
+      } else if (n === 7) {
+        assert.match(results, /workspace path is read-only in this execution/);
+        content = [{ type: 'toolCall', id: 'run-history-v1-agent-probe', name: 'run_program', arguments: {
+          name: 'live_check', version: 1, readonly: true, args: { agent: true },
+        } }];
+      } else if (n === 8) {
+        assert.match(results, /env\.agent is unavailable in a read-only execution/);
+        content = [{ type: 'toolCall', id: 'run-history-v1-render-probe', name: 'run_program', arguments: {
+          name: 'live_check', version: 1, readonly: true, args: { render: true },
+        } }];
+      } else if (n === 9) {
+        assert.match(results, /env\.render is unavailable in a read-only execution/);
         content = [
           { type: 'toolCall', id: 'retire', name: 'retire_program', arguments: { name: 'live_check', expected_version: 2 } },
           { type: 'toolCall', id: 'disable-method', name: 'write', arguments: {
@@ -77,7 +100,7 @@ export default function(pi: any) {
       }
       appendFileSync(join(process.env.PPT_DEMO_ROOT!, 'provider-checks.jsonl'), JSON.stringify({ turn: n, passed: true }) + '\n');
       const message: any = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
-        content, stopReason: n < 7 ? 'toolUse' : 'stop', timestamp: Date.now(),
+        content, stopReason: n < 10 ? 'toolUse' : 'stop', timestamp: Date.now(),
         usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
       const stream = createAssistantMessageEventStream();

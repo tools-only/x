@@ -38,6 +38,11 @@ def prepare(root: Path, source: Path) -> None:
     agents = root / "workspace" / "agents"
     agents.mkdir(parents=True)
     shutil.copy2(PROJECT / "demo" / "ppt-roles" / "visual_asset.md", agents / "visual_asset.md")
+    skill = root / "workspace" / "skills" / "self_evolution" / "SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    source_skill = PROJECT / "demo" / "harness-methods" / "self_evolution" / "SKILL.md"
+    if not skill.exists():
+        shutil.copy2(source_skill, skill)
     import winreg
     fonts = set()
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts") as key:
@@ -138,6 +143,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         "command": command}
     protocol["source_hashes"] = {str(p.relative_to(PROJECT)): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [PROJECT / "demo/ppt_demo_extension.ts", PROJECT / "demo/prompts/ppt_demo_system.md",
+                  PROJECT / "demo/prompts/ppt_adapt_system.md", PROJECT / "demo/harness-methods/self_evolution/SKILL.md",
                   PROJECT / "src/autoresearch_pi/ppt_demo.py", PROJECT / "src/autoresearch_pi/ppt_demo_artifact.py",
                   PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts",
                   PROJECT / "demo/arc_thin_workspace.ts", PROJECT / "demo/ppt-roles/visual_asset.md"]}

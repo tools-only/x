@@ -45,18 +45,23 @@ def test_agent_authored_method_runs_returns_feedback_revises_and_retires(tmp_pat
         pi.prompt_and_wait("PPT_METHOD_LOOP_DIAGNOSTIC", timeout=170)
 
     checks = [json.loads(line) for line in (run / "provider-checks.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [row["turn"] for row in checks] == list(range(8))
+    assert [row["turn"] for row in checks] == list(range(11))
     assert all(row["passed"] for row in checks)
 
     runs_path = run / "harness/component_runs.jsonl"
     runs = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines()]
     calls = [row for row in runs if row.get("kind") == "program_call"]
-    assert [(row["version"], row.get("requested_version")) for row in calls] == [
-        (1, None), (2, None), (2, 1),
+    assert [(row["executed_version"], row.get("requested_version"), row["readonly"]) for row in calls] == [
+        (1, None, False), (2, None, False), (1, 1, True),
+        (1, 1, True), (1, 1, True), (1, 1, True),
     ]
     results = [row for row in runs if row.get("kind") == "program_result"]
-    assert [row["ok"] for row in results] == [True, True, True]
+    assert [row["ok"] for row in results] == [True, True, True, False, False, False]
+    assert all(row["run_id"] == call["run_id"] for row, call in zip(results, calls))
+    assert [row["executed_version"] for row in results] == [1, 2, 1, 1, 1, 1]
+    assert all(row["output_excerpt"].count("METHOD RUN ") == 1 for row in results)
 
+    assert not (workspace / "artifacts/readonly-write.txt").exists()
     assert not (workspace / "tools/live_check.py").exists()
     retired_source = workspace / "tools_off/live_check.py"
     assert retired_source.exists()
