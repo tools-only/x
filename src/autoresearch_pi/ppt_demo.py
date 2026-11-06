@@ -99,7 +99,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         codex_config["models"] = [item for item in current_models if item.get("id") != model_id] + [model]
         models_path.write_text(json.dumps(model_config, indent=2), encoding="utf-8")
         settings_config = json.loads(original_settings) if original_settings else {}
-        settings_config.setdefault("compaction", {})["enabled"] = False
+        settings_config.setdefault("compaction", {})["enabled"] = True
         settings_config.setdefault("retry", {})["enabled"] = False
         settings_path.write_text(json.dumps(settings_config, indent=2), encoding="utf-8")
     else:
@@ -108,7 +108,11 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         (agent / "models.json").write_text(json.dumps({"providers": {provider_id: {"baseUrl": values["OPENAI_API_BASE"],
             "api": "openai-completions", "apiKey": "$OPENAI_API_KEY", "authHeader": True,
             "compat": {"supportsDeveloperRole": False, "thinkingFormat": "qwen"}, "models": [model]}}}), encoding="utf-8")
-        (agent / "settings.json").write_text(json.dumps({"compaction": {"enabled": False}, "retry": {"enabled": False}}))
+        settings = {"compaction": {"enabled": True}, "retry": {"enabled": False, "provider": {"maxRetries": 0}}}
+        if unbounded:
+            settings["httpIdleTimeoutMs"] = 900000
+            settings["retry"]["provider"]["timeoutMs"] = 900000
+        (agent / "settings.json").write_text(json.dumps(settings))
     env = {**{key: value for key, value in os.environ.items() if key != "OPENAI_API_KEY"},
            **({"OPENAI_API_KEY": values["OPENAI_API_KEY"]} if not official_openai else {}),
            "PI_CODING_AGENT_DIR": str(agent),
@@ -139,14 +143,15 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         "rates": {"input_usd_per_million": 0.10, "output_usd_per_million": 0.50, "cache_read_usd_per_million": 0.01,
                   "cache_write_usd_per_million": 0.125, "source": "OpenAI GPT-6 Luna published API rates; Codex OAuth usage is subscription quota, not API billing equivalent"} if official_openai else
                  {"input_usd_per_million": 20, "output_usd_per_million": 80, "source": "Conservative guard above AZ public /api/pricing: model_ratio=1.2, completion_ratio=4; not verified account billing"},
-        "scope": "one exploratory production demo; no claim of causal net benefit", "guidance": "Explicit dual artifact+harness goal; no required program count, no forced revision, no critic worker",
+        "scope": "one exploratory production demo; no claim of causal net benefit", "guidance": "Produce the presentation through an agent-designed and evolving self-harness; assess producing and assessing separately, without fixed component quotas",
         "command": command}
     protocol["source_hashes"] = {str(p.relative_to(PROJECT)): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [PROJECT / "demo/ppt_demo_extension.ts", PROJECT / "demo/prompts/ppt_demo_system.md",
-                  PROJECT / "demo/prompts/ppt_adapt_system.md", PROJECT / "demo/harness-methods/self_evolution/SKILL.md",
+                  PROJECT / "demo/prompts/ppt_adapt_system.md", PROJECT / "demo/prompts/ppt_subagent_system.md", PROJECT / "demo/harness-methods/self_evolution/SKILL.md",
                   PROJECT / "src/autoresearch_pi/ppt_demo.py", PROJECT / "src/autoresearch_pi/ppt_demo_artifact.py",
                   PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts",
-                  PROJECT / "demo/arc_thin_workspace.ts", PROJECT / "demo/ppt-roles/visual_asset.md"]}
+                  PROJECT / "demo/arc_thin_workspace.ts", PROJECT / "demo/ppt_task_context.ts",
+                  PROJECT / "demo/ppt-roles/visual_asset.md"]}
     protocol["task_hashes"] = {str(p.relative_to(root)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [root / "workspace/data/instructions.md", root / "workspace/data/material.txt", root / "workspace/data/environment.md"]}
     if resume:
@@ -165,9 +170,9 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
     try:
         with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=300 if unbounded else 90, deadline=deadline, event_sink=record) as kernel:
             transport = continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else (
-                "Create the presentation described in data/instructions.md. Use artifacts/presentation.html as the required canonical authoring source, with exactly one data-slide element per slide and 16:9 sizing. Use only the supplied facts and preserve their figures, units, periods, accounting labels, caveats and slide-level source citations. The deliverable includes the HTML source, its local assets, and a PowerPoint export. You choose how to organize, explore, assess and revise the work. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
+                "Build and evolve a self-harness through which you create the presentation described in data/instructions.md. Inspect capability gaps, compose and use appropriate components, and separately develop production and assessment through evidence from the work. Use artifacts/presentation.html as the required canonical authoring source, with exactly one data-slide element per slide and 16:9 sizing. Use only the supplied facts and preserve their figures, units, periods, accounting labels, caveats and slide-level source citations. The deliverable includes the HTML source, its local assets, and a PowerPoint export. You choose how to organize, explore, assess and revise the work. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
                 if html_first else
-                "Create the complete requested deck. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
+                "Build and evolve a self-harness through which you create the complete requested deck; use and improve its production and assessment capabilities with evidence from the work. Start by reading data/instructions.md, data/environment.md and data/material.txt. You have the same model for all task and method-design work. Runtime exports your evolved harness with the deck."
             )
             while deadline is None or time.monotonic() < deadline:
                 response = kernel.prompt(transport)

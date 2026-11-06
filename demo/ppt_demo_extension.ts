@@ -6,11 +6,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import { validateToolArguments } from '@earendil-works/pi-ai';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { compact, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Workspace } from './arc_thin_workspace.ts';
 import { Binder } from './arc_thin_binder.ts';
 import { validatePythonComponent } from './arc_thin_components.ts';
 import { NativeRuntime } from './arc_thin_native_runtime.ts';
+import { projectPptTaskContext } from './ppt_task_context.ts';
 
 export default function pptDemo(pi: ExtensionAPI) {
   const root = process.env.PPT_DEMO_ROOT!;
@@ -18,6 +19,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   const binder = new Binder(workspace, validatePythonComponent);
   const basePrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
   const adaptPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_adapt_system.md', import.meta.url)), 'utf8');
+  const childSystemInstruction = readFileSync(fileURLToPath(new URL('./prompts/ppt_subagent_system.md', import.meta.url)), 'utf8');
   const activePromptText = () => binder.active().filter(c => c.kind === 'prompt').map(c => `${binder.label(c.path)}\n${c.body}`).join('\n\n');
   mkdirSync(join(root, 'harness'), { recursive: true });
   const statePath = join(root, '.harness', 'ppt-loop.json');
@@ -86,6 +88,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   const runtime = new NativeRuntime({ pi, workspace, binder, state: snapshot, level: () => 0,
     actionCount: () => requests, decision: () => requests, hookTurn: () => false, immediateSubagent: true,
     consultReasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
+    childSystemInstruction,
     modelResult,
     pythonSession: false, pythonKernel: false, workMemory: false, log, usage: (kind, message) => log('usage.jsonl', { kind, message }),
     generateImage: async ({ prompt }, signal, ctx) => {
@@ -270,7 +273,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const c = binder.active().find(c => c.program && c.name === a.name);
       if (!c || c.version !== a.expected_version) throw Error('Program version changed; read_component and retry.');
       if (!a.old_text || c.source.split(a.old_text).length !== 2) throw Error('old_text must occur exactly once in the active source.');
-      return text(await runtime.saveProgram(a.name, c.source.replace(a.old_text, a.new_text), c.description, c.tags ?? [], c.version));
+      return text(await runtime.saveProgram(a.name, c.source.replace(a.old_text, () => a.new_text), c.description, c.tags ?? [], c.version));
     });
   register('list_programs', 'Find available executable methods and versions by purpose.', Type.Object({ query: Type.Optional(Type.String()) }),
     (a: any) => text(binder.programCatalog(0, a.query ?? '')));
@@ -293,7 +296,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const receipt = await binder.save(path, 0, { by: 'agent', decision: requests });
       return text(receipt ?? `Saved ${path}; the saved version is available to subsequent requests.`);
     });
-  register('run_agent', 'Run a saved task-local subagent in a fresh context. It sees its role, active prompts, and only the files named in uses/refs or its role. Set independent=true to omit the parent instructions and active prompts for a fresh perspective. Its declared tools and write_scope control access. It cannot deliver.',
+  register('run_agent', 'Run a saved task-local subagent in a fresh context. Every agent receives the host self-harness responsibility, its role, task and declared material. Set independent=true to omit parent instructions and active prompts for a fresh perspective; task facts must be supplied explicitly. Its declared tools and write_scope control access. It cannot deliver.',
     Type.Object({ agent: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), task: Type.String(),
       uses: Type.Optional(Type.Array(Type.String())), refs: Type.Optional(Type.Array(Type.String())), save_as: Type.Optional(Type.String()), independent: Type.Optional(Type.Boolean()) }),
     async (a: any, signal: any, ctx: any) => {
@@ -351,7 +354,10 @@ export default function pptDemo(pi: ExtensionAPI) {
         cpSync(snapshotPath, target, { recursive: true, errorOnExist: true });
         return text({ recovered_revision: revision, destination });
       }
-      if (a.op === 'look') return { content: (a.pages ?? [1]).map((n: number) => ({ type: 'image', data: readFileSync(join(out, `slide-${String(n).padStart(2, '0')}.png`)).toString('base64'), mimeType: 'image/png' })) };
+      if (a.op === 'look') return { content: [
+        ...(a.pages ?? [1]).map((n: number) => ({ type: 'image', data: readFileSync(join(out, `slide-${String(n).padStart(2, '0')}.png`)).toString('base64'), mimeType: 'image/png' })),
+        { type: 'text', text: `Review evidence: revision ${revision}, pages ${(a.pages ?? [1]).join(', ')}. Use this evidence to diagnose production and the reviewer's own assessment harness capabilities, blind spots and strategies. In this round develop and use changes on both sides; test review criteria on accept and reject cases. If a reviewer is read-only, it returns a diagnosis for the parent to implement and validate.` }
+      ] };
       const sourcePath = canonicalSourcePath();
       if (state.lastFeedback?.source_path !== sourcePath) throw Error(`Render the current canonical source ${sourcePath} before delivery.`);
       const receipt = JSON.parse(readFileSync(join(out, 'receipt.json'), 'utf8'));
@@ -385,6 +391,31 @@ export default function pptDemo(pi: ExtensionAPI) {
       cpSync(join(root, 'harness', 'lifecycle.jsonl'), join(delivery, 'harness-evidence', 'harness', 'lifecycle.jsonl'));
       return text({ delivered: revision, directory: 'delivery/' }, true);
     });
+  pi.on('context', event => {
+    const messages = projectPptTaskContext(event.messages, workspace);
+    log('context-projection.jsonl', { request: requests + 1,
+      before_chars: JSON.stringify(event.messages).length, after_chars: JSON.stringify(messages).length });
+    return { messages };
+  });
+  // Pi schedules and persists compaction; summary requests share the task budget.
+  pi.on('session_before_compact', async (event, ctx) => {
+    try {
+      if (!ctx.model) throw Error('PPT compaction needs the active model');
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+      if (!auth.ok) throw Error(auth.error);
+      return { compaction: await compact(event.preparation, ctx.model, auth.apiKey, auth.headers,
+        event.customInstructions, event.signal, pi.getThinkingLevel(),
+        (model, context, options) => ({ result: () => modelResult(
+          () => ctx.modelRegistry.streamSimple(model, context, options), 'compaction') }) as any, auth.env) };
+    } catch (error) {
+      // Pi swallows hook exceptions and falls back; cancel to keep failures inside the task budget.
+      log('compaction.jsonl', { reason: event.reason, error: String(error), cancelled: true });
+      return { cancel: true };
+    }
+  });
+  pi.on('session_compact', event => log('compaction.jsonl', { reason: event.reason,
+    tokensBefore: event.compactionEntry.tokensBefore, summary_chars: event.compactionEntry.summary.length,
+    usage: event.compactionEntry.usage }));
   pi.on('before_agent_start', async (event: any) => {
     if (!initialized) {
       await binder.scan(0);

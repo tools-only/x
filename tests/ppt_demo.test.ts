@@ -36,6 +36,10 @@ test('refreshes active prompts for parent provider payload formats', async () =>
   ]) {
     hooks.get('before_provider_request')({ payload });
     assert.match(JSON.stringify(payload), /FRESH_METHOD/);
+    assert.match(JSON.stringify(payload), /every round advance BOTH production and assessment independently/);
+    assert.match(JSON.stringify(payload), /self-harness reasoning part of the work/);
+    assert.match(JSON.stringify(payload), /reviewer itself/);
+    assert.match(JSON.stringify(payload), /independent reviewer receives the host self-harness responsibility but no parent prompt or history/);
   }
   delete process.env.PPT_DEMO_BUDGET_USD;
 });
@@ -56,6 +60,8 @@ test('nested delegation respects parent tools and material scope', async () => {
   const ctx = { model: { maxTokens: 1000 }, modelRegistry: {
     getApiKeyAndHeaders: async () => ({ apiKey: 'test' }),
     streamSimple: (_model: any, request: any) => ({ result: async () => {
+      assert.match(request.systemPrompt, /part of the caller's self-harness/);
+      assert.doesNotMatch(request.systemPrompt, /You own both the presentation/);
       if (request.systemPrompt.includes('CONSULT_ROLE inner')) {
         assert.ok(request.messages[0].content.some((p: any) => p.text?.includes('visible evidence')));
         return { role: 'assistant', content: [{ type: 'text', text: 'inner result' }], stopReason: 'stop', usage: { input: 1, output: 1 } };
@@ -160,6 +166,7 @@ test('agent-owned workflow, scoped workers, PowerPoint export and source-checked
   await assert.rejects(() => call('office', { op: 'recover', revision: 1, destination: 'artifacts/recovered_v1' }), /already exists/);
   const look = await call('office', { op: 'look', pages: [1] });
   assert.equal(look.content[0].type, 'image');
+  assert.match(look.content[1].text, /revision 1, pages 1.*reviewer's own assessment harness.*both sides.*read-only/);
   await call('self_component', { kind: 'subagent', name: 'artifact_writer', description: 'Write a scoped artifact from loaded evidence',
     content: 'Use only the supplied evidence and write the requested file.', tools: ['read', 'write'], write_scope: ['artifacts/'] });
   let isolatedInput: any;
@@ -267,4 +274,26 @@ test('a representative partial HTML draft renders to a real PowerPoint image', {
   assert.equal(receipt.slides, 1);
   assert.equal(receipt.renderer, 'Microsoft Edge HTML + Microsoft PowerPoint 16 COM');
   assert.ok(existsSync(join(root, 'workspace/results/renders/v001/slide-01.png')));
+});
+
+
+test('edit_program preserves literal dollar replacement markers in Python source', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-literal-edit-'));
+  process.env.PPT_DEMO_ROOT = root;
+  process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f),
+    setActiveTools() {}, getActiveTools: () => [] } as any);
+  await hooks.get('before_agent_start')({ prompt: 'start' });
+  const call = (name: string, args: any) => tools.get(name).execute('literal', args, undefined, undefined, {});
+  await call('save_program', { name: 'literal_edit', description: 'Literal source probe', body: 'print("before")' });
+  const replacement = `import re
+pattern = r'^(\\d+)$'
+print("$& $$ $\x60", bool(re.match(pattern, "42")))`;
+  await call('edit_program', { name: 'literal_edit', expected_version: 1, old_text: 'print("before")', new_text: replacement });
+  const source = readFileSync(join(root, 'workspace/tools/literal_edit.py'), 'utf8');
+  assert.ok(source.includes(replacement));
+  const result = await call('run_program', { name: 'literal_edit' });
+  assert.equal(result.isError, false);
+  assert.match(result.content[0].text, /True/);
 });

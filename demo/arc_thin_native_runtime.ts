@@ -39,6 +39,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   /** A baseline subagent may be consulted after its save, on the next provider request of this decision. */
   immediateSubagent?: boolean;
   consultReasoning?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Host-specific responsibilities inherited by every task-local agent, including independent nested agents. */
+  childSystemInstruction?: string;
   /** Baseline exposes the component shortcut and session source extractor. */
   selfBaseline?: boolean;
   /** Where the python session is checkpointed, so it survives a runtime restart; in memory when absent. */
@@ -1418,7 +1420,7 @@ export class NativeRuntime {
         if (signal?.aborted) throw Error('consult aborted');
         const activePrompts = typeof options.activePrompts === 'function' ? options.activePrompts() : options.activePrompts ?? '';
         const currentRole = this.host.binder.active().find(c => c.path === agent.path && c.kind === 'subagent') ?? agent;
-        const systemPrompt = `${options.writable ? `${activePrompts}\n` : ''}CONSULT_ROLE ${currentRole.name}\n${currentRole.body}`;
+        const systemPrompt = `${this.host.childSystemInstruction ? `${this.host.childSystemInstruction}\n\n` : ''}${options.writable ? `${activePrompts}\n` : ''}CONSULT_ROLE ${currentRole.name}\n${currentRole.body}`;
         const create = (onResponse?:any) => ctx.modelRegistry.streamSimple(ctx.model!, { systemPrompt, messages, tools } as any,
           { apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, reasoning: this.host.consultReasoning ?? 'off', maxTokens: ctx.model!.maxTokens, ...(onResponse?{onResponse}:{}) } as any);
         const reply: any = this.host.modelResult ? await this.host.modelResult(create) : await create().result();
