@@ -287,6 +287,8 @@ export default function pptDemo(pi: ExtensionAPI) {
       name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), content: Type.String(),
       description: Type.Optional(Type.String()), tools: Type.Optional(Type.Array(Type.String())), write_scope: Type.Optional(Type.Array(Type.String())) }),
     async (a: any) => {
+      const historical = a.content.match(/\[Historical content: \d+ chars; original arguments: (results\/[^;\]]+); sha256=[a-f0-9]+\]/i);
+      if (historical) throw Error(`Historical content placeholder is not component source; read ${historical[1]} and use its original content before saving.`);
       const path = a.kind === 'memory' ? `notes/memory/${a.name}.md` : a.kind === 'skill' ? `skills/${a.name}/SKILL.md`
         : a.kind === 'subagent' ? `agents/${a.name}.md` : `prompts/${a.name}.md`;
       const content = a.kind === 'memory' ? a.content : a.kind === 'prompt' ? `---\nactive: true\n---\n${a.content}`

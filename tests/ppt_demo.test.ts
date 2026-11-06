@@ -44,6 +44,18 @@ test('refreshes active prompts for parent provider payload formats', async () =>
   delete process.env.PPT_DEMO_BUDGET_USD;
 });
 
+test('rejects a projected historical placeholder instead of replacing a role', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-placeholder-'));
+  process.env.PPT_DEMO_ROOT = root; process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  const hooks = new Map<string, any>(), tools = new Map<string, any>();
+  pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f), setActiveTools() {}, getActiveTools: () => [] } as any);
+  await hooks.get('before_agent_start')({ prompt: 'start' });
+  const save = (content: string) => tools.get('self_component').execute('x', { kind: 'subagent', name: 'reviewer', content, tools: ['read'] }, undefined, undefined, {});
+  await save('Real review method');
+  await assert.rejects(() => save('[Historical content: 2775 chars; original arguments: results/r000012.txt; sha256=abc]'), /historical.*placeholder/i);
+  assert.match(readFileSync(join(root, 'workspace/agents/reviewer.md'), 'utf8'), /Real review method/);
+});
+
 test('nested delegation respects parent tools and material scope', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-nested-'));
   process.env.PPT_DEMO_ROOT = root; process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
