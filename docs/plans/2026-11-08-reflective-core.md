@@ -8,7 +8,7 @@ The burden removed is choosing separate read, write, save, and reload operations
 
 ## Design
 
-Use a small MOP surface: `reflect_component(op="inspect")` exposes live component objects; `redefine` and `rollback` intercede on their definitions. The component model remains heterogeneous: tools keep executable Python, prompts keep Markdown. Binder remains the version store and validator. The Pi host rebinds the component and updates the active tool set for the next request; `before_agent_start` composes active prompts for that request in the same session. The current call and transcript are not rewritten.
+Use a small MOP surface: `reflect_component(op="inspect")` exposes live component objects; `redefine` and `rollback` intercede on their definitions. The component model remains heterogeneous: tools keep executable Python, prompts keep Markdown. Binder remains the version store and validator. The Pi host rebinds the component and updates the active tool set for the next request; `before_agent_start` composes active prompts and sets `forceSystemPrompt` for that request in the same session. The current call and transcript are not rewritten.
 
 The API returns name, kind, active version, path, complete definition, and source-level `used_by` references. Redefine accepts a replacement source with a name and kind. Rollback accepts a saved version number. Both publish through the existing Workspace and Binder, then refresh live bindings and tool registration. Output paths such as `artifacts/deck.json` are outside the component namespace and cannot satisfy the reflective evidence check.
 
@@ -29,7 +29,7 @@ Offline Node tests exercise the Pi extension tool surface with a local stub and 
 
 | Evidence layer | Status | Environment | Result |
 | --- | --- | --- | --- |
-| Functional correctness | Pending | Local Node/Pi extension tests | Pending |
+| Functional correctness | Passed | Local Node/Pi extension tests (local Pi API stub) | Introspection, tool/prompt redefine and rollback, and deck-only checker failure passed |
 | Full-chain reachability | Unverified | Azure DeepSeek V4 Flash | Prepared only; not run |
 | Autonomous adoption | Unverified | Azure DeepSeek V4 Flash | Prepared only; not run |
 | Net benefit | Unverified | Not evaluated | No benefit claim |
