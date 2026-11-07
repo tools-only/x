@@ -224,7 +224,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const components = binder.active().filter(c => ['tool', 'prompt', 'skill', 'subagent'].includes(c.kind));
       const consumers = (component: any) => [...new Set([
         ...(component.kind === 'tool' ? ['Pi tool registry / run_program'] : []),
-        ...(component.kind === 'prompt' ? ['before_agent_start system prompt'] : []),
+        ...(component.kind === 'prompt' ? ['next provider request system prompt'] : []),
         ...(component.kind === 'skill' ? ['task workspace skill index'] : []),
         ...(component.kind === 'subagent' ? ['consult'] : []),
         ...components.filter(other => other.path !== component.path && other.source.includes(component.name)).map(other => `${other.kind}:${other.name}`),
@@ -232,7 +232,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (a.op === 'inspect') return text([...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
         path: c.path, source: c.source, used_by: consumers(c) })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
         .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
-          path, source: workspace.read(path), used_by: ['before_agent_start task memory'] }))]);
+          path, source: workspace.read(path), used_by: ['next provider request system context'] }))]);
       if (!a.name || !a.kind) throw Error('name and kind are required for redefine or rollback');
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
@@ -431,9 +431,6 @@ export default function pptDemo(pi: ExtensionAPI) {
     const handoff = state.noteStale ? '(none: the last batch closed at its request limit)' : state.note || '(none)';
     const memory = workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))
       .map((path: string) => `## ${path}\n${workspace.read(path)}`).join('\n');
-    for (const path of workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))) {
-      log('lifecycle.jsonl', { event: 'component_consumed', kind: 'memory', name: path.split('/').at(-1)!.replace(/\.md$/, ''), version: binder.versionMap()[path] ?? 1, boundary: 'before_agent_start task memory' });
-    }
     const memoryBlock = `TASK MEMORY\n${memory || '(none saved)'}`;
     if (!resumed) {
       state.batch++; state.batchRequests = 0; state.batchClosed = false;
@@ -445,7 +442,6 @@ export default function pptDemo(pi: ExtensionAPI) {
     const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'self_component', 'component_lifecycle', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt').map(c => c.body).join('\n');
-    for (const prompt of binder.active().filter(c => c.kind === 'prompt')) log('lifecycle.jsonl', { event: 'component_consumed', kind: 'prompt', name: prompt.name, version: prompt.version, boundary: 'before_agent_start system prompt' });
     const taskGuidancePath = workspace.path('AGENTS.md');
     const taskGuidance = existsSync(taskGuidancePath) ? readFileSync(taskGuidancePath, 'utf8') : '';
     const systemPrompt = [readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'),
@@ -470,6 +466,24 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (freshBatch && state.batchRequests === batchLimit - 1) tail.push({ role: 'custom', customType: 'ppt-batch-limit', display: false,
       timestamp: Date.now(), content: 'LAST REQUEST IN THIS BATCH. The next batch starts with a fresh conversation; only the workspace, your harness and a checkpoint note (max 400 chars) carry over.' });
     return { messages: [...kept, ...tail] };
+  });
+  // Prompt and memory changes are interceded into the very next provider request,
+  // including tool continuations in the same Pi task/session.
+  pi.on('context_with_system', (event: any, ctx: any) => {
+    const system = event.messages.find((message: any) => message.role === 'system');
+    if (!system) return;
+    const prompts = binder.active().filter(c => c.kind === 'prompt');
+    const memories = workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path));
+    const additions = [
+      ...prompts.map((prompt: any) => ({ kind: 'prompt', name: prompt.name, version: prompt.version, text: prompt.body })),
+      ...memories.map((path: string) => ({ kind: 'memory', name: path.split('/').at(-1)!.replace(/\.md$/, ''), version: binder.versionMap()[path] ?? 1, text: workspace.read(path) })),
+    ];
+    if (!additions.length) return;
+    const appended = additions.map(item => `\n\n## ${item.kind.toUpperCase()} ${item.name}\n${item.text}`).join('');
+    const content = typeof system.content === 'string' ? system.content : '';
+    system.content = `${content}${appended}`;
+    for (const item of additions) log('lifecycle.jsonl', { event: 'component_consumed', ...item, text: undefined,
+      boundary: 'context_with_system provider request' });
   });
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   pi.on('before_provider_request', (event: any) => {

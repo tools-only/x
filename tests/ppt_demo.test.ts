@@ -31,6 +31,11 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools };
   pptDemo(pi as any);
   const call = async (name: string, args: any) => tools.get(name).execute('reflect-test', args, undefined, undefined, {});
+  const requestContext = (content = 'base prompt') => {
+    const event = { messages: [{ role: 'system', content }] };
+    hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'same-session' } });
+    return event.messages[0].content as string;
+  };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   await call('self_component', { kind: 'prompt', name: 'reflect_rules', content: 'prompt version one' });
   const firstTool = `def main(args):\n    return 'tool version one'\n`;
@@ -43,16 +48,18 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'reflect_tool', source: newTool });
   assert.match((await call('run_program', { name: 'reflect_tool' })).content[0].text, /tool version two/);
   await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version two' });
-  const nextPrompt = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
-  assert.match(nextPrompt.systemPrompt, /prompt version two/);
+  assert.match(requestContext(), /prompt version two/);
   await call('reflect_component', { op: 'rollback', kind: 'tool', name: 'reflect_tool', version: 1 });
   assert.match((await call('run_program', { name: 'reflect_tool' })).content[0].text, /tool version one/);
   await call('reflect_component', { op: 'rollback', kind: 'prompt', name: 'reflect_rules', version: 1 });
-  assert.match((await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' })).systemPrompt, /prompt version one/);
+  assert.match(requestContext(), /prompt version one/);
   await call('write', { path: 'artifacts/deck.json', content: '{"slides":[]}' });
   const afterDeckWrite = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
   assert.ok(!afterDeckWrite.some((c: any) => c.path === 'artifacts/deck.json'));
   assert.ok(activeTools.includes('reflect_tool'));
+  const lifecycle = readFileSync(join(root, 'harness/lifecycle.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const promptChange = lifecycle.find(row => row.event === 'reflective_change' && row.kind === 'prompt' && row.version === 2);
+  assert.ok(lifecycle.some(row => row.kind === 'prompt' && row.version === 2 && row.session_id === promptChange.session_id && row.boundary === 'context_with_system provider request'));
   const deckOnly = mkdtempSync(join(tmpdir(), 'ppt-deck-only-'));
   mkdirSync(join(deckOnly, 'harness'), { recursive: true });
   mkdirSync(join(deckOnly, 'artifacts'), { recursive: true });
@@ -71,6 +78,11 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
   const call = (name: string, args: any) => tools.get(name).execute('reflect-test', args, undefined, undefined, {});
+  const requestContext = () => {
+    const event = { messages: [{ role: 'system', content: 'base system' }] };
+    hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'five-kind-session' } });
+    return event.messages[0].content as string;
+  };
   const ctx = { model: { maxTokens: 1000 }, modelRegistry: {
     getApiKeyAndHeaders: async () => ({ apiKey: 'offline-test' }),
     streamSimple: (_model: any, request: any) => ({ result: async () => ({ role: 'assistant', content: [{ type: 'text', text: request.systemPrompt }], stopReason: 'stop', usage: { input: 1, output: 1 } }) }),
@@ -86,9 +98,9 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
     memory: 'memory new', tool: "def main(args):\n    return 'tool new'\n",
   };
   for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'redefine', kind, name: `five_${kind === 'subagent' ? 'agent' : kind === 'memory' ? 'memory' : kind}`, source: definitions[kind] });
-  const prompt = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
-  assert.match(prompt.systemPrompt, /prompt new/);
-  assert.match(prompt.message.content, /memory new/);
+  const prompt = requestContext();
+  assert.match(prompt, /prompt new/);
+  assert.match(prompt, /memory new/);
   assert.match((await call('read_component', { name: 'five_skill' })).content[0].text, /skill new/);
   assert.match((await call('run_program', { name: 'five_tool' })).content[0].text, /tool new/);
   let consultSystem = '';
@@ -97,9 +109,9 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   assert.match(consultSystem, /subagent new/);
   const names: Record<string, string> = { prompt: 'five_prompt', skill: 'five_skill', tool: 'five_tool', subagent: 'five_agent', memory: 'five_memory' };
   for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'rollback', kind, name: names[kind], version: 1 });
-  const restored = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
-  assert.match(restored.systemPrompt, /prompt old/);
-  assert.match(restored.message.content, /memory old/);
+  const restored = requestContext();
+  assert.match(restored, /prompt old/);
+  assert.match(restored, /memory old/);
   assert.match((await call('read_component', { name: 'five_skill' })).content[0].text, /skill old/);
   assert.match((await call('run_program', { name: 'five_tool' })).content[0].text, /tool old/);
   await tools.get('consult').execute('test', { agent: 'five_agent', question: 'Review' }, undefined, undefined, ctx);

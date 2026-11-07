@@ -58,3 +58,42 @@ The `a2` transcript shows the agent created v1 components first because those na
 - Autonomous adoption: incomplete; only skill v2 had checker-valid consumption in `a2`.
 - Net benefit: unverified. There is no delivered deck or matched comparison.
 - Remaining work: reduce task-agent exploration overhead and ensure it calls the redefined validator and reviewer, then crosses a task boundary to consume prompt and memory before rendering and delivery. No additional attempt was authorized or run.
+
+## Follow-up hot-swap validation (a4/a5)
+
+The lifecycle defect was fixed before these attempts. Prompt and memory definitions are now injected by Pi's `context_with_system` hook on each outgoing provider request, with a `component_consumed` receipt containing the runtime session id, component name, exact version, and request boundary. This lets a redefine take effect on the next model request in the same Pi session, without waiting for another task start. The existing `before_agent_start` hook still initializes task context. Offline coverage exercises the request hook after redefine and rollback without another `before_agent_start` call.
+
+| Root | Result | Provider use | Deck delivered |
+| --- | --- | ---: | --- |
+| `runs/ppt-reflective-core-az-v4-a4` | Budget stop. The agent created prompt, memory, skill, and reviewer components but made no `reflect_component(op="redefine")` calls. It drafted `workspace/artifacts/presentation.html`; evidence checker failed all kinds. | 10 requests; 308,454 reported tokens; estimated spend $8.7522. | No; artifact was not delivered. |
+| `runs/ppt-reflective-core-az-v4-a5` | Budget stop. All five kinds were redefined. Prompt, memory, and skill were consumed at v2 in-session; tool and subagent were not consumed before stop. `workspace/artifacts/presentation.html` exists. | 14 requests; 244,545 reported tokens; estimated spend $9.81454. | No; artifact was not delivered. |
+
+### a4 per-kind evidence and checker output
+
+| Kind | Evidence |
+| --- | --- |
+| Prompt | A v1 prompt was created; no reflective redefine and no valid checker consumption. |
+| Memory | A v1 memory entry was created; no reflective redefine and no valid checker consumption. |
+| Skill | A v1 skill was created; no reflective redefine and no valid checker consumption. |
+| Tool | No recorded successful program use; no valid redefine/use pair. |
+| Subagent | A reviewer component was created; no reflective redefine/consult pair. |
+
+```json
+{"pass":false,"per_kind":{"prompt":{"pass":false,"consumed":[]},"skill":{"pass":false,"consumed":[]},"tool":{"pass":false,"consumed":[]},"subagent":{"pass":false,"consumed":[]},"memory":{"pass":false,"consumed":[]}},"reflective_redefinitions":0,"reason":"each kind requires redefine followed by same-session consumption at that version"}
+```
+
+### a5 per-kind evidence and checker output
+
+| Kind | Evidence |
+| --- | --- |
+| Prompt | `evidence_source_rule` v2 redefined and consumed at `context_with_system provider request`, same session. PASS. |
+| Memory | `verified_facts` v2 redefined and consumed at `context_with_system provider request`, same session. PASS. |
+| Skill | `slide_checklist` v2 redefined and consumed via `read_component`, same session. PASS. |
+| Tool | `numeric_source_validator` v2 redefined; no successful `run_program` receipt. FAIL. |
+| Subagent | `financial_accuracy_reviewer` v2 redefined; no `consult` receipt. FAIL. |
+
+```json
+{"pass":false,"per_kind":{"prompt":{"pass":true,"consumed":[{"name":"evidence_source_rule","version":2,"boundary":"context_with_system provider request"}]},"skill":{"pass":true,"consumed":[{"name":"slide_checklist","version":2,"boundary":"read_component"}]},"tool":{"pass":false,"consumed":[]},"subagent":{"pass":false,"consumed":[]},"memory":{"pass":true,"consumed":[{"name":"verified_facts","version":2,"boundary":"context_with_system provider request"}]},"reflective_redefinitions":5,"reason":"each kind requires redefine followed by same-session consumption at that version"}
+```
+
+The five-kind acceptance check did not pass in either run, and neither deck was delivered. The hot-swap defect is functionally covered offline and observed working in a5. Full-chain delivery and autonomous use of the redefined tool and reviewer remain failed in these bounded attempts; net benefit remains unverified. The two authorized follow-up attempts are exhausted; no B1/B2 benchmarks or further paid attempts were run.
