@@ -8,7 +8,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
@@ -428,7 +428,35 @@ export default function pptDemo(pi: ExtensionAPI) {
       return text({ delivered: revision, directory: 'delivery/', evidence: evidenceLine() }, true);
     });
   pi.on('before_agent_start', async (event: any) => {
-    if (!initialized) { await binder.scan(0); binder.boundary(); runtime.register(); initialized = true; }
+    if (!initialized) {
+      // Start with addressable versions of the capabilities this workflow already runs. The prompt body is
+      // byte-for-byte the existing PPT system prompt; context_with_system replaces that same section on redefinition.
+      const seed = (path: string, source: string) => {
+        if (!existsSync(workspace.path(path))) {
+          mkdirSync(dirname(workspace.path(path)), { recursive: true });
+          writeFileSync(workspace.path(path), source, 'utf8');
+        }
+      };
+      seed('prompts/ppt_baseline_guidance.md', readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'));
+      seed('skills/deck_workflow/SKILL.md', 'Use the supplied source material to build a clear, readable slide deck. Keep each slide focused, make numeric claims traceable to source material, and render the final artifact before delivery.');
+      seed('agents/deck_reviewer.md', '---\ndescription: Review a slide deck for clarity and source traceability\ntools: [read, grep]\n---\nReview the supplied draft and source material briefly. Identify the most consequential unsupported claim, unclear comparison, or readability issue; cite the relevant evidence and suggest one concrete correction.');
+      seed('notes/memory/presentation_workflow.md', 'The active presentation workflow uses the supplied source materials, renders the canonical artifact, and delivers the rendered revision.');
+      await binder.scan(0);
+      binder.boundary();
+      runtime.register();
+      if (!binder.active().some(c => c.kind === 'tool' && c.name === 'deck_file_summary')) {
+        await runtime.saveProgram('deck_file_summary', `def main(args, env):
+    from pathlib import Path
+    path = str(args.get('path', 'artifacts/presentation.html'))
+    target = Path(path)
+    if not target.is_file():
+        return {'ok': False, 'path': path, 'reason': 'file not found'}
+    text = target.read_text(encoding='utf-8', errors='replace')
+    return {'ok': True, 'path': path, 'bytes': len(text.encode('utf-8')), 'slides': text.count('class="slide'), 'has_title': '<title>' in text.lower()}
+`, 'Summarize the current HTML deck file used by the presentation workflow.', ['deck', 'summary']);
+      }
+      initialized = true;
+    }
     resumed = event.prompt === 'PPT_RESUME';
     if (freshBatch && !resumed && state.batchRequests >= batchLimit && !state.batchClosed) {
       state.nextPhase = 'task'; state.noteStale = true; state.batchClosed = true;
@@ -447,10 +475,12 @@ export default function pptDemo(pi: ExtensionAPI) {
     // Agent-created tools stay active across batches: setActiveTools unions in everything registered.
     const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'self_component', 'component_lifecycle', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
-    const activePrompts = binder.active().filter(c => c.kind === 'prompt').map(c => c.body).join('\n');
+    const activePrompts = binder.active().filter(c => c.kind === 'prompt' && c.name !== 'ppt_baseline_guidance').map(c => c.body).join('\n');
+    const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance')?.body
+      ?? readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
     const taskGuidancePath = workspace.path('AGENTS.md');
     const taskGuidance = existsSync(taskGuidancePath) ? readFileSync(taskGuidancePath, 'utf8') : '';
-    const systemPrompt = [readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'),
+    const systemPrompt = [baselinePrompt,
       taskGuidance, activePrompts].filter(Boolean).join('\n\n');
     event.systemPromptOptions ??= {};
     event.systemPromptOptions.forceSystemPrompt = systemPrompt;
@@ -478,18 +508,24 @@ export default function pptDemo(pi: ExtensionAPI) {
   pi.on('context_with_system', (event: any, ctx: any) => {
     const system = event.messages.find((message: any) => message.role === 'system');
     if (!system) return;
-    const prompts = binder.active().filter(c => c.kind === 'prompt');
+    const prompts = binder.active().filter(c => c.kind === 'prompt' && c.name !== 'ppt_baseline_guidance');
     const memories = workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path));
     const additions = [
       ...prompts.map((prompt: any) => ({ kind: 'prompt', name: prompt.name, version: prompt.version, text: prompt.body })),
       ...memories.map((path: string) => ({ kind: 'memory', name: path.split('/').at(-1)!.replace(/\.md$/, ''), version: binder.versionMap()[path] ?? 1, text: workspace.read(path) })),
     ];
-    if (!additions.length) return;
+    const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance');
+    const originalPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
+    if (baselinePrompt && typeof system.content === 'string' && system.content.includes(originalPrompt))
+      system.content = system.content.replace(originalPrompt, baselinePrompt.body);
+    if (!additions.length && !baselinePrompt) return;
     const appended = additions.map(item => `\n\n## ${item.kind.toUpperCase()} ${item.name}\n${item.text}`).join('');
     const content = typeof system.content === 'string' ? system.content : '';
     system.content = `${content}${appended}`;
     for (const item of additions) log('lifecycle.jsonl', { event: 'component_consumed', ...item, text: undefined,
       boundary: 'context_with_system provider request' });
+    if (baselinePrompt) log('lifecycle.jsonl', { event: 'component_consumed', kind: 'prompt', name: baselinePrompt.name,
+      version: baselinePrompt.version, boundary: 'context_with_system provider request' });
   });
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   pi.on('before_provider_request', (event: any) => {

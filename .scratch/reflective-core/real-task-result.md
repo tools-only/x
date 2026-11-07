@@ -117,3 +117,76 @@ No assistant response or component lifecycle action occurred before the provider
 ```
 
 Functional correctness: the offline extension tests pass 4/4, including concise inspect and explicit tool-use receipt coverage. Full-chain reachability for a6: unverified because no model turn completed. Autonomous adoption: unverified in a6; a5 had prompt, skill, and memory consumption only. Net benefit: unverified; there is no delivered deck or matched-budget comparison. No further paid attempts or B1/B2 runs were made.
+
+## a7 (2026-11-08 02:08 Asia/Shanghai)
+HEAD: 760d4864
+run_exit: 0
+summary.json:
+{
+  "complete": false,
+  "stop": "budget",
+  "batches": 0,
+  "provider": "AZ https://az.gptplus5.com/v1",
+  "model": "deepseek-v4-flash",
+  "error": "Pi RPC process exited while waiting for an event"
+}budget-stop.json:
+{"spent":8.613259999999999,"requests":18,"tokensSpent":376330,"reason":"authorized budget boundary"}checker:
+{
+  "pass": false,
+  "per_kind": {
+    "prompt": {
+      "pass": false,
+      "consumed": []
+    },
+    "skill": {
+      "pass": false,
+      "consumed": []
+    },
+    "tool": {
+      "pass": false,
+      "consumed": []
+    },
+    "subagent": {
+      "pass": false,
+      "consumed": []
+    },
+    "memory": {
+      "pass": false,
+      "consumed": []
+    }
+  },
+  "reflective_redefinitions": 0,
+  "reason": "each kind requires redefine followed by same-session consumption at that version"
+}
+
+## a7 findings and a8 follow-up (2026-11-08)
+
+### a7 diagnosis
+
+`runs/ppt-reflective-core-az-v4-a7` used AZ `az/deepseek-v4-flash`, thinking high, and stopped at the budget boundary after 18 provider requests, 376,330 reported tokens, and $8.61326 estimated spend. No deck was delivered. The checker found zero reflective redefinitions. Startup inspect was empty, so the agent had no live baseline identities it could redefine; it instead spent its budget creating v1 components. This is the primary lifecycle design flaw exposed by a7.
+
+The a7 request trace shows context/cached input rising to roughly 28–31k tokens on later turns. One response produced 8,555 output tokens; most tool results were not individually large enough to explain the repeated input. The history cost is measurable, but this trace does not identify a specific oversized tool return as the main driver, so no truncation behavior was added.
+
+### a8 seed design and outcome
+
+At session initialization the runtime now registers five real v1 components: `ppt_baseline_guidance` uses the existing `demo/prompts/ppt_demo_system.md` byte-for-byte and replaces that same system-prompt section at request time; `deck_file_summary` is a runnable program for the HTML artifact created by the deck workflow; `deck_workflow` is the workflow skill surfaced in the harness; `deck_reviewer` is the role used by `consult`; and `presentation_workflow` is injected as task memory. Pi kernel and guards remain outside component addressability. The baseline prompt body is reused as the active system prompt, preserving its existing text when no redefine occurs.
+
+The a8 kickoff was scoped to three slides, one initial inspect, and redefine/use of the five seeded identities before drafting. It did not direct workspace exploration or creation of new components. Run: `runs/ppt-reflective-core-az-v4-a8`, AZ `az/deepseek-v4-flash`, thinking high, $12 guard. The first provider request did not time out. The agent redefined and consumed all five kinds at v2. It created a three-slide `workspace/artifacts/presentation.html` and ran `deck_file_summary` v2 successfully, which reported three slides, three cited slides, and no warnings. The harness did not record delivery; the run stopped at the budget boundary after 17 requests, 373,369 reported tokens, and $9.21776 estimated spend. No further paid attempts or B1/B2 runs were made.
+
+Per-kind checker evidence:
+
+| Kind | a8 evidence | Result |
+| --- | --- | --- |
+| Prompt | `ppt_baseline_guidance` v2 consumed at `context_with_system provider request` | PASS |
+| Skill | `deck_workflow` v2 consumed by `read_component` | PASS |
+| Tool | `deck_file_summary` v2 successfully run against the three-slide HTML deck | PASS |
+| Subagent | `deck_reviewer` v2 consumed by `consult` | PASS |
+| Memory | `presentation_workflow` v2 consumed at `context_with_system provider request` | PASS |
+
+Checker output from `tools/check_reflective_core_evidence.py runs/ppt-reflective-core-az-v4-a8`:
+
+```json
+{"pass":true,"per_kind":{"prompt":{"pass":true,"consumed":[{"name":"ppt_baseline_guidance","version":2,"boundary":"context_with_system provider request"}]},"skill":{"pass":true,"consumed":[{"name":"deck_workflow","version":2,"boundary":"read_component"}]},"tool":{"pass":true,"consumed":[{"name":"deck_file_summary","version":2,"boundary":"tool"}]},"subagent":{"pass":true,"consumed":[{"name":"deck_reviewer","version":2,"boundary":"subagent"}]},"memory":{"pass":true,"consumed":[{"name":"presentation_workflow","version":2,"boundary":"context_with_system provider request"}]},"reflective_redefinitions":5,"reason":"all five redefined versions were consumed"}
+```
+
+Offline functional correctness: `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts` passed 5/5, including all five seeded kinds, redefine at their consumption boundaries, rollback, and deck-only rejection. Full-chain reachability: passed for five-kind redefine/use and tool execution in the real provider run. Autonomous adoption: demonstrated for this explicitly instructed diagnostic task; it does not establish general autonomous opportunity recognition. Deck delivery: failed/unrecorded. Net benefit: unverified; no matched comparison was authorized or run.

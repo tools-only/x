@@ -124,6 +124,55 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   assert.ok(activeTools.includes('five_tool'));
 });
 
+test('session starts with five live baseline components that redefine and restore at their real boundaries', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-reflective-seeded-'));
+  process.env.PPT_DEMO_ROOT = root;
+  process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  let activeTools: string[] = [];
+  pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
+    setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
+  const call = (name: string, args: any) => tools.get(name).execute('reflect-seeded', args, undefined, undefined, {});
+  const context = () => {
+    const event = { messages: [{ role: 'system', content: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8') }] };
+    hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'seeded-session' } });
+    return event.messages[0].content as string;
+  };
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  const initial = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
+  assert.deepEqual(new Set(initial.map((c: any) => c.kind)), new Set(['prompt', 'tool', 'skill', 'subagent', 'memory']));
+  const names: Record<string, string> = { prompt: 'ppt_baseline_guidance', skill: 'deck_workflow', tool: 'deck_file_summary', subagent: 'deck_reviewer', memory: 'presentation_workflow' };
+  const changed: Record<string, string> = {
+    prompt: '---\nactive: true\n---\nSeeded prompt changed for this request boundary.',
+    skill: 'Seeded skill changed for the next skill read.',
+    tool: "def main(args, env):\n    return {'seeded_tool': 'changed'}\n",
+    subagent: '---\ndescription: changed reviewer\ntools: [read, grep]\n---\nSeeded reviewer changed.',
+    memory: 'Seeded memory changed for the next request.',
+  };
+  for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory'])
+    await call('reflect_component', { op: 'redefine', kind, name: names[kind], source: changed[kind] });
+  assert.match(context(), /Seeded prompt changed/);
+  assert.match(context(), /Seeded memory changed/);
+  assert.match((await call('read_component', { name: names.skill })).content[0].text, /Seeded skill changed/);
+  assert.match((await call('run_program', { name: names.tool })).content[0].text, /changed/);
+  const ctx = { model: { maxTokens: 1000 }, modelRegistry: {
+    getApiKeyAndHeaders: async () => ({ apiKey: 'offline-test' }),
+    streamSimple: (_model: any, request: any) => ({ result: async () => ({ role: 'assistant', content: [{ type: 'text', text: request.systemPrompt }], stopReason: 'stop', usage: { input: 1, output: 1 } }) }),
+  } };
+  await tools.get('consult').execute('test', { agent: names.subagent, question: 'Review briefly' }, undefined, undefined, ctx);
+  for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory'])
+    await call('reflect_component', { op: 'rollback', kind, name: names[kind], version: 1 });
+  assert.match(context(), /You are completing the task in the supplied brief/);
+  assert.match((await call('read_component', { name: names.skill })).content[0].text, /Keep each slide focused/);
+  assert.match((await call('run_program', { name: names.tool })).content[0].text, /file not found/);
+  assert.ok(activeTools.includes(names.tool));
+  const deckOnly = mkdtempSync(join(tmpdir(), 'ppt-seeded-deck-only-'));
+  mkdirSync(join(deckOnly, 'artifacts'), { recursive: true });
+  writeFileSync(join(deckOnly, 'artifacts/deck.json'), '{"slides":[]}');
+  const checker = spawnSync('python', ['tools/check_reflective_core_evidence.py', deckOnly], { encoding: 'utf8' });
+  assert.equal(checker.status, 1, checker.stdout + checker.stderr);
+});
+
 test('free-hands: programs write text and binary, any entry shape, plain markdown components, render and delivery without gates', { timeout: 240000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-native-'));
   process.env.PPT_DEMO_ROOT = root;
