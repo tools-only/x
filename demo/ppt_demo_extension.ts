@@ -215,6 +215,53 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (!c) throw Error('No active component by this name');
     return text(`${c.name}@v${c.version}\n${c.source}`);
   });
+  register('reflect_component', 'Inspect or redefine a live harness component, or roll it back to an earlier saved version. Changes bind at the next Pi request boundary. Decks and output files are not harness components.',
+    Type.Object({ op: Type.Union([Type.Literal('inspect'), Type.Literal('redefine'), Type.Literal('rollback')]),
+      name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')])),
+      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })) }), async (a: any) => {
+      const components = binder.active().filter(c => ['tool', 'prompt', 'skill', 'subagent'].includes(c.kind));
+      const consumers = (component: any) => [...new Set([
+        ...(component.kind === 'tool' ? ['Pi tool registry / run_program'] : []),
+        ...(component.kind === 'prompt' ? ['before_agent_start system prompt'] : []),
+        ...(component.kind === 'skill' ? ['task workspace skill index'] : []),
+        ...(component.kind === 'subagent' ? ['consult'] : []),
+        ...components.filter(other => other.path !== component.path && other.source.includes(component.name)).map(other => `${other.kind}:${other.name}`),
+      ])];
+      if (a.op === 'inspect') return text([...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
+        path: c.path, source: c.source, used_by: consumers(c) })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
+        .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
+          path, source: workspace.read(path), used_by: ['before_agent_start task memory'] }))]);
+      if (!a.name || !a.kind) throw Error('name and kind are required for redefine or rollback');
+      if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
+      const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
+        : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
+      if (!/^(tools\/[^/]+\.py|prompts\/[^/]+\.md|skills\/[^/]+\/SKILL\.md|agents\/[^/]+\.md|notes\/memory\/[^/]+\.md)$/.test(path)) throw Error('invalid component name');
+      if (a.op === 'redefine' && typeof a.source !== 'string') throw Error('source is required for redefine');
+      const current = binder.active().find(c => c.path === path);
+      let nextSource = a.source;
+      if (a.op === 'rollback') {
+        if (!Number.isSafeInteger(a.version)) throw Error('version is required for rollback');
+        nextSource = binder.sourceOf(path, a.version);
+        if (nextSource === undefined) throw Error(`no saved version ${a.version} for ${a.name}`);
+      }
+      if (a.kind === 'tool' && !current) throw Error('tool must already exist as a live component');
+      const receipt = a.kind === 'tool'
+        ? await runtime.saveProgram(a.name, nextSource, current!.description, current!.tags ?? [], current!.version)
+        : await (async () => {
+          workspace.mutate({ op: 'write', path, content: nextSource });
+          const saved = await binder.save(path, 0, { by: 'agent', decision: state.batch });
+          binder.boundary(); return saved;
+        })();
+      runtime.register();
+      if (a.kind === 'tool') pi.setActiveTools([...new Set([...pi.getActiveTools(), a.name])]);
+      const updated = binder.active().find(c => c.path === path);
+      const version = updated?.version ?? binder.versionMap()[path];
+      if ((!updated && a.kind !== 'memory') || (a.kind === 'tool' && updated?.kind !== 'tool')) throw Error(`redefinition did not bind: ${receipt ?? path}`);
+      log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: updated?.name ?? a.name, kind: a.kind,
+        from_version: current?.version ?? null, version, hash: updated?.hash });
+      return text({ name: updated?.name ?? a.name, kind: a.kind, version, source: updated?.source ?? workspace.read(path),
+        receipt, effective: 'next_pi_request' });
+    });
   register('checkpoint', 'Record a short handoff note and optionally enter or leave an engineering turn.',
     Type.Object({ note: Type.Optional(Type.String()), adapt: Type.Optional(Type.Boolean()) }), (a: any) => {
       const chars = Array.from(String(a.note ?? '')), note = chars.slice(0, 400).join('');
@@ -395,6 +442,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     const taskGuidance = existsSync(taskGuidancePath) ? readFileSync(taskGuidancePath, 'utf8') : '';
     const systemPrompt = [readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'),
       taskGuidance, activePrompts].filter(Boolean).join('\n\n');
+    event.systemPromptOptions ??= {};
+    event.systemPromptOptions.forceSystemPrompt = systemPrompt;
     log('lifecycle.jsonl', { event: resumed ? 'resume' : 'batch_started' });
     if (!freshBatch) return { systemPrompt, message: { customType: 'ppt-task-memory', content: memoryBlock, display: false } };
     const deadline = Number(process.env.PPT_DEMO_DEADLINE);

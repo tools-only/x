@@ -82,9 +82,9 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         else:
             raise ValueError("Official OpenAI model must be gpt-6-luna or gpt-6-sol")
     else:
-        if model_override:
-            raise ValueError("--model is currently supported only with --official-openai")
-        model_id = "qwen3.8-27b"
+        if model_override and model_override.startswith("az/"):
+            model_override = model_override.removeprefix("az/")
+        model_id = model_override or "qwen3.8-27b"
     if official_openai:
         model = {"id": model_id, "name": model_name, "api": "openai-codex-responses", "provider": provider_id,
                  "baseUrl": "https://chatgpt.com/backend-api", "reasoning": True, "input": ["text", "image"],
@@ -206,7 +206,7 @@ if __name__ == "__main__":
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--official-openai", action="store_true", help="use the existing OpenAI Codex OAuth session; defaults to GPT-6 Luna")
-    parser.add_argument("--model", choices=["gpt-6-luna", "gpt-6-sol"], help="select the model used with --official-openai")
+    parser.add_argument("--model", help="select a model; AZ accepts its configured model id (for example az/deepseek-v4-flash)")
     parser.add_argument("--continue-prompt", help="continue an existing run with a concrete task update; keeps the original deadline and budget")
     parser.add_argument("--thinking", choices=["low", "medium", "high", "xhigh", "max"], default="low")
     parser.add_argument("--fresh-batch", action="store_true", help="start each new batch with a fresh conversation and carry only workspace and harness")

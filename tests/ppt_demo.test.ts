@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import pptDemo from '../demo/ppt_demo_extension.ts';
@@ -18,6 +19,47 @@ test('unknown provider usage remains charged across process reload', async () =>
   const rows = readFileSync(join(root, 'harness/model-usage.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.equal(rows[1].usage_status, 'unknown_reserved');
   assert.equal(rows[1].conservative_usd, 7.04);
+});
+
+test('reflective component surgery introspects, hot-swaps, rolls back, and rejects deck edits as evidence', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-reflective-'));
+  process.env.PPT_DEMO_ROOT = root;
+  process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  let activeTools: string[] = [];
+  const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
+    setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools };
+  pptDemo(pi as any);
+  const call = async (name: string, args: any) => tools.get(name).execute('reflect-test', args, undefined, undefined, {});
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  await call('self_component', { kind: 'prompt', name: 'reflect_rules', content: 'prompt version one' });
+  const firstTool = `def main(args):\n    return 'tool version one'\n`;
+  await call('save_program', { name: 'reflect_tool', description: 'Reflective test tool', body: firstTool });
+  const listed = await call('reflect_component', { op: 'inspect' });
+  const live = JSON.parse(listed.content[0].text);
+  assert.ok(live.some((c: any) => c.kind === 'prompt' && c.name === 'reflect_rules' && c.source.includes('prompt version one')));
+  assert.ok(live.some((c: any) => c.kind === 'tool' && c.name === 'reflect_tool' && c.source.includes('tool version one')));
+  const newTool = `def main(args):\n    return 'tool version two'\n`;
+  await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'reflect_tool', source: newTool });
+  assert.match((await call('run_program', { name: 'reflect_tool' })).content[0].text, /tool version two/);
+  await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version two' });
+  const nextPrompt = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  assert.match(nextPrompt.systemPrompt, /prompt version two/);
+  await call('reflect_component', { op: 'rollback', kind: 'tool', name: 'reflect_tool', version: 1 });
+  assert.match((await call('run_program', { name: 'reflect_tool' })).content[0].text, /tool version one/);
+  await call('reflect_component', { op: 'rollback', kind: 'prompt', name: 'reflect_rules', version: 1 });
+  assert.match((await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' })).systemPrompt, /prompt version one/);
+  await call('write', { path: 'artifacts/deck.json', content: '{"slides":[]}' });
+  const afterDeckWrite = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
+  assert.ok(!afterDeckWrite.some((c: any) => c.path === 'artifacts/deck.json'));
+  assert.ok(activeTools.includes('reflect_tool'));
+  const deckOnly = mkdtempSync(join(tmpdir(), 'ppt-deck-only-'));
+  mkdirSync(join(deckOnly, 'harness'), { recursive: true });
+  mkdirSync(join(deckOnly, 'artifacts'), { recursive: true });
+  writeFileSync(join(deckOnly, 'artifacts/deck.json'), '{"slides":[]}');
+  const checker = spawnSync('python', ['tools/check_reflective_core_evidence.py', deckOnly], { encoding: 'utf8' });
+  assert.equal(checker.status, 1, checker.stdout + checker.stderr);
+  assert.match(checker.stdout, /"pass": false/);
 });
 
 test('free-hands: programs write text and binary, any entry shape, plain markdown components, render and delivery without gates', { timeout: 240000 }, async () => {
