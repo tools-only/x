@@ -230,9 +230,9 @@ export default function pptDemo(pi: ExtensionAPI) {
         ...components.filter(other => other.path !== component.path && other.source.includes(component.name)).map(other => `${other.kind}:${other.name}`),
       ])];
       if (a.op === 'inspect') return text([...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
-        path: c.path, source: c.source, used_by: consumers(c) })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
+        path: c.path, used_by: consumers(c), detail: `read_component(name=${JSON.stringify(c.name)})` })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
         .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
-          path, source: workspace.read(path), used_by: ['next provider request system context'] }))]);
+          path, used_by: ['next provider request system context'], detail: `read(path=${JSON.stringify(path)})` }))]);
       if (!a.name || !a.kind) throw Error('name and kind are required for redefine or rollback');
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
@@ -263,8 +263,14 @@ export default function pptDemo(pi: ExtensionAPI) {
       if ((!updated && a.kind !== 'memory') || (a.kind === 'tool' && updated?.kind !== 'tool')) throw Error(`redefinition did not bind: ${receipt ?? path}`);
       log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: updated?.name ?? a.name, kind: a.kind,
         from_version: current?.version ?? null, version, hash: updated?.hash });
-      return text({ name: updated?.name ?? a.name, kind: a.kind, version, source: updated?.source ?? workspace.read(path),
-        receipt, effective: 'next_pi_request' });
+      const name = updated?.name ?? a.name;
+      const nextCall = a.kind === 'tool' ? `run_program(name=${JSON.stringify(name)}, version=${version}, args={})`
+        : a.kind === 'subagent' ? `consult(agent=${JSON.stringify(name)}, question="Review supplied facts briefly", refs=["data/material.txt"])`
+        : a.kind === 'skill' ? `read_component(name=${JSON.stringify(name)})`
+        : a.kind === 'prompt' ? 'Make the next provider request; the prompt is injected automatically.'
+        : 'Make the next provider request; the memory is injected automatically.';
+      return text({ name, kind: a.kind, version, receipt, effective: 'next_pi_request', next_call: nextCall,
+        detail: a.kind === 'tool' || a.kind === 'subagent' ? undefined : `read ${path} for full source` });
     });
   register('checkpoint', 'Record a short handoff note and optionally enter or leave an engineering turn.',
     Type.Object({ note: Type.Optional(Type.String()), adapt: Type.Optional(Type.Boolean()) }), (a: any) => {

@@ -42,10 +42,12 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   await call('save_program', { name: 'reflect_tool', description: 'Reflective test tool', body: firstTool });
   const listed = await call('reflect_component', { op: 'inspect' });
   const live = JSON.parse(listed.content[0].text);
-  assert.ok(live.some((c: any) => c.kind === 'prompt' && c.name === 'reflect_rules' && c.source.includes('prompt version one')));
-  assert.ok(live.some((c: any) => c.kind === 'tool' && c.name === 'reflect_tool' && c.source.includes('tool version one')));
+  assert.ok(live.some((c: any) => c.kind === 'prompt' && c.name === 'reflect_rules' && c.detail === 'read_component(name="reflect_rules")'));
+  assert.ok(live.some((c: any) => c.kind === 'tool' && c.name === 'reflect_tool' && c.detail === 'read_component(name="reflect_tool")'));
+  assert.ok(live.every((c: any) => !('source' in c)));
   const newTool = `def main(args):\n    return 'tool version two'\n`;
-  await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'reflect_tool', source: newTool });
+  const redefine = await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'reflect_tool', source: newTool });
+  assert.equal(JSON.parse(redefine.content[0].text).next_call, 'run_program(name="reflect_tool", version=2, args={})');
   assert.match((await call('run_program', { name: 'reflect_tool' })).content[0].text, /tool version two/);
   await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version two' });
   assert.match(requestContext(), /prompt version two/);

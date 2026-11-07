@@ -97,3 +97,23 @@ The lifecycle defect was fixed before these attempts. Prompt and memory definiti
 ```
 
 The five-kind acceptance check did not pass in either run, and neither deck was delivered. The hot-swap defect is functionally covered offline and observed working in a5. Full-chain delivery and autonomous use of the redefined tool and reviewer remain failed in these bounded attempts; net benefit remains unverified. The two authorized follow-up attempts are exhausted; no B1/B2 benchmarks or further paid attempts were run.
+
+## a5 free diagnosis and a6 follow-up
+
+The full free diagnosis is in [a5-diagnosis.md](a5-diagnosis.md). In a5, neither `run_program` nor `consult` was attempted after the v2 definitions: no tool-call events or component run receipts exist. The evidence supports an adoption/sequence failure, not a runtime, argument, validation, definition, or timeout failure. The model continued inspecting files, then spent its largest response producing a 15-slide HTML deck (11,715 output tokens, $1.6259). a5's initial inspect returned `[]`; later inspect/redefine output sizes were avoidable but not the main cost driver. Per-request exact system-prompt chars were not recorded. The a5 run reached $9.81454 across 14 requests and stopped at the $12 guard.
+
+Changes for a6: `reflect_component(op="inspect")` now returns component metadata and a detail-read pointer instead of full source; redefine receipts give the next exact action for the new version and direct source inspection to `read_component`/`read`. The a6 kickoff asks for the five redefine/use steps first, in the requested order (tool/run, subagent/consult, skill/read, prompt, memory), then a 3–5 slide deck, validation, render, and delivery. Offline PPT extension tests passed 4/4 before the provider attempt.
+
+| Run | Result | Provider/model | Spend and requests | Delivered |
+| --- | --- | --- | ---: | --- |
+| `runs/ppt-reflective-core-az-v4-a6` | Provider requests timed out through Pi's three-attempt retry cycle before an assistant response. Budget reservation stopped the run. | AZ `az/deepseek-v4-flash`, thinking high | $10.56 conservative reserved; 3 requests, 36,000 reserved tokens. No provider usage was reported, so actual spend is unknown. | No deck created or delivered. |
+
+### a6 per-kind evidence and checker
+
+No assistant response or component lifecycle action occurred before the provider timeout. All five kinds remain unconsumed and have zero reflective redefinitions; this run provides no new autonomy evidence.
+
+```json
+{"pass":false,"per_kind":{"prompt":{"pass":false,"consumed":[]},"skill":{"pass":false,"consumed":[]},"tool":{"pass":false,"consumed":[]},"subagent":{"pass":false,"consumed":[]},"memory":{"pass":false,"consumed":[]}},"reflective_redefinitions":0,"reason":"each kind requires redefine followed by same-session consumption at that version"}
+```
+
+Functional correctness: the offline extension tests pass 4/4, including concise inspect and explicit tool-use receipt coverage. Full-chain reachability for a6: unverified because no model turn completed. Autonomous adoption: unverified in a6; a5 had prompt, skill, and memory consumption only. Net benefit: unverified; there is no delivered deck or matched-budget comparison. No further paid attempts or B1/B2 runs were made.
