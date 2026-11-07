@@ -5,19 +5,30 @@
 - `25c99c2f1905e6ac700ac25c27fbca974613b132` — `feat(ppt): add reflective component surgery`
 - `7aa5899c` — `docs(ppt): record reflective core evidence`
 - `ad986828319ed30ac4b9f6ba5cec561b26146b1a` — `fix(ppt): restrict reflection to live components`
+- This follow-up commit extends the change to all five component kinds.
 
-## Design
+## Design and observed boundary
 
-Chosen pattern: a minimal MOP over heterogeneous live components. `reflect_component` introspects live tools, prompts, skills, subagents, and task memory; redefines by component name and kind; and restores saved versions through the same operation. Binder and NativeRuntime preserve validation, version history, and tool re-registration. Active tools refresh through Pi's tool surface and active prompts are composed with `forceSystemPrompt` at the next PPT request in the same session. The Pi kernel and guards are not addressable components.
+`reflect_component` inspects, redefines, and restores prompt, skill, tool, subagent, and task-memory components. New version consumption is recorded where it actually occurs: prompt and memory at `before_agent_start`, skill when loaded through `read_component`, tool after a successful `run_program`, and subagent after a successful `consult`. The evidence checker requires a post-redefine consumption at the exact version and matching runtime session ID for every kind. Deck or output writes do not count.
+
+Offline acceptance tested each kind's sequence: redefine → next use observes the replacement → rollback to version 1 → next use observes the original. The subagent execution used a local model stub; no provider call was made.
 
 ## Verification
 
-- Passed: `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts` (3/3), including the new reflective coverage and existing PPT render/delivery regression.
-- Passed: `$env:PYTHONPATH='src'; python -m py_compile src/autoresearch_pi/ppt_demo.py tools/check_reflective_core_evidence.py`.
+- Passed: `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts` (4/4), including all five component boundaries, rollback, checker positive evidence, deck-only negative evidence, and existing render/delivery regressions.
+- Passed: `python -m py_compile src/autoresearch_pi/ppt_demo.py tools/check_reflective_core_evidence.py`.
 - Passed: `git diff --check`.
-- The offline test executes the real PPT extension, Binder, NativeRuntime, and evidence checker with a local Pi API stub. Full Pi RPC continuity, Azure provider behavior, autonomous adoption, and net benefit remain unverified.
-- No paid PPT run was started.
 
-## Prepared real-task validation
+Per-kind offline status:
 
-Exact commands are in [validation.md](validation.md). They prepare the bundled JPMorgan Chase task, run the same session with `az/deepseek-v4-flash`, instruct the agent to introspect/redefine/use a tool, then run the evidence checker. The checker fails when the only change is to deck/output files. This validation was not run.
+| Kind | Redefined | New version consumed | Restored v1 and consumed | Real-task evidence |
+| --- | --- | --- | --- | --- |
+| Prompt | PASS | PASS: next system prompt | PASS | Unverified; paid validation not run |
+| Skill | PASS | PASS: loaded with `read_component` | PASS | Unverified; paid validation not run |
+| Tool | PASS | PASS: successful `run_program` | PASS | Unverified; paid validation not run |
+| Subagent | PASS | PASS: successful `consult` used new role definition | PASS | Unverified; paid validation not run |
+| Memory | PASS | PASS: injected at next task boundary | PASS | Unverified; paid validation not run |
+
+## Evidence limits and next check
+
+Functional correctness and same-extension-session wiring passed with local Pi API and subagent model stubs. Full Pi/provider reachability, autonomous adoption, and net benefit remain unverified. The prepared AZ DeepSeek real-task validation is in [validation.md](validation.md); it was not run, and no paid call was started.

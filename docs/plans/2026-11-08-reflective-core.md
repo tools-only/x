@@ -18,18 +18,18 @@ The Pi kernel, the PPT host and its budget, deadline, path and provider guards, 
 
 ## Evaluation and limits
 
-Offline Node tests exercise the Pi extension tool surface with a local stub and real Binder/Workspace persistence. They establish function and same-extension-session wiring, not provider behavior or autonomous adoption. The prepared AZ DeepSeek validation asks the real task agent to inspect, redefine, and execute a tool and checks recorded reflective and component-run evidence. A deck-only write must fail that checker. No paid run is part of this change.
+Offline Node tests exercise the Pi extension tool surface with a local stub and real Binder/Workspace persistence. They establish function and same-extension-session wiring, not provider behavior or autonomous adoption. The prepared AZ DeepSeek validation asks the real task agent to inspect, redefine, and consume all five component kinds in the same session, with each change serving the presentation task. The checker requires a redefine followed by a same-version consumption receipt for prompt, skill, tool, subagent, and memory; deck-only writes fail. Offline tests exercise redefine, next use, and rollback for each kind. No paid run is part of this change.
 
 ## Implementation and evidence
 
-- `demo/ppt_demo_extension.ts`: reflective inspect/redefine/rollback API.
-- `tests/ppt_demo.test.ts`: offline introspection, tool/prompt hot swap, rollback, and deck-edit negative case.
+- `demo/ppt_demo_extension.ts`: reflective inspect/redefine/rollback API and versioned consumption receipts at prompt, skill, and memory boundaries.
+- `tests/ppt_demo.test.ts`: offline introspection and redefine/use/rollback coverage for all five kinds, checker positive case, and deck-edit negative case.
 - `src/autoresearch_pi/ppt_demo.py`: allow selecting an AZ model for the prepared validation command.
 - Results and exact validation command: `.scratch/reflective-core/result.md` and `.scratch/reflective-core/validation.md`.
 
 | Evidence layer | Status | Environment | Result |
 | --- | --- | --- | --- |
-| Functional correctness | Passed | Local Node/Pi extension tests (local Pi API stub) | Introspection, tool/prompt redefine and rollback, and deck-only checker failure passed |
+| Functional correctness | Passed | Local Node/Pi extension tests (local Pi API stub; subagent model stub) | All five kinds were redefined, consumed at the new version, rolled back to v1, and consumed again; checker positive and deck-only negative cases passed |
 | Full-chain reachability | Unverified | Azure DeepSeek V4 Flash | Prepared only; not run |
 | Autonomous adoption | Unverified | Azure DeepSeek V4 Flash | Prepared only; not run |
 | Net benefit | Unverified | Not evaluated | No benefit claim |

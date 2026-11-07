@@ -62,6 +62,54 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   assert.match(checker.stdout, /"pass": false/);
 });
 
+test('reflective redefine reaches and restores prompt, skill, tool, subagent, and memory boundaries', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-reflective-five-'));
+  process.env.PPT_DEMO_ROOT = root;
+  process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  let activeTools: string[] = [];
+  pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
+    setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
+  const call = (name: string, args: any) => tools.get(name).execute('reflect-test', args, undefined, undefined, {});
+  const ctx = { model: { maxTokens: 1000 }, modelRegistry: {
+    getApiKeyAndHeaders: async () => ({ apiKey: 'offline-test' }),
+    streamSimple: (_model: any, request: any) => ({ result: async () => ({ role: 'assistant', content: [{ type: 'text', text: request.systemPrompt }], stopReason: 'stop', usage: { input: 1, output: 1 } }) }),
+  } };
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  await call('self_component', { kind: 'prompt', name: 'five_prompt', content: 'prompt old' });
+  await call('self_component', { kind: 'skill', name: 'five_skill', content: 'skill old' });
+  await call('self_component', { kind: 'subagent', name: 'five_agent', content: 'subagent old', tools: [] });
+  await call('self_component', { kind: 'memory', name: 'five_memory', content: 'memory old' });
+  await call('save_program', { name: 'five_tool', description: 'version check', body: "def main(args):\n    return 'tool old'\n" });
+  const definitions: Record<string, string> = {
+    prompt: '---\nactive: true\n---\nprompt new', skill: 'skill new', subagent: '---\ndescription: reviewer\ntools: []\n---\nsubagent new',
+    memory: 'memory new', tool: "def main(args):\n    return 'tool new'\n",
+  };
+  for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'redefine', kind, name: `five_${kind === 'subagent' ? 'agent' : kind === 'memory' ? 'memory' : kind}`, source: definitions[kind] });
+  const prompt = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  assert.match(prompt.systemPrompt, /prompt new/);
+  assert.match(prompt.message.content, /memory new/);
+  assert.match((await call('read_component', { name: 'five_skill' })).content[0].text, /skill new/);
+  assert.match((await call('run_program', { name: 'five_tool' })).content[0].text, /tool new/);
+  let consultSystem = '';
+  ctx.modelRegistry.streamSimple = (_model: any, request: any) => { consultSystem = request.systemPrompt; return { result: async () => ({ role: 'assistant', content: [{ type: 'text', text: 'reviewed' }], stopReason: 'stop', usage: { input: 1, output: 1 } }) }; };
+  await tools.get('consult').execute('test', { agent: 'five_agent', question: 'Review' }, undefined, undefined, ctx);
+  assert.match(consultSystem, /subagent new/);
+  const names: Record<string, string> = { prompt: 'five_prompt', skill: 'five_skill', tool: 'five_tool', subagent: 'five_agent', memory: 'five_memory' };
+  for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'rollback', kind, name: names[kind], version: 1 });
+  const restored = await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  assert.match(restored.systemPrompt, /prompt old/);
+  assert.match(restored.message.content, /memory old/);
+  assert.match((await call('read_component', { name: 'five_skill' })).content[0].text, /skill old/);
+  assert.match((await call('run_program', { name: 'five_tool' })).content[0].text, /tool old/);
+  await tools.get('consult').execute('test', { agent: 'five_agent', question: 'Review' }, undefined, undefined, ctx);
+  assert.match(consultSystem, /subagent old/);
+  const evidence = spawnSync('python', ['tools/check_reflective_core_evidence.py', root], { encoding: 'utf8' });
+  assert.equal(evidence.status, 0, evidence.stdout + evidence.stderr);
+  assert.deepEqual(Object.keys(JSON.parse(evidence.stdout).per_kind).sort(), ['memory', 'prompt', 'skill', 'subagent', 'tool']);
+  assert.ok(activeTools.includes('five_tool'));
+});
+
 test('free-hands: programs write text and binary, any entry shape, plain markdown components, render and delivery without gates', { timeout: 240000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-native-'));
   process.env.PPT_DEMO_ROOT = root;

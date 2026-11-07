@@ -21,6 +21,7 @@ import { Trials } from './ppt_trials.ts';
 
 export default function pptDemo(pi: ExtensionAPI) {
   const root = process.env.PPT_DEMO_ROOT!;
+  const sessionId = `${process.pid}-${Date.now()}`;
   const freshBatch = process.env.PPT_FRESH_BATCH === '1';
   const requestedBatchLimit = Number(process.env.PPT_BATCH_REQUESTS ?? 10);
   const batchLimit = requestedBatchLimit === 0 ? Infinity
@@ -73,7 +74,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (file === 'consult_runs.jsonl') evidence.consults += 1;
     if (file === 'component_runs.jsonl' && ['program_call', 'tool', 'save', 'program_save'].includes(row?.kind)) lineageUse(row);
     if (file === 'consult_runs.jsonl' && row?.role) lineageUse({ ...row, role: row.role });
-    appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), batch: state.batch, ...row })+'\n');
+    appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), session_id: sessionId, batch: state.batch, ...row })+'\n');
   };
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
   const registerTool = pi.registerTool.bind(pi);
@@ -213,6 +214,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('read_component', 'Inspect a named component source and exact active version.', Type.Object({ name: Type.String() }), (a: any) => {
     const c = binder.active().find(c => c.name === a.name);
     if (!c) throw Error('No active component by this name');
+    if (c.kind === 'skill') log('lifecycle.jsonl', { event: 'component_consumed', kind: c.kind, name: c.name, version: c.version, boundary: 'read_component' });
     return text(`${c.name}@v${c.version}\n${c.source}`);
   });
   register('reflect_component', 'Inspect or redefine a live harness component, or roll it back to an earlier saved version. Changes bind at the next Pi request boundary. Decks and output files are not harness components.',
@@ -429,6 +431,9 @@ export default function pptDemo(pi: ExtensionAPI) {
     const handoff = state.noteStale ? '(none: the last batch closed at its request limit)' : state.note || '(none)';
     const memory = workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))
       .map((path: string) => `## ${path}\n${workspace.read(path)}`).join('\n');
+    for (const path of workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path))) {
+      log('lifecycle.jsonl', { event: 'component_consumed', kind: 'memory', name: path.split('/').at(-1)!.replace(/\.md$/, ''), version: binder.versionMap()[path] ?? 1, boundary: 'before_agent_start task memory' });
+    }
     const memoryBlock = `TASK MEMORY\n${memory || '(none saved)'}`;
     if (!resumed) {
       state.batch++; state.batchRequests = 0; state.batchClosed = false;
@@ -437,9 +442,10 @@ export default function pptDemo(pi: ExtensionAPI) {
       binder.boundary(); persist();
     }
     // Agent-created tools stay active across batches: setActiveTools unions in everything registered.
-    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'component_lifecycle', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
+    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'self_component', 'component_lifecycle', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt').map(c => c.body).join('\n');
+    for (const prompt of binder.active().filter(c => c.kind === 'prompt')) log('lifecycle.jsonl', { event: 'component_consumed', kind: 'prompt', name: prompt.name, version: prompt.version, boundary: 'before_agent_start system prompt' });
     const taskGuidancePath = workspace.path('AGENTS.md');
     const taskGuidance = existsSync(taskGuidancePath) ? readFileSync(taskGuidancePath, 'utf8') : '';
     const systemPrompt = [readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'),
