@@ -4,7 +4,7 @@
 
 - `25c99c2f1905e6ac700ac25c27fbca974613b132` — `feat(ppt): add reflective component surgery`
 - `7aa5899c` — `docs(ppt): record reflective core evidence`
-- The final boundary tightening requires redefine to target an existing live component; its focused test passed before commit.
+- `ad986828319ed30ac4b9f6ba5cec561b26146b1a` — `fix(ppt): restrict reflection to live components`
 
 ## Design
 
