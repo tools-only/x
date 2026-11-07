@@ -49,7 +49,8 @@ def prepare(root: Path, source: Path) -> None:
 
 
 def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False,
-        continue_prompt: str | None = None, thinking: str = "low", fresh_batch: bool = False,
+        continue_prompt: str | None = None, kickoff_prompt: str | None = None,
+        thinking: str = "low", fresh_batch: bool = False,
         batch_requests: int = 10, unbounded: bool = False, model_override: str | None = None) -> dict:
     if batch_requests < 0:
         raise ValueError("batch_requests must be zero (unlimited) or a positive integer")
@@ -104,7 +105,6 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         settings_config = json.loads(original_settings) if original_settings else {}
         settings_path.write_text(json.dumps(settings_config, indent=2), encoding="utf-8")
     else:
-        agent.mkdir(exist_ok=resume)
         model = {"id": model_id, "name": model_id, "reasoning": True, "input": ["text", "image"],
                  "contextWindow": 128000, "cost": {"input": 20, "output": 80, "cacheRead": 20, "cacheWrite": 20}}
         (agent / "models.json").write_text(json.dumps({"providers": {provider_id: {"baseUrl": values["OPENAI_API_BASE"],
@@ -161,7 +161,8 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                 stream.write(json.dumps(event, ensure_ascii=False)+"\n")
     try:
         with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=90, deadline=deadline, event_sink=record) as kernel:
-            transport = continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else "Complete the requested deliverable using the supplied brief and source material."
+            transport = (continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else
+                         kickoff_prompt or "Complete the requested deliverable using the supplied brief and source material.")
             while deadline is None or time.monotonic() < deadline:
                 response = kernel.prompt(transport)
                 if response.get("success") is False:
@@ -208,6 +209,7 @@ if __name__ == "__main__":
     parser.add_argument("--official-openai", action="store_true", help="use the existing OpenAI Codex OAuth session; defaults to GPT-6 Luna")
     parser.add_argument("--model", help="select a model; AZ accepts its configured model id (for example az/deepseek-v4-flash)")
     parser.add_argument("--continue-prompt", help="continue an existing run with a concrete task update; keeps the original deadline and budget")
+    parser.add_argument("--kickoff-prompt", help="give a fresh run a concrete task prompt")
     parser.add_argument("--thinking", choices=["low", "medium", "high", "xhigh", "max"], default="low")
     parser.add_argument("--fresh-batch", action="store_true", help="start each new batch with a fresh conversation and carry only workspace and harness")
     parser.add_argument("--batch-requests", type=int, default=10, help="maximum provider requests per fresh batch; use 0 for unlimited")
@@ -217,5 +219,6 @@ if __name__ == "__main__":
     if args.source:
         prepare(root, args.source.resolve())
     print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai,
-        continue_prompt=args.continue_prompt, thinking=args.thinking, fresh_batch=args.fresh_batch,
+        continue_prompt=args.continue_prompt, kickoff_prompt=args.kickoff_prompt,
+        thinking=args.thinking, fresh_batch=args.fresh_batch,
         batch_requests=args.batch_requests, unbounded=args.unbounded, model_override=args.model) if args.run else {"prepared": str(root)}, ensure_ascii=False))

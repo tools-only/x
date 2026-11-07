@@ -23,12 +23,12 @@ Per-kind offline status:
 
 | Kind | Redefined | New version consumed | Restored v1 and consumed | Real-task evidence |
 | --- | --- | --- | --- | --- |
-| Prompt | PASS | PASS: next system prompt | PASS | Unverified; paid validation not run |
-| Skill | PASS | PASS: loaded with `read_component` | PASS | Unverified; paid validation not run |
-| Tool | PASS | PASS: successful `run_program` | PASS | Unverified; paid validation not run |
-| Subagent | PASS | PASS: successful `consult` used new role definition | PASS | Unverified; paid validation not run |
-| Memory | PASS | PASS: injected at next task boundary | PASS | Unverified; paid validation not run |
+| Prompt | PASS | PASS: next system prompt | PASS | Failed in real-task attempts; see [real-task result](real-task-result.md) |
+| Skill | PASS | PASS: loaded with `read_component` | PASS | PASS in `a2` at `slide-quality-checklist` v2 |
+| Tool | PASS | PASS: successful `run_program` | PASS | Failed in real-task attempts; see [real-task result](real-task-result.md) |
+| Subagent | PASS | PASS: successful `consult` used new role definition | PASS | Failed in real-task attempts; see [real-task result](real-task-result.md) |
+| Memory | PASS | PASS: injected at next task boundary | PASS | Failed in real-task attempts; see [real-task result](real-task-result.md) |
 
 ## Evidence limits and next check
 
-Functional correctness and same-extension-session wiring passed with local Pi API and subagent model stubs. Full Pi/provider reachability, autonomous adoption, and net benefit remain unverified. The prepared AZ DeepSeek real-task validation is in [validation.md](validation.md); it was not run, and no paid call was started.
+Functional correctness and same-extension-session wiring passed with local Pi API and subagent model stubs. Real-provider full-chain reachability failed within the authorized attempt budget; autonomous adoption was incomplete, and net benefit remains unverified. See [validation.md](validation.md) and [real-task-result.md](real-task-result.md) for run evidence. No deck was delivered.

@@ -18,7 +18,7 @@ The Pi kernel, the PPT host and its budget, deadline, path and provider guards, 
 
 ## Evaluation and limits
 
-Offline Node tests exercise the Pi extension tool surface with a local stub and real Binder/Workspace persistence. They establish function and same-extension-session wiring, not provider behavior or autonomous adoption. The prepared AZ DeepSeek validation asks the real task agent to inspect, redefine, and consume all five component kinds in the same session, with each change serving the presentation task. The checker requires a redefine followed by a same-version consumption receipt for prompt, skill, tool, subagent, and memory; deck-only writes fail. Offline tests exercise redefine, next use, and rollback for each kind. No paid run is part of this change.
+Offline Node tests exercise the Pi extension tool surface with a local stub and real Binder/Workspace persistence. They establish function and same-extension-session wiring, not provider behavior or autonomous adoption. The authorized AZ DeepSeek validation asks the real task agent to inspect, redefine, and consume all five component kinds in the same session, with each change serving the presentation task. The checker requires a redefine followed by a same-version consumption receipt for prompt, skill, tool, subagent, and memory; deck-only writes fail. Offline tests exercise redefine, next use, and rollback for each kind. The bounded real-task attempts and their outcomes are recorded below and in `.scratch/reflective-core/real-task-result.md`.
 
 ## Implementation and evidence
 
@@ -30,6 +30,6 @@ Offline Node tests exercise the Pi extension tool surface with a local stub and 
 | Evidence layer | Status | Environment | Result |
 | --- | --- | --- | --- |
 | Functional correctness | Passed | Local Node/Pi extension tests (local Pi API stub; subagent model stub) | All five kinds were redefined, consumed at the new version, rolled back to v1, and consumed again; checker positive and deck-only negative cases passed |
-| Full-chain reachability | Unverified | Azure DeepSeek V4 Flash | Prepared only; not run |
-| Autonomous adoption | Unverified | Azure DeepSeek V4 Flash | Prepared only; not run |
+| Full-chain reachability | Failed | Azure DeepSeek V4 Flash (`deepseek-v4-flash`, high) | Fresh-run kickoff now works. Attempts `a2` and `a3` reached the provider but hit the authorized $12 run guard before delivery; evidence is in `.scratch/reflective-core/real-task-result.md`. |
+| Autonomous adoption | Failed in observed attempts | Azure DeepSeek V4 Flash (`deepseek-v4-flash`, high) | `a2` redefined all five kinds but consumed only skill v2; `a3` made no reflective changes before budget stop. No deck delivered. |
 | Net benefit | Unverified | Not evaluated | No benefit claim |
