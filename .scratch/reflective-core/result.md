@@ -3,7 +3,8 @@
 ## Commits
 
 - `25c99c2f1905e6ac700ac25c27fbca974613b132` — `feat(ppt): add reflective component surgery`
-- Follow-up documentation and result record: recorded in the next commit.
+- `7aa5899c` — `docs(ppt): record reflective core evidence`
+- The final boundary tightening requires redefine to target an existing live component; its focused test passed before commit.
 
 ## Design
 

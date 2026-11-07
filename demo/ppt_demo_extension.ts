@@ -244,6 +244,8 @@ export default function pptDemo(pi: ExtensionAPI) {
         nextSource = binder.sourceOf(path, a.version);
         if (nextSource === undefined) throw Error(`no saved version ${a.version} for ${a.name}`);
       }
+      if (a.op === 'redefine' && a.kind !== 'memory' && !current) throw Error(`${a.kind} must already exist as a live component`);
+      if (a.op === 'redefine' && a.kind === 'memory' && !workspace.files('notes').includes(path)) throw Error('memory must already exist as a live component');
       if (a.kind === 'tool' && !current) throw Error('tool must already exist as a live component');
       const receipt = a.kind === 'tool'
         ? await runtime.saveProgram(a.name, nextSource, current!.description, current!.tags ?? [], current!.version)
