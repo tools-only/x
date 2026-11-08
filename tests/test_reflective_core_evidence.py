@@ -56,3 +56,17 @@ def test_wrong_version_and_consult_without_parent_use_fail(tmp_path):
     write_rows(tmp_path, "component_runs.jsonl", [{"kind": "program_result", "name": "t", "version": 1, "ok": True, "session_id": "s", "time": "2"}])
     write_rows(tmp_path, "consult_runs.jsonl", [{"role": "a", "version": 1, "ok": True, "session_id": "s", "time": "2"}])
     assert check(tmp_path, "new-creation")["pass"] is False
+
+
+def test_process_mode_requires_revision_and_changed_hook_action(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": []},
+        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 1, "note": "first", "ok": True, "time": "1"},
+        {"event": "reflective_change", "op": "redefine", "kind": "process", "name": "p", "version": 2, "note": "revise", "ok": True, "time": "2"},
+    ])
+    write_rows(tmp_path, "process_boundaries.jsonl", [{"part": "loop", "name": "p", "process_version": 2, "changed_action": True, "time": "3"}])
+    assert check(tmp_path, "process")["pass"] is True
+    write_rows(tmp_path, "process_boundaries.jsonl", [{"part": "loop", "name": "p", "process_version": 2, "outcome": "strategy_only", "changed_action": False, "time": "3"}])
+    result = check(tmp_path, "process")
+    assert result["pass"] is False
+    assert result["claims"]["enforced_hook_changed_subsequent_action"] == "fail"

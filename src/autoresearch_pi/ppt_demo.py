@@ -179,7 +179,19 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                     break
                 if latest.get("stopReason") in ("error", "aborted"):
                     raise RuntimeError(latest.get("errorMessage", latest.get("stopReason")))
-                transport = "PPT_RESUME" if latest.get("stopReason") == "length" and not (fresh_batch and state.get("batchRequests", 0) >= batch_requests) else "PPT_NEXT"
+                process_choice = state.get("process", {}).get("next")
+                if process_choice and process_choice.get("decision") == "error":
+                    summary.update(stop="process_hook_failed", process_error=process_choice.get("error"))
+                    break
+                if process_choice and process_choice.get("decision") == "stop":
+                    summary.update(stop="process_stop", process_version=process_choice.get("version"))
+                    break
+                if process_choice:
+                    state["process"]["next"] = None
+                    (root / ".harness" / "ppt-loop.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+                    transport = "PPT_NEXT" + (f"\n{process_choice.get('guidance', '')}" if process_choice.get("guidance") else "")
+                else:
+                    transport = "PPT_RESUME" if latest.get("stopReason") == "length" and not (fresh_batch and state.get("batchRequests", 0) >= batch_requests) else "PPT_NEXT"
                 (root / "summary.json").write_text(json.dumps(summary, indent=2))
             else:
                 summary["stop"] = "time_budget"

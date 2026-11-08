@@ -83,7 +83,27 @@ def creation(root: Path) -> dict:
 
 
 def check(root: Path, mode: str = "historical") -> dict:
-    result = historical(root) if mode == "historical" else creation(root)
+    if mode == "historical":
+        result = historical(root)
+    elif mode == "new-creation":
+        result = creation(root)
+    else:
+        life = rows(root / "harness/lifecycle.jsonl")
+        boundaries = rows(root / "harness/process_boundaries.jsonl")
+        initial = next((r for r in life if r.get("event") == "initial_registry"), {})
+        seeded = any(c.get("kind") == "process" for c in initial.get("components", []))
+        changes = [r for r in life if r.get("event") == "reflective_change" and r.get("kind") == "process"]
+        defined = any(r.get("op") == "define" and r.get("ok") is not False and str(r.get("note", "")).strip() for r in changes)
+        revised = any(r.get("op") == "redefine" and r.get("ok") is not False and str(r.get("note", "")).strip() for r in changes)
+        changed = [r for r in boundaries if r.get("changed_action") is True and r.get("part") in ("workflow", "loop")
+                   and any(c.get("name") == r.get("name") and c.get("version") == r.get("process_version")
+                           and r.get("time", "") >= c.get("time", "") for c in changes)]
+        result = {"mode": "process", "claims": {"agent_defined_not_seeded": "pass" if defined and not seeded else "fail",
+                   "redefined_with_note": "pass" if revised else "fail",
+                   "enforced_hook_changed_subsequent_action": "pass" if changed else "fail"},
+                  "pass": bool(defined and revised and changed and not seeded),
+                  "definitions": changes, "boundaries": boundaries,
+                  "limits": ["text-only publication does not count as process use", "offline wiring does not establish autonomous adoption or net benefit"]}
     print(json.dumps(result, indent=2))
     return result
 
@@ -91,6 +111,6 @@ def check(root: Path, mode: str = "historical") -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
-    parser.add_argument("--mode", choices=("historical", "new-creation"), default="historical")
+    parser.add_argument("--mode", choices=("historical", "new-creation", "process"), default="historical")
     args = parser.parse_args()
     raise SystemExit(0 if check(args.root, args.mode)["pass"] else 1)

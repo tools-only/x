@@ -28,7 +28,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   // The PPT workspace starts from what the task actually uses; no ARC skeleton (data/frames, config).
   const workspace = new Workspace(root, { dirs: ['data', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results'] });
   workspace.writeGuard = path => {
-    if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory\/|notes\/memory\.md$|AGENTS\.md$)/i.test(path))
+    if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory\/|notes\/memory\.md$|AGENTS\.md$|processes\/)/i.test(path))
       throw Error('Harness component files can only be changed with reflect_component(op="define" or "redefine").');
   };
   const binder = new Binder(workspace, validatePythonComponent);
@@ -41,6 +41,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   state.nextPhase ??= 'task';
   state.note ??= '';
   state.noteStale ??= false;
+  state.process ??= { active: null, pending: null, failures: [] };
   let resumed = false, initialized = false;
   const newDefinitions: Array<{ name: string; kind: string; purpose: string; version: number; use_endpoint: string }> = [];
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
@@ -81,6 +82,55 @@ export default function pptDemo(pi: ExtensionAPI) {
     appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), session_id: sessionId, batch: state.batch, ...row })+'\n');
   };
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
+  const processPath = (name: string) => `processes/${name}.json`;
+  const processRows = () => (existsSync(workspace.path('processes')) ? workspace.files('processes') : []).filter(path => path.endsWith('.json')).map(path => {
+    try { return { ...JSON.parse(workspace.read(path)), name: path.split('/').at(-1)!.replace(/\.json$/, ''), version: binder.versionMap()[path] }; } catch { return undefined; }
+  }).filter(Boolean);
+  const runHook = (hook: string, input: any) => {
+    if (!hook.trim()) return undefined;
+    const runner = `const vm=require('node:vm');const ts=require('node:module').stripTypeScriptTypes;let raw='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>raw+=x);process.stdin.on('end',()=>{try{const x=JSON.parse(raw);const code=ts(x.hook).replace(/export\\s+default\\s+function/, 'globalThis.default = function').replace(/export\\s+default\\s+/, 'globalThis.default = ');const box={};vm.runInNewContext(code,box,{timeout:120,maxStringLength:65536,codeGeneration:{strings:false,wasm:false}});if(typeof box.default!=='function')throw Error('default function export required');const out=box.default(x.input);if(out&&typeof out.then==='function')throw Error('async hooks are not supported');const s=JSON.stringify(out);if(!s||s.length>8192)throw Error('invalid or oversized output');process.stdout.write(s)}catch(e){process.stderr.write(String(e&&e.message||e).slice(0,1000));process.exitCode=1}})`;
+    const child = spawnSync(process.execPath, ['--permission', '-e', runner], { input: JSON.stringify({ hook, input }), encoding: 'utf8', timeout: 500, maxBuffer: 16 * 1024, windowsHide: true });
+    if (child.error || child.status !== 0) throw Error((child.stderr || String(child.error || 'hook failed')).slice(0, 1000));
+    return JSON.parse(child.stdout);
+  };
+  const activateProcess = () => {
+    const pending = state.process.pending;
+    if (!pending) return state.process.active;
+    const references = ['workflow', 'loop'].flatMap(part => pending.envelope[part].refs ?? []);
+    const incompatible = references.filter(ref => !binder.active().some(c => c.name === ref.name && c.kind === ref.kind && c.version === ref.version));
+    if (incompatible.length) {
+      state.process.pending = null;
+      state.process.activationReceipt = { name: pending.name, version: pending.version, error: `references no longer active at exact versions: ${incompatible.map(r => `${r.name}/${r.kind}@${r.version}`).join(', ')}` };
+      persist();
+      log('lifecycle.jsonl', { event: 'process_activation_failed', ...state.process.activationReceipt });
+      return state.process.active;
+    }
+    state.process.lastGood = state.process.active ?? state.process.lastGood ?? null;
+    state.process.active = pending; state.process.pending = null; persist();
+    state.process.activationReceipt = null;
+    log('lifecycle.jsonl', { event: 'process_activated', name: pending.name, version: pending.version });
+    return pending;
+  };
+  const validateProcess = (envelope: any) => {
+    if (!envelope || Object.keys(envelope).some(k => !['workflow', 'loop'].includes(k)) || !envelope.workflow || !envelope.loop) throw Error('process requires workflow and loop parts');
+    const components = binder.active();
+    for (const partName of ['workflow', 'loop']) {
+      const part = envelope[partName];
+      if (Object.keys(part).some(k => !['strategy', 'hook', 'refs'].includes(k))) throw Error(`${partName} has unknown fields`);
+      if (typeof part.strategy !== 'string' || part.strategy.length > 12000 || (part.hook !== undefined && (typeof part.hook !== 'string' || part.hook.length > 16000)) || !Array.isArray(part.refs ?? []) || (part.refs?.length ?? 0) > 32) throw Error(`${partName} has invalid shape`);
+      for (const ref of part.refs ?? []) {
+        if (!ref || Object.keys(ref).some(k => !['name', 'kind', 'version'].includes(k)) || typeof ref.name !== 'string' || typeof ref.kind !== 'string' || !Number.isSafeInteger(ref.version)) throw Error(`${partName} has invalid component reference`);
+        const component = components.find(c => c.name === ref.name && c.kind === ref.kind && c.version === ref.version);
+        if (!component) throw Error(`unresolved exact reference ${ref.name}/${ref.kind}@${ref.version}`);
+      }
+      if (part.hook?.trim()) {
+        const probe = partName === 'workflow' ? { transition: 'render', allow: true } : { decision: 'continue', guidance: '' };
+        const result = runHook(part.hook, probe);
+        if (partName === 'workflow' && (!result || typeof result.allow !== 'boolean' || (result.guidance !== undefined && typeof result.guidance !== 'string'))) throw Error('workflow hook export must return {allow:boolean,guidance?:string}');
+        if (partName === 'loop' && (!result || !['continue', 'adapt', 'stop'].includes(result.decision) || (result.guidance !== undefined && typeof result.guidance !== 'string'))) throw Error('loop hook export must return {decision:continue|adapt|stop,guidance?:string}');
+      }
+    }
+  };
   const registerTool = pi.registerTool.bind(pi);
   (pi as any).registerTool = (tool: any) => registerTool({ ...tool, execute: async (...args: any[]) => {
     const result = await tool.execute(...args);
@@ -210,9 +260,9 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (c.kind === 'skill') log('lifecycle.jsonl', { event: 'component_consumed', kind: c.kind, name: c.name, version: c.version, boundary: 'read_component' });
     return text(`${c.name}@v${c.version}\n${c.source}`);
   });
-  register('reflect_component', 'Inspect, define, redefine, or restore a live harness component. This is the only way to create or change prompts, skills, tools, subagents, and memory. Changes bind at the next Pi request boundary. Decks and output files are not harness components.',
+  register('reflect_component', 'Inspect, define, redefine, or restore a live harness component or process. Process versions use the same note, Binder history, and restore path as physical components.',
     Type.Object({ op: Type.Union([Type.Literal('inspect'), Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
-      name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')])),
+      name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory'), Type.Literal('process')])),
       source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), note: Type.Optional(Type.String()) }), async (a: any) => {
       const components = binder.active().filter(c => ['tool', 'prompt', 'skill', 'subagent'].includes(c.kind));
       const consumers = (component: any) => [...new Set([
@@ -225,10 +275,31 @@ export default function pptDemo(pi: ExtensionAPI) {
        if (a.op === 'inspect') return text([...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
         path: c.path, used_by: consumers(c), detail: `read_component(name=${JSON.stringify(c.name)})` })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
         .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
-          path, used_by: ['next provider request system context'], detail: `read(path=${JSON.stringify(path)})` }))]);
+          path, used_by: ['next provider request system context'], detail: `read(path=${JSON.stringify(path)})` })),
+        ...processRows().map(p => ({ name: p.name, kind: 'process', version: p.version, status: state.process.active?.name === p.name ? 'active' : 'saved' }))]);
        if (a.op !== 'inspect' && (typeof a.note !== 'string' || !a.note.trim())) throw Error('note is required for define, redefine, or restore');
        if (!a.name || !a.kind) throw Error('name and kind are required for define, redefine, or restore');
        if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(a.name)) throw Error('invalid component name');
+      if (a.kind === 'process') {
+        const path = processPath(a.name), old = existsSync(workspace.path(processPath(a.name)))
+          ? { name: a.name, version: binder.versionMap()[processPath(a.name)] } : undefined;
+        if (a.op === 'define' && old) throw Error('process already exists; use redefine');
+        if ((a.op === 'redefine' || a.op === 'restore') && !old) throw Error('process does not exist; use define');
+        let envelope: any;
+        try {
+          const raw = a.op === 'restore' ? binder.sourceOf(path, a.version) : a.source;
+          if (typeof raw !== 'string') throw Error(a.op === 'restore' ? 'saved version not found' : 'source is required');
+          envelope = JSON.parse(raw); validateProcess(envelope);
+        } catch (error) { return text({ ok: false, name: a.name, kind: 'process', last_good: state.process.active, error: String(error) }); }
+        workspace.mutate({ op: 'write', path, content: JSON.stringify(envelope) }, true);
+        const receipt = await binder.save(path, 0, { by: 'agent', decision: state.batch });
+        const version = binder.versionMap()[path];
+        state.process.pending = { name: a.name, version, envelope };
+        persist(); binder.boundary();
+        log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: 'process', version, note: a.note, ok: true, envelope_hash: createHash('sha256').update(JSON.stringify(envelope)).digest('hex') });
+        if (a.op === 'define') newDefinitions.push({ name: a.name, kind: 'process', purpose: 'Agent-authored workflow and settled-round strategy', version, use_endpoint: `reflect_component(op="inspect", kind="process", name=${JSON.stringify(a.name)})` });
+        return text({ ok: true, name: a.name, kind: 'process', version, receipt, activation: 'next workflow or settled-round boundary' });
+      }
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
@@ -282,6 +353,24 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('office', 'Render the current presentation or prototype (HTML or scene JSON under artifacts/), look at rendered pages as images, or deliver. Rendering takes a screenshot of every slide; delivery copies the rendered revision and your harness.',
     Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('deliver')]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
     async (a: any, signal: AbortSignal, ctx: any) => {
+      const activeProcess = ['render', 'deliver'].includes(a.op) ? activateProcess() : state.process.active;
+      if (activeProcess && ['render', 'deliver'].includes(a.op) && activeProcess.envelope.workflow.hook?.trim()) {
+        const hookInput = { transition: a.op, source: sourceFacts(), rendered_revision: state.lastFeedback?.revision ?? null, references: activeProcess.envelope.workflow.refs ?? [] };
+        try {
+          const decision = runHook(activeProcess.envelope.workflow.hook, { ...hookInput, process_version: activeProcess.version });
+          if (!decision || typeof decision.allow !== 'boolean' || (decision.guidance !== undefined && typeof decision.guidance !== 'string')) throw Error('workflow hook must return {allow:boolean,guidance?:string}');
+          log('process_boundaries.jsonl', { part: 'workflow', process_version: activeProcess.version, name: activeProcess.name, inputs: hookInput, outcome: decision });
+          if (!decision.allow) throw Error(`process denied ${a.op}: ${String(decision.guidance ?? '').slice(0, 500)}`);
+          state.process.lastGood = activeProcess; persist();
+        } catch (error) {
+          state.process.active = state.process.lastGood ?? null; state.process.failures.push(String(error)); persist();
+          log('process_boundaries.jsonl', { part: 'workflow', process_version: activeProcess.version, inputs: hookInput, outcome: 'failure', error: String(error).slice(0, 1000), last_good: state.process.active?.version ?? null });
+          throw Error(`process hook failed; ${a.op} was not performed: ${String(error).slice(0, 1000)}`);
+        }
+      } else if (activeProcess && ['render', 'deliver'].includes(a.op)) {
+        log('process_boundaries.jsonl', { part: 'workflow', process_version: activeProcess.version, name: activeProcess.name, inputs: { transition: a.op, source: sourceFacts(), rendered_revision: state.lastFeedback?.revision ?? null, references: activeProcess.envelope.workflow.refs ?? [] }, outcome: 'strategy_only', changed_action: false });
+        state.process.lastGood = activeProcess; persist();
+      }
       if (a.op === 'render') {
         const sourcePath = a.source_path ?? canonicalPath();
         if (!sourcePath) throw Error('Choose source_path from an existing file under artifacts/, or create artifacts/presentation.html or artifacts/deck.json as the canonical source.');
@@ -353,7 +442,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
       writeFileSync(join(delivery, 'harness.json'), JSON.stringify({ components: components.map(c => ({ name: c.name, kind: c.kind, version: c.version, path: c.path, hash: c.hash })),
         artifact_sha256: currentHash }, null, 2));
-      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/renders.jsonl', 'harness/usage.jsonl',
+      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/renders.jsonl', 'harness/usage.jsonl', 'harness/process_boundaries.jsonl',
         'harness/consult_runs.jsonl', 'harness/model-usage.jsonl', 'harness/provider-requests.jsonl', 'session.jsonl']) {
         const source = join(root, relative);
         if (!existsSync(source)) continue;
@@ -374,7 +463,6 @@ export default function pptDemo(pi: ExtensionAPI) {
         }
       };
       seed('prompts/ppt_baseline_guidance.md', readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'));
-      seed('skills/deck_workflow/SKILL.md', 'Use the supplied source material to build a clear, readable slide deck. Keep each slide focused, make numeric claims traceable to source material, and render the final artifact before delivery.');
       seed('agents/deck_reviewer.md', '---\ndescription: Review a slide deck for clarity and source traceability\ntools: [read, grep]\n---\nReview the supplied draft and source material briefly. Identify the most consequential unsupported claim, unclear comparison, or readability issue; cite the relevant evidence and suggest one concrete correction.');
       seed('notes/memory/presentation_workflow.md', 'The active presentation workflow uses the supplied source materials, renders the canonical artifact, and delivers the rendered revision.');
       await binder.scan(0);
@@ -451,6 +539,11 @@ export default function pptDemo(pi: ExtensionAPI) {
       ...prompts.map((prompt: any) => ({ kind: 'prompt', name: prompt.name, version: prompt.version, text: prompt.body })),
       ...memories.map((path: string) => ({ kind: 'memory', name: path.split('/').at(-1)!.replace(/\.md$/, ''), version: binder.versionMap()[path] ?? 1, text: workspace.read(path) })),
     ];
+    const liveProcess = state.process.active;
+    if (liveProcess) for (const part of ['workflow', 'loop']) if (liveProcess.envelope[part].strategy)
+      additions.push({ kind: 'process', name: liveProcess.name, version: liveProcess.version, text: `${part.toUpperCase()} STRATEGY\n${liveProcess.envelope[part].strategy}` } as any);
+    if (state.process.activationReceipt) additions.push({ kind: 'process', name: state.process.activationReceipt.name, version: state.process.activationReceipt.version,
+      text: `Activation receipt: ${state.process.activationReceipt.error}` } as any);
     const discoveries = newDefinitions.splice(0);
     const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance');
     const originalPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
@@ -466,6 +559,34 @@ export default function pptDemo(pi: ExtensionAPI) {
       boundary: 'context_with_system provider request' });
     if (baselinePrompt) log('lifecycle.jsonl', { event: 'component_consumed', kind: 'prompt', name: baselinePrompt.name,
       version: baselinePrompt.version, boundary: 'context_with_system provider request' });
+  });
+  let settledMessage: any;
+  pi.on('agent_end', () => {
+    const activeProcess = activateProcess();
+    if (!activeProcess) return;
+    const hook = activeProcess.envelope.loop.hook;
+    const input = { stop_reason: settledMessage?.stopReason ?? 'unknown', batch: state.batch, revision: state.revision, complete: state.complete, process_version: activeProcess.version,
+      references: activeProcess.envelope.loop.refs ?? [] };
+    if (!hook?.trim()) {
+      log('process_boundaries.jsonl', { part: 'loop', name: activeProcess.name, process_version: activeProcess.version, inputs: input, outcome: 'strategy_only', changed_action: false });
+      state.process.lastGood = activeProcess; persist();
+      return;
+    }
+    try {
+      const decision = runHook(hook, input);
+      if (!decision || !['continue', 'adapt', 'stop'].includes(decision.decision) || (decision.guidance !== undefined && typeof decision.guidance !== 'string')) throw Error('loop hook must return {decision:continue|adapt|stop,guidance?:string}');
+      state.process.next = { decision: decision.decision, guidance: (decision.guidance ?? '').slice(0, 1000), version: activeProcess.version };
+      state.process.lastGood = activeProcess;
+      const baselineAction = input.stop_reason === 'length' ? 'PPT_RESUME' : 'PPT_NEXT';
+      const chosenAction = decision.decision === 'stop' ? 'STOP' : 'PPT_NEXT';
+      const changedAction = chosenAction !== baselineAction || Boolean(decision.guidance);
+      log('process_boundaries.jsonl', { part: 'loop', name: activeProcess.name, process_version: activeProcess.version, inputs: input, outcome: state.process.next, baseline_action: baselineAction, chosen_action: chosenAction, changed_action: changedAction });
+      persist();
+    } catch (error) {
+      state.process.active = state.process.lastGood ?? null; state.process.next = { decision: 'error', version: activeProcess.version, error: String(error).slice(0, 1000) };
+      log('process_boundaries.jsonl', { part: 'loop', name: activeProcess.name, process_version: activeProcess.version, inputs: input, outcome: 'failure', error: String(error).slice(0, 1000), changed_action: false });
+      persist();
+    } finally { settledMessage = undefined; }
   });
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   pi.on('before_provider_request', (event: any) => {
@@ -483,6 +604,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   pi.on('message_end', (event: any) => {
     const m = event.message;
     if (m.role === 'assistant') {
+      settledMessage = m;
       const u = m.usage ?? {};
       const known = Number.isFinite(u.input) && Number.isFinite(u.output) && (u.input+u.output)>0;
       const usedTokens = known ? reportedTokens(u) : unknownUsageReserveTokens;
