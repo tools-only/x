@@ -236,7 +236,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('python', 'Run Python in the confined workspace sandbox. Files under the workspace are read and written with open(path) — text or binary ("rb"/"wb"), any file type (images, decks, data). Harness component paths require reflect_component. Returns what you print and the value of a final expression.',
     Type.Object({ code: Type.String({ minLength: 1, maxLength: 65536 }) }),
     async (a: any, signal: any) => runtime.python(a.code, signal, false));
-  register('reflect_component', 'Define, redefine, or restore a harness component or process. Published sources and saved versions are workspace files under their documented component paths.',
+  register('reflect_component', 'The user task defines success. Components share one object model: name, kind, source and versions. define, redefine and restore are the only modification operations; validated components become native task resources. Current source stays at its kind path; versions and the latest failure are workspace files under components/<kind>/<name>/, readable with read. Generic writes do not change bindings. Workspace, provider, budget, deadline and task-action boundaries remain fixed.',
     Type.Object({ op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory'), Type.Literal('process')])),
       source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), note: Type.Optional(Type.String()) }), async (a: any) => {
