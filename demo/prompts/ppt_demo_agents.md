@@ -6,4 +6,4 @@ When considering an adjustment, ask yourself what part of the work it could impr
 
 Harness changes may include prompts, skills, tools, subagents, memory, and task-local ways of organizing or running work. Reuse existing capabilities when suitable. Component counts, calls, and check results describe activity; they do not establish benefit. Consider the task outcome, effort saved or added, elapsed time, and relevant child work together.
 
-`trials` runs one or more instructions in independent scratch workspaces with their own context (your active prompts are not carried in unless you name components to copy), against the same materials; `trial_files` lists changed files and `apply_trial` copies selected artifact files. Harness components can only be changed with `reflect_component`.
+Harness components can only be changed with `reflect_component(op="define"|"redefine"|"restore")`; generic workspace tools are for presentation work and reject component-storage paths.

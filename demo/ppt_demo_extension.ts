@@ -17,7 +17,6 @@ import { Workspace } from './arc_thin_workspace.ts';
 import { Binder } from './arc_thin_binder.ts';
 import { validatePythonComponent } from './arc_thin_components.ts';
 import { NativeRuntime } from './arc_thin_native_runtime.ts';
-import { Trials } from './ppt_trials.ts';
 
 export default function pptDemo(pi: ExtensionAPI) {
   const root = process.env.PPT_DEMO_ROOT!;
@@ -272,44 +271,6 @@ export default function pptDemo(pi: ExtensionAPI) {
       return text({ name, kind: a.kind, version, receipt, effective: 'next_pi_request', next_call: nextCall,
         detail: a.kind === 'tool' || a.kind === 'subagent' ? undefined : `read ${path} for full source` });
     });
-  register('checkpoint', 'Record a short handoff note and optionally enter or leave an engineering turn.',
-    Type.Object({ note: Type.Optional(Type.String()), adapt: Type.Optional(Type.Boolean()) }), (a: any) => {
-      const chars = Array.from(String(a.note ?? '')), note = chars.slice(0, 400).join('');
-      if (a.note !== undefined) { state.note = note; state.noteStale = false; }
-      if (a.adapt !== undefined) { state.phase = a.adapt ? 'adapt' : 'task'; state.nextPhase = state.phase; }
-      persist(); log('lifecycle.jsonl', { event: 'checkpoint', phase: state.phase, note_chars: note.length });
-      return text({ phase: state.phase, note: state.note, ...(chars.length > 400 ? { warning: 'Handoff note was truncated to 400 characters.' } : {}) });
-    });
-  const trials = new Trials({ root, workspace, binder, log, usage: (kind, message) => log('usage.jsonl', { kind, message }),
-    modelResult: async create => {
-      if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
-        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, reason: 'trial budget boundary' }));
-        process.exit(0);
-      }
-      spent += reserve;
-      log('provider-requests.jsonl', { request: ++requests, kind: 'trial', estimated_usd_so_far: spent });
-      const reply = await create().result();
-      const u = reply.usage ?? {};
-      const known = Number.isFinite(u.input) && Number.isFinite(u.output) && u.input + u.output > 0;
-      const usedTokens = known ? reportedTokens(u) : unknownUsageReserveTokens;
-      tokensSpent += usedTokens;
-      if (known) spent += ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6-reserve;
-      log('model-usage.jsonl', { request: requests, kind: 'trial', usage: known ? u : null, tokens_used: usedTokens, tokens_total: tokensSpent, conservative_usd: spent,
-        usage_status: known ? 'reported' : 'unknown_reserved', stopReason: reply.stopReason });
-      return reply;
-    },
-    reasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
-    maxTrials: Number(process.env.PPT_DEMO_MAX_TRIALS ?? 3), maxRounds: Number(process.env.PPT_DEMO_TRIAL_ROUNDS ?? 12),
-    timeoutMs: Number(process.env.PPT_DEMO_TRIAL_MS ?? 300000) });
-  register('trials', 'Run one or more independent trials: each gets its own scratch workspace and its own context (no parent prompts unless you name components to copy in) and works on the instruction you give it, with file and Python tools. Trials cannot touch the main workspace; their files stay under .harness/trials. Same model, counted against the task budget. Each trial returns its answer and the files it wrote.',
-    Type.Object({ trials: Type.Array(Type.Object({ id: Type.Optional(Type.String()), instruction: Type.String({ minLength: 1 }),
-      materials: Type.Optional(Type.Array(Type.String())), components: Type.Optional(Type.Array(Type.String())) }), { minItems: 1 }) }),
-    async (a: any, signal: AbortSignal, ctx: any) => text((await trials.run(a.trials, ctx, signal)).content[0].text));
-  register('apply_trial', 'Copy selected non-component artifact files from a trial into the main workspace.',
-    Type.Object({ id: Type.String(), paths: Type.Optional(Type.Array(Type.String())) }),
-    async (a: any) => { const result = await trials.apply(a.id, a.paths); await binder.scan(0); binder.boundary(); runtime.register(); return text(result.content[0].text); });
-  register('trial_files', 'List the files a trial changed relative to the main workspace, before applying any.',
-    Type.Object({ id: Type.String() }), (a: any) => text({ id: a.id, changed: trials.changed(a.id) }));
   register('office', 'Render the current presentation or prototype (HTML or scene JSON under artifacts/), look at rendered pages as images, or deliver. Rendering takes a screenshot of every slide; delivery copies the rendered revision and your harness.',
     Type.Object({ op: Type.Union([Type.Literal('render'), Type.Literal('look'), Type.Literal('deliver')]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
     async (a: any, signal: AbortSignal, ctx: any) => {
@@ -440,7 +401,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       binder.boundary(); persist();
     }
     // Agent-created tools stay active across batches: setActiveTools unions in everything registered.
-  const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
+  const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'office', 'consult']);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt' && c.name !== 'ppt_baseline_guidance').map(c => c.body).join('\n');
     const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance')?.body

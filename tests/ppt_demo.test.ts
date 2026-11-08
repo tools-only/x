@@ -40,6 +40,10 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   assert.ok(!tools.has('save_program') && !tools.has('self_component') && !tools.has('edit_program') && !tools.has('component_lifecycle'));
+  const selfModificationSurface = [...tools.keys()].filter(name => ['reflect_component', 'trials', 'trial_files', 'apply_trial', 'checkpoint', 'list_programs', 'python', 'edit', 'write'].includes(name)).sort();
+  assert.deepEqual(selfModificationSurface, ['edit', 'list_programs', 'python', 'reflect_component', 'write']);
+  for (const name of ['trials', 'trial_files', 'apply_trial', 'checkpoint']) assert.equal(tools.has(name), false, `${name} must not be agent-visible`);
+  assert.equal(typeof tools.get('list_programs').execute, 'function');
   await call('reflect_component', { op: 'define', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version one' });
   const firstTool = toolSource(`def main(args):\n    return 'tool version one'`, 'Reflective test tool');
   await call('reflect_component', { op: 'define', kind: 'tool', name: 'reflect_tool', source: firstTool });
@@ -62,6 +66,9 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   await assert.rejects(() => call('write', { path: 'prompts/bypass.md', content: 'bypass' }), /reflect_component/);
   await assert.rejects(() => call('edit', { path: 'tools/reflect_tool.py', oldText: 'main', newText: 'main2' }), /reflect_component/);
   await assert.rejects(() => call('python', { code: "open('notes/memory/bypass.md','w').write('bypass')" }), /reflect_component/);
+  await assert.rejects(() => call('python', { code: "open('skills/bypass/SKILL.md','w').write('bypass')" }), /reflect_component/);
+  await assert.rejects(() => call('python', { code: "open('agents/bypass.md','w').write('bypass')" }), /reflect_component/);
+  await assert.rejects(() => call('python', { code: "open('lib/bypass.py','w').write('bypass')" }), /reflect_component/);
   await assert.rejects(() => call('write', { path: 'ToOlS/bypass.py', content: 'bypass' }), /reflect_component/);
   assert.ok(!existsSync(join(root, 'workspace/prompts/bypass.md')));
   const afterDeckWrite = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
@@ -216,14 +223,11 @@ test('free-hands: programs write text and binary, any entry shape, plain markdow
   const manifest = join(root, 'workspace/artifacts/deck.json');
   assert.match(readFileSync(manifest, 'utf8'), /Initial/);
 
-  // The engineering turn is not forced read-only: a program may write during it.
-  await call('checkpoint', { note: 'Revising method', adapt: true });
-  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  // A live program may write before it is redefined.
   const duringAdapt = await call('run_program', { name: 'page_builder', args: { title: 'Adapt write' } });
   assert.equal(duringAdapt.isError, false, duringAdapt.content?.[0]?.text);
   assert.match(readFileSync(manifest, 'utf8'), /Adapt write/);
 
-  await call('checkpoint', { note: 'Back to task', adapt: false });
   await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'page_builder', source: toolSource(body, 'Updated method') });
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   const matches = await call('list_programs', { query: 'updated' });
