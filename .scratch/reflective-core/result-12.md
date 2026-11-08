@@ -24,7 +24,7 @@ Date: 2026-11-08 (Asia/Shanghai). Branch: `codex/ppt-reflective-core-20261108`, 
 
 - **Checks:**
   - `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts` — 8 passed, 0 failed. Scripted doubles covered legacy compatibility, single-part next-request activation, captured versions, exact refs, stale-ref last-good recovery, seed registry cleanup, existing component use, and PPT offline behavior.
-  - `python -m pytest tests/test_reflective_core_evidence.py -q` — 7 passed. Cases reject note-only and hook-only adoption, verify process/session/version association reporting, and reject a semantic adoption verdict without a matching request binding.
+  - `python -m pytest tests/test_reflective_core_evidence.py -q` — 8 passed. Cases reject note-only and hook-only adoption, verify process/session/version association reporting, reject semantic adoption without a matching request binding, and reject identify/create claims when strategic seeds remain.
   - `git diff --check` — clean for the implementation diff.
 - No provider, Azure, Qwen, or paid run was started. No secrets were written. Offline checks use scripted Pi/provider doubles and only establish local behavior/wiring.
 - The seed test checks that the initial registry excludes the strategic seeds and that optional process guidance remains. Environment and delivery facts remain in the existing adapter/runtime.
@@ -46,4 +46,4 @@ Deferred checklist review: A's adapter/policy boundary remains open; B/C's evalu
 
 ## Commit
 
-Implementation and tests are in local commits `3a70e77a` (`Add lightweight reflective process binding`) and `d87bd8c4` (`Require bound versions for process adoption evidence`). This record is committed in a following documentation commit on the same branch; the final commit identifier is reported in the delivery summary.
+Implementation and tests are in local commits `3a70e77a` (`Add lightweight reflective process binding`), `d87bd8c4` (`Require bound versions for process adoption evidence`), and `35ea1b97` (`Guard identify evidence against strategy seeds`). This record is committed in a following documentation commit on the same branch; the final commit identifier is reported in the delivery summary.
