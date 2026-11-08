@@ -84,6 +84,8 @@ def process(root: Path) -> dict:
     boundaries = rows(root / "harness/process_boundaries.jsonl")
     initial = next((r for r in life if r.get("event") == "initial_registry"), {})
     seeded = any(c.get("kind") == "process" for c in initial.get("components", []))
+    strategy_seeds = [c.get("name") for c in initial.get("components", [])
+                      if c.get("name") in {"deck_reviewer", "presentation_workflow", "deck_file_summary"}]
     changes = [r for r in life if r.get("event") == "reflective_change" and r.get("kind") == "process"]
     injected = [r for r in life if r.get("event") == "process_context_injected"]
     summaries = rows(root / "harness/process_semantic_reviews.jsonl")
@@ -109,7 +111,7 @@ def process(root: Path) -> dict:
         verdict = semantic.get(claim, "not_evaluated")
         if verdict != "pass":
             return verdict
-        if claim == "identify_create" and (not initial or seeded or not valid_definitions):
+        if claim == "identify_create" and (not initial or seeded or strategy_seeds or not valid_definitions):
             return "fail"
         if claim == "process_adoption" and not associated:
             return "fail"
@@ -125,6 +127,7 @@ def process(root: Path) -> dict:
               "self_modify": status("self_modify"), "task_effect": effect, "quality": quality}
     return {"mode": "process", "claims": claims, "pass": False,
             "recorded_evidence": {"initial_registry_snapshot": bool(initial), "seeded_process": seeded,
+                "strategic_seed_names": strategy_seeds,
                 "nonempty_strategy_definition": bool(valid_definitions), "process_context_bindings": associations,
                 "legacy_hook_boundaries": len(boundaries), "semantic_review_records": len(summaries)},
             "definitions": changes, "boundaries": boundaries,

@@ -120,3 +120,15 @@ def test_semantic_adoption_review_cannot_pass_without_associated_request_version
     write_rows(tmp_path, "process_semantic_reviews.jsonl", [{"claim": "process_adoption", "verdict": "pass"}])
     result = check(tmp_path, "process")
     assert result["claims"]["process_adoption"] == "fail"
+
+
+def test_identify_create_review_requires_seed_free_initial_registry(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": [{"kind": "subagent", "name": "deck_reviewer"}]},
+        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 1,
+         "strategy_present": True, "ok": True, "session_id": "s", "time": "1"},
+    ])
+    write_rows(tmp_path, "process_semantic_reviews.jsonl", [{"claim": "identify_create", "verdict": "pass"}])
+    result = check(tmp_path, "process")
+    assert result["claims"]["identify_create"] == "fail"
+    assert result["recorded_evidence"]["strategic_seed_names"] == ["deck_reviewer"]
