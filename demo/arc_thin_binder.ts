@@ -90,6 +90,12 @@ export class Binder {
     const file = hash ? join(this.versions, `${hash}.txt`) : '';
     return file && existsSync(file) ? readFileSync(file, 'utf8') : undefined;
   }
+  historyOf(path: string) {
+    const versions = this.history.get(path);
+    const entry = this.entries.get(path);
+    return { versions: [...(versions ?? [])].map(([version, hash]) => ({ version, hash })),
+      lastFailure: entry?.error ? { version: entry.version, error: entry.error } : undefined };
+  }
   originOf(path: string): { by?: string; decision?: number } | undefined {
     const entry = this.entries.get(path);
     return entry ? { by: entry.by, decision: entry.decision } : undefined;

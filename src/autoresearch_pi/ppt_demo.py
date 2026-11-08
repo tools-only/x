@@ -18,7 +18,7 @@ PROJECT = Path(__file__).resolve().parents[2]
 ENVIRONMENT = """# HTML presentation environment
 The deliverable is a presentation you author; the typical form is artifacts/presentation.html with each slide container marked class="slide". Inline CSS/SVG/JavaScript and embedded assets make it self-contained, and relative assets (images, css, js next to the source under artifacts/) resolve: the renderer screenshots a copy placed next to your source files. The renderer adds navigation, a slide counter, fullscreen and print-to-PDF; it creates one-slide browser previews. Receipts and page images are readable under results/renders/vNNN/.
 The renderer also accepts scene JSON at artifacts/deck.json and converts it to standalone HTML. JSON scenes use width, height, slides; each slide has background and elements with kind,x,y,w,h. Element kinds include text, rect, line, shape, chart, table and image; an element may also carry raw HTML/SVG in an "html" field. Images reference any workspace path; their type is detected from content (png, jpeg, gif, webp, bmp). See the tool result for renderer facts and warnings.
-Python (the python tool and programs) reads and writes workspace files as text or binary; you can create images and other binary assets yourself. The task files are data/instructions.md and data/material.txt. Read and write paths are confined to the workspace. data/ and results/ are read-only. Browser output is written under exports/ and results/; delivery copies the rendered revision to delivery/.
+Python and native named tools read and write workspace files as text or binary; you can create images and other binary assets yourself. Published skills appear in Pi's explicit workspace skill index and their SKILL.md files are available through the ordinary confined read tool. Ambient skills remain disabled. The task files are data/instructions.md and data/material.txt. Read and write paths are confined to the workspace. data/ and results/ are read-only. Browser output is written under exports/ and results/; delivery copies the rendered revision to delivery/.
 """
 
 
@@ -145,7 +145,9 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         for p in [PROJECT / "demo/ppt_demo_extension.ts", PROJECT / "demo/prompts/ppt_demo_system.md",
                   PROJECT / "demo/prompts/ppt_demo_agents.md",
                   PROJECT / "src/autoresearch_pi/ppt_demo.py", PROJECT / "src/autoresearch_pi/ppt_demo_html.py",
-                  PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts"]}
+                  PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts",
+                  PROJECT / "demo/arc_thin_workspace.ts",
+                  PROJECT / "demo/ppt_trials.ts", PROJECT / "tools/reflective_core_evidence_joins.py"]}
     protocol["task_hashes"] = {str(p.relative_to(root)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [root / "workspace/AGENTS.md", root / "workspace/data/instructions.md", root / "workspace/data/material.txt", root / "workspace/data/environment.md"]}
     if resume:

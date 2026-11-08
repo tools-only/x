@@ -19,6 +19,57 @@ def test_new_creation_requires_new_definition_note_and_same_session_use(tmp_path
     assert check(tmp_path, "new-creation")["pass"]
 
 
+def test_native_tool_success_and_skill_body_read_are_distinct_from_exposure(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": []},
+        {"event": "reflective_change", "op": "define", "kind": "tool", "name": "native", "version": 1,
+         "hash": "native-hash", "note": "publish native tool", "ok": True, "session_id": "s", "time": "1"},
+        {"event": "reflective_change", "op": "define", "kind": "skill", "name": "guide", "version": 1,
+         "hash": "skill-hash", "note": "publish skill", "ok": True, "session_id": "s", "time": "1"},
+        {"event": "skill_index_exposed", "skills": [{"name": "guide", "version": 1}], "session_id": "s", "time": "2"},
+        {"event": "skill_loaded", "kind": "skill", "name": "guide", "version": 1, "hash": "skill-hash",
+         "session_id": "s", "time": "3"},
+    ])
+    write_rows(tmp_path, "component_runs.jsonl", [
+        {"kind": "tool", "name": "native", "version": 1, "hash": "native-hash", "ok": True, "session_id": "s", "time": "2"},
+        {"kind": "tool", "name": "native", "version": 2, "hash": "later-hash", "ok": True, "session_id": "s", "time": "3"},
+    ])
+    result = check(tmp_path, "new-creation")
+    by_kind = {row["kind"]: row for row in result["creations"]}
+    assert by_kind["tool"]["same_session_use"] == "pass"
+    assert by_kind["tool"]["use_evidence"][0]["hash"] == "native-hash"
+    assert by_kind["skill"]["same_session_use"] == "uncertain"
+    assert by_kind["skill"]["use_evidence"][0]["boundary"] == "ordinary skill read; semantic use uncertain"
+
+
+def test_failed_native_publication_and_index_exposure_do_not_count_as_use(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": []},
+        {"event": "reflective_change", "op": "define", "kind": "skill", "name": "bad", "version": 1,
+         "note": "invalid skill", "ok": False, "session_id": "s", "time": "1"},
+        {"event": "skill_index_exposed", "skills": [{"name": "bad", "version": 1}], "session_id": "s", "time": "2"},
+    ])
+    write_rows(tmp_path, "component_runs.jsonl", [])
+    result = check(tmp_path, "new-creation")
+    assert result["creations"][0]["definition"] == "fail"
+    assert result["creations"][0]["same_session_use"] == "fail"
+
+
+def test_historical_failed_redefine_does_not_match_prior_version_use(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": []},
+        {"event": "reflective_change", "op": "redefine", "kind": "tool", "name": "t", "version": 1,
+         "hash": "candidate", "note": "bad candidate", "ok": False, "session_id": "s", "time": "1"},
+    ])
+    write_rows(tmp_path, "component_runs.jsonl", [
+        {"kind": "tool", "name": "t", "version": 1, "hash": "previous", "ok": True, "session_id": "s", "time": "2"},
+    ])
+    result = check(tmp_path, "historical")
+    assert result["pass"] is False
+    assert result["failed_publications"] == 1
+    assert result["per_kind"]["tool"]["pass"] is False
+
+
 def test_creation_mode_negative_cases(tmp_path):
     snapshot = {"event": "initial_registry", "components": [{"kind": "tool", "name": "seed", "hash": "seed-hash"}]}
     cases = [

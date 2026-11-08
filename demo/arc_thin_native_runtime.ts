@@ -184,10 +184,6 @@ export class NativeRuntime {
       if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
       if (host.pythonKernel !== false) this.kernel = nativeKernel();
     }
-    host.pi.registerTool({ name: 'consult', label: 'Consult', description: 'Ask a task-authored subagent (agents/<name>.md) with exact workspace refs. Image refs of any type are sent as images in an independent context using the same model. Create a role with self_component(kind="subagent") before consulting it. Its tools are the ones its frontmatter grants (read, write, edit, ls, grep, python, named tools); it cannot take environment actions.',
-      parameters: Type.Object({ agent: Type.String(), question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
-      prepareArguments: (args: any) => args && typeof args === 'object' && args.role && !args.agent ? { ...args, agent: args.role } : args,
-      execute: host.wrap('consult', (args, signal, ctx) => this.consult(args, signal, ctx)) });
   }
   /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text.
    * candidates(), not active(): a save or removal inside a decision is visible immediately (as on r04), while
@@ -206,14 +202,17 @@ export class NativeRuntime {
     for (const c of this.callable()) {
       if (this.registered.get(c.name) === c.hash) continue;
       this.host.pi.registerTool({ name: c.name, label: c.name, description: c.description, parameters: c.parameters,
-        // Older calls passed the inputs at the top level; they become args.
-        prepareArguments: (args: any) => args && typeof args === 'object' && !('args' in args) && Object.keys(args).length ? { args } : args,
-        execute: this.host.wrap(c.name, async (args, signal) => {
-          const active = this.host.binder.active().find(x => x.path === c.path);
-          if (!active || active.mount?.length) throw Error(`${c.name} is retired or mounted at a loop boundary`);
-          return this.call(active, args, signal);
-        }) });
+        execute: this.host.wrap(c.name, async (args, signal) => this.call(c, args, signal)) });
       this.registered.set(c.name, c.hash);
+    }
+  }
+  registerSubagents() {
+    for (const c of this.host.binder.candidates().filter(x => x.kind === 'subagent')) {
+      if (this.registered.get(`subagent:${c.name}`) === c.hash) continue;
+      this.host.pi.registerTool({ name: c.name, label: c.name, description: c.description,
+        parameters: Type.Object({ question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
+        execute: this.host.wrap(c.name, (args, signal, ctx) => this.consult({ ...args, agent: c.name }, signal, ctx, c)) });
+      this.registered.set(`subagent:${c.name}`, c.hash);
     }
   }
   toolNames() { return this.callable().filter(c => this.registered.has(c.name)).map(c => c.name); }
@@ -666,7 +665,7 @@ export class NativeRuntime {
       const contractLines = component.source.split(/\r?\n/).filter(line => /\bargs\s*\[/.test(line)).slice(0, 2);
       this.host.log('component_runs.jsonl', { kind: 'reuse_read', path: component.path, name: component.name,
         tool_name: component.name, version: component.version,
-        args_contract: (contractLines.length ? contractLines.join(' | ') : `read_component("${component.name}") body` ).slice(0, 240),
+        args_contract: (contractLines.length ? contractLines.join(' | ') : 'args dictionary').slice(0, 240),
         level: this.host.level(), decision: this.decision(), n: this.host.actionCount() });
     }
   }
@@ -810,7 +809,7 @@ export class NativeRuntime {
     const reuseIndex = !readonly && related.length ? 'RELATED COMPONENTS (mounted tools; matching is a lead only):\n' +
       related.map(({ c, matched, total }) => `${c.name}@${c.version} - ${c.description || 'no Agent-written description'}; parameters: ${JSON.stringify(c.parameters)}; ` +
         `${Object.keys(c.parameters?.properties ?? {}).length === 1 && Object.keys(c.parameters?.properties ?? {})[0] === 'args'
-          ? 'schema only exposes an args dictionary; use read_component(name) to inspect the body for its parameter contract. ' : ''}` +
+          ? 'schema exposes an args dictionary. ' : ''}` +
         `normalized computation lines match: ${matched}/${total} (lead only).`).join('\n') : '';
     if (reuseIndex) this.host.log('component_runs.jsonl', { kind: 'reuse_shown', level: this.host.level(), decision, n: this.host.actionCount(),
       paths: related.map(({ c }) => `${c.path}@${c.version}`), evidence: related.map(({ matched, total }) => ({ matched, total })) });
@@ -838,21 +837,24 @@ export class NativeRuntime {
     return this.call(component, { args }, signal);
   }
   private async call(c: Component, args: any, signal?: AbortSignal, readonly = false, source?: string) {
+    const invoked = { ...c };
+    const snap = this.snapshot();
+    snap.sources[invoked.path] = source ?? invoked.source;
+    snap.versions[invoked.path] = invoked.version;
     const resolved = await this.resolveSessionArgs(args, signal);
-    if (!resolved.ok) return text(`${c.name}: ${resolved.error}`, true);
+    if (!resolved.ok) return text(`${invoked.name}: ${resolved.error}`, true);
     args = resolved.value;
-    const snap = this.snapshot(); const started = Date.now(); const label = source === undefined ? this.host.binder.label(c.path) : `${c.name} historical`;
-    if (source !== undefined) snap.sources[c.path] = source;
-    let result = await this.execute({ ...snap, mode: 'call', path: c.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : c.path);
+    const started = Date.now(); const label = `${invoked.name} v${invoked.version}`;
+    let result = await this.execute({ ...snap, mode: 'call', path: invoked.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : invoked.path);
     const receipts = result.ok ? await this.applyWrites(result) : [];
-    if (!readonly && this.host.artifacts) result = { ...this.host.artifacts(result, c, this.host.actionCount()), acted: result.acted };
-    this.host.log('component_runs.jsonl', { kind: 'tool', name: c.name, path: c.path, decision: this.decision(), readonly, n: this.host.actionCount(), version: c.version,
+    if (!readonly && this.host.artifacts) result = { ...this.host.artifacts(result, invoked, this.host.actionCount()), acted: result.acted };
+    this.host.log('component_runs.jsonl', { kind: 'tool', name: invoked.name, path: invoked.path, decision: this.decision(), readonly, n: this.host.actionCount(), version: invoked.version, hash: invoked.hash,
       versions: snap.versions, ok: result.ok, ms: Date.now() - started, acted: result.acted?.lines.length ?? 0 });
-    const saved = this.savedFeedback.get(c.path);
-    if (!readonly && saved?.version === c.version) saved[result.ok ? 'ok' : 'failed']++;
-    const fallback = this.host.binder.active().filter(x => x.path !== c.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
+    const saved = this.savedFeedback.get(invoked.path);
+    if (!readonly && saved?.version === invoked.version) saved[result.ok ? 'ok' : 'failed']++;
+    const fallback = this.host.binder.active().filter(x => x.path !== invoked.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
     const out = this.finish([`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n'), result);
-    const feedback = !readonly && this.selfFeedbackText(c.path);
+    const feedback = !readonly && this.selfFeedbackText(invoked.path);
     if (feedback) out.content.push({ type: 'text', text: feedback });
     return out;
   }
@@ -1077,10 +1079,10 @@ export class NativeRuntime {
       } catch (error) { return { path: c.path, version: c.version, error: String(error).slice(0, 200) }; }
     }));
   }
-  private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+  private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext, pinned?: Component) {
     const available = this.host.immediateSubagent ? this.host.binder.candidates() : this.host.binder.active();
-    const agent = available.find(c => c.kind === 'subagent' && c.name === args.agent);
-    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${available.filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}. Create one with self_component(kind="subagent", name="${args.agent}", content="...", description="...") and consult it after the next batch boundary.`);
+    const agent = pinned ?? available.find(c => c.kind === 'subagent' && c.name === args.agent);
+    if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}`);
     const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
     const tools: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
     // The subagent's python has a session of its own for this consult: it neither sees nor changes the parent's.
@@ -1133,24 +1135,25 @@ export class NativeRuntime {
         }
         const calls = (reply.content ?? []).filter((b: any) => b.type === 'toolCall');
         if (!calls.length) {
-          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, refs, tools: allowed, answer, ms: Date.now() - started });
+          this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, hash: agent.hash, ok: true, refs, tools: allowed, answer, ms: Date.now() - started });
           const {ref}=this.host.workspace.saveResult(answer);
-          return text(`${this.host.binder.label(agent.path)} →\n${this.host.workspace.receipt(answer)}\nref: ${ref}`);
+          return text(`${agent.name} v${agent.version} →\n${this.host.workspace.receipt(answer)}\nref: ${ref}`);
         }
         for (const call of calls) {
           let result: any;
           try {
             const def = tools.find(t => t.name === call.name); if (!def) throw Error(`Tool ${call.name} not granted`);
-            // A saved tool takes args={...}; inputs sent at the top level become args, as for the parent.
-            const named = !['read', 'write', 'edit', 'ls', 'grep', 'python'].includes(call.name) && call.arguments && typeof call.arguments === 'object'
-              && !('args' in call.arguments) && Object.keys(call.arguments).length;
-            result = await runTools.get(call.name)!(validateToolArguments(def, named ? { ...call, arguments: { args: call.arguments } } : call));
+            result = await runTools.get(call.name)!(validateToolArguments(def, call));
           } catch (error) { result = text(String(error), true); }
           messages.push({ role: 'toolResult', toolCallId: call.id, toolName: call.name, content: result.content,
             isError: Boolean(result.isError), timestamp: Date.now() });
         }
       }
       throw Error('consult tool/time budget exhausted');
+    } catch (error) {
+      this.host.log('consult_runs.jsonl', { role: agent.name, version: agent.version, hash: agent.hash, ok: false,
+        refs, tools: allowed, error: String(error), ms: Date.now() - started });
+      throw error;
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
   /** Run an Agent-authored quality reviewer with explicit refs, without exposing the parent workspace to a write tool. */

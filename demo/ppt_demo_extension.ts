@@ -3,16 +3,17 @@
  * Free-hands revision (2026-11-04): the preset quality workflow is gone. No quality map, no automatic checks or
  * coverage reviews on render, no delivery gate beyond the integrity of what is delivered (the rendered source is
  * still the source being delivered). The agent decides its own workflow; the host provides facts (statusText),
- * facilities (python, programs, components, render/look/deliver, consult) and the hard boundaries only: budget,
+ * facilities (Python, native resources, render/look/deliver) and the hard boundaries only: budget,
  * deadline, path confinement, provider authorization.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { loadSkills, formatSkillsForPrompt } from '@earendil-works/pi-coding-agent';
 import { Workspace } from './arc_thin_workspace.ts';
 import { Binder } from './arc_thin_binder.ts';
 import { validatePythonComponent } from './arc_thin_components.ts';
@@ -45,13 +46,16 @@ export default function pptDemo(pi: ExtensionAPI) {
   state.noteStale ??= false;
   state.process ??= { active: null, pending: null, failures: [] };
   let resumed = false, initialized = false;
-  const newDefinitions: Array<{ name: string; kind: string; purpose: string; version: number; use_endpoint: string }> = [];
+  const ownedNative = new Map<string, { kind: string; path: string }>();
+  const initialSystemPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
+  let forcedBaseline = initialSystemPrompt;
+  let injectedSkillsSection = '';
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
   // Evidence facts only: what has run since the last completed render. No gate, no instruction — the agent still
   // decides whether to check; this makes "has this revision been checked" a visible fact instead of a hidden one.
   // Counters are per process (a resumed process starts at zero).
-  const evidence = { revision: Number(state.lastFeedback?.revision ?? 0), programRuns: 0, consults: 0, artifactWrites: 0 };
-  const evidenceLine = () => `Since render v${evidence.revision}: ${evidence.programRuns} program runs, ${evidence.consults} consults, ${evidence.artifactWrites} artifact writes; current revision checked: ${evidence.programRuns + evidence.consults > 0 ? 'yes' : 'no'}.`;
+  const evidence = { revision: Number(state.lastFeedback?.revision ?? 0), toolRuns: 0, childRuns: 0, artifactWrites: 0 };
+  const evidenceLine = () => `Since render v${evidence.revision}: ${evidence.toolRuns} native tool runs, ${evidence.childRuns} subagent runs, ${evidence.artifactWrites} artifact writes; component activity recorded: ${evidence.toolRuns + evidence.childRuns > 0 ? 'yes' : 'no'}.`;
   // Work lineage: which component versions actually ran, and which files they touched, since the last render. It is
   // built from execution facts the host already records; it attributes nothing and grades nothing. Its only job is to
   // save the agent from reconstructing "what produced this revision" out of the conversation and the logs.
@@ -77,11 +81,17 @@ export default function pptDemo(pi: ExtensionAPI) {
       lineage.unattributed.size ? `changed outside a recorded run: ${[...lineage.unattributed].slice(0, 8).join(', ')}` : ''].filter(Boolean).join('\n');
   };
   const log = (file: string, row: any) => {
-    if (file === 'component_runs.jsonl' && row?.kind === 'program_call') evidence.programRuns += 1;
-    if (file === 'consult_runs.jsonl') evidence.consults += 1;
+    if (file === 'component_runs.jsonl' && row?.kind === 'tool') evidence.toolRuns += 1;
+    if (file === 'consult_runs.jsonl') evidence.childRuns += 1;
     if (file === 'component_runs.jsonl' && ['program_call', 'tool', 'save', 'program_save'].includes(row?.kind)) lineageUse(row);
-    if (file === 'consult_runs.jsonl' && row?.role) lineageUse({ ...row, role: row.role });
+    if (file === 'consult_runs.jsonl' && row?.role) lineageUse({ ...row, role: row.role, kind: 'subagent' });
     appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), session_id: sessionId, batch: state.batch, ...row })+'\n');
+  };
+  const lastPublicationFailure = (name: string, kind: string) => {
+    const path = join(root, 'harness/lifecycle.jsonl');
+    if (!existsSync(path)) return undefined;
+    return readFileSync(path, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+      .findLast(row => row.event === 'reflective_change' && row.name === name && row.kind === kind && row.ok === false);
   };
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
   const processPath = (name: string) => `processes/${name}.json`;
@@ -160,6 +170,23 @@ export default function pptDemo(pi: ExtensionAPI) {
     wrap: (_name, fn) => async (_id: string, args: any, signal: any, _update: any, ctx: any) => fn(args, signal, ctx),
   });
   const canonical = () => canonicalPath(workspace);
+  const assertNativeName = (name: string, kind: string, path?: string) => {
+    if (kind !== 'tool' && kind !== 'subagent') return;
+    const prior = ownedNative.get(name);
+    if (prior && (prior.kind !== kind || prior.path !== path)) throw Error(`native tool name ${name} is already owned by ${prior.kind}`);
+    const existing = pi.getAllTools().find(tool => tool.name === name);
+    if (existing && !prior) throw Error(`native tool name ${name} is owned by the host or another extension`);
+  };
+  const validateNativeSkill = (path: string) => {
+    const candidate = loadSkills({ skillPaths: [workspace.path(path)], includeDefaults: false, cwd: root } as any);
+    const skill = candidate.skills.find(row => row.filePath === workspace.path(path));
+    if (!skill || candidate.diagnostics.length || skill.name !== path.split('/')[1])
+      throw Error(candidate.diagnostics.map(d => d.message).join('; ') || 'Pi did not load this skill with its published name');
+    const others = loadSkills({ skillPaths: binder.active().filter(c => c.kind === 'skill' && c.path !== path)
+      .map(c => workspace.path(c.path)), includeDefaults: false, cwd: root } as any);
+    if (others.skills.some(row => row.name === skill.name)) throw Error(`native skill name ${skill.name} is already published`);
+    return skill;
+  };
   const fileHash = (path: string) => createHash('sha256').update(readFileSync(workspace.path(path))).digest('hex');
   const currentSourceFacts = () => sourceFacts(workspace, canonical());
   /** Facts only: where the work stands. No nudges, no prescribed next step; the agent decides its workflow. */
@@ -172,7 +199,18 @@ export default function pptDemo(pi: ExtensionAPI) {
         result: result?.content?.filter((x: any) => x.type === 'text'), isError: result?.isError ?? false });
       return result;
     } });
-  for (const tool of workspace.fileTools()) pi.registerTool(tool);
+  for (const tool of workspace.fileTools()) {
+    if (tool.name !== 'read') { pi.registerTool(tool); continue; }
+    const execute = tool.execute;
+    pi.registerTool({ ...tool, execute: async (id: string, args: any, signal: any, update: any, ctx: any) => {
+      const result = await execute(id, args, signal, update, ctx);
+      const path = String(args.path ?? '').replace(/^\.\//, '').replace(/\\/g, '/');
+      const skill = binder.active().find(c => c.kind === 'skill' && c.path === path);
+      if (skill && !result?.isError) log('lifecycle.jsonl', { event: 'skill_loaded', kind: 'skill', name: skill.name,
+        version: skill.version, hash: skill.hash, path, boundary: 'ordinary read' });
+      return result;
+    } });
+  }
   workspace.onWrite = async path => {
     if (path.startsWith('artifacts/')) evidence.artifactWrites += 1;
     // A direct file write is an agent edit with no recorded run behind it; lineage says so instead of guessing.
@@ -184,38 +222,52 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('python', 'Run Python in the confined workspace sandbox. Files under the workspace are read and written with open(path) — text or binary ("rb"/"wb"), any file type (images, decks, data). Harness component paths require reflect_component. Returns what you print and the value of a final expression.',
     Type.Object({ code: Type.String({ minLength: 1, maxLength: 65536 }) }),
     async (a: any, signal: any) => runtime.python(a.code, signal, false));
-  register('run_program', 'Run the live version of a named tool against current task evidence. Programs may read and write confined workspace files (text or binary).',
-    Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
-    async (a: any, signal: any) => {
-      const result = await runtime.runProgram(a.name, a.args ?? {}, signal);
-      await binder.scan(0); binder.boundary(); runtime.register();
-      return result;
-    });
-  register('list_programs', 'Find available executable methods and versions by purpose.', Type.Object({ query: Type.Optional(Type.String()) }),
-    (a: any) => text(binder.programCatalog(0, a.query ?? '')));
-  register('read_component', 'Inspect a named component source and exact active version.', Type.Object({ name: Type.String() }), (a: any) => {
-    const c = binder.active().find(c => c.name === a.name);
-    if (!c) throw Error('No active component by this name');
-    if (c.kind === 'skill') log('lifecycle.jsonl', { event: 'component_consumed', kind: c.kind, name: c.name, version: c.version, boundary: 'read_component' });
-    return text(`${c.name}@v${c.version}\n${c.source}`);
-  });
   register('reflect_component', 'Inspect, define, redefine, or restore a live harness component or process. Process versions use the same note, Binder history, and restore path as physical components.',
     Type.Object({ op: Type.Union([Type.Literal('inspect'), Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory'), Type.Literal('process')])),
       source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), note: Type.Optional(Type.String()) }), async (a: any) => {
       const components = binder.active().filter(c => ['tool', 'prompt', 'skill', 'subagent'].includes(c.kind));
       const consumers = (component: any) => [...new Set([
-        ...(component.kind === 'tool' ? ['Pi tool registry / run_program'] : []),
+        ...(component.kind === 'tool' ? ['Pi native tool registry'] : []),
         ...(component.kind === 'prompt' ? ['next provider request system prompt'] : []),
         ...(component.kind === 'skill' ? ['task workspace skill index'] : []),
-        ...(component.kind === 'subagent' ? ['consult'] : []),
+        ...(component.kind === 'subagent' ? ['Pi native tool registry'] : []),
         ...components.filter(other => other.path !== component.path && other.source.includes(component.name)).map(other => `${other.kind}:${other.name}`),
       ])];
-       if (a.op === 'inspect') return text([...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
-        path: c.path, used_by: consumers(c), detail: `read_component(name=${JSON.stringify(c.name)})` })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
+       if (a.op === 'inspect') {
+         const rows: any[] = [...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
+        path: c.path, used_by: consumers(c), detail: `reflect_component(op="inspect", kind=${JSON.stringify(c.kind)}, name=${JSON.stringify(c.name)})` })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
         .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
           path, used_by: ['next provider request system context'], detail: `read(path=${JSON.stringify(path)})` })),
-        ...processRows().map(p => ({ name: p.name, kind: 'process', version: p.version, status: state.process.active?.name === p.name ? 'active' : 'saved' }))]);
+        ...processRows().map(p => ({ name: p.name, kind: 'process', version: p.version, status: state.process.active?.name === p.name ? 'active' : 'saved' }))];
+         if (!a.name && !a.kind) return text(rows);
+         const selected = rows.filter(row => (!a.name || row.name === a.name) && (!a.kind || row.kind === a.kind)).map(row => {
+           const path = row.path ?? processPath(row.name);
+           const active = binder.active().find(c => c.path === path);
+           const memory = row.kind === 'memory' && existsSync(workspace.path(path)) ? workspace.read(path) : undefined;
+           const processSource = row.kind === 'process' && existsSync(workspace.path(path)) ? workspace.read(path) : undefined;
+           const history = binder.historyOf(path);
+           return { ...row, active: Boolean(active) || memory !== undefined || row.status === 'active',
+             schema: active?.kind === 'tool' ? active.parameters : undefined,
+             native_location: active?.kind === 'skill' ? workspace.path(active.path)
+               : ['tool', 'subagent'].includes(active?.kind ?? '') ? `Pi tool ${active?.name}`
+               : row.kind === 'memory' ? 'next provider request context'
+               : row.kind === 'process' ? 'pending or active provider request context' : undefined,
+             source: active?.source ?? memory ?? processSource,
+             history, last_failure: history.lastFailure ?? lastPublicationFailure(row.name, row.kind)
+               ?? (row.kind === 'process' ? state.process.failures.at(-1) : undefined) };
+         });
+         if (!selected.length && a.name && a.kind) {
+           const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
+             : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md`
+             : a.kind === 'memory' ? `notes/memory/${a.name}.md` : processPath(a.name);
+           const history = binder.historyOf(path);
+           const lastFailure = history.lastFailure ?? lastPublicationFailure(a.name, a.kind);
+           if (lastFailure) return text([{ name: a.name, kind: a.kind, active: false, path,
+             history, last_failure: lastFailure }]);
+         }
+         return text(selected);
+       }
        if (a.op !== 'inspect' && (typeof a.note !== 'string' || !a.note.trim())) throw Error('note is required for define, redefine, or restore');
        if (!a.name || !a.kind) throw Error('name and kind are required for define, redefine, or restore');
        if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(a.name)) throw Error('invalid component name');
@@ -235,10 +287,9 @@ export default function pptDemo(pi: ExtensionAPI) {
         const version = binder.versionMap()[path];
         state.process.pending = { name: a.name, version, envelope };
         persist(); binder.boundary();
-        log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: 'process', version, note: a.note, ok: true,
+        log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: 'process', version, note: a.note, ok: true, activated: false, pending: true,
           strategy_present: Boolean(envelope.strategy?.trim() || envelope.workflow?.strategy?.trim()),
           envelope_hash: createHash('sha256').update(JSON.stringify(envelope)).digest('hex') });
-        if (a.op === 'define') newDefinitions.push({ name: a.name, kind: 'process', purpose: 'Agent-authored task process', version, use_endpoint: `reflect_component(op="inspect", kind="process", name=${JSON.stringify(a.name)})` });
         return text({ ok: true, name: a.name, kind: 'process', version, receipt, activation: 'next provider request' });
       }
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
@@ -256,40 +307,53 @@ export default function pptDemo(pi: ExtensionAPI) {
         nextSource = binder.sourceOf(path, a.version);
         if (nextSource === undefined) throw Error(`no saved version ${a.version} for ${a.name}`);
       }
+      assertNativeName(a.name, a.kind, path);
        if (a.kind === 'tool' && !nextSource.split(/\r?\n/).slice(0, 10).some((line: string) => line.trim() === '# program: on'))
-         throw Error('tool source must include # program: on in its first ten lines so run_program can consume it');
+         throw Error('tool source must include # program: on in its first ten lines');
+      const lastGoodSource = current?.source;
+      if (a.kind === 'skill') {
+        workspace.mutate({ op: 'write', path, content: nextSource }, true);
+        try { validateNativeSkill(path); }
+        catch (error) {
+          if (lastGoodSource === undefined) rmSync(workspace.path(path), { force: true });
+          else workspace.mutate({ op: 'write', path, content: lastGoodSource }, true);
+          log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind,
+            note: a.note, ok: false, active_version: current?.version ?? null, error: String(error) });
+          return text({ ok: false, name: a.name, kind: a.kind, active_version: current?.version ?? null, error: String(error) });
+        }
+      }
       const receipt = a.kind === 'tool'
          ? await (async () => {
            workspace.mutate({ op: 'write', path, content: nextSource }, true);
            const saved = await binder.save(path, 0, { by: 'agent', decision: state.batch });
-           binder.boundary(); await binder.scan(0); runtime.register(); return saved;
+           binder.boundary(); await binder.scan(0); return saved;
          })()
         : await (async () => {
            workspace.mutate({ op: 'write', path, content: nextSource }, true);
           const saved = await binder.save(path, 0, { by: 'agent', decision: state.batch });
           binder.boundary(); return saved;
         })();
-      runtime.register();
-      if (a.kind === 'tool') pi.setActiveTools([...new Set([...pi.getActiveTools(), a.name])]);
       const updated = binder.active().find(c => c.path === path);
       const version = updated?.version ?? binder.versionMap()[path];
-      if ((!updated && a.kind !== 'memory') || (a.kind === 'tool' && updated?.kind !== 'tool')) {
+      const expectedHash = createHash('sha256').update(nextSource).digest('hex');
+      if ((!updated && a.kind !== 'memory') || (updated && updated.hash !== expectedHash) || (['tool', 'subagent'].includes(a.kind) && updated?.kind !== a.kind)) {
+        if (lastGoodSource !== undefined) workspace.mutate({ op: 'write', path, content: lastGoodSource }, true);
+        else if (existsSync(workspace.path(path))) rmSync(workspace.path(path), { force: true });
         log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind, version: binder.versionMap()[path],
           hash: updated?.hash, note: a.note, ok: false, error: `publication did not bind: ${receipt ?? path}` });
-        throw Error(`redefinition did not bind: ${receipt ?? path}`);
+        return text({ ok: false, name: a.name, kind: a.kind, active_version: current?.version ?? null, error: receipt ?? 'candidate failed validation' });
+      }
+      runtime.register(); runtime.registerSubagents();
+      if (a.kind === 'tool' || a.kind === 'subagent') {
+        ownedNative.set(a.name, { kind: a.kind, path });
+        pi.setActiveTools([...new Set([...pi.getActiveTools(), a.name])]);
       }
       log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: updated?.name ?? a.name, kind: a.kind,
-         from_version: current?.version ?? (a.kind === 'memory' && exists ? binder.versionMap()[path] : null), version, hash: updated?.hash, note: a.note });
+         from_version: current?.version ?? (a.kind === 'memory' && exists ? binder.versionMap()[path] : null), version, hash: updated?.hash,
+         note: a.note, ok: true, activated: ['tool', 'subagent'].includes(a.kind), effective: ['tool', 'subagent'].includes(a.kind) ? 'native registry' : 'next provider request' });
       const name = updated?.name ?? a.name;
-      const nextCall = a.kind === 'tool' ? `run_program(name=${JSON.stringify(name)}, args={})`
-        : a.kind === 'subagent' ? `consult(agent=${JSON.stringify(name)}, question="Review supplied facts briefly", refs=["data/material.txt"])`
-        : a.kind === 'skill' ? `read_component(name=${JSON.stringify(name)})`
-        : a.kind === 'prompt' ? 'Make the next provider request; the prompt is injected automatically.'
-        : 'Make the next provider request; the memory is injected automatically.';
-      if (a.op === 'define' && updated) newDefinitions.push({ name, kind: a.kind, purpose: updated.description, version,
-        use_endpoint: nextCall });
-      return text({ name, kind: a.kind, purpose: updated?.description ?? '', version, receipt, effective: 'next_pi_request', use_endpoint: nextCall, next_call: nextCall,
-        detail: a.kind === 'tool' || a.kind === 'subagent' ? undefined : `read ${path} for full source` });
+      return text({ ok: true, name, kind: a.kind, purpose: updated?.description ?? '', version, receipt,
+        native: a.kind === 'tool' || a.kind === 'subagent' ? 'Pi tool' : a.kind === 'skill' ? 'Pi skill index and ordinary read' : 'next provider request' });
     });
   register('office', OFFICE_ACTION_DESCRIPTION,
     Type.Object({ op: Type.Union([Type.Literal(PPT_ACTIONS[0]), Type.Literal(PPT_ACTIONS[1]), Type.Literal(PPT_ACTIONS[2])]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
@@ -329,7 +393,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         // Facts about the period that just ended (how the previous revision was checked), then the new period starts.
         const sincePrevious = evidenceLine();
         const lineageSince = lineageLine();
-        evidence.revision = revision; evidence.programRuns = 0; evidence.consults = 0; evidence.artifactWrites = 0;
+        evidence.revision = revision; evidence.toolRuns = 0; evidence.childRuns = 0; evidence.artifactWrites = 0;
         lineage.revision = revision; lineage.uses.clear(); lineage.writes.clear(); lineage.unattributed.clear();
         return { content: [...text({ render: state.lastFeedback, evidence: sincePrevious, lineage: lineageSince, state: statusText() }).content,
           { type: 'image', data: readFileSync(join(out, 'contact-sheet.png')).toString('base64'), mimeType: 'image/png' }] };
@@ -367,7 +431,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
       writeFileSync(join(delivery, 'harness.json'), JSON.stringify({ components: components.map(c => ({ name: c.name, kind: c.kind, version: c.version, path: c.path, hash: c.hash })),
         artifact_sha256: currentHash }, null, 2));
-      for (const relative of ['.harness/components.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/renders.jsonl', 'harness/usage.jsonl', 'harness/process_boundaries.jsonl',
+      for (const relative of ['.harness/components.jsonl', 'harness/component_runs.jsonl', 'harness/tools.jsonl', 'harness/lifecycle.jsonl', 'harness/renders.jsonl', 'harness/usage.jsonl', 'harness/process_boundaries.jsonl',
         'harness/consult_runs.jsonl', 'harness/model-usage.jsonl', 'harness/provider-requests.jsonl', 'session.jsonl']) {
         const source = join(root, relative);
         if (!existsSync(source)) continue;
@@ -391,7 +455,16 @@ export default function pptDemo(pi: ExtensionAPI) {
       await binder.scan(0);
       binder.boundary();
       log('lifecycle.jsonl', { event: 'initial_registry', components: binder.active().map(c => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })) });
+      const nativeComponents = binder.active().filter(c => c.kind === 'tool' || c.kind === 'subagent');
+      for (const c of nativeComponents) {
+        assertNativeName(c.name, c.kind, c.path);
+        const prior = ownedNative.get(c.name);
+        if (prior) throw Error(`native tool name ${c.name} has multiple component definitions`);
+        ownedNative.set(c.name, { kind: c.kind, path: c.path });
+      }
       runtime.register();
+      runtime.registerSubagents();
+      pi.setActiveTools([...new Set([...pi.getActiveTools(), ...nativeComponents.map(c => c.name)])]);
       initialized = true;
     }
     resumed = event.prompt === 'PPT_RESUME';
@@ -410,23 +483,22 @@ export default function pptDemo(pi: ExtensionAPI) {
       binder.boundary(); persist();
     }
     // Agent-created tools stay active across batches: setActiveTools unions in everything registered.
-  const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'office', 'consult']);
+    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'reflect_component', 'office']);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
-    const activePrompts = binder.active().filter(c => c.kind === 'prompt' && c.name !== 'ppt_baseline_guidance').map(c => c.body).join('\n');
     const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance')?.body
       ?? readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
     const taskGuidancePath = workspace.path('AGENTS.md');
     const taskGuidance = existsSync(taskGuidancePath) ? readFileSync(taskGuidancePath, 'utf8') : '';
-    const systemPrompt = [baselinePrompt,
-      taskGuidance, activePrompts].filter(Boolean).join('\n\n');
+    forcedBaseline = baselinePrompt;
+    const systemPrompt = [baselinePrompt, taskGuidance].filter(Boolean).join('\n\n');
     event.systemPromptOptions ??= {};
     event.systemPromptOptions.forceSystemPrompt = systemPrompt;
     log('lifecycle.jsonl', { event: resumed ? 'resume' : 'batch_started' });
     if (!freshBatch) return { systemPrompt, message: { customType: 'ppt-task-memory', content: memoryBlock, display: false } };
     const deadline = Number(process.env.PPT_DEMO_DEADLINE);
-    const handoffMessage = [`FRESH CONTEXT: batch ${state.batch}, phase ${state.phase}. Earlier batches are not in this conversation. Carried over: workspace files; your prompts (in the system prompt); your memory (below, in full); your skills, programs and subagents (listed below; read_component for a body); the handoff note.`,
+    const handoffMessage = [`FRESH CONTEXT: batch ${state.batch}, phase ${state.phase}. Earlier batches are not in this conversation. Carried over: workspace files; prompts in the system prompt; memory in full; native tools and skill index; the handoff note.`,
       `Handoff note: ${handoff}.`, `Time left: ${Math.max(0, Math.ceil((deadline - Date.now()) / 60000))} min; budget left: $${Math.max(0, cap - spent).toFixed(2)}; requests per batch: ${batchLimit}.`,
-      memoryBlock, binder.index(0) || 'HARNESS\n(none)', binder.programCatalog(0), statusText()].join('\n\n');
+      memoryBlock, statusText()].join('\n\n');
     return { systemPrompt, message: { customType: 'ppt-work-state', content: handoffMessage, display: false } };
   });
   pi.on('context', async (event: any) => {
@@ -442,9 +514,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   });
   // Prompt and memory changes are interceded into the very next provider request,
   // including tool continuations in the same Pi task/session.
-  pi.on('context_with_system', (event: any, ctx: any) => {
-    const system = event.messages.find((message: any) => message.role === 'system');
-    if (!system) return;
+  const addCurrentContext = (system: any) => {
     const activeProcess = activateProcess();
     const prompts = binder.active().filter(c => c.kind === 'prompt' && c.name !== 'ppt_baseline_guidance');
     const memories = workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path));
@@ -457,22 +527,30 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (activeProcess && processAdditions.some((item: any) => item.name === activeProcess.name && item.version === activeProcess.version))
       log('lifecycle.jsonl', { event: 'process_context_injected', name: activeProcess.name, version: activeProcess.version,
         binding: 'provider_request', references: activeProcess.envelope.strategy !== undefined ? activeProcess.envelope.refs ?? [] : undefined });
-    const discoveries = newDefinitions.splice(0);
+    const skillPaths = binder.active().filter(c => c.kind === 'skill').map(c => workspace.path(c.path));
+    const nativeSkills = loadSkills({ skillPaths, includeDefaults: false, cwd: root } as any);
+    if (skillPaths.length) log('lifecycle.jsonl', { event: 'skill_index_refreshed', candidates: skillPaths,
+      loaded: nativeSkills.skills.map(skill => skill.filePath), diagnostics: nativeSkills.diagnostics.map(d => d.message) });
     const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance');
-    const originalPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
-    if (baselinePrompt && typeof system.content === 'string' && system.content.includes(originalPrompt))
-      system.content = system.content.replace(originalPrompt, baselinePrompt.body);
-    if (!additions.length && !baselinePrompt && !discoveries.length) return;
-    const appended = additions.map(item => `\n\n## ${item.kind.toUpperCase()} ${item.name}\n${item.text}`).join('');
-    const content = typeof system.content === 'string' ? system.content : '';
-    const discoveryText = discoveries.map(item => `\n\n## Newly defined ${item.kind}: ${item.name}\nPurpose: ${item.purpose}\nVersion: ${item.version}\nUse: ${item.use_endpoint}`).join('');
-    system.content = `${content}${appended}${discoveryText}`;
-    for (const item of discoveries) log('lifecycle.jsonl', { event: 'definition_discovered', ...item });
+    const nextBaseline = baselinePrompt?.body ?? initialSystemPrompt;
+    const skillsSection = nativeSkills.skills?.length ? formatSkillsForPrompt(nativeSkills.skills, 'read') : '';
+    let content = typeof system.content === 'string' ? system.content : '';
+    if (content.includes(forcedBaseline)) content = content.replace(forcedBaseline, nextBaseline);
+    else if (!content.includes(nextBaseline)) content += `\n\n${nextBaseline}`;
+    const appended = additions.filter(item => item.kind !== 'prompt' || !content.includes(item.text))
+      .map(item => `\n\n## ${item.kind.toUpperCase()} ${item.name}\n${item.text}`).join('');
+    if (injectedSkillsSection && content.includes(injectedSkillsSection)) content = content.replace(injectedSkillsSection, '');
+    system.content = `${content}${appended}${skillsSection ? `\n\n${skillsSection}` : ''}`;
+    injectedSkillsSection = skillsSection;
+    if (skillsSection) log('lifecycle.jsonl', { event: 'skill_index_exposed', skills: nativeSkills.skills.map(skill => {
+      const component = binder.active().find(c => c.kind === 'skill' && workspace.path(c.path) === skill.filePath);
+      return component ? { name: component.name, version: component.version, hash: component.hash } : { name: skill.name };
+    }) });
     for (const item of additions) log('lifecycle.jsonl', { event: 'component_consumed', ...item, text: undefined,
-      boundary: 'context_with_system provider request' });
+      boundary: 'provider request' });
     if (baselinePrompt) log('lifecycle.jsonl', { event: 'component_consumed', kind: 'prompt', name: baselinePrompt.name,
-      version: baselinePrompt.version, boundary: 'context_with_system provider request' });
-  });
+      version: baselinePrompt.version, boundary: 'provider request' });
+  };
   let settledMessage: any;
   pi.on('agent_end', () => {
     const activeProcess = state.process.active;
@@ -493,6 +571,12 @@ export default function pptDemo(pi: ExtensionAPI) {
     spent += reserve; reserved = reserve;
     if (freshBatch) state.batchRequests = (state.batchRequests ?? 0) + 1;
     const payload = event.payload as any;
+    const system = typeof payload?.systemPrompt === 'string' ? { content: payload.systemPrompt }
+      : payload?.messages?.find((message: any) => message.role === 'system');
+    if (system) {
+      addCurrentContext(system);
+      if (typeof payload.systemPrompt === 'string') payload.systemPrompt = system.content;
+    }
     log('provider-requests.jsonl', { request: ++requests, batch_request: state.batchRequests, estimated_usd_so_far: spent,
       payload: JSON.stringify(payload, (key, value) => key === 'url' && typeof value === 'string' && value.startsWith('data:') ? '(image)' : value) });
     if (freshBatch) persist();

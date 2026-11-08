@@ -15,9 +15,11 @@ def historical(root: Path) -> dict:
     lifecycle = rows(root / "harness/lifecycle.jsonl")
     calls = rows(root / "harness/component_runs.jsonl")
     consults = rows(root / "harness/consult_runs.jsonl")
-    changes = [r for r in lifecycle if r.get("event") == "reflective_change" and r.get("op") == "redefine"]
+    all_changes = [r for r in lifecycle if r.get("event") == "reflective_change" and r.get("op") == "redefine"]
+    changes = [r for r in all_changes if r.get("ok") is not False]
     consumed = [r for r in lifecycle if r.get("event") == "component_consumed"]
-    consumed += [{**r, "kind": "tool"} for r in calls if r.get("kind") == "program_result" and r.get("ok") is True]
+    consumed += [{**r, "kind": "tool"} for r in calls if r.get("kind") in ("program_result", "tool") and r.get("ok") is True]
+    consumed += [r for r in lifecycle if r.get("event") == "skill_loaded" and r.get("kind") == "skill"]
     consumed += [{**r, "kind": "subagent", "name": r.get("role")} for r in consults if r.get("role")]
     per_kind = {}
     for kind in ("prompt", "skill", "tool", "subagent", "memory"):
@@ -27,13 +29,15 @@ def historical(root: Path) -> dict:
                 continue
             use = next((r for r in consumed if r.get("kind") == kind and r.get("name") == change.get("name")
                         and r.get("version") == change.get("version") and r.get("session_id") == change.get("session_id")
-                        and r.get("time", "") >= change.get("time", "")), None)
+                        and r.get("time", "") >= change.get("time", "")
+                        and (not change.get("hash") or not r.get("hash") or r.get("hash") == change.get("hash"))), None)
             if use:
                 matched.append({"name": change.get("name"), "version": change.get("version"), "boundary": use.get("boundary", use.get("kind"))})
         per_kind[kind] = {"pass": bool(matched), "consumed": matched}
     passed = all(v["pass"] for v in per_kind.values())
     return {"mode": "historical_prescribed_redefine", "pass": passed, "per_kind": per_kind,
-            "reflective_redefinitions": len(changes), "reason": "all five redefined versions were consumed" if passed else "each kind requires redefine followed by same-session consumption at that version"}
+            "reflective_redefinitions": len(changes), "failed_publications": len(all_changes) - len(changes),
+            "reason": "all five redefined versions were consumed" if passed else "each kind requires a successful redefine followed by same-session consumption at that version"}
 
 
 def creation(root: Path) -> dict:
@@ -53,12 +57,16 @@ def creation(root: Path) -> dict:
         same = lambda r: r.get("session_id") == session and r.get("name") == name and r.get("version") == version and r.get("time", "") >= (time or "")
         uses = []
         if kind == "tool":
-            uses = [r for r in calls if r.get("kind") in ("program_result", "tool") and r.get("ok") is True and same(r)]
+            uses = [r for r in calls if r.get("kind") in ("program_result", "tool") and r.get("ok") is True and same(r)
+                    and (not change.get("hash") or not r.get("hash") or r.get("hash") == change.get("hash"))]
         elif kind == "skill":
-            reads = [r for r in life if r.get("event") == "component_consumed" and r.get("boundary") == "read_component" and same(r)]
-            uses = [{"boundary": "read_component; procedure-following evidence unavailable"} for _ in reads]
+            reads = [r for r in life if ((r.get("event") == "skill_loaded" and r.get("kind") == "skill")
+                     or (r.get("event") == "component_consumed" and r.get("boundary") == "read_component")) and same(r)
+                     and (not change.get("hash") or not r.get("hash") or r.get("hash") == change.get("hash"))]
+            uses = [{"boundary": "ordinary skill read; semantic use uncertain"} for _ in reads]
         elif kind == "subagent":
-            cs = [r for r in consults if r.get("role") == name and r.get("version") == version and r.get("session_id") == session and r.get("time", "") >= (time or "") and r.get("ok") is not False]
+            cs = [r for r in consults if r.get("role") == name and r.get("version") == version and r.get("session_id") == session and r.get("time", "") >= (time or "") and r.get("ok") is True
+                  and (not change.get("hash") or not r.get("hash") or r.get("hash") == change.get("hash"))]
             later_work = any(r.get("time", "") > c.get("time", "") and r.get("session_id") == session for c in cs for r in calls if r.get("ok") is True)
             uses = ([{"boundary": "consult; followed by parent tool work"}] if cs and later_work else [])
         status = "pass" if uses and (kind != "skill") else "uncertain" if uses else ("not_applicable" if kind not in ("tool", "skill", "subagent") else "fail")

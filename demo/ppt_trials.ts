@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Type } from 'typebox';
+import { loadSkills, formatSkillsForPrompt } from '@earendil-works/pi-coding-agent';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { Workspace } from './arc_thin_workspace.ts';
 import { Binder } from './arc_thin_binder.ts';
@@ -103,14 +104,15 @@ export class Trials {
     };
     const binder = new Binder(scratch, validatePythonComponent);
     await binder.scan(0); binder.boundary();
-    const stubPi: any = { registerTool() {}, on() {}, setActiveTools() {}, getActiveTools: () => [] };
+    const nativeTools = new Map<string, any>();
+    const stubPi: any = { registerTool(tool: any) { nativeTools.set(tool.name, tool); }, on() {}, setActiveTools() {}, getActiveTools: () => [], getAllTools: () => [...nativeTools.values()] };
     const runtime = new NativeRuntime({ pi: stubPi, workspace: scratch, binder, state: () => ({}), level: () => 0,
       actionCount: () => 0, decision: () => 0, hookTurn: () => false, pythonSession: false, pythonKernel: false,
       modelResult: this.host.modelResult,
       log: (file, row) => this.host.log('trial_runs.jsonl', { ...row, trial: id, inner: file }),
       usage: (kind, message) => this.host.usage('trial', { kind, message, trial: id }),
       wrap: (_name: string, fn: any) => async (_id: string, args: any, s: any, _u: any, c: any) => fn(args, s, c) });
-    // The trial's toolset: the confined file tools, python and the named-program calls, all against the scratch workspace.
+    // The trial's toolset: the confined file tools, Python and native named components.
     const toolDefs: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
     for (const tool of scratch.fileTools()) {
       toolDefs.push({ name: tool.name, description: tool.description, parameters: tool.parameters });
@@ -118,18 +120,14 @@ export class Trials {
     }
     toolDefs.push({ name: 'python', description: 'Run Python in the scratch workspace sandbox (text or binary files). Component paths require reflect_component.', parameters: Type.Object({ code: Type.String({ minLength: 1 }) }) });
     runTools.set('python', a => runtime.python(a.code, signal, false));
-    toolDefs.push({ name: 'run_program', description: 'Run the live named program from the scratch workspace tools/ directory.', parameters: Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())) }) });
-    runTools.set('run_program', a => runtime.runProgram(a.name, a.args ?? {}, signal));
-    toolDefs.push({ name: 'list_programs', description: 'List named programs available in the scratch workspace.', parameters: Type.Object({ query: Type.Optional(Type.String()) }) });
-    runTools.set('list_programs', a => ({ content: [{ type: 'text', text: binder.programCatalog(0, a.query ?? '') }] }));
-    toolDefs.push({ name: 'read_component', description: 'Read a saved component source by name.', parameters: Type.Object({ name: Type.String() }) });
-    runTools.set('read_component', a => {
-      const c = binder.active().find(x => x.name === a.name);
-      if (!c) throw Error('No active component by this name');
-      return { content: [{ type: 'text', text: `${c.name}@v${c.version}\n${c.source}` }] };
-    });
+    runtime.register(); runtime.registerSubagents();
+    for (const tool of nativeTools.values()) {
+      toolDefs.push({ name: tool.name, description: tool.description, parameters: tool.parameters });
+      runTools.set(tool.name, args => tool.execute(`trial:${tool.name}`, args, signal, undefined, { model: ctx.model, modelRegistry: ctx.modelRegistry }));
+    }
     // Its own context: the agent's instruction is the question, and no parent prompt travels with it.
-    const systemPrompt = `TRIAL ${id}\nYou are working in an isolated scratch workspace. Files you write here are not visible in the main workspace until the caller applies them. Work in the workspace; produce the artifact or answer the instruction asks for.${copied.length ? `\nLoaded components: ${copied.join(', ')}.` : ''}`;
+    const skills = loadSkills({ skillPaths: binder.active().filter(c => c.kind === 'skill').map(c => scratch.path(c.path)), includeDefaults: false, cwd: dir } as any);
+    const systemPrompt = `TRIAL ${id}\nYou are working in an isolated scratch workspace. Files you write here are not visible in the main workspace until the caller applies them.${skills.skills?.length ? `\n\n${formatSkillsForPrompt(skills.skills, 'read')}` : ''}`;
     const messages: any[] = [{ role: 'user', content: [{ type: 'text', text: spec.instruction }], timestamp: Date.now() }];
     const controller = new AbortController(); const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
     const timeout = setTimeout(abort, this.host.timeoutMs ?? 300000);

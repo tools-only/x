@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdir
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createLsToolDefinition,
-  createGrepToolDefinition, detectSupportedImageMimeTypeFromFile, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+  createGrepToolDefinition, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 /** A receipt line longer than this is a stub. A 64-cell grid row printed as a list is about 190 characters. */
 export const LONG_LINE_CHARS = 400;
@@ -172,8 +172,16 @@ export class Workspace {
     const access = async (p: string) => { if (!existsSync(safe(p))) throw Error('workspace file does not exist'); };
     const tools: ToolDefinition[] = [
       createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile, access,
-        // Pi's own detector: jpg, png, gif, webp, bmp — whatever the provider accepts, by content, not by suffix.
-        detectImageMimeType: async p => detectSupportedImageMimeTypeFromFile(safe(p)) } }),
+          // Pi extension APIs do not expose its image detector. Keep the confined read's supported formats by signature.
+          detectImageMimeType: async p => {
+            const bytes = await readFile(p);
+            if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png';
+            if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'image/jpeg';
+            if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6))) return 'image/gif';
+            if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+            if (bytes.length >= 2 && bytes[0] === 66 && bytes[1] === 77) return 'image/bmp';
+            return undefined;
+          } } }),
       createWriteToolDefinition(this.root, { operations: { writeFile, mkdir: async p => { mkdirSync(safe(p, true), { recursive: true }); } } }),
       createEditToolDefinition(this.root, { operations: { readFile, writeFile, access: async p => { safe(p, true); await access(p); } } }),
       createLsToolDefinition(this.root, { operations: { exists: p => existsSync(safe(p)), stat: p => lstatSync(safe(p)),
