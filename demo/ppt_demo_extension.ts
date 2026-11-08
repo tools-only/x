@@ -235,9 +235,11 @@ export default function pptDemo(pi: ExtensionAPI) {
         const version = binder.versionMap()[path];
         state.process.pending = { name: a.name, version, envelope };
         persist(); binder.boundary();
-        log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: 'process', version, note: a.note, ok: true, envelope_hash: createHash('sha256').update(JSON.stringify(envelope)).digest('hex') });
-        if (a.op === 'define') newDefinitions.push({ name: a.name, kind: 'process', purpose: 'Agent-authored workflow and settled-round strategy', version, use_endpoint: `reflect_component(op="inspect", kind="process", name=${JSON.stringify(a.name)})` });
-        return text({ ok: true, name: a.name, kind: 'process', version, receipt, activation: 'next workflow or settled-round boundary' });
+        log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: 'process', version, note: a.note, ok: true,
+          strategy_present: Boolean(envelope.strategy?.trim() || envelope.workflow?.strategy?.trim()),
+          envelope_hash: createHash('sha256').update(JSON.stringify(envelope)).digest('hex') });
+        if (a.op === 'define') newDefinitions.push({ name: a.name, kind: 'process', purpose: 'Agent-authored task process', version, use_endpoint: `reflect_component(op="inspect", kind="process", name=${JSON.stringify(a.name)})` });
+        return text({ ok: true, name: a.name, kind: 'process', version, receipt, activation: 'next provider request' });
       }
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
@@ -292,11 +294,11 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('office', OFFICE_ACTION_DESCRIPTION,
     Type.Object({ op: Type.Union([Type.Literal(PPT_ACTIONS[0]), Type.Literal(PPT_ACTIONS[1]), Type.Literal(PPT_ACTIONS[2])]), source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })) }),
     async (a: any, signal: AbortSignal, ctx: any) => {
-      const activeProcess = ['render', 'deliver'].includes(a.op) ? activateProcess() : state.process.active;
+      const activeProcess = state.process.active;
       const hasActionBoundary = ['render', 'deliver'].includes(a.op);
       const actionBoundary = processCore.boundary(a.op === 'deliver' ? 'before-submit/deliver' : 'before-action', a.op, activeProcess,
         { transition: a.op, source: hasActionBoundary ? currentSourceFacts() : undefined, rendered_revision: state.lastFeedback?.revision ?? null,
-          references: activeProcess?.envelope.workflow.refs ?? [] }, ['render', 'deliver'].includes(a.op));
+          references: activeProcess?.envelope.strategy !== undefined ? activeProcess.envelope.refs ?? [] : activeProcess?.envelope.workflow.refs ?? [] }, ['render', 'deliver'].includes(a.op));
       processCore.beforeAction(actionBoundary);
       if (a.op === 'render') {
         const sourcePath = a.source_path ?? canonical();
@@ -386,23 +388,10 @@ export default function pptDemo(pi: ExtensionAPI) {
         }
       };
       seed('prompts/ppt_baseline_guidance.md', readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'));
-      seed('agents/deck_reviewer.md', '---\ndescription: Review a slide deck for clarity and source traceability\ntools: [read, grep]\n---\nReview the supplied draft and source material briefly. Identify the most consequential unsupported claim, unclear comparison, or readability issue; cite the relevant evidence and suggest one concrete correction.');
-      seed('notes/memory/presentation_workflow.md', 'The active presentation workflow uses the supplied source materials, renders the canonical artifact, and delivers the rendered revision.');
       await binder.scan(0);
       binder.boundary();
       log('lifecycle.jsonl', { event: 'initial_registry', components: binder.active().map(c => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })) });
       runtime.register();
-      if (!binder.active().some(c => c.kind === 'tool' && c.name === 'deck_file_summary')) {
-        await runtime.saveProgram('deck_file_summary', `def main(args, env):
-    from pathlib import Path
-    path = str(args.get('path', 'artifacts/presentation.html'))
-    target = Path(path)
-    if not target.is_file():
-        return {'ok': False, 'path': path, 'reason': 'file not found'}
-    text = target.read_text(encoding='utf-8', errors='replace')
-    return {'ok': True, 'path': path, 'bytes': len(text.encode('utf-8')), 'slides': text.count('class="slide'), 'has_title': '<title>' in text.lower()}
-`, 'Summarize the current HTML deck file used by the presentation workflow.', ['deck', 'summary']);
-      }
       initialized = true;
     }
     resumed = event.prompt === 'PPT_RESUME';
@@ -456,13 +445,18 @@ export default function pptDemo(pi: ExtensionAPI) {
   pi.on('context_with_system', (event: any, ctx: any) => {
     const system = event.messages.find((message: any) => message.role === 'system');
     if (!system) return;
+    const activeProcess = activateProcess();
     const prompts = binder.active().filter(c => c.kind === 'prompt' && c.name !== 'ppt_baseline_guidance');
     const memories = workspace.files('notes').filter((path: string) => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path));
     const additions = [
       ...prompts.map((prompt: any) => ({ kind: 'prompt', name: prompt.name, version: prompt.version, text: prompt.body })),
       ...memories.map((path: string) => ({ kind: 'memory', name: path.split('/').at(-1)!.replace(/\.md$/, ''), version: binder.versionMap()[path] ?? 1, text: workspace.read(path) })),
     ];
-    additions.push(...processCore.contextAdditions());
+    const processAdditions = processCore.contextAdditions();
+    additions.push(...processAdditions);
+    if (activeProcess && processAdditions.some((item: any) => item.name === activeProcess.name && item.version === activeProcess.version))
+      log('lifecycle.jsonl', { event: 'process_context_injected', name: activeProcess.name, version: activeProcess.version,
+        binding: 'provider_request', references: activeProcess.envelope.strategy !== undefined ? activeProcess.envelope.refs ?? [] : undefined });
     const discoveries = newDefinitions.splice(0);
     const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance');
     const originalPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
@@ -481,7 +475,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   });
   let settledMessage: any;
   pi.on('agent_end', () => {
-    const activeProcess = activateProcess();
+    const activeProcess = state.process.active;
     if (!activeProcess) return;
     const settleBoundary = processCore.boundary('settle', 'agent_end', activeProcess,
       { stop_reason: settledMessage?.stopReason ?? 'unknown', batch: state.batch, revision: state.revision, complete: state.complete, process_version: activeProcess.version,

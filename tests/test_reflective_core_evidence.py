@@ -61,13 +61,15 @@ def test_wrong_version_and_consult_without_parent_use_fail(tmp_path):
 def test_ppt_delivery_is_reported_separately_from_core_process_verdict(tmp_path):
     write_rows(tmp_path, "lifecycle.jsonl", [
         {"event": "initial_registry", "components": []},
-        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 1, "note": "first", "ok": True, "time": "1"},
-        {"event": "reflective_change", "op": "redefine", "kind": "process", "name": "p", "version": 2, "note": "revise", "ok": True, "time": "2"},
+        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 1, "note": "first", "strategy_present": True, "ok": True, "time": "1"},
+        {"event": "reflective_change", "op": "redefine", "kind": "process", "name": "p", "version": 2, "note": "revise", "strategy_present": True, "ok": True, "time": "2"},
     ])
     write_rows(tmp_path, "process_boundaries.jsonl", [{"part": "loop", "name": "p", "process_version": 2, "changed_action": True, "time": "3"}])
     (tmp_path / "summary.json").write_text(json.dumps({"complete": True, "stop": "delivered", "revision": 4}), encoding="utf-8")
     result = check(tmp_path, "process")
-    assert result["pass"] is True
+    assert result["pass"] is False
+    assert result["claims"] == {"identify_create": "not_evaluated", "process_adoption": "not_evaluated",
+                                "self_modify": "not_evaluated", "task_effect": "not_evaluated", "quality": "not_evaluated"}
     assert result["ppt_outcome"] == {"delivered": True, "revision": 4, "quality": "not_evaluated"}
 
     (tmp_path / "harness" / "process_boundaries.jsonl").write_text("", encoding="utf-8")
@@ -76,15 +78,33 @@ def test_ppt_delivery_is_reported_separately_from_core_process_verdict(tmp_path)
     assert result["ppt_outcome"]["delivered"] is True
 
 
-def test_process_mode_requires_revision_and_changed_hook_action(tmp_path):
+def test_process_checker_rejects_note_only_and_hook_only_false_positives(tmp_path):
     write_rows(tmp_path, "lifecycle.jsonl", [
         {"event": "initial_registry", "components": []},
-        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 1, "note": "first", "ok": True, "time": "1"},
-        {"event": "reflective_change", "op": "redefine", "kind": "process", "name": "p", "version": 2, "note": "revise", "ok": True, "time": "2"},
+        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 1, "note": "first", "strategy_present": True, "ok": True, "time": "1", "session_id": "s"},
     ])
-    write_rows(tmp_path, "process_boundaries.jsonl", [{"part": "loop", "name": "p", "process_version": 2, "changed_action": True, "time": "3"}])
-    assert check(tmp_path, "process")["pass"] is True
-    write_rows(tmp_path, "process_boundaries.jsonl", [{"part": "loop", "name": "p", "process_version": 2, "outcome": "strategy_only", "changed_action": False, "time": "3"}])
+    write_rows(tmp_path, "process_boundaries.jsonl", [{"part": "loop", "name": "p", "process_version": 1, "outcome": {"guidance": "do a review"}, "changed_action": True, "time": "3", "session_id": "s"}])
     result = check(tmp_path, "process")
     assert result["pass"] is False
-    assert result["claims"]["enforced_hook_changed_subsequent_action"] == "fail"
+    assert result["claims"]["process_adoption"] == "not_evaluated"
+    assert result["recorded_evidence"]["process_context_bindings"] == []
+
+
+def test_process_checker_requires_same_session_exact_version_for_context_binding(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": []},
+        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 2,
+         "note": "not semantic evidence", "strategy_present": True, "ok": True, "session_id": "s1", "time": "1"},
+        {"event": "reflective_change", "op": "redefine", "kind": "prompt", "name": "guidance", "version": 2,
+         "note": "empty guidance only", "ok": True, "session_id": "s1", "time": "1.5"},
+        {"event": "process_context_injected", "name": "p", "version": 2, "session_id": "s2", "binding": "provider_request", "time": "2"},
+        {"event": "process_context_injected", "name": "p", "version": 1, "session_id": "s1", "binding": "provider_request", "time": "3"},
+        {"event": "process_context_injected", "name": "p", "version": 2, "session_id": "s1", "binding": "provider_request", "time": "4"},
+    ])
+    result = check(tmp_path, "process")
+    assert result["recorded_evidence"]["process_context_bindings"] == [
+        {"name": "p", "version": 2, "session_id": "s2", "definition_associated": False, "references": []},
+        {"name": "p", "version": 1, "session_id": "s1", "definition_associated": False, "references": []},
+        {"name": "p", "version": 2, "session_id": "s1", "definition_associated": True, "references": []},
+    ]
+    assert result["claims"]["process_adoption"] == "not_evaluated"

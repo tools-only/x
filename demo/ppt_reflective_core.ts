@@ -11,7 +11,7 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
   const activate = () => {
     const pending = state.process.pending;
     if (!pending) return state.process.active;
-    const references = ['workflow', 'loop'].flatMap(part => pending.envelope[part].refs ?? []);
+    const references = processParts(pending.envelope).flatMap((part: any) => part.refs ?? []);
     const incompatible = references.filter((ref: any) => !binder.active().some((c: any) => c.name === ref.name && c.kind === ref.kind && c.version === ref.version));
     if (incompatible.length) {
       state.process.pending = null;
@@ -24,11 +24,14 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
     log('lifecycle.jsonl', { event: 'process_activated', name: pending.name, version: pending.version });
     return pending;
   };
+  const processParts = (envelope: any) => envelope.strategy !== undefined ? [envelope] : [envelope.workflow, envelope.loop];
   const validate = (envelope: any) => {
-    if (!envelope || Object.keys(envelope).some(k => !['workflow', 'loop'].includes(k)) || !envelope.workflow || !envelope.loop) throw Error('process requires workflow and loop parts');
+    const single = envelope && typeof envelope === 'object' && !Array.isArray(envelope) && Object.keys(envelope).every(k => ['strategy', 'refs'].includes(k));
+    const dual = envelope && typeof envelope === 'object' && Object.keys(envelope).every(k => ['workflow', 'loop'].includes(k)) && envelope.workflow && envelope.loop;
+    if (!single && !dual) throw Error('process requires strategy+refs or legacy workflow+loop parts');
     const components = binder.active();
-    for (const partName of ['workflow', 'loop']) {
-      const part = envelope[partName];
+    for (const [index, part] of processParts(envelope).entries()) {
+      const partName = single ? 'process' : index === 0 ? 'workflow' : 'loop';
       if (Object.keys(part).some(k => !['strategy', 'hook', 'refs'].includes(k))) throw Error(`${partName} has unknown fields`);
       if (typeof part.strategy !== 'string' || part.strategy.length > 12000 || (part.hook !== undefined && (typeof part.hook !== 'string' || part.hook.length > 16000)) || !Array.isArray(part.refs ?? []) || (part.refs?.length ?? 0) > 32) throw Error(`${partName} has invalid shape`);
       for (const ref of part.refs ?? []) {
@@ -48,15 +51,15 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
   const contextAdditions = () => {
     const additions: any[] = [];
     const active = state.process.active;
-    if (active) for (const part of ['workflow', 'loop']) if (active.envelope[part].strategy)
-      additions.push({ kind: 'process', name: active.name, version: active.version, text: `${part.toUpperCase()} STRATEGY\n${active.envelope[part].strategy}` });
+    if (active) for (const part of processParts(active.envelope)) if (part.strategy)
+      additions.push({ kind: 'process', name: active.name, version: active.version, text: `ACTIVE PROCESS ${active.name}@v${active.version}\n${part.strategy}\nExact component references: ${(part.refs ?? []).map((ref: any) => `${ref.name}/${ref.kind}@v${ref.version}`).join(', ') || '(none)'}` });
     if (state.process.activationReceipt) additions.push({ kind: 'process', name: state.process.activationReceipt.name, version: state.process.activationReceipt.version,
       text: `Activation receipt: ${state.process.activationReceipt.error}` });
     return additions;
   };
   const beforeAction = (call: any) => {
     const { action, active, input } = call;
-    if (!active || !call.useHook) return;
+    if (!active || active.envelope.strategy !== undefined || !call.useHook) return;
     if (!active.envelope.workflow.hook?.trim()) {
       log('process_boundaries.jsonl', { part: 'workflow', process_version: active.version, name: active.name, inputs: input, outcome: 'strategy_only', changed_action: false });
       state.process.lastGood = active; persist();
@@ -75,6 +78,7 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
     }
   };
   const settle = (active: any, input: any) => {
+    if (active.envelope.strategy !== undefined) return false;
     const hook = active.envelope.loop.hook;
     if (!hook?.trim()) {
       log('process_boundaries.jsonl', { part: 'loop', name: active.name, process_version: active.version, inputs: input, outcome: 'strategy_only', changed_action: false });

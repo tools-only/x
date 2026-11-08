@@ -101,11 +101,18 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     workflow: { strategy: `workflow ${version}`, refs: [{ name: 'ref', kind: 'prompt', version }], hook: '' },
     loop: { strategy: `loop ${version}`, refs: [{ name: 'ref', kind: 'prompt', version }], hook: `export default (input: {stop_reason:string}) => ({decision:'${decision}',guidance:'continue with evidence'})` },
   });
+  const bindRequest = () => {
+    const event = { messages: [{ role: 'system', content: 'base prompt' }] };
+    hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'legacy-process-session' } });
+    return event;
+  };
   const first = await call('reflect_component', { op: 'define', kind: 'process', name: 'task_loop', source: envelope(1, 'continue'), note: 'first loop version' });
   assert.match(first.content[0].text, /"ok":true/, first.content[0].text);
+  bindRequest();
   hooks.get('agent_end')();
   await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'ref', source: component('ref v2'), note: 'revise reference' });
   await call('reflect_component', { op: 'redefine', kind: 'process', name: 'task_loop', source: envelope(2, 'adapt'), note: 'use revised reference' });
+  bindRequest();
   hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'stop' } });
   hooks.get('agent_end')();
   const state = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8'));
@@ -118,6 +125,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     workflow: { strategy: 'workflow 3', refs: [{ name: 'ref', kind: 'prompt', version: 2 }] },
     loop: { strategy: 'loop 3', refs: [{ name: 'ref', kind: 'prompt', version: 2 }], hook: `export default (input: {stop_reason:string}) => { if(input.stop_reason==='stop') throw Error('runtime fault'); return {decision:'continue'} }` },
   }), note: 'exercise runtime recovery' });
+  bindRequest();
   hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'stop' } });
   hooks.get('agent_end')();
   assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active.version, 2);
@@ -126,6 +134,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     loop: { strategy: '', refs: [], hook: `export default (input: {stop_reason:string}) => { if(input.stop_reason==='stop') while(true){}; return {decision:'continue'} }` },
   }), note: 'exercise bounded hook runtime' });
   assert.match(timed.content[0].text, /"ok":true/);
+  bindRequest();
   hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'stop' } });
   hooks.get('agent_end')();
   assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active.version, 2);
@@ -140,6 +149,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
   await call('reflect_component', { op: 'define', kind: 'process', name: 'restore_path', source: restorable, note: 'create restore fixture' });
   await call('reflect_component', { op: 'redefine', kind: 'process', name: 'restore_path', source: JSON.stringify({ workflow: { strategy: 'v2', refs: [] }, loop: { strategy: '', refs: [] } }), note: 'save newer process' });
   await call('reflect_component', { op: 'restore', kind: 'process', name: 'restore_path', version: 1, note: 'restore saved process version' });
+  bindRequest();
   hooks.get('agent_end')();
   const restored = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active;
   assert.equal(restored.name, 'restore_path');
@@ -150,11 +160,48 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     workflow: { strategy: 'deny delivery', refs: [], hook: `export default () => ({allow:false,guidance:'deny'})` },
     loop: { strategy: '', refs: [] },
   }), note: 'verify core preserves last good on denial' });
+  bindRequest();
   await assert.rejects(() => call('office', { op: 'deliver' }), /process hook failed/);
   const denied = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8'));
   assert.equal(denied.process.active.version, 3);
   assert.equal(denied.complete, false);
   assert.equal(existsSync(join(root, 'delivery')), false);
+});
+
+test('single-part process binds on the next request, captures versions, and retains last-good on activation failure', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-process-request-'));
+  process.env.PPT_DEMO_ROOT = root; process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f), setActiveTools() {}, getActiveTools: () => [] } as any);
+  const call = (name: string, args: any) => tools.get(name).execute('single-process-session', args, undefined, undefined, {});
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  await call('reflect_component', { op: 'define', kind: 'prompt', name: 'task_ref', source: '---\nactive: true\n---\nreference v1', note: 'process reference' });
+  const define = (strategy: string, extra: object = {}) => call('reflect_component', { op: 'define', kind: 'process', name: 'task_method',
+    source: JSON.stringify({ strategy, refs: [{ name: 'task_ref', kind: 'prompt', version: 1 }], ...extra }), note: `observed: ${strategy}` });
+  const redefine = (strategy: string, extra: object = {}) => call('reflect_component', { op: 'redefine', kind: 'process', name: 'task_method',
+    source: JSON.stringify({ strategy, refs: [{ name: 'task_ref', kind: 'prompt', version: 1 }], ...extra }), note: `observed: ${strategy}` });
+  await define('first method');
+  const request = () => {
+    const event = { messages: [{ role: 'system', content: 'base prompt' }] };
+    hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'single-process-session' } });
+    return event.messages[0].content as string;
+  };
+  assert.match(request(), /ACTIVE PROCESS task_method@v1[\s\S]*first method[\s\S]*Exact component references: task_ref\/prompt@v1/);
+  await redefine('second method');
+  assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active.version, 1);
+  assert.match(request(), /ACTIVE PROCESS task_method@v2[\s\S]*second method/);
+  await call('reflect_component', { op: 'redefine', kind: 'process', name: 'task_method', source: JSON.stringify({ strategy: 'bad pending version', refs: [{ name: 'task_ref', kind: 'prompt', version: 1 }] }), note: 'reference may expire' });
+  await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'task_ref', source: '---\nactive: true\n---\nreference v2', note: 'reference changed' });
+  const recovered = request();
+  assert.match(recovered, /ACTIVE PROCESS task_method@v2[\s\S]*second method/);
+  const state = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8'));
+  assert.equal(state.process.active.version, 2);
+  assert.equal(state.process.activationReceipt.name, 'task_method');
+  const life = readFileSync(join(root, 'harness/lifecycle.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const bindings = life.filter(row => row.event === 'process_context_injected');
+  assert.deepEqual(bindings.map(row => [row.name, row.version, row.session_id]), [
+    ['task_method', 1, bindings[0].session_id], ['task_method', 2, bindings[0].session_id], ['task_method', 2, bindings[0].session_id],
+  ]);
 });
 
 test('reflective redefine reaches and restores prompt, skill, tool, subagent, and memory boundaries', async () => {
@@ -210,7 +257,7 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   assert.ok(activeTools.includes('five_tool'));
 });
 
-test('session starts with five live baseline components that redefine and restore at their real boundaries', async () => {
+test('initial registry omits strategic reviewer/workflow seeds and keeps optional process guidance', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-reflective-seeded-'));
   process.env.PPT_DEMO_ROOT = root;
   process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
@@ -226,30 +273,12 @@ test('session starts with five live baseline components that redefine and restor
   };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   const initial = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
-  assert.deepEqual(new Set(initial.map((c: any) => c.kind)), new Set(['prompt', 'tool', 'subagent', 'memory']));
-  assert.equal(initial.some((c: any) => c.name === 'deck_workflow'), false);
-  const names: Record<string, string> = { prompt: 'ppt_baseline_guidance', tool: 'deck_file_summary', subagent: 'deck_reviewer', memory: 'presentation_workflow' };
-  const changed: Record<string, string> = {
-    prompt: '---\nactive: true\n---\nSeeded prompt changed for this request boundary.',
-    tool: toolSource("def main(args, env):\n    return {'seeded_tool': 'changed'}", 'Summarize the current HTML deck file used by the presentation workflow.'),
-    subagent: '---\ndescription: changed reviewer\ntools: [read, grep]\n---\nSeeded reviewer changed.',
-    memory: 'Seeded memory changed for the next request.',
-  };
-  for (const kind of ['prompt', 'tool', 'subagent', 'memory'])
-    await call('reflect_component', { op: 'redefine', kind, name: names[kind], source: changed[kind] });
-  assert.match(context(), /Seeded prompt changed/);
-  assert.match(context(), /Seeded memory changed/);
-  assert.match((await call('run_program', { name: names.tool })).content[0].text, /changed/);
-  const ctx = { model: { maxTokens: 1000 }, modelRegistry: {
-    getApiKeyAndHeaders: async () => ({ apiKey: 'offline-test' }),
-    streamSimple: (_model: any, request: any) => ({ result: async () => ({ role: 'assistant', content: [{ type: 'text', text: request.systemPrompt }], stopReason: 'stop', usage: { input: 1, output: 1 } }) }),
-  } };
-  await tools.get('consult').execute('test', { agent: names.subagent, question: 'Review briefly' }, undefined, undefined, ctx);
-  for (const kind of ['prompt', 'tool', 'subagent', 'memory'])
-    await call('reflect_component', { op: 'restore', kind, name: names[kind], version: 1 });
-  assert.match(context(), /You are completing the task in the supplied brief/);
-  assert.match((await call('run_program', { name: names.tool })).content[0].text, /file not found/);
-  assert.ok(activeTools.includes(names.tool));
+  assert.deepEqual(new Set(initial.map((c: any) => c.kind)), new Set(['prompt']));
+  assert.equal(initial.some((c: any) => ['deck_reviewer', 'presentation_workflow', 'deck_file_summary'].includes(c.name)), false);
+  assert.doesNotMatch(context(), /must review|presentation workflow|deck reviewer/i);
+  assert.match(readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), /may create or modify a task process/i);
+  assert.match(readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), /optional/i);
+  assert.match(readFileSync('demo/ppt_demo_adapter.ts', 'utf8'), /deliver|delivery/i);
   const deckOnly = mkdtempSync(join(tmpdir(), 'ppt-seeded-deck-only-'));
   mkdirSync(join(deckOnly, 'artifacts'), { recursive: true });
   writeFileSync(join(deckOnly, 'artifacts/deck.json'), '{"slides":[]}');

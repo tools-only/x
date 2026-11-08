@@ -85,17 +85,38 @@ def process(root: Path) -> dict:
     initial = next((r for r in life if r.get("event") == "initial_registry"), {})
     seeded = any(c.get("kind") == "process" for c in initial.get("components", []))
     changes = [r for r in life if r.get("event") == "reflective_change" and r.get("kind") == "process"]
-    defined = any(r.get("op") == "define" and r.get("ok") is not False and str(r.get("note", "")).strip() for r in changes)
-    revised = any(r.get("op") == "redefine" and r.get("ok") is not False and str(r.get("note", "")).strip() for r in changes)
-    changed = [r for r in boundaries if r.get("changed_action") is True and r.get("part") in ("workflow", "loop")
-               and any(c.get("name") == r.get("name") and c.get("version") == r.get("process_version")
-                       and r.get("time", "") >= c.get("time", "") for c in changes)]
-    return {"mode": "process", "claims": {"agent_defined_not_seeded": "pass" if defined and not seeded else "fail",
-               "redefined_with_note": "pass" if revised else "fail",
-               "enforced_hook_changed_subsequent_action": "pass" if changed else "fail"},
-            "pass": bool(defined and revised and changed and not seeded),
+    injected = [r for r in life if r.get("event") == "process_context_injected"]
+    summaries = rows(root / "harness/process_semantic_reviews.jsonl")
+    summary_path = root / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else None
+    valid_definitions = [r for r in changes if r.get("op") == "define" and r.get("ok") is not False
+                         and r.get("strategy_present") is True]
+    # A note or hook decision describes intent/transport; neither proves the agent followed a process.
+    associations = []
+    for binding in injected:
+        matching_changes = [c for c in changes if c.get("name") == binding.get("name")
+                            and c.get("version") == binding.get("version")
+                            and c.get("session_id") == binding.get("session_id")]
+        associations.append({"name": binding.get("name"), "version": binding.get("version"),
+                              "session_id": binding.get("session_id"),
+                              "definition_associated": bool(matching_changes),
+                              "references": binding.get("references", [])})
+    semantic = {r.get("claim"): r.get("verdict") for r in summaries if r.get("claim") and r.get("verdict") in ("pass", "fail", "uncertain")}
+    status = lambda claim: semantic.get(claim, "not_evaluated")
+    effect = "not_evaluated"
+    quality = "not_evaluated"
+    if summary is not None:
+        effect = summary.get("task_effect", "not_evaluated") if summary.get("task_effect") in ("pass", "fail", "uncertain") else "not_evaluated"
+        quality = summary.get("quality", "not_evaluated") if summary.get("quality") in ("pass", "fail", "uncertain") else "not_evaluated"
+    claims = {"identify_create": status("identify_create"), "process_adoption": status("process_adoption"),
+              "self_modify": status("self_modify"), "task_effect": effect, "quality": quality}
+    return {"mode": "process", "claims": claims, "pass": False,
+            "recorded_evidence": {"initial_registry_snapshot": bool(initial), "seeded_process": seeded,
+                "nonempty_strategy_definition": bool(valid_definitions), "process_context_bindings": associations,
+                "legacy_hook_boundaries": len(boundaries), "semantic_review_records": len(summaries)},
             "definitions": changes, "boundaries": boundaries,
-            "limits": ["text-only publication does not count as process use", "offline wiring does not establish autonomous adoption or net benefit"]}
+            "limits": ["semantic claims require review evidence and are never inferred from a note, prompt injection, or hook action",
+                       "offline wiring does not establish autonomous adoption or net benefit"]}
 
 
 def check(root: Path, mode: str = "historical") -> dict:
