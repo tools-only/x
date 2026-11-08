@@ -208,7 +208,7 @@ export class NativeRuntime {
     this.registerSubagents();
   }
   registerSubagents() {
-    for (const c of this.host.binder.candidates().filter(x => x.kind === 'subagent')) {
+    for (const c of this.host.binder.active().filter(x => x.kind === 'subagent')) {
       if (this.registered.get(`subagent:${c.name}`) === c.hash) continue;
       this.host.pi.registerTool({ name: c.name, label: c.name, description: c.description,
         parameters: Type.Object({ question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),

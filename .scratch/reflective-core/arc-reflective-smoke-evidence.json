@@ -1,0 +1,64 @@
+﻿{
+  "mode": "historical_prescribed_redefine",
+  "pass": true,
+  "per_kind": {
+    "prompt": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "smoke_prompt",
+          "version": 2,
+          "boundary": "provider_request"
+        }
+      ]
+    },
+    "skill": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "smoke-skill",
+          "version": 2,
+          "boundary": "native_read"
+        }
+      ]
+    },
+    "tool": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "smoke_tool",
+          "version": 2,
+          "boundary": "tool"
+        }
+      ]
+    },
+    "subagent": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "smoke_agent",
+          "version": 2,
+          "boundary": "subagent"
+        }
+      ]
+    },
+    "memory": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "smoke_memory",
+          "version": 2,
+          "boundary": "provider_request"
+        }
+      ]
+    }
+  },
+  "reflective_redefinitions": 6,
+  "failed_publications": 0,
+  "reason": "all five redefined versions were consumed",
+  "ppt_outcome": {
+    "delivered": false,
+    "revision": null,
+    "quality": "not_evaluated"
+  }
+}

@@ -1756,6 +1756,7 @@ def run_arc_thin_e2e(
     max_provider_errors: int = MAX_PROVIDER_ERRORS,
     max_provider_outage_seconds: float = MAX_PROVIDER_OUTAGE_SECONDS,
     provider_outage_backoff_seconds: float = OUTAGE_BACKOFF_SECONDS,
+    extension_path: Path | None = None,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
 
@@ -1879,6 +1880,7 @@ def run_arc_thin_e2e(
            if fork else {}),
     }
     stage = "bridge"
+    active_extension = (extension_path or EXTENSION).resolve()
     startup_error: Exception | None = None
     ready: dict[str, Any] = {}
     for attempt in range(1, BRIDGE_START_ATTEMPTS + 1):
@@ -2009,12 +2011,13 @@ def run_arc_thin_e2e(
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", model,
                    *(["--session", str(root / "session.jsonl")] if foundation == "native" else ["--no-session"]),
                    "--no-extensions", "--no-skills", "--no-prompt-templates",
-                   "--no-context-files", "--no-builtin-tools", "--extension", str(EXTENSION)]
+                   "--no-context-files", "--no-builtin-tools", "--extension", str(active_extension)]
         if pi_provider_extension is not None:
             command.extend(["--extension", str(pi_provider_extension.resolve())])
         if max_reported_tokens is not None:
             command.extend(["--extension", str((PROJECT_ROOT / "demo" / "pi_final_provider_payload.ts").resolve())])
-        sources = sorted(EXTENSION.parent.glob("arc_thin_*.ts")) + sorted((EXTENSION.parent / "prompts").glob("arc_thin_*.md"))
+        sources = sorted(active_extension.parent.glob("arc_thin_*.ts")) + sorted((active_extension.parent / "prompts").glob("arc_thin_*.md"))
+        sources.extend([active_extension, active_extension.parent / "prompts" / "arc_reflective_task.md"] if active_extension.name == "arc_reflective_extension.ts" else [])
         sources += [Path(__file__), Path(__file__).with_name("arc_thin_adapt_config.py"),
                     Path(__file__).with_name("arc_thin_daemon.py"),
                     Path(__file__).with_name("daemon_service.py")]

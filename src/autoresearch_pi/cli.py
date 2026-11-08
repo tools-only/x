@@ -232,6 +232,16 @@ def main(argv: list[str] | None = None) -> int:
                           help="native, work memory: the stall review also comes after this many decisions in a row that only "
                                "replayed results the same board had already shown, doubling after each until a decision learns "
                                "something new (default: ARC_THIN_SPIN_REVIEW, else 2; 0 = off)")
+    arc_reflective = sub.add_parser("arc-reflective-e2e", help="run ARC through the native reflective-core adapter; stop after the first level")
+    arc_reflective.add_argument("--root", type=Path, required=True)
+    arc_reflective.add_argument("--arc-root", type=Path, default=None)
+    arc_reflective.add_argument("--game", required=True)
+    arc_reflective.add_argument("--provider", required=True)
+    arc_reflective.add_argument("--model", required=True)
+    arc_reflective.add_argument("--thinking", choices=("off", "low", "medium", "high", "xhigh", "max"), required=True)
+    arc_reflective.add_argument("--thinking-format", choices=("openai", "qwen", "qwen-chat-template"), required=True)
+    arc_reflective.add_argument("--input-modalities", required=True)
+    arc_reflective.add_argument("--max-output-tokens", type=int, required=True)
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)
@@ -483,6 +493,22 @@ def main(argv: list[str] | None = None) -> int:
             adapt_config=args.adapt_config,
             extension_env={**({} if args.auto_compaction is None else {"ARC_THIN_AUTO_COMPACTION": "1" if args.auto_compaction else "0"}),
                            **({"ARC_THIN_PHASE_OWNER": "typescript"} if args.typescript_phase_owner else {})},
+        )
+        print(summary.read_text(encoding="utf-8"), end="")
+        return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "arc-reflective-e2e":
+        root = args.root.resolve()
+        if root.exists():
+            parser.error(f"run root already exists: {root}")
+        summary = run_arc_thin_e2e(
+            root, arc_root=args.arc_root or paths.arc_agi_3_root, game=args.game, variant="treatment",
+            max_actions=None, max_decisions=None, max_reported_tokens=None, experiment_timeout_seconds=0,
+            decision_timeout_seconds=900.0, turn_idle_timeout_seconds=180.0, consolidate_after_actions=0,
+            review_on_miss=False, pi_provider=args.provider, pi_model=args.model, thinking=args.thinking,
+            thinking_format=args.thinking_format, input_modalities=args.input_modalities,
+            max_output_tokens=args.max_output_tokens, ledger=False, critic=False, continuity="session",
+            review_at_level_change=False, stall_review_after=0, spin_review_after=0, foundation="native",
+            max_levels=1, extension_path=Path(__file__).resolve().parents[2] / "demo" / "arc_reflective_extension.ts",
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
