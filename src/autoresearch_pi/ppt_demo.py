@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .project import load_project_dotenv
 from .pi_kernel import PiKernel
+from .ppt_demo_continuation import initial_intent, legacy_core_next_intent, pi_prompt, process_next_intent
 
 PROJECT = Path(__file__).resolve().parents[2]
 
@@ -161,8 +162,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                 stream.write(json.dumps(event, ensure_ascii=False)+"\n")
     try:
         with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=90, deadline=deadline, event_sink=record) as kernel:
-            transport = (continue_prompt if resume and continue_prompt else "PPT_RESUME" if resume else
-                         kickoff_prompt or "Complete the requested deliverable using the supplied brief and source material.")
+            transport = pi_prompt(initial_intent(resume, continue_prompt, kickoff_prompt))
             while deadline is None or time.monotonic() < deadline:
                 response = kernel.prompt(transport)
                 if response.get("success") is False:
@@ -189,9 +189,9 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                 if process_choice:
                     state["process"]["next"] = None
                     (root / ".harness" / "ppt-loop.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-                    transport = "PPT_NEXT" + (f"\n{process_choice.get('guidance', '')}" if process_choice.get("guidance") else "")
+                    transport = pi_prompt(process_next_intent(process_choice))
                 else:
-                    transport = "PPT_RESUME" if latest.get("stopReason") == "length" and not (fresh_batch and state.get("batchRequests", 0) >= batch_requests) else "PPT_NEXT"
+                    transport = pi_prompt(legacy_core_next_intent(state, latest, fresh_batch, batch_requests))
                 (root / "summary.json").write_text(json.dumps(summary, indent=2))
             else:
                 summary["stop"] = "time_budget"

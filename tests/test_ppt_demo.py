@@ -2,6 +2,18 @@ import json
 from pathlib import Path
 
 from autoresearch_pi import ppt_demo
+from autoresearch_pi.ppt_demo_continuation import initial_intent, legacy_core_next_intent, pi_prompt
+
+
+def test_legacy_continuation_policy_keeps_existing_defaults_and_transport_mapping():
+    assert pi_prompt(initial_intent(False, None, None)) == "Complete the requested deliverable using the supplied brief and source material."
+    assert pi_prompt(initial_intent(True, None, None)) == "PPT_RESUME"
+    assert pi_prompt(initial_intent(True, "continue with a new brief", None)) == "continue with a new brief"
+    assert pi_prompt(initial_intent(False, None, "kickoff")) == "kickoff"
+    assert pi_prompt(legacy_core_next_intent({"batchRequests": 2}, {"stopReason": "length"}, False, 10)) == "PPT_RESUME"
+    assert pi_prompt(legacy_core_next_intent({"batchRequests": 2}, {"stopReason": "length"}, True, 10)) == "PPT_RESUME"
+    assert pi_prompt(legacy_core_next_intent({"batchRequests": 10}, {"stopReason": "length"}, True, 10)) == "PPT_NEXT"
+    assert pi_prompt(legacy_core_next_intent({"batchRequests": 10}, {"stopReason": "stop"}, True, 10)) == "PPT_NEXT"
 
 
 def test_fresh_run_sends_kickoff_prompt(tmp_path, monkeypatch):

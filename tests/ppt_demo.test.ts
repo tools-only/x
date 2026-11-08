@@ -146,6 +146,15 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
   assert.equal(restored.version, 3);
   assert.equal(restored.envelope.workflow.strategy, 'saved v1');
   assert.equal((await call('reflect_component', { op: 'inspect' })).content[0].text.includes('deck_workflow'), false);
+  await call('reflect_component', { op: 'redefine', kind: 'process', name: 'restore_path', source: JSON.stringify({
+    workflow: { strategy: 'deny delivery', refs: [], hook: `export default () => ({allow:false,guidance:'deny'})` },
+    loop: { strategy: '', refs: [] },
+  }), note: 'verify core preserves last good on denial' });
+  await assert.rejects(() => call('office', { op: 'deliver' }), /process hook failed/);
+  const denied = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8'));
+  assert.equal(denied.process.active.version, 3);
+  assert.equal(denied.complete, false);
+  assert.equal(existsSync(join(root, 'delivery')), false);
 });
 
 test('reflective redefine reaches and restores prompt, skill, tool, subagent, and memory boundaries', async () => {
@@ -355,6 +364,7 @@ test('free-hands: programs write text and binary, any entry shape, plain markdow
   source.slides[0].elements[0].text = 'Changed';
   writeFileSync(manifest, JSON.stringify(source));
   await assert.rejects(() => call('office', { op: 'deliver' }), /changed since render/);
+  assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).complete, false);
 
   // Consult sends an image ref of any type as an image (content-detected), here the rendered slide PNG.
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
