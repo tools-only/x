@@ -19,10 +19,6 @@ Failure/opportunity: a10 exposed trial machinery and a task checkpoint action ne
 
 Offline evidence: `PYTHONPATH=src python -m pytest tests/test_ppt_demo.py -q` and `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts` (results to append).
 
-## Real run
-
-Pending Qwen AZ run and checker evidence.
-
 ## Offline verification
 
 - `PYTHONPATH=src python -m pytest tests/test_ppt_demo.py -q`: passed, 1 test.
