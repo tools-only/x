@@ -58,4 +58,5 @@ Cap each run at 45 minutes and USD 12 total parent-plus-child spend (USD 72 maxi
 ## Commits
 
 - `1a0e38bb` — `Add reflective process hooks to PPT harness`
+- `d14e4b58` — `Cover reflective process restore path`
 - `Record reflective process evidence` — this report is committed separately after the implementation.
