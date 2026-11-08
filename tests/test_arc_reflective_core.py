@@ -94,7 +94,7 @@ def test_reflective_arc_runner_uses_native_core_and_stops_after_level_one(tmp_pa
     assert '"grid":[' in final_user_text
     recent = final_user_text.split("RECENT COMPLETED ACTIONS (facts and exact refs)", 1)[-1].split("Authored memory/evidence refs:", 1)[0]
     assert len([line for line in recent.splitlines() if line.startswith("phase ")]) == 8
-    assert any(part.get("type") == "image" for message in final["messages"] for part in message.get("content", []) if isinstance(message.get("content"), list))
+    assert any(part.get("type") == "image_url" and str(part.get("image_url", {}).get("url", "")).startswith("data:image/png;base64,") for message in final["messages"] for part in message.get("content", []) if isinstance(message.get("content"), list))
     assert "AGENTS.md" not in live
     all_tools = {name for row in requests for name in row.get("tools", [])}
     assert "reflect_component" in all_tools

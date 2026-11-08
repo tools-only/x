@@ -422,14 +422,18 @@ export default function arcReflective(pi: ExtensionAPI) {
       if (prior) {
         const priorIndex = content.indexOf(prior);
         prior.text = String(prior.text).split(marker)[0];
-        if (content[priorIndex + 1]?.type === 'image') content.splice(priorIndex + 1, 1);
+        if (['image', 'image_url'].includes(content[priorIndex + 1]?.type)) content.splice(priorIndex + 1, 1);
       }
       else if (oldText) content[0] = { type: 'text', text: oldText };
       const current = { type: 'text', text: `${marker}${blocks.current}` };
-      content.push(current, ...(blocks.image ? [blocks.image] : []));
+      // The payload is already in the provider wire format; OpenAI-compatible chat payloads take image_url parts.
+      const wireImage = blocks.image && typeof payload?.systemPrompt !== 'string'
+        ? { type: 'image_url', image_url: { url: `data:${blocks.image.mimeType};base64,${blocks.image.data}` } }
+        : blocks.image;
+      content.push(current, ...(wireImage ? [wireImage] : []));
       latestUser.content = content;
     }
     append('provider-requests.jsonl', { request, route: 'parent', conservative_usd: spent,
-      payload: JSON.stringify(payload, (key, value) => key === 'data' && typeof value === 'string' && value.length > 4096 ? '(image)' : value) });
+      payload: JSON.stringify(payload, (key, value) => (key === 'data' || key === 'url') && typeof value === 'string' && value.length > 4096 ? '(image)' : value) });
   });
 }
