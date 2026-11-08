@@ -22,3 +22,37 @@ Offline evidence: `PYTHONPATH=src python -m pytest tests/test_ppt_demo.py -q` an
 ## Real run
 
 Pending Qwen AZ run and checker evidence.
+
+## Offline verification
+
+- `PYTHONPATH=src python -m pytest tests/test_ppt_demo.py -q`: passed, 1 test.
+- `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts`: passed, 5 tests.
+- Implementation commit: `ce5bb3cc59f4c941c218cb9137fb8490151ad73c` (`Remove unused PPT component mutation paths`).
+
+## Qwen q1 real run
+
+- Run: `runs/ppt-reflective-core-qwen-q1`; protocol confirmed model `qwen3.8-27b`, provider `AZ https://az.gptplus5.com/v1`, thinking `high`; unbounded.
+- Evidence checker: `.scratch/reflective-core/q1-checker.json`; pass, five redefined versions consumed (prompt, skill, tool, subagent, memory).
+- Stop: task did not finish. After rendering and inspection, the provider hit an error at request 34 (`stopReason=error`, unknown usage reserved), then request 35 remained unresponsive with no new session or usage log activity. I interrupted the stalled process. Run `summary.json` remains `complete:false, stop:"running"` because interruption prevented runner finalization.
+- Slides: 15 authored in `workspace/artifacts/presentation.html`; 0 delivered (no `office(op="deliver")`, no delivery directory).
+- Cost: last `conservative_usd` in `harness/model-usage.jsonl` was `$34.43482`; request 34 had unknown usage and reserved 12,000 tokens. Provider request log has 35 requests, including request 35 that did not return.
+- Tool calls from `session.jsonl`:
+
+| Tool | Calls |
+| --- | ---: |
+| reflect_component | 6 |
+| read_component | 5 |
+| read | 6 |
+| write | 2 |
+| edit | 1 |
+| python | 5 |
+| run_program | 2 |
+| consult | 3 |
+| office | 4 |
+| ls | 2 |
+| trials | 0 |
+| trial_files | 0 |
+| apply_trial | 0 |
+| checkpoint | 0 |
+
+`list_programs` was not called. The 6 `reflect_component` calls are one inspection and five redefinitions; the real-run checker records a same-version consumption for all five kinds. The reviewer's multiple looks and renders are included in the 4 office tool calls.

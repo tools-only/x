@@ -1,0 +1,57 @@
+﻿{
+  "pass": true,
+  "per_kind": {
+    "prompt": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "ppt_baseline_guidance",
+          "version": 2,
+          "boundary": "context_with_system provider request"
+        }
+      ]
+    },
+    "skill": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "deck_workflow",
+          "version": 2,
+          "boundary": "read_component"
+        }
+      ]
+    },
+    "tool": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "deck_file_summary",
+          "version": 2,
+          "boundary": "tool"
+        }
+      ]
+    },
+    "subagent": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "deck_reviewer",
+          "version": 2,
+          "boundary": "subagent"
+        }
+      ]
+    },
+    "memory": {
+      "pass": true,
+      "consumed": [
+        {
+          "name": "presentation_workflow",
+          "version": 2,
+          "boundary": "context_with_system provider request"
+        }
+      ]
+    }
+  },
+  "reflective_redefinitions": 5,
+  "reason": "all five redefined versions were consumed"
+}
