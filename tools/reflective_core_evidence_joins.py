@@ -102,7 +102,20 @@ def process(root: Path) -> dict:
                               "definition_associated": bool(matching_changes),
                               "references": binding.get("references", [])})
     semantic = {r.get("claim"): r.get("verdict") for r in summaries if r.get("claim") and r.get("verdict") in ("pass", "fail", "uncertain")}
-    status = lambda claim: semantic.get(claim, "not_evaluated")
+    associated = any(row["definition_associated"] for row in associations)
+    defined_names = {r.get("name") for r in valid_definitions}
+    revised_names = {r.get("name") for r in changes if r.get("op") == "redefine" and r.get("ok") is not False}
+    def status(claim: str) -> str:
+        verdict = semantic.get(claim, "not_evaluated")
+        if verdict != "pass":
+            return verdict
+        if claim == "identify_create" and (not initial or seeded or not valid_definitions):
+            return "fail"
+        if claim == "process_adoption" and not associated:
+            return "fail"
+        if claim == "self_modify" and not (defined_names & revised_names):
+            return "fail"
+        return verdict
     effect = "not_evaluated"
     quality = "not_evaluated"
     if summary is not None:

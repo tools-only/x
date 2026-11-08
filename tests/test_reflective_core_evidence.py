@@ -108,3 +108,15 @@ def test_process_checker_requires_same_session_exact_version_for_context_binding
         {"name": "p", "version": 2, "session_id": "s1", "definition_associated": True, "references": []},
     ]
     assert result["claims"]["process_adoption"] == "not_evaluated"
+
+
+def test_semantic_adoption_review_cannot_pass_without_associated_request_version(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": []},
+        {"event": "reflective_change", "op": "define", "kind": "process", "name": "p", "version": 2,
+         "note": "nonempty note alone is not evidence", "strategy_present": True, "ok": True, "session_id": "s1", "time": "1"},
+        {"event": "process_context_injected", "name": "p", "version": 2, "session_id": "s2", "binding": "provider_request"},
+    ])
+    write_rows(tmp_path, "process_semantic_reviews.jsonl", [{"claim": "process_adoption", "verdict": "pass"}])
+    result = check(tmp_path, "process")
+    assert result["claims"]["process_adoption"] == "fail"

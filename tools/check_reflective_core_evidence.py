@@ -16,8 +16,9 @@ def ppt_outcome(root: Path) -> dict | None:
     if not summary_path.exists():
         return None
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    quality = summary.get("quality") if summary.get("quality") in ("pass", "fail", "uncertain") else "not_evaluated"
     return {"delivered": summary.get("complete") is True and summary.get("stop") == "delivered",
-            "revision": summary.get("revision"), "quality": "not_evaluated"}
+            "revision": summary.get("revision"), "quality": quality}
 
 
 def check(root: Path, mode: str = "historical") -> dict:
