@@ -63,6 +63,7 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
 			return { result: async () => reply(consult ? answer : 'NONE') };
 		} } };
 	await handlers.get('session_start')({}, ctx);
+	for (const removed of ['run_program', 'consult', 'read_component', 'list_programs']) assert.equal(tools.has(removed), false);
 	let sections: Record<string, string> = {};
 	const text = (result: any) => (result.content ?? []).map((b: any) => b.text ?? '').join('\n');
 	const call = async (name: string, params: any) => {
@@ -73,7 +74,7 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
 	const head = async (prompt: string) => (await handlers.get('context')({ messages: [{ role: 'user', content: prompt }] }, ctx)).messages[0]
 		.content.map((b: any) => b.text ?? '').join('\n');
 	return {
-		consulted, sections: () => sections,
+		consulted, sections: () => sections, active: () => active, tools,
 		file: (path: string) => existsSync(join(w.root, path)) ? readFileSync(join(w.root, path), 'utf8') : '',
 		rows: (name: string) => existsSync(join(w.root, 'harness', name))
 			? readFileSync(join(w.root, 'harness', name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [],
@@ -159,13 +160,16 @@ test('a level review consults a subagent before it writes; its test lines are pi
 			'- test: a click near the corner — it completes the level\n';
 		assert.match(await h.call('write', { path: 'prompts/lessons.md', content: lessons }), /^REFUSED: this review consults first/);
 		assert.match(await h.call('memory', { op: 'set', key: 'win', text: 'the marked cell' }), /^REFUSED: this review consults first/);
-		assert.match(await h.call('write', { path: 'agents/scout.md', content: '---\ndescription: reads a level record\ntools: [read]\n---\nSay what was never tried.\n' }),
-			/agents\/scout\.md → subagent scout v1: saved · loaded/);
+		assert.match(await h.call('self_component', { kind: 'subagent', name: 'scout', description: 'reads a level record',
+			content: 'Say what was never tried.', allowed_tools: ['read'] }), /subagent scout v1: saved · loaded/);
 		await h.request('LEVEL REVIEW. Level 1 is complete; this turn takes no action.');
-		assert.match(await h.call('consult', { agent: 'scout', question: 'What was never tried?', refs: ['data/record.md'] }), /Clicks next to the marked cell were never tried/);
+		assert.deepEqual(Object.keys(h.tools.get('scout').parameters.properties), ['question', 'refs']);
+		assert.ok(h.active().includes('scout'));
+		assert.ok(!h.active().includes('consult'));
+		assert.match(await h.call('scout', { question: 'What was never tried?', refs: ['data/record.md'] }), /Clicks next to the marked cell were never tried/);
 		assert.match(h.consulted[0], /LEVEL 1 RECORD/, 'the subagent reads the record');
 		const saved = await h.call('write', { path: 'prompts/lessons.md', content: lessons });
-		assert.match(saved, /prompts\/lessons\.md → prompt lessons v1: saved · loaded/);
+		assert.match(saved, /prompt lessons v1: saved · loaded/);
 		assert.match(saved, /\nnote: 2 of 3 test lines will be pinned one at a time from your next decision; not pinned: "a click near the corner — it completes the level" names no move \(write ACTIONn, or ACTION6\(x,y\) for a click\)/);
 		// The next decision: the first test is the strategy's next experiment and carries the level-change prediction.
 		await h.begin();
@@ -183,7 +187,7 @@ test('a level review consults a subagent before it writes; its test lines are pi
 		assert.match(h.file('workspace/prompts/strategy.md'), /- First: ACTION1; test 2 of 2 from prompts\/lessons\.md/);
 		assert.doesNotMatch(h.file('workspace/prompts/strategy.md'), /ACTION6\(3,3\); test 1/);
 		assert.deepEqual(h.rows('refiner.jsonl').filter((row) => row.kind === 'tests').map((row) => [row.version, row.count, row.played ?? 0]), [[1, 2, 0], [2, 2, 1]]);
-		assert.deepEqual(h.rows('call_points.jsonl').map((row) => row.kind), ['consult_point', 'consult', 'consult_use']);
+		assert.deepEqual(h.rows('call_points.jsonl').map((row) => row.kind), ['consult_point', 'subagent_call', 'consult_use']);
 	} finally { await h.close(); await done(w); }
 });
 
@@ -195,14 +199,15 @@ test('a review that has not saved its file by its last call may write it with on
 		await h.begin(); await h.act({ action: 'ACTION6', x: 8, y: 8 });
 		const REVIEW = 'LEVEL REVIEW. Level 1 is complete; this turn takes no action.';
 		await h.begin(REVIEW);
-		await h.call('write', { path: 'agents/scout.md', content: '---\ndescription: reads a level record\ntools: [read]\n---\nSay what was never tried.\n' });
+		await h.call('self_component', { kind: 'subagent', name: 'scout', description: 'reads a level record',
+			content: 'Say what was never tried.', allowed_tools: ['read'] });
 		await h.request(REVIEW);
-		assert.match(await h.call('consult', { agent: 'scout', question: 'What was never tried?', refs: ['data/record.md'] }), /never tried/);
+		assert.match(await h.call('scout', { question: 'What was never tried?', refs: ['data/record.md'] }), /never tried/);
 		for (let i = 3; i < 10; i += 1) await h.call('python', { code: `${i}` });
 		assert.match(await h.call('python', { code: '10' }),
 			/\(This was tool call 10 of 10 for this review: finish now; one more call is accepted, the write of prompts\/lessons\.md\.\)/);
 		assert.match(await h.call('write', { path: './prompts/lessons.md', content: '---\nactive: true\n---\n- test: ACTION6(3,3) — the new marked cell completes the level\n' }),
-			/prompts\/lessons\.md → prompt lessons v1: saved · loaded/);
+			/prompt lessons v1: saved · loaded/);
 		assert.match(await h.call('write', { path: 'prompts/rules.md', content: '- one more\n' }), /this review used its 10 tool calls; it ends here/);
 		await h.begin();
 		assert.match(h.file('workspace/prompts/strategy.md'), /- First: ACTION6\(3,3\); test 1 of 1 from prompts\/lessons\.md/);

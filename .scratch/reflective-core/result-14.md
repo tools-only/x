@@ -15,8 +15,21 @@
 
 **Autonomous adoption:** unverified. **Net benefit:** unverified. No real-provider ARC evaluation was run.
 
-## Known blocker
+## ARC endpoint migration follow-up
 
-The owner-wide removal of generic endpoints is incomplete for the thin ARC caller. `demo/arc_thin_extension.ts` still registers `run_program`, `list_programs`, and `read_component`, and its review scheduler still selects and requires `consult(agent=...)`. The shared runtime's generic `consult` registration has been removed, leaving the ARC scheduler without its expected tool. Migrating this path requires updating its program publication/call model, review call-point tracking, receipts, scripted provider, and associated ARC tests together. The exact affected transition is the selected `consult` tool in `arc_thin_extension.ts` to `NativeRuntime.consult`; ARC migration and preserved ARC behavior remain incomplete.
+The remaining thin ARC callers were migrated off the generic execution endpoints. Programs now execute through their same-name native tools; named subagents register as same-name tools with the existing `{question, refs?}` schema and child execution. The review call point tracks a named child tool. `run_program`, `consult(agent=...)`, `read_component`, and `list_programs` registrations, active-tool entries, descriptions, and agent-facing guidance were removed. The smoke provider and review tests now call native names. `programCatalog` and `runProgram` were deleted.
+
+**Validation after endpoint migration:**
+
+- `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts tests/ppt_trials.test.ts` — 13 passed.
+- `node --experimental-transform-types --test --test-concurrency=1 tests/arc_thin_native_runtime.test.ts tests/arc_thin_binder.test.ts` — 21 passed.
+- Focused ARC review tests in `tests/arc_thin_loop_bound.test.ts` — 2 passed; verified the child tool name/schema, native call and review accounting.
+- `PYTHONPATH=src python -m pytest tests/test_reflective_core_evidence.py tests/test_ppt_native_pi.py tests/test_arc_thin_loop_bound.py -q` — 13 passed.
+- Existing scripted-provider ARC program smoke — passed all `agent_program_checks` and ended at its configured two-action budget; artifact: `runs/ppt-reflective-core-native-program-smoke-20261109/summary.json`.
+- `python -m py_compile src/autoresearch_pi/arc_thin_e2e.py` and `git diff --check` — passed.
+
+The installed-Pi ARC smoke used the mock ARC SDK and `offline-arc-thin-smoke` scripted provider. It verifies the named tool is advertised and called after v1 publication, v2 is published during ADAPT, and the later Task calls v2. It provides offline wiring evidence only.
+
+**Remaining ARC boundary:** the thin ARC extension still has its older `self_component`, `save_tool`, `save_program`, and `promote` publication interfaces. Its component-file reads remain confined and refused, while that path has no `reflect_component(inspect)` implementation. Migrating those older mutation and inspection flows to the owner-approved component primitive is a separate transition with callers in ARC Hook, ADAPT, scripted provider scenarios, and offline run checks; it remains incomplete. There are no compatibility generic execution endpoints left in the runtime path.
 
 Startup reload is tested, but explicit persisted-session resume is unverified. Native `/skill` command/autocomplete registration was not claimed because Pi 0.87.0 has no public mid-turn skill registry API. Deferred checklist A (adapter boundary), B/C (child permissions, evidence and cost), and D (context exposure versus retained use) remain open. See [analysis-native-hotswap.md](analysis-native-hotswap.md) for the scoped design and appended evidence record.

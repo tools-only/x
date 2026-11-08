@@ -174,7 +174,7 @@ IDLE_RECOVERY_PROMPT = (
 )
 SELF_HARNESS_HOOK_PROMPT = (
     "ADAPT TURN. Review recent task evidence, memory and active prompts. Changes are optional; prompt/memory edits load "
-    "on the next task decision. No environment action. Choose promote(name?), save_tool(name, body), read_component(name), "
+    "on the next task decision. No environment action. Choose promote(name?), save_tool(name, body), "
     "self_component(...), or skip(reason_code). Four tool calls maximum, charged to the Task budget."
 )
 HOOK_PROJECTION_MAX_CHARS = 24_000
@@ -1034,7 +1034,8 @@ def _loop_bound_stats(harness: Path) -> dict[str, Any]:
     count = lambda kind, **match: sum(1 for row in calls if row.get("kind") == kind and all(bool(row.get(k)) == v for k, v in match.items()))
     return {
         "refine_points": count("refine_point"), "refine_calls": count("refine"), "refine_calls_at_points": count("refine", point=True),
-        "consult_points": count("consult_point"), "consults_in_reviews": count("consult", review=True),
+        "consult_points": count("consult_point"), "consults_in_reviews": sum(1 for row in calls
+            if row.get("kind") in {"consult", "subagent_call"} and bool(row.get("review"))),
         "consult_marks": sum(int(row.get("file_marks") or 0) + int(row.get("memory_marks") or 0)
                              for row in calls if row.get("kind") == "consult_use"),
         "tests_pinned": len(tests), "tests_by_outcome": outcomes,
@@ -2938,7 +2939,7 @@ def run_arc_thin_self_hook_smoke(root: Path, *, profile: str = "self-hook") -> P
              reuse_report.get("categories", {}).get("tool")),
             ("no_errors", summary.get("provider_errors", 0) == 0 and (summary.get("harness") or {}).get("errors", 0) == 0
              and not summary.get("error"), {"provider_errors": summary.get("provider_errors"), "harness": summary.get("harness", {}).get("errors"), "error": summary.get("error")}),
-            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "skip"} for row in hook_requests), None),
             ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
         ]
     elif profile in ("inspect-to-call-python-negative", "inspect-to-call-read-failure", "inspect-to-call-no-read"):
@@ -2960,17 +2961,14 @@ def run_arc_thin_self_hook_smoke(root: Path, *, profile: str = "self-hook") -> P
             ("card_retires_after_that_task", profile != "inspect-to-call-python-negative" or (
                 bool(later_task_requests) and all("INSPECTED COMPONENT (one Task only)" not in str(row.get("current", ""))
                                                   for row in later_task_requests)), later_task_requests),
-            ("read_failure_was_reported", profile != "inspect-to-call-read-failure" or (
-                any(call and call[0] == "read_component" and call[1].get("name") == "missing_component"
-                    for row in requests for call in row.get("planned", {}).get("calls", []))
-                and any(result.get("tool") == "read_component" and result.get("is_error")
-                        for row in requests for result in row.get("last_tool_results", []))), requests),
+            ("removed_read_endpoint_absent", not any(tool.get("name") == "read_component"
+                for row in requests for tool in row.get("tools", [])), requests),
             ("no_read_was_skipped", profile != "inspect-to-call-no-read" or any(
                 call and call[0] == "skip" for row in requests for call in row.get("planned", {}).get("calls", [])), requests),
             ("no_named_saved_tool_call", not any(call and call[0] == "summarize_values" for call in task_calls), task_calls),
             ("reuse_uses_zero", tool_uses == 0, reuse_report.get("categories", {}).get("tool")),
             ("python_path_was_executed", any(row.get("kind") == "python" and row.get("ok") for row in runs), runs),
-            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "skip"} for row in hook_requests), None),
             ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
         ]
     elif profile == "min-loop":
@@ -2984,7 +2982,7 @@ def run_arc_thin_self_hook_smoke(root: Path, *, profile: str = "self-hook") -> P
             ("covered_component_skip", any(row.get("event") == "shown" and "hook_act | Covered" in str(row.get("head_text", "")) for row in hooks) and any(row.get("event") == "skip" and row.get("reason_code") == "already_covered" and row.get("decision", 0) > int(tool_run.get("decision", 0)) for row in hooks) and any(row.get("event") == "turn_complete" and row.get("disposition") == "no_save" and row.get("outcome") == "completed" for row in hooks), hooks),
             ("no_errors", summary.get("provider_errors", 0) == 0 and (summary.get("harness") or {}).get("errors", 0) == 0 and not summary.get("error"), {"provider_errors": summary.get("provider_errors"), "harness": summary.get("harness", {}).get("errors"), "error": summary.get("error")}),
             ("normal_expected_stop", summary.get("stop_reason") == "max_decisions" and len(trajectory) == 3 and bool(last_completion) and last_completion.get("outcome") == "completed" and last_completion.get("error") is None, {"stop_reason": summary.get("stop_reason"), "decisions": summary.get("decisions"), "actions": len(trajectory), "last_turn_complete": last_completion}),
-            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "skip"} for row in hook_requests), None),
             ("hook_bounded", bool(hook_requests) and all(len(str(row.get("current"))) < 3000 for row in hook_requests), None),
             ("no_unprojected_diary_or_absolute_private_paths", all(not re.search(r"(?im)^\s*(?:DIARY_INJECTION|DIARY(?:_ENTRY)?)\b", str(row.get("current", ""))) and not re.search(r"(?i)(?:[A-Z]:\\|/)(?:[^\s\"']*[\\/])*private[\\/]", str(row.get("current", ""))) for row in hook_requests), None),
             ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
@@ -3030,7 +3028,7 @@ def run_arc_thin_self_hook_smoke(root: Path, *, profile: str = "self-hook") -> P
             ("normal_expected_stop", summary.get("stop_reason") == "max_decisions" and len(trajectory) == 5
              and bool(last_completion) and last_completion.get("outcome") == "completed" and last_completion.get("error") is None,
              {"stop_reason": summary.get("stop_reason"), "decisions": summary.get("decisions"), "last_turn_complete": last_completion}),
-            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+            ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "skip"} for row in hook_requests), None),
             ("hook_bounded", bool(hook_requests) and all(len(str(row.get("current"))) < 3000 for row in hook_requests), None),
             ("request_log_bounded", len(requests) <= 80 and request_bytes <= 1_000_000, {"requests": len(requests), "bytes": request_bytes}),
         ]
@@ -3075,7 +3073,7 @@ def run_arc_thin_self_hook_smoke(root: Path, *, profile: str = "self-hook") -> P
          and last_completion.get("outcome") == "completed" and last_completion.get("error") is None,
          {"stop_reason": summary.get("stop_reason"), "decisions": summary.get("decisions"),
           "actions": len(trajectory), "last_turn_complete": last_completion, "last_completion_skip": last_completion_skip}),
-        ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "read_component", "skip"} for row in hook_requests), None),
+        ("hook_tools_only", bool(hook_requests) and all(set(_tool_names(row)) == {"promote", "save_tool", "skip"} for row in hook_requests), None),
         ("hook_bounded", bool(hook_requests) and all(len(str(row.get("current"))) < 3000 for row in hook_requests), None),
         ("no_unprojected_diary_or_absolute_private_paths", all(
             not re.search(r"(?im)^\s*(?:DIARY_INJECTION|DIARY(?:_ENTRY)?)\b", str(row.get("current", "")))
@@ -3259,35 +3257,27 @@ def run_arc_thin_agent_program_smoke(root: Path) -> Path:
     runs = _read_jsonl(root / "harness" / "component_runs.jsonl")
     components = _read_jsonl(root / ".harness" / "components.jsonl")
     program = next((row for row in reversed(components) if row.get("path") == "tools/track_object.py"), {})
-    program_calls = [row for row in runs if row.get("kind") == "program_call"]
+    program_calls = [row for row in runs if row.get("kind") == "tool" and row.get("name") == "track_object"]
     adapt = next((row for row in requests if str(row.get("current", "")).startswith("ADAPT TURN")), {})
     run_config = json.loads((root / "run-config.json").read_text(encoding="utf-8"))
     adapt_revision = next((row for row in runs if row.get("kind") == "program_save" and row.get("decision") == 2), {})
     task_requests = [row for row in requests if not row.get("analyst") and not row.get("critic")
                      and not str(row.get("head", "")).startswith("ADAPT TURN")]
-    task_calls_before = [row for row in program_calls if row.get("phase") == "task" and row.get("version") == 1
-                         and row.get("decision") == 1]
-    task_calls_after = [row for row in program_calls if row.get("phase") == "task" and row.get("version") == 2
-                        and row.get("decision") >= 2]
+    task_calls_before = [row for row in program_calls if row.get("version") == 1 and row.get("decision") == 1]
+    task_calls_after = [row for row in program_calls if row.get("version") == 2 and row.get("decision") >= 2]
     checks = [
-        ("task_created_and_used_v1", bool(task_calls_before), [(row.get("phase"), row.get("version")) for row in program_calls]),
+        ("task_created_and_used_v1", bool(task_calls_before), [(row.get("decision"), row.get("version")) for row in program_calls]),
         ("program_catalog_discovered", any("track_object@v2 | executable skill" in str(row.get("head", ""))
          and "Locate the tracked object with a position offset" in str(row.get("head", "")) for row in task_requests)
-         and any(result.get("tool") == "list_programs" and "tags: tracking, position" in str(result.get("text", ""))
-                 for row in task_requests for result in row.get("last_tool_results", []))
-         and any(result.get("tool") == "read_component" and "# active version: v1" in str(result.get("text", ""))
-                 and "grid[3].index(9)" in str(result.get("text", ""))
-                 for row in task_requests for result in row.get("last_tool_results", [])),
+         and any("track_object" in _tool_names(row) for row in task_requests)
+         and any(call and call[0] == "track_object" for row in task_requests for call in row.get("planned", {}).get("calls", [])),
          {"catalog_in_head": any("track_object@v2 | executable skill" in str(row.get("head", "")) for row in task_requests),
-          "list_called": any(result.get("tool") == "list_programs" for row in task_requests
-                             for result in row.get("last_tool_results", [])),
-          "source_read": any(result.get("tool") == "read_component" for row in task_requests
-                             for result in row.get("last_tool_results", []))}),
+          "native_tool_advertised": any("track_object" in _tool_names(row) for row in task_requests),
+          "native_tool_called": any(call and call[0] == "track_object" for row in task_requests for call in row.get("planned", {}).get("calls", []))}),
         ("adapt_published_same_name_v2", adapt_revision.get("version") == 2,
          {"version": adapt_revision.get("version"), "ok": adapt_revision.get("ok")}),
-        ("later_task_used_v2", bool(task_calls_after), [(row.get("phase"), row.get("version")) for row in program_calls]),
-        ("adapt_received_task_program_evidence", "program_call" in str(adapt.get("current", ""))
-         and "output_excerpt" in str(adapt.get("current", "")), adapt.get("current", "")[:2400]),
+        ("later_task_used_v2", bool(task_calls_after), [(row.get("decision"), row.get("version")) for row in program_calls]),
+        ("adapt_received_task_tool_evidence", "track_object" in str(adapt.get("current", "")), adapt.get("current", "")[:2400]),
         ("adapt_received_current_image", bool(adapt.get("image_blocks")), adapt.get("image_blocks")),
         ("python_session_not_implied", all(
             "python" not in " ".join(str(tool.get("name", "")) for tool in row.get("tools", [])).lower()

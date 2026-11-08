@@ -11,6 +11,7 @@ def test_the_summary_counts_call_points_pinned_tests_and_predictions(tmp_path):
     (harness / 'call_points.jsonl').write_text(lines([
         dict(kind='refine_point', at=15), dict(kind='refine', at=15, point=True), dict(kind='refine', at=20, point=False),
         dict(kind='consult_point', at=22), dict(kind='consult', at=22, review=True),
+        dict(kind='subagent_call', at=24, review=True, agent='scout'),
         dict(kind='consult_use', at=22, file_marks=2, memory_marks=1)]), encoding='utf-8')
     (harness / 'refiner.jsonl').write_text(lines([
         dict(kind='next', edit='test:prompts/lessons.md:9:1', test=dict(index=1, total=2)),
@@ -23,6 +24,6 @@ def test_the_summary_counts_call_points_pinned_tests_and_predictions(tmp_path):
                               dict(path='tools/q.py', version=1, error='raised')]),
         dict(n=2, diverges_from=1)]), encoding='utf-8')
     assert runner._loop_bound_stats(harness) == {
-        'refine_points': 1, 'refine_calls': 2, 'refine_calls_at_points': 1, 'consult_points': 1, 'consults_in_reviews': 1,
+        'refine_points': 1, 'refine_calls': 2, 'refine_calls_at_points': 1, 'consult_points': 1, 'consults_in_reviews': 2,
         'consult_marks': 3, 'tests_pinned': 3, 'tests_by_outcome': {'met': 1, 'expired': 1, 'open': 1}, 'disagreement_pins': 1,
         'predictions': 2, 'predictions_right': 1, 'diverged_moves': 1}

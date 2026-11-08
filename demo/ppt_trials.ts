@@ -120,7 +120,7 @@ export class Trials {
     }
     toolDefs.push({ name: 'python', description: 'Run Python in the scratch workspace sandbox (text or binary files). Component paths require reflect_component.', parameters: Type.Object({ code: Type.String({ minLength: 1 }) }) });
     runTools.set('python', a => runtime.python(a.code, signal, false));
-    runtime.register(); runtime.registerSubagents();
+    runtime.register();
     for (const tool of nativeTools.values()) {
       toolDefs.push({ name: tool.name, description: tool.description, parameters: tool.parameters });
       runTools.set(tool.name, args => tool.execute(`trial:${tool.name}`, args, signal, undefined, { model: ctx.model, modelRegistry: ctx.modelRegistry }));

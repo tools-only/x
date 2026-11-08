@@ -169,25 +169,6 @@ export class Binder {
     const active = this.bindings.get(path); const entry = this.entries.get(path);
     return `${active?.name ?? path} v${active?.version ?? 'none'}${entry?.error ? ` (v${entry.version} failed)` : ''}`;
   }
-  /** Executable skills are stored as Python tools, but discovered as named programs. */
-  programCatalog(level: number, query = ''): string {
-    const terms = query.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? [];
-    const rows = [...this.entries].filter(([, e]) => !e.retired && e.good?.program)
-      .map(([path, e]) => {
-        const c = e.good!;
-        const status = c.level < level ? 'stale for this level' : e.error ? `v${e.version} failed; v${c.version} active` : 'active';
-        return { path, c, status };
-      }).map(row => ({ ...row, score: terms.reduce((score, term) => {
-        const fields = [row.c.name, row.c.description, ...(row.c.tags ?? [])].join(' ').toLowerCase();
-        return score + (fields.includes(term) ? 1 : 0);
-      }, 0) })).filter(row => !terms.length || row.score > 0)
-      .sort((a, b) => b.score - a.score || a.c.name.localeCompare(b.c.name));
-    if (!rows.length) return `No named programs match ${JSON.stringify(query)}.`;
-    const shown = rows.slice(0, 20).map(({ c, status }) =>
-      `${c.name}@v${c.version} | ${status} | ${c.description}${c.tags?.length ? ` | tags: ${c.tags.join(', ')}` : ''}`);
-    return [`NAMED PROGRAMS (${rows.length} matches; run_program(name, args), read_component(name) for source)`,
-      ...shown, ...(rows.length > shown.length ? [`${rows.length - shown.length} more; narrow list_programs(query).`] : [])].join('\n');
-  }
   /**
    * The capability index: one line per saved prompt, tool, skill and subagent (memory has its own index). Libraries
    * and plain files are not listed. A tool's line says where it enters the decision (a view after each new state, a
@@ -211,7 +192,7 @@ export class Binder {
     if (full.length <= 1200) return full;
     const groups = new Map<string, string[]>();
     for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path.split('/').at(-1)!.replace(/\.[^.]+$/, '')]); }
-    return ['HARNESS (logical names; read_component for content; list_programs(query) for program descriptions and versions)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
+    return ['HARNESS (native component names; callable inputs appear in each tool schema)', ...[...groups].map(([kind, names]) => `${kind}s: ${names.join(', ')}`),
       `${listed.filter(([, e]) => e.error).length} failed; receipts label last working versions.`].join('\n').slice(0, 1200);
   }
 }

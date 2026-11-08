@@ -122,7 +122,7 @@ const NO_EFFECT_CELLS = 2;
 const REFINE_FIRST = "this decision is a refine point: first call refine(focus) with what your harness should change now, then act; " +
 	"this action was NOT played";
 /** A review's response when it has not yet attempted its subagent consult (A5). */
-const CONSULT_FIRST = "this review consults first: make one attempt with consult(agent, question, refs) before you write. " +
+const CONSULT_FIRST = "this review consults first: make one attempt with an available named subagent tool before you write. " +
 	"If the consult returns an error, continue the review from the available evidence; writing agents/<name>.md to make one is allowed";
 /**
  * Pi checks arguments against the action enum of the current state before a tool runs, and its message ("must be equal
@@ -1587,16 +1587,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       if (run.hookTurn) {
         pi.setActiveTools(run.adaptTurn
           ? agentNativeProgramLoop
-            ? ['save_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'adapt_policy', 'skip']
-            : ['promote', 'save_tool', 'read_component', 'self_component', 'adapt_policy', 'skip']
-          : ['promote', 'save_tool', 'read_component', 'skip']);
+            ? ['save_program', 'self_component', 'adapt_policy', 'skip']
+            : ['promote', 'save_tool', 'self_component', 'adapt_policy', 'skip']
+          : ['promote', 'save_tool', 'skip']);
         return;
       }
-      // Keep the core list fixed; newly saved tools and a saved subagent's consult enter on the next provider request.
+      // Keep the core list fixed; newly saved tools and subagents enter on the next provider request.
       // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
       pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory',
-        ...(agentNativeProgramLoop ? [] : ['python', 'promote', 'save_tool']), 'save_program', 'run_program', 'list_programs', 'read', 'write', 'edit', 'read_component', 'self_component', ...(!run.consolidating && !selfBaseline && !control ? ['request_adapt'] : []), ...(selfBaseline ? ['save'] : []),
-        ...(consultTool && (!selfBaseline || binder?.candidates().some(c => c.kind === 'subagent')) ? ['consult'] : []),
+        ...(agentNativeProgramLoop ? [] : ['python', 'promote', 'save_tool']), 'save_program', 'read', 'write', 'edit', 'self_component', ...(!run.consolidating && !selfBaseline && !control ? ['request_adapt'] : []), ...(selfBaseline ? ['save'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : [])]);
       return;
     }
@@ -3049,11 +3048,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	/** What a review shows first when it consults (A5): which subagents there are, or how to make one, and the record's path. */
 	function consultFirstText(): string {
 		const agents = binder?.active().filter((c) => c.kind === "subagent").map((c) => c.name) ?? [];
-		return `CONSULT FIRST (every review): before you write, attempt one question to a subagent about this record with ` +
-			`consult(agent, question, refs=["${RECORD_PATH}"]); it reads the record in a context of its own, without your assumptions. ` +
+		return `CONSULT FIRST (every review): before you write, attempt one question to a subagent about this record using its same-name tool. ` +
+			`The tool runs in a context of its own; attach ${RECORD_PATH} through its refs argument. ` +
 			(agents.length ? `Your subagents: ${agents.join(", ")}. ` : "You have none yet: first write agents/<name>.md (frontmatter: " +
 				"description, tools: [read, python]; then what it should look for). ") +
-			"If the consult returns an error, continue from the available evidence. Mark anything you take from an answer with (from <name>).";
+			"If the tool returns an error, continue from the available evidence. Mark anything you take from an answer with (from <name>).";
 	}
 
 	/**
@@ -3117,14 +3116,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.toolCalls += 1;
 		if (run.hookTurn) {
 			const allowed = run.adaptTurn ? agentNativeProgramLoop
-                ? ['save_program', 'run_program', 'list_programs', 'read_component', 'self_component', 'adapt_policy', 'skip']
-				: ['promote', 'save_tool', 'read_component', 'self_component', 'adapt_policy', 'skip']
-				: ['promote', 'save_tool', 'read_component', 'skip'];
+				? ['save_program', 'self_component', 'adapt_policy', 'skip']
+				: ['promote', 'save_tool', 'self_component', 'adapt_policy', 'skip']
+				: ['promote', 'save_tool', 'skip'];
 			if (!allowed.includes(name) || run.toolCalls > 4)
 				return { reason: run.adaptTurn ? agentNativeProgramLoop
-                    ? 'ADAPT permits four calls: save_program, run_program, list_programs, read_component, self_component, adapt_policy, skip.'
-					: 'ADAPT permits four calls: promote, save_tool, read_component, self_component, adapt_policy, skip.'
-					: 'Hook permits four calls: promote, save_tool, read_component, skip.', terminate: true };
+					? 'ADAPT permits four calls: save_program, self_component, adapt_policy, skip.'
+					: 'ADAPT permits four calls: promote, save_tool, self_component, adapt_policy, skip.'
+					: 'Hook permits four calls: promote, save_tool, skip.', terminate: true };
 		}
 		if (run.daemonReplied) return { reason: "daemon response completed; Task resumes in the next turn", terminate: true };
 
@@ -3698,7 +3697,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       if (tool.name === 'read' && /(?:^|\/)(tools|lib|observers|skills|agents|roles|prompts|\.harness)(?:\/|$)/.test(path)) {
         const component = binder?.candidates().find(c => c.path === path);
         const name = component?.name ?? path.split('/').at(-1)!.replace(/\.[^.]+$/, '');
-        throw new Refusal(`Use read_component(name="${name}", kind="${component?.kind ?? 'tool'}").`);
+        throw new Refusal('Component files are managed by the native component interface.');
       }
       if (['write', 'edit'].includes(tool.name) && /(?:^|\/)(tools|lib|observers|skills|agents|roles|prompts|\.harness)(?:\/|$)/.test(path)
           && path !== run.reviewWrite && ![REVIEW_PATH, LESSONS_PATH].includes(path)) {
@@ -3885,31 +3884,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
             try { const receipt = await nativeRuntime!.saveProgram(params.name, params.body, params.description, params.tags ?? [], params.expected_version); refreshSkillSurface(); return text(receipt); }
             catch (error) { throw new Refusal(errorText(error)); }
           }) });
-        pi.registerTool({ name: 'run_program', label: 'Run program',
-          description: 'Run an active named program on the authoritative current ARC state. Supply its args dictionary. ADAPT runs are read-only.',
-          parameters: Type.Object({ name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), args: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
-          execute: guardTool('run_program', async (params: { name: string; args?: Record<string, unknown> }, signal) => {
-            try { return await nativeRuntime!.runProgram(params.name, params.args ?? {}, signal); }
-            catch (error) { throw new Refusal(errorText(error)); }
-          }) });
-        pi.registerTool({ name: 'list_programs', label: 'List programs',
-          description: 'Find named executable skills by name, purpose or tag. Returns active version and level status; read_component(name) returns full source.',
-          parameters: Type.Object({ query: Type.Optional(Type.String({ maxLength: 80 })) }),
-          execute: guardTool('list_programs', async (params: { query?: string }) => text(binder!.programCatalog(currentLevel(), params.query ?? ''))) });
         pi.registerTool({ name: 'promote', label: 'Promote',
           description: 'Publish a session function by logical name; omit name for the top candidate. Runtime fills the callable shell.',
           parameters: Type.Object({ name: Type.Optional(Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' })) }),
           execute: guardTool('promote', async (params: { name?: string }, signal) => {
             const receipt = await nativeRuntime!.promote(params.name, signal);
             refreshSkillSurface(); return text(receipt);
-          }) });
-        pi.registerTool({ name: 'read_component', label: 'Read component', description: 'Read a saved prompt, tool, skill or subagent by logical name and optional kind.',
-          parameters: Type.Object({ name: Type.String({ pattern: '^[a-z][a-z0-9_]{0,39}$' }), kind: Type.Optional(Type.String()) }),
-          execute: guardTool('read_component', async (params: { name: string; kind?: string }) => {
-            const component = binder!.candidates().find(c => c.name === params.name && c.kind === (params.kind ?? 'tool'));
-            if (!component) throw new Refusal('name: no saved component matches this name and kind');
-            nativeRuntime!.noteReuseRead(component.path, component.version);
-            return text(component.program ? `${component.source}\n# active version: v${component.version}` : component.source);
           }) });
         pi.registerTool({ name: 'skip', label: 'Skip', description: 'End this Hook without publishing.',
           parameters: Type.Object({ reason_code: StringEnum(['no_reusable_logic', 'already_covered', 'need_more_task_signal'] as const) }),
@@ -4053,7 +4033,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const receipt = await binder!.save(path, currentLevel(), { by: "agent", decision });
 				nativeRuntime!.noteSave(path, receipt);
 				refreshSkillSurface();
-				return text(`${receipt ?? params.name}${params.kind === "skill" ? `\nUse the named component when useful.` : params.kind === "subagent" ? `\nCall consult(agent="${params.name}", question=...) to use it.` : ""}`,
+				return text(`${receipt ?? params.name}${params.kind === "subagent" ? `\nPublished as the native ${params.name} tool.` : ""}`,
 					Boolean(receipt?.includes("NOT loaded")), endsBatch());
 			}),
 		});
@@ -4448,18 +4428,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       receipt: body => workspace.receipt(body),
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         let result: any;
-        if (name === 'consult' && run.consultPoint) run.consultAttempted = true;
+        const subagent = binder?.candidates().find(c => c.kind === 'subagent' && c.name === name);
+        if (subagent && run.consultPoint) run.consultAttempted = true;
         try { result = await fn(params, signal, ctx); } catch (error) {
-          if (name === 'consult' && run.consultPoint) append('call_points.jsonl', { kind: 'consult_failed', at: trajectory.length, decision,
-            agent: String(params?.agent ?? ''), error: errorText(error).slice(0, 300) });
+          if (subagent && run.consultPoint) append('call_points.jsonl', { kind: 'subagent_failed', at: trajectory.length, decision,
+            agent: name, error: errorText(error).slice(0, 300) });
           throw new Refusal(errorText(error));
         }
-        // A review's call point (A5): one consult attempt releases its write gate, whether it succeeds or fails.
-        if (name === 'consult') {
+        // A review's call point (A5): one native subagent attempt releases its write gate, whether it succeeds or fails.
+        if (subagent) {
           if (run.consultPoint) run.consulted = true;
-          append('call_points.jsonl', { kind: 'consult', at: trajectory.length, decision, review: run.consolidating, agent: String(params?.agent ?? ''),
+          append('call_points.jsonl', { kind: 'subagent_call', at: trajectory.length, decision, review: run.consolidating, agent: name,
             question: String(params?.question ?? '').slice(0, 300) });
-          consultedAgent = String(params?.agent ?? '');
+          consultedAgent = name;
         }
         return result;
       }) });
@@ -4747,7 +4728,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				"Use Python to combine queries, calculations and feedback-dependent actions; print only selected evidence. One cell can also write files and memory (env.remember takes the memory tool's arguments) and act, so bookkeeping and the next action are one call rather than several. Reuse your saved components before re-deriving or rewriting anything; leave coordinates, differences, counts and history lookups to code; you judge applicability on current evidence and interpret results.",
 				"Use named programs for reusable calculations, observations and plans. Each run receives the current authoritative state in a fresh sandbox; pass changing inputs through args and use the returned result to decide what to do. Create or revise a program directly when repeated logic is worth keeping; ordinary one-off reasoning can stay in the current decision.");
 			systemBody = systemBody.replace(/Self tools use logical names\.[\s\S]*?Meta process rules remain separate\./,
-				"Create or revise a complete named program with save_program(name, description, tags?, body); its executable Python source receives state, args and env from the current run. The HARNESS index lists its purpose and version; use list_programs(query) to search and read_component(name) for full source. Run it with run_program(name, args) against each authoritative state; each call has a fresh sandbox and cannot depend on Task Python-session variables. ADAPT may inspect, run read-only, revise or skip; only TASK programs can act through env.act. A failed candidate leaves the last valid version active.\n\nself_component remains available for the other harness component types. Meta process rules remain separate.");
+				"Create or revise a complete named program with save_program(name, description, tags?, body). Its name appears in the HARNESS index as a native callable tool. The tool receives the current authoritative state in a fresh sandbox, accepts its declared args dictionary, and returns a result; ADAPT executions are read-only and TASK executions may act through env.act. Native tools can be read through the ordinary workspace read tool where permitted. A failed candidate leaves the last valid version active.\n\nself_component remains available for the other harness component types. Meta process rules remain separate.");
 			systemBody += "\n\nAgent-native program loop: do not use Python cells or session names. Use the named program on the current state and base revisions on observed feedback.";
 		}
 		const rendered = `${rootPrompt}\n\n${systemBody.trim()}`.trimEnd() + "\n";

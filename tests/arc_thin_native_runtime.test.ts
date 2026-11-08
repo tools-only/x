@@ -205,34 +205,36 @@ test('agent-native named programs run on fresh states, revise by name, and prese
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-program-')));
   const binder = new Binder(workspace, validatePythonComponent);
   const logs: any[] = [];
+  const tools = new Map<string, any>();
   let grid = [[4]];
-  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder,
+  const runtime = new NativeRuntime({ pi: { registerTool(tool: any) { tools.set(tool.name, tool); } } as any, workspace, binder,
     state: () => ({ grid }), level: () => 0, actionCount: () => 2, decision: () => 3,
-    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
+    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => (id: string, args: any, signal?: AbortSignal, ctx?: any) => fn(args, signal, ctx) });
   try {
     const created = await runtime.saveProgram('measure', 'grid[0][0] + args.get("delta", 0)', 'Measure the current grid cell', ['measurement', 'grid']);
     assert.match(created, /measure v1: saved/);
     assert.match(binder.index(0), /measure@v1 \| executable skill \| Created \| Measure the current grid cell \| measurement, grid/);
-    assert.match(binder.programCatalog(0, 'grid'), /measure@v1 \| active \| Measure the current grid cell/);
-    assert.match(new Binder(workspace).programCatalog(0, 'measurement'), /measure@v1/, 'program metadata survives a Binder restart');
+    assert.match(binder.index(0), /measure@v1 \| executable skill \| Created \| Measure the current grid cell/);
+    assert.match(new Binder(workspace).index(0), /measure@v1/, 'tool metadata survives a Binder restart');
+    assert.ok(tools.has('measure'));
     assert.match(binder.candidates().find(c => c.name === 'measure')?.source ?? '', /# description: Measure the current grid cell\n# tags: measurement, grid/);
     await assert.rejects(runtime.saveProgram('measure', '0', 'Wrong version', [], 0), /expected v0, current version is v1/);
-    const first = await runtime.runProgram('measure', { delta: 2 });
+    const first = await tools.get('measure').execute('test', { args: { delta: 2 } });
     assert.match(first.content.map((part: any) => part.text ?? '').join('\n'), /6/);
     await runtime.python('old_measure = 999');
     grid = [[9]];
-    const second = await runtime.runProgram('measure', { delta: 1 });
+    const second = await tools.get('measure').execute('test', { args: { delta: 1 } });
     assert.match(second.content.map((part: any) => part.text ?? '').join('\n'), /10/);
     await assert.rejects(runtime.saveProgram('measure', 'def broken(:\n    pass', 'Broken candidate'), /NOT loaded/);
-    const retained = await runtime.runProgram('measure', { delta: 1 });
+    const retained = await tools.get('measure').execute('test', { args: { delta: 1 } });
     assert.match(retained.content.map((part: any) => part.text ?? '').join('\n'), /10/);
     const revised = await runtime.saveProgram('measure', 'grid[0][0] * args.get("scale", 2)', 'Scale the current grid cell', ['measurement']);
     assert.match(revised, /measure v3: saved/);
-    assert.match(binder.programCatalog(0, 'scale'), /measure@v3 \| active \| Scale the current grid cell/);
-    assert.doesNotMatch(binder.programCatalog(0, 'scale'), /Measure the current grid cell/);
-    const third = await runtime.runProgram('measure', { scale: 3 });
+    assert.match(binder.index(0), /measure@v3 \| executable skill \| Created \| Scale the current grid cell/);
+    assert.doesNotMatch(binder.index(0), /Measure the current grid cell/);
+    const third = await tools.get('measure').execute('test', { args: { scale: 3 } });
     assert.match(third.content.map((part: any) => part.text ?? '').join('\n'), /27/);
-    assert.deepEqual(logs.filter(row => row.kind === 'program_call').map(row => row.version), [1, 1, 1, 3]);
+    assert.deepEqual(logs.filter(row => row.kind === 'tool' && row.name === 'measure').map(row => row.version), [1, 1, 1, 3]);
   } finally { runtime.close(); }
 });
 

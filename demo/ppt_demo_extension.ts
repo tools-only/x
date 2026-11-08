@@ -343,7 +343,7 @@ export default function pptDemo(pi: ExtensionAPI) {
           hash: updated?.hash, note: a.note, ok: false, error: `publication did not bind: ${receipt ?? path}` });
         return text({ ok: false, name: a.name, kind: a.kind, active_version: current?.version ?? null, error: receipt ?? 'candidate failed validation' });
       }
-      runtime.register(); runtime.registerSubagents();
+      runtime.register();
       if (a.kind === 'tool' || a.kind === 'subagent') {
         ownedNative.set(a.name, { kind: a.kind, path });
         pi.setActiveTools([...new Set([...pi.getActiveTools(), a.name])]);
@@ -463,7 +463,6 @@ export default function pptDemo(pi: ExtensionAPI) {
         ownedNative.set(c.name, { kind: c.kind, path: c.path });
       }
       runtime.register();
-      runtime.registerSubagents();
       pi.setActiveTools([...new Set([...pi.getActiveTools(), ...nativeComponents.map(c => c.name)])]);
       initialized = true;
     }

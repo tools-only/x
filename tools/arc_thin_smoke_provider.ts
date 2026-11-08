@@ -299,7 +299,7 @@ const COMPONENT_SCRIPT: Step[] = [
     ['write', { path: 'agents/check.md', content: '---\ndescription: check measurements\ntools: [read, python, compare]\n---\nReturn exact computed value.' }],
     ['write', { path: 'skills/probe/scripts/helper.py', content: 'def answer():\n    return 42\n' }]] },
   { kind: 'decide', calls: [['python', { code: 'from skills.probe.scripts.helper import answer\nanswer()' }]] },
-  { kind: 'decide', calls: [['consult', { agent: 'check', question: 'Compute compare(x=40).', refs: ['data/current.json'] }]] },
+  { kind: 'decide', calls: [['check', { question: 'Compute compare(x=40).', refs: ['data/current.json'] }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
   { kind: 'decide', calls: [['write', { path: 'tools/compare.py', content: 'def run(x: int)\n    return x\n' }]] },
   { kind: 'decide', calls: [['compare', { args: { x: 40 } }]] },
@@ -315,7 +315,7 @@ const COMPONENT_SCRIPT: Step[] = [
     ['write', { path: 'agents/check.md', content: '---\ndescription: REVISED_ROLE\ntools: [compare]\n---\nReturn the updated computed value.' }],
     ['write', { path: 'tools/position.py', content: NATIVE_VIEW('777') }]] },
   // The older role argument still reaches the subagent.
-  { kind: 'decide', calls: [['consult', { role: 'check', question: 'Compute compare(x=40).' }],
+  { kind: 'decide', calls: [['check', { question: 'Compute compare(x=40).' }],
     ['memory', { set: [{ key: 'accepted', text: 'VALID_IN_PARTIAL_BATCH' }, { key: 'unfinished' }],
       hypotheses: [{ key: 'partial', claim: 'PARTIAL_CLAIM', evidence: { verdict: 'supports' } }] }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
@@ -448,7 +448,7 @@ const SELF_COMPONENTS_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['self_component', { kind: 'skill', name: 'probe', description: 'A reusable checking procedure', content: 'SELF_SKILL_MARK: read the current observation, compare it with the prior result, and report the difference.' }]] },
   { kind: 'decide', calls: [['self_component', { kind: 'subagent', name: 'reviewer', description: 'Answer a bounded arithmetic question', content: 'Answer the assigned question using the provided evidence.' }]] },
   { kind: 'decide', calls: [['self_component', { kind: 'tool', name: 'answer', content: 'print(6 * 7)' }]] },
-  { kind: 'decide', calls: [['consult', { agent: 'reviewer', question: 'What is 6 * 7?' }]] },
+  { kind: 'decide', calls: [['reviewer', { question: 'What is 6 * 7?' }]] },
   { kind: 'decide', calls: [['answer', { args: {} }]] },
   act('ACTION1'),
   { kind: 'decide', calls: [['self_component', { kind: 'subagent', name: 'reviewer', content: 'Invalid role update.', allowed_tools: ['arc_action'] }]] },
@@ -509,12 +509,12 @@ const ADAPT_REQUEST_SCRIPT: Step[] = [
 const AGENT_PROGRAM_LOOP_SCRIPT: Step[] = [
 	{ kind: 'decide', calls: [['save_program', { name: 'track_object', description: 'Locate the tracked object in the current grid', tags: ['tracking', 'position'], body: 'grid[3].index(9)' }]] },
 	{ kind: 'decide', calls: [
-		['run_program', { name: 'track_object', args: {} }],
+		['track_object', { args: {} }],
 		['request_adapt', { focus: 'Check whether track_object remains useful on the next state.' }],
 		['arc_action', { action: 'ACTION1', note: 'move the tracked object right', predict: { cells: [[3, 3, 9]], level_changed: false } }],
 	] },
 	{ kind: 'decide', calls: [
-		['run_program', { name: 'track_object', args: { offset: 1 } }],
+		['track_object', { args: { offset: 1 } }],
 		['arc_action', { action: 'ACTION2', note: 'use the revised program result', predict: { cells: [[2, 3, 9]], level_changed: false } }],
 	] },
 ];
@@ -763,11 +763,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
           const versionTwo = existsSync(runLog) && readFileSync(runLog, 'utf8')
             .includes('"kind":"program_save","name":"track_object","path":"tools/track_object.py","version":2');
           if (!savedRevision) planned = { kind: 'decide', calls: [['save_program', { name: 'track_object', description: 'Locate the tracked object in the current grid', tags: ['tracking', 'position'], body: 'grid[3].index(9)' }]] };
-          else if (!versionTwo && !resultNames.has('list_programs') && !resultNames.has('run_program'))
-            planned = { kind: 'decide', calls: [['list_programs', { query: 'tracking' }]] };
-          else if (!versionTwo && !resultNames.has('read_component') && !resultNames.has('run_program'))
-            planned = { kind: 'decide', calls: [['read_component', { name: 'track_object' }]] };
-          else if (!resultNames.has('run_program')) planned = { kind: 'decide', calls: [['run_program', { name: 'track_object', args: versionTwo ? { offset: 1 } : {} }]] };
+          else if (!resultNames.has('track_object')) planned = { kind: 'decide', calls: [['track_object', { args: versionTwo ? { offset: 1 } : {} }]] };
           else if (!resultNames.has('request_adapt') && !versionTwo) planned = { kind: 'decide', calls: [['request_adapt', { focus: 'Check whether track_object remains useful on the next state.' }]] };
           else if (!resultNames.has('arc_action')) planned = { kind: 'decide', calls: [['arc_action', {
             action: 'ACTION1', note: versionTwo ? 'use the revised program result' : 'move the tracked object right',
@@ -813,7 +809,7 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
         else if (inspectToCallHookCount === 2 && process.env.ARC_THIN_SMOKE_SCRIPT === 'inspect-to-call-no-read')
           planned = { kind: 'decide', calls: [['skip', { reason_code: 'no_reusable_logic' }]] };
         else if (inspectToCallHookCount === 2)
-          planned = { kind: 'decide', calls: [['read_component', { name: process.env.ARC_THIN_SMOKE_SCRIPT === 'inspect-to-call-read-failure' ? 'missing_component' : 'summarize_values' }]] };
+          planned = { kind: 'decide', calls: [['skip', { reason_code: process.env.ARC_THIN_SMOKE_SCRIPT === 'inspect-to-call-read-failure' ? 'need_more_task_signal' : 'already_covered' }]] };
         else planned = { kind: 'decide', calls: [['skip', { reason_code: 'already_covered' }]] };
       }
       else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook-python-negative'

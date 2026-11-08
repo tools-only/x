@@ -8,7 +8,7 @@ import type { ComponentSpec } from './arc_thin_binder.ts';
 const NATIVE = String.raw`
 import ast, base64, io, re, sys, importlib.abc, importlib.util, builtins
 
-RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'consult', 'refine', 'run_skill', 'save', 'save_tool', 'save_program', 'run_program', 'list_programs', 'promote', 'read_component', 'skip', 'self_component', 'promote_session_function')
+RESERVED = ('arc_action', 'read', 'write', 'edit', 'ls', 'grep', 'python', 'memory', 'refine', 'run_skill', 'save', 'save_tool', 'save_program', 'promote', 'skip', 'self_component', 'promote_session_function')
 # Every tool has one interface: a dict of arguments (Continual Harness's run(state, args) contract; Prime calls plain
 # python). No schema is derived from type hints, so there is no annotation to get wrong.
 TOOL_PARAMETERS = {'type': 'object', 'properties': {'args': {'type': 'object', 'description': 'For any direct parameter value in args, you may write {"$python_session":"variable_name"} to pass that top-level JSON value from the current Task Python session.'}}, 'additionalProperties': False}

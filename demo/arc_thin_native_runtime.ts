@@ -205,6 +205,7 @@ export class NativeRuntime {
         execute: this.host.wrap(c.name, async (args, signal) => this.call(c, args, signal)) });
       this.registered.set(c.name, c.hash);
     }
+    this.registerSubagents();
   }
   registerSubagents() {
     for (const c of this.host.binder.candidates().filter(x => x.kind === 'subagent')) {
@@ -215,7 +216,8 @@ export class NativeRuntime {
       this.registered.set(`subagent:${c.name}`, c.hash);
     }
   }
-  toolNames() { return this.callable().filter(c => this.registered.has(c.name)).map(c => c.name); }
+  toolNames() { return [...this.callable().filter(c => this.registered.has(c.name)).map(c => c.name),
+    ...this.host.binder.candidates().filter(c => c.kind === 'subagent' && this.registered.has(`subagent:${c.name}`)).map(c => c.name)]; }
   /** Runtime-owned drafts: names come from successful Python cells, never a second model. */
   private candidateShown = new Map<string, number>();
   private promoted = new Set<string>();
@@ -303,21 +305,6 @@ export class NativeRuntime {
     this.host.log('component_runs.jsonl', { kind: 'program_save', name, path, version: this.host.binder.versionMap()[path],
       decision: this.decision(), n: this.host.actionCount(), ok: true });
     return receipt ?? `${name}: Created`;
-  }
-  /** Run the active named version on a fresh authoritative state snapshot. ADAPT calls are read-only. */
-  async runProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal, version?: number) {
-    const component = this.host.binder.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
-    if (!component) throw Error(`program ${name}: no active named program`);
-    const source = version === undefined ? undefined : this.host.binder.sourceOf(component.path, version);
-    if (version !== undefined && source === undefined) throw Error(`program ${name}: version ${version} does not exist`);
-    this.host.log('component_runs.jsonl', { kind: 'program_call', name, path: component.path, version: component.version,
-      requested_version: version, decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task' });
-    const result = await this.call(component, { args }, signal, Boolean(this.host.hookTurn?.()), source);
-    const output = (result?.content ?? []).filter((part: any) => part?.type === 'text').map((part: any) => String(part.text ?? '')).join('\n');
-    this.host.log('component_runs.jsonl', { kind: 'program_result', name, path: component.path, version: component.version,
-      decision: this.decision(), n: this.host.actionCount(), phase: this.host.hookTurn?.() ? 'adapt' : 'task', ok: !result?.isError,
-      output_excerpt: output.slice(0, 600) });
-    return result;
   }
   /** Execute an Agent-owned acceptance program against immutable evidence, without permitting writes. */
   async checkProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -1155,10 +1142,6 @@ export class NativeRuntime {
         refs, tools: allowed, error: String(error), ms: Date.now() - started });
       throw error;
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
-  }
-  /** Run an Agent-authored quality reviewer with explicit refs, without exposing the parent workspace to a write tool. */
-  qualityConsult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
-    return this.consult(args, signal, ctx);
   }
   close() { this.viewPool.close(); this.kernel?.close(); }
   /** The line listing what the parent's python session holds, for the decision's working set. */
