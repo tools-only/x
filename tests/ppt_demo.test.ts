@@ -136,6 +136,15 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
   const invalid = await call('reflect_component', { op: 'redefine', kind: 'process', name: 'task_loop', source: JSON.stringify({ workflow: { strategy: '', refs: [{ name: 'missing', kind: 'prompt', version: 1 }] }, loop: { strategy: '', refs: [] } }), note: 'invalid reference test' });
   assert.match(invalid.content[0].text, /unresolved exact reference/);
   assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active.version, 2);
+  const restorable = JSON.stringify({ workflow: { strategy: 'saved v1', refs: [] }, loop: { strategy: '', refs: [] } });
+  await call('reflect_component', { op: 'define', kind: 'process', name: 'restore_path', source: restorable, note: 'create restore fixture' });
+  await call('reflect_component', { op: 'redefine', kind: 'process', name: 'restore_path', source: JSON.stringify({ workflow: { strategy: 'v2', refs: [] }, loop: { strategy: '', refs: [] } }), note: 'save newer process' });
+  await call('reflect_component', { op: 'restore', kind: 'process', name: 'restore_path', version: 1, note: 'restore saved process version' });
+  hooks.get('agent_end')();
+  const restored = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active;
+  assert.equal(restored.name, 'restore_path');
+  assert.equal(restored.version, 3);
+  assert.equal(restored.envelope.workflow.strategy, 'saved v1');
   assert.equal((await call('reflect_component', { op: 'inspect' })).content[0].text.includes('deck_workflow'), false);
 });
 
