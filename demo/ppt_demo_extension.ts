@@ -31,7 +31,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   // The PPT workspace starts from what the task actually uses; no ARC skeleton (data/frames, config).
   const workspace = new Workspace(root, { dirs: ['data', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results'] });
   workspace.writeGuard = path => {
-    if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory\/|notes\/memory\.md$|AGENTS\.md$|processes\/)/i.test(path))
+    if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory\/|notes\/memory\.md$|AGENTS\.md$|processes\/|components\/)/i.test(path))
       throw Error('Harness component files can only be changed with reflect_component(op="define" or "redefine").');
   };
   const binder = new Binder(workspace, validatePythonComponent);
@@ -93,11 +93,25 @@ export default function pptDemo(pi: ExtensionAPI) {
     return readFileSync(path, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
       .findLast(row => row.event === 'reflective_change' && row.name === name && row.kind === kind && row.ok === false);
   };
+  const componentRecordPath = (kind: string, name: string, file: string) => `components/${kind}/${name}/${file}`;
+  const publishComponentFiles = (path: string, kind: string, name: string) => {
+    const published = new Set<number>();
+    const active = binder.active().find(component => component.path === path);
+    if (active) published.add(active.version);
+    const lifePath = join(root, 'harness/lifecycle.jsonl');
+    if (existsSync(lifePath)) for (const line of readFileSync(lifePath, 'utf8').split('\n').filter(Boolean)) {
+      const row = JSON.parse(line);
+      if (row.name === name && row.kind === kind && row.ok === true && Number.isSafeInteger(row.version)) published.add(row.version);
+    }
+    for (const { version } of binder.historyOf(path).versions.filter(row => published.has(row.version))) {
+      const source = binder.sourceOf(path, version);
+      if (source !== undefined) workspace.runtimeWrite(componentRecordPath(kind, name, `v${version}.source`), source);
+    }
+    const failure = lastPublicationFailure(name, kind);
+    if (failure) workspace.runtimeWrite(componentRecordPath(kind, name, 'last-failure.md'), `${failure.error ?? 'Publication failed'}\n`);
+  };
   const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
   const processPath = (name: string) => `processes/${name}.json`;
-  const processRows = () => (existsSync(workspace.path('processes')) ? workspace.files('processes') : []).filter(path => path.endsWith('.json')).map(path => {
-    try { return { ...JSON.parse(workspace.read(path)), name: path.split('/').at(-1)!.replace(/\.json$/, ''), version: binder.versionMap()[path] }; } catch { return undefined; }
-  }).filter(Boolean);
   const processCore = createProcessCore({ state, binder, workspace, persist, log });
   const { validate: validateProcess } = processCore;
   const activateProcess = () => processCore.activate();
@@ -222,53 +236,11 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('python', 'Run Python in the confined workspace sandbox. Files under the workspace are read and written with open(path) — text or binary ("rb"/"wb"), any file type (images, decks, data). Harness component paths require reflect_component. Returns what you print and the value of a final expression.',
     Type.Object({ code: Type.String({ minLength: 1, maxLength: 65536 }) }),
     async (a: any, signal: any) => runtime.python(a.code, signal, false));
-  register('reflect_component', 'Inspect, define, redefine, or restore a live harness component or process. Process versions use the same note, Binder history, and restore path as physical components.',
-    Type.Object({ op: Type.Union([Type.Literal('inspect'), Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
+  register('reflect_component', 'Define, redefine, or restore a harness component or process. Published sources and saved versions are workspace files under their documented component paths.',
+    Type.Object({ op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory'), Type.Literal('process')])),
       source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), note: Type.Optional(Type.String()) }), async (a: any) => {
-      const components = binder.active().filter(c => ['tool', 'prompt', 'skill', 'subagent'].includes(c.kind));
-      const consumers = (component: any) => [...new Set([
-        ...(component.kind === 'tool' ? ['Pi native tool registry'] : []),
-        ...(component.kind === 'prompt' ? ['next provider request system prompt'] : []),
-        ...(component.kind === 'skill' ? ['task workspace skill index'] : []),
-        ...(component.kind === 'subagent' ? ['Pi native tool registry'] : []),
-        ...components.filter(other => other.path !== component.path && other.source.includes(component.name)).map(other => `${other.kind}:${other.name}`),
-      ])];
-       if (a.op === 'inspect') {
-         const rows: any[] = [...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
-        path: c.path, used_by: consumers(c), detail: `reflect_component(op="inspect", kind=${JSON.stringify(c.kind)}, name=${JSON.stringify(c.name)})` })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
-        .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
-          path, used_by: ['next provider request system context'], detail: `read(path=${JSON.stringify(path)})` })),
-        ...processRows().map(p => ({ name: p.name, kind: 'process', version: p.version, status: state.process.active?.name === p.name ? 'active' : 'saved' }))];
-         if (!a.name && !a.kind) return text(rows);
-         const selected = rows.filter(row => (!a.name || row.name === a.name) && (!a.kind || row.kind === a.kind)).map(row => {
-           const path = row.path ?? processPath(row.name);
-           const active = binder.active().find(c => c.path === path);
-           const memory = row.kind === 'memory' && existsSync(workspace.path(path)) ? workspace.read(path) : undefined;
-           const processSource = row.kind === 'process' && existsSync(workspace.path(path)) ? workspace.read(path) : undefined;
-           const history = binder.historyOf(path);
-           return { ...row, active: Boolean(active) || memory !== undefined || row.status === 'active',
-             schema: active?.kind === 'tool' ? active.parameters : undefined,
-             native_location: active?.kind === 'skill' ? workspace.path(active.path)
-               : ['tool', 'subagent'].includes(active?.kind ?? '') ? `Pi tool ${active?.name}`
-               : row.kind === 'memory' ? 'next provider request context'
-               : row.kind === 'process' ? 'pending or active provider request context' : undefined,
-             source: active?.source ?? memory ?? processSource,
-             history, last_failure: history.lastFailure ?? lastPublicationFailure(row.name, row.kind)
-               ?? (row.kind === 'process' ? state.process.failures.at(-1) : undefined) };
-         });
-         if (!selected.length && a.name && a.kind) {
-           const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
-             : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md`
-             : a.kind === 'memory' ? `notes/memory/${a.name}.md` : processPath(a.name);
-           const history = binder.historyOf(path);
-           const lastFailure = history.lastFailure ?? lastPublicationFailure(a.name, a.kind);
-           if (lastFailure) return text([{ name: a.name, kind: a.kind, active: false, path,
-             history, last_failure: lastFailure }]);
-         }
-         return text(selected);
-       }
-       if (a.op !== 'inspect' && (typeof a.note !== 'string' || !a.note.trim())) throw Error('note is required for define, redefine, or restore');
+       if (typeof a.note !== 'string' || !a.note.trim()) throw Error('note is required for define, redefine, or restore');
        if (!a.name || !a.kind) throw Error('name and kind are required for define, redefine, or restore');
        if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(a.name)) throw Error('invalid component name');
       if (a.kind === 'process') {
@@ -281,7 +253,13 @@ export default function pptDemo(pi: ExtensionAPI) {
           const raw = a.op === 'restore' ? binder.sourceOf(path, a.version) : a.source;
           if (typeof raw !== 'string') throw Error(a.op === 'restore' ? 'saved version not found' : 'source is required');
           envelope = JSON.parse(raw); validateProcess(envelope);
-        } catch (error) { return text({ ok: false, name: a.name, kind: 'process', last_good: state.process.active, error: String(error) }); }
+        } catch (error) {
+          const reason = String(error);
+          log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: 'process',
+            active_version: old?.version ?? null, note: a.note, ok: false, error: reason });
+          publishComponentFiles(path, 'process', a.name);
+          return text({ ok: false, name: a.name, kind: 'process', last_good: state.process.active, error: reason });
+        }
         workspace.mutate({ op: 'write', path, content: JSON.stringify(envelope) }, true);
         const receipt = await binder.save(path, 0, { by: 'agent', decision: state.batch });
         const version = binder.versionMap()[path];
@@ -290,6 +268,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: 'process', version, note: a.note, ok: true, activated: false, pending: true,
           strategy_present: Boolean(envelope.strategy?.trim() || envelope.workflow?.strategy?.trim()),
           envelope_hash: createHash('sha256').update(JSON.stringify(envelope)).digest('hex') });
+        publishComponentFiles(path, 'process', a.name);
         return text({ ok: true, name: a.name, kind: 'process', version, receipt, activation: 'next provider request' });
       }
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
@@ -319,6 +298,7 @@ export default function pptDemo(pi: ExtensionAPI) {
           else workspace.mutate({ op: 'write', path, content: lastGoodSource }, true);
           log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind,
             note: a.note, ok: false, active_version: current?.version ?? null, error: String(error) });
+          publishComponentFiles(path, a.kind, a.name);
           return text({ ok: false, name: a.name, kind: a.kind, active_version: current?.version ?? null, error: String(error) });
         }
       }
@@ -341,6 +321,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         else if (existsSync(workspace.path(path))) rmSync(workspace.path(path), { force: true });
         log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind, version: binder.versionMap()[path],
           hash: updated?.hash, note: a.note, ok: false, error: `publication did not bind: ${receipt ?? path}` });
+        publishComponentFiles(path, a.kind, a.name);
         return text({ ok: false, name: a.name, kind: a.kind, active_version: current?.version ?? null, error: receipt ?? 'candidate failed validation' });
       }
       runtime.register();
@@ -351,6 +332,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: updated?.name ?? a.name, kind: a.kind,
          from_version: current?.version ?? (a.kind === 'memory' && exists ? binder.versionMap()[path] : null), version, hash: updated?.hash,
          note: a.note, ok: true, activated: ['tool', 'subagent'].includes(a.kind), effective: ['tool', 'subagent'].includes(a.kind) ? 'native registry' : 'next provider request' });
+      publishComponentFiles(path, a.kind, a.name);
       const name = updated?.name ?? a.name;
       return text({ ok: true, name, kind: a.kind, purpose: updated?.description ?? '', version, receipt,
         native: a.kind === 'tool' || a.kind === 'subagent' ? 'Pi tool' : a.kind === 'skill' ? 'Pi skill index and ordinary read' : 'next provider request' });
@@ -454,6 +436,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       seed('prompts/ppt_baseline_guidance.md', readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8'));
       await binder.scan(0);
       binder.boundary();
+      for (const component of binder.active()) publishComponentFiles(component.path, component.kind, component.name);
       log('lifecycle.jsonl', { event: 'initial_registry', components: binder.active().map(c => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })) });
       const nativeComponents = binder.active().filter(c => c.kind === 'tool' || c.kind === 'subagent');
       for (const c of nativeComponents) {

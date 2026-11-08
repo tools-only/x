@@ -32,6 +32,7 @@ def test_installed_pi_advertises_hot_swapped_native_tools_and_skill_reads_in_one
         {"name": "read", "arguments": {"path": "skills/pi-native-skill/SKILL.md"}},
         {"name": "reflect_component", "arguments": {"op": "redefine", "kind": "skill", "name": "pi-native-skill", "source": "---\n---\nrejected", "note": "reject missing description"}},
         {"name": "read", "arguments": {"path": "skills/pi-native-skill/SKILL.md"}},
+        {"name": "read", "arguments": {"path": "components/tool/pi_native_probe/v1.source"}},
     ]
     command = [
         node, cli, "--mode", "rpc", "--provider", "offline-external-test", "--model", "scripted",
@@ -59,7 +60,10 @@ def test_installed_pi_advertises_hot_swapped_native_tools_and_skill_reads_in_one
         kernel.prompt_and_wait("Run the scripted native resource continuation diagnostic.", timeout=90)
 
     contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert len(contexts) == 17
+    assert len(contexts) == 18
+    reflect_schema = next(tool["parameters"] for tool in contexts[0]["tools"] if tool["name"] == "reflect_component")
+    operation = reflect_schema["properties"]["op"]
+    assert {choice["const"] for choice in operation["anyOf"]} == {"define", "redefine", "restore"}
     for index, expected in ((1, "probe-v1"), (3, "probe-v2"), (5, "probe-v1"), (7, "probe-v1")):
         tool = next(tool for tool in contexts[index]["tools"] if tool["name"] == "pi_native_probe")
         assert list(tool["parameters"]["properties"]) == ["args"]
@@ -72,10 +76,16 @@ def test_installed_pi_advertises_hot_swapped_native_tools_and_skill_reads_in_one
             messages = json.dumps(context["messages"])
             assert body in messages
     assert "body-v1" in json.dumps(contexts[10]["messages"])
+    assert "probe-v1" in json.dumps(contexts[17]["messages"])
     assert "body-v2" in json.dumps(contexts[12]["messages"])
     assert "body-v1" in json.dumps(contexts[14]["messages"])
     assert "body-v1" in json.dumps(contexts[16]["messages"])
     assert '"content":"rejected"' not in json.dumps(contexts[16]["messages"])
+    assert (tmp_path / "workspace/components/tool/pi_native_probe/v1.source").read_text(encoding="utf-8") == probe_v1
+    assert (tmp_path / "workspace/components/tool/pi_native_probe/v2.source").read_text(encoding="utf-8") == probe_v2
+    assert (tmp_path / "workspace/tools/pi_native_probe.py").read_text(encoding="utf-8") == probe_v1
+    assert (tmp_path / "workspace/skills/pi-native-skill/SKILL.md").read_text(encoding="utf-8") == skill_v1
+    assert (tmp_path / "workspace/components/skill/pi-native-skill/last-failure.md").is_file()
     lifecycle = [json.loads(line) for line in (tmp_path / "harness/lifecycle.jsonl").read_text(encoding="utf-8").splitlines()]
     loaded = [row["version"] for row in lifecycle if row.get("event") == "skill_loaded" and row.get("name") == "pi-native-skill"]
     assert loaded == [1, 2, 3, 3]

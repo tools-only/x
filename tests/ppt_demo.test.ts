@@ -26,7 +26,7 @@ test('unknown provider usage remains charged across process reload', async () =>
   assert.equal(rows[1].conservative_usd, 7.04);
 });
 
-test('reflective component surgery introspects, hot-swaps, rolls back, and rejects deck edits as evidence', async () => {
+test('reflective component surgery hot-swaps, rolls back, and rejects deck edits as evidence', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-reflective-'));
   process.env.PPT_DEMO_ROOT = root;
   process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
@@ -52,11 +52,9 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   await call('reflect_component', { op: 'define', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version one' });
   const firstTool = toolSource(`def main(args):\n    return 'tool version one'`, 'Reflective test tool');
   await call('reflect_component', { op: 'define', kind: 'tool', name: 'reflect_tool', source: firstTool });
-  const listed = await call('reflect_component', { op: 'inspect' });
-  const live = JSON.parse(listed.content[0].text);
-  assert.ok(live.some((c: any) => c.kind === 'prompt' && c.name === 'reflect_rules' && c.source === undefined));
-  assert.ok(live.some((c: any) => c.kind === 'tool' && c.name === 'reflect_tool' && c.source === undefined));
-  assert.ok(live.every((c: any) => !('source' in c)));
+  assert.deepEqual(tools.get('reflect_component').parameters.properties.op.anyOf.map((x: any) => x.const), ['define', 'redefine', 'restore']);
+  assert.equal(readFileSync(join(root, 'workspace/components/tool/reflect_tool/v1.source'), 'utf8'), firstTool);
+  assert.match((await call('read', { path: 'tools/reflect_tool.py' })).content[0].text, /tool version one/);
   const newTool = toolSource(`def main(args):\n    return 'tool version two'`, 'Reflective test tool');
   const redefine = await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'reflect_tool', source: newTool });
   assert.equal(JSON.parse(redefine.content[0].text).ok, true);
@@ -76,8 +74,6 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   await assert.rejects(() => call('python', { code: "open('lib/bypass.py','w').write('bypass')" }), /reflect_component/);
   await assert.rejects(() => call('write', { path: 'ToOlS/bypass.py', content: 'bypass' }), /reflect_component/);
   assert.ok(!existsSync(join(root, 'workspace/prompts/bypass.md')));
-  const afterDeckWrite = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
-  assert.ok(!afterDeckWrite.some((c: any) => c.path === 'artifacts/deck.json'));
   assert.ok(activeTools.includes('reflect_tool'));
   const lifecycle = readFileSync(join(root, 'harness/lifecycle.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   const promptChange = lifecycle.find(row => row.event === 'reflective_change' && row.kind === 'prompt' && row.version === 2);
@@ -122,10 +118,8 @@ test('native ownership collisions and rejected candidates preserve the published
   const next = { systemPrompt: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), messages: [] };
   hooks.get('before_provider_request')({ payload: next });
   assert.match(next.systemPrompt, /<description>original skill<\/description>/);
-  const selected = JSON.parse((await call('reflect_component', { op: 'inspect', name: 'stable-skill', kind: 'skill' })).content[0].text)[0];
-  assert.match(selected.source, /original body/);
-  assert.equal(selected.last_failure.ok, false);
-  assert.equal(selected.history.versions.length, 1);
+  assert.match(readFileSync(join(root, 'workspace/components/skill/stable-skill/last-failure.md'), 'utf8'), /description/);
+  assert.equal(readFileSync(join(root, 'workspace/components/skill/stable-skill/v1.source'), 'utf8'), skill);
   assert.equal(activeTools.includes('stable_tool'), true);
 });
 
@@ -214,7 +208,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
   assert.equal(restored.name, 'restore_path');
   assert.equal(restored.version, 3);
   assert.equal(restored.envelope.workflow.strategy, 'saved v1');
-  assert.equal((await call('reflect_component', { op: 'inspect' })).content[0].text.includes('deck_workflow'), false);
+  assert.equal(existsSync(join(root, 'workspace/components/process/deck_workflow/v1.source')), false);
   await call('reflect_component', { op: 'redefine', kind: 'process', name: 'restore_path', source: JSON.stringify({
     workflow: { strategy: 'deny delivery', refs: [], hook: `export default () => ({allow:false,guidance:'deny'})` },
     loop: { strategy: '', refs: [] },
@@ -344,11 +338,9 @@ test('initial registry omits strategic reviewer/workflow seeds and keeps optiona
     return event.payload.systemPrompt;
   };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
-  const initial = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
-  assert.deepEqual(new Set(initial.map((c: any) => c.kind)), new Set(['prompt']));
-  assert.equal(initial.some((c: any) => ['deck_reviewer', 'presentation_workflow', 'deck_file_summary'].includes(c.name)), false);
+  assert.equal(readFileSync(join(root, 'workspace/prompts/ppt_baseline_guidance.md'), 'utf8'), readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'));
   assert.doesNotMatch(context(), /must review|presentation workflow|deck reviewer/i);
-  assert.match(readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), /Published tools and subagents are Pi tools under their logical names/);
+  assert.match(readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), /single modification primitive/);
   assert.doesNotMatch(readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), /run_program|read_component|consult\(agent=/i);
   assert.match(readFileSync('demo/ppt_demo_adapter.ts', 'utf8'), /deliver|delivery/i);
   const deckOnly = mkdtempSync(join(tmpdir(), 'ppt-seeded-deck-only-'));
@@ -367,13 +359,11 @@ test('native tools and Pi skill index appear after publication and are directly 
   pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f), setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools, getAllTools: () => [...tools.values()] } as any);
   const call = (name: string, args: any) => tools.get(name).execute('new-session', ['define','redefine','restore'].includes(args.op) ? { note: 'avoid repeating a small task step', ...args } : args, undefined, undefined, {});
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
-  const initial = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
   for (const [kind, name, source] of [
     ['tool', 'new_counter', '# program: on\n# description: Count a supplied list\ndef main(args, env):\n    return {\'count\': len(args[\'items\'])}'],
     ['skill', 'new-method', '---\ndescription: count items\n---\nCount each item once, then report the total.'],
     ['subagent', 'new_advisor', '---\ndescription: concise advisor\ntools: [read]\n---\nReturn one useful observation.'],
   ] as string[][]) {
-    assert.equal(initial.some((c: any) => c.kind === kind && c.name === name), false);
     await call('reflect_component', { op: 'define', kind, name, source });
   }
   const event = { payload: { systemPrompt: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), messages: [] } };
