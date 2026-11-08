@@ -33,3 +33,14 @@ Offline Node tests exercise the Pi extension tool surface with a local stub and 
 | Full-chain reachability | Failed | Azure DeepSeek V4 Flash (`deepseek-v4-flash`, high) | Attempts `a2` through `a5` reached the provider but stopped at the authorized $12 run guard before delivery. a4 drafted an HTML artifact; a5 did too. Neither was delivered. Evidence is in `.scratch/reflective-core/real-task-result.md`. |
 | Autonomous adoption | Failed in observed attempts | Azure DeepSeek V4 Flash (`deepseek-v4-flash`, high) | a4 made no reflective redefinitions. a5 consumed prompt, memory, and skill v2, but did not run the redefined tool or consult the redefined subagent. |
 | Net benefit | Unverified | Not evaluated | No benefit claim |
+
+### a9 failure and a10 result
+
+After a9 fell back to the old save tools, commit `7fa72762` removed those agent paths, added `reflect_component(define|redefine|restore)`, and refused generic writes into harness component storage. Offline checks passed (Node 5/5; pytest 1/1). The single unbounded Azure DeepSeek V4 Flash run a10 delivered revision 2; the evidence checker passed all five component kinds. Cost and exact receipts are in `.scratch/reflective-core/result-7.md` and `.scratch/reflective-core/a10-checker.json`.
+
+| Evidence layer | Status | Environment | Result |
+| --- | --- | --- | --- |
+| Functional correctness | Passed | Local Node/Pi extension tests and Python runner test | Define, redefine, restore, active-version consumption, legacy tool absence, and direct write refusal passed. |
+| Full-chain reachability | Passed | Azure `az/deepseek-v4-flash`, high, unbounded | a10 delivered revision 2 with three slides. |
+| Autonomous adoption | Passed for this run | Azure `az/deepseek-v4-flash`, high | Five version-2 components were redefined and consumed; no old self-modification tool was called. |
+| Net benefit | Unverified | Not evaluated | No task-quality comparison or net-benefit claim. |
