@@ -45,7 +45,7 @@ def creation(root: Path) -> dict:
     changes = [r for r in life if r.get("event") == "reflective_change" and r.get("op") in ("define", "redefine", "restore")]
     creations = []
     for change in changes:
-        is_new = change.get("op") == "define" and change.get("kind") in ("tool", "skill", "subagent") and not any(
+        is_new = change.get("op") == "define" and not any(
             kind == change.get("kind") and (name == change.get("name") or (digest and digest == change.get("hash")))
             for kind, name, digest in initial)
         if not is_new:
@@ -58,18 +58,21 @@ def creation(root: Path) -> dict:
         elif kind == "skill":
             reads = [r for r in life if r.get("event") == "component_consumed" and r.get("boundary") == "read_component" and same(r)]
             uses = [{"boundary": "read_component; procedure-following evidence unavailable"} for _ in reads]
-        else:
+        elif kind == "subagent":
             cs = [r for r in consults if r.get("role") == name and r.get("version") == version and r.get("session_id") == session and r.get("time", "") >= (time or "") and r.get("ok") is not False]
             later_work = any(r.get("time", "") > c.get("time", "") and r.get("session_id") == session for c in cs for r in calls if r.get("ok") is True)
             uses = ([{"boundary": "consult; followed by parent tool work"}] if cs and later_work else [])
-        status = "pass" if uses and (kind != "skill") else "uncertain" if uses else "fail"
+        else:
+            uses = []
+        status = "pass" if uses and (kind != "skill") else "uncertain" if uses else ("not_applicable" if kind not in ("tool", "skill", "subagent") else "fail")
         if change.get("ok") is False:
             status = "fail"
         creations.append({"name": name, "kind": kind, "version": version, "note_present": bool(str(change.get("note", "")).strip()),
+                          "primary_kind": kind in ("tool", "skill", "subagent"),
                           "definition": "pass" if change.get("ok") is not False and change.get("note", "").strip() else "fail", "same_session_use": status,
                           "use_evidence": uses, "source_hash": change.get("hash")})
-    defined = [c for c in creations if c["definition"] == "pass"]
-    created_used = any(c["definition"] == "pass" and c["same_session_use"] == "pass" for c in creations)
+    defined = [c for c in creations if c["primary_kind"] and c["definition"] == "pass"]
+    created_used = any(c["primary_kind"] and c["definition"] == "pass" and c["same_session_use"] == "pass" for c in creations)
     return {"mode": "new_creation", "claims": {
         "initial_registry_snapshot": "pass" if snapshots else "uncertain",
         "genuinely_new_definition_with_note": "pass" if defined else "fail",

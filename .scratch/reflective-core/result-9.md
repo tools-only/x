@@ -47,4 +47,4 @@ Deferred backlog connection: B/C child-answer quality, parent use, and total cos
 
 ## Commit
 
-Implementation and evidence report committed locally as `Implement reflective core creation evidence`; not pushed.
+Implementation and evidence report committed locally as `Implement reflective core creation evidence`, followed by `Report every defined component kind`; not pushed.
