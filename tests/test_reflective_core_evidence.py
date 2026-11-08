@@ -1,0 +1,58 @@
+import json
+from pathlib import Path
+
+from tools.check_reflective_core_evidence import check
+
+
+def write_rows(root: Path, name: str, values: list[dict]) -> None:
+    path = root / "harness" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(v) + "\n" for v in values), encoding="utf-8")
+
+
+def test_new_creation_requires_new_definition_note_and_same_session_use(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": [{"kind": "tool", "name": "seed", "hash": "seed-hash"}]},
+        {"event": "reflective_change", "op": "define", "kind": "tool", "name": "new_tool", "version": 1, "hash": "new-hash", "note": "reduce repeated parsing", "session_id": "s", "time": "1"},
+    ])
+    write_rows(tmp_path, "component_runs.jsonl", [{"kind": "program_result", "name": "new_tool", "version": 1, "ok": True, "session_id": "s", "time": "2"}])
+    assert check(tmp_path, "new-creation")["pass"]
+
+
+def test_creation_mode_negative_cases(tmp_path):
+    snapshot = {"event": "initial_registry", "components": [{"kind": "tool", "name": "seed", "hash": "seed-hash"}]}
+    cases = [
+        ([{"op": "redefine", "kind": "tool", "name": "seed", "version": 2, "hash": "new-hash", "note": "x"}], [], [], "fail"),
+        ([{"op": "define", "kind": "tool", "name": "renamed", "version": 1, "hash": "seed-hash", "note": "x"}], [], [], "fail"),
+        ([{"op": "define", "kind": "tool", "name": "unused", "version": 1, "hash": "h", "note": "x"}], [], [], "fail"),
+        ([{"op": "define", "kind": "tool", "name": "failed", "version": 1, "hash": "h", "note": "x"}], [{"kind": "program_result", "name": "failed", "version": 1, "ok": False, "session_id": "s", "time": "2"}], [], "fail"),
+        ([{"op": "define", "kind": "tool", "name": "wrong", "version": 1, "hash": "h", "note": "x"}], [{"kind": "program_result", "name": "wrong", "version": 1, "ok": True, "session_id": "other", "time": "2"}], [], "fail"),
+        ([{"op": "define", "kind": "skill", "name": "read_only", "version": 1, "hash": "h", "note": "x"}], [], [{"event": "component_consumed", "kind": "skill", "name": "read_only", "version": 1, "boundary": "read_component", "session_id": "s", "time": "2"}], "uncertain"),
+        ([{"op": "define", "kind": "subagent", "name": "consult_only", "version": 1, "hash": "h", "note": "x"}], [], [], "fail"),
+        ([{"op": "define", "kind": "subagent", "name": "failed_consult", "version": 1, "hash": "h", "note": "x"}], [], [], "fail"),
+        ([{"op": "define", "kind": "tool", "name": "no_note", "version": 1, "hash": "h"}], [], [], "fail"),
+    ]
+    for i, (changes, calls, extra_life, expected) in enumerate(cases):
+        root = tmp_path / str(i)
+        life = [snapshot] + [{"event": "reflective_change", "session_id": "s", "time": "1", **c} for c in changes] + extra_life
+        write_rows(root, "lifecycle.jsonl", life)
+        write_rows(root, "component_runs.jsonl", [{"session_id": "s", "time": "2", **c} for c in calls])
+        consult_rows = ([{"role": "failed_consult", "version": 1, "ok": False, "session_id": "s", "time": "2"}]
+                        if changes[0].get("name") == "failed_consult" else [])
+        write_rows(root, "consult_runs.jsonl", consult_rows)
+        result = check(root, "new-creation")
+        if changes[0].get("kind") == "skill" and extra_life:
+            assert result["creations"][0]["same_session_use"] == expected
+        else:
+            assert result["pass"] is False
+
+
+def test_wrong_version_and_consult_without_parent_use_fail(tmp_path):
+    write_rows(tmp_path, "lifecycle.jsonl", [
+        {"event": "initial_registry", "components": []},
+        {"event": "reflective_change", "op": "define", "kind": "tool", "name": "t", "version": 2, "hash": "h", "note": "x", "session_id": "s", "time": "1"},
+        {"event": "reflective_change", "op": "define", "kind": "subagent", "name": "a", "version": 1, "hash": "a", "note": "x", "session_id": "s", "time": "1"},
+    ])
+    write_rows(tmp_path, "component_runs.jsonl", [{"kind": "program_result", "name": "t", "version": 1, "ok": True, "session_id": "s", "time": "2"}])
+    write_rows(tmp_path, "consult_runs.jsonl", [{"role": "a", "version": 1, "ok": True, "session_id": "s", "time": "2"}])
+    assert check(tmp_path, "new-creation")["pass"] is False

@@ -42,6 +42,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   state.note ??= '';
   state.noteStale ??= false;
   let resumed = false, initialized = false;
+  const newDefinitions: Array<{ name: string; kind: string; purpose: string; version: number; use_endpoint: string }> = [];
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
   // Evidence facts only: what has run since the last completed render. No gate, no instruction — the agent still
   // decides whether to check; this makes "has this revision been checked" a visible fact instead of a hidden one.
@@ -212,7 +213,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('reflect_component', 'Inspect, define, redefine, or restore a live harness component. This is the only way to create or change prompts, skills, tools, subagents, and memory. Changes bind at the next Pi request boundary. Decks and output files are not harness components.',
     Type.Object({ op: Type.Union([Type.Literal('inspect'), Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')])),
-      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })) }), async (a: any) => {
+      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), note: Type.Optional(Type.String()) }), async (a: any) => {
       const components = binder.active().filter(c => ['tool', 'prompt', 'skill', 'subagent'].includes(c.kind));
       const consumers = (component: any) => [...new Set([
         ...(component.kind === 'tool' ? ['Pi tool registry / run_program'] : []),
@@ -225,6 +226,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         path: c.path, used_by: consumers(c), detail: `read_component(name=${JSON.stringify(c.name)})` })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
         .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
           path, used_by: ['next provider request system context'], detail: `read(path=${JSON.stringify(path)})` }))]);
+       if (a.op !== 'inspect' && (typeof a.note !== 'string' || !a.note.trim())) throw Error('note is required for define, redefine, or restore');
        if (!a.name || !a.kind) throw Error('name and kind are required for define, redefine, or restore');
        if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(a.name)) throw Error('invalid component name');
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
@@ -259,16 +261,22 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (a.kind === 'tool') pi.setActiveTools([...new Set([...pi.getActiveTools(), a.name])]);
       const updated = binder.active().find(c => c.path === path);
       const version = updated?.version ?? binder.versionMap()[path];
-      if ((!updated && a.kind !== 'memory') || (a.kind === 'tool' && updated?.kind !== 'tool')) throw Error(`redefinition did not bind: ${receipt ?? path}`);
+      if ((!updated && a.kind !== 'memory') || (a.kind === 'tool' && updated?.kind !== 'tool')) {
+        log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind, version: binder.versionMap()[path],
+          hash: updated?.hash, note: a.note, ok: false, error: `publication did not bind: ${receipt ?? path}` });
+        throw Error(`redefinition did not bind: ${receipt ?? path}`);
+      }
       log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: updated?.name ?? a.name, kind: a.kind,
-         from_version: current?.version ?? (a.kind === 'memory' && exists ? binder.versionMap()[path] : null), version, hash: updated?.hash });
+         from_version: current?.version ?? (a.kind === 'memory' && exists ? binder.versionMap()[path] : null), version, hash: updated?.hash, note: a.note });
       const name = updated?.name ?? a.name;
       const nextCall = a.kind === 'tool' ? `run_program(name=${JSON.stringify(name)}, args={})`
         : a.kind === 'subagent' ? `consult(agent=${JSON.stringify(name)}, question="Review supplied facts briefly", refs=["data/material.txt"])`
         : a.kind === 'skill' ? `read_component(name=${JSON.stringify(name)})`
         : a.kind === 'prompt' ? 'Make the next provider request; the prompt is injected automatically.'
         : 'Make the next provider request; the memory is injected automatically.';
-      return text({ name, kind: a.kind, version, receipt, effective: 'next_pi_request', next_call: nextCall,
+      if (a.op === 'define' && updated) newDefinitions.push({ name, kind: a.kind, purpose: updated.description, version,
+        use_endpoint: nextCall });
+      return text({ name, kind: a.kind, purpose: updated?.description ?? '', version, receipt, effective: 'next_pi_request', use_endpoint: nextCall, next_call: nextCall,
         detail: a.kind === 'tool' || a.kind === 'subagent' ? undefined : `read ${path} for full source` });
     });
   register('office', 'Render the current presentation or prototype (HTML or scene JSON under artifacts/), look at rendered pages as images, or deliver. Rendering takes a screenshot of every slide; delivery copies the rendered revision and your harness.',
@@ -371,6 +379,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       seed('notes/memory/presentation_workflow.md', 'The active presentation workflow uses the supplied source materials, renders the canonical artifact, and delivers the rendered revision.');
       await binder.scan(0);
       binder.boundary();
+      log('lifecycle.jsonl', { event: 'initial_registry', components: binder.active().map(c => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })) });
       runtime.register();
       if (!binder.active().some(c => c.kind === 'tool' && c.name === 'deck_file_summary')) {
         await runtime.saveProgram('deck_file_summary', `def main(args, env):
@@ -442,14 +451,17 @@ export default function pptDemo(pi: ExtensionAPI) {
       ...prompts.map((prompt: any) => ({ kind: 'prompt', name: prompt.name, version: prompt.version, text: prompt.body })),
       ...memories.map((path: string) => ({ kind: 'memory', name: path.split('/').at(-1)!.replace(/\.md$/, ''), version: binder.versionMap()[path] ?? 1, text: workspace.read(path) })),
     ];
+    const discoveries = newDefinitions.splice(0);
     const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance');
     const originalPrompt = readFileSync(fileURLToPath(new URL('./prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
     if (baselinePrompt && typeof system.content === 'string' && system.content.includes(originalPrompt))
       system.content = system.content.replace(originalPrompt, baselinePrompt.body);
-    if (!additions.length && !baselinePrompt) return;
+    if (!additions.length && !baselinePrompt && !discoveries.length) return;
     const appended = additions.map(item => `\n\n## ${item.kind.toUpperCase()} ${item.name}\n${item.text}`).join('');
     const content = typeof system.content === 'string' ? system.content : '';
-    system.content = `${content}${appended}`;
+    const discoveryText = discoveries.map(item => `\n\n## Newly defined ${item.kind}: ${item.name}\nPurpose: ${item.purpose}\nVersion: ${item.version}\nUse: ${item.use_endpoint}`).join('');
+    system.content = `${content}${appended}${discoveryText}`;
+    for (const item of discoveries) log('lifecycle.jsonl', { event: 'definition_discovered', ...item });
     for (const item of additions) log('lifecycle.jsonl', { event: 'component_consumed', ...item, text: undefined,
       boundary: 'context_with_system provider request' });
     if (baselinePrompt) log('lifecycle.jsonl', { event: 'component_consumed', kind: 'prompt', name: baselinePrompt.name,

@@ -32,7 +32,7 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools };
   pptDemo(pi as any);
-  const call = async (name: string, args: any) => tools.get(name).execute('reflect-test', args, undefined, undefined, {});
+  const call = async (name: string, args: any) => tools.get(name).execute('reflect-test', ['define','redefine','restore'].includes(args.op) ? { note: 'test mutation', ...args } : args, undefined, undefined, {});
   const requestContext = (content = 'base prompt') => {
     const event = { messages: [{ role: 'system', content }] };
     hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'same-session' } });
@@ -42,6 +42,8 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
   assert.ok(!tools.has('save_program') && !tools.has('self_component') && !tools.has('edit_program') && !tools.has('component_lifecycle'));
   const selfModificationSurface = [...tools.keys()].filter(name => ['reflect_component', 'trials', 'trial_files', 'apply_trial', 'checkpoint', 'list_programs', 'python', 'edit', 'write'].includes(name)).sort();
   assert.deepEqual(selfModificationSurface, ['edit', 'list_programs', 'python', 'reflect_component', 'write']);
+  await assert.rejects(() => tools.get('reflect_component').execute('reflect-test', { op: 'define', kind: 'skill', name: 'missing_note', source: 'no note' }, undefined, undefined, {}), /note is required/);
+  assert.equal(existsSync(join(root, 'workspace/skills/missing_note/SKILL.md')), false);
   for (const name of ['trials', 'trial_files', 'apply_trial', 'checkpoint']) assert.equal(tools.has(name), false, `${name} must not be agent-visible`);
   assert.equal(typeof tools.get('list_programs').execute, 'function');
   await call('reflect_component', { op: 'define', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version one' });
@@ -94,7 +96,7 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   let activeTools: string[] = [];
   pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
-  const call = (name: string, args: any) => tools.get(name).execute('reflect-test', args, undefined, undefined, {});
+  const call = (name: string, args: any) => tools.get(name).execute('reflect-test', ['define','redefine','restore'].includes(args.op) ? { note: 'test mutation', ...args } : args, undefined, undefined, {});
   const requestContext = () => {
     const event = { messages: [{ role: 'system', content: 'base system' }] };
     hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'five-kind-session' } });
@@ -147,7 +149,7 @@ test('session starts with five live baseline components that redefine and restor
   let activeTools: string[] = [];
   pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
-  const call = (name: string, args: any) => tools.get(name).execute('reflect-seeded', args, undefined, undefined, {});
+  const call = (name: string, args: any) => tools.get(name).execute('reflect-seeded', ['define','redefine','restore'].includes(args.op) ? { note: 'test mutation', ...args } : args, undefined, undefined, {});
   const context = () => {
     const event = { messages: [{ role: 'system', content: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8') }] };
     hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'seeded-session' } });
@@ -188,6 +190,41 @@ test('session starts with five live baseline components that redefine and restor
   assert.equal(checker.status, 1, checker.stdout + checker.stderr);
 });
 
+test('new definitions are discovered next request and consumed at their live endpoints with notes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-new-components-'));
+  process.env.PPT_DEMO_ROOT = root;
+  process.env.PPT_DEMO_DEADLINE = String(Date.now()+60000);
+  const tools = new Map<string, any>(), hooks = new Map<string, any>();
+  let activeTools: string[] = [];
+  pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f), setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
+  const call = (name: string, args: any) => tools.get(name).execute('new-session', ['define','redefine','restore'].includes(args.op) ? { note: 'avoid repeating a small task step', ...args } : args, undefined, undefined, {});
+  await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
+  const initial = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
+  for (const [kind, name, source] of [
+    ['tool', 'new_counter', '# program: on\n# description: Count a supplied list\ndef main(args, env):\n    return {\'count\': len(args[\'items\'])}'],
+    ['skill', 'new_method', 'Count each item once, then report the total.'],
+    ['subagent', 'new_advisor', '---\ndescription: concise advisor\ntools: [read]\n---\nReturn one useful observation.'],
+  ] as string[][]) {
+    assert.equal(initial.some((c: any) => c.kind === kind && c.name === name), false);
+    await call('reflect_component', { op: 'define', kind, name, source });
+  }
+  const event = { messages: [{ role: 'system', content: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8') }] };
+  hooks.get('context_with_system')(event, { sessionManager: { getSessionId: () => 'new-session' } });
+  for (const name of ['new_counter', 'new_method', 'new_advisor']) assert.match(event.messages[0].content, new RegExp(`Newly defined [^\\n]+: ${name}`));
+  assert.match((await call('run_program', { name: 'new_counter', args: { items: [1, 2, 3] } })).content[0].text, /3/);
+  assert.match((await call('read_component', { name: 'new_method' })).content[0].text, /Count each item once/);
+  const ctx = { model: { maxTokens: 1000 }, modelRegistry: {
+    getApiKeyAndHeaders: async () => ({ apiKey: 'offline-test' }),
+    streamSimple: (_model: any, request: any) => ({ result: async () => ({ role: 'assistant', content: [{ type: 'text', text: request.systemPrompt }], stopReason: 'stop', usage: { input: 1, output: 1 } }) }),
+  } };
+  const consult = await tools.get('consult').execute('test', { agent: 'new_advisor', question: 'One observation' }, undefined, undefined, ctx);
+  assert.equal(consult.isError, false);
+  const life = readFileSync(join(root, 'harness/lifecycle.jsonl'), 'utf8');
+  assert.equal((life.match(/"event":"definition_discovered"/g) ?? []).length, 3);
+  assert.equal((life.match(/"note":"avoid repeating a small task step"/g) ?? []).length, 3);
+  assert.ok(activeTools.includes('new_counter'));
+});
+
 test('free-hands: programs write text and binary, any entry shape, plain markdown components, render and delivery without gates', { timeout: 240000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-native-'));
   process.env.PPT_DEMO_ROOT = root;
@@ -195,7 +232,7 @@ test('free-hands: programs write text and binary, any entry shape, plain markdow
   const tools = new Map<string, any>(), hooks = new Map<string, any>();
   let activeTools: string[] = [];
   pptDemo({ registerTool: (t: any) => tools.set(t.name, t), on: (n: string, f: any) => hooks.set(n, f), setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools } as any);
-  const call = (name: string, args: any) => tools.get(name).execute('test', args, undefined, undefined, {});
+  const call = (name: string, args: any) => tools.get(name).execute('test', ['define','redefine','restore'].includes(args.op) ? { note: 'test mutation', ...args } : args, undefined, undefined, {});
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   assert.ok(activeTools.includes('consult'));
   assert.ok(activeTools.includes('python'));
