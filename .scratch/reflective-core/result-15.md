@@ -1,6 +1,6 @@
 # Native component sources without inspection: change 15
 
-**Implementation commit:** `da86bf8c090a22632feef3b2eab39a49b89a1259` on `codex/ppt-reflective-core-20261108`.
+**Implementation commits:** `da86bf8c090a22632feef3b2eab39a49b89a1259` and `0941bc9aef14eabac62889bf9c12e4be01e90f91` on `codex/ppt-reflective-core-20261108`.
 
 ## Opportunity and claim
 
@@ -21,6 +21,7 @@ The falsifiable claim is that one installed Pi scripted session can define, rede
 - `node --experimental-transform-types --test --test-concurrency=1 tests/ppt_demo.test.ts tests/ppt_trials.test.ts` — 13 passed.
 - `node --experimental-transform-types --test --test-concurrency=1 tests/arc_thin_native_runtime.test.ts tests/arc_thin_binder.test.ts` — 21 passed.
 - `PYTHONPATH=src python -m pytest tests/test_reflective_core_evidence.py tests/test_ppt_native_pi.py -q` — 12 passed. Installed Pi 0.87.0 with `offline-external-test` verified schema and lifecycle in one scripted session; no paid or real-provider run.
+- After the final tool-description edit, `PYTHONPATH=src python -m pytest tests/test_ppt_native_pi.py -q` — 1 passed.
 - `git diff --check` — passed.
 
 ## Evidence status and limitations
@@ -71,4 +72,4 @@ The task workspace provides ordinary file tools, confined Python, and `office` f
 
 ### Tool description
 
-> Define, redefine, or restore a harness component or process. Published sources and saved versions are workspace files under their documented component paths.
+> The user task defines success. Components share one object model: name, kind, source and versions. define, redefine and restore are the only modification operations; validated components become native task resources. Current source stays at its kind path; versions and the latest failure are workspace files under components/<kind>/<name>/, readable with read. Generic writes do not change bindings. Workspace, provider, budget, deadline and task-action boundaries remain fixed.
