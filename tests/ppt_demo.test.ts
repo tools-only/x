@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import pptDemo from '../demo/ppt_demo_extension.ts';
 
+const toolSource = (body: string, description = 'Offline test component') => `# program: on\n# description: ${description}\n${body.trim()}\n`;
+
 test('unknown provider usage remains charged across process reload', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ppt-budget-'));
   process.env.PPT_DEMO_ROOT = root;
@@ -37,25 +39,31 @@ test('reflective component surgery introspects, hot-swaps, rolls back, and rejec
     return event.messages[0].content as string;
   };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
-  await call('self_component', { kind: 'prompt', name: 'reflect_rules', content: 'prompt version one' });
-  const firstTool = `def main(args):\n    return 'tool version one'\n`;
-  await call('save_program', { name: 'reflect_tool', description: 'Reflective test tool', body: firstTool });
+  assert.ok(!tools.has('save_program') && !tools.has('self_component') && !tools.has('edit_program') && !tools.has('component_lifecycle'));
+  await call('reflect_component', { op: 'define', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version one' });
+  const firstTool = toolSource(`def main(args):\n    return 'tool version one'`, 'Reflective test tool');
+  await call('reflect_component', { op: 'define', kind: 'tool', name: 'reflect_tool', source: firstTool });
   const listed = await call('reflect_component', { op: 'inspect' });
   const live = JSON.parse(listed.content[0].text);
   assert.ok(live.some((c: any) => c.kind === 'prompt' && c.name === 'reflect_rules' && c.detail === 'read_component(name="reflect_rules")'));
   assert.ok(live.some((c: any) => c.kind === 'tool' && c.name === 'reflect_tool' && c.detail === 'read_component(name="reflect_tool")'));
   assert.ok(live.every((c: any) => !('source' in c)));
-  const newTool = `def main(args):\n    return 'tool version two'\n`;
+  const newTool = toolSource(`def main(args):\n    return 'tool version two'`, 'Reflective test tool');
   const redefine = await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'reflect_tool', source: newTool });
-  assert.equal(JSON.parse(redefine.content[0].text).next_call, 'run_program(name="reflect_tool", version=2, args={})');
+  assert.equal(JSON.parse(redefine.content[0].text).next_call, 'run_program(name="reflect_tool", args={})');
   assert.match((await call('run_program', { name: 'reflect_tool' })).content[0].text, /tool version two/);
   await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version two' });
   assert.match(requestContext(), /prompt version two/);
-  await call('reflect_component', { op: 'rollback', kind: 'tool', name: 'reflect_tool', version: 1 });
+  await call('reflect_component', { op: 'restore', kind: 'tool', name: 'reflect_tool', version: 1 });
   assert.match((await call('run_program', { name: 'reflect_tool' })).content[0].text, /tool version one/);
-  await call('reflect_component', { op: 'rollback', kind: 'prompt', name: 'reflect_rules', version: 1 });
+  await call('reflect_component', { op: 'restore', kind: 'prompt', name: 'reflect_rules', version: 1 });
   assert.match(requestContext(), /prompt version one/);
   await call('write', { path: 'artifacts/deck.json', content: '{"slides":[]}' });
+  await assert.rejects(() => call('write', { path: 'prompts/bypass.md', content: 'bypass' }), /reflect_component/);
+  await assert.rejects(() => call('edit', { path: 'tools/reflect_tool.py', oldText: 'main', newText: 'main2' }), /reflect_component/);
+  await assert.rejects(() => call('python', { code: "open('notes/memory/bypass.md','w').write('bypass')" }), /reflect_component/);
+  await assert.rejects(() => call('write', { path: 'ToOlS/bypass.py', content: 'bypass' }), /reflect_component/);
+  assert.ok(!existsSync(join(root, 'workspace/prompts/bypass.md')));
   const afterDeckWrite = JSON.parse((await call('reflect_component', { op: 'inspect' })).content[0].text);
   assert.ok(!afterDeckWrite.some((c: any) => c.path === 'artifacts/deck.json'));
   assert.ok(activeTools.includes('reflect_tool'));
@@ -90,14 +98,14 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
     streamSimple: (_model: any, request: any) => ({ result: async () => ({ role: 'assistant', content: [{ type: 'text', text: request.systemPrompt }], stopReason: 'stop', usage: { input: 1, output: 1 } }) }),
   } };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
-  await call('self_component', { kind: 'prompt', name: 'five_prompt', content: 'prompt old' });
-  await call('self_component', { kind: 'skill', name: 'five_skill', content: 'skill old' });
-  await call('self_component', { kind: 'subagent', name: 'five_agent', content: 'subagent old', tools: [] });
-  await call('self_component', { kind: 'memory', name: 'five_memory', content: 'memory old' });
-  await call('save_program', { name: 'five_tool', description: 'version check', body: "def main(args):\n    return 'tool old'\n" });
+  for (const [kind, name, source] of [
+    ['prompt', 'five_prompt', '---\nactive: true\n---\nprompt old'], ['skill', 'five_skill', 'skill old'],
+    ['subagent', 'five_agent', '---\ndescription: reviewer\ntools: []\n---\nsubagent old'], ['memory', 'five_memory', 'memory old'],
+    ['tool', 'five_tool', toolSource("def main(args):\n    return 'tool old'", 'version check')],
+  ]) await call('reflect_component', { op: 'define', kind, name, source });
   const definitions: Record<string, string> = {
     prompt: '---\nactive: true\n---\nprompt new', skill: 'skill new', subagent: '---\ndescription: reviewer\ntools: []\n---\nsubagent new',
-    memory: 'memory new', tool: "def main(args):\n    return 'tool new'\n",
+    memory: 'memory new', tool: toolSource("def main(args):\n    return 'tool new'", 'version check'),
   };
   for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'redefine', kind, name: `five_${kind === 'subagent' ? 'agent' : kind === 'memory' ? 'memory' : kind}`, source: definitions[kind] });
   const prompt = requestContext();
@@ -110,7 +118,7 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   await tools.get('consult').execute('test', { agent: 'five_agent', question: 'Review' }, undefined, undefined, ctx);
   assert.match(consultSystem, /subagent new/);
   const names: Record<string, string> = { prompt: 'five_prompt', skill: 'five_skill', tool: 'five_tool', subagent: 'five_agent', memory: 'five_memory' };
-  for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'rollback', kind, name: names[kind], version: 1 });
+  for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'restore', kind, name: names[kind], version: 1 });
   const restored = requestContext();
   assert.match(restored, /prompt old/);
   assert.match(restored, /memory old/);
@@ -145,7 +153,7 @@ test('session starts with five live baseline components that redefine and restor
   const changed: Record<string, string> = {
     prompt: '---\nactive: true\n---\nSeeded prompt changed for this request boundary.',
     skill: 'Seeded skill changed for the next skill read.',
-    tool: "def main(args, env):\n    return {'seeded_tool': 'changed'}\n",
+    tool: toolSource("def main(args, env):\n    return {'seeded_tool': 'changed'}", 'Summarize the current HTML deck file used by the presentation workflow.'),
     subagent: '---\ndescription: changed reviewer\ntools: [read, grep]\n---\nSeeded reviewer changed.',
     memory: 'Seeded memory changed for the next request.',
   };
@@ -161,7 +169,7 @@ test('session starts with five live baseline components that redefine and restor
   } };
   await tools.get('consult').execute('test', { agent: names.subagent, question: 'Review briefly' }, undefined, undefined, ctx);
   for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory'])
-    await call('reflect_component', { op: 'rollback', kind, name: names[kind], version: 1 });
+    await call('reflect_component', { op: 'restore', kind, name: names[kind], version: 1 });
   assert.match(context(), /You are completing the task in the supplied brief/);
   assert.match((await call('read_component', { name: names.skill })).content[0].text, /Keep each slide focused/);
   assert.match((await call('run_program', { name: names.tool })).content[0].text, /file not found/);
@@ -187,9 +195,9 @@ test('free-hands: programs write text and binary, any entry shape, plain markdow
   await assert.rejects(() => tools.get('consult').execute('test', { agent: 'visual_review', question: 'Review a slide' }, undefined, undefined, { model: { maxTokens: 1000 } }), /no active subagent/);
 
   // A plain markdown subagent with no frontmatter binds with defaults; a subagent may keep write tools.
-  await call('self_component', { kind: 'subagent', name: 'visual_review', content: 'Inspect the requested rendered slide.', tools: ['read', 'write'] });
+  await call('reflect_component', { op: 'define', kind: 'subagent', name: 'visual_review', source: '---\ndescription: reviewer\ntools: [read, write]\n---\nInspect the requested rendered slide.' });
   // A plain markdown prompt (no frontmatter) is active by default.
-  await call('self_component', { kind: 'prompt', name: 'style_rules', content: 'Prefer dark titles on light backgrounds.' });
+  await call('reflect_component', { op: 'define', kind: 'prompt', name: 'style_rules', source: '---\nactive: true\n---\nPrefer dark titles on light backgrounds.' });
 
   // The ad-hoc python tool exists and writes binary bytes (a PNG) plus reads them back.
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -202,7 +210,7 @@ test('free-hands: programs write text and binary, any entry shape, plain markdow
 
   // A program with a main() entry (no run/observe) is accepted and callable.
   const body = `import json\ndef main(args):\n    slides=[]\n    for i in range(3):\n        slides.append({'elements':[{'kind':'text','x':0.5,'y':0.5,'w':10,'h':1,'text':args['title']+' '+str(i+1),'size':28}]})\n    slides[0]['elements'].append({'kind':'image','x':1,'y':2,'w':3,'h':3,'path':'artifacts/pixel.png'})\n    json.dump({'slides':slides},open('artifacts/deck.json','w'))\n    print('created',len(slides))`;
-  await call('save_program', { name: 'page_builder', description: 'Parameterised page generator', body });
+  await call('reflect_component', { op: 'define', kind: 'tool', name: 'page_builder', source: toolSource(body, 'Parameterised page generator') });
   const first = await call('run_program', { name: 'page_builder', args: { title: 'Initial' } });
   assert.equal(first.isError, false, first.content?.[0]?.text);
   const manifest = join(root, 'workspace/artifacts/deck.json');
@@ -216,12 +224,10 @@ test('free-hands: programs write text and binary, any entry shape, plain markdow
   assert.match(readFileSync(manifest, 'utf8'), /Adapt write/);
 
   await call('checkpoint', { note: 'Back to task', adapt: false });
-  await call('save_program', { name: 'page_builder', description: 'Updated method', body, expected_version: 1 });
+  await call('reflect_component', { op: 'redefine', kind: 'tool', name: 'page_builder', source: toolSource(body, 'Updated method') });
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   const matches = await call('list_programs', { query: 'updated' });
   assert.match(matches.content[0].text, /page_builder@v2/);
-  await call('run_program', { name: 'page_builder', version: 1, args: { title: 'Historical' } });
-  assert.match(readFileSync(manifest, 'utf8'), /Historical/);
   await call('run_program', { name: 'page_builder', args: { title: 'Updated' } });
 
   // Render has no quality-map prerequisite and does not terminate the run.

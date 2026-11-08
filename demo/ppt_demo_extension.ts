@@ -28,6 +28,10 @@ export default function pptDemo(pi: ExtensionAPI) {
     : Number.isSafeInteger(requestedBatchLimit) && requestedBatchLimit > 0 ? requestedBatchLimit : 10;
   // The PPT workspace starts from what the task actually uses; no ARC skeleton (data/frames, config).
   const workspace = new Workspace(root, { dirs: ['data', 'notes', 'prompts', 'lib', 'tools', 'skills', 'agents', 'artifacts', 'results'] });
+  workspace.writeGuard = path => {
+    if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory\/|notes\/memory\.md$|AGENTS\.md$)/i.test(path))
+      throw Error('Harness component files can only be changed with reflect_component(op="define" or "redefine").');
+  };
   const binder = new Binder(workspace, validatePythonComponent);
   mkdirSync(join(root, 'harness'), { recursive: true });
   const statePath = join(root, '.harness', 'ppt-loop.json');
@@ -175,7 +179,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   const register = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name,
     description, parameters, execute: async (_id: string, args: any, signal: any, _update: any, ctx: any) => {
       const result = await fn(args, signal, ctx);
-      log('tools.jsonl', { name, args: name === 'save_program' ? { ...args, body: '(see versioned source)' } : args,
+      log('tools.jsonl', { name, args,
         result: result?.content?.filter((x: any) => x.type === 'text'), isError: result?.isError ?? false });
       return result;
     } });
@@ -188,26 +192,15 @@ export default function pptDemo(pi: ExtensionAPI) {
     const result = await binder.save(path, 0, { by: 'agent', decision: state.batch }); binder.boundary();
     return result;
   };
-  register('python', 'Run Python in the confined workspace sandbox. Files under the workspace are read and written with open(path) — text or binary ("rb"/"wb"), any file type (images, decks, data). pathlib works too. Returns what you print and the value of a final expression. save="name" publishes the exact source as a named tool (tools/name.py) callable from later requests.',
-    Type.Object({ code: Type.String({ minLength: 1, maxLength: 65536 }), save: Type.Optional(Type.String({ maxLength: 64 })) }),
-    async (a: any, signal: any) => runtime.python(a.code, signal, false, a.save || undefined));
-  register('save_program', 'Create/revise an Agent-authored named program (a tool or method) as tools/<name>.py, versioned. Complete source; state, args, env injected. Entry: run(args[, env]), main(...), handler(...), or a plain script.',
-    Type.Object({ name: Type.String(), description: Type.String(), tags: Type.Optional(Type.Array(Type.String())), body: Type.String(), expected_version: Type.Optional(Type.Integer()) }),
-    async (a: any) => text(await runtime.saveProgram(a.name, a.body, a.description, a.tags ?? [], a.expected_version)));
-  register('run_program', 'Run an Agent-authored program against current task evidence. Omit version for active. Programs may read and write confined workspace files (text or binary).',
-    Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())), version: Type.Optional(Type.Integer({ minimum: 1 })) }),
+  register('python', 'Run Python in the confined workspace sandbox. Files under the workspace are read and written with open(path) — text or binary ("rb"/"wb"), any file type (images, decks, data). Harness component paths require reflect_component. Returns what you print and the value of a final expression.',
+    Type.Object({ code: Type.String({ minLength: 1, maxLength: 65536 }) }),
+    async (a: any, signal: any) => runtime.python(a.code, signal, false));
+  register('run_program', 'Run the live version of a named tool against current task evidence. Programs may read and write confined workspace files (text or binary).',
+    Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())) }),
     async (a: any, signal: any) => {
-      const result = await runtime.runProgram(a.name, a.args ?? {}, signal, a.version);
+      const result = await runtime.runProgram(a.name, a.args ?? {}, signal);
       await binder.scan(0); binder.boundary(); runtime.register();
       return result;
-    });
-  register('edit_program', 'Revise one exact text span in an active program while preserving its version history. Use read_component first.',
-    Type.Object({ name: Type.String(), old_text: Type.String(), new_text: Type.String(), expected_version: Type.Integer({ minimum: 1 }) }),
-    async (a: any) => {
-      const c = binder.active().find(c => c.program && c.name === a.name);
-      if (!c || c.version !== a.expected_version) throw Error('Program version changed; read_component and retry.');
-      if (!a.old_text || c.source.split(a.old_text).length !== 2) throw Error('old_text must occur exactly once in the active source.');
-      return text(await runtime.saveProgram(a.name, c.source.replace(a.old_text, a.new_text), c.description, c.tags ?? [], c.version));
     });
   register('list_programs', 'Find available executable methods and versions by purpose.', Type.Object({ query: Type.Optional(Type.String()) }),
     (a: any) => text(binder.programCatalog(0, a.query ?? '')));
@@ -217,8 +210,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (c.kind === 'skill') log('lifecycle.jsonl', { event: 'component_consumed', kind: c.kind, name: c.name, version: c.version, boundary: 'read_component' });
     return text(`${c.name}@v${c.version}\n${c.source}`);
   });
-  register('reflect_component', 'Inspect or redefine a live harness component, or roll it back to an earlier saved version. Changes bind at the next Pi request boundary. Decks and output files are not harness components.',
-    Type.Object({ op: Type.Union([Type.Literal('inspect'), Type.Literal('redefine'), Type.Literal('rollback')]),
+  register('reflect_component', 'Inspect, define, redefine, or restore a live harness component. This is the only way to create or change prompts, skills, tools, subagents, and memory. Changes bind at the next Pi request boundary. Decks and output files are not harness components.',
+    Type.Object({ op: Type.Union([Type.Literal('inspect'), Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')])),
       source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })) }), async (a: any) => {
       const components = binder.active().filter(c => ['tool', 'prompt', 'skill', 'subagent'].includes(c.kind));
@@ -229,30 +222,37 @@ export default function pptDemo(pi: ExtensionAPI) {
         ...(component.kind === 'subagent' ? ['consult'] : []),
         ...components.filter(other => other.path !== component.path && other.source.includes(component.name)).map(other => `${other.kind}:${other.name}`),
       ])];
-      if (a.op === 'inspect') return text([...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
+       if (a.op === 'inspect') return text([...components.map(c => ({ name: c.name, kind: c.kind, version: c.version,
         path: c.path, used_by: consumers(c), detail: `read_component(name=${JSON.stringify(c.name)})` })), ...workspace.files('notes').filter(path => /^notes\/memory\/.+\.md$/.test(path))
         .map(path => ({ name: path.split('/').at(-1)!.replace(/\.md$/, ''), kind: 'memory', version: binder.versionMap()[path] ?? 1,
           path, used_by: ['next provider request system context'], detail: `read(path=${JSON.stringify(path)})` }))]);
-      if (!a.name || !a.kind) throw Error('name and kind are required for redefine or rollback');
+       if (!a.name || !a.kind) throw Error('name and kind are required for define, redefine, or restore');
+       if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(a.name)) throw Error('invalid component name');
       if (!['tool', 'prompt', 'skill', 'subagent', 'memory'].includes(a.kind)) throw Error('unsupported component kind');
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
       if (!/^(tools\/[^/]+\.py|prompts\/[^/]+\.md|skills\/[^/]+\/SKILL\.md|agents\/[^/]+\.md|notes\/memory\/[^/]+\.md)$/.test(path)) throw Error('invalid component name');
-      if (a.op === 'redefine' && typeof a.source !== 'string') throw Error('source is required for redefine');
+       if ((a.op === 'define' || a.op === 'redefine') && typeof a.source !== 'string') throw Error('source is required for define or redefine');
       const current = binder.active().find(c => c.path === path);
+       const exists = Boolean(current) || a.kind === 'memory' && existsSync(workspace.path(path));
       let nextSource = a.source;
-      if (a.op === 'rollback') {
-        if (!Number.isSafeInteger(a.version)) throw Error('version is required for rollback');
+        if (a.op === 'define' && exists) throw Error(`${a.kind} ${a.name} already exists; use redefine`);
+        if (a.op === 'redefine' && !exists) throw Error(`${a.kind} ${a.name} does not exist; use define`);
+       if (a.op === 'restore') {
+         if (!Number.isSafeInteger(a.version)) throw Error('version is required for restore');
         nextSource = binder.sourceOf(path, a.version);
         if (nextSource === undefined) throw Error(`no saved version ${a.version} for ${a.name}`);
       }
-      if (a.op === 'redefine' && a.kind !== 'memory' && !current) throw Error(`${a.kind} must already exist as a live component`);
-      if (a.op === 'redefine' && a.kind === 'memory' && !workspace.files('notes').includes(path)) throw Error('memory must already exist as a live component');
-      if (a.kind === 'tool' && !current) throw Error('tool must already exist as a live component');
+       if (a.kind === 'tool' && !nextSource.split(/\r?\n/).slice(0, 10).some((line: string) => line.trim() === '# program: on'))
+         throw Error('tool source must include # program: on in its first ten lines so run_program can consume it');
       const receipt = a.kind === 'tool'
-        ? await runtime.saveProgram(a.name, nextSource, current!.description, current!.tags ?? [], current!.version)
+         ? await (async () => {
+           workspace.mutate({ op: 'write', path, content: nextSource }, true);
+           const saved = await binder.save(path, 0, { by: 'agent', decision: state.batch });
+           binder.boundary(); await binder.scan(0); runtime.register(); return saved;
+         })()
         : await (async () => {
-          workspace.mutate({ op: 'write', path, content: nextSource });
+           workspace.mutate({ op: 'write', path, content: nextSource }, true);
           const saved = await binder.save(path, 0, { by: 'agent', decision: state.batch });
           binder.boundary(); return saved;
         })();
@@ -262,9 +262,9 @@ export default function pptDemo(pi: ExtensionAPI) {
       const version = updated?.version ?? binder.versionMap()[path];
       if ((!updated && a.kind !== 'memory') || (a.kind === 'tool' && updated?.kind !== 'tool')) throw Error(`redefinition did not bind: ${receipt ?? path}`);
       log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: updated?.name ?? a.name, kind: a.kind,
-        from_version: current?.version ?? null, version, hash: updated?.hash });
+         from_version: current?.version ?? (a.kind === 'memory' && exists ? binder.versionMap()[path] : null), version, hash: updated?.hash });
       const name = updated?.name ?? a.name;
-      const nextCall = a.kind === 'tool' ? `run_program(name=${JSON.stringify(name)}, version=${version}, args={})`
+      const nextCall = a.kind === 'tool' ? `run_program(name=${JSON.stringify(name)}, args={})`
         : a.kind === 'subagent' ? `consult(agent=${JSON.stringify(name)}, question="Review supplied facts briefly", refs=["data/material.txt"])`
         : a.kind === 'skill' ? `read_component(name=${JSON.stringify(name)})`
         : a.kind === 'prompt' ? 'Make the next provider request; the prompt is injected automatically.'
@@ -279,39 +279,6 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (a.adapt !== undefined) { state.phase = a.adapt ? 'adapt' : 'task'; state.nextPhase = state.phase; }
       persist(); log('lifecycle.jsonl', { event: 'checkpoint', phase: state.phase, note_chars: note.length });
       return text({ phase: state.phase, note: state.note, ...(chars.length > 400 ? { warning: 'Handoff note was truncated to 400 characters.' } : {}) });
-    });
-  register('self_component', 'Create or revise a task-local prompt, skill, memory entry, or subagent role. Plain markdown works; frontmatter is optional (a prompt is active unless it says active: false). Saved versions are available from your next request.',
-    Type.Object({ kind: Type.Union([Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('memory'), Type.Literal('subagent')]),
-      name: Type.String({ pattern: '^[a-zA-Z][a-zA-Z0-9_-]{0,63}$' }), content: Type.String(),
-      description: Type.Optional(Type.String()), tools: Type.Optional(Type.Array(Type.String())) }),
-    async (a: any) => {
-      const path = a.kind === 'memory' ? `notes/memory/${a.name}.md` : a.kind === 'skill' ? `skills/${a.name}/SKILL.md`
-        : a.kind === 'subagent' ? `agents/${a.name}.md` : `prompts/${a.name}.md`;
-      const content = a.kind === 'memory' ? a.content : a.kind === 'prompt' ? `---\nactive: true\n---\n${a.content}`
-        : a.kind === 'subagent' ? `---\ndescription: ${JSON.stringify(a.description ?? a.name)}${a.tools ? `\ntools: ${JSON.stringify(a.tools)}` : ''}\n---\n${a.content}`
-        : `---\nname: ${a.name}\ndescription: ${JSON.stringify(a.description ?? a.name)}\n---\n${a.content}`;
-      workspace.mutate({ op: 'write', path, content });
-      const receipt = await binder.save(path, 0, { by: 'agent', decision: state.batch });
-      binder.boundary();
-      log('lifecycle.jsonl', { event: 'component_changed', path, kind: a.kind, hash: createHash('sha256').update(content).digest('hex') });
-      return text(receipt ?? `Saved ${path}; next request uses it.`);
-    });
-  register('component_lifecycle', 'Retire or restore an Agent-created harness component. Retired files move to _off/ and can be restored.',
-    Type.Object({ op: Type.Union([Type.Literal('retire'), Type.Literal('restore')]), path: Type.String() }), async (a: any) => {
-      const path = a.path.replace(/\\/g, '/').replace(/^\.\//, '');
-      if (!/^(tools|lib|skills|agents|prompts|notes)\//.test(path)) throw Error('Only task-local harness component paths can be retired or restored.');
-      const offPath = `_off/${path}`;
-      if (a.op === 'retire') {
-        if (!existsSync(workspace.path(path))) throw Error(`No active component at ${path}`);
-        workspace.mutate({ op: 'move', path, destination: offPath });
-      } else {
-        if (!existsSync(workspace.path(offPath))) throw Error(`No retired component at ${offPath}`);
-        if (existsSync(workspace.path(path))) throw Error(`An active component already exists at ${path}`);
-        workspace.mutate({ op: 'move', path: offPath, destination: path });
-      }
-      await binder.scan(0); binder.boundary(); runtime.register();
-      log('lifecycle.jsonl', { event: 'component_lifecycle', op: a.op, path });
-      return text({ op: a.op, path, state: statusText() });
     });
   const trials = new Trials({ root, workspace, binder, log, usage: (kind, message) => log('usage.jsonl', { kind, message }),
     modelResult: async create => {
@@ -334,11 +301,11 @@ export default function pptDemo(pi: ExtensionAPI) {
     reasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
     maxTrials: Number(process.env.PPT_DEMO_MAX_TRIALS ?? 3), maxRounds: Number(process.env.PPT_DEMO_TRIAL_ROUNDS ?? 12),
     timeoutMs: Number(process.env.PPT_DEMO_TRIAL_MS ?? 300000) });
-  register('trials', 'Run one or more independent trials: each gets its own scratch workspace and its own context (no parent prompts unless you name components to copy in) and works on the instruction you give it, with file, python and program tools. Trials cannot touch the main workspace; their files stay under .harness/trials until apply_trial copies chosen files in. Same model, counted against the task budget. Each trial returns its answer and the files it wrote. No automatic selection or merge.',
+  register('trials', 'Run one or more independent trials: each gets its own scratch workspace and its own context (no parent prompts unless you name components to copy in) and works on the instruction you give it, with file and Python tools. Trials cannot touch the main workspace; their files stay under .harness/trials. Same model, counted against the task budget. Each trial returns its answer and the files it wrote.',
     Type.Object({ trials: Type.Array(Type.Object({ id: Type.Optional(Type.String()), instruction: Type.String({ minLength: 1 }),
       materials: Type.Optional(Type.Array(Type.String())), components: Type.Optional(Type.Array(Type.String())) }), { minItems: 1 }) }),
     async (a: any, signal: AbortSignal, ctx: any) => text((await trials.run(a.trials, ctx, signal)).content[0].text));
-  register('apply_trial', 'Copy files a trial wrote into the main workspace, where components are versioned like any write. Omit paths to copy every file the trial changed; paths picks specific files.',
+  register('apply_trial', 'Copy selected non-component artifact files from a trial into the main workspace.',
     Type.Object({ id: Type.String(), paths: Type.Optional(Type.Array(Type.String())) }),
     async (a: any) => { const result = await trials.apply(a.id, a.paths); await binder.scan(0); binder.boundary(); runtime.register(); return text(result.content[0].text); });
   register('trial_files', 'List the files a trial changed relative to the main workspace, before applying any.',
@@ -473,7 +440,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       binder.boundary(); persist();
     }
     // Agent-created tools stay active across batches: setActiveTools unions in everything registered.
-    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'save_program', 'edit_program', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'self_component', 'component_lifecycle', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
+  const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'run_program', 'list_programs', 'read_component', 'reflect_component', 'checkpoint', 'office', 'consult', 'trials', 'apply_trial', 'trial_files']);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
     const activePrompts = binder.active().filter(c => c.kind === 'prompt' && c.name !== 'ppt_baseline_guidance').map(c => c.body).join('\n');
     const baselinePrompt = binder.active().find(c => c.kind === 'prompt' && c.name === 'ppt_baseline_guidance')?.body

@@ -270,7 +270,7 @@ export class NativeRuntime {
     if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error('name: use a logical identifier');
     const source = await this.toolSource(body, undefined, signal);
     const path = `tools/${name}.py`;
-    this.host.workspace.mutate({ op: 'write', path, content: source + '\n' });
+    this.host.workspace.mutate({ op: 'write', path, content: source + '\n' }, true);
     const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
     this.noteSave(path, receipt);
     if (receipt?.includes('NOT loaded')) throw Error(receipt);
@@ -294,7 +294,7 @@ export class NativeRuntime {
       ? body.trim().replace(/^# program: on\r?\n(?:# description:[^\r\n]*\r?\n)?(?:# tags:[^\r\n]*\r?\n)?/, '')
       : body.trim();
     const source = `# program: on\n# description: ${description.trim().replace(/[\r\n]+/g, ' ')}\n${tags.length ? `# tags: ${tags.join(', ')}\n` : ''}${code}\n`;
-    this.host.workspace.mutate({ op: 'write', path, content: source });
+    this.host.workspace.mutate({ op: 'write', path, content: source }, true);
     const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
     this.noteSave(path, receipt);
     if (receipt?.includes('NOT loaded')) throw Error(receipt);
@@ -455,8 +455,7 @@ export class NativeRuntime {
   }
   private async applyWrites(result: NativeResult) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
-    // Harness directories are writable: the write lands in the workspace and the Binder versions it like any
-    // component save, so a program can build or revise components itself (a failed bind is reported, not silent).
+    // Harness component storage is writable only through reflect_component.
     for (const op of result.ops ?? []) {
       if (op.op === 'memory' || op.op === 'meta_decide') continue;
       this.host.workspace.path(op.path, true);

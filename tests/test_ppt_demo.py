@@ -5,6 +5,10 @@ from autoresearch_pi import ppt_demo
 
 
 def test_fresh_run_sends_kickoff_prompt(tmp_path, monkeypatch):
+    system_prompt = Path("demo/prompts/ppt_demo_system.md").read_text(encoding="utf-8")
+    assert "reflect_component" in system_prompt
+    assert "save_program" not in system_prompt
+    assert "self_component" not in system_prompt
     root = tmp_path / "run"
     workspace_data = root / "workspace" / "data"
     workspace_data.mkdir(parents=True)

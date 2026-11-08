@@ -1,0 +1,10 @@
+Create and deliver a compact three-slide presentation from the supplied JPMorgan Chase 3Q21 source materials. Work directly from the supplied materials; do not explore unrelated workspace files.
+
+First call reflect_component(op="inspect") once. Use only reflect_component to define or redefine harness components, then consume each live version before drafting:
+1. Redefine tool deck_file_summary to summarize the presentation file you will deliver, then run_program it once.
+2. Redefine subagent deck_reviewer as a concise reviewer for slide clarity and source traceability, then consult it once briefly using the supplied source materials.
+3. Redefine skill deck_workflow with a short slide-production/checking method, then read_component it.
+4. Redefine prompt ppt_baseline_guidance with a concise rule that improves numeric sourcing and plain-language explanations; it takes effect at the next request.
+5. Redefine memory presentation_workflow with the key task facts you have verified; it takes effect at the next request.
+
+Use the supplied source materials to draft three slides, render the deck, make any needed correction, and deliver the rendered artifact. Use reflect_component(op="define") if a new harness component is needed.

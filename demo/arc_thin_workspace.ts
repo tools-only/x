@@ -19,6 +19,7 @@ export class Workspace {
   private resultIndex: string;
   private inlineChars: number;
   onWrite?: (path: string) => Promise<string | undefined>;
+  writeGuard?: (path: string) => void;
   /** Counts every write, move and delete, so a computation can tell its inputs did not change (the same-state cache). */
   version = 0;
   constructor(runRoot: string, options: { inlineChars?: number; dirs?: string[] } = {}) {
@@ -43,6 +44,7 @@ export class Workspace {
     const rel = relative(this.root, target).replace(/\\/g, '/');
     if (rel.startsWith('../') || isAbsolute(rel)) throw Error('path leaves workspace');
     if (write && !runtime && /^(data|results)(\/|$)/i.test(rel)) throw Error('workspace data/ and results/ are read-only');
+    if (write && !runtime) this.writeGuard?.(rel);
     let cursor = this.root;
     for (const part of rel.split('/').filter(Boolean)) {
       cursor = join(cursor, part);
@@ -60,8 +62,8 @@ export class Workspace {
     writeFileSync(target, content, typeof content === 'string' ? 'utf8' : undefined);
     this.version += 1;
   }
-  mutate(op: { op: string; path: string; content?: string; destination?: string }) {
-    const source = this.path(op.path, true);
+  mutate(op: { op: string; path: string; content?: string; destination?: string }, runtime = false) {
+    const source = this.path(op.path, true, runtime);
     if (source === this.root) throw Error('workspace root cannot be changed');
     this.version += 1;
     if (op.op === 'write') this.runtimeWrite(op.path, op.content!);
@@ -69,10 +71,10 @@ export class Workspace {
       if (!lstatSync(source).isFile()) throw Error('only workspace files can be removed');
       unlinkSync(source);
     } else if (op.op === 'move') {
-      const target = this.path(op.destination!, true);
+      const target = this.path(op.destination!, true, runtime);
       if (target === this.root) throw Error('workspace root cannot be changed');
       mkdirSync(dirname(target), { recursive: true });
-      renameSync(this.path(op.path, true), this.path(op.destination!, true));
+      renameSync(this.path(op.path, true, runtime), this.path(op.destination!, true, runtime));
     } else throw Error('invalid workspace mutation');
   }
   files(path = '.'): string[] {

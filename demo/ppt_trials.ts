@@ -97,6 +97,10 @@ export class Trials {
       scratch.runtimeWrite(c.path, c.source);
       copied.push(`${c.path}@v${c.version}`);
     }
+    scratch.writeGuard = path => {
+      if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory\/|notes\/memory\.md$|AGENTS\.md$)/i.test(path))
+        throw Error('Harness component files can only be changed with reflect_component(op="define" or "redefine").');
+    };
     const binder = new Binder(scratch, validatePythonComponent);
     await binder.scan(0); binder.boundary();
     const stubPi: any = { registerTool() {}, on() {}, setActiveTools() {}, getActiveTools: () => [] };
@@ -112,12 +116,10 @@ export class Trials {
       toolDefs.push({ name: tool.name, description: tool.description, parameters: tool.parameters });
       runTools.set(tool.name, args => tool.execute('trial', args, signal, undefined, { cwd: scratch.root } as any));
     }
-    toolDefs.push({ name: 'python', description: 'Run Python in the scratch workspace sandbox (text or binary files).', parameters: Type.Object({ code: Type.String({ minLength: 1 }), save: Type.Optional(Type.String({ maxLength: 64 })) }) });
-    runTools.set('python', a => runtime.python(a.code, signal, false, a.save || undefined));
-    toolDefs.push({ name: 'run_program', description: 'Run a named program from the scratch workspace tools/ directory.', parameters: Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())), version: Type.Optional(Type.Integer({ minimum: 1 })) }) });
-    runTools.set('run_program', a => runtime.runProgram(a.name, a.args ?? {}, signal, a.version));
-    toolDefs.push({ name: 'save_program', description: 'Create or revise a named program in the scratch workspace.', parameters: Type.Object({ name: Type.String(), description: Type.String(), tags: Type.Optional(Type.Array(Type.String())), body: Type.String(), expected_version: Type.Optional(Type.Integer()) }) });
-    runTools.set('save_program', a => runtime.saveProgram(a.name, a.body, a.description, a.tags ?? [], a.expected_version));
+    toolDefs.push({ name: 'python', description: 'Run Python in the scratch workspace sandbox (text or binary files). Component paths require reflect_component.', parameters: Type.Object({ code: Type.String({ minLength: 1 }) }) });
+    runTools.set('python', a => runtime.python(a.code, signal, false));
+    toolDefs.push({ name: 'run_program', description: 'Run the live named program from the scratch workspace tools/ directory.', parameters: Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())) }) });
+    runTools.set('run_program', a => runtime.runProgram(a.name, a.args ?? {}, signal));
     toolDefs.push({ name: 'list_programs', description: 'List named programs available in the scratch workspace.', parameters: Type.Object({ query: Type.Optional(Type.String()) }) });
     runTools.set('list_programs', a => ({ content: [{ type: 'text', text: binder.programCatalog(0, a.query ?? '') }] }));
     toolDefs.push({ name: 'read_component', description: 'Read a saved component source by name.', parameters: Type.Object({ name: Type.String() }) });
@@ -185,6 +187,10 @@ export class Trials {
     const receipts: string[] = [];
     for (const clean of candidates) {
       if (/^(data|results)(\/|$)/.test(clean)) throw Error(`${clean}: data/ and results/ are read-only`);
+      if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory\/|notes\/memory\.md$|AGENTS\.md$)/i.test(clean))
+        throw Error(`${clean}: harness components can only be changed with reflect_component(op="define" or "redefine")`);
+      if (/^(tools\/|skills\/|agents\/|prompts\/|notes\/memory\/|notes\/memory\.md$)/.test(clean))
+        throw Error(`${clean}: harness components can only be changed with reflect_component(op="define" or "redefine")`);
       scratch.path(clean);
       const source = scratch.path(clean);
       if (!existsSync(source)) throw Error(`Trial ${id} has no file ${clean}`);
