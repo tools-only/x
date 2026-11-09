@@ -1,0 +1,22 @@
+{
+  "ARC": {
+    "root": "D:\\autoresearch_pi_project\\worktrees\\arc-reflective-core-20261109\\.scratch\\evolution-v1-arc-accept\\test_reflective_native_binding0\\evolution-loop",
+    "mounts": 6,
+    "feedbacks": 3,
+    "mount_wall_ms": 7316,
+    "snapshot_count": 7,
+    "snapshot_ms_total": 1455.05,
+    "snapshot_ms_max": 373.61,
+    "snapshot_read_bytes_max": 12183
+  },
+  "PPT": {
+    "root": "D:\\autoresearch_pi_project\\worktrees\\ppt-reflective-core-20261108\\.scratch\\evolution-v1-ppt-accept\\test_modern_process_render_fee1",
+    "mounts": 7,
+    "feedbacks": 2,
+    "mount_wall_ms": 10100,
+    "snapshot_count": 7,
+    "snapshot_ms_total": 1351.43,
+    "snapshot_ms_max": 304.37,
+    "snapshot_read_bytes_max": 111882
+  }
+}

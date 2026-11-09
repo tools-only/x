@@ -1,0 +1,12 @@
+{
+  "base": "e0fd805a",
+  "WINDOW_DECIDE_unchanged": true,
+  "base_missing_test_phrase": true,
+  "unchanged_files": {
+    "tests/arc_thin_native_context.test.ts": true,
+    "demo/arc_thin_native_context.ts": true,
+    "demo/prompts/arc_thin_native_system.md": true,
+    "demo/prompt_loader.ts": true,
+    "tests/test_arc_thin_decide_prompt.py": true
+  }
+}
