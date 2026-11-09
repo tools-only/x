@@ -1,5 +1,6 @@
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { detectSupportedImageMimeTypeFromFile } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -17,6 +18,8 @@ export type ActOutcome = { observation?: Record<string, unknown>; stopped?: stri
 type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): Record<string, unknown>;
   level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   hookTurn?(): boolean;
+  /** Reflective hosts supply a persisted run-wide compute allowance, shared across resumes. */
+  method?: { state: any; persist(): void; totalMs: number; deadline: number };
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
   /** Take one action for foreground code through the environment boundary (closed loop: env.act). */
@@ -928,15 +931,34 @@ export class NativeRuntime {
   private loopMounts(phase: 'decision' | 'action' | 'feedback', level = this.host.level()) {
     return this.host.binder.active().filter(c => c.kind === 'tool' && c.level === level && c.mount?.includes(phase));
   }
-  private async runLoopMount(c: Component, event: Record<string, unknown>) {
+  private async runLoopMount(c: Component, event: Record<string, unknown>, binding?: any) {
     const started = Date.now();
+    const method = binding ? this.host.method : undefined;
+    const compute = method ? (method.state.compute ??= { spent_ms: 0, runs: {}, local: {} }) : undefined;
+    const key = binding ? createHash('sha256').update(JSON.stringify([binding.owner, c.path, c.version, c.hash,
+      binding.scope, binding.input_ref, event.phase, event.feedback_ref ?? null])).digest('hex') : '';
+    if (compute?.runs[key]) return compute.runs[key];
+    const localKey = binding ? `${c.path}@${c.version}@${binding.scope}` : `${c.path}@${c.version}@${c.level}`;
+    const remaining = method ? Math.min(MAX_LOOP_MOUNT_MS, method.totalMs - compute.spent_ms, method.deadline - started) : MAX_LOOP_MOUNT_MS;
+    if (method && (!Number.isFinite(remaining) || remaining <= 0)) return { ok: false, error: 'Automatic compute allowance exhausted or not configured.' };
+    if (compute) {
+      // An interrupted execution remains unknown after restart, never implicitly replayed.
+      compute.runs[key] = { ok: false, error: 'Automatic execution did not settle; not replayed.' };
+      method!.persist();
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), MAX_LOOP_MOUNT_MS);
+    const timer = setTimeout(() => controller.abort(), remaining);
     let result: NativeResult;
     try {
       const snap = this.snapshot();
+      if (binding) for (const dependency of binding.components) {
+        if (dependency.path.endsWith('.py')) snap.sources[dependency.path] = dependency.source;
+        snap.versions[dependency.path] = dependency.version;
+      }
+      if (method && Date.now() - started >= remaining) throw Error('Automatic compute wall allowance exhausted during snapshot.');
       result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} },
-        mount_event: { ...event, local: this.mountLocal.get(`${c.path}@${c.version}@${c.level}`) ?? null },
+        mount_event: { ...event, ...(binding ? { owner: binding.owner, input_ref: binding.input_ref, scope: binding.scope } : {}),
+          local: compute ? compute.local[localKey] ?? null : this.mountLocal.get(localKey) ?? null },
         allow_writes: false }, controller.signal, this.viewPool);
     } catch (error) { result = { ok: false, error: String(error) }; }
     finally { clearTimeout(timer); }
@@ -946,9 +968,9 @@ export class NativeRuntime {
       const encoded = JSON.stringify(value.next_local);
       if (!encoded || encoded.length > 8192) result = { ok: false, error: 'next_local must be JSON of at most 8192 characters' };
       else {
-        const key = `${c.path}@${c.version}@${c.level}`;
-        this.mountLocal.set(key, value.next_local);
-        this.host.log('mount_state.jsonl', { key, path: c.path, version: c.version, level: c.level,
+        this.mountLocal.set(localKey, value.next_local);
+        if (compute) compute.local[localKey] = value.next_local;
+        this.host.log('mount_state.jsonl', { key: localKey, path: c.path, version: c.version, level: c.level,
           n: this.host.actionCount(), local: value.next_local });
       }
     }
@@ -956,14 +978,25 @@ export class NativeRuntime {
       ? value.context : result.value;
     const visible = shownValue && typeof shownValue === 'object' && !Array.isArray(shownValue)
       ? Object.fromEntries(Object.entries(shownValue).filter(([key]) => key !== 'next_local' && key !== 'expect_next')) : shownValue;
-    const row = { kind: 'mount', path: c.path, version: c.version, level: c.level, decision: this.decision(),
+    const output = binding ? this.host.workspace.saveResult(JSON.stringify({ owner: binding.owner, component: { name: c.name, path: c.path, version: c.version, hash: c.hash },
+      input_ref: binding.input_ref, event, result })) : undefined;
+    const row = { kind: 'mount', name: c.name, path: c.path, hash: c.hash, version: c.version, level: c.level, decision: this.decision(),
+      ...(binding ? { key, owner: binding.owner, input_ref: binding.input_ref, output_ref: output!.ref,
+        feedback_ref: event.feedback_ref, scope: binding.scope } : {}),
       n: this.host.actionCount(), phase: event.phase, ok: result.ok, ms: Date.now() - started,
       ...(result.ok ? { value: JSON.stringify(visible ?? null).slice(0, 700) } : { error: String(result.error ?? '').slice(0, 300) }) };
     this.host.log('component_runs.jsonl', row);
-    return { ...result, visible };
+    const settled = { ...result, visible, ...(output ? { output_ref: output.ref } : {}) };
+    if (compute) {
+      compute.spent_ms += Date.now() - started;
+      compute.runs[key] = { ok: result.ok, error: result.error, visible, output_ref: output!.ref };
+      method!.persist();
+    }
+    return settled;
   }
   /** A free-form result enters the next decision head unasked, bounded by the host. */
-  async loopDecisionText(): Promise<string> {
+  async loopDecisionText(binding?: any): Promise<string> {
+    if (binding) return this.methodMount('decision', binding, {});
     const due = this.loopMounts('decision');
     if (!due.length) return '';
     const parts: string[] = [];
@@ -1003,13 +1036,28 @@ export class NativeRuntime {
     return checks;
   }
   /** The post-action state is canonical; Agent code may update only its private bounded local state. */
-  async loopFeedback(action: { name: string; x?: number; y?: number }, checks: unknown[], fromLevel: number) {
+  async loopFeedback(action: { name: string; x?: number; y?: number }, checks: unknown[], fromLevel: number, binding?: any, feedback?: any) {
+    if (binding) return this.methodMount('feedback', binding, { action, feedback, feedback_ref: feedback?.observation_ref ?? feedback?.evidence ?? feedback?.ref });
     const due = this.loopMounts('feedback', fromLevel);
     for (const c of due.slice(0, MAX_LOOP_MOUNTS))
       await this.runLoopMount(c, { phase: 'feedback', decision: this.decision(), n: this.host.actionCount(),
         from_level: fromLevel, action, checks });
     if (due.length > MAX_LOOP_MOUNTS) this.host.log('component_runs.jsonl', { kind: 'mount_limit', phase: 'feedback',
       n: this.host.actionCount(), level: fromLevel, skipped: due.length - MAX_LOOP_MOUNTS });
+  }
+  private async methodMount(phase: 'decision' | 'feedback', binding: any, event: any): Promise<string> {
+    if (!binding.owner || this.host.method?.state.complete) return '';
+    if (binding.error) return binding.error;
+    const due = binding.components.filter((c: Component) => c.kind === 'tool' && c.mount?.includes(phase));
+    if (due.length > 1 || due.some((c: Component) => c.guard || c.mount?.includes('action')))
+      return 'Automatic compute paused: v1 permits one decision and one feedback tool only.';
+    const parts: string[] = [];
+    for (const c of due) {
+      const result = await this.runLoopMount(c, { phase, ...event }, binding);
+      if (result.output_ref && !binding.outputs.includes(result.output_ref)) binding.outputs.push(result.output_ref);
+      parts.push(`${c.name}@v${c.version}: ${JSON.stringify({ ok: result.ok, value: result.visible, error: result.error, output_ref: result.output_ref })}`);
+    }
+    return parts.length ? `AGENT COMPUTE (${phase}; derived, not canonical):\n${parts.join('\n')}`.slice(0, 2400) : '';
   }
   /** The active predictor tools: they define predict(state, action) (arc_thin_components.ts). */
   predictors() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).predictor && c.level === this.host.level()); }

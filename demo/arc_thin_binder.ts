@@ -27,6 +27,8 @@ export function componentKind(path: string): string | undefined {
   if (/^prompts\/process\/[^/]+\.md$/.test(path)) return 'prompt';
   if (/^prompts\/[^/]+\.md$/.test(path)) return 'prompt';
   if (/^(agents|roles)\/[^/]+\.md$/.test(path)) return 'subagent';
+  if (/^notes\/memory\/[^/]+\.md$/.test(path) || path === 'notes/memory.md') return 'memory';
+  if (/^processes\/[^/]+\.json$/.test(path)) return 'process';
 }
 /** The file conventions require only scalar values and lists, not an SDK. Frontmatter is optional: a plain markdown
  * file binds with defaults (prompt active, description from its first line, skill named by its directory), so writing
@@ -107,7 +109,17 @@ export class Binder {
     const work = this.saving.then(() => this.saveSource(path, level, kind, source, origin));
     this.saving = work.catch(() => undefined); return work;
   }
-  private async saveSource(path: string, level: number, kind: string, source: string, origin: { by: string; decision?: number }) {
+  /** Validate the captured candidate before changing the live source or binding. */
+  publish(path: string, source: string, level: number, origin: { by: string; decision?: number; restored_from?: number }) {
+    const work = this.saving.then(async () => {
+      const receipt = await this.saveSource(path, level, componentKind(path) ?? 'file', source, origin, true);
+      const entry = this.entries.get(path)!;
+      return { receipt, component: entry.good, error: entry.error };
+    });
+    this.saving = work.catch(() => undefined);
+    return work;
+  }
+  private async saveSource(path: string, level: number, kind: string, source: string, origin: { by: string; decision?: number; restored_from?: number }, publish = false) {
     const hash = createHash('sha256').update(source).digest('hex');
     const old = this.entries.get(path);
     if (old?.hash === hash && !old.retired) return kind === 'file' ? undefined : this.receipt(old, true);
@@ -115,11 +127,13 @@ export class Binder {
     if (!existsSync(target)) writeFileSync(target, source, { flag: 'wx', encoding: 'utf8' });
     const entry: Entry = { path, version: (old?.version ?? 0) + 1, hash, level, kind,
       // B: ownership is recorded at save; layer follows the path, never an Agent declaration.
-      layer: path.startsWith('prompts/process/') ? 'meta' : componentKind(path) ? 'self' : undefined, by: origin.by, decision: origin.decision, good: old?.good };
+      layer: path.startsWith('prompts/process/') ? 'meta' : componentKind(path) ? 'self' : undefined, ...origin, good: old?.good };
     try {
       const spec = kind === 'file' ? { kind, name: path, description: '', enabled: false }
         : kind === 'tool' || kind === 'library'
-          ? await this.validate?.(path, source) : markdownSpec(path, source);
+          ? await this.validate?.(path, source)
+          : kind === 'process' ? { kind, name: path.split('/').at(-1)!.replace(/\.json$/, ''), description: 'Current task method', enabled: true,
+            body: JSON.stringify(JSON.parse(source)) } : markdownSpec(path, source);
       if (!spec) throw Error('Python component binder not available');
       if (spec.kind === 'prompt') {
         const section = `prompt_${spec.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
@@ -129,6 +143,7 @@ export class Binder {
       }
       entry.good = { ...spec, source, path, hash, level, version: entry.version };
     } catch (error) { entry.error = error instanceof Error ? error.message : String(error); }
+    if (publish && !entry.error) this.workspace.runtimeWrite(path, source);
     this.record(entry); return kind === 'file' ? undefined : this.receipt(entry);
   }
   /**

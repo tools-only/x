@@ -5,6 +5,13 @@ import { TaskPythonPool } from './pi_task_python_pool.ts';
 import { PythonKernel } from './pi_task_python_kernel.ts';
 import type { ComponentSpec } from './arc_thin_binder.ts';
 
+/** The reflective v1 boundary authorizes read-only decision/feedback compute only. */
+export async function validateReflectiveComponent(path: string, source: string): Promise<ComponentSpec> {
+  const spec = await validatePythonComponent(path, source);
+  if (spec.guard || spec.mount?.includes('action')) throw Error('Reflective v1 permits only decision/feedback mounts; action/guard mounts are unavailable.');
+  return spec;
+}
+
 const NATIVE = String.raw`
 import ast, base64, io, re, sys, importlib.abc, importlib.util, builtins
 

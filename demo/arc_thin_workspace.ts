@@ -171,7 +171,16 @@ export class Workspace {
     const writeFile = async (p: string, content: string) => { writeFileSync(safe(p, true), content, 'utf8'); this.version += 1; };
     const access = async (p: string) => { if (!existsSync(safe(p))) throw Error('workspace file does not exist'); };
     const tools: ToolDefinition[] = [
-      createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile, access,
+      createReadToolDefinition(this.root, { autoResizeImages: false, operations: { readFile: async p => {
+          const bytes = await readFile(p);
+          // Native read can page a large single-line JSON value using its ordinary line offsets.
+          // Edit and Python retain the exact original bytes; no domain analysis is added.
+          if (p.endsWith('.json') && bytes.length > 8000 && !bytes.toString('utf8').trim().includes('\n')) {
+            try { return Buffer.from(JSON.stringify(JSON.parse(bytes.toString('utf8')), null, 2) + '\n'); }
+            catch { /* A non-JSON file remains an ordinary byte read. */ }
+          }
+          return bytes;
+        }, access,
           // Pi extension APIs do not expose its image detector. Keep the confined read's supported formats by signature.
           detectImageMimeType: async p => {
             const bytes = await readFile(p);

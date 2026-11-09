@@ -1,0 +1,15 @@
+# Native component source contracts
+
+Mutation: `reflect_component(op="define"|"redefine"|"restore", name, kind, source?, version?, note)`. Restore publishes saved source as a future version (or unchanged); it never rewinds task state or costs. Invalid source preserves the effective binding. Current source and saved `components/<kind>/<name>/v<N>.source` are ordinary readable files.
+
+Process source is JSON: `{"strategy":"...","refs":[{"name":"...","kind":"tool","version":1}]}`. Strategy is at most 12000 characters. References are exact active versions; a mismatch pauses automatic compute and reports the fact. A validated process replaces the single current method at the next provider request. There is no activation tool. The preset direct process is an entry point, not Agent evolution.
+
+Tool source is Python with `# program: on` within the first ten lines. An ordinary tool is callable by its logical name, with `{args:{...}}`; supported entries include `run(state,args)`, `main(args)` and scripts. A native boundary tool instead declares `# mount: decision,feedback` (either phase or both) and `def on_event(state, event): ...`. It is not a callable Pi tool. Only exact tools referenced by the current process execute automatically, with at most one tool per phase. Action/guard bindings are unavailable in v1.
+
+`state` contains adapter facts and workspace resources. `event` contains `phase`, `owner`, `input_ref`, `scope`, and private `local`; feedback also supplies the canonical receipt and `feedback_ref`. Output is JSON; `{context: ..., next_local: ...}` provides derived context and private JSON state (at most 8192 characters). Automatic code is read-only: no actions, writes, network or provider calls. Results are Agent computations, not canonical observations. The current result projection is bounded to 2400 characters; full output has an ordinary result file reference. Same owner/source/input/event executes once, including length continuation and restart. Exceptions, empty results and interrupted executions are retained, not automatically retried. A task scope change suspends old automatic work. Removing refs or mount declarations retires that work.
+
+Automatic execution requires a finite run allowance (`REFLECTIVE_AUTO_COMPUTE_MS`) and deadline, uses at most five seconds per call and the remaining allowance, and never increases parent/child task budgets. Feedback belongs to the method and dependencies that produced the task call, including results arriving after replacement.
+
+Prompt and memory sources are Markdown injected at subsequent provider requests. Skill source is `skills/<name>/SKILL.md` with native skill metadata, exposed through the Pi skill index and ordinary read. Subagent source is Markdown with native `tools`/`refs` metadata, callable by name with `{question,refs?}` using the working agent's model and shared budget. Children cannot take environment actions.
+
+Native read pretty-prints large single-line JSON for paging with ordinary line offset/limit; edit and Python retain the original bytes.
