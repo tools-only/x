@@ -48,9 +48,32 @@ test('one current process replaces old strategy; Binder supplies process/memory 
   assert.equal(restored.component!.version, 3);
   assert.equal(restored.component!.hash, first.owner.hash);
   assert.equal(b.state.process.active.version, 2); // Future boundary only.
+  assert.equal(b.binder.active().find(c => c.kind === 'process')!.version, 2);
+  b.state.process.pending = { ...restored.component, envelope: JSON.parse(restored.component!.source) };
+  b.core.activate('scope-a');
+  assert.equal(b.core.execution('data/future.json', 'scope-a').owner.version, 3);
+  assert.equal(first.owner.version, 1); // Restore cannot rewrite the producing identity.
+  assert.doesNotMatch(b.core.contextAdditions()[0].text, /second/);
   const memory = await b.publish('notes/memory/facts.md', 'An authored interpretation.');
   assert.equal(memory.component!.kind, 'memory');
   assert.equal(b.binder.sourceOf(memory.component!.path, 1), memory.component!.source);
+});
+
+test('dependency change before activation preserves the effective Binder method and source', async () => {
+  const b = boot();
+  await b.publish('tools/compute.py', source);
+  await b.method('effective', [{ name: 'compute', kind: 'tool', version: 1 }]);
+  const envelope = { strategy: 'pending', refs: [{ name: 'compute', kind: 'tool', version: 1 }] };
+  b.core.validate(envelope);
+  const pending = await b.publish('processes/direct.json', JSON.stringify(envelope));
+  b.state.process.pending = { ...pending.component, envelope };
+  assert.equal(b.binder.active().find(c => c.kind === 'process')!.version, 1);
+  await b.publish('tools/compute.py', source + '\n# changed dependency');
+  b.core.activate('scope-a');
+  assert.equal(b.state.process.active.version, 1);
+  assert.equal(b.binder.active().find(c => c.kind === 'process')!.version, 1);
+  assert.equal(JSON.parse(b.workspace.read('processes/direct.json')).strategy, 'effective');
+  assert.match(b.state.process.activationReceipt.error, /references no longer active/);
 });
 
 test('invalid tool source, forbidden action/guard and refs limits preserve old effective source', async () => {
@@ -74,9 +97,11 @@ test('native compute dedupes across requests/restart, and late feedback retains 
   assert.match(decision, /"value":7/);
   assert.match(decision, /output_ref/);
   assert.equal(await b.runtime.loopDecisionText(first), decision);
-  assert.equal(await new NativeRuntime(b.host).loopDecisionText(first), decision);
+  const restartHost = { ...b.host, method: { ...b.host.method, state: JSON.parse(JSON.stringify(b.host.method.state)) } };
+  assert.equal(await new NativeRuntime(restartHost).loopDecisionText(first), decision);
   const second = await b.method('direct');
   assert.equal(await b.runtime.loopDecisionText(second), '');
+  await b.publish('tools/compute.py', source.replace('state["public_value"]', '999'));
   const feedback = await b.runtime.loopFeedback({ name: 'task-result' }, [], 0, first, { ref: 'data/result-2.json', actual: 8 });
   assert.match(feedback!, /feedback/);
   const runs = b.logs.filter(r => r.file === 'component_runs.jsonl');
@@ -85,8 +110,26 @@ test('native compute dedupes across requests/restart, and late feedback retains 
   assert.equal(runs[1].feedback_ref, 'data/result-2.json');
   assert.equal(runs[0].input_ref, 'data/input-1.json');
   assert.match(b.workspace.read(runs[1].output_ref), /"owner":1/);
+  assert.match(b.workspace.read(runs[1].output_ref), /"value":7/); // Pinned source, not the replacement's 999.
   assert.ok(b.state.process.compute.spent_ms > 0);
   assert.ok(b.logs.some(r => r.file === 'wasi_runs.jsonl' && r.snapshot_ms >= 0));
+});
+
+test('failed, empty and timed-out auto results settle once and preserve canonical input', { timeout: 30000 }, async () => {
+  const b = boot();
+  for (const [name, body] of [['failure', 'raise ValueError("fixture failure")'], ['empty', 'return None'], ['timeout', 'while True: pass']]) {
+    await b.publish(`tools/${name}.py`, `# program: on\n# mount: decision\ndef on_event(state, event):\n    ${body}\n`);
+    const binding = await b.method(name, [{ name, kind: 'tool', version: 1 }]);
+    const start = Date.now();
+    const output = await b.runtime.loopDecisionText(binding);
+    assert.equal(await b.runtime.loopDecisionText(binding), output);
+    assert.ok(Date.now() - start < 10000);
+    assert.equal(binding.input_ref, 'data/input-1.json');
+    const row = b.logs.filter(r => r.kind === 'mount').at(-1);
+    assert.equal(row.ok, name === 'empty');
+    assert.ok(row.output_ref);
+    assert.equal(b.logs.filter(r => r.kind === 'mount' && r.name === name).length, 1);
+  }
 });
 
 test('mismatched refs and changed task scope pause compute; zero allowance does not execute', async () => {
@@ -99,7 +142,8 @@ test('mismatched refs and changed task scope pause compute; zero allowance does 
   const current = await b.method('new', [{ name: 'compute', kind: 'tool', version: 2 }]);
   b.host.method.totalMs = 0;
   assert.match(await b.runtime.loopDecisionText(current), /allowance exhausted/);
-  assert.equal(b.logs.filter(r => r.file === 'component_runs.jsonl').length, 0);
+  assert.equal(b.logs.filter(r => r.kind === 'mount').length, 0);
+  assert.equal(await b.runtime.loopDecisionText(current), ''); // Exhaustion is reported once.
 });
 
 test('native read pages large single-line JSON without changing its bytes', async () => {

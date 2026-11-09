@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 
 export function createProcessCore({ state, binder, workspace, persist, log }: any) {
+  if (state.process.active?.source) binder.bindProcess(state.process.active);
   const runHook = (hook: string, input: any) => {
     if (!hook.trim()) return undefined;
     const runner = `const vm=require('node:vm');const ts=require('node:module').stripTypeScriptTypes;let raw='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>raw+=x);process.stdin.on('end',()=>{try{const x=JSON.parse(raw);const code=ts(x.hook).replace(/export\\s+default\\s+function/, 'globalThis.default = function').replace(/export\\s+default\\s+/, 'globalThis.default = ');const box={};vm.runInNewContext(code,box,{timeout:120,maxStringLength:65536,codeGeneration:{strings:false,wasm:false}});if(typeof box.default!=='function')throw Error('default function export required');const out=box.default(x.input);if(out&&typeof out.then==='function')throw Error('async hooks are not supported');const s=JSON.stringify(out);if(!s||s.length>8192)throw Error('invalid or oversized output');process.stdout.write(s)}catch(e){process.stderr.write(String(e&&e.message||e).slice(0,1000));process.exitCode=1}})`;
@@ -16,11 +17,14 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
     if (incompatible.length) {
       state.process.pending = null;
       state.process.activationReceipt = { name: pending.name, version: pending.version, error: `references no longer active at exact versions: ${incompatible.map((r: any) => `${r.name}/${r.kind}@${r.version}`).join(', ')}` };
+      if (state.process.active?.source) binder.bindProcess(state.process.active);
       persist(); log('lifecycle.jsonl', { event: 'process_activation_failed', ...state.process.activationReceipt });
       return state.process.active;
     }
     state.process.lastGood = state.process.active ?? state.process.lastGood ?? null;
-    state.process.active = { ...pending, scope }; state.process.pending = null; state.process.activationReceipt = null; persist();
+    state.process.active = { ...pending, scope }; state.process.pending = null; state.process.activationReceipt = null;
+    binder.bindProcess(state.process.active);
+    state.process.next = null; persist();
     log('lifecycle.jsonl', { event: 'process_activated', name: pending.name, version: pending.version, hash: pending.hash,
       replaced: state.process.lastGood ? identity(state.process.lastGood) : null });
     return state.process.active;

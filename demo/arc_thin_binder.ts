@@ -60,6 +60,7 @@ export function markdownSpec(path: string, source: string): ComponentSpec {
 export class Binder {
   private entries = new Map<string, Entry>();
   private bindings = new Map<string, Component>();
+  private processBinding?: Component;
   private saving: Promise<unknown> = Promise.resolve();
   private log: string; private versions: string;
   constructor(readonly workspace: Workspace, private validate?: Validator) {
@@ -167,11 +168,20 @@ export class Binder {
     const paths = new Set(this.workspace.files().filter(p => !/^(data|results)(\/|$)/.test(p)));
     for (const [path, entry] of this.entries) if (!paths.has(path) && !entry.retired)
       this.record({ ...entry, retired: true });
-    for (const path of paths) await this.save(path, level);
+    for (const path of paths) if (componentKind(path) !== 'process') await this.save(path, level);
   }
   boundary() {
     this.bindings.clear();
-    for (const [path, entry] of this.entries) if (!entry.retired && entry.good?.enabled) this.bindings.set(path, entry.good);
+    for (const [path, entry] of this.entries) if (!entry.retired && entry.good?.enabled && entry.good.kind !== 'process') this.bindings.set(path, entry.good);
+    if (this.processBinding) this.bindings.set(this.processBinding.path, this.processBinding);
+  }
+  /** The process core selects one saved Binder component at a safe request boundary. */
+  bindProcess(component: Component) {
+    if (this.processBinding) this.bindings.delete(this.processBinding.path);
+    this.processBinding = component;
+    this.bindings.set(component.path, component);
+    this.workspace.runtimeWrite(component.path, component.source);
+    this.workspace.runtimeWrite(`components/process/${component.name}/v${component.version}.source`, component.source);
   }
   active(): Component[] { return [...this.bindings.values()].sort((a, b) => a.path.localeCompare(b.path)); }
   candidates(): Component[] {
