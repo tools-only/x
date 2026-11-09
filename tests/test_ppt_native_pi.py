@@ -2,10 +2,65 @@
 
 import json
 import shutil
+import pytest
 from pathlib import Path
 
 from autoresearch_pi.pi_kernel import PiKernel
 from test_pi_external_benchmark_native import _pi_cli
+
+
+@pytest.mark.parametrize("with_compute", [False, True])
+def test_modern_process_render_feedback_and_three_page_direct_delivery(tmp_path: Path, with_compute: bool):
+    """Real installed Pi/office, scripted model; direct success requires no authored component."""
+    node, cli = _pi_cli()
+    project = Path(__file__).resolve().parents[1]
+    steps = []
+    if with_compute:
+        steps += [
+            {"name": "reflect_component", "arguments": {"op": "define", "kind": "tool", "name": "compute", "note": "offline binding fixture",
+                "source": '# program: on\n# mount: decision,feedback\ndef on_event(state, event):\n    return {"context":{"phase":event["phase"],"owner":event["owner"]},"next_local":(event["local"] or 0)+1}'}},
+            {"name": "reflect_component", "arguments": {"op": "define", "kind": "process", "name": "method", "note": "offline method fixture",
+                "source": json.dumps({"strategy": "Fixture method.", "refs": [{"name": "compute", "kind": "tool", "version": 1}]})}},
+        ]
+    html = '<html><body>' + ''.join(f'<div class="slide"><h1>Page {i}</h1><p>Revision 1</p></div>' for i in range(1, 4)) + '</body></html>'
+    steps += [
+        {"name": "write", "arguments": {"path": "artifacts/presentation.html", "content": html}},
+        {"name": "office", "arguments": {"op": "render"}},
+        {"name": "office", "arguments": {"op": "look"}},
+        {"name": "write", "arguments": {"path": "artifacts/presentation.html", "content": html.replace('Revision 1', 'Revision 2')}},
+        {"name": "office", "arguments": {"op": "render"}},
+        {"name": "office", "arguments": {"op": "look"}},
+        {"name": "office", "arguments": {"op": "deliver"}},
+    ]
+    command = [node, cli, "--mode", "rpc", "--provider", "offline-external-test", "--model", "scripted",
+        "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
+        "--extension", str(project / "demo/ppt_demo_extension.ts"),
+        "--extension", str(project / "tests/pi_external_benchmark_provider.ts"), "--session", str(tmp_path / "session.jsonl")]
+    env = {"PI_CODING_AGENT_DIR": str(tmp_path / ".pi-agent"), "PI_AUTORESEARCH_E2E_ROOT": str(tmp_path),
+        "PPT_DEMO_ROOT": str(tmp_path), "PPT_DEMO_DEADLINE": "4102444800000", "PPT_DEMO_BUDGET_USD": "100",
+        "PPT_DEMO_REQUEST_RESERVE_USD": "0.01", "REFLECTIVE_AUTO_COMPUTE_MS": "60000",
+        "PI_EXTERNAL_STEPS": json.dumps(steps), "PI_EXTERNAL_USAGE_TOKENS": "1"}
+    with PiKernel(command, cwd=str(tmp_path), env=env, timeout=180) as kernel:
+        kernel.prompt_and_wait("Complete the supplied offline presentation diagnostic.", timeout=180)
+        # Exercises modern agent_end and transport-only resume with no loop.refs object.
+        kernel.prompt_and_wait("PPT_RESUME", timeout=30)
+    state = json.loads((tmp_path / ".harness/ppt-loop.json").read_text(encoding="utf-8"))
+    assert state["complete"] and state["deliveredRevision"] == 2
+    receipt = json.loads((tmp_path / "delivery/receipt.json").read_text(encoding="utf-8"))
+    assert receipt["slides"] == 3
+    rows = lambda name: [json.loads(line) for line in (tmp_path / "harness" / name).read_text(encoding="utf-8").splitlines()]
+    if not with_compute:
+        assert not any(row.get("event") == "reflective_change" for row in rows("lifecycle.jsonl"))
+    if with_compute:
+        runs = [row for row in rows("component_runs.jsonl") if row.get("kind") == "mount"]
+        assert len([row for row in runs if row["phase"] == "feedback"]) == 2
+        assert all(row["owner"]["name"] == "method" and row["owner"]["hash"] for row in runs)
+        assert len({row["key"] for row in runs}) == len(runs)
+        assert all(row["ok"] for row in runs)
+        assert "feedback" in state["process"]["feedback"]["compute"]
+        assert state["lastFeedback"]["file_lineage"]["owner"]["name"] == "method"
+        contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert all(tool["name"] != "compute" for context in contexts for tool in context["tools"])
 
 
 def test_installed_pi_advertises_hot_swapped_native_tools_and_skill_reads_in_one_session(tmp_path: Path):

@@ -133,6 +133,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         "model": model_id, "thinking": thinking, "max_seconds": None if unbounded else min(seconds,7200),
         "unbounded": unbounded,
         "fresh_batch": fresh_batch, "batch_requests": batch_requests,
+        "reflective_auto_compute_ms": float(env.get("REFLECTIVE_AUTO_COMPUTE_MS", "0")),
         "token_limit": "none; provider/model native limits apply",
         "authorized_cny": None if unbounded else 100, "budget_guard": "none; user-authorized unbounded run" if unbounded else ("USD12 cumulative API-equivalent cap, USD0.10 reserve/request, 2-hour deadline" if official_openai else "USD12 conservative token estimate, reserve USD3.52 before each request, 2-hour deadline"),
         "rates": {"input_usd_per_million": model["cost"]["input"], "output_usd_per_million": model["cost"]["output"],
@@ -147,6 +148,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                   PROJECT / "src/autoresearch_pi/ppt_demo.py", PROJECT / "src/autoresearch_pi/ppt_demo_html.py",
                   PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts",
                   PROJECT / "demo/arc_thin_workspace.ts",
+                  PROJECT / "demo/ppt_reflective_core.ts", PROJECT / "demo/prompts/reflective_native_contract.md",
                   PROJECT / "demo/ppt_trials.ts", PROJECT / "tools/reflective_core_evidence_joins.py"]}
     protocol["task_hashes"] = {str(p.relative_to(root)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in [root / "workspace/AGENTS.md", root / "workspace/data/instructions.md", root / "workspace/data/material.txt", root / "workspace/data/environment.md"]}
@@ -182,6 +184,8 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                 if latest.get("stopReason") in ("error", "aborted"):
                     raise RuntimeError(latest.get("errorMessage", latest.get("stopReason")))
                 process_choice = state.get("process", {}).get("next")
+                if "strategy" in (state.get("process", {}).get("active") or {}).get("envelope", {}):
+                    process_choice = None  # Modern process owns method; NEXT/RESUME are transport facts only.
                 if process_choice and process_choice.get("decision") == "error":
                     summary.update(stop="process_hook_failed", process_error=process_choice.get("error"))
                     break

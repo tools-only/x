@@ -18,7 +18,7 @@ test('unknown provider usage remains charged across process reload', async () =>
   for (let i=0; i<2; i++) {
     const hooks = new Map<string, any>();
     pptDemo({ registerTool() {}, on: (n: string, f: any) => hooks.set(n, f), setActiveTools() {}, getActiveTools: () => [] } as any);
-    hooks.get('before_provider_request')({ payload: { messages: [] } });
+    await hooks.get('before_provider_request')({ payload: { messages: [] } });
     hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'error' } });
   }
   const rows = readFileSync(join(root, 'harness/model-usage.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
@@ -36,9 +36,9 @@ test('reflective component surgery hot-swaps, rolls back, and rejects deck edits
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools, getAllTools: () => [...tools.values()] };
   pptDemo(pi as any);
   const call = async (name: string, args: any) => tools.get(name).execute('reflect-test', ['define','redefine','restore'].includes(args.op) ? { note: 'test mutation', ...args } : args, undefined, undefined, {});
-  const requestContext = (content = 'base prompt') => {
+  const requestContext = async (content = 'base prompt') => {
     const payload = { systemPrompt: content, messages: [] };
-    hooks.get('before_provider_request')({ payload });
+    await hooks.get('before_provider_request')({ payload });
     return payload.systemPrompt;
   };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
@@ -60,11 +60,11 @@ test('reflective component surgery hot-swaps, rolls back, and rejects deck edits
   assert.equal(JSON.parse(redefine.content[0].text).ok, true);
   assert.match((await call('reflect_tool', { args: {} })).content[0].text, /tool version two/);
   await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'reflect_rules', source: '---\nactive: true\n---\nprompt version two' });
-  assert.match(requestContext(), /prompt version two/);
+  assert.match(await requestContext(), /prompt version two/);
   await call('reflect_component', { op: 'restore', kind: 'tool', name: 'reflect_tool', version: 1 });
   assert.match((await call('reflect_tool', { args: {} })).content[0].text, /tool version one/);
   await call('reflect_component', { op: 'restore', kind: 'prompt', name: 'reflect_rules', version: 1 });
-  assert.match(requestContext(), /prompt version one/);
+  assert.match(await requestContext(), /prompt version one/);
   await call('write', { path: 'artifacts/deck.json', content: '{"slides":[]}' });
   await assert.rejects(() => call('write', { path: 'prompts/bypass.md', content: 'bypass' }), /reflect_component/);
   await assert.rejects(() => call('edit', { path: 'tools/reflect_tool.py', oldText: 'main', newText: 'main2' }), /reflect_component/);
@@ -116,7 +116,7 @@ test('native ownership collisions and rejected candidates preserve the published
   assert.equal(JSON.parse(failedSkill.content[0].text).ok, false);
   assert.equal(readFileSync(join(root, 'workspace/skills/stable-skill/SKILL.md'), 'utf8'), skill);
   const next = { systemPrompt: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), messages: [] };
-  hooks.get('before_provider_request')({ payload: next });
+  await hooks.get('before_provider_request')({ payload: next });
   assert.match(next.systemPrompt, /<description>original skill<\/description>/);
   assert.match(readFileSync(join(root, 'workspace/components/skill/stable-skill/last-failure.md'), 'utf8'), /description/);
   assert.equal(readFileSync(join(root, 'workspace/components/skill/stable-skill/v1.source'), 'utf8'), skill);
@@ -154,18 +154,18 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     workflow: { strategy: `workflow ${version}`, refs: [{ name: 'ref', kind: 'prompt', version }], hook: '' },
     loop: { strategy: `loop ${version}`, refs: [{ name: 'ref', kind: 'prompt', version }], hook: `export default (input: {stop_reason:string}) => ({decision:'${decision}',guidance:'continue with evidence'})` },
   });
-  const bindRequest = () => {
+  const bindRequest = async () => {
     const event = { payload: { systemPrompt: 'base prompt', messages: [] } };
-    hooks.get('before_provider_request')(event);
+    await hooks.get('before_provider_request')(event);
     return event;
   };
   const first = await call('reflect_component', { op: 'define', kind: 'process', name: 'task_loop', source: envelope(1, 'continue'), note: 'first loop version' });
   assert.match(first.content[0].text, /"ok":true/, first.content[0].text);
-  bindRequest();
+  await bindRequest();
   hooks.get('agent_end')();
   await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'ref', source: component('ref v2'), note: 'revise reference' });
   await call('reflect_component', { op: 'redefine', kind: 'process', name: 'task_loop', source: envelope(2, 'adapt'), note: 'use revised reference' });
-  bindRequest();
+  await bindRequest();
   hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'stop' } });
   hooks.get('agent_end')();
   const state = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8'));
@@ -178,7 +178,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     workflow: { strategy: 'workflow 3', refs: [{ name: 'ref', kind: 'prompt', version: 2 }] },
     loop: { strategy: 'loop 3', refs: [{ name: 'ref', kind: 'prompt', version: 2 }], hook: `export default (input: {stop_reason:string}) => { if(input.stop_reason==='stop') throw Error('runtime fault'); return {decision:'continue'} }` },
   }), note: 'exercise runtime recovery' });
-  bindRequest();
+  await bindRequest();
   hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'stop' } });
   hooks.get('agent_end')();
   assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active.version, 2);
@@ -187,7 +187,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     loop: { strategy: '', refs: [], hook: `export default (input: {stop_reason:string}) => { if(input.stop_reason==='stop') while(true){}; return {decision:'continue'} }` },
   }), note: 'exercise bounded hook runtime' });
   assert.match(timed.content[0].text, /"ok":true/);
-  bindRequest();
+  await bindRequest();
   hooks.get('message_end')({ message: { role: 'assistant', stopReason: 'stop' } });
   hooks.get('agent_end')();
   assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active.version, 2);
@@ -202,7 +202,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
   await call('reflect_component', { op: 'define', kind: 'process', name: 'restore_path', source: restorable, note: 'create restore fixture' });
   await call('reflect_component', { op: 'redefine', kind: 'process', name: 'restore_path', source: JSON.stringify({ workflow: { strategy: 'v2', refs: [] }, loop: { strategy: '', refs: [] } }), note: 'save newer process' });
   await call('reflect_component', { op: 'restore', kind: 'process', name: 'restore_path', version: 1, note: 'restore saved process version' });
-  bindRequest();
+  await bindRequest();
   hooks.get('agent_end')();
   const restored = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active;
   assert.equal(restored.name, 'restore_path');
@@ -213,7 +213,7 @@ test('process envelopes validate, revise at settle, and log only an enforced cha
     workflow: { strategy: 'deny delivery', refs: [], hook: `export default () => ({allow:false,guidance:'deny'})` },
     loop: { strategy: '', refs: [] },
   }), note: 'verify core preserves last good on denial' });
-  bindRequest();
+  await bindRequest();
   await assert.rejects(() => call('office', { op: 'deliver' }), /process hook failed/);
   const denied = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8'));
   assert.equal(denied.process.active.version, 3);
@@ -234,18 +234,18 @@ test('single-part process binds on the next request, captures versions, and reta
   const redefine = (strategy: string, extra: object = {}) => call('reflect_component', { op: 'redefine', kind: 'process', name: 'task_method',
     source: JSON.stringify({ strategy, refs: [{ name: 'task_ref', kind: 'prompt', version: 1 }], ...extra }), note: `observed: ${strategy}` });
   await define('first method');
-  const request = () => {
+  const request = async () => {
     const event = { payload: { systemPrompt: 'base prompt', messages: [] } };
-    hooks.get('before_provider_request')(event);
+    await hooks.get('before_provider_request')(event);
     return event.payload.systemPrompt;
   };
-  assert.match(request(), /ACTIVE PROCESS task_method@v1[\s\S]*first method[\s\S]*Exact component references: task_ref\/prompt@v1/);
+  assert.match(await request(), /ACTIVE PROCESS task_method@v1[\s\S]*first method[\s\S]*Exact component references: task_ref\/prompt@v1/);
   await redefine('second method');
   assert.equal(JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8')).process.active.version, 1);
-  assert.match(request(), /ACTIVE PROCESS task_method@v2[\s\S]*second method/);
+  assert.match(await request(), /ACTIVE PROCESS task_method@v2[\s\S]*second method/);
   await call('reflect_component', { op: 'redefine', kind: 'process', name: 'task_method', source: JSON.stringify({ strategy: 'bad pending version', refs: [{ name: 'task_ref', kind: 'prompt', version: 1 }] }), note: 'reference may expire' });
   await call('reflect_component', { op: 'redefine', kind: 'prompt', name: 'task_ref', source: '---\nactive: true\n---\nreference v2', note: 'reference changed' });
-  const recovered = request();
+  const recovered = await request();
   assert.match(recovered, /ACTIVE PROCESS task_method@v2[\s\S]*second method/);
   const state = JSON.parse(readFileSync(join(root, '.harness/ppt-loop.json'), 'utf8'));
   assert.equal(state.process.active.version, 2);
@@ -267,9 +267,9 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools, getAllTools: () => [...tools.values()] } as any);
   const call = (name: string, args: any) => tools.get(name).execute('reflect-test', ['define','redefine','restore'].includes(args.op) ? { note: 'test mutation', ...args } : args, undefined, undefined, {});
-  const requestContext = () => {
+  const requestContext = async () => {
     const event = { payload: { systemPrompt: 'base system', messages: [] } };
-    hooks.get('before_provider_request')(event);
+    await hooks.get('before_provider_request')(event);
     return event.payload.systemPrompt;
   };
   const ctx = { model: { maxTokens: 1000 }, modelRegistry: {
@@ -293,7 +293,7 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   };
   const names: Record<string, string> = { prompt: 'five_prompt', skill: 'five-skill', tool: 'five_tool', subagent: 'five_agent', memory: 'five_memory' };
   for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'redefine', kind, name: names[kind], source: definitions[kind] });
-  const prompt = requestContext();
+  const prompt = await requestContext();
   assert.match(prompt, /prompt new/);
   assert.match(prompt, /memory new/);
   assert.match(prompt, /<name>five-skill<\/name>/);
@@ -307,7 +307,7 @@ test('reflective redefine reaches and restores prompt, skill, tool, subagent, an
   assert.ok(childRequests[0].messages.some((message: any) => message.content?.some((part: any) => part.type === 'image' && part.mimeType === 'image/png')));
   assert.deepEqual(childRequests[0].tools.map((tool: any) => tool.name), ['read']);
   for (const kind of ['prompt', 'skill', 'tool', 'subagent', 'memory']) await call('reflect_component', { op: 'restore', kind, name: names[kind], version: 1 });
-  const restored = requestContext();
+  const restored = await requestContext();
   assert.match(restored, /prompt old/);
   assert.match(restored, /memory old/);
   assert.match((await call('read', { path: 'skills/five-skill/SKILL.md' })).content[0].text, /skill old/);
@@ -332,14 +332,14 @@ test('initial registry omits strategic reviewer/workflow seeds and keeps optiona
   pptDemo({ registerTool: (tool: any) => tools.set(tool.name, tool), on: (name: string, fn: any) => hooks.set(name, fn),
     setActiveTools: (names: string[]) => { activeTools = names; }, getActiveTools: () => activeTools, getAllTools: () => [...tools.values()] } as any);
   const call = (name: string, args: any) => tools.get(name).execute('reflect-seeded', ['define','redefine','restore'].includes(args.op) ? { note: 'test mutation', ...args } : args, undefined, undefined, {});
-  const context = () => {
+  const context = async () => {
     const event = { payload: { systemPrompt: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), messages: [] } };
-    hooks.get('before_provider_request')(event);
+    await hooks.get('before_provider_request')(event);
     return event.payload.systemPrompt;
   };
   await hooks.get('before_agent_start')({ prompt: 'PPT_NEXT' });
   assert.equal(readFileSync(join(root, 'workspace/prompts/ppt_baseline_guidance.md'), 'utf8'), readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'));
-  assert.doesNotMatch(context(), /must review|presentation workflow|deck reviewer/i);
+  assert.doesNotMatch(await context(), /must review|presentation workflow|deck reviewer/i);
   assert.match(readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), /single modification primitive/);
   assert.doesNotMatch(readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), /run_program|read_component|consult\(agent=/i);
   assert.match(readFileSync('demo/ppt_demo_adapter.ts', 'utf8'), /deliver|delivery/i);
@@ -367,7 +367,7 @@ test('native tools and Pi skill index appear after publication and are directly 
     await call('reflect_component', { op: 'define', kind, name, source });
   }
   const event = { payload: { systemPrompt: readFileSync('demo/prompts/ppt_demo_system.md', 'utf8'), messages: [] } };
-  hooks.get('before_provider_request')(event);
+  await hooks.get('before_provider_request')(event);
   assert.equal(tools.has('new_counter'), true);
   assert.equal(tools.has('new_advisor'), true);
   assert.deepEqual(Object.keys(tools.get('new_counter').parameters.properties), ['args']);
