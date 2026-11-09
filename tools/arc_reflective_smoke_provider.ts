@@ -41,6 +41,7 @@ export default function arcReflectiveSmokeProvider(pi: ExtensionAPI) {
   let rejected = false;
   let lengthStopped = false;
   let resetUsed = false;
+  let evolutionStep = 0;
   pi.registerProvider('offline-arc-reflective-smoke', {
     api: 'openai-completions', apiKey: 'offline', baseUrl: 'http://unused.invalid',
     models: [{ id: 'scripted', name: 'scripted', reasoning: false, input: ['text', 'image'], contextWindow: 175000,
@@ -61,6 +62,28 @@ export default function arcReflectiveSmokeProvider(pi: ExtensionAPI) {
       const calls: Array<[string, Record<string, unknown>]> = [];
       if (!toolNames.has('arc_action')) {
         output.content = [{ type: 'text', text: 'Fixture child response with no environment authority.' }];
+      } else if (process.env.SMOKE_EVOLUTION_V1 === '1') {
+        const latestUser: any = [...messages].reverse().find((message: any) => message.role === 'user');
+        const userText = (latestUser?.content ?? []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n');
+        const environment = userText.split('CURRENT CANONICAL ENVIRONMENT\n').at(-1)?.trimStart().split('\n')[0];
+        const available = environment ? JSON.parse(environment).available_actions ?? [] : [];
+        const action = available.find((name: string) => name !== 'RESET') ?? available[0];
+        const plan: Array<[string, Record<string, unknown>]> = [
+          ['reflect_component', { op: 'define', kind: 'tool', name: 'compute', note: 'offline compute fixture', source: '# program: on\n# mount: decision,feedback\ndef on_event(state, event):\n    return {"context":{"phase":event["phase"],"owner":event["owner"],"input_ref":event["input_ref"]},"next_local":(event["local"] or 0)+1}' }],
+          ['reflect_component', { op: 'define', kind: 'process', name: 'method', note: 'offline exact refs fixture', source: JSON.stringify({ strategy: 'Offline fixture method.', refs: [{ name: 'compute', kind: 'tool', version: 1 }] }) }],
+          ['read', { path: 'data/native-components.md' }],
+          ['reflect_component', { op: 'define', kind: 'tool', name: 'acting', note: 'offline foreground act fixture', source: '# program: on\ndef run(args, env):\n    return env.act(args["name"])' }],
+          ['acting', { args: { name: action } }],
+        ];
+        if (process.env.SMOKE_EMPTY_EVOLUTION === '1') {
+          if (evolutionStep++ % 2 === 0) calls.push(['reflect_component', { op: 'define', kind: 'memory', name: `empty_${evolutionStep}`, note: 'offline no-task-progress fixture', source: 'Authored note; no task action.' }]);
+          else output.content = [{ type: 'text', text: 'Fixture turn ended without task progress.' }];
+          output.stopReason = 'stop';
+          // Close this task turn so the runner's existing no-action counter can settle it.
+        } else if (evolutionStep === 3 && !lengthStopped) {
+          output.stopReason = 'length'; lengthStopped = true;
+        } else if (evolutionStep < plan.length) calls.push(plan[evolutionStep++]);
+        else if (action) calls.push(['arc_action', { action }]);
       } else if (toolNames.has('reflect_component') && !defined) {
         for (const [kind, name, source] of definitions) calls.push(['reflect_component', { op: 'define', kind, name, source, note: 'offline lifecycle fixture' }]);
         defined = true;

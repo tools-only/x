@@ -1881,6 +1881,7 @@ def run_arc_thin_e2e(
     }
     stage = "bridge"
     active_extension = (extension_path or EXTENSION).resolve()
+    reflective_path = active_extension.name == "arc_reflective_extension.ts"
     startup_error: Exception | None = None
     ready: dict[str, Any] = {}
     for attempt in range(1, BRIDGE_START_ATTEMPTS + 1):
@@ -1992,7 +1993,7 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_SELF_BASELINE"] = "1" if self_baseline else "0"
         pi_env["ARC_THIN_SELF_CONVERT"] = "1" if self_convert else "0"
         native_treatment = foundation == "native" and variant == "treatment"
-        daemon_enabled = native_treatment and not self_baseline and pi_env.get("ARC_THIN_DAEMON", "1") != "0"
+        daemon_enabled = native_treatment and not reflective_path and not self_baseline and pi_env.get("ARC_THIN_DAEMON", "1") != "0"
         pi_env["ARC_THIN_DAEMON"] = "1" if daemon_enabled else "0"
         pi_env["ARC_THIN_PROCESS"] = "1" if native_treatment and not self_baseline and pi_env.get("ARC_THIN_PROCESS", "1") != "0" else "0"
         daemon = DaemonService(root) if daemon_enabled else None
@@ -2017,7 +2018,8 @@ def run_arc_thin_e2e(
         if max_reported_tokens is not None:
             command.extend(["--extension", str((PROJECT_ROOT / "demo" / "pi_final_provider_payload.ts").resolve())])
         sources = sorted(active_extension.parent.glob("arc_thin_*.ts")) + sorted((active_extension.parent / "prompts").glob("arc_thin_*.md"))
-        sources.extend([active_extension, active_extension.parent / "prompts" / "arc_reflective_task.md"] if active_extension.name == "arc_reflective_extension.ts" else [])
+        sources.extend([active_extension, active_extension.parent / "prompts" / "arc_reflective_task.md",
+                        active_extension.parent / "ppt_reflective_core.ts", active_extension.parent / "prompts" / "reflective_native_contract.md"] if reflective_path else [])
         sources += [Path(__file__), Path(__file__).with_name("arc_thin_adapt_config.py"),
                     Path(__file__).with_name("arc_thin_daemon.py"),
                     Path(__file__).with_name("daemon_service.py")]
@@ -2032,6 +2034,7 @@ def run_arc_thin_e2e(
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
             "ledger": ledger_enabled, "critic": critic_enabled,
             "daemon": daemon_enabled, "process_evidence": pi_env["ARC_THIN_PROCESS"] == "1",
+            "reflective_auto_compute_ms": float(pi_env.get("REFLECTIVE_AUTO_COMPUTE_MS", "0")) if reflective_path else None,
             "self_baseline": self_baseline,
             "typescript_phase_owner": typescript_phase_owner,
             "self_convert": self_convert,
@@ -2234,7 +2237,7 @@ def run_arc_thin_e2e(
             if continuity != "session":
                 kernel.new_session()
             summary["length_recoveries"] += 1
-            recovery = _review_recovery(message) or (
+            recovery = ('Continue the unfinished task. The previous reply reached the provider output limit; completed operations remain settled.' if reflective_path else _review_recovery(message)) or (
                 'RECOVER ACTION. The previous reply reached the provider output limit. Continue the unfinished '
                 'step using the available tools and current observation; reuse suitable components. '
                 'Do not repeat completed operations. Finish with an acting call (arc_action or Python env.act).' if foundation == 'native' else DECIDE_RECOVERY_PROMPT)
@@ -2532,7 +2535,8 @@ def run_arc_thin_e2e(
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
                 else:
-                    base_prompt = (NO_ACTION_PROMPT if no_action_streak else
+                    base_prompt = ('Continue the task using the current method and canonical results.' if reflective_path else
+                                   NO_ACTION_PROMPT if no_action_streak else
                                    WINDOW_DECIDE_PROMPT if foundation == "native" and variant == "treatment" else
                                    DECIDE_PROMPT)
                     prompt = (base_prompt + (f" {restart_note}" if restart_note else "")
@@ -2551,7 +2555,7 @@ def run_arc_thin_e2e(
                     elif _environment_errors(harness) == environment_before:
                         no_action_streak += 1
                         summary["no_action_decisions"] += 1
-                    if single_loop and not length_stopped(events) and _environment_errors(harness) == environment_before:
+                    if single_loop and not reflective_path and not length_stopped(events) and _environment_errors(harness) == environment_before:
                         requests = _read_jsonl(harness / "adapt_requests.jsonl")
                         handled = {str(row.get("id")) for row in requests if row.get("event") == "handled"}
                         pending = [row for row in requests if row.get("event") == "requested" and str(row.get("id")) not in handled]

@@ -24,6 +24,7 @@ def _run_reflective_arc(root: Path, monkeypatch, *, level_at: int, budget: str =
     monkeypatch.setenv("PPT_DEMO_OUTPUT_USD_PER_MILLION", "80")
     monkeypatch.setenv("PPT_DEMO_CACHE_READ_USD_PER_MILLION", "20")
     monkeypatch.setenv("PPT_DEMO_CACHE_WRITE_USD_PER_MILLION", "20")
+    monkeypatch.setenv("REFLECTIVE_AUTO_COMPUTE_MS", "60000")
     return run_arc_thin_e2e(
         root, arc_root=PROJECT_ROOT, game="fixture", variant="treatment", max_actions=None,
         max_decisions=decisions, experiment_timeout_seconds=600, decision_timeout_seconds=180,
@@ -92,7 +93,7 @@ def test_reflective_arc_runner_uses_native_core_and_stops_after_level_one(tmp_pa
     assert "Fixture process text." in live
     assert "CURRENT CANONICAL ENVIRONMENT" in live
     assert '"grid":[' in final_user_text
-    recent = final_user_text.split("RECENT COMPLETED ACTIONS (facts and exact refs)", 1)[-1].split("Authored memory/evidence refs:", 1)[0]
+    recent = final_user_text.split("RECENT COMPLETED ACTIONS (canonical receipts; decision_text is Agent interpretation)", 1)[-1].split("Authored memory/evidence refs:", 1)[0]
     assert len([line for line in recent.splitlines() if line.startswith("phase ")]) == 8
     assert any(part.get("type") == "image_url" and str(part.get("image_url", {}).get("url", "")).startswith("data:image/png;base64,") for message in final["messages"] for part in message.get("content", []) if isinstance(message.get("content"), list))
     assert "AGENTS.md" not in live
@@ -104,6 +105,8 @@ def test_reflective_arc_runner_uses_native_core_and_stops_after_level_one(tmp_pa
     assert len(actions) == 9
     assert [row["environment_action_index"] for row in actions] == list(range(1, 10))
     assert all(row.get("observation_ref") and row.get("grid_ref") and row.get("image_ref") for row in actions)
+    assert all(row["grid_ref"] == row["observation_ref"] and row["grid_ref"] != "data/current.json" for row in actions)
+    assert all("changed_cells" in row and "bbox" in row and row["decision_text_source"] == "agent_interpretation" for row in actions)
     errors = _rows(root / "harness" / "errors.jsonl")
     assert [row["outcome"] for row in errors if row.get("outcome") == "rejected"] == ["rejected"]
 
@@ -125,6 +128,37 @@ def test_shared_guard_keeps_unknown_child_reservation_and_refuses_before_parent_
     trajectory = root / "harness" / "trajectory.jsonl"
     assert not trajectory.exists() or not _rows(trajectory)
     assert summary_path.is_file()
+
+
+def test_reflective_native_bindings_direct_and_foreground_feedback_and_length_dedupe(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "evolution-loop"
+    monkeypatch.setenv("SMOKE_EVOLUTION_V1", "1")
+    summary = json.loads(_run_reflective_arc(root, monkeypatch, level_at=3).read_text(encoding="utf-8"))
+    assert summary["stop_reason"] == "max_levels"
+    assert summary["length_recoveries"] == 1
+    actions = _rows(root / "harness/reflective-actions.jsonl")
+    assert {row["action"]["via"] for row in actions} == {"tools/acting.py", "arc_action"}
+    assert all(row["owner"]["name"] == "method" and row["owner"]["hash"] for row in actions)
+    runs = [row for row in _rows(root / "harness/component_runs.jsonl") if row.get("kind") == "mount"]
+    assert all(row["ok"] for row in runs)
+    assert len(runs) == len({row["key"] for row in runs})
+    assert len([row for row in runs if row["phase"] == "feedback"]) == 3
+    assert all(row.get("input_ref") and row.get("output_ref") and row["owner"]["name"] == "method" for row in runs)
+    assert all("compute" not in row["tools"] for row in _rows(root / "scripted-provider.jsonl"))
+    assert not (root / "harness/self_harness_hook.jsonl").exists()
+    requests = _rows(root / "scripted-provider.jsonl")
+    assert not any("RECOVER ACTION" in json.dumps(row["messages"]) or "WINDOW_DECIDE" in json.dumps(row["messages"]) for row in requests)
+
+
+def test_reflect_does_not_reset_no_task_progress_counter(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "empty-evolution"
+    monkeypatch.setenv("SMOKE_EVOLUTION_V1", "1")
+    monkeypatch.setenv("SMOKE_EMPTY_EVOLUTION", "1")
+    summary = json.loads(_run_reflective_arc(root, monkeypatch, level_at=0, decisions=20).read_text(encoding="utf-8"))
+    assert summary["stop_reason"] == "no_action_streak"
+    assert summary["actions"] == 0
+    assert summary["no_action_decisions"] > 1
+    assert not (root / "harness/self_harness_hook.jsonl").exists()
 
 
 def test_missing_sdk_baseline_fails_protocol_preflight(tmp_path: Path, monkeypatch) -> None:

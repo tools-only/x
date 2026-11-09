@@ -9,7 +9,7 @@ import { loadSkills, formatSkillsForPrompt } from '@earendil-works/pi-coding-age
 import { Workspace } from './arc_thin_workspace.ts';
 import { Binder } from './arc_thin_binder.ts';
 import { NativeRuntime } from './arc_thin_native_runtime.ts';
-import { validatePythonComponent } from './arc_thin_components.ts';
+import { validateReflectiveComponent } from './arc_thin_components.ts';
 import { createProcessCore } from './ppt_reflective_core.ts';
 import { storeObservation } from './arc_thin_observation.ts';
 import { bridge } from './pi_arc_bridge_client.ts';
@@ -28,7 +28,7 @@ export default function arcReflective(pi: ExtensionAPI) {
     if (/^(tools\/|skills\/|agents\/|prompts\/|lib\/|notes\/memory(?:\/|\.md$)|AGENTS\.md$|processes\/|components\/)/i.test(path))
       throw new Error('Native component files can only be changed with reflect_component.');
   };
-  const binder = new Binder(workspace, validatePythonComponent);
+  const binder = new Binder(workspace, validateReflectiveComponent);
   const harness = join(root, 'harness');
   mkdirSync(harness, { recursive: true });
   const statePath = join(root, '.harness', 'arc-reflective.json');
@@ -45,6 +45,7 @@ export default function arcReflective(pi: ExtensionAPI) {
   let actionBlocked = Boolean(state.actionBlocked);
   let pendingDecisionText = '';
   let initialized = false;
+  let execution: any;
   const nativeNames = new Map<string, { kind: string; path: string }>();
 
   const previousRequests = readRows('provider-requests.jsonl');
@@ -59,7 +60,8 @@ export default function arcReflective(pi: ExtensionAPI) {
   const unknownUsageReserveTokens = 12000;
   let requests = previousRequests.at(-1)?.request ?? 0;
   const pendingRequests: Array<{ request: number; reserve: number; route: string }> = [];
-  let spent = Number(lastUsage?.conservative_usd ?? 0) + Math.max(0, requests - Number(lastUsage?.request ?? 0)) * reserve;
+  const settledRequests = new Set(previousUsage.map(row => row.request));
+  let spent = Number(lastUsage?.conservative_usd ?? 0) + [...new Set(previousRequests.map(row => row.request))].filter(id => !settledRequests.has(id)).length * reserve;
   let tokensSpent = previousUsage.reduce((sum, row) => sum + (row.usage
     ? Number(row.usage.input ?? 0) + Number(row.usage.output ?? 0) + Number(row.usage.cacheRead ?? 0) + Number(row.usage.cacheWrite ?? 0)
     : unknownUsageReserveTokens), 0);
@@ -75,7 +77,7 @@ export default function arcReflective(pi: ExtensionAPI) {
     tokensSpent += tokens;
     if (known) spent += (Number(usage.input ?? 0) * inputRate + Number(usage.cacheRead ?? 0) * cacheReadRate
       + Number(usage.cacheWrite ?? 0) * cacheWriteRate + Number(usage.output ?? 0) * outputRate) / 1e6 - reservation.reserve;
-    append('model-usage.jsonl', { request, route: reservation.route, usage: known ? usage : null, tokens_used: tokens,
+    append('model-usage.jsonl', { request, route: reservation.route, owner: (reservation as any).owner, usage: known ? usage : null, tokens_used: tokens,
       tokens_total: tokensSpent, conservative_usd: spent, usage_status: known ? 'reported' : 'unknown_reserved', stopReason: message?.stopReason });
   };
   const reserveRequest = (route: string) => {
@@ -86,8 +88,8 @@ export default function arcReflective(pi: ExtensionAPI) {
     }
     spent += reserve;
     const request = ++requests;
-    pendingRequests.push({ request, reserve, route });
-    append('provider-requests.jsonl', { request, route, conservative_usd: spent });
+    pendingRequests.push({ request, reserve, route, owner: execution?.owner } as any);
+    append('provider-requests.jsonl', { request, route, owner: execution?.owner, conservative_usd: spent });
     return request;
   };
 
@@ -99,18 +101,22 @@ export default function arcReflective(pi: ExtensionAPI) {
       : kind === 'skill' ? `skills/${name}/SKILL.md`
         : kind === 'subagent' ? `agents/${name}.md`
           : kind === 'memory' ? `notes/memory/${name}.md` : `processes/${name}.json`;
-  const log = (file: string, row: any) => append(file, row);
+  const log = (file: string, row: any) => append(file, { owner: execution?.owner, input_ref: execution?.input_ref, ...row });
   const processCore = createProcessCore({ state, binder, workspace, persist, log });
 
-  const recordFrame = async (frame: Record<string, any>, phase: number, action?: any) => {
+  const recordFrame = async (frame: Record<string, any>, phase: number, action?: any, producer?: any) => {
+    const beforeRef = state.lastReceipt?.observation_ref;
     observation = frame;
     storeObservation(workspace, frame, phase);
     const budget = frame.action_budget ?? {};
     const receipt = {
       phase, action: action ?? null, state: frame.state ?? null, levels_completed: frame.levels_completed ?? null,
       action_budget: budget, observation_ref: `data/observations/${phase}.json`, image_ref: `data/frames/${phase}.png`,
-      grid_ref: currentRef(), environment_action_index: budget.total_used ?? null,
-      decision_text: pendingDecisionText || null,
+      grid_ref: `data/observations/${phase}.json`, environment_action_index: budget.total_used ?? null,
+      before_observation_ref: beforeRef ?? null, changed_cells: frame.observation_delta?.changed_cells ?? null,
+      bbox: frame.observation_delta?.bbox ?? null, owner: producer?.owner ?? null,
+      input_ref: producer?.input_ref ?? beforeRef ?? null, output_refs: [...(producer?.outputs ?? [])],
+      decision_text: pendingDecisionText || null, decision_text_source: 'agent_interpretation',
     };
     workspace.runtimeWrite(`data/frames/${phase}.json`, JSON.stringify(frame.frames?.at(-1) ?? null) + '\n');
     if (action) {
@@ -132,16 +138,24 @@ export default function arcReflective(pi: ExtensionAPI) {
     if (actionBlocked) return { stopped: 'Environment outcome is uncertain; the action cannot be replayed.' };
     if (!observation) return { stopped: 'Current environment state is unavailable.' };
     if (!Array.isArray(observation.agent_available_actions ?? observation.available_actions)
-      || !(observation.agent_available_actions ?? observation.available_actions).includes(call.name)) {
+      || !(observation.agent_available_actions ?? observation.available_actions).includes(call.action)) {
       append('errors.jsonl', { phase: state.phase, action: call, via, outcome: 'rejected', retry: true, error: 'Action is unavailable in the current observation.' });
       return { stopped: 'Action is not available in the current environment state.' };
     }
     if (phaseActionUsed) return { stopped: 'This logical phase already has a settled environment action.' };
     phaseActionUsed = true;
-    const payload = { action: call.name, ...(call.x !== undefined && call.y !== undefined ? { x: call.x, y: call.y } : {}) };
+    const producer = execution;
+    const payload = { action: call.action, ...(call.x !== undefined && call.y !== undefined ? { x: call.x, y: call.y } : {}) };
     try {
       const next = await bridge('/action', payload) as Record<string, any>;
-      const receipt = await recordFrame(next, state.phase + 1, { ...payload, via });
+      const receipt = await recordFrame(next, state.phase + 1, { ...payload, via }, producer);
+      if (producer) {
+        const compute = await runtime.loopFeedback({ name: call.action, x: call.x, y: call.y }, [], 0, producer, receipt);
+        state.process.feedback = { owner: producer.owner, input_ref: producer.input_ref, output_refs: producer.outputs,
+          receipt, compute };
+        append('lifecycle.jsonl', { event: 'method_feedback', ...state.process.feedback });
+        persist();
+      }
       return { observation: { ...next, receipt }, line: `Settled action ${receipt.environment_action_index}; ${receipt.state}; level ${receipt.levels_completed}.` };
     } catch (error) {
       let details: any;
@@ -165,6 +179,8 @@ export default function arcReflective(pi: ExtensionAPI) {
     usage: (kind: string, message: any) => append('usage.jsonl', { kind, stop_reason: message?.stopReason, usage: message?.usage }),
     wrap: (_name: string, fn: any) => async (_id: string, args: any, signal: any, _update: any, ctx: any) => fn(args, signal, ctx),
     act,
+    method: { state: state.process, persist, totalMs: Number(process.env.REFLECTIVE_AUTO_COMPUTE_MS ?? 0),
+      deadline: Number(process.env.ARC_RUN_DEADLINE_MS ?? 0) },
     consultReasoning: 'low',
     modelResult: async (create: any) => {
       const request = reserveRequest('native-child');
@@ -219,18 +235,21 @@ export default function arcReflective(pi: ExtensionAPI) {
     if (a.kind === 'process') {
       const envelope = JSON.parse(source);
       validateProcess(envelope);
-      workspace.mutate({ op: 'write', path, content: JSON.stringify(envelope) }, true);
-      const receipt = await binder.save(path, 0, { by: 'agent', decision: state.phase });
-      const version = binder.versionMap()[path];
+      const saved = await binder.publish(path, source, 0, { by: 'agent', decision: state.phase,
+        ...(a.op === 'restore' ? { restored_from: a.version } : {}) });
+      if (saved.error) throw Error(saved.error);
+      const { receipt, component } = saved;
+      const version = component!.version;
       state.process ??= { active: null, pending: null, failures: [] };
-      state.process.pending = { name: a.name, version, envelope };
+      state.process.pending = { ...component, envelope };
       persist(); binder.boundary();
-      append('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind, version, note: a.note, ok: true, activated: false });
+      append('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind, version,
+        hash: component!.hash, restored_from: a.op === 'restore' ? a.version : undefined, note: a.note, ok: true, activated: false });
       publishFiles(path, a.kind, a.name);
       return jsonText({ ok: true, name: a.name, kind: a.kind, version, receipt, activation: 'next provider request' });
     }
-    workspace.mutate({ op: 'write', path, content: source }, true);
     if (a.kind === 'skill') {
+      workspace.mutate({ op: 'write', path, content: source }, true);
       const skills = loadSkills({ skillPaths: [workspace.path(path)], includeDefaults: false, cwd: root } as any);
       if (!skills.skills.some((skill: any) => skill.filePath === workspace.path(path) && skill.name === a.name) || skills.diagnostics.length) {
         if (oldSource !== undefined) workspace.mutate({ op: 'write', path, content: oldSource }, true);
@@ -240,23 +259,26 @@ export default function arcReflective(pi: ExtensionAPI) {
         return jsonText({ ok: false, error });
       }
     }
-    const receipt = await binder.save(path, 0, { by: 'agent', decision: state.phase });
-    if (a.kind === 'tool') await binder.scan(0);
+    const saved = await binder.publish(path, source, 0, { by: 'agent', decision: state.phase,
+      ...(a.op === 'restore' ? { restored_from: a.version } : {}) });
+    if (saved.error) throw Error(saved.error);
+    const receipt = saved.receipt;
     binder.boundary();
     const updated = binder.active().find(component => component.path === path);
-    if (a.kind !== 'memory' && (!updated || updated.hash !== createHash('sha256').update(source).digest('hex')))
+    if (!updated || updated.hash !== createHash('sha256').update(source).digest('hex'))
       throw new Error('Published component did not bind to its saved source.');
     const version = updated?.version ?? binder.versionMap()[path];
     runtime.register();
     if (a.kind === 'tool' || a.kind === 'subagent') {
       nativeNames.set(a.name, { kind: a.kind, path });
-      pi.setActiveTools([...new Set([...pi.getActiveTools(), a.name])]);
+      pi.setActiveTools([...new Set([...pi.getActiveTools().filter(name => !nativeNames.has(name)), ...runtime.toolNames()])]);
     }
     append('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind, from_version: current?.version ?? null,
-      version, hash: updated?.hash, note: a.note, ok: true, activated: ['tool', 'subagent'].includes(a.kind), effective: ['tool', 'subagent'].includes(a.kind) ? 'native registry' : 'next provider request' });
+      version, hash: updated?.hash, restored_from: a.op === 'restore' ? a.version : undefined,
+      note: a.note, ok: true, activated: ['tool', 'subagent'].includes(a.kind), effective: updated?.mount?.length ? 'native boundary binding' : ['tool', 'subagent'].includes(a.kind) ? 'native registry' : 'next provider request' });
     publishFiles(path, a.kind, a.name);
     return jsonText({ ok: true, name: a.name, kind: a.kind, version, receipt,
-      native: ['tool', 'subagent'].includes(a.kind) ? 'Pi tool' : a.kind === 'skill' ? 'Pi skill index and ordinary read' : 'next provider request' });
+      native: updated?.mount?.length ? 'native decision/feedback binding; requires exact current process ref' : ['tool', 'subagent'].includes(a.kind) ? 'Pi tool' : a.kind === 'skill' ? 'Pi skill index and ordinary read' : 'next provider request' });
   };
 
   pi.registerTool({ name: 'reflect_component', label: 'reflect_component',
@@ -264,7 +286,16 @@ export default function arcReflective(pi: ExtensionAPI) {
     parameters: Type.Object({ op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.String(), kind: Type.Union(COMPONENT_KINDS.map(kind => Type.Literal(kind)) as any), source: Type.Optional(Type.String()),
       version: Type.Optional(Type.Integer({ minimum: 1 })), note: Type.String() }),
-    execute: async (_id, args: any) => reflect(args),
+    execute: async (_id, args: any) => {
+      try { return await reflect(args); }
+      catch (error) {
+        const failure = { event: 'reflective_change', op: args.op, name: args.name, kind: args.kind, ok: false, error: String(error).slice(0, 1500) };
+        append('lifecycle.jsonl', failure);
+        if (/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(args.name) && COMPONENT_KINDS.includes(args.kind))
+          workspace.runtimeWrite(`${componentDir(args.kind, args.name)}/last-failure.md`, failure.error);
+        return jsonText(failure, true);
+      }
+    },
   });
 
   for (const tool of workspace.fileTools()) pi.registerTool({
@@ -289,7 +320,7 @@ export default function arcReflective(pi: ExtensionAPI) {
     description: 'Send one currently available concrete action to ARC and return its canonical receipt.',
     parameters: Type.Object({ action: Type.String(), x: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })), y: Type.Optional(Type.Integer({ minimum: 0, maximum: 63 })) }),
     execute: async (_id, args: any) => {
-      const result = await act({ name: args.action, x: args.x, y: args.y }, 'arc_action');
+      const result = await act({ action: args.action, x: args.x, y: args.y }, 'arc_action');
       if (!('observation' in result)) return jsonText(result.stopped ?? 'Action failed.', true, true);
       phaseActionUsed = true;
       return jsonText(result.line, false, true);
@@ -311,9 +342,16 @@ export default function arcReflective(pi: ExtensionAPI) {
       await recordFrame(event.frame, Number(state.phase ?? 0) + 1, { action: event.action, ...(event.coordinates ?? {}), via: 'bridge_recovery' });
     }
     await recordFrame(frame, Number(state.phase ?? 0));
+    workspace.runtimeWrite('data/native-components.md', readFileSync(fileURLToPath(new URL('./prompts/reflective_native_contract.md', import.meta.url)), 'utf8'));
+    if (!state.process.active && !state.process.pending) {
+      const saved = await binder.publish('processes/direct.json', JSON.stringify({ strategy: 'Complete the given task within its fixed boundaries.', refs: [] }), 0, { by: 'preset' });
+      state.process.pending = { ...saved.component, envelope: JSON.parse(saved.component!.source) };
+      publishFiles('processes/direct.json', 'process', 'direct');
+    }
     await binder.scan(0);
     binder.boundary();
     runtime.register();
+    for (const c of binder.active()) publishFiles(c.path, c.kind, c.name);
     for (const c of binder.active().filter(component => component.kind === 'tool' || component.kind === 'subagent')) {
       assertNativeName(c.name, c.kind, c.path);
       nativeNames.set(c.name, { kind: c.kind, path: c.path });
@@ -326,8 +364,9 @@ export default function arcReflective(pi: ExtensionAPI) {
 
   const contextBlocks = () => {
     const rows = phaseLog().slice(-8);
-    const decisions = rows.map(row => `phase ${row.phase}: ${row.decision_text || '(no assistant text captured)'}\n` +
-      `receipt=${JSON.stringify({ action: row.action, state: row.state, levels_completed: row.levels_completed, action_budget: row.action_budget })}\n` +
+    const decisions = rows.map(row => `phase ${row.phase}: agent interpretation=${row.decision_text || '(no assistant text captured)'}\n` +
+      `receipt=${JSON.stringify({ action: row.action, state: row.state, levels_completed: row.levels_completed, action_budget: row.action_budget,
+        changed_cells: row.changed_cells, bbox: row.bbox, owner: row.owner, input_ref: row.input_ref, output_refs: row.output_refs })}\n` +
       `refs=${row.observation_ref}, ${row.grid_ref}, ${row.image_ref}`).join('\n');
     const changes = readRows('lifecycle.jsonl').slice(-16).map(row => JSON.stringify({ event: row.event, op: row.op, kind: row.kind,
       name: row.name, version: row.version, from_version: row.from_version, activated: row.activated, effective: row.effective,
@@ -344,7 +383,8 @@ export default function arcReflective(pi: ExtensionAPI) {
     const imagePath = grid ? workspace.path(`data/frames/${state.phase}.png`) : '';
     const image = imagePath && existsSync(imagePath) ? { type: 'image', mimeType: 'image/png', data: readFileSync(imagePath).toString('base64') } : undefined;
     const current = [
-      'RECENT COMPLETED ACTIONS (facts and exact refs)', decisions || '(no completed action)',
+      'RECENT COMPLETED ACTIONS (canonical receipts; decision_text is Agent interpretation)', decisions || '(no completed action)',
+      `PRODUCING METHOD FEEDBACK: ${JSON.stringify(state.process.feedback ? { ...state.process.feedback, compute: undefined } : null)}`,
       `Authored memory/evidence refs: ${authoredEvidenceRefs.join(', ') || '(none)'}`,
       'SELF-SURGERY CHANGES AND NATIVE USE (facts)', changes.join('\n') || '(none recorded)',
       `ACTIVE RESOURCES: ${active.join('; ') || '(none)'}`,
@@ -356,7 +396,6 @@ export default function arcReflective(pi: ExtensionAPI) {
     const prompts = binder.active().filter(c => c.kind === 'prompt').map(c => `\n\n## PROMPT ${c.name}@v${c.version}\n${c.body}`);
     const memoryPaths = workspace.files('notes').filter(path => path === 'notes/memory.md' || /^notes\/memory\/[^/]+\.md$/.test(path));
     const memories = memoryPaths.map(path => `\n\n## MEMORY ${path}\n${workspace.read(path)}`);
-    processCore.activate();
     const activePrompts = binder.active().filter(c => c.kind === 'prompt');
     const additions: any[] = [...prompts.map((text, i) => ({ kind: 'prompt', name: activePrompts[i].name,
       version: activePrompts[i].version, hash: activePrompts[i].hash, text })),
@@ -398,13 +437,17 @@ export default function arcReflective(pi: ExtensionAPI) {
       if (reservation) settleRequest(reservation.request, message);
     }
   });
-  pi.on('before_provider_request', (event: any) => {
+  pi.on('before_provider_request', async (event: any) => {
+    processCore.activate(String(observation?.levels_completed ?? 0));
+    execution = processCore.execution(`data/observations/${state.phase}.json`, String(observation?.levels_completed ?? 0));
+    const computeText = await runtime.loopDecisionText(execution);
     const request = reserveRequest('parent');
     if (request === undefined) process.exit(0);
     const payload = event.payload as any;
     const system = typeof payload?.systemPrompt === 'string' ? { content: payload.systemPrompt }
       : payload?.messages?.find((message: any) => message.role === 'system');
     const blocks = contextBlocks();
+    blocks.current += `\n\n${[computeText, state.process.feedback?.compute].filter(Boolean).join('\n').slice(0, 2400)}`;
     if (system) {
       const taskResource = readFileSync(fileURLToPath(new URL('./prompts/arc_reflective_task.md', import.meta.url)), 'utf8');
       const base = [ARC_TASK, taskResource].join('\n\n');
@@ -433,7 +476,8 @@ export default function arcReflective(pi: ExtensionAPI) {
       content.push(current, ...(wireImage ? [wireImage] : []));
       latestUser.content = content;
     }
-    append('provider-requests.jsonl', { request, route: 'parent', conservative_usd: spent,
+    append('provider-requests.jsonl', { request, route: 'parent', owner: execution.owner, input_ref: execution.input_ref,
+      output_refs: execution.outputs, feedback: state.process.feedback, conservative_usd: spent,
       payload: JSON.stringify(payload, (key, value) => (key === 'data' || key === 'url') && typeof value === 'string' && value.length > 4096 ? '(image)' : value) });
   });
 }
