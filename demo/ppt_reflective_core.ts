@@ -8,7 +8,7 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
     if (child.error || child.status !== 0) throw Error((child.stderr || String(child.error || 'hook failed')).slice(0, 1000));
     return JSON.parse(child.stdout);
   };
-  const activate = () => {
+  const activate = (scope?: string) => {
     const pending = state.process.pending;
     if (!pending) return state.process.active;
     const references = processParts(pending.envelope).flatMap((part: any) => part.refs ?? []);
@@ -20,9 +20,10 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
       return state.process.active;
     }
     state.process.lastGood = state.process.active ?? state.process.lastGood ?? null;
-    state.process.active = pending; state.process.pending = null; persist(); state.process.activationReceipt = null;
-    log('lifecycle.jsonl', { event: 'process_activated', name: pending.name, version: pending.version });
-    return pending;
+    state.process.active = { ...pending, scope }; state.process.pending = null; state.process.activationReceipt = null; persist();
+    log('lifecycle.jsonl', { event: 'process_activated', name: pending.name, version: pending.version, hash: pending.hash,
+      replaced: state.process.lastGood ? identity(state.process.lastGood) : null });
+    return state.process.active;
   };
   const processParts = (envelope: any) => envelope.strategy !== undefined ? [envelope] : [envelope.workflow, envelope.loop];
   const validate = (envelope: any) => {
@@ -45,6 +46,23 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
         if (partName === 'loop' && (!result || !['continue', 'adapt', 'stop'].includes(result.decision) || (result.guidance !== undefined && typeof result.guidance !== 'string'))) throw Error('loop hook export must return {decision:continue|adapt|stop,guidance?:string}');
       }
     }
+    if (single) {
+      const tools = (envelope.refs ?? []).map((ref: any) => components.find((c: any) => c.name === ref.name && c.kind === ref.kind && c.version === ref.version))
+        .filter((c: any) => c.kind === 'tool');
+      if (tools.some((c: any) => c.guard || c.mount?.includes('action'))) throw Error('v1 permits only decision/feedback mounts');
+      for (const phase of ['decision', 'feedback']) if (tools.filter((c: any) => c.mount?.includes(phase)).length > 1)
+        throw Error(`v1 permits at most one ${phase} tool per process`);
+    }
+  };
+  const identity = (component: any) => component ? { name: component.name, kind: 'process', version: component.version,
+    hash: component.hash, path: component.path } : null;
+  const execution = (input_ref: string, scope: string) => {
+    const active = state.process.active;
+    const refs = active ? processParts(active.envelope).flatMap((part: any) => part.refs ?? []) : [];
+    const components = refs.map((ref: any) => binder.active().find((c: any) => c.name === ref.name && c.kind === ref.kind && c.version === ref.version));
+    const error = components.some((c: any) => !c) ? 'Exact component references no longer match; automatic compute paused.'
+      : active?.scope !== undefined && active.scope !== scope ? 'Task scope changed; automatic compute paused.' : undefined;
+    return { owner: identity(active), refs, components: components.filter(Boolean), input_ref, scope, outputs: [], ...(error ? { error } : {}) };
   };
   const boundary = (name: 'before-action' | 'before-submit/deliver' | 'settle', action: string, active: any, input: any, useHook: boolean) =>
     ({ name, action, active, input, useHook });
@@ -52,7 +70,7 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
     const additions: any[] = [];
     const active = state.process.active;
     if (active) for (const part of processParts(active.envelope)) if (part.strategy)
-      additions.push({ kind: 'process', name: active.name, version: active.version, text: `ACTIVE PROCESS ${active.name}@v${active.version}\n${part.strategy}\nExact component references: ${(part.refs ?? []).map((ref: any) => `${ref.name}/${ref.kind}@v${ref.version}`).join(', ') || '(none)'}` });
+      additions.push({ kind: 'process', name: active.name, version: active.version, hash: active.hash, text: `ACTIVE PROCESS ${active.name}@v${active.version}\n${part.strategy}\nExact component references: ${(part.refs ?? []).map((ref: any) => `${ref.name}/${ref.kind}@v${ref.version}`).join(', ') || '(none)'}` });
     if (state.process.activationReceipt) additions.push({ kind: 'process', name: state.process.activationReceipt.name, version: state.process.activationReceipt.version,
       text: `Activation receipt: ${state.process.activationReceipt.error}` });
     return additions;
@@ -102,5 +120,5 @@ export function createProcessCore({ state, binder, workspace, persist, log }: an
     }
     return true;
   };
-  return { runHook, activate, validate, boundary, contextAdditions, beforeAction, settle };
+  return { runHook, activate, validate, boundary, contextAdditions, beforeAction, settle, execution };
 }
