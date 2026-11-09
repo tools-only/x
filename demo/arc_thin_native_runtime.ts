@@ -442,7 +442,7 @@ export class NativeRuntime {
       snapshotMetrics:{snapshot_ms:performance.now()-started, scan_ms:scanMs, read_ms:performance.now()-readStarted,
         snapshot_read_bytes:readBytes, scanned_files:paths.length} };
   }
-  private async applyWrites(result: NativeResult) {
+  private async applyWrites(result: NativeResult, component?: Component) {
     // Recheck untrusted guest output at the host boundary before applying any filesystem mutation.
     // Harness component storage is writable only through reflect_component.
     for (const op of result.ops ?? []) {
@@ -452,6 +452,9 @@ export class NativeRuntime {
     }
     const receipts: string[] = [];
     const decisions: Array<{ choice: string; reason: string }> = [];
+    const recordWrite = (op: any) => this.host.log('lifecycle.jsonl', { event: 'native_file_write', path: op.destination ?? op.path, op: op.op,
+      sha256: op.op === 'delete' ? null : createHash('sha256').update(this.host.workspace.readBytes(op.destination ?? op.path)).digest('hex'),
+      component: component ? { name: component.name, kind: component.kind, version: component.version, hash: component.hash } : null });
     let files = 0;
     for (const op of result.ops ?? []) {
       if (op.op === 'memory') {
@@ -472,15 +475,18 @@ export class NativeRuntime {
         this.host.workspace.mutate({ op: 'write', path: op.path, content: source });
         const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() });
         receipts.push(`${op.path}: restored from v${op.version}${receipt ? ` · ${receipt}` : ''}`); this.noteSave(op.path, receipt);
+        recordWrite(op);
         continue;
       }
       if (op.op === 'write' && (op as any).encoding === 'base64') {
         // A binary write from the guest: real bytes land in the workspace, any file type.
         this.host.workspace.mutate({ op: 'write', path: op.path, content: Buffer.from(String(op.content ?? ''), 'base64') } as any);
         receipts.push(`${op.path}: written (binary) · bindings rebuilt next request`);
+        recordWrite(op);
         continue;
       }
       this.host.workspace.mutate(op as any);
+      recordWrite(op);
       if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() }); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
       else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
     }
@@ -836,7 +842,7 @@ export class NativeRuntime {
     args = resolved.value;
     const started = Date.now(); const label = `${invoked.name} v${invoked.version}`;
     let result = await this.execute({ ...snap, mode: 'call', path: invoked.path, args, allow_writes: !readonly }, signal, undefined, readonly ? undefined : invoked.path);
-    const receipts = result.ok ? await this.applyWrites(result) : [];
+    const receipts = result.ok ? await this.applyWrites(result, invoked) : [];
     if (!readonly && this.host.artifacts) result = { ...this.host.artifacts(result, invoked, this.host.actionCount()), acted: result.acted };
     this.host.log('component_runs.jsonl', { kind: 'tool', name: invoked.name, path: invoked.path, decision: this.decision(), readonly, n: this.host.actionCount(), version: invoked.version, hash: invoked.hash,
       versions: snap.versions, ok: result.ok, ms: Date.now() - started, acted: result.acted?.lines.length ?? 0 });
@@ -939,11 +945,18 @@ export class NativeRuntime {
       binding.scope, binding.input_ref, event.phase, event.feedback_ref ?? null])).digest('hex') : '';
     if (compute?.runs[key]) return compute.runs[key];
     const localKey = binding ? `${c.path}@${c.version}@${binding.scope}` : `${c.path}@${c.version}@${c.level}`;
-    const remaining = method ? Math.min(MAX_LOOP_MOUNT_MS, method.totalMs - compute.spent_ms, method.deadline - started) : MAX_LOOP_MOUNT_MS;
-    if (method && (!Number.isFinite(remaining) || remaining <= 0)) return { ok: false, error: 'Automatic compute allowance exhausted or not configured.' };
+    const remaining = method ? Number.isFinite(method.totalMs) && Number.isFinite(method.deadline)
+      ? Math.min(MAX_LOOP_MOUNT_MS, method.totalMs - compute.spent_ms, method.deadline - started) : 0 : MAX_LOOP_MOUNT_MS;
+    if (method && (!Number.isFinite(remaining) || remaining <= 0)) {
+      if (method.state.compute_exhausted_shown) return { ok: false, silent: true };
+      method.state.compute_exhausted_shown = true; method.persist();
+      this.host.log('component_runs.jsonl', { kind: 'mount_budget', owner: binding.owner, input_ref: binding.input_ref, phase: event.phase });
+      return { ok: false, error: 'Automatic compute allowance exhausted or not configured.' };
+    }
     if (compute) {
       // An interrupted execution remains unknown after restart, never implicitly replayed.
       compute.runs[key] = { ok: false, error: 'Automatic execution did not settle; not replayed.' };
+      compute.spent_ms += remaining; // Reserve before dispatch; an interrupted call keeps its allowance charged.
       method!.persist();
     }
     const controller = new AbortController();
@@ -988,7 +1001,7 @@ export class NativeRuntime {
     this.host.log('component_runs.jsonl', row);
     const settled = { ...result, visible, ...(output ? { output_ref: output.ref } : {}) };
     if (compute) {
-      compute.spent_ms += Date.now() - started;
+      compute.spent_ms += Date.now() - started - remaining;
       compute.runs[key] = { ok: result.ok, error: result.error, visible, output_ref: output!.ref };
       method!.persist();
     }
@@ -1054,6 +1067,7 @@ export class NativeRuntime {
     const parts: string[] = [];
     for (const c of due) {
       const result = await this.runLoopMount(c, { phase, ...event }, binding);
+      if ('silent' in result) continue;
       if (result.output_ref && !binding.outputs.includes(result.output_ref)) binding.outputs.push(result.output_ref);
       parts.push(`${c.name}@v${c.version}: ${JSON.stringify({ ok: result.ok, value: result.visible, error: result.error, output_ref: result.output_ref })}`);
     }
