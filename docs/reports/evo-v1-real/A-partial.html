@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bank of America — Q3 2021 Earnings (Plain-English Briefing)</title>
+<style>
+  :root{
+    --navy:#051C2C; --navy2:#0A2A44; --blue:#2E5B8F; --blue-mid:#6E93BC; --blue-light:#B9CCE0;
+    --sky:#EAF1F8; --bg:#F5F8FC; --ink:#16283C; --muted:#5B7089; --line:#D5E0EC;
+    --green:#1E8E5A; --red:#C2402A; --gold:#F2B705;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{background:#31465C;font-family:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;color:var(--ink);}
+  .slide{width:1280px;height:720px;position:relative;overflow:hidden;background:#fff;margin:24px auto;border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.35);}
+  .wrap{position:absolute;top:0;left:0;right:0;bottom:36px;padding:26px 40px 0 40px;}
+  .foot{position:absolute;left:0;right:0;bottom:0;height:36px;background:#F0F4F9;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 40px;font-size:10.5px;color:var(--muted);}
+  .foot .src{font-weight:600;color:#41586F;}
+  .kicker{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);margin-bottom:6px;}
+  .title{font-size:27px;font-weight:800;color:var(--navy);line-height:1.12;}
+  .subtitle{font-size:13px;color:var(--muted);margin-top:5px;line-height:1.35;}
+  .rule{height:3px;width:64px;background:var(--gold);border-radius:2px;margin:10px 0 14px 0;}
+  h3.sec{font-size:12.5px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--navy);margin:0 0 8px 0;border-left:4px solid var(--blue);padding-left:8px;}
+  .cols{display:flex;gap:22px;}
+  .col{flex:1;min-width:0;}
+  ul.b{list-style:none;}
+  ul.b li{font-size:12.5px;line-height:1.42;padding-left:14px;position:relative;margin-bottom:7px;color:var(--ink);}
+  ul.b li::before{content:"";position:absolute;left:0;top:6px;width:6px;height:6px;border-radius:2px;background:var(--blue);}
+  ul.b li b{color:var(--navy);}
+  .num{font-variant-numeric:tabular-nums;}
+  table.fin{width:100%;border-collapse:collapse;font-size:11.8px;font-variant-numeric:tabular-nums;}
+  table.fin th,table.fin td{padding:4.5px 8px;border-bottom:1px solid var(--line);}
+  table.fin thead th{background:var(--navy);color:#fff;font-size:11px;font-weight:700;text-align:right;border-bottom:none;}
+  table.fin thead th:first-child{text-align:left;border-radius:4px 4px 0 0;}
+  table.fin thead th:last-child{border-radius:0 4px 0 0;}
+  table.fin td:first-child{text-align:left;font-weight:600;color:#2A3E54;}
+  table.fin td.r{text-align:right;}
+  table.fin td.cur{background:#EDF3FA;font-weight:700;color:var(--navy);}
+  table.fin th.cur{background:var(--blue);}
+  table.fin tr.total td{border-top:2px solid var(--navy);font-weight:800;color:var(--navy);}
+  table.fin .grp td{background:var(--sky);font-weight:800;color:var(--navy);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;border-bottom:1px solid var(--line);}
+  .fn{font-size:10px;color:var(--muted);line-height:1.4;margin-top:6px;}
+  .callout{background:var(--sky);border-left:4px solid var(--blue);border-radius:0 6px 6px 0;padding:10px 12px;font-size:11.5px;line-height:1.45;color:#2A3E54;}
+  .callout b.t{display:block;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--blue);margin-bottom:4px;}
+  .quote{background:var(--navy);color:#E8F0F8;border-radius:8px;padding:12px 14px;font-size:12px;line-height:1.5;font-style:italic;}
+  .quote .who{display:block;margin-top:7px;font-style:normal;font-size:11px;font-weight:700;color:var(--gold);}
+  .stat{background:#fff;border:1px solid var(--line);border-top:3px solid var(--blue);border-radius:6px;padding:8px 10px;}
+  .stat .v{font-size:19px;font-weight:800;color:var(--navy);font-variant-numeric:tabular-nums;line-height:1.1;}
+  .stat .l{font-size:10px;color:var(--muted);margin-top:3px;line-height:1.3;}
+  .stat .d{font-size:10px;font-weight:700;margin-top:2px;}
+  .up{color:var(--green);} .down{color:var(--red);}
+  .grid-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .seg-card{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 11px;}
+  .seg-card .h{font-size:11.5px;font-weight:800;color:var(--navy);margin-bottom:4px;display:flex;justify-content:space-between;align-items:baseline;}
+  .seg-card .h .ni{font-size:12px;color:var(--blue);}
+  .seg-card ul{list-style:none;}
+  .seg-card li{font-size:10.6px;line-height:1.36;color:#33475C;padding-left:10px;position:relative;margin-bottom:3.5px;}
+  .seg-card li::before{content:"";position:absolute;left:0;top:5px;width:4px;height:4px;border-radius:1px;background:var(--blue-mid);}
+  .chip{display:inline-block;background:var(--sky);color:var(--blue);font-size:9.5px;font-weight:800;border-radius:9px;padding:2px 8px;letter-spacing:.03em;margin-bottom:6px;}
+  .chart-cap{font-size:10.5px;font-weight:700;color:var(--navy);text-align:center;margin-bottom:2px;}
+  .chart-sub{font-size:9.5px;color:var(--muted);text-align:center;margin-top:2px;line-height:1.3;}
+  svg text{font-family:"Segoe UI",system-ui,Arial,sans-serif;}
+  .gloss{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .gloss .g{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;}
+  .gloss .g .k{font-size:10.5px;font-weight:800;color:var(--navy);margin-bottom:3px;}
+  .gloss .g .k sup{color:var(--blue);}
+  .gloss .g p{font-size:10.3px;line-height:1.4;color:#33475C;}
+  .tag{font-size:9px;font-weight:800;color:var(--red);background:#FBEDEA;border-radius:3px;padding:1px 5px;margin-left:6px;letter-spacing:.04em;}
+  .title-slide{background:radial-gradient(1200px 700px at 75% -10%, #12406A 0%, var(--navy) 55%);color:#fff;display:flex;flex-direction:column;justify-content:center;padding:0 70px;}
+  .title-slide .mark{display:flex;align-items:center;gap:12px;margin-bottom:34px;}
+  .title-slide .mark .sq{width:26px;height:26px;background:var(--gold);border-radius:3px;}
+  .title-slide .mark .nm{font-size:15px;font-weight:800;letter-spacing:.22em;color:#DCE8F5;}
+  .title-slide h1{font-size:52px;font-weight:800;line-height:1.08;letter-spacing:-.01em;}
+  .title-slide .sub{font-size:19px;color:#B9CCE0;margin-top:14px;line-height:1.4;max-width:820px;}
+  .title-slide .strip{display:flex;gap:14px;margin-top:38px;}
+  .title-slide .strip .it{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:12px 18px;min-width:160px;}
+  .title-slide .strip .it .v{font-size:24px;font-weight:800;color:#fff;}
+  .title-slide .strip .it .l{font-size:11px;color:#9FB6CC;margin-top:4px;line-height:1.35;}
+  .title-slide .q{margin-top:36px;border-left:3px solid var(--gold);padding-left:16px;max-width:860px;font-size:13.5px;font-style:italic;color:#DCE8F5;line-height:1.55;}
+  .title-slide .q .who{display:block;font-style:normal;font-size:11.5px;font-weight:700;color:var(--gold);margin-top:6px;}
+  .title-slide .foot{background:rgba(255,255,255,.06);border-top:1px solid rgba(255,255,255,.15);color:#8FA8C0;}
+  .title-slide .foot .src{color:#C8D8E8;}
+  .toc-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--blue);color:#fff;font-size:11px;font-weight:800;margin-right:8px;flex:none;}
+</style>
+</head>
+<body>
+
+<!-- ============================ SLIDE 1 — TITLE ============================ -->
+<section class="slide title-slide">
+  <div class="mark"><div class="sq"></div><div class="nm">BANK OF AMERICA</div></div>
+  <h1>Q3 2021 Earnings:<br>Net Income of $7.7&nbsp;Billion, EPS of $0.85</h1>
+  <div class="sub">A plain-English briefing for a business audience — third quarter ended September&nbsp;30,&nbsp;2021.
+  All figures from Bank of America's Q3-21 earnings release (SEC EDGAR Exhibit 99.1).</div>
+  <div class="strip">
+    <div class="it"><div class="v">$7.7B</div><div class="l">Net income, up 58% year over year</div></div>
+    <div class="it"><div class="v">$0.85</div><div class="l">Diluted earnings per share</div></div>
+    <div class="it"><div class="v">$22.8B</div><div class="l">Revenue, net of interest expense, up 12%</div></div>
+    <div class="it"><div class="v">11.1%</div><div class="l">CET1 capital ratio (Standardized)</div></div>
+  </div>
+  <div class="q">"We reported strong results as the economy continued to improve and our businesses regained the organic customer growth momentum we saw before the pandemic."
+    <span class="who">— Brian Moynihan, Chairman and CEO (earnings release, page 1)</span></div>
+  <div class="foot"><span class="src">Source: Bank of America Q3-21 Earnings Release (Exhibit 99.1), page 1</span><span>Slide 1 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 2 — AT A GLANCE (unit-01, p.1) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Q3-21 Financial Highlights</div>
+    <div class="title">The quarter at a glance: stronger profits, record balances, solid capital</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.12;">
+        <h3 class="sec">What happened at the company level</h3>
+        <ul class="b">
+          <li><b>Net income rose 58% to $7.7 billion</b>, or <b>$0.85 per diluted share</b> — a big lift versus Q3-20, when the bank booked a much larger provision for credit losses.</li>
+          <li><b>Revenue, net of interest expense, increased 12% to $22.8 billion:</b> net interest income (NII)<sup>B</sup> up $1 billion, or 10%, to $11.1 billion (strong deposit growth and related investment of liquidity, plus Paycheck Protection Program activity); noninterest income up 14% to $11.7 billion (record asset management fees, strong investment banking revenue, higher sales &amp; trading).</li>
+          <li><b>Provision for credit losses improved by $2.0 billion to a benefit of $624 million</b>, reflecting a reserve release of $1.1 billion driven primarily by asset quality improvements.<sup>C</sup></li>
+          <li><b>Noninterest expense was relatively flat at $14.4 billion</b> — higher revenue-related expenses largely offset by lower litigation and lower COVID-related costs.</li>
+          <li><b>Average loans in business segments up $14 billion QoQ to $903 billion;</b> excluding PPP, up $21 billion QoQ.<sup>D</sup> <b>Average deposits up $247 billion, or 15%, to $1.9 trillion.</b></li>
+          <li><b>Average Global Liquidity Sources rose $261 billion, or 30%, to a record $1.1 trillion.<sup>E</sup></b> <b>CET1 ratio 11.1% (Standardized);</b> returned $11.7 billion to shareholders via dividends and buybacks.<sup>F</sup></li>
+        </ul>
+        <div class="callout"><b class="t">Plain English</b>
+        "Revenue, net of interest expense" = interest earned minus interest paid on deposits, plus all fee and trading income. A "provision benefit" means the bank judged it no longer needed as much money set aside for possible loan losses, which flows back into profit.</div>
+      </div>
+      <div class="col" style="flex:.88;">
+        <h3 class="sec">Headline numbers (vs. Q3-20 unless noted)</h3>
+        <div class="grid-stats">
+          <div class="stat"><div class="v">$7.7B</div><div class="l">Net income</div><div class="d up">▲ 58% YoY</div></div>
+          <div class="stat"><div class="v">$22.8B</div><div class="l">Revenue, net of interest expense</div><div class="d up">▲ 12% YoY</div></div>
+          <div class="stat"><div class="v">$11.1B</div><div class="l">Net interest income (FTE)<sup>B</sup></div><div class="d up">▲ 10% (+$1B)</div></div>
+          <div class="stat"><div class="v">$11.7B</div><div class="l">Noninterest income</div><div class="d up">▲ 14% YoY</div></div>
+          <div class="stat"><div class="v">$(624)M</div><div class="l">Provision for credit losses (benefit)</div><div class="d up">Improved $2.0B</div></div>
+          <div class="stat"><div class="v">$14.4B</div><div class="l">Noninterest expense</div><div class="d">Roughly flat YoY</div></div>
+          <div class="stat"><div class="v">$1.9T</div><div class="l">Average deposits</div><div class="d up">▲ 15% (+$247B)</div></div>
+          <div class="stat"><div class="v">11.1%</div><div class="l">CET1 ratio (Standardized)<sup>F</sup></div><div class="d">Well capitalized (min. 9.5%)</div></div>
+        </div>
+      </div>
+    </div>
+    <h3 class="sec" style="margin-top:12px;">Business segment highlights (page 1)</h3>
+    <div class="cols" style="gap:12px;">
+      <div class="seg-card" style="flex:1.15;"><div class="h">Consumer Banking <span class="ni">NI $3.0B</span></div><ul>
+        <li>Deposit balances exceeded $1.0 trillion for the first time, up 16%</li>
+        <li>Consumer investment assets up $87 billion, or 32%, to a record $353 billion ($21B client flows since Q3-20)</li>
+        <li>Record consumer checking accounts: 34.2M, 93% primary<sup>3</sup>; card spend up 21% to $201B</li></ul></div>
+      <div class="seg-card" style="flex:1.15;"><div class="h">Global Wealth &amp; Investment Mgmt <span class="ni">NI $1.2B (record)</span></div><ul>
+        <li>Record client balances of $3.7 trillion, up $626 billion, or 20%</li>
+        <li>Record AUM of $1.6 trillion, up 23%; deposits up 16% to $339B</li>
+        <li>Merrill Lynch WM: ~4,200 net new households; Private Bank: ~275 net new relationships</li></ul></div>
+      <div class="seg-card" style="flex:1.15;"><div class="h">Global Banking <span class="ni">NI $2.5B</span></div><ul>
+        <li>Total investment banking fees (excl. self-led) up 23% to near-record $2.2B; record advisory fees of $654M, up 65%</li>
+        <li>Deposits up 13% to $534 billion; raised $221B of client capital in Q3-21 ($728B YTD)<sup>4,5</sup></li></ul></div>
+      <div class="seg-card" style="flex:1.15;"><div class="h">Global Markets <span class="ni">NI $926M</span></div><ul>
+        <li>Sales &amp; trading revenue up 12% to $3.6B (FICC $2.0B; Equities $1.6B)</li>
+        <li>Excluding net DVA, S&amp;T revenue up 9% to $3.6B; FICC down 5%, Equities up 33%</li>
+        <li>Average assets up $124 billion to $805 billion</li></ul></div>
+    </div>
+    <div class="fn" style="margin-top:7px;">Comparisons are to the year-ago quarter (Q3-20) unless noted; loan and deposit balances are shown on an average basis unless noted. The Corporation reports the four business segments and All Other on a fully taxable-equivalent (FTE) basis.<sup>1,2</sup> &nbsp; <sup>3</sup> Estimated share of consumer checking accounts that are the customer's primary account. <sup>4,5</sup> Source: Dealogic as of Oct. 1, 2021.</div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.1, "Q3-21 Financial / Business Segment Highlights"</span><span>Slide 2 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 3 — COMPANY P&L (unit-02, p.2) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Corporate Results · Unit 02</div>
+    <div class="title">Company financial highlights: the quarterly P&amp;L in plain view</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.25;">
+        <h3 class="sec">Bank of America Financial Highlights — three months ended ($ in billions, except per share data)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Total revenue, net of interest expense</td><td class="r cur">22.8</td><td class="r">21.5</td><td class="r">20.3</td></tr>
+            <tr><td>Provision for credit losses</td><td class="r cur">(0.6)</td><td class="r">(1.6)</td><td class="r">1.4</td></tr>
+            <tr><td>Noninterest expense</td><td class="r cur">14.4</td><td class="r">15.0</td><td class="r">14.4</td></tr>
+            <tr><td>Pretax income</td><td class="r cur">9.0</td><td class="r">8.0</td><td class="r">4.5</td></tr>
+            <tr><td>Pretax, pre-provision income<sup>1</sup></td><td class="r cur">8.3</td><td class="r">6.4</td><td class="r">5.9</td></tr>
+            <tr><td>Income tax expense</td><td class="r cur">1.3</td><td class="r">(1.2)</td><td class="r">(0.3)</td></tr>
+            <tr class="total"><td>Net income</td><td class="r cur">7.7</td><td class="r">9.2</td><td class="r">4.9</td></tr>
+            <tr><td>Diluted earnings per share</td><td class="r cur">$0.85</td><td class="r">$1.03</td><td class="r">$0.51</td></tr>
+          </tbody>
+        </table>
+        <div class="fn"><sup>1</sup> Pretax, pre-provision income (PTPI) is a non-GAAP financial measure — pretax income with the provision for credit losses added back (see endnote H, page 10). Reconciliation on page 19.</div>
+        <div class="callout" style="margin-top:10px;"><b class="t">How to read this table</b>
+        Revenue ($22.8B) minus the provision for credit losses (a $(0.6)B benefit this quarter) minus operating expenses ($14.4B) = pretax income ($9.0B). After income tax expense of $1.3B, net income was $7.7B; divided by diluted shares, that is $0.85 per share. Parentheses denote a credit/benefit (or, for taxes, a benefit to income).</div>
+      </div>
+      <div class="col">
+        <h3 class="sec">Why Q3-21 ≠ Q2-21</h3>
+        <svg viewBox="0 0 340 170" width="100%">
+          <line x1="10" y1="120" x2="330" y2="120" stroke="#D5E0EC" stroke-width="1.5"/>
+          <rect x="35" y="61.2" width="60" height="58.8" rx="3" fill="#B9CCE0"/>
+          <rect x="140" y="9.6" width="60" height="110.4" rx="3" fill="#6E93BC"/>
+          <rect x="245" y="27.6" width="60" height="92.4" rx="3" fill="#2E5B8F"/>
+          <text x="65" y="53" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">$4.9B</text>
+          <text x="170" y="0.6+8" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">$9.2B</text>
+          <text x="275" y="19.6" text-anchor="middle" font-size="13" font-weight="700" fill="#051C2C">$7.7B</text>
+          <text x="65" y="138" text-anchor="middle" font-size="11" fill="#5B7089">Q3-20</text>
+          <text x="170" y="138" text-anchor="middle" font-size="11" fill="#5B7089">Q2-21</text>
+          <text x="275" y="138" text-anchor="middle" font-size="11" font-weight="700" fill="#2E5B8F">Q3-21</text>
+          <text x="170" y="160" text-anchor="middle" font-size="10" fill="#5B7089">Net income, three months ended ($ in billions)</text>
+        </svg>
+        <ul class="b" style="margin-top:8px;">
+          <li><b>Q2-21 net income of $9.2B</b> was helped by a <b>$1.2 billion income tax benefit</b> and a larger provision benefit ($(1.6)B); Q3-21 paid $1.3B of tax and its provision benefit was $(0.6)B.</li>
+          <li>Year over year, the quarter improved on <b>every line</b>: revenue +$2.5B, provision swung $2.0B in the bank's favor, and expense held flat.</li>
+          <li><b>PTPI of $8.3B</b> (vs. $5.9B a year ago) shows core earning power rising even before the credit-cost swing.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.2, "Bank of America Financial Highlights, Three Months Ended"</span><span>Slide 3 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 4 — CAPITAL / LIQUIDITY / CREDIT TRENDS (unit-02, p.2) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Corporate Results · Unit 02</div>
+    <div class="title">Capital, liquidity and credit: buffers grew even as ratios eased</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col">
+        <div class="chart-cap">CET1 ratio — "Well Capitalized"</div>
+        <svg viewBox="0 0 340 175" width="100%">
+          <line x1="15" y1="140" x2="325" y2="140" stroke="#D5E0EC" stroke-width="1.5"/>
+          <rect x="45" y="24" width="60" height="116" rx="3" fill="#B9CCE0"/>
+          <rect x="145" y="40" width="60" height="100" rx="3" fill="#6E93BC"/>
+          <rect x="245" y="56" width="60" height="84" rx="3" fill="#2E5B8F"/>
+          <text x="75" y="16" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">11.9%</text>
+          <text x="175" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">11.5%</text>
+          <text x="275" y="48" text-anchor="middle" font-size="13" font-weight="700" fill="#051C2C">11.1%</text>
+          <line x1="15" y1="120" x2="325" y2="120" stroke="#C2402A" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <text x="322" y="114" text-anchor="end" font-size="10" font-weight="700" fill="#C2402A">Regulatory minimum 9.5%</text>
+          <text x="75" y="158" text-anchor="middle" font-size="11" fill="#5B7089">Q3-20</text>
+          <text x="175" y="158" text-anchor="middle" font-size="11" fill="#5B7089">Q2-21</text>
+          <text x="275" y="158" text-anchor="middle" font-size="11" font-weight="700" fill="#2E5B8F">Q3-21</text>
+        </svg>
+        <div class="chart-sub">Standardized approach; ratios at 9/30/2021 preliminary<sup>F</sup></div>
+      </div>
+      <div class="col">
+        <div class="chart-cap">Avg. Global Liquidity Sources ($B)<sup>E</sup></div>
+        <svg viewBox="0 0 340 175" width="100%">
+          <line x1="15" y1="140" x2="325" y2="140" stroke="#D5E0EC" stroke-width="1.5"/>
+          <rect x="45" y="39.8" width="60" height="100.2" rx="3" fill="#B9CCE0"/>
+          <rect x="145" y="16" width="60" height="124" rx="3" fill="#6E93BC"/>
+          <rect x="245" y="9.3" width="60" height="130.7" rx="3" fill="#2E5B8F"/>
+          <text x="75" y="31.8" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">$859</text>
+          <text x="175" y="8" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">$1,063</text>
+          <text x="275" y="1.3+8" text-anchor="middle" font-size="13" font-weight="700" fill="#051C2C">$1,120</text>
+          <text x="75" y="158" text-anchor="middle" font-size="11" fill="#5B7089">Q3-20</text>
+          <text x="175" y="158" text-anchor="middle" font-size="11" fill="#5B7089">Q2-21</text>
+          <text x="275" y="158" text-anchor="middle" font-size="11" font-weight="700" fill="#2E5B8F">Q3-21</text>
+          <text x="170" y="172" text-anchor="middle" font-size="9.5" fill="#5B7089">Record level; up $261B (30%) vs. Q3-20</text>
+        </svg>
+      </div>
+      <div class="col">
+        <div class="chart-cap">Net charge-off ratio — "Low Loss Rates"</div>
+        <svg viewBox="0 0 340 175" width="100%">
+          <line x1="15" y1="140" x2="325" y2="140" stroke="#D5E0EC" stroke-width="1.5"/>
+          <rect x="45" y="28" width="60" height="112" rx="3" fill="#B9CCE0"/>
+          <rect x="145" y="64.4" width="60" height="75.6" rx="3" fill="#6E93BC"/>
+          <rect x="245" y="84" width="60" height="56" rx="3" fill="#2E5B8F"/>
+          <text x="75" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">0.40%</text>
+          <text x="175" y="56.4" text-anchor="middle" font-size="13" font-weight="700" fill="#41586F">0.27%</text>
+          <text x="275" y="76" text-anchor="middle" font-size="13" font-weight="700" fill="#051C2C">0.20%</text>
+          <text x="75" y="158" text-anchor="middle" font-size="11" fill="#5B7089">Q3-20</text>
+          <text x="175" y="158" text-anchor="middle" font-size="11" fill="#5B7089">Q2-21</text>
+          <text x="275" y="158" text-anchor="middle" font-size="11" font-weight="700" fill="#2E5B8F">Q3-21</text>
+          <text x="170" y="172" text-anchor="middle" font-size="9.5" fill="#5B7089">Annualized net charge-offs ÷ average loans</text>
+        </svg>
+      </div>
+    </div>
+    <div class="cols" style="margin-top:12px;">
+      <div class="col">
+        <div class="callout"><b class="t">Plain English</b>
+        <b>CET1</b> is the highest-quality capital (mainly common shares and retained earnings) relative to risk-weighted assets — the main regulatory cushion. <b>Global Liquidity Sources</b> = cash plus high-quality, liquid, unencumbered securities ready to meet funding needs (excludes Federal Reserve Discount Window or FHLB borrowing capacity). The <b>net charge-off ratio</b> measures loans actually written off, as a share of average loans.</div>
+      </div>
+      <div class="col" style="flex:1.05;">
+        <div class="quote">"We grew revenues faster than expenses, producing year-over-year operating leverage in every business segment and 12% for the company. Net interest income improved, despite a challenging rate environment… Asset quality remained strong, with loss rates approaching 50-year lows, enabling the release of loan loss reserves again this quarter. … we were able to increase the quarterly dividend by 17% and buy back nearly $10 billion in common stock."
+        <span class="who">— Paul Donofrio, Chief Financial Officer (p.2)</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.2 (CET-1 ratio, Avg. Global Liquidity Sources, Net Charge-off Ratio panels; CFO commentary)</span><span>Slide 4 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 5 — CONSUMER BANKING (unit-03, p.3) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Segment 1 of 4 · Consumer Banking<sup>1,2</sup></div>
+    <div class="title">Consumer Banking: first-ever $1 trillion deposit franchise, record investment assets</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.02;">
+        <h3 class="sec">Financial results — three months ended ($ in millions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Total revenue<sup>2</sup></td><td class="r cur">8,838</td><td class="r">8,186</td><td class="r">8,039</td></tr>
+            <tr><td>Provision for credit losses</td><td class="r cur">247</td><td class="r">(697)</td><td class="r">479</td></tr>
+            <tr><td>Noninterest expense</td><td class="r cur">4,558</td><td class="r">4,859</td><td class="r">4,842</td></tr>
+            <tr><td>Pretax income</td><td class="r cur">4,033</td><td class="r">4,024</td><td class="r">2,718</td></tr>
+            <tr><td>Income tax expense</td><td class="r cur">988</td><td class="r">986</td><td class="r">666</td></tr>
+            <tr class="total"><td>Net income</td><td class="r cur">3,045</td><td class="r">3,038</td><td class="r">2,052</td></tr>
+          </tbody>
+        </table>
+        <h3 class="sec" style="margin-top:10px;">Business highlights — selected ($ in billions, except as noted)</h3>
+        <table class="fin">
+          <thead><tr><th>Three months ended</th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Average deposits</td><td class="r cur">1,000.8</td><td class="r">979.1</td><td class="r">861.0</td></tr>
+            <tr><td>Average loans and leases</td><td class="r cur">281.4</td><td class="r">281.8</td><td class="r">318.8</td></tr>
+            <tr><td>Consumer investment assets (EOP)</td><td class="r cur">353.3</td><td class="r">345.8</td><td class="r">266.7</td></tr>
+            <tr><td>Efficiency ratio</td><td class="r cur">52%</td><td class="r">59%</td><td class="r">60%</td></tr>
+            <tr><td>Return on average allocated capital</td><td class="r cur">31</td><td class="r">32</td><td class="r">21</td></tr>
+            <tr class="grp"><td colspan="4">Total Consumer Credit Card<sup>4</sup></td></tr>
+            <tr><td>Average credit card outstanding balances</td><td class="r cur">75.6</td><td class="r">73.4</td><td class="r">81.3</td></tr>
+            <tr><td>Total credit/debit spend</td><td class="r cur">200.6</td><td class="r">200.3</td><td class="r">166.1</td></tr>
+            <tr><td>Risk-adjusted margin</td><td class="r cur">10.7%</td><td class="r">9.8%</td><td class="r">9.7%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <h3 class="sec">What drove the quarter</h3>
+        <ul class="b">
+          <li><b>Net income increased to $3.0 billion</b>, as higher revenue and lower expenses combined to create <b>16% positive operating leverage</b><sup>3</sup>.</li>
+          <li><b>Revenue of $8.8 billion increased 10%</b>, driven by improved NII and higher fee income.</li>
+          <li><b>Provision improved $232 million to $247 million;</b> net charge-off ratio improved to 0.69%, vs. 0.82%.</li>
+          <li><b>Noninterest expense decreased 6% to $4.6 billion</b>, driven by lower COVID-19 related costs.</li>
+          <li><b>Average deposits grew $140 billion, or 16%, to $1 trillion</b> — above $1.0T for the first time; average loans declined $37 billion, or 12%, to $281 billion (lower first mortgage and card balances).</li>
+          <li><b>Consumer investment assets up $87 billion, or 32%, to $353 billion</b> — $21B of client flows since Q3-20; 3.2 million client accounts, up 9%.</li>
+          <li><b>Combined credit/debit card spend up $35 billion, or 21%</b> — credit up 26%, debit up 17%.</li>
+          <li><b>7.8 million clients in Preferred Rewards, up 13%</b>, with 99% annualized retention.</li>
+        </ul>
+        <div class="chart-cap" style="margin-top:6px;">Average deposits ($B) — crossed $1.0T for the first time</div>
+        <svg viewBox="0 0 300 148" width="92%">
+          <line x1="10" y1="120" x2="290" y2="120" stroke="#D5E0EC" stroke-width="1.5"/>
+          <rect x="30" y="90.7" width="56" height="29.3" rx="3" fill="#B9CCE0"/>
+          <rect x="122" y="34" width="56" height="86" rx="3" fill="#6E93BC"/>
+          <rect x="214" y="23.6" width="56" height="96.4" rx="3" fill="#2E5B8F"/>
+          <line x1="10" y1="24" x2="290" y2="24" stroke="#C2402A" stroke-width="1.2" stroke-dasharray="4 3"/>
+          <text x="288" y="20" text-anchor="end" font-size="9" font-weight="700" fill="#C2402A">$1,000B</text>
+          <text x="58" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#41586F">861.0</text>
+          <text x="150" y="28" text-anchor="middle" font-size="11" font-weight="700" fill="#41586F">979.1</text>
+          <text x="242" y="18" text-anchor="middle" font-size="11" font-weight="700" fill="#051C2C">1,000.8</text>
+          <text x="58" y="136" text-anchor="middle" font-size="10" fill="#5B7089">Q3-20</text>
+          <text x="150" y="136" text-anchor="middle" font-size="10" fill="#5B7089">Q2-21</text>
+          <text x="242" y="136" text-anchor="middle" font-size="10" font-weight="700" fill="#2E5B8F">Q3-21</text>
+        </svg>
+      </div>
+    </div>
+    <div class="fn"><sup>1</sup> Comparisons are to the year-ago quarter unless noted. <sup>2</sup> Revenue, net of interest expense. <sup>3</sup> Operating leverage = YoY % change in revenue, net of interest expense, less % change in noninterest expense. <sup>4</sup> The Consumer credit card portfolio includes Consumer Banking and GWIM. Digital usage and business-leadership details (e.g., No. 1 in U.S. Retail Deposits, J.D. Power awards) on page 3.</div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.3, "Consumer Banking Financial Results"</span><span>Slide 5 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 6 — GWIM (unit-04, p.4) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Segment 2 of 4 · Global Wealth &amp; Investment Management<sup>1,2</sup></div>
+    <div class="title">GWIM: record $3.7 trillion in client balances, record $5.3B revenue</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.02;">
+        <h3 class="sec">Financial results — three months ended ($ in millions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Total revenue<sup>2</sup></td><td class="r cur">5,310</td><td class="r">5,065</td><td class="r">4,546</td></tr>
+            <tr><td>Provision for credit losses</td><td class="r cur">(58)</td><td class="r">(62)</td><td class="r">24</td></tr>
+            <tr><td>Noninterest expense</td><td class="r cur">3,745</td><td class="r">3,813</td><td class="r">3,533</td></tr>
+            <tr><td>Pretax income</td><td class="r cur">1,623</td><td class="r">1,314</td><td class="r">989</td></tr>
+            <tr><td>Income tax expense</td><td class="r cur">398</td><td class="r">322</td><td class="r">242</td></tr>
+            <tr class="total"><td>Net income</td><td class="r cur">1,225</td><td class="r">992</td><td class="r">747</td></tr>
+          </tbody>
+        </table>
+        <h3 class="sec" style="margin-top:10px;">Business highlights — three months ended ($ in billions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Average deposits</td><td class="r cur">339.4</td><td class="r">333.5</td><td class="r">291.8</td></tr>
+            <tr><td>Average loans and leases</td><td class="r cur">199.7</td><td class="r">194.0</td><td class="r">185.6</td></tr>
+            <tr><td>Total client balances (EOP)</td><td class="r cur">3,692.8</td><td class="r">3,652.8</td><td class="r">3,066.6</td></tr>
+            <tr><td>AUM flows</td><td class="r cur">14.8</td><td class="r">11.7</td><td class="r">1.4</td></tr>
+            <tr><td>Pretax margin</td><td class="r cur">31%</td><td class="r">26%</td><td class="r">22%</td></tr>
+            <tr><td>Return on average allocated capital</td><td class="r cur">30</td><td class="r">24</td><td class="r">20</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <h3 class="sec">What drove the quarter</h3>
+        <ul class="b">
+          <li><b>Net income increased $478 million, or 64%, to $1.2 billion</b>; revenue rising faster than expenses generated <b>11% positive operating leverage</b>; pretax margin of 31%.</li>
+          <li><b>Record revenue of $5.3 billion, up 17%</b> — driven by a 19% increase in asset management fees and strong loan and deposit growth.</li>
+          <li><b>Noninterest expense increased 6% to $3.7 billion</b>, primarily higher revenue-related incentives.</li>
+          <li><b>Total client balances up $626 billion, or 20%, to a record $3.7 trillion</b> — higher market valuations plus positive client flows; average deposits +$48B (16%) to $339B; average loans +$14B (8%) to $200B; <b>strong AUM flows of $15 billion in Q3-21</b>.</li>
+          <li><b>Merrill Lynch Wealth Management:</b> record client balances of $3.1T (up 21%); record AUM of $1.2T (up 24%); added ~4,200 net new households; 78% of households actively using online/mobile platforms.</li>
+          <li><b>Private Bank:</b> record client balances of $584B (up 18% YoY); record AUM of $341B (up 18%); added ~275 net new relationships; record 83% of clients digitally active.</li>
+        </ul>
+        <div class="cols" style="gap:14px;margin-top:8px;">
+          <div class="col"><div class="chart-cap">Total client balances ($B)</div>
+            <svg viewBox="0 0 300 132" width="100%">
+              <line x1="10" y1="108" x2="290" y2="108" stroke="#D5E0EC" stroke-width="1.5"/>
+              <rect x="30" y="88" width="56" height="20" rx="3" fill="#B9CCE0"/>
+              <rect x="122" y="17.7" width="56" height="90.3" rx="3" fill="#6E93BC"/>
+              <rect x="214" y="12.9" width="56" height="95.1" rx="3" fill="#2E5B8F"/>
+              <text x="58" y="82" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">3,066.6</text>
+              <text x="150" y="11.7" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">3,652.8</text>
+              <text x="242" y="7" text-anchor="middle" font-size="10.5" font-weight="700" fill="#051C2C">3,692.8</text>
+              <text x="58" y="124" text-anchor="middle" font-size="9.5" fill="#5B7089">Q3-20</text>
+              <text x="150" y="124" text-anchor="middle" font-size="9.5" fill="#5B7089">Q2-21</text>
+              <text x="242" y="124" text-anchor="middle" font-size="9.5" font-weight="700" fill="#2E5B8F">Q3-21</text>
+            </svg>
+            <div class="chart-sub">Axis starts at $2,800B to show the move</div>
+          </div>
+          <div class="col"><div class="chart-cap">AUM flows ($B, quarterly)</div>
+            <svg viewBox="0 0 300 132" width="100%">
+              <line x1="10" y1="108" x2="290" y2="108" stroke="#D5E0EC" stroke-width="1.5"/>
+              <rect x="30" y="97.5" width="56" height="10.5" rx="3" fill="#B9CCE0"/>
+              <rect x="122" y="20.25" width="56" height="87.75" rx="3" fill="#6E93BC"/>
+              <rect x="214" y="-3" width="56" height="111" rx="3" fill="#2E5B8F"/>
+              <text x="58" y="91.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">1.4</text>
+              <text x="150" y="14.25" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">11.7</text>
+              <text x="242" y="110" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">14.8</text>
+              <text x="58" y="124" text-anchor="middle" font-size="9.5" fill="#5B7089">Q3-20</text>
+              <text x="150" y="124" text-anchor="middle" font-size="9.5" fill="#5B7089">Q2-21</text>
+              <text x="242" y="124" text-anchor="middle" font-size="9.5" font-weight="700" fill="#2E5B8F">Q3-21</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="fn"><sup>1</sup> Comparisons are to the year-ago quarter unless noted. <sup>2</sup> Revenue, net of interest expense. "AUM flows" are asset management inflows net of outflows for the quarter. Business-leadership awards (e.g., No. 1 in personal trust AUM, Best Private Bank in North America) on page 4.</div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.4, "Global Wealth and Investment Management Financial Results"</span><span>Slide 6 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 7 — GLOBAL BANKING (unit-05, p.5) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Segment 3 of 4 · Global Banking<sup>1,2</sup></div>
+    <div class="title">Global Banking: near-record $2.2B investment banking fees, deposits up 13%</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.02;">
+        <h3 class="sec">Financial results — three months ended ($ in millions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Total revenue<sup>2,3</sup></td><td class="r cur">5,244</td><td class="r">5,090</td><td class="r">4,517</td></tr>
+            <tr><td>Provision for credit losses</td><td class="r cur">(781)</td><td class="r">(831)</td><td class="r">883</td></tr>
+            <tr><td>Noninterest expense</td><td class="r cur">2,534</td><td class="r">2,599</td><td="r">2,365</td></tr>
+            <tr><td>Pretax income</td><td class="r cur">3,491</td><td class="r">3,322</td><td class="r">1,269</td></tr>
+            <tr><td>Income tax expense</td><td class="r cur">942</td><td class="r">897</td><td class="r">343</td></tr>
+            <tr class="total"><td>Net income</td><td class="r cur">2,549</td><td class="r">2,425</td><td class="r">926</td></tr>
+          </tbody>
+        </table>
+        <h3 class="sec" style="margin-top:10px;">Business highlights — three months ended ($ in billions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Average deposits</td><td class="r cur">534.2</td><td class="r">506.6</td><td class="r">471.3</td></tr>
+            <tr><td>Average loans and leases</td><td class="r cur">324.7</td><td class="r">325.1</td><td class="r">373.1</td></tr>
+            <tr><td>Total Corp. IB fees (excl. self-led)<sup>2</sup></td><td class="r cur">2.2</td><td class="r">2.1</td><td class="r">1.8</td></tr>
+            <tr><td>Global Banking IB fees<sup>2</sup></td><td class="r cur">1.3</td><td class="r">1.2</td><td class="r">1.0</td></tr>
+            <tr><td>Business Lending revenue</td><td class="r cur">1.9</td><td class="r">1.9</td><td class="r">1.8</td></tr>
+            <tr><td>Global Transaction Services revenue</td><td class="r cur">1.9</td><td class="r">1.7</td><td class="r">1.6</td></tr>
+            <tr><td>Efficiency ratio</td><td class="r cur">48%</td><td class="r">51%</td><td class="r">52%</td></tr>
+            <tr><td>Return on average allocated capital</td><td class="r cur">24</td><td class="r">23</td><td class="r">9</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <h3 class="sec">What drove the quarter</h3>
+        <ul class="b">
+          <li><b>Net income increased $1.6 billion to $2.5 billion</b>, driven by lower credit costs and higher revenue — <b>9% positive operating leverage</b>.</li>
+          <li><b>Revenue of $5.2 billion rose 16%</b>: higher investment banking fees, higher leasing-related revenue, and strong deposit growth that benefited NII.</li>
+          <li><b>Provision improved $1.7 billion to a benefit of $781 million</b> — this quarter's reserve release reflects asset quality improvements; the year-ago build reflected COVID-19 impacted industries such as travel and entertainment.<sup>C</sup></li>
+          <li><b>Noninterest expense rose $169 million, or 7%, to $2.5 billion</b> — higher revenue-related costs and continued investment in the franchise.</li>
+          <li><b>Average deposits increased $63 billion, or 13%, to $534 billion;</b> average loans declined $48 billion, or 13%, to $325 billion on paydowns — <b>excluding PPP, loans rose $3.2 billion, or 1%, QoQ</b> (Middle Market and Commercial Real Estate Banking).<sup>D</sup></li>
+          <li><b>Total investment banking fees rose 23% to near-record $2.2 billion (excl. self-led)</b>; debt underwriting fees rose 26% (9 of the top 10 debt deals<sup>4</sup>); raised $221B in client capital in Q3-21, $728B YTD.<sup>5</sup></li>
+          <li>Digital: 74% of commercial/corporate/business banking clients digitally active; CashPro App sign-ins up 49% (rolling 12 months), surpassing 1 million sign-ins.</li>
+        </ul>
+        <div class="chart-cap" style="margin-top:6px;">Average deposits ($B) &nbsp;·&nbsp; Total Corp. IB fees, excl. self-led ($B)</div>
+        <svg viewBox="0 0 620 120" width="100%">
+          <g>
+            <line x1="10" y1="98" x2="290" y2="98" stroke="#D5E0EC" stroke-width="1.5"/>
+            <rect x="30" y="36.2" width="50" height="61.8" rx="3" fill="#B9CCE0"/>
+            <rect x="90" y="15" width="50" height="83" rx="3" fill="#6E93BC"/>
+            <rect x="150" y="-1.5" width="50" height="99.5" rx="3" fill="#2E5B8F"/>
+            <text x="55" y="30" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">471.3</text>
+            <text x="115" y="9" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">506.6</text>
+            <text x="175" y="103" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">534.2</text>
+            <text x="55" y="114" text-anchor="middle" font-size="9.5" fill="#5B7089">Q3-20</text>
+            <text x="115" y="114" text-anchor="middle" font-size="9.5" fill="#5B7089">Q2-21</text>
+            <text x="175" y="114" text-anchor="middle" font-size="9.5" font-weight="700" fill="#2E5B8F">Q3-21</text>
+          </g>
+          <g transform="translate(330,0)">
+            <line x1="10" y1="98" x2="290" y2="98" stroke="#D5E0EC" stroke-width="1.5"/>
+            <rect x="60" y="12.4" width="50" height="85.6" rx="3" fill="#B9CCE0"/>
+            <rect x="120" y="1" width="50" height="97" rx="3" fill="#6E93BC"/>
+            <rect x="180" y="-3.5" width="50" height="101.5" rx="3" fill="#2E5B8F"/>
+            <text x="85" y="6.4" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">1.8</text>
+            <text x="145" y="-5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">2.1</text>
+            <text x="205" y="98-4" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">2.2</text>
+            <text x="85" y="114" text-anchor="middle" font-size="9.5" fill="#5B7089">Q3-20</text>
+            <text x="145" y="114" text-anchor="middle" font-size="9.5" fill="#5B7089">Q2-21</text>
+            <text x="205" y="114" text-anchor="middle" font-size="9.5" font-weight="700" fill="#2E5B8F">Q3-21</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+    <div class="fn"><sup>1</sup> Comparisons are to the year-ago quarter unless noted. <sup>2</sup> Global Banking and Global Markets share in certain deal economics from investment banking, loan origination, and sales &amp; trading activities. <sup>3</sup> Revenue, net of interest expense. <sup>4</sup> Source: Dealogic as of Oct. 1, 2021. <sup>5</sup> Source: Dealogic as of Oct. 1, 2021; Global Capital Raise includes Equity, Debt, Loans (MBS, ABS and self-funded deals excluded), shown on a proportional share basis.</div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.5, "Global Banking Financial Results" (client-capital figures from p.1)</span><span>Slide 7 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 8 — GLOBAL MARKETS (unit-06, p.6) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Segment 4 of 4 · Global Markets<sup>1,2,6</sup></div>
+    <div class="title">Global Markets: $3.6B sales &amp; trading; equities revenue up 33%</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.05;">
+        <h3 class="sec">Financial results — three months ended ($ in millions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Total revenue<sup>2,3</sup></td><td class="r cur">4,519</td><td class="r">4,720</td><td class="r">4,283</td></tr>
+            <tr><td>Net DVA<sup>4</sup></td><td class="r cur">(20)</td><td class="r">(34)</td><td class="r">(116)</td></tr>
+            <tr><td>Total revenue (excl. net DVA)<sup>2,3,4</sup></td><td class="r cur">4,539</td><td class="r">4,754</td><td class="r">4,399</td></tr>
+            <tr><td>Provision for credit losses</td><td class="r cur">16</td><td class="r">22</td><td class="r">21</td></tr>
+            <tr><td>Noninterest expense</td><td class="r cur">3,252</td><td class="r">3,471</td><td class="r">3,102</td></tr>
+            <tr><td>Pretax income</td><td class="r cur">1,251</td><td class="r">1,227</td><td class="r">1,160</td></tr>
+            <tr><td>Income tax expense</td><td class="r cur">325</td><td class="r">319</td><td class="r">302</td></tr>
+            <tr class="total"><td>Net income</td><td class="r cur">926</td><td class="r">908</td><td class="r">858</td></tr>
+            <tr><td>Net income (excl. net DVA)<sup>4</sup></td><td class="r cur">941</td><td class="r">934</td><td class="r">946</td></tr>
+          </tbody>
+        </table>
+        <h3 class="sec" style="margin-top:8px;">Business highlights — selected ($ in billions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Average total assets</td><td class="r cur">804.9</td><td class="r">797.6</td><td class="r">681.0</td></tr>
+            <tr><td>Sales and trading revenue<sup>2</sup></td><td class="r cur">3.6</td><td class="r">3.6</td><td class="r">3.2</td></tr>
+            <tr><td>Sales &amp; trading revenue (excl. net DVA)<sup>2(G)</sup></td><td class="r cur">3.6</td><td class="r">3.6</td><td class="r">3.3</td></tr>
+            <tr><td>Global Markets IB fees<sup>2</sup></td><td class="r cur">0.8</td><td class="r">1.0</td><td class="r">0.7</td></tr>
+            <tr><td>Efficiency ratio</td><td class="r cur">72%</td><td class="r">74%</td><td class="r">72%</td></tr>
+            <tr><td>Return on average allocated capital</td><td class="r cur">10</td><td class="r">10</td><td class="r">9</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <h3 class="sec">What drove the quarter</h3>
+        <ul class="b">
+          <li><b>Net income increased $68 million to $926 million</b>, with revenues growing modestly faster than expenses. <b>Excluding net DVA, net income decreased 1% to $941 million.</b><sup>4</sup></li>
+          <li><b>Revenue of $4.5 billion increased 6%</b>, driven by higher sales &amp; trading results (excl. net DVA, up 3%).<sup>4</sup></li>
+          <li><b>Noninterest expense increased $150 million, or 5%, to $3.3 billion</b> — higher activity-based expenses.</li>
+          <li><b>Sales &amp; trading revenue of $3.6 billion</b> = FICC $2.0B + Equities $1.6B. Excluding net DVA: up 9% to $3.6B<sup>(G)</sup> — <b>FICC down 5%</b> (weaker mortgage/interest-rate trading environment, partly offset by improved FX client flows); <b>Equities up 33%</b> (growth in client financing, stronger trading performance, increased client activity).</li>
+          <li><b>Average VaR of $78 million.</b><sup>5</sup></li>
+          <li>Research: 680+ analysts covering 3,300+ companies, 1,200+ corporate bond issuers across 55+ economies and 24 industries.</li>
+        </ul>
+        <div class="chart-cap" style="margin-top:4px;">Sales &amp; trading revenue by line ($ in millions, endnote G)</div>
+        <svg viewBox="0 0 340 158" width="92%">
+          <line x1="15" y1="128" x2="325" y2="128" stroke="#D5E0EC" stroke-width="1.5"/>
+          <!-- Q3-20: 2019 + 1205 = 3224 -->
+          <rect x="40" y="53.6" width="60" height="74.4" fill="#2E5B8F"/>
+          <rect x="40" y="9.2" width="60" height="44.4" fill="#6E93BC"/>
+          <text x="70" y="2.2" text-anchor="middle" font-size="11" font-weight="700" fill="#41586F">3,224</text>
+          <!-- Q2-21: 1937 + 1624 = 3561 -->
+          <rect x="140" y="56.6" width="60" height="71.4" fill="#2E5B8F"/>
+          <rect x="140" y="-3.2" width="60" height="59.8" fill="#6E93BC"/>
+          <text x="170" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">3,561</text>
+          <!-- Q3-21: 2009 + 1605 = 3614 -->
+          <rect x="240" y="54" width="60" height="74" fill="#2E5B8F"/>
+          <rect x="240" y="-5.1" width="60" height="59.1" fill="#6E93BC"/>
+          <text x="270" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">3,614</text>
+          <text x="70" y="144" text-anchor="middle" font-size="10" fill="#5B7089">Q3-20</text>
+          <text x="170" y="144" text-anchor="middle" font-size="10" fill="#5B7089">Q2-21</text>
+          <text x="270" y="144" text-anchor="middle" font-size="10" font-weight="700" fill="#2E5B8F">Q3-21</text>
+          <rect x="196" y="150" width="9" height="9" fill="#2E5B8F"/><text x="209" y="158" font-size="9.5" fill="#5B7089">FICC ($2,009 / $1,937 / $2,019)</text>
+          <rect x="292" y="150" width="9" height="9" fill="#6E93BC"/><text x="305" y="158" font-size="9.5" fill="#5B7089" >Equities</text>
+        </svg>
+      </div>
+    </div>
+    <div class="fn"><sup>1</sup> Comparisons are to the year-ago quarter unless noted. <sup>2</sup> GB and GM share in certain deal economics. <sup>3</sup> Revenue, net of interest expense. <sup>4</sup> Revenue and net income excluding net DVA are non-GAAP measures (endnote G, p.10). <sup>5</sup> VaR model: historical simulation on three years of data, expected-shortfall methodology equivalent to 99% confidence; average VaR $78M / $77M / $109M for Q3-21, Q2-21, Q3-20. <sup>6</sup> Period-over-period explanations are the same for amounts including and excluding net DVA. Plain English: "net DVA" (debit valuation adjustment) marks down the value of derivatives for counterparty credit risk; excluding it is a common industry view of trading performance.</div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.6, "Global Markets Financial Results" + endnote G table (p.10)</span><span>Slide 8 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 9 — ALL OTHER (unit-07, p.7) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Corporate Center · All Other<sup>1</sup></div>
+    <div class="title">All Other: small net loss, explained by one-off tax items</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1;">
+        <h3 class="sec">Financial results — three months ended ($ in millions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Total revenue<sup>2</sup></td><td class="r cur">(1,044)</td><td class="r">(1,485)</td><td class="r">(935)</td></tr>
+            <tr><td>Provision for credit losses</td><td class="r cur">(48)</td><td class="r">(53)</td><td class="r">(18)</td></tr>
+            <tr><td>Noninterest expense</td><td class="r cur">351</td><td class="r">303</td><td class="r">559</td></tr>
+            <tr><td>Pretax loss</td><td class="r cur">(1,347)</td><td class="r">(1,735)</td><td class="r">(1,476)</td></tr>
+            <tr><td>Income tax expense (benefit)</td><td class="r cur">(1,293)</td><td class="r">(3,596)</td><td class="r">(1,774)</td></tr>
+            <tr class="total"><td>Net income (loss)</td><td class="r cur">(54)</td><td class="r">1,861</td><td class="r">298</td></tr>
+          </tbody>
+        </table>
+        <div class="callout" style="margin-top:10px;"><b class="t">What is "All Other"?</b>
+        All Other primarily consists of asset and liability management (ALM) activities, liquidating businesses and certain expenses not otherwise allocated to a business segment. ALM activities manage interest-rate and foreign-currency risk for the whole bank, and substantially all of their results are allocated to the business segments. That is why revenue is negative (mainly funding costs) while the bottom line swings with tax items.</div>
+        <ul class="b" style="margin-top:10px;">
+          <li><b>Net loss of $54 million</b>, vs. net income of $1.9B in Q2-21 and $298M in Q3-20 — <b>Q2-21 and Q3-20 each included positive income tax adjustments</b> from the revaluation of U.K. deferred tax assets of <b>$2.0 billion</b> and <b>$0.7 billion</b>, respectively.</li>
+          <li><b>Revenue down modestly;</b> included higher partnership losses for Environmental, Social and Governance (ESG) investments (offset in All Other tax expense).</li>
+          <li><b>Noninterest expense declined 37%</b>, driven primarily by lower litigation expense.</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3 class="sec">Reading the swing, quarter by quarter</h3>
+        <svg viewBox="0 0 360 200" width="100%">
+          <line x1="20" y1="100" x2="340" y2="100" stroke="#D5E0EC" stroke-width="1.5"/>
+          <text x="15" y="104" text-anchor="end" font-size="9" fill="#5B7089">0</text>
+          <rect x="55" y="100" width="60" height="8.4" fill="#C2402A"/>
+          <rect x="175" y="71.6" width="60" height="28.4" fill="#2E5B8F"/>
+          <rect x="295" y="95.8" width="60" height="4.2" fill="#B9CCE0"/>
+          <text x="85" y="120" text-anchor="middle" font-size="11.5" font-weight="700" fill="#C2402A">$(54)M</text>
+          <text x="205" y="64" text-anchor="middle" font-size="11.5" font-weight="700" fill="#051C2C">$1,861M</text>
+          <text x="325" y="112" text-anchor="middle" font-size="11.5" font-weight="700" fill="#41586F">$298M</text>
+          <text x="85" y="185" text-anchor="middle" font-size="10.5" font-weight="700" fill="#2E5B8F">Q3-21</text>
+          <text x="205" y="185" text-anchor="middle" font-size="10.5" fill="#5B7089">Q2-21</text>
+          <text x="325" y="185" text-anchor="middle" font-size="10.5" fill="#5B7089">Q3-20</text>
+          <text x="180" y="197" text-anchor="middle" font-size="9.5" fill="#5B7089">Net income (loss), $ in millions</text>
+        </svg>
+        <ul class="b" style="margin-top:8px;">
+          <li><b>Q2-21's $1.9B</b> included the $2.0B U.K. deferred tax asset revaluation benefit — a one-time accounting gain, not operating earnings.</li>
+          <li><b>Q3-21 corporate effective tax rate (ETR) was 14%</b>; excluding ESG tax credits, the ETR would have been approximately 25%.</li>
+          <li>Bottom line for the full company: All Other's small loss was more than offset by the four business segments' combined results.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="fn"><sup>1</sup> Comparisons are to the year-ago quarter unless noted. <sup>2</sup> Revenue, net of interest expense.</div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.7, "All Other Financial Results"</span><span>Slide 9 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 10 — CREDIT QUALITY (unit-08, p.8) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Credit Quality · Unit 08</div>
+    <div class="title">Credit quality: loss rates near 50-year lows, reserves still ample</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.08;">
+        <h3 class="sec">Credit Quality Highlights — three months ended ($ in millions)</h3>
+        <table class="fin">
+          <thead><tr><th></th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr><td>Provision for credit losses</td><td class="r cur">(624)</td><td class="r">(1,621)</td><td class="r">1,389</td></tr>
+            <tr><td>Net charge-offs</td><td class="r cur">463</td><td class="r">595</td><td class="r">972</td></tr>
+            <tr><td>Net charge-off ratio<sup>2</sup></td><td class="r cur">0.20%</td><td class="r">0.27%</td><td class="r">0.40%</td></tr>
+            <tr class="grp"><td colspan="4">At period-end</td></tr>
+            <tr><td>Nonperforming loans and leases</td><td class="r cur">4,714</td><td class="r">4,907</td><td class="r">4,550</td></tr>
+            <tr><td>Nonperforming loans and leases ratio</td><td class="r cur">0.51%</td><td class="r">0.54%</td><td class="r">0.48%</td></tr>
+            <tr><td>Allowance for loan and lease losses</td><td class="r cur">13,155</td><td class="r">14,095</td><td class="r">19,596</td></tr>
+            <tr><td>Allowance for loan and lease losses ratio<sup>3</sup></td><td class="r cur">1.43%</td><td class="r">1.55%</td><td class="r">2.07%</td></tr>
+          </tbody>
+        </table>
+        <div class="fn"><sup>2</sup> Annualized net charge-offs ÷ average outstanding loans and leases. <sup>3</sup> Allowance ÷ loans and leases outstanding at period end. Ratios do not include loans accounted for under the fair value option.</div>
+        <div class="cols" style="gap:14px;margin-top:10px;">
+          <div class="col"><div class="chart-cap">Net charge-off ratio</div>
+            <svg viewBox="0 0 300 120" width="100%">
+              <line x1="10" y1="98" x2="290" y2="98" stroke="#D5E0EC" stroke-width="1.5"/>
+              <rect x="30" y="10" width="56" height="88" rx="3" fill="#B9CCE0"/>
+              <rect x="122" y="23.6" width="56" height="74.4" rx="3" fill="#6E93BC"/>
+              <rect x="214" y="34" width="56" height="64" rx="3" fill="#2E5B8F"/>
+              <text x="58" y="4" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">0.40%</text>
+              <text x="150" y="17.6" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">0.27%</text>
+              <text x="242" y="28" text-anchor="middle" font-size="10.5" font-weight="700" fill="#051C2C">0.20%</text>
+              <text x="58" y="112" text-anchor="middle" font-size="9.5" fill="#5B7089">Q3-20</text>
+              <text x="150" y="112" text-anchor="middle" font-size="9.5" fill="#5B7089">Q2-21</text>
+              <text x="242" y="112" text-anchor="middle" font-size="9.5" font-weight="700" fill="#2E5B8F">Q3-21</text>
+            </svg>
+          </div>
+          <div class="col"><div class="chart-cap">Allowance for loan &amp; lease losses ratio</div>
+            <svg viewBox="0 0 300 120" width="100%">
+              <line x1="10" y1="98" x2="290" y2="98" stroke="#D5E0EC" stroke-width="1.5"/>
+              <rect x="30" y="12.7" width="56" height="85.3" rx="3" fill="#B9CCE0"/>
+              <rect x="122" y="36.2" width="56" height="61.8" rx="3" fill="#6E93BC"/>
+              <rect x="214" y="41" width="56" height="57" rx="3" fill="#2E5B8F"/>
+              <text x="58" y="6.7" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">2.07%</text>
+              <text x="150" y="30.2" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">1.55%</text>
+              <text x="242" y="35" text-anchor="middle" font-size="10.5" font-weight="700" fill="#051C2C">1.43%</text>
+              <text x="58" y="112" text-anchor="middle" font-size="9.5" fill="#5B7089">Q3-20</text>
+              <text x="150" y="112" text-anchor="middle" font-size="9.5" fill="#5B7089">Q2-21</text>
+              <text x="242" y="112" text-anchor="middle" font-size="9.5" font-weight="700" fill="#2E5B8F">Q3-21</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <h3 class="sec">What changed this quarter</h3>
+        <ul class="b">
+          <li><b>Charge-offs: total net charge-offs decreased $132 million, or 22%, QoQ, to $463 million</b> — Consumer net charge-offs down $184 million to $329 million (lower credit card losses); Commercial net charge-offs remained low at $134 million. Net charge-off ratio down 7 bps QoQ to 0.20%.</li>
+          <li><b>Provision: a benefit of $624 million</b>, reflecting a net <b>$1.1 billion reserve release</b> driven primarily by asset quality improvements — Consumer release of $0.2 billion; Commercial release of $0.8 billion.</li>
+          <li><b>Allowance: total allowance for credit losses (incl. unfunded commitments) down 7% QoQ to $14.7 billion;</b> the allowance for loan and lease losses decreased $0.9 billion, or 7%, to $13.2 billion — still 1.43% of total loans and leases.</li>
+          <li><b>Nonperforming loans decreased $193 million QoQ to $4.7 billion</b>, primarily driven by Commercial.</li>
+          <li><b>Commercial reservable criticized utilized exposure decreased $4.7 billion QoQ to $24.1 billion</b>, driven by improvements across a broad range of industries.</li>
+        </ul>
+        <div class="callout"><b class="t">Plain English</b>
+        The "provision" is the quarterly earnings charge that tops up the bank's loss reserve; a negative provision (a benefit) means losses were smaller than expected, so the bank gave part of the reserve back to earnings. The allowance ratio shows how many cents of reserve back each dollar of loans — 1.43 cents… no: 1.43% means about $0.014 of reserve per loan dollar, well above the 0.20% rate loans are actually being charged off.</div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.8, "Credit Quality Highlights"</span><span>Slide 10 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 11 — BALANCE SHEET (unit-09, p.9) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Balance Sheet, Liquidity &amp; Capital · Unit 09</div>
+    <div class="title">Balance sheet: $3.1 trillion in assets, deposits up 15%, capital well above minimums</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.15;">
+        <h3 class="sec">Highlights ($ in billions except per share data, end of period unless otherwise noted)<sup>(A)(E)(F)</sup></h3>
+        <table class="fin" style="font-size:11.2px;">
+          <thead><tr><th>Three months ended</th><th class="cur">9/30/2021</th><th>6/30/2021</th><th>9/30/2020</th></tr></thead>
+          <tbody>
+            <tr class="grp"><td colspan="4">Ending balance sheet</td></tr>
+            <tr><td>Total assets</td><td class="r cur">3,085.4</td><td class="r">3,029.9</td><td class="r">2,738.5</td></tr>
+            <tr><td>Total loans and leases</td><td class="r cur">927.7</td><td class="r">918.9</td><td class="r">955.2</td></tr>
+            <tr><td>Total loans and leases in business segments (excl. All Other)</td><td class="r cur">910.9</td><td class="r">900.6</td><td class="r">932.1</td></tr>
+            <tr><td>Total deposits</td><td class="r cur">1,964.8</td><td class="r">1,909.1</td><td class="r">1,702.9</td></tr>
+            <tr class="grp"><td colspan="4">Average balance sheet</td></tr>
+            <tr><td>Average total assets</td><td class="r cur">3,076.5</td><td class="r">3,015.1</td><td class="r">2,739.7</td></tr>
+            <tr><td>Average loans and leases</td><td class="r cur">920.5</td><td class="r">907.9</td><td class="r">974.0</td></tr>
+            <tr><td>Average deposits</td><td class="r cur">1,942.7</td><td class="r">1,888.8</td><td class="r">1,695.5</td></tr>
+            <tr class="grp"><td colspan="4">Funding and liquidity</td></tr>
+            <tr><td>Long-term debt</td><td class="r cur">278.6</td><td class="r">274.6</td><td class="r">255.7</td></tr>
+            <tr><td>Global Liquidity Sources, average<sup>(E)</sup></td><td class="r cur">1,120</td><td class="r">1,063</td><td class="r">859</td></tr>
+            <tr class="grp"><td colspan="4">Equity</td></tr>
+            <tr><td>Common shareholders' equity</td><td class="r cur">249.0</td><td class="r">253.7</td><td class="r">245.4</td></tr>
+            <tr><td>Common equity ratio</td><td class="r cur">8.1%</td><td class="r">8.4%</td><td class="r">9.0%</td></tr>
+            <tr><td>Tangible common shareholders' equity<sup>1</sup></td><td class="r cur">178.7</td><td class="r">183.4</td><td class="r">175.2</td></tr>
+            <tr><td>Tangible common equity ratio<sup>1</sup></td><td class="r cur">5.9%</td><td class="r">6.2%</td><td class="r">6.6%</td></tr>
+            <tr class="grp"><td colspan="4">Per share data</td></tr>
+            <tr><td>Common shares outstanding (in billions)</td><td class="r cur">8.24</td><td class="r">8.49</td><td class="r">8.66</td></tr>
+            <tr><td>Book value per common share</td><td class="r cur">$30.22</td><td class="r">$29.89</td><td class="r">$28.33</td></tr>
+            <tr><td>Tangible book value per common share<sup>1</sup></td><td class="r cur">21.69</td><td class="r">21.61</td><td class="r">20.23</td></tr>
+            <tr class="grp"><td colspan="4">Regulatory capital<sup>(F)</sup></td></tr>
+            <tr><td>CET1 capital</td><td class="r cur">174.4</td><td class="r">178.8</td><td class="r">173.2</td></tr>
+            <tr><td>Standardized approach — Risk-weighted assets</td><td class="r cur">1,567</td><td class="r">1,552</td><td class="r">1,460</td></tr>
+            <tr><td>Standardized — CET1 ratio</td><td class="r cur">11.1%</td><td class="r">11.5%</td><td class="r">11.9%</td></tr>
+            <tr><td>Advanced approaches — Risk-weighted assets</td><td class="r cur">1,381</td><td class="r">1,380</td><td class="r">1,364</td></tr>
+            <tr><td>Advanced — CET1 ratio</td><td class="r cur">12.6%</td><td class="r">13.0%</td><td class="r">12.7%</td></tr>
+            <tr><td>Supplementary leverage ratio (SLR)</td><td class="r cur">5.6%</td><td class="r">5.9%</td><td class="r">6.9%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <h3 class="sec">What it means</h3>
+        <ul class="b">
+          <li><b>The balance sheet grew ~13% year over year</b> (total assets $3,085.4B vs. $2,738.5B), led by <b>total deposits of $1,964.8B</b> — up $261.9B vs. Q3-20 — the bank's primary, lowest-cost funding source.</li>
+          <li><b>Loans of $927.7B</b> are below Q3-20's $955.2B, reflecting PPP run-off and mortgage paydowns; segment loans (ex-All Other) rose $78.8B vs. Q3-20 to $910.9B.</li>
+          <li><b>Common shareholders' equity of $249.0B</b> (common equity ratio 8.1%); tangible common equity of $178.7B excludes goodwill and intangibles<sup>1</sup>.</li>
+          <li><b>Per-share value keeps rising:</b> book value $30.22 (from $28.33); tangible book value $21.69 (from $20.23) — helped by $11.7B of dividends and buybacks and falling share count (8.24B shares vs. 8.66B).<sup>F</sup></li>
+          <li><b>Capital remains ample:</b> CET1 ratio of 11.1% (Standardized) is 160 bps above the 9.5% well-capitalized minimum; Advanced-approach CET1 is 12.6%<sup>F</sup>.</li>
+          <li><b>Liquidity is at record highs:</b> average Global Liquidity Sources of $1,120B<sup>(E)</sup>, plus long-term debt of $278.6B as a backup funding source.</li>
+        </ul>
+        <div class="callout" style="margin-top:8px;"><b class="t">Plain English</b>
+        A bank's balance sheet is "loans funded by deposits." The ratios on the right are safety gauges: CET1 and SLR measure capital against risk-weighted (or total) assets, and regulators set minimums — 9.5% for CET1. "Standardized" and "Advanced" are two different ways of sizing each asset's risk; for CET1 the lower ratio (Standardized) is used to assess capital adequacy.<sup>F</sup></div>
+      </div>
+    </div>
+    <div class="fn" style="margin-top:5px;"><sup>1</sup> Non-GAAP measure; reconciliation on page 19. <sup>(E)</sup> GLS = cash and high-quality, liquid, unencumbered securities (U.S. government, U.S. agency, U.S. agency MBS, select non-U.S. government/supranational, and other investment-grade); excludes Fed Discount Window and FHLB borrowing capacity; transfers among legal entities may be subject to restrictions. <sup>(F)</sup> Regulatory capital ratios at 9/30/2021 are preliminary; the approach yielding the lower ratio is used to assess capital adequacy (Standardized for CET1 in all three periods).</div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.9, "Balance Sheet, Liquidity and Capital Highlights"</span><span>Slide 11 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 12 — SEGMENT SCORECARD (synthesis p.1, 3–7, 16) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Cross-Segment View</div>
+    <div class="title">Segment scorecard: every business segment profitable, all growing year over year</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.12;">
+        <h3 class="sec">Q3-21 by segment (three months ended, $ in millions)</h3>
+        <table class="fin">
+          <thead><tr><th>Segment</th><th class="cur">Net income (loss)</th><th>Revenue, net of int. exp.</th><th>ROAC</th><th>Efficiency ratio</th></tr></thead>
+          <tbody>
+            <tr><td>Consumer Banking</td><td class="r cur">3,045</td><td class="r">8,838</td><td class="r">31</td><td class="r">52%</td></tr>
+            <tr><td>Global Wealth &amp; Investment Mgmt</td><td class="r cur">1,225</td><td class="r">5,310</td><td class="r">30</td><td class="r">n/a (31% pretax margin)</td></tr>
+            <tr><td>Global Banking</td><td class="r cur">2,549</td><td class="r">5,244</td><td class="r">24</td><td class="r">48%</td></tr>
+            <tr><td>Global Markets</td><td class="r cur">926</td><td class="r">4,519</td><td class="r">10</td><td class="r">72%</td></tr>
+            <tr><td>All Other</td><td class="r cur">(54)</td><td class="r">(1,044)</td><td class="r">n/m</td><td class="r">n/m</td></tr>
+            <tr class="total"><td>Company (per p.2)</td><td class="r cur">~7,691<sup>*</sup></td><td class="r">22,766<sup>*</sup></td><td class="r">—</td><td class="r">—</td></tr>
+          </tbody>
+        </table>
+        <div class="fn">ROAC = return on average allocated capital (net income adjusted for cost of funds, earnings credits and certain intangible-related expenses, ÷ average allocated capital); n/m = not meaningful.<sup>(1)</sup> Segment figures from segment pages 3–7. <sup>*</sup> Company-level detail from the Selected Financial Data on page 14 (Q3-21 net income $7,691M; total revenue, net of interest expense $22,766M). Segment and All Other results are reported on a fully taxable-equivalent (FTE) basis.<sup>1</sup> Certain prior-period amounts have been reclassified among segments to conform to current-period presentation (page 16).</div>
+        <div class="callout" style="margin-top:10px;"><b class="t">How to read ROAC</b>
+        ROAC answers: "How much profit did this business generate on the capital the company assigned to it?" Consumer Banking (31) and GWIM (30) earned the most on each capital dollar; Global Markets (10) is capital-intensive by nature because trading holds large asset balances.</div>
+      </div>
+      <div class="col">
+        <h3 class="sec">Net income by segment: Q3-20 → Q3-21 ($M)</h3>
+        <svg viewBox="0 0 640 210" width="100%">
+          <line x1="20" y1="160" x2="620" y2="160" stroke="#D5E0EC" stroke-width="1.5"/>
+          <!-- Consumer Banking -->
+          <rect x="38" y="63.8" width="34" height="96.2" rx="2" fill="#B9CCE0"/>
+          <rect x="76" y="17.3" width="34" height="142.7" rx="2" fill="#2E5B8F"/>
+          <text x="55" y="57.8" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">2,052</text>
+          <text x="93" y="11.3" text-anchor="middle" font-size="10.5" font-weight="700" fill="#051C2C">3,045</text>
+          <text x="74" y="178" text-anchor="middle" font-size="10.5" fill="#33475C">Consumer Banking</text>
+          <!-- GWIM -->
+          <rect x="153" y="125" width="34" height="35" rx="2" fill="#B9CCE0"/>
+          <rect x="191" y="102.6" width="34" height="57.4" rx="2" fill="#2E5B8F"/>
+          <text x="170" y="119" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">747</text>
+          <text x="208" y="96.6" text-anchor="middle" font-size="10.5" font-weight="700" fill="#051C2C">1,225</text>
+          <text x="189" y="178" text-anchor="middle" font-size="10.5" fill="#33475C">GWIM</text>
+          <!-- Global Banking -->
+          <rect x="268" y="116.6" width="34" height="43.4" rx="2" fill="#B9CCE0"/>
+          <rect x="306" y="40.5" width="34" height="119.5" rx="2" fill="#2E5B8F"/>
+          <text x="285" y="110.6" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">926</text>
+          <text x="323" y="34.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#051C2C">2,549</text>
+          <text x="304" y="178" text-anchor="middle" font-size="10.5" fill="#33475C">Global Banking</text>
+          <!-- Global Markets -->
+          <rect x="383" y="119.8" width="34" height="40.2" rx="2" fill="#B9CCE0"/>
+          <rect x="421" y="116.6" width="34" height="43.4" rx="2" fill="#2E5B8F"/>
+          <text x="400" y="113.8" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">858</text>
+          <text x="438" y="110.6" text-anchor="middle" font-size="10.5" font-weight="700" fill="#051C2C">926</text>
+          <text x="419" y="178" text-anchor="middle" font-size="10.5" fill="#33475C">Global Markets</text>
+          <!-- All Other -->
+          <rect x="498" y="146" width="34" height="14" rx="2" fill="#B9CCE0"/>
+          <rect x="536" y="160" width="34" height="3" rx="1" fill="#C2402A"/>
+          <text x="515" y="140" text-anchor="middle" font-size="10.5" font-weight="700" fill="#41586F">298</text>
+          <text x="553" y="176" text-anchor="middle" font-size="10.5" font-weight="700" fill="#C2402A">(54)</text>
+          <text x="534" y="178" text-anchor="middle" font-size="10.5" fill="#33475C">All Other</text>
+          <rect x="430" y="196" width="10" height="10" fill="#B9CCE0"/><text x="444" y="205" font-size="9.5" fill="#5B7089">Q3-20</text>
+          <rect x="492" y="196" width="10" height="10" fill="#2E5B8F"/><text x="506" y="205" font-size="9.5" fill="#5B7089">Q3-21</text>
+        </svg>
+        <ul class="b" style="margin-top:6px;">
+          <li><b>Global Banking's net income more than doubled</b> (926 → 2,549) on lower credit costs; <b>Consumer Banking and GWIM grew ~48% and 64%</b>, respectively, a year ago the same pandemic-shocked base.</li>
+          <li><b>Global Markets was roughly flat</b> year over year (858 → 926); <b>All Other swung to a small loss</b> on one-off tax items (see slide 9).</li>
+          <li>Page 1 headline segment profits: Consumer $3.0B · GWIM $1.2B (record) · Global Banking $2.5B · Global Markets $926M.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — pp.1, 3–7 (segment results) and p.16 (segment data, ROAC definition)</span><span>Slide 12 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 13 — KPIs / NON-GAAP (unit-10, p.10) ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Definitions &amp; Non-GAAP Measures · Unit 10</div>
+    <div class="title">The KPIs and footnotes behind the numbers (endnotes A–H)</div>
+    <div class="rule"></div>
+    <div class="gloss">
+      <div class="g"><div class="k"><sup>(A)</sup> Key performance indicators (KPIs)</div><p>BofA presents certain key financial and nonfinancial KPIs that management uses when assessing consolidated and/or segment results. The company believes they give management and investors information about underlying operational performance and trends. KPIs appear in the Balance Sheet, Liquidity and Capital Highlights and on each segment page.</p></div>
+      <div class="g"><div class="k"><sup>(B)</sup> Net interest income, FTE basis <span class="tag">NON-GAAP</span></div><p>FTE (fully taxable-equivalent) makes tax-exempt income comparable to taxable income. NII on an FTE basis was <b>$11.2B / $10.3B / $10.2B</b> for the three months ended 9/30/21, 6/30/21, 9/30/20; the FTE adjustment was <b>$101M / $110M / $114M</b>, respectively.</p></div>
+      <div class="g"><div class="k"><sup>(C)</sup> Reserve build (or release)</div><p>Calculated by subtracting net charge-offs for the period from the provision for credit losses recognized in that period. The period-end allowance reflects the beginning allowance adjusted for net charge-offs plus the provision.</p></div>
+      <div class="g"><div class="k"><sup>(D)</sup> PPP loan detail</div><p>Average loans in business segments: <b>$903B vs. $889B</b> (9/30/21 vs. 6/30/21), +$14B. Excluding average PPP balances of <b>$13B vs. $20B</b>, loans were <b>$890B vs. $869B</b>. Global Banking: $324.7B vs. $325.1B; ex-PPP (avg. $4.1B vs. $7.7B) $320.6B vs. $317.4B.</p></div>
+      <div class="g"><div class="k"><sup>(E)</sup> Global Liquidity Sources (GLS)</div><p>Cash and high-quality, liquid, unencumbered securities — U.S. government, U.S. agency, U.S. agency MBS, a select group of non-U.S. government and supranational securities, and other investment-grade securities — readily available to meet funding needs. Excludes Federal Reserve Discount Window and FHLB borrowing capacity; transfers among legal entities may be subject to regulatory and other restrictions.</p></div>
+      <div class="g"><div class="k"><sup>(F)</sup> Regulatory capital</div><p>Ratios at September 30, 2021 are <b>preliminary</b>. The Corporation reports under both the Standardized and Advanced approaches; <b>the lower ratio is used to assess capital adequacy</b> — for CET1, the Standardized approach for 9/30/21, 6/30/21 and 9/30/20. SLR exposure at 9/30/20 excluded U.S. Treasury securities and deposits at Federal Reserve Banks.</p></div>
+      <div class="g"><div class="k"><sup>(G)</sup> Global Markets — net DVA <span class="tag">NON-GAAP</span></div><p>Net DVA losses: <b>$(20)M / $(34)M / $(116)M</b>; FICC net DVA losses <b>$(16)M / $(28)M / $(107)M</b>; Equities net DVA gains (losses) <b>$(4)M / $(6)M / $(9)M</b> (9/30/21, 6/30/21, 9/30/20). Sales &amp; trading revenue incl. DVA: FICC $2,009M/$1,937M/$2,019M; Equities $1,605M/$1,624M/$1,205M; Total $3,614M/$3,561M/$3,224M. Excl. net DVA: FICC $2,025M/$1,965M/$2,126M; Equities $1,609M/$1,630M/$1,214M; Total <b>$3,634M/$3,595M/$3,340M</b>.</p></div>
+      <div class="g"><div class="k"><sup>(H)</sup> Pretax, pre-provision income (PTPI) <span class="tag">NON-GAAP</span></div><p>Consolidated pretax income with the provision for credit losses added back. Management believes PTPI helps assess the ability to generate earnings to cover credit losses through a credit cycle and isolates the impact of provision, which can vary significantly between periods. Reconciliations on page 19.</p></div>
+    </div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — p.10, endnotes (A)–(H) (dollars in millions unless noted; periods: 9/30/2021, 6/30/2021, 9/30/2020)</span><span>Slide 13 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 14 — CAVEATS ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Reading Guide</div>
+    <div class="title">Caveats and conventions: how to read this deck responsibly</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col">
+        <h3 class="sec">Presentation conventions</h3>
+        <ul class="b">
+          <li><b>Comparisons are to the year-ago quarter (Q3-20) unless noted<sup>1</sup></b> — most growth figures in this deck are year over year, not quarter over quarter.</li>
+          <li><b>Loan and deposit balances are shown on an average basis unless noted<sup>1</sup></b>; "EOP" items are at end of period.</li>
+          <li><b>Segments and All Other are reported on a fully taxable-equivalent (FTE) basis<sup>1,2</sup></b> — tax-exempt income is adjusted upward to make it comparable with taxable income.</li>
+          <li><b>Non-GAAP measures used here:</b> pretax, pre-provision income (PTPI)<sup>(H)</sup>; NII on an FTE basis<sup>(B)</sup>; Global Markets revenue and net income excluding net DVA<sup>(G)</sup>; tangible common equity, tangible book value and related ratios (p.9, note 1; reconciliations on p.19). GAAP reconciliations appear in the release (p.19).</li>
+          <li><b>Credit ratios do not include loans accounted for under the fair value option</b> (p.8); charge-off ratios are annualized for quarterly presentation (p.14).</li>
+          <li><b>ROAC</b> is a management measure: net income adjusted for cost of funds, earnings credits and certain intangible-related expenses, ÷ average allocated capital; other companies may calculate it differently. n/m = not meaningful (p.16).</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3 class="sec">Specific caveats to keep in mind</h3>
+        <ul class="b">
+          <li><b>Regulatory capital ratios at September 30, 2021 are preliminary<sup>(F)</sup></b> and reported under both Standardized and Advanced approaches; the lower (Standardized for CET1) is used to assess adequacy.</li>
+          <li><b>All Other's results swing with one-off tax items:</b> Q2-21 and Q3-20 included positive income tax adjustments from the revaluation of U.K. deferred tax assets of $2.0B and $0.7B, respectively (p.7). Q3-21 corporate effective tax rate was 14% (~25% excluding ESG tax credits).</li>
+          <li><b>Q2-21 company net income of $9.2B included a $1.2B income tax benefit and a larger provision benefit</b> (p.2) — useful context when comparing quarters.</li>
+          <li><b>Current-period information is preliminary</b> and based on company data available at the time of the presentation (p.14).</li>
+          <li><b>Certain prior-period amounts have been reclassified</b> among the segments to conform to current-period presentation (p.16).</li>
+          <li><b>Third-party rankings</b> (J.D. Power, Dealogic, Euromoney, etc.) are as cited in the release; see page 11 for the full list of business-leadership sources.</li>
+          <li><b>The release contains forward-looking statements</b> that are subject to risks and uncertainties (litigation, interest rates, credit conditions, regulation, pandemics, and other matters discussed in Item 1A of the 2020 Form 10-K); actual results may differ materially, and the company undertakes no obligation to update them (pp.12–13).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release — pp.1, 7, 8, 10, 11, 12–14 (endnotes, footnotes and disclosures)</span><span>Slide 14 of 15</span></div>
+</section>
+
+<!-- ============================ SLIDE 15 — SOURCES ============================ -->
+<section class="slide">
+  <div class="wrap">
+    <div class="kicker">Appendix</div>
+    <div class="title">Sources and slide map</div>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="col" style="flex:1.05;">
+        <h3 class="sec">Primary source</h3>
+        <div class="callout" style="margin-bottom:14px;"><b class="t">Bank of America Q3 2021 Earnings Release</b>
+        SEC EDGAR, Exhibit 99.1 (Bank of America Corporation, filed with the SEC):<br>
+        <span style="font-size:10.5px;word-break:break-all;">https://www.sec.gov/Archives/edgar/data/70858/000007085821000098/bac09302021ex991.htm</span><br>
+        <span style="font-size:10.5px;">"Bank of America Reports Q3-21 Net Income of $7.7 Billion, EPS of $0.85" — see page 10 of the release for endnotes; current-period information is preliminary.</span></div>
+        <h3 class="sec">Slide-by-slide citations</h3>
+        <table class="fin" style="font-size:11.3px;">
+          <thead><tr><th style="text-align:left;">Slides</th><th style="text-align:left;">Release section (page)</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td style="text-align:left;">Q3-21 headline + CEO commentary (p.1)</td></tr>
+            <tr><td>2</td><td style="text-align:left;">Q3-21 Financial &amp; Business Segment Highlights (p.1)</td></tr>
+            <tr><td>3–4</td><td style="text-align:left;">Bank of America Financial Highlights — three months ended (p.2), incl. CET-1, GLS, NCO panels and CFO commentary</td></tr>
+            <tr><td>5</td><td style="text-align:left;">Consumer Banking Financial Results (p.3)</td></tr>
+            <tr><td>6</td><td style="text-align:left;">Global Wealth and Investment Management Financial Results (p.4)</td></tr>
+            <tr><td>7</td><td style="text-align:left;">Global Banking Financial Results (p.5) + client capital figures (p.1)</td></tr>
+            <tr><td>8</td><td style="text-align:left;">Global Markets Financial Results (p.6) + endnote G table (p.10)</td></tr>
+            <tr><td>9</td><td style="text-align:left;">All Other Financial Results (p.7)</td></tr>
+            <tr><td>10</td><td style="text-align:left;">Credit Quality Highlights (p.8)</td></tr>
+            <tr><td>11</td><td style="text-align:left;">Balance Sheet, Liquidity and Capital Highlights (p.9)</td></tr>
+            <tr><td>12</td><td style="text-align:left;">Segment highlights (p.1) and segment results (pp.3–7, 16)</td></tr>
+            <tr><td>13</td><td style="text-align:left;">Endnotes (A)–(H) (p.10)</td></tr>
+            <tr><td>14</td><td style="text-align:left;">Endnotes, footnotes and disclosures (pp.1, 7, 8, 10, 11, 12–14)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <h3 class="sec">About this briefing</h3>
+        <ul class="b">
+          <li>Prepared for a <b>business audience without finance specialization</b>; every figure, unit, period, accounting label and caveat is taken directly from the earnings release listed at left.</li>
+          <li>"Plain English" boxes paraphrase standard banking terminology (provision, reserve, CET1, FTE, DVA, VaR, ROAC) to aid understanding — they do not add facts.</li>
+          <li>Footnote markers (1–6, A–H) refer to the release's own footnotes and endnotes; parenthesized numbers are credits/benefits.</li>
+          <li>Investor call: CEO Brian Moynihan and CFO Paul Donofrio discussed Q3 results at 9:00 a.m. ET; materials available at investor.bankofamerica.com (p.12).</li>
+          <li>Bank of America (NYSE: BAC) is one of the world's leading financial institutions, serving ~66 million consumer and small business clients through ~4,200 retail financial centers and ~17,000 ATMs, with award-winning digital banking of ~41 million active users (p.12).</li>
+          <li>This deck is an informational summary, not investment advice. See the release for complete endnotes, reconciliations of non-GAAP measures and risk disclosures.</li>
+        </ul>
+        <div class="quote" style="margin-top:14px;">"Our institutional clients also relied on us to help them manage risk through our market-leading sales and trading capabilities, where we had strong revenues this quarter. For our shareholders, we returned nearly $12 billion in capital this quarter, while continuing to support clients and communities."
+        <span class="who">— Brian Moynihan, Chairman and CEO (p.1)</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="src">Source: BofA Q3-21 Earnings Release (Exhibit 99.1), pages cited per slide</span><span>Slide 15 of 15</span></div>
+</section>
+
+</body>
+</html>

@@ -284,6 +284,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 2026-10-28 Completions 本地有界投影：真实 AZ/Qwen g50t 探索运行将旧决策压为摘要、仅重发最近推理并归档旧结果；单请求 input 峰值及投影字符峰值下降，但缓存读取减少，未缓存 input + output 略高，15 分钟内同为 2 动作、0 关。第三决策仍有未知成本请求，关键反证跨摘要后的认知连续性未核对；本节各项仍未勾选。见 [同一变更记录](plans/2026-10-27-four-layer-minimal-operational-plan.md#completions-的本地上下文上限2026-10-28)。
 
+2026-11-11 PPT v1 真实实验：az / qwen3.8-27b 的 A 臂生成草稿后发生无 usage 的请求超时，剩余费用预留不足使 B1/B2 未启动。本轮没有真实 SelfRoot reset/compaction，不能用 P1 的既有接线或草稿落盘证明关键假设、反证与续点跨压缩保留；本节待办仍未验证。见 [本轮结果与计费边界](reports/ROUND-v1.md)。
+
 ## 后续更新
 
 2026-11-02 第一阶段 MEMORY-A1：真实 `self-harness-bounded-20261102-103200` 中 ADAPT 写入 memory，runtime 持久化且下一 TASK 工作集包含 memory section；下一行动没有遵循该条 memory 的具体建议，日志无法判定是否有意修订或语义采用，实际 provider 请求内容也未单独留证。后续核对真实输入与下一轮判断/行动/反馈，合理不使用单列；收益声明需对照。此项仍开放，见[第一阶段记录](plans/2026-11-02-minimal-self-harness-agent-system.md#2026-11-02-第一阶段真实路径补记)。
