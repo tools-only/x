@@ -1,0 +1,72 @@
+{
+  "stop": "budget_or_integrity_stop",
+  "provider": "az",
+  "model": "qwen3.8-27b",
+  "arm": "A",
+  "units": [
+    {
+      "id": "unit-01",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-02",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-03",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-04",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-05",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-06",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-07",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-08",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-09",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-10",
+      "status": "not_delivered"
+    }
+  ],
+  "error": "Pi RPC process exited while waiting for an event",
+  "elapsed_seconds": 1686.3589999999967,
+  "preflight": {
+    "requests": 1,
+    "tokens": 55,
+    "usd": 0.00206,
+    "seconds": 2.1410000000032596,
+    "returned_model": "qwen3.8-27b"
+  },
+  "resources": {
+    "requests": 13,
+    "tokens": 456343,
+    "usd": 11.982379999999997,
+    "requests_with_missing_usage": 0,
+    "storage_bytes": 10189765,
+    "billing": "conservative estimate; actual invoice unknown",
+    "seconds": 1688.5
+  },
+  "root_id": null,
+  "self_revision": null,
+  "legacy_self_revision": 2,
+  "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+  "runtime_activations": [],
+  "reviews": []
+}

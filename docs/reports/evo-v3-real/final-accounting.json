@@ -1,0 +1,41 @@
+{
+  "resources": {
+    "requests": 20,
+    "tokens": 501647,
+    "usd": 12.921819999999997,
+    "seconds": 2355.3587255477905,
+    "storage_bytes": 37737932
+  },
+  "caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "started_epoch": 1794352149.7396052,
+  "ended_epoch": 1794354505.0983307,
+  "billing": "known usage plus unresolved permits at input20/output80 USD/M; actual invoice unknown",
+  "phases": [
+    "calibration-A",
+    "sample-B1",
+    "sample-B2"
+  ],
+  "experiment_end_epoch": 1794353882.1911883,
+  "posthoc": "real local renderer/checker; no provider; never in-run feedback or delivery",
+  "posthoc_end_epoch": 1794353974.809124,
+  "storage_scope": {
+    "directories": [
+      "runs\\evo-v3-real-20261111",
+      "docs\\reports\\evo-v3-real"
+    ],
+    "additional_files": [
+      "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\docs\\reports\\ANALYSIS-v2.md",
+      "C:\\Users\\qi\\tmp\\r04\\evo-design\\ANALYSIS-v2.md",
+      "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\docs\\reports\\ROUND-v3.md",
+      "C:\\Users\\qi\\tmp\\r04\\evo-design\\ROUND-v3.md"
+    ],
+    "measurement": "sum of file logical bytes, each copy counted; includes accounting copies; excludes Git object database"
+  },
+  "time_scope": "round orchestration start through accounting seal, including posthoc and report finalization up to ended_epoch; subsequent Git commit/tag are development bookkeeping"
+}

@@ -1,0 +1,604 @@
+{
+  "arm": "sample-B2",
+  "summary": {
+    "stop": "budget_or_integrity_stop",
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "arm": "B",
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_delivered"
+      }
+    ],
+    "error": "Pi RPC process exited while waiting for an event",
+    "elapsed_seconds": 10.25,
+    "preflight": {
+      "requests": 1,
+      "tokens": 55,
+      "usd": 0.00206,
+      "seconds": 5.1560000000172295,
+      "returned_model": "qwen3.8-27b"
+    },
+    "resources": {
+      "requests": 3,
+      "tokens": 11856,
+      "usd": 0.25211999999999996,
+      "requests_with_missing_usage": 0,
+      "storage_bytes": 8131894,
+      "billing": "conservative estimate; actual invoice unknown",
+      "seconds": 15.40600000001723
+    },
+    "root_id": "7d0986f9-6ec3-4d26-9441-b39183b20291",
+    "self_revision": 1,
+    "legacy_self_revision": 2,
+    "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+    "runtime_activations": [],
+    "reviews": [
+      {
+        "ref": "ledger:2",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "id": "review:ledger:0",
+          "mode": "reflect",
+          "triggers": [
+            {
+              "id": "contract:window_entry",
+              "source": "user_contract",
+              "mode": "reflect",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:18",
+        "kind": "fact",
+        "type": "review_closed",
+        "revision": 1,
+        "request": 3,
+        "value": {
+          "review": "review:ledger:0",
+          "status": "deferred",
+          "subtype": "incomplete",
+          "agent_decision": "absent",
+          "reason": "authorized budget boundary"
+        }
+      }
+    ]
+  },
+  "runtime_state": {
+    "batch": 1,
+    "batchRequests": 0,
+    "phase": "task",
+    "nextPhase": "task",
+    "note": "",
+    "noteStale": false,
+    "revision": 0,
+    "complete": false,
+    "events": [],
+    "batchClosed": false
+  },
+  "reported_task_usage": {
+    "input": 11567,
+    "output": 234,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 126,
+    "totalTokens": 11801
+  },
+  "response_stops": {
+    "toolUse": 2
+  },
+  "length_responses": [],
+  "unknown_task_requests": [],
+  "tool_calls": {
+    "read": 3
+  },
+  "tool_errors": [],
+  "decisions": [],
+  "ledger_counts": {
+    "event": 7,
+    "mode_entered": 1,
+    "provider_input": 3,
+    "assistant_reasoning": 2,
+    "request_cost": 2,
+    "tool_result": 3,
+    "review_closed": 1
+  },
+  "lifecycle": [
+    {
+      "ref": "ledger:2",
+      "kind": "fact",
+      "type": "mode_entered",
+      "revision": 1,
+      "request": 0,
+      "value": {
+        "id": "review:ledger:0",
+        "mode": "reflect",
+        "triggers": [
+          {
+            "id": "contract:window_entry",
+            "source": "user_contract",
+            "mode": "reflect",
+            "conclusion_sink": "ledger"
+          }
+        ],
+        "suspended": {
+          "step": "work",
+          "revision": 1
+        }
+      }
+    },
+    {
+      "ref": "ledger:18",
+      "kind": "fact",
+      "type": "review_closed",
+      "revision": 1,
+      "request": 3,
+      "value": {
+        "review": "review:ledger:0",
+        "status": "deferred",
+        "subtype": "incomplete",
+        "agent_decision": "absent",
+        "reason": "authorized budget boundary"
+      }
+    }
+  ],
+  "windows": [],
+  "checker_facts": [],
+  "latest_unit_facts": [],
+  "render_receipts": [],
+  "posthoc_acceptance": null,
+  "usage": [
+    {
+      "time": "2026-11-10T23:37:58.976Z",
+      "session_id": "1078100-1794353873033",
+      "batch": 1,
+      "request": 1,
+      "usage": {
+        "input": 5164,
+        "output": 173,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 103,
+        "totalTokens": 5337,
+        "cost": {
+          "input": 0.025820000000000003,
+          "output": 0.00519,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.031010000000000003
+        }
+      },
+      "tokens_used": 5337,
+      "tokens_total": 5337,
+      "conservative_usd": 0.11712,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:38:02.027Z",
+      "session_id": "1078100-1794353873033",
+      "batch": 1,
+      "request": 2,
+      "usage": {
+        "input": 6403,
+        "output": 61,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 23,
+        "totalTokens": 6464,
+        "cost": {
+          "input": 0.032015,
+          "output": 0.00183,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.033845
+        }
+      },
+      "tokens_used": 6464,
+      "tokens_total": 11801,
+      "conservative_usd": 0.25005999999999995,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    }
+  ],
+  "request_audit": [
+    {
+      "time": "2026-11-10T23:37:53.276Z",
+      "session_id": "1078100-1794353873033",
+      "batch": 1,
+      "request": 1,
+      "batch_request": 0,
+      "estimated_usd_so_far": 1.10902,
+      "composition": {
+        "system_chars": 10322,
+        "schema_chars": 7391,
+        "history_chars": 680,
+        "reasoning_chars": 0,
+        "payload_bytes": 18587,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 22683,
+        "output_tokens_bound": 8192,
+        "tokens": 30875,
+        "usd": 1.10902,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": [
+              "exit",
+              "validation",
+              "capsule",
+              "inherit",
+              "reset"
+            ]
+          },
+          "mode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "subtype": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": "object"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "window": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "restore": {
+            "type": "integer"
+          },
+          "value": {},
+          "decisionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "op": {
+                  "const": "exit"
+                }
+              },
+              "required": [
+                "op"
+              ]
+            },
+            "then": {
+              "properties": {
+                "result": {
+                  "type": "object",
+                  "properties": {
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reason"
+                  ]
+                }
+              },
+              "required": [
+                "result"
+              ]
+            }
+          }
+        ]
+      },
+      "reasoning_message_count": 0,
+      "schema_tool_names": [
+        "read",
+        "grep",
+        "ls",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "read_self",
+        "acceptance",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:37:59.048Z",
+      "session_id": "1078100-1794353873033",
+      "batch": 1,
+      "request": 2,
+      "batch_request": 0,
+      "estimated_usd_so_far": 1.32822,
+      "composition": {
+        "system_chars": 10335,
+        "schema_chars": 7391,
+        "history_chars": 5768,
+        "reasoning_chars": 399,
+        "payload_bytes": 23691,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 27787,
+        "output_tokens_bound": 8192,
+        "tokens": 35979,
+        "usd": 1.2111,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": [
+              "exit",
+              "validation",
+              "capsule",
+              "inherit",
+              "reset"
+            ]
+          },
+          "mode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "subtype": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": "object"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "window": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "restore": {
+            "type": "integer"
+          },
+          "value": {},
+          "decisionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "op": {
+                  "const": "exit"
+                }
+              },
+              "required": [
+                "op"
+              ]
+            },
+            "then": {
+              "properties": {
+                "result": {
+                  "type": "object",
+                  "properties": {
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reason"
+                  ]
+                }
+              },
+              "required": [
+                "result"
+              ]
+            }
+          }
+        ]
+      },
+      "reasoning_message_count": 1,
+      "schema_tool_names": [
+        "read",
+        "grep",
+        "ls",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "read_self",
+        "acceptance",
+        "office"
+      ]
+    }
+  ],
+  "hashes": {
+    "session.jsonl": "b125576469b628ea9b7f915272a701df5b8d97d7b9faf1e9d39387ac0e6e701e",
+    "pi-events.jsonl": "ba1d95705f672bb74fa6d46f13b6aa420dad7f4514448befc95ca6a9f9fe0697",
+    ".harness\\live-self.json": "48311a5e1320d45959623131836e3001ed867ba9796d5aef25035d59c96ddce6",
+    "harness\\provider-requests.jsonl": "9103e286b3740cb30c9fc312ee8826e625931b814f691bbebab25cf3f50e9ae8",
+    "harness\\model-usage.jsonl": "976f344fe826dc146f757f43e9bb75eb4863cf9dedacd80c3730882783cc21f3"
+  },
+  "runtime_definitions": [
+    {
+      "revision": 1,
+      "policy": {
+        "request": {
+          "maxOutputTokens": 8192
+        },
+        "modes": {
+          "execute": {
+            "tools": [
+              "read",
+              "write",
+              "edit",
+              "ls",
+              "grep",
+              "python",
+              "office.render",
+              "office.look",
+              "office.deliver",
+              "acceptance",
+              "submit_unit",
+              "agent_tools"
+            ],
+            "instruction": "Continue the current task.",
+            "exitSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ]
+            }
+          },
+          "reflect": {
+            "tools": [
+              "read",
+              "ls",
+              "grep",
+              "office.look",
+              "acceptance"
+            ],
+            "instruction": "Review the pinned self/evidence. You choose scope, method and whether to change anything. Exit with decide(op=\"exit\").",
+            "exitSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ]
+            }
+          },
+          "consolidate": {
+            "tools": [
+              "read",
+              "ls",
+              "grep",
+              "acceptance"
+            ],
+            "instruction": "Organize this task's evidence and bounded inheritance records if useful; no automatic cross-task defaults.",
+            "exitSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        },
+        "routes": [],
+        "methods": {},
+        "memory": {
+          "names": "*",
+          "order": "name",
+          "write": "replace"
+        },
+        "context": {
+          "order": [
+            "prompts",
+            "memory",
+            "skills"
+          ],
+          "instruction": "",
+          "reasoning": "latest"
+        }
+      },
+      "components": [
+        {
+          "kind": "prompt",
+          "name": "ppt_baseline_guidance",
+          "version": 1,
+          "hash": "a42d43112ac1c5e1690bd9f9739dae1d4d69a824bae00a7add9a6c0a7c0faacf"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1722 @@
+{
+  "arm": "calibration-A",
+  "summary": {
+    "stop": "budget_or_integrity_stop",
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "arm": "A",
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_delivered"
+      }
+    ],
+    "error": "Pi RPC process exited while waiting for an event",
+    "elapsed_seconds": 1686.3589999999967,
+    "preflight": {
+      "requests": 1,
+      "tokens": 55,
+      "usd": 0.00206,
+      "seconds": 2.1410000000032596,
+      "returned_model": "qwen3.8-27b"
+    },
+    "resources": {
+      "requests": 13,
+      "tokens": 456343,
+      "usd": 11.982379999999997,
+      "requests_with_missing_usage": 0,
+      "storage_bytes": 10189765,
+      "billing": "conservative estimate; actual invoice unknown",
+      "seconds": 1688.5
+    },
+    "root_id": null,
+    "self_revision": null,
+    "legacy_self_revision": 2,
+    "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+    "runtime_activations": [],
+    "reviews": []
+  },
+  "runtime_state": {
+    "batch": 3,
+    "batchRequests": 0,
+    "phase": "task",
+    "nextPhase": "task",
+    "note": "",
+    "noteStale": false,
+    "revision": 0,
+    "complete": false,
+    "events": [],
+    "batchClosed": false
+  },
+  "reported_task_usage": {
+    "input": 318984,
+    "output": 47576,
+    "cacheRead": 89728,
+    "cacheWrite": 0,
+    "reasoning": 29550,
+    "totalTokens": 456288
+  },
+  "response_stops": {
+    "toolUse": 9,
+    "length": 3
+  },
+  "length_responses": [
+    {
+      "usage": {
+        "input": 6310,
+        "output": 8192,
+        "cacheRead": 19072,
+        "cacheWrite": 0,
+        "reasoning": 8192,
+        "totalTokens": 33574,
+        "cost": {
+          "input": 0.03155,
+          "output": 0.24576,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.27731
+        }
+      },
+      "content_types": [
+        "thinking"
+      ]
+    },
+    {
+      "usage": {
+        "input": 3581,
+        "output": 8192,
+        "cacheRead": 24064,
+        "cacheWrite": 0,
+        "reasoning": 8192,
+        "totalTokens": 35837,
+        "cost": {
+          "input": 0.017905,
+          "output": 0.24576,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.263665
+        }
+      },
+      "content_types": [
+        "thinking"
+      ]
+    },
+    {
+      "usage": {
+        "input": 27685,
+        "output": 8192,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 8031,
+        "totalTokens": 35877,
+        "cost": {
+          "input": 0.13842500000000002,
+          "output": 0.24576,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.384185
+        }
+      },
+      "content_types": [
+        "thinking",
+        "text",
+        "toolCall"
+      ]
+    }
+  ],
+  "unknown_task_requests": [],
+  "tool_calls": {
+    "read": 5,
+    "ls": 2,
+    "write": 2,
+    "python": 5
+  },
+  "tool_errors": [
+    {
+      "tool": "write",
+      "call": "call_78f1d05e32d344ccaf8488ea",
+      "content": [
+        {
+          "type": "text",
+          "text": "Tool call \"write\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."
+        }
+      ]
+    },
+    {
+      "tool": "python",
+      "call": "call_8acf8cfe28134042bf60fd9c",
+      "content": [
+        {
+          "type": "text",
+          "text": "SyntaxError: unterminated triple-quoted string literal (detected at line 4) (<skill>, line 1)\nline 1"
+        }
+      ]
+    }
+  ],
+  "decisions": [],
+  "ledger_counts": {},
+  "lifecycle": [],
+  "windows": [],
+  "checker_facts": [],
+  "latest_unit_facts": [],
+  "render_receipts": [],
+  "posthoc_acceptance": {
+    "measurement": "development posthoc; not Agent render, feedback or delivery",
+    "source": "protected_acceptance",
+    "checker": {
+      "version": "literal-normalized-render-v2",
+      "sha256": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a"
+    },
+    "source_hashes": {
+      "data/available-fonts.json": "b51ed8165fe176e7774f5130b23320cbac61f93ecfb8e513c1bdf5007cc70b12",
+      "data/environment.md": "ae728d205203d049f105eff0a02507f9f0c9667d938c5dcbe23b0e39598cedb5",
+      "data/instructions.md": "67aec1aead63d54f51cd793c7361633ddffbe091a7a17d574652eb24a2a19f0e",
+      "data/material.txt": "493262215dcf09d678387ed416c6c168df27042d95467f45799e5d830545f1fe"
+    },
+    "artifact": {
+      "path": "artifacts/presentation.html",
+      "sha256": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7",
+      "bytes": 46420
+    },
+    "slide_count": {
+      "expected": 15,
+      "observed": 12,
+      "matches": false
+    },
+    "rendered_source_matches_current": true,
+    "unit": "whole_deck",
+    "units": [
+      {
+        "id": "unit-01",
+        "literal_matches": [
+          {
+            "text": "$7.7",
+            "found": true
+          },
+          {
+            "text": "$0.85",
+            "found": true
+          },
+          {
+            "text": "$3.0",
+            "found": true
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 1",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 3,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$7.7",
+              "token": "7.7",
+              "found": true
+            },
+            {
+              "text": "$0.85",
+              "token": "0.85",
+              "found": true
+            },
+            {
+              "text": "$3.0",
+              "token": "3.0",
+              "found": false
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-02",
+        "literal_matches": [
+          {
+            "text": "$22.8",
+            "found": true
+          },
+          {
+            "text": "$21.5",
+            "found": false
+          },
+          {
+            "text": "$20.3",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 2",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 3,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$22.8",
+              "token": "22.8",
+              "found": true
+            },
+            {
+              "text": "$21.5",
+              "token": "21.5",
+              "found": true
+            },
+            {
+              "text": "$20.3",
+              "token": "20.3",
+              "found": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-03",
+        "literal_matches": [
+          {
+            "text": "$8,838",
+            "found": false
+          },
+          {
+            "text": "$8,186",
+            "found": false
+          },
+          {
+            "text": "$8,039",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 3",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 2,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$8,838",
+              "token": "8838",
+              "found": true
+            },
+            {
+              "text": "$8,186",
+              "token": "8186",
+              "found": true
+            },
+            {
+              "text": "$8,039",
+              "token": "8039",
+              "found": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-04",
+        "literal_matches": [
+          {
+            "text": "$5,310",
+            "found": false
+          },
+          {
+            "text": "$5,065",
+            "found": false
+          },
+          {
+            "text": "$4,546",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 4",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 1,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$5,310",
+              "token": "5310",
+              "found": true
+            },
+            {
+              "text": "$5,065",
+              "token": "5065",
+              "found": true
+            },
+            {
+              "text": "$4,546",
+              "token": "4546",
+              "found": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-05",
+        "literal_matches": [
+          {
+            "text": "$5,244",
+            "found": false
+          },
+          {
+            "text": "$5,090",
+            "found": false
+          },
+          {
+            "text": "$4,517",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 5",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 1,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$5,244",
+              "token": "5244",
+              "found": true
+            },
+            {
+              "text": "$5,090",
+              "token": "5090",
+              "found": true
+            },
+            {
+              "text": "$4,517",
+              "token": "4517",
+              "found": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-06",
+        "literal_matches": [
+          {
+            "text": "$4,519",
+            "found": false
+          },
+          {
+            "text": "$4,720",
+            "found": false
+          },
+          {
+            "text": "$4,283",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 6",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 1,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$4,519",
+              "token": "4519",
+              "found": true
+            },
+            {
+              "text": "$4,720",
+              "token": "4720",
+              "found": true
+            },
+            {
+              "text": "$4,283",
+              "token": "4283",
+              "found": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-07",
+        "literal_matches": [
+          {
+            "text": "$1,861",
+            "found": false
+          },
+          {
+            "text": "$298",
+            "found": true
+          },
+          {
+            "text": "$54",
+            "found": true
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 7",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 1,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$1,861",
+              "token": "1861",
+              "found": true
+            },
+            {
+              "text": "$298",
+              "token": "298",
+              "found": true
+            },
+            {
+              "text": "$54",
+              "token": "54",
+              "found": false
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-08",
+        "literal_matches": [
+          {
+            "text": "$624",
+            "found": true
+          },
+          {
+            "text": "$1,621",
+            "found": false
+          },
+          {
+            "text": "$1,389",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 8",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 1,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$624",
+              "token": "624",
+              "found": false
+            },
+            {
+              "text": "$1,621",
+              "token": "1621",
+              "found": false
+            },
+            {
+              "text": "$1,389",
+              "token": "1389",
+              "found": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-09",
+        "literal_matches": [
+          {
+            "text": "$3,085.4",
+            "found": false
+          },
+          {
+            "text": "$3,029.9",
+            "found": false
+          },
+          {
+            "text": "$2,738.5",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 9",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": false,
+          "cited_fragments": 0,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$3,085.4",
+              "token": "3085.4",
+              "found": false
+            },
+            {
+              "text": "$3,029.9",
+              "token": "3029.9",
+              "found": false
+            },
+            {
+              "text": "$2,738.5",
+              "token": "2738.5",
+              "found": false
+            }
+          ]
+        }
+      },
+      {
+        "id": "unit-10",
+        "literal_matches": [
+          {
+            "text": "$11.2",
+            "found": false
+          },
+          {
+            "text": "$10.3",
+            "found": false
+          },
+          {
+            "text": "$10.2",
+            "found": false
+          }
+        ],
+        "citation_literal": {
+          "text": "Source page 10",
+          "found": false
+        },
+        "normalized": {
+          "citation_found": true,
+          "cited_fragments": 4,
+          "scope": "slide_elements",
+          "matches": [
+            {
+              "text": "$11.2",
+              "token": "11.2",
+              "found": false
+            },
+            {
+              "text": "$10.3",
+              "token": "10.3",
+              "found": false
+            },
+            {
+              "text": "$10.2",
+              "token": "10.2",
+              "found": false
+            }
+          ]
+        }
+      }
+    ],
+    "renderer": {
+      "exit": 0,
+      "receipt": {
+        "revision": 1,
+        "slides": 12,
+        "native_objects": {
+          "html": 1
+        },
+        "warnings": [],
+        "renderer": "msedge.exe headless HTML",
+        "output": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-real-20261111\\posthoc\\calibration-A\\exports\\v001",
+        "html": "presentation.html",
+        "source_path": "artifacts/presentation.html",
+        "source_sha256": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7",
+        "source": {
+          "format": "html",
+          "path": "artifacts/presentation.html",
+          "slides": [
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {}
+          ]
+        },
+        "title": "Bank of America — Q3 2021 Earnings in Plain English"
+      },
+      "original_ref": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-real-20261111\\posthoc\\calibration-A\\exports\\v001",
+      "images": [
+        "slide-01.png",
+        "slide-02.png",
+        "slide-03.png",
+        "slide-04.png",
+        "slide-05.png",
+        "slide-06.png",
+        "slide-07.png",
+        "slide-08.png",
+        "slide-09.png",
+        "slide-10.png",
+        "slide-11.png",
+        "slide-12.png"
+      ]
+    },
+    "limitations": [
+      "literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion",
+      "narrative, aesthetics and persuasion unmeasured",
+      "geometry limited to renderer warnings",
+      "HTML delivery; not a native editable pptx"
+    ]
+  },
+  "usage": [
+    {
+      "time": "2026-11-10T23:09:24.465Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 1,
+      "request": 1,
+      "usage": {
+        "input": 3980,
+        "output": 95,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 14,
+        "totalTokens": 4075,
+        "cost": {
+          "input": 0.0199,
+          "output": 0.00285,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.02275
+        }
+      },
+      "tokens_used": 4075,
+      "tokens_total": 4075,
+      "conservative_usd": 0.08719999999999994,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:09:31.644Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 1,
+      "request": 2,
+      "usage": {
+        "input": 20274,
+        "output": 92,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 25,
+        "totalTokens": 20366,
+        "cost": {
+          "input": 0.10137,
+          "output": 0.00276,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.10413
+        }
+      },
+      "tokens_used": 20366,
+      "tokens_total": 24441,
+      "conservative_usd": 0.5000400000000003,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:12:26.528Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 1,
+      "request": 3,
+      "usage": {
+        "input": 6310,
+        "output": 8192,
+        "cacheRead": 19072,
+        "cacheWrite": 0,
+        "reasoning": 8192,
+        "totalTokens": 33574,
+        "cost": {
+          "input": 0.03155,
+          "output": 0.24576,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.27731
+        }
+      },
+      "tokens_used": 33574,
+      "tokens_total": 58015,
+      "conservative_usd": 1.6630400000000003,
+      "usage_status": "reported",
+      "stopReason": "length"
+    },
+    {
+      "time": "2026-11-10T23:13:12.306Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 2,
+      "request": 4,
+      "usage": {
+        "input": 25421,
+        "output": 1796,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 1718,
+        "totalTokens": 27217,
+        "cost": {
+          "input": 0.12710500000000002,
+          "output": 0.053880000000000004,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.18098500000000003
+        }
+      },
+      "tokens_used": 27217,
+      "tokens_total": 85232,
+      "conservative_usd": 2.31514,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:16:14.755Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 2,
+      "request": 5,
+      "usage": {
+        "input": 3581,
+        "output": 8192,
+        "cacheRead": 24064,
+        "cacheWrite": 0,
+        "reasoning": 8192,
+        "totalTokens": 35837,
+        "cost": {
+          "input": 0.017905,
+          "output": 0.24576,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.263665
+        }
+      },
+      "tokens_used": 35837,
+      "tokens_total": 121069,
+      "conservative_usd": 3.5233999999999996,
+      "usage_status": "reported",
+      "stopReason": "length"
+    },
+    {
+      "time": "2026-11-10T23:19:18.835Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 6,
+      "usage": {
+        "input": 27685,
+        "output": 8192,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 8031,
+        "totalTokens": 35877,
+        "cost": {
+          "input": 0.13842500000000002,
+          "output": 0.24576,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.384185
+        }
+      },
+      "tokens_used": 35877,
+      "tokens_total": 156946,
+      "conservative_usd": 4.73246,
+      "usage_status": "reported",
+      "stopReason": "length"
+    },
+    {
+      "time": "2026-11-10T23:24:04.919Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 7,
+      "usage": {
+        "input": 35941,
+        "output": 5754,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 2362,
+        "totalTokens": 41695,
+        "cost": {
+          "input": 0.179705,
+          "output": 0.17262,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.352325
+        }
+      },
+      "tokens_used": 41695,
+      "tokens_total": 198641,
+      "conservative_usd": 5.9116,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:27:49.759Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 8,
+      "usage": {
+        "input": 41893,
+        "output": 5848,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 246,
+        "totalTokens": 47741,
+        "cost": {
+          "input": 0.209465,
+          "output": 0.17544,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.38490500000000005
+        }
+      },
+      "tokens_used": 47741,
+      "tokens_total": 246382,
+      "conservative_usd": 7.217299999999999,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:28:47.110Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 9,
+      "usage": {
+        "input": 47774,
+        "output": 257,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 156,
+        "totalTokens": 48031,
+        "cost": {
+          "input": 0.23887000000000003,
+          "output": 0.00771,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.24658000000000002
+        }
+      },
+      "tokens_used": 48031,
+      "tokens_total": 294413,
+      "conservative_usd": 8.19334,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:32:03.266Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 10,
+      "usage": {
+        "input": 1483,
+        "output": 2714,
+        "cacheRead": 46592,
+        "cacheWrite": 0,
+        "reasoning": 390,
+        "totalTokens": 50789,
+        "cost": {
+          "input": 0.007415000000000001,
+          "output": 0.08142,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.08883500000000001
+        }
+      },
+      "tokens_used": 50789,
+      "tokens_total": 345202,
+      "conservative_usd": 9.371959999999998,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:34:22.030Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 11,
+      "usage": {
+        "input": 50820,
+        "output": 2974,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 133,
+        "totalTokens": 53794,
+        "cost": {
+          "input": 0.25410000000000005,
+          "output": 0.08922000000000001,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.34332000000000007
+        }
+      },
+      "tokens_used": 53794,
+      "tokens_total": 398996,
+      "conservative_usd": 10.626279999999998,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    },
+    {
+      "time": "2026-11-10T23:37:18.454Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 12,
+      "usage": {
+        "input": 53822,
+        "output": 3470,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 91,
+        "totalTokens": 57292,
+        "cost": {
+          "input": 0.26911,
+          "output": 0.1041,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.37321000000000004
+        }
+      },
+      "tokens_used": 57292,
+      "tokens_total": 456288,
+      "conservative_usd": 11.980319999999997,
+      "usage_status": "reported",
+      "stopReason": "toolUse"
+    }
+  ],
+  "request_audit": [
+    {
+      "time": "2026-11-10T23:09:15.964Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 1,
+      "request": 1,
+      "batch_request": 0,
+      "estimated_usd_so_far": 1.04654,
+      "composition": {
+        "system_chars": 7269,
+        "schema_chars": 7348,
+        "history_chars": 650,
+        "reasoning_chars": 0,
+        "payload_bytes": 15463,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 19559,
+        "output_tokens_bound": 8192,
+        "tokens": 27751,
+        "usd": 1.04654,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 0,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:09:24.525Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 1,
+      "request": 2,
+      "batch_request": 0,
+      "estimated_usd_so_far": 2.27292,
+      "composition": {
+        "system_chars": 7269,
+        "schema_chars": 7348,
+        "history_chars": 57093,
+        "reasoning_chars": 62,
+        "payload_bytes": 72422,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 76518,
+        "output_tokens_bound": 8192,
+        "tokens": 84710,
+        "usd": 2.18572,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 1,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:09:31.693Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 1,
+      "request": 3,
+      "batch_request": 0,
+      "estimated_usd_so_far": 2.94422,
+      "composition": {
+        "system_chars": 7269,
+        "schema_chars": 7348,
+        "history_chars": 69944,
+        "reasoning_chars": 175,
+        "payload_bytes": 85345,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 89441,
+        "output_tokens_bound": 8192,
+        "tokens": 97633,
+        "usd": 2.44418,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 2,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:12:26.570Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 2,
+      "request": 4,
+      "batch_request": 0,
+      "estimated_usd_so_far": 4.11306,
+      "composition": {
+        "system_chars": 7269,
+        "schema_chars": 7348,
+        "history_chars": 70234,
+        "reasoning_chars": 175,
+        "payload_bytes": 85637,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 89733,
+        "output_tokens_bound": 8192,
+        "tokens": 97925,
+        "usd": 2.45002,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 2,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:13:12.349Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 2,
+      "request": 5,
+      "batch_request": 0,
+      "estimated_usd_so_far": 4.92246,
+      "composition": {
+        "system_chars": 7269,
+        "schema_chars": 7348,
+        "history_chars": 78068,
+        "reasoning_chars": 5294,
+        "payload_bytes": 93502,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 97598,
+        "output_tokens_bound": 8192,
+        "tokens": 105790,
+        "usd": 2.60732,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 3,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:16:14.795Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 6,
+      "batch_request": 0,
+      "estimated_usd_so_far": 6.1365799999999995,
+      "composition": {
+        "system_chars": 7269,
+        "schema_chars": 7348,
+        "history_chars": 78359,
+        "reasoning_chars": 5294,
+        "payload_bytes": 93795,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 97891,
+        "output_tokens_bound": 8192,
+        "tokens": 106083,
+        "usd": 2.61318,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 3,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:19:18.870Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 7,
+      "batch_request": 0,
+      "estimated_usd_so_far": 7.7431,
+      "composition": {
+        "system_chars": 7269,
+        "schema_chars": 7348,
+        "history_chars": 98123,
+        "reasoning_chars": 23797,
+        "payload_bytes": 113668,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 117764,
+        "output_tokens_bound": 8192,
+        "tokens": 125956,
+        "usd": 3.01064,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 4,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:24:04.970Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 8,
+      "batch_request": 0,
+      "estimated_usd_so_far": 9.28024,
+      "composition": {
+        "system_chars": 7434,
+        "schema_chars": 7348,
+        "history_chars": 115743,
+        "reasoning_chars": 30903,
+        "payload_bytes": 131568,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 135664,
+        "output_tokens_bound": 8192,
+        "tokens": 143856,
+        "usd": 3.36864,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 5,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:27:52.419Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 9,
+      "batch_request": 0,
+      "estimated_usd_so_far": 10.945739999999999,
+      "composition": {
+        "system_chars": 7434,
+        "schema_chars": 7348,
+        "history_chars": 133654,
+        "reasoning_chars": 31747,
+        "payload_bytes": 149558,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 153654,
+        "output_tokens_bound": 8192,
+        "tokens": 161846,
+        "usd": 3.72844,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 6,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:28:49.506Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 10,
+      "batch_request": 0,
+      "estimated_usd_so_far": 11.944339999999999,
+      "composition": {
+        "system_chars": 7434,
+        "schema_chars": 7348,
+        "history_chars": 134767,
+        "reasoning_chars": 32242,
+        "payload_bytes": 150686,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 154782,
+        "output_tokens_bound": 8192,
+        "tokens": 162974,
+        "usd": 3.751,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 7,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:32:05.541Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 11,
+      "batch_request": 0,
+      "estimated_usd_so_far": 13.298299999999998,
+      "composition": {
+        "system_chars": 7434,
+        "schema_chars": 7348,
+        "history_chars": 143483,
+        "reasoning_chars": 33598,
+        "payload_bytes": 159453,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 163549,
+        "output_tokens_bound": 8192,
+        "tokens": 171741,
+        "usd": 3.92634,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 8,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    },
+    {
+      "time": "2026-11-10T23:34:24.297Z",
+      "session_id": "1065168-1794352155667",
+      "batch": 3,
+      "request": 12,
+      "batch_request": 0,
+      "estimated_usd_so_far": 14.731399999999997,
+      "composition": {
+        "system_chars": 7434,
+        "schema_chars": 7348,
+        "history_chars": 152378,
+        "reasoning_chars": 34012,
+        "payload_bytes": 168392,
+        "basis": "serialized characters/bytes; tokens are provider-reported separately"
+      },
+      "permit": {
+        "input_tokens_bound": 172488,
+        "output_tokens_bound": 8192,
+        "tokens": 180680,
+        "usd": 4.10512,
+        "basis": "serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"
+      },
+      "decide_schema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "evidenceRefs",
+          "result"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {}
+        }
+      },
+      "reasoning_message_count": 9,
+      "schema_tool_names": [
+        "read",
+        "write",
+        "edit",
+        "ls",
+        "grep",
+        "python",
+        "read_self_component",
+        "reflect_component",
+        "reflect_orchestration",
+        "decide",
+        "office"
+      ]
+    }
+  ],
+  "hashes": {
+    "session.jsonl": "9e746a4f2ae042fbd2a2ddb28987478485ffa6821901da7839fb7f92795546a9",
+    "pi-events.jsonl": "39a730fd04aa898c5acd8d8fb1510ef7ebf29d2b51198989d026f79f75884c0f",
+    ".harness\\live-self.json": "c0bf268dc6017f6d061580046fb260da0295d41895320a005441e985329219ac",
+    "harness\\provider-requests.jsonl": "b321e992cde70135c12c09dc85efe3044f24bac9f3fc5e87f9403635d450f72b",
+    "harness\\model-usage.jsonl": "a4492fc79135f0bfddcb1d1c37bf3ddc1e29a608334e06ec5257c998d3419fdb",
+    "workspace\\artifacts\\presentation.html": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7"
+  },
+  "runtime_definitions": []
+}

@@ -1,0 +1,514 @@
+{
+  "measurement": "development posthoc; not Agent render, feedback or delivery",
+  "source": "protected_acceptance",
+  "checker": {
+    "version": "literal-normalized-render-v2",
+    "sha256": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a"
+  },
+  "source_hashes": {
+    "data/available-fonts.json": "b51ed8165fe176e7774f5130b23320cbac61f93ecfb8e513c1bdf5007cc70b12",
+    "data/environment.md": "ae728d205203d049f105eff0a02507f9f0c9667d938c5dcbe23b0e39598cedb5",
+    "data/instructions.md": "67aec1aead63d54f51cd793c7361633ddffbe091a7a17d574652eb24a2a19f0e",
+    "data/material.txt": "493262215dcf09d678387ed416c6c168df27042d95467f45799e5d830545f1fe"
+  },
+  "artifact": {
+    "path": "artifacts/presentation.html",
+    "sha256": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7",
+    "bytes": 46420
+  },
+  "slide_count": {
+    "expected": 15,
+    "observed": 12,
+    "matches": false
+  },
+  "rendered_source_matches_current": true,
+  "unit": "whole_deck",
+  "units": [
+    {
+      "id": "unit-01",
+      "literal_matches": [
+        {
+          "text": "$7.7",
+          "found": true
+        },
+        {
+          "text": "$0.85",
+          "found": true
+        },
+        {
+          "text": "$3.0",
+          "found": true
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 1",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 3,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$7.7",
+            "token": "7.7",
+            "found": true
+          },
+          {
+            "text": "$0.85",
+            "token": "0.85",
+            "found": true
+          },
+          {
+            "text": "$3.0",
+            "token": "3.0",
+            "found": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-02",
+      "literal_matches": [
+        {
+          "text": "$22.8",
+          "found": true
+        },
+        {
+          "text": "$21.5",
+          "found": false
+        },
+        {
+          "text": "$20.3",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 2",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 3,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$22.8",
+            "token": "22.8",
+            "found": true
+          },
+          {
+            "text": "$21.5",
+            "token": "21.5",
+            "found": true
+          },
+          {
+            "text": "$20.3",
+            "token": "20.3",
+            "found": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-03",
+      "literal_matches": [
+        {
+          "text": "$8,838",
+          "found": false
+        },
+        {
+          "text": "$8,186",
+          "found": false
+        },
+        {
+          "text": "$8,039",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 3",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 2,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$8,838",
+            "token": "8838",
+            "found": true
+          },
+          {
+            "text": "$8,186",
+            "token": "8186",
+            "found": true
+          },
+          {
+            "text": "$8,039",
+            "token": "8039",
+            "found": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-04",
+      "literal_matches": [
+        {
+          "text": "$5,310",
+          "found": false
+        },
+        {
+          "text": "$5,065",
+          "found": false
+        },
+        {
+          "text": "$4,546",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 4",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 1,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$5,310",
+            "token": "5310",
+            "found": true
+          },
+          {
+            "text": "$5,065",
+            "token": "5065",
+            "found": true
+          },
+          {
+            "text": "$4,546",
+            "token": "4546",
+            "found": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-05",
+      "literal_matches": [
+        {
+          "text": "$5,244",
+          "found": false
+        },
+        {
+          "text": "$5,090",
+          "found": false
+        },
+        {
+          "text": "$4,517",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 5",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 1,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$5,244",
+            "token": "5244",
+            "found": true
+          },
+          {
+            "text": "$5,090",
+            "token": "5090",
+            "found": true
+          },
+          {
+            "text": "$4,517",
+            "token": "4517",
+            "found": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-06",
+      "literal_matches": [
+        {
+          "text": "$4,519",
+          "found": false
+        },
+        {
+          "text": "$4,720",
+          "found": false
+        },
+        {
+          "text": "$4,283",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 6",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 1,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$4,519",
+            "token": "4519",
+            "found": true
+          },
+          {
+            "text": "$4,720",
+            "token": "4720",
+            "found": true
+          },
+          {
+            "text": "$4,283",
+            "token": "4283",
+            "found": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-07",
+      "literal_matches": [
+        {
+          "text": "$1,861",
+          "found": false
+        },
+        {
+          "text": "$298",
+          "found": true
+        },
+        {
+          "text": "$54",
+          "found": true
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 7",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 1,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$1,861",
+            "token": "1861",
+            "found": true
+          },
+          {
+            "text": "$298",
+            "token": "298",
+            "found": true
+          },
+          {
+            "text": "$54",
+            "token": "54",
+            "found": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-08",
+      "literal_matches": [
+        {
+          "text": "$624",
+          "found": true
+        },
+        {
+          "text": "$1,621",
+          "found": false
+        },
+        {
+          "text": "$1,389",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 8",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 1,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$624",
+            "token": "624",
+            "found": false
+          },
+          {
+            "text": "$1,621",
+            "token": "1621",
+            "found": false
+          },
+          {
+            "text": "$1,389",
+            "token": "1389",
+            "found": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-09",
+      "literal_matches": [
+        {
+          "text": "$3,085.4",
+          "found": false
+        },
+        {
+          "text": "$3,029.9",
+          "found": false
+        },
+        {
+          "text": "$2,738.5",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 9",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": false,
+        "cited_fragments": 0,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$3,085.4",
+            "token": "3085.4",
+            "found": false
+          },
+          {
+            "text": "$3,029.9",
+            "token": "3029.9",
+            "found": false
+          },
+          {
+            "text": "$2,738.5",
+            "token": "2738.5",
+            "found": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit-10",
+      "literal_matches": [
+        {
+          "text": "$11.2",
+          "found": false
+        },
+        {
+          "text": "$10.3",
+          "found": false
+        },
+        {
+          "text": "$10.2",
+          "found": false
+        }
+      ],
+      "citation_literal": {
+        "text": "Source page 10",
+        "found": false
+      },
+      "normalized": {
+        "citation_found": true,
+        "cited_fragments": 4,
+        "scope": "slide_elements",
+        "matches": [
+          {
+            "text": "$11.2",
+            "token": "11.2",
+            "found": false
+          },
+          {
+            "text": "$10.3",
+            "token": "10.3",
+            "found": false
+          },
+          {
+            "text": "$10.2",
+            "token": "10.2",
+            "found": false
+          }
+        ]
+      }
+    }
+  ],
+  "renderer": {
+    "exit": 0,
+    "receipt": {
+      "revision": 1,
+      "slides": 12,
+      "native_objects": {
+        "html": 1
+      },
+      "warnings": [],
+      "renderer": "msedge.exe headless HTML",
+      "output": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-real-20261111\\posthoc\\calibration-A\\exports\\v001",
+      "html": "presentation.html",
+      "source_path": "artifacts/presentation.html",
+      "source_sha256": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7",
+      "source": {
+        "format": "html",
+        "path": "artifacts/presentation.html",
+        "slides": [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {}
+        ]
+      },
+      "title": "Bank of America — Q3 2021 Earnings in Plain English"
+    },
+    "original_ref": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-real-20261111\\posthoc\\calibration-A\\exports\\v001",
+    "images": [
+      "slide-01.png",
+      "slide-02.png",
+      "slide-03.png",
+      "slide-04.png",
+      "slide-05.png",
+      "slide-06.png",
+      "slide-07.png",
+      "slide-08.png",
+      "slide-09.png",
+      "slide-10.png",
+      "slide-11.png",
+      "slide-12.png"
+    ]
+  },
+  "limitations": [
+    "literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion",
+    "narrative, aesthetics and persuasion unmeasured",
+    "geometry limited to renderer warnings",
+    "HTML delivery; not a native editable pptx"
+  ]
+}

@@ -1,0 +1,1 @@
+{"spent":0.25005999999999995,"requests":2,"tokensSpent":11801,"permit":{"input_tokens_bound":79858,"output_tokens_bound":8192,"tokens":88050,"usd":2.25252,"basis":"serialized UTF-8 bytes + 4096 chat framing, bounded by registered context; actual output envelope"},"reason":"authorized budget boundary"}

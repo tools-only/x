@@ -1,0 +1,895 @@
+[
+  {
+    "arm": "calibration-A",
+    "summary": {
+      "stop": "budget_or_integrity_stop",
+      "provider": "az",
+      "model": "qwen3.8-27b",
+      "arm": "A",
+      "units": [
+        {
+          "id": "unit-01",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-02",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-03",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-04",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-05",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-06",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-07",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-08",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-09",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-10",
+          "status": "not_delivered"
+        }
+      ],
+      "error": "Pi RPC process exited while waiting for an event",
+      "elapsed_seconds": 1686.3589999999967,
+      "preflight": {
+        "requests": 1,
+        "tokens": 55,
+        "usd": 0.00206,
+        "seconds": 2.1410000000032596,
+        "returned_model": "qwen3.8-27b"
+      },
+      "resources": {
+        "requests": 13,
+        "tokens": 456343,
+        "usd": 11.982379999999997,
+        "requests_with_missing_usage": 0,
+        "storage_bytes": 10189765,
+        "billing": "conservative estimate; actual invoice unknown",
+        "seconds": 1688.5
+      },
+      "root_id": null,
+      "self_revision": null,
+      "legacy_self_revision": 2,
+      "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+      "runtime_activations": [],
+      "reviews": []
+    },
+    "reported_task_usage": {
+      "input": 318984,
+      "output": 47576,
+      "cacheRead": 89728,
+      "cacheWrite": 0,
+      "reasoning": 29550,
+      "totalTokens": 456288
+    },
+    "tool_calls": {
+      "read": 5,
+      "ls": 2,
+      "write": 2,
+      "python": 5
+    },
+    "response_stops": {
+      "toolUse": 9,
+      "length": 3
+    },
+    "latest_unit_facts": [],
+    "runtime_windows": [],
+    "hashes": {
+      "session.jsonl": "9e746a4f2ae042fbd2a2ddb28987478485ffa6821901da7839fb7f92795546a9",
+      "pi-events.jsonl": "39a730fd04aa898c5acd8d8fb1510ef7ebf29d2b51198989d026f79f75884c0f",
+      ".harness\\live-self.json": "c0bf268dc6017f6d061580046fb260da0295d41895320a005441e985329219ac",
+      "harness\\provider-requests.jsonl": "b321e992cde70135c12c09dc85efe3044f24bac9f3fc5e87f9403635d450f72b",
+      "harness\\model-usage.jsonl": "a4492fc79135f0bfddcb1d1c37bf3ddc1e29a608334e06ec5257c998d3419fdb",
+      "workspace\\artifacts\\presentation.html": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7"
+    },
+    "posthoc_acceptance": {
+      "measurement": "development posthoc; not Agent render, feedback or delivery",
+      "source": "protected_acceptance",
+      "checker": {
+        "version": "literal-normalized-render-v2",
+        "sha256": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a"
+      },
+      "source_hashes": {
+        "data/available-fonts.json": "b51ed8165fe176e7774f5130b23320cbac61f93ecfb8e513c1bdf5007cc70b12",
+        "data/environment.md": "ae728d205203d049f105eff0a02507f9f0c9667d938c5dcbe23b0e39598cedb5",
+        "data/instructions.md": "67aec1aead63d54f51cd793c7361633ddffbe091a7a17d574652eb24a2a19f0e",
+        "data/material.txt": "493262215dcf09d678387ed416c6c168df27042d95467f45799e5d830545f1fe"
+      },
+      "artifact": {
+        "path": "artifacts/presentation.html",
+        "sha256": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7",
+        "bytes": 46420
+      },
+      "slide_count": {
+        "expected": 15,
+        "observed": 12,
+        "matches": false
+      },
+      "rendered_source_matches_current": true,
+      "unit": "whole_deck",
+      "units": [
+        {
+          "id": "unit-01",
+          "literal_matches": [
+            {
+              "text": "$7.7",
+              "found": true
+            },
+            {
+              "text": "$0.85",
+              "found": true
+            },
+            {
+              "text": "$3.0",
+              "found": true
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 1",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 3,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$7.7",
+                "token": "7.7",
+                "found": true
+              },
+              {
+                "text": "$0.85",
+                "token": "0.85",
+                "found": true
+              },
+              {
+                "text": "$3.0",
+                "token": "3.0",
+                "found": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-02",
+          "literal_matches": [
+            {
+              "text": "$22.8",
+              "found": true
+            },
+            {
+              "text": "$21.5",
+              "found": false
+            },
+            {
+              "text": "$20.3",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 2",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 3,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$22.8",
+                "token": "22.8",
+                "found": true
+              },
+              {
+                "text": "$21.5",
+                "token": "21.5",
+                "found": true
+              },
+              {
+                "text": "$20.3",
+                "token": "20.3",
+                "found": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-03",
+          "literal_matches": [
+            {
+              "text": "$8,838",
+              "found": false
+            },
+            {
+              "text": "$8,186",
+              "found": false
+            },
+            {
+              "text": "$8,039",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 3",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 2,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$8,838",
+                "token": "8838",
+                "found": true
+              },
+              {
+                "text": "$8,186",
+                "token": "8186",
+                "found": true
+              },
+              {
+                "text": "$8,039",
+                "token": "8039",
+                "found": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-04",
+          "literal_matches": [
+            {
+              "text": "$5,310",
+              "found": false
+            },
+            {
+              "text": "$5,065",
+              "found": false
+            },
+            {
+              "text": "$4,546",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 4",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 1,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$5,310",
+                "token": "5310",
+                "found": true
+              },
+              {
+                "text": "$5,065",
+                "token": "5065",
+                "found": true
+              },
+              {
+                "text": "$4,546",
+                "token": "4546",
+                "found": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-05",
+          "literal_matches": [
+            {
+              "text": "$5,244",
+              "found": false
+            },
+            {
+              "text": "$5,090",
+              "found": false
+            },
+            {
+              "text": "$4,517",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 5",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 1,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$5,244",
+                "token": "5244",
+                "found": true
+              },
+              {
+                "text": "$5,090",
+                "token": "5090",
+                "found": true
+              },
+              {
+                "text": "$4,517",
+                "token": "4517",
+                "found": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-06",
+          "literal_matches": [
+            {
+              "text": "$4,519",
+              "found": false
+            },
+            {
+              "text": "$4,720",
+              "found": false
+            },
+            {
+              "text": "$4,283",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 6",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 1,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$4,519",
+                "token": "4519",
+                "found": true
+              },
+              {
+                "text": "$4,720",
+                "token": "4720",
+                "found": true
+              },
+              {
+                "text": "$4,283",
+                "token": "4283",
+                "found": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-07",
+          "literal_matches": [
+            {
+              "text": "$1,861",
+              "found": false
+            },
+            {
+              "text": "$298",
+              "found": true
+            },
+            {
+              "text": "$54",
+              "found": true
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 7",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 1,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$1,861",
+                "token": "1861",
+                "found": true
+              },
+              {
+                "text": "$298",
+                "token": "298",
+                "found": true
+              },
+              {
+                "text": "$54",
+                "token": "54",
+                "found": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-08",
+          "literal_matches": [
+            {
+              "text": "$624",
+              "found": true
+            },
+            {
+              "text": "$1,621",
+              "found": false
+            },
+            {
+              "text": "$1,389",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 8",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 1,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$624",
+                "token": "624",
+                "found": false
+              },
+              {
+                "text": "$1,621",
+                "token": "1621",
+                "found": false
+              },
+              {
+                "text": "$1,389",
+                "token": "1389",
+                "found": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-09",
+          "literal_matches": [
+            {
+              "text": "$3,085.4",
+              "found": false
+            },
+            {
+              "text": "$3,029.9",
+              "found": false
+            },
+            {
+              "text": "$2,738.5",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 9",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": false,
+            "cited_fragments": 0,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$3,085.4",
+                "token": "3085.4",
+                "found": false
+              },
+              {
+                "text": "$3,029.9",
+                "token": "3029.9",
+                "found": false
+              },
+              {
+                "text": "$2,738.5",
+                "token": "2738.5",
+                "found": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "unit-10",
+          "literal_matches": [
+            {
+              "text": "$11.2",
+              "found": false
+            },
+            {
+              "text": "$10.3",
+              "found": false
+            },
+            {
+              "text": "$10.2",
+              "found": false
+            }
+          ],
+          "citation_literal": {
+            "text": "Source page 10",
+            "found": false
+          },
+          "normalized": {
+            "citation_found": true,
+            "cited_fragments": 4,
+            "scope": "slide_elements",
+            "matches": [
+              {
+                "text": "$11.2",
+                "token": "11.2",
+                "found": false
+              },
+              {
+                "text": "$10.3",
+                "token": "10.3",
+                "found": false
+              },
+              {
+                "text": "$10.2",
+                "token": "10.2",
+                "found": false
+              }
+            ]
+          }
+        }
+      ],
+      "renderer": {
+        "exit": 0,
+        "receipt": {
+          "revision": 1,
+          "slides": 12,
+          "native_objects": {
+            "html": 1
+          },
+          "warnings": [],
+          "renderer": "msedge.exe headless HTML",
+          "output": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-real-20261111\\posthoc\\calibration-A\\exports\\v001",
+          "html": "presentation.html",
+          "source_path": "artifacts/presentation.html",
+          "source_sha256": "21f9913777bf41e0150f3cfd47fb059199048bbb7a46230009596862534561b7",
+          "source": {
+            "format": "html",
+            "path": "artifacts/presentation.html",
+            "slides": [
+              {},
+              {},
+              {},
+              {},
+              {},
+              {},
+              {},
+              {},
+              {},
+              {},
+              {},
+              {}
+            ]
+          },
+          "title": "Bank of America — Q3 2021 Earnings in Plain English"
+        },
+        "original_ref": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-real-20261111\\posthoc\\calibration-A\\exports\\v001",
+        "images": [
+          "slide-01.png",
+          "slide-02.png",
+          "slide-03.png",
+          "slide-04.png",
+          "slide-05.png",
+          "slide-06.png",
+          "slide-07.png",
+          "slide-08.png",
+          "slide-09.png",
+          "slide-10.png",
+          "slide-11.png",
+          "slide-12.png"
+        ]
+      },
+      "limitations": [
+        "literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion",
+        "narrative, aesthetics and persuasion unmeasured",
+        "geometry limited to renderer warnings",
+        "HTML delivery; not a native editable pptx"
+      ]
+    }
+  },
+  {
+    "arm": "sample-B1",
+    "summary": {
+      "stop": "budget_or_integrity_stop",
+      "provider": "az",
+      "model": "qwen3.8-27b",
+      "arm": "B",
+      "units": [
+        {
+          "id": "unit-01",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-02",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-03",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-04",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-05",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-06",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-07",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-08",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-09",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-10",
+          "status": "not_delivered"
+        }
+      ],
+      "error": "Pi RPC process exited while waiting for an event",
+      "elapsed_seconds": 20.125,
+      "preflight": {
+        "requests": 1,
+        "tokens": 55,
+        "usd": 0.00206,
+        "seconds": 1.75,
+        "returned_model": "qwen3.8-27b"
+      },
+      "resources": {
+        "requests": 4,
+        "tokens": 33448,
+        "usd": 0.6873199999999999,
+        "requests_with_missing_usage": 0,
+        "storage_bytes": 8310343,
+        "billing": "conservative estimate; actual invoice unknown",
+        "seconds": 21.875
+      },
+      "root_id": "5d714135-2137-4d83-bc90-573c429d61ba",
+      "self_revision": 1,
+      "legacy_self_revision": 2,
+      "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+      "runtime_activations": [],
+      "reviews": [
+        {
+          "ref": "ledger:2",
+          "kind": "fact",
+          "type": "mode_entered",
+          "revision": 1,
+          "request": 0,
+          "value": {
+            "id": "review:ledger:0",
+            "mode": "reflect",
+            "triggers": [
+              {
+                "id": "contract:window_entry",
+                "source": "user_contract",
+                "mode": "reflect",
+                "conclusion_sink": "ledger"
+              }
+            ],
+            "suspended": {
+              "step": "work",
+              "revision": 1
+            }
+          }
+        },
+        {
+          "ref": "ledger:28",
+          "kind": "fact",
+          "type": "review_closed",
+          "revision": 1,
+          "request": 4,
+          "value": {
+            "review": "review:ledger:0",
+            "status": "deferred",
+            "subtype": "incomplete",
+            "agent_decision": "absent",
+            "reason": "authorized budget boundary"
+          }
+        }
+      ]
+    },
+    "reported_task_usage": {
+      "input": 33103,
+      "output": 290,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 79,
+      "totalTokens": 33393
+    },
+    "tool_calls": {
+      "ls": 1,
+      "read": 4,
+      "read_self_component": 1
+    },
+    "response_stops": {
+      "toolUse": 3
+    },
+    "latest_unit_facts": [],
+    "runtime_windows": [],
+    "hashes": {
+      "session.jsonl": "b81fe6307985e3faf77b9334e977147f3a9f0c9eb53bfaf3f70a694d9524bd69",
+      "pi-events.jsonl": "daa747600b3219effe646cf36747cf1487fc1dc453f7b7b259a15ff572687949",
+      ".harness\\live-self.json": "d21c79224c485aaf4364293294226d81a82896ab326072b61022fe3b010c4a12",
+      "harness\\provider-requests.jsonl": "6d961a8238be7f2a3263888fd555738b36202b4badfbbd036519e43f82f7ca26",
+      "harness\\model-usage.jsonl": "0d51b9abf647b21f32078f4c5d1e156009d8221a59d7b64674e2403f4aa072f0"
+    },
+    "posthoc_acceptance": null
+  },
+  {
+    "arm": "sample-B2",
+    "summary": {
+      "stop": "budget_or_integrity_stop",
+      "provider": "az",
+      "model": "qwen3.8-27b",
+      "arm": "B",
+      "units": [
+        {
+          "id": "unit-01",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-02",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-03",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-04",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-05",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-06",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-07",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-08",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-09",
+          "status": "not_delivered"
+        },
+        {
+          "id": "unit-10",
+          "status": "not_delivered"
+        }
+      ],
+      "error": "Pi RPC process exited while waiting for an event",
+      "elapsed_seconds": 10.25,
+      "preflight": {
+        "requests": 1,
+        "tokens": 55,
+        "usd": 0.00206,
+        "seconds": 5.1560000000172295,
+        "returned_model": "qwen3.8-27b"
+      },
+      "resources": {
+        "requests": 3,
+        "tokens": 11856,
+        "usd": 0.25211999999999996,
+        "requests_with_missing_usage": 0,
+        "storage_bytes": 8131894,
+        "billing": "conservative estimate; actual invoice unknown",
+        "seconds": 15.40600000001723
+      },
+      "root_id": "7d0986f9-6ec3-4d26-9441-b39183b20291",
+      "self_revision": 1,
+      "legacy_self_revision": 2,
+      "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+      "runtime_activations": [],
+      "reviews": [
+        {
+          "ref": "ledger:2",
+          "kind": "fact",
+          "type": "mode_entered",
+          "revision": 1,
+          "request": 0,
+          "value": {
+            "id": "review:ledger:0",
+            "mode": "reflect",
+            "triggers": [
+              {
+                "id": "contract:window_entry",
+                "source": "user_contract",
+                "mode": "reflect",
+                "conclusion_sink": "ledger"
+              }
+            ],
+            "suspended": {
+              "step": "work",
+              "revision": 1
+            }
+          }
+        },
+        {
+          "ref": "ledger:18",
+          "kind": "fact",
+          "type": "review_closed",
+          "revision": 1,
+          "request": 3,
+          "value": {
+            "review": "review:ledger:0",
+            "status": "deferred",
+            "subtype": "incomplete",
+            "agent_decision": "absent",
+            "reason": "authorized budget boundary"
+          }
+        }
+      ]
+    },
+    "reported_task_usage": {
+      "input": 11567,
+      "output": 234,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 126,
+      "totalTokens": 11801
+    },
+    "tool_calls": {
+      "read": 3
+    },
+    "response_stops": {
+      "toolUse": 2
+    },
+    "latest_unit_facts": [],
+    "runtime_windows": [],
+    "hashes": {
+      "session.jsonl": "b125576469b628ea9b7f915272a701df5b8d97d7b9faf1e9d39387ac0e6e701e",
+      "pi-events.jsonl": "ba1d95705f672bb74fa6d46f13b6aa420dad7f4514448befc95ca6a9f9fe0697",
+      ".harness\\live-self.json": "48311a5e1320d45959623131836e3001ed867ba9796d5aef25035d59c96ddce6",
+      "harness\\provider-requests.jsonl": "9103e286b3740cb30c9fc312ee8826e625931b814f691bbebab25cf3f50e9ae8",
+      "harness\\model-usage.jsonl": "976f344fe826dc146f757f43e9bb75eb4863cf9dedacd80c3730882783cc21f3"
+    },
+    "posthoc_acceptance": null
+  }
+]

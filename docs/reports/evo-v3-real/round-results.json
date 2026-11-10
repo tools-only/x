@@ -1,0 +1,297 @@
+[
+  {
+    "phase": "calibration-A",
+    "stop": "budget_or_integrity_stop",
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "arm": "A",
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_delivered"
+      }
+    ],
+    "error": "Pi RPC process exited while waiting for an event",
+    "elapsed_seconds": 1686.3589999999967,
+    "preflight": {
+      "requests": 1,
+      "tokens": 55,
+      "usd": 0.00206,
+      "seconds": 2.1410000000032596,
+      "returned_model": "qwen3.8-27b"
+    },
+    "resources": {
+      "requests": 13,
+      "tokens": 456343,
+      "usd": 11.982379999999997,
+      "requests_with_missing_usage": 0,
+      "storage_bytes": 10189765,
+      "billing": "conservative estimate; actual invoice unknown",
+      "seconds": 1688.5
+    },
+    "root_id": null,
+    "self_revision": null,
+    "legacy_self_revision": 2,
+    "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+    "runtime_activations": [],
+    "reviews": []
+  },
+  {
+    "phase": "sample-B1",
+    "stop": "budget_or_integrity_stop",
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "arm": "B",
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_delivered"
+      }
+    ],
+    "error": "Pi RPC process exited while waiting for an event",
+    "elapsed_seconds": 20.125,
+    "preflight": {
+      "requests": 1,
+      "tokens": 55,
+      "usd": 0.00206,
+      "seconds": 1.75,
+      "returned_model": "qwen3.8-27b"
+    },
+    "resources": {
+      "requests": 4,
+      "tokens": 33448,
+      "usd": 0.6873199999999999,
+      "requests_with_missing_usage": 0,
+      "storage_bytes": 8310343,
+      "billing": "conservative estimate; actual invoice unknown",
+      "seconds": 21.875
+    },
+    "root_id": "5d714135-2137-4d83-bc90-573c429d61ba",
+    "self_revision": 1,
+    "legacy_self_revision": 2,
+    "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+    "runtime_activations": [],
+    "reviews": [
+      {
+        "ref": "ledger:2",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "id": "review:ledger:0",
+          "mode": "reflect",
+          "triggers": [
+            {
+              "id": "contract:window_entry",
+              "source": "user_contract",
+              "mode": "reflect",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:28",
+        "kind": "fact",
+        "type": "review_closed",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "review": "review:ledger:0",
+          "status": "deferred",
+          "subtype": "incomplete",
+          "agent_decision": "absent",
+          "reason": "authorized budget boundary"
+        }
+      }
+    ]
+  },
+  {
+    "phase": "sample-B2",
+    "stop": "budget_or_integrity_stop",
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "arm": "B",
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_delivered"
+      }
+    ],
+    "error": "Pi RPC process exited while waiting for an event",
+    "elapsed_seconds": 10.25,
+    "preflight": {
+      "requests": 1,
+      "tokens": 55,
+      "usd": 0.00206,
+      "seconds": 5.1560000000172295,
+      "returned_model": "qwen3.8-27b"
+    },
+    "resources": {
+      "requests": 3,
+      "tokens": 11856,
+      "usd": 0.25211999999999996,
+      "requests_with_missing_usage": 0,
+      "storage_bytes": 8131894,
+      "billing": "conservative estimate; actual invoice unknown",
+      "seconds": 15.40600000001723
+    },
+    "root_id": "7d0986f9-6ec3-4d26-9441-b39183b20291",
+    "self_revision": 1,
+    "legacy_self_revision": 2,
+    "engineering_commit": "ad5636a995911cca490b61a2d7c0e8952eef9482",
+    "runtime_activations": [],
+    "reviews": [
+      {
+        "ref": "ledger:2",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "id": "review:ledger:0",
+          "mode": "reflect",
+          "triggers": [
+            {
+              "id": "contract:window_entry",
+              "source": "user_contract",
+              "mode": "reflect",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:18",
+        "kind": "fact",
+        "type": "review_closed",
+        "revision": 1,
+        "request": 3,
+        "value": {
+          "review": "review:ledger:0",
+          "status": "deferred",
+          "subtype": "incomplete",
+          "agent_decision": "absent",
+          "reason": "authorized budget boundary"
+        }
+      }
+    ]
+  }
+]
