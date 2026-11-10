@@ -1,0 +1,9 @@
+{
+  "original_start_epoch": 1794341964.196101,
+  "original_start_utc": "2026-11-10T20:19:24.196101+00:00",
+  "deadline_epoch": 1794356364.196101,
+  "resumed_epoch": 1794349179.4401677,
+  "authority": "user_contract: Round v2 request 2026-11-11; A/B1/B2, same 10 units, az/qwen3.8-27b; aggregate max 600 requests, 600000 tokens, 14400 seconds, USD15, 2147483648 bytes; stop at any cap, never raise",
+  "no_session_retry": true,
+  "note": "A externally interrupted; do not rerun. Only unstarted B arms. All elapsed interruption time remains charged to original 4h cap."
+}

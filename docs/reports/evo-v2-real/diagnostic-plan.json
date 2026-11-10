@@ -1,0 +1,37 @@
+{
+  "classification": "independent interface diagnostic; not a replacement for A/B1/B2",
+  "claim": "operation-specific exit schema can reach a valid same-Agent closure; no task-success or improvement claim",
+  "caps": {
+    "requests": 579,
+    "tokens": 82896,
+    "usd": 2.7193199999999997,
+    "seconds": 5840.6742374897,
+    "storage_bytes": 2121961688
+  },
+  "prior_accounting": {
+    "resources": {
+      "requests": 21,
+      "tokens": 517104,
+      "usd": 12.28068,
+      "seconds": 7983.261345863342,
+      "storage_bytes": 25521060
+    },
+    "caps": {
+      "requests": 600,
+      "tokens": 600000,
+      "seconds": 14400,
+      "usd": 15,
+      "storage_bytes": 2147483648
+    },
+    "billing": "conservative known plus unresolved permits; invoice unknown",
+    "phases": [
+      "calibration-A",
+      "sample-B1",
+      "sample-B2"
+    ]
+  },
+  "original_deadline_epoch": 1794356364.196101,
+  "authority": "user_contract: Round v2 request 2026-11-11; A/B1/B2, same 10 units, az/qwen3.8-27b; aggregate max 600 requests, 600000 tokens, 14400 seconds, USD15, 2147483648 bytes; stop at any cap, never raise",
+  "no_retry": true,
+  "task": "same ordinary brief, ten units, source and model; no extra tool-selection prompt"
+}

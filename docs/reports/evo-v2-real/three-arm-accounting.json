@@ -1,0 +1,22 @@
+{
+  "resources": {
+    "requests": 21,
+    "tokens": 517104,
+    "usd": 12.28068,
+    "seconds": 7983.261345863342,
+    "storage_bytes": 25521060
+  },
+  "caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "billing": "conservative known plus unresolved permits; invoice unknown",
+  "phases": [
+    "calibration-A",
+    "sample-B1",
+    "sample-B2"
+  ]
+}

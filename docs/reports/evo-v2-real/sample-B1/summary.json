@@ -1,0 +1,96 @@
+{
+  "stop": "budget_or_integrity_stop",
+  "provider": "az",
+  "model": "qwen3.8-27b",
+  "arm": "B",
+  "units": [
+    {
+      "id": "unit-01",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-02",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-03",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-04",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-05",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-06",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-07",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-08",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-09",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-10",
+      "status": "not_delivered"
+    }
+  ],
+  "error": "Pi RPC process exited while waiting for an event",
+  "elapsed_seconds": 673.0310000000172,
+  "preflight": {
+    "requests": 1,
+    "tokens": 55,
+    "usd": 0.00206,
+    "seconds": 2.0939999999827705,
+    "returned_model": "qwen3.8-27b"
+  },
+  "resources": {
+    "requests": 12,
+    "tokens": 316692,
+    "usd": 7.110060000000001,
+    "requests_with_missing_usage": 0,
+    "storage_bytes": 9580203,
+    "billing": "conservative estimate; actual invoice unknown",
+    "seconds": 675.125
+  },
+  "root_id": "a9290fab-3fbe-4725-8905-3070c00a74c1",
+  "self_revision": 1,
+  "legacy_self_revision": 2,
+  "engineering_commit": "1935b112b515e03990fa7b50ece0f4b00f3ff694",
+  "runtime_activations": [],
+  "reviews": [
+    {
+      "ref": "ledger:1",
+      "kind": "fact",
+      "type": "mode_entered",
+      "revision": 1,
+      "request": 0,
+      "value": {
+        "id": "review:ledger:0",
+        "mode": "reflect",
+        "triggers": [
+          {
+            "id": "contract:window_entry",
+            "source": "user_contract",
+            "mode": "reflect",
+            "conclusion_sink": "ledger"
+          }
+        ],
+        "suspended": {
+          "step": "work",
+          "revision": 1
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "total_caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "calibration_caps": {
+    "requests": 60,
+    "tokens": 600000,
+    "seconds": 1800,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "b_caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "shared_remaining": true,
+  "classification": "exploratory A/B1/B2; no calibration success prerequisite; v2 user authorization",
+  "authority": "user_contract: Round v2 request 2026-11-11; A/B1/B2, same 10 units, az/qwen3.8-27b; aggregate max 600 requests, 600000 tokens, 14400 seconds, USD15, 2147483648 bytes; stop at any cap, never raise",
+  "stage2": "requires a separately registered comparison; not launched by this runner"
+}

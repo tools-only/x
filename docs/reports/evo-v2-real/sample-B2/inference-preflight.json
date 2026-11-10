@@ -1,0 +1,28 @@
+{
+  "status": "available",
+  "http_status": 200,
+  "returned_model": "qwen3.8-27b",
+  "model_listed": null,
+  "usage": {
+    "prompt_tokens": 39,
+    "total_tokens": 55,
+    "completion_tokens": 16,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "text_tokens": 39
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 16
+    }
+  },
+  "error": null,
+  "elapsed_seconds": 2.797000000020489,
+  "kind": "separate inference connectivity probe",
+  "accounting": {
+    "requests": 1,
+    "tokens": 55,
+    "usd": 0.00206,
+    "seconds": 2.797000000020489,
+    "usage_status": "reported"
+  }
+}

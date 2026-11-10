@@ -286,6 +286,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 2026-11-11 PPT v1 真实实验：az / qwen3.8-27b 的 A 臂生成草稿后发生无 usage 的请求超时，剩余费用预留不足使 B1/B2 未启动。本轮没有真实 SelfRoot reset/compaction，不能用 P1 的既有接线或草稿落盘证明关键假设、反证与续点跨压缩保留；本节待办仍未验证。见 [本轮结果与计费边界](reports/ROUND-v1.md)。
 
+2026-11-11 PPT v2：同一模型的 B1/B2 进入同根 floor 审阅，但没有有效结案、任务交付或运行自修订，也未发生 reset。接口与预算关闭的脚本接线检查通过，最终补丁的真实模型诊断在小预检被远端断开；不能据此证明认知连续性或净收益，本节各项继续开放。见 [v2 结果、成本及剩余偏差](reports/ROUND-v2.md)。
+
 ## 后续更新
 
 2026-11-02 第一阶段 MEMORY-A1：真实 `self-harness-bounded-20261102-103200` 中 ADAPT 写入 memory，runtime 持久化且下一 TASK 工作集包含 memory section；下一行动没有遵循该条 memory 的具体建议，日志无法判定是否有意修订或语义采用，实际 provider 请求内容也未单独留证。后续核对真实输入与下一轮判断/行动/反馈，合理不使用单列；收益声明需对照。此项仍开放，见[第一阶段记录](plans/2026-11-02-minimal-self-harness-agent-system.md#2026-11-02-第一阶段真实路径补记)。

@@ -1,0 +1,25 @@
+{
+  "resources": {
+    "requests": 22,
+    "tokens": 521394,
+    "usd": 12.36744,
+    "seconds": 8562.854573249817,
+    "storage_bytes": 32823631
+  },
+  "caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "billing": "conservative known plus unresolved permits; actual invoice unknown",
+  "phases": [
+    "calibration-A",
+    "sample-B1",
+    "sample-B2",
+    "diagnostic-exit-schema"
+  ],
+  "three_arm_accounting_ref": "three-arm-accounting.json",
+  "diagnostic_result_ref": "diagnostic-result.json"
+}

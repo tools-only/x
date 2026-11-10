@@ -1,0 +1,60 @@
+{
+  "phase": "calibration-A",
+  "stop": "external_codex_usage_interruption",
+  "provider": "az",
+  "model": "qwen3.8-27b",
+  "arm": "A",
+  "resources": {
+    "requests": 4,
+    "tokens": 122590,
+    "usd": 2.9589800000000004,
+    "requests_with_missing_usage": 1,
+    "storage_bytes": 8204713,
+    "billing": "conservative estimate; actual invoice unknown"
+  },
+  "engineering_commit": "1935b112b515e03990fa7b50ece0f4b00f3ff694",
+  "runtime_duration": "unknown; no final callback; full interruption charged to aggregate wall clock",
+  "units": [
+    {
+      "id": "unit-01",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-02",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-03",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-04",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-05",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-06",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-07",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-08",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-09",
+      "status": "not_delivered"
+    },
+    {
+      "id": "unit-10",
+      "status": "not_delivered"
+    }
+  ],
+  "evidence": "session.jsonl, pi-events.jsonl, provider-requests.jsonl and model-usage.jsonl preserved; unreported request keeps original permit"
+}
