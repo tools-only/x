@@ -1,0 +1,2394 @@
+{
+  "calibration-A": {
+    "requests": [
+      {
+        "request": 1,
+        "payload_chars": 15461,
+        "system_chars": 7269,
+        "tools_chars": 7348,
+        "history_chars": 650,
+        "message_roles": {
+          "system": 1,
+          "user": 3
+        },
+        "tool_names": [
+          "read",
+          "write",
+          "edit",
+          "ls",
+          "grep",
+          "python",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "office"
+        ]
+      },
+      {
+        "request": 2,
+        "payload_chars": 72191,
+        "system_chars": 7269,
+        "tools_chars": 7348,
+        "history_chars": 57375,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 1,
+          "tool": 4
+        },
+        "tool_names": [
+          "read",
+          "write",
+          "edit",
+          "ls",
+          "grep",
+          "python",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "office"
+        ]
+      },
+      {
+        "request": 3,
+        "payload_chars": 85102,
+        "system_chars": 7269,
+        "tools_chars": 7348,
+        "history_chars": 70283,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 2,
+          "tool": 6
+        },
+        "tool_names": [
+          "read",
+          "write",
+          "edit",
+          "ls",
+          "grep",
+          "python",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "office"
+        ]
+      }
+    ],
+    "last_messages": [
+      {
+        "role": "system",
+        "chars": 7269,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 164,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 78,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 653,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read",
+            "args": null
+          },
+          {
+            "name": "read",
+            "args": null
+          },
+          {
+            "name": "read",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 2553,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 51642,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 1711,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 163,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 574,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 12241,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 412,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      }
+    ],
+    "ledger_types": {},
+    "review_trace": []
+  },
+  "sample-B1": {
+    "requests": [
+      {
+        "request": 1,
+        "payload_chars": 18084,
+        "system_chars": 10186,
+        "tools_chars": 7023,
+        "history_chars": 681,
+        "message_roles": {
+          "system": 1,
+          "user": 3
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 2,
+        "payload_chars": 23448,
+        "system_chars": 10199,
+        "tools_chars": 7023,
+        "history_chars": 6028,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 1,
+          "tool": 3
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 3,
+        "payload_chars": 75832,
+        "system_chars": 10200,
+        "tools_chars": 7023,
+        "history_chars": 58409,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 2,
+          "tool": 4
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 4,
+        "payload_chars": 88512,
+        "system_chars": 10201,
+        "tools_chars": 7023,
+        "history_chars": 71086,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 3,
+          "tool": 5
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 5,
+        "payload_chars": 100277,
+        "system_chars": 10201,
+        "tools_chars": 7023,
+        "history_chars": 82845,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 4,
+          "tool": 10
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 6,
+        "payload_chars": 101573,
+        "system_chars": 10202,
+        "tools_chars": 7023,
+        "history_chars": 84135,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 5,
+          "tool": 14
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 7,
+        "payload_chars": 117956,
+        "system_chars": 10202,
+        "tools_chars": 7023,
+        "history_chars": 100515,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 6,
+          "tool": 16
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 8,
+        "payload_chars": 124225,
+        "system_chars": 10214,
+        "tools_chars": 7023,
+        "history_chars": 106770,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 7,
+          "tool": 17
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 9,
+        "payload_chars": 126257,
+        "system_chars": 10203,
+        "tools_chars": 7023,
+        "history_chars": 108811,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 8,
+          "tool": 18
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 10,
+        "payload_chars": 134603,
+        "system_chars": 10206,
+        "tools_chars": 7023,
+        "history_chars": 117152,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 9,
+          "tool": 19
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 11,
+        "payload_chars": 140050,
+        "system_chars": 10205,
+        "tools_chars": 7023,
+        "history_chars": 122598,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 10,
+          "tool": 20
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      }
+    ],
+    "last_messages": [
+      {
+        "role": "system",
+        "chars": 10205,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 164,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 108,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 928,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "read",
+            "args": null
+          },
+          {
+            "name": "read",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 152,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 2553,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 1711,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 738,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 51642,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 436,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 12241,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 11287,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "read",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 104,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 922,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 5897,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read_self",
+            "args": null
+          },
+          {
+            "name": "read_self",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 1298,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 9184,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 6138,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "decide",
+            "args": "{\"op\":\"exit\",\"status\":\"deferred\",\"subtype\":\"keep\",\"result\":\"{\\\"reason\\\": \\\"Window-entry review complete. Task is to author a self-contained 15-slide HTML deck (artifacts/presentation.html) from data/material.txt, using native HTML/CSS/SVG, then render/look/deliver via the office interface. All required capabilities are present in execute mode (read/write/edit/python, office.render/look/deliver, acceptance, submit_unit); the office renderer already adds navigation, slide counter, fullscreen, print-to-PDF and per-slide previews. No component/orchestration/policy change is warranted. Proceed to execute.\\\"}\",\"evidenceRefs\":[\"ledger:6\",\"ledger:8\"]}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 117,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 1924,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "decide",
+            "args": "{\"evidenceRefs\":[\"ledger:6\",\"ledger:8\"],\"op\":\"exit\",\"result\":\"{\\\"reason\\\": \\\"Window-entry review complete. Task: author a self-contained 15-slide HTML deck (artifacts/presentation.html) from data/material.txt using native HTML/CSS/SVG, then render/look/deliver via the office interface. All required capabilities exist in execute mode (read/write/edit/python, office.render/look/deliver, acceptance, submit_unit); the office renderer already adds navigation, slide counter, fullscreen, print-to-PDF and per-slide previews. No component/orchestration/policy change is warranted. Proceed to execute.\\\"}\",\"status\":\"deferred\",\"subtype\":\"keep\"}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 117,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 8224,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "decide",
+            "args": "{\"evidenceRefs\":[\"ledger:6\"],\"op\":\"exit\",\"result\":\"{\\\"reason\\\": \\\"review done; keep current method; proceed to build deck in execute mode\\\"}\",\"status\":\"deferred\",\"subtype\":\"keep\"}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 117,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 5332,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "decide",
+            "args": "{\"mode\":\"execute\",\"op\":\"enter_mode\"}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 114,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 414,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      }
+    ],
+    "ledger_types": {
+      "event": 22,
+      "mode_entered": 1,
+      "provider_input": 12,
+      "request_cost": 11,
+      "tool_result": 15
+    },
+    "review_trace": [
+      {
+        "ref": "ledger:0",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "type": "window_entry",
+          "boundary": "session-window",
+          "facts": {}
+        }
+      },
+      {
+        "ref": "ledger:1",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "id": "review:ledger:0",
+          "mode": "reflect",
+          "triggers": [
+            {
+              "id": "contract:window_entry",
+              "source": "user_contract",
+              "mode": "reflect",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:3",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 1,
+        "value": {
+          "pin": {
+            "request": 1,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 2,
+            "step": "work"
+          },
+          "usage": {
+            "input": 4997,
+            "output": 183,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 88,
+            "totalTokens": 5180,
+            "cost": {
+              "input": 0.024985000000000004,
+              "output": 0.00549,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.030475000000000002
+            }
+          },
+          "tokens": 5180,
+          "duration_ms": 6280,
+          "usd_estimate": 0.11458,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:5",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 1,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_fb2ee2e3a7784e7ab48c9575",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "4ae486c3a48f8dc732af672b138b438a1d96960304cc334d46bbc2687d169cbb",
+            "duration_ms": 11
+          }
+        }
+      },
+      {
+        "ref": "ledger:7",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 1,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_3439a20217e84a5c886ecb1c",
+          "facts": {
+            "tool": "read",
+            "input_hash": "20731a6df1b0c31497390d3c323096feb43197d2ae43aef7111a0f0e433ab9b3",
+            "duration_ms": 17
+          }
+        }
+      },
+      {
+        "ref": "ledger:9",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 1,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_f3fdea61d2974960ae8b3c07",
+          "facts": {
+            "tool": "read",
+            "input_hash": "6f644c238e4837a10872f9aea3079fe5ef4af0309a8f45c507501c2944694c33",
+            "duration_ms": 21
+          }
+        }
+      },
+      {
+        "ref": "ledger:11",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 2,
+        "value": {
+          "pin": {
+            "request": 2,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 10,
+            "step": "work"
+          },
+          "usage": {
+            "input": 6279,
+            "output": 143,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 97,
+            "totalTokens": 6422,
+            "cost": {
+              "input": 0.031395,
+              "output": 0.00429,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.035685
+            }
+          },
+          "tokens": 6422,
+          "duration_ms": 6496,
+          "usd_estimate": 0.13702,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:13",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 2,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_b08dce25dc02423fa7abd2a4",
+          "facts": {
+            "tool": "read",
+            "input_hash": "db202cf0de964a38c9d8fd979c8f46222edca30af60907ce3ea25e3595b955d5",
+            "duration_ms": 9
+          }
+        }
+      },
+      {
+        "ref": "ledger:15",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 3,
+        "value": {
+          "pin": {
+            "request": 3,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 14,
+            "step": "work"
+          },
+          "usage": {
+            "input": 21580,
+            "output": 97,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 43,
+            "totalTokens": 21677,
+            "cost": {
+              "input": 0.10790000000000001,
+              "output": 0.0029100000000000003,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.11081
+            }
+          },
+          "tokens": 21677,
+          "duration_ms": 7509,
+          "usd_estimate": 0.43936,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:17",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 3,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_0f09a537725a4bcfafba2c64",
+          "facts": {
+            "tool": "read",
+            "input_hash": "7efb3443a8239b8a2382494e85c94edc1d113d007fed8c1054aace0557a9ea9b",
+            "duration_ms": 5
+          }
+        }
+      },
+      {
+        "ref": "ledger:19",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "pin": {
+            "request": 4,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 18,
+            "step": "work"
+          },
+          "usage": {
+            "input": 26656,
+            "output": 3145,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 2985,
+            "totalTokens": 29801,
+            "cost": {
+              "input": 0.13328,
+              "output": 0.09435,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.22763
+            }
+          },
+          "tokens": 29801,
+          "duration_ms": 72999,
+          "usd_estimate": 0.78472,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:21",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_df70faef897244798656dc44",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "df72e88539e2534b9173b3cc18bdcd11b6fb1ddcd230b6fce23bbc2e5e0ccc0b",
+            "duration_ms": 11
+          }
+        }
+      },
+      {
+        "ref": "ledger:23",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_feb69653e85641e6a1ac3801",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "f991e963f41e029b485a75c2892a0de74b2c453769393fb63140961de1cddd25",
+            "duration_ms": 10
+          }
+        }
+      },
+      {
+        "ref": "ledger:25",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_9eb8713b42b048349304a5ea",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "06a4e402f3ffeaf21778d65ef872dbdee12fcc9142072d4fe9a60a99a671b961",
+            "duration_ms": 8
+          }
+        }
+      },
+      {
+        "ref": "ledger:27",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_6f9cc71384914230af3af1d3",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "4e05d41d8176a0033aecdf78005b8f0d4718692db89dc733291d2a2c1967a5a4",
+            "duration_ms": 7
+          }
+        }
+      },
+      {
+        "ref": "ledger:28",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "type": "tool_failed",
+          "boundary": "tool:call_388a5e6625c54878958c9003",
+          "facts": {
+            "tool": "read",
+            "args": {
+              "path": "prompts/ppt_baseline_guidance.md"
+            },
+            "error": "Error: workspace file does not exist",
+            "duration_ms": 25
+          }
+        }
+      },
+      {
+        "ref": "ledger:30",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 5,
+        "value": {
+          "pin": {
+            "request": 5,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 29,
+            "step": "work"
+          },
+          "usage": {
+            "input": 29853,
+            "output": 180,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 64,
+            "totalTokens": 30033,
+            "cost": {
+              "input": 0.149265,
+              "output": 0.0054,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.154665
+            }
+          },
+          "tokens": 30033,
+          "duration_ms": 12254,
+          "usd_estimate": 0.61146,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:32",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 5,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_ac18169139ba44ddad4a2e1f",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "001f4500ecf9c386f0aaa6cc44dfb07c945114ba045ed009b906fd6df06577cb",
+            "duration_ms": 9
+          }
+        }
+      },
+      {
+        "ref": "ledger:34",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 5,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_0d8518d06bfd48029e38bc1c",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "7a9a1e56dbe41f0b36d7ed09625f4b5351f0dac6c9a55fd5cf2a3969bba9f82c",
+            "duration_ms": 8
+          }
+        }
+      },
+      {
+        "ref": "ledger:36",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 5,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_5a37173315ab4b61888ab1f8",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "36ea9f1ff212c5bba9abba47f8d424f698ce7e4fba95e84b5278267f0467bfb2",
+            "duration_ms": 7
+          }
+        }
+      },
+      {
+        "ref": "ledger:38",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 5,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_22391e710753480394c9be2d",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "a6c7bbaa1440e4799a677df11616a3395b16856f4995b0cfd745d69d75e79b59",
+            "duration_ms": 6
+          }
+        }
+      },
+      {
+        "ref": "ledger:40",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 6,
+        "value": {
+          "pin": {
+            "request": 6,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 39,
+            "step": "work"
+          },
+          "usage": {
+            "input": 30076,
+            "output": 1328,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 1208,
+            "totalTokens": 31404,
+            "cost": {
+              "input": 0.15038,
+              "output": 0.03984,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.19022
+            }
+          },
+          "tokens": 31404,
+          "duration_ms": 40963,
+          "usd_estimate": 0.70776,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:42",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 6,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_d146791db2024dfebae30e3a",
+          "facts": {
+            "tool": "read_self",
+            "input_hash": "2f3afd5c62232eaae58e208c747dbf60231408befff1ca98754d5042c9526a55",
+            "duration_ms": 6
+          }
+        }
+      },
+      {
+        "ref": "ledger:44",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 6,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_6daca24b58174e24a26a0bb5",
+          "facts": {
+            "tool": "read_self",
+            "input_hash": "b4841b57de453233d4dba60f228f29ae81714b5e69741c1ac4704fa324dd288d",
+            "duration_ms": 6
+          }
+        }
+      },
+      {
+        "ref": "ledger:46",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 7,
+        "value": {
+          "pin": {
+            "request": 7,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 45,
+            "step": "work"
+          },
+          "usage": {
+            "input": 34446,
+            "output": 1401,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 1029,
+            "totalTokens": 35847,
+            "cost": {
+              "input": 0.17223000000000002,
+              "output": 0.04203,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.21426
+            }
+          },
+          "tokens": 35847,
+          "duration_ms": 102154,
+          "usd_estimate": 0.801,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:47",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 7,
+        "value": {
+          "type": "tool_failed",
+          "boundary": "tool:call_1fd0cbf8f7604ae9b7fbaf9f",
+          "facts": {
+            "tool": "decide",
+            "args": {
+              "op": "exit",
+              "status": "deferred",
+              "subtype": "keep",
+              "result": "{\"reason\": \"Window-entry review complete. Task is to author a self-contained 15-slide HTML deck (artifacts/presentation.html) from data/material.txt, using native HTML/CSS/SVG, then render/look/deliver via the office interface. All required capabilities are present in execute mode (read/write/edit/python, office.render/look/deliver, acceptance, submit_unit); the office renderer already adds navigation, slide counter, fullscreen, print-to-PDF and per-slide previews. No component/orchestration/policy change is warranted. Proceed to execute.\"}",
+              "evidenceRefs": [
+                "ledger:6",
+                "ledger:8"
+              ]
+            },
+            "error": "Error: decision result does not match object at $",
+            "duration_ms": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:49",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 8,
+        "value": {
+          "pin": {
+            "request": 8,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 48,
+            "step": "work"
+          },
+          "usage": {
+            "input": 35882,
+            "output": 443,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 226,
+            "totalTokens": 36325,
+            "cost": {
+              "input": 0.17941000000000001,
+              "output": 0.01329,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.1927
+            }
+          },
+          "tokens": 36325,
+          "duration_ms": 40540,
+          "usd_estimate": 0.75308,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:50",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 8,
+        "value": {
+          "type": "tool_failed",
+          "boundary": "tool:call_63e361efce1b4926abee3834",
+          "facts": {
+            "tool": "decide",
+            "args": {
+              "evidenceRefs": [
+                "ledger:6",
+                "ledger:8"
+              ],
+              "op": "exit",
+              "result": "{\"reason\": \"Window-entry review complete. Task: author a self-contained 15-slide HTML deck (artifacts/presentation.html) from data/material.txt using native HTML/CSS/SVG, then render/look/deliver via the office interface. All required capabilities exist in execute mode (read/write/edit/python, office.render/look/deliver, acceptance, submit_unit); the office renderer already adds navigation, slide counter, fullscreen, print-to-PDF and per-slide previews. No component/orchestration/policy change is warranted. Proceed to execute.\"}",
+              "status": "deferred",
+              "subtype": "keep"
+            },
+            "error": "Error: decision result does not match object at $",
+            "duration_ms": 0
+          }
+        }
+      },
+      {
+        "ref": "ledger:52",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 9,
+        "value": {
+          "pin": {
+            "request": 9,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 51,
+            "step": "work"
+          },
+          "usage": {
+            "input": 36337,
+            "output": 1843,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 1716,
+            "totalTokens": 38180,
+            "cost": {
+              "input": 0.181685,
+              "output": 0.05529,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.23697500000000002
+            }
+          },
+          "tokens": 38180,
+          "duration_ms": 180920,
+          "usd_estimate": 0.87418,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:53",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 9,
+        "value": {
+          "type": "tool_failed",
+          "boundary": "tool:call_c1f7654750b24aaeb9ae1ce6",
+          "facts": {
+            "tool": "decide",
+            "args": {
+              "evidenceRefs": [
+                "ledger:6"
+              ],
+              "op": "exit",
+              "result": "{\"reason\": \"review done; keep current method; proceed to build deck in execute mode\"}",
+              "status": "deferred",
+              "subtype": "keep"
+            },
+            "error": "Error: decision result does not match object at $",
+            "duration_ms": 0
+          }
+        }
+      },
+      {
+        "ref": "ledger:55",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 10,
+        "value": {
+          "pin": {
+            "request": 10,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 54,
+            "step": "work"
+          },
+          "usage": {
+            "input": 38206,
+            "output": 1178,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 1098,
+            "totalTokens": 39384,
+            "cost": {
+              "input": 0.19103,
+              "output": 0.03534,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.22637000000000002
+            }
+          },
+          "tokens": 39384,
+          "duration_ms": 99779,
+          "usd_estimate": 0.85836,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:56",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 10,
+        "value": {
+          "type": "tool_failed",
+          "boundary": "tool:call_4e74f087ba7d4bf993afb887",
+          "facts": {
+            "tool": "decide",
+            "args": {
+              "mode": "execute",
+              "op": "enter_mode"
+            },
+            "error": "Error: mode unavailable or mode already active",
+            "duration_ms": 0
+          }
+        }
+      },
+      {
+        "ref": "ledger:58",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 11,
+        "value": {
+          "pin": {
+            "request": 11,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 57,
+            "step": "work"
+          },
+          "usage": {
+            "input": 39404,
+            "output": 2980,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 2872,
+            "totalTokens": 42384,
+            "cost": {
+              "input": 0.19702000000000003,
+              "output": 0.08940000000000001,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.28642
+            }
+          },
+          "tokens": 42384,
+          "duration_ms": 101105,
+          "usd_estimate": 1.02648,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:59",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 11,
+        "value": {
+          "type": "tool_failed",
+          "boundary": "tool:call_b4a6de5726374ce0938a290b",
+          "facts": {
+            "tool": "decide",
+            "args": {
+              "op": "exit",
+              "result": "{\"reason\": \"ok\"}",
+              "status": "deferred",
+              "subtype": "keep"
+            },
+            "error": "Error: decision result does not match object at $",
+            "duration_ms": 0
+          }
+        }
+      }
+    ]
+  },
+  "sample-B2": {
+    "requests": [
+      {
+        "request": 1,
+        "payload_chars": 18101,
+        "system_chars": 10204,
+        "tools_chars": 7023,
+        "history_chars": 680,
+        "message_roles": {
+          "system": 1,
+          "user": 3
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 2,
+        "payload_chars": 22828,
+        "system_chars": 10213,
+        "tools_chars": 7023,
+        "history_chars": 5395,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 1,
+          "tool": 2
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 3,
+        "payload_chars": 31333,
+        "system_chars": 10219,
+        "tools_chars": 7023,
+        "history_chars": 13891,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 2,
+          "tool": 4
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      },
+      {
+        "request": 4,
+        "payload_chars": 43011,
+        "system_chars": 10219,
+        "tools_chars": 7023,
+        "history_chars": 25566,
+        "message_roles": {
+          "system": 1,
+          "user": 3,
+          "assistant": 3,
+          "tool": 6
+        },
+        "tool_names": [
+          "read",
+          "grep",
+          "ls",
+          "read_self_component",
+          "reflect_component",
+          "reflect_orchestration",
+          "decide",
+          "read_self",
+          "acceptance",
+          "office"
+        ]
+      }
+    ],
+    "last_messages": [
+      {
+        "role": "system",
+        "chars": 10219,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 164,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 108,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 448,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read",
+            "args": null
+          },
+          {
+            "name": "read",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 2553,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 1711,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 1092,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read_self",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 7251,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 152,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "assistant",
+        "chars": 9787,
+        "keys": [
+          "role",
+          "content",
+          "reasoning_content",
+          "tool_calls"
+        ],
+        "name": null,
+        "calls": [
+          {
+            "name": "read_self_component",
+            "args": null
+          },
+          {
+            "name": "ls",
+            "args": null
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "chars": 1796,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "tool",
+        "chars": 92,
+        "keys": [
+          "role",
+          "content",
+          "tool_call_id"
+        ],
+        "name": null,
+        "calls": []
+      },
+      {
+        "role": "user",
+        "chars": 412,
+        "keys": [
+          "role",
+          "content"
+        ],
+        "name": null,
+        "calls": []
+      }
+    ],
+    "ledger_types": {
+      "event": 8,
+      "mode_entered": 1,
+      "provider_input": 4,
+      "request_cost": 4,
+      "tool_result": 6,
+      "review_closed": 1
+    },
+    "review_trace": [
+      {
+        "ref": "ledger:0",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "type": "window_entry",
+          "boundary": "session-window",
+          "facts": {}
+        }
+      },
+      {
+        "ref": "ledger:1",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "id": "review:ledger:0",
+          "mode": "reflect",
+          "triggers": [
+            {
+              "id": "contract:window_entry",
+              "source": "user_contract",
+              "mode": "reflect",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:3",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 1,
+        "value": {
+          "pin": {
+            "request": 1,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 2,
+            "step": "work"
+          },
+          "usage": {
+            "input": 5014,
+            "output": 76,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 20,
+            "totalTokens": 5090,
+            "cost": {
+              "input": 0.025070000000000002,
+              "output": 0.00228,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.027350000000000003
+            }
+          },
+          "tokens": 5090,
+          "duration_ms": 4229,
+          "usd_estimate": 0.10636,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:5",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 1,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_8f15907af6734bd2a3b23568",
+          "facts": {
+            "tool": "read",
+            "input_hash": "20731a6df1b0c31497390d3c323096feb43197d2ae43aef7111a0f0e433ab9b3",
+            "duration_ms": 8
+          }
+        }
+      },
+      {
+        "ref": "ledger:7",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 1,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_916699d60c1248bcb8d97ff2",
+          "facts": {
+            "tool": "read",
+            "input_hash": "6f644c238e4837a10872f9aea3079fe5ef4af0309a8f45c507501c2944694c33",
+            "duration_ms": 12
+          }
+        }
+      },
+      {
+        "ref": "ledger:9",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 2,
+        "value": {
+          "pin": {
+            "request": 2,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 8,
+            "step": "work"
+          },
+          "usage": {
+            "input": 6152,
+            "output": 241,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 154,
+            "totalTokens": 6393,
+            "cost": {
+              "input": 0.030760000000000003,
+              "output": 0.00723,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.03799
+            }
+          },
+          "tokens": 6393,
+          "duration_ms": 6245,
+          "usd_estimate": 0.14232,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:11",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 2,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_17cbfbec8b8d42478cee097a",
+          "facts": {
+            "tool": "read_self",
+            "input_hash": "7edecc684add23699287c6b81b5199bcd9f8b7afc3428b285333778aaaabd061",
+            "duration_ms": 2
+          }
+        }
+      },
+      {
+        "ref": "ledger:13",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 2,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_3f578c847d0548949064bd64",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "duration_ms": 8
+          }
+        }
+      },
+      {
+        "ref": "ledger:15",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 3,
+        "value": {
+          "pin": {
+            "request": 3,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 14,
+            "step": "work"
+          },
+          "usage": {
+            "input": 8544,
+            "output": 2395,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 2293,
+            "totalTokens": 10939,
+            "cost": {
+              "input": 0.04272,
+              "output": 0.07185,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0.11457
+            }
+          },
+          "tokens": 10939,
+          "duration_ms": 62595,
+          "usd_estimate": 0.36248,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "reported"
+        }
+      },
+      {
+        "ref": "ledger:17",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 3,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_cb23a211152c48bd8e77f10c",
+          "facts": {
+            "tool": "read_self_component",
+            "input_hash": "232cf748dfc64c0db4bcdec04b39331ed87917feef828b2b55e409cb3f573e46",
+            "duration_ms": 2
+          }
+        }
+      },
+      {
+        "ref": "ledger:19",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 3,
+        "value": {
+          "type": "tool_succeeded",
+          "boundary": "tool:call_30248bfa50714d5893767ce1",
+          "facts": {
+            "tool": "ls",
+            "input_hash": "df72e88539e2534b9173b3cc18bdcd11b6fb1ddcd230b6fce23bbc2e5e0ccc0b",
+            "duration_ms": 4
+          }
+        }
+      },
+      {
+        "ref": "ledger:21",
+        "kind": "fact",
+        "type": "request_cost",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "pin": {
+            "request": 4,
+            "revision": 1,
+            "mode": "reflect",
+            "mode_version": 1,
+            "ledger_offset": 20,
+            "step": "work"
+          },
+          "usage": null,
+          "tokens": 55345,
+          "duration_ms": 9780,
+          "usd_estimate": 1.59842,
+          "cost_source": "provider usage + manifest rates; actual invoice unknown",
+          "status": "unknown_reserved"
+        }
+      },
+      {
+        "ref": "ledger:22",
+        "kind": "fact",
+        "type": "review_closed",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "review": "review:ledger:0",
+          "status": "deferred",
+          "subtype": "incomplete",
+          "agent_decision": "absent",
+          "reason": "plain-text/technical end without decide exit"
+        }
+      },
+      {
+        "ref": "ledger:23",
+        "kind": "fact",
+        "type": "event",
+        "revision": 1,
+        "request": 4,
+        "value": {
+          "type": "before_session_end",
+          "boundary": "normal-session-end",
+          "facts": {}
+        }
+      }
+    ]
+  }
+}

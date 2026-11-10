@@ -74,7 +74,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
     Type.Object({ baseRevision: Type.Integer({ minimum: 1 }), orchestration: Type.Optional(Type.Any()), components: Type.Optional(Type.Array(Type.Any())),
       policy: Type.Optional(Type.Any()), carry: Type.Optional(Type.Any()), stepMap: Type.Optional(Type.Any()), restore: Type.Optional(Type.Integer({minimum:1})), validation: Type.Optional(Type.Any()) }),
     (a: any) => evo.transaction(a));
-  tool('decide', 'Decide on this same serial agent: enter_mode(execute/reflect/consolidate), exit(changed/unrelated/deferred, result matching mode exitSchema, evidenceRefs; keep uses deferred/keep), validation(window, decision adopt/restore/defer, result comparison, restore revision), capsule(value), inherit(value), reset, or ordinary orchestration decision. Pending reflection is not a completed change. No required modification.',
+  tool('decide', 'Decide on this same serial agent: enter_mode(execute/reflect/consolidate), exit(changed/unrelated/deferred, object result matching mode exitSchema, evidenceRefs; keep uses deferred/keep), validation(window, decision adopt/restore/defer, result={reason,baseline_refs,outcome_refs,comparison} for adoption, restore revision), capsule(value), inherit(value), reset, or ordinary orchestration decision in execute. Pending reflection is not a completed change. No required modification.',
     Type.Object({ op: Type.Optional(Type.String()), mode: Type.Optional(Type.String()), status: Type.Optional(Type.String()), subtype: Type.Optional(Type.String()), terminal: Type.Optional(Type.Boolean()),
       result: Type.Optional(Type.Any()), evidenceRefs: Type.Optional(Type.Array(Type.String())), window: Type.Optional(Type.String()), decision: Type.Optional(Type.String()),
       restore: Type.Optional(Type.Integer()), value: Type.Optional(Type.Any()), decisionId: Type.Optional(Type.String()) }), async (a: any, ctx: any) => {
@@ -83,10 +83,6 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       if (a.op === 'capsule') return evo.capsule(a.value);
       if (a.op === 'inherit') return evo.inherit(a.value);
       if (a.op === 'validation') {
-        if (a.decision === 'restore') {
-          // Validate and queue the action before recording an enacted decision.
-          await evo.transaction({ baseRevision: evo.pendingRevision, restore: a.restore });
-        }
         return evo.interpret(a.window,a.decision,a.result,a.restore);
       }
       if (a.op === 'reset') {
@@ -101,6 +97,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
         return { ...reset, review_queued: !reset.ready, context_reset_requested: reset.ready };
       }
       if (a.op) throw Error('unknown decide operation');
+      if (evo.reviewExitSchema) throw Error('work decision suspended during mode transaction; use decide op for this mode');
       const decision = evo.decide({ decisionId: a.decisionId, actor: 'agent', evidenceRefs: a.evidenceRefs ?? [], result: a.result });
       return { decision, transition: evo.advance() };
     });
@@ -121,7 +118,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       const receipt = JSON.parse(readFileSync(join(root,'exports',dirs.at(-1) ?? 'missing','receipt.json'),'utf8'));
       if (fileHash(workspace.path(receipt.source_path)) !== receipt.source_sha256) throw Error('unit needs a current rendered artifact');
       const routed = await evo.event('before_delivery',`unit:${a.unit}:${receipt.source_sha256}`);
-      if (!(routed as any).duplicate || evo.mode !== 'execute') return { unit: a.unit, review_pending: true };
+      if (!(routed as any).duplicate || evo.hasReview) return { unit: a.unit, review_pending: true };
       const result = collectAcceptance(manifest,root,workspace,receipt.source_path,receipt,0,a.unit);
       evo.outcome(result,true); evo.fact('unit_delivered',{ unit: a.unit }); submitted.add(a.unit);
       await evo.event('unit_completed',`unit:${a.unit}`);

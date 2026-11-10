@@ -71,7 +71,8 @@ def test_shared_round_uses_actual_remaining_without_starving_independent_arms(tm
     assert allocated[2][1]['tokens']==599800
 
 
-def test_length_response_resumes_same_history_without_reopening_window(tmp_path,monkeypatch):
+@pytest.mark.parametrize('terminal_review',[False,True])
+def test_length_or_terminal_review_resumes_same_history_without_reopening_window(tmp_path,monkeypatch,terminal_review):
     contract={'budget':{'requests':10,'tokens':100000,'seconds':100,'usd':10,'storage_bytes':1000000}}
     contract['content_hash']=evo_ppt.digest(contract)
     settings={'api':'openai-completions','compat':{},'model':{'id':evo_ppt.MODEL},'thinking':'low',
@@ -90,9 +91,27 @@ def test_length_response_resumes_same_history_without_reopening_window(tmp_path,
         def __exit__(self,*_a): pass
         def prompt(self,message): prompts.append(message); return {'success':True}
         def wait_for_agent_events(self,**_kw):
-            return [{'type':'message_end','message':{'role':'assistant','stopReason':'length' if len(prompts)==1 else 'stop'}}]
+            if terminal_review:
+                evo_ppt.write(tmp_path/'.harness/ppt-loop.json',{'complete':True})
+                evo_ppt.write(tmp_path/'.harness/live-self.json',{'root':{'queue':['terminal-window'] if len(prompts)==1 else [],'ledger':[]}})
+            return [{'type':'message_end','message':{'role':'assistant','stopReason':'length' if len(prompts)==1 and not terminal_review else 'stop'}}]
     monkeypatch.setattr(evo_ppt,'PiKernel',Kernel)
     result=evo_ppt.run(tmp_path)
-    assert result['stop']=='plain_text_end'
+    assert result['stop']==('delivered' if terminal_review else 'plain_text_end')
     assert len(prompts)==2
-    assert json.loads(prompts[1])['event']=='provider_response_incomplete'
+    if not terminal_review:
+        assert json.loads(prompts[1])['event']=='provider_response_incomplete'
+    else:
+        assert 'queued boundary' in prompts[1]
+
+
+def test_round_deadline_stops_before_any_charged_preflight(tmp_path,monkeypatch):
+    contract={'budget':{'requests':10,'tokens':100000,'seconds':100,'usd':10,'storage_bytes':1000000}}
+    contract['content_hash']=evo_ppt.digest(contract)
+    evo_ppt.write(tmp_path/'manifest.json',{'provider':'az','model':evo_ppt.MODEL,'arm':'B','contract':contract,
+        'settings':{},'seed_hashes':{},'sources':{},'units':[], 'renderer_preflight':{'status':'passed'}})
+    monkeypatch.setattr(evo_ppt,'load_project_dotenv',lambda _p:{})
+    monkeypatch.setattr(evo_ppt,'model_preflight',lambda *_a,**_kw:pytest.fail('preflight outside authorized wall clock'))
+    result=evo_ppt.run(tmp_path,round_deadline=0)
+    assert result['stop']=='round_wall_clock_before_preflight'
+    assert result['resources']=={'requests':0,'tokens':0,'usd':0}

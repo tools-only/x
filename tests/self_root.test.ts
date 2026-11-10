@@ -109,8 +109,66 @@ test('window delivers protected outcomes, cost once and matching numeric predict
   await s.event('unit_completed','one');
   const w = s.detail('windows')[0]; assert.equal(w.status,'delivered'); assert.equal(w.delivered.prediction_error.difference,-1);
   assert.equal(s.detail('windows')[0].status,'delivered');
-  s.interpret(w.id,'defer',{reason:'insufficient comparison'});
+  await s.interpret(w.id,'defer',{reason:'insufficient comparison'});
   assert.equal(s.detail('windows')[0].status,'deferred_unverified');
+});
+
+test('reasoning selection changes actual messages without removing task facts or call continuity', async () => {
+  const s = new SelfRoot(contract());
+  const messages = [{role:'user',content:'original task'},
+    {role:'assistant',content:[{type:'thinking',thinking:'old counterevidence'},{type:'toolCall',id:'a',name:'read',arguments:{}}]},
+    {role:'toolResult',toolCallId:'a',content:[{type:'text',text:'complete source facts'}]},
+    {role:'assistant',content:[{type:'thinking',thinking:'current reasoning'},{type:'text',text:'current plan'}]}];
+  const projected = s.contextMessages(messages);
+  assert.deepEqual(projected[1].content,[messages[1].content![1]]);
+  assert.deepEqual(projected[2],messages[2]);
+  assert.deepEqual(projected[3],messages[3]);
+  assert.equal(messages[1].content!.length,2);
+  await start(s);
+  const p = structuredClone(s.policy); p.context.reasoning = 'all';
+  await s.transaction({baseRevision:1,policy:p}); await start(s);
+  assert.deepEqual(s.contextMessages(messages),messages);
+});
+
+test('new commitments expire on an already consumed terminal boundary without re-triggering floor', async () => {
+  const s = new SelfRoot(contract()); await start(s);
+  await s.event('before_session_end','delivery:same'); await start(s);
+  await s.transaction({baseRevision:1,policy:s.policy}); await start(s);
+  s.exit({status:'changed',result:{reason:'actual activation'},evidenceRefs:[]});
+  const event = await s.event('before_session_end','delivery:same');
+  assert.equal(event.duplicate,true);
+  assert.deepEqual(event.triggers!.map(t=>t.source),['validation_due']);
+  assert.equal(s.hasReview,true);
+  await start(s);
+  assert.equal(s.detail('windows')[0].status,'delivered');
+  assert.deepEqual(await s.event('before_session_end','delivery:same'),{duplicate:true});
+});
+
+test('request commitments expire at request boundary without an unrelated tool event', async () => {
+  const s = new SelfRoot(contract()); await start(s);
+  await s.transaction({baseRevision:1,policy:s.policy,validation:{due:{request:2},scope:'bounded',baseline:[],metric_refs:[]}});
+  await start(s); assert.equal(s.mode,'execute');
+  await start(s); assert.equal(s.mode,'reflect');
+  assert.equal(s.detail('windows')[0].status,'delivered');
+});
+
+test('adoption requires cited task baseline, window task outcome and Agent comparison; restore is atomic', async () => {
+  const s = new SelfRoot(contract()); await start(s);
+  await s.transaction({baseRevision:1,policy:s.policy,validation:{due:{request:1},baseline:[],metric_refs:[],scope:'no baseline'}});
+  await start(s);
+  await assert.rejects(s.interpret('window:0','adopt',{reason:'assertion only'}),/real task/);
+  await assert.rejects(s.interpret('window:0','restore',{},1),/comparison/);
+  assert.equal(s.pendingRevision,s.revision);
+  await s.interpret('window:0','defer',{reason:'no task comparison yet'});
+  s.exit({status:'deferred',subtype:'keep',result:{reason:'resume'},evidenceRefs:[]});
+  const baseline = s.outcome({source:'protected_acceptance',result:1});
+  await s.transaction({baseRevision:2,policy:s.policy,validation:{due:{request:3},baseline:[baseline.ref],metric_refs:[],scope:'task comparison'}});
+  await start(s);
+  const outcome = s.outcome({source:'protected_acceptance',result:2});
+  await start(s);
+  await assert.rejects(s.interpret('window:1','adopt',{reason:'fake refs',baseline_refs:[outcome.ref],outcome_refs:[baseline.ref],comparison:{result:'better'}}),/real task/);
+  await s.interpret('window:1','adopt',{reason:'agent chooses',baseline_refs:[baseline.ref],outcome_refs:[outcome.ref],comparison:{result:'1 to 2, local only'}});
+  assert.equal(s.detail('windows')[1].status,'adopted');
 });
 
 test('bounded pure failure/success capsules restore and replay without workspace/network effects', async () => {

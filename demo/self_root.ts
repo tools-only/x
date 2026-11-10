@@ -15,7 +15,7 @@ export type Policy = {
   modes: Record<string, Mode>; routes: Route[];
   methods: Record<string, string>;
   memory: { names: string[] | '*'; order: 'name' | 'newest'; write: 'replace' | 'append' };
-  context: { order: Array<'prompts' | 'memory' | 'skills'>; instruction: string };
+  context: { order: Array<'prompts' | 'memory' | 'skills'>; instruction: string; reasoning?: 'all' | 'latest' | 'none' };
 };
 export type SelfContract = {
   source: 'user_contract'; authority: string; decisions: string; content_hash: string; readonly_reason: string;
@@ -35,7 +35,7 @@ export function seedPolicy(capabilities: string[]): Policy {
     reflect: { tools: ['read', 'ls', 'grep', 'office.look', 'acceptance'], instruction: 'Review the pinned self/evidence. You choose scope, method and whether to change anything. Exit with decide(op="exit").', exitSchema },
     consolidate: { tools: ['read', 'ls', 'grep', 'acceptance'], instruction: 'Organize this task\'s evidence and bounded inheritance records if useful; no automatic cross-task defaults.', exitSchema },
   }, routes: [], methods: {}, memory: { names: '*', order: 'name', write: 'replace' },
-  context: { order: ['prompts', 'memory', 'skills'], instruction: '' } };
+  context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest' } };
 }
 
 export function validateContract(c: SelfContract) {
@@ -67,6 +67,7 @@ function validatePolicy(p: Policy, c: SelfContract, outputLimit = Number.MAX_SAF
   for (const source of Object.values(p.methods)) validateLiveSelfSource(source);
   if (!p.memory || (p.memory.names !== '*' && (!Array.isArray(p.memory.names) || p.memory.names.some(n => typeof n !== 'string'))) || !['name','newest'].includes(p.memory.order) || !['replace','append'].includes(p.memory.write)) throw Error('invalid memory policy');
   if (!p.context || typeof p.context.instruction !== 'string' || !Array.isArray(p.context.order) || p.context.order.some(x => !['prompts','memory','skills'].includes(x)) || new Set(p.context.order).size !== p.context.order.length) throw Error('invalid context policy');
+  if (p.context.reasoning !== undefined && !['all','latest','none'].includes(p.context.reasoning)) throw Error('invalid reasoning context policy');
 }
 
 /** No new actor: inherited action/decision/component entry points execute on this instance. */
@@ -136,6 +137,7 @@ export class SelfRoot extends LiveAgentSelf {
   override get revision() { return this.serial; }
   get mode() { return this.currentMode; }
   get reviewExitSchema() { return this.review ? copy(this.review.modeDefinition.exitSchema) : undefined; }
+  get hasReview() { return Boolean(this.review || this.queue.length); }
   get pendingRevision() { return this.pending?.revision ?? this.serial; }
   get isPaused() { return this.paused; }
   get isResetting() { return Boolean(this.resetInProgress); }
@@ -321,26 +323,30 @@ export class SelfRoot extends LiveAgentSelf {
       }
     }
     this.chainFailed = false;
+    await this.event('request_boundary',`request:${this.request}`);
     if (!this.review && this.queue.length) this.enter(this.queue.shift());
     this.lastSurface = this.surface(); applySurface(this.lastSurface);
   }
   async event(type: string, boundary: string, facts: unknown = {}) {
     const key = `${type}:${boundary}`;
-    if (this.consumed.has(key)) return { duplicate: true };
+    const duplicate = this.consumed.has(key);
+    // Event consumption does not consume commitments created AFTER that event.
+    const due = this.windows.filter(w => w.status === 'open' &&
+      ((w.due.boundary && w.due.boundary === type) || (w.due.request !== undefined && this.request >= w.due.request) || (w.due.units !== undefined && this.units >= w.due.units)));
+    if (duplicate && !due.length) return { duplicate: true };
     this.consumed.add(key);
-    const event = this.fact('event', { type, boundary, facts });
+    const event = this.fact(duplicate ? 'commitment_boundary' : 'event', { type, boundary, facts });
     const input = { event, revision: this.serial, state: super.snapshot(), ledger_offset: this.ledger.length, request: this.request, resources: this.resources() };
-    const routes = [...this.policy.routes].filter(r => r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
+    const routes = [...this.policy.routes].filter(r => !duplicate && r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
     const triggers: any[] = [];
-    if (this.contract.boundaries.includes(type)) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    if (!duplicate && this.contract.boundaries.includes(type)) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
     for (const route of routes) {
       try {
         if (route.predicate && (await this.evaluate(this.policy.methods[route.predicate], input, { route: route.id })).value !== true) continue;
         triggers.push({ ...route, source: 'agent_method' });
       } catch (e) { this.fact('watch_stall', { route: route.id, error: String(e), triggered: false }); }
     }
-    for (const window of this.windows.filter(w => w.status === 'open')) {
-      if ((window.due.boundary && window.due.boundary === type) || (window.due.request !== undefined && this.request >= window.due.request) || (window.due.units !== undefined && this.units >= window.due.units)) {
+    for (const window of due) {
         const outcomes = this.ledger.filter(r => r.type === 'task_outcome' && r.revision >= window.revision);
         let measured: any = null;
         if (window.measure) {
@@ -350,17 +356,17 @@ export class SelfRoot extends LiveAgentSelf {
         const observed = measured?.value, prediction = window.prediction;
         const error = prediction && observed?.metric === prediction.metric && observed?.unit === prediction.unit && Number.isFinite(prediction.value) && Number.isFinite(observed.value)
           ? { predicted: prediction.value, observed: observed.value, unit: prediction.unit, difference: observed.value-prediction.value } : { status: 'unknown', reason: 'no comparable numeric prediction/observation' };
-        window.status = 'delivered'; window.delivered = { outcomes: outcomes.map(r => r.ref), baseline: window.baseline, measured, prediction_error: error, resources: this.resources(), missing: outcomes.length ? [] : ['task_outcomes'] };
+        const baseline = window.baseline.filter(ref => this.ledger.some(r => r.ref === ref && r.kind === 'fact' && r.type === 'task_outcome'));
+        window.status = 'delivered'; window.delivered = { outcomes: outcomes.map(r => r.ref), baseline: window.baseline, task_baseline: baseline, measured, prediction_error: error, resources: this.resources(), missing: [...(outcomes.length ? [] : ['task_outcomes']), ...(baseline.length ? [] : ['task_baseline'])] };
         this.fact('validation_delivered', { window: window.id, ...window.delivered });
         triggers.push({ id: window.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
-      }
     }
     if (triggers.length) {
       const existing = this.queue.find(t => t.boundary === boundary);
       if (existing) existing.triggers.push(...triggers);
       else this.queue.push({ id: `review:${event.ref}`, boundary, event: event.ref, triggers, revision: this.serial, ledger_offset: this.ledger.length });
     }
-    return { event: event.ref, triggers };
+    return { event: event.ref, triggers, ...(duplicate ? { duplicate: true } : {}) };
   }
   private enter(ticket: any) {
     this.previousMode = this.currentMode; this.currentMode = ticket.triggers[0].mode;
@@ -407,11 +413,18 @@ export class SelfRoot extends LiveAgentSelf {
   closeIncomplete(reason: string) {
     if (this.review) { this.fact('review_closed', { review: this.review.id, status: 'deferred', subtype: 'incomplete', agent_decision: 'absent', reason }); this.review = undefined; this.currentMode = this.previousMode; }
   }
-  interpret(id: string, decision: 'adopt'|'restore'|'defer', explanation: any, restore?: number) {
+  async interpret(id: string, decision: 'adopt'|'restore'|'defer', explanation: any, restore?: number) {
     const w = this.windows.find(w => w.id === id);
     if (!w || w.status !== 'delivered' || !['adopt','restore','defer'].includes(decision)) throw Error('validation not delivered or invalid decision');
     if (!explanation || !explanation.reason) throw Error('Agent comparison required');
     if (decision === 'restore' && restore === undefined) throw Error('restore source required');
+    if (decision === 'adopt') {
+      const { baseline_refs, outcome_refs, comparison } = explanation;
+      if (!Array.isArray(baseline_refs) || !baseline_refs.length || !baseline_refs.every(ref => w.delivered.task_baseline.includes(ref)) ||
+          !Array.isArray(outcome_refs) || !outcome_refs.length || !outcome_refs.every(ref => w.delivered.outcomes.includes(ref)) ||
+          !comparison || typeof comparison !== 'object' || Array.isArray(comparison) || !Object.keys(comparison).length) throw Error('adoption requires Agent comparison with real task baseline_refs and window outcome_refs; missing evidence may be deferred or restored');
+    }
+    if (decision === 'restore') await this.transaction({ baseRevision: this.pendingRevision, restore });
     const row = this.claim('validation_interpreted', { window: id, decision, explanation, restore: restore ?? null, delivered: w.delivered });
     w.status = decision === 'restore' ? 'restore_pending' : decision === 'adopt' ? 'adopted' : 'deferred_unverified';
     return row;
@@ -461,6 +474,13 @@ export class SelfRoot extends LiveAgentSelf {
     let memories = this.active().filter(c => c.kind === 'memory' && (this.policy.memory.names === '*' || this.policy.memory.names.includes(c.name)));
     memories.sort(this.policy.memory.order === 'newest' ? (a,b) => b.version-a.version || a.name.localeCompare(b.name) : (a,b) => a.name.localeCompare(b.name));
     return memories;
+  }
+  /** Select only the reasoning channel; task text, tools, images and call IDs stay intact. */
+  contextMessages(messages: any[]) {
+    const selection = this.policy.context.reasoning ?? 'all';
+    const latest = messages.findLastIndex(m => m.role === 'assistant');
+    return messages.map((m,i) => m.role !== 'assistant' || selection === 'all' || (selection === 'latest' && i === latest) ? m :
+      { ...m, content: Array.isArray(m.content) ? m.content.filter((part: any) => part.type !== 'thinking') : m.content });
   }
   async projection() {
     const p = this.review?.policy ?? this.policy;

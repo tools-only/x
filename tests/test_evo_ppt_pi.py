@@ -38,7 +38,7 @@ def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     policy = {"modes": {name: {"tools": tools, "instruction": name, "exitSchema": exit_schema} for name, tools in [
         ("execute", caps), ("reflect", ["read", "ls", "grep", "office.look", "acceptance"]), ("consolidate", ["read", "ls", "grep", "acceptance"])]},
         "routes": [], "methods": {}, "memory": {"names": ["m2"], "order": "name", "write": "replace"},
-        "context": {"order": ["memory"], "instruction": "context-policy-v2"}}
+        "context": {"order": ["memory"], "instruction": "context-policy-v2", "reasoning":"latest"}}
     policy['methods']={'project':'{"marker":"METHOD-V2","facts":len(input["evidence_index"])}','watch':'False'}
     policy['modes']['execute']['projection']='project'
     policy['routes']=[{'id':'agent-watch','event':'tool_succeeded','predicate':'watch','mode':'reflect','priority':0,'conclusion_sink':'ledger'}]
@@ -66,7 +66,7 @@ def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     env = {"PI_CODING_AGENT_DIR": str(tmp_path / ".pi-agent"), "PI_AUTORESEARCH_E2E_ROOT": str(tmp_path), "PPT_DEMO_ROOT": str(tmp_path),
            "EVO_MANIFEST": str(path), "PPT_DEMO_DEADLINE": "4102444800000", "PPT_DEMO_BUDGET_USD": "1", "PPT_DEMO_REQUEST_RESERVE_USD": "0.001",
            "PPT_DEMO_INPUT_USD_PER_MILLION": "0", "PPT_DEMO_OUTPUT_USD_PER_MILLION": "0", "PPT_DEMO_CACHE_READ_USD_PER_MILLION": "0", "PPT_DEMO_CACHE_WRITE_USD_PER_MILLION": "0",
-           "PI_EXTERNAL_STEPS": json.dumps(steps), "PI_EXTERNAL_USAGE_TOKENS": "1"}
+           "PI_EXTERNAL_STEPS": json.dumps(steps), "PI_EXTERNAL_USAGE_TOKENS": "1", "PI_EXTERNAL_THINKING_CHARS":"1200"}
     def record(event):
         with (tmp_path / 'events.jsonl').open('a',encoding='utf-8') as f:
             f.write(json.dumps(event,ensure_ascii=False)+'\n')
@@ -80,7 +80,13 @@ def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     assert "python" not in toolnames(contexts[0])
     decision_schema=next(t for t in contexts[0]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']
     assert decision_schema['allOf'][0]['then']['properties']['result']['type']=='object'
-    assert 'type' not in decision_schema['properties']['result']  # ordinary decisions remain unrestricted
+    assert decision_schema['properties']['result']['type']=='object'
+    assert 'op' in decision_schema['required']
+    assert 'type' not in next(t for t in contexts[3]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']['properties']['result']
+    for context in contexts[2:]:
+        assistants=[m for m in context['messages'] if m['role']=='assistant']
+        assert not any(p['type']=='thinking' for m in assistants[:-1] for p in m['content'])
+        assert any(p['type']=='thinking' for p in assistants[-1]['content'])
     assert "python" in toolnames(contexts[3])
     assert "evo_probe" in toolnames(contexts[4])
     assert "probe-v1" in json.dumps(contexts[5])
@@ -99,6 +105,7 @@ def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     assert any(r['kind']=='fact' and r['type']=='capsule' and r['value']['dependencies']['metadata'].get('route')=='agent-watch' for r in saved['root']['ledger'])
     costs = [r for r in saved["root"]["ledger"] if r["type"] == "request_cost"]
     assert len({r["request"] for r in costs}) == len(costs)
+    assert any(r['type']=='assistant_reasoning' and r['value']['blocks'] for r in saved['root']['ledger'])
 
 
 def test_real_renderer_acceptance_and_merged_delivery_review(tmp_path):
@@ -112,7 +119,11 @@ def test_real_renderer_acceptance_and_merged_delivery_review(tmp_path):
              {"name":"acceptance","arguments":{"unit":"one"}},
              {"name":"submit_unit","arguments":{"unit":"one"}},keep,
              {"name":"submit_unit","arguments":{"unit":"one"}},
-             {"name":"office","arguments":{"op":"deliver"}},keep,
+             {"name":"office","arguments":{"op":"deliver"}},
+             {"name":"reflect_component","arguments":{"baseRevision":1,"op":"define","kind":"memory","name":"delivery_note","source":"fixture final review change"}},
+             {"name":"decide","arguments":{"op":"exit","status":"changed","result":{"reason":"activated memory receipt"}}},
+             {"name":"office","arguments":{"op":"deliver"}},
+             {"name":"decide","arguments":{"op":"validation","window":"window:0","decision":"defer","result":{"reason":"no post-change task result; do not claim validated adoption"}}},keep,
              {"name":"office","arguments":{"op":"deliver"}}]
     command = [shutil.which('node'),str(PROJECT/'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),'--mode','rpc',
                '--no-context-files','--no-extensions','--no-skills','--no-prompt-templates','--no-builtin-tools',
@@ -142,6 +153,8 @@ def test_real_renderer_acceptance_and_merged_delivery_review(tmp_path):
     assert any(r['value']['unit']=='one' for r in ledger if r['type']=='unit_delivered')
     tickets = [r['value'] for r in ledger if r['type']=='mode_entered']
     assert any({t['id'] for t in r['triggers']} >= {'contract:before_delivery','contract:before_session_end'} for r in tickets)
+    assert any(r['type']=='validation_delivered' and 'task_outcomes' in r['value']['missing'] for r in ledger)
+    assert any(r['type']=='validation_interpreted' and r['value']['decision']=='defer' for r in ledger)
 
 
 def test_tool_contract_replacement_and_same_agent_reset(tmp_path):

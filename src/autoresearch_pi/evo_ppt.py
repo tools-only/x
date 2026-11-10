@@ -123,7 +123,7 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
                      "\nDeliver the complete presentation with the existing office interface; submit_unit, when available, supports partial handover.\n", encoding="utf-8")
     # The development AGENTS.md and constitution are never task context.
     sources = {f"data/{p.name}": file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()}
-    body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; user Round v2 request",
+    body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; explicit round authority above",
             "readonly_reason": "user authorization, total resources, evidence integrity and acceptance cannot be rewritten by the task Agent",
             "boundaries": ["window_entry", "before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
             "capabilities": ["read", "write", "edit", "ls", "grep", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
@@ -133,7 +133,7 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     manifest = {"experiment_id": root.name, "arm": arm, "provider": "az", "model": MODEL, "contract": {**body, "content_hash": digest(body)},
                 "sources": sources, "units": units, "checker": {"version": "literal-normalized-render-v2", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
                 "engineering_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip(),
-            "engineering_tag": "v2 candidate; exact final commit recorded by local tag v2", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
+            "engineering_tag": "v3 candidate; exact final commit recorded by local tag v3", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
                     "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
                 "comparison": "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence",
                 "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established"}
@@ -143,7 +143,7 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     return manifest
 
 
-def model_preflight(root: Path, manifest: dict, values: dict, inference=False):
+def model_preflight(root: Path, manifest: dict, values: dict, inference=False, deadline: float | None = None):
     """No fallback/retry. Optional tiny connectivity probe is separately accounted."""
     sent = False
     if values.get("OPENAI_API_BASE", "").rstrip("/") != BASE or not values.get("OPENAI_API_KEY"):
@@ -156,8 +156,14 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False):
                            "enable_thinking": True, "reasoning_effort": manifest["settings"]["thinking"], "stream": False}).encode() if inference else None
         started = time.monotonic()
         try:
+            timeout = min(45,manifest["contract"]["budget"]["seconds"],deadline-time.time() if deadline is not None else 45)
+            if timeout <= 0:
+                raise TimeoutError("authorized round wall clock exhausted before preflight dispatch")
+            if inference:
+                write(root / "inference-preflight.json", {"status":"pending", "accounting":{"requests":1,
+                    "tokens":len(data)+4096+16,"usd":((len(data)+4096)*20+16*80)/1e6,"usage_status":"unknown_reserved"}})
             sent = True
-            with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=min(45,manifest["contract"]["budget"]["seconds"])) as response:
+            with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=timeout) as response:
                 body = json.load(response)
                 listed = any(m.get("id") == MODEL for m in body.get("data", [])) if not inference else None
                 result = {"status": "available" if (body.get("model") == MODEL if inference else listed) else "model_mismatch_or_not_listed",
@@ -198,10 +204,14 @@ def run(root: Path, *, round_deadline: float | None = None):
     # This connectivity probe is not a task Agent. Charge it to the same total
     # authorization, record the actual returned model, and never retry/fallback.
     b = contract["budget"]
+    if round_deadline is not None and time.time() >= round_deadline:
+        result={"stop":"round_wall_clock_before_preflight", "resources":{"requests":0,"tokens":0,"usd":0},
+                "units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
+        write(root / "summary.json",result); return result
     if b["requests"] < 2 or b["tokens"] < 4352 or b["usd"] < (4336*20+16*80)/1e6:
         result={"stop":"insufficient_preflight_budget","units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); return result
-    probe = model_preflight(root,manifest,values,inference=True)
+    probe = model_preflight(root,manifest,values,inference=True,deadline=round_deadline)
     if probe["status"] != "available":
         result = {"stop":"az_inference_unavailable", "preflight":probe, "provider":"az", "model":MODEL,
                   "resources":probe["accounting"],"units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
@@ -257,14 +267,14 @@ def run(root: Path, *, round_deadline: float | None = None):
                 events = kernel.wait_for_agent_events(timeout=max(1,deadline-time.monotonic()),idle_timeout=300)
                 state_path = root / ".harness/ppt-loop.json"
                 state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
-                if state.get("complete"):
-                    result["stop"] = "delivered"
-                    break
                 if (root / "budget-stop.json").exists():
                     result["stop"] = "budget_or_integrity_stop"
                     break
                 saved = json.loads((root / ".harness/live-self.json").read_text(encoding="utf-8"))
                 ledger = saved.get("root",{}).get("ledger",[])
+                if state.get("complete") and not saved.get("root",{}).get("queue"):
+                    result["stop"] = "delivered"
+                    break
                 resets = [r for r in ledger if r["type"] == "active_reset_authorized" and r["ref"] not in handled_resets]
                 if resets:
                     reset = resets[-1]

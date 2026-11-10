@@ -315,8 +315,8 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (evo && a.op === 'deliver') {
         const boundary = `delivery:${currentSourceFacts()?.hash}`;
         const routed = await evo.event('before_delivery', boundary);
-        if (!(routed as any).duplicate) {
-          await evo.event('before_session_end', boundary);
+        await evo.event('before_session_end', boundary);
+        if (!(routed as any).duplicate || evo.hasReview) {
           persistLiveSelf();
           return text({ delivery_pending: true, boundary, review: 'queued for next request; repeat delivery after review' });
         }
@@ -572,7 +572,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       try {
         evo.guard(directoryBytes(root));
         const pin = evo.pin(); evoRequestStarted = Date.now();
-        const messages = [...event.messages];
+        const messages = evo.contextMessages(event.messages);
         const system = { ...messages[0] };
         if (system.role !== 'system') throw Error('missing system message');
         // Rebuild the actual schema, including office sub-operations, for this request.
@@ -582,10 +582,20 @@ export default function pptDemo(pi: ExtensionAPI) {
           if (t.name === 'office') parameters.properties.op = { type: 'string', enum: actions.filter(x => x.startsWith('office.')).map(x => x.slice(7)) };
           // Type the operation, not the mode name. Other decisions retain their
           // declared result shapes; exit uses the Agent's pinned schema.
-          if (t.name === 'decide') parameters.allOf = [{
+          if (t.name === 'decide') {
+            // A suspended work step cannot make ordinary work decisions. Mode
+            // operations carry objects; advertise that directly, not as Any
+            // with a conditional hidden from schema-light providers.
+            if (evo.reviewExitSchema) {
+              parameters.properties.op = { type: 'string', enum: ['exit','validation','capsule','inherit','reset'] };
+              parameters.required = [...new Set([...(parameters.required ?? []),'op'])];
+              parameters.properties.result = { type: 'object' };
+            }
+            parameters.allOf = [{
             if: { properties: { op: { const: 'exit' } }, required: ['op'] },
             then: { properties: { result: evo.reviewExitSchema ?? { type: 'object' } }, required: ['result'] },
-          }];
+            }];
+          }
           return { name: t.name, description: t.description, parameters };
         });
         // Older tool additions/removals must not re-open a suspended capability later in history.
@@ -600,7 +610,7 @@ export default function pptDemo(pi: ExtensionAPI) {
           'SELF ROOT: one agent, one session. Protocol: read_self expands policy/ledger/lineage; reflect_component or reflect_orchestration queues a candidate until the next request. decide(op="enter_mode",mode=...) changes attention; decide(op="exit",status="deferred",subtype="keep",result={reason:...},evidenceRefs=[]) can keep the current method. changed requires activation; keep is not unrelated. Validation decisions compare task facts; no required modification. office.deliver hands over the whole deck; submit_unit supports partial handover.',
           JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())].join('\n\n');
         messages[0] = system;
-        evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
+        evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), reasoning_selection: evo.policy.context.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
         persistLiveSelf();
         return { messages };
       } catch (error) {
@@ -611,7 +621,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     });
     pi.on('agent_end', async () => {
       evo.closeIncomplete('plain-text/technical end without decide exit');
-      if (!state.complete && !evo.isResetting) await evo.event('before_session_end','normal-session-end');
+      if (!evo.isResetting) await evo.event('before_session_end',state.complete ? `delivery:${currentSourceFacts()?.hash}` : 'normal-session-end');
       persistLiveSelf();
     });
     pi.on('session_before_compact', (event: any) => {
@@ -652,7 +662,13 @@ export default function pptDemo(pi: ExtensionAPI) {
     }
     spent += requestReserve; reserved = requestReserve;
     if (freshBatch) state.batchRequests = (state.batchRequests ?? 0) + 1;
-    log('provider-requests.jsonl', { request: ++requests, batch_request: state.batchRequests, estimated_usd_so_far: spent,
+    const chars = (value: any) => JSON.stringify(value).length;
+    const inputMessages = payload?.messages ?? [];
+    const composition = { system_chars: inputMessages.filter((m: any) => m.role === 'system').reduce((n: number,m: any) => n+chars(m),0),
+      schema_chars: chars(payload?.tools ?? []), history_chars: inputMessages.filter((m: any) => m.role !== 'system').reduce((n: number,m: any) => n+chars(m),0),
+      reasoning_chars: inputMessages.reduce((n: number,m: any) => n+(typeof m.reasoning_content === 'string' ? m.reasoning_content.length : 0),0),
+      payload_bytes: Buffer.byteLength(JSON.stringify(payload)), basis: 'serialized characters/bytes; tokens are provider-reported separately' };
+    log('provider-requests.jsonl', { request: ++requests, batch_request: state.batchRequests, estimated_usd_so_far: spent, composition,
       permit: permit ? { ...permit, payload: undefined } : { usd: requestReserve, tokens: unknownUsageReserveTokens },
       payload: JSON.stringify(payload, (key, value) => key === 'url' && typeof value === 'string' && value.startsWith('data:') ? '(image)' : value) });
     if (freshBatch) persist();
@@ -672,6 +688,8 @@ export default function pptDemo(pi: ExtensionAPI) {
       tokensSpent += usedTokens;
       if (evo) {
         const estimate = known ? ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6 : requestReserve;
+        const reasoning = m.content?.filter((part: any) => part.type === 'thinking');
+        if (reasoning?.length) evo.fact('assistant_reasoning', { request: requests, blocks: reasoning, recovery: 'read_self(section="ledger")' });
         evo.cost(u,Date.now()-evoRequestStarted,estimate,known,unknownUsageReserveTokens);
         persistLiveSelf();
       }
