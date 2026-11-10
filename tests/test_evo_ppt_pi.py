@@ -130,6 +130,10 @@ def test_real_renderer_acceptance_and_merged_delivery_review(tmp_path):
     assert len(outcomes) >= 4
     assert all(r['source']=='protected_acceptance' and r['renderer']['exit']==0 for r in outcomes)
     assert all(r['slide_count']['matches'] and r['rendered_source_matches_current'] for r in outcomes)
+    contexts=[json.loads(line)['context'] for line in (tmp_path/'provider-contexts.jsonl').read_text(encoding='utf-8').splitlines()]
+    # Render feedback enters the immediate next decision, before explicit acceptance.
+    assert 'protected_acceptance' in json.dumps(contexts[3])
+    assert 'normalized' in json.dumps(contexts[3])
     assert any(r['value']['unit']=='one' for r in ledger if r['type']=='unit_delivered')
     tickets = [r['value'] for r in ledger if r['type']=='mode_entered']
     assert any({t['id'] for t in r['triggers']} >= {'contract:before_delivery','contract:before_session_end'} for r in tickets)

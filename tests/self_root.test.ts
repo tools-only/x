@@ -42,6 +42,17 @@ test('pending chain leaves pinned response unchanged, any failure aborts whole c
   assert.equal(s.revision,2); assert.equal(s.policy.context.instruction,'next input');
 });
 
+test('request envelope is part of the same policy, hot activation and restore', async () => {
+  const s = new SelfRoot(contract()); await start(s);
+  const p = structuredClone(s.policy); p.request = { maxOutputTokens: 16384 };
+  await s.transaction({baseRevision:1,policy:p});
+  assert.equal(s.policy.request?.maxOutputTokens,8192);
+  await start(s); assert.equal(s.policy.request?.maxOutputTokens,16384);
+  await s.transaction({baseRevision:2,restore:1}); await start(s);
+  assert.equal(s.policy.request?.maxOutputTokens,8192);
+  assert.equal(s.revision,3);
+});
+
 test('same root atomically changes memory selection/context/control; restore is a new revision', async () => {
   const s = new SelfRoot(contract()); await start(s);
   const p = structuredClone(s.policy); p.memory.names = ['second']; p.context.order = ['memory'];

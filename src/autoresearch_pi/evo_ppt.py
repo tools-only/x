@@ -38,10 +38,11 @@ def write(path, value):
 
 def resource_usage(root: Path, reserve: dict):
     rows = [json.loads(line) for line in (root / "harness/model-usage.jsonl").read_text(encoding="utf-8").splitlines()] if (root / "harness/model-usage.jsonl").exists() else []
-    requests = len((root / "harness/provider-requests.jsonl").read_text(encoding="utf-8").splitlines()) if (root / "harness/provider-requests.jsonl").exists() else 0
-    missing = max(0,requests-len(rows))
-    return {"requests":requests, "tokens":sum(r["tokens_used"] for r in rows)+missing*reserve["tokens"],
-            "usd":(rows[-1]["conservative_usd"] if rows else 0)+missing*reserve["usd"], "requests_with_missing_usage":missing,
+    dispatched = [json.loads(line) for line in (root / "harness/provider-requests.jsonl").read_text(encoding="utf-8").splitlines()] if (root / "harness/provider-requests.jsonl").exists() else []
+    settled = {r["request"] for r in rows}
+    missing = [r.get("permit",reserve) for r in dispatched if r["request"] not in settled]
+    return {"requests":len(dispatched), "tokens":sum(r["tokens_used"] for r in rows)+sum(p["tokens"] for p in missing),
+            "usd":(rows[-1]["conservative_usd"] if rows else 0)+sum(p["usd"] for p in missing), "requests_with_missing_usage":len(missing),
             "storage_bytes":sum(p.stat().st_size for p in root.rglob('*') if p.is_file()),
             "billing":"conservative estimate; actual invoice unknown"}
 
@@ -61,6 +62,7 @@ def local_settings(registration: Path):
     name, provider, model = found[0]
     return {"registration": str(registration), "original_provider_handle": name, "provider": "az", "baseUrl": BASE,
             "api": provider["api"], "compat": provider.get("compat", {}), "model": model, "thinking": "low",
+            "request_output_tokens": 8192,
             "request_reserve": {"tokens": model["contextWindow"] + model["maxTokens"],
                                 "usd": (model["contextWindow"]*20 + model["maxTokens"]*80)/1e6,
                                 "basis": "registered maximum input/output; conservative existing PPT rates 20/80 USD per million; unknown invoice"},
@@ -118,21 +120,21 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     unit_text = "\n".join(f"- {u['id']}: {u['title']} (cite {u['citation']})." for u in units)
     brief = root / "workspace/data/instructions.md"
     brief.write_text(brief.read_text(encoding="utf-8") + "\n\nFrozen content units for this production run (units may span slides; retain the 15-slide brief):\n" + unit_text +
-                     ("\nUse submit_unit to hand over each content unit after rendering; office.deliver hands over the complete presentation.\n" if arm == "B" else "\nDeliver the complete presentation with the existing office interface.\n"), encoding="utf-8")
+                     "\nDeliver the complete presentation with the existing office interface; submit_unit, when available, supports partial handover.\n", encoding="utf-8")
     # The development AGENTS.md and constitution are never task context.
     sources = {f"data/{p.name}": file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()}
-    body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; user Round v1 request",
+    body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; user Round v2 request",
             "readonly_reason": "user authorization, total resources, evidence integrity and acceptance cannot be rewritten by the task Agent",
             "boundaries": ["window_entry", "before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
             "capabilities": ["read", "write", "edit", "ls", "grep", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
             "writable": ["components.tool", "components.prompt", "components.skill", "components.memory", "policy", "orchestration"],
-            "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-render-v1", "expected_slides":15},
+            "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-normalized-render-v2", "expected_slides":15},
             "inherit_defaults": False, "heartbeat": False}
     manifest = {"experiment_id": root.name, "arm": arm, "provider": "az", "model": MODEL, "contract": {**body, "content_hash": digest(body)},
-                "sources": sources, "units": units, "checker": {"version": "literal-render-v1", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
+                "sources": sources, "units": units, "checker": {"version": "literal-normalized-render-v2", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
                 "engineering_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip(),
-                "engineering_tag": "v1 candidate; exact final commit recorded in ROUND-v1.md", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
-                    "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
+            "engineering_tag": "v2 candidate; exact final commit recorded by local tag v2", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
+                    "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
                 "comparison": "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence",
                 "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established"}
     manifest["renderer_preflight"] = renderer_preflight(root)
@@ -150,7 +152,8 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False):
         key = values["OPENAI_API_KEY"]
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         url = BASE + ("/chat/completions" if inference else "/models")
-        data = json.dumps({"model": MODEL, "messages": [{"role": "user", "content": "Reply OK."}], "max_tokens": 16, "stream": False}).encode() if inference else None
+        data = json.dumps({"model": MODEL, "messages": [{"role": "user", "content": "Reply OK."}], "max_completion_tokens": 16,
+                           "enable_thinking": True, "reasoning_effort": manifest["settings"]["thinking"], "stream": False}).encode() if inference else None
         started = time.monotonic()
         try:
             sent = True
@@ -167,14 +170,14 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False):
             result = {"status": "az_unavailable", "error": str(error).replace(key, "[redacted]"), "elapsed_seconds": time.monotonic()-started}
     if inference:
         usage = result.get("usage") or {}
-        result["accounting"]={"requests":int(sent),"tokens":usage.get("total_tokens",(manifest["settings"]["model"]["contextWindow"]+16) if sent else 0),
-                              "usd":(usage["prompt_tokens"]*20+usage["completion_tokens"]*80)/1e6 if "prompt_tokens" in usage and "completion_tokens" in usage else ((manifest["settings"]["model"]["contextWindow"]*20+16*80)/1e6 if sent else 0),
+        result["accounting"]={"requests":int(sent),"tokens":usage.get("total_tokens",(len(data)+4096+16) if sent else 0),
+                              "usd":(usage["prompt_tokens"]*20+usage["completion_tokens"]*80)/1e6 if "prompt_tokens" in usage and "completion_tokens" in usage else (((len(data)+4096)*20+16*80)/1e6 if sent else 0),
                               "seconds":result.get("elapsed_seconds",0),"usage_status":"reported" if usage else "unknown_reserved"}
     write(root / ("inference-preflight.json" if inference else "provider-preflight.json"), result)
     return result
 
 
-def run(root: Path):
+def run(root: Path, *, round_deadline: float | None = None):
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     if manifest["provider"] != "az" or manifest["model"] != MODEL:
         raise ValueError("provider/model substitution refused")
@@ -192,14 +195,10 @@ def run(root: Path):
     if not manifest.get("renderer_preflight",{}).get("status") == "passed":
         raise ValueError("actual renderer preflight missing")
     values = load_project_dotenv(Path("D:/autoresearch_pi_project"))
-    if model_preflight(root,manifest,values)["status"] != "available":
-        result = {"stop": "az_unavailable", "provider": "az", "model": MODEL, "units": [{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
-        write(root / "summary.json",result)
-        return result
     # This connectivity probe is not a task Agent. Charge it to the same total
     # authorization, record the actual returned model, and never retry/fallback.
     b = contract["budget"]
-    if b["requests"] < 2 or b["tokens"] < manifest["settings"]["model"]["contextWindow"]+16 or b["usd"] < (manifest["settings"]["model"]["contextWindow"]*20+16*80)/1e6:
+    if b["requests"] < 2 or b["tokens"] < 4352 or b["usd"] < (4336*20+16*80)/1e6:
         result={"stop":"insufficient_preflight_budget","units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); return result
     probe = model_preflight(root,manifest,values,inference=True)
@@ -213,6 +212,9 @@ def run(root: Path):
     caps = runtime_manifest["contract"]["budget"]
     caps.update(requests=caps["requests"]-1,tokens=caps["tokens"]-probe_tokens,usd=caps["usd"]-probe_usd,
                 seconds=caps["seconds"]-probe["elapsed_seconds"])
+    if round_deadline is not None:
+        caps["seconds"] = min(caps["seconds"],round_deadline-time.time())
+        runtime_manifest["round_deadline_epoch"] = round_deadline
     if any(v <= 0 for v in caps.values()):
         result={"stop":"preflight_exhausted_budget","preflight":probe,"units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); return result
@@ -282,6 +284,12 @@ def run(root: Path):
                 if latest and latest[-1].get("stopReason") in ("error","aborted"):
                     result.update(stop="provider_error",error=latest[-1].get("errorMessage",latest[-1]["stopReason"]))
                     break
+                if latest and latest[-1].get("stopReason") == "length":
+                    # The completed bounded response is part of this same history,
+                    # not an identical retry or a second decision-maker.
+                    message = json.dumps({"event":"provider_response_incomplete","stopReason":"length",
+                                          "continuation":"same serial session; prior response and tool receipts retained"})
+                    continue
                 pending = saved.get("root",{}).get("queue",[])
                 # A normal end gets at most its queued contract review. No repeated window entrance.
                 if not pending:
@@ -291,7 +299,8 @@ def run(root: Path):
             else:
                 result["stop"] = "time_budget"
     except Exception as error:
-        result.update(stop="runtime_or_provider_error",error=str(error).replace(values["OPENAI_API_KEY"],"[redacted]"))
+        result.update(stop="budget_or_integrity_stop" if (root / "budget-stop.json").exists() else "runtime_or_provider_error",
+                      error=str(error).replace(values["OPENAI_API_KEY"],"[redacted]"))
     result["elapsed_seconds"] = time.monotonic()-started
     result["preflight"] = {"requests":1,"tokens":probe_tokens,"usd":probe_usd,"seconds":probe["elapsed_seconds"],"returned_model":probe["returned_model"]}
     result["resources"] = resource_usage(root,settings["request_reserve"])
@@ -321,27 +330,37 @@ def run_round(root: Path, source: Path, registration: Path, plan: dict, authorit
     """Explicit per-phase allocations within one approved total; no stage-2 auto launch."""
     if root.exists():
         raise ValueError("round requires a fresh directory")
+    shared = plan.get("shared_remaining",False)
     allocations=[plan["calibration_caps"],plan["b_caps"],plan["b_caps"]]
     for key in ("requests","tokens","seconds","usd","storage_bytes"):
-        if any(c.get(key,0) <= 0 for c in allocations) or sum(c[key] for c in allocations) > plan["total_caps"][key]:
+        if any(c.get(key,0) <= 0 for c in allocations) or (max(c[key] for c in allocations) if shared else sum(c[key] for c in allocations)) > plan["total_caps"][key]:
             raise ValueError(f"round allocation exceeds authorized total {key}")
     if allocations[0]["requests"] > 60 or allocations[0]["seconds"] > 1800:
         raise ValueError("A calibration exceeds FINAL 30min/60-request starting ceiling")
     root.mkdir(parents=True)
     write(root / "round-plan.json",{**plan,"authority":authority,"stage2":"requires a separately registered comparison; not launched by this runner"})
     results=[]
+    started = time.monotonic()
+    round_deadline = time.time()+plan["total_caps"]["seconds"]
     for name,arm,caps in zip(("calibration-A","sample-B1","sample-B2"),("A","B","B"),allocations):
+        if shared:
+            spent = {k:sum(r.get("resources",{}).get(k,0) for r in results) for k in ("requests","tokens","usd")}
+            spent["seconds"] = time.monotonic()-started
+            spent["storage_bytes"] = sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+            caps = {k:min(caps[k],plan["total_caps"][k]-spent[k]) for k in caps}
+            if any(v <= 0 for v in caps.values()):
+                write(root / "round-stop.json",{"reason":"aggregate cap exhausted", "spent":spent}); break
         freeze(root/name,source,registration,caps,authority,arm)
-        result=run(root/name); results.append({"phase":name,**result})
+        result=run(root/name,round_deadline=round_deadline); results.append({"phase":name,**result})
         write(root / "round-results.json",results)
-        if result["stop"] in ("az_unavailable","az_inference_unavailable","provider_error","runtime_or_provider_error"):
+        if not shared and result["stop"] in ("az_unavailable","az_inference_unavailable","provider_error","runtime_or_provider_error"):
             break
         if "resources" not in result:
             break
         if arm == "A":
             ratios={k:result["resources"][k]/plan["b_caps"][k] for k in ("requests","tokens","seconds","usd")}
             write(root / "calibration.json",{"ratios":ratios,"target":[0.7,0.9],"baseline_complete":result["stop"]=="delivered"})
-            if result["stop"] != "delivered" or not 0.7 <= max(ratios.values()) <= 0.9:
+            if not shared and (result["stop"] != "delivered" or not 0.7 <= max(ratios.values()) <= 0.9):
                 write(root / "round-stop.json",{"reason":"calibration incomplete or outside target; freeze a revised bounded protocol before confirmatory samples"})
                 break
     return results

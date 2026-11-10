@@ -19,12 +19,14 @@ import { NativeRuntime } from './arc_thin_native_runtime.ts';
 import { canonicalPath, sourceFacts, deliveryIntegrity, statusFacts, PPT_GOAL, PPT_ACTIONS, OFFICE_ACTION_DESCRIPTION } from './ppt_demo_adapter.ts';
 import { LiveAgentSelf } from './live_orchestration_core.ts';
 import { SelfRoot, hash } from './self_root.ts';
+import { providerPermit } from './provider_permit.ts';
 import { installSelfRootTools, type SelfRootManifest, collectAcceptance, directoryBytes } from './self_root_ppt.ts';
 
 export default function pptDemo(pi: ExtensionAPI) {
   const root = process.env.PPT_DEMO_ROOT!;
   const manifest: SelfRootManifest | undefined = process.env.EVO_MANIFEST ? JSON.parse(readFileSync(process.env.EVO_MANIFEST, 'utf8')) : undefined;
-  const experimentLimits = manifest?.contract.budget ?? (process.env.PPT_EXPERIMENT_LIMITS ? JSON.parse(readFileSync(process.env.PPT_EXPERIMENT_LIMITS,'utf8')).contract.budget : undefined);
+  const experimentManifest = manifest ?? (process.env.PPT_EXPERIMENT_LIMITS ? JSON.parse(readFileSync(process.env.PPT_EXPERIMENT_LIMITS,'utf8')) : undefined);
+  const experimentLimits = experimentManifest?.contract.budget;
   if (manifest && process.env.PPT_FRESH_BATCH === '1') throw Error('v1 uses one serial conversation; fresh-batch runner is disabled');
   const sessionId = `${process.pid}-${Date.now()}`;
   const freshBatch = process.env.PPT_FRESH_BATCH === '1';
@@ -134,7 +136,8 @@ export default function pptDemo(pi: ExtensionAPI) {
   const lastUsage = previousUsage.at(-1);
   const reserve = Number(process.env.PPT_DEMO_REQUEST_RESERVE_USD ?? 3.52);
   const cap = Number(process.env.PPT_DEMO_BUDGET_USD ?? 12);
-  const unknownUsageReserveTokens = Number(process.env.PPT_DEMO_REQUEST_RESERVE_TOKENS ?? 12000);
+  let unknownUsageReserveTokens = Number(process.env.PPT_DEMO_REQUEST_RESERVE_TOKENS ?? 12000);
+  let requestReserve = reserve;
   const inputRate = Number(process.env.PPT_DEMO_INPUT_USD_PER_MILLION ?? 20);
   const outputRate = Number(process.env.PPT_DEMO_OUTPUT_USD_PER_MILLION ?? 80);
   const cacheReadRate = Number(process.env.PPT_DEMO_CACHE_READ_USD_PER_MILLION ?? inputRate);
@@ -167,6 +170,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     hookTurn: () => false,
     consultReasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
     modelResult: async create => {
+      if (experimentManifest) throw Error('this experiment authorizes one serial agent; child provider calls are disabled');
       if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
         writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, reason: 'consult budget boundary' }));
         process.exit(0);
@@ -334,7 +338,8 @@ export default function pptDemo(pi: ExtensionAPI) {
           throw Error((child.stderr || String(child.error)).slice(-5000));
         }
         const receipt = JSON.parse(child.stdout);
-        if (evo && manifest) { evo.outcome(collectAcceptance(manifest, root, workspace, sourcePath, receipt, child.status)); persistLiveSelf(); }
+        const acceptance = experimentManifest ? collectAcceptance(experimentManifest, root, workspace, sourcePath, receipt, child.status) : undefined;
+        if (evo && acceptance) { evo.outcome(acceptance); persistLiveSelf(); }
         state.lastFeedback = { revision, slides: receipt.slides, native_objects: receipt.native_objects,
           warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath };
         state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
@@ -358,7 +363,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const lineageSince = lineageLine();
         evidence.revision = revision; evidence.toolRuns = 0; evidence.childRuns = 0; evidence.artifactWrites = 0;
         lineage.revision = revision; lineage.uses.clear(); lineage.writes.clear(); lineage.unattributed.clear();
-        return { content: [...text({ render: state.lastFeedback, evidence: sincePrevious, lineage: lineageSince, state: statusText(), orchestration_action: orchestrationAction }).content,
+        return { content: [...text({ render: state.lastFeedback, acceptance, evidence: sincePrevious, lineage: lineageSince, state: statusText(), orchestration_action: orchestrationAction }).content,
           { type: 'image', data: readFileSync(join(out, 'contact-sheet.png')).toString('base64'), mimeType: 'image/png' }] };
       }
       const revision = a.revision ?? state.lastFeedback?.revision;
@@ -404,7 +409,15 @@ export default function pptDemo(pi: ExtensionAPI) {
         const target = join(delivery, 'harness-evidence', relative.replace(/^\.harness\//, ''));
         mkdirSync(join(target, '..'), { recursive: true }); cpSync(source, target);
       }
-      if (evo && manifest) evo.outcome(collectAcceptance(manifest, root, workspace, receipt.source_path, receipt, 0));
+      if (evo && manifest) {
+        evo.outcome(collectAcceptance(manifest, root, workspace, receipt.source_path, receipt, 0));
+        const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => r.value.unit));
+        for (const unit of manifest.units) if (!delivered.has(unit.id)) {
+          evo.outcome(collectAcceptance(manifest, root, workspace, receipt.source_path, receipt, 0, unit.id), true);
+          evo.fact('unit_delivered', { unit: unit.id, via: 'whole_deck_delivery' });
+        }
+        persistLiveSelf();
+      }
       state.complete = true; state.deliveredRevision = revision; persist(); log('lifecycle.jsonl', { event: 'delivered', revision });
       const orchestrationAction = agentSelf.recordAction('office.deliver', { artifactVersion: Number(revision), artifactHash: currentHash, sourcePath: receipt.source_path });
       persistLiveSelf('action_receipt', orchestrationAction);
@@ -578,7 +591,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         };
         const taskInstructions = existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
         system.content = [taskInstructions, ...evo.policy.context.order.map(k => groups[k]), evo.policy.context.instruction,
-          'SELF ROOT: one agent, one session. Protocol: read_self expands policy/ledger/lineage; reflect_component or reflect_orchestration queues a candidate until the next request. decide(op="enter_mode",mode=...) changes attention; decide(op="exit",status="deferred",subtype="keep",result={reason:...},evidenceRefs=[]) can keep the current method. changed requires activation; keep is not unrelated. Validation decisions compare task facts; no required modification. Use submit_unit for each frozen content unit and office.deliver for the complete deck.',
+          'SELF ROOT: one agent, one session. Protocol: read_self expands policy/ledger/lineage; reflect_component or reflect_orchestration queues a candidate until the next request. decide(op="enter_mode",mode=...) changes attention; decide(op="exit",status="deferred",subtype="keep",result={reason:...},evidenceRefs=[]) can keep the current method. changed requires activation; keep is not unrelated. Validation decisions compare task facts; no required modification. office.deliver hands over the whole deck; submit_unit supports partial handover.',
           JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())].join('\n\n');
         messages[0] = system;
         evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
@@ -607,23 +620,35 @@ export default function pptDemo(pi: ExtensionAPI) {
   }
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   pi.on('before_provider_request', (event: any) => {
-    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap ||
-      (experimentLimits && (requests >= experimentLimits.requests || tokensSpent + unknownUsageReserveTokens > experimentLimits.tokens || directoryBytes(root) >= experimentLimits.storage_bytes))) {
-      writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, reason: 'authorized budget boundary' }));
-      process.exit(0); // Extension event exceptions are fail-open in Pi; stop before the HTTP call.
-    }
-    spent += reserve; reserved = reserve;
-    if (freshBatch) state.batchRequests = (state.batchRequests ?? 0) + 1;
-    const payload = event.payload as any;
+    let payload = event.payload as any;
     const system = typeof payload?.systemPrompt === 'string' ? { content: payload.systemPrompt }
       : payload?.messages?.find((message: any) => message.role === 'system');
     if (system) {
       addCurrentContext(system);
       if (typeof payload.systemPrompt === 'string') payload.systemPrompt = system.content;
     }
+    let permit;
+    if (experimentManifest?.settings?.model) {
+      const model = experimentManifest.settings.model;
+      const output = evo?.policy.request?.maxOutputTokens ?? experimentManifest.settings.request_output_tokens ?? model.maxTokens;
+      if (output > model.maxTokens) {
+        writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason:'output envelope exceeds registered model', output })); process.exit(0);
+      }
+      permit = providerPermit(payload, model, output, { input: Math.max(inputRate,cacheReadRate,cacheWriteRate), output: outputRate });
+      payload = permit.payload; requestReserve = permit.usd; unknownUsageReserveTokens = permit.tokens;
+    }
+    if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + requestReserve > cap ||
+      (experimentLimits && (requests >= experimentLimits.requests || tokensSpent + unknownUsageReserveTokens > experimentLimits.tokens || directoryBytes(root) >= experimentLimits.storage_bytes))) {
+      writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, permit: permit ? { ...permit, payload: undefined } : undefined, reason: 'authorized budget boundary' }));
+      process.exit(0); // Pi event exceptions are fail-open: stop before HTTP.
+    }
+    spent += requestReserve; reserved = requestReserve;
+    if (freshBatch) state.batchRequests = (state.batchRequests ?? 0) + 1;
     log('provider-requests.jsonl', { request: ++requests, batch_request: state.batchRequests, estimated_usd_so_far: spent,
+      permit: permit ? { ...permit, payload: undefined } : { usd: requestReserve, tokens: unknownUsageReserveTokens },
       payload: JSON.stringify(payload, (key, value) => key === 'url' && typeof value === 'string' && value.startsWith('data:') ? '(image)' : value) });
     if (freshBatch) persist();
+    return payload;
   });
   let settledRequest = lastUsage?.request ?? 0;
   pi.on('message_end', (event: any) => {
@@ -638,7 +663,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const usedTokens = known ? reportedTokens(u) : unknownUsageReserveTokens;
       tokensSpent += usedTokens;
       if (evo) {
-        const estimate = known ? ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6 : reserve;
+        const estimate = known ? ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6 : requestReserve;
         evo.cost(u,Date.now()-evoRequestStarted,estimate,known,unknownUsageReserveTokens);
         persistLiveSelf();
       }

@@ -15,6 +15,36 @@ export function directoryBytes(path: string): number {
   return readdirSync(path, { withFileTypes: true }).reduce((sum,e) => sum + (e.isSymbolicLink() ? 0 : e.isDirectory() ? directoryBytes(join(path,e.name)) : statSync(join(path,e.name)).size),0);
 }
 const fileHash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+export function coverageFacts(source: string, definitions: SelfRootManifest['units']) {
+  const plain = (s: string) => s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,' ')
+    .replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/[−–]/g,'-').replace(/\s+/g,' ');
+  const visible = plain(source);
+  const slides: string[] = [];
+  let active: { tag: string; start: number; depth: number } | undefined;
+  for (const tag of source.matchAll(/<\/?([a-z][\w-]*)\b[^>]*>/gi)) {
+    const closing = tag[0].startsWith('</'), name = tag[1].toLowerCase();
+    if (active) {
+      if (name === active.tag) active.depth += closing ? -1 : 1;
+      if (!active.depth) { slides.push(source.slice(active.start,tag.index!+tag[0].length)); active = undefined; }
+    } else if (!closing && /class\s*=\s*["'][^"']*\bslide\b[^"']*["']/i.test(tag[0])) active = { tag: name, start: tag.index!, depth: 1 };
+  }
+  const sections = source.match(/<section\b[^>]*>[\s\S]*?<\/section>/gi);
+  const fragments = slides.length ? slides : sections ?? [source];
+  const scope = slides.length ? 'slide_elements' : sections ? 'section_elements' : 'whole_document_unscoped';
+  const numbers = (s: string) => [...s.matchAll(/(?<![\w.])(?:\(\s*)?[-+]?\s*\$?\s*\d[\d,]*(?:\.\d+)?\s*%?\s*\)?(?![\w.])/g)]
+    .map(m => { const value = m[0].trim(); return `${value.includes('(') || value.startsWith('-') ? '-' : ''}${value.replace(/[^\d.%]/g,'')}`; });
+  return definitions.map(u => {
+    const page = u.citation.match(/^Source page (\d+)$/i)?.[1];
+    const citation = page ? new RegExp(`(?:source\\s+page\\s+|\\bp\\.\\s*|\\bpage\\s+)${page}(?!\\d)`, 'i') : undefined;
+    const cited = fragments.map(plain).filter(s => citation ? citation.test(s) : s.toLowerCase().includes(u.citation.toLowerCase()));
+    const scoped = cited.flatMap(numbers);
+    return { id: u.id,
+      literal_matches: u.required.map(text => ({ text, found: visible.toLowerCase().includes(text.toLowerCase()) })),
+      citation_literal: { text: u.citation, found: visible.includes(u.citation) },
+      normalized: { citation_found: cited.length > 0, cited_fragments: cited.length, scope,
+        matches: u.required.map(text => ({ text, token: numbers(text)[0], found: scope === 'whole_document_unscoped' ? null : scoped.includes(numbers(text)[0]) })) } };
+  });
+}
 export function collectAcceptance(m: SelfRootManifest, root: string, workspace: any, sourcePath: string, receipt: any, exit: number | null, unit?: string) {
   const acceptance = m.contract.acceptance as any;
   if (acceptance.units_sha256 && acceptance.units_sha256 !== hash(m.units)) throw Error('protected acceptance unit definition mismatch');
@@ -23,18 +53,14 @@ export function collectAcceptance(m: SelfRootManifest, root: string, workspace: 
   const sources = Object.fromEntries(Object.keys(m.sources).map(p => [p,fileHash(workspace.path(p))]));
   if (hash(sources) !== hash(m.sources)) throw Error('protected source snapshot mismatch');
   const source = workspace.read(sourcePath);
-  // Literal matching is a recorded checker result, not semantic factual/aesthetic acceptance.
-  const visible = source.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ');
-  const units = m.units.filter(u => !unit || u.id === unit).map(u => ({ id: u.id,
-    literal_matches: u.required.map(text => ({ text, found: visible.toLowerCase().includes(text.toLowerCase()) })),
-    citation_literal: { text: u.citation, found: visible.includes(u.citation) } }));
+  const units = coverageFacts(source,m.units.filter(u => !unit || u.id === unit));
   const artifacts = join(root,'exports',`v${String(receipt.revision).padStart(3,'0')}`);
   return { source: 'protected_acceptance', checker: m.checker, source_hashes: sources,
     artifact: { path: sourcePath, sha256: fileHash(workspace.path(sourcePath)), bytes: Buffer.byteLength(source) },
     slide_count: { expected: acceptance.expected_slides ?? null, observed: receipt.slides, matches: acceptance.expected_slides === undefined ? null : acceptance.expected_slides === receipt.slides },
     rendered_source_matches_current: fileHash(workspace.path(sourcePath)) === receipt.source_sha256,
     unit: unit ?? 'whole_deck', units, renderer: { exit, receipt, original_ref: artifacts, images: existsSync(artifacts) ? readdirSync(artifacts).filter(p => /^slide-\d+\.png$/.test(p)) : [] },
-    limitations: ['literal matching does not prove semantic completeness or numeric attribution', 'narrative, aesthetics and persuasion unmeasured', 'geometry limited to renderer warnings', 'HTML delivery; not a native editable pptx'] };
+    limitations: ['literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion', 'narrative, aesthetics and persuasion unmeasured', 'geometry limited to renderer warnings', 'HTML delivery; not a native editable pptx'] };
 }
 
 export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist }: any) {

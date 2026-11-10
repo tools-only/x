@@ -48,3 +48,51 @@ def test_changed_contract_stops_before_provider_access(tmp_path,monkeypatch):
     monkeypatch.setattr(evo_ppt,'model_preflight',lambda *_a,**_kw:pytest.fail('unexpected provider call'))
     with pytest.raises(ValueError,match='contract changed'):
         evo_ppt.run(tmp_path)
+
+
+def test_unsettled_request_retains_its_own_liability(tmp_path):
+    (tmp_path/'harness').mkdir()
+    (tmp_path/'harness/provider-requests.jsonl').write_text(json.dumps({'request':1,'permit':{'tokens':1234,'usd':.5}})+'\n',encoding='utf-8')
+    usage=evo_ppt.resource_usage(tmp_path,{'tokens':240536,'usd':8.74})
+    assert usage['tokens']==1234 and usage['usd']==.5
+    assert usage['requests_with_missing_usage']==1
+
+
+def test_shared_round_uses_actual_remaining_without_starving_independent_arms(tmp_path,monkeypatch):
+    total={'requests':600,'tokens':600000,'seconds':14400,'usd':15,'storage_bytes':2147483648}
+    a={**total,'requests':60,'seconds':1800}
+    allocated=[]
+    monkeypatch.setattr(evo_ppt,'freeze',lambda _r,_s,_m,c,_auth,arm:allocated.append((arm,c)))
+    monkeypatch.setattr(evo_ppt,'run',lambda _r,**_kw:{'stop':'runtime_or_provider_error','resources':{'requests':1,'tokens':100,'usd':.25,'seconds':1}})
+    results=evo_ppt.run_round(tmp_path/'round',Path('unused'),Path('unused'),{'total_caps':total,'calibration_caps':a,'b_caps':total,'shared_remaining':True},'test')
+    assert len(results)==3
+    assert [arm for arm,_ in allocated]==['A','B','B']
+    assert allocated[1][1]['usd']==14.75 and allocated[2][1]['usd']==14.5
+    assert allocated[2][1]['tokens']==599800
+
+
+def test_length_response_resumes_same_history_without_reopening_window(tmp_path,monkeypatch):
+    contract={'budget':{'requests':10,'tokens':100000,'seconds':100,'usd':10,'storage_bytes':1000000}}
+    contract['content_hash']=evo_ppt.digest(contract)
+    settings={'api':'openai-completions','compat':{},'model':{'id':evo_ppt.MODEL},'thinking':'low',
+              'agent_settings':{},'request_reserve':{'usd':1,'tokens':1000}}
+    evo_ppt.write(tmp_path/'manifest.json',{'provider':'az','model':evo_ppt.MODEL,'arm':'B','contract':contract,
+        'settings':settings,'seed_hashes':{},'sources':{},'units':[], 'engineering_commit':'test','renderer_preflight':{'status':'passed'}})
+    (tmp_path/'.harness').mkdir()
+    evo_ppt.write(tmp_path/'.harness/live-self.json',{'root':{'queue':[],'ledger':[]}})
+    monkeypatch.setattr(evo_ppt,'load_project_dotenv',lambda _p:{'OPENAI_API_KEY':'test'})
+    monkeypatch.setattr(evo_ppt,'model_preflight',lambda *_a,**_kw:{'status':'available','returned_model':evo_ppt.MODEL,
+        'elapsed_seconds':0,'accounting':{'tokens':1,'usd':.001}})
+    prompts=[]
+    class Kernel:
+        def __init__(self,*_a,**_kw): pass
+        def __enter__(self): return self
+        def __exit__(self,*_a): pass
+        def prompt(self,message): prompts.append(message); return {'success':True}
+        def wait_for_agent_events(self,**_kw):
+            return [{'type':'message_end','message':{'role':'assistant','stopReason':'length' if len(prompts)==1 else 'stop'}}]
+    monkeypatch.setattr(evo_ppt,'PiKernel',Kernel)
+    result=evo_ppt.run(tmp_path)
+    assert result['stop']=='plain_text_end'
+    assert len(prompts)==2
+    assert json.loads(prompts[1])['event']=='provider_response_incomplete'

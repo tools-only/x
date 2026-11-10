@@ -11,6 +11,7 @@ export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component'
 type Mode = { tools: string[]; instruction: string; projection?: string; exitSchema: any };
 type Route = { id: string; event: string; predicate?: string; projection?: string; mode: string; priority: number; conclusion_sink: 'ledger' | 'lineage' };
 export type Policy = {
+  request?: { maxOutputTokens: number };
   modes: Record<string, Mode>; routes: Route[];
   methods: Record<string, string>;
   memory: { names: string[] | '*'; order: 'name' | 'newest'; write: 'replace' | 'append' };
@@ -29,7 +30,7 @@ type Window = { id: string; revision: number; baseline: string[]; metric_refs: s
 
 export function seedPolicy(capabilities: string[]): Policy {
   const exitSchema = { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'] };
-  return { modes: {
+  return { request: { maxOutputTokens: 8192 }, modes: {
     execute: { tools: capabilities, instruction: 'Continue the current task.', exitSchema },
     reflect: { tools: ['read', 'ls', 'grep', 'office.look', 'acceptance'], instruction: 'Review the pinned self/evidence. You choose scope, method and whether to change anything. Exit with decide(op="exit").', exitSchema },
     consolidate: { tools: ['read', 'ls', 'grep', 'acceptance'], instruction: 'Organize this task\'s evidence and bounded inheritance records if useful; no automatic cross-task defaults.', exitSchema },
@@ -47,7 +48,8 @@ export function validateContract(c: SelfContract) {
 }
 
 function validatePolicy(p: Policy, c: SelfContract) {
-  if (!p || Object.keys(p).some(k => !['modes','routes','methods','memory','context'].includes(k))) throw Error('unknown policy field');
+  if (!p || Object.keys(p).some(k => !['modes','routes','methods','memory','context','request'].includes(k))) throw Error('unknown policy field');
+  if (p.request && (!Number.isSafeInteger(p.request.maxOutputTokens) || p.request.maxOutputTokens < 1)) throw Error('invalid request envelope');
   if (!p.modes?.execute || !p.modes.reflect || !p.modes.consolidate || !Array.isArray(p.routes)) throw Error('three modes and routes required');
   for (const mode of Object.values(p.modes)) {
     if (!Array.isArray(mode.tools) || mode.tools.some(t => !c.capabilities.includes(t)) || typeof mode.instruction !== 'string') throw Error('mode exceeds user capabilities');
@@ -471,7 +473,8 @@ export class SelfRoot extends LiveAgentSelf {
     return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, parts: {
       components: { relation: 'executes from this root', writable_kinds: this.contract.writable.filter(x => x.startsWith('components.')) },
       orchestration: { relation: 'controls active step and trusted receipts', writable: this.contract.writable.includes('orchestration') },
-      policy: { relation: 'controls modes, META, memory retrieval/write and actual context assembly', version: hash(this.policy), writable: this.contract.writable.includes('policy'), expand: 'read_self(section="policy")' },
+      policy: { relation: 'controls modes, META, memory retrieval/write, request envelope and actual context assembly', request: this.policy.request,
+        version: hash(this.policy), writable: this.contract.writable.includes('policy'), expand: 'read_self(section="policy")' },
       protected: { reason: this.contract.readonly_reason, contract_hash: this.contract.content_hash, boundaries: this.contract.boundaries, budget: this.contract.budget, capabilities: this.contract.capabilities, acceptance: this.contract.acceptance },
       unsupported: ['provider replacement', 'task subagents', 'cross-task default promotion', 'interactive world replay'],
     }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, review: this.review ? { id: this.review.id, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended } : null,
