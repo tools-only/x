@@ -5,7 +5,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { scriptedProviderTransport } from './pi_scripted_provider_transport.ts';
 
 const harnessSource = 'output = input["source_text"].upper()\noutput';
-const loopSource = 'source_words = set(input["source_text"].lower().split())\ndraft_words = set(input["draft"].lower().split())\n{"method": "shared-token-count", "source_tokens": len(source_words), "shared_tokens": len(source_words & draft_words)}';
+const loopSource = 'evidence_ref = input["evidence"][0]["ref"]\nif input["trial_receipt"] is not None:\n    receipt = input["trial_receipt"]\n    original = input["evidence"][0]["output"]\n    conclusion = "trial output differs from cited evidence output" if receipt["output"] != original else "trial output matches cited evidence output"\n    result = {"method": "shared-token-count", "scopes": [{"label": "work-and-meta", "level": "joint", "object_ids": ["task_harness", "evolution_loop"], "evidence_refs": [evidence_ref], "criteria": conclusion}], "decision": "complete", "trial": None, "summary": conclusion}\nelse:\n    result = {"method": "shared-token-count", "scopes": [{"label": "work-and-meta", "level": "joint", "object_ids": ["task_harness", "evolution_loop"], "evidence_refs": [evidence_ref], "criteria": "Compare the method and its review policy against this evidence."}], "decision": "trial", "trial": {"method_id": "task_harness", "evidence_ref": evidence_ref}, "summary": "Run one isolated method trial."}';
 
 function currentMirror(context: any) {
   const body = String(context.systemPrompt ?? context.messages?.find((m: any) => m.role === 'system')?.content ?? '');
@@ -19,7 +19,7 @@ export default function liveSelfScriptedProvider(pi: ExtensionAPI) {
   const contextPath = process.env.LIVE_SELF_PROVIDER_CONTEXTS!;
   let request = 0, toolCall = 0;
   const steps = [
-    { name: 'draft_item', arguments: { task: 'slide-outline', source_text: 'Revenue rose. Costs were flat.' } },
+    { name: 'draft_item', arguments: { task: 'alternate-slide-outline', source_text: 'Revenue rose. Costs were flat.' } },
     { name: 'review_self', arguments: { evidence_id: 'evidence-1', disposition: 'change', rationale: 'The first result is useful; compare the source and draft by shared tokens on later work.' } },
     (c: any) => ({ name: 'reflect', arguments: { ref: currentMirror(c).parts.task_harness.operations[0].ref, replace: true, value: { type: 'text', value: harnessSource }, reasoning: 'Uppercase the input to make headings consistent.' } }),
     (c: any) => ({ name: 'reflect', arguments: { ref: currentMirror(c).parts.evolution_loop.operations[0].ref, replace: true, value: { type: 'text', value: loopSource }, reasoning: 'Change the evidence comparison method.' } }),

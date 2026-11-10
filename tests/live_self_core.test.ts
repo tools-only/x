@@ -34,13 +34,13 @@ test('WASI methods change actual task output and subsequent review analysis; run
   assert.equal(initial.output, 'Brief: Revenue rose');
   assert.equal(initial.revision, 1);
   assert.equal(s.current.version, 1, 'task invocation does not auto-promote');
-  const loopSource = `source_words = input["source_text"].lower().split()\ndraft = input["draft"].lower()\nlong_terms = [word.strip(".,!?;:") for word in source_words if len(word.strip(".,!?;:")) > 3]\ncovered = [word for word in long_terms if word in draft]\n{"method": "long-token-recall", "long_terms": len(long_terms), "covered": covered, "recall": len(covered) / len(long_terms) if long_terms else 1.0}`;
+  const loopSource = `evidence_ref = input["evidence"][-1]["ref"]\nsource_words = input["source_text"].lower().split()\ndraft = input["draft"].lower()\nlong_terms = [word.strip(".,!?;:") for word in source_words if len(word.strip(".,!?;:")) > 3]\ncovered = [word for word in long_terms if word in draft]\n{"method": "long-token-recall", "long_terms": len(long_terms), "covered": covered, "recall": len(covered) / len(long_terms) if long_terms else 1.0, "scopes": [{"label": "evidence", "object_ids": ["task_harness"], "evidence_refs": [evidence_ref], "criteria": "Count covered long source terms."}], "decision": "complete", "trial": None}`;
   reflect(s, 'task_harness', 'text = input["source_text"].upper()\ntext');
   reflect(s, 'evolution_loop', loopSource);
   const changed = await s.draft('code-note', 'Revenue rose. Costs were flat.', 3);
   assert.equal(changed.output, 'REVENUE ROSE. COSTS WERE FLAT.');
-  assert.equal((changed.self_review_signal as any).method, 'long-token-recall');
-  assert.equal((changed.self_review_signal as any).long_terms, 5);
+  assert.equal((changed.meta_review as any).plan.method, 'long-token-recall');
+  assert.equal((changed.meta_review as any).plan.long_terms, 5);
   s.recordReview(changed.evidence_id, 'change', 'The source coverage signal is a useful diagnostic, but I want to compare long terms.');
   assert.equal(s.submit(changed.evidence_id, 'change', 'The new comparison evaluates distinct source tokens.').revision, 3);
   const pinned = await s.draft('old-revision-run', 'Revenue rose. Costs were flat.', 1);
@@ -59,4 +59,40 @@ test('failed optional self review does not block a task deliverable', async () =
   assert.equal(draft.review_status, 'failed');
   assert.equal(s.submit(draft.evidence_id, 'defer', 'The self-review method failed to run.').submitted, true);
   assert.equal(s.trace().review_status[0].disposition, 'defer');
+});
+
+test('Meta trial runner rejects protected, stale and over-budget requests without losing task output', async () => {
+  const cases = [
+    ['protected', `ref = input["evidence"][-1]["ref"]\n{"scopes": [], "decision": "trial", "trial": {"method_id": "kernel", "evidence_ref": ref}}`],
+    ['stale', `{"scopes": [], "decision": "trial", "trial": {"method_id": "task_harness", "evidence_ref": "evidence-999@r999"}}`],
+    ['over-budget-plan', `{"scopes": [{"label": "x", "object_ids": [], "evidence_refs": [], "criteria": "x"}] * 6, "decision": "complete", "trial": None}`],
+  ] as const;
+  for (const [name, source] of cases) {
+    const s = new LiveSelfSession();
+    reflect(s, 'evolution_loop', source);
+    const draft = await s.draft(name, 'A useful source sentence.');
+    assert.equal(draft.output, 'Brief: A useful source sentence');
+    assert.equal(draft.review_status, 'failed');
+    assert.equal((draft.meta_review as any).status, 'failed');
+  }
+
+  const s = new LiveSelfSession();
+  const longSource = `A${'x'.repeat(6900)}.`;
+  const large = await s.draft('bounded-evidence', longSource);
+  assert.ok(large.output.length < 8000);
+  assert.equal(large.review_status, 'failed');
+  assert.match((large.meta_review as any).failure.reason, /bounded input envelope/);
+  closeLiveSelfMethods();
+});
+
+test('Meta continuation cannot request another trial and retains its first receipt', async () => {
+  const s = new LiveSelfSession();
+  const source = `ref = input["evidence"][-1]["ref"]\n{"scopes": [], "decision": "trial", "trial": {"method_id": "task_harness", "evidence_ref": ref}}`;
+  reflect(s, 'evolution_loop', source);
+  const draft = await s.draft('bounded-continuation', 'Revenue rose.');
+  assert.equal(draft.output, 'Brief: Revenue rose');
+  assert.equal(draft.review_status, 'partial');
+  assert.equal((draft.meta_review as any).trial_receipt.method_id, 'task_harness');
+  assert.equal((draft.meta_review as any).execution_trace.at(-1).status, 'bounded_failure');
+  closeLiveSelfMethods();
 });

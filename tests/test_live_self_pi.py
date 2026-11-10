@@ -48,17 +48,33 @@ def test_pi_scripted_provider_executes_revisioned_live_self_task_chain(tmp_path:
     assert mirrors[0]["parts"]["task_harness"]["operations"][0]["version"] == 1
     assert mirrors[3]["parts"]["evolution_loop"]["operations"][0]["version"] == 2
     assert mirrors[4]["parts"]["task_harness"]["operations"][0]["version"] == 3
+    assert {o["id"] for o in mirrors[0]["graph"]} == {"kernel", "task_harness", "evolution_loop"}
+    assert mirrors[0]["parts"]["evolution_loop"]["category"] == "meta-method"
+    assert "trial_receipt" in mirrors[0]["parts"]["evolution_loop"]["interface"]["input"]
+    assert "assign result" in mirrors[0]["parts"]["evolution_loop"]["interface"]["python_return"]
     event_names = [r["event"] for r in trace_rows]
     assert event_names.index("draft") < event_names.index("review_decision") < event_names.index("reflect_committed") < event_names.index("submit")
     drafts = [r["value"] for r in trace_rows if r["event"] == "draft"]
     assert [d["revision"] for d in drafts] == [1, 3, 3]
     assert drafts[0]["output"] == "Brief: Revenue rose"
     assert drafts[1]["output"] == "REVENUE ROSE. COSTS WERE FLAT."
-    assert drafts[1]["self_review_signal"]["method"] == "shared-token-count"
-    assert drafts[0]["self_review_signal"] != drafts[1]["self_review_signal"]
+    assert drafts[1]["meta_review"]["plan"]["method"] == "shared-token-count"
+    assert drafts[0]["meta_review"]["plan"]["scopes"] != drafts[1]["meta_review"]["plan"]["scopes"]
     assert drafts[2]["task"] == "code-note"
     submitted = next(r["value"] for r in trace_rows if r["event"] == "submit")
     assert submitted["content"] == drafts[2]["output"]
     assert submitted["revision"] == 3
     final = next(r["value"] for r in trace_rows if r["event"] == "session_trace")
     assert [x["disposition"] for x in final["review_status"]] == ["change", "unreviewed", "keep"]
+    drafts = [r["value"] for r in trace_rows if r["event"] == "draft"]
+    assert drafts[0]["meta_review"]["trial_receipt"] is None
+    assert drafts[1]["meta_review"]["trial_receipt"]["method_id"] == "task_harness"
+    assert drafts[1]["meta_review"]["trial_receipt"]["evidence_ref"] == drafts[0]["evidence_ref"]
+    assert drafts[1]["meta_review"]["trial_receipt"]["output"] == "REVENUE ROSE. COSTS WERE FLAT."
+    assert drafts[1]["meta_review"]["plan"]["decision"] == "complete"
+    assert drafts[1]["meta_review"]["plan"]["scopes"][0]["level"] == "joint"
+    assert drafts[1]["meta_review"]["plan"]["summary"] == "trial output differs from cited evidence output"
+    assert drafts[1]["meta_review"]["plan"]["scopes"][0]["criteria"] == drafts[1]["meta_review"]["plan"]["summary"]
+    assert drafts[1]["meta_review"]["trial_receipt"]["output"] != drafts[0]["output"]
+    assert drafts[1]["meta_review"]["execution_trace"][-1]["method_id"] == "evolution_loop"
+    assert drafts[1]["review_status"] == "available"

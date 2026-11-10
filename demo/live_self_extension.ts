@@ -45,7 +45,7 @@ export default function liveSelfExtension(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: 'draft_item', label: 'Draft Item',
-    description: 'Perform ordinary task work by executing the active WASI-backed harness method on supplied source text. The active evolution-loop method automatically compares the draft with the source and returns review evidence; the Agent chooses whether to keep, defer, or change its self.',
+    description: 'Perform ordinary task work by executing the active WASI-backed harness method on supplied source text. The active Meta method chooses its own review scopes and evidence, then may request one bounded isolated trial of an explicitly trialable method; the Agent retains semantic review and adoption.',
     parameters: Type.Object({ task: Type.String({ minLength: 1 }), source_text: Type.String({ minLength: 1 }) }),
     async execute(_id, args, signal) {
       try { const result = await (requestSelf ?? ensureSelf(undefined)).draft(args.task, args.source_text, requestRevision, signal); record('draft', result); return { content: [{ type: 'text', text: JSON.stringify(result) }] }; }
