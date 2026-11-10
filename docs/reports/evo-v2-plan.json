@@ -1,0 +1,25 @@
+{
+  "total_caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "calibration_caps": {
+    "requests": 60,
+    "tokens": 600000,
+    "seconds": 1800,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "b_caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "shared_remaining": true,
+  "classification": "exploratory A/B1/B2; no calibration success prerequisite; v2 user authorization"
+}

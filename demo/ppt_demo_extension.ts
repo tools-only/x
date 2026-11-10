@@ -50,7 +50,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   state.note ??= '';
   state.noteStale ??= false;
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
-  const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace) : undefined;
+  const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens) : undefined;
   const agentSelf = evo ?? new LiveAgentSelf(savedSelf, validatePythonComponent, workspace);
   let activatingEvo = false;
   let advanceEvoBoundary = async () => {};
@@ -580,6 +580,12 @@ export default function pptDemo(pi: ExtensionAPI) {
         system.toolsAdded = pi.getAllTools().filter(t => names.has(t.name)).map(t => {
           const parameters = structuredClone(t.parameters) as any;
           if (t.name === 'office') parameters.properties.op = { type: 'string', enum: actions.filter(x => x.startsWith('office.')).map(x => x.slice(7)) };
+          // Type the operation, not the mode name. Other decisions retain their
+          // declared result shapes; exit uses the Agent's pinned schema.
+          if (t.name === 'decide') parameters.allOf = [{
+            if: { properties: { op: { const: 'exit' } }, required: ['op'] },
+            then: { properties: { result: evo.reviewExitSchema ?? { type: 'object' } }, required: ['result'] },
+          }];
           return { name: t.name, description: t.description, parameters };
         });
         // Older tool additions/removals must not re-open a suspended capability later in history.
@@ -632,6 +638,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const model = experimentManifest.settings.model;
       const output = evo?.policy.request?.maxOutputTokens ?? experimentManifest.settings.request_output_tokens ?? model.maxTokens;
       if (output > model.maxTokens) {
+        evo?.closeIncomplete('output envelope exceeds registered model'); persistLiveSelf();
         writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason:'output envelope exceeds registered model', output })); process.exit(0);
       }
       permit = providerPermit(payload, model, output, { input: Math.max(inputRate,cacheReadRate,cacheWriteRate), output: outputRate });
@@ -639,6 +646,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     }
     if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + requestReserve > cap ||
       (experimentLimits && (requests >= experimentLimits.requests || tokensSpent + unknownUsageReserveTokens > experimentLimits.tokens || directoryBytes(root) >= experimentLimits.storage_bytes))) {
+      evo?.closeIncomplete('authorized budget boundary'); persistLiveSelf();
       writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, permit: permit ? { ...permit, payload: undefined } : undefined, reason: 'authorized budget boundary' }));
       process.exit(0); // Pi event exceptions are fail-open: stop before HTTP.
     }

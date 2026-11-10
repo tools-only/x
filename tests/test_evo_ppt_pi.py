@@ -4,6 +4,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from autoresearch_pi.pi_kernel import PiKernel
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -76,6 +78,9 @@ def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     toolnames = lambda c: {t["name"] for t in c["messages"][0]["toolsAdded"]}
     system = lambda c: c["messages"][0]["content"]
     assert "python" not in toolnames(contexts[0])
+    decision_schema=next(t for t in contexts[0]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']
+    assert decision_schema['allOf'][0]['then']['properties']['result']['type']=='object'
+    assert 'type' not in decision_schema['properties']['result']  # ordinary decisions remain unrestricted
     assert "python" in toolnames(contexts[3])
     assert "evo_probe" in toolnames(contexts[4])
     assert "probe-v1" in json.dumps(contexts[5])
@@ -215,3 +220,31 @@ def test_actual_legacy_arm_still_renders_and_delivers(tmp_path):
     assert 'root' not in json.loads((tmp_path/'.harness/live-self.json').read_text(encoding='utf-8'))
     contexts=[json.loads(l)['context'] for l in (tmp_path/'provider-contexts.jsonl').read_text(encoding='utf-8').splitlines()]
     assert 'read_self' not in {t['name'] for t in contexts[0]['messages'][0]['toolsAdded']}
+
+
+@pytest.mark.parametrize('requests,tokens,reason,dispatched',[(1,100000,'hard budget',1),(30,10000,'authorized budget boundary',0)])
+def test_budget_stop_closes_active_review_without_an_agent_decision(tmp_path,requests,tokens,reason,dispatched):
+    manifest=fixture_manifest()
+    manifest['contract']['budget'].update(requests=requests,tokens=tokens)
+    manifest['contract']['content_hash']=digest({k:v for k,v in manifest['contract'].items() if k!='content_hash'})
+    path=tmp_path/'manifest.json'
+    path.write_text(json.dumps(manifest),encoding='utf-8')
+    command=[shutil.which('node'),str(PROJECT/'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),'--mode','rpc',
+             '--no-context-files','--no-extensions','--no-skills','--no-prompt-templates','--no-builtin-tools',
+             '--extension',str(PROJECT/'demo/ppt_demo_extension.ts'),'--extension',str(PROJECT/'tests/pi_external_benchmark_provider.ts'),
+             '--provider','offline-external-test','--model','scripted','--session',str(tmp_path/'session.jsonl')]
+    env={'PI_CODING_AGENT_DIR':str(tmp_path/'.pi-agent'),'PI_AUTORESEARCH_E2E_ROOT':str(tmp_path),'PPT_DEMO_ROOT':str(tmp_path),
+         'EVO_MANIFEST':str(path),'PPT_DEMO_DEADLINE':'4102444800000','PPT_DEMO_BUDGET_USD':'1','PPT_DEMO_REQUEST_RESERVE_USD':'0.001',
+         'PPT_DEMO_INPUT_USD_PER_MILLION':'0','PPT_DEMO_OUTPUT_USD_PER_MILLION':'0',
+         'PI_EXTERNAL_STEPS':json.dumps([{'name':'read_self','arguments':{'section':'policy'}}]),'PI_EXTERNAL_USAGE_TOKENS':'1'}
+    with PiKernel(command,cwd=str(tmp_path),env=env,timeout=90) as kernel:
+        assert kernel.prompt('Execute the explicitly scripted budget boundary fixture.').get('success') is not False
+        with pytest.raises(RuntimeError,match='Pi RPC process exited'):
+            kernel.wait_for_agent_events(timeout=60)
+    root=json.loads((tmp_path/'.harness/live-self.json').read_text(encoding='utf-8'))['root']
+    assert root.get('review') is None
+    closure=next(r['value'] for r in root['ledger'] if r['type']=='review_closed')
+    assert closure['status']=='deferred' and closure['subtype']=='incomplete'
+    assert closure['agent_decision']=='absent' and closure['reason']==reason
+    trace=tmp_path/'harness/provider-requests.jsonl'
+    assert (len(trace.read_text(encoding='utf-8').splitlines()) if trace.exists() else 0)==dispatched

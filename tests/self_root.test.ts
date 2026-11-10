@@ -53,6 +53,16 @@ test('request envelope is part of the same policy, hot activation and restore', 
   assert.equal(s.revision,3);
 });
 
+test('registered output limit rejects a reflection before activation', async () => {
+  const s = new SelfRoot(contract(),undefined,undefined,undefined,8192); await start(s);
+  const p = structuredClone(s.policy); p.request = { maxOutputTokens: 8193 };
+  await assert.rejects(s.transaction({baseRevision:1,policy:p}),/request envelope/);
+  await start(s);
+  assert.equal(s.revision,1);
+  assert.equal(s.policy.request!.maxOutputTokens,8192);
+  assert.ok(!all(s).some(r => r.type === 'reflection_activated'));
+});
+
 test('same root atomically changes memory selection/context/control; restore is a new revision', async () => {
   const s = new SelfRoot(contract()); await start(s);
   const p = structuredClone(s.policy); p.memory.names = ['second']; p.context.order = ['memory'];

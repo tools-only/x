@@ -47,9 +47,9 @@ export function validateContract(c: SelfContract) {
   if (!Array.isArray(c.capabilities) || !Array.isArray(c.writable) || !c.acceptance) throw Error('contract capabilities/acceptance required');
 }
 
-function validatePolicy(p: Policy, c: SelfContract) {
+function validatePolicy(p: Policy, c: SelfContract, outputLimit = Number.MAX_SAFE_INTEGER) {
   if (!p || Object.keys(p).some(k => !['modes','routes','methods','memory','context','request'].includes(k))) throw Error('unknown policy field');
-  if (p.request && (!Number.isSafeInteger(p.request.maxOutputTokens) || p.request.maxOutputTokens < 1)) throw Error('invalid request envelope');
+  if (p.request && (!Number.isSafeInteger(p.request.maxOutputTokens) || p.request.maxOutputTokens < 1 || p.request.maxOutputTokens > outputLimit)) throw Error('invalid request envelope');
   if (!p.modes?.execute || !p.modes.reflect || !p.modes.consolidate || !Array.isArray(p.routes)) throw Error('three modes and routes required');
   for (const mode of Object.values(p.modes)) {
     if (!Array.isArray(mode.tools) || mode.tools.some(t => !c.capabilities.includes(t)) || typeof mode.instruction !== 'string') throw Error('mode exceeds user capabilities');
@@ -102,7 +102,8 @@ export class SelfRoot extends LiveAgentSelf {
   private resetInProgress?: string;
   private mutations: Promise<unknown> = Promise.resolve();
   private rootValidator?: Validator;
-  constructor(contract: SelfContract, saved?: any, validator?: Validator, workspace?: { read(path: string): string }) {
+  private readonly outputLimit: number;
+  constructor(contract: SelfContract, saved?: any, validator?: Validator, workspace?: { read(path: string): string }, outputLimit = Number.MAX_SAFE_INTEGER) {
     const rootValidator: Validator | undefined = validator ? async (path,source) => {
       const spec = await validator(path,source);
       const schemaLine = source.split(/\r?\n/).slice(0,10).find(line=>line.startsWith('# parameters:'));
@@ -115,10 +116,11 @@ export class SelfRoot extends LiveAgentSelf {
       return spec;
     } : undefined;
     super(saved, rootValidator, workspace);
+    this.outputLimit = outputLimit;
     this.rootValidator = rootValidator;
     validateContract(contract); this.contract = copy(contract);
     this.root_id = saved?.root?.root_id ?? randomUUID();
-    this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities)); validatePolicy(this.policy, contract);
+    this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
       for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
@@ -133,6 +135,7 @@ export class SelfRoot extends LiveAgentSelf {
   }
   override get revision() { return this.serial; }
   get mode() { return this.currentMode; }
+  get reviewExitSchema() { return this.review ? copy(this.review.modeDefinition.exitSchema) : undefined; }
   get pendingRevision() { return this.pending?.revision ?? this.serial; }
   get isPaused() { return this.paused; }
   get isResetting() { return Boolean(this.resetInProgress); }
@@ -240,7 +243,7 @@ export class SelfRoot extends LiveAgentSelf {
         if (input.orchestration.roles?.length !== 1 || input.orchestration.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
         await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: input.orchestration, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push('orchestration');
       }
-      if (input.policy !== undefined) { this.assertWrite('policy'); validatePolicy(input.policy, this.contract); policy = copy(input.policy); addresses.push('policy'); }
+      if (input.policy !== undefined) { this.assertWrite('policy'); validatePolicy(input.policy, this.contract, this.outputLimit); policy = copy(input.policy); addresses.push('policy'); }
       if (!addresses.length) throw Error('empty transaction');
       const validation = input.validation ?? { due: { boundary: 'before_session_end' }, scope: 'unspecified; unverified', baseline: [], metric_refs: [] };
       if (!validation.due || Object.keys(validation.due).some(k => !['request','units','boundary'].includes(k)) || !Object.keys(validation.due).length) throw Error('validation due required');
@@ -477,7 +480,7 @@ export class SelfRoot extends LiveAgentSelf {
         version: hash(this.policy), writable: this.contract.writable.includes('policy'), expand: 'read_self(section="policy")' },
       protected: { reason: this.contract.readonly_reason, contract_hash: this.contract.content_hash, boundaries: this.contract.boundaries, budget: this.contract.budget, capabilities: this.contract.capabilities, acceptance: this.contract.acceptance },
       unsupported: ['provider replacement', 'task subagents', 'cross-task default promotion', 'interactive world replay'],
-    }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, review: this.review ? { id: this.review.id, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended } : null,
+    }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, review: this.review ? { id: this.review.id, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_schema: this.reviewExitSchema } : null,
       instruction: this.review?.modeDefinition.instruction ?? this.policy.modes[this.currentMode].instruction,
       request_pin: this.requestPin, resources: this.resources(), pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
       queue: this.queue.map(t => t.id), windows: this.windows.filter(w => ['open','delivered','restore_pending'].includes(w.status)),
