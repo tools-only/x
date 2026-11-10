@@ -1,0 +1,118 @@
+{
+  "baseline_comparison": {
+    "baseline-node-tests.log": {
+      "counts": [
+        "ℹ tests 21",
+        "ℹ pass 7",
+        "ℹ fail 14"
+      ],
+      "failed_tests": [
+        "an entered native tool call keeps its published source while later calls use the replacement",
+        "failed, empty and timed-out auto results settle once and preserve canonical input",
+        "free-hands: programs write text and binary, any entry shape, plain markdown components, render and delivery without gates",
+        "initial registry omits strategic reviewer/workflow seeds and keeps optional process guidance",
+        "lineage reports what ran and what was written, and labels unrecorded changes",
+        "native compute dedupes across requests/restart, and late feedback retains producing version",
+        "native ownership collisions and rejected candidates preserve the published binding and file",
+        "native tools and Pi skill index appear after publication and are directly usable",
+        "opt-in Pi surface projects and directly revises the live Agent orchestration",
+        "process envelopes validate, revise at settle, and log only an enforced changed choice",
+        "reflective component surgery hot-swaps, rolls back, and rejects deck edits as evidence",
+        "reflective redefine reaches and restores prompt, skill, tool, subagent, and memory boundaries",
+        "single-part process binds on the next request, captures versions, and retains last-good on activation failure",
+        "trials run isolated, write only in their scratch workspace, and apply_trial is the only way in"
+      ]
+    },
+    "current-node-final.log": {
+      "counts": [
+        "ℹ tests 21",
+        "ℹ pass 7",
+        "ℹ fail 14"
+      ],
+      "failed_tests": [
+        "an entered native tool call keeps its published source while later calls use the replacement",
+        "failed, empty and timed-out auto results settle once and preserve canonical input",
+        "free-hands: programs write text and binary, any entry shape, plain markdown components, render and delivery without gates",
+        "initial registry omits strategic reviewer/workflow seeds and keeps optional process guidance",
+        "lineage reports what ran and what was written, and labels unrecorded changes",
+        "native compute dedupes across requests/restart, and late feedback retains producing version",
+        "native ownership collisions and rejected candidates preserve the published binding and file",
+        "native tools and Pi skill index appear after publication and are directly usable",
+        "opt-in Pi surface projects and directly revises the live Agent orchestration",
+        "process envelopes validate, revise at settle, and log only an enforced changed choice",
+        "reflective component surgery hot-swaps, rolls back, and rejects deck edits as evidence",
+        "reflective redefine reaches and restores prompt, skill, tool, subagent, and memory boundaries",
+        "single-part process binds on the next request, captures versions, and retains last-good on activation failure",
+        "trials run isolated, write only in their scratch workspace, and apply_trial is the only way in"
+      ]
+    },
+    "same_failure_set": true
+  },
+  "protocol_tests": {
+    "node": "21 passed",
+    "python": "11 passed (7 runner + 4 actual Pi fixtures)",
+    "real_model": false
+  },
+  "engineering_files": {
+    "demo/self_root.ts": "2eee3d4f4af0de1cbd440f1ae199974f51b36fc30927d18623c85ae6da68a329",
+    "demo/self_root_ppt.ts": "05e56b9418e5b0e973f3a3f355489f20254c87c35bc865059e475399e9be0a8a",
+    "demo/ppt_demo_extension.ts": "c675802189334d8027bc553eec2b948dcc828920649329a7053030c89fe1bbf1",
+    "demo/live_orchestration_core.ts": "d27dbcbcded969fdf2df6c159935532e3d48f76089bf3fc4263b3419e13b7a39",
+    "demo/prompts/self_root_system.md": "7827f1657b521d95a61c05dd6527862d1e13b4a3ba5e1b84c01a8bccfb39afb2",
+    "src/autoresearch_pi/evo_ppt.py": "ad25f7c53422345202a9f7814feb68aa4dbbd292346b74bd968ee49f8a861aba"
+  },
+  "design_sources": {
+    "FINAL.md": "a6f75ae81410c96c3daad47a90c99c5156691e87a63e81ca8a34d21ceeb79c3a",
+    "FINAL-CHANGES.md": "a58ab6caffa68c15296231a0e2bc36835be26e5c5f9b51057edca10df834caf7",
+    "ADDENDUM-george-t810.md": "fb8e2dcef268ecf8654e4fc3b3351d8bb8fb9dc70c1e568bd62ea21351d04dfe",
+    "EXPAND-grok.md": "775658ec164ecc0d9ce6fb49c32d6d231be856873f4f9b63acc7b136280d3fa6"
+  },
+  "fixtures": {
+    "test_actual_legacy_arm_still_r0": {
+      "root_id": null,
+      "self_revision": null,
+      "legacy_self_revision": 2,
+      "requests": 3,
+      "activations": 0,
+      "initial_system_chars": 4904,
+      "initial_tools_chars": 7850
+    },
+    "test_real_renderer_acceptance_0": {
+      "root_id": "168b9063-39a1-455f-8484-b6dd0370ea88",
+      "self_revision": 1,
+      "legacy_self_revision": 2,
+      "requests": 10,
+      "activations": 0,
+      "initial_system_chars": 4876,
+      "initial_tools_chars": 7091
+    },
+    "test_same_root_pi_schema_mode_0": {
+      "root_id": "05861724-33a4-44b6-92d9-7aa46f5f7770",
+      "self_revision": 2,
+      "legacy_self_revision": 5,
+      "requests": 12,
+      "activations": 1,
+      "initial_system_chars": 4876,
+      "initial_tools_chars": 7091
+    },
+    "test_tool_contract_replacement0": {
+      "root_id": "703a3731-b20d-4b62-a509-c677912731ae",
+      "self_revision": 3,
+      "legacy_self_revision": 4,
+      "requests": 10,
+      "activations": 2,
+      "initial_system_chars": 4876,
+      "initial_tools_chars": 7091
+    }
+  },
+  "artifact_root": "runs/evo-v1/stage0-verified",
+  "python_regressions": {
+    "baseline": "3 failed, 5 passed",
+    "current": "3 failed, 5 passed",
+    "failed_tests": [
+      "test_fresh_run_sends_kickoff_prompt",
+      "test_run_loads_project_dotenv_and_defaults_to_authorized_az_qwen",
+      "test_html_browser_finds_linux_chromium_from_path"
+    ]
+  }
+}

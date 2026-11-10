@@ -20,7 +20,7 @@ const pointer = (value: unknown, path = ''): unknown => path.split('/').slice(1)
   return v == null ? undefined : v[key];
 }, value);
 
-function validateSchema(value: unknown, schema: any, path = '$'): void {
+export function validateSchema(value: unknown, schema: any, path = '$'): void {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) throw Error(`invalid output schema at ${path}`);
   const valid = schema.type === 'object' ? !!value && typeof value === 'object' && !Array.isArray(value)
     : schema.type === 'array' ? Array.isArray(value)
@@ -39,7 +39,7 @@ function validateSchema(value: unknown, schema: any, path = '$'): void {
   }
   if (schema.type === 'array' && schema.items) for (const [i, item] of (value as unknown[]).entries()) validateSchema(item, schema.items, `${path}[${i}]`);
 }
-function validateSchemaStructure(schema: any, path = '$'): void {
+export function validateSchemaStructure(schema: any, path = '$'): void {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) throw Error(`invalid output schema at ${path}`);
   if (!['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'].includes(schema.type)) throw Error(`unsupported output schema type at ${path}`);
   if (schema.type === 'object') for (const [key, child] of Object.entries(schema.properties ?? {})) validateSchemaStructure(child, `${path}.${key}`);
@@ -133,12 +133,13 @@ export class LiveOrchestrationSession {
     return { ...review, recorded: true };
   }
   hasCurrentSelfReview() { return this.selfReviews.some(review => review.revision === this.current.revision); }
-  reflect(input: { baseRevision: number; orchestration: unknown; authorized: boolean; carry?: Record<string, unknown> }) {
+  reflect(input: { baseRevision: number; orchestration: unknown; authorized: boolean; carry?: Record<string, unknown>; stepMap?: Record<string,string> }) {
     if (input.authorized !== true) throw Error('unauthorized orchestration reflection');
     if (input.baseRevision !== this.current.revision) throw Error('stale revision');
     const candidate = validateDefinition(input.orchestration);
     const bootstrap = this.current.revision === 1 && this.activeStep === 'work' && this.current.orchestration.steps.length === 1;
-    if (!bootstrap && !candidate.steps.some(step => step.id === this.activeStep)) throw Error('active step must remain reachable');
+    const nextStep = input.stepMap?.[this.activeStep] ?? this.activeStep;
+    if (!bootstrap && !candidate.steps.some(step => step.id === nextStep)) throw Error('active step must remain reachable or have an explicit stepMap');
     if (input.carry !== undefined && (!input.carry || typeof input.carry !== 'object' || Array.isArray(input.carry))) throw Error('carry must be an object');
     const nextSlotValues: Record<string, unknown> = {};
     for (const slot of candidate.slots) {
@@ -153,6 +154,7 @@ export class LiveOrchestrationSession {
     this.revisions.push(next);
     this.slotValues = nextSlotValues;
     if (bootstrap) { this.activeStep = next.steps[0].id; this.stepGeneration++; }
+    else if (nextStep !== this.activeStep) { this.activeStep = nextStep; this.stepGeneration++; }
     return { revision: next.revision, receipt: digest({ from: input.baseRevision, orchestration: next, carry: input.carry ?? {} }), step: this.activeStep };
   }
   invalidateArtifact() { this.latestArtifactVersion = undefined; this.latestArtifactHash = undefined; }
@@ -182,7 +184,7 @@ export class LiveOrchestrationSession {
     const decision = this.current.orchestration.decisions.find(d => d.id === input.decisionId);
     if (!step || step.role !== 'agent' || !decision || decision.judge !== 'agent' || step.decision !== decision.id) throw Error('unauthorized or inactive decision');
     if (!Array.isArray(input.evidenceRefs)) throw Error('evidence refs are required');
-    const refs = input.evidenceRefs.map(ref => this.actions.find(a => a.ref === ref));
+    const refs = input.evidenceRefs.map(ref => this.resolveEvidence(ref));
     if (refs.some(ref => !ref)) throw Error('unknown evidence reference');
     for (const needed of decision.evidence) {
       const matching = refs.filter(receipt => receipt!.type === needed.type && (needed.factPath === undefined || same(pointer(receipt!.facts, needed.factPath), needed.equals)));
@@ -220,8 +222,14 @@ export class LiveOrchestrationSession {
     this.stepGeneration++;
     return { status: 'advanced' as const, step: this.activeStep, transition: transition.id };
   }
+  protected resolveEvidence(ref: string): ActionReceipt | undefined {
+    const action = this.actions.find(a => a.ref === ref);
+    if (action) return action;
+    const decision = this.decisions.find(d => d.ref === ref);
+    return decision ? { ref, type: 'decision', facts: clone(decision) } : undefined;
+  }
   private requiresMatched(requirements: ReceiptCondition[], refs: string[]) {
-    return requirements.every(requirement => this.actions.some(action => refs.includes(action.ref) && action.type === requirement.type &&
+    return requirements.every(requirement => refs.map(ref => this.resolveEvidence(ref)).some(action => action && action.type === requirement.type &&
       (requirement.factPath === undefined || same(pointer(action.facts, requirement.factPath), requirement.equals)) &&
       (!(requirement.currentArtifact || requirement.freshness === 'current') ||
         (action.artifactVersion === this.latestArtifactVersion && !!this.latestArtifactHash && action.artifactHash === this.latestArtifactHash))));
@@ -340,10 +348,10 @@ export class LiveAgentSelf extends LiveOrchestrationSession {
     }
     return { revision: this.selfRevision, component: clone(component), previousVersion: current?.version ?? null };
   }
-  async reflectOrchestration(input: {baseRevision:number; orchestration:unknown; carry?:Record<string,unknown>; authorized:boolean}) {
+  async reflectOrchestration(input: {baseRevision:number; orchestration:unknown; carry?:Record<string,unknown>; stepMap?:Record<string,string>; authorized:boolean}) {
     if (input.baseRevision !== this.selfRevision) throw Error(`stale Agent revision ${input.baseRevision}; current revision is ${this.selfRevision}`);
     const result = super.reflect({ baseRevision: this.current.revision, orchestration: input.orchestration,
-      carry: input.carry, authorized: input.authorized });
+      carry: input.carry, stepMap: input.stepMap, authorized: input.authorized });
     this.selfRevision++;
     this.onReflection?.({ kind: 'orchestration', revision: this.selfRevision });
     return { ...result, selfRevision: this.selfRevision };
