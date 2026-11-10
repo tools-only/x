@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -32,12 +33,7 @@ def prepare(root: Path, source: Path) -> None:
     shutil.copy2(source / "material.txt", data / "material.txt")
     shutil.copy2(source / "production_brief.md", data / "instructions.md")
     (data / "environment.md").write_text(ENVIRONMENT, encoding="utf-8")
-    import winreg
-    fonts = set()
-    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts") as key:
-        for i in range(winreg.QueryInfoKey(key)[1]):
-            name, _, _ = winreg.EnumValue(key, i)
-            fonts.add(name.split(" (")[0])
+    fonts = _available_fonts()
     (data / "available-fonts.json").write_text(json.dumps(sorted(fonts), ensure_ascii=False, indent=2), encoding="utf-8")
     evaluation = root / "evaluation"
     evaluation.mkdir()
@@ -49,13 +45,63 @@ def prepare(root: Path, source: Path) -> None:
     (root / "task-provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 
+def _available_fonts() -> set[str]:
+    """Return installed font family names on Windows and fontconfig systems."""
+    if os.name == "nt":
+        import winreg
+        fonts = set()
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts") as key:
+            for i in range(winreg.QueryInfoKey(key)[1]):
+                name, _, _ = winreg.EnumValue(key, i)
+                fonts.add(name.split(" (")[0])
+        return fonts
+    fc_list = shutil.which("fc-list")
+    if not fc_list:
+        return set()
+    result = subprocess.run([fc_list, "--format=%{family}\n"], check=False, capture_output=True, text=True)
+    if result.returncode:
+        return set()
+    return {family.strip() for line in result.stdout.splitlines() for family in line.split(",") if family.strip()}
+
+
+def _redact(value, secrets: tuple[str, ...]):
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "[redacted]")
+        return value
+    if isinstance(value, list):
+        return [_redact(item, secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact(item, secrets) for item in value)
+    if isinstance(value, dict):
+        return {key: _redact(item, secrets) for key, item in value.items()}
+    return value
+
+
+def _load_dotenv(dotenv_path: Path | None) -> dict[str, str]:
+    if dotenv_path is None:
+        return load_project_dotenv(PROJECT)
+    path = dotenv_path.expanduser().resolve()
+    if path.is_dir():
+        return load_project_dotenv(path)
+    if not path.is_file():
+        raise ValueError(f"dotenv path does not exist or is not a file/directory: {path}")
+    if path.name != ".env":
+        raise ValueError("An explicit dotenv file must be named .env; pass its parent directory otherwise")
+    return load_project_dotenv(path.parent)
+
+
 def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: bool = False,
         continue_prompt: str | None = None, kickoff_prompt: str | None = None,
         thinking: str = "low", fresh_batch: bool = False,
-        batch_requests: int = 10, unbounded: bool = False, model_override: str | None = None) -> dict:
+        batch_requests: int = 10, unbounded: bool = False, model_override: str | None = None,
+        dotenv_path: Path | None = None) -> dict:
     if batch_requests < 0:
         raise ValueError("batch_requests must be zero (unlimited) or a positive integer")
-    values = {} if official_openai else load_project_dotenv(Path("D:/autoresearch_pi_project"))
+    values = {} if official_openai else _load_dotenv(dotenv_path)
+    if not official_openai and not values.get("OPENAI_API_KEY"):
+        raise ValueError("Missing OPENAI_API_KEY in the project .env or process environment")
     if not official_openai and values.get("OPENAI_API_BASE", "").rstrip("/") != "https://az.gptplus5.com/v1":
         raise ValueError("This demo is authorized for the configured AZ route only")
     previous_protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8")) if resume else {}
@@ -132,6 +178,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         "provider": "OpenAI Codex OAuth (official)" if official_openai else "AZ https://az.gptplus5.com/v1",
         "model": model_id, "thinking": thinking, "max_seconds": None if unbounded else min(seconds,7200),
         "unbounded": unbounded,
+        "agent_self_reflection": True,
         "fresh_batch": fresh_batch, "batch_requests": batch_requests,
         "token_limit": "none; provider/model native limits apply",
         "authorized_cny": None if unbounded else 100, "budget_guard": "none; user-authorized unbounded run" if unbounded else ("USD12 cumulative API-equivalent cap, USD0.10 reserve/request, 2-hour deadline" if official_openai else "USD12 conservative token estimate, reserve USD3.52 before each request, 2-hour deadline"),
@@ -142,10 +189,10 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         "scope": "one exploratory HTML presentation production demo; no claim of causal net benefit", "guidance": "Generic harness-learning guidance; no preseeded task criteria, methods, or components",
         "command": command}
     protocol["source_hashes"] = {str(p.relative_to(PROJECT)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in [PROJECT / "demo/ppt_demo_extension.ts", PROJECT / "demo/prompts/ppt_demo_system.md",
+        for p in [PROJECT / "demo/ppt_demo_extension.ts", PROJECT / "demo/live_orchestration_core.ts", PROJECT / "demo/prompts/ppt_demo_system.md",
                   PROJECT / "demo/prompts/ppt_demo_agents.md",
                   PROJECT / "src/autoresearch_pi/ppt_demo.py", PROJECT / "src/autoresearch_pi/ppt_demo_html.py",
-                  PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/arc_thin_binder.ts",
+                  PROJECT / "demo/arc_thin_native_runtime.ts", PROJECT / "demo/arc_thin_components.ts", PROJECT / "demo/agent_component_model.ts",
                   PROJECT / "demo/arc_thin_workspace.ts",
                   PROJECT / "demo/ppt_trials.ts", PROJECT / "tools/reflective_core_evidence_joins.py"]}
     protocol["task_hashes"] = {str(p.relative_to(root)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -157,18 +204,19 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
         protocol["previous_source_hashes"] = previous_protocol.get("source_hashes", {})
     (root / "protocol.json").write_text(json.dumps(protocol, indent=2), encoding="utf-8")
     summary = {"complete": False, "stop": "running", "batches": 0, "provider": protocol["provider"], "model": protocol["model"]}
+    secrets = (values.get("OPENAI_API_KEY", ""),)
     def record(event):
         # Preserve complete semantic events without repeating streaming cumulative content.
         if event.get("type") != "message_update":
             with (root / "pi-events.jsonl").open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(event, ensure_ascii=False)+"\n")
+                stream.write(json.dumps(_redact(event, secrets), ensure_ascii=False)+"\n")
     try:
         with PiKernel(command, cwd=str(root / "workspace"), env=env, timeout=90, deadline=deadline, event_sink=record) as kernel:
             transport = pi_prompt(initial_intent(resume, continue_prompt, kickoff_prompt))
             while deadline is None or time.monotonic() < deadline:
                 response = kernel.prompt(transport)
                 if response.get("success") is False:
-                    raise RuntimeError(f"Pi rejected prompt: {response}")
+                    raise RuntimeError(f"Pi rejected prompt: {_redact(response, secrets)}")
                 events = kernel.wait_for_agent_events(
                     timeout=float("inf") if deadline is None else max(1, deadline-time.monotonic()),
                     idle_timeout=None if deadline is None else 900)
@@ -180,10 +228,10 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                     summary.update(complete=True, stop="delivered", revision=state.get("deliveredRevision"))
                     break
                 if latest.get("stopReason") in ("error", "aborted"):
-                    raise RuntimeError(latest.get("errorMessage", latest.get("stopReason")))
+                    raise RuntimeError(_redact(latest.get("errorMessage", latest.get("stopReason")), secrets))
                 process_choice = state.get("process", {}).get("next")
                 if process_choice and process_choice.get("decision") == "error":
-                    summary.update(stop="process_hook_failed", process_error=process_choice.get("error"))
+                    summary.update(stop="process_hook_failed", process_error=_redact(process_choice.get("error"), secrets))
                     break
                 if process_choice and process_choice.get("decision") == "stop":
                     summary.update(stop="process_stop", process_version=process_choice.get("version"))
@@ -199,7 +247,7 @@ def run(root: Path, seconds: int = 7200, resume: bool = False, official_openai: 
                 summary["stop"] = "time_budget"
     except Exception as error:
         summary["stop"] = "budget" if (root / "budget-stop.json").exists() else "runtime_error"
-        summary["error"] = str(error)
+        summary["error"] = _redact(str(error), secrets)
     finally:
         if official_openai:
             if original_models is None:
@@ -219,6 +267,8 @@ if __name__ == "__main__":
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--source", type=Path)
     parser.add_argument("--run", action="store_true")
+    parser.add_argument("--seconds", type=int, default=7200, help="wall-clock budget, capped at 7200 seconds")
+    parser.add_argument("--dotenv", type=Path, help="project .env location; defaults to the checkout root")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--official-openai", action="store_true", help="use the existing OpenAI Codex OAuth session; defaults to GPT-6 Luna")
     parser.add_argument("--model", help="select a model; AZ accepts its configured model id (for example az/deepseek-v4-flash)")
@@ -232,7 +282,8 @@ if __name__ == "__main__":
     root = args.root.resolve()
     if args.source:
         prepare(root, args.source.resolve())
-    print(json.dumps(run(root, resume=args.resume, official_openai=args.official_openai,
+    print(json.dumps(run(root, seconds=args.seconds, resume=args.resume, official_openai=args.official_openai,
         continue_prompt=args.continue_prompt, kickoff_prompt=args.kickoff_prompt,
         thinking=args.thinking, fresh_batch=args.fresh_batch,
-        batch_requests=args.batch_requests, unbounded=args.unbounded, model_override=args.model) if args.run else {"prepared": str(root)}, ensure_ascii=False))
+        batch_requests=args.batch_requests, unbounded=args.unbounded, model_override=args.model,
+        dotenv_path=args.dotenv) if args.run else {"prepared": str(root)}, ensure_ascii=False))

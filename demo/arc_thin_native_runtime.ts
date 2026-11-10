@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { detectSupportedImageMimeTypeFromFile } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { Binder, type Component } from './arc_thin_binder.ts';
+import type { Component } from './agent_component_model.ts';
+import { componentKind } from './agent_component_model.ts';
 import { Workspace } from './arc_thin_workspace.ts';
 import { executeNative, nativeKernel, type ActCall, type NativeResult } from './arc_thin_components.ts';
 import { PythonSession } from './arc_thin_python_session.ts';
@@ -15,7 +16,7 @@ import { blockNote, cellRefs, codeKey, commentLines, repeatedBlocks } from './ar
 
 /** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
-type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): Record<string, unknown>;
+type Host = { pi: ExtensionAPI; workspace: Workspace; self: any; state(): Record<string, unknown>;
   level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   hookTurn?(): boolean;
   /** Reflective hosts supply a persisted run-wide compute allowance, shared across resumes. */
@@ -95,7 +96,7 @@ export class NativeRuntime {
   private savedFeedback = new Map<string, { version: number; n: number; ok: number; failed: number }>();
   /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
   emptyViews() {
-    const live = new Set(this.host.binder.active().filter(c => (c as any).view).map(c => `${c.path}@${c.version}`));
+    const live = new Set(this.host.self.active().filter(c => (c as any).view).map(c => `${c.path}@${c.version}`));
     return [...this.viewHealth].filter(([key, v]) => live.has(key) && v.states.length >= EMPTY_VIEW_STATES).map(([, v]) => v);
   }
   /** The newest version of `path` below `below` that showed something as a view. */
@@ -123,7 +124,7 @@ export class NativeRuntime {
   /** What each active view's current version has done: its runs, raised runs and output changes (A4 accounting). */
   viewStats(): Map<string, { runs: number; errors: number; changes: number }> {
     const out = new Map<string, { runs: number; errors: number; changes: number }>();
-    for (const c of this.host.binder.active()) {
+    for (const c of this.host.self.active()) {
       if (c.level !== this.host.level()) continue;
       const counts = this.viewCounts.get(`${c.path}@${c.version}`);
       if ((c as any).view && counts) out.set(c.path, { runs: counts.runs, errors: counts.errors, changes: counts.changes });
@@ -188,11 +189,23 @@ export class NativeRuntime {
       if (host.pythonKernel !== false) this.kernel = nativeKernel();
     }
   }
+  /** Directly reflect on AgentSelf; preserve the frozen Binder path for older ARC runners. */
+  private async reflectSource(path: string, source: string) {
+    if (typeof this.host.self.reflectSource === 'function')
+      return this.host.self.reflectSource(path, source, this.host.level());
+    this.host.workspace.mutate({ op: 'write', path, content: source }, true);
+    const receipt = await this.host.self.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
+    await this.host.self.scan(this.host.level()); this.host.self.boundary();
+    this.register();
+    const names = new Set(this.toolNames());
+    this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
+    return { component: this.host.self.active().find((row: Component) => row.path === path), receipt };
+  }
   /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text.
    * candidates(), not active(): a save or removal inside a decision is visible immediately (as on r04), while
    * Pi's advertised tool list still follows the request boundary. */
   private callable() {
-    return this.host.binder.candidates().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length
+    return this.host.self.candidates().filter(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length
       && !c.path.startsWith('observers/'));
   }
   /** Facts about the exact callable schema that Pi is about to submit to its provider. */
@@ -211,7 +224,7 @@ export class NativeRuntime {
     this.registerSubagents();
   }
   registerSubagents() {
-    for (const c of this.host.binder.active().filter(x => x.kind === 'subagent')) {
+    for (const c of this.host.self.active().filter(x => x.kind === 'subagent')) {
       if (this.registered.get(`subagent:${c.name}`) === c.hash) continue;
       this.host.pi.registerTool({ name: c.name, label: c.name, description: c.description,
         parameters: Type.Object({ question: Type.String(), refs: Type.Optional(Type.Array(Type.String())) }),
@@ -220,7 +233,7 @@ export class NativeRuntime {
     }
   }
   toolNames() { return [...this.callable().filter(c => this.registered.has(c.name)).map(c => c.name),
-    ...this.host.binder.candidates().filter(c => c.kind === 'subagent' && this.registered.has(`subagent:${c.name}`)).map(c => c.name)]; }
+    ...this.host.self.candidates().filter(c => c.kind === 'subagent' && this.registered.has(`subagent:${c.name}`)).map(c => c.name)]; }
   /** Runtime-owned drafts: names come from successful Python cells, never a second model. */
   private candidateShown = new Map<string, number>();
   private promoted = new Set<string>();
@@ -229,7 +242,7 @@ export class NativeRuntime {
     const names = new Map<string, string>();
     for (const call of this.pythonRuns.slice(this.lastSaveRun).filter(c => c.ok && c.level === this.host.level()))
       for (const match of (call.code ?? '').matchAll(/^def ([a-z][a-z0-9_]{0,39})\(/gm))
-        if (!this.promoted.has(match[1]) && !this.host.binder.candidates().some(c => c.name === match[1]))
+        if (!this.promoted.has(match[1]) && !this.host.self.candidates().some(c => c.name === match[1]))
           names.set(match[1], `python:${call.shape}; checked at #${call.n}`);
     return [...names].map(([name, fingerprint]) => ({ name, fingerprint })).slice(-8).reverse();
   }
@@ -248,7 +261,7 @@ export class NativeRuntime {
       if (age >= 3) failures.push(`${c.name} | candidate_uncalled | shown ${age} turns; promote available`);
       else failures.push(`${c.name} | reusable_function | ${c.fingerprint}; promote available`);
     }
-    for (const c of this.host.binder.candidates().filter(c => c.kind === 'tool')) {
+    for (const c of this.host.self.candidates().filter(c => c.kind === 'tool')) {
       const saved = this.savedFeedback.get(c.path);
       if (!saved || saved.version !== c.version) continue;
       if (!saved.ok && !saved.failed) mounted.push(`${c.name} | tool | Shown | via=0`);
@@ -274,12 +287,11 @@ export class NativeRuntime {
     if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error('name: use a logical identifier');
     const source = await this.toolSource(body, undefined, signal);
     const path = `tools/${name}.py`;
-    this.host.workspace.mutate({ op: 'write', path, content: source + '\n' }, true);
-    const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
+    const reflected = await this.reflectSource(path, source + '\n');
+    const receipt = reflected.receipt ?? `tool ${name} v${reflected.component?.version ?? 0}: reflected into live Agent`;
     this.noteSave(path, receipt);
     if (receipt?.includes('NOT loaded')) throw Error(receipt);
     this.lastSaveRun = this.pythonRuns.length;
-    this.register();
     return receipt ?? `${name}: Created`;
   }
   /** Agent-authored script: the program is the saved source itself, not a wrapper extracted from a Python session. */
@@ -291,27 +303,24 @@ export class NativeRuntime {
     if (tags.length > 10 || tags.some(tag => !/^[a-zA-Z0-9_-]{0,31}$/.test(tag)))
       throw Error('tags: use up to ten short identifiers');
     const path = `tools/${name}.py`;
-    const currentVersion = this.host.binder.versionMap()[path] ?? 0;
+    const currentVersion = this.host.self.versionMap()[path] ?? 0;
     if (expectedVersion !== undefined && expectedVersion !== currentVersion)
       throw Error(`program ${name}: expected v${expectedVersion}, current version is v${currentVersion}; read the active source before revising`);
     const code = body.trim().startsWith('# program: on\n')
       ? body.trim().replace(/^# program: on\r?\n(?:# description:[^\r\n]*\r?\n)?(?:# tags:[^\r\n]*\r?\n)?/, '')
       : body.trim();
     const source = `# program: on\n# description: ${description.trim().replace(/[\r\n]+/g, ' ')}\n${tags.length ? `# tags: ${tags.join(', ')}\n` : ''}${code}\n`;
-    this.host.workspace.mutate({ op: 'write', path, content: source }, true);
-    const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
+    const reflected = await this.reflectSource(path, source);
+    const receipt = reflected.receipt ?? `tool ${name} v${reflected.component?.version ?? 0}: reflected into live Agent`;
     this.noteSave(path, receipt);
     if (receipt?.includes('NOT loaded')) throw Error(receipt);
-    await this.host.binder.scan(this.host.level());
-    this.host.binder.boundary();
-    this.register();
-    this.host.log('component_runs.jsonl', { kind: 'program_save', name, path, version: this.host.binder.versionMap()[path],
+    this.host.log('component_runs.jsonl', { kind: 'program_save', name, path, version: reflected.component?.version,
       decision: this.decision(), n: this.host.actionCount(), ok: true });
     return receipt ?? `${name}: Created`;
   }
   /** Execute an Agent-owned acceptance program against immutable evidence, without permitting writes. */
   async checkProgram(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
-    const component = this.host.binder.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
+    const component = this.host.self.active().find(c => c.program && c.name === name && c.path.startsWith('tools/'));
     if (!component) throw Error(`acceptance program ${name} is not active`);
     const snap = this.snapshot();
     const result = await this.execute({ ...snap, mode: 'call', path: component.path, args: { args }, allow_writes: false }, signal);
@@ -370,7 +379,7 @@ export class NativeRuntime {
   private decision() { return this.host.decision?.() ?? 0; }
   /** Updated at save/call events; ordinary heads never rescan the run log. */
   selfFeedbackText(path?: string) {
-    const lines = (path ? this.host.binder.candidates() : this.host.binder.active()).filter(c => c.kind === 'tool' && c.path.startsWith('tools/') &&
+    const lines = (path ? this.host.self.candidates() : this.host.self.active()).filter(c => c.kind === 'tool' && c.path.startsWith('tools/') &&
       !c.mount?.length && !c.guard && (!path || c.path === path)).flatMap(c => {
       const saved = this.savedFeedback.get(c.path);
       if (!saved || saved.version !== c.version) return [];
@@ -381,12 +390,12 @@ export class NativeRuntime {
   noteSave(path: string, receipt: string | undefined) {
     if (/^(tools|observers|lib)\/[^/]+\.py$/.test(path)) {
       const ok = !/NOT loaded/.test(receipt ?? '');
-      const version = this.host.binder.versionMap()[path];
+      const version = this.host.self.versionMap()[path];
       if (ok) this.lastSaveRun = this.pythonRuns.length;
-      if (ok && this.host.binder.originOf(path)?.by === 'agent' && this.savedFeedback.get(path)?.version !== version)
+      if (ok && this.host.self.originOf(path)?.by === 'agent' && this.savedFeedback.get(path)?.version !== version)
         this.savedFeedback.set(path, { version, n: this.host.actionCount(), ok: 0, failed: 0 });
       this.host.log('component_runs.jsonl', { kind: 'save', path, decision: this.decision(), n: this.host.actionCount(), ok,
-        version: this.host.binder.versionMap()[path], by: this.host.binder.originOf(path)?.by,
+        version: this.host.self.versionMap()[path], by: this.host.self.originOf(path)?.by,
         ...(ok ? {} : { error: /NOT loaded \(([^)]*)\)/.exec(receipt ?? '')?.[1]?.slice(0, 200) }) });
     }
     this.host.onSaved?.(path, receipt);
@@ -396,10 +405,10 @@ export class NativeRuntime {
       this.mountLocal.set(row.key, row.local);
   }
   private components() {
-    return this.host.binder.active().filter(c => /^(tools|observers|lib)\//.test(c.path) && c.path.endsWith('.py')).map(c => componentLines(c.path, c.source));
+    return this.host.self.active().filter(c => /^(tools|observers|lib)\//.test(c.path) && c.path.endsWith('.py')).map(c => componentLines(c.path, c.source));
   }
   private levelRuns(level: number) {
-    const kit = kitOf(this.host.binder.versionMap());
+    const kit = kitOf(this.host.self.versionMap());
     return this.pythonRuns.filter(r => r.level === level && r.kit === kit);
   }
   /**
@@ -418,7 +427,7 @@ export class NativeRuntime {
     const files: Record<string, string> = {};
     // Binary files of any type travel to the guest as base64; the guest's open(path,'rb'/'wb') speaks real bytes.
     const binaries: Record<string, string> = {};
-    for (const c of this.host.binder.active()) if (c.path.endsWith('.py')) sources[c.path] = c.source;
+    for (const c of this.host.self.active()) if (c.path.endsWith('.py')) sources[c.path] = c.source;
     const scanStarted=performance.now(), paths=this.host.workspace.files(), scanMs=performance.now()-scanStarted;
     const readStarted=performance.now();
     for (const path of paths) {
@@ -432,8 +441,8 @@ export class NativeRuntime {
       if (/^skills\/.+\.py$/.test(path)) sources[path] = body;
       else files[path] = body;
     }
-    const versions = this.host.binder.versionMap();
-    for (const c of this.host.binder.active()) versions[c.path] = c.version;
+    const versions = this.host.self.versionMap();
+    for (const c of this.host.self.active()) versions[c.path] = c.version;
     const artifacts = { ...(this.host.state().artifacts as Record<string, unknown> ?? {}) };
     for (const [path, body] of Object.entries(files)) if (/^artifacts\/[^/]+\.json$/.test(path)) {
       try { artifacts[path.slice(10, -5)] = JSON.parse(body); } catch { /* Non-JSON artifacts remain readable files. */ }
@@ -447,6 +456,7 @@ export class NativeRuntime {
     // Harness component storage is writable only through reflect_component.
     for (const op of result.ops ?? []) {
       if (op.op === 'memory' || op.op === 'meta_decide') continue;
+      if (componentKind(op.path) && !['library','process'].includes(componentKind(op.path)!)) continue;
       this.host.workspace.path(op.path, true);
       if (op.destination) this.host.workspace.path(op.destination, true);
     }
@@ -469,11 +479,28 @@ export class NativeRuntime {
         continue;
       }
       files += 1;
+      const componentAddress = componentKind(op.path);
+      if (componentAddress && componentAddress !== 'library' && componentAddress !== 'process') {
+        if (op.op === 'restore') {
+          const source = this.host.self.sourceOf(op.path, Number(op.version));
+          if (source === undefined) { receipts.push(`${op.path}: no version ${op.version} to restore`); continue; }
+          const reflected = await this.reflectSource(op.path, source);
+          receipts.push(`${op.path}: updated from v${op.version}${reflected.receipt ? ` · ${reflected.receipt}` : ''}`);
+          this.noteSave(op.path, reflected.receipt ?? `v${reflected.component?.version ?? 0}`);
+          continue;
+        }
+        if (op.op !== 'write' || (op as any).encoding === 'base64' || typeof op.content !== 'string')
+          throw Error(`Agent component ${op.path} can only be changed by a text reflection`);
+        const reflected = await this.reflectSource(op.path, op.content);
+        receipts.push(`${op.path}: reflected${reflected.component ? ` as v${reflected.component.version}` : ''}${reflected.receipt ? ` · ${reflected.receipt}` : ''}`);
+        this.noteSave(op.path, reflected.receipt ?? `v${reflected.component?.version ?? 0}`);
+        continue;
+      }
       if (op.op === 'restore') {
-        const source = this.host.binder.sourceOf(op.path, Number(op.version));
+        const source = this.host.self.sourceOf(op.path, Number(op.version));
         if (source === undefined) { receipts.push(`${op.path}: no version ${op.version} to restore`); continue; }
         this.host.workspace.mutate({ op: 'write', path: op.path, content: source });
-        const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() });
+        const receipt = await this.host.self.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() });
         receipts.push(`${op.path}: restored from v${op.version}${receipt ? ` · ${receipt}` : ''}`); this.noteSave(op.path, receipt);
         recordWrite(op);
         continue;
@@ -481,17 +508,17 @@ export class NativeRuntime {
       if (op.op === 'write' && (op as any).encoding === 'base64') {
         // A binary write from the guest: real bytes land in the workspace, any file type.
         this.host.workspace.mutate({ op: 'write', path: op.path, content: Buffer.from(String(op.content ?? ''), 'base64') } as any);
-        receipts.push(`${op.path}: written (binary) · bindings rebuilt next request`);
+        receipts.push(`${op.path}: written (binary)`);
         recordWrite(op);
         continue;
       }
       this.host.workspace.mutate(op as any);
       recordWrite(op);
-      if (op.op === 'write') { const receipt = await this.host.binder.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() }); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
-      else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'} · bindings rebuilt next request`);
+      if (op.op === 'write') { const receipt = await this.host.self.save(op.path, this.host.level(), { by: 'agent', decision: this.decision() }); if (receipt) receipts.push(receipt); this.noteSave(op.path, receipt); }
+      else receipts.push(`${op.path}: ${op.op === 'move' ? 'moved to ' + op.destination : 'deleted'}`);
     }
-    if (files) {
-      await this.host.binder.scan(this.host.level()); this.register();
+    if (files && typeof this.host.self.reflectSource !== 'function') {
+      await this.host.self.scan(this.host.level()); this.register();
       // Tools are only added mid-decision, never removed: the tool list the agent sees stays consistent.
       const names = new Set(this.toolNames());
       this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
@@ -655,7 +682,7 @@ export class NativeRuntime {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
   }
   noteReuseRead(path: string, version?: number) {
-    const component = this.host.binder.active().find(c => c.path === path && (version === undefined || c.version === version) && c.kind === 'tool'
+    const component = this.host.self.active().find(c => c.path === path && (version === undefined || c.version === version) && c.kind === 'tool'
       && !c.guard && !c.mount?.length && !c.path.startsWith('observers/'));
     if (component) {
       const contractLines = component.source.split(/\r?\n/).filter(line => /\bargs\s*\[/.test(line)).slice(0, 2);
@@ -724,18 +751,20 @@ export class NativeRuntime {
     if (save !== undefined && !readonly) {
       if (!SAVE_NAME.test(save)) throw Error('save must be a lowercase name like route_to (letters, digits, _)');
       const path = `tools/${save}.py`;
-      this.host.workspace.mutate({ op: 'write', path, content: code.endsWith('\n') ? code : code + '\n' });
-      const receipt = await this.host.binder.save(path, this.host.level(), { by: 'agent', decision: this.decision() });
+      const reflected = await this.reflectSource(path, code.endsWith('\n') ? code : code + '\n');
+      const receipt = reflected.receipt ?? `tool ${save} v${reflected.component?.version ?? 0}: reflected into live Agent`;
       if (receipt) saveReceipts.push(receipt);
       this.noteSave(path, receipt);
-      await this.host.binder.scan(this.host.level()); this.register();
-      const names = new Set(this.toolNames());
-      this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
+      if (typeof this.host.self.reflectSource !== 'function') {
+        await this.host.self.scan(this.host.level()); this.register();
+        const names = new Set(this.toolNames());
+        this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
+      }
       if (!/NOT loaded/.test(receipt ?? '')) via = path;
     }
     const snap = this.snapshot(); const started = Date.now();
     const windowAtStart = this.host.actionCount();
-    const kit = kitOf(this.host.binder.versionMap());
+    const kit = kitOf(this.host.self.versionMap());
     const input = { ...snap, mode: 'exec', code, allow_writes: !readonly, ...(session ? { session: session.payload() } : {}),
       ...(Object.keys(cells).length ? { cells } : {}) };
     // The parent's session runs in its live kernel; a subagent's session and saved tools keep a fresh sandbox per call.
@@ -767,7 +796,7 @@ export class NativeRuntime {
       ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit, code_excerpt: code.slice(0, 1200),
         output_excerpt: shown(result).slice(0, 600), ...(save ? { saved_as: `tools/${save}.py` } : {}) }),
       acted: result.acted?.lines.length ?? 0, ...(outcome ? { session_version: outcome.version, session_event: outcome.event ?? 'unchanged' } : {}) });
-    const failed = this.host.binder.active().map(c => this.host.binder.label(c.path)).filter(s => s.includes('failed'));
+    const failed = this.host.self.active().map(c => this.host.self.label(c.path)).filter(s => s.includes('failed'));
     // Saved once, named once: when this call retypes what a saved component computes, its own result says so (once per
     // component and level), so the next call can use it instead (Prime: the change arrives in the next tool result).
     // All of the level's calls count: counting only those since the saved tools last changed (levelRuns) let every save
@@ -777,7 +806,7 @@ export class NativeRuntime {
     let coverNote = '';
     if (covering && !this.coverHinted.has(coverKey)) {
       this.coverHinted.add(coverKey);
-      const c = this.host.binder.active().find(x => x.path === covering);
+      const c = this.host.self.active().find(x => x.path === covering);
       coverNote = `(${c?.name ?? "saved component"} already computes this: ${c?.kind === 'tool' && ((c as any).view || c.path.startsWith('observers/'))
         ? 'it is a view, so its output is shown with each new state under HARNESS'
         : c?.kind === 'tool' ? `call ${c.name}(args={...})` : `from ${covering.replace(/\.py$/, '').replace(/\//g, '.')} import …`} instead of retyping it)`;
@@ -796,7 +825,7 @@ export class NativeRuntime {
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
     const relevance = new Set(shape.struct);
     const callableNames = new Set(this.toolNames());
-    const related = this.host.binder.active().filter(c => c.kind === 'tool' && callableNames.has(c.name) && c.level === this.host.level() && !((c as any).view) &&
+    const related = this.host.self.active().filter(c => c.kind === 'tool' && callableNames.has(c.name) && c.level === this.host.level() && !((c as any).view) &&
       /^(tools|observers|lib)\/.+\.py$/.test(c.path)).map(c => {
         const component = componentLines(c.path, c.source);
         const matched = [...relevance].filter(line => component.lines.has(line)).length;
@@ -828,7 +857,7 @@ export class NativeRuntime {
     return out;
   }
   async legacyAlias(name: string, args: any, signal?: AbortSignal) {
-    const component = this.host.binder.active().find(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length && c.name === name && !c.path.startsWith('observers/'));
+    const component = this.host.self.active().find(c => c.kind === 'tool' && !(c as any).guard && !c.mount?.length && c.name === name && !c.path.startsWith('observers/'));
     if (!component) throw Error(`legacy alias ${name}: tool retired or unavailable`);
     return this.call(component, { args }, signal);
   }
@@ -848,7 +877,7 @@ export class NativeRuntime {
       versions: snap.versions, ok: result.ok, ms: Date.now() - started, acted: result.acted?.lines.length ?? 0 });
     const saved = this.savedFeedback.get(invoked.path);
     if (!readonly && saved?.version === invoked.version) saved[result.ok ? 'ok' : 'failed']++;
-    const fallback = this.host.binder.active().filter(x => x.path !== invoked.path).map(x => this.host.binder.label(x.path)).filter(s => s.includes('failed'));
+    const fallback = this.host.self.active().filter(x => x.path !== invoked.path).map(x => this.host.self.label(x.path)).filter(s => s.includes('failed'));
     const out = this.finish([`${label} →\n${shown(result)}`, ...receipts, ...fallback.map(s => 'bindings: ' + s)].join('\n'), result);
     const feedback = !readonly && this.selfFeedbackText(invoked.path);
     if (feedback) out.content.push({ type: 'text', text: feedback });
@@ -879,7 +908,7 @@ export class NativeRuntime {
   }
   /** Tools marked as views run after every new state; their outputs are shown each decision. They never act. */
   observe(n: number) {
-    const due = this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).view && c.level === this.host.level()
+    const due = this.host.self.active().filter(c => c.kind === 'tool' && (c as any).view && c.level === this.host.level()
       && !this.observed.has(`${c.path}@${c.version}@${n}`));
     if (!due.length) return;
     const snap = this.snapshot();
@@ -890,7 +919,7 @@ export class NativeRuntime {
         try { result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} } }, undefined, this.viewPool); }
         catch (error) { result = { ok: false, error: String(error) }; }
         if (this.host.artifacts) result = this.host.artifacts(result, c, n);
-        const liveLabel = this.host.binder.label(c.path);
+        const liveLabel = this.host.self.label(c.path);
         this.countView(`${c.path}@${c.version}`, n, result.ok ? result.value : undefined, result.ok);
         // An output that has not changed is still shown (a decision sees only its own head), and says so. One that has
         // been the same on every state since the view was saved is a snapshot, not a view of the state (in the su15 runs on
@@ -926,7 +955,7 @@ export class NativeRuntime {
     await Promise.race([this.pending, new Promise<void>(done => { timer = setTimeout(done, 5000); })]);
     clearTimeout(timer!);
     const level = this.host.level();
-    const views = this.host.binder.active().filter(c => (c as any).view);
+    const views = this.host.self.active().filter(c => (c as any).view);
     const current = new Set(views.filter(c => c.level === level).map(c => c.path));
     const shown = [...this.outputs].filter(([path]) => current.has(path)).map(([, s]) => s.length > 900 ? s.slice(0, 900) : s);
     const stale = views.filter(c => c.level !== level).map(c =>
@@ -935,7 +964,7 @@ export class NativeRuntime {
   }
   /** One generic, read-only Agent-authored callback at a runtime boundary. Its result is evidence, not authority. */
   private loopMounts(phase: 'decision' | 'action' | 'feedback', level = this.host.level()) {
-    return this.host.binder.active().filter(c => c.kind === 'tool' && c.level === level && c.mount?.includes(phase));
+    return this.host.self.active().filter(c => c.kind === 'tool' && c.level === level && c.mount?.includes(phase));
   }
   private async runLoopMount(c: Component, event: Record<string, unknown>, binding?: any) {
     const started = Date.now();
@@ -1074,9 +1103,9 @@ export class NativeRuntime {
     return parts.length ? `AGENT COMPUTE (${phase}; derived, not canonical):\n${parts.join('\n')}`.slice(0, 2400) : '';
   }
   /** The active predictor tools: they define predict(state, action) (arc_thin_components.ts). */
-  predictors() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).predictor && c.level === this.host.level()); }
+  predictors() { return this.host.self.active().filter(c => c.kind === 'tool' && (c as any).predictor && c.level === this.host.level()); }
   /** Active, current-level tools that define the read-only admit(state, action) action contract. */
-  guards() { return this.host.binder.active().filter(c => c.kind === 'tool' && (c as any).guard && c.level === this.host.level()); }
+  guards() { return this.host.self.active().filter(c => c.kind === 'tool' && (c as any).guard && c.level === this.host.level()); }
   /** Run each active guard against the state and exact action about to cross the environment boundary. */
   async admit(action: { name: string; x?: number; y?: number }): Promise<Array<{ path: string; version: number; allow?: boolean; reason?: string; error?: string; ms: number }>> {
     const due = this.guards();
@@ -1129,7 +1158,7 @@ export class NativeRuntime {
     }));
   }
   private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext, pinned?: Component) {
-    const available = this.host.immediateSubagent ? this.host.binder.candidates() : this.host.binder.active();
+    const available = this.host.immediateSubagent ? this.host.self.candidates() : this.host.self.active();
     const agent = pinned ?? available.find(c => c.kind === 'subagent' && c.name === args.agent);
     if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}`);
     const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
@@ -1147,7 +1176,7 @@ export class NativeRuntime {
         tools.push({ name, description: 'Read-only one-off Python', parameters: Type.Object({ code: Type.String() }) });
         runTools.set(name, args => this.python(args.code, signal, true, undefined, childSession));
       } else {
-        const c = this.host.binder.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
+        const c = this.host.self.active().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));
         if (!c) throw Error(`subagent tool ${name} unavailable`);
         tools.push({ name, description: c.description, parameters: c.parameters });
         runTools.set(name, args => this.call(c, args, signal, true));

@@ -174,7 +174,7 @@ export default function arcReflective(pi: ExtensionAPI) {
   };
 
   const runtime = new NativeRuntime({
-    pi, workspace, binder, state: () => ({ ...state, observation }), level: () => Number(observation?.levels_completed ?? 0),
+    pi, workspace, self: binder, state: () => ({ ...state, observation }), level: () => Number(observation?.levels_completed ?? 0),
     actionCount: () => phaseLog().length, decision: () => Number(state.phase ?? 0), log,
     usage: (kind: string, message: any) => append('usage.jsonl', { kind, stop_reason: message?.stopReason, usage: message?.usage }),
     wrap: (_name: string, fn: any) => async (_id: string, args: any, signal: any, _update: any, ctx: any) => fn(args, signal, ctx),

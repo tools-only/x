@@ -2,60 +2,11 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createRequire } from 'node:module';
 import { Workspace } from './arc_thin_workspace.ts';
-
-export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean;
-  mount?: Array<'decision' | 'action' | 'feedback'>; program?: boolean; tags?: string[] };
-export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
+import { componentKind, markdownSpec, type Component, type ComponentSpec, type Validator } from './agent_component_model.ts';
+export { componentKind, markdownSpec } from './agent_component_model.ts';
+export type { Component, ComponentSpec, Validator } from './agent_component_model.ts';
 type Entry = { path: string; version: number; hash: string; level: number; kind?: string; layer?: string; by?: string; decision?: number; error?: string; retired?: boolean; good?: Component };
-export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
-const requirePi = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'));
-const { parseDocument } = requirePi('yaml'); // Pi 0.87.0's pinned YAML dependency, full Agent Skills frontmatter.
-
-/**
- * The five capability categories (Prompt, Memory, Tool, Skill, Subagent; Memory lives in the memory store), by
- * workspace place. lib/ holds code tools import (a dependency, not a capability); notes/, artifacts/ and other files
- * are plain workspace files. observers/ and roles/ are older places for view tools and subagents.
- */
-export function componentKind(path: string): string | undefined {
-  if (path.split('/').includes('_off')) return;
-  if (/^(tools|observers)\/[^/]+\.py$/.test(path)) return 'tool';
-  if (/^lib\/[^/]+\.py$/.test(path)) return 'library';
-  if (/^skills\/[^/]+\/SKILL\.md$/.test(path)) return 'skill';
-  if (/^prompts\/process\/[^/]+\.md$/.test(path)) return 'prompt';
-  if (/^prompts\/[^/]+\.md$/.test(path)) return 'prompt';
-  if (/^(agents|roles)\/[^/]+\.md$/.test(path)) return 'subagent';
-  if (/^notes\/memory\/[^/]+\.md$/.test(path) || path === 'notes/memory.md') return 'memory';
-  if (/^processes\/[^/]+\.json$/.test(path)) return 'process';
-}
-/** The file conventions require only scalar values and lists, not an SDK. Frontmatter is optional: a plain markdown
- * file binds with defaults (prompt active, description from its first line, skill named by its directory), so writing
- * a component is just writing a file. What frontmatter states, it overrides. */
-export function markdownSpec(path: string, source: string): ComponentSpec {
-  const kind = componentKind(path)!; const name = kind === 'skill' ? path.split('/')[1]
-    : `${path.startsWith('prompts/process/') ? 'process_' : ''}${path.split('/').at(-1)!.replace(/\.md$/, '')}`;
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(source);
-  let header: Record<string, any> = {}; let body = source;
-  if (match) {
-    body = match[2];
-    const doc = parseDocument(match[1]); if (doc.errors.length) throw Error(doc.errors.map((e: Error) => e.message).join('; '));
-    const parsed = doc.toJS({ maxAliasCount: 20 });
-    if (parsed === null || parsed === undefined) header = {};
-    else if (typeof parsed !== 'object' || Array.isArray(parsed)) throw Error('frontmatter must be a mapping');
-    else header = parsed;
-  }
-  if (kind === 'prompt' && header.active !== undefined && ![true, false].includes(header.active)) throw Error('prompt active must be true or false');
-  const description = String(header.description ?? body.split(/\r?\n/).find(s => s.trim()) ?? '').slice(0, 120);
-  if (kind === 'skill' && header.name && header.name !== name) throw Error('skill name must match its directory');
-  // Only the environment action stays out of subagent reach (an ARC-work-memory boundary); file writes and memory
-  // are the subagent's own to decide, as the parent's.
-  if (kind === 'subagent' && Array.isArray(header.tools) && header.tools.some((t: string) => t === 'arc_action'))
-    throw Error('a subagent cannot take environment actions (arc_action)');
-  return { kind, name, description, enabled: kind !== 'prompt' || header.active !== false,
-    body, tools: header.tools, refs: header.refs };
-}
 
 export class Binder {
   private entries = new Map<string, Entry>();

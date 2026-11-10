@@ -106,7 +106,7 @@ export class Trials {
     await binder.scan(0); binder.boundary();
     const nativeTools = new Map<string, any>();
     const stubPi: any = { registerTool(tool: any) { nativeTools.set(tool.name, tool); }, on() {}, setActiveTools() {}, getActiveTools: () => [], getAllTools: () => [...nativeTools.values()] };
-    const runtime = new NativeRuntime({ pi: stubPi, workspace: scratch, binder, state: () => ({}), level: () => 0,
+    const runtime = new NativeRuntime({ pi: stubPi, workspace: scratch, self: binder, state: () => ({}), level: () => 0,
       actionCount: () => 0, decision: () => 0, hookTurn: () => false, pythonSession: false, pythonKernel: false,
       modelResult: this.host.modelResult,
       log: (file, row) => this.host.log('trial_runs.jsonl', { ...row, trial: id, inner: file }),

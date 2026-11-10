@@ -4387,7 +4387,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         artifacts: (artifactInputs(artifactLog) as any).artifacts ?? {} });
       writeFileSync(migrationMarker, JSON.stringify({ migrated, at: new Date().toISOString() }) + '\n');
     }
-    nativeRuntime = new NativeRuntime({ pi, workspace, binder,
+    nativeRuntime = new NativeRuntime({ pi, workspace, self: binder,
 		hookTurn: () => run.hookTurn,
       state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from html.parser import HTMLParser
@@ -69,7 +70,11 @@ def _browser() -> Path:
         str(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe")]
     for candidate in candidates:
         if candidate and Path(candidate).is_file(): return Path(candidate)
-    raise RuntimeError("HTML previews require Microsoft Edge or Google Chrome; set PPT_DEMO_BROWSER to its executable.")
+    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "microsoft-edge"):
+        candidate = shutil.which(name)
+        if candidate:
+            return Path(candidate)
+    raise RuntimeError("HTML previews require Edge, Chrome, or Chromium; set PPT_DEMO_BROWSER to its executable.")
 
 
 def _mime_of(path: Path) -> str:
