@@ -73,7 +73,12 @@ def local_settings(registration: Path):
                                 "usd": (model["contextWindow"]*20 + model["maxTokens"]*80)/1e6,
                                 "basis": "registered maximum input/output; conservative existing PPT rates 20/80 USD per million; unknown invoice"},
             "sampling": {"temperature": "provider default; not supplied", "top_p": "provider default; not supplied"},
-            "agent_settings": {"compaction": {"enabled": False}, "retry": {"enabled": False, "maxRetries": 0}}}
+            # Pi's HTTP dispatcher resets its headers/body idle clock on received
+            # bytes. A silent call fails before the 300s turn watchdog; Pi then
+            # retries that failed assistant request in the same serial session.
+            "agent_settings": {"compaction": {"enabled": False}, "httpIdleTimeoutMs": 240_000,
+                               "retry": {"enabled": True, "maxRetries": 2, "baseDelayMs": 2000,
+                                         "maxAgentDelayMs": 4000, "provider": {"maxRetries": 0}}}}
 
 
 def content_units(material: str):
@@ -274,6 +279,10 @@ def run(root: Path, *, round_deadline: float | None = None):
         if event.get("type") != "message_update":
             with (root / "pi-events.jsonl").open("a",encoding="utf-8") as stream:
                 stream.write(json.dumps(event,ensure_ascii=False).replace(values["OPENAI_API_KEY"],"[redacted]")+"\n")
+        # Retry transitions are already recorded in pi-events.jsonl. The
+        # existing provider dispatch/usage ledgers retain each charged attempt.
+        if event.get("type") in ("auto_retry_start", "auto_retry_end"):
+            persist_resource_daemon(root)
     started = time.monotonic()
     handled_resets = set()
     try:

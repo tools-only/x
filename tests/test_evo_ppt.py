@@ -15,6 +15,10 @@ def test_exact_local_registration_without_provider_or_model_fallback(tmp_path):
     assert settings['provider']=='az' and settings['model']['id']=='qwen3.8-27b'
     assert settings['request_reserve']['tokens']==240536
     assert settings['request_reserve']['usd']==pytest.approx(8.74288)
+    agent=settings['agent_settings']
+    assert 0 < agent['httpIdleTimeoutMs'] < 300_000
+    assert agent['retry']['enabled'] and agent['retry']['maxRetries']==2
+    assert agent['retry']['provider']['maxRetries']==0
     path.write_text(json.dumps({'providers':{}}),encoding='utf-8')
     with pytest.raises(ValueError,match='no substitution'):evo_ppt.local_settings(path)
 

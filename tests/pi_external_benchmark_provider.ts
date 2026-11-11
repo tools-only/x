@@ -93,10 +93,16 @@ export default function externalBenchmarkFixture(pi: ExtensionAPI) {
 			const step = steps[request++];
 			const stream = createAssistantMessageEventStream();
 			const output: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider,
-				model: model.id, content: [], stopReason: step?.stop_reason ?? (step ? "toolUse" : "stop"), timestamp: Date.now(),
+				model: model.id, content: [], stopReason: step?.stop_reason ?? (step ? "toolUse" : "stop"),
+				...(step?.error_message ? { errorMessage: step.error_message } : {}), timestamp: Date.now(),
 				usage: { input: fixtureUsage, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: fixtureUsage,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 			stream.push({ type: "start", partial: output });
+			if (output.stopReason === "error") {
+				stream.push({ type: "error", reason: "error", error: output });
+				stream.end();
+				return stream;
+			}
 			if (step) {
 				if (thinkingChars) output.content.push({ type: "thinking", thinking: "x".repeat(thinkingChars) } as any);
 				for (const call of Array.isArray(step) ? step : [step]) {
