@@ -22,6 +22,24 @@ import { SelfRoot, hash } from './self_root.ts';
 import { providerPermit } from './provider_permit.ts';
 import { installSelfRootTools, type SelfRootManifest, collectAcceptance, directoryBytes } from './self_root_ppt.ts';
 
+function refreshResourceDaemon(root: string) {
+  if (!root) return;
+  try {
+    const helper = fileURLToPath(new URL('../src/autoresearch_pi/resource_daemon.py', import.meta.url));
+    const child = spawnSync(process.env.PPT_DEMO_PYTHON ?? 'python', [helper, 'refresh', root], {
+      encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+    });
+    if (child.error || child.status !== 0) return;
+    return JSON.parse(child.stdout || 'null');
+  } catch { return; }
+}
+function syncDaemonResources(root: string, agent?: SelfRoot) {
+  try {
+    const record = refreshResourceDaemon(root);
+    if (record && agent) agent.adoptDaemonResources(record);
+  } catch { return; }
+}
+
 export default function pptDemo(pi: ExtensionAPI) {
   const root = process.env.PPT_DEMO_ROOT!;
   const manifest: SelfRootManifest | undefined = process.env.EVO_MANIFEST ? JSON.parse(readFileSync(process.env.EVO_MANIFEST, 'utf8')) : undefined;
@@ -172,11 +190,13 @@ export default function pptDemo(pi: ExtensionAPI) {
     modelResult: async create => {
       if (experimentManifest) throw Error('this experiment authorizes one serial agent; child provider calls are disabled');
       if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
-        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, reason: 'consult budget boundary' }));
+        writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, reason: 'consult budget boundary', stop_kind: 'budget_stop' }));
+        syncDaemonResources(root, evo);
         process.exit(0);
       }
       spent += reserve;
       log('provider-requests.jsonl', { request: ++requests, kind: 'consult', estimated_usd_so_far: spent });
+      syncDaemonResources(root, evo);
       const reply = await create().result();
       const u = reply.usage ?? {};
       const known = Number.isFinite(u.input) && Number.isFinite(u.output) && u.input + u.output > 0;
@@ -185,6 +205,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (known) spent += ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6-reserve;
       log('model-usage.jsonl', { request: requests, kind: 'consult', usage: known ? u : null, tokens_used: usedTokens, tokens_total: tokensSpent, conservative_usd: spent,
         usage_status: known ? 'reported' : 'unknown_reserved', stopReason: reply.stopReason });
+      syncDaemonResources(root, evo);
       return reply;
     },
     pythonSession: false, pythonKernel: false, workMemory: false, log, usage: (kind, message) => log('usage.jsonl', { kind, message }),
@@ -551,10 +572,12 @@ export default function pptDemo(pi: ExtensionAPI) {
       try { await evo.boundary(applySurface,persistLiveSelf); }
       catch (error) {
         evo.fact('request_paused', { error: String(error) }); persistLiveSelf();
-        writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason: String(error), resources: evo.resources() }));
+        writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason: String(error), resources: evo.resources(), stop_kind: 'budget_stop' }));
+        syncDaemonResources(root, evo);
         process.exit(0);
       } finally { activatingEvo = false; }
       persistLiveSelf();
+      syncDaemonResources(root, evo);
     };
     // Pi snapshots executable tools before context_with_system. Commit after the
     // whole response's tools finish, before its next-turn executable refresh.
@@ -615,7 +638,8 @@ export default function pptDemo(pi: ExtensionAPI) {
         return { messages };
       } catch (error) {
         evo.fact('request_paused', { error: String(error) }); persistLiveSelf();
-        writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason: String(error), resources: evo.resources() }));
+        writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason: String(error), resources: evo.resources(), stop_kind: 'budget_stop' }));
+        syncDaemonResources(root, evo);
         process.exit(0); // Pi event exceptions are fail-open: never send inconsistent tools/definitions.
       }
     });
@@ -649,7 +673,9 @@ export default function pptDemo(pi: ExtensionAPI) {
       const output = evo?.policy.request?.maxOutputTokens ?? experimentManifest.settings.request_output_tokens ?? model.maxTokens;
       if (output > model.maxTokens) {
         evo?.closeIncomplete('output envelope exceeds registered model'); persistLiveSelf();
-        writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason:'output envelope exceeds registered model', output })); process.exit(0);
+        writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason:'output envelope exceeds registered model', output, stop_kind: 'permit_reject' }));
+        syncDaemonResources(root, evo);
+        process.exit(0);
       }
       permit = providerPermit(payload, model, output, { input: Math.max(inputRate,cacheReadRate,cacheWriteRate), output: outputRate });
       payload = permit.payload; requestReserve = permit.usd; unknownUsageReserveTokens = permit.tokens;
@@ -657,7 +683,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + requestReserve > cap ||
       (experimentLimits && (requests >= experimentLimits.requests || tokensSpent + unknownUsageReserveTokens > experimentLimits.tokens || directoryBytes(root) >= experimentLimits.storage_bytes))) {
       evo?.closeIncomplete('authorized budget boundary'); persistLiveSelf();
-      writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, permit: permit ? { ...permit, payload: undefined } : undefined, reason: 'authorized budget boundary' }));
+      writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, permit: permit ? { ...permit, payload: undefined } : undefined, reason: 'authorized budget boundary', stop_kind: 'budget_stop' }));
+      syncDaemonResources(root, evo);
       process.exit(0); // Pi event exceptions are fail-open: stop before HTTP.
     }
     spent += requestReserve; reserved = requestReserve;
@@ -672,6 +699,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       permit: permit ? { ...permit, payload: undefined } : { usd: requestReserve, tokens: unknownUsageReserveTokens },
       payload: JSON.stringify(payload, (key, value) => key === 'url' && typeof value === 'string' && value.startsWith('data:') ? '(image)' : value) });
     if (freshBatch) persist();
+    syncDaemonResources(root, evo);
     return payload;
   });
   let settledRequest = lastUsage?.request ?? 0;
@@ -697,6 +725,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       reserved = 0; // Missing usage keeps its full request reserve charged.
       log('model-usage.jsonl', { request: requests, usage: known ? u : null, tokens_used: usedTokens, tokens_total: tokensSpent,
         conservative_usd: spent, usage_status: known ? 'reported' : 'unknown_reserved', stopReason: m.stopReason });
+      syncDaemonResources(root, evo);
     }
   });
 }

@@ -18,6 +18,7 @@ from .pi_kernel import PiKernel
 from .ppt_demo import prepare
 from .ppt_demo_html import render, _browser
 from .project import load_project_dotenv
+from .resource_daemon import refresh_resource_daemon
 
 PROJECT = Path(__file__).resolve().parents[2]
 MODEL = "qwen3.8-27b"
@@ -34,6 +35,11 @@ def file_hash(path):
 
 def write(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def persist_resource_daemon(root: Path):
+    """Refresh the shared daemon resource mount. Heartbeat stays off in this runner."""
+    return refresh_resource_daemon(root)
 
 
 def resource_usage(root: Path, reserve: dict):
@@ -191,6 +197,7 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False, d
                               "usd":(usage["prompt_tokens"]*20+usage["completion_tokens"]*80)/1e6 if "prompt_tokens" in usage and "completion_tokens" in usage else (((len(data)+4096)*20+16*80)/1e6 if sent else 0),
                               "seconds":result.get("elapsed_seconds",0),"usage_status":"reported" if usage else "unknown_reserved"}
     write(root / ("inference-preflight.json" if inference else "provider-preflight.json"), result)
+    persist_resource_daemon(root)
     return result
 
 
@@ -218,15 +225,16 @@ def run(root: Path, *, round_deadline: float | None = None):
     if round_deadline is not None and time.time() >= round_deadline:
         result={"stop":"round_wall_clock_before_preflight", "resources":{"requests":0,"tokens":0,"usd":0},
                 "units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
-        write(root / "summary.json",result); return result
+        write(root / "summary.json",result); persist_resource_daemon(root); return result
     if b["requests"] < 2 or b["tokens"] < 4352 or b["usd"] < (4336*20+16*80)/1e6:
         result={"stop":"insufficient_preflight_budget","units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
-        write(root / "summary.json",result); return result
+        write(root / "summary.json",result); persist_resource_daemon(root); return result
     probe = model_preflight(root,manifest,values,inference=True,deadline=round_deadline)
     if probe["status"] != "available":
         result = {"stop":"az_inference_unavailable", "preflight":probe, "provider":"az", "model":MODEL,
                   "resources":probe["accounting"],"units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result)
+        persist_resource_daemon(root)
         return result
     probe_tokens,probe_usd = probe["accounting"]["tokens"],probe["accounting"]["usd"]
     runtime_manifest = json.loads(json.dumps(manifest))
@@ -238,7 +246,7 @@ def run(root: Path, *, round_deadline: float | None = None):
         runtime_manifest["round_deadline_epoch"] = round_deadline
     if any(v <= 0 for v in caps.values()):
         result={"stop":"preflight_exhausted_budget","preflight":probe,"units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
-        write(root / "summary.json",result); return result
+        write(root / "summary.json",result); persist_resource_daemon(root); return result
     runtime_manifest["preflight_allocation"]={"original_contract_hash":contract["content_hash"],"requests":1,"tokens":probe_tokens,"usd":probe_usd,"ref":"inference-preflight.json"}
     runtime_manifest["contract"]["content_hash"]=digest({k:v for k,v in runtime_manifest["contract"].items() if k != "content_hash"})
     write(root / "runtime-manifest.json",runtime_manifest)
@@ -343,6 +351,7 @@ def run(root: Path, *, round_deadline: float | None = None):
         result["final_unit_probes"]=[{"id":u["id"],"literal_matches":[{"text":x,"found":x.lower() in visible.lower()} for x in u["required"]],"citation_found":u["citation"] in visible} for u in manifest["units"]]
         if manifest["arm"] == "A":
             result["units"]=[{"id":u["id"],"status":"whole_deck_delivered_unit_quality_unverified"} for u in manifest["units"]]
+    persist_resource_daemon(root)
     write(root / "summary.json",result)
     return result
 

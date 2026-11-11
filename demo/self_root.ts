@@ -21,8 +21,23 @@ export type SelfContract = {
   source: 'user_contract'; authority: string; decisions: string; content_hash: string; readonly_reason: string;
   boundaries: string[]; capabilities: string[]; writable: string[];
   budget: { requests: number; tokens: number; seconds: number; usd: number; storage_bytes: number };
-  acceptance: unknown; inherit_defaults: false; heartbeat: false;
+  acceptance: unknown; inherit_defaults: false; heartbeat: false | { enabled: true; every_settled_task_requests: 3 };
 };
+export type HeartbeatContract = SelfContract['heartbeat'];
+const PROBE_KINDS = new Set(['preflight','inference','inference_probe','inference-preflight','provider-preflight','renderer-preflight']);
+const CONSERVATIVE_RATES = { input: 20, output: 80 };
+const REGISTERED_RATES = { input: 5, output: 30 };
+const ESTIMATE_NEVER_INVOICE = 'estimate, never the invoice';
+export function isValidHeartbeat(heartbeat: unknown): heartbeat is HeartbeatContract {
+  if (heartbeat === false) return true;
+  return !!heartbeat && typeof heartbeat === 'object' && !Array.isArray(heartbeat)
+    && (heartbeat as any).enabled === true
+    && (heartbeat as any).every_settled_task_requests === 3
+    && Object.keys(heartbeat as any).length === 2;
+}
+export function heartbeatInterval(heartbeat: HeartbeatContract): number | undefined {
+  return heartbeat === false ? undefined : heartbeat.every_settled_task_requests;
+}
 type Row = { ref: string; kind: 'fact' | 'claim'; type: string; revision: number; request: number; value: any };
 type Window = { id: string; revision: number; baseline: string[]; metric_refs: string[]; scope: string;
   due: { request?: number; units?: number; boundary?: string }; prediction?: { metric: string; value: number; unit: string };
@@ -42,7 +57,7 @@ export function validateContract(c: SelfContract) {
   if (!c || c.source !== 'user_contract' || !c.authority || !c.decisions || !c.readonly_reason) throw Error('explicit user contract not loaded');
   const { content_hash, ...body } = c;
   if (content_hash !== hash(body)) throw Error('user contract hash mismatch');
-  if (hash([...c.boundaries].sort()) !== hash([...FLOOR].sort()) || c.heartbeat !== false || c.inherit_defaults !== false) throw Error('v1 contract floor/heartbeat/inheritance mismatch');
+  if (hash([...c.boundaries].sort()) !== hash([...FLOOR].sort()) || c.inherit_defaults !== false || !isValidHeartbeat(c.heartbeat)) throw Error('v1 contract floor/heartbeat/inheritance mismatch');
   for (const key of ['requests', 'tokens', 'seconds', 'usd', 'storage_bytes']) if (!Number.isFinite(c.budget[key]) || c.budget[key] <= 0) throw Error(`missing numeric budget ${key}`);
   if (!Array.isArray(c.capabilities) || !Array.isArray(c.writable) || !c.acceptance) throw Error('contract capabilities/acceptance required');
 }
@@ -102,6 +117,8 @@ export class SelfRoot extends LiveAgentSelf {
   private activeReset?: string;
   private resetInProgress?: string;
   private mutations: Promise<unknown> = Promise.resolve();
+  private heartbeatDue: number[] = [];
+  private daemonRecord?: any;
   private rootValidator?: Validator;
   private readonly outputLimit: number;
   constructor(contract: SelfContract, saved?: any, validator?: Validator, workspace?: { read(path: string): string }, outputLimit = Number.MAX_SAFE_INTEGER) {
@@ -124,8 +141,9 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','heartbeatDue'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
+      if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
       if (r.contract_hash !== contract.content_hash) throw Error('saved root contract differs');
       if (r.pending) this.fact('transaction_interrupted', { status: 'aborted', reason: 'uncommitted candidate on process restart' });
       if (r.resetInProgress) this.fact('active_reset_failed',{id:r.resetInProgress,error:'process restart during reset; completion unknown'});
@@ -149,6 +167,7 @@ export class SelfRoot extends LiveAgentSelf {
       windows: this.windows, queue: this.queue, currentMode: this.currentMode, review: this.review,
       consumed: [...this.consumed], started: this.started, units: this.units, tokens: this.tokens, usd: this.usd,
       paused: this.paused, previousMode: this.previousMode, providerCosts: [...this.providerCosts], policy: this.policy,
+      heartbeatDue: this.heartbeatDue, daemonRecord: this.daemonRecord ?? null,
       activeReset: this.activeReset ?? null, resetInProgress: this.resetInProgress ?? null, pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses, status: 'intent' } : null }) };
   }
   private add(kind: 'fact' | 'claim', type: string, value: unknown) {
@@ -323,6 +342,7 @@ export class SelfRoot extends LiveAgentSelf {
       }
     }
     this.chainFailed = false;
+    await this.emitDueHeartbeats();
     await this.event('request_boundary',`request:${this.request}`);
     if (!this.review && this.queue.length) this.enter(this.queue.shift());
     this.lastSurface = this.surface(); applySurface(this.lastSurface);
@@ -337,9 +357,12 @@ export class SelfRoot extends LiveAgentSelf {
     this.consumed.add(key);
     const event = this.fact(duplicate ? 'commitment_boundary' : 'event', { type, boundary, facts });
     const input = { event, revision: this.serial, state: super.snapshot(), ledger_offset: this.ledger.length, request: this.request, resources: this.resources() };
-    const routes = [...this.policy.routes].filter(r => !duplicate && r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
+    const routes = type === 'heartbeat' ? [] : [...this.policy.routes].filter(r => !duplicate && r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
     const triggers: any[] = [];
     if (!duplicate && this.contract.boundaries.includes(type)) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    if (!duplicate && type === 'heartbeat' && heartbeatInterval(this.contract.heartbeat)) {
+      triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    }
     for (const route of routes) {
       try {
         if (route.predicate && (await this.evaluate(this.policy.methods[route.predicate], input, { route: route.id })).value !== true) continue;
@@ -449,7 +472,89 @@ export class SelfRoot extends LiveAgentSelf {
     const row = this.claim('inheritance', { ...value, auto_inherit: false, root_id: this.root_id }); this.lineage.push(row); return row;
   }
   outcome(value: any, delivered = false) { const row = this.fact('task_outcome', value); if (delivered) this.units++; return row; }
-  resources() { return { request: this.request, tokens: this.tokens, usd_estimate: this.usd, elapsed_seconds: (Date.now() - this.started)/1000, storage_bytes: this.storageBytes, units: this.units, cap: this.contract.budget }; }
+  adoptDaemonResources(record: any) { this.daemonRecord = copy(record); }
+  private isProbeKind(kind?: string) { return PROBE_KINDS.has(kind ?? ''); }
+  settledTaskRequests() {
+    return this.ledger.filter(r => r.type === 'request_cost' && !this.isProbeKind(r.value?.kind)).length;
+  }
+  private usageParts(usage: any) {
+    if (!usage) return null;
+    const input = usage.input ?? usage.prompt_tokens, output = usage.output ?? usage.completion_tokens;
+    if (!Number.isFinite(input) || !Number.isFinite(output)) return null;
+    const details = usage.prompt_tokens_details ?? {}, outDetails = usage.output_tokens_details ?? {}, completionDetails = usage.completion_tokens_details ?? {};
+    return { input: Number(input), output: Number(output),
+      cache_read: Number(usage.cacheRead ?? usage.cache_read ?? details.cached_tokens ?? 0),
+      reasoning: Number(usage.reasoning ?? usage.reasoning_tokens ?? outDetails.reasoning_tokens ?? completionDetails.reasoning_tokens ?? 0) };
+  }
+  private usdFromParts(parts: { input: number; output: number; cache_read: number }, rates: { input: number; output: number }) {
+    return (parts.input * rates.input + parts.output * rates.output + parts.cache_read * rates.input) / 1e6;
+  }
+  resourceRecord() {
+    const costs = this.ledger.filter(r => r.type === 'request_cost');
+    const tokens = { input: 0, output: 0, cache_read: 0, reasoning: 0, unknown_reserved: 0, reasoning_included_in_output: true as const };
+    let conservative = 0, registered = 0, usageUnknown = 0;
+    for (const row of costs) {
+      const parts = this.usageParts(row.value?.usage);
+      if (!parts || row.value?.status === 'unknown_reserved') {
+        usageUnknown += 1;
+        tokens.unknown_reserved += Number(row.value?.tokens ?? 0);
+        const reserved = Number(row.value?.usd_estimate ?? 0);
+        conservative += reserved;
+        registered += reserved * ((REGISTERED_RATES.input + REGISTERED_RATES.output) / (CONSERVATIVE_RATES.input + CONSERVATIVE_RATES.output));
+      } else {
+        tokens.input += parts.input; tokens.output += parts.output; tokens.cache_read += parts.cache_read; tokens.reasoning += parts.reasoning;
+        conservative += this.usdFromParts(parts, CONSERVATIVE_RATES);
+        registered += this.usdFromParts(parts, REGISTERED_RATES);
+      }
+    }
+    const pending = Math.max(0, this.request - costs.length);
+    const reasons = (type: string) => this.ledger.filter(r => r.type === type).map(r => String(r.value?.reason ?? type));
+    const permit = reasons('permit_rejected');
+    const preflight = this.ledger.filter(r => r.type === 'preflight_completed' && r.value?.status && !['passed','available'].includes(r.value.status)).map(r => String(r.value.reason ?? r.value.status));
+    const budget = reasons('budget_stop');
+    return {
+      requests: { dispatched: this.request, settled: costs.length, pending_settlement: pending, usage_unknown: usageUnknown },
+      tokens, usd: {
+        conservative: { input_per_million: CONSERVATIVE_RATES.input, output_per_million: CONSERVATIVE_RATES.output, estimate: conservative, label: 'conservative estimate 20/80 USD per million; estimate, never the invoice', billing: ESTIMATE_NEVER_INVOICE },
+        registered: { input_per_million: REGISTERED_RATES.input, output_per_million: REGISTERED_RATES.output, estimate: registered, label: 'registered estimate 5/30 USD per million; estimate, never the invoice', billing: ESTIMATE_NEVER_INVOICE },
+      },
+      time: { started_at: this.started, elapsed_seconds: (Date.now() - this.started)/1000 },
+      storage: { bytes: this.storageBytes },
+      stops: {
+        permit_reject: { count: permit.length, reasons: permit },
+        preflight_failure: { count: preflight.length, reasons: preflight },
+        budget_stop: { count: budget.length, reasons: budget },
+      },
+      heartbeat_gaps: this.ledger.filter(r => r.type === 'heartbeat_gap').map(r => copy(r.value)),
+    };
+  }
+  resources() {
+    const record = this.daemonRecord ?? this.resourceRecord();
+    return { request: this.request, tokens: this.tokens, usd_estimate: this.usd, elapsed_seconds: (Date.now() - this.started)/1000, storage_bytes: this.storageBytes, units: this.units, cap: this.contract.budget, record };
+  }
+  private queueHeartbeatIfDue() {
+    const interval = heartbeatInterval(this.contract.heartbeat);
+    if (!interval) return;
+    const settled = this.settledTaskRequests();
+    if (settled > 0 && settled % interval === 0 && !this.heartbeatDue.includes(settled)) this.heartbeatDue.push(settled);
+  }
+  private async emitDueHeartbeats() {
+    const interval = heartbeatInterval(this.contract.heartbeat);
+    if (!interval) { this.heartbeatDue = []; return; }
+    const due = [...this.heartbeatDue];
+    this.heartbeatDue = [];
+    for (const settled of due) {
+      const boundary = `heartbeat:settled:${settled}`;
+      if (this.request >= this.contract.budget.requests) {
+        if (!this.consumed.has(`heartbeat:${boundary}`)) {
+          this.consumed.add(`heartbeat:${boundary}`);
+          this.fact('heartbeat_gap', { settled_task_requests: settled, reason: 'hard cap; heartbeat not dispatched', source: 'user_contract' });
+        }
+        continue;
+      }
+      await this.event('heartbeat', boundary, { settled_task_requests: settled, source: 'user_contract' });
+    }
+  }
   guard(storageBytes?: number) {
     if (storageBytes !== undefined) this.storageBytes = storageBytes;
     const b = this.contract.budget;
@@ -457,9 +562,9 @@ export class SelfRoot extends LiveAgentSelf {
       this.closeIncomplete('hard budget'); this.fact('budget_stop', this.resources()); throw Error('authorized budget exhausted');
     }
   }
-  pin() {
+  pin(kind = 'task') {
     this.guard(); this.request++;
-    this.requestPin = { request: this.request, revision: this.serial, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, ledger_offset: this.ledger.length, step: this.step };
+    this.requestPin = { request: this.request, revision: this.serial, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, ledger_offset: this.ledger.length, step: this.step, kind };
     this.executionGrant = [...this.lastSurface];
     return copy(this.requestPin);
   }
@@ -468,7 +573,9 @@ export class SelfRoot extends LiveAgentSelf {
     this.providerCosts.add(this.request);
     const tokens = known ? ['input','output','cacheRead','cacheWrite'].reduce((n,k) => n + Number(usage[k] ?? 0), 0) : unknownTokens;
     this.tokens += tokens; this.usd += usd;
-    return this.fact('request_cost', { pin: this.requestPin, usage: known ? usage : null, tokens, duration_ms, usd_estimate: usd, cost_source: 'provider usage + manifest rates; actual invoice unknown', status: known ? 'reported' : 'unknown_reserved' });
+    const row = this.fact('request_cost', { pin: this.requestPin, kind: this.requestPin?.kind ?? 'task', usage: known ? usage : null, tokens, duration_ms, usd_estimate: usd, cost_source: 'provider usage + manifest rates; actual invoice unknown', status: known ? 'reported' : 'unknown_reserved' });
+    this.queueHeartbeatIfDue();
+    return row;
   }
   memory() {
     let memories = this.active().filter(c => c.kind === 'memory' && (this.policy.memory.names === '*' || this.policy.memory.names.includes(c.name)));

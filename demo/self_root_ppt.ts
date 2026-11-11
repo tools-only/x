@@ -12,7 +12,14 @@ export type SelfRootManifest = {
 };
 export function directoryBytes(path: string): number {
   if (!existsSync(path)) return 0;
-  return readdirSync(path, { withFileTypes: true }).reduce((sum,e) => sum + (e.isSymbolicLink() ? 0 : e.isDirectory() ? directoryBytes(join(path,e.name)) : statSync(join(path,e.name)).size),0);
+  try {
+    return readdirSync(path, { withFileTypes: true }).reduce((sum,e) => {
+      if (e.isSymbolicLink() || e.name === 'browser-profile' || e.name.endsWith('.tmp')) return sum;
+      const child = join(path, e.name);
+      try { return sum + (e.isDirectory() ? directoryBytes(child) : statSync(child).size); }
+      catch { return sum; }
+    }, 0);
+  } catch { return 0; }
 }
 const fileHash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
 export function coverageFacts(source: string, definitions: SelfRootManifest['units']) {
