@@ -341,18 +341,30 @@ def run_round(root: Path, source: Path, registration: Path, plan: dict, authorit
     if root.exists():
         raise ValueError("round requires a fresh directory")
     shared = plan.get("shared_remaining",False)
-    allocations=[plan["calibration_caps"],plan["b_caps"],plan["b_caps"]]
+    phases = plan.get("phases")
+    if phases is None:
+        phases = [{"name":name,"arm":arm,"caps":caps} for name,arm,caps in zip(
+            ("calibration-A","sample-B1","sample-B2"),("A","B","B"),
+            (plan["calibration_caps"],plan["b_caps"],plan["b_caps"]))]
+    elif [p["name"] for p in phases] != ["sample-B1","sample-B2","calibration-A"] or [p["arm"] for p in phases] != ["B","B","A"] or not shared:
+        raise ValueError("explicit verification schedule requires shared B1 -> B2 -> A")
+    allocations=[p["caps"] for p in phases]
     for key in ("requests","tokens","seconds","usd","storage_bytes"):
         if any(c.get(key,0) <= 0 for c in allocations) or (max(c[key] for c in allocations) if shared else sum(c[key] for c in allocations)) > plan["total_caps"][key]:
             raise ValueError(f"round allocation exceeds authorized total {key}")
-    if allocations[0]["requests"] > 60 or allocations[0]["seconds"] > 1800:
+    if "phases" not in plan and (allocations[0]["requests"] > 60 or allocations[0]["seconds"] > 1800):
         raise ValueError("A calibration exceeds FINAL 30min/60-request starting ceiling")
+    if "phases" in plan:
+        ceilings = {k:math.floor(v*.45) if k in ("requests","tokens","storage_bytes") else v*.45 for k,v in plan["total_caps"].items()}
+        if any(c[k] > ceilings[k] for c in allocations[:2] for k in ceilings):
+            raise ValueError("verification B arm exceeds 45% ceiling")
     root.mkdir(parents=True)
     write(root / "round-plan.json",{**plan,"authority":authority,"stage2":"requires a separately registered comparison; not launched by this runner"})
     results=[]
     started = time.monotonic()
     round_deadline = time.time()+plan["total_caps"]["seconds"]
-    for name,arm,caps in zip(("calibration-A","sample-B1","sample-B2"),("A","B","B"),allocations):
+    for phase in phases:
+        name,arm,caps = phase["name"],phase["arm"],phase["caps"]
         if shared:
             spent = {k:sum(r.get("resources",{}).get(k,0) for r in results) for k in ("requests","tokens","usd")}
             spent["seconds"] = time.monotonic()-started
@@ -360,14 +372,15 @@ def run_round(root: Path, source: Path, registration: Path, plan: dict, authorit
             caps = {k:min(caps[k],plan["total_caps"][k]-spent[k]) for k in caps}
             if any(v <= 0 for v in caps.values()):
                 write(root / "round-stop.json",{"reason":"aggregate cap exhausted", "spent":spent}); break
+        phase_deadline = min(round_deadline,time.time()+caps["seconds"])
         freeze(root/name,source,registration,caps,authority,arm)
-        result=run(root/name,round_deadline=round_deadline); results.append({"phase":name,**result})
+        result=run(root/name,round_deadline=phase_deadline); results.append({"phase":name,**result})
         write(root / "round-results.json",results)
         if not shared and result["stop"] in ("az_unavailable","az_inference_unavailable","provider_error","runtime_or_provider_error"):
             break
         if "resources" not in result:
             break
-        if arm == "A":
+        if arm == "A" and "phases" not in plan:
             ratios={k:result["resources"][k]/plan["b_caps"][k] for k in ("requests","tokens","seconds","usd")}
             write(root / "calibration.json",{"ratios":ratios,"target":[0.7,0.9],"baseline_complete":result["stop"]=="delivered"})
             if not shared and (result["stop"] != "delivered" or not 0.7 <= max(ratios.values()) <= 0.9):

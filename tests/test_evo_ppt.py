@@ -71,6 +71,45 @@ def test_shared_round_uses_actual_remaining_without_starving_independent_arms(tm
     assert allocated[2][1]['tokens']==599800
 
 
+def test_verification_b_first_ceilings_and_a_actual_remainder(tmp_path,monkeypatch):
+    total={'requests':600,'tokens':600000,'seconds':14400,'usd':15,'storage_bytes':2147483648}
+    b={'requests':270,'tokens':270000,'seconds':6480,'usd':6.75,'storage_bytes':966367641}
+    phases=[{'name':name,'arm':arm,'caps':caps} for name,arm,caps in
+            [('sample-B1','B',b),('sample-B2','B',b),('calibration-A','A',total)]]
+    plan={'total_caps':total,'shared_remaining':True,'phases':phases}
+    allocated=[]
+    clock=[1000.0]
+    monkeypatch.setattr(evo_ppt.time,'time',lambda:clock[0])
+    monkeypatch.setattr(evo_ppt.time,'monotonic',lambda:clock[0])
+    storage_before_a=[]
+    def freeze(root,_s,_m,c,_auth,arm):
+        if arm=='A':
+            storage_before_a.append(sum(p.stat().st_size for p in root.parent.rglob('*') if p.is_file()))
+        root.mkdir()
+        (root/'renderer.txt').write_bytes(b'x'*10)
+        allocated.append((root.name,arm,c.copy()))
+        clock[0]+=3
+    deadlines=[]
+    def run(_root,**kwargs):
+        deadlines.append(kwargs['round_deadline'])
+        clock[0]+=100
+        return {'stop':'budget_or_integrity_stop','resources':{'requests':10,'tokens':100000,'usd':3}}
+    monkeypatch.setattr(evo_ppt,'freeze',freeze)
+    monkeypatch.setattr(evo_ppt,'run',run)
+    results=evo_ppt.run_round(tmp_path/'round',Path('unused'),Path('unused'),plan,'test')
+    assert [r['phase'] for r in results]==['sample-B1','sample-B2','calibration-A']
+    assert allocated[0][2]==b and allocated[1][2]==b
+    assert allocated[2][2]=={**total,'requests':580,'tokens':400000,'usd':9,'seconds':14194,
+                            'storage_bytes':total['storage_bytes']-storage_before_a[0]}
+    assert deadlines==[7480,7583,15400]  # Renderer time consumes the arm and total clocks.
+    for key in total:
+        invalid=[{**p,'caps':dict(p['caps'])} for p in phases]
+        invalid[0]['caps'][key]=total[key]
+        with pytest.raises(ValueError,match='45%'):
+            evo_ppt.run_round(tmp_path/f'invalid-{key}',Path('unused'),Path('unused'),{**plan,'phases':invalid},'test')
+        assert not (tmp_path/f'invalid-{key}').exists()
+
+
 @pytest.mark.parametrize('terminal_review',[False,True])
 def test_length_or_terminal_review_resumes_same_history_without_reopening_window(tmp_path,monkeypatch,terminal_review):
     contract={'budget':{'requests':10,'tokens':100000,'seconds':100,'usd':10,'storage_bytes':1000000}}
