@@ -154,3 +154,64 @@ def test_round_deadline_stops_before_any_charged_preflight(tmp_path,monkeypatch)
     result=evo_ppt.run(tmp_path,round_deadline=0)
     assert result['stop']=='round_wall_clock_before_preflight'
     assert result['resources']=={'requests':0,'tokens':0,'usd':0}
+
+
+@pytest.mark.parametrize('token_cap',[None,600000])
+def test_explicit_no_token_cap_uses_nonbinding_runtime_value_and_keeps_metering(tmp_path,monkeypatch,token_cap):
+    monkeypatch.setattr(evo_ppt,'PROJECT',tmp_path)
+    monkeypatch.setattr(evo_ppt,'local_settings',lambda _p:{'request_reserve':{'tokens':240536}})
+    def prepare(root,_source):
+        (root/'workspace/data').mkdir(parents=True)
+        for name in ('AGENTS.md','data/material.txt','data/instructions.md'):
+            (root/'workspace'/name).write_text('fixture',encoding='utf-8')
+    monkeypatch.setattr(evo_ppt,'prepare',prepare)
+    monkeypatch.setattr(evo_ppt,'content_units',lambda _s:[])
+    monkeypatch.setattr(evo_ppt,'file_hash',lambda _p:'fixture-hash')
+    monkeypatch.setattr(evo_ppt.subprocess,'check_output',lambda *_a,**_kw:'fixture-commit')
+    monkeypatch.setattr(evo_ppt,'renderer_preflight',lambda _r:{'status':'passed'})
+    caps={'requests':600,'tokens':token_cap,'seconds':14400,'usd':30,'storage_bytes':2147483648}
+    manifest=evo_ppt.freeze(tmp_path/'run',Path('source'),Path('registration'),caps,'explicit fixture authorization')
+    assert caps['tokens'] is token_cap  # Caller authorization is not mutated.
+    if token_cap is None:
+        runtime_cap=manifest['contract']['budget']['tokens']
+        assert runtime_cap==2**53-1
+        assert manifest['token_budget']['authorized_cap'] is None
+        # Even 600 maximum-context/output permits cannot make tokens bind.
+        assert 600*240536 < runtime_cap
+        (tmp_path/'run/harness').mkdir()
+        (tmp_path/'run/harness/model-usage.jsonl').write_text(json.dumps({'request':1,'tokens_used':800001,'conservative_usd':1})+'\n',encoding='utf-8')
+        (tmp_path/'run/harness/provider-requests.jsonl').write_text(json.dumps({'request':1})+'\n',encoding='utf-8')
+        assert evo_ppt.resource_usage(tmp_path/'run',{})['tokens']==800001
+    else:
+        assert manifest['contract']['budget']['tokens']==token_cap
+        assert 'token_budget' not in manifest
+
+
+def test_verify2_only_b1_full_independent_budget_environment_failure_no_retry(tmp_path,monkeypatch):
+    import runpy
+    launch=runpy.run_path(str(evo_ppt.PROJECT/'docs/reports/evo-v3-verify2/run_b1.py'))
+    previous=json.loads((evo_ppt.PROJECT/'docs/reports/evo-v3-verify/sample-B1/manifest.json').read_text(encoding='utf-8'))
+    clock=[1000.0]
+    calls=[]
+    monkeypatch.setattr(evo_ppt.time,'time',lambda:clock[0])
+    def freeze(root,_source,_registration,caps,_authority,arm):
+        calls.append(('freeze',root.name,arm,caps.copy()))
+        root.mkdir()
+        clock[0]+=3  # Local renderer consumes this B1's clock.
+        return previous
+    def run(root,*,round_deadline):
+        calls.append(('run',root.name,round_deadline,clock[0]))
+        return {'stop':'az_inference_unavailable','resources':{'requests':1,'tokens':4290,'usd':.08676}}
+    monkeypatch.setattr(evo_ppt,'freeze',freeze)
+    monkeypatch.setattr(evo_ppt,'run',run)
+    root=tmp_path/'one'
+    result=launch['run_b1'](root,Path('source'),Path('registration'))
+    assert result['stop']=='az_inference_unavailable'
+    assert calls==[('freeze','sample-B1','B',{'requests':600,'tokens':None,'seconds':14400,'usd':30,'storage_bytes':2147483648}),
+                   ('run','sample-B1',15400,1003)]
+    with pytest.raises(ValueError,match='no retry'):
+        launch['run_b1'](root,Path('source'),Path('registration'))
+    assert len(calls)==2
+    accounting=json.loads((root/'final-accounting.json').read_text(encoding='utf-8'))
+    assert accounting['caps']['tokens'] is None and accounting['resources']['tokens']==4290
+    assert accounting['phases']==['sample-B1'] and accounting['resources']['seconds']==3

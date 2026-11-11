@@ -105,6 +105,11 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     root = root.resolve()
     if not root.is_relative_to(PROJECT):
         raise ValueError("experiment writes must remain in this worktree")
+    # The frozen runtime requires finite numbers. An explicit null means no
+    # token cap; its compatibility value cannot bind within the request cap.
+    unlimited_tokens = "tokens" in caps and caps["tokens"] is None
+    if unlimited_tokens:
+        caps = {**caps, "tokens": 2**53 - 1}
     for key in ("requests", "tokens", "seconds", "usd", "storage_bytes"):
         if isinstance(caps.get(key),bool) or not isinstance(caps.get(key), (int, float)) or not math.isfinite(caps[key]) or caps[key] <= 0:
             raise ValueError(f"authorized numeric cap missing: {key}")
@@ -113,6 +118,8 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     if not authority.strip():
         raise ValueError("numeric resource authorization provenance required")
     settings = local_settings(registration)
+    if unlimited_tokens and caps["requests"] * settings["request_reserve"]["tokens"] >= caps["tokens"]:
+        raise ValueError("token-free compatibility value must exceed all authorized request permits")
     prepare(root, source)
     if arm == "B":
         (root / "workspace/AGENTS.md").unlink()
@@ -137,6 +144,10 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
                     "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
                 "comparison": "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence",
                 "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established"}
+    if unlimited_tokens:
+        manifest["token_budget"] = {"authorized_cap": None, "runtime_nonbinding_value": caps["tokens"],
+            "maximum_permit_tokens_across_request_cap": caps["requests"] * settings["request_reserve"]["tokens"],
+            "metering": "unchanged; token dimension cannot deny any authorized request permit"}
     manifest["renderer_preflight"] = renderer_preflight(root)
     write(root / "manifest.json", manifest)
     write(root / "units.json", units)
