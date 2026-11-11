@@ -1,0 +1,23 @@
+{
+  "started_epoch": 1794367573.8105955,
+  "ended_epoch": 1794367579.8027604,
+  "caps": {
+    "requests": 600,
+    "tokens": null,
+    "seconds": 14400,
+    "usd": 30,
+    "storage_bytes": 2147483648
+  },
+  "resources": {
+    "requests": 1,
+    "tokens": 4290,
+    "usd": 0.08676,
+    "seconds": 5.992164850234985,
+    "usage_status": "unknown_reserved",
+    "storage_bytes": 7301292
+  },
+  "phases": [
+    "sample-B1"
+  ],
+  "billing": "conservative 20/80 USD/M; actual invoice unknown"
+}

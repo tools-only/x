@@ -1,0 +1,68 @@
+{
+  "started_epoch": 1794367573.8105955,
+  "ended_epoch": 1794367873.2622485,
+  "caps": {
+    "requests": 600,
+    "tokens": null,
+    "seconds": 14400,
+    "usd": 30,
+    "storage_bytes": 2147483648
+  },
+  "resources": {
+    "requests": 1,
+    "tokens": 4290,
+    "usd": 0.08676,
+    "seconds": 299.4516530036926,
+    "usage_status": "unknown_reserved",
+    "storage_bytes": 7444444
+  },
+  "phases": [
+    "sample-B1"
+  ],
+  "billing": "conservative 20/80 USD/M; actual invoice unknown",
+  "experiment_end_epoch": 1794367579.8027604,
+  "execution_seconds": 5.992164850234985,
+  "unknown_liabilities": [
+    {
+      "arm": "sample-B1",
+      "kind": "inference preflight remote disconnect",
+      "requests": 1,
+      "tokens_reserved_not_measured": 4290,
+      "conservative_usd_reserved": 0.08676,
+      "registered_price_usd_reserved": 0.02185,
+      "reported_usage": null,
+      "invoice": "unknown"
+    }
+  ],
+  "registered_price_usd": {
+    "known_reported_requests": 0,
+    "unknown_reserved": 0.02185,
+    "rates_per_million": {
+      "input": 5,
+      "output": 30,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    },
+    "invoice": "unknown"
+  },
+  "stop": "environment_failure_before_task_agent",
+  "task_requests": 0,
+  "posthoc_task_render_or_checker": false,
+  "storage_scope": {
+    "directories": [
+      "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-verify2-20261111",
+      "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\docs\\reports\\evo-v3-verify2"
+    ],
+    "additional_files": [
+      "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\docs\\reports\\ROUND-v3-verify2.md",
+      "C:\\Users\\qi\\tmp\\r04\\evo-design\\ROUND-v3-verify2.md"
+    ],
+    "measurement": "logical file bytes, every copy counted including both final-accounting files; Git objects and caller Codex logs excluded"
+  },
+  "time_scope": "launch through evidence export and Chinese report seal; execution end separately recorded; later Git bookkeeping is development work",
+  "report_sha256": "2e3604a9c432d286ce9e01cd0edac0c0e94d13a4783a9a85efc3d57a545fcd72",
+  "external_report_sha256": "8536fe3a050c04bb033a5e48b49a1f5de1580ec32a4ac98cc2cd2aeb1b6782b5",
+  "per_arm_final_original_storage_bytes": {
+    "sample-B1": 7299334
+  }
+}

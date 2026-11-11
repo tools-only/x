@@ -1,0 +1,112 @@
+[
+  {
+    "id": "unit-01",
+    "title": "1 Q3-21 Financial Highlights1 Q3-21 Business Segment Highlights1,2(A) Consumer Banking Global Wealth",
+    "source_page": 1,
+    "required": [
+      "$7.7",
+      "$0.85",
+      "$3.0"
+    ],
+    "citation": "Source page 1"
+  },
+  {
+    "id": "unit-02",
+    "title": "2 Bank of America Financial Highlights Three Months Ended ($ in billions, except per share data) 9/3",
+    "source_page": 2,
+    "required": [
+      "$22.8",
+      "$21.5",
+      "$20.3"
+    ],
+    "citation": "Source page 2"
+  },
+  {
+    "id": "unit-03",
+    "title": "3 Consumer Banking1,2 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30",
+    "source_page": 3,
+    "required": [
+      "$8,838",
+      "$8,186",
+      "$8,039"
+    ],
+    "citation": "Source page 3"
+  },
+  {
+    "id": "unit-04",
+    "title": "4 Global Wealth and Investment Management1,2 Financial Results1 Three months ended ($ in millions) 9",
+    "source_page": 4,
+    "required": [
+      "$5,310",
+      "$5,065",
+      "$4,546"
+    ],
+    "citation": "Source page 4"
+  },
+  {
+    "id": "unit-05",
+    "title": "5 Global Banking1,2 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30/2",
+    "source_page": 5,
+    "required": [
+      "$5,244",
+      "$5,090",
+      "$4,517"
+    ],
+    "citation": "Source page 5"
+  },
+  {
+    "id": "unit-06",
+    "title": "6 Global Markets1,2,6 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30",
+    "source_page": 6,
+    "required": [
+      "$4,519",
+      "$4,720",
+      "$4,283"
+    ],
+    "citation": "Source page 6"
+  },
+  {
+    "id": "unit-07",
+    "title": "7 All Other1 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30/2020 Tot",
+    "source_page": 7,
+    "required": [
+      "$1,861",
+      "$298",
+      "$54"
+    ],
+    "citation": "Source page 7"
+  },
+  {
+    "id": "unit-08",
+    "title": "8 Credit Quality Highlights1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30/2020 Provis",
+    "source_page": 8,
+    "required": [
+      "$624",
+      "$1,621",
+      "$1,389"
+    ],
+    "citation": "Source page 8"
+  },
+  {
+    "id": "unit-09",
+    "title": "9 Balance Sheet, Liquidity and Capital Highlights ($ in billions except per share data, end of perio",
+    "source_page": 9,
+    "required": [
+      "$3,085.4",
+      "$3,029.9",
+      "$2,738.5"
+    ],
+    "citation": "Source page 9"
+  },
+  {
+    "id": "unit-10",
+    "title": "10 A We present certain key financial and nonfinancial performance indicators (KPIs) that management",
+    "source_page": 10,
+    "required": [
+      "$11.2",
+      "$10.3",
+      "$10.2"
+    ],
+    "citation": "Source page 10"
+  }
+]

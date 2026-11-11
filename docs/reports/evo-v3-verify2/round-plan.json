@@ -1,0 +1,13 @@
+{
+  "phases": [
+    "sample-B1"
+  ],
+  "independent_caps": {
+    "requests": 600,
+    "tokens": null,
+    "seconds": 14400,
+    "usd": 30,
+    "storage_bytes": 2147483648
+  },
+  "authority": "user_contract: George t820u continue validating, run B first; t822u USD30; t823u remove token cap; t824u USD30 EACH; t827u run B1 only. ONE B1, independent 600 requests/14400 seconds/USD30/2147483648 bytes, no token cap; all preflights/failures/pending counted; frozen v3 permits; no retry, no cap increase, no push"
+}

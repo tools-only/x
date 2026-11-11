@@ -1,0 +1,8 @@
+{
+  "command": "PYTHONPATH=src python -X utf8 -m pytest tests/test_evo_ppt.py -q",
+  "exit_code": 0,
+  "result": "16 passed in 0.24s",
+  "environment": "Windows / Python 3.12.7; offline unit tests, no provider calls",
+  "initial_fixture_failure": "One new test used indented JSON in a JSONL fixture; corrected test serialization only before the passing run and paid launch.",
+  "scope": "Experiment runner boundaries; not full-repository or real-provider acceptance"
+}

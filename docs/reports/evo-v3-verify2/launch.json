@@ -1,0 +1,18 @@
+{
+  "started_epoch": 1794367573.7819898,
+  "engineering_commit": "f86602c2d7ff4dd47ee6b7e4f20563cedc1ce615",
+  "engineering_tag": "v3-verify2",
+  "v3_commit": "b5a3879c962a102adbe07749aaa10a4ec4eddec0",
+  "preregistration_sha256": "50cfd8e7a20cbe06ff378723a54ab4bc98e0e1f91754c94e3a1558158b3d7f03",
+  "authority": "user_contract: George t820u continue validating, run B first; t822u USD30; t823u remove token cap; t824u USD30 EACH; t827u run B1 only. ONE B1, independent 600 requests/14400 seconds/USD30/2147483648 bytes, no token cap; all preflights/failures/pending counted; frozen v3 permits; no retry, no cap increase, no push",
+  "caps": {
+    "requests": 600,
+    "tokens": null,
+    "seconds": 14400,
+    "usd": 30,
+    "storage_bytes": 2147483648
+  },
+  "phases": [
+    "sample-B1"
+  ]
+}

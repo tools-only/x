@@ -1,0 +1,1524 @@
+{
+  "classification": "environment_failure_before_task_agent",
+  "raw_root": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-verify2-20261111",
+  "engineering_commit": "f86602c2d7ff4dd47ee6b7e4f20563cedc1ce615",
+  "tag_commit": "f86602c2d7ff4dd47ee6b7e4f20563cedc1ce615",
+  "input_checks_against_v3_verify_B1": {
+    "sources": true,
+    "units": true,
+    "checker": true,
+    "settings": true
+  },
+  "non_runner_seed_checks": {
+    "demo/self_root.ts": {
+      "before": "402b94af6a01717e7fbd3a20a8f42495eae91a53c0a38e39a54dbf030e5897ff",
+      "at_freeze": "402b94af6a01717e7fbd3a20a8f42495eae91a53c0a38e39a54dbf030e5897ff",
+      "after": "402b94af6a01717e7fbd3a20a8f42495eae91a53c0a38e39a54dbf030e5897ff",
+      "unchanged": true
+    },
+    "demo/self_root_ppt.ts": {
+      "before": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a",
+      "at_freeze": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a",
+      "after": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a",
+      "unchanged": true
+    },
+    "demo/provider_permit.ts": {
+      "before": "6b7cc14013b332b7453c833cf64edfc4b7a034dc5c73141a98ce4691709da553",
+      "at_freeze": "6b7cc14013b332b7453c833cf64edfc4b7a034dc5c73141a98ce4691709da553",
+      "after": "6b7cc14013b332b7453c833cf64edfc4b7a034dc5c73141a98ce4691709da553",
+      "unchanged": true
+    },
+    "demo/ppt_demo_extension.ts": {
+      "before": "7b9e3712deff90eefd67956a4cf4d6a0ca36ad373f92d56c9221e8cf57c3f255",
+      "at_freeze": "7b9e3712deff90eefd67956a4cf4d6a0ca36ad373f92d56c9221e8cf57c3f255",
+      "after": "7b9e3712deff90eefd67956a4cf4d6a0ca36ad373f92d56c9221e8cf57c3f255",
+      "unchanged": true
+    },
+    "demo/live_orchestration_core.ts": {
+      "before": "d27dbcbcded969fdf2df6c159935532e3d48f76089bf3fc4263b3419e13b7a39",
+      "at_freeze": "d27dbcbcded969fdf2df6c159935532e3d48f76089bf3fc4263b3419e13b7a39",
+      "after": "d27dbcbcded969fdf2df6c159935532e3d48f76089bf3fc4263b3419e13b7a39",
+      "unchanged": true
+    },
+    "demo/prompts/ppt_demo_system.md": {
+      "before": "dec0d90e3c6fee0e5be7c51450fb5c96f5966c226df2fa8c75aecaa8eff6e64b",
+      "at_freeze": "dec0d90e3c6fee0e5be7c51450fb5c96f5966c226df2fa8c75aecaa8eff6e64b",
+      "after": "dec0d90e3c6fee0e5be7c51450fb5c96f5966c226df2fa8c75aecaa8eff6e64b",
+      "unchanged": true
+    },
+    "demo/prompts/self_root_system.md": {
+      "before": "7827f1657b521d95a61c05dd6527862d1e13b4a3ba5e1b84c01a8bccfb39afb2",
+      "at_freeze": "7827f1657b521d95a61c05dd6527862d1e13b4a3ba5e1b84c01a8bccfb39afb2",
+      "after": "7827f1657b521d95a61c05dd6527862d1e13b4a3ba5e1b84c01a8bccfb39afb2",
+      "unchanged": true
+    },
+    "demo/arc_thin_native_runtime.ts": {
+      "before": "e7ee64f683a062a09e135a8d7225440e1d63b2504d866837651887d6701918b2",
+      "at_freeze": "e7ee64f683a062a09e135a8d7225440e1d63b2504d866837651887d6701918b2",
+      "after": "e7ee64f683a062a09e135a8d7225440e1d63b2504d866837651887d6701918b2",
+      "unchanged": true
+    },
+    "demo/arc_thin_workspace.ts": {
+      "before": "8a8494d4c4a8c2b119be0db7969230f3eca63b06c5bc9873e960f08f33e06362",
+      "at_freeze": "8a8494d4c4a8c2b119be0db7969230f3eca63b06c5bc9873e960f08f33e06362",
+      "after": "8a8494d4c4a8c2b119be0db7969230f3eca63b06c5bc9873e960f08f33e06362",
+      "unchanged": true
+    },
+    "src/autoresearch_pi/ppt_demo_html.py": {
+      "before": "4d1f13e20dd93e87f1aec8dfdff299d1733a64c43f38a3ce52dbb92a3f74c430",
+      "at_freeze": "4d1f13e20dd93e87f1aec8dfdff299d1733a64c43f38a3ce52dbb92a3f74c430",
+      "after": "4d1f13e20dd93e87f1aec8dfdff299d1733a64c43f38a3ce52dbb92a3f74c430",
+      "unchanged": true
+    }
+  },
+  "absence_checks": {
+    "session.jsonl": true,
+    "pi-events.jsonl": true,
+    "runtime-manifest.json": true,
+    ".pi-agent": true,
+    ".harness/live-self.json": true,
+    "harness/provider-requests.jsonl": true,
+    "harness/model-usage.jsonl": true,
+    "budget-stop.json": true,
+    "delivery/presentation.html": true
+  },
+  "task_artifact_files": [],
+  "token_budget": {
+    "authorized_cap": null,
+    "runtime_nonbinding_value": 9007199254740991,
+    "maximum_permit_tokens_across_request_cap": 144321600,
+    "metering": "unchanged; token dimension cannot deny any authorized request permit"
+  },
+  "request_attempts": 1,
+  "task_requests": 0,
+  "reviews_entered": [],
+  "reviews_closed": [],
+  "agent_runtime_revisions": [],
+  "verification_windows": [],
+  "adopt": [],
+  "restore": [],
+  "render_look_checker_delivery_in_run": {
+    "render": 0,
+    "look": 0,
+    "checker": 0,
+    "delivery": 0
+  },
+  "units": [
+    {
+      "id": "unit-01",
+      "source_page": 1,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-02",
+      "source_page": 2,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-03",
+      "source_page": 3,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-04",
+      "source_page": 4,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-05",
+      "source_page": 5,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-06",
+      "source_page": 6,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-07",
+      "source_page": 7,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-08",
+      "source_page": 8,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-09",
+      "source_page": 9,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    },
+    {
+      "id": "unit-10",
+      "source_page": 10,
+      "status": "not_run_environment",
+      "literal_quality": null,
+      "normalized_quality": null,
+      "delivered": false
+    }
+  ],
+  "pages_rendered_in_task": null,
+  "units_delivered": 0,
+  "pages_delivered": 0,
+  "cost": {
+    "reported_tokens": null,
+    "input": null,
+    "output": null,
+    "reasoning": null,
+    "cacheRead": null,
+    "cacheWrite": null,
+    "unresolved_request_attempts": 1,
+    "unknown_reserved_tokens": 4290,
+    "unknown_reserved_usd_20_80": 0.08676,
+    "unknown_reserved_usd_registered_5_30": 0.02185,
+    "invoice": "unknown"
+  },
+  "run_seconds_including_freeze_and_preflights": 5.992164850234985,
+  "started_local": "2026-11-11T11:26:13.810596+08:00",
+  "ended_local": "2026-11-11T11:26:19.802760+08:00",
+  "raw_file_index": [
+    {
+      "path": "round-plan.json",
+      "bytes": 522,
+      "sha256": "845e207d0539f322210174ff32adc48454ebb26ca86277cbda249c32288d91d4"
+    },
+    {
+      "path": "round-results.json",
+      "bytes": 1436,
+      "sha256": "36ac2f5f00c7f2374b6715fbe4e8daf63ab6fd90a502efd233ada65f63c092ca"
+    },
+    {
+      "path": "sample-B1\\inference-preflight.json",
+      "bytes": 300,
+      "sha256": "b356e461deb3318ccb11a6ce54cbb3a37c0d64218c644ee4549c7721608c1b7d"
+    },
+    {
+      "path": "sample-B1\\manifest.json",
+      "bytes": 9862,
+      "sha256": "f6dbb8dd97b6bc9b1005657e7228056e1fd0839e6dadb0dd0ec7374523bc56e0"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight.json",
+      "bytes": 981,
+      "sha256": "eb62bc4347a62d706841f8cd23911408f70893a3e31eee6dca3be2f0edce3422"
+    },
+    {
+      "path": "sample-B1\\summary.json",
+      "bytes": 1271,
+      "sha256": "22b15d99048f0cadc27fe8b6614ac3a6f6b5c9240281e691474fd854d275e0fa"
+    },
+    {
+      "path": "sample-B1\\task-provenance.json",
+      "bytes": 469,
+      "sha256": "a6f0eeae4d4544be87f50694b5da2f45dc7ba88be70055fb4804e32dd41c1b47"
+    },
+    {
+      "path": "sample-B1\\units.json",
+      "bytes": 2833,
+      "sha256": "e4e2bebcf622b7a78edbb0df08cc391b2ce9166afb9d026c0b26895481dbaafd"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\contact-sheet.png",
+      "bytes": 6656,
+      "sha256": "cb278d8f07435a63a72e2783c7a532f62697d95202a6e23a0a112849adc7670c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\presentation.html",
+      "bytes": 1899,
+      "sha256": "45c237e5d4e919ed40bacb19a6e57ea0393436af73b3087dcec9c775a1efa894"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\receipt.json",
+      "bytes": 605,
+      "sha256": "bc77837484acd85df9994b128b9d9304081e286c4980ebe5fb1cd9622066ed1a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\slide-01.png",
+      "bytes": 15041,
+      "sha256": "fbb8401949da5add025716f01262fd0cd87049e21fdfbbc57bdd3c503bddcd40"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\FirstLaunchAfterInstallation",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Last Version",
+      "bytes": 13,
+      "sha256": "f0c3e89d70ace0e8f2d5d6a9e227f805cdfb088b41d4aa2cf9e5225b61b38722"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Local State",
+      "bytes": 10695,
+      "sha256": "146cab964a39fa453a349956785b582a568c4e18500ce6c4a5fac84f5c3717ea"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Variations",
+      "bytes": 85,
+      "sha256": "b26da4f8c7e283aa74386da0229d66af14a37986b8ca828e054fc932f68dd557"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\VariationsRuntimeSeedV2",
+      "bytes": 19,
+      "sha256": "1560b22b2264f7cb6b7f6910164813f76c5e8a06fb1acf85b375e687ee49c1ad"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\VariationsSafeSeedV2",
+      "bytes": 19,
+      "sha256": "1560b22b2264f7cb6b7f6910164813f76c5e8a06fb1acf85b375e687ee49c1ad"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\VariationsSeedV2",
+      "bytes": 11,
+      "sha256": "b4cc4174735c28360b9081be3c3d0552d8a4b3cdb54431ac00ed0d622bab6296"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\render\\presentation.html",
+      "bytes": 1899,
+      "sha256": "45c237e5d4e919ed40bacb19a6e57ea0393436af73b3087dcec9c775a1efa894"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Crashpad\\metadata",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Crashpad\\settings.dat",
+      "bytes": 288,
+      "sha256": "fd1a92e15df7ddbaff8489af064ea80b447f6defbbda13d46769546faa0341fc"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Crashpad\\throttle_store.dat",
+      "bytes": 20,
+      "sha256": "41c91a9c93d76295746a149dce7ebb3b9ee2cb551d84365fff108e59a61cc304"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Affiliation Database",
+      "bytes": 53248,
+      "sha256": "52b369ae1ac4db15be400b8d45b01d9e4c4054299fd3743f811e785a6abcbe3a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Affiliation Database-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\arbitration_service_config.json",
+      "bytes": 20395,
+      "sha256": "5153ba36524b344071bd538d9c92b431b5479dfdee382c8ceab82af85b7b8a64"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\BookmarkMergedSurfaceOrdering",
+      "bytes": 6,
+      "sha256": "4489f9e3e454748b3521eb214e0a5694d562cff3d9ff511cb456953c8f534c00"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\declarative_performance_observer.db",
+      "bytes": 32768,
+      "sha256": "eda4c9567974174f08a1dbcd8badf4d6199a7e9a8b78b8826548f49e20e7badf"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\declarative_performance_observer.db-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Favicons",
+      "bytes": 20480,
+      "sha256": "1fbc7ea9722b2154b0d69c9d0ed80b6c0c98c5d389cf31ac1a2b8db030724840"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Favicons-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\History",
+      "bytes": 258048,
+      "sha256": "75cb88aa6525883606e9598db05020698cc88411168e261859dbbe1629e62410"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\History-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\HubApps Icons",
+      "bytes": 28672,
+      "sha256": "5fb632fd6da74c7f797600382215cbeec68cbb132cc3beb0d57562ecdcff6b54"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\HubApps Icons-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\load_statistics.db",
+      "bytes": 45056,
+      "sha256": "9fe3c1ba89c69f5543dfa71621e8228a5881c5ad1ef06c68337b73a7997348b7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Login Data",
+      "bytes": 51200,
+      "sha256": "4825922749265b3039e3d5fabc9e5cbdd00406b0d256bafea9a835234ab38683"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Login Data For Account",
+      "bytes": 51200,
+      "sha256": "4825922749265b3039e3d5fabc9e5cbdd00406b0d256bafea9a835234ab38683"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Login Data For Account-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Login Data-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Preferences",
+      "bytes": 9843,
+      "sha256": "b0bff65769d9b44e3bbe9c05d2abd5d161c4311461c794aac1b1e5358a18e3c9"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\README",
+      "bytes": 182,
+      "sha256": "a0c9abae18599f0a65fc654ad36251f6330794bea66b718a09d8b297f3e38e87"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Secure Preferences",
+      "bytes": 115640,
+      "sha256": "b45e8bf8eb35ad592755747680480127b9fb7dc70d3589ef1c8c6fd0872c9c3b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\ServerCertificate",
+      "bytes": 20480,
+      "sha256": "180ffbc2a4f10b5563f5a7bfe62d23909f0aa77572a06e59a9be4c6fca7176f7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\ServerCertificate-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Top Sites",
+      "bytes": 20480,
+      "sha256": "4d9ebcf96faf105e25d6d3e14aece4730ffc7c87c242ab308dea324d6615ff14"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Top Sites-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Vpn Tokens",
+      "bytes": 28672,
+      "sha256": "0750267321d06309dfd0bc3957b29483fe4f76cdb105e02e64dbe9ec240ddc03"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Vpn Tokens-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Web Data",
+      "bytes": 233472,
+      "sha256": "b8c33232d20600f26bc51e93433fb1288b2ed9d42de0310226468516eaa36c1d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Web Data-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\extensions_crx_cache\\metadata.json",
+      "bytes": 13,
+      "sha256": "2771d13c637c267132afff9db67537bef95708534b79ae8d954254c4e64e4e0f"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GrShaderCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GrShaderCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GrShaderCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GrShaderCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GrShaderCache\\index",
+      "bytes": 262512,
+      "sha256": "2fcc24aa4b042cf8edd928c8b05ae96f8970c356878387af0e3a611d9529f1cb"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Nurturing\\campaign_history",
+      "bytes": 20480,
+      "sha256": "bf3caa0226349b642e67dbccd9d8125c8c9c402a60a8e4e6295b7dad48feb3dd"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Nurturing\\campaign_history-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\ShaderCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\ShaderCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\ShaderCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\ShaderCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\ShaderCache\\index",
+      "bytes": 262512,
+      "sha256": "8108328be01f4e36e2dd2faa2076f15391e2ab9269f4ee34478d54d8028c049e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\ClientCertificates\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\ClientCertificates\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\commerce_subscription_db\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\commerce_subscription_db\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnGraphiteCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnGraphiteCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnGraphiteCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnGraphiteCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnGraphiteCache\\index",
+      "bytes": 262512,
+      "sha256": "49967c9e7ad64553b2f6390ff6e198a3052f50e880716a382d8da6a02981e689"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnWebGPUCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnWebGPUCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnWebGPUCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnWebGPUCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DawnWebGPUCache\\index",
+      "bytes": 262512,
+      "sha256": "58d957548d5eedf8e8daf8b3a1710142eb96daeb278e717d859f94a83a4f460f"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\discounts_db\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\discounts_db\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\discount_infos_db\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\discount_infos_db\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DualEngine\\SiteList-Consumer.json",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\DualEngine\\SiteList-Enterprise.json",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\EdgeHubAppUsage\\EdgeHubAppUsageSQLite.db",
+      "bytes": 32768,
+      "sha256": "62bb674a8299a872bd362f7e22b2e09ba699879e68259fea9a29bc487a81f9f7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\EdgeHubAppUsage\\EdgeHubAppUsageSQLite.db-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\EdgePushStorageWithConnectTokenAndKey\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\EdgePushStorageWithConnectTokenAndKey\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Rules\\000003.log",
+      "bytes": 190,
+      "sha256": "46ed76c989fa492af602d813eaf61c17edd71251674807a443b8f9ccc988292a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Rules\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Rules\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Rules\\LOG",
+      "bytes": 443,
+      "sha256": "68830f89fbf1717acc8c6a98d5cb1188ebc6d282b18935c98532cbb6e57b318e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Rules\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Scripts\\000003.log",
+      "bytes": 190,
+      "sha256": "46ed76c989fa492af602d813eaf61c17edd71251674807a443b8f9ccc988292a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Scripts\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Scripts\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Scripts\\LOG",
+      "bytes": 447,
+      "sha256": "2726cb102b5c29c8eb4fd7e243b5180a0bc22f6128f23e923177a8c21b9c32bf"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension Scripts\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension State\\000003.log",
+      "bytes": 570,
+      "sha256": "99def1b557f19f04c1affc6f247d0451f33fc10ec42e73792223c3215ac98be6"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension State\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension State\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension State\\LOG",
+      "bytes": 443,
+      "sha256": "d6d573da0747f8e4f4e62a9bce1aa4cc9f36cd89a965233a0ddc70e3d933782f"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Extension State\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\GPUCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\GPUCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\GPUCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\GPUCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\GPUCache\\index",
+      "bytes": 262512,
+      "sha256": "c7d04edfd4fd74df35845d1f2b85a15fe01191e71f902d158fa939324a423a8c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Cookies",
+      "bytes": 20480,
+      "sha256": "8da294027e6ff01d4253e19f529e9af6f4ddf89ae08a4b50225a007ddffb43e4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Cookies-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Device Bound Sessions",
+      "bytes": 20480,
+      "sha256": "6a22ff7ca6e53a73bc4578271e5f5bf34cdd7c1c9e8e13aea5db31ae5b2618d2"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Device Bound Sessions-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Network Persistent State",
+      "bytes": 244,
+      "sha256": "a9340ec58bc9748e1d7b4690d86f944572d553e81dbf16cd5377cb0f0148c460"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\NetworkDataMigrated",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Reporting and NEL",
+      "bytes": 36864,
+      "sha256": "2d6dada0da20730019917ab502a8189099aa5ad98a1b23cd30715d6f9689ef11"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Reporting and NEL-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\SCT Auditing Pending Reports",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Sdch Dictionaries",
+      "bytes": 40,
+      "sha256": "6028bd681dbf11a0a58dde8a0cd884115c04caa59d080ba51bde1b086ce0079d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Trust Tokens",
+      "bytes": 36864,
+      "sha256": "88bafa2a265212152b2405502209d64438a416ff594a040e666f031ef442a812"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Network\\Trust Tokens-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Nurturing\\campaign_history",
+      "bytes": 20480,
+      "sha256": "bf3caa0226349b642e67dbccd9d8125c8c9c402a60a8e4e6295b7dad48feb3dd"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Nurturing\\campaign_history-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\parcel_tracking_db\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\parcel_tracking_db\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\PersistentOriginTrials\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\PersistentOriginTrials\\LOG",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Session Storage\\000003.log",
+      "bytes": 144,
+      "sha256": "ac7f20464b308d5eb78fe9b4c6b6759e023688fd322e7f7f63352efd112e043f"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Session Storage\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Session Storage\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Session Storage\\LOG",
+      "bytes": 443,
+      "sha256": "57c581293f9df2f40eb596bc57dff290d0e8afa79572ab49522a67887f8ecbfd"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Session Storage\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sessions\\Session_13438841175186846",
+      "bytes": 2585,
+      "sha256": "e543948e0eb80ab6b0d54b46ab845aa1dabc7a5f78e88b783ff94bb3fb687728"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sessions\\Tabs_13438841175276278",
+      "bytes": 2180,
+      "sha256": "dae061bdb9730744de155489061a033e8a5a332bad57e0012bb1c2b92e3b497d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sessions_Encrypted\\Session_13438841175187608",
+      "bytes": 3476,
+      "sha256": "11d8e1ee88e67536578726d44adfdbdcb95831c99ed30af9f9a460d1ec4f2cfe"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sessions_Encrypted\\Tabs_13438841175277346",
+      "bytes": 2312,
+      "sha256": "93ef6fb4904547e6193545cae0679792469d022d726e5c101f2db8a247e1b031"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Shared Dictionary\\db",
+      "bytes": 45056,
+      "sha256": "0d6287fecedbc44ed9f51ded9de88629ec9f385ecff5da9a34e47e96fd5a9cba"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Shared Dictionary\\db-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\000003.log",
+      "bytes": 19,
+      "sha256": "ab5c71347d95f319781df230012713c7819ac0d69373e8c9a7302cae3f9a04b7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\LOG",
+      "bytes": 443,
+      "sha256": "64a906cd069c07f9381a2e2b399959ce2a7188472e58e65e99c37ae1d01db8d1"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Site Characteristics Database\\000003.log",
+      "bytes": 40,
+      "sha256": "f096bc366a931fba656bdcd77b24af15a5f29fc53281a727c79f82c608ecfab8"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Site Characteristics Database\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Site Characteristics Database\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Site Characteristics Database\\LOG",
+      "bytes": 471,
+      "sha256": "35236df57164732ce374ffd7a39d0eae50ec715feab11e1cb98290693d9d336a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Site Characteristics Database\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\WebStorage\\QuotaManager",
+      "bytes": 40960,
+      "sha256": "1e5a56f8868b4688795b4cf942e890d73d9025e6647426f5957ee4ae73f2c0f6"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\WebStorage\\QuotaManager-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Cache\\Cache_Data\\data_0",
+      "bytes": 45056,
+      "sha256": "468456974fd86b33647942820dce7284879acfab9e9e6eca008e1fdcf9006fb5"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Cache\\Cache_Data\\data_1",
+      "bytes": 270336,
+      "sha256": "63c1a7e5a7815c3bcdfe5b26e78f31ac691ffb780ff51eea4faaef52d4b2e738"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Cache\\Cache_Data\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Cache\\Cache_Data\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Cache\\Cache_Data\\index",
+      "bytes": 524656,
+      "sha256": "00f6beb39e5b295e11183d5d0a6e9dbe56067c546d3ad5a2fe5bb134817eba8b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Cache\\No_Vary_Search\\journal.baj",
+      "bytes": 4,
+      "sha256": "9c169428d852e25bd59b27652ed533d2a1f09f96e4c329fa5e06f47e16731543"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Cache\\No_Vary_Search\\snapshot.baf",
+      "bytes": 20,
+      "sha256": "0c2dd377ed0cc66161e9db8f89f7d8bcb3ad8c06c4a054bdcba214ab05f58c9a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\2a8a6f695a3ff316_0",
+      "bytes": 303,
+      "sha256": "06eccd5664040155e1a4cf0abd472a12beaf9bd6b3f324d549b441d22d3e4e92"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\2cca9bc741a6516d_0",
+      "bytes": 306,
+      "sha256": "c847d500e282e560cfdd688736e92d13bb94d573a2a9dcd7bcd4fc46e393c32b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\5cce1706364839f1_0",
+      "bytes": 307,
+      "sha256": "1aa698e90bc61e6ba5fc16847985bf6a87dce6cd3ca0cf00fcfa54c9814c6ade"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\5fbb54f36261c413_0",
+      "bytes": 308,
+      "sha256": "e5714bd8d98e0e88186a07854c81be02af32645beba69ef0c5e00de6bf21686a"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\7de0dc67a2b3a69c_0",
+      "bytes": 307,
+      "sha256": "b447cd8120e92373b7331e91c27e8321d192c93fecd123253c421ed094c06ea1"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\8020acacb3d13763_0",
+      "bytes": 321,
+      "sha256": "1a7d8244b757cd767e93cceb661ee3c5162477542fec8b4b1897548c172b938b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\8bb1867be67136eb_0",
+      "bytes": 305,
+      "sha256": "333050aa186807dc7920dcdea0bfa01e313afdf676e6e57907b9bff1f474664f"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\945cb8fb56d09a8e_0",
+      "bytes": 321,
+      "sha256": "e3c4f36d99cabec545e2811f4d6d7cdaffde9f0d71b875703fb2cdc62eb3e27c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\b21fb45197b9c728_0",
+      "bytes": 303,
+      "sha256": "092dbb981acbf1bdf225770cff4cec83b8797043cbb985ae33a4238e53f9a5b6"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\baded5730168391f_0",
+      "bytes": 313,
+      "sha256": "094c758bc505596e16e906e5ff76137356ceef30816f3c25bf900d9e7d6c890b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\e94999eac39dfd99_0",
+      "bytes": 317,
+      "sha256": "95d3859473c5fbf3b03efcf1193d4842f9db74afd6ee0771b93c411313f01f0c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\e9a142a21b9ad9ef_0",
+      "bytes": 297,
+      "sha256": "782ef61102fa1804de6e25145dbfcd29d71180490e122fe005f28a0627840141"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\ebce9e52a869b921_0",
+      "bytes": 303,
+      "sha256": "96e5017b6471673b294c47d79e0f87c226bfe20a585c1e4c161e7955669d645f"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\index",
+      "bytes": 24,
+      "sha256": "fbcfe23a2ecb82b7100c50811691dde0a33aa3da8d176be9882a9db485dc0f2d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\wasm\\index",
+      "bytes": 24,
+      "sha256": "fbcfe23a2ecb82b7100c50811691dde0a33aa3da8d176be9882a9db485dc0f2d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\js\\index-dir\\the-real-index",
+      "bytes": 360,
+      "sha256": "b1368865ba6e307a71f9478e07a90db9835eb1e1369f7808930ccc2187af8d14"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Code Cache\\wasm\\index-dir\\the-real-index",
+      "bytes": 48,
+      "sha256": "94ba740583ed3d558a2ee5a674ead9ba32147c2dbd25e7ce0a5a6c9efae1a1a0"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Extension Settings\\jdiccldimpdaibmpdkjnbmckianbfold\\000003.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Extension Settings\\jdiccldimpdaibmpdkjnbmckianbfold\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Extension Settings\\jdiccldimpdaibmpdkjnbmckianbfold\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Extension Settings\\jdiccldimpdaibmpdkjnbmckianbfold\\LOG",
+      "bytes": 527,
+      "sha256": "c72e3fdd99ae1da6cd6eccdd384fa70009861db88bddd5d5cfbe914193c7fd14"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Extension Settings\\jdiccldimpdaibmpdkjnbmckianbfold\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Storage\\leveldb\\000003.log",
+      "bytes": 30,
+      "sha256": "8bd2ea70a0b70c91de138a5b87c7936c6a6fa7c4275c54b97f4ef0ccc5b79bb4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Storage\\leveldb\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Storage\\leveldb\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Storage\\leveldb\\LOG",
+      "bytes": 455,
+      "sha256": "4459204ccb988eaf4392dfde416964364f0ab383def144754c66828da30577ff"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Local Storage\\leveldb\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\Database\\000003.log",
+      "bytes": 2938,
+      "sha256": "83e6c9aa01bce12edf37b17c0685e30fa8e70cf1a41d4e61ed3dc0f9e236ea39"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\Database\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\Database\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\Database\\LOG",
+      "bytes": 459,
+      "sha256": "ba6d115d80d38dcc64d93e775870ff3ae98f8aa14878472bc636b9f005382283"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\Database\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\ScriptCache\\2cc80dabc69f58b6_0",
+      "bytes": 6962,
+      "sha256": "c34788b1f6553b416bc9756d1e27e84675593708f5d3d210d0154301e3517aa7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\ScriptCache\\2cc80dabc69f58b6_1",
+      "bytes": 6137,
+      "sha256": "95519e9f4c19de8fc37754d600662a8ea94c3d64d1d25f9038fa2c06b7b4ce3b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\ScriptCache\\4cb013792b196a35_0",
+      "bytes": 374426,
+      "sha256": "a7de6a5b4e6df2e33c1125bb760fe43e1dc2e8e99853ba4141960cb135b56f24"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\ScriptCache\\f1cdccba37924bda_0",
+      "bytes": 2777,
+      "sha256": "cf7da69df1af37139a6691143a01d666b1218c805303d13880b67ac8b7e029f2"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\ScriptCache\\index",
+      "bytes": 24,
+      "sha256": "fbcfe23a2ecb82b7100c50811691dde0a33aa3da8d176be9882a9db485dc0f2d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Service Worker\\ScriptCache\\index-dir\\the-real-index",
+      "bytes": 120,
+      "sha256": "ce2d08c39926d11735df83ee69ea236607bd1299d91e9bd9d203ec58969eea98"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Shared Dictionary\\cache\\index",
+      "bytes": 24,
+      "sha256": "fbcfe23a2ecb82b7100c50811691dde0a33aa3da8d176be9882a9db485dc0f2d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Shared Dictionary\\cache\\index-dir\\the-real-index",
+      "bytes": 48,
+      "sha256": "de9695910aeb637b6828bd897bd56673cc03d6ae3dfb753b3a60185750af32c7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\metadata\\000003.log",
+      "bytes": 474,
+      "sha256": "5182a22c3382b76b060151eed6661106844774845a4769fb249d351be478e94f"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\metadata\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\metadata\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\metadata\\LOG",
+      "bytes": 461,
+      "sha256": "db9afba90c1a51e472a5d45d958fc2910f750491e021c2a0c2d09ebf2493aa34"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\shared_proto_db\\metadata\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\declarative_performance_observer.db",
+      "bytes": 32768,
+      "sha256": "eda4c9567974174f08a1dbcd8badf4d6199a7e9a8b78b8826548f49e20e7badf"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\declarative_performance_observer.db-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnGraphiteCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnGraphiteCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnGraphiteCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnGraphiteCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnGraphiteCache\\index",
+      "bytes": 262512,
+      "sha256": "28ac95245a86cbff9cbe14c619deb76e67e5f8b5fa4a9cab45334efa768b2221"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnWebGPUCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnWebGPUCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnWebGPUCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnWebGPUCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\DawnWebGPUCache\\index",
+      "bytes": 262512,
+      "sha256": "d592769802e60a98d7d26a53cdd3cee6680a79cddf4b3fd90dee3db51713c6bb"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\GPUCache\\data_0",
+      "bytes": 8192,
+      "sha256": "d6a5fe39cd672781b256e0e3102f7022635f1d4bb7cfcc90a80fffe4d0f3877e"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\GPUCache\\data_1",
+      "bytes": 270336,
+      "sha256": "b1e963d702392fb7224786e7d56d43973e9b9efd1b89c17814d7c558ffc0cdec"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\GPUCache\\data_2",
+      "bytes": 8192,
+      "sha256": "ec1702806f4cc7c42a82fc2b38e89835fde7c64bb32060e0823c9077ca92efb7"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\GPUCache\\data_3",
+      "bytes": 8192,
+      "sha256": "e09f42c398d688dce168570291f1f92d079987deda3099a34adb9e8c0522b30c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\GPUCache\\index",
+      "bytes": 262512,
+      "sha256": "0ea6cf7ea1e07be40807687ce72473842cdca396fcbcdf0d18e4719354dadd71"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Network\\Device Bound Sessions",
+      "bytes": 20480,
+      "sha256": "6a22ff7ca6e53a73bc4578271e5f5bf34cdd7c1c9e8e13aea5db31ae5b2618d2"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Network\\Device Bound Sessions-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Network\\NetworkDataMigrated",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Network\\Reporting and NEL",
+      "bytes": 36864,
+      "sha256": "2d6dada0da20730019917ab502a8189099aa5ad98a1b23cd30715d6f9689ef11"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Network\\Reporting and NEL-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Network\\Trust Tokens",
+      "bytes": 36864,
+      "sha256": "88bafa2a265212152b2405502209d64438a416ff594a040e666f031ef442a812"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Network\\Trust Tokens-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Session Storage\\000003.log",
+      "bytes": 49,
+      "sha256": "ffd700cf04be6fe8d51e2ffb8a2e37bc3fa95a6679a4102fa35e8494c2350eae"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Session Storage\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Session Storage\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Session Storage\\LOG",
+      "bytes": 541,
+      "sha256": "269f59171940805e729fa5a555791198bea967771e69da183ac625a9ddaf1697"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Session Storage\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Shared Dictionary\\db",
+      "bytes": 45056,
+      "sha256": "0d6287fecedbc44ed9f51ded9de88629ec9f385ecff5da9a34e47e96fd5a9cba"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Shared Dictionary\\db-journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Code Cache\\js\\6f3a0dc5e6916f1e_0",
+      "bytes": 309,
+      "sha256": "303a9fe470bc0d943df71cc5e3dd6f623c649f59ca926501217e953e28a5586b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Code Cache\\js\\index",
+      "bytes": 24,
+      "sha256": "fbcfe23a2ecb82b7100c50811691dde0a33aa3da8d176be9882a9db485dc0f2d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Code Cache\\wasm\\index",
+      "bytes": 24,
+      "sha256": "fbcfe23a2ecb82b7100c50811691dde0a33aa3da8d176be9882a9db485dc0f2d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Code Cache\\js\\index-dir\\the-real-index",
+      "bytes": 72,
+      "sha256": "43e47a72004971bc3bcb8c3d466317a098b60c08a98e28cc767c25a1ee9a9571"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Code Cache\\wasm\\index-dir\\the-real-index",
+      "bytes": 48,
+      "sha256": "b6b6d424cf245cc91c580bcb4926e86af878041631be8a7feae79014a9819278"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Local Storage\\leveldb\\000003.log",
+      "bytes": 30,
+      "sha256": "8bd2ea70a0b70c91de138a5b87c7936c6a6fa7c4275c54b97f4ef0ccc5b79bb4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Local Storage\\leveldb\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Local Storage\\leveldb\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Local Storage\\leveldb\\LOG",
+      "bytes": 553,
+      "sha256": "8e4b4d8ebd3597b6d4742744a78fb05bbf6a6a54cb276a067b4c11d8f1f93967"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Local Storage\\leveldb\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Shared Dictionary\\cache\\index",
+      "bytes": 24,
+      "sha256": "fbcfe23a2ecb82b7100c50811691dde0a33aa3da8d176be9882a9db485dc0f2d"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Storage\\ext\\ihmafllikibpmigkcoadcmckbfhibefp\\def\\Shared Dictionary\\cache\\index-dir\\the-real-index",
+      "bytes": 48,
+      "sha256": "79d2975c82c397ee5bcf935aae080534e49fc65b7d5b558f41237c155927582c"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sync Data\\LevelDB\\000003.log",
+      "bytes": 137,
+      "sha256": "225d5ae4f9f239789da25e14ea1251600d0a4b71ba2521744392966950ad3744"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sync Data\\LevelDB\\CURRENT",
+      "bytes": 16,
+      "sha256": "0f1bad70c7bd1e0a69562853ec529355462fcd0423263a3d39d6d0d70b780443"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sync Data\\LevelDB\\LOCK",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sync Data\\LevelDB\\LOG",
+      "bytes": 447,
+      "sha256": "819b56e36a4628de62278115648906194e08a7551a86aed87039ef16eec25bd9"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\Default\\Sync Data\\LevelDB\\MANIFEST-000001",
+      "bytes": 41,
+      "sha256": "f9d31b278e215eb0d0e9cd709edfa037e828f36214ab7906f612160fead4b2b4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GPUPersistentCache\\DawnGraphiteCache\\OMXJKWSVDDS6L3YMYJJRNHVYDBSO7SEM\\cache.db",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GPUPersistentCache\\DawnGraphiteCache\\OMXJKWSVDDS6L3YMYJJRNHVYDBSO7SEM\\cache.db-wal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\GPUPersistentCache\\DawnGraphiteCache\\OMXJKWSVDDS6L3YMYJJRNHVYDBSO7SEM\\cache.journal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\SmartScreen\\RemoteData\\customSettings",
+      "bytes": 47,
+      "sha256": "d8d672f953e823063955bd9981532fc3453800c2e74c0cc3653d091088abd3b3"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\SmartScreen\\RemoteData\\customSettings_F95BA787499AB4FA9EFFF472CE383A14",
+      "bytes": 35,
+      "sha256": "2bae8302f9bd2d87ae26acf692663df1639b8e2068157451da4773bd8bd30a2b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\SmartScreen\\RemoteData\\edgeSettings",
+      "bytes": 18,
+      "sha256": "42ccb5159b168dbe5d5ddf026e5f7ed3dbf50873cfe47c7c3ef0677bb07b90d4"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\exports\\v001\\browser-profile\\SmartScreen\\RemoteData\\edgeSettings_2.0-0",
+      "bytes": 3552,
+      "sha256": "e6beb5ac43dfa3e05ca3c40c4e5de7d763e2e0580203ad9034c6f0527ac0e45b"
+    },
+    {
+      "path": "sample-B1\\renderer-preflight\\workspace\\artifacts\\presentation.html",
+      "bytes": 120,
+      "sha256": "9726b96e6be680975af9df3a3e83eb8e68b0b4794eefb2b971c7b8282cd18e80"
+    },
+    {
+      "path": "sample-B1\\workspace\\data\\available-fonts.json",
+      "bytes": 5134,
+      "sha256": "b51ed8165fe176e7774f5130b23320cbac61f93ecfb8e513c1bdf5007cc70b12"
+    },
+    {
+      "path": "sample-B1\\workspace\\data\\environment.md",
+      "bytes": 1624,
+      "sha256": "ae728d205203d049f105eff0a02507f9f0c9667d938c5dcbe23b0e39598cedb5"
+    },
+    {
+      "path": "sample-B1\\workspace\\data\\instructions.md",
+      "bytes": 2444,
+      "sha256": "67aec1aead63d54f51cd793c7361633ddffbe091a7a17d574652eb24a2a19f0e"
+    },
+    {
+      "path": "sample-B1\\workspace\\data\\material.txt",
+      "bytes": 63165,
+      "sha256": "493262215dcf09d678387ed416c6c168df27042d95467f45799e5d830545f1fe"
+    }
+  ]
+}

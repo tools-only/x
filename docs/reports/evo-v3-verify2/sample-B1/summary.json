@@ -1,0 +1,66 @@
+{
+  "stop": "az_inference_unavailable",
+  "preflight": {
+    "status": "az_unavailable",
+    "error": "Remote end closed connection without response",
+    "elapsed_seconds": 2.2339999999967404,
+    "accounting": {
+      "requests": 1,
+      "tokens": 4290,
+      "usd": 0.08676,
+      "seconds": 2.2339999999967404,
+      "usage_status": "unknown_reserved"
+    }
+  },
+  "provider": "az",
+  "model": "qwen3.8-27b",
+  "resources": {
+    "requests": 1,
+    "tokens": 4290,
+    "usd": 0.08676,
+    "seconds": 2.2339999999967404,
+    "usage_status": "unknown_reserved"
+  },
+  "units": [
+    {
+      "id": "unit-01",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-02",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-03",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-04",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-05",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-06",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-07",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-08",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-09",
+      "status": "not_run"
+    },
+    {
+      "id": "unit-10",
+      "status": "not_run"
+    }
+  ]
+}
