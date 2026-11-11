@@ -1,0 +1,337 @@
+[
+  {
+    "phase": "sample-B1",
+    "stop": "az_inference_unavailable",
+    "preflight": {
+      "status": "az_unavailable",
+      "error": "Remote end closed connection without response",
+      "elapsed_seconds": 15.077999999979511,
+      "accounting": {
+        "requests": 1,
+        "tokens": 4290,
+        "usd": 0.08676,
+        "seconds": 15.077999999979511,
+        "usage_status": "unknown_reserved"
+      }
+    },
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "resources": {
+      "requests": 1,
+      "tokens": 4290,
+      "usd": 0.08676,
+      "seconds": 15.077999999979511,
+      "usage_status": "unknown_reserved"
+    },
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_run"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_run"
+      }
+    ]
+  },
+  {
+    "phase": "sample-B2",
+    "stop": "budget_or_integrity_stop",
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "arm": "B",
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_delivered"
+      }
+    ],
+    "error": "Pi RPC process exited while waiting for an event",
+    "elapsed_seconds": 357.26499999995576,
+    "preflight": {
+      "requests": 1,
+      "tokens": 55,
+      "usd": 0.00206,
+      "seconds": 9.125,
+      "returned_model": "qwen3.8-27b"
+    },
+    "resources": {
+      "requests": 8,
+      "tokens": 166486,
+      "usd": 4.077020000000001,
+      "requests_with_missing_usage": 0,
+      "storage_bytes": 9288850,
+      "billing": "conservative estimate; actual invoice unknown",
+      "seconds": 366.38999999995576
+    },
+    "root_id": "443ab7e8-8f93-410f-9606-731f034ac83c",
+    "self_revision": 1,
+    "legacy_self_revision": 2,
+    "engineering_commit": "c1396cb6f0fd9dd407f52721b5104e3ba633f4ac",
+    "runtime_activations": [],
+    "reviews": [
+      {
+        "ref": "ledger:2",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 0,
+        "value": {
+          "id": "review:ledger:0",
+          "mode": "reflect",
+          "triggers": [
+            {
+              "id": "contract:window_entry",
+              "source": "user_contract",
+              "mode": "reflect",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:46",
+        "kind": "claim",
+        "type": "review_closed",
+        "revision": 1,
+        "request": 6,
+        "value": {
+          "review": "review:ledger:0",
+          "op": "exit",
+          "status": "deferred",
+          "subtype": "keep",
+          "result": {
+            "reason": "Window-entry review at session start: fresh root, revision 1, no render, no canonical source. The ppt_baseline_guidance prompt component and default orchestration (single agent, work step) are fit for purpose for this 15-slide BofA Q3-21 deck task. No components, modes, windows or methods need changing. Keeping current method and entering execute to author the presentation."
+          },
+          "evidenceRefs": [
+            "ledger:2",
+            "ledger:3"
+          ],
+          "changes": [],
+          "agent_decision": "present",
+          "mode_version": 1,
+          "pending": false
+        }
+      },
+      {
+        "ref": "ledger:48",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 6,
+        "value": {
+          "id": "review:ledger:47",
+          "mode": "execute",
+          "triggers": [
+            {
+              "id": "ledger:47",
+              "source": "agent_active",
+              "mode": "execute",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:58",
+        "kind": "fact",
+        "type": "review_closed",
+        "revision": 1,
+        "request": 7,
+        "value": {
+          "review": "review:ledger:47",
+          "status": "deferred",
+          "subtype": "incomplete",
+          "agent_decision": "absent",
+          "reason": "plain-text/technical end without decide exit"
+        }
+      },
+      {
+        "ref": "ledger:60",
+        "kind": "fact",
+        "type": "mode_entered",
+        "revision": 1,
+        "request": 7,
+        "value": {
+          "id": "review:ledger:59",
+          "mode": "reflect",
+          "triggers": [
+            {
+              "id": "contract:before_session_end",
+              "source": "user_contract",
+              "mode": "reflect",
+              "conclusion_sink": "ledger"
+            }
+          ],
+          "suspended": {
+            "step": "work",
+            "revision": 1
+          }
+        }
+      },
+      {
+        "ref": "ledger:62",
+        "kind": "fact",
+        "type": "review_closed",
+        "revision": 1,
+        "request": 8,
+        "value": {
+          "review": "review:ledger:59",
+          "status": "deferred",
+          "subtype": "incomplete",
+          "agent_decision": "absent",
+          "reason": "authorized budget boundary"
+        }
+      }
+    ]
+  },
+  {
+    "phase": "calibration-A",
+    "stop": "budget_or_integrity_stop",
+    "provider": "az",
+    "model": "qwen3.8-27b",
+    "arm": "A",
+    "units": [
+      {
+        "id": "unit-01",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-02",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-03",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-04",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-05",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-06",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-07",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-08",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-09",
+        "status": "not_delivered"
+      },
+      {
+        "id": "unit-10",
+        "status": "not_delivered"
+      }
+    ],
+    "error": "Pi RPC process exited while waiting for an event",
+    "elapsed_seconds": 1088.0779999999795,
+    "preflight": {
+      "requests": 1,
+      "tokens": 55,
+      "usd": 0.00206,
+      "seconds": 2.2030000000377186,
+      "returned_model": "qwen3.8-27b"
+    },
+    "resources": {
+      "requests": 10,
+      "tokens": 278060,
+      "usd": 8.59342,
+      "requests_with_missing_usage": 0,
+      "storage_bytes": 9708366,
+      "billing": "conservative estimate; actual invoice unknown",
+      "seconds": 1090.2810000000172
+    },
+    "root_id": null,
+    "self_revision": null,
+    "legacy_self_revision": 2,
+    "engineering_commit": "c1396cb6f0fd9dd407f52721b5104e3ba633f4ac",
+    "runtime_activations": [],
+    "reviews": []
+  }
+]

@@ -1,0 +1,268 @@
+{
+  "experiment_id": "calibration-A",
+  "arm": "A",
+  "provider": "az",
+  "model": "qwen3.8-27b",
+  "contract": {
+    "source": "user_contract",
+    "authority": "user_contract: George t820u continue validating, run B first; ONE v3 validation, B1 -> B2 -> A, each B <=45% of every total cap, A actual remainder; 600 requests/600000 tokens/14400 seconds/USD15/2147483648 bytes total; preflights/failures/pending counted, unchanged v3 permits, no retry/no cap increases/no push",
+    "decisions": "FINAL 2.1 G1/G5/G7; explicit round authority above",
+    "readonly_reason": "user authorization, total resources, evidence integrity and acceptance cannot be rewritten by the task Agent",
+    "boundaries": [
+      "window_entry",
+      "before_delivery",
+      "before_active_reset",
+      "before_batch_switch",
+      "before_session_end"
+    ],
+    "capabilities": [
+      "read",
+      "write",
+      "edit",
+      "ls",
+      "grep",
+      "python",
+      "office.render",
+      "office.look",
+      "office.deliver",
+      "acceptance",
+      "submit_unit",
+      "agent_tools"
+    ],
+    "writable": [
+      "components.tool",
+      "components.prompt",
+      "components.skill",
+      "components.memory",
+      "policy",
+      "orchestration"
+    ],
+    "budget": {
+      "requests": 591,
+      "tokens": 429224,
+      "seconds": 14014.108999999997,
+      "usd": 10.836219999999999,
+      "storage_bytes": 2130882996
+    },
+    "acceptance": {
+      "brief_sha256": "67aec1aead63d54f51cd793c7361633ddffbe091a7a17d574652eb24a2a19f0e",
+      "original_brief_sha256": "598edd4f8b327e8b69b0d65f9e3df74c643256a3ec676ea514e20f95eb8c1910",
+      "units_sha256": "043bb987c8b54e58978e8c1c2177f8ee1b1ba7841afbe86b78b035090d11ea8c",
+      "checker_version": "literal-normalized-render-v2",
+      "expected_slides": 15
+    },
+    "inherit_defaults": false,
+    "heartbeat": false,
+    "content_hash": "531651a965a75968fa9a5d5235ccaae30dba62692ed7c579e8791a46fb0060f1"
+  },
+  "sources": {
+    "data/available-fonts.json": "b51ed8165fe176e7774f5130b23320cbac61f93ecfb8e513c1bdf5007cc70b12",
+    "data/environment.md": "ae728d205203d049f105eff0a02507f9f0c9667d938c5dcbe23b0e39598cedb5",
+    "data/instructions.md": "67aec1aead63d54f51cd793c7361633ddffbe091a7a17d574652eb24a2a19f0e",
+    "data/material.txt": "493262215dcf09d678387ed416c6c168df27042d95467f45799e5d830545f1fe"
+  },
+  "units": [
+    {
+      "id": "unit-01",
+      "title": "1 Q3-21 Financial Highlights1 Q3-21 Business Segment Highlights1,2(A) Consumer Banking Global Wealth",
+      "source_page": 1,
+      "required": [
+        "$7.7",
+        "$0.85",
+        "$3.0"
+      ],
+      "citation": "Source page 1"
+    },
+    {
+      "id": "unit-02",
+      "title": "2 Bank of America Financial Highlights Three Months Ended ($ in billions, except per share data) 9/3",
+      "source_page": 2,
+      "required": [
+        "$22.8",
+        "$21.5",
+        "$20.3"
+      ],
+      "citation": "Source page 2"
+    },
+    {
+      "id": "unit-03",
+      "title": "3 Consumer Banking1,2 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30",
+      "source_page": 3,
+      "required": [
+        "$8,838",
+        "$8,186",
+        "$8,039"
+      ],
+      "citation": "Source page 3"
+    },
+    {
+      "id": "unit-04",
+      "title": "4 Global Wealth and Investment Management1,2 Financial Results1 Three months ended ($ in millions) 9",
+      "source_page": 4,
+      "required": [
+        "$5,310",
+        "$5,065",
+        "$4,546"
+      ],
+      "citation": "Source page 4"
+    },
+    {
+      "id": "unit-05",
+      "title": "5 Global Banking1,2 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30/2",
+      "source_page": 5,
+      "required": [
+        "$5,244",
+        "$5,090",
+        "$4,517"
+      ],
+      "citation": "Source page 5"
+    },
+    {
+      "id": "unit-06",
+      "title": "6 Global Markets1,2,6 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30",
+      "source_page": 6,
+      "required": [
+        "$4,519",
+        "$4,720",
+        "$4,283"
+      ],
+      "citation": "Source page 6"
+    },
+    {
+      "id": "unit-07",
+      "title": "7 All Other1 Financial Results1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30/2020 Tot",
+      "source_page": 7,
+      "required": [
+        "$1,861",
+        "$298",
+        "$54"
+      ],
+      "citation": "Source page 7"
+    },
+    {
+      "id": "unit-08",
+      "title": "8 Credit Quality Highlights1 Three months ended ($ in millions) 9/30/2021 6/30/2021 9/30/2020 Provis",
+      "source_page": 8,
+      "required": [
+        "$624",
+        "$1,621",
+        "$1,389"
+      ],
+      "citation": "Source page 8"
+    },
+    {
+      "id": "unit-09",
+      "title": "9 Balance Sheet, Liquidity and Capital Highlights ($ in billions except per share data, end of perio",
+      "source_page": 9,
+      "required": [
+        "$3,085.4",
+        "$3,029.9",
+        "$2,738.5"
+      ],
+      "citation": "Source page 9"
+    },
+    {
+      "id": "unit-10",
+      "title": "10 A We present certain key financial and nonfinancial performance indicators (KPIs) that management",
+      "source_page": 10,
+      "required": [
+        "$11.2",
+        "$10.3",
+        "$10.2"
+      ],
+      "citation": "Source page 10"
+    }
+  ],
+  "checker": {
+    "version": "literal-normalized-render-v2",
+    "sha256": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a"
+  },
+  "settings": {
+    "registration": "C:\\Users\\qi\\tmp\\r04\\self-harness-az-loop-20261029\\run53\\.pi-agent\\models.json",
+    "original_provider_handle": "yibu",
+    "provider": "az",
+    "baseUrl": "https://az.gptplus5.com/v1",
+    "api": "openai-completions",
+    "compat": {
+      "supportsDeveloperRole": false,
+      "thinkingFormat": "qwen"
+    },
+    "model": {
+      "id": "qwen3.8-27b",
+      "name": "qwen3.8-27b",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "contextWindow": 175000,
+      "cost": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "maxTokens": 65536
+    },
+    "thinking": "low",
+    "request_output_tokens": 8192,
+    "request_reserve": {
+      "tokens": 240536,
+      "usd": 8.74288,
+      "basis": "registered maximum input/output; conservative existing PPT rates 20/80 USD per million; unknown invoice"
+    },
+    "sampling": {
+      "temperature": "provider default; not supplied",
+      "top_p": "provider default; not supplied"
+    },
+    "agent_settings": {
+      "compaction": {
+        "enabled": false
+      },
+      "retry": {
+        "enabled": false,
+        "maxRetries": 0
+      }
+    }
+  },
+  "engineering_commit": "c1396cb6f0fd9dd407f52721b5104e3ba633f4ac",
+  "engineering_tag": "v3 candidate; exact final commit recorded by local tag v3",
+  "seed_hashes": {
+    "demo/self_root.ts": "402b94af6a01717e7fbd3a20a8f42495eae91a53c0a38e39a54dbf030e5897ff",
+    "demo/self_root_ppt.ts": "6dfddea0aec82f508810c784f91ae5dab9e1f7f562f471eaad055f687e067e0a",
+    "demo/provider_permit.ts": "6b7cc14013b332b7453c833cf64edfc4b7a034dc5c73141a98ce4691709da553",
+    "demo/ppt_demo_extension.ts": "7b9e3712deff90eefd67956a4cf4d6a0ca36ad373f92d56c9221e8cf57c3f255",
+    "demo/live_orchestration_core.ts": "d27dbcbcded969fdf2df6c159935532e3d48f76089bf3fc4263b3419e13b7a39",
+    "demo/prompts/ppt_demo_system.md": "dec0d90e3c6fee0e5be7c51450fb5c96f5966c226df2fa8c75aecaa8eff6e64b",
+    "demo/prompts/self_root_system.md": "7827f1657b521d95a61c05dd6527862d1e13b4a3ba5e1b84c01a8bccfb39afb2",
+    "demo/arc_thin_native_runtime.ts": "e7ee64f683a062a09e135a8d7225440e1d63b2504d866837651887d6701918b2",
+    "demo/arc_thin_workspace.ts": "8a8494d4c4a8c2b119be0db7969230f3eca63b06c5bc9873e960f08f33e06362",
+    "src/autoresearch_pi/ppt_demo_html.py": "4d1f13e20dd93e87f1aec8dfdff299d1733a64c43f38a3ce52dbb92a3f74c430",
+    "src/autoresearch_pi/evo_ppt.py": "970f03def552351bff2e6d7968648bcf76911ecd636fb9483b0177133fc9b5d2"
+  },
+  "comparison": "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence",
+  "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established",
+  "renderer_preflight": {
+    "status": "passed",
+    "exit": 0,
+    "elapsed_seconds": 2.4679999999934807,
+    "receipt": {
+      "revision": 1,
+      "slides": 1,
+      "native_objects": {
+        "html": 1
+      },
+      "warnings": [],
+      "renderer": "msedge.exe headless HTML",
+      "output": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-verify-20261111\\calibration-A\\renderer-preflight\\exports\\v001",
+      "html": "presentation.html",
+      "source_path": "artifacts/presentation.html",
+      "source_sha256": "9726b96e6be680975af9df3a3e83eb8e68b0b4794eefb2b971c7b8282cd18e80",
+      "title": "Presentation"
+    },
+    "browser": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "source_sha256": "9726b96e6be680975af9df3a3e83eb8e68b0b4794eefb2b971c7b8282cd18e80",
+    "image_sha256": "fbb8401949da5add025716f01262fd0cd87049e21fdfbbc57bdd3c503bddcd40",
+    "acceptance_preflight": "tests/test_evo_ppt_pi.py runs the protected checker through actual Pi/render/delivery"
+  }
+}

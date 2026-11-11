@@ -1,0 +1,256 @@
+{
+  "arms": [
+    {
+      "arm": "sample-B1",
+      "same_sources": true,
+      "same_units": true,
+      "same_checker": true,
+      "same_settings": true,
+      "seed_differences": [
+        "src/autoresearch_pi/evo_ppt.py"
+      ],
+      "end_seed_drift": [],
+      "allocated_caps": {
+        "requests": 270,
+        "tokens": 270000,
+        "seconds": 6480.0,
+        "usd": 6.75,
+        "storage_bytes": 966367641
+      },
+      "summary_resources": {
+        "requests": 1,
+        "tokens": 4290,
+        "usd": 0.08676,
+        "seconds": 15.077999999979511,
+        "usage_status": "unknown_reserved"
+      },
+      "reported_task_usage": {},
+      "known_registered_usd_including_probe": 0,
+      "registered_unknown_probe_reserve_usd": 0.02185,
+      "unknown_probe": true,
+      "renderer_preflight_seconds": 3.077999999979511,
+      "phase_wall_seconds_file_metadata": 18.267152786254883,
+      "final_original_arm_storage_bytes": 7298820,
+      "office_calls": [],
+      "posthoc_units": [],
+      "posthoc_slides": null,
+      "posthoc_render_warnings": null
+    },
+    {
+      "arm": "sample-B2",
+      "same_sources": true,
+      "same_units": true,
+      "same_checker": true,
+      "same_settings": true,
+      "seed_differences": [
+        "src/autoresearch_pi/evo_ppt.py"
+      ],
+      "end_seed_drift": [],
+      "allocated_caps": {
+        "requests": 270,
+        "tokens": 270000,
+        "seconds": 6480.0,
+        "usd": 6.75,
+        "storage_bytes": 966367641
+      },
+      "summary_resources": {
+        "requests": 8,
+        "tokens": 166486,
+        "usd": 4.077020000000001,
+        "requests_with_missing_usage": 0,
+        "storage_bytes": 9288850,
+        "billing": "conservative estimate; actual invoice unknown",
+        "seconds": 366.38999999995576
+      },
+      "reported_task_usage": {
+        "input": 153992,
+        "output": 12439,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 11680,
+        "totalTokens": 166431
+      },
+      "known_registered_usd_including_probe": 1.143805,
+      "registered_unknown_probe_reserve_usd": 0,
+      "unknown_probe": false,
+      "renderer_preflight_seconds": 1.0320000000065193,
+      "phase_wall_seconds_file_metadata": 367.5792872905731,
+      "final_original_arm_storage_bytes": 9293683,
+      "office_calls": [],
+      "posthoc_units": [],
+      "posthoc_slides": null,
+      "posthoc_render_warnings": null
+    },
+    {
+      "arm": "calibration-A",
+      "same_sources": true,
+      "same_units": true,
+      "same_checker": true,
+      "same_settings": true,
+      "seed_differences": [
+        "src/autoresearch_pi/evo_ppt.py"
+      ],
+      "end_seed_drift": [],
+      "allocated_caps": {
+        "requests": 591,
+        "tokens": 429224,
+        "seconds": 14014.108999999997,
+        "usd": 10.836219999999999,
+        "storage_bytes": 2130882996
+      },
+      "summary_resources": {
+        "requests": 10,
+        "tokens": 278060,
+        "usd": 8.59342,
+        "requests_with_missing_usage": 0,
+        "storage_bytes": 9708366,
+        "billing": "conservative estimate; actual invoice unknown",
+        "seconds": 1090.2810000000172
+      },
+      "reported_task_usage": {
+        "input": 205980,
+        "output": 50521,
+        "cacheRead": 21504,
+        "cacheWrite": 0,
+        "reasoning": 40464,
+        "totalTokens": 278005
+      },
+      "known_registered_usd_including_probe": 2.5462050000000005,
+      "registered_unknown_probe_reserve_usd": 0,
+      "unknown_probe": false,
+      "renderer_preflight_seconds": 2.4679999999934807,
+      "phase_wall_seconds_file_metadata": 1092.889374256134,
+      "final_original_arm_storage_bytes": 9709925,
+      "office_calls": [],
+      "posthoc_units": [
+        {
+          "id": "unit-01",
+          "literal": 3,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 3,
+          "normalized_total": 3,
+          "normalized_citation": true,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": true
+        },
+        {
+          "id": "unit-02",
+          "literal": 3,
+          "literal_total": 3,
+          "literal_citation": true,
+          "normalized": 3,
+          "normalized_total": 3,
+          "normalized_citation": true,
+          "literal_all_and_citation": true,
+          "normalized_all_and_citation": true
+        },
+        {
+          "id": "unit-03",
+          "literal": 0,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": false,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        },
+        {
+          "id": "unit-04",
+          "literal": 0,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": false,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        },
+        {
+          "id": "unit-05",
+          "literal": 0,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": false,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        },
+        {
+          "id": "unit-06",
+          "literal": 0,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": false,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        },
+        {
+          "id": "unit-07",
+          "literal": 0,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": false,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        },
+        {
+          "id": "unit-08",
+          "literal": 1,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": false,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        },
+        {
+          "id": "unit-09",
+          "literal": 0,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": false,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        },
+        {
+          "id": "unit-10",
+          "literal": 0,
+          "literal_total": 3,
+          "literal_citation": false,
+          "normalized": 0,
+          "normalized_total": 3,
+          "normalized_citation": true,
+          "literal_all_and_citation": false,
+          "normalized_all_and_citation": false
+        }
+      ],
+      "posthoc_slides": {
+        "expected": 15,
+        "observed": 4,
+        "matches": false
+      },
+      "posthoc_render_warnings": []
+    }
+  ],
+  "functional_tests": {
+    "command": "PYTHONPATH=src python -m pytest tests/test_evo_ppt.py -q",
+    "passed": 13
+  },
+  "posthoc_command": "existing docs/reports/evo-v3-real/posthoc.py with run-root replacement only; same posthoc_check.ts and frozen checker",
+  "totals": {
+    "known_registered_usd": 3.6900100000000005,
+    "registered_unknown_reserve_usd": 0.02185,
+    "unknown_preflights": 1,
+    "unknown_task_requests": 0
+  }
+}

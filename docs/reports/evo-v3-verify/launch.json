@@ -1,0 +1,54 @@
+{
+  "started_epoch": 1794361921.5142744,
+  "engineering_commit": "c1396cb6f0fd9dd407f52721b5104e3ba633f4ac",
+  "v3_commit": "b5a3879c962a102adbe07749aaa10a4ec4eddec0",
+  "preregistration_sha256": "4f2dc0343e5c77d37d1cce788fb74991db22ed49c335323e070648708430c4db",
+  "authority": "user_contract: George t820u continue validating, run B first; ONE v3 validation, B1 -> B2 -> A, each B <=45% of every total cap, A actual remainder; 600 requests/600000 tokens/14400 seconds/USD15/2147483648 bytes total; preflights/failures/pending counted, unchanged v3 permits, no retry/no cap increases/no push",
+  "plan": {
+    "total_caps": {
+      "requests": 600,
+      "tokens": 600000,
+      "seconds": 14400,
+      "usd": 15,
+      "storage_bytes": 2147483648
+    },
+    "shared_remaining": true,
+    "phases": [
+      {
+        "name": "sample-B1",
+        "arm": "B",
+        "caps": {
+          "requests": 270,
+          "tokens": 270000,
+          "seconds": 6480.0,
+          "usd": 6.75,
+          "storage_bytes": 966367641
+        }
+      },
+      {
+        "name": "sample-B2",
+        "arm": "B",
+        "caps": {
+          "requests": 270,
+          "tokens": 270000,
+          "seconds": 6480.0,
+          "usd": 6.75,
+          "storage_bytes": 966367641
+        }
+      },
+      {
+        "name": "calibration-A",
+        "arm": "A",
+        "caps": {
+          "requests": 600,
+          "tokens": 600000,
+          "seconds": 14400,
+          "usd": 15,
+          "storage_bytes": 2147483648
+        }
+      }
+    ],
+    "classification": "single validation of v3; B-first schedule only; no new design round",
+    "preregistration": "docs/reports/evo-v3-verify/pre-registration.md"
+  }
+}

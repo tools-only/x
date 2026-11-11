@@ -1,0 +1,49 @@
+{
+  "total_caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "shared_remaining": true,
+  "phases": [
+    {
+      "name": "sample-B1",
+      "arm": "B",
+      "caps": {
+        "requests": 270,
+        "tokens": 270000,
+        "seconds": 6480.0,
+        "usd": 6.75,
+        "storage_bytes": 966367641
+      }
+    },
+    {
+      "name": "sample-B2",
+      "arm": "B",
+      "caps": {
+        "requests": 270,
+        "tokens": 270000,
+        "seconds": 6480.0,
+        "usd": 6.75,
+        "storage_bytes": 966367641
+      }
+    },
+    {
+      "name": "calibration-A",
+      "arm": "A",
+      "caps": {
+        "requests": 600,
+        "tokens": 600000,
+        "seconds": 14400,
+        "usd": 15,
+        "storage_bytes": 2147483648
+      }
+    }
+  ],
+  "classification": "single validation of v3; B-first schedule only; no new design round",
+  "preregistration": "docs/reports/evo-v3-verify/pre-registration.md",
+  "authority": "user_contract: George t820u continue validating, run B first; ONE v3 validation, B1 -> B2 -> A, each B <=45% of every total cap, A actual remainder; 600 requests/600000 tokens/14400 seconds/USD15/2147483648 bytes total; preflights/failures/pending counted, unchanged v3 permits, no retry/no cap increases/no push",
+  "stage2": "requires a separately registered comparison; not launched by this runner"
+}

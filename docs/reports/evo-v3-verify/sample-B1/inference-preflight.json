@@ -1,0 +1,12 @@
+{
+  "status": "az_unavailable",
+  "error": "Remote end closed connection without response",
+  "elapsed_seconds": 15.077999999979511,
+  "accounting": {
+    "requests": 1,
+    "tokens": 4290,
+    "usd": 0.08676,
+    "seconds": 15.077999999979511,
+    "usage_status": "unknown_reserved"
+  }
+}

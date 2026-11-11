@@ -1,0 +1,68 @@
+{
+  "resources": {
+    "requests": 19,
+    "tokens": 448836,
+    "usd": 12.757200000000001,
+    "seconds": 1844.8153014183044,
+    "storage_bytes": 34878529
+  },
+  "caps": {
+    "requests": 600,
+    "tokens": 600000,
+    "seconds": 14400,
+    "usd": 15,
+    "storage_bytes": 2147483648
+  },
+  "started_epoch": 1794361921.5142744,
+  "ended_epoch": 1794363766.3295758,
+  "phases": [
+    "sample-B1",
+    "sample-B2",
+    "calibration-A"
+  ],
+  "billing": "reported usage plus unresolved v3 permits; conservative input/cache20 output80 USD/M; invoice unknown",
+  "experiment_end_epoch": 1794363400.462654,
+  "posthoc": "real local renderer/checker; no provider; never in-run feedback or delivery",
+  "posthoc_end_epoch": 1794363450.5622962,
+  "registered_price_usd": {
+    "known_registered_usd": 3.6900100000000005,
+    "registered_unknown_reserve_usd": 0.02185,
+    "unknown_preflights": 1,
+    "unknown_task_requests": 0,
+    "sum_with_unknown_reserve": 3.7118600000000006,
+    "rates_per_million": {
+      "input": 5,
+      "output": 30,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    },
+    "invoice": "unknown; estimate only"
+  },
+  "unknown_liabilities": [
+    {
+      "arm": "sample-B1",
+      "kind": "inference preflight remote disconnect",
+      "requests": 1,
+      "tokens": 4290,
+      "conservative_usd": 0.08676,
+      "registered_price_reserve_usd": 0.02185
+    }
+  ],
+  "storage_scope": {
+    "directories": [
+      "runs\\evo-v3-verify-20261111",
+      "docs\\reports\\evo-v3-verify"
+    ],
+    "additional_files": [
+      "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\docs\\reports\\ROUND-v3-verify.md",
+      "C:/Users/qi/tmp/r04/evo-design/ROUND-v3-verify.md"
+    ],
+    "measurement": "logical file bytes, each copy counted, includes accounting copies; excludes Git object database and caller UI/session logs"
+  },
+  "time_scope": "single launch through accounting seal, including renderer preflights, failures, pending, posthoc, evidence export and report finalization up to ended_epoch; later Git bookkeeping excluded",
+  "per_arm_final_original_storage_bytes": {
+    "sample-B1": 7298820,
+    "sample-B2": 9293683,
+    "calibration-A": 9709925
+  }
+}

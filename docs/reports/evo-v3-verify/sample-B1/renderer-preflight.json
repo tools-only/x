@@ -1,0 +1,23 @@
+{
+  "status": "passed",
+  "exit": 0,
+  "elapsed_seconds": 3.077999999979511,
+  "receipt": {
+    "revision": 1,
+    "slides": 1,
+    "native_objects": {
+      "html": 1
+    },
+    "warnings": [],
+    "renderer": "msedge.exe headless HTML",
+    "output": "D:\\agent\\.codex\\worktrees\\evo-design-20261110\\runs\\evo-v3-verify-20261111\\sample-B1\\renderer-preflight\\exports\\v001",
+    "html": "presentation.html",
+    "source_path": "artifacts/presentation.html",
+    "source_sha256": "9726b96e6be680975af9df3a3e83eb8e68b0b4794eefb2b971c7b8282cd18e80",
+    "title": "Presentation"
+  },
+  "browser": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "source_sha256": "9726b96e6be680975af9df3a3e83eb8e68b0b4794eefb2b971c7b8282cd18e80",
+  "image_sha256": "fbb8401949da5add025716f01262fd0cd87049e21fdfbbc57bdd3c503bddcd40",
+  "acceptance_preflight": "tests/test_evo_ppt_pi.py runs the protected checker through actual Pi/render/delivery"
+}
