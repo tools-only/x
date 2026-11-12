@@ -346,9 +346,12 @@ export default function pptDemo(pi: ExtensionAPI) {
     self_review: Type.Optional(Type.Object({ disposition: Type.Union([Type.Literal('keep'), Type.Literal('defer'), Type.Literal('change')]), rationale: Type.String() })) });
   register('office', OFFICE_ACTION_DESCRIPTION, officeParameters,
     async (a: any, signal: AbortSignal, ctx: any) => {
-      // D1: final delivery is one call; it is the last settlement and no review follows.
-      if (evo && a.op === 'deliver' && evo.mode !== 'execute') throw Error('delivery is a task action; it resumes after this review');
-      agentSelf.assertActionAllowed(`office.${a.op}`);
+      if (evo && evo.isFinalDelivery('office', a) && evo.needsQualityReview()) return evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true));
+      return officeDeliver(a, signal, ctx);
+    });
+  const officeDeliver = async (a: any, signal: AbortSignal, ctx: any, hostDeferred = false) => {
+      // The host defers final delivery while opening a review for quality facts not yet shown.
+      if (!hostDeferred) agentSelf.assertActionAllowed(`office.${a.op}`);
       if (a.op === 'render') {
         const sourcePath = a.source_path ?? canonical();
         if (!sourcePath) throw Error('Choose source_path from an existing file under artifacts/, or create artifacts/presentation.html or artifacts/deck.json as the canonical source.');
@@ -447,7 +450,7 @@ export default function pptDemo(pi: ExtensionAPI) {
           evo.outcome({ ...unitAcceptance, episode:state.episode, metrics: pptUnitMetrics(unitAcceptance, evo.segmentRows()) }, true);
           evo.fact('unit_delivered', { unit: unit.id, episode:state.episode, via: 'whole_deck_delivery' });
         }
-        // Whole delivery is the final settlement of the single task: due windows are delivered, no review is queued.
+        // The final settlement occurs only when the deferred delivery actually runs.
         await evo.finalSettlement(`delivery:${currentHash}`, { unit: null });
         persistLiveSelf();
       }
@@ -460,7 +463,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         mkdirSync(dirname(target), { recursive: true }); cpSync(liveTrace, target);
       }
       return text({ delivered: revision, directory: 'delivery/', evidence: evidenceLine(), self_review: selfReview, orchestration_action: orchestrationAction }, true);
-    });
+    };
   pi.on('before_agent_start', async (event: any) => {
     if (!initialized) {
       // Initial capabilities are fields on the live Agent object, not workspace files.
@@ -581,7 +584,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     };
     advanceEvoBoundary = async () => {
       activatingEvo = true;
-      try { await evo.boundary(applySurface,persistLiveSelf); }
+      try { await evo.requestBoundary(); await evo.boundary(applySurface,persistLiveSelf); }
       catch (error) {
         evo.fact('request_paused', { error: String(error) }); persistLiveSelf();
         writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason: String(error), resources: evo.resources(), stop_kind: 'budget_stop' }));
@@ -633,7 +636,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const ctx = evo.policy.context;
         const selfView = [JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())];
         const selfTail = ctx.self_view?.placement === 'tail';
-        const coreLine = 'SELF ROOT: one agent, one task, one serial session. Each counted unit boundary settles the unit and is followed by a review of your self. Your working context (policy.context), its composition per request, process facts and outcome metrics are part of your self view. The host records windows, later use and evidence; missing effects or metrics remain unverified. read_self exposes the current self and its evidence.';
+        const coreLine = 'SELF ROOT: one agent, one task, one serial session. At work boundaries the host presents the full process and delivery-quality facts for your review. An evolution review ends after a harness change is active or pending. Your working context and its composition are part of your self view. The host records windows, later use and evidence; read_self exposes the current self and its evidence.';
         const sections = [{ section: 'task_brief', text: taskInstructions }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
           { section: 'self_view', text: selfView[0] }, { section: 'projection', text: selfView[1] }];
         system.content = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine, ...(selfTail ? [] : selfView)].join('\n\n');

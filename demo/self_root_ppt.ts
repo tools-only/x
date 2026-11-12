@@ -108,6 +108,8 @@ export const PPT_SELF_ROOT_OPTIONS = {
   reservedToolNames: ['office'],
   actionOf: (name: string, args: any) => name === 'office' ? `office.${args?.op}` : name,
   boundaryTools: ['submit_unit', 'office.deliver'],
+  processFactTypes: ['render_action_receipt','artifact_write'],
+  finalDeliveryTools: ['office.deliver'],
   contextSections: ['task_brief', 'task_status'],
   probeKinds: ['renderer-preflight'],
 };
@@ -188,7 +190,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       return evo.outcome({ ...result, episode:episode() });
     });
   const submitted = new Set<string>(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => `${r.value.episode ?? 1}:${r.value.unit}`));
-  tool('submit_unit', 'Deliver one frozen content unit from the current rendered artifact. Records its acceptance facts and settles the unit; a review of your self follows at the next request. A content unit may span several slides. No quality verdict is fabricated.',
+  tool('submit_unit', 'Deliver one frozen content unit from the current rendered artifact. Records its acceptance facts and settles the unit; counted boundaries follow recorded task work. A content unit may span several slides. No quality verdict is fabricated.',
     Type.Object({ unit: Type.String() }), async (a: any) => {
       if (!active().units.some((u: any) => u.id === a.unit)) throw Error('unknown frozen unit');
       const key = `${episode()}:${a.unit}`;

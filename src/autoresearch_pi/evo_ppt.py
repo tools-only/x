@@ -167,7 +167,7 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
             "capabilities": ["read", "write", "edit", "ls", "grep", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
             "writable": ["components.tool", "components.prompt", "components.skill", "components.memory", "policy", "orchestration"],
             "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-normalized-render-v2", "expected_slides":15},
-            "inherit_defaults": False, "heartbeat": False}
+            "inherit_defaults": False, "segment": {"work_requests": 3}, "review": {"max_requests_without_change": 4}}
     if tuple(body["boundaries"]) != CONTRACT_BOUNDARIES:
         raise ValueError(f"frozen contract floor must be {list(CONTRACT_BOUNDARIES)}, got {body['boundaries']}")
     manifest = {"experiment_id": root.name, "arm": arm, "provider": "az", "model": MODEL, "contract": {**body, "content_hash": digest(body)},

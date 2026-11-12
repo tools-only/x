@@ -16,6 +16,7 @@ const INITIAL_CONDITIONS = { floor: { step: 0, evidence: ['settlement_facts'], e
 export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component', 'reflect_orchestration', 'decide', 'decide_exit', 'decide_validation'];
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
+  processFactTypes?: string[]; finalDeliveryTools?: string[];
   /** Adapter actions that mark a unit boundary; they never count as work between boundaries. */
   boundaryTools?: string[];
   /** Adapter-declared context section names (opaque to the core). */
@@ -47,23 +48,13 @@ export type SelfContract = {
   source: 'user_contract'; authority: string; decisions: string; content_hash: string; readonly_reason: string;
   boundaries: string[]; capabilities: string[]; writable: string[];
   budget: { requests: number; tokens: number; seconds: number; usd: number; storage_bytes: number };
-  acceptance: unknown; inherit_defaults: false; heartbeat: false | { enabled: true; every_settled_task_requests: 3 };
+  acceptance: unknown; inherit_defaults: false; segment: { work_requests: number }; review: { max_requests_without_change: number };
 };
-export type HeartbeatContract = SelfContract['heartbeat'];
 const CORE_PROBE_KINDS = ['preflight','inference','inference_probe','inference-preflight','provider-preflight'];
+const PROCESS_FACT_TYPES = ['watch_stall','request_paused','exit_normalization','review_unresolved','reflection_noop'];
 const CONSERVATIVE_RATES = { input: 20, output: 80 };
 const REGISTERED_RATES = { input: 5, output: 30 };
 const ESTIMATE_NEVER_INVOICE = 'estimate, never the invoice';
-export function isValidHeartbeat(heartbeat: unknown): heartbeat is HeartbeatContract {
-  if (heartbeat === false) return true;
-  return !!heartbeat && typeof heartbeat === 'object' && !Array.isArray(heartbeat)
-    && (heartbeat as any).enabled === true
-    && (heartbeat as any).every_settled_task_requests === 3
-    && Object.keys(heartbeat as any).length === 2;
-}
-export function heartbeatInterval(heartbeat: HeartbeatContract): number | undefined {
-  return heartbeat === false ? undefined : heartbeat.every_settled_task_requests;
-}
 type Row = { ref: string; kind: 'fact' | 'claim'; type: string; revision: number; request: number; value: any };
 export type Metric = { name: string; value: number; unit: string };
 export type Window = { id: string; revision: number; parent: number; review: string | null; activation: string; baseline: string[]; baseline_segment: number | null;
@@ -73,7 +64,7 @@ export type Window = { id: string; revision: number; parent: number; review: str
 /** Fixed mechanical rules published to the Agent; the host never selects "relevant" evidence. */
 export const WINDOW_RULES = {
   baseline: 'every metric of the last segment_summary at or before activation (baseline_last) and the per-metric mean over all segment_summaries at or before activation (baseline_mean); process and outcome metrics alike',
-  segment: 'the work between two counted unit boundaries; a boundary counts only when at least one successful execute-mode task action other than a boundary action ran since the previous counted boundary',
+  segment: 'the work between two counted boundaries; each boundary follows the configured number of execute-mode requests containing a task action, and submit_unit with work since the previous counted boundary also counts',
   due: 'the first counted unit boundary after activation whose segment contains later use of the activated revision; at task end an open window becomes due_unverified',
   later_use: 'execute-mode provider requests pinned at or after the activated revision; for a changed tool, a recorded call of that tool',
   observed: 'every metric of the segment_summary of the due boundary; differences against baseline_last and baseline_mean, no direction or verdict',
@@ -87,7 +78,7 @@ export const CORE_CONTEXT_SECTIONS = ['prompts', 'memory', 'skills', 'instructio
 export type OperationKind = 'review' | 'validation' | 'component' | 'orchestration';
 export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
-  if (kind === 'review') return { name: 'decide_exit', description: 'Close the current review. No field is required. The host records whether a reflection was activated in this review.',
+  if (kind === 'review') return { name: 'decide_exit', description: 'Finish the current review after the host-visible review work is complete. No field is required.',
     properties: { reason }, required: [] as string[] };
   if (kind === 'validation') return { name: 'decide_validation', description: 'Your decision on a due validation window. window selects among several due windows; restore defaults to the recorded parent revision.',
     properties: { window: { type: 'string' }, decision: { type: 'string', enum: ['adopt', 'restore'] }, reason: { type: 'string', description: 'Optional: how you interpret the delivered baseline/observed facts.' }, restore: { type: 'integer', minimum: 1 } }, required: ['decision'] };
@@ -208,17 +199,17 @@ export function seedPolicy(capabilities: string[], reviewTools: string[] = ['rea
   const observe = reviewTools.filter(t => capabilities.includes(t));
   return { request: { maxOutputTokens: 8192 }, modes: {
     execute: { tools: capabilities, instruction: 'Continue the current task.', exitSchema },
-    reflect: { tools: observe, instruction: 'Review the pinned self/evidence. You choose scope, method and whether to change anything. Close with decide_exit.', exitSchema },
+    reflect: { tools: observe, instruction: 'Review the pinned self/evidence and choose your scope, method and changes. Finish with decide_exit when it is available.', exitSchema },
     consolidate: { tools: observe, instruction: 'Organize this task\'s evidence and bounded inheritance records if useful; no automatic cross-task defaults.', exitSchema },
   }, routes: [], methods: {}, memory: { names: '*', order: 'name', write: 'replace' },
-  context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest' } };
+    context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest' } };
 }
 
 export function validateContract(c: SelfContract) {
   if (!c || c.source !== 'user_contract' || !c.authority || !c.decisions || !c.readonly_reason) throw Error('explicit user contract not loaded');
   const { content_hash, ...body } = c;
   if (content_hash !== hash(body)) throw Error('user contract hash mismatch');
-  if (hash([...c.boundaries].sort()) !== hash([...FLOOR].sort()) || c.inherit_defaults !== false || !isValidHeartbeat(c.heartbeat)) throw Error('v1 contract floor/heartbeat/inheritance mismatch');
+  if (hash([...c.boundaries].sort()) !== hash([...FLOOR].sort()) || c.inherit_defaults !== false || !Number.isSafeInteger(c.segment?.work_requests) || c.segment.work_requests < 1 || !Number.isSafeInteger(c.review?.max_requests_without_change) || c.review.max_requests_without_change < 1) throw Error('v1 contract floor/segment/review/inheritance mismatch');
   for (const key of ['requests', 'tokens', 'seconds', 'usd', 'storage_bytes']) if (!Number.isFinite(c.budget[key]) || c.budget[key] <= 0) throw Error(`missing numeric budget ${key}`);
   if (!Array.isArray(c.capabilities) || !Array.isArray(c.writable) || !c.acceptance) throw Error('contract capabilities/acceptance required');
 }
@@ -300,7 +291,10 @@ export class SelfRoot extends LiveAgentSelf {
   private activeReset?: string;
   private resetInProgress?: string;
   private mutations: Promise<unknown> = Promise.resolve();
-  private heartbeatDue: number[] = [];
+  private workRequests = 0;
+  private reviewRequests = 0;
+  private reviewedQualityRefs = new Set<string>();
+  private pendingDelivery?: { run: () => Promise<any> };
   private conditionSet: any = copy(INITIAL_CONDITIONS);
   private settlementCount = 0;
   private lastSettlementReview?: string;
@@ -334,7 +328,8 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','heartbeatDue','conditionSet','settlementCount','lastSettlementReview','taskEnded','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      if (r.reviewedQualityRefs !== undefined) this.reviewedQualityRefs = new Set(r.reviewedQualityRefs);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
       if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
       if (r.contract_hash !== contract.content_hash) throw Error('saved root contract differs');
@@ -349,9 +344,10 @@ export class SelfRoot extends LiveAgentSelf {
   }
   override get revision() { return this.serial; }
   get mode() { return this.currentMode; }
-  get reviewExitSchema() { return this.review ? copy(this.review.modeDefinition.exitSchema) : undefined; }
+  get reviewExitSchema() { return this.exitOperationKind ? copy(this.review.modeDefinition.exitSchema) : undefined; }
   /** The provider-visible exit operation for the current review, from the one descriptor. */
-  get exitOperationKind(): 'review' | undefined { return this.review ? 'review' : undefined; }
+  get exitOperationKind(): 'review' | undefined { return this.review && (!this.inEvolutionReview || this.reviewChanged()) ? 'review' : undefined; }
+  private reviewChanged() { return Boolean(this.review?.changes?.length || this.pending?.review === this.review?.id || this.pendingReview === this.review?.id); }
   get exitOperationSchema() { const kind = this.exitOperationKind; return kind ? providerOperationSchema(kind, this.review.modeDefinition.exitSchema) : undefined; }
   get dueWindows() { return this.windows.filter(w => ['due_unverified', 'due_comparable'].includes(w.status)).map(w => w.id); }
   get hasReview() { return Boolean(this.review || this.queue.length); }
@@ -366,7 +362,7 @@ export class SelfRoot extends LiveAgentSelf {
       windows: this.windows, queue: this.queue, currentMode: this.currentMode, review: this.review,
       consumed: [...this.consumed], started: this.started, units: this.units, tokens: this.tokens, usd: this.usd,
       paused: this.paused, previousMode: this.previousMode, providerCosts: [...this.providerCosts], policy: this.policy,
-      heartbeatDue: this.heartbeatDue, daemonRecord: this.daemonRecord ?? null,
+      workRequests: this.workRequests, reviewRequests: this.reviewRequests, reviewedQualityRefs: [...this.reviewedQualityRefs], daemonRecord: this.daemonRecord ?? null,
       conditionSet: this.conditionSet, settlementCount: this.settlementCount, lastSettlementReview: this.lastSettlementReview,
       taskEnded: this.taskEnded ?? null, segmentStart: this.segmentStart, segmentRefs: this.segmentRefs, contextByRequest: this.contextByRequest,
       activeReset: this.activeReset ?? null, resetInProgress: this.resetInProgress ?? null, pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses, status: 'intent', review: this.pendingReview ?? null } : null }) };
@@ -480,6 +476,9 @@ export class SelfRoot extends LiveAgentSelf {
         validatePolicy(next, this.contract, this.outputLimit); policy = next; addresses.push('policy');
       }
       if (!addresses.length) throw Error('empty transaction');
+      if (input.restore === undefined && hash(candidate.snapshot()) === hash(base.snapshot) && hash(policy) === hash(this.policy)) {
+        return this.fact('reflection_noop', { addresses, reason: 'candidate matches the active self' }).value;
+      }
       const evolution = this.inEvolutionReview;
       if (this.chainFailed) throw Error('response chain failed while candidate was being validated');
       const revision = this.pendingRevision + 1;
@@ -526,6 +525,9 @@ export class SelfRoot extends LiveAgentSelf {
     return this.options.contextItem(ref);
   }
   actionName(name: string, args: any) { return this.options.actionOf ? this.options.actionOf(name, args) : name; }
+  isFinalDelivery(name: string, args: any) {
+    return (this.options.finalDeliveryTools ?? []).includes(this.actionName(name, args));
+  }
   private applyConditionAddenda() {
     const routes = this.policy.routes.map((route: any) => ({ id: route.id, event: route.event, mode: route.mode, priority: route.priority }));
     this.conditionSet.addenda = routes;
@@ -619,15 +621,19 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.paused) throw Error('inconsistent/paused');
     this.activatePending(applySurface, persist);
     this.chainFailed = false;
-    await this.emitDueHeartbeats();
+    if (this.review && this.inEvolutionReview && !this.reviewChanged()) {
+      this.reviewRequests++;
+      if (this.reviewRequests >= this.contract.review.max_requests_without_change) this.closeMechanically('review_unresolved');
+    } else if (!this.review) this.reviewRequests = 0;
     await this.event('request_boundary',`request:${this.request}`);
     if (!this.review && this.queue.length) this.enter(this.queue.shift());
     this.lastSurface = this.surface(); applySurface(this.lastSurface);
+    if (!this.review && this.pendingDelivery) { const delivery = this.pendingDelivery; this.pendingDelivery = undefined; await delivery.run(); }
   }
-  /** End of a model response/run (Pi agent_end): resolve a pending activation first, then one mechanical closure. */
+  /** End a response. Agent-opened reviews may close mechanically; host-opened evolution reviews remain active until decide_exit or the request cap. */
   endResponse(applySurface: (tools: string[]) => void, persist: () => void, reason: string) {
     if (!this.paused) this.activatePending(applySurface, persist);
-    this.closeMechanically(reason);
+    if (!this.review || !this.inEvolutionReview) this.closeMechanically(reason);
   }
   /** Task end (delivery completed or budget stop): open windows become due; no further review is queued. */
   taskEnd(reason: string) {
@@ -645,8 +651,39 @@ export class SelfRoot extends LiveAgentSelf {
   get segmentNumber() { return this.settlementCount + 1; }
   private isWork(r: Row) {
     const boundary = this.options.boundaryTools ?? [];
-    return r.kind === 'fact' && r.type === 'tool_result' && r.value?.mode === 'execute' && !r.value?.is_error
-      && !PROTOCOL.includes(r.value?.tool) && !boundary.includes(r.value?.action ?? r.value?.tool);
+    if (r.kind !== 'fact' || r.value?.mode !== 'execute') return false;
+    const tool = r.value?.tool ?? r.value?.facts?.tool;
+    const action = r.value?.action ?? r.value?.facts?.action ?? tool;
+    return Boolean(tool) && !PROTOCOL.includes(tool) && !boundary.includes(action);
+  }
+  private segmentHasWork(rows: Row[]) {
+    return rows.some(r => this.isWork(r) || (r.type === 'event' && ['tool_failed', 'tool_cancelled'].includes(r.value?.type)
+      && !PROTOCOL.includes(r.value?.facts?.tool)
+      && !(this.options.boundaryTools ?? []).includes(this.actionName(r.value.facts.tool, r.value.facts.args))));
+  }
+  /** Host-selected evidence for the review's counted segment, in a fixed order. */
+  reviewView() {
+    const eventRow = this.review ? this.ledger.find(r => r.ref === this.review.event && r.type === 'event') : undefined;
+    const facts = eventRow?.value?.facts ?? {};
+    const summary = facts.segment_summary ? this.ledger.find(r => r.ref === facts.segment_summary) : undefined;
+    const range = summary?.value?.ledger;
+    const rows = Array.isArray(range) ? this.ledger.slice(range[0], range[1] + 1) : [];
+    const item = (r: Row) => ({ ref: r.ref, type: r.type, value: copy(r.value) });
+    const processTypes = new Set(['request_record', ...PROCESS_FACT_TYPES]);
+    const processFacts = rows.filter(r => processTypes.has(r.type)).map(item);
+    const toolEvents = rows.filter(r => r.type === 'event' && ['tool_succeeded', 'tool_failed', 'tool_cancelled'].includes(r.value?.type))
+      .map(r => ({ ref: r.ref, type: r.value.type, facts: copy(r.value.facts) }));
+    const boundaries = rows.filter(r => r.type === 'event' && ['unit_completed', 'work_quantum', 'settlement'].includes(r.value?.type))
+      .map(r => ({ ref: r.ref, type: r.value.type, facts: copy(r.value.facts) }));
+    const receipts = rows.filter(r => (this.options.processFactTypes ?? []).includes(r.type)).map(item);
+    const selfActivity = rows.filter(r => ['reflection_pending', 'reflection_activated', 'reflection_noop', 'review_closed'].includes(r.type)).map(item);
+    const qualityFacts = rows.filter(r => r.type === 'task_outcome').map(r => ({ ref: r.ref, value: copy(r.value) }));
+    const due = (facts.due_windows ?? []).map((id: string) => {
+      const window = this.windows.find(w => w.id === id);
+      return window ? { id, delivered: copy(window.delivered ?? null) } : { id, delivered: null };
+    });
+    return { process_facts: processFacts, tool_events: toolEvents, boundaries, receipts_probes: receipts,
+      self_activity: selfActivity, quality_facts: qualityFacts, due_window_deliveries: due };
   }
   /** Host-made per-segment summary: counts, sums, max and last over recorded facts; no labels or ranking. */
   private summarizeSegment(boundaryRef: string, unit: string | null) {
@@ -685,9 +722,10 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.consumed.has(key)) return { duplicate: true };
     this.consumed.add(key);
     const final = (facts as any)?.final === true;
-    let settles = ['unit_completed', 'settlement'].includes(type);
+    let settles = ['unit_completed', 'settlement', 'work_quantum'].includes(type);
     // D2: a unit boundary counts only when task work ran since the previous counted boundary (final delivery always settles).
-    const coalesced = settles && !final && !this.ledger.slice(this.segmentStart).some(r => this.isWork(r));
+    const forcedReview = (facts as any)?.force_review === true;
+    const coalesced = settles && !final && !forcedReview && !this.segmentHasWork(this.ledger.slice(this.segmentStart));
     if (coalesced) settles = false;
     if (settles) this.settlementCount++;
     const event = this.fact('event', { type, boundary, facts });
@@ -699,7 +737,7 @@ export class SelfRoot extends LiveAgentSelf {
     const input = { event, revision: this.serial, state: super.snapshot(), ledger_offset: this.ledger.length, request: this.request, resources: this.resources() };
     // After task end (or at the final settlement) nothing can use a change in this task: no review is queued.
     const quiet = Boolean(this.taskEnded) || final;
-    const routes = type === 'heartbeat' || quiet ? [] : [...this.policy.routes].filter(r => r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
+    const routes = quiet ? [] : [...this.policy.routes].filter(r => r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
     const triggers: any[] = [];
     if (this.contract.boundaries.includes(type) && !quiet) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
     if (settles && !quiet) {
@@ -709,9 +747,7 @@ export class SelfRoot extends LiveAgentSelf {
       this.conditionSet.floor = { ...prior, event_classes: [...new Set([...prior.event_classes, ...classes])], coverage_tags: [...new Set([...prior.coverage_tags, ...tags])] };
       triggers.push({ id: 'evolution_review', source: 'settlement_clock', mode: 'reflect', conclusion_sink: 'ledger' });
     }
-    if (type === 'heartbeat' && heartbeatInterval(this.contract.heartbeat) && !quiet) {
-      triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
-    }
+
     for (const route of routes) {
       try {
         if (route.predicate && (await this.evaluate(this.policy.methods[route.predicate], input, { route: route.id })).value !== true) continue;
@@ -737,6 +773,7 @@ export class SelfRoot extends LiveAgentSelf {
         due_windows: this.dueWindows, conditions: copy(this.conditionSet) };
       this.lastSettlementReview = event.ref;
     }
+
     if (triggers.length) {
       const existing = this.queue.find(t => t.boundary === boundary);
       if (existing) existing.triggers.push(...triggers);
@@ -751,8 +788,14 @@ export class SelfRoot extends LiveAgentSelf {
   }
   private enter(ticket: any) {
     this.previousMode = this.currentMode; this.currentMode = ticket.triggers[0].mode;
+    this.reviewRequests = 0;
     this.review = { ...ticket, mode: this.currentMode, modeDefinition: copy(this.policy.modes[this.currentMode]), policy: copy(this.policy),
-      suspended: { step: this.step, revision: this.serial }, changes: [], request_entered: this.request, snapshot: this.baseSaved(), windows: this.dueWindows };
+      suspended: { step: this.step, revision: this.serial }, changes: [], request_entered: this.request, snapshot: this.baseSaved(), windows: this.dueWindows, entry_hash: hash(this.baseSaved().snapshot) };
+    if (this.inEvolutionReview) {
+      const shown = this.reviewView().quality_facts.map((x: any) => x.ref);
+      this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
+      this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
+    }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
   }
   enterMode(mode: string) {
@@ -776,7 +819,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.fact(error ? 'active_reset_failed' : 'active_reset_completed',{id,...(error ? {error} : {})});
     this.resetInProgress = undefined;
   }
-  /** decide_exit. No status: the host records whether a reflection was activated; at most one invalid expression, then mechanical close. */
+  /** decide_exit: at most one invalid expression, then mechanical close. */
   exit(input: { reason?: string; result?: any }) {
     if (!this.review) throw Error('no active review');
     const review = this.review;
@@ -794,10 +837,12 @@ export class SelfRoot extends LiveAgentSelf {
     }
     return this.close(review, 'agent', { result });
   }
-  /** One closure record; outcome is a host fact (changed / changed_pending_activation / no_change_activated), never an Agent verdict. */
+  /** One closure record; a host-unresolved close is distinct from an Agent conclusion. */
   private close(review: any, closedBy: string, extra: any = {}) {
     const evolution = this.inEvolutionReview;
-    const outcome = review.changes.length > 0 ? 'changed' : this.pending ? 'changed_pending_activation' : 'no_change_activated';
+    const unresolved = evolution && closedBy.startsWith('mechanical:') && !this.reviewChanged();
+    const outcome = unresolved || closedBy.includes('review_unresolved') ? 'review_unresolved' : review.changes.length > 0 ? 'changed' : this.pending ? 'changed_pending_activation' : 'closed';
+    if (evolution && closedBy === 'agent' && !this.reviewChanged()) throw Error('host-opened evolution review requires a qualifying change');
     const undecided = (review.windows ?? []).filter((id: string) => this.windows.some(w => w.id === id && ['due_unverified', 'due_comparable'].includes(w.status)));
     for (const id of undecided) this.fact('validation_undecided', { window: id, review: review.id });
     const pinned = this.ledger.find(r => r.ref === review.event)?.value?.facts?.evidenceRefs;
@@ -814,6 +859,7 @@ export class SelfRoot extends LiveAgentSelf {
   /** One mechanical closure (agent_end, crash, budget, second invalid exit). Never invents an Agent decision. */
   closeMechanically(reason: string, extra: any = {}) {
     if (!this.review) return undefined;
+    if (reason === 'review_unresolved') this.fact('review_unresolved', { review:this.review.id, requests:this.reviewRequests });
     return this.close(this.review, `mechanical:${reason}`, extra);
   }
   closeIncomplete(reason: string) { return this.closeMechanically(reason); }
@@ -909,36 +955,28 @@ export class SelfRoot extends LiveAgentSelf {
         preflight_failure: { count: preflight.length, reasons: preflight },
         budget_stop: { count: budget.length, reasons: budget },
       },
-      heartbeat_gaps: this.ledger.filter(r => r.type === 'heartbeat_gap').map(r => copy(r.value)),
+
     };
   }
   resources() {
     const record = this.daemonRecord ?? this.resourceRecord();
     return { request: this.request, tokens: this.tokens, usd_estimate: this.usd, elapsed_seconds: (Date.now() - this.started)/1000, storage_bytes: this.storageBytes, units: this.units, cap: this.contract.budget, record };
   }
-  private queueHeartbeatIfDue() {
-    const interval = heartbeatInterval(this.contract.heartbeat);
-    if (!interval) return;
-    const settled = this.settledTaskRequests();
-    if (settled > 0 && settled % interval === 0 && !this.heartbeatDue.includes(settled)) this.heartbeatDue.push(settled);
-  }
-  private async emitDueHeartbeats() {
-    const interval = heartbeatInterval(this.contract.heartbeat);
-    if (!interval) { this.heartbeatDue = []; return; }
-    const due = [...this.heartbeatDue];
-    this.heartbeatDue = [];
-    for (const settled of due) {
-      const boundary = `heartbeat:settled:${settled}`;
-      if (this.request >= this.contract.budget.requests) {
-        if (!this.consumed.has(`heartbeat:${boundary}`)) {
-          this.consumed.add(`heartbeat:${boundary}`);
-          this.fact('heartbeat_gap', { settled_task_requests: settled, reason: 'hard cap; heartbeat not dispatched', source: 'user_contract' });
-        }
-        continue;
-      }
-      await this.event('heartbeat', boundary, { settled_task_requests: settled, source: 'user_contract' });
+  async requestBoundary() {
+    const sincePin = this.ledger.slice(this.requestPin?.ledger_offset ?? this.ledger.length);
+    const worked = this.segmentHasWork(sincePin);
+    if (this.requestPin?.mode === 'execute' && !this.isProbeKind(this.requestPin.kind) && worked) this.workRequests++;
+    if (this.workRequests >= this.contract.segment.work_requests) {
+      this.workRequests = 0;
+      await this.event('work_quantum', `work:${this.settlementCount}:${this.request}`, { source: 'user_contract' });
     }
   }
+  queueFinalDelivery(run: () => Promise<any>) {
+    if (this.queue.length || this.review) throw Error('final delivery is already deferred by an open review');
+    this.pendingDelivery = { run };
+    return this.event('settlement', `quality-review:${this.request}:${this.ledger.length}`, { final: false, force_review: true, source: 'unreviewed_quality' }).then(result => ({ delivery_deferred: true, review: result.event, completion: 'host completes delivery after review closure' }));
+  }
+  needsQualityReview() { return this.ledger.some(r => r.type === 'task_outcome' && !this.reviewedQualityRefs.has(r.ref)); }
   guard(storageBytes?: number) {
     if (storageBytes !== undefined) this.storageBytes = storageBytes;
     const b = this.contract.budget;
@@ -969,7 +1007,6 @@ export class SelfRoot extends LiveAgentSelf {
       provider_retries: extra.provider_retries ?? null, cache_supported: extra.cache_supported ?? 'unknown', latency_ms: duration_ms, duration_ms,
       usd_estimate: usd, cost_source: 'provider usage + manifest rates; actual invoice unknown', status: known ? 'reported' : 'unknown_reserved',
       composition: context?.composition ?? null, context_policy: context?.receipt ?? null });
-    this.queueHeartbeatIfDue();
     return row;
   }
   /** Runtime assembly plan for this request from the pinned context policy (declarative knobs, then the Agent's optional
@@ -1014,10 +1051,8 @@ export class SelfRoot extends LiveAgentSelf {
   override mirror(): any {
     const active = super.mirror();
     for (const component of active.architecture.components) delete (component as any).body;
-    const reviewEvent = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event' && ['settlement','unit_completed'].includes(r.value.type))?.value.facts;
-    const reviewSummary = reviewEvent?.segment_summary ? this.ledger.find(r => r.ref === reviewEvent.segment_summary)?.value : undefined;
-    const reviewEvidence = reviewEvent ? { ...reviewEvent, ...(reviewSummary ? { segment_summary_value: reviewSummary } : {}),
-      due_window_deliveries: this.windows.filter(w => (reviewEvent.due_windows ?? []).includes(w.id)).map(w => ({ id: w.id, ...w.delivered })) } : undefined;
+    const reviewEvent = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event')?.value.facts;
+    const reviewEvidence = reviewEvent ? { ...reviewEvent, ...this.reviewView() } : undefined;
     const rows = this.policy.context.self_view?.ledger_rows ?? 40;
     const lastRequest = this.ledger.findLast(r => r.type === 'request_record');
     const segments = this.segmentRefs.slice(-12).map(ref => { const v = this.ledger.find(r => r.ref === ref)!.value; return { ref, segment: v.segment, unit: v.unit, requests: v.requests, metrics: v.metrics }; });
