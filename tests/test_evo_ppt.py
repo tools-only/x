@@ -10,11 +10,11 @@ from autoresearch_pi import evo_ppt
 def test_exact_local_registration_without_provider_or_model_fallback(tmp_path):
     path=tmp_path/'models.json'
     path.write_text(json.dumps({'providers':{'old-handle':{'baseUrl':evo_ppt.BASE,'api':'openai-completions','models':[
-        {'id':evo_ppt.MODEL,'contextWindow':175000,'maxTokens':65536}]}}}),encoding='utf-8')
+        {'id':evo_ppt.MODEL,'contextWindow':1048576,'maxTokens':131072}]}}}),encoding='utf-8')
     settings=evo_ppt.local_settings(path)
-    assert settings['provider']=='az' and settings['model']['id']=='qwen3.8-27b'
-    assert settings['request_reserve']['tokens']==240536
-    assert settings['request_reserve']['usd']==pytest.approx(8.74288)
+    assert settings['provider']=='az' and settings['model']['id']=='glm-5.3-flash'
+    assert settings['request_reserve']['tokens']==1179648
+    assert settings['request_reserve']['usd']==pytest.approx(0.2228224)
     agent=settings['agent_settings']
     assert 0 < agent['httpIdleTimeoutMs'] < 300_000
     assert agent['retry']['enabled'] and agent['retry']['maxRetries']==2

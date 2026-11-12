@@ -21,8 +21,11 @@ from .project import load_project_dotenv
 from .resource_daemon import refresh_resource_daemon
 
 PROJECT = Path(__file__).resolve().parents[2]
-MODEL = "qwen3.8-27b"
+MODEL = "glm-5.3-flash"
 BASE = "https://az.gptplus5.com/v1"
+INPUT_RATE = 0.15
+OUTPUT_RATE = 0.5
+CACHE_RATE = 0.0
 
 
 def digest(value):
@@ -64,14 +67,14 @@ def local_settings(registration: Path):
             if model.get("id") == MODEL:
                 found.append((name, provider, model))
     if not found:
-        raise ValueError("az/qwen3.8-27b unavailable in the existing local registration; no substitution")
+        raise ValueError("az/glm-5.3-flash unavailable in the existing local registration; no substitution")
     name, provider, model = found[0]
     return {"registration": str(registration), "original_provider_handle": name, "provider": "az", "baseUrl": BASE,
             "api": provider["api"], "compat": provider.get("compat", {}), "model": model, "thinking": "low",
             "request_output_tokens": 8192,
             "request_reserve": {"tokens": model["contextWindow"] + model["maxTokens"],
-                                "usd": (model["contextWindow"]*20 + model["maxTokens"]*80)/1e6,
-                                "basis": "registered maximum input/output; conservative existing PPT rates 20/80 USD per million; unknown invoice"},
+                                "usd": (model["contextWindow"]*INPUT_RATE + model["maxTokens"]*OUTPUT_RATE)/1e6,
+                                "basis": "registered maximum input/output; GLM-5.3-Flash rates 0.15/0.50 USD per million and zero cache rates; unknown invoice"},
             "sampling": {"temperature": "provider default; not supplied", "top_p": "provider default; not supplied"},
             # Pi's HTTP dispatcher resets its headers/body idle clock on received
             # bytes. A silent call fails before the 300s turn watchdog; Pi then
@@ -119,8 +122,11 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     # The frozen runtime requires finite numbers. An explicit null means no
     # token cap; its compatibility value cannot bind within the request cap.
     unlimited_tokens = "tokens" in caps and caps["tokens"] is None
+    unlimited_usd = "usd" in caps and caps["usd"] is None
     if unlimited_tokens:
         caps = {**caps, "tokens": 2**53 - 1}
+    if unlimited_usd:
+        caps = {**caps, "usd": 2**53 - 1}
     for key in ("requests", "tokens", "seconds", "usd", "storage_bytes"):
         if isinstance(caps.get(key),bool) or not isinstance(caps.get(key), (int, float)) or not math.isfinite(caps[key]) or caps[key] <= 0:
             raise ValueError(f"authorized numeric cap missing: {key}")
@@ -131,6 +137,8 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     settings = local_settings(registration)
     if unlimited_tokens and caps["requests"] * settings["request_reserve"]["tokens"] >= caps["tokens"]:
         raise ValueError("token-free compatibility value must exceed all authorized request permits")
+    if unlimited_usd and caps["requests"] * settings["request_reserve"]["usd"] >= caps["usd"]:
+        raise ValueError("usd-free compatibility value must exceed all authorized request permits")
     prepare(root, source)
     if arm == "B":
         (root / "workspace/AGENTS.md").unlink()
@@ -159,6 +167,10 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
         manifest["token_budget"] = {"authorized_cap": None, "runtime_nonbinding_value": caps["tokens"],
             "maximum_permit_tokens_across_request_cap": caps["requests"] * settings["request_reserve"]["tokens"],
             "metering": "unchanged; token dimension cannot deny any authorized request permit"}
+    if unlimited_usd:
+        manifest["usd_budget"] = {"authorized_cap": None, "runtime_nonbinding_value": caps["usd"],
+            "maximum_permit_usd_across_request_cap": caps["requests"] * settings["request_reserve"]["usd"],
+            "metering": "unchanged; usd dimension cannot deny any authorized request permit"}
     manifest["renderer_preflight"] = renderer_preflight(root)
     write(root / "manifest.json", manifest)
     write(root / "units.json", units)
@@ -174,8 +186,9 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False, d
         key = values["OPENAI_API_KEY"]
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         url = BASE + ("/chat/completions" if inference else "/models")
-        data = json.dumps({"model": MODEL, "messages": [{"role": "user", "content": "Reply OK."}], "max_completion_tokens": 16,
-                           "enable_thinking": True, "reasoning_effort": manifest["settings"]["thinking"], "stream": False}).encode() if inference else None
+        probe_payload = {"model": MODEL, "messages": [{"role": "user", "content": "Reply OK."}], "max_completion_tokens": 16,
+                         "reasoning_effort": manifest["settings"]["thinking"], "stream": False}
+        data = json.dumps(probe_payload).encode() if inference else None
         started = time.monotonic()
         try:
             timeout = min(45,manifest["contract"]["budget"]["seconds"],deadline-time.time() if deadline is not None else 45)
@@ -183,7 +196,7 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False, d
                 raise TimeoutError("authorized round wall clock exhausted before preflight dispatch")
             if inference:
                 write(root / "inference-preflight.json", {"status":"pending", "accounting":{"requests":1,
-                    "tokens":len(data)+4096+16,"usd":((len(data)+4096)*20+16*80)/1e6,"usage_status":"unknown_reserved"}})
+                    "tokens":len(data)+4096+16,"usd":((len(data)+4096)*INPUT_RATE+16*OUTPUT_RATE)/1e6,"usage_status":"unknown_reserved"}})
             sent = True
             with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=timeout) as response:
                 body = json.load(response)
@@ -199,7 +212,7 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False, d
     if inference:
         usage = result.get("usage") or {}
         result["accounting"]={"requests":int(sent),"tokens":usage.get("total_tokens",(len(data)+4096+16) if sent else 0),
-                              "usd":(usage["prompt_tokens"]*20+usage["completion_tokens"]*80)/1e6 if "prompt_tokens" in usage and "completion_tokens" in usage else (((len(data)+4096)*20+16*80)/1e6 if sent else 0),
+                              "usd":(usage["prompt_tokens"]*INPUT_RATE+usage["completion_tokens"]*OUTPUT_RATE)/1e6 if "prompt_tokens" in usage and "completion_tokens" in usage else (((len(data)+4096)*INPUT_RATE+16*OUTPUT_RATE)/1e6 if sent else 0),
                               "seconds":result.get("elapsed_seconds",0),"usage_status":"reported" if usage else "unknown_reserved"}
     write(root / ("inference-preflight.json" if inference else "provider-preflight.json"), result)
     persist_resource_daemon(root)
@@ -231,7 +244,7 @@ def run(root: Path, *, round_deadline: float | None = None):
         result={"stop":"round_wall_clock_before_preflight", "resources":{"requests":0,"tokens":0,"usd":0},
                 "units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); persist_resource_daemon(root); return result
-    if b["requests"] < 2 or b["tokens"] < 4352 or b["usd"] < (4336*20+16*80)/1e6:
+    if b["requests"] < 2 or b["tokens"] < 4352 or b["usd"] < (4336*INPUT_RATE+16*OUTPUT_RATE)/1e6:
         result={"stop":"insufficient_preflight_budget","units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); persist_resource_daemon(root); return result
     probe = model_preflight(root,manifest,values,inference=True,deadline=round_deadline)
@@ -264,8 +277,9 @@ def run(root: Path, *, round_deadline: float | None = None):
     env = {"PI_CODING_AGENT_DIR": str(agent), "OPENAI_API_KEY": values["OPENAI_API_KEY"], "PPT_DEMO_ROOT": str(root), "PPT_DEMO_PYTHON": os.sys.executable,
            "PPT_DEMO_MODEL": MODEL, "PPT_DEMO_THINKING": settings["thinking"], "PPT_FRESH_BATCH": "0", "PPT_DEMO_DEADLINE": str(int((time.time()+caps["seconds"])*1000)),
            "PPT_DEMO_BUDGET_USD": str(caps["usd"]), "PPT_DEMO_REQUEST_RESERVE_USD": str(settings["request_reserve"]["usd"]),
-           "PPT_DEMO_REQUEST_RESERVE_TOKENS": str(settings["request_reserve"]["tokens"]), "PPT_DEMO_INPUT_USD_PER_MILLION": "20", "PPT_DEMO_OUTPUT_USD_PER_MILLION": "80",
-           "PPT_DEMO_CACHE_READ_USD_PER_MILLION": "20", "PPT_DEMO_CACHE_WRITE_USD_PER_MILLION": "20"}
+           "PPT_DEMO_REQUEST_RESERVE_TOKENS": str(settings["request_reserve"]["tokens"]), "PPT_DEMO_INPUT_USD_PER_MILLION": str(INPUT_RATE),
+           "PPT_DEMO_OUTPUT_USD_PER_MILLION": str(OUTPUT_RATE), "PPT_DEMO_CACHE_READ_USD_PER_MILLION": str(CACHE_RATE),
+           "PPT_DEMO_CACHE_WRITE_USD_PER_MILLION": str(CACHE_RATE)}
     if manifest["arm"] == "B":
         env["EVO_MANIFEST"] = str(root / "runtime-manifest.json")
     else:
