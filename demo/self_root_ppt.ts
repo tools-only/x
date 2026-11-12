@@ -70,6 +70,36 @@ export function collectAcceptance(m: SelfRootManifest, root: string, workspace: 
     limitations: ['literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion', 'narrative, aesthetics and persuasion unmeasured', 'geometry limited to renderer warnings', 'HTML delivery; not a native editable pptx'] };
 }
 
+/** Bounded facts from immutable same-root receipts for the existing delivery review. */
+export function deliveryReviewEvidence(evo: SelfRoot) {
+  const saved = evo.export();
+  const ledger = saved.root.ledger as Array<{ref: string; type: string; value: any}>;
+  const outcome = ledger.findLast(row => row.type === 'task_outcome' && row.value?.renderer?.receipt);
+  const failure = ledger.findLast(row => row.type === 'event' && row.value?.type === 'tool_failed');
+  const recovered = failure && ledger.slice(Number(failure.ref.slice(7)) + 1)
+    .find(row => row.type === 'event' && row.value?.type === 'tool_succeeded');
+  const render = ledger.findLast(row => row.type === 'render_action_receipt');
+  const receipt = outcome?.value?.renderer?.receipt;
+  const current = receipt ? receipt.source_sha256 === saved.snapshot.latestArtifactHash : null;
+  const units = outcome?.value?.units ?? [];
+  const flags = units.flatMap((unit: any) => [unit.citation_literal?.found, unit.normalized?.citation_found,
+    ...(unit.literal_matches ?? []).map((match: any) => match.found),
+    ...(unit.normalized?.matches ?? []).map((match: any) => match.found)]);
+  const refs = [...new Set([outcome?.ref, failure?.ref, recovered?.ref, render?.ref].filter((ref): ref is string => Boolean(ref)))];
+  return { evidenceRefs: refs, artifact: receipt ? { revision: receipt.revision, sha256: receipt.source_sha256, current,
+    slides: receipt.slides, warnings: (receipt.warnings ?? []).slice(0, 8), additional_warnings: Math.max(0, (receipt.warnings ?? []).length - 8) } : null,
+    checker: outcome ? { version: outcome.value.checker?.version, unit_count: units.length,
+      slide_count: outcome.value.slide_count,
+      flags: { true: flags.filter(x => x === true).length, false: flags.filter(x => x === false).length,
+        unknown: flags.filter(x => x == null).length } } : null,
+    tool_failure: failure ? { ref: failure.ref, tool: failure.value.facts?.tool,
+      subsequent_success_ref: recovered?.ref ?? null, subsequent_success_tool: recovered?.value.facts?.tool ?? null } : null,
+    render_action: render ? { ref: render.value.action_ref, ledger_ref: render.ref,
+      transition: render.value.transition?.status, transition_reason: render.value.transition?.reason ?? null } : null,
+    self_revision: saved.root.serial, orchestration_revision: saved.snapshot.revision,
+    candidate_validation_window: saved.root.windows.some((window: any) => window.status === 'open' || window.status === 'delivered') };
+}
+
 export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist }: any) {
   const tool = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name, description, parameters,
     execute: async (_id: string, a: any, _signal: any, _update: any, ctx: any) => { const result = await fn(a,ctx); persist(); return text(result,Boolean(result?.context_reset_requested)); } });

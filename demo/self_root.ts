@@ -600,6 +600,7 @@ export class SelfRoot extends LiveAgentSelf {
   override mirror(): any {
     const active = super.mirror();
     for (const component of active.architecture.components) delete (component as any).body;
+    const reviewEvidence = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event' && r.value.type === 'before_delivery')?.value.facts;
     return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, parts: {
       components: { relation: 'executes from this root', writable_kinds: this.contract.writable.filter(x => x.startsWith('components.')) },
       orchestration: { relation: 'controls active step and trusted receipts', writable: this.contract.writable.includes('orchestration') },
@@ -608,6 +609,7 @@ export class SelfRoot extends LiveAgentSelf {
       protected: { reason: this.contract.readonly_reason, contract_hash: this.contract.content_hash, boundaries: this.contract.boundaries, budget: this.contract.budget, capabilities: this.contract.capabilities, acceptance: this.contract.acceptance },
       unsupported: ['provider replacement', 'task subagents', 'cross-task default promotion', 'interactive world replay'],
     }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, review: this.review ? { id: this.review.id, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_schema: this.reviewExitSchema } : null,
+      ...(reviewEvidence ? { review_evidence: copy(reviewEvidence) } : {}),
       instruction: this.review?.modeDefinition.instruction ?? this.policy.modes[this.currentMode].instruction,
       request_pin: this.requestPin, resources: this.resources(), pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
       queue: this.queue.map(t => t.id), windows: this.windows.filter(w => ['open','delivered','restore_pending'].includes(w.status)),

@@ -153,6 +153,22 @@ def test_real_renderer_acceptance_and_merged_delivery_review(tmp_path):
     assert any(r['value']['unit']=='one' for r in ledger if r['type']=='unit_delivered')
     tickets = [r['value'] for r in ledger if r['type']=='mode_entered']
     assert any({t['id'] for t in r['triggers']} >= {'contract:before_delivery','contract:before_session_end'} for r in tickets)
+    events = [r for r in ledger if r['type']=='event' and r['value']['type']=='before_delivery']
+    assert len(events) == 2  # unit and whole deck; repeat delivery does not add a review
+    whole = next(r for r in events if r['value']['boundary'].startswith('delivery:'))
+    facts = whole['value']['facts']
+    assert facts['artifact']['revision'] == 1 and facts['artifact']['current']
+    assert facts['artifact']['slides'] == 1 and facts['artifact']['warnings'] == []
+    assert facts['checker']['version'] == 'v1' and facts['checker']['unit_count'] == 1
+    assert facts['checker']['flags'] == {'true': 4, 'false': 0, 'unknown': 0}
+    assert facts['render_action']['ref'].startswith('action-')
+    assert facts['render_action']['transition'] in ('stalled', 'advanced', 'complete')
+    assert facts['self_revision'] == 1 and facts['orchestration_revision'] == 1
+    assert facts['candidate_validation_window'] is False
+    assert all(any(row['ref'] == ref and row['kind'] == 'fact' for row in ledger) for ref in facts['evidenceRefs'])
+    assert not any(key in json.dumps(facts) for key in ('quality_verdict', 'proposed_change', 'cause_tag'))
+    assert any('review_evidence' in c['messages'][0]['content'] and facts['artifact']['sha256'] in c['messages'][0]['content']
+               for c in contexts)
     assert any(r['type']=='validation_delivered' and 'task_outcomes' in r['value']['missing'] for r in ledger)
     assert any(r['type']=='validation_interpreted' and r['value']['decision']=='defer' for r in ledger)
 

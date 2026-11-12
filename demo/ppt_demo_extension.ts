@@ -20,7 +20,7 @@ import { canonicalPath, sourceFacts, deliveryIntegrity, statusFacts, PPT_GOAL, P
 import { LiveAgentSelf } from './live_orchestration_core.ts';
 import { SelfRoot, hash } from './self_root.ts';
 import { providerPermit } from './provider_permit.ts';
-import { installSelfRootTools, type SelfRootManifest, collectAcceptance, directoryBytes } from './self_root_ppt.ts';
+import { installSelfRootTools, type SelfRootManifest, collectAcceptance, deliveryReviewEvidence, directoryBytes } from './self_root_ppt.ts';
 
 function refreshResourceDaemon(root: string) {
   if (!root) return;
@@ -335,7 +335,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     async (a: any, signal: AbortSignal, ctx: any) => {
       if (evo && a.op === 'deliver') {
         const boundary = `delivery:${currentSourceFacts()?.hash}`;
-        const routed = await evo.event('before_delivery', boundary);
+        const routed = await evo.event('before_delivery', boundary, deliveryReviewEvidence(evo));
         await evo.event('before_session_end', boundary);
         if (!(routed as any).duplicate || evo.hasReview) {
           persistLiveSelf();
@@ -378,6 +378,8 @@ export default function pptDemo(pi: ExtensionAPI) {
         persist();
         const orchestrationAction = agentSelf.recordAction('office.render', { artifactVersion: revision,
           artifactHash: receipt.source_sha256, sourcePath, evidencePath, slides: receipt.slides, renderer: receipt.renderer }, true);
+        if (evo) evo.fact('render_action_receipt', { action_ref: orchestrationAction.receipt.ref,
+          transition: orchestrationAction.transition });
         persistLiveSelf('action_receipt', orchestrationAction);
         // Facts about the period that just ended (how the previous revision was checked), then the new period starts.
         const sincePrevious = evidenceLine();

@@ -1,6 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { SelfRoot, FLOOR, PROTOCOL, hash, type SelfContract } from '../demo/self_root.ts';
+import { deliveryReviewEvidence } from '../demo/self_root_ppt.ts';
 import { closeLiveSelfMethods } from '../demo/live_self_wasi.ts';
 after(closeLiveSelfMethods);
 
@@ -30,6 +31,52 @@ test('META merges a boundary, deduplicates consumption, no automatic failure dia
   const saved = s.export(), x = new SelfRoot(contract(),saved), y = new SelfRoot(contract(),saved);
   const rx = await x.event('tool_succeeded','same',{ok:true}), ry = await y.event('tool_succeeded','same',{ok:true});
   assert.deepEqual(rx,ry); assert.ok((a as any).triggers[0].source === 'user_contract');
+});
+
+test('delivery evidence stays pinned, valid refs close any disposition, invalid refs preserve review', async () => {
+  for (const status of ['deferred', 'unrelated', 'changed'] as const) {
+    const s = new SelfRoot(contract()); await start(s);
+    const receipt = s.fact('task_outcome', { source: 'protected_acceptance' });
+    const evidence = { evidenceRefs: [receipt.ref], artifact: { revision: 2, sha256: 'current' } };
+    await s.event('before_delivery', 'delivery:current', evidence);
+    await s.event('before_session_end', 'delivery:current');
+    assert.equal(s.export().root.queue.length, 1);
+    await start(s);
+    assert.deepEqual(s.mirror().dynamic.review_evidence, evidence);
+    assert.throws(() => s.exit({ status, result: { reason: 'invalid' }, evidenceRefs: ['forged'] }), /unknown evidence ref/);
+    assert.deepEqual(s.mirror().dynamic.review_evidence, evidence);
+    if (status === 'changed') {
+      await s.reflectComponent({ baseRevision: 1, op: 'define', kind: 'memory', name: 'note', source: 'candidate' });
+      assert.throws(() => s.exit({ status, result: { reason: 'pending' }, evidenceRefs: [receipt.ref] }), /activation/);
+      await start(s);
+      assert.equal(s.revision, 2);
+      assert.equal(s.mirror().dynamic.windows.length, 1);
+    }
+    s.exit({ status, subtype: status === 'deferred' ? 'keep' : undefined,
+      result: { reason: 'task evidence supports this choice' }, evidenceRefs: [receipt.ref] });
+    assert.equal(s.mirror().dynamic.review, null);
+  }
+});
+
+test('delivery projection bounds warnings and reports false and unknown probes without interpretation', async () => {
+  const s = new SelfRoot(contract()); await start(s);
+  const warnings = Array.from({ length: 12 }, (_, i) => ({ page: i + 1, issue: 'outside_canvas' }));
+  const outcome = s.outcome({ checker: { version: 'v2' }, slide_count: { expected: 2, observed: 1, matches: false },
+    units: [{ citation_literal: { found: false }, normalized: { citation_found: true, matches: [{ found: null }] } }],
+    renderer: { receipt: { revision: 3, source_sha256: 'hash-3', slides: 1, warnings } } });
+  const failure = s.fact('event', { type: 'tool_failed', facts: { tool: 'write', error: 'truncated' } });
+  const success = s.fact('event', { type: 'tool_succeeded', facts: { tool: 'python' } });
+  const render = s.recordAction('office.render', { artifactVersion: 3, artifactHash: 'hash-3' }, true);
+  const action = s.fact('render_action_receipt', { action_ref: render.receipt.ref, transition: render.transition });
+  const facts = deliveryReviewEvidence(s);
+  assert.deepEqual(facts.evidenceRefs, [outcome.ref, failure.ref, success.ref, action.ref]);
+  assert.equal(facts.artifact?.warnings.length, 8);
+  assert.equal(facts.artifact?.additional_warnings, 4);
+  assert.deepEqual(facts.checker?.flags, { true: 1, false: 1, unknown: 1 });
+  assert.equal(facts.checker?.slide_count.matches, false);
+  assert.equal(facts.tool_failure?.ref, failure.ref);
+  assert.equal(facts.render_action?.ref, render.receipt.ref);
+  assert.ok(!JSON.stringify(facts).includes('proposed_change'));
 });
 
 test('pending chain leaves pinned response unchanged, any failure aborts whole chain', async () => {
