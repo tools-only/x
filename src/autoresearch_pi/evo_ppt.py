@@ -156,15 +156,12 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     if arm == "B":
         (root / "workspace/AGENTS.md").unlink()
     units = content_units((root / "workspace/data/material.txt").read_text(encoding="utf-8"))
-    unit_text = "\n".join(f"- {u['id']}: {u['title']} (cite {u['citation']})." for u in units)
-    brief = root / "workspace/data/instructions.md"
-    brief.write_text(brief.read_text(encoding="utf-8") + "\n\nFrozen content units for this production run (units may span slides; retain the 15-slide brief):\n" + unit_text +
-                     "\nDeliver the complete presentation with the existing office interface; submit_unit, when available, supports partial handover.\n", encoding="utf-8")
+    append_frozen_units(root / "workspace/data/instructions.md", units)
     # The development AGENTS.md and constitution are never task context.
     sources = {f"data/{p.name}": file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()}
     body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; explicit round authority above",
             "readonly_reason": "user authorization, total resources, evidence integrity and acceptance cannot be rewritten by the task Agent",
-            "boundaries": ["before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
+            "boundaries": ["before_delivery", "before_active_reset", "unit_completed", "before_session_end"],
             "capabilities": ["read", "write", "edit", "ls", "grep", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
             "writable": ["components.tool", "components.prompt", "components.skill", "components.memory", "policy", "orchestration"],
             "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-normalized-render-v2", "expected_slides":15},
@@ -172,7 +169,7 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     manifest = {"experiment_id": root.name, "arm": arm, "provider": "az", "model": MODEL, "contract": {**body, "content_hash": digest(body)},
                 "sources": sources, "units": units, "checker": {"version": "literal-normalized-render-v2", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
                 "engineering_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip(),
-            "engineering_tag": "v3 candidate; exact final commit recorded by local tag v3", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
+            "engineering_tag": "exact engineering commit above; local tag recorded by the runner", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
                     "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
                 "comparison": "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence",
                 "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established"}
@@ -185,37 +182,42 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
             "maximum_permit_usd_across_request_cap": caps["requests"] * settings["request_reserve"]["usd"],
             "metering": "unchanged; usd dimension cannot deny any authorized request permit"}
     manifest["renderer_preflight"] = renderer_preflight(root)
+    assert_live_sources_match(root, manifest)
     write(root / "manifest.json", manifest)
     write(root / "units.json", units)
     return manifest
 
 
+def append_frozen_units(brief: Path, units: list) -> None:
+    """Single writer for the frozen-unit brief, so every snapshot of the brief hashes identically."""
+    unit_text = "\n".join(f"- {u['id']}: {u['title']} (cite {u['citation']})." for u in units)
+    brief.write_text(brief.read_text(encoding="utf-8") + "\n\nFrozen content units (units may span slides; retain the 15-slide brief):\n" + unit_text +
+                     "\nDeliver the complete presentation with office; submit_unit delivers one unit and marks an in-task boundary.\n", encoding="utf-8")
+
+
+def live_sources(root: Path) -> dict:
+    return {f"data/{p.name}": file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()}
+
+
+def assert_live_sources_match(root: Path, manifest: dict) -> None:
+    """The live workspace must be exactly the frozen task sources the acceptance checker will verify."""
+    live = live_sources(root)
+    frozen = manifest["sources"]
+    bad = sorted(p for p in set(live) | set(frozen) if live.get(p) != frozen.get(p))
+    if bad:
+        raise ValueError(f"live workspace sources differ from the active task manifest: {bad}")
+
+
 def freeze_task_family(root: Path, first: Path, registration: Path, caps: dict, authority: str):
-    """Freeze the tagged task-family pool under one authorization and one serial root."""
-    manifest = freeze(root, first, registration, caps, authority, "B")
-    pool = []
-    for case in sorted((PROJECT / "demo/ppt-cases").iterdir(), key=lambda p:p.name):
-        if not case.is_dir() or not (case / "assets/material.txt").is_file():
-            continue
-        staging = root / "cases" / case.name
-        prepare(staging, case / "assets")
-        (staging / "workspace/AGENTS.md").unlink()
-        material = (staging / "workspace/data/material.txt").read_text(encoding="utf-8")
-        units = content_units(material)
-        brief = staging / "workspace/data/instructions.md"
-        brief.write_text(brief.read_text(encoding="utf-8") + "\n\nFrozen content units (units may span slides; retain the 15-slide brief):\n" +
-                         "\n".join(f"- {u['id']}: {u['title']} (cite {u['citation']})." for u in units) +
-                         "\nDeliver the complete presentation with office; submit_unit supports partial handover.\n", encoding="utf-8")
-        sources = {f"data/{p.name}": file_hash(p) for p in (staging / "workspace/data").iterdir() if p.is_file()}
-        pool.append({"id":case.name,"scope":"15-slide earnings presentation","sources":sources,"units":units,
-                     "acceptance":{**manifest["contract"]["acceptance"],"brief_sha256":sources["data/instructions.md"],
-                                   "original_brief_sha256":file_hash(case / "assets/production_brief.md"),"units_sha256":digest(units)},
-                     "coverage_tags":["earnings_presentation","validation_window_exercise"]})
-    if not any(e["id"] == first.name for e in pool):
-        raise ValueError("selected first task is absent from the tagged family")
-    manifest["episodes"] = pool
-    manifest["episodes_sha256"] = digest(pool)
-    manifest["comparison"] = "Deterministic next-unused tagged earnings-brief family pool; no matched-difficulty claim."
+    """Freeze the one staged case directory itself; no case pool or switch path."""
+    first = first.resolve()
+    assets = first / "assets" if (first / "assets/material.txt").is_file() else first
+    if not (assets / "material.txt").is_file() or not (assets / "production_brief.md").is_file():
+        raise ValueError("selected task must be a case directory or its assets directory")
+    manifest = freeze(root, assets, registration, caps, authority, "B")
+    manifest["task_id"] = assets.parent.name
+    manifest["comparison"] = "One authorized task; unit completion boundaries; no task pool or switching."
+    assert_live_sources_match(root.resolve(), manifest)
     write(root / "manifest.json", manifest)
     return manifest
 

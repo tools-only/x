@@ -30,11 +30,11 @@ def digest(value):
 def fixture_manifest():
     body = {
         "source": "user_contract", "authority": "Round v1 no-provider integration fixture", "decisions": "FINAL G1", "readonly_reason": "protected user boundary",
-        "boundaries": ["before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
+        "boundaries": ["before_delivery", "before_active_reset", "unit_completed", "before_session_end"],
         "capabilities": ["read", "ls", "grep", "write", "edit", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
         "writable": ["components.tool", "components.prompt", "components.memory", "components.skill", "policy", "orchestration"],
         "budget": {"requests": 50, "tokens": 100000, "seconds": 600, "usd": 1, "storage_bytes": 200000000},
-        "acceptance": {"checker": "literal-fixture", "expected_slides":1}, "inherit_defaults": False, "heartbeat": False,
+        "acceptance": {"checker": "literal-fixture", "expected_slides":1}, "inherit_defaults": False, "heartbeat": {"enabled": True, "every_settled_task_requests": 3},
     }
     return {"experiment_id": "scripted-stage0", "provider": "offline-external-test", "model": "scripted", "contract": {**body, "content_hash": digest(body)},
             "sources": {}, "units": [{"id": "one", "title": "fixture", "required": ["1"], "citation": "source"}],
@@ -93,11 +93,10 @@ def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     # only after a settlement, so task tools are visible at the first request.
     assert "python" in toolnames(contexts[0])
     decision_schema=next(t for t in contexts[0]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']
-    assert decision_schema['allOf'][0]['then']['properties']['result']['type']=='object'
-    assert 'status' in decision_schema['allOf'][0]['then']['required']
-    assert decision_schema['properties']['result']['type']=='object'
+    assert 'allOf' not in decision_schema
     assert 'op' in decision_schema['required']
-    assert next(t for t in contexts[3]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']['properties']['result']['type'] == 'object'
+    assert 'result' in decision_schema['properties']
+    assert next(t for t in contexts[3]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']['type'] == 'object'
     for context in contexts[2:]:
         assistants=[m for m in context['messages'] if m['role']=='assistant']
         assert not any(p['type']=='thinking' for m in assistants[:-1] for p in m['content'])

@@ -15,7 +15,7 @@ A component is an object field on the active Agent with a logical name, kind, so
 | memory | Agent component object | Provider request context from the active object |
 | orchestration | `self.orchestration` | Active workflow and feedback transitions, interpreted by the runtime |
 
-In SelfRoot runs, task work settles into S_n, followed by evolution review under visible C_n and construction of the next task from the tagged family pool and open validation windows. C_n's general floor only rises from objective settlements. Agent-added dimensions route through reflect_orchestration. The packed facts are a floor: read_self retains access to the full self. Keep is allowed for before_delivery task review only; evolution review needs an explicit status and cannot close with satisfaction. A changed close requires a later-settlement validation window with non-empty baseline and metric_refs. The same Agent later chooses adopt, restore or defer from runtime evidence.
+In SelfRoot runs, evolution review happens at completed unit boundaries within this same task. The host records use and window facts; the Agent decides what change to make and whether to adopt, restore or defer after reviewing the evidence. Missing effects or repeatable numeric metrics remain unverified.
 
 The component and orchestration histories are retained inside the Agent self snapshot. They are not exposed as writable files. Generic workspace writes change task artifacts and data, while `reflect_component` and `reflect_orchestration` change the active Agent object.
 

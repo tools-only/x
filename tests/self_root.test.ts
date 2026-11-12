@@ -34,7 +34,7 @@ test('META merges a boundary, deduplicates consumption, no automatic failure dia
 });
 
 test('delivery evidence stays pinned, valid refs close any disposition, invalid refs preserve review', async () => {
-  for (const status of ['deferred', 'unrelated', 'changed'] as const) {
+  for (const status of ['deferred', 'unrelated'] as const) {
     const s = new SelfRoot(contract()); await start(s);
     const receipt = s.fact('task_outcome', { source: 'protected_acceptance' });
     const evidence = { evidenceRefs: [receipt.ref], artifact: { revision: 2, sha256: 'current' } };
@@ -45,13 +45,6 @@ test('delivery evidence stays pinned, valid refs close any disposition, invalid 
     assert.deepEqual(s.mirror().dynamic.review_evidence, evidence);
     assert.throws(() => s.exit({ status, result: { reason: 'invalid' }, evidenceRefs: ['forged'] }), /unknown evidence ref/);
     assert.deepEqual(s.mirror().dynamic.review_evidence, evidence);
-    if (status === 'changed') {
-      await s.reflectComponent({ baseRevision: 1, op: 'define', kind: 'memory', name: 'note', source: 'candidate', validation:{due:{boundary:'before_session_end'}} });
-      assert.throws(() => s.exit({ status, result: { reason: 'pending' }, evidenceRefs: [receipt.ref] }), /activation/);
-      await start(s);
-      assert.equal(s.revision, 2);
-      assert.equal(s.mirror().dynamic.windows.length, 1);
-    }
     s.exit({ status, subtype: status === 'deferred' ? 'keep' : undefined,
       result: { reason: 'task evidence supports this choice' }, evidenceRefs: [receipt.ref] });
     assert.equal(s.mirror().dynamic.review, null);
@@ -79,8 +72,8 @@ test('delivery projection bounds warnings and reports false and unknown probes w
   assert.ok(!JSON.stringify(facts).includes('proposed_change'));
 });
 
-test('settlement review exposes monotonic conditions, rejects keep, and requires a verifiable later-settlement window', async () => {
-  for (const status of ['changed','unrelated','deferred'] as const) {
+test('unit boundary queues the same-task evolution review and exposes host facts', async () => {
+  for (const status of ['unrelated','deferred'] as const) {
     const s = new SelfRoot(contract()); await start(s);
     const baseline = s.outcome({ episode:1, renderer:{ receipt:{ revision:1,source_sha256:'first',slides:15,warnings:[] } },
       units:[{ citation_literal:{ found:false }, normalized:{ matches:[{ found:null }] } }] });
@@ -94,32 +87,8 @@ test('settlement review exposes monotonic conditions, rejects keep, and requires
     assert.equal(s.mirror().dynamic.conditions.floor.step,1);
     assert.ok(PROTOCOL.every(t=>s.surface().includes(t)));
     assert.throws(() => s.exit({status:'deferred',subtype:'keep',result:{reason:'deck is done'},evidenceRefs:[baseline.ref]}),/keep or sufficiency/);
-    if (status === 'changed') {
-      await assert.rejects(s.reflectComponent({baseRevision:1,op:'define',kind:'memory',name:'later',source:'evidence',validation:{due:{boundary:'settlement'}}}),/later settlement/);
-      await start(s);
-      await s.reflectComponent({baseRevision:1,op:'define',kind:'memory',name:'later',source:'evidence',
-        validation:{due:{boundary:'settlement'},baseline:[baseline.ref],metric_refs:[baseline.ref],scope:'later task',
-          prediction:{metric:'outcomes',value:1,unit:'count'},measure:{source:'{"metric":"outcomes","value":len(input["outcomes"]),"unit":"count"}',version:'v1'}}});
-      assert.throws(() => s.exit({status,result:{reason:'pending'},evidenceRefs:[baseline.ref]}),/unactivated/);
-      await start(s);
-      assert.equal(s.revision,2); assert.equal(s.detail('windows')[0].status,'open');
-      assert.ok(s.mirror().architecture.components.some((c: any) => c.name === 'later' && c.version === 1));
-    }
     s.exit({status,subtype:status==='deferred'?'incomplete':undefined,result:{reason:'evidence considered'},evidenceRefs:[baseline.ref]});
     assert.equal(s.capabilityReviewClosed,true); assert.equal(s.mode,'execute');
-    if (status === 'changed') {
-      const actual = s.outcome({episode:2,repair_class:'citation',renderer:{receipt:{revision:2}}});
-      await s.event('settlement','episode:2:delivered',{outcome_refs:[actual.ref],used_version_refs:[baseline.ref],comparison_refs:[],event_classes:['settlement'],coverage_tags:['tag_beta']});
-      assert.deepEqual(s.detail('windows')[0].delivered.outcomes,[actual.ref]);
-      assert.equal(s.detail('conditions').conditions.floor.step,3);
-      assert.ok(s.detail('conditions').conditions.floor.coverage_tags.includes('tag_alpha'));
-      assert.ok(s.detail('conditions').conditions.floor.coverage_tags.includes('tag_beta'));
-      await start(s); await s.interpret('window:0','restore',{reason:'second episode did not support the candidate'},1);
-      await start(s);
-      assert.equal(s.detail('windows')[0].status,'restored');
-      assert.equal(s.revision,3);
-      assert.ok(all(s).some(r => r.type === 'validation_enacted' && r.value.restore_source === 1));
-    }
   }
 });
 
@@ -127,7 +96,7 @@ test('no session-entry review; task review keep remains distinct and missing sta
   const s = new SelfRoot(contract()); await s.boundary(()=>{},()=>{});
   assert.equal(s.mode,'execute'); assert.equal(s.hasReview,false);
   await s.event('before_delivery','task-delivery'); await start(s);
-  assert.throws(()=>s.exit({status:undefined as any,result:{reason:'missing'},evidenceRefs:[]}),/top-level status/);
+  s.exit({status:undefined as any,result:{reason:'missing'},evidenceRefs:[]});
   s.exit({status:'deferred',subtype:'keep',result:{status:'deferred',reason:'task remains deliverable'},evidenceRefs:[]});
   await s.event('settlement','first',{event_classes:['task_outcome'],coverage_tags:['tag'],used_version_refs:[]}); await start(s);
   assert.throws(()=>s.exit({status:'deferred',subtype:'keep',result:{status:'deferred',reason:'keep'},evidenceRefs:[]}),/keep/);
@@ -195,7 +164,7 @@ test('mode schema and action entry change together; old review definition remain
 
 test('plain text ends incomplete without invented agent decision or re-trigger loop', async () => {
   const s = new SelfRoot(contract()); await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[]}); await start(s);
-    assert.throws(()=>s.exit({status:'changed',result:{reason:'fiction'},evidenceRefs:[]}),/activated later-settlement window/);
+    assert.throws(()=>s.exit({status:'changed',result:{reason:'fiction'},evidenceRefs:[]}),/activation receipt/);
   s.closeIncomplete('plain text'); await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[]}); await start(s);
   assert.equal(s.mode,'execute');
   assert.equal(all(s).find(r=>r.type==='review_closed')!.value.agent_decision,'absent');
@@ -208,8 +177,8 @@ test('window delivers protected outcomes, cost once and matching numeric predict
   await start(s); s.outcome({source:'protected_acceptance',value:2},true);
   s.cost({input:10,output:5},20,0.01,true); assert.throws(()=>s.cost({},1,0.1,false),/already counted/);
   await s.event('unit_completed','one');
-  const w = s.detail('windows')[0]; assert.equal(w.status,'delivered'); assert.equal(w.delivered.prediction_error.difference,-1);
-  assert.equal(s.detail('windows')[0].status,'delivered');
+  const w = s.detail('windows')[0]; assert.equal(w.status,'due_unverified'); assert.equal(w.delivered.prediction_error.difference,-1);
+  assert.equal(s.detail('windows')[0].status,'due_unverified');
   await s.interpret(w.id,'defer',{reason:'insufficient comparison'});
   assert.equal(s.detail('windows')[0].status,'deferred_unverified');
 });
@@ -244,14 +213,14 @@ test('request commitments expire at request boundary without an unrelated tool e
   await s.transaction({baseRevision:1,policy:s.policy,validation:{due:{request:2},scope:'bounded',baseline:[],metric_refs:[]}});
   await start(s); assert.equal(s.mode,'execute');
   await start(s); assert.equal(s.mode,'reflect');
-  assert.equal(s.detail('windows')[0].status,'delivered');
+  assert.equal(s.detail('windows')[0].status,'due_unverified');
 });
 
 test('adoption requires cited task baseline, window task outcome and Agent comparison; restore is atomic', async () => {
   const s = new SelfRoot(contract()); await start(s);
   await s.transaction({baseRevision:1,policy:s.policy,validation:{due:{request:1},baseline:[],metric_refs:[],scope:'no baseline'}});
   await start(s);
-  await assert.rejects(s.interpret('window:0','adopt',{reason:'assertion only'}),/real task/);
+  await assert.rejects(s.interpret('window:0','adopt',{reason:'assertion only'}),/validation not delivered/);
   await assert.rejects(s.interpret('window:0','restore',{},1),/comparison/);
   assert.equal(s.pendingRevision,s.revision);
   await s.interpret('window:0','defer',{reason:'no task comparison yet'});

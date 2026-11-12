@@ -18,9 +18,9 @@ import { validatePythonComponent } from './arc_thin_components.ts';
 import { NativeRuntime } from './arc_thin_native_runtime.ts';
 import { canonicalPath, sourceFacts, deliveryIntegrity, statusFacts, PPT_GOAL, PPT_ACTIONS, OFFICE_ACTION_DESCRIPTION } from './ppt_demo_adapter.ts';
 import { LiveAgentSelf } from './live_orchestration_core.ts';
-import { SelfRoot, hash } from './self_root.ts';
+import { SelfRoot, hash, normalizeOperation } from './self_root.ts';
 import { providerPermit } from './provider_permit.ts';
-import { installSelfRootTools, type SelfRootManifest, collectAcceptance, deliveryReviewEvidence, settlementEvidence, directoryBytes } from './self_root_ppt.ts';
+import { installSelfRootTools, type SelfRootManifest, collectAcceptance, deliveryReviewEvidence, directoryBytes, PPT_SELF_ROOT_OPTIONS, selfRootToolSchema } from './self_root_ppt.ts';
 
 function refreshResourceDaemon(root: string) {
   if (!root) return;
@@ -45,7 +45,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   const manifest: SelfRootManifest | undefined = process.env.EVO_MANIFEST ? JSON.parse(readFileSync(process.env.EVO_MANIFEST, 'utf8')) : undefined;
   const experimentManifest = manifest ?? (process.env.PPT_EXPERIMENT_LIMITS ? JSON.parse(readFileSync(process.env.PPT_EXPERIMENT_LIMITS,'utf8')) : undefined);
   const experimentLimits = experimentManifest?.contract.budget;
-  if (manifest && process.env.PPT_FRESH_BATCH === '1') throw Error('v1 uses one serial conversation; fresh-batch runner is disabled');
+  if (manifest && process.env.PPT_FRESH_BATCH === '1') throw Error('v0.1 uses one serial conversation; fresh-batch runner is disabled');
   const sessionId = `${process.pid}-${Date.now()}`;
   const freshBatch = process.env.PPT_FRESH_BATCH === '1';
   const requestedBatchLimit = Number(process.env.PPT_BATCH_REQUESTS ?? 10);
@@ -68,13 +68,10 @@ export default function pptDemo(pi: ExtensionAPI) {
   state.note ??= '';
   state.noteStale ??= false;
   state.episode ??= 1; state.usedCases ??= [];
-  if (manifest?.episodes && hash(manifest.episodes) !== manifest.episodes_sha256) throw Error('frozen case pool changed');
-  state.caseId ??= manifest?.episodes?.[0]?.id;
-  if (manifest?.episodes && !state.usedCases.includes(state.caseId)) state.usedCases.push(state.caseId);
-  const activeManifest = () => manifest?.episodes ? { ...manifest, ...manifest.episodes.find((item: any) => item.id === state.caseId) ?? manifest.episodes[0], contract: { ...manifest.contract,
-    acceptance: (manifest.episodes.find((item: any) => item.id === state.caseId) ?? manifest.episodes[0]).acceptance } } : manifest;
+  if (manifest?.episodes && (manifest.episodes.length !== 1 || hash(manifest.episodes) !== manifest.episodes_sha256)) throw Error('v0.1 requires exactly one frozen task');
+  const activeManifest = () => manifest?.episodes ? { ...manifest, ...manifest.episodes[0], contract: { ...manifest.contract, acceptance: manifest.episodes[0].acceptance } } : manifest;
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
-  const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens) : undefined;
+  const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens, PPT_SELF_ROOT_OPTIONS) : undefined;
   const agentSelf = evo ?? new LiveAgentSelf(savedSelf, validatePythonComponent, workspace);
   let activatingEvo = false;
   let advanceEvoBoundary = async () => {};
@@ -293,16 +290,17 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (source === undefined) throw Error(`no ${a.kind} ${a.name}${a.version ? ` at v${a.version}` : ' in the active Agent'}`);
       return text({ kind: a.kind, name: a.name, version: component?.version ?? version, source });
     });
-  register('reflect_component', 'Directly hot-reflect a capability into the active Agent object. No component file is written and no intermediate publisher assembles it. Provide the current Agent self revision shown in the mirror.' + (evo ? ' Activation is before the next request. A tool may declare # parameters: followed by a JSON object schema in its first ten lines; source and schema change together.' : ''),
-    Type.Object({ baseRevision: Type.Integer({ minimum: 1 }), op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
+  register('reflect_component', 'Directly hot-reflect a capability into the active Agent object. The host supplies revision and evidence bookkeeping.' + (evo ? ' Activation is before the next request.' : ''),
+    Type.Object({ op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.String(), kind: Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')]),
-      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), note: Type.Optional(Type.String()), ...(evo ? {validation: Type.Optional(Type.Any())} : {}) }), async (a: any) => {
+      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), expected_effect: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }), async (a: any) => {
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
       try {
         if (experimentLimits && a.kind === 'subagent') throw Error('experiment authorizes one agent; no task subagents');
-        assertNativeName(a.name, a.kind, path);
-        const result = await agentSelf.reflectComponent({ ...a, level: 0, origin: { by: 'agent', decision: state.batch } });
+        const input = evo ? normalizeOperation('component', a) : a;
+        assertNativeName(input.name, input.kind, path);
+        const result = await agentSelf.reflectComponent({ ...input, baseRevision: evo?.pendingRevision ?? agentSelf.revision, level: 0, origin: { by: 'agent', decision: state.batch } });
         if (evo) return text(result);
         log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind,
           version: result.component.version, hash: result.component.hash, self_revision: result.revision,
@@ -316,12 +314,12 @@ export default function pptDemo(pi: ExtensionAPI) {
         return text({ ok: false, selfRevision: agentSelf.revision, name: a.name, kind: a.kind, error: String(error) });
       }
     });
-  register('reflect_orchestration', 'Directly revise the active Agent orchestration. Submit a complete object and the current Agent self revision; this updates the same live Agent object used for components.',
-    Type.Object({ baseRevision: Type.Integer({ minimum: 1 }), orchestration: Type.Any(), carry: Type.Optional(Type.Any()), note: Type.Optional(Type.String()) }), async (args: any) => {
-      const result = agentSelf.reflectOrchestration({ baseRevision: args.baseRevision, orchestration: args.orchestration, carry: args.carry, authorized: true });
+  if (!evo) register('reflect_orchestration', 'Directly revise the active Agent orchestration. Host revision and evidence bookkeeping are automatic.',
+    Type.Object({ orchestration: Type.Optional(Type.Record(Type.String(), Type.Any())), policy: Type.Optional(Type.Record(Type.String(), Type.Any())), components: Type.Optional(Type.Array(Type.Any())), restore: Type.Optional(Type.Integer({minimum:1})), carry: Type.Optional(Type.Record(Type.String(), Type.Any())), stepMap: Type.Optional(Type.Record(Type.String(), Type.Any())), expected_effect: Type.Optional(Type.String()) }), async (args: any) => {
+      const result = await agentSelf.reflectOrchestration({ ...args, baseRevision: evo?.pendingRevision ?? agentSelf.revision, authorized: true });
       return text({ ...result, active: agentSelf.mirror() });
     });
-  register('decide', 'Submit an Agent-authored decision against trusted action receipts. The live orchestration checks evidence and applies its declared transition.',
+  if (!evo) register('decide', 'Submit an Agent-authored decision against trusted action receipts. The live orchestration checks evidence and applies its declared transition.',
     Type.Object({ decisionId: Type.String(), evidenceRefs: Type.Array(Type.String()), result: Type.Any() }), async (args: any) => {
       const activeHash = currentSourceFacts()?.hash;
       if (activeHash !== agentSelf.snapshot().latestArtifactHash) {
@@ -419,7 +417,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         disposition: a.self_review.disposition, rationale: a.self_review.rationale });
       persistLiveSelf('self_review', selfReview);
       const currentHash = fileHash(receipt.source_path);
-      const delivery = join(root, manifest?.episodes ? `cases/${state.caseId}/delivery` : 'delivery'); mkdirSync(delivery, { recursive: true });
+      const delivery = join(root, 'delivery'); mkdirSync(delivery, { recursive: true });
       // The rendered revision, not one file: the presentation plus every page image and the receipt. The render
       // directory (the HTML with its relative assets intact) is delivered too; only the browser profile is skipped.
       for (const entry of readdirSync(out)) {
@@ -441,11 +439,13 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (evo && manifest) {
         const episode = activeManifest()!;
         evo.outcome({ ...collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0), episode:state.episode });
-        const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered' && (!manifest.episodes || r.value.episode === state.episode)).map((r: any) => r.value.unit));
+        const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => r.value.unit));
         for (const unit of episode.units) if (!delivered.has(unit.id)) {
           evo.outcome({ ...collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0, unit.id), episode:state.episode }, true);
           evo.fact('unit_delivered', { unit: unit.id, episode:state.episode, via: 'whole_deck_delivery' });
         }
+        // Whole delivery ends the single task: open windows become due_unverified; no post-task review is queued.
+        evo.taskEnd('delivered');
         persistLiveSelf();
       }
       state.complete = true; state.deliveredRevision = revision; persist(); log('lifecycle.jsonl', { event: 'delivered', revision });
@@ -456,7 +456,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const target = join(delivery, 'harness-evidence', 'harness', 'live_agent_self.jsonl');
         mkdirSync(dirname(target), { recursive: true }); cpSync(liveTrace, target);
       }
-      return text({ delivered: revision, directory: manifest?.episodes ? `cases/${state.caseId}/delivery/` : 'delivery/', evidence: evidenceLine(), self_review: selfReview, orchestration_action: orchestrationAction }, true);
+      return text({ delivered: revision, directory: 'delivery/', evidence: evidenceLine(), self_review: selfReview, orchestration_action: orchestrationAction }, true);
     });
   pi.on('before_agent_start', async (event: any) => {
     if (!initialized) {
@@ -492,39 +492,10 @@ export default function pptDemo(pi: ExtensionAPI) {
       persist();
     }
     // Agent-created tools stay active across batches: setActiveTools unions in everything registered.
-    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'reflect_component', 'read_self_component', 'office', 'reflect_orchestration', 'decide']);
+    const selected = new Set(['read', 'write', 'edit', 'ls', 'grep', 'python', 'reflect_component', 'read_self_component', 'office', 'reflect_orchestration', 'decide', ...(evo ? ['decide_exit', 'decide_validation'] : [])]);
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
     // A forced prompt is reapplied by Pi AFTER context_with_system and would erase the live Mirror.
     if (evo) {
-      if (evo.export().root.ledger.some((r:any)=>r.type==='review_closed'&&r.value?.occasion==='evolution_review') && !evo.hasReview && manifest?.episodes && state.lastConstructedSettlement !== evo.settlementReviewRef) {
-        const pool = manifest.episodes;
-        const openWindows = evo.detail('windows').filter((w:any)=>w.status==='open');
-        const requiredTags = evo.detail('conditions').conditions.floor.coverage_tags;
-        const next = pool.filter((item:any)=>!state.usedCases.includes(item.id))
-          .sort((a:any,b:any)=>a.id.localeCompare(b.id))
-          .find((item:any)=>(!openWindows.length || (item.coverage_tags ?? []).includes('validation_window_exercise')) && requiredTags.every((tag:string)=>(item.coverage_tags ?? []).includes(tag)));
-        if (!next) { evo.fact('insufficient_task_supply',{ after_settlement:state.episode, required_windows:openWindows.map((w:any)=>w.id), unlocked_but_unsupplied_tags:requiredTags }); }
-        else {
-          const currentCase = manifest.episodes.find((item:any)=>item.id===state.caseId);
-          for (const [path, expected] of Object.entries(currentCase?.sources ?? {})) {
-            const bytes = readFileSync(join(root,`cases/${state.caseId}/workspace`,path));
-            if (createHash('sha256').update(bytes).digest('hex') !== expected) throw Error(`current task source changed: ${path}`);
-          }
-          for (const [path, expected] of Object.entries(next.sources)) {
-            const bytes = readFileSync(join(root,`cases/${next.id}/workspace`,path));
-            if (createHash('sha256').update(bytes).digest('hex') !== expected) throw Error(`next task source changed: ${path}`);
-          }
-          for (const [path, expected] of Object.entries(next.sources)) {
-            const bytes = readFileSync(join(root,`cases/${next.id}/workspace`,path));
-            workspace.runtimeWrite(path,bytes);
-          }
-          for (const artifact of workspace.files('artifacts')) workspace.mutate({ op:'delete', path:artifact },true);
-          state.episode++; state.caseId = next.id; state.complete = false; state.deliveredRevision = null; state.lastFeedback = null;
-          state.usedCases = [...state.usedCases,next.id]; persist();
-          evo.fact('episode_constructed',{ episode:state.episode, case_id:next.id, source_hashes:next.sources, coverage_tags:next.coverage_tags }); persistLiveSelf();
-        }
-        state.lastConstructedSettlement = evo.settlementReviewRef; persist();
-      }
       await advanceEvoBoundary();
       return { message: { customType: 'same-root-window', content: 'Continue this task in the same root and serial session.', display: false } };
     }
@@ -638,31 +609,16 @@ export default function pptDemo(pi: ExtensionAPI) {
         if (system.role !== 'system') throw Error('missing system message');
         // Rebuild the actual schema, including office sub-operations, for this request.
         const actions = evo.surface(), names = new Set(pi.getActiveTools());
-        system.toolsAdded = pi.getAllTools().filter(t => names.has(t.name)).map(t => {
-          const parameters = structuredClone(t.parameters) as any;
+        // Provider-visible schemas for self operations come from the core descriptor (one definition);
+        // tools a state does not offer (decide_exit outside review, decide_validation without a due window) are not advertised.
+        system.toolsAdded = pi.getAllTools().filter(t => names.has(t.name)).flatMap(t => {
+          const generated = selfRootToolSchema(evo, t.name);
+          if (generated === undefined) return [];
+          const parameters = generated ?? structuredClone(t.parameters) as any;
           if (t.name === 'office') parameters.properties.op = { type: 'string', enum: actions.filter(x => x.startsWith('office.')).map(x => x.slice(7)) };
-          // Type the operation, not the mode name. Other decisions retain their
-          // declared result shapes; exit uses the Agent's pinned schema.
-          if (t.name === 'decide') {
-            // A suspended work step cannot make ordinary work decisions. Mode
-            // operations carry objects; advertise that directly, not as Any
-            // with a conditional hidden from schema-light providers.
-            if (evo.reviewExitSchema) {
-              parameters.properties.op = { type: 'string', enum: ['exit','validation','capsule','inherit','reset'] };
-              parameters.required = [...new Set([...(parameters.required ?? []),'op'])];
-              parameters.properties.result = { type: 'object' };
-            }
-            parameters.required = [...new Set([...(parameters.required ?? []), 'op'])];
-            parameters.properties.result = { type: 'object' };
-            parameters.properties.status = { type: 'string', enum: ['changed','unrelated','deferred'] };
-            parameters.allOf ??= [];
-            parameters.allOf.push({
-              if: { properties: { op: { const: 'exit' } }, required: ['op'] },
-              then: { properties: { status: { type: 'string', enum: ['changed','unrelated','deferred'] }, result: evo.reviewExitSchema ?? { type: 'object' } }, required: ['status','result'] },
-            });
-          }
-          return { name: t.name, description: t.description, parameters };
+          return [{ name: t.name, description: t.description, parameters }];
         });
+        for (const t of system.toolsAdded) { const expected = selfRootToolSchema(evo, t.name); if (expected && hash(expected) !== hash(t.parameters)) throw Error(`provider schema for ${t.name} differs from its descriptor`); }
         // Older tool additions/removals must not re-open a suspended capability later in history.
         for (let i = 1; i < messages.length; i++) if (messages[i].role === 'system') { messages[i] = { ...messages[i] }; delete messages[i].toolsAdded; delete messages[i].toolsRemoved; }
         const groups: Record<string,string> = {
@@ -672,10 +628,10 @@ export default function pptDemo(pi: ExtensionAPI) {
         };
         const taskInstructions = evo.inCapabilityReview ? '' : existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
         system.content = [taskInstructions, ...evo.policy.context.order.map(k => groups[k]), evo.policy.context.instruction,
-          'SELF ROOT: one agent, one session. Task work settles into S_n, then evolution review runs under visible C_n, then the next authorized task is constructed from that settlement and open windows. No evolution review runs before a settlement. C_n floor only rises from objective settlement facts and cannot be relaxed; add dimensions through reflect_orchestration. You decide what to change or defer. Assume capability shortfalls remain; neither deliverability nor sufficiency closes evolution review. changed needs an activated verifiable window due at a later settlement with baseline and metric_refs. Exit requires explicit status. keep is valid only for before_delivery task review. No human score: adopt/restore/defer later against runtime-assembled facts. read_self continues to expose the full self and S_n/C_n.',
+          'SELF ROOT: one agent, one task, one serial session. Each delivered unit (submit_unit) is an in-task settlement boundary followed by an evolution review. You decide what to change, defer, adopt, or restore. The host records windows, later use and evidence; missing effects or repeatable metrics remain unverified. read_self exposes the current self and its evidence.',
           JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())].join('\n\n');
         messages[0] = system;
-        evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), reasoning_selection: evo.policy.context.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
+        evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), reasoning_selection: evo.policy.context.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
         persistLiveSelf();
         return { messages };
       } catch (error) {
@@ -686,15 +642,12 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
     });
     pi.on('agent_end', async () => {
-      if (!evo.inEvolutionReview) evo.closeIncomplete('plain-text/technical end without decide exit');
+      // Pi order: tool results -> turn_end (activation) -> agent_end. Resolve any late pending activation, then one closure.
+      try { evo.endResponse(applySurface, persistLiveSelf, 'response ended without decide_exit'); }
+      catch (error) { evo.fact('request_paused', { error: String(error) }); }
       if (!evo.isResetting)
         await evo.event('before_session_end',state.complete ? `delivery:${currentSourceFacts()?.hash}` : 'normal-session-end');
-      if (!evo.isResetting) {
-        const episodeRows = evo.export().root.ledger.filter((r: any) => r.type === 'task_outcome' && r.value?.episode === state.episode);
-        const episodeSettled = evo.export().root.ledger.some((r: any) => r.type === 'event' && r.value?.type === 'settlement' && r.value?.boundary.startsWith(`episode:${state.episode}:`));
-        if (episodeRows.length && !episodeSettled)
-          await evo.event('settlement',`episode:${state.episode}:${state.complete ? 'delivered' : 'incomplete'}`,settlementEvidence(evo,state.episode,manifest?.episodes?.find((item:any)=>item.id===state.caseId)?.coverage_tags ?? []));
-      }
+      if (state.complete) evo.taskEnd('delivered');
       persistLiveSelf();
     });
     pi.on('session_before_compact', (event: any) => {
@@ -705,7 +658,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       return { cancel:true }; // Never hide an additional summarizer/model lifecycle or unmetered call.
     });
     pi.on('session_compact', (event: any) => { evo.fact('context_restored',{ reason:event.reason, root_id:evo.root_id, evidence_recovery:'read_self' }); persistLiveSelf(); });
-    pi.on('session_shutdown', () => { evo.closeIncomplete('session shutdown'); persistLiveSelf(); });
+    pi.on('session_shutdown', () => { evo.closeMechanically('session shutdown'); persistLiveSelf(); });
   }
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   pi.on('before_provider_request', (event: any) => {
@@ -721,7 +674,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const model = experimentManifest.settings.model;
       const output = evo?.policy.request?.maxOutputTokens ?? experimentManifest.settings.request_output_tokens ?? model.maxTokens;
       if (output > model.maxTokens) {
-        evo?.closeIncomplete('output envelope exceeds registered model'); persistLiveSelf();
+        evo?.closeMechanically('output envelope exceeds registered model'); evo?.taskEnd('permit reject'); persistLiveSelf();
         writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason:'output envelope exceeds registered model', output, stop_kind: 'permit_reject' }));
         syncDaemonResources(root, evo);
         process.exit(0);
@@ -731,7 +684,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     }
     if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + requestReserve > cap ||
       (experimentLimits && (requests >= experimentLimits.requests || tokensSpent + unknownUsageReserveTokens > experimentLimits.tokens || directoryBytes(root) >= experimentLimits.storage_bytes))) {
-      evo?.closeIncomplete('authorized budget boundary'); persistLiveSelf();
+      evo?.closeMechanically('authorized budget boundary'); evo?.taskEnd('budget stop'); persistLiveSelf();
       writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, permit: permit ? { ...permit, payload: undefined } : undefined, reason: 'authorized budget boundary', stop_kind: 'budget_stop' }));
       syncDaemonResources(root, evo);
       process.exit(0); // Pi event exceptions are fail-open: stop before HTTP.

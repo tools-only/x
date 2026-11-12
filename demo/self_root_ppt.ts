@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { Type } from 'typebox';
-import { SelfRoot, hash, type SelfContract } from './self_root.ts';
+import { SelfRoot, hash, operationContract, providerOperationSchema, normalizeOperation, type SelfContract } from './self_root.ts';
 
 export type SelfRootManifest = {
   experiment_id: string; provider: string; model: string; contract: SelfContract;
@@ -60,7 +60,7 @@ export function collectAcceptance(m: SelfRootManifest, root: string, workspace: 
   const checkerPath = new URL('./self_root_ppt.ts', import.meta.url);
   if (fileHash(checkerPath as any) !== m.checker.sha256) throw Error('protected checker version mismatch');
   const sources = Object.fromEntries(Object.keys(m.sources).map(p => [p,fileHash(workspace.path(p))]));
-  if (hash(sources) !== hash(m.sources)) throw Error('protected source snapshot mismatch');
+  if (hash(sources) !== hash(m.sources)) throw Error(`protected source snapshot mismatch: ${Object.keys({ ...m.sources, ...sources }).filter(p => sources[p] !== (m.sources as any)[p]).join(', ')}`);
   const source = workspace.read(sourcePath);
   const units = coverageFacts(source,m.units.filter(u => !unit || u.id === unit));
   const artifacts = join(root,'exports',`v${String(receipt.revision).padStart(3,'0')}`);
@@ -115,48 +115,81 @@ export function settlementEvidence(evo: SelfRoot, episode: number, coverage_tags
     };
 }
 
+/** Adapter-side, task-specific wiring passed to the task-neutral core (constitution art. 10-1). */
+export const PPT_SELF_ROOT_OPTIONS = {
+  reviewTools: ['read', 'ls', 'grep', 'office.look', 'acceptance'],
+  evolutionTools: ['read', 'ls', 'grep', 'office.look'],
+  reservedToolNames: ['office'],
+  actionOf: (name: string, args: any) => name === 'office' ? `office.${args?.op}` : name,
+};
+
+/** Provider-visible schema for one registered tool name, generated from the core descriptor.
+ * Returns undefined when the tool is not advertised in the current state. */
+export function selfRootToolSchema(evo: SelfRoot, name: string): any {
+  if (name === 'reflect_component') return providerOperationSchema('component');
+  if (name === 'reflect_orchestration') return providerOperationSchema('orchestration');
+  if (name === 'decide_exit') return evo.exitOperationSchema;
+  if (name === 'decide_validation') return evo.dueWindows.length ? providerOperationSchema('validation') : undefined;
+  if (name === 'decide') return DECIDE_SCHEMA;
+  return null;
+}
+const DECIDE_SCHEMA = { type: 'object', properties: {
+  op: { type: 'string', enum: ['enter_mode', 'capsule', 'inherit', 'reset'], description: 'Omit for an ordinary task decision (decisionId, result).' },
+  decisionId: { type: 'string' }, result: {}, mode: { type: 'string' }, value: { type: 'object' },
+  summary: { type: 'string', description: 'Optional reset note; the host continuity pack is built from the ledger.' } }, required: [] as string[], additionalProperties: false };
+const DECIDE_FIELDS = Object.keys(DECIDE_SCHEMA.properties);
+
 export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist, episode = () => 1 }: any) {
   const active = () => typeof manifest === 'function' ? manifest() : manifest;
   const tool = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name, description, parameters,
     execute: async (_id: string, a: any, _signal: any, _update: any, ctx: any) => { const result = await fn(a,ctx); persist(); return text(result,Boolean(result?.context_reset_requested)); } });
+  // Registered TypeBox shapes are permissive envelopes; the provider receives the descriptor schema
+  // (ppt_demo_extension context_with_system) and dispatch re-checks it with normalizeOperation.
+  const open = (keys: string[]) => Type.Object(Object.fromEntries(keys.map(k => [k, Type.Optional(Type.Any())])));
   tool('read_self', 'Expand the same root: self (full mirror plus S_n/C_n), policy, contract, ledger pages (offset/count), definition (offset=revision), windows, conditions, lineage or continuity. The packed evidence is a floor; full self and ledger remain accessible. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
     Type.Object({ section: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), count: Type.Optional(Type.Integer({ minimum: 1, maximum: 40 })),
       op: Type.Optional(Type.Literal('replay')), ref: Type.Optional(Type.String()), source: Type.Optional(Type.String()) }),
     async (a: any) => a.op === 'replay' ? evo.replay(a.ref,a.source) : evo.detail(a.section ?? 'policy',a.offset ?? 0,a.count ?? 20));
-  tool('reflect_orchestration', 'Queue one atomic same-response transaction on this root. Replace orchestration and/or policy and/or components together, with carry/stepMap. restore copies a same-root snapshot as a NEW revision. Use pendingRevision for a subsequent reflection in the same response. Activation before next provider request. Optional validation defines baseline ledger refs, metric_refs, scope, absolute due request/units/boundary, prediction and pure measure.',
-    Type.Object({ baseRevision: Type.Integer({ minimum: 1 }), orchestration: Type.Optional(Type.Any()), components: Type.Optional(Type.Array(Type.Any())),
-      policy: Type.Optional(Type.Any()), carry: Type.Optional(Type.Any()), stepMap: Type.Optional(Type.Any()), restore: Type.Optional(Type.Integer({minimum:1})), validation: Type.Optional(Type.Any()) }),
-    (a: any) => evo.transaction(a));
-  tool('decide', 'Decide on this same serial agent: enter_mode(execute/reflect/consolidate), exit with explicit status (changed/unrelated/deferred), object result matching mode exitSchema, and evidenceRefs; task delivery review alone allows deferred/keep. Evolution review rejects keep. Validation(window, decision adopt/restore/defer, result={reason,baseline_refs,outcome_refs,comparison} for adoption, restore revision), capsule(value), inherit(value), reset, or ordinary orchestration decision in execute. Pending reflection is not a completed change. No required modification.',
-    Type.Object({ op: Type.Optional(Type.String()), mode: Type.Optional(Type.String()), status: Type.Optional(Type.String()), subtype: Type.Optional(Type.String()), terminal: Type.Optional(Type.Boolean()),
-      result: Type.Optional(Type.Any()), evidenceRefs: Type.Optional(Type.Array(Type.String())), window: Type.Optional(Type.String()), decision: Type.Optional(Type.String()),
-      restore: Type.Optional(Type.Integer()), value: Type.Optional(Type.Any()), decisionId: Type.Optional(Type.String()) }), async (a: any, ctx: any) => {
+  const orchestration = operationContract('orchestration');
+  tool(orchestration.name, orchestration.description, open(Object.keys(orchestration.properties)),
+    (a: any) => evo.transaction(normalizeOperation('orchestration', a)));
+  const exitContract = operationContract('evolution');
+  tool(exitContract.name, exitContract.description, open([...Object.keys(operationContract('delivery').properties), 'result']), async (a: any) => {
+    const kind = evo.exitOperationKind;
+    if (!kind) throw Error('no active review to close');
+    const capability = evo.inEvolutionReview;
+    const result = evo.exit(normalizeOperation(kind, a, evo.reviewExitSchema));
+    return { ...result, ...(capability ? { context_reset_requested: true } : {}) };
+  });
+  const validation = operationContract('validation');
+  tool(validation.name, validation.description, open(Object.keys(validation.properties)), async (a: any) => {
+    const v = normalizeOperation('validation', a);
+    return evo.interpret(v.window, v.decision, { reason: v.reason }, v.restore);
+  });
+  tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). Host supplies receipts, versions and evidence refs.',
+    open(DECIDE_FIELDS), async (a: any, ctx: any) => {
+      const unknown = Object.keys(a ?? {}).filter(k => a[k] !== undefined && !DECIDE_FIELDS.includes(k));
+      if (unknown.length) throw Error(`decide: unknown field(s) ${unknown.join(', ')}; visible fields: ${DECIDE_FIELDS.join(', ')}`);
       if (a.op === 'enter_mode') return evo.enterMode(a.mode);
-      if (a.op === 'exit') {
-        if (!['changed','unrelated','deferred'].includes(a.status)) throw Error('decide(op="exit") requires top-level status: changed, unrelated, or deferred');
-        const capability = evo.inEvolutionReview;
-        const result = evo.exit({ ...a, evidenceRefs: a.evidenceRefs ?? [] });
-        return { ...result, ...(capability ? { context_reset_requested: true } : {}) };
-      }
       if (a.op === 'capsule') return evo.capsule(a.value);
-      if (a.op === 'inherit') return evo.inherit(a.value);
-      if (a.op === 'validation') {
-        return evo.interpret(a.window,a.decision,a.result,a.restore);
-      }
+      if (a.op === 'inherit') return evo.inherit(a.value ?? {});
       if (a.op === 'reset') {
-        if (!a.result?.summary || typeof a.result.summary !== 'string') throw Error('active reset requires the same Agent continuity summary in result.summary');
         const reset = await evo.requestReset();
-        evo.claim('continuity_summary',{ reset:reset.id, summary:a.result.summary });
+        // Host continuity pack from the persisted ledger; the Agent note is optional semantic text.
+        const pack = { root: evo.root_id, revision: evo.revision, mode: evo.mode, ledger_total: evo.detail('ledger', 0, 1).total,
+          open_windows: evo.detail('windows').filter((w: any) => w.status === 'open').map((w: any) => w.id), recover: 'read_self(section="ledger"|"continuity")' };
+        const summary = [typeof a.summary === 'string' ? a.summary : '', `HOST CONTINUITY ${JSON.stringify(pack)}`].filter(Boolean).join('\n');
+        evo.fact('continuity_pack', { reset: reset.id, pack, agent_note: a.summary ?? null });
         if (reset.ready) {
-          persist(); ctx.compact({ customInstructions: 'SELFROOT_SUMMARY\n'+a.result.summary,
+          persist(); ctx.compact({ customInstructions: 'SELFROOT_SUMMARY\n'+summary,
             onComplete: () => { evo.finishReset(reset.id); persist(); },
             onError: (error: Error) => { evo.finishReset(reset.id,String(error)); persist(); } });
         }
         return { ...reset, review_queued: !reset.ready, context_reset_requested: reset.ready };
       }
       if (a.op) throw Error('unknown decide operation');
-      if (evo.reviewExitSchema) throw Error('work decision suspended during mode transaction; use decide op for this mode');
-      const decision = evo.decide({ decisionId: a.decisionId, actor: 'agent', evidenceRefs: a.evidenceRefs ?? [], result: a.result });
+      if (evo.reviewExitSchema) throw Error('task decisions resume after this review; close it with decide_exit');
+      const decision = evo.decide({ decisionId: a.decisionId, actor: 'agent', evidenceRefs: [], result: a.result });
       return { decision, transition: evo.advance() };
     });
   tool('acceptance', 'Observe the fixed acceptance checker on the latest rendered source. Returns literal coverage, source/renderer/checker hashes and unknowns; does not decide quality or adopt a self revision.',
@@ -180,7 +213,8 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       if (!(routed as any).duplicate || evo.hasReview) return { unit: a.unit, review_pending: true };
       const result = collectAcceptance(active(),root,workspace,receipt.source_path,receipt,0,a.unit);
       evo.outcome({ ...result, episode:episode() },true); evo.fact('unit_delivered',{ unit: a.unit, episode:episode() }); submitted.add(key);
-      await evo.event('unit_completed',`unit:${a.unit}`);
+      const outcomeRefs = evo.export().root.ledger.filter((r: any) => r.type === 'task_outcome' && r.value?.unit === a.unit).map((r: any) => r.ref);
+      await evo.event('unit_completed',`unit:${a.unit}`,{ event_classes:['task_outcome'], coverage_tags:[], unit: a.unit, evidenceRefs: outcomeRefs.slice(-4) });
       return result;
     });
 }
