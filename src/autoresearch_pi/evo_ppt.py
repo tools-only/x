@@ -23,6 +23,8 @@ from .resource_daemon import refresh_resource_daemon
 PROJECT = Path(__file__).resolve().parents[2]
 MODEL = "glm-5.3-flash"
 BASE = "https://az.gptplus5.com/v1"
+# User-contract review boundaries; must equal FLOOR in demo/self_root.ts (D1: no before_delivery; final delivery is one call).
+CONTRACT_BOUNDARIES = ("before_active_reset", "unit_completed", "before_session_end")
 INPUT_RATE = 0.15
 OUTPUT_RATE = 0.5
 CACHE_RATE = 0.0
@@ -161,16 +163,18 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     sources = {f"data/{p.name}": file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()}
     body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; explicit round authority above",
             "readonly_reason": "user authorization, total resources, evidence integrity and acceptance cannot be rewritten by the task Agent",
-            "boundaries": ["before_delivery", "before_active_reset", "unit_completed", "before_session_end"],
+            "boundaries": list(CONTRACT_BOUNDARIES),
             "capabilities": ["read", "write", "edit", "ls", "grep", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
             "writable": ["components.tool", "components.prompt", "components.skill", "components.memory", "policy", "orchestration"],
             "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-normalized-render-v2", "expected_slides":15},
             "inherit_defaults": False, "heartbeat": False}
+    if tuple(body["boundaries"]) != CONTRACT_BOUNDARIES:
+        raise ValueError(f"frozen contract floor must be {list(CONTRACT_BOUNDARIES)}, got {body['boundaries']}")
     manifest = {"experiment_id": root.name, "arm": arm, "provider": "az", "model": MODEL, "contract": {**body, "content_hash": digest(body)},
                 "sources": sources, "units": units, "checker": {"version": "literal-normalized-render-v2", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
                 "engineering_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip(),
             "engineering_tag": "exact engineering commit above; local tag recorded by the runner", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
-                    "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
+                    "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/pi_context_adapter.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
                 "comparison": "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence",
                 "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established"}
     if unlimited_tokens:
@@ -406,7 +410,7 @@ def run(root: Path, *, round_deadline: float | None = None):
                     break
                 message = ("Continue the next constructed task episode in this same root and serial session."
                            if episodes and state.get("complete") and any(r["type"] == "review_closed" and r["value"].get("occasion") == "evolution_review" and
-                               r["value"].get("agent_decision") == "present" for r in ledger)
+                               r["value"].get("closed_by") == "agent" for r in ledger)
                            else "Continue the queued boundary in this same root and serial session.")
             else:
                 result["stop"] = "time_budget"

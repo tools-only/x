@@ -20,7 +20,8 @@ import { canonicalPath, sourceFacts, deliveryIntegrity, statusFacts, PPT_GOAL, P
 import { LiveAgentSelf } from './live_orchestration_core.ts';
 import { SelfRoot, hash, normalizeOperation } from './self_root.ts';
 import { providerPermit } from './provider_permit.ts';
-import { installSelfRootTools, type SelfRootManifest, collectAcceptance, deliveryReviewEvidence, directoryBytes, PPT_SELF_ROOT_OPTIONS, selfRootToolSchema } from './self_root_ppt.ts';
+import { installSelfRootTools, type SelfRootManifest, collectAcceptance, directoryBytes, PPT_SELF_ROOT_OPTIONS, selfRootToolSchema, pptUnitMetrics } from './self_root_ppt.ts';
+import { createPiContextAdapter, normalizeStop, cacheSupported } from './pi_context_adapter.ts';
 
 function refreshResourceDaemon(root: string) {
   if (!root) return;
@@ -71,7 +72,9 @@ export default function pptDemo(pi: ExtensionAPI) {
   if (manifest?.episodes && (manifest.episodes.length !== 1 || hash(manifest.episodes) !== manifest.episodes_sha256)) throw Error('v0.1 requires exactly one frozen task');
   const activeManifest = () => manifest?.episodes ? { ...manifest, ...manifest.episodes[0], contract: { ...manifest.contract, acceptance: manifest.episodes[0].acceptance } } : manifest;
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
-  const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens, PPT_SELF_ROOT_OPTIONS) : undefined;
+  const piContext = createPiContextAdapter();
+  const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
+    { ...PPT_SELF_ROOT_OPTIONS, contextItem: (ref: string) => piContext.resolve(ref) }) : undefined;
   const agentSelf = evo ?? new LiveAgentSelf(savedSelf, validatePythonComponent, workspace);
   let activatingEvo = false;
   let advanceEvoBoundary = async () => {};
@@ -119,6 +122,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   };
   const log = (file: string, row: any) => {
     if (row?.event === 'native_file_write' && typeof row.path === 'string' && row.path.startsWith('artifacts/')) {
+      if (evo) evo.fact('artifact_write', { path: row.path, mode: 'program', chars: Number(row.bytes ?? row.size ?? 0) || null, via: 'native runtime write' });
       agentSelf.invalidateArtifact();
       persistLiveSelf('artifact_invalidated', { path: row.path, via: 'native runtime write' });
     }
@@ -133,6 +137,10 @@ export default function pptDemo(pi: ExtensionAPI) {
   (pi as any).registerTool = (tool: any) => registerTool({ ...tool, execute: async (...args: any[]) => {
     const began = Date.now();
     let result;
+    // Adapter fact for artifact writes through file tools (mode and size only; no judgement).
+    const artifactWrite = evo && ['write', 'edit'].includes(tool.name) && typeof args[1]?.path === 'string' && args[1].path.replace(/^\.\//, '').startsWith('artifacts/')
+      ? { path: args[1].path, mode: tool.name === 'edit' ? 'edit' : existsSync(workspace.path(args[1].path)) ? 'overwrite' : 'create',
+          chars: tool.name === 'edit' ? (args[1].edits ?? []).reduce((n: number, e: any) => n + String(e?.newText ?? '').length, 0) : String(args[1].content ?? '').length } : undefined;
     try { if (evo) evo.allowTool(tool.name, args[1]); result = await tool.execute(...args); }
     catch (error) {
       if (evo && ['reflect_component','reflect_orchestration'].includes(tool.name)) evo.abortTransaction(error);
@@ -140,7 +148,8 @@ export default function pptDemo(pi: ExtensionAPI) {
       persistLiveSelf(); throw error;
     }
     if (evo) {
-      evo.fact('tool_result', { tool: tool.name, input_hash: hash(args[1]), result, duration_ms: Date.now()-began });
+      if (artifactWrite && !result?.isError) evo.fact('artifact_write', artifactWrite);
+      evo.fact('tool_result', { tool: tool.name, action: evo.actionName(tool.name, args[1]), mode: evo.mode, is_error: Boolean(result?.isError), input_hash: hash(args[1]), result, duration_ms: Date.now()-began });
       await evo.event(result?.isError ? 'tool_failed' : 'tool_succeeded',`tool:${args[0]}`, { tool: tool.name, input_hash: hash(args[1]), duration_ms: Date.now()-began });
       persistLiveSelf();
     }
@@ -337,16 +346,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     self_review: Type.Optional(Type.Object({ disposition: Type.Union([Type.Literal('keep'), Type.Literal('defer'), Type.Literal('change')]), rationale: Type.String() })) });
   register('office', OFFICE_ACTION_DESCRIPTION, officeParameters,
     async (a: any, signal: AbortSignal, ctx: any) => {
-      if (evo && a.op === 'deliver') {
-        const boundary = `delivery:${currentSourceFacts()?.hash}`;
-        const routed = await evo.event('before_delivery', boundary, deliveryReviewEvidence(evo));
-        await evo.event('before_session_end', boundary);
-        if (!(routed as any).duplicate || evo.hasReview) {
-          persistLiveSelf();
-          return text({ delivery_pending: true, boundary, review: 'queued for next request; repeat delivery after review' });
-        }
-        if (evo.mode !== 'execute') throw Error('delivery awaits review exit');
-      }
+      // D1: final delivery is one call; it is the last settlement and no review follows.
+      if (evo && a.op === 'deliver' && evo.mode !== 'execute') throw Error('delivery is a task action; it resumes after this review');
       agentSelf.assertActionAllowed(`office.${a.op}`);
       if (a.op === 'render') {
         const sourcePath = a.source_path ?? canonical();
@@ -364,7 +365,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         }
         const receipt = JSON.parse(child.stdout);
         const acceptance = experimentManifest ? collectAcceptance(activeManifest() ?? experimentManifest, root, workspace, sourcePath, receipt, child.status) : undefined;
-        if (evo && acceptance) { evo.outcome({ ...acceptance, episode:state.episode }); persistLiveSelf(); }
+        if (evo && acceptance) { evo.outcome({ ...acceptance, episode:state.episode, metrics: pptUnitMetrics(acceptance, evo.segmentRows()) }); persistLiveSelf(); }
         state.lastFeedback = { revision, slides: receipt.slides, native_objects: receipt.native_objects,
           warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath };
         state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
@@ -438,14 +439,16 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
       if (evo && manifest) {
         const episode = activeManifest()!;
-        evo.outcome({ ...collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0), episode:state.episode });
+        const whole = collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0);
+        evo.outcome({ ...whole, episode:state.episode, metrics: pptUnitMetrics(whole, evo.segmentRows()) });
         const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => r.value.unit));
         for (const unit of episode.units) if (!delivered.has(unit.id)) {
-          evo.outcome({ ...collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0, unit.id), episode:state.episode }, true);
+          const unitAcceptance = collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0, unit.id);
+          evo.outcome({ ...unitAcceptance, episode:state.episode, metrics: pptUnitMetrics(unitAcceptance, evo.segmentRows()) }, true);
           evo.fact('unit_delivered', { unit: unit.id, episode:state.episode, via: 'whole_deck_delivery' });
         }
-        // Whole delivery ends the single task: open windows become due_unverified; no post-task review is queued.
-        evo.taskEnd('delivered');
+        // Whole delivery is the final settlement of the single task: due windows are delivered, no review is queued.
+        await evo.finalSettlement(`delivery:${currentHash}`, { unit: null });
         persistLiveSelf();
       }
       state.complete = true; state.deliveredRevision = revision; persist(); log('lifecycle.jsonl', { event: 'delivered', revision });
@@ -521,7 +524,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       : Array.isArray(message.content) ? message.content.map((part: any) => part?.text ?? '').join('') : '';
     const start = freshBatch ? messages.findLastIndex((message: any) => message.role === 'user' && messageText(message) !== 'PPT_RESUME') : -1;
     const kept = start >= 0 ? messages.slice(start) : [...messages];
-    const tail: any[] = [{ role: 'user', content: [{ type: 'text', text: statusText() }], timestamp: Date.now() }];
+    const tail: any[] = [{ role: 'user', content: [{ type: 'text', text: statusText() }], timestamp: Date.now(), contextSection: 'task_status' }];
     if (freshBatch && state.batchRequests === batchLimit - 1) tail.push({ role: 'custom', customType: 'ppt-batch-limit', display: false,
       timestamp: Date.now(), content: 'LAST REQUEST IN THIS BATCH. The next batch starts with a fresh conversation; only the workspace, your harness and a checkpoint note (max 400 chars) carry over.' });
     return { messages: [...kept, ...tail] };
@@ -604,7 +607,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       try {
         evo.guard(directoryBytes(root));
         const pin = evo.pin(); evoRequestStarted = Date.now();
-        const messages = evo.contextMessages(event.messages);
+        const messages = [...event.messages];
         const system = { ...messages[0] };
         if (system.role !== 'system') throw Error('missing system message');
         // Rebuild the actual schema, including office sub-operations, for this request.
@@ -615,7 +618,7 @@ export default function pptDemo(pi: ExtensionAPI) {
           const generated = selfRootToolSchema(evo, t.name);
           if (generated === undefined) return [];
           const parameters = generated ?? structuredClone(t.parameters) as any;
-          if (t.name === 'office') parameters.properties.op = { type: 'string', enum: actions.filter(x => x.startsWith('office.')).map(x => x.slice(7)) };
+          if (t.name === 'office') { parameters.properties.op = { type: 'string', enum: actions.filter(x => x.startsWith('office.')).map(x => x.slice(7)) }; delete parameters.properties.self_review; }
           return [{ name: t.name, description: t.description, parameters }];
         });
         for (const t of system.toolsAdded) { const expected = selfRootToolSchema(evo, t.name); if (expected && hash(expected) !== hash(t.parameters)) throw Error(`provider schema for ${t.name} differs from its descriptor`); }
@@ -627,12 +630,23 @@ export default function pptDemo(pi: ExtensionAPI) {
           skills: agentSelf.active().filter(c => c.kind === 'skill').map(c => `${c.name}@${c.version}: ${c.description}; read_self_component`).join('\n'),
         };
         const taskInstructions = evo.inCapabilityReview ? '' : existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
-        system.content = [taskInstructions, ...evo.policy.context.order.map(k => groups[k]), evo.policy.context.instruction,
-          'SELF ROOT: one agent, one task, one serial session. Each delivered unit (submit_unit) is an in-task settlement boundary followed by an evolution review. You decide what to change, defer, adopt, or restore. The host records windows, later use and evidence; missing effects or repeatable metrics remain unverified. read_self exposes the current self and its evidence.',
-          JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())].join('\n\n');
+        const ctx = evo.policy.context;
+        const selfView = [JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())];
+        const selfTail = ctx.self_view?.placement === 'tail';
+        const coreLine = 'SELF ROOT: one agent, one task, one serial session. Each counted unit boundary settles the unit and is followed by a review of your self. Your working context (policy.context), its composition per request, process facts and outcome metrics are part of your self view. The host records windows, later use and evidence; missing effects or metrics remain unverified. read_self exposes the current self and its evidence.';
+        const sections = [{ section: 'task_brief', text: taskInstructions }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
+          { section: 'self_view', text: selfView[0] }, { section: 'projection', text: selfView[1] }];
+        system.content = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine, ...(selfTail ? [] : selfView)].join('\n\n');
         messages[0] = system;
-        evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), reasoning_selection: evo.policy.context.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
+        // Runtime assembly from the active context policy (art. 6-4): items -> core plan -> applied request.
+        const list = piContext.items(messages, sections, system.toolsAdded);
+        const plan = await evo.planContext(list);
+        const assembled = piContext.apply(messages, list, plan.actions, plan.policyHash);
+        if (selfTail) assembled.push({ role: 'custom', customType: 'self-view', display: false, timestamp: Date.now(), content: selfView.join('\n\n') });
+        evo.recordContext(plan.composition, plan.receipt);
+        evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), context_policy: plan.receipt, reasoning_selection: ctx.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
         persistLiveSelf();
+        return { messages: assembled };        persistLiveSelf();
         return { messages };
       } catch (error) {
         evo.fact('request_paused', { error: String(error) }); persistLiveSelf();
@@ -720,7 +734,10 @@ export default function pptDemo(pi: ExtensionAPI) {
         const estimate = known ? ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6 : requestReserve;
         const reasoning = m.content?.filter((part: any) => part.type === 'thinking');
         if (reasoning?.length) evo.fact('assistant_reasoning', { request: requests, blocks: reasoning, recovery: 'read_self(section="ledger")' });
-        evo.cost(u,Date.now()-evoRequestStarted,estimate,known,unknownUsageReserveTokens);
+        const stop = normalizeStop(m.stopReason);
+        evo.cost(u,Date.now()-evoRequestStarted,estimate,known,unknownUsageReserveTokens, { stop: stop ?? undefined,
+          cut_tool_calls: stop === 'output_cap' ? (m.content ?? []).filter((p: any) => p.type === 'toolCall').map((p: any) => p.name) : [],
+          provider_retries: null, output_cap: evo.policy.request?.maxOutputTokens, cache_supported: cacheSupported(experimentManifest?.settings?.model) });
         persistLiveSelf();
       }
       if (known) spent += ((u.input ?? 0)*inputRate+(u.cacheRead ?? 0)*cacheReadRate+(u.cacheWrite ?? 0)*cacheWriteRate+(u.output ?? 0)*outputRate)/1e6-reserved;

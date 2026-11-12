@@ -72,47 +72,33 @@ export function collectAcceptance(m: SelfRootManifest, root: string, workspace: 
     limitations: ['literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion', 'narrative, aesthetics and persuasion unmeasured', 'geometry limited to renderer warnings', 'HTML delivery; not a native editable pptx'] };
 }
 
-/** Bounded facts from immutable same-root receipts for the existing delivery review. */
-export function deliveryReviewEvidence(evo: SelfRoot) {
-  const saved = evo.export();
-  const ledger = saved.root.ledger as Array<{ref: string; type: string; value: any}>;
-  const outcome = ledger.findLast(row => row.type === 'task_outcome' && row.value?.renderer?.receipt);
-  const failure = ledger.findLast(row => row.type === 'event' && row.value?.type === 'tool_failed');
-  const recovered = failure && ledger.slice(Number(failure.ref.slice(7)) + 1)
-    .find(row => row.type === 'event' && row.value?.type === 'tool_succeeded');
-  const render = ledger.findLast(row => row.type === 'render_action_receipt');
-  const receipt = outcome?.value?.renderer?.receipt;
-  const current = receipt ? receipt.source_sha256 === saved.snapshot.latestArtifactHash : null;
-  const units = outcome?.value?.units ?? [];
-  const flags = units.flatMap((unit: any) => [unit.citation_literal?.found, unit.normalized?.citation_found,
-    ...(unit.literal_matches ?? []).map((match: any) => match.found),
-    ...(unit.normalized?.matches ?? []).map((match: any) => match.found)]);
-  const refs = [...new Set([outcome?.ref, failure?.ref, recovered?.ref, render?.ref].filter((ref): ref is string => Boolean(ref)))];
-  return { evidenceRefs: refs, artifact: receipt ? { revision: receipt.revision, sha256: receipt.source_sha256, current,
-    slides: receipt.slides, warnings: (receipt.warnings ?? []).slice(0, 8), additional_warnings: Math.max(0, (receipt.warnings ?? []).length - 8) } : null,
-    checker: outcome ? { version: outcome.value.checker?.version, unit_count: units.length,
-      slide_count: outcome.value.slide_count,
-      flags: { true: flags.filter(x => x === true).length, false: flags.filter(x => x === false).length,
-        unknown: flags.filter(x => x == null).length } } : null,
-    tool_failure: failure ? { ref: failure.ref, tool: failure.value.facts?.tool,
-      subsequent_success_ref: recovered?.ref ?? null, subsequent_success_tool: recovered?.value.facts?.tool ?? null } : null,
-    render_action: render ? { ref: render.value.action_ref, ledger_ref: render.ref,
-      transition: render.value.transition?.status, transition_reason: render.value.transition?.reason ?? null } : null,
-    self_revision: saved.root.serial, orchestration_revision: saved.snapshot.revision,
-    candidate_validation_window: saved.root.windows.some((window: any) => window.status === 'open' || window.status === 'delivered') };
+/** PPT outcome metrics ({name, value, unit}) for one unit, plus segment counts from the adapter's own facts.
+ * Facts only; the core treats the names as opaque and never ranks them. */
+export function pptSegmentMetrics(rows: any[]) {
+  const renders = rows.filter(r => r.type === 'task_outcome' && r.value?.unit === 'whole_deck' && r.value?.renderer?.receipt).length;
+  const failures = rows.filter(r => r.type === 'task_outcome' && r.value?.status === 'render_failed').length;
+  const writes = rows.filter(r => r.type === 'artifact_write');
+  const n = (mode: string) => writes.filter(r => r.value?.mode === mode).length;
+  return [
+    { name: 'render.count', value: renders, unit: 'count' }, { name: 'render.failures', value: failures, unit: 'count' },
+    { name: 'artifact.whole_file_writes', value: n('create') + n('overwrite'), unit: 'count' }, { name: 'artifact.edit_calls', value: n('edit'), unit: 'count' },
+    { name: 'artifact.program_writes', value: n('program'), unit: 'count' },
+    { name: 'artifact.write_chars', value: writes.reduce((sum, r) => sum + Number(r.value?.chars ?? 0), 0), unit: 'chars' },
+  ];
 }
-
-export function settlementEvidence(evo: SelfRoot, episode: number, coverage_tags: string[] = []) {
-  const ledger = evo.export().root.ledger as Array<{ref:string;type:string;value:any}>;
-  const outcomes = ledger.filter(r => r.type === 'task_outcome' && r.value?.episode === episode);
-  const activations = ledger.filter(r => r.type === 'reflection_activated');
-  const used = ledger.filter(r => r.type === 'component_consumed' && activations.some(a => a.value.revision === r.value?.version && a.request < r.request));
-  const due = ledger.filter(r => r.type === 'validation_delivered' && r.value?.outcomes?.some((ref: string) => outcomes.some(outcome => outcome.ref === ref)));
-  return { episode, boundary: outcomes.length ? 'delivered' : 'incomplete', outcome_refs: outcomes.map(r => r.ref),
-    used_version_refs: used.map(r => r.ref), due_window_refs: due.map(r => r.ref), comparison_refs: due.filter(r => r.value?.prediction_error?.status !== 'unknown').map(r => r.ref),
-    event_classes: [...new Set(ledger.filter(r => r.type === 'event' && r.request >= (outcomes.at(0)?.request ?? 0)).map(r => r.value?.type).filter(Boolean))], coverage_tags,
-    evidenceRefs: [...new Set([...outcomes, ...used, ...due].map(r => r.ref))],
-    };
+export function pptUnitMetrics(result: any, rows: any[]) {
+  const units = result.units ?? [];
+  const literal = units.flatMap((u: any) => u.literal_matches ?? []);
+  const normalized = units.filter((u: any) => u.normalized?.scope !== 'whole_document_unscoped').flatMap((u: any) => u.normalized?.matches ?? []);
+  const cited = units.filter((u: any) => u.citation_literal?.found || u.normalized?.citation_found).length;
+  return [
+    { name: 'acceptance.required_found', value: literal.filter((m: any) => m.found).length, unit: 'count' },
+    { name: 'acceptance.required_total', value: literal.length, unit: 'count' },
+    { name: 'acceptance.citations_found', value: cited, unit: 'count' },
+    ...(normalized.length ? [{ name: 'acceptance.normalized_found', value: normalized.filter((m: any) => m.found === true).length, unit: 'count' }] : []),
+    { name: 'render.warnings_latest', value: (result.renderer?.receipt?.warnings ?? []).length, unit: 'count' },
+    ...pptSegmentMetrics(rows),
+  ];
 }
 
 /** Adapter-side, task-specific wiring passed to the task-neutral core (constitution art. 10-1). */
@@ -121,6 +107,9 @@ export const PPT_SELF_ROOT_OPTIONS = {
   evolutionTools: ['read', 'ls', 'grep', 'office.look'],
   reservedToolNames: ['office'],
   actionOf: (name: string, args: any) => name === 'office' ? `office.${args?.op}` : name,
+  boundaryTools: ['submit_unit', 'office.deliver'],
+  contextSections: ['task_brief', 'task_status'],
+  probeKinds: ['renderer-preflight'],
 };
 
 /** Provider-visible schema for one registered tool name, generated from the core descriptor.
@@ -146,25 +135,23 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
   // Registered TypeBox shapes are permissive envelopes; the provider receives the descriptor schema
   // (ppt_demo_extension context_with_system) and dispatch re-checks it with normalizeOperation.
   const open = (keys: string[]) => Type.Object(Object.fromEntries(keys.map(k => [k, Type.Optional(Type.Any())])));
-  tool('read_self', 'Expand the same root: self (full mirror plus S_n/C_n), policy, contract, ledger pages (offset/count), definition (offset=revision), windows, conditions, lineage or continuity. The packed evidence is a floor; full self and ledger remain accessible. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
+  tool('read_self', 'Expand the same root: self (full mirror plus S_n/C_n), policy, contract, ledger pages (offset/count), definition (offset=revision), windows, conditions, lineage, continuity, segments (per-unit summaries), requests (per-request records) or context_item (ref: the full content of an item the context policy omitted; read-only). The packed evidence is a floor; full self and ledger remain accessible. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
     Type.Object({ section: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), count: Type.Optional(Type.Integer({ minimum: 1, maximum: 40 })),
       op: Type.Optional(Type.Literal('replay')), ref: Type.Optional(Type.String()), source: Type.Optional(Type.String()) }),
-    async (a: any) => a.op === 'replay' ? evo.replay(a.ref,a.source) : evo.detail(a.section ?? 'policy',a.offset ?? 0,a.count ?? 20));
+    async (a: any) => a.op === 'replay' ? evo.replay(a.ref,a.source) : a.section === 'context_item' && a.ref ? evo.contextItem(a.ref) : evo.detail(a.section ?? 'policy',a.offset ?? 0,a.count ?? 20));
   const orchestration = operationContract('orchestration');
   tool(orchestration.name, orchestration.description, open(Object.keys(orchestration.properties)),
     (a: any) => evo.transaction(normalizeOperation('orchestration', a)));
-  const exitContract = operationContract('evolution');
-  tool(exitContract.name, exitContract.description, open([...Object.keys(operationContract('delivery').properties), 'result']), async (a: any) => {
-    const kind = evo.exitOperationKind;
-    if (!kind) throw Error('no active review to close');
-    const capability = evo.inEvolutionReview;
-    const result = evo.exit(normalizeOperation(kind, a, evo.reviewExitSchema));
-    return { ...result, ...(capability ? { context_reset_requested: true } : {}) };
+  const exitContract = operationContract('review');
+  tool(exitContract.name, exitContract.description, open([...Object.keys(exitContract.properties), 'result']), async (a: any) => {
+    if (!evo.exitOperationKind) throw Error('no active review to close');
+    // The response continues; the next request is assembled in the restored mode (no forced turn end).
+    return evo.exit(normalizeOperation('review', a, evo.reviewExitSchema));
   });
   const validation = operationContract('validation');
   tool(validation.name, validation.description, open(Object.keys(validation.properties)), async (a: any) => {
     const v = normalizeOperation('validation', a);
-    return evo.interpret(v.window, v.decision, { reason: v.reason }, v.restore);
+    return evo.interpret(v.window, v.decision, v.reason, v.restore);
   });
   tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). Host supplies receipts, versions and evidence refs.',
     open(DECIDE_FIELDS), async (a: any, ctx: any) => {
@@ -201,7 +188,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       return evo.outcome({ ...result, episode:episode() });
     });
   const submitted = new Set<string>(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => `${r.value.episode ?? 1}:${r.value.unit}`));
-  tool('submit_unit', 'Deliver one frozen content unit after rendering the current deck. First invocation queues its before-delivery review. Repeat after exit to record protected acceptance. A content unit may span several slides. No quality verdict is fabricated.',
+  tool('submit_unit', 'Deliver one frozen content unit from the current rendered artifact. Records its acceptance facts and settles the unit; a review of your self follows at the next request. A content unit may span several slides. No quality verdict is fabricated.',
     Type.Object({ unit: Type.String() }), async (a: any) => {
       if (!active().units.some((u: any) => u.id === a.unit)) throw Error('unknown frozen unit');
       const key = `${episode()}:${a.unit}`;
@@ -209,12 +196,12 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       const dirs = readdirSync(join(root,'exports')).filter(p => /^v\d+$/.test(p)).sort();
       const receipt = JSON.parse(readFileSync(join(root,'exports',dirs.at(-1) ?? 'missing','receipt.json'),'utf8'));
       if (fileHash(workspace.path(receipt.source_path)) !== receipt.source_sha256) throw Error('unit needs a current rendered artifact');
-      const routed = await evo.event('before_delivery',`unit:${episode()}:${a.unit}:${receipt.source_sha256}`);
-      if (!(routed as any).duplicate || evo.hasReview) return { unit: a.unit, review_pending: true };
+      // One call: acceptance facts, unit delivery and the unit boundary (D1/D2; no per-unit delivery review).
       const result = collectAcceptance(active(),root,workspace,receipt.source_path,receipt,0,a.unit);
-      evo.outcome({ ...result, episode:episode() },true); evo.fact('unit_delivered',{ unit: a.unit, episode:episode() }); submitted.add(key);
+      evo.outcome({ ...result, episode:episode(), metrics: pptUnitMetrics(result, evo.segmentRows()) },true); evo.fact('unit_delivered',{ unit: a.unit, episode:episode() }); submitted.add(key);
       const outcomeRefs = evo.export().root.ledger.filter((r: any) => r.type === 'task_outcome' && r.value?.unit === a.unit).map((r: any) => r.ref);
-      await evo.event('unit_completed',`unit:${a.unit}`,{ event_classes:['task_outcome'], coverage_tags:[], unit: a.unit, evidenceRefs: outcomeRefs.slice(-4) });
-      return result;
+      const routed: any = await evo.event('unit_completed',`unit:${a.unit}`,{ event_classes:['task_outcome'], coverage_tags:[], unit: a.unit, evidenceRefs: outcomeRefs.slice(-4) });
+      return { ...result, unit_boundary: routed.coalesced ? { counted: false, rule: 'no task action since the previous counted unit boundary' } : { counted: true, segment_summary: routed.segment_summary ?? null },
+        review: evo.hasReview ? 'opens at the next request' : null };
     });
 }
