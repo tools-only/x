@@ -405,9 +405,13 @@ def run(root: Path, *, round_deadline: float | None = None):
                     continue
                 pending = saved.get("root",{}).get("queue",[])
                 # A normal end gets at most its queued contract review. No repeated window entrance.
-                if not pending and not (episodes and state.get("complete") and saved.get("root",{}).get("ledger",[])[-1].get("type") == "review_closed"):
-                    result["stop"] = "plain_text_end"
-                    break
+                if not pending and not saved.get("root", {}).get("taskEnded"):
+                    result["empty_turns"] = result.get("empty_turns", 0) + 1
+                    if saved.get("root", {}).get("review"):
+                        message = "Continue the active review in this same serial session; finish the review or make the required change, then resume the task."
+                    else:
+                        message = "Continue the task in execute mode. The prior response made no task action; complete remaining work and formal delivery."
+                    continue
                 message = ("Continue the next constructed task episode in this same root and serial session."
                            if episodes and state.get("complete") and any(r["type"] == "review_closed" and r["value"].get("occasion") == "evolution_review" and
                                r["value"].get("closed_by") == "agent" for r in ledger)

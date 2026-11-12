@@ -74,7 +74,8 @@ export default function pptDemo(pi: ExtensionAPI) {
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
   const piContext = createPiContextAdapter();
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
-    { ...PPT_SELF_ROOT_OPTIONS, contextItem: (ref: string) => piContext.resolve(ref) }) : undefined;
+    { ...PPT_SELF_ROOT_OPTIONS, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
+      contextItem: (ref: string) => piContext.resolve(ref) }) : undefined;
   const agentSelf = evo ?? new LiveAgentSelf(savedSelf, validatePythonComponent, workspace);
   let activatingEvo = false;
   let advanceEvoBoundary = async () => {};
@@ -659,12 +660,14 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
     });
     pi.on('agent_end', async () => {
-      // Pi order: tool results -> turn_end (activation) -> agent_end. Resolve any late pending activation, then one closure.
+      // Pi order: tool results -> turn_end (activation) -> agent_end. A stopped model turn is not task/session completion.
       try { evo.endResponse(applySurface, persistLiveSelf, 'response ended without decide_exit'); }
       catch (error) { evo.fact('request_paused', { error: String(error) }); }
-      if (!evo.isResetting)
-        await evo.event('before_session_end',state.complete ? `delivery:${currentSourceFacts()?.hash}` : 'normal-session-end');
-      if (state.complete) evo.taskEnd('delivered');
+      if (state.complete) {
+        evo.taskEnd('delivered');
+      } else if (!evo.isResetting && !evo.taskIncomplete) {
+        await evo.event('before_session_end', 'formal-task-end');
+      }
       persistLiveSelf();
     });
     pi.on('session_before_compact', (event: any) => {
@@ -675,7 +678,11 @@ export default function pptDemo(pi: ExtensionAPI) {
       return { cancel:true }; // Never hide an additional summarizer/model lifecycle or unmetered call.
     });
     pi.on('session_compact', (event: any) => { evo.fact('context_restored',{ reason:event.reason, root_id:evo.root_id, evidence_recovery:'read_self' }); persistLiveSelf(); });
-    pi.on('session_shutdown', () => { evo.closeMechanically('session shutdown'); persistLiveSelf(); });
+    pi.on('session_shutdown', () => {
+      evo.closeMechanically('session shutdown');
+      evo.taskEnd('session shutdown');
+      persistLiveSelf();
+    });
   }
   // Guard each actual provider request, including automatic tool continuations and length resumes.
   pi.on('before_provider_request', (event: any) => {

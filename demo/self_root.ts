@@ -16,7 +16,7 @@ const INITIAL_CONDITIONS = { floor: { step: 0, evidence: ['settlement_facts'], e
 export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component', 'reflect_orchestration', 'decide', 'decide_exit', 'decide_validation'];
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
-  processFactTypes?: string[]; finalDeliveryTools?: string[];
+  processFactTypes?: string[]; finalDeliveryTools?: string[]; taskComplete?: () => boolean; requiredUnits?: () => number;
   /** Adapter actions that mark a unit boundary; they never count as work between boundaries. */
   boundaryTools?: string[];
   /** Adapter-declared context section names (opaque to the core). */
@@ -295,6 +295,7 @@ export class SelfRoot extends LiveAgentSelf {
   private reviewRequests = 0;
   private reviewedQualityRefs = new Set<string>();
   private pendingDelivery?: { run: () => Promise<any> };
+  private taskEndPending?: string;
   private conditionSet: any = copy(INITIAL_CONDITIONS);
   private settlementCount = 0;
   private lastSettlementReview?: string;
@@ -328,7 +329,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
       if (r.reviewedQualityRefs !== undefined) this.reviewedQualityRefs = new Set(r.reviewedQualityRefs);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
       if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
@@ -351,6 +352,8 @@ export class SelfRoot extends LiveAgentSelf {
   get exitOperationSchema() { const kind = this.exitOperationKind; return kind ? providerOperationSchema(kind, this.review.modeDefinition.exitSchema) : undefined; }
   get dueWindows() { return this.windows.filter(w => ['due_unverified', 'due_comparable'].includes(w.status)).map(w => w.id); }
   get hasReview() { return Boolean(this.review || this.queue.length); }
+  /** Whether the task still has host-owned work that a model stop cannot complete. */
+  get taskIncomplete() { return !(this.options.taskComplete?.() ?? false) || this.units < (this.options.requiredUnits?.() ?? 0) || this.windows.some(w => w.status === 'open') || this.hasReview || Boolean(this.taskEndPending); }
   get pendingRevision() { return this.pending?.revision ?? this.serial; }
   get isPaused() { return this.paused; }
   get isResetting() { return Boolean(this.resetInProgress); }
@@ -364,7 +367,7 @@ export class SelfRoot extends LiveAgentSelf {
       paused: this.paused, previousMode: this.previousMode, providerCosts: [...this.providerCosts], policy: this.policy,
       workRequests: this.workRequests, reviewRequests: this.reviewRequests, reviewedQualityRefs: [...this.reviewedQualityRefs], daemonRecord: this.daemonRecord ?? null,
       conditionSet: this.conditionSet, settlementCount: this.settlementCount, lastSettlementReview: this.lastSettlementReview,
-      taskEnded: this.taskEnded ?? null, segmentStart: this.segmentStart, segmentRefs: this.segmentRefs, contextByRequest: this.contextByRequest,
+      taskEnded: this.taskEnded ?? null, taskEndPending: this.taskEndPending ?? null, segmentStart: this.segmentStart, segmentRefs: this.segmentRefs, contextByRequest: this.contextByRequest,
       activeReset: this.activeReset ?? null, resetInProgress: this.resetInProgress ?? null, pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses, status: 'intent', review: this.pendingReview ?? null } : null }) };
   }
   private add(kind: 'fact' | 'claim', type: string, value: unknown) {
@@ -635,14 +638,25 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.paused) this.activatePending(applySurface, persist);
     if (!this.review || !this.inEvolutionReview) this.closeMechanically(reason);
   }
-  /** Task end (delivery completed or budget stop): open windows become due; no further review is queued. */
+  /** Task end (formal delivery or a real terminal stop): open windows become due. */
   taskEnd(reason: string) {
     if (this.taskEnded) return { duplicate: true };
+    const formalDelivery = reason === 'delivered';
+    if (formalDelivery && (this.review || this.queue.length || this.pendingDelivery)) {
+      this.taskEndPending = reason;
+      return { deferred: true };
+    }
+    if (!formalDelivery) {
+      if (this.review) this.closeMechanically(`terminal:${reason}`);
+      this.queue = [];
+      this.pendingDelivery = undefined;
+    }
     this.taskEnded = reason;
     const delivered = this.windows.filter(w => w.status === 'open').map(w => {
       const observed = this.segmentRefs.map(ref => this.ledger.find(r => r.ref === ref)!).filter(r => r && Number(r.value.segment) > (w.baseline_segment ?? 0)).at(-1);
       return this.deliverWindow(w, `task end: ${reason}`, observed?.ref).ref; });
     this.queue = [];
+    this.taskEndPending = undefined;
     this.fact('task_ended', { reason, windows_delivered: delivered });
     return { delivered };
   }
@@ -784,7 +798,7 @@ export class SelfRoot extends LiveAgentSelf {
   /** Final delivery: the last segment settles (due windows delivered), no review follows, the task ends. */
   async finalSettlement(boundary: string, facts: any = {}) {
     const result = await this.event('settlement', boundary, { ...facts, final: true });
-    return { ...result, task_end: this.taskEnd('delivered') };
+    return { ...result, task_end: { deferred: true, reason: 'formal delivery completion is recorded by the adapter after its delivery action returns' } };
   }
   private enter(ticket: any) {
     this.previousMode = this.currentMode; this.currentMode = ticket.triggers[0].mode;
