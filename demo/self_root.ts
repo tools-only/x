@@ -266,10 +266,13 @@ export class SelfRoot extends LiveAgentSelf {
       }
       if (input.policy !== undefined) { this.assertWrite('policy'); validatePolicy(input.policy, this.contract, this.outputLimit); policy = copy(input.policy); addresses.push('policy'); }
       if (!addresses.length) throw Error('empty transaction');
+      const capability = this.review?.triggers.some((t: any) => t.id === 'contract:capability_review');
+      if (capability && (!input.validation || input.validation.due?.boundary !== 'episode_two_delivered' || !input.validation.baseline?.length || !input.validation.metric_refs?.length))
+        throw Error('capability fill requires a second-episode validation window with baseline and metric refs');
       const validation = input.validation ?? { due: { boundary: 'before_session_end' }, scope: 'unspecified; unverified', baseline: [], metric_refs: [] };
       if (!validation.due || Object.keys(validation.due).some(k => !['request','units','boundary'].includes(k)) || !Object.keys(validation.due).length) throw Error('validation due required');
       for (const k of ['request','units']) if (validation.due[k] !== undefined && (!Number.isSafeInteger(validation.due[k]) || validation.due[k] < 0)) throw Error('invalid due counter');
-      if (validation.due.boundary !== undefined && !FLOOR.includes(validation.due.boundary)) throw Error('unknown due boundary');
+      if (validation.due.boundary !== undefined && ![...FLOOR, 'episode_two_delivered'].includes(validation.due.boundary)) throw Error('unknown due boundary');
       for (const ref of [...(validation.baseline ?? []), ...(validation.metric_refs ?? [])]) if (!this.ledger.some(row => row.ref === ref)) throw Error('unknown validation evidence');
       if (validation.measure) validateLiveSelfSource(validation.measure.source);
       if (this.chainFailed) throw Error('response chain failed while candidate was being validated');
@@ -300,11 +303,14 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.requestPin?.mode === 'execute') super.assertActionAllowed(type);
   }
   surface() {
-    const tools = this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
+    const tools = this.review?.triggers.some((t: any) => t.id === 'contract:capability_review')
+      ? ['read', 'ls', 'grep', 'office.look'] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
     return [...new Set([...PROTOCOL, ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
       ...(tools.includes('agent_tools') && this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool').map(c => c.name) : [])])];
   }
   allowTool(name: string, args: any) { this.assertActionAllowed(name === 'office' ? `office.${args.op}` : name); }
+  get inCapabilityReview() { return Boolean(this.review?.triggers.some((t: any) => t.id === 'contract:capability_review')); }
+  get capabilityReviewClosed() { return this.ledger.some(r => r.type === 'review_closed' && r.value?.occasion === 'capability_review' && r.value?.agent_decision === 'present'); }
   async boundary(applySurface: (tools: string[]) => void, persist: () => void) {
     if (this.paused) throw Error('inconsistent/paused');
     if (this.pending) {
@@ -359,7 +365,7 @@ export class SelfRoot extends LiveAgentSelf {
     const input = { event, revision: this.serial, state: super.snapshot(), ledger_offset: this.ledger.length, request: this.request, resources: this.resources() };
     const routes = type === 'heartbeat' ? [] : [...this.policy.routes].filter(r => !duplicate && r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
     const triggers: any[] = [];
-    if (!duplicate && this.contract.boundaries.includes(type)) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    if (!duplicate && (this.contract.boundaries.includes(type) || type === 'capability_review')) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
     if (!duplicate && type === 'heartbeat' && heartbeatInterval(this.contract.heartbeat)) {
       triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
     }
@@ -370,7 +376,12 @@ export class SelfRoot extends LiveAgentSelf {
       } catch (e) { this.fact('watch_stall', { route: route.id, error: String(e), triggered: false }); }
     }
     for (const window of due) {
-        const outcomes = this.ledger.filter(r => r.type === 'task_outcome' && r.revision >= window.revision);
+        const outcomes = this.ledger.filter(r => r.type === 'task_outcome' && r.revision >= window.revision &&
+          (type !== 'episode_two_delivered' || r.value?.episode === 2));
+        const priorRepairs = type === 'episode_two_delivered' ? this.ledger.filter(r => r.type === 'task_outcome' && r.value?.episode === 1 && r.value?.renderer?.receipt)
+          .map(r => r.value.renderer.receipt.revision) : [];
+        const laterRepairs = type === 'episode_two_delivered' ? outcomes.filter(r => r.value?.renderer?.receipt)
+          .map(r => r.value.renderer.receipt.revision) : [];
         let measured: any = null;
         if (window.measure) {
           try { measured = { status: 'returned', ...(await this.evaluate(window.measure.source, { outcomes, baseline: window.baseline.map(ref => this.ledger.find(r => r.ref === ref)), resources: this.resources() }, { window: window.id })), source: 'agent_measure', version: window.measure.version }; }
@@ -380,7 +391,10 @@ export class SelfRoot extends LiveAgentSelf {
         const error = prediction && observed?.metric === prediction.metric && observed?.unit === prediction.unit && Number.isFinite(prediction.value) && Number.isFinite(observed.value)
           ? { predicted: prediction.value, observed: observed.value, unit: prediction.unit, difference: observed.value-prediction.value } : { status: 'unknown', reason: 'no comparable numeric prediction/observation' };
         const baseline = window.baseline.filter(ref => this.ledger.some(r => r.ref === ref && r.kind === 'fact' && r.type === 'task_outcome'));
-        window.status = 'delivered'; window.delivered = { outcomes: outcomes.map(r => r.ref), baseline: window.baseline, task_baseline: baseline, measured, prediction_error: error, resources: this.resources(), missing: [...(outcomes.length ? [] : ['task_outcomes']), ...(baseline.length ? [] : ['task_baseline'])] };
+        window.status = 'delivered'; window.delivered = { outcomes: outcomes.map(r => r.ref), baseline: window.baseline, task_baseline: baseline, measured, prediction_error: error,
+          repair_recurrence: type === 'episode_two_delivered' ? { first_episode_distinct_render_revisions: new Set(priorRepairs).size,
+            second_episode_distinct_render_revisions: new Set(laterRepairs).size, same_class_recurrence: 'unknown' } : null,
+          resources: this.resources(), missing: [...(outcomes.length ? [] : ['task_outcomes']), ...(baseline.length ? [] : ['task_baseline'])] };
         this.fact('validation_delivered', { window: window.id, ...window.delivered });
         triggers.push({ id: window.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
     }
@@ -421,13 +435,22 @@ export class SelfRoot extends LiveAgentSelf {
   exit(input: { status: 'changed'|'unrelated'|'deferred'; subtype?: string; result: any; evidenceRefs: string[]; terminal?: boolean }) {
     if (!this.review) throw Error('no active review');
     if (!['changed','unrelated','deferred'].includes(input.status)) throw Error('invalid closure');
+    if (this.inCapabilityReview) {
+      if (this.pending) throw Error('capability review cannot close with an unactivated candidate');
+      if (input.status === 'deferred' && !['incomplete','insufficient_evidence'].includes(input.subtype ?? ''))
+        throw Error('capability_review cannot close with keep or sufficiency; record incomplete or insufficient_evidence');
+      if (/\b(good enough|sufficient|needs? (?:are |is )?(?:met|satisfied)|no shortfalls?(?: remain)?|deck (?:is |was )?(?:done|deliverable))\b/i.test(input.result?.reason ?? ''))
+        throw Error('capability_review cannot conclude that needs are met or no shortfall remains');
+      if (input.status === 'changed' && !this.review.changes.some((ref: string) => this.windows.some(w => w.revision === this.serial && w.due.boundary === 'episode_two_delivered')))
+        throw Error('capability change needs an activated second-episode window');
+    }
     for (const ref of input.evidenceRefs) if (!this.ledger.some(r => r.ref === ref)) throw Error('unknown evidence ref');
     const schema = this.review.modeDefinition.exitSchema;
     validateSchema(input.result, schema);
     if (input.status === 'changed' && !this.review.changes.length) throw Error('changed requires an actual activation receipt');
     if (input.status === 'unrelated' && (!input.evidenceRefs.length || !input.result.reason)) throw Error('unrelated requires explicit judgment and evidence');
     const review = this.review;
-    const row = this.claim('review_closed', { review: review.id, ...input, changes: review.changes, agent_decision: 'present', mode_version: review.revision, pending: Boolean(this.pending) });
+    const row = this.claim('review_closed', { review: review.id, occasion: this.inCapabilityReview ? 'capability_review' : null, ...input, changes: review.changes, agent_decision: 'present', mode_version: review.revision, pending: Boolean(this.pending) });
     if (this.pending) this.fact('review_pending', { review: review.id, closure: row.ref, status: 'deferred', subtype: 'pending' });
     if (review.triggers.some((t: any) => t.conclusion_sink === 'lineage')) this.lineage.push(row);
     this.review = undefined; this.currentMode = this.previousMode;
@@ -600,7 +623,7 @@ export class SelfRoot extends LiveAgentSelf {
   override mirror(): any {
     const active = super.mirror();
     for (const component of active.architecture.components) delete (component as any).body;
-    const reviewEvidence = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event' && r.value.type === 'before_delivery')?.value.facts;
+    const reviewEvidence = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event' && ['before_delivery','capability_review'].includes(r.value.type))?.value.facts;
     return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, parts: {
       components: { relation: 'executes from this root', writable_kinds: this.contract.writable.filter(x => x.startsWith('components.')) },
       orchestration: { relation: 'controls active step and trusted receipts', writable: this.contract.writable.includes('orchestration') },

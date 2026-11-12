@@ -1,0 +1,12 @@
+[
+  {"id":"unit-01","title":"Firmwide results","required":["$11.7","$3.74"],"citation":"THIRD-QUARTER 2021 RESULTS"},
+  {"id":"unit-02","title":"Firmwide metrics","required":["$29.6","$30.4"],"citation":"JPMORGAN CHASE (JPM)"},
+  {"id":"unit-03","title":"Consumer and Community Banking overview","required":["34%","1.39%"],"citation":"CCB"},
+  {"id":"unit-04","title":"Corporate and Investment Bank overview","required":["26%","$6.3"],"citation":"CIB"},
+  {"id":"unit-05","title":"Commercial Banking overview","required":["22%","$1.3"],"citation":"CB"},
+  {"id":"unit-06","title":"Asset and Wealth Management overview","required":["33%","$3.0"],"citation":"AWM"},
+  {"id":"unit-07","title":"Significant items","required":["$2.1","$566"],"citation":"SIGNIFICANT ITEMS"},
+  {"id":"unit-08","title":"Capital distributed","required":["$3.0","$5.0"],"citation":"CAPITAL DISTRIBUTED"},
+  {"id":"unit-09","title":"Fortress principles","required":["$86.36","12.9%"],"citation":"FORTRESS PRINCIPLES"},
+  {"id":"unit-10","title":"Operating leverage","required":["$17.1","58%"],"citation":"OPERATING LEVERAGE"}
+]

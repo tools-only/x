@@ -1,7 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { SelfRoot, FLOOR, PROTOCOL, hash, type SelfContract } from '../demo/self_root.ts';
-import { deliveryReviewEvidence } from '../demo/self_root_ppt.ts';
+import { deliveryReviewEvidence, capabilityReviewEvidence } from '../demo/self_root_ppt.ts';
 import { closeLiveSelfMethods } from '../demo/live_self_wasi.ts';
 after(closeLiveSelfMethods);
 
@@ -77,6 +77,48 @@ test('delivery projection bounds warnings and reports false and unknown probes w
   assert.equal(facts.tool_failure?.ref, failure.ref);
   assert.equal(facts.render_action?.ref, render.receipt.ref);
   assert.ok(!JSON.stringify(facts).includes('proposed_change'));
+});
+
+test('contractual capability occasion is separate, bounded, and only evidence-based closures resume', async () => {
+  for (const status of ['changed','unrelated','deferred'] as const) {
+    const s = new SelfRoot(contract()); await start(s);
+    const baseline = s.outcome({ episode:1, renderer:{ receipt:{ revision:1,source_sha256:'first',slides:15,warnings:[] } },
+      units:[{ citation_literal:{ found:false }, normalized:{ matches:[{ found:null }] } }] });
+    const next = { id:'second', scope:'15-slide second deck', sources:{'data/material.txt':'hash'}, units:[], acceptance:{} };
+    const facts = capabilityReviewEvidence(s,next);
+    assert.equal(facts.checker?.flags.false,1); assert.equal(facts.later_episode.id,'second');
+    assert.ok(facts.evidenceRefs.includes(baseline.ref));
+    await s.event('capability_review','episode:1:settled',facts);
+    assert.deepEqual(await s.event('capability_review','episode:1:settled',facts),{duplicate:true});
+    await start(s);
+    assert.equal(s.inCapabilityReview,true);
+    assert.deepEqual(s.surface().filter(x=>['write','edit','python','office.deliver','acceptance','submit_unit'].includes(x)),[]);
+    assert.deepEqual(s.mirror().dynamic.review_evidence,facts);
+    assert.throws(() => s.exit({status:'deferred',subtype:'keep',result:{reason:'deck is done'},evidenceRefs:[baseline.ref]}),/keep or sufficiency/);
+    if (status === 'changed') {
+      await assert.rejects(s.reflectComponent({baseRevision:1,op:'define',kind:'memory',name:'later',source:'evidence'}),/second-episode validation/);
+      await start(s);
+      await s.reflectComponent({baseRevision:1,op:'define',kind:'memory',name:'later',source:'evidence',
+        validation:{due:{boundary:'episode_two_delivered'},baseline:[baseline.ref],metric_refs:[baseline.ref],scope:'second work'}});
+      assert.throws(() => s.exit({status,result:{reason:'pending'},evidenceRefs:[baseline.ref]}),/unactivated/);
+      await start(s);
+      assert.equal(s.revision,2); assert.equal(s.detail('windows')[0].status,'open');
+      assert.ok(s.mirror().architecture.components.some((c: any) => c.name === 'later' && c.version === 1));
+    }
+    s.exit({status,subtype:status==='deferred'?'incomplete':undefined,result:{reason:'evidence considered'},evidenceRefs:[baseline.ref]});
+    assert.equal(s.capabilityReviewClosed,true); assert.equal(s.mode,'execute');
+    if (status === 'changed') {
+      const actual = s.outcome({episode:2,repair_class:'citation',renderer:{receipt:{revision:2}}});
+      await s.event('episode_two_delivered','episode:2');
+      assert.deepEqual(s.detail('windows')[0].delivered.outcomes,[actual.ref]);
+      assert.equal(s.detail('windows')[0].delivered.repair_recurrence.same_class_recurrence,'unknown');
+      await start(s); await s.interpret('window:0','restore',{reason:'second episode did not support the candidate'},1);
+      await start(s);
+      assert.equal(s.detail('windows')[0].status,'restored');
+      assert.equal(s.revision,3);
+      assert.ok(all(s).some(r => r.type === 'validation_enacted' && r.value.restore_source === 1));
+    }
+  }
 });
 
 test('pending chain leaves pinned response unchanged, any failure aborts whole chain', async () => {

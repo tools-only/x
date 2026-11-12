@@ -20,7 +20,7 @@ import { canonicalPath, sourceFacts, deliveryIntegrity, statusFacts, PPT_GOAL, P
 import { LiveAgentSelf } from './live_orchestration_core.ts';
 import { SelfRoot, hash } from './self_root.ts';
 import { providerPermit } from './provider_permit.ts';
-import { installSelfRootTools, type SelfRootManifest, collectAcceptance, deliveryReviewEvidence, directoryBytes } from './self_root_ppt.ts';
+import { installSelfRootTools, type SelfRootManifest, collectAcceptance, deliveryReviewEvidence, capabilityReviewEvidence, directoryBytes } from './self_root_ppt.ts';
 
 function refreshResourceDaemon(root: string) {
   if (!root) return;
@@ -67,6 +67,10 @@ export default function pptDemo(pi: ExtensionAPI) {
   state.nextPhase ??= 'task';
   state.note ??= '';
   state.noteStale ??= false;
+  state.episode ??= 1;
+  if (manifest?.episodes && hash(manifest.episodes) !== manifest.episodes_sha256) throw Error('frozen episode contract changed');
+  const activeManifest = () => manifest?.episodes ? { ...manifest, ...manifest.episodes[state.episode-1], contract: { ...manifest.contract,
+    acceptance: manifest.episodes[state.episode-1].acceptance } } : manifest;
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens) : undefined;
   const agentSelf = evo ?? new LiveAgentSelf(savedSelf, validatePythonComponent, workspace);
@@ -327,7 +331,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       persistLiveSelf('decision_and_transition', { decision, transition });
       return text({ decision, transition, active: agentSelf.mirror() });
     });
-  if (evo && manifest) installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist: persistLiveSelf });
+  if (evo && manifest) installSelfRootTools({ pi, evo, manifest: activeManifest, root, workspace, text, persist: persistLiveSelf, episode: () => state.episode });
   const officeParameters = Type.Object({ op: Type.Union([Type.Literal(PPT_ACTIONS[0]), Type.Literal(PPT_ACTIONS[1]), Type.Literal(PPT_ACTIONS[2])]),
     source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })),
     self_review: Type.Optional(Type.Object({ disposition: Type.Union([Type.Literal('keep'), Type.Literal('defer'), Type.Literal('change')]), rationale: Type.String() })) });
@@ -354,13 +358,13 @@ export default function pptDemo(pi: ExtensionAPI) {
         const helper = fileURLToPath(new URL('../src/autoresearch_pi/ppt_demo_html.py', import.meta.url));
         const child = spawnSync(process.env.PPT_DEMO_PYTHON ?? 'python', [helper, root, source, String(revision)], { encoding: 'utf8', timeout: 300000, maxBuffer: 4*1024*1024, windowsHide: true });
         if (child.error || child.status !== 0) {
-          if (evo && manifest) evo.outcome({ source:'protected_acceptance', checker:manifest.checker, unit:'whole_deck',
+          if (evo && manifest) evo.outcome({ source:'protected_acceptance', checker:manifest.checker, unit:'whole_deck', episode:state.episode,
             artifact:{path:sourcePath,sha256:fileHash(sourcePath)}, renderer:{exit:child.status,error:String(child.error ?? child.stderr),original_output:child.stdout}, status:'render_failed' });
           throw Error((child.stderr || String(child.error)).slice(-5000));
         }
         const receipt = JSON.parse(child.stdout);
-        const acceptance = experimentManifest ? collectAcceptance(experimentManifest, root, workspace, sourcePath, receipt, child.status) : undefined;
-        if (evo && acceptance) { evo.outcome(acceptance); persistLiveSelf(); }
+        const acceptance = experimentManifest ? collectAcceptance(activeManifest() ?? experimentManifest, root, workspace, sourcePath, receipt, child.status) : undefined;
+        if (evo && acceptance) { evo.outcome({ ...acceptance, episode:state.episode }); persistLiveSelf(); }
         state.lastFeedback = { revision, slides: receipt.slides, native_objects: receipt.native_objects,
           warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath };
         state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
@@ -413,7 +417,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         disposition: a.self_review.disposition, rationale: a.self_review.rationale });
       persistLiveSelf('self_review', selfReview);
       const currentHash = fileHash(receipt.source_path);
-      const delivery = join(root, 'delivery'); mkdirSync(delivery, { recursive: true });
+      const delivery = join(root, manifest?.episodes ? `episodes/${state.episode}/delivery` : 'delivery'); mkdirSync(delivery, { recursive: true });
       // The rendered revision, not one file: the presentation plus every page image and the receipt. The render
       // directory (the HTML with its relative assets intact) is delivered too; only the browser profile is skipped.
       for (const entry of readdirSync(out)) {
@@ -433,23 +437,28 @@ export default function pptDemo(pi: ExtensionAPI) {
         mkdirSync(join(target, '..'), { recursive: true }); cpSync(source, target);
       }
       if (evo && manifest) {
-        evo.outcome(collectAcceptance(manifest, root, workspace, receipt.source_path, receipt, 0));
-        const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => r.value.unit));
-        for (const unit of manifest.units) if (!delivered.has(unit.id)) {
-          evo.outcome(collectAcceptance(manifest, root, workspace, receipt.source_path, receipt, 0, unit.id), true);
-          evo.fact('unit_delivered', { unit: unit.id, via: 'whole_deck_delivery' });
+        const episode = activeManifest()!;
+        evo.outcome({ ...collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0), episode:state.episode });
+        const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered' && (!manifest.episodes || r.value.episode === state.episode)).map((r: any) => r.value.unit));
+        for (const unit of episode.units) if (!delivered.has(unit.id)) {
+          evo.outcome({ ...collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0, unit.id), episode:state.episode }, true);
+          evo.fact('unit_delivered', { unit: unit.id, episode:state.episode, via: 'whole_deck_delivery' });
         }
         persistLiveSelf();
       }
       state.complete = true; state.deliveredRevision = revision; persist(); log('lifecycle.jsonl', { event: 'delivered', revision });
       const orchestrationAction = agentSelf.recordAction('office.deliver', { artifactVersion: Number(revision), artifactHash: currentHash, sourcePath: receipt.source_path });
       persistLiveSelf('action_receipt', orchestrationAction);
+      if (evo && manifest?.episodes && state.episode === 2) {
+        await evo.event('episode_two_delivered','episode:2',{ episode:2, artifact_hash:currentHash, delivery_revision:revision });
+        persistLiveSelf();
+      }
       const liveTrace = join(root, 'harness', 'live_agent_self.jsonl');
       if (existsSync(liveTrace)) {
         const target = join(delivery, 'harness-evidence', 'harness', 'live_agent_self.jsonl');
         mkdirSync(dirname(target), { recursive: true }); cpSync(liveTrace, target);
       }
-      return text({ delivered: revision, directory: 'delivery/', evidence: evidenceLine(), self_review: selfReview, orchestration_action: orchestrationAction }, true);
+      return text({ delivered: revision, directory: manifest?.episodes ? `episodes/${state.episode}/delivery/` : 'delivery/', evidence: evidenceLine(), self_review: selfReview, orchestration_action: orchestrationAction }, true);
     });
   pi.on('before_agent_start', async (event: any) => {
     if (!initialized) {
@@ -489,6 +498,21 @@ export default function pptDemo(pi: ExtensionAPI) {
     pi.setActiveTools([...new Set([...pi.getActiveTools(), ...selected])]);
     // A forced prompt is reapplied by Pi AFTER context_with_system and would erase the live Mirror.
     if (evo) {
+      if (manifest?.episodes && state.episode === 1 && state.complete && !state.capabilityQueued) {
+        await evo.event('capability_review','episode:1:settled',capabilityReviewEvidence(evo,manifest.episodes[1]));
+        state.capabilityQueued = true; persist(); persistLiveSelf();
+      }
+      if (manifest?.episodes && state.episode === 1 && state.capabilityQueued && evo.capabilityReviewClosed && !evo.hasReview) {
+        const next = manifest.episodes[1];
+        for (const [path, expected] of Object.entries(next.sources)) {
+          const bytes = readFileSync(join(root,'episodes/2/workspace',path));
+          if (createHash('sha256').update(bytes).digest('hex') !== expected) throw Error(`episode source changed: ${path}`);
+          workspace.runtimeWrite(path,bytes);
+        }
+        for (const artifact of workspace.files('artifacts')) workspace.mutate({ op:'delete', path:artifact },true);
+        state.episode = 2; state.complete = false; state.deliveredRevision = null; state.lastFeedback = null; persist();
+        evo.fact('episode_started',{ episode:2, source_hashes:next.sources }); persistLiveSelf();
+      }
       await advanceEvoBoundary();
       return { message: { customType: 'same-root-window', content: 'Continue this task in the same root and serial session.', display: false } };
     }
@@ -630,9 +654,9 @@ export default function pptDemo(pi: ExtensionAPI) {
           memory: evo.memory().map(c => `${c.name}@${c.version}\n${c.source}`).join('\n\n'),
           skills: agentSelf.active().filter(c => c.kind === 'skill').map(c => `${c.name}@${c.version}: ${c.description}; read_self_component`).join('\n'),
         };
-        const taskInstructions = existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
+        const taskInstructions = evo.inCapabilityReview ? '' : existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
         system.content = [taskInstructions, ...evo.policy.context.order.map(k => groups[k]), evo.policy.context.instruction,
-          'SELF ROOT: one agent, one session. Protocol: read_self expands policy/ledger/lineage; reflect_component or reflect_orchestration queues a candidate until the next request. decide(op="enter_mode",mode=...) changes attention; decide(op="exit",status="deferred",subtype="keep",result={reason:...},evidenceRefs=[]) can keep the current method. changed requires activation; keep is not unrelated. Validation decisions compare task facts; no required modification. office.deliver hands over the whole deck; submit_unit supports partial handover.',
+          'SELF ROOT: one agent, one session. read_self expands evidence. Reflection activates before the next request. For task delivery, deferred/keep remains available. capability_review instead requires an evidenced, later-testable fill with an episode_two_delivered window, or incomplete/insufficient_evidence. Satisfaction is not a capability-review close. Validation decisions compare objective facts. office.deliver hands over the current episode.',
           JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())].join('\n\n');
         messages[0] = system;
         evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), reasoning_selection: evo.policy.context.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
@@ -646,8 +670,13 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
     });
     pi.on('agent_end', async () => {
-      evo.closeIncomplete('plain-text/technical end without decide exit');
-      if (!evo.isResetting) await evo.event('before_session_end',state.complete ? `delivery:${currentSourceFacts()?.hash}` : 'normal-session-end');
+      if (!evo.inCapabilityReview) evo.closeIncomplete('plain-text/technical end without decide exit');
+      if (!evo.isResetting && !(manifest?.episodes && state.episode === 1 && state.complete))
+        await evo.event('before_session_end',state.complete ? `delivery:${currentSourceFacts()?.hash}` : 'normal-session-end');
+      if (manifest?.episodes && state.episode === 1 && state.complete && !state.capabilityQueued) {
+        await evo.event('capability_review','episode:1:settled',capabilityReviewEvidence(evo,manifest.episodes[1]));
+        state.capabilityQueued = true; persist();
+      }
       persistLiveSelf();
     });
     pi.on('session_before_compact', (event: any) => {

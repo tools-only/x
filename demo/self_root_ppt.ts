@@ -9,6 +9,8 @@ export type SelfRootManifest = {
   experiment_id: string; provider: string; model: string; contract: SelfContract;
   sources: Record<string,string>; units: Array<{ id: string; title: string; required: string[]; citation: string }>;
   checker: { version: string; sha256: string }; settings: any; engineering_commit: string;
+  episodes?: Array<{ id: string; sources: Record<string,string>; units: SelfRootManifest['units']; acceptance: any; scope: string }>;
+  episodes_sha256?: string;
 };
 export function directoryBytes(path: string): number {
   if (!existsSync(path)) return 0;
@@ -47,7 +49,7 @@ export function coverageFacts(source: string, definitions: SelfRootManifest['uni
     const scoped = cited.flatMap(numbers);
     return { id: u.id,
       literal_matches: u.required.map(text => ({ text, found: visible.toLowerCase().includes(text.toLowerCase()) })),
-      citation_literal: { text: u.citation, found: visible.includes(u.citation) },
+      citation_literal: { text: u.citation, found: visible.toLowerCase().includes(u.citation.toLowerCase()) },
       normalized: { citation_found: cited.length > 0, cited_fragments: cited.length, scope,
         matches: u.required.map(text => ({ text, token: numbers(text)[0], found: scope === 'whole_document_unscoped' ? null : scoped.includes(numbers(text)[0]) })) } };
   });
@@ -100,7 +102,30 @@ export function deliveryReviewEvidence(evo: SelfRoot) {
     candidate_validation_window: saved.root.windows.some((window: any) => window.status === 'open' || window.status === 'delivered') };
 }
 
-export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist }: any) {
+/** Facts only, bounded to the settled first episode and the authorized next scope. */
+export function capabilityReviewEvidence(evo: SelfRoot, next: NonNullable<SelfRootManifest['episodes']>[number]) {
+  const saved = evo.export(), ledger = saved.root.ledger as Array<{ref:string;type:string;value:any}>;
+  const outcomes = ledger.filter(r => r.type === 'task_outcome' && r.value?.episode === 1 && r.value?.unit === 'whole_deck' && r.value?.renderer?.receipt).slice(-2);
+  const base = deliveryReviewEvidence(evo);
+  const repairs = outcomes.length === 2 && outcomes[0].value.renderer.receipt.revision !== outcomes[1].value.renderer.receipt.revision
+    ? { earlier: outcomes[0].ref, latest: outcomes[1].ref, revisions: outcomes.map(r => r.value.renderer.receipt.revision),
+      flags: outcomes.map(r => {
+        const flags = (r.value.units ?? []).flatMap((u:any) => [u.citation_literal?.found, ...(u.normalized?.matches ?? []).map((m:any) => m.found)]);
+        return { true:flags.filter((x:any) => x === true).length, false:flags.filter((x:any) => x === false).length,
+          unknown:flags.filter((x:any) => x == null).length };
+      }) } : null;
+  const identities = saved.snapshot.components.map((c:any) => ({ name:c.name, kind:c.kind, version:c.version })).slice(0,32);
+  const refs = [...new Set([...base.evidenceRefs, ...outcomes.map(r => r.ref)])].slice(0,12);
+  return { ...base, evidenceRefs:refs, repair_receipts:repairs, identities: { components:identities, additional_components:Math.max(0,saved.snapshot.components.length-32),
+    orchestration:{ revision:saved.snapshot.revision } }, later_episode:{ id:next.id, scope:next.scope,
+    source_hashes:next.sources, remaining_budget: { requests:Math.max(0,evo.resources().cap.requests-evo.resources().request),
+      tokens:Math.max(0,evo.resources().cap.tokens-evo.resources().tokens), usd:Math.max(0,evo.resources().cap.usd-evo.resources().usd_estimate),
+      seconds:Math.max(0,evo.resources().cap.seconds-evo.resources().elapsed_seconds) },
+    resource_record: { requests:evo.resources().record.requests, tokens:evo.resources().record.tokens, usd:evo.resources().record.usd } } };
+}
+
+export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist, episode = () => 1 }: any) {
+  const active = () => typeof manifest === 'function' ? manifest() : manifest;
   const tool = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name, description, parameters,
     execute: async (_id: string, a: any, _signal: any, _update: any, ctx: any) => { const result = await fn(a,ctx); persist(); return text(result,Boolean(result?.context_reset_requested)); } });
   tool('read_self', 'Expand the same root: policy, contract, ledger pages (offset/count), definition (offset=revision), windows, lineage or continuity. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
@@ -116,7 +141,11 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       result: Type.Optional(Type.Any()), evidenceRefs: Type.Optional(Type.Array(Type.String())), window: Type.Optional(Type.String()), decision: Type.Optional(Type.String()),
       restore: Type.Optional(Type.Integer()), value: Type.Optional(Type.Any()), decisionId: Type.Optional(Type.String()) }), async (a: any, ctx: any) => {
       if (a.op === 'enter_mode') return evo.enterMode(a.mode);
-      if (a.op === 'exit') return evo.exit({ ...a, evidenceRefs: a.evidenceRefs ?? [] });
+      if (a.op === 'exit') {
+        const capability = evo.inCapabilityReview;
+        const result = evo.exit({ ...a, evidenceRefs: a.evidenceRefs ?? [] });
+        return { ...result, ...(capability ? { context_reset_requested: true } : {}) };
+      }
       if (a.op === 'capsule') return evo.capsule(a.value);
       if (a.op === 'inherit') return evo.inherit(a.value);
       if (a.op === 'validation') {
@@ -143,21 +172,22 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       const dirs = readdirSync(join(root,'exports')).filter(p => /^v\d+$/.test(p)).sort();
       const receiptPath = join(root,'exports',dirs.at(-1) ?? 'missing','receipt.json');
       const receipt = JSON.parse(readFileSync(receiptPath,'utf8'));
-    const result = collectAcceptance(manifest,root,workspace,receipt.source_path,receipt,0,a.unit);
-      return evo.outcome(result);
+    const result = collectAcceptance(active(),root,workspace,receipt.source_path,receipt,0,a.unit);
+      return evo.outcome({ ...result, episode:episode() });
     });
-  const submitted = new Set<string>(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => r.value.unit));
+  const submitted = new Set<string>(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => `${r.value.episode ?? 1}:${r.value.unit}`));
   tool('submit_unit', 'Deliver one frozen content unit after rendering the current deck. First invocation queues its before-delivery review. Repeat after exit to record protected acceptance. A content unit may span several slides. No quality verdict is fabricated.',
     Type.Object({ unit: Type.String() }), async (a: any) => {
-      if (!manifest.units.some((u: any) => u.id === a.unit)) throw Error('unknown frozen unit');
-      if (submitted.has(a.unit)) return { unit: a.unit, already_delivered: true };
+      if (!active().units.some((u: any) => u.id === a.unit)) throw Error('unknown frozen unit');
+      const key = `${episode()}:${a.unit}`;
+      if (submitted.has(key)) return { unit: a.unit, already_delivered: true };
       const dirs = readdirSync(join(root,'exports')).filter(p => /^v\d+$/.test(p)).sort();
       const receipt = JSON.parse(readFileSync(join(root,'exports',dirs.at(-1) ?? 'missing','receipt.json'),'utf8'));
       if (fileHash(workspace.path(receipt.source_path)) !== receipt.source_sha256) throw Error('unit needs a current rendered artifact');
-      const routed = await evo.event('before_delivery',`unit:${a.unit}:${receipt.source_sha256}`);
+      const routed = await evo.event('before_delivery',`unit:${episode()}:${a.unit}:${receipt.source_sha256}`);
       if (!(routed as any).duplicate || evo.hasReview) return { unit: a.unit, review_pending: true };
-      const result = collectAcceptance(manifest,root,workspace,receipt.source_path,receipt,0,a.unit);
-      evo.outcome(result,true); evo.fact('unit_delivered',{ unit: a.unit }); submitted.add(a.unit);
+      const result = collectAcceptance(active(),root,workspace,receipt.source_path,receipt,0,a.unit);
+      evo.outcome({ ...result, episode:episode() },true); evo.fact('unit_delivered',{ unit: a.unit, episode:episode() }); submitted.add(key);
       await evo.event('unit_completed',`unit:${a.unit}`);
       return result;
     });

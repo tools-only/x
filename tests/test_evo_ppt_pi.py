@@ -7,8 +7,74 @@ from pathlib import Path
 import pytest
 
 from autoresearch_pi.pi_kernel import PiKernel
+from autoresearch_pi.evo_ppt import content_units
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+
+def test_two_episode_case_units_are_distinct_and_grounded():
+    first = PROJECT / 'demo/ppt-cases/bank-of-america-3q21/assets'
+    second = PROJECT / 'demo/ppt-cases/jpmorgan-chase-3q21/assets'
+    first_units = content_units((first/'material.txt').read_text(encoding='utf-8'))
+    material = (second/'material.txt').read_text(encoding='utf-8')
+    second_units = json.loads((second/'units.json').read_text(encoding='utf-8'))
+    assert len(first_units) == len(second_units) == 10
+    assert {u['citation'] for u in first_units}.isdisjoint(u['citation'] for u in second_units)
+    assert all(u['citation'] in material and all(x in material for x in u['required']) for u in second_units)
+    assert len(material) < len((first/'material.txt').read_text(encoding='utf-8'))
+
+
+def test_two_episode_same_root_contractual_review_scripted_pi(tmp_path):
+    manifest = fixture_manifest()
+    manifest['episodes'] = [
+        {'id': 'first', 'scope': 'one slide', 'sources': {}, 'units': manifest['units'], 'acceptance': manifest['contract']['acceptance']},
+        {'id': 'second', 'scope': 'one slide', 'sources': {}, 'units': manifest['units'], 'acceptance': manifest['contract']['acceptance']},
+    ]
+    manifest['episodes_sha256'] = digest(manifest['episodes'])
+    path = tmp_path/'manifest.json'
+    path.write_text(json.dumps(manifest),encoding='utf-8')
+    second = tmp_path/'episodes/2/workspace/data'
+    second.mkdir(parents=True)
+    keep = {'name':'decide','arguments':{'op':'exit','status':'deferred','subtype':'keep','result':{'reason':'task delivery ready'}}}
+    incomplete = {'name':'decide','arguments':{'op':'exit','status':'deferred','subtype':'incomplete','result':{'reason':'No evidenced later-testable fill encoded'}}}
+    steps = [keep,
+        {'name':'write','arguments':{'path':'artifacts/presentation.html','content':"<section class='slide'>1 source</section>"}},
+        {'name':'office','arguments':{'op':'render'}},
+        {'name':'office','arguments':{'op':'deliver'}},keep,
+        {'name':'office','arguments':{'op':'deliver'}},
+        {'name':'write','arguments':{'path':'artifacts/illegal.html','content':'not work'}},
+        {'name':'decide','arguments':{'op':'exit','status':'deferred','subtype':'keep','result':{'reason':'deck is done'}}},
+        incomplete,
+        {'name':'write','arguments':{'path':'artifacts/presentation.html','content':"<section class='slide'>1 source second</section>"}},
+        {'name':'office','arguments':{'op':'render'}},
+        {'name':'office','arguments':{'op':'deliver'}},keep,
+        {'name':'office','arguments':{'op':'deliver'}}]
+    command = [shutil.which('node'),str(PROJECT/'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),'--mode','rpc',
+        '--no-context-files','--no-extensions','--no-skills','--no-prompt-templates','--no-builtin-tools',
+        '--extension',str(PROJECT/'demo/ppt_demo_extension.ts'),'--extension',str(PROJECT/'tests/pi_external_benchmark_provider.ts'),
+        '--provider','offline-external-test','--model','scripted','--session',str(tmp_path/'session.jsonl')]
+    env = {'PI_CODING_AGENT_DIR':str(tmp_path/'.pi-agent'),'PI_AUTORESEARCH_E2E_ROOT':str(tmp_path),'PPT_DEMO_ROOT':str(tmp_path),
+        'PPT_DEMO_PYTHON':__import__('sys').executable,'EVO_MANIFEST':str(path),'PPT_DEMO_DEADLINE':'4102444800000',
+        'PPT_DEMO_BUDGET_USD':'1','PPT_DEMO_REQUEST_RESERVE_USD':'0.001','PPT_DEMO_INPUT_USD_PER_MILLION':'0','PPT_DEMO_OUTPUT_USD_PER_MILLION':'0',
+        'PI_EXTERNAL_STEPS':json.dumps(steps),'PI_EXTERNAL_USAGE_TOKENS':'1'}
+    with PiKernel(command,cwd=str(tmp_path),env=env,timeout=90) as kernel:
+        for _ in range(4):
+            assert kernel.prompt('Continue the same root.').get('success') is not False
+            kernel.wait_for_agent_events(timeout=180)
+            state = json.loads((tmp_path/'.harness/ppt-loop.json').read_text(encoding='utf-8'))
+            if state.get('episode') == 2 and state.get('complete'):
+                break
+    saved = json.loads((tmp_path/'.harness/live-self.json').read_text(encoding='utf-8'))
+    ledger = saved['root']['ledger']
+    assert (tmp_path/'episodes/1/delivery/presentation.html').exists()
+    assert (tmp_path/'episodes/2/delivery/presentation.html').exists()
+    assert sum(r['type']=='event' and r['value']['type']=='capability_review' for r in ledger) == 1
+    closed = [r for r in ledger if r['type']=='review_closed' and r['value'].get('occasion')=='capability_review']
+    assert len(closed)==1 and closed[0]['value']['subtype']=='incomplete'
+    assert not (tmp_path/'workspace/artifacts/illegal.html').exists()
+    assert next(i for i,r in enumerate(ledger) if r['type']=='episode_started' and r['value']['episode']==2) > ledger.index(closed[0])
+    assert any(r['type']=='review_closed' and r['value'].get('subtype')=='keep' for r in ledger)
+    assert {r['value'].get('episode') for r in ledger if r['type']=='unit_delivered'} == {1,2}
 
 
 def digest(value):

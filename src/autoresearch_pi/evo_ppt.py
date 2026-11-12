@@ -177,6 +177,35 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     return manifest
 
 
+def freeze_two_episode(root: Path, first: Path, second: Path, registration: Path, caps: dict, authority: str):
+    """Freeze two distinct briefs under one authorization and one serial root; no inference."""
+    manifest = freeze(root, first, registration, caps, authority, "B")
+    first_episode = {"id": "bank-of-america-3q21", "scope": "15-slide Q3 2021 earnings deck",
+                     "sources": manifest["sources"], "units": manifest["units"], "acceptance": manifest["contract"]["acceptance"]}
+    staging = root / "episodes/2"
+    prepare(staging, second)
+    (staging / "workspace/AGENTS.md").unlink()
+    material = (staging / "workspace/data/material.txt").read_text(encoding="utf-8")
+    # This release uses named sections, not the numbered PDF pages of episode one.
+    units = json.loads((second / "units.json").read_text(encoding="utf-8"))
+    if len(units) < 10 or any(u["citation"] not in material or any(x not in material for x in u["required"]) for u in units):
+        raise ValueError("second episode probes must be literal facts in its frozen material")
+    brief = staging / "workspace/data/instructions.md"
+    brief.write_text(brief.read_text(encoding="utf-8") + "\n\nFrozen content units (units may span slides; retain the 15-slide brief):\n" +
+                     "\n".join(f"- {u['id']}: {u['title']} (cite {u['citation']})." for u in units) +
+                     "\nDeliver the complete presentation with office; submit_unit supports partial handover.\n", encoding="utf-8")
+    sources = {f"data/{p.name}": file_hash(p) for p in (staging / "workspace/data").iterdir() if p.is_file()}
+    second_episode = {"id": "jpmorgan-chase-3q21", "scope": "15-slide Q3 2021 earnings deck",
+                      "sources": sources, "units": units,
+                      "acceptance": {**manifest["contract"]["acceptance"], "brief_sha256": sources["data/instructions.md"],
+                                     "original_brief_sha256": file_hash(second / "production_brief.md"), "units_sha256": digest(units)}}
+    manifest["episodes"] = [first_episode, second_episode]
+    manifest["episodes_sha256"] = digest(manifest["episodes"])
+    manifest["comparison"] = "Fixed Bank of America then JPMorgan Chase; two 15-slide Q3 2021 briefs; distinct source units and acceptance. No matched-difficulty claim."
+    write(root / "manifest.json", manifest)
+    return manifest
+
+
 def model_preflight(root: Path, manifest: dict, values: dict, inference=False, deadline: float | None = None):
     """No fallback/retry. Optional tiny connectivity probe is separately accounted."""
     sent = False
@@ -231,6 +260,12 @@ def run(root: Path, *, round_deadline: float | None = None):
     for relative, expected in manifest["sources"].items():
         if file_hash(root / "workspace" / relative) != expected:
             raise ValueError(f"frozen task source changed: {relative}")
+    if manifest.get("episodes") and manifest.get("episodes_sha256") != digest(manifest["episodes"]):
+        raise ValueError("frozen episode contract changed")
+    for episode in manifest.get("episodes", [])[1:]:
+        for relative, expected in episode["sources"].items():
+            if file_hash(root / "episodes/2/workspace" / relative) != expected:
+                raise ValueError(f"frozen episode source changed: {relative}")
     contract = manifest["contract"]
     if contract["content_hash"] != digest({k:v for k,v in contract.items() if k != "content_hash"}):
         raise ValueError("contract changed after freeze")
@@ -319,7 +354,8 @@ def run(root: Path, *, round_deadline: float | None = None):
                     break
                 saved = json.loads((root / ".harness/live-self.json").read_text(encoding="utf-8"))
                 ledger = saved.get("root",{}).get("ledger",[])
-                if state.get("complete") and not saved.get("root",{}).get("queue"):
+                episodes = manifest.get("episodes")
+                if state.get("complete") and (not episodes or state.get("episode") == 2) and not saved.get("root",{}).get("queue"):
                     result["stop"] = "delivered"
                     break
                 resets = [r for r in ledger if r["type"] == "active_reset_authorized" and r["ref"] not in handled_resets]
@@ -349,10 +385,14 @@ def run(root: Path, *, round_deadline: float | None = None):
                     continue
                 pending = saved.get("root",{}).get("queue",[])
                 # A normal end gets at most its queued contract review. No repeated window entrance.
-                if not pending:
+                if not pending and not (episodes and state.get("episode") == 1 and state.get("complete")):
                     result["stop"] = "plain_text_end"
                     break
-                message = "Continue the queued boundary in this same root and serial session."
+                message = ("Continue the next authorized work episode in this same root and serial session."
+                           if episodes and state.get("episode") == 1 and saved.get("root",{}).get("ledger") and
+                           any(r["type"] == "review_closed" and r["value"].get("occasion") == "capability_review" and
+                               r["value"].get("agent_decision") == "present" for r in ledger)
+                           else "Continue the queued boundary in this same root and serial session.")
             else:
                 result["stop"] = "time_budget"
     except Exception as error:
@@ -367,8 +407,16 @@ def run(root: Path, *, round_deadline: float | None = None):
     if saved_path.exists():
         saved = json.loads(saved_path.read_text(encoding="utf-8")); r = saved.get("root",{})
         result.update(root_id=r.get("root_id"),self_revision=r.get("serial"),legacy_self_revision=saved.get("snapshot",{}).get("selfRevision"),engineering_commit=manifest["engineering_commit"])
-        delivered = {row["value"]["unit"] for row in r.get("ledger",[]) if row["type"] == "unit_delivered"}
-        result["units"] = [{"id":u["id"],"status":"delivered" if u["id"] in delivered else "not_delivered"} for u in manifest["units"]]
+        if manifest.get("episodes"):
+            result["episodes"] = [{"id": e["id"], "source_hashes":e["sources"],
+                "delivery":str(root / "episodes" / str(i) / "delivery"),
+                "delivered":(root / "episodes" / str(i) / "delivery" / "presentation.html").exists(),
+                "units":[{"id":u["id"],"status":"delivered" if any(row["type"] == "unit_delivered" and
+                    row["value"].get("episode") == i and row["value"]["unit"] == u["id"] for row in r.get("ledger",[])) else "not_delivered"} for u in e["units"]]}
+                for i,e in enumerate(manifest["episodes"],1)]
+        else:
+            delivered = {row["value"]["unit"] for row in r.get("ledger",[]) if row["type"] == "unit_delivered"}
+            result["units"] = [{"id":u["id"],"status":"delivered" if u["id"] in delivered else "not_delivered"} for u in manifest["units"]]
         result["runtime_activations"] = [row for row in r.get("ledger",[]) if row["type"] == "reflection_activated"]
         result["reviews"] = [row for row in r.get("ledger",[]) if row["type"] in ("mode_entered","review_closed","validation_interpreted","validation_enacted")]
     # Apply the identical narrow checker to the A arm's final file offline. It
@@ -448,6 +496,7 @@ def main():
     parser.add_argument("--run",action="store_true")
     parser.add_argument("--prepare-only",action="store_true",help="freeze draft task inputs and local rendering, without an authorized run manifest or any inference")
     parser.add_argument("--round-plan",type=Path,help="JSON: total_caps, calibration_caps, b_caps; all within the named numeric authorization")
+    parser.add_argument("--two-episode",action="store_true",help="freeze a sequential same-root pair; does not launch unless --run is also given")
     args = parser.parse_args()
     root = args.root.resolve()
     if not root.is_relative_to(PROJECT):
@@ -468,7 +517,11 @@ def main():
     if args.caps:
         if not args.registration or not args.authority:
             parser.error("freeze requires --registration and --authority")
-        manifest = freeze(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority,args.arm)
+        if args.two_episode and args.arm != "B":
+            parser.error("two-episode requires the self-root B arm")
+        manifest = (freeze_two_episode(root,args.source.resolve(),PROJECT / "demo/ppt-cases/jpmorgan-chase-3q21/assets",
+                    args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority)
+                    if args.two_episode else freeze(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority,args.arm))
         print(json.dumps({"frozen":str(root),"units":len(manifest["units"])}))
     if args.run:
         print(json.dumps(run(root),ensure_ascii=False))
