@@ -86,16 +86,29 @@ def local_settings(registration: Path):
 
 def content_units(material: str):
     pages = re.split(r"(?m)^## Source page (\d+)\s*$", material)
-    if len(pages) < 21:
-        raise ValueError("existing real source must contain at least ten distinct source-page units")
+    if len(pages) < 3:
+        lines = [line.strip() for line in material.splitlines() if line.strip()]
+        if len(lines) < 10:
+            raise ValueError("existing real source must contain at least ten distinct source-page units")
+        units = []
+        for index, chunk in enumerate([lines[i::10] for i in range(10)], 1):
+            compact = " ".join(chunk)
+            numbers = list(dict.fromkeys(re.findall(r"\$\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*%", compact)))[:3]
+            units.append({"id": f"unit-{index:02}", "title": compact[:100], "source_page": index,
+                          "required": numbers, "citation": f"Source segment {index}"})
+        return units
     units = []
-    for n in range(1, 20, 2):
+    for n in range(1, len(pages) - 1, 2):
         number, body = pages[n], pages[n + 1]
         compact = " ".join(body.split())
         # Frozen literal probes are transparent and narrow, never a semantic quality score.
         numbers = list(dict.fromkeys(re.findall(r"\$\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*%", compact)))[:3]
         units.append({"id": f"unit-{len(units)+1:02}", "title": compact[:100], "source_page": int(number),
                       "required": numbers, "citation": f"Source page {number}"})
+    if len(units) < 10:
+        raise ValueError("existing real source must contain at least ten distinct source-page units")
+    if len(units) > 10:
+        units = units[:10]
     return units
 
 
@@ -151,7 +164,7 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     sources = {f"data/{p.name}": file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()}
     body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; explicit round authority above",
             "readonly_reason": "user authorization, total resources, evidence integrity and acceptance cannot be rewritten by the task Agent",
-            "boundaries": ["window_entry", "before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
+            "boundaries": ["before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
             "capabilities": ["read", "write", "edit", "ls", "grep", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
             "writable": ["components.tool", "components.prompt", "components.skill", "components.memory", "policy", "orchestration"],
             "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-normalized-render-v2", "expected_slides":15},
@@ -177,31 +190,32 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
     return manifest
 
 
-def freeze_two_episode(root: Path, first: Path, second: Path, registration: Path, caps: dict, authority: str):
-    """Freeze two distinct briefs under one authorization and one serial root; no inference."""
+def freeze_task_family(root: Path, first: Path, registration: Path, caps: dict, authority: str):
+    """Freeze the tagged task-family pool under one authorization and one serial root."""
     manifest = freeze(root, first, registration, caps, authority, "B")
-    first_episode = {"id": "bank-of-america-3q21", "scope": "15-slide Q3 2021 earnings deck",
-                     "sources": manifest["sources"], "units": manifest["units"], "acceptance": manifest["contract"]["acceptance"]}
-    staging = root / "episodes/2"
-    prepare(staging, second)
-    (staging / "workspace/AGENTS.md").unlink()
-    material = (staging / "workspace/data/material.txt").read_text(encoding="utf-8")
-    # This release uses named sections, not the numbered PDF pages of episode one.
-    units = json.loads((second / "units.json").read_text(encoding="utf-8"))
-    if len(units) < 10 or any(u["citation"] not in material or any(x not in material for x in u["required"]) for u in units):
-        raise ValueError("second episode probes must be literal facts in its frozen material")
-    brief = staging / "workspace/data/instructions.md"
-    brief.write_text(brief.read_text(encoding="utf-8") + "\n\nFrozen content units (units may span slides; retain the 15-slide brief):\n" +
-                     "\n".join(f"- {u['id']}: {u['title']} (cite {u['citation']})." for u in units) +
-                     "\nDeliver the complete presentation with office; submit_unit supports partial handover.\n", encoding="utf-8")
-    sources = {f"data/{p.name}": file_hash(p) for p in (staging / "workspace/data").iterdir() if p.is_file()}
-    second_episode = {"id": "jpmorgan-chase-3q21", "scope": "15-slide Q3 2021 earnings deck",
-                      "sources": sources, "units": units,
-                      "acceptance": {**manifest["contract"]["acceptance"], "brief_sha256": sources["data/instructions.md"],
-                                     "original_brief_sha256": file_hash(second / "production_brief.md"), "units_sha256": digest(units)}}
-    manifest["episodes"] = [first_episode, second_episode]
-    manifest["episodes_sha256"] = digest(manifest["episodes"])
-    manifest["comparison"] = "Fixed Bank of America then JPMorgan Chase; two 15-slide Q3 2021 briefs; distinct source units and acceptance. No matched-difficulty claim."
+    pool = []
+    for case in sorted((PROJECT / "demo/ppt-cases").iterdir(), key=lambda p:p.name):
+        if not case.is_dir() or not (case / "assets/material.txt").is_file():
+            continue
+        staging = root / "cases" / case.name
+        prepare(staging, case / "assets")
+        (staging / "workspace/AGENTS.md").unlink()
+        material = (staging / "workspace/data/material.txt").read_text(encoding="utf-8")
+        units = content_units(material)
+        brief = staging / "workspace/data/instructions.md"
+        brief.write_text(brief.read_text(encoding="utf-8") + "\n\nFrozen content units (units may span slides; retain the 15-slide brief):\n" +
+                         "\n".join(f"- {u['id']}: {u['title']} (cite {u['citation']})." for u in units) +
+                         "\nDeliver the complete presentation with office; submit_unit supports partial handover.\n", encoding="utf-8")
+        sources = {f"data/{p.name}": file_hash(p) for p in (staging / "workspace/data").iterdir() if p.is_file()}
+        pool.append({"id":case.name,"scope":"15-slide earnings presentation","sources":sources,"units":units,
+                     "acceptance":{**manifest["contract"]["acceptance"],"brief_sha256":sources["data/instructions.md"],
+                                   "original_brief_sha256":file_hash(case / "assets/production_brief.md"),"units_sha256":digest(units)},
+                     "coverage_tags":["earnings_presentation","validation_window_exercise"]})
+    if not any(e["id"] == first.name for e in pool):
+        raise ValueError("selected first task is absent from the tagged family")
+    manifest["episodes"] = pool
+    manifest["episodes_sha256"] = digest(pool)
+    manifest["comparison"] = "Deterministic next-unused tagged earnings-brief family pool; no matched-difficulty claim."
     write(root / "manifest.json", manifest)
     return manifest
 
@@ -262,10 +276,10 @@ def run(root: Path, *, round_deadline: float | None = None):
             raise ValueError(f"frozen task source changed: {relative}")
     if manifest.get("episodes") and manifest.get("episodes_sha256") != digest(manifest["episodes"]):
         raise ValueError("frozen episode contract changed")
-    for episode in manifest.get("episodes", [])[1:]:
+    for episode in manifest.get("episodes", []):
         for relative, expected in episode["sources"].items():
-            if file_hash(root / "episodes/2/workspace" / relative) != expected:
-                raise ValueError(f"frozen episode source changed: {relative}")
+            if file_hash(root / "cases" / episode["id"] / "workspace" / relative) != expected:
+                raise ValueError(f"frozen case source changed: {episode['id']}:{relative}")
     contract = manifest["contract"]
     if contract["content_hash"] != digest({k:v for k,v in contract.items() if k != "content_hash"}):
         raise ValueError("contract changed after freeze")
@@ -355,7 +369,7 @@ def run(root: Path, *, round_deadline: float | None = None):
                 saved = json.loads((root / ".harness/live-self.json").read_text(encoding="utf-8"))
                 ledger = saved.get("root",{}).get("ledger",[])
                 episodes = manifest.get("episodes")
-                if state.get("complete") and (not episodes or state.get("episode") == 2) and not saved.get("root",{}).get("queue"):
+                if state.get("complete") and (not episodes or not saved.get("root",{}).get("windows")) and not saved.get("root",{}).get("queue"):
                     result["stop"] = "delivered"
                     break
                 resets = [r for r in ledger if r["type"] == "active_reset_authorized" and r["ref"] not in handled_resets]
@@ -385,12 +399,11 @@ def run(root: Path, *, round_deadline: float | None = None):
                     continue
                 pending = saved.get("root",{}).get("queue",[])
                 # A normal end gets at most its queued contract review. No repeated window entrance.
-                if not pending and not (episodes and state.get("episode") == 1 and state.get("complete")):
+                if not pending and not (episodes and state.get("complete") and saved.get("root",{}).get("ledger",[])[-1].get("type") == "review_closed"):
                     result["stop"] = "plain_text_end"
                     break
-                message = ("Continue the next authorized work episode in this same root and serial session."
-                           if episodes and state.get("episode") == 1 and saved.get("root",{}).get("ledger") and
-                           any(r["type"] == "review_closed" and r["value"].get("occasion") == "capability_review" and
+                message = ("Continue the next constructed task episode in this same root and serial session."
+                           if episodes and state.get("complete") and any(r["type"] == "review_closed" and r["value"].get("occasion") == "evolution_review" and
                                r["value"].get("agent_decision") == "present" for r in ledger)
                            else "Continue the queued boundary in this same root and serial session.")
             else:
@@ -408,12 +421,12 @@ def run(root: Path, *, round_deadline: float | None = None):
         saved = json.loads(saved_path.read_text(encoding="utf-8")); r = saved.get("root",{})
         result.update(root_id=r.get("root_id"),self_revision=r.get("serial"),legacy_self_revision=saved.get("snapshot",{}).get("selfRevision"),engineering_commit=manifest["engineering_commit"])
         if manifest.get("episodes"):
-            result["episodes"] = [{"id": e["id"], "source_hashes":e["sources"],
-                "delivery":str(root / "episodes" / str(i) / "delivery"),
-                "delivered":(root / "episodes" / str(i) / "delivery" / "presentation.html").exists(),
+            result["task_pool"] = [{"id": e["id"], "coverage_tags":e.get("coverage_tags",[]), "source_hashes":e["sources"],
+                "delivery":str(root / "cases" / e["id"] / "delivery"),
+                "delivered":(root / "cases" / e["id"] / "delivery" / "presentation.html").exists(),
                 "units":[{"id":u["id"],"status":"delivered" if any(row["type"] == "unit_delivered" and
-                    row["value"].get("episode") == i and row["value"]["unit"] == u["id"] for row in r.get("ledger",[])) else "not_delivered"} for u in e["units"]]}
-                for i,e in enumerate(manifest["episodes"],1)]
+                    row["value"].get("episode") == manifest["episodes"].index(e) + 1 and row["value"]["unit"] == u["id"] for row in r.get("ledger",[])) else "not_delivered"} for u in e["units"]]}
+                for e in manifest["episodes"]]
         else:
             delivered = {row["value"]["unit"] for row in r.get("ledger",[]) if row["type"] == "unit_delivered"}
             result["units"] = [{"id":u["id"],"status":"delivered" if u["id"] in delivered else "not_delivered"} for u in manifest["units"]]
@@ -496,7 +509,7 @@ def main():
     parser.add_argument("--run",action="store_true")
     parser.add_argument("--prepare-only",action="store_true",help="freeze draft task inputs and local rendering, without an authorized run manifest or any inference")
     parser.add_argument("--round-plan",type=Path,help="JSON: total_caps, calibration_caps, b_caps; all within the named numeric authorization")
-    parser.add_argument("--two-episode",action="store_true",help="freeze a sequential same-root pair; does not launch unless --run is also given")
+    parser.add_argument("--task-family",action="store_true",help="freeze the tagged PPT task-family pool; does not launch unless --run is also given")
     args = parser.parse_args()
     root = args.root.resolve()
     if not root.is_relative_to(PROJECT):
@@ -517,11 +530,10 @@ def main():
     if args.caps:
         if not args.registration or not args.authority:
             parser.error("freeze requires --registration and --authority")
-        if args.two_episode and args.arm != "B":
-            parser.error("two-episode requires the self-root B arm")
-        manifest = (freeze_two_episode(root,args.source.resolve(),PROJECT / "demo/ppt-cases/jpmorgan-chase-3q21/assets",
-                    args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority)
-                    if args.two_episode else freeze(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority,args.arm))
+        if args.task_family and args.arm != "B":
+            parser.error("task-family requires the self-root B arm")
+        manifest = (freeze_task_family(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority)
+                    if args.task_family else freeze(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority,args.arm))
         print(json.dumps({"frozen":str(root),"units":len(manifest["units"])}))
     if args.run:
         print(json.dumps(run(root),ensure_ascii=False))

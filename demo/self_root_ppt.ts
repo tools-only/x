@@ -9,7 +9,7 @@ export type SelfRootManifest = {
   experiment_id: string; provider: string; model: string; contract: SelfContract;
   sources: Record<string,string>; units: Array<{ id: string; title: string; required: string[]; citation: string }>;
   checker: { version: string; sha256: string }; settings: any; engineering_commit: string;
-  episodes?: Array<{ id: string; sources: Record<string,string>; units: SelfRootManifest['units']; acceptance: any; scope: string }>;
+  episodes?: Array<{ id: string; sources: Record<string,string>; units: SelfRootManifest['units']; acceptance: any; scope: string; coverage_tags?: string[] }>;
   episodes_sha256?: string;
 };
 export function directoryBytes(path: string): number {
@@ -102,33 +102,24 @@ export function deliveryReviewEvidence(evo: SelfRoot) {
     candidate_validation_window: saved.root.windows.some((window: any) => window.status === 'open' || window.status === 'delivered') };
 }
 
-/** Facts only, bounded to the settled first episode and the authorized next scope. */
-export function capabilityReviewEvidence(evo: SelfRoot, next: NonNullable<SelfRootManifest['episodes']>[number]) {
-  const saved = evo.export(), ledger = saved.root.ledger as Array<{ref:string;type:string;value:any}>;
-  const outcomes = ledger.filter(r => r.type === 'task_outcome' && r.value?.episode === 1 && r.value?.unit === 'whole_deck' && r.value?.renderer?.receipt).slice(-2);
-  const base = deliveryReviewEvidence(evo);
-  const repairs = outcomes.length === 2 && outcomes[0].value.renderer.receipt.revision !== outcomes[1].value.renderer.receipt.revision
-    ? { earlier: outcomes[0].ref, latest: outcomes[1].ref, revisions: outcomes.map(r => r.value.renderer.receipt.revision),
-      flags: outcomes.map(r => {
-        const flags = (r.value.units ?? []).flatMap((u:any) => [u.citation_literal?.found, ...(u.normalized?.matches ?? []).map((m:any) => m.found)]);
-        return { true:flags.filter((x:any) => x === true).length, false:flags.filter((x:any) => x === false).length,
-          unknown:flags.filter((x:any) => x == null).length };
-      }) } : null;
-  const identities = saved.snapshot.components.map((c:any) => ({ name:c.name, kind:c.kind, version:c.version })).slice(0,32);
-  const refs = [...new Set([...base.evidenceRefs, ...outcomes.map(r => r.ref)])].slice(0,12);
-  return { ...base, evidenceRefs:refs, repair_receipts:repairs, identities: { components:identities, additional_components:Math.max(0,saved.snapshot.components.length-32),
-    orchestration:{ revision:saved.snapshot.revision } }, later_episode:{ id:next.id, scope:next.scope,
-    source_hashes:next.sources, remaining_budget: { requests:Math.max(0,evo.resources().cap.requests-evo.resources().request),
-      tokens:Math.max(0,evo.resources().cap.tokens-evo.resources().tokens), usd:Math.max(0,evo.resources().cap.usd-evo.resources().usd_estimate),
-      seconds:Math.max(0,evo.resources().cap.seconds-evo.resources().elapsed_seconds) },
-    resource_record: { requests:evo.resources().record.requests, tokens:evo.resources().record.tokens, usd:evo.resources().record.usd } } };
+export function settlementEvidence(evo: SelfRoot, episode: number, coverage_tags: string[] = []) {
+  const ledger = evo.export().root.ledger as Array<{ref:string;type:string;value:any}>;
+  const outcomes = ledger.filter(r => r.type === 'task_outcome' && r.value?.episode === episode);
+  const activations = ledger.filter(r => r.type === 'reflection_activated');
+  const used = ledger.filter(r => r.type === 'component_consumed' && activations.some(a => a.value.revision === r.value?.version && a.request < r.request));
+  const due = ledger.filter(r => r.type === 'validation_delivered' && r.value?.outcomes?.some((ref: string) => outcomes.some(outcome => outcome.ref === ref)));
+  return { episode, boundary: outcomes.length ? 'delivered' : 'incomplete', outcome_refs: outcomes.map(r => r.ref),
+    used_version_refs: used.map(r => r.ref), due_window_refs: due.map(r => r.ref), comparison_refs: due.filter(r => r.value?.prediction_error?.status !== 'unknown').map(r => r.ref),
+    event_classes: [...new Set(ledger.filter(r => r.type === 'event' && r.request >= (outcomes.at(0)?.request ?? 0)).map(r => r.value?.type).filter(Boolean))], coverage_tags,
+    evidenceRefs: [...new Set([...outcomes, ...used, ...due].map(r => r.ref))],
+    };
 }
 
 export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist, episode = () => 1 }: any) {
   const active = () => typeof manifest === 'function' ? manifest() : manifest;
   const tool = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name, description, parameters,
     execute: async (_id: string, a: any, _signal: any, _update: any, ctx: any) => { const result = await fn(a,ctx); persist(); return text(result,Boolean(result?.context_reset_requested)); } });
-  tool('read_self', 'Expand the same root: policy, contract, ledger pages (offset/count), definition (offset=revision), windows, lineage or continuity. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
+  tool('read_self', 'Expand the same root: self (full mirror plus S_n/C_n), policy, contract, ledger pages (offset/count), definition (offset=revision), windows, conditions, lineage or continuity. The packed evidence is a floor; full self and ledger remain accessible. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
     Type.Object({ section: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), count: Type.Optional(Type.Integer({ minimum: 1, maximum: 40 })),
       op: Type.Optional(Type.Literal('replay')), ref: Type.Optional(Type.String()), source: Type.Optional(Type.String()) }),
     async (a: any) => a.op === 'replay' ? evo.replay(a.ref,a.source) : evo.detail(a.section ?? 'policy',a.offset ?? 0,a.count ?? 20));
@@ -136,13 +127,14 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
     Type.Object({ baseRevision: Type.Integer({ minimum: 1 }), orchestration: Type.Optional(Type.Any()), components: Type.Optional(Type.Array(Type.Any())),
       policy: Type.Optional(Type.Any()), carry: Type.Optional(Type.Any()), stepMap: Type.Optional(Type.Any()), restore: Type.Optional(Type.Integer({minimum:1})), validation: Type.Optional(Type.Any()) }),
     (a: any) => evo.transaction(a));
-  tool('decide', 'Decide on this same serial agent: enter_mode(execute/reflect/consolidate), exit(changed/unrelated/deferred, object result matching mode exitSchema, evidenceRefs; keep uses deferred/keep), validation(window, decision adopt/restore/defer, result={reason,baseline_refs,outcome_refs,comparison} for adoption, restore revision), capsule(value), inherit(value), reset, or ordinary orchestration decision in execute. Pending reflection is not a completed change. No required modification.',
+  tool('decide', 'Decide on this same serial agent: enter_mode(execute/reflect/consolidate), exit with explicit status (changed/unrelated/deferred), object result matching mode exitSchema, and evidenceRefs; task delivery review alone allows deferred/keep. Evolution review rejects keep. Validation(window, decision adopt/restore/defer, result={reason,baseline_refs,outcome_refs,comparison} for adoption, restore revision), capsule(value), inherit(value), reset, or ordinary orchestration decision in execute. Pending reflection is not a completed change. No required modification.',
     Type.Object({ op: Type.Optional(Type.String()), mode: Type.Optional(Type.String()), status: Type.Optional(Type.String()), subtype: Type.Optional(Type.String()), terminal: Type.Optional(Type.Boolean()),
       result: Type.Optional(Type.Any()), evidenceRefs: Type.Optional(Type.Array(Type.String())), window: Type.Optional(Type.String()), decision: Type.Optional(Type.String()),
       restore: Type.Optional(Type.Integer()), value: Type.Optional(Type.Any()), decisionId: Type.Optional(Type.String()) }), async (a: any, ctx: any) => {
       if (a.op === 'enter_mode') return evo.enterMode(a.mode);
       if (a.op === 'exit') {
-        const capability = evo.inCapabilityReview;
+        if (!['changed','unrelated','deferred'].includes(a.status)) throw Error('decide(op="exit") requires top-level status: changed, unrelated, or deferred');
+        const capability = evo.inEvolutionReview;
         const result = evo.exit({ ...a, evidenceRefs: a.evidenceRefs ?? [] });
         return { ...result, ...(capability ? { context_reset_requested: true } : {}) };
       }

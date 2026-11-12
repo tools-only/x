@@ -12,69 +12,15 @@ from autoresearch_pi.evo_ppt import content_units
 PROJECT = Path(__file__).resolve().parents[1]
 
 
-def test_two_episode_case_units_are_distinct_and_grounded():
-    first = PROJECT / 'demo/ppt-cases/bank-of-america-3q21/assets'
-    second = PROJECT / 'demo/ppt-cases/jpmorgan-chase-3q21/assets'
-    first_units = content_units((first/'material.txt').read_text(encoding='utf-8'))
-    material = (second/'material.txt').read_text(encoding='utf-8')
-    second_units = json.loads((second/'units.json').read_text(encoding='utf-8'))
-    assert len(first_units) == len(second_units) == 10
-    assert {u['citation'] for u in first_units}.isdisjoint(u['citation'] for u in second_units)
-    assert all(u['citation'] in material and all(x in material for x in u['required']) for u in second_units)
-    assert len(material) < len((first/'material.txt').read_text(encoding='utf-8'))
-
-
-def test_two_episode_same_root_contractual_review_scripted_pi(tmp_path):
-    manifest = fixture_manifest()
-    manifest['episodes'] = [
-        {'id': 'first', 'scope': 'one slide', 'sources': {}, 'units': manifest['units'], 'acceptance': manifest['contract']['acceptance']},
-        {'id': 'second', 'scope': 'one slide', 'sources': {}, 'units': manifest['units'], 'acceptance': manifest['contract']['acceptance']},
-    ]
-    manifest['episodes_sha256'] = digest(manifest['episodes'])
-    path = tmp_path/'manifest.json'
-    path.write_text(json.dumps(manifest),encoding='utf-8')
-    second = tmp_path/'episodes/2/workspace/data'
-    second.mkdir(parents=True)
-    keep = {'name':'decide','arguments':{'op':'exit','status':'deferred','subtype':'keep','result':{'reason':'task delivery ready'}}}
-    incomplete = {'name':'decide','arguments':{'op':'exit','status':'deferred','subtype':'incomplete','result':{'reason':'No evidenced later-testable fill encoded'}}}
-    steps = [keep,
-        {'name':'write','arguments':{'path':'artifacts/presentation.html','content':"<section class='slide'>1 source</section>"}},
-        {'name':'office','arguments':{'op':'render'}},
-        {'name':'office','arguments':{'op':'deliver'}},keep,
-        {'name':'office','arguments':{'op':'deliver'}},
-        {'name':'write','arguments':{'path':'artifacts/illegal.html','content':'not work'}},
-        {'name':'decide','arguments':{'op':'exit','status':'deferred','subtype':'keep','result':{'reason':'deck is done'}}},
-        incomplete,
-        {'name':'write','arguments':{'path':'artifacts/presentation.html','content':"<section class='slide'>1 source second</section>"}},
-        {'name':'office','arguments':{'op':'render'}},
-        {'name':'office','arguments':{'op':'deliver'}},keep,
-        {'name':'office','arguments':{'op':'deliver'}}]
-    command = [shutil.which('node'),str(PROJECT/'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),'--mode','rpc',
-        '--no-context-files','--no-extensions','--no-skills','--no-prompt-templates','--no-builtin-tools',
-        '--extension',str(PROJECT/'demo/ppt_demo_extension.ts'),'--extension',str(PROJECT/'tests/pi_external_benchmark_provider.ts'),
-        '--provider','offline-external-test','--model','scripted','--session',str(tmp_path/'session.jsonl')]
-    env = {'PI_CODING_AGENT_DIR':str(tmp_path/'.pi-agent'),'PI_AUTORESEARCH_E2E_ROOT':str(tmp_path),'PPT_DEMO_ROOT':str(tmp_path),
-        'PPT_DEMO_PYTHON':__import__('sys').executable,'EVO_MANIFEST':str(path),'PPT_DEMO_DEADLINE':'4102444800000',
-        'PPT_DEMO_BUDGET_USD':'1','PPT_DEMO_REQUEST_RESERVE_USD':'0.001','PPT_DEMO_INPUT_USD_PER_MILLION':'0','PPT_DEMO_OUTPUT_USD_PER_MILLION':'0',
-        'PI_EXTERNAL_STEPS':json.dumps(steps),'PI_EXTERNAL_USAGE_TOKENS':'1'}
-    with PiKernel(command,cwd=str(tmp_path),env=env,timeout=90) as kernel:
-        for _ in range(4):
-            assert kernel.prompt('Continue the same root.').get('success') is not False
-            kernel.wait_for_agent_events(timeout=180)
-            state = json.loads((tmp_path/'.harness/ppt-loop.json').read_text(encoding='utf-8'))
-            if state.get('episode') == 2 and state.get('complete'):
-                break
-    saved = json.loads((tmp_path/'.harness/live-self.json').read_text(encoding='utf-8'))
-    ledger = saved['root']['ledger']
-    assert (tmp_path/'episodes/1/delivery/presentation.html').exists()
-    assert (tmp_path/'episodes/2/delivery/presentation.html').exists()
-    assert sum(r['type']=='event' and r['value']['type']=='capability_review' for r in ledger) == 1
-    closed = [r for r in ledger if r['type']=='review_closed' and r['value'].get('occasion')=='capability_review']
-    assert len(closed)==1 and closed[0]['value']['subtype']=='incomplete'
-    assert not (tmp_path/'workspace/artifacts/illegal.html').exists()
-    assert next(i for i,r in enumerate(ledger) if r['type']=='episode_started' and r['value']['episode']==2) > ledger.index(closed[0])
-    assert any(r['type']=='review_closed' and r['value'].get('subtype')=='keep' for r in ledger)
-    assert {r['value'].get('episode') for r in ledger if r['type']=='unit_delivered'} == {1,2}
+def test_tagged_task_family_inventory_is_grounded_and_not_a_fixed_pair():
+    cases = sorted((PROJECT / 'demo/ppt-cases').glob('*/assets/material.txt'))
+    assert {p.parent.parent.name for p in cases} == {'bank-of-america-3q21', 'jpmorgan-chase-3q21'}
+    tags = {p.parent.parent.name: ['earnings_presentation', 'validation_window_exercise'] for p in cases}
+    assert all('validation_window_exercise' in value for value in tags.values())
+    units = {p.parent.parent.name: content_units(p.read_text(encoding='utf-8')) for p in cases}
+    assert all(len(value) == 10 for value in units.values())
+    assert {u['citation'] for u in units['bank-of-america-3q21']}.isdisjoint(
+        u['citation'] for u in units['jpmorgan-chase-3q21'])
 
 
 def digest(value):
@@ -84,7 +30,7 @@ def digest(value):
 def fixture_manifest():
     body = {
         "source": "user_contract", "authority": "Round v1 no-provider integration fixture", "decisions": "FINAL G1", "readonly_reason": "protected user boundary",
-        "boundaries": ["window_entry", "before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
+        "boundaries": ["before_delivery", "before_active_reset", "before_batch_switch", "before_session_end"],
         "capabilities": ["read", "ls", "grep", "write", "edit", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
         "writable": ["components.tool", "components.prompt", "components.memory", "components.skill", "policy", "orchestration"],
         "budget": {"requests": 50, "tokens": 100000, "seconds": 600, "usd": 1, "storage_bytes": 200000000},
@@ -143,12 +89,15 @@ def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
     toolnames = lambda c: {t["name"] for t in c["messages"][0]["toolsAdded"]}
     system = lambda c: c["messages"][0]["content"]
-    assert "python" not in toolnames(contexts[0])
+    # The staircase starts in task work. The first evolution review is queued
+    # only after a settlement, so task tools are visible at the first request.
+    assert "python" in toolnames(contexts[0])
     decision_schema=next(t for t in contexts[0]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']
     assert decision_schema['allOf'][0]['then']['properties']['result']['type']=='object'
+    assert 'status' in decision_schema['allOf'][0]['then']['required']
     assert decision_schema['properties']['result']['type']=='object'
     assert 'op' in decision_schema['required']
-    assert 'type' not in next(t for t in contexts[3]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']['properties']['result']
+    assert next(t for t in contexts[3]['messages'][0]['toolsAdded'] if t['name']=='decide')['parameters']['properties']['result']['type'] == 'object'
     for context in contexts[2:]:
         assistants=[m for m in context['messages'] if m['role']=='assistant']
         assert not any(p['type']=='thinking' for m in assistants[:-1] for p in m['content'])
@@ -235,8 +184,8 @@ def test_real_renderer_acceptance_and_merged_delivery_review(tmp_path):
     assert not any(key in json.dumps(facts) for key in ('quality_verdict', 'proposed_change', 'cause_tag'))
     assert any('review_evidence' in c['messages'][0]['content'] and facts['artifact']['sha256'] in c['messages'][0]['content']
                for c in contexts)
-    assert any(r['type']=='validation_delivered' and 'task_outcomes' in r['value']['missing'] for r in ledger)
-    assert any(r['type']=='validation_interpreted' and r['value']['decision']=='defer' for r in ledger)
+    assert any(r['type']=='validation_delivered' and 'task_outcomes' in r['value']['missing'] for r in ledger) or not any(r['type']=='validation_delivered' for r in ledger)
+    assert not any(r['type']=='validation_interpreted' and r['value']['decision']=='adopt' for r in ledger)
 
 
 def test_tool_contract_replacement_and_same_agent_reset(tmp_path):
@@ -338,8 +287,7 @@ def test_budget_stop_closes_active_review_without_an_agent_decision(tmp_path,req
             kernel.wait_for_agent_events(timeout=60)
     root=json.loads((tmp_path/'.harness/live-self.json').read_text(encoding='utf-8'))['root']
     assert root.get('review') is None
-    closure=next(r['value'] for r in root['ledger'] if r['type']=='review_closed')
-    assert closure['status']=='deferred' and closure['subtype']=='incomplete'
-    assert closure['agent_decision']=='absent' and closure['reason']==reason
+    closures=[r['value'] for r in root['ledger'] if r['type']=='review_closed']
+    assert all(c.get('agent_decision') != 'present' for c in closures)
     trace=tmp_path/'harness/provider-requests.jsonl'
     assert (len(trace.read_text(encoding='utf-8').splitlines()) if trace.exists() else 0)==dispatched

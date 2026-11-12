@@ -1,7 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { SelfRoot, FLOOR, PROTOCOL, hash, type SelfContract } from '../demo/self_root.ts';
-import { deliveryReviewEvidence, capabilityReviewEvidence } from '../demo/self_root_ppt.ts';
+import { deliveryReviewEvidence } from '../demo/self_root_ppt.ts';
 import { closeLiveSelfMethods } from '../demo/live_self_wasi.ts';
 after(closeLiveSelfMethods);
 
@@ -46,7 +46,7 @@ test('delivery evidence stays pinned, valid refs close any disposition, invalid 
     assert.throws(() => s.exit({ status, result: { reason: 'invalid' }, evidenceRefs: ['forged'] }), /unknown evidence ref/);
     assert.deepEqual(s.mirror().dynamic.review_evidence, evidence);
     if (status === 'changed') {
-      await s.reflectComponent({ baseRevision: 1, op: 'define', kind: 'memory', name: 'note', source: 'candidate' });
+      await s.reflectComponent({ baseRevision: 1, op: 'define', kind: 'memory', name: 'note', source: 'candidate', validation:{due:{boundary:'before_session_end'}} });
       assert.throws(() => s.exit({ status, result: { reason: 'pending' }, evidenceRefs: [receipt.ref] }), /activation/);
       await start(s);
       assert.equal(s.revision, 2);
@@ -79,27 +79,27 @@ test('delivery projection bounds warnings and reports false and unknown probes w
   assert.ok(!JSON.stringify(facts).includes('proposed_change'));
 });
 
-test('contractual capability occasion is separate, bounded, and only evidence-based closures resume', async () => {
+test('settlement review exposes monotonic conditions, rejects keep, and requires a verifiable later-settlement window', async () => {
   for (const status of ['changed','unrelated','deferred'] as const) {
     const s = new SelfRoot(contract()); await start(s);
     const baseline = s.outcome({ episode:1, renderer:{ receipt:{ revision:1,source_sha256:'first',slides:15,warnings:[] } },
       units:[{ citation_literal:{ found:false }, normalized:{ matches:[{ found:null }] } }] });
-    const next = { id:'second', scope:'15-slide second deck', sources:{'data/material.txt':'hash'}, units:[], acceptance:{} };
-    const facts = capabilityReviewEvidence(s,next);
-    assert.equal(facts.checker?.flags.false,1); assert.equal(facts.later_episode.id,'second');
-    assert.ok(facts.evidenceRefs.includes(baseline.ref));
-    await s.event('capability_review','episode:1:settled',facts);
-    assert.deepEqual(await s.event('capability_review','episode:1:settled',facts),{duplicate:true});
+    const facts = { episode:1, outcome_refs:[baseline.ref], event_classes:['task_outcome','new_event'], coverage_tags:['tag_alpha'], used_version_refs:[], comparison_refs:[], floor_met:true };
+    await s.event('settlement','episode:1:delivered',facts);
+    assert.deepEqual(await s.event('settlement','episode:1:delivered',facts),{duplicate:true});
     await start(s);
     assert.equal(s.inCapabilityReview,true);
     assert.deepEqual(s.surface().filter(x=>['write','edit','python','office.deliver','acceptance','submit_unit'].includes(x)),[]);
-    assert.deepEqual(s.mirror().dynamic.review_evidence,facts);
+    assert.ok(s.mirror().dynamic.conditions.floor.coverage_tags.includes('tag_alpha'));
+    assert.equal(s.mirror().dynamic.conditions.floor.step,1);
+    assert.ok(PROTOCOL.every(t=>s.surface().includes(t)));
     assert.throws(() => s.exit({status:'deferred',subtype:'keep',result:{reason:'deck is done'},evidenceRefs:[baseline.ref]}),/keep or sufficiency/);
     if (status === 'changed') {
-      await assert.rejects(s.reflectComponent({baseRevision:1,op:'define',kind:'memory',name:'later',source:'evidence'}),/second-episode validation/);
+      await assert.rejects(s.reflectComponent({baseRevision:1,op:'define',kind:'memory',name:'later',source:'evidence',validation:{due:{boundary:'settlement'}}}),/later settlement/);
       await start(s);
       await s.reflectComponent({baseRevision:1,op:'define',kind:'memory',name:'later',source:'evidence',
-        validation:{due:{boundary:'episode_two_delivered'},baseline:[baseline.ref],metric_refs:[baseline.ref],scope:'second work'}});
+        validation:{due:{boundary:'settlement'},baseline:[baseline.ref],metric_refs:[baseline.ref],scope:'later task',
+          prediction:{metric:'outcomes',value:1,unit:'count'},measure:{source:'{"metric":"outcomes","value":len(input["outcomes"]),"unit":"count"}',version:'v1'}}});
       assert.throws(() => s.exit({status,result:{reason:'pending'},evidenceRefs:[baseline.ref]}),/unactivated/);
       await start(s);
       assert.equal(s.revision,2); assert.equal(s.detail('windows')[0].status,'open');
@@ -109,9 +109,11 @@ test('contractual capability occasion is separate, bounded, and only evidence-ba
     assert.equal(s.capabilityReviewClosed,true); assert.equal(s.mode,'execute');
     if (status === 'changed') {
       const actual = s.outcome({episode:2,repair_class:'citation',renderer:{receipt:{revision:2}}});
-      await s.event('episode_two_delivered','episode:2');
+      await s.event('settlement','episode:2:delivered',{outcome_refs:[actual.ref],used_version_refs:[baseline.ref],comparison_refs:[],event_classes:['settlement'],coverage_tags:['tag_beta']});
       assert.deepEqual(s.detail('windows')[0].delivered.outcomes,[actual.ref]);
-      assert.equal(s.detail('windows')[0].delivered.repair_recurrence.same_class_recurrence,'unknown');
+      assert.equal(s.detail('conditions').conditions.floor.step,3);
+      assert.ok(s.detail('conditions').conditions.floor.coverage_tags.includes('tag_alpha'));
+      assert.ok(s.detail('conditions').conditions.floor.coverage_tags.includes('tag_beta'));
       await start(s); await s.interpret('window:0','restore',{reason:'second episode did not support the candidate'},1);
       await start(s);
       assert.equal(s.detail('windows')[0].status,'restored');
@@ -119,6 +121,16 @@ test('contractual capability occasion is separate, bounded, and only evidence-ba
       assert.ok(all(s).some(r => r.type === 'validation_enacted' && r.value.restore_source === 1));
     }
   }
+});
+
+test('no session-entry review; task review keep remains distinct and missing status is rejected', async () => {
+  const s = new SelfRoot(contract()); await s.boundary(()=>{},()=>{});
+  assert.equal(s.mode,'execute'); assert.equal(s.hasReview,false);
+  await s.event('before_delivery','task-delivery'); await start(s);
+  assert.throws(()=>s.exit({status:undefined as any,result:{reason:'missing'},evidenceRefs:[]}),/top-level status/);
+  s.exit({status:'deferred',subtype:'keep',result:{status:'deferred',reason:'task remains deliverable'},evidenceRefs:[]});
+  await s.event('settlement','first',{event_classes:['task_outcome'],coverage_tags:['tag'],used_version_refs:[]}); await start(s);
+  assert.throws(()=>s.exit({status:'deferred',subtype:'keep',result:{status:'deferred',reason:'keep'},evidenceRefs:[]}),/keep/);
 });
 
 test('pending chain leaves pinned response unchanged, any failure aborts whole chain', async () => {
@@ -169,22 +181,22 @@ test('same root atomically changes memory selection/context/control; restore is 
 });
 
 test('mode schema and action entry change together; old review definition remains pinned', async () => {
-  const s = new SelfRoot(contract()); await s.event('window_entry','session'); await start(s);
+  const s = new SelfRoot(contract()); await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[]}); await start(s);
   assert.equal(s.mode,'reflect'); assert.ok(PROTOCOL.every(t=>s.surface().includes(t)));
   assert.throws(()=>s.allowTool('python',{}),/outside/); s.allowTool('office',{op:'look'});
   const p = structuredClone(s.policy); p.modes.reflect.tools.push('python'); p.modes.reflect.instruction = 'new review';
   await s.transaction({baseRevision:1,policy:p}); await start(s);
   assert.throws(()=>s.allowTool('python',{}),/outside/);
-  s.exit({status:'changed',result:{reason:'used activation receipt'},evidenceRefs:[]}); await start(s);
+  s.exit({status:'deferred',subtype:'insufficient_evidence',result:{reason:'no verifiable window'},evidenceRefs:[]}); await start(s);
   s.allowTool('python',{});
   s.enterMode('reflect'); await start(s); s.allowTool('python',{});
   assert.equal(s.mirror().dynamic.instruction,'new review');
 });
 
 test('plain text ends incomplete without invented agent decision or re-trigger loop', async () => {
-  const s = new SelfRoot(contract()); await s.event('window_entry','session'); await start(s);
-  assert.throws(()=>s.exit({status:'changed',result:{reason:'fiction'},evidenceRefs:[]}),/activation/);
-  s.closeIncomplete('plain text'); await s.event('window_entry','session'); await start(s);
+  const s = new SelfRoot(contract()); await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[]}); await start(s);
+    assert.throws(()=>s.exit({status:'changed',result:{reason:'fiction'},evidenceRefs:[]}),/activated later-settlement window/);
+  s.closeIncomplete('plain text'); await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[]}); await start(s);
   assert.equal(s.mode,'execute');
   assert.equal(all(s).find(r=>r.type==='review_closed')!.value.agent_decision,'absent');
 });
@@ -219,18 +231,12 @@ test('reasoning selection changes actual messages without removing task facts or
   assert.deepEqual(s.contextMessages(messages),messages);
 });
 
-test('new commitments expire on an already consumed terminal boundary without re-triggering floor', async () => {
+test('no implicit empty validation window is created', async () => {
   const s = new SelfRoot(contract()); await start(s);
   await s.event('before_session_end','delivery:same'); await start(s);
   await s.transaction({baseRevision:1,policy:s.policy}); await start(s);
-  s.exit({status:'changed',result:{reason:'actual activation'},evidenceRefs:[]});
-  const event = await s.event('before_session_end','delivery:same');
-  assert.equal(event.duplicate,true);
-  assert.deepEqual(event.triggers!.map(t=>t.source),['validation_due']);
+  assert.equal(s.detail('windows').length,0);
   assert.equal(s.hasReview,true);
-  await start(s);
-  assert.equal(s.detail('windows')[0].status,'delivered');
-  assert.deepEqual(await s.event('before_session_end','delivery:same'),{duplicate:true});
 });
 
 test('request commitments expire at request boundary without an unrelated tool event', async () => {

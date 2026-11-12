@@ -6,7 +6,13 @@ import type { Validator } from './agent_component_model.ts';
 
 export const copy = <T>(x: T): T => structuredClone(x);
 export const hash = (x: unknown) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
-export const FLOOR = ['window_entry', 'before_delivery', 'before_active_reset', 'before_batch_switch', 'before_session_end'];
+export const FLOOR = ['before_delivery', 'before_active_reset', 'before_batch_switch', 'before_session_end'];
+const FLOOR_STEPS = [
+  { unlocked_by: 'first_settlement', close_contract: 'changed requires a later settlement window with baseline and metric_refs', evidence_scope: ['settlement_facts'], coverage_tags: [] },
+  { unlocked_by: 'later_use_observed', close_contract: 'changed metric_refs must be comparable with later use', evidence_scope: ['used_version_receipts'], coverage_tags: [] },
+  { unlocked_by: 'due_window_comparison', close_contract: 'changed may not use an empty or unverified window', evidence_scope: ['due_window_comparisons'], coverage_tags: [] },
+];
+const INITIAL_CONDITIONS = { floor: { step: 0, evidence: ['settlement_facts'], event_classes: [], coverage_tags: [] }, addenda: [] as unknown[] };
 export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component', 'reflect_orchestration', 'decide'];
 type Mode = { tools: string[]; instruction: string; projection?: string; exitSchema: any };
 type Route = { id: string; event: string; predicate?: string; projection?: string; mode: string; priority: number; conclusion_sink: 'ledger' | 'lineage' };
@@ -118,6 +124,9 @@ export class SelfRoot extends LiveAgentSelf {
   private resetInProgress?: string;
   private mutations: Promise<unknown> = Promise.resolve();
   private heartbeatDue: number[] = [];
+  private conditionSet: any = copy(INITIAL_CONDITIONS);
+  private settlementCount = 0;
+  private lastSettlementReview?: string;
   private daemonRecord?: any;
   private rootValidator?: Validator;
   private readonly outputLimit: number;
@@ -141,7 +150,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','heartbeatDue'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','heartbeatDue','conditionSet','settlementCount','lastSettlementReview'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
       if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
       if (r.contract_hash !== contract.content_hash) throw Error('saved root contract differs');
@@ -168,6 +177,7 @@ export class SelfRoot extends LiveAgentSelf {
       consumed: [...this.consumed], started: this.started, units: this.units, tokens: this.tokens, usd: this.usd,
       paused: this.paused, previousMode: this.previousMode, providerCosts: [...this.providerCosts], policy: this.policy,
       heartbeatDue: this.heartbeatDue, daemonRecord: this.daemonRecord ?? null,
+      conditionSet: this.conditionSet, settlementCount: this.settlementCount, lastSettlementReview: this.lastSettlementReview,
       activeReset: this.activeReset ?? null, resetInProgress: this.resetInProgress ?? null, pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses, status: 'intent' } : null }) };
   }
   private add(kind: 'fact' | 'claim', type: string, value: unknown) {
@@ -193,6 +203,7 @@ export class SelfRoot extends LiveAgentSelf {
     return { rows, next: offset + rows.length < this.ledger.length ? offset + rows.length : null, total: this.ledger.length };
   }
   detail(section: string, offset = 0, count = 20): any {
+    if (section === 'self') return { ...this.mirror(), ledger: this.read(offset, count), conditions: { settlement_count: this.settlementCount, conditions: copy(this.conditionSet), published_steps: copy(FLOOR_STEPS) } };
     if (section === 'ledger') return this.read(offset, count);
     if (section === 'policy') return copy(this.policy);
     if (section === 'contract') return copy(this.contract);
@@ -200,6 +211,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (section === 'lineage') return { rows: copy(this.lineage.slice(offset, offset + count)), total: this.lineage.length };
     if (section === 'windows') return copy(this.windows);
     if (section === 'continuity') return { current: super.snapshot(), review: copy(this.review ?? null), requestPin: copy(this.requestPin ?? null) };
+    if (section === 'conditions') return { settlement_count: this.settlementCount, conditions: copy(this.conditionSet), published_steps: copy(FLOOR_STEPS) };
     throw Error('unknown self section');
   }
   private assertWrite(address: string) {
@@ -266,19 +278,21 @@ export class SelfRoot extends LiveAgentSelf {
       }
       if (input.policy !== undefined) { this.assertWrite('policy'); validatePolicy(input.policy, this.contract, this.outputLimit); policy = copy(input.policy); addresses.push('policy'); }
       if (!addresses.length) throw Error('empty transaction');
-      const capability = this.review?.triggers.some((t: any) => t.id === 'contract:capability_review');
-      if (capability && (!input.validation || input.validation.due?.boundary !== 'episode_two_delivered' || !input.validation.baseline?.length || !input.validation.metric_refs?.length))
-        throw Error('capability fill requires a second-episode validation window with baseline and metric refs');
-      const validation = input.validation ?? { due: { boundary: 'before_session_end' }, scope: 'unspecified; unverified', baseline: [], metric_refs: [] };
-      if (!validation.due || Object.keys(validation.due).some(k => !['request','units','boundary'].includes(k)) || !Object.keys(validation.due).length) throw Error('validation due required');
-      for (const k of ['request','units']) if (validation.due[k] !== undefined && (!Number.isSafeInteger(validation.due[k]) || validation.due[k] < 0)) throw Error('invalid due counter');
-      if (validation.due.boundary !== undefined && ![...FLOOR, 'episode_two_delivered'].includes(validation.due.boundary)) throw Error('unknown due boundary');
-      for (const ref of [...(validation.baseline ?? []), ...(validation.metric_refs ?? [])]) if (!this.ledger.some(row => row.ref === ref)) throw Error('unknown validation evidence');
-      if (validation.measure) validateLiveSelfSource(validation.measure.source);
+      const evolution = this.inEvolutionReview;
+      if (evolution && input.validation && (input.validation.due?.boundary !== 'settlement' || !input.validation.baseline?.length || !input.validation.metric_refs?.length || !input.validation.scope || !input.validation.measure || !input.validation.prediction))
+        throw Error('evolution fill requires a verifiable window due at a later settlement with non-empty baseline, metric_refs, scope and measure');
+      const validation = input.validation;
+      if (validation) {
+        if (!validation.due || Object.keys(validation.due).some(k => !['request','units','boundary'].includes(k)) || !Object.keys(validation.due).length) throw Error('validation due required');
+        for (const k of ['request','units']) if (validation.due[k] !== undefined && (!Number.isSafeInteger(validation.due[k]) || validation.due[k] < 0)) throw Error('invalid due counter');
+        if (validation.due.boundary !== undefined && ![...FLOOR, 'settlement'].includes(validation.due.boundary)) throw Error('unknown due boundary');
+        for (const ref of [...(validation.baseline ?? []), ...(validation.metric_refs ?? [])]) if (!this.ledger.some(row => row.ref === ref)) throw Error('unknown validation evidence');
+        if (validation.measure) validateLiveSelfSource(validation.measure.source);
+      }
       if (this.chainFailed) throw Error('response chain failed while candidate was being validated');
       const revision = this.pendingRevision + 1;
       this.pendingReview = this.review?.id;
-      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), { ...copy(validation), revision }], source: input.restore,
+      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(validation ? [{ ...copy(validation), revision }] : [])], source: input.restore,
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
       return this.fact('reflection_pending', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null }).value;
     } catch (e) {
@@ -303,14 +317,20 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.requestPin?.mode === 'execute') super.assertActionAllowed(type);
   }
   surface() {
-    const tools = this.review?.triggers.some((t: any) => t.id === 'contract:capability_review')
+    const tools = this.review?.triggers.some((t: any) => t.id === 'evolution_review')
       ? ['read', 'ls', 'grep', 'office.look'] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
     return [...new Set([...PROTOCOL, ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
       ...(tools.includes('agent_tools') && this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool').map(c => c.name) : [])])];
   }
   allowTool(name: string, args: any) { this.assertActionAllowed(name === 'office' ? `office.${args.op}` : name); }
-  get inCapabilityReview() { return Boolean(this.review?.triggers.some((t: any) => t.id === 'contract:capability_review')); }
-  get capabilityReviewClosed() { return this.ledger.some(r => r.type === 'review_closed' && r.value?.occasion === 'capability_review' && r.value?.agent_decision === 'present'); }
+  get inEvolutionReview() { return Boolean(this.review?.triggers.some((t: any) => t.id === 'evolution_review')); }
+  get settlementReviewRef() { return this.lastSettlementReview; }
+  get inCapabilityReview() { return this.inEvolutionReview; }
+  get capabilityReviewClosed() { return this.ledger.some(r => r.type === 'review_closed' && r.value?.occasion === 'evolution_review' && r.value?.agent_decision === 'present'); }
+  private applyConditionAddenda() {
+    const routes = this.policy.routes.map((route: any) => ({ id: route.id, event: route.event, mode: route.mode, priority: route.priority }));
+    this.conditionSet.addenda = routes;
+  }
   async boundary(applySurface: (tools: string[]) => void, persist: () => void) {
     if (this.paused) throw Error('inconsistent/paused');
     if (this.pending) {
@@ -328,10 +348,11 @@ export class SelfRoot extends LiveAgentSelf {
         this.onReflection?.({ kind: 'orchestration', revision: this.serial });
         applySurface(this.surface());
         this.pending = undefined;
-        for (const w of p.windows) this.windows.push({ id: `window:${this.windows.length}`, baseline: [], metric_refs: [], scope: '', ...w, status: 'open' });
+        for (const w of p.windows) if (w) this.windows.push({ id: `window:${this.windows.length}`, baseline: [], metric_refs: [], scope: '', ...w, status: 'open' });
         this.definitions.push(this.definition());
         const activated = this.fact('reflection_activated', { parent: oldSerial, revision: this.serial, addresses: p.addresses, restore_source: p.source ?? null, review: this.review?.id ?? this.pendingReview ?? null });
         this.lineage.push(activated);
+        this.applyConditionAddenda();
         if (this.review) this.review.changes.push(activated.ref);
         else if (this.pendingReview) this.fact('review_activation_closed', { review: this.pendingReview, activation: activated.ref, status: 'changed' });
         if (p.source !== undefined) for (const w of this.windows) if (w.status === 'restore_pending') { w.status = 'restored'; this.fact('validation_enacted',{ window:w.id, revision:this.serial, restore_source:p.source }); }
@@ -356,16 +377,24 @@ export class SelfRoot extends LiveAgentSelf {
   async event(type: string, boundary: string, facts: unknown = {}) {
     const key = `${type}:${boundary}`;
     const duplicate = this.consumed.has(key);
+    if (!duplicate && type === 'settlement') this.settlementCount++;
     // Event consumption does not consume commitments created AFTER that event.
-    const due = this.windows.filter(w => w.status === 'open' &&
-      ((w.due.boundary && w.due.boundary === type) || (w.due.request !== undefined && this.request >= w.due.request) || (w.due.units !== undefined && this.units >= w.due.units)));
+    const due = this.windows.filter(w => w.status === 'open' && w.due &&
+      ((w.due.boundary && w.due.boundary === type && (type !== 'settlement' || this.settlementCount > 1)) || (w.due.request !== undefined && this.request >= w.due.request) || (w.due.units !== undefined && this.units >= w.due.units)));
     if (duplicate && !due.length) return { duplicate: true };
     this.consumed.add(key);
     const event = this.fact(duplicate ? 'commitment_boundary' : 'event', { type, boundary, facts });
     const input = { event, revision: this.serial, state: super.snapshot(), ledger_offset: this.ledger.length, request: this.request, resources: this.resources() };
     const routes = type === 'heartbeat' ? [] : [...this.policy.routes].filter(r => !duplicate && r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
     const triggers: any[] = [];
-    if (!duplicate && (this.contract.boundaries.includes(type) || type === 'capability_review')) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    if (!duplicate && this.contract.boundaries.includes(type)) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    if (!duplicate && type === 'settlement') {
+      const classes = Array.isArray((facts as any)?.event_classes) ? (facts as any).event_classes : [];
+      const tags = Array.isArray((facts as any)?.coverage_tags) ? (facts as any).coverage_tags : [];
+      const prior = this.conditionSet.floor;
+      this.conditionSet.floor = { ...prior, event_classes: [...new Set([...prior.event_classes, ...classes])], coverage_tags: [...new Set([...prior.coverage_tags, ...tags])] };
+      triggers.push({ id: 'evolution_review', source: 'settlement_clock', mode: 'reflect', conclusion_sink: 'ledger', projection: undefined });
+    }
     if (!duplicate && type === 'heartbeat' && heartbeatInterval(this.contract.heartbeat)) {
       triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
     }
@@ -376,12 +405,7 @@ export class SelfRoot extends LiveAgentSelf {
       } catch (e) { this.fact('watch_stall', { route: route.id, error: String(e), triggered: false }); }
     }
     for (const window of due) {
-        const outcomes = this.ledger.filter(r => r.type === 'task_outcome' && r.revision >= window.revision &&
-          (type !== 'episode_two_delivered' || r.value?.episode === 2));
-        const priorRepairs = type === 'episode_two_delivered' ? this.ledger.filter(r => r.type === 'task_outcome' && r.value?.episode === 1 && r.value?.renderer?.receipt)
-          .map(r => r.value.renderer.receipt.revision) : [];
-        const laterRepairs = type === 'episode_two_delivered' ? outcomes.filter(r => r.value?.renderer?.receipt)
-          .map(r => r.value.renderer.receipt.revision) : [];
+        const outcomes = this.ledger.filter(r => r.type === 'task_outcome' && r.revision >= window.revision);
         let measured: any = null;
         if (window.measure) {
           try { measured = { status: 'returned', ...(await this.evaluate(window.measure.source, { outcomes, baseline: window.baseline.map(ref => this.ledger.find(r => r.ref === ref)), resources: this.resources() }, { window: window.id })), source: 'agent_measure', version: window.measure.version }; }
@@ -392,11 +416,23 @@ export class SelfRoot extends LiveAgentSelf {
           ? { predicted: prediction.value, observed: observed.value, unit: prediction.unit, difference: observed.value-prediction.value } : { status: 'unknown', reason: 'no comparable numeric prediction/observation' };
         const baseline = window.baseline.filter(ref => this.ledger.some(r => r.ref === ref && r.kind === 'fact' && r.type === 'task_outcome'));
         window.status = 'delivered'; window.delivered = { outcomes: outcomes.map(r => r.ref), baseline: window.baseline, task_baseline: baseline, measured, prediction_error: error,
-          repair_recurrence: type === 'episode_two_delivered' ? { first_episode_distinct_render_revisions: new Set(priorRepairs).size,
-            second_episode_distinct_render_revisions: new Set(laterRepairs).size, same_class_recurrence: 'unknown' } : null,
           resources: this.resources(), missing: [...(outcomes.length ? [] : ['task_outcomes']), ...(baseline.length ? [] : ['task_baseline'])] };
         this.fact('validation_delivered', { window: window.id, ...window.delivered });
         triggers.push({ id: window.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
+    }
+    if (!duplicate && type === 'settlement' && triggers.some(t => t.id === 'evolution_review')) {
+      const comparisons = this.ledger.filter(r => r.type === 'validation_delivered' && r.value?.prediction_error?.status !== 'unknown');
+      const used = (facts as any)?.used_version_refs ?? [];
+      const settlementRow = this.ledger.find(r => r.ref === event.ref);
+      if (settlementRow) settlementRow.value.facts = { ...settlementRow.value.facts, comparison_refs: comparisons.map(r => r.ref), used_version_refs: used };
+      const hasLaterUse = used.some((ref: string) => this.ledger.some(row => row.ref === ref && row.type === 'component_consumed'));
+      const hasComparison = comparisons.length > 0;
+      const prior = this.conditionSet.floor;
+      const step = Math.max(prior.step, hasComparison ? 3 : hasLaterUse ? 2 : 1);
+      this.conditionSet.floor = { step, evidence: [...new Set([...prior.evidence, ...FLOOR_STEPS.slice(0, step).flatMap(s => s.evidence_scope)])],
+        event_classes: [...prior.event_classes], coverage_tags: [...prior.coverage_tags] };
+      if (settlementRow) settlementRow.value.facts.conditions = copy(this.conditionSet);
+      this.lastSettlementReview = event.ref;
     }
     if (triggers.length) {
       const existing = this.queue.find(t => t.boundary === boundary);
@@ -434,15 +470,18 @@ export class SelfRoot extends LiveAgentSelf {
   }
   exit(input: { status: 'changed'|'unrelated'|'deferred'; subtype?: string; result: any; evidenceRefs: string[]; terminal?: boolean }) {
     if (!this.review) throw Error('no active review');
+    if (!input.status) throw Error('decide(op="exit") requires a top-level status');
     if (!['changed','unrelated','deferred'].includes(input.status)) throw Error('invalid closure');
-    if (this.inCapabilityReview) {
+    if (input.status === 'deferred' && input.subtype === 'keep' && this.inEvolutionReview) throw Error('evolution review rejects keep or sufficiency');
+    if (this.inEvolutionReview) {
       if (this.pending) throw Error('capability review cannot close with an unactivated candidate');
       if (input.status === 'deferred' && !['incomplete','insufficient_evidence'].includes(input.subtype ?? ''))
-        throw Error('capability_review cannot close with keep or sufficiency; record incomplete or insufficient_evidence');
+        throw Error('evolution review cannot close with keep or sufficiency; record incomplete or insufficient_evidence');
+      if (input.status === 'unrelated' && (!input.evidenceRefs.length || !input.result?.reason)) throw Error('unrelated requires explicit judgment and evidence');
       if (/\b(good enough|sufficient|needs? (?:are |is )?(?:met|satisfied)|no shortfalls?(?: remain)?|deck (?:is |was )?(?:done|deliverable))\b/i.test(input.result?.reason ?? ''))
-        throw Error('capability_review cannot conclude that needs are met or no shortfall remains');
-      if (input.status === 'changed' && !this.review.changes.some((ref: string) => this.windows.some(w => w.revision === this.serial && w.due.boundary === 'episode_two_delivered')))
-        throw Error('capability change needs an activated second-episode window');
+        throw Error('evolution review cannot conclude that needs are met or no shortfall remains');
+      if (input.status === 'changed' && !this.review.changes.some((ref: string) => this.windows.some(w => w.revision === this.serial && w.due && w.due.boundary === 'settlement' && w.baseline.length && w.metric_refs.length && w.scope && w.measure && w.prediction && w.metric_refs.every(metric => w.baseline.includes(metric)))))
+        throw Error('evolution change needs an activated later-settlement window');
     }
     for (const ref of input.evidenceRefs) if (!this.ledger.some(r => r.ref === ref)) throw Error('unknown evidence ref');
     const schema = this.review.modeDefinition.exitSchema;
@@ -450,7 +489,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (input.status === 'changed' && !this.review.changes.length) throw Error('changed requires an actual activation receipt');
     if (input.status === 'unrelated' && (!input.evidenceRefs.length || !input.result.reason)) throw Error('unrelated requires explicit judgment and evidence');
     const review = this.review;
-    const row = this.claim('review_closed', { review: review.id, occasion: this.inCapabilityReview ? 'capability_review' : null, ...input, changes: review.changes, agent_decision: 'present', mode_version: review.revision, pending: Boolean(this.pending) });
+    const row = this.claim('review_closed', { review: review.id, occasion: this.inEvolutionReview ? 'evolution_review' : null, ...input, changes: review.changes, agent_decision: 'present', mode_version: review.revision, pending: Boolean(this.pending) });
     if (this.pending) this.fact('review_pending', { review: review.id, closure: row.ref, status: 'deferred', subtype: 'pending' });
     if (review.triggers.some((t: any) => t.conclusion_sink === 'lineage')) this.lineage.push(row);
     this.review = undefined; this.currentMode = this.previousMode;
@@ -623,15 +662,15 @@ export class SelfRoot extends LiveAgentSelf {
   override mirror(): any {
     const active = super.mirror();
     for (const component of active.architecture.components) delete (component as any).body;
-    const reviewEvidence = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event' && ['before_delivery','capability_review'].includes(r.value.type))?.value.facts;
-    return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, parts: {
+    const reviewEvidence = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event' && ['before_delivery','settlement'].includes(r.value.type))?.value.facts;
+    return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, ledger: this.read(0, 40), parts: {
       components: { relation: 'executes from this root', writable_kinds: this.contract.writable.filter(x => x.startsWith('components.')) },
       orchestration: { relation: 'controls active step and trusted receipts', writable: this.contract.writable.includes('orchestration') },
       policy: { relation: 'controls modes, META, memory retrieval/write, request envelope and actual context assembly', request: this.policy.request,
         version: hash(this.policy), writable: this.contract.writable.includes('policy'), expand: 'read_self(section="policy")' },
       protected: { reason: this.contract.readonly_reason, contract_hash: this.contract.content_hash, boundaries: this.contract.boundaries, budget: this.contract.budget, capabilities: this.contract.capabilities, acceptance: this.contract.acceptance },
       unsupported: ['provider replacement', 'task subagents', 'cross-task default promotion', 'interactive world replay'],
-    }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, review: this.review ? { id: this.review.id, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_schema: this.reviewExitSchema } : null,
+    }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, settlement_count: this.settlementCount, conditions: copy(this.conditionSet), review: this.review ? { id: this.review.id, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_schema: this.reviewExitSchema } : null,
       ...(reviewEvidence ? { review_evidence: copy(reviewEvidence) } : {}),
       instruction: this.review?.modeDefinition.instruction ?? this.policy.modes[this.currentMode].instruction,
       request_pin: this.requestPin, resources: this.resources(), pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
