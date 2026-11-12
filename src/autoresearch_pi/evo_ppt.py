@@ -257,7 +257,12 @@ def run(root: Path, *, round_deadline: float | None = None):
     probe_tokens,probe_usd = probe["accounting"]["tokens"],probe["accounting"]["usd"]
     runtime_manifest = json.loads(json.dumps(manifest))
     caps = runtime_manifest["contract"]["budget"]
-    caps.update(requests=caps["requests"]-1,tokens=caps["tokens"]-probe_tokens,usd=caps["usd"]-probe_usd,
+    # Keep runtime JSON numeric semantics aligned with the TypeScript checker:
+    # JSON round-trips large integers unchanged, while float arithmetic turns
+    # the no-USD sentinel into a non-integer and changes its canonical hash.
+    caps.update(requests=caps["requests"]-1,
+                tokens=caps["tokens"]-int(probe_tokens),
+                usd=caps["usd"]-probe_usd if caps["usd"] < 1e15 else caps["usd"],
                 seconds=caps["seconds"]-probe["elapsed_seconds"])
     if round_deadline is not None:
         caps["seconds"] = min(caps["seconds"],round_deadline-time.time())
