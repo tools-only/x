@@ -375,7 +375,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const acceptance = experimentManifest ? collectAcceptance(activeManifest() ?? experimentManifest, root, workspace, sourcePath, receipt, child.status) : undefined;
         if (evo && acceptance) { evo.outcome({ ...acceptance, episode:state.episode, metrics: pptUnitMetrics(acceptance, evo.segmentRows()) }); persistLiveSelf(); }
         state.lastFeedback = { revision, slides: receipt.slides, native_objects: receipt.native_objects,
-          warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath };
+          warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath, source_hash: receipt.source_sha256 };
         state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
         state.events.push({ batch: state.batch, type: 'render', ...state.lastFeedback }); persist();
         log('renders.jsonl', state.lastFeedback);

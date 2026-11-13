@@ -388,6 +388,7 @@ export class SelfRoot extends LiveAgentSelf {
   private workRequests = 0;
   private reviewRequests = 0;
   private reviewedQualityRefs = new Set<string>();
+  private reviewObjectState: any = null;
   private pendingDelivery?: { run: () => Promise<any> };
   private taskEndPending?: string;
   private unresolvedReview = false;
@@ -601,7 +602,7 @@ export class SelfRoot extends LiveAgentSelf {
       const knownMetrics = this.reviewView().quality_facts.flatMap((row: any) => row.value?.metrics ?? []).filter(isMetric);
       const requestedPredicate = input.components?.find((c: any) => c.success_predicate)?.success_predicate ?? (input as any).success_predicate;
       const metric = requestedPredicate?.metric ? knownMetrics.find(m => m.name === requestedPredicate.metric) ?? knownMetrics.find(m => m.name.includes(requestedPredicate.metric) || requestedPredicate.metric.includes(m.name)) : knownMetrics.find(m => m.name === this.options.metricInfo?.(knownMetrics).primary) ?? knownMetrics[0];
-      const polarity = metric ? this.options.metricInfo?.(knownMetrics) : undefined;
+      const info = metric ? this.options.metricInfo?.(knownMetrics) : undefined; const polarity = info && info.primary === metric!.name ? info : undefined;
       const success_predicate = metric && (requestedPredicate?.direction || polarity?.better) ? { metric: metric.name, direction: requestedPredicate?.direction ?? (polarity?.better === 'higher' ? 'increase' : 'decrease'), segment: requestedPredicate?.segment ?? 'last' } : undefined;
       const reviewFacts = this.reviewView().all_facts.map((r: any) => r.ref);
       const suppliedRefs = [...new Set([...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? [])])];
@@ -902,7 +903,7 @@ export class SelfRoot extends LiveAgentSelf {
       for (const w of this.windows.filter(w => w.status === 'open' && this.settlementCount >= w.due.settlement)) {
         w.later_use_refs = this.laterUse(w);
         if (!w.later_use_refs.length) continue;
-        const quality = (summary?.ref && this.ledger.find(r => r.ref === summary.ref)?.value?.metrics ?? []).some((m: any) => m.name === w.success_predicate?.metric && m.observation);
+        const quality = ((summary?.ref ? this.ledger.find(r => r.ref === summary.ref)?.value?.metrics : undefined) ?? []).some((m: any) => m.name === w.success_predicate?.metric);
         if (w.success_predicate && !quality) { w.unknowns = [...new Set([...w.unknowns, 'awaiting_observation'])]; continue; }
         this.deliverWindow(w, `settlement ${this.settlementCount}`, summary?.ref);
         if (!quiet) triggers.push({ id: w.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
@@ -935,6 +936,9 @@ export class SelfRoot extends LiveAgentSelf {
     this.reviewRequests = 0;
     this.review = { ...ticket, mode: this.currentMode, modeDefinition: copy(this.policy.modes[this.currentMode]), policy: copy(this.policy),
       suspended: { step: this.step, revision: this.serial }, changes: [], request_entered: this.request, snapshot: this.baseSaved(), windows: this.dueWindows, entry_hash: hash(this.baseSaved().snapshot) };
+    let object_state: any = null;
+    try { object_state = this.options.observeCurrentArtifact?.() ?? null; } catch (error) { object_state = { refresh: { fresh: false, failed: true, error: String(error) } }; }
+    this.reviewObjectState = object_state;
     if (this.inEvolutionReview) {
       const shown = this.reviewView().quality_facts.map((x: any) => x.ref);
       this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
@@ -942,8 +946,6 @@ export class SelfRoot extends LiveAgentSelf {
       this.fact('self_view', { review: ticket.id, view: this.reviewSelfView() });
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
-    let object_state: any = null;
-    try { object_state = this.options.observeCurrentArtifact?.() ?? null; } catch (error) { object_state = { refresh: { fresh: false, failed: true, error: String(error) } }; }
     const due_windows = this.dueWindows.map(id => { const w = this.windows.find(x => x.id === id)!; return { id, predicate: w.success_predicate ?? null, baseline: w.baseline_metrics, delivered: w.delivered ?? null, status: w.status }; });
     this.fact('review_frame', { in_review: true, must_change_self: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' });
   }
@@ -959,7 +961,7 @@ export class SelfRoot extends LiveAgentSelf {
     const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, copy((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: copy((this.policy as any)[name]) } } }));
     return { revision: this.serial, entries: [
       ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: copy(this.current.orchestration) } }), ...policyEntries
-    ], object_state: this.review ? this.ledger.find(r => r.type === 'review_frame' && r.value?.in_review)?.value?.object_state ?? null : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
+    ], object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
   }
   enterMode(mode: string) {
     if (!this.policy.modes[mode] || this.review) throw Error('mode unavailable or mode already active');
