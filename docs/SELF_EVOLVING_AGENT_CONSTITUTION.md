@@ -1,6 +1,6 @@
 # 自进化 Agent 设计宪法
 
-**版本：** 1.9（2026-11-13）
+**版本：** 2.0（2026-11-13）
 **性质：** 目标架构与工程验收约束；不是当前代码能力声明。  
 **适用范围：** Agent 自身视图、可修改性建模、运行时反射、自我审阅、自我进化及其在 ARC、coding、PPT、视频等任务中的实现。
 
@@ -71,7 +71,7 @@ Architecture、Workflow 和 Loop 都可以指向同一个 Agent 的**系统级�
 
 ### 第五条：进化方向由 Agent 决定
 
-在用户授予的范围内，Agent 决定修改哪里、提出何种改变、如何实验以及如何利用反馈。每项进入验证窗口的改变同时由 Agent 声明自己的成功谓词：指标、方向和比较段。宿主只机械执行预先定义的权限、接口契约、并发版本和状态一致性约束，并在窗口到期时依据已入账事实和该谓词计算是否满足；不满足则恢复，满足则保留。谓词本身属于 Agent 的策略，可以按同一反射协议修改。宿主不诊断原因、不选择修改对象、不发明固定的“什么算更好”规则，也不成为独立的语义审批者。
+在用户授予的范围内，Agent 决定修改哪里、提出何种改变、如何实验以及如何利用反馈。每项进入验证窗口的改变同时由 Agent 声明自己的成功谓词：指标、方向和比较段。宿主只机械执行预先定义的权限、接口契约、并发版本和状态一致性约束，并在窗口到期时依据已入账事实和该谓词计算是否满足；不满足则恢复，满足则保留。谓词本身属于 Agent 的策略，可以按同一反射协议修改。若 Agent 尚未声明谓词，宿主可以依据用户声明的任务指标提供明确标注为“临时比较”的比较结果；该比较不能算作 Agent 的成功谓词，在 Agent 采纳或修改它之前也不能触发保留或恢复。未发生采纳仍记为未验证。宿主不诊断原因、不选择修改对象、不发明固定的“什么算更好”规则，也不成为独立的语义审批者。
 
 进化审视不设“不进化”的结局。每次进化审视都必须以至少一项 harness 自身修改结束：修改经被授权的反射操作生效或进入待生效，宿主为其建立验证窗口；审视结束时生效（或待生效）的自身定义必须不同于进入审视时的定义。可修改的对象包括组件、协调与编排、审阅方法，以及 Agent Loop 材料的管理策略（如上下文、memory 策略，见第六条之四）。修订现有组件或策略即满足本条，不要求每次新建组件；恢复到先前版本也是一次可见的修改（第八条）。退出接口不得提供零改动结案的路径，宿主也不得把零改动记录为一种正常的审视结果。
 
@@ -95,11 +95,13 @@ Loop Engineering 的对象是围绕任务运行的完整闭环架构。Agent 可
 
 用户开放相应权限后，Agent 应能够审阅并调整实际工作架构，也能修改用于改进它的方法。初期实现可以从组件或局部审阅工作流开始，验收声明须标明实际覆盖的范围。
 
+**本阶段单任务策略实验的限定例外：** 暂缓把进化策略本身暴露为反射对象。固定的、任务中立的入口方法可以要求 Agent 全面考虑可写部分，但不得替 Agent 选择对象、顺序、拟议改变、指标解释或采纳。Agent 的任务工作流以及审阅证据和方法仍然可写。报告不得声称固定入口策略本身已经进化。
+
 ### 第六条之一：Agent 定义并改进自身的工作架构
 
 Agent 可以承担自身的 Architect 角色，提出、组织、试验和修订任务中的工作架构。其审阅对象可以是 Workflow 或 Loop 的整体行为、Orchestration 的协调策略、内部组件及其关系，也可以是自身用于改进它们的审阅方法。Agent 在第四条界定的审阅对象之内决定审阅范围、证据、修改与验证方法，并在验证后决定保留或恢复。获得对应权限后，它可以通过同一反射协议修改实际生效的部分。
 
-运行时提供实际对象关系、任务阶段、原始执行事实（包括第四条所述的过程事实）、版本、预算和受控实验能力。具体诊断、分类、指标及其解释属于 Agent 的方法。领域适配器可以提供该领域的观测和执行入口，宿主不得据此为 Agent 固定诊断策略、审阅顺序或采纳规则。替换一个检查器或审阅工作流，可以验证相应的反射与执行能力。要验收 Meta Harness，还需观察 Agent 如何对其工作架构或工作方式建模、形成或检验替代方案，并根据证据选择。
+运行时提供实际对象关系、任务阶段、原始执行事实（包括第四条所述的过程事实）、版本、预算和受控实验能力。在本阶段单任务策略实验中，前述固定入口方法属于限定例外：它可以要求全面考虑可写部分，但不得选择对象、顺序、拟议改变、指标解释或采纳；任务工作流和审阅证据/方法仍可由 Agent 修改，且不得声称该入口策略已经进化。具体诊断、分类、指标及其解释属于 Agent 的方法。领域适配器可以提供该领域的观测和执行入口，宿主不得据此为 Agent 固定诊断策略、审阅顺序或采纳规则。替换一个检查器或审阅工作流，可以验证相应的反射与执行能力。要验收 Meta Harness，还需观察 Agent 如何对其工作架构或工作方式建模、形成或检验替代方案，并根据证据选择。
 
 ### 第六条之二：对象类别与审阅层级分开
 
@@ -202,6 +204,10 @@ ARC、coding、PPT、视频生成中的任务状态和可优化部分各不相�
 
 - **1.8（2026-11-13）**：第五条增加 Agent 声明指标、方向和比较段的成功谓词；窗口到期时宿主只按入账事实机械求值，未满足即恢复、满足即保留。谓词仍属 Agent 可反射策略；宿主不得诊断、选择方向或另设固定改善标准。同步修订工程验收中的验证责任。
 
+## 版本记录
+
+- **2.0（2026-11-13）**：根据批准的两项修订更新第五条：Agent 未声明谓词时，宿主可提供明确标注的临时比较，但在 Agent 采纳或修改前不得将其视为成功谓词或触发保留/恢复，未采纳仍未验证；更新第六条及第六条之一：当前单任务策略实验暂缓把进化策略本身纳入反射，固定任务中立入口只可要求全面考虑可写部分，不得替 Agent 选择对象、顺序、改变、指标解释或采纳，任务工作流与审阅证据/方法仍可写，报告不得声称入口策略已经进化。
+
 ## 适用关系
 
 此前的《Autoresearch Pi Kernel — Minimal Mutation Design & Implementation Constitution》限定的是 **Pi 最小运行时修改能力**的局部里程碑，明确暂不设计自我进化。本文规定的是更上层的**完整 Agent 自我进化目标**。局部最小实现可作为本文的一块基础，但不能用“已证明 Pi 可修改”代替完整自身对象、自身审阅、直接反射和自主进化的验收。
@@ -214,3 +220,4 @@ ARC、coding、PPT、视频生成中的任务状态和可优化部分各不相�
 The Agent-facing meta-harness surface is thin. Runtime and base services own legal vocabularies, field matching, normalization, validation, request assembly, review and window bookkeeping, interpretation, defaults, and host floors. The Agent authors concrete component content and orchestration intent; it does not construct internal policy token lists or adjudicate host bookkeeping.
 
 A mechanism is complete only when its runtime surface states what the Agent may operate and gives the name, meaning, current value, and required resources for each writable item. Internal composition sections and bookkeeping fields are not writable knobs. Validation failures normalize at the boundary or return an actionable same-turn correction surface. This preserves 1.8 success predicates, mechanical host evaluation, and restore on failure.
+
