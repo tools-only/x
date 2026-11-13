@@ -98,7 +98,7 @@ export function pptUnitMetrics(result: any, rows: any[]) {
     ...(normalized.length ? [{ name: 'acceptance.normalized_found', value: normalized.filter((m: any) => m.found === true).length, unit: 'count' }] : []),
     { name: 'render.warnings_latest', value: (result.renderer?.receipt?.warnings ?? []).length, unit: 'count' },
     ...pptSegmentMetrics(rows),
-  ].map((metric: any) => ({ ...metric, scope: 'unit' }));
+  ].map((metric: any) => ({ ...metric, scope: metric.scope ?? 'unit' }));
 }
 
 /** Adapter-side, task-specific wiring passed to the task-neutral core (constitution art. 10-1). */

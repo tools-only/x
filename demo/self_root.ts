@@ -138,6 +138,7 @@ function operationError(message: string, kind: OperationKind, input: any, surfac
     components: { meaning: 'concrete Agent component content', current: 'read_self(section="self")' },
     restore: { meaning: 'restore a saved Agent revision', current: 'read_self(section="lineage")' },
   }, invalid: surface.invalid ?? [], correction: surface.correction ?? 'Edit the named writable item and submit this operation again in the same turn.' };
+  error.message = `${message}; correction_surface=${JSON.stringify(error.surface)}`;
   return error;
 }
 
@@ -157,7 +158,6 @@ const CONTEXT_ORDER_ALIASES: Record<string, string> = {
   content: 'prompts', instructions: 'prompts', prompt: 'prompts', prompts: 'prompts',
   memory: 'memory', memories: 'memory', learned: 'memory', skills: 'skills', methods: 'skills',
 };
-  error.message = `${message}; correction_surface=${JSON.stringify(error.surface)}`;
 /** Maps Agent intent to the private policy vocabulary at one runtime boundary. */
 export function normalizeContextIntent(intent: ContextIntent): { context: Partial<ContextPolicy> } {
   const result: any = {};
