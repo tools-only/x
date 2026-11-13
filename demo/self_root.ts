@@ -26,7 +26,9 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   /** Host observation supplied at review entry. It may refresh a task artifact, but returns facts only. */
   observeCurrentArtifact?: () => unknown;
   /** Adapter-declared metric meaning; the core only uses the returned polarity and primary metric. */
-  metricInfo?: (metrics: Metric[]) => { primary?: string; better?: 'higher' | 'lower' };
+  metricInfo?: (metrics: Metric[]) => { primary?: string; better?: 'higher' | 'lower'; scope?: string };
+  /** Adapter-owned opaque identity for comparing observations of one metric. */
+  observationIdentity?: (metric: Metric) => string | undefined;
   acceptanceUnits?: string[] | (() => string[]);
   canonicalSource?: () => string | undefined;
   /** Adapter-specific probe request kinds excluded from settled task requests. */
@@ -74,10 +76,10 @@ const CONSERVATIVE_RATES = { input: 20, output: 80 };
 const REGISTERED_RATES = { input: 5, output: 30 };
 const ESTIMATE_NEVER_INVOICE = 'estimate, never the invoice';
 type Row = { ref: string; kind: 'fact' | 'claim'; type: string; revision: number; request: number; value: any };
-export type Metric = { name: string; value: number; unit: string; scope?: string; observation?: any };
+export type Metric = { name: string; value: number; unit: string; scope?: string; observation?: any; observation_id?: string };
 export type Window = { id: string; revision: number; parent: number; review: string | null; activation: string; baseline: string[]; baseline_segment: number | null;
   baseline_metrics: { last: Metric[]; mean: Metric[] }; scope: string[];
-  due: { settlement: number; after_use: true; rule: string }; expected_effect?: string; success_predicate?: { metric: string; direction: 'increase' | 'decrease'; segment: 'last' | 'mean' }; effect_status: 'specified' | 'effect_unspecified';
+  due: { settlement: number; after_use: true; rule: string }; expected_effect?: string; success_predicate?: { metric: string; direction: 'increase' | 'decrease'; segment: 'last' | 'mean'; scope?: string }; predicate_source?: 'default' | 'agent'; effect_status: 'specified' | 'effect_unspecified';
   evidence_refs: string[]; baseline_phase: string | null; later_use_refs: string[]; status: string; delivered?: any; unknowns: string[] };
 /** Fixed mechanical rules published to the Agent; the host never selects "relevant" evidence. */
 export const WINDOW_RULES = {
@@ -599,20 +601,21 @@ export class SelfRoot extends LiveAgentSelf {
       if (this.chainFailed) throw Error('response chain failed while candidate was being validated');
       const revision = this.pendingRevision + 1;
       this.pendingReview = this.review?.id ?? this.pendingReview;
-      const knownMetrics = this.reviewView().quality_facts.flatMap((row: any) => row.value?.metrics ?? []).filter(isMetric);
+      const knownMetrics = this.ledger.filter(r => r.type === 'task_outcome' && r.revision <= this.serial)
+        .flatMap((row: any) => row.value?.metrics ?? []).filter(isMetric);
       const requestedPredicate = input.components?.find((c: any) => c.success_predicate)?.success_predicate ?? (input as any).success_predicate;
       const metric = requestedPredicate?.metric ? knownMetrics.find(m => m.name === requestedPredicate.metric) ?? knownMetrics.find(m => m.name.includes(requestedPredicate.metric) || requestedPredicate.metric.includes(m.name)) : knownMetrics.find(m => m.name === this.options.metricInfo?.(knownMetrics).primary) ?? knownMetrics[0];
       const info = metric ? this.options.metricInfo?.(knownMetrics) : undefined; const polarity = info && info.primary === metric!.name ? info : undefined;
-      const success_predicate = metric && (requestedPredicate?.direction || polarity?.better) ? { metric: metric.name, direction: requestedPredicate?.direction ?? (polarity?.better === 'higher' ? 'increase' : 'decrease'), segment: requestedPredicate?.segment ?? 'last' } : undefined;
+      const success_predicate = metric && (requestedPredicate?.direction || polarity?.better) ? { metric: metric.name, direction: requestedPredicate?.direction ?? (polarity?.better === 'higher' ? 'increase' : 'decrease'), segment: requestedPredicate?.segment ?? 'last', scope: requestedPredicate?.scope ?? info?.scope ?? metric.scope ?? 'segment' } : undefined;
       const reviewFacts = this.reviewView().all_facts.map((r: any) => r.ref);
       const suppliedRefs = [...new Set([...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? [])])];
       const retained = suppliedRefs.filter((ref: string) => reviewFacts.includes(ref));
       const discarded = suppliedRefs.filter((ref: string) => !reviewFacts.includes(ref)).map(ref => ({ ref, reason: 'not a booked fact reference in this review' }));
       const evidence_refs = [...new Set([...(evolution ? reviewFacts : []), ...retained])];
-      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length ? [{ addresses, success_predicate, evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
+      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length ? [{ addresses, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'default', evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
       return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null,
-        evidence_refs: { retained, discarded, auto_attached: evolution ? reviewFacts : [] }, success_predicate }).value;
+        evidence_refs: { retained, discarded, auto_attached: evolution ? reviewFacts : [] }, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'default' }).value;
     } catch (e) {
       this.abortTransaction(e); throw e;
     }
@@ -678,8 +681,9 @@ export class SelfRoot extends LiveAgentSelf {
       this.onReflection?.({ kind: 'orchestration', revision: this.serial });
       applySurface(this.surface());
       this.pending = undefined;
-      const activated = this.fact('reflection_activated', { parent: oldSerial, revision: this.serial, addresses: p.addresses, restore_source: p.source ?? null, review: this.review?.id ?? this.pendingReview ?? null });
-      for (const w of p.windows) if (w) this.createWindow(oldSerial, activated.ref, w.addresses ?? p.addresses, w.expected_effect, w.review ?? null, w.success_predicate, w.evidence_refs);
+      const activated = this.fact('reflection_activated', { parent: oldSerial, revision: this.serial, addresses: p.addresses, restore_source: p.source ?? null, review: this.review?.id ?? this.pendingReview ?? null,
+        success_predicates: p.windows.filter(Boolean).map((w: any) => ({ predicate: w.success_predicate ?? null, predicate_source: w.predicate_source ?? null })) });
+      for (const w of p.windows) if (w) this.createWindow(oldSerial, activated.ref, w.addresses ?? p.addresses, w.expected_effect, w.review ?? null, w.success_predicate, w.evidence_refs, w.predicate_source);
       this.definitions.push(this.definition());
       this.lineage.push(activated);
       this.applyConditionAddenda();
@@ -699,16 +703,24 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** Host-made window (art. 5-1): fixed segment baseline rule, no Agent bookkeeping fields. */
-  private createWindow(parent: number, activation: string, addresses: string[], expected_effect: string | undefined, review: string | null, success_predicate?: any, evidence_refs: string[] = []) {
+  private createWindow(parent: number, activation: string, addresses: string[], expected_effect: string | undefined, review: string | null, success_predicate?: any, evidence_refs: string[] = [], predicate_source?: 'default' | 'agent') {
     const summaries = this.segmentRefs.map(ref => this.ledger.find(r => r.ref === ref)!).filter(Boolean);
     const last = summaries.at(-1);
-    const lastMetrics: Metric[] = (last?.value?.metrics ?? []).filter(isMetric);
-    const mean: Metric[] = lastMetrics.map(m => { const xs = summaries.flatMap(r => (r.value?.metrics ?? []).filter((x: any) => isMetric(x) && x.name === m.name && x.unit === m.unit).map((x: Metric) => x.value));
-      return { name: m.name, unit: m.unit, value: xs.reduce((a: number, b: number) => a + b, 0) / xs.length }; });
+    const allMetrics = summaries.flatMap(r => (r.value?.metrics ?? []).filter(isMetric));
+    const latestMetrics = (last?.value?.metrics ?? []).filter(isMetric);
+    const key = (m: Metric) => `${m.name}|${m.unit}|${m.scope ?? 'segment'}`;
+    const lastMetrics: Metric[] = [...new Map(latestMetrics.map(m => [key(m), m])).values()];
+    if (success_predicate?.metric) {
+      const predicateScope = success_predicate.scope ?? 'segment';
+      const comparable = [...allMetrics].reverse().find(m => m.name === success_predicate.metric && (m.scope ?? 'segment') === predicateScope);
+      if (comparable && !lastMetrics.some(m => key(m) === key(comparable))) lastMetrics.push(comparable);
+    }
+    const mean: Metric[] = lastMetrics.map(m => { const xs = allMetrics.filter(x => key(x) === key(m)).map(x => x.value);
+      return { ...m, value: xs.reduce((a: number, b: number) => a + b, 0) / xs.length }; });
     const window: Window = { id: `window:${this.windows.length}`, revision: this.serial, parent, review, activation, baseline: summaries.map(r => r.ref),
       baseline_segment: last ? Number(last.value.segment) : null, baseline_metrics: { last: lastMetrics, mean }, scope: [...addresses],
       due: { settlement: this.settlementCount + 1, after_use: true, rule: WINDOW_RULES.due }, ...(expected_effect ? { expected_effect } : {}),
-      success_predicate, evidence_refs, baseline_phase: (last?.value?.phase ?? null), effect_status: success_predicate ? 'specified' : expected_effect ? 'specified' : 'effect_unspecified', later_use_refs: [], status: 'open',
+      success_predicate, predicate_source, evidence_refs, baseline_phase: (last?.value?.phase ?? null), effect_status: success_predicate ? 'specified' : expected_effect ? 'specified' : 'effect_unspecified', later_use_refs: [], status: 'open',
       unknowns: [...(last ? [] : ['settled_baseline']), ...(lastMetrics.length ? [] : ['repeatable_numeric_metric']), ...(success_predicate ? [] : ['success_predicate']), 'comparable_phase', 'later_use'] };
     this.windows.push(window);
     this.fact('window_created', { window: window.id, revision: window.revision, parent, activation, baseline_rule: WINDOW_RULES.baseline, baseline_segment: window.baseline_segment,
@@ -728,15 +740,20 @@ export class SelfRoot extends LiveAgentSelf {
     w.later_use_refs = this.laterUse(w);
     const observedRow = observedRef ? this.ledger.find(r => r.ref === observedRef) : undefined;
     const observed: Metric[] = (observedRow?.value?.metrics ?? []).filter(isMetric);
+    const identity = (m: Metric) => m.observation_id ?? this.options.observationIdentity?.(m);
+    const baselineIndex = this.ledger.findIndex(r => r.ref === w.activation);
+    const fresh = (m: Metric, baseline: Metric) => { const id = identity(m); return id !== undefined && id !== identity(baseline) && this.ledger.some((r, i) => i > baselineIndex && r.type === 'task_outcome' && (r.value?.metrics ?? []).some((x: any) => isMetric(x) && identity(x) === id)); };
     const comparisons = w.baseline_metrics.last.flatMap(b => {
-      const o = observed.find(x => x.name === b.name && x.unit === b.unit && ((x as any).scope ?? 'segment') === ((b as any).scope ?? 'segment')); if (!o) return [];
-      const m = w.baseline_metrics.mean.find(x => x.name === b.name && x.unit === b.unit);
-      return [{ name: b.name, unit: b.unit, baseline_last: b.value, baseline_mean: m?.value ?? null, observed: o.value, diff_last: o.value - b.value, diff_mean: m ? o.value - m.value : null }]; });
-    const key = (m: Metric) => `${m.name}|${m.unit}`;
+      const o = observed.find(x => x.name === b.name && x.unit === b.unit && ((x as any).scope ?? 'segment') === ((b as any).scope ?? 'segment') && fresh(x, b)); if (!o) return [];
+      const m = w.baseline_metrics.mean.find(x => x.name === b.name && x.unit === b.unit && (x.scope ?? 'segment') === (b.scope ?? 'segment'));
+      return [{ name: b.name, unit: b.unit, scope: b.scope ?? 'segment', baseline_observation_id: identity(b) ?? null, observation_id: identity(o) ?? null, baseline_last: b.value, baseline_mean: m?.value ?? null, observed: o.value, diff_last: o.value - b.value, diff_mean: m ? o.value - m.value : null }]; });
+    const key = (m: Metric) => `${m.name}|${m.unit}|${m.scope ?? 'segment'}`;
     const missing_metrics = [...new Set([...w.baseline_metrics.last.map(key), ...observed.map(key)])]
-      .filter(k => !w.baseline_metrics.last.some(m => key(m) === k) || !observed.some(m => key(m) === k));
+      .map(k => ({ key: k, baseline: w.baseline_metrics.last.find(m => key(m) === k) ? { scope: w.baseline_metrics.last.find(m => key(m) === k)!.scope ?? 'segment', observation_id: identity(w.baseline_metrics.last.find(m => key(m) === k)!) ?? null } : null,
+        current: observed.find(m => key(m) === k) ? { scope: observed.find(m => key(m) === k)!.scope ?? 'segment', observation_id: identity(observed.find(m => key(m) === k)!) ?? null } : null }))
+      .filter(row => !row.baseline || !row.current || row.baseline.observation_id === row.current.observation_id);
     const predicate = w.success_predicate;
-    const comparison = predicate ? comparisons.find(c => c.name === predicate.metric) : undefined;
+    const comparison = predicate ? comparisons.find(c => c.name === predicate.metric && c.scope === (predicate.scope ?? c.scope)) : undefined;
     const matchingPhase = w.baseline_phase !== null && observedRow?.value?.phase === w.baseline_phase;
     const missing = [...(w.later_use_refs.length ? [] : ['later_use']), ...(observedRow ? [] : ['observed_segment']),
       ...(w.baseline.length ? [] : ['settled_baseline']), ...(comparisons.length ? [] : ['repeatable_numeric_metric']),
@@ -745,10 +762,10 @@ export class SelfRoot extends LiveAgentSelf {
       ? comparison.observed > (predicate.segment === 'mean' ? comparison.baseline_mean : comparison.baseline_last)
       : comparison.observed < (predicate.segment === 'mean' ? comparison.baseline_mean : comparison.baseline_last) : false;
     const verification = missing.length || !predicate ? 'unverified' : 'comparable';
-    w.status = verification === 'comparable' ? 'due_comparable' : 'due_unverified';
+    w.status = verification === 'comparable' ? 'due_comparable' : reason.startsWith('task end:') ? 'unverified_at_task_end' : 'due_unverified';
     w.delivered = { reason, baseline_segment: w.baseline_segment, observed_segment: observedRow?.value?.segment ?? null, observed_ref: observedRef ?? null,
       metric_comparisons: comparisons, missing_metrics, later_use: w.later_use_refs.length > 0,
-      later_use_refs: w.later_use_refs.slice(-20), missing, verification, success_predicate: predicate ?? null, predicate_met: verification === 'comparable' ? Boolean(predicateMet) : null, restore_default: w.parent };
+      later_use_refs: w.later_use_refs.slice(-20), missing, verification, success_predicate: predicate ?? null, predicate_source: w.predicate_source ?? (predicate ? 'agent' : null), predicate_met: verification === 'comparable' ? Boolean(predicateMet) : null, restore_default: w.parent };
     return this.fact('validation_delivered', { window: w.id, ...w.delivered });
   }
   async boundary(applySurface: (tools: string[]) => void, persist: () => void) {
@@ -770,14 +787,12 @@ export class SelfRoot extends LiveAgentSelf {
   taskEnd(reason: string) {
     if (this.taskEnded) return { duplicate: true };
     const formalDelivery = reason === 'delivered';
-    if (formalDelivery && (this.review || this.queue.length || this.pendingDelivery || this.unresolvedReview || this.windows.some(w => ['open','due_unverified','due_comparable','restore_pending'].includes(w.status)))) {
+    if (formalDelivery && (this.review || this.queue.length || this.pendingDelivery || this.unresolvedReview) && !this.taskEndPending) {
       this.taskEndPending = reason;
       return { deferred: true };
     }
     this.taskEnded = reason;
-    const delivered = this.windows.filter(w => w.status === 'open').map(w => {
-      const observed = this.segmentRefs.map(ref => this.ledger.find(r => r.ref === ref)!).filter(r => r && Number(r.value.segment) > (w.baseline_segment ?? 0)).at(-1);
-      return this.deliverWindow(w, `task end: ${reason}`, observed?.ref).ref; });
+    const delivered = this.windows.filter(w => w.status === 'open').map(w => this.deliverWindow(w, `task end: ${reason}`).ref);
     this.taskEndPending = undefined;
     this.fact('task_ended', { reason, windows_delivered: delivered });
     return { delivered };
@@ -903,7 +918,14 @@ export class SelfRoot extends LiveAgentSelf {
       for (const w of this.windows.filter(w => w.status === 'open' && this.settlementCount >= w.due.settlement)) {
         w.later_use_refs = this.laterUse(w);
         if (!w.later_use_refs.length) continue;
-        const quality = ((summary?.ref ? this.ledger.find(r => r.ref === summary.ref)?.value?.metrics : undefined) ?? []).some((m: any) => m.name === w.success_predicate?.metric);
+        const quality = ((summary?.ref ? this.ledger.find(r => r.ref === summary.ref)?.value?.metrics : undefined) ?? []).some((m: any) => {
+          const baseline = w.baseline_metrics.last.find(b => b.name === m.name && b.unit === m.unit && (b.scope ?? 'segment') === (m.scope ?? 'segment'));
+          const currentId = m.observation_id ?? this.options.observationIdentity?.(m);
+          const baselineId = baseline && (baseline.observation_id ?? this.options.observationIdentity?.(baseline));
+          const activationIndex = this.ledger.findIndex(r => r.ref === w.activation);
+          const observedAfterActivation = currentId !== undefined && this.ledger.some((r, i) => i > activationIndex && r.type === 'task_outcome' && (r.value?.metrics ?? []).some((x: any) => isMetric(x) && x.name === m.name && (x.scope ?? 'segment') === (m.scope ?? 'segment') && (x.observation_id ?? this.options.observationIdentity?.(x)) === currentId));
+          return m.name === w.success_predicate?.metric && (m.scope ?? 'segment') === (w.success_predicate?.scope ?? 'segment') && observedAfterActivation && currentId !== baselineId;
+        });
         if (w.success_predicate && !quality) { w.unknowns = [...new Set([...w.unknowns, 'awaiting_observation'])]; continue; }
         this.deliverWindow(w, `settlement ${this.settlementCount}`, summary?.ref);
         if (!quiet) triggers.push({ id: w.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });

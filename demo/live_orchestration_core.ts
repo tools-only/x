@@ -166,15 +166,15 @@ export class LiveOrchestrationSession {
     if (step.actions && !step.actions.includes(type)) throw Error(`action ${type} is not allowed by active step ${step.id}`);
   }
   /** Called only by host action adapters after a real action succeeds. */
-  recordAction(type: string, facts: Record<string, unknown> = {}, updatesCurrentArtifact = false) {
+  recordAction(type: string, facts: Record<string, unknown> = {}, updatesCurrentArtifact = false, hostDeferred = false) {
     if (typeof type !== 'string' || !type || !facts || typeof facts !== 'object' || Array.isArray(facts)) throw Error('invalid action facts');
-    this.assertActionAllowed(type);
+    if (!hostDeferred) this.assertActionAllowed(type);
     const artifactVersion = Number.isSafeInteger(facts.artifactVersion) ? Number(facts.artifactVersion) : undefined;
     const artifactHash = typeof facts.artifactHash === 'string' ? facts.artifactHash : undefined;
     if (updatesCurrentArtifact && artifactVersion !== undefined && artifactHash) {
       this.latestArtifactVersion = artifactVersion; this.latestArtifactHash = artifactHash;
     }
-    const receipt = { ref: `action-${this.actions.length + 1}`, type, artifactVersion, artifactHash, facts: clone(facts) };
+    const receipt = { ref: `action-${this.actions.length + 1}`, type, artifactVersion, artifactHash, host_deferred: hostDeferred, facts: clone(facts) };
     this.actions.push(receipt);
     return { receipt: clone(receipt), transition: this.advanceAction(receipt) };
   }
