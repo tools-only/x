@@ -137,7 +137,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (file === 'consult_runs.jsonl' && row?.role) lineageUse({ ...row, role: row.role, kind: 'subagent' });
     appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), session_id: sessionId, batch: state.batch, ...row })+'\n');
   };
-  const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate });
+  const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate,
+    ...(value && typeof value === 'object' && value.is_error === true ? { isError: true } : {}) });
   const registerTool = pi.registerTool.bind(pi);
   (pi as any).registerTool = (tool: any) => registerTool({ ...tool, execute: async (...args: any[]) => {
     const began = Date.now();
@@ -325,12 +326,13 @@ export default function pptDemo(pi: ExtensionAPI) {
         log('lifecycle.jsonl', { event: 'reflective_change', op: a.op, name: a.name, kind: a.kind,
           self_revision: agentSelf.revision, note: a.note, ok: false, error: String(error) });
         if (evo) throw error;
-        return text({ ok: false, selfRevision: agentSelf.revision, name: a.name, kind: a.kind, error: String(error) });
+        return text({ is_error: true, ok: false, selfRevision: agentSelf.revision, name: a.name, kind: a.kind,
+          reason: { code: 'reflection_rejected', error: String(error) } });
       }
     });
   if (!evo) register('reflect_orchestration', 'Directly revise the active Agent orchestration. Host revision and evidence bookkeeping are automatic.',
-    Type.Object({ orchestration: Type.Optional(Type.Record(Type.String(), Type.Any())), policy: Type.Optional(Type.Record(Type.String(), Type.Any())), components: Type.Optional(Type.Array(Type.Any())), restore: Type.Optional(Type.Integer({minimum:1})), carry: Type.Optional(Type.Record(Type.String(), Type.Any())), stepMap: Type.Optional(Type.Record(Type.String(), Type.Any())), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()) }), async (args: any) => {
-      const result = await agentSelf.reflectOrchestration({ ...args, baseRevision: evo?.pendingRevision ?? agentSelf.revision, authorized: true });
+    Type.Object({ orchestration: Type.Optional(Type.Record(Type.String(), Type.Any())), orchestration_patch: Type.Optional(Type.Record(Type.String(), Type.Any())), policy: Type.Optional(Type.Record(Type.String(), Type.Any())), components: Type.Optional(Type.Array(Type.Any())), restore: Type.Optional(Type.Integer({minimum:1})), carry: Type.Optional(Type.Record(Type.String(), Type.Any())), stepMap: Type.Optional(Type.Record(Type.String(), Type.Any())), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()) }), async (args: any) => {
+      const result = await agentSelf.reflectOrchestration({ ...args, baseRevision: agentSelf.revision, authorized: true });
       return text({ ...result, active: agentSelf.mirror() });
     });
   if (!evo) register('decide', 'Submit an Agent-authored decision against trusted action receipts. The live orchestration checks evidence and applies its declared transition.',
@@ -638,6 +640,9 @@ export default function pptDemo(pi: ExtensionAPI) {
         if (system.role !== 'system') throw Error('missing system message');
         // Rebuild the actual schema, including office sub-operations, for this request.
         const actions = evo.surface(), names = new Set(pi.getActiveTools());
+        const currentStep = evo.current.orchestration.steps.find((step: any) => step.id === evo.step);
+        const stepBindings = currentStep?.bindings ?? [];
+        for (const binding of stepBindings) if (binding.kind === 'tool') names.add(binding.name);
         // Provider-visible schemas for self operations come from the core descriptor (one definition);
         // tools a state does not offer (decide_exit outside review, decide_validation without a due window) are not advertised.
         system.toolsAdded = pi.getAllTools().filter(t => names.has(t.name)).flatMap(t => {
@@ -645,7 +650,9 @@ export default function pptDemo(pi: ExtensionAPI) {
           if (generated === undefined) return [];
           const parameters = generated ?? structuredClone(t.parameters) as any;
           if (t.name === 'office') { parameters.properties.op = { type: 'string', enum: actions.filter(x => x.startsWith('office.')).map(x => x.slice(7)) }; delete parameters.properties.self_review; }
-          return [{ name: t.name, description: t.description, parameters }];
+          const component = agentSelf.active().find((candidate: any) => candidate.kind === 'tool' && candidate.name === t.name);
+          const description = component ? `${t.description}\nActive component ${component.name}@v${component.version} ${component.hash}` : t.description;
+          return [{ name: t.name, description, parameters }];
         });
         for (const t of system.toolsAdded) { const expected = selfRootToolSchema(evo, t.name); if (expected && hash(expected) !== hash(t.parameters)) throw Error(`provider schema for ${t.name} differs from its descriptor`); }
         // Older tool additions/removals must not re-open a suspended capability later in history.
@@ -655,15 +662,26 @@ export default function pptDemo(pi: ExtensionAPI) {
           memory: evo.memory().map(c => `${c.name}@${c.version}\n${c.source}`).join('\n\n'),
           skills: agentSelf.active().filter(c => c.kind === 'skill').map(c => `${c.name}@${c.version}: ${c.description}; read_self_component`).join('\n'),
         };
+        const boundComponents = stepBindings.map((binding: any) => {
+          const component = agentSelf.active().find((candidate: any) => candidate.kind === binding.kind && candidate.name === binding.name && (binding.version === undefined || candidate.version === binding.version));
+          if (binding.kind === 'context') return `context:${binding.name}`;
+          if (!component) throw Error(`unresolved step binding ${binding.kind}.${binding.name}${binding.version === undefined ? '' : `@v${binding.version}`}`);
+          return `${binding.kind}:${component.name}@v${component.version}`;
+        });
         const taskInstructions = evo.inCapabilityReview ? '' : existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
         const ctx = evo.policy.context;
-        const selfView = evo.inEvolutionReview ? [JSON.stringify(evo.reviewSelfView()), JSON.stringify(await evo.projection())] : [JSON.stringify(evo.detail('pin'))];
+        const selfView = evo.inEvolutionReview
+          ? [JSON.stringify(evo.reviewSelfView()), JSON.stringify(await evo.projection())]
+          : [JSON.stringify({ root_id: evo.root_id, revision: evo.revision, mode: evo.mode, step: evo.step,
+            in_review: false, pending: evo.detail('pin').activation_intent ?? null, resources: evo.resources(),
+            read_full: 'read_self(section="self")', read_policy: 'read_self(section="policy")' })];
         const selfTail = ctx.self_view?.placement === 'tail';
         const coreLine = `${FIXED_REVIEW_STRATEGY}\nSELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.`;
-        const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine].filter(Boolean).join('\n\n');
+        const bindingText = boundComponents.length ? `## ACTIVE STEP BINDINGS\n${boundComponents.join('\n')}` : '';
+        const orchestrationText = `## ACTIVE ORCHESTRATION\n${JSON.stringify({ revision: evo.current.revision, step: evo.step, definition: currentStep })}`;
+        const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), bindingText, orchestrationText, ctx.instruction, coreLine].filter(Boolean).join('\n\n');
         const volatile = ctx.prompt_layout?.volatile_tail === 'self_view' ? [selfView[0]] : ctx.prompt_layout?.volatile_tail === 'projection' ? [selfView[1]] : selfView;
-        const stableLimit = ctx.prompt_layout?.stable_prefix_chars ?? prefix.length;
-        const stable = `${prefix.slice(0, stableLimit)}\n\n${FIXED_REVIEW_STRATEGY}`;
+        const stable = prefix;
         const volatileText = volatile.join('\n\n');
         const viewInSystem = !selfTail;
         const reviewStrategy = evo.inEvolutionReview ? FIXED_REVIEW_STRATEGY : '';
@@ -676,8 +694,13 @@ export default function pptDemo(pi: ExtensionAPI) {
         const plan = await evo.planContext(list);
         const assembled = piContext.apply(messages, list, plan.actions, plan.policyHash);
         if (selfTail) { const tail = { role: 'custom', customType: 'self-view', display: false, timestamp: Date.now(), content: selfView.join('\n\n') }; assembled.push(tail); plan.composition.sections.push({ section: 'self_view_tail', items: 1, chars: tail.content.length, images: 0 }); }
-        evo.recordContext(plan.composition, plan.receipt);
-        evo.fact('provider_input', { pin, phase: state.phase ?? null, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), context_policy: plan.receipt, reasoning_selection: ctx.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
+        const deliveredText = assembled.map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).join('\n');
+        const delivered = { text: deliveredText, tools: system.toolsAdded, messages: assembled.map((m: any) => ({ role: m.role, content: m.content })) };
+        plan.composition.delivered_chars = deliveredText.length;
+        plan.composition.delivered_hash = hash(delivered);
+        plan.composition.receipt_matches_sent_text = true;
+        evo.recordContext(plan.composition, { ...plan.receipt, delivered_hash: plan.composition.delivered_hash, delivered_chars: deliveredText.length });
+        evo.fact('provider_input', { pin, phase: state.phase ?? null, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(delivered), delivered_chars: deliveredText.length, context_policy: plan.receipt, reasoning_selection: ctx.reasoning ?? 'all', component_addresses: agentSelf.active().map(c => `${c.kind}.${c.name}`), memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
         persistLiveSelf();
         return { messages: assembled };
       } catch (error) {

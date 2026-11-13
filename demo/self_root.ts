@@ -42,8 +42,8 @@ export type ContextPolicy = {
   history?: { recent_turns: number | null; older: 'drop' | 'stub' };
   tool_results?: { max_chars: number | null; images: ImagesRule; by_tool?: Record<string, { max_chars?: number | null; images?: ImagesRule }> };
   tool_args?: { max_chars: number | null };
-  self_view?: { placement: 'system' | 'tail'; ledger_rows: number; max_chars?: number };
-  prompt_layout?: { stable_prefix_chars: number; volatile_tail: 'self_view' | 'projection' | 'both' };
+  self_view?: { placement: 'system' | 'tail'; ledger_rows: number };
+  prompt_layout?: { volatile_tail: 'self_view' | 'projection' | 'both' };
   select?: string;
 };
 /** Agent-facing context intent. The runtime maps these names to its internal sections and rules. */
@@ -92,25 +92,31 @@ export const FIXED_REVIEW_STRATEGY = 'At every self-evolution entrance, inspect 
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
-  const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', actions: ['rewrite'] }], decisions: [], transitions: [{ id: 'rewrite', from: 'work', on: { type: 'action', action: 'rewrite' }, requires: [{ type: 'source_receipt' }], to: 'work' }] };
+  const binding = { type: 'object', properties: { kind: { type: 'string', enum: ['prompt','skill','tool','memory','context'] }, name: { type: 'string' }, version: { type: 'integer', minimum: 1 } }, required: ['kind','name'], additionalProperties: false };
+  const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', bindings: [] }], decisions: [], transitions: [] };
   const definition = current ?? example;
-  return { type: 'object', properties: { revision: { type: 'integer' }, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', items: { type: 'string' } } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
+  return { type: 'object', properties: { revision: { type: 'integer' }, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
 }
 export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
   if (kind === 'review') return { name: 'decide_exit', description: 'Finish the current review after the host-visible review work is complete.', properties: { reason }, required: [] as string[] };
   if (kind === 'validation') return { name: 'decide_validation', description: 'Read the due window; missing or provisional comparisons remain unresolved.', properties: { window: { type: 'string' } }, required: [] as string[] };
   if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' } }, required: ['op','kind','name'] };
-  const context = { type: 'object', properties: { order: { type: 'array', items: { type: 'string' } }, instruction: { type: 'string' }, reasoning: { type: 'string', enum: ['all','latest','none'] }, history: { type: 'object' }, tool_results: { type: 'object' }, tool_args: { type: 'object' }, self_view: { type: 'object' }, prompt_layout: { type: 'object' } }, additionalProperties: false };
+  const context = { type: 'object', properties: { order: { type: 'array', items: { type: 'string' } }, instruction: { type: 'string' }, reasoning: { type: 'string', enum: ['all','latest','none'] }, history: { type: 'object' }, tool_results: { type: 'object' }, tool_args: { type: 'object' }, self_view: { type: 'object' }, prompt_layout: { type: 'object', properties: { volatile_tail: { type: 'string', enum: ['self_view','projection','both'] } }, additionalProperties: false } }, additionalProperties: false };
   const policy = { type: 'object', properties: { modes: { type: 'object' }, routes: { type: 'array' }, methods: { type: 'object' }, memory: { type: 'object' }, memory_strategy: { type: 'object' }, context, request: { type: 'object' }, review: { type: 'object' } }, additionalProperties: false };
-  return { name: 'reflect_orchestration', description: 'Apply a complete orchestration replacement, an atomic typed policy merge patch, component changes, or restore. A legal change is pinned before the next request.', properties: { orchestration: orchestrationSchema(), policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' } }, required: [] as string[] };
+  const orchestrationPatch = { type: 'object', properties: {
+    roles: { type: 'array' }, slots: { type: 'array' }, steps: { type: 'array' }, decisions: { type: 'array' }, transitions: { type: 'array' },
+    steps_by_id: { type: 'object', additionalProperties: { type: 'object' } },
+  }, additionalProperties: false };
+  return { name: 'reflect_orchestration', description: 'Apply a current orchestration patch or replacement, an atomic typed policy merge patch, component changes, or restore. A legal change is pinned before the next request.', properties: { orchestration: orchestrationSchema(), orchestration_patch: orchestrationPatch, policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' } }, required: [] as string[] };
 }
 
 /** Provider-visible JSON schema generated from the one descriptor. The Agent's own mode exit schema
  * (part of its writable policy) is exposed as an optional result object when it declares more than reason. */
-export function providerOperationSchema(kind: OperationKind, modeExitSchema?: any) {
+export function providerOperationSchema(kind: OperationKind, modeExitSchema?: any, currentOrchestration?: any) {
   const contract = operationContract(kind);
   const properties: any = structuredClone(contract.properties);
+  if (kind === 'orchestration' && currentOrchestration) properties.orchestration = orchestrationSchema(currentOrchestration);
   const own = modeExitSchema?.properties ? Object.keys(modeExitSchema.properties).filter(k => k !== 'reason') : [];
   if (kind === 'review' && own.length) properties.result = structuredClone(modeExitSchema);
   return { type: 'object', properties, required: [...contract.required], additionalProperties: false };
@@ -131,7 +137,7 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
   }
   if (kind === 'component' && a.op !== 'restore' && typeof a.source !== 'string') throw Error('reflect_component: define/redefine needs source');
   if (kind === 'component' && a.op === 'restore' && a.version === undefined) throw Error('reflect_component: restore needs version');
-  if (kind === 'orchestration' && !['policy', 'orchestration', 'components', 'restore'].some(k => a[k] !== undefined)) throw operationError('reflect_orchestration: include orchestration, policy, components or restore', kind, a);
+  if (kind === 'orchestration' && !['policy', 'orchestration', 'orchestration_patch', 'components', 'restore'].some(k => a[k] !== undefined)) throw operationError('reflect_orchestration: include orchestration, orchestration_patch, policy, components or restore', kind, a);
   if (['component','orchestration'].includes(kind) && a.evidence_refs !== undefined && (!Array.isArray(a.evidence_refs) || a.evidence_refs.some((ref: any) => typeof ref !== 'string'))) throw operationError('evidence_refs must be an array of strings when supplied', kind, a, { invalid: ['evidence_refs'] });
   if (['component','orchestration'].includes(kind) && a.success_predicate !== undefined && (!a.success_predicate || typeof a.success_predicate.metric !== 'string' || !['increase','decrease'].includes(a.success_predicate.direction) || !['last','mean'].includes(a.success_predicate.segment))) throw operationError('success_predicate needs metric, direction (increase|decrease), and segment (last|mean)', kind, a, { invalid: ['success_predicate'] });
   const normalized = Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
@@ -160,6 +166,21 @@ function normalizeOrchestration(value: any) {
   }) : value.transitions;
   return { ...value, ...(transitions ? { transitions } : {}) };
 }
+function mergeOrchestrationPatch(current: any, patch: any) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw Error('orchestration_patch must be an object');
+  const next = copy(current);
+  for (const key of ['roles', 'slots', 'steps', 'decisions', 'transitions']) {
+    if (patch[key] !== undefined) {
+      if (!Array.isArray(patch[key])) throw Error(`orchestration_patch.${key} must be an array`);
+      next[key] = patch[key];
+    }
+  }
+  if (patch.steps_by_id) {
+    if (!patch.steps_by_id || typeof patch.steps_by_id !== 'object' || Array.isArray(patch.steps_by_id)) throw Error('orchestration_patch.steps_by_id must be an object');
+    next.steps = next.steps.map((step: any) => patch.steps_by_id[step.id] ? { ...step, ...patch.steps_by_id[step.id] } : step);
+  }
+  return next;
+}
 
 const CONTEXT_ORDER_ALIASES: Record<string, string> = {
   content: 'prompts', instructions: 'prompts', prompt: 'prompts', prompts: 'prompts',
@@ -178,8 +199,8 @@ function normalizeLegacyContextPolicy(input: any): { context: Partial<ContextPol
   if (input.history) result.history = { recent_turns: input.history.recentTurns, older: input.history.older };
   if (input.toolResults) result.tool_results = { max_chars: input.toolResults.maxChars, images: input.toolResults.images };
   if (input.toolArgs) result.tool_args = { max_chars: input.toolArgs.maxChars };
-  if (input.selfView) result.self_view = { placement: input.selfView.placement, ledger_rows: input.selfView.ledgerRows, max_chars: input.selfView.maxChars };
-  if (input.promptLayout) result.prompt_layout = { stable_prefix_chars: input.promptLayout.stablePrefixChars, volatile_tail: input.promptLayout.volatileTail === 'self' ? 'self_view' : input.promptLayout.volatileTail };
+  if (input.selfView) result.self_view = { placement: input.selfView.placement, ledger_rows: input.selfView.ledgerRows };
+  if (input.promptLayout) result.prompt_layout = { volatile_tail: input.promptLayout.volatileTail === 'self' ? 'self_view' : input.promptLayout.volatileTail };
   return { context: result };
 }
 
@@ -270,7 +291,7 @@ export function seedPolicy(capabilities: string[], reviewTools: string[] = ['rea
   }, routes: [], methods: {}, memory: { names: '*', order: 'name', write: 'replace' },
     review: { trigger: 'booked_quality_or_process_facts', evidence: 'all_booked_facts', tools: [...observe], verification: { metric: 'process.output_cap_stops', direction: 'decrease', segment: 'last' } },
     memory_strategy: { retrieval: 'all', recent_count: 12, partition: 'component', retention: 'latest', sources: ['agent'] },
-    context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest', tool_results: { max_chars: 4000, images: 'latest' }, history: { recent_turns: 16, older: 'stub' }, self_view: { placement: 'tail', ledger_rows: 12, max_chars: 12000 }, prompt_layout: { stable_prefix_chars: 4000, volatile_tail: 'both' } } };
+    context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest', tool_results: { max_chars: 4000, images: 'latest' }, history: { recent_turns: 16, older: 'stub' }, self_view: { placement: 'tail', ledger_rows: 12 }, prompt_layout: { volatile_tail: 'both' } } };
 }
 
 export function validateContract(c: SelfContract) {
@@ -300,7 +321,7 @@ function validatePolicy(p: Policy, c: SelfContract, outputLimit = Number.MAX_SAF
     for (const name of [r.predicate, r.projection]) if (name && !p.methods[name]) throw Error('unresolved method');
   }
   for (const source of Object.values(p.methods)) validateLiveSelfSource(source);
-  if (!p.review || !['booked_quality_or_process_facts','disabled'].includes(p.review.trigger) || !['all_booked_facts','current_segment'].includes(p.review.evidence) || !Array.isArray(p.review.tools) || p.review.tools.some(t => typeof t !== 'string') || !p.review.verification || typeof p.review.verification.metric !== 'string' || !['increase','decrease'].includes(p.review.verification.direction) || !['last','mean'].includes(p.review.verification.segment)) throw Error('review policy needs trigger (booked_quality_or_process_facts|disabled), evidence (all_booked_facts|current_segment), tools[], and verification {metric, direction: increase|decrease, segment: last|mean}');
+  if (!p.review || p.review.trigger !== 'booked_quality_or_process_facts' || !['all_booked_facts','current_segment'].includes(p.review.evidence) || !Array.isArray(p.review.tools) || p.review.tools.some(t => typeof t !== 'string') || !p.review.verification || typeof p.review.verification.metric !== 'string' || !['increase','decrease'].includes(p.review.verification.direction) || !['last','mean'].includes(p.review.verification.segment)) throw Error('review policy needs trigger booked_quality_or_process_facts, evidence (all_booked_facts|current_segment), tools[], and verification {metric, direction: increase|decrease, segment: last|mean}');
   if (!p.memory_strategy || !['all','recent'].includes(p.memory_strategy.retrieval) || !Number.isSafeInteger(p.memory_strategy.recent_count) || p.memory_strategy.recent_count < 1 || !['component','kind'].includes(p.memory_strategy.partition) || !['all','latest'].includes(p.memory_strategy.retention) || !Array.isArray(p.memory_strategy.sources)) throw Error('memory_strategy needs retrieval (all|recent), recent_count >= 1, partition (component|kind), retention (all|latest), and sources[]');
   if (!p.memory || (p.memory.names !== '*' && (!Array.isArray(p.memory.names) || p.memory.names.some(n => typeof n !== 'string'))) || !['name','newest'].includes(p.memory.order) || !['replace','append'].includes(p.memory.write)) throw Error('invalid memory policy');
   if (!p.context || typeof p.context.instruction !== 'string' || !Array.isArray(p.context.order) || p.context.order.some(x => !['prompts','memory','skills'].includes(x)) || new Set(p.context.order).size !== p.context.order.length) {
@@ -326,9 +347,9 @@ function validateContextKnobs(p: Policy) {
       throw Error('context.tool_results.by_tool maps a tool name to {max_chars?, images?}');
   }
   if (c.tool_args !== undefined && (!c.tool_args || !nullableInt(c.tool_args.max_chars, 200))) throw Error('context.tool_args needs max_chars (integer >= 200 or null)');
-  if (c.self_view !== undefined && (!c.self_view || !['system', 'tail'].includes(c.self_view.placement) || !Number.isSafeInteger(c.self_view.ledger_rows) || c.self_view.ledger_rows < 0 || c.self_view.ledger_rows > 40 || (c.self_view.max_chars !== undefined && (!Number.isSafeInteger(c.self_view.max_chars) || c.self_view.max_chars < 1000))))
-    throw Error('context.self_view needs placement (system|tail), ledger_rows (0..40), and optional max_chars (integer >= 1000)');
-  if (c.prompt_layout !== undefined && (!c.prompt_layout || !Number.isSafeInteger(c.prompt_layout.stable_prefix_chars) || c.prompt_layout.stable_prefix_chars < 0 || !['self_view','projection','both'].includes(c.prompt_layout.volatile_tail))) throw Error('context.prompt_layout needs stable_prefix_chars (integer >= 0) and volatile_tail (self_view|projection|both)');
+  if (c.self_view !== undefined && (!c.self_view || !['system', 'tail'].includes(c.self_view.placement) || !Number.isSafeInteger(c.self_view.ledger_rows) || c.self_view.ledger_rows < 0 || c.self_view.ledger_rows > 40))
+    throw Error('context.self_view needs placement (system|tail) and ledger_rows (0..40)');
+  if (c.prompt_layout !== undefined && (!c.prompt_layout || !['self_view','projection','both'].includes(c.prompt_layout.volatile_tail))) throw Error('context.prompt_layout needs volatile_tail (self_view|projection|both)');
   if (c.select !== undefined && (typeof c.select !== 'string' || !p.methods[c.select])) throw Error('context.select must name a method in policy.methods');
 }
 
@@ -420,9 +441,9 @@ export class SelfRoot extends LiveAgentSelf {
   }
   override get revision() { return this.serial; }
   get mode() { return this.currentMode; }
-  get reviewExitSchema() { return this.exitOperationKind ? copy(this.review.modeDefinition.exitSchema) : undefined; }
+  get reviewExitSchema() { return this.review ? copy(this.review.modeDefinition.exitSchema) : undefined; }
   /** The provider-visible exit operation for the current review, from the one descriptor. */
-  get exitOperationKind(): 'review' | undefined { return this.review && (!this.inEvolutionReview || this.reviewChanged()) ? 'review' : undefined; }
+  get exitOperationKind(): 'review' | undefined { return this.review ? 'review' : undefined; }
   private reviewChanged() { return Boolean(this.review?.changes?.length || this.pending?.review === this.review?.id || this.pendingReview === this.review?.id); }
   get exitOperationSchema() { const kind = this.exitOperationKind; return kind ? providerOperationSchema(kind, this.review.modeDefinition.exitSchema) : undefined; }
   get dueWindows() { return this.windows.filter(w => ['due_unverified', 'due_comparable'].includes(w.status)).map(w => w.id); }
@@ -503,7 +524,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** All reflection tools in one model response share this pending chain. */
-  transaction(input: { baseRevision?: number; components?: any[];  orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     const result = this.mutations.then(() => this.prepareTransaction(input));
     this.mutations = result.then(() => undefined, () => undefined);
     return result;
@@ -513,7 +534,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
     this.chainFailed = true;
   }
-  private async prepareTransaction(input: { baseRevision?: number; components?: any[];  orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     try {
       if (this.chainFailed) throw Error('transaction chain already failed');
       if (input.baseRevision !== undefined && input.baseRevision !== this.pendingRevision) throw Error(`stale revision; expected ${this.pendingRevision}`);
@@ -544,20 +565,21 @@ export class SelfRoot extends LiveAgentSelf {
         if (c.kind === 'memory' && c.op === 'redefine' && policy.memory.write === 'append') value.source = `${candidate.active().find(x => x.kind === 'memory' && x.name === c.name)?.source ?? ''}\n${c.source}`;
         await candidate.reflectComponent(value); addresses.push(`components.${c.kind}.${c.name}`);
       }
-      if (input.orchestration !== undefined || input.restore !== undefined) {
+      if (input.orchestration !== undefined || input.orchestration_patch !== undefined || input.restore !== undefined) {
         this.assertWrite('orchestration');
         if (input.restore !== undefined && input.orchestration === undefined) { await candidate.reflectOrchestration({ baseRevision:candidate.revision, restore:input.restore, authorized:true }); addresses.push('orchestration'); }
-        if (input.orchestration !== undefined) {
-          input.orchestration = normalizeOrchestration(input.orchestration);
-          if (input.orchestration.roles?.length !== 1 || input.orchestration.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
-          await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: input.orchestration, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push('orchestration');
+        if (input.orchestration !== undefined || input.orchestration_patch !== undefined) {
+          const definition = normalizeOrchestration(input.orchestration ?? mergeOrchestrationPatch(candidate.current.orchestration, input.orchestration_patch));
+          if (definition.roles?.length !== 1 || definition.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
+          await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: definition, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push('orchestration');
         }
       }
       if (input.policy !== undefined) {
         this.assertWrite('policy');
         // A restore carries a whole definition; an Agent change is a merge patch onto the current (pending) policy.
         const next = input.restore !== undefined ? copy(input.policy) : mergePatch(policy, input.policy);
-        validatePolicy(next, this.contract, this.outputLimit); policy = next; addresses.push('policy');
+        validatePolicy(next, this.contract, this.outputLimit); policy = next;
+        for (const key of Object.keys(input.policy)) addresses.push(`policy.${key}`);
       }
       if (!addresses.length) throw Error('empty transaction');
       if (input.restore === undefined && hash(candidate.snapshot()) === hash(base.snapshot) && hash(policy) === hash(this.policy)) {
@@ -613,7 +635,7 @@ export class SelfRoot extends LiveAgentSelf {
     const tools = this.inEvolutionReview
       ? [...new Set([...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? [], ...this.policy.modes[this.currentMode].tools])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
     return [...new Set([...PROTOCOL, ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
-      ...(tools.includes('agent_tools') && this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool').map(c => c.name) : [])])];
+      ...(this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool').map(c => c.name) : [])])];
   }
   allowTool(name: string, args: any) { this.assertActionAllowed(this.options.actionOf ? this.options.actionOf(name, args) : name); }
   get inEvolutionReview() { return Boolean(this.review?.triggers.some((t: any) => t.id === 'evolution_review')); }
@@ -875,7 +897,7 @@ export class SelfRoot extends LiveAgentSelf {
     const eventFacts = (facts as any)?.evidenceRefs ?? [];
       const segmentRows = segmentEvidence;
       const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','tool_failed','reflection_validation_failed','acceptance_result','validation_delivered'].includes(r.type));
-      if (newFacts && this.policy.review.trigger !== 'disabled') triggers.push({ id: 'evolution_review', source: 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
+      if (newFacts) triggers.push({ id: 'evolution_review', source: 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
     }
 
     for (const route of routes) {
@@ -947,7 +969,12 @@ export class SelfRoot extends LiveAgentSelf {
     const latest = this.segmentRefs.at(-1) ? this.ledger.find(r => r.ref === this.segmentRefs.at(-1))?.value : null;
     const entry = (name: string, kind: string, controls: string, value: any, writable: boolean, change: any, reason?: string) => {
       const address = `${kind}.${name}`;
-      const related = this.ledger.filter(r => JSON.stringify(r.value).includes(name));
+      const related = this.ledger.filter(r => {
+        const rawAddresses = r.value?.addresses ?? r.value?.address;
+        const addresses = rawAddresses === undefined ? [] : [rawAddresses];
+        const flat = addresses.flatMap((x: any) => Array.isArray(x) ? x : [x]);
+        return flat.includes(address) || (r.type === 'provider_input' && (r.value?.component_addresses ?? []).includes(address)) || (r.type === 'task_outcome' && (r.value?.component_addresses ?? []).includes(address));
+      });
       const tried = new Set(related.flatMap(r => r.type.includes('reflection') || r.type.includes('activation') ? ['redefine'] : r.type === 'component_read' ? ['read'] : []));
       const legal = writable ? (kind === 'component' ? ['define', 'redefine', 'restore', 'read'] : ['patch', 'replace', 'restore', 'read']) : ['read'];
       return { name, kind, controls, value, writable, ops: writable ? change.ops : [], change: writable ? change : null,
@@ -956,6 +983,7 @@ export class SelfRoot extends LiveAgentSelf {
     const components = ['prompt','skill','tool','memory'].flatMap(kind => {
       const current = active.filter(c => c.kind === kind);
       const names = [...new Set(current.map(c => c.name))];
+      if (!names.length) names.push(`${kind}_candidate`);
       return names.map(name => { const c = current.find(x => x.name === name); return entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], example: { op: c ? 'redefine' : 'define', kind, name, source: c?.source ?? 'concrete component content' } }); });
     });
     const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, copy((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: copy((this.policy as any)[name]) } } }));

@@ -44,7 +44,7 @@ export function coverageFacts(source: string, definitions: SelfRootManifest['uni
     .map(m => { const value = m[0].trim(); return `${value.includes('(') || value.startsWith('-') ? '-' : ''}${value.replace(/[^\d.%]/g,'')}`; });
   return definitions.map(u => {
     const page = u.citation.match(/^Source page (\d+)$/i)?.[1];
-    const citation = page ? new RegExp(`(?:source\\s+page\\s+|\\bp\\.\\s*|\\bpage\\s+)${page}(?!\\d)`, 'i') : undefined;
+    const citation = page ? new RegExp(`(?:source\\s+page\\s+|(?<![\\w.])p\\.?\\s*|(?<![\\w.])page\\s+)${page}(?![\\w.])`, 'i') : undefined;
     const cited = fragments.map(plain).filter(s => citation ? citation.test(s) : s.toLowerCase().includes(u.citation.toLowerCase()));
     const scoped = cited.flatMap(numbers);
     return { id: u.id,
@@ -119,7 +119,7 @@ export const PPT_SELF_ROOT_OPTIONS = {
  * Returns undefined when the tool is not advertised in the current state. */
 export function selfRootToolSchema(evo: SelfRoot, name: string): any {
   if (name === 'reflect_component') return providerOperationSchema('component');
-  if (name === 'reflect_orchestration') return providerOperationSchema('orchestration');
+  if (name === 'reflect_orchestration') return providerOperationSchema('orchestration', undefined, evo.current.orchestration);
   if (name === 'decide_exit') return evo.exitOperationSchema;
   if (name === 'decide_validation') return evo.dueWindows.length ? providerOperationSchema('validation') : undefined;
   if (name === 'decide') return DECIDE_SCHEMA;
@@ -136,7 +136,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
   const tool = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name, description, parameters,
     execute: async (_id: string, a: any, _signal: any, _update: any, ctx: any) => {
       try { const result = await fn(a,ctx); persist(); return text(result,Boolean(result?.context_reset_requested)); }
-      catch (error: any) { persist(); return text({ error: String(error?.message ?? error), surface: error?.surface ?? { received: a, correction: 'Use the visible operation fields and read_self(section="pin") for current values.' } }, true); }
+      catch (error: any) { persist(); return text({ is_error: true, error: String(error?.message ?? error), reason: { code: error?.code ?? 'operation_rejected', surface: error?.surface ?? { received: a, correction: 'Use the visible operation fields and read_self(section="pin") for current values.' } } }, true); }
     } });
   // Registered TypeBox shapes are permissive envelopes; the provider receives the descriptor schema
   // (ppt_demo_extension context_with_system) and dispatch re-checks it with normalizeOperation.

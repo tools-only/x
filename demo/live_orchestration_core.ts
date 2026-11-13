@@ -6,7 +6,7 @@ export type LiveOrchestration = {
   revision: number;
   roles: Array<{ id: string }>;
   slots: Array<{ id: string; type: 'json' | 'text'; initial?: unknown; writers?: string[] }>;
-  steps: Array<{ id: string; role: string; decision?: string; actions?: string[] }>;
+  steps: Array<{ id: string; role: string; decision?: string; actions?: string[]; bindings?: Array<{ kind: 'prompt'|'skill'|'tool'|'memory'|'context'; name: string; version?: number }> }>;
   decisions: Array<{ id: string; judge: string; question: string; evidence: ReceiptCondition[]; output: Record<string, unknown>; writes?: { slot: string; from?: string } }>;
   transitions: Array<{ id: string; from: string; on: { type: 'decision'; id: string; path?: string; equals?: unknown } | { type: 'action'; action: string }; requires: ReceiptCondition[]; to: string | 'complete' }>;
 };
@@ -61,6 +61,7 @@ export function validateDefinition(def: any): Omit<LiveOrchestration, 'revision'
   for (const step of def.steps) {
     if (!roles.has(step.role)) throw Error(`step ${step.id} references unknown role`);
     if (step.actions !== undefined && (!Array.isArray(step.actions) || step.actions.some((action: unknown) => typeof action !== 'string') || new Set(step.actions).size !== step.actions.length)) throw Error(`invalid actions for step ${step.id}`);
+    if (step.bindings !== undefined && (!Array.isArray(step.bindings) || step.bindings.some((binding: any) => !binding || !['prompt','skill','tool','memory','context'].includes(binding.kind) || typeof binding.name !== 'string' || (binding.version !== undefined && !Number.isSafeInteger(binding.version))))) throw Error(`invalid component bindings for step ${step.id}`);
     if (step.decision && !decisions.has(step.decision)) throw Error(`step ${step.id} references unknown decision`);
   }
   for (const d of def.decisions) {
