@@ -347,6 +347,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     self_review: Type.Optional(Type.Object({ disposition: Type.Union([Type.Literal('keep'), Type.Literal('defer'), Type.Literal('change')]), rationale: Type.String() })) });
   register('office', OFFICE_ACTION_DESCRIPTION, officeParameters,
     async (a: any, signal: AbortSignal, ctx: any) => {
+      if (evo?.inEvolutionReview && evo.isFinalDelivery('office', a)) return evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true));
       if (evo && evo.isFinalDelivery('office', a) && evo.needsQualityReview()) return evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true));
       return officeDeliver(a, signal, ctx);
     });
@@ -529,7 +530,6 @@ export default function pptDemo(pi: ExtensionAPI) {
     const start = freshBatch ? messages.findLastIndex((message: any) => message.role === 'user' && messageText(message) !== 'PPT_RESUME') : -1;
     const kept = start >= 0 ? messages.slice(start) : [...messages];
     const tail: any[] = [];
-    if (evo?.inEvolutionReview) tail.push({ role: 'user', content: [{ type: 'text', text: 'SELF REVIEW OPEN: inspect the booked process and quality facts first; change a harness strategy or orchestration, cite fact references, declare a success predicate, and use the changed orchestration to rework an existing artifact when needed.' }], timestamp: Date.now(), contextSection: 'review' });
     tail.push({ role: 'user', content: [{ type: 'text', text: statusText() }], timestamp: Date.now(), contextSection: evo?.inEvolutionReview ? 'review_status' : 'task_status' });
     if (freshBatch && state.batchRequests === batchLimit - 1) tail.push({ role: 'custom', customType: 'ppt-batch-limit', display: false,
       timestamp: Date.now(), content: 'LAST REQUEST IN THIS BATCH. The next batch starts with a fresh conversation; only the workspace, your harness and a checkpoint note (max 400 chars) carry over.' });
@@ -637,7 +637,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         };
         const taskInstructions = evo.inCapabilityReview ? '' : existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
         const ctx = evo.policy.context;
-        const selfView = [JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())];
+        const selfView = evo.inEvolutionReview ? [JSON.stringify(evo.reviewSelfView()), JSON.stringify(await evo.projection())] : [JSON.stringify(evo.detail('pin'))];
         const selfTail = ctx.self_view?.placement === 'tail';
         const coreLine = 'SELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.';
         const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine].filter(Boolean).join('\n\n');

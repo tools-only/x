@@ -84,7 +84,7 @@ export function pptSegmentMetrics(rows: any[]) {
     { name: 'artifact.whole_file_writes', value: n('create') + n('overwrite'), unit: 'count' }, { name: 'artifact.edit_calls', value: n('edit'), unit: 'count' },
     { name: 'artifact.program_writes', value: n('program'), unit: 'count' },
     { name: 'artifact.write_chars', value: writes.reduce((sum, r) => sum + Number(r.value?.chars ?? 0), 0), unit: 'chars' },
-  ];
+  ].map((metric: any) => ({ ...metric, scope: 'segment' }));
 }
 export function pptUnitMetrics(result: any, rows: any[]) {
   const units = result.units ?? [];
@@ -92,13 +92,13 @@ export function pptUnitMetrics(result: any, rows: any[]) {
   const normalized = units.filter((u: any) => u.normalized?.scope !== 'whole_document_unscoped').flatMap((u: any) => u.normalized?.matches ?? []);
   const cited = units.filter((u: any) => u.citation_literal?.found || u.normalized?.citation_found).length;
   return [
-    { name: 'acceptance.required_found', value: literal.filter((m: any) => m.found).length, unit: 'count' },
+    { name: 'acceptance.required_found', value: literal.filter((m: any) => m.found).length, unit: 'count', scope: 'unit' },
     { name: 'acceptance.required_total', value: literal.length, unit: 'count' },
     { name: 'acceptance.citations_found', value: cited, unit: 'count' },
     ...(normalized.length ? [{ name: 'acceptance.normalized_found', value: normalized.filter((m: any) => m.found === true).length, unit: 'count' }] : []),
     { name: 'render.warnings_latest', value: (result.renderer?.receipt?.warnings ?? []).length, unit: 'count' },
     ...pptSegmentMetrics(rows),
-  ];
+  ].map((metric: any) => ({ ...metric, scope: 'unit' }));
 }
 
 /** Adapter-side, task-specific wiring passed to the task-neutral core (constitution art. 10-1). */
@@ -133,7 +133,10 @@ const DECIDE_FIELDS = Object.keys(DECIDE_SCHEMA.properties);
 export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist, episode = () => 1 }: any) {
   const active = () => typeof manifest === 'function' ? manifest() : manifest;
   const tool = (name: string, description: string, parameters: any, fn: any) => pi.registerTool({ name, label: name, description, parameters,
-    execute: async (_id: string, a: any, _signal: any, _update: any, ctx: any) => { const result = await fn(a,ctx); persist(); return text(result,Boolean(result?.context_reset_requested)); } });
+    execute: async (_id: string, a: any, _signal: any, _update: any, ctx: any) => {
+      try { const result = await fn(a,ctx); persist(); return text(result,Boolean(result?.context_reset_requested)); }
+      catch (error: any) { persist(); return text({ error: String(error?.message ?? error), surface: error?.surface ?? { received: a, correction: 'Use the visible operation fields and read_self(section="pin") for current values.' } }, true); }
+    } });
   // Registered TypeBox shapes are permissive envelopes; the provider receives the descriptor schema
   // (ppt_demo_extension context_with_system) and dispatch re-checks it with normalizeOperation.
   const open = (keys: string[]) => Type.Object(Object.fromEntries(keys.map(k => [k, Type.Optional(Type.Any())])));

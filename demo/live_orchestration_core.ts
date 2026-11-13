@@ -211,16 +211,21 @@ export class LiveOrchestrationSession {
     const latest = this.decisions.at(-1);
     const definition = this.current.orchestration;
     if (!latest || this.consumedDecisions.has(latest.ref) || latest.revision !== this.current.revision || latest.step !== this.activeStep || latest.generation !== this.stepGeneration)
-      return { status: 'stalled' as const, step: this.activeStep, reason: 'no fresh decision for current step and revision' };
+      return { status: 'stalled' as const, step: this.activeStep, reason: 'no fresh decision for current step and revision', editable_content: this.decisionTemplate() };
     const matching = definition.transitions.filter(t => t.from === this.activeStep && t.on.type === 'decision' && latest.decisionId === t.on.id && same(pointer(latest.result, t.on.path), t.on.equals)
       && this.requiresMatched(t.requires, latest.evidenceRefs));
-    if (matching.length !== 1) return { status: 'stalled' as const, step: this.activeStep, reason: matching.length ? 'ambiguous transition' : 'no transition matches current decision and evidence' };
+    if (matching.length !== 1) return { status: 'stalled' as const, step: this.activeStep, reason: matching.length ? 'ambiguous transition' : 'no transition matches current decision and evidence', editable_content: this.decisionTemplate() };
     const transition = matching[0];
     this.consumedDecisions.add(latest.ref);
     if (transition.to === 'complete') { this.complete = true; return { status: 'complete' as const, step: this.activeStep, transition: transition.id }; }
     this.activeStep = transition.to;
     this.stepGeneration++;
     return { status: 'advanced' as const, step: this.activeStep, transition: transition.id };
+  }
+  private decisionTemplate() {
+    const step = this.current.orchestration.steps.find(row => row.id === this.activeStep);
+    const decision = step?.decision ?? 'decision-id';
+    return { meaning: 'add or revise orchestration content for this decision stall', template: { from: this.activeStep, on: { type: 'decision', id: decision }, requires: [{ type: 'decision' }], to: 'next-step-id' } };
   }
   protected resolveEvidence(ref: string): ActionReceipt | undefined {
     const action = this.actions.find(a => a.ref === ref);
