@@ -47,7 +47,7 @@ export function validateSchemaStructure(schema: any, path = '$'): void {
   if (schema.enum !== undefined && (!Array.isArray(schema.enum) || !schema.enum.length)) throw Error(`invalid enum at ${path}`);
 }
 
-function validateDefinition(def: any): Omit<LiveOrchestration, 'revision'> {
+export function validateDefinition(def: any): Omit<LiveOrchestration, 'revision'> {
   if (!def || typeof def !== 'object' || !Array.isArray(def.roles) || !Array.isArray(def.slots) || !Array.isArray(def.steps) || !Array.isArray(def.decisions) || !Array.isArray(def.transitions)) throw Error('orchestration must define roles, slots, steps, decisions and transitions');
   const unique = (rows: any[], label: string) => {
     if (rows.some(row => !row || typeof row.id !== 'string' || !row.id.trim()) || new Set(rows.map(row => row.id)).size !== rows.length) throw Error(`${label} must have unique non-empty ids`);
@@ -248,9 +248,9 @@ export class LiveOrchestrationSession {
       template: { from: this.activeStep, on: { type: 'action', action: receipt.type }, requires: [], to: 'next-step-id' },
     } };
     const transition = matches[0];
-    if (transition.to === 'complete') { this.complete = true; return { status: 'complete' as const, step: this.activeStep, transition: transition.id }; }
+    if (transition.to === 'complete') { this.complete = true; return { status: 'complete' as const, step: this.activeStep, transition: transition.id, revision: this.current.revision, decision_revision: latest.revision }; }
     this.activeStep = transition.to; this.stepGeneration++;
-    return { status: 'advanced' as const, step: this.activeStep, transition: transition.id };
+    return { status: 'advanced' as const, step: this.activeStep, transition: transition.id, revision: this.current.revision, decision_revision: latest.revision };
   }
 }
 

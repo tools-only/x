@@ -103,8 +103,8 @@ export function pptUnitMetrics(result: any, rows: any[]) {
 
 /** Adapter-side, task-specific wiring passed to the task-neutral core (constitution art. 10-1). */
 export const PPT_SELF_ROOT_OPTIONS = {
-  reviewTools: ['read', 'ls', 'grep', 'office.look', 'office.render', 'acceptance'],
-  evolutionTools: ['read', 'ls', 'grep', 'office.look', 'office.render'],
+  reviewTools: ['read', 'ls', 'grep', 'office.look', 'office.render', 'office.preview', 'acceptance'],
+  evolutionTools: ['read', 'ls', 'grep', 'office.look', 'office.render', 'office.preview'],
   reservedToolNames: ['office'],
   actionOf: (name: string, args: any) => name === 'office' ? `office.${args?.op}` : name,
   boundaryTools: ['submit_unit', 'office.deliver'],

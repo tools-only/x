@@ -6,6 +6,7 @@
  * facilities (Python, native resources, render/look/deliver) and the hard boundaries only: budget,
  * deadline, path confinement, provider authorization.
  */
+import { FIXED_REVIEW_STRATEGY } from './self_root.ts';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -345,8 +346,9 @@ export default function pptDemo(pi: ExtensionAPI) {
       return text({ decision, transition, active: agentSelf.mirror() });
     });
   if (evo && manifest) installSelfRootTools({ pi, evo, manifest: activeManifest, root, workspace, text, persist: persistLiveSelf, episode: () => state.episode });
-  const officeParameters = Type.Object({ op: Type.Union([Type.Literal(PPT_ACTIONS[0]), Type.Literal(PPT_ACTIONS[1]), Type.Literal(PPT_ACTIONS[2])]),
+  const officeParameters = Type.Object({ op: Type.Union(PPT_ACTIONS.map(action => Type.Literal(action)) as any),
     source_path: Type.Optional(Type.String()), pages: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }))), revision: Type.Optional(Type.Integer({ minimum: 1 })),
+    unit: Type.Optional(Type.String()),
     self_review: Type.Optional(Type.Object({ disposition: Type.Union([Type.Literal('keep'), Type.Literal('defer'), Type.Literal('change')]), rationale: Type.String() })) });
   register('office', OFFICE_ACTION_DESCRIPTION, officeParameters,
     async (a: any, signal: AbortSignal, ctx: any) => {
@@ -357,6 +359,20 @@ export default function pptDemo(pi: ExtensionAPI) {
   const officeDeliver = async (a: any, signal: AbortSignal, ctx: any, hostDeferred = false) => {
       // The host defers final delivery while opening a review for quality facts not yet shown.
       if (!hostDeferred) agentSelf.assertActionAllowed(`office.${a.op}`);
+      if (a.op === 'preview') {
+        const unit = activeManifest()?.units.find((u: any) => u.id === a.unit);
+        if (!unit) throw Error('preview requires a frozen unit');
+        const page = Number(unit.citation.match(/(?:page|p\.)\s*(\d+)/i)?.[1] ?? 1);
+        const sourcePath = a.source_path ?? canonical(); if (!sourcePath) throw Error('preview requires a canonical source');
+        const revision = ++state.revision; const helper = fileURLToPath(new URL('../src/autoresearch_pi/ppt_demo_html.py', import.meta.url));
+        const started = Date.now();
+        const child = spawnSync(process.env.PPT_DEMO_PYTHON ?? 'python', [helper, root, workspace.path(sourcePath), String(revision), '--page-start', String(page), '--page-end', String(page)], { encoding: 'utf8', timeout: 300000, maxBuffer: 4*1024*1024, windowsHide: true });
+        if (child.error || child.status !== 0) throw Error((child.stderr || String(child.error)).slice(-5000));
+        const receipt = JSON.parse(child.stdout); const elapsedMs = Date.now() - started;
+        const acceptance = collectAcceptance(activeManifest()!, root, workspace, sourcePath, receipt, child.status, unit.id);
+        const result = { unit: unit.id, scope: unit.citation, preview: true, receipt, acceptance, metrics: pptUnitMetrics(acceptance, evo?.segmentRows?.() ?? []), source_identity: { path: sourcePath, sha256: receipt.source_sha256 }, checker: activeManifest()?.checker ?? null, artifact_identity: { revision: receipt.revision, output: receipt.output ?? null }, cost: { elapsed_ms: elapsedMs, usd: null, measured: true }, unknowns: ['preview dollar cost unavailable without an adapter rate'] };
+        if (evo) evo.outcome({ source: 'adapter_preview', unit: unit.id, ...result }, true); persist(); return { content: text(result).content };
+      }
       if (a.op === 'render') {
         const sourcePath = a.source_path ?? canonical();
         if (!sourcePath) throw Error('Choose source_path from an existing file under artifacts/, or create artifacts/presentation.html or artifacts/deck.json as the canonical source.');
@@ -643,16 +659,17 @@ export default function pptDemo(pi: ExtensionAPI) {
         const ctx = evo.policy.context;
         const selfView = evo.inEvolutionReview ? [JSON.stringify(evo.reviewSelfView()), JSON.stringify(await evo.projection())] : [JSON.stringify(evo.detail('pin'))];
         const selfTail = ctx.self_view?.placement === 'tail';
-        const coreLine = 'SELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.';
+        const coreLine = `${FIXED_REVIEW_STRATEGY}\nSELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.';
         const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine].filter(Boolean).join('\n\n');
         const volatile = ctx.prompt_layout?.volatile_tail === 'self_view' ? [selfView[0]] : ctx.prompt_layout?.volatile_tail === 'projection' ? [selfView[1]] : selfView;
         const stableLimit = ctx.prompt_layout?.stable_prefix_chars ?? prefix.length;
-        const stable = prefix.slice(0, stableLimit);
-        const volatileText = volatile.join('\n\n').slice(0, ctx.self_view?.max_chars ?? 12000);
+        const stable = `${prefix.slice(0, stableLimit)}\n\n${FIXED_REVIEW_STRATEGY}`;
+        const volatileText = volatile.join('\n\n');
         const viewInSystem = !selfTail;
+        const reviewStrategy = evo.inEvolutionReview ? FIXED_REVIEW_STRATEGY : '';
         const sections = [{ section: 'task_brief', text: taskInstructions }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
           ...(viewInSystem ? [{ section: 'self_view', text: volatileText }] : []), { section: 'projection', text: ctx.prompt_layout?.volatile_tail === 'self_view' ? '' : volatile[1] ?? '' }];
-        system.content = [stable, ...(viewInSystem ? [volatileText] : [])].filter(Boolean).join('\n\n');
+        system.content = [reviewStrategy, stable, ...(viewInSystem ? [volatileText] : [])].filter(Boolean).join('\n\n');
         messages[0] = system;
         // Runtime assembly from the active context policy (art. 6-4): items -> core plan -> applied request.
         const list = piContext.items(messages, sections, system.toolsAdded);

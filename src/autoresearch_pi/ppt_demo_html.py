@@ -89,7 +89,7 @@ def _mime_of(path: Path) -> str:
     return "image/png"
 
 
-def render(root: Path, manifest: Path, revision: int) -> dict:
+def render(root: Path, manifest: Path, revision: int, page_start: int | None = None, page_end: int | None = None) -> dict:
     raw = manifest.read_bytes(); source_path = manifest.resolve().relative_to((root/"workspace").resolve()).as_posix()
     source_hash = hashlib.sha256(raw).hexdigest(); source = raw.decode("utf-8")
     warnings: list = []
@@ -138,22 +138,24 @@ def render(root: Path, manifest: Path, revision: int) -> dict:
         shutil.copyfile(html_path, out / "presentation.html")
     browser=_browser(); profile=out/"browser-profile"; profile.mkdir()
     window=os.environ.get("PPT_DEMO_WINDOW_SIZE","1600,900"); vtb=os.environ.get("PPT_DEMO_VIRTUAL_TIME_MS","10000")
-    for n in range(1,count+1):
+    first = max(1, page_start or 1); last = min(count, page_end or count)
+    if first > last: raise ValueError("page range is empty")
+    for n in range(first,last+1):
         shot=out/f"slide-{n:02d}.png"
         subprocess.run([str(browser),"--headless=new","--disable-gpu","--no-first-run","--no-default-browser-check",
             "--hide-scrollbars",f"--window-size={window}",f"--virtual-time-budget={vtb}",f"--user-data-dir={profile}",
             f"--screenshot={shot}",f"{html_path.as_uri()}?slide={n}"],check=True,capture_output=True,timeout=60)
     from PIL import Image, ImageDraw
-    tw,th,cols=480,270,3; sheet=Image.new("RGB",(cols*tw,((count+cols-1)//cols)*(th+24)),"#dfe5e9"); draw=ImageDraw.Draw(sheet)
-    for i in range(count):
+    tw,th,cols=480,270,3; sheet=Image.new("RGB",(cols*tw,(((last-first+1)+cols-1)//cols)*(th+24)),"#dfe5e9"); draw=ImageDraw.Draw(sheet)
+    for i in range(first-1,last):
         image=Image.open(out/f"slide-{i+1:02d}.png").convert("RGB"); image.thumbnail((tw,th)); sheet.paste(image,((i%cols)*tw,(i//cols)*(th+24))); draw.text(((i%cols)*tw+6,(i//cols)*(th+24)+th+4),str(i+1),fill="black")
     sheet.save(out/"contact-sheet.png")
-    result={"revision":revision,"slides":count,"native_objects":counts,"warnings":warnings,"renderer":f"{browser.name} headless HTML","output":str(out),"html":"presentation.html","source_path":source_path,"source_sha256":source_hash,"source":source_info,"title":title}
+    result={"revision":revision,"slides":count,"rendered_page_range":{"start":first,"end":last},"native_objects":counts,"warnings":warnings,"renderer":f"{browser.name} headless HTML","output":str(out),"html":"presentation.html","source_path":source_path,"source_sha256":source_hash,"source":source_info,"title":title}
     (out/"receipt.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
     return {k:v for k,v in result.items() if k!="source"}
 
 
 if __name__ == "__main__":
     import argparse
-    parser=argparse.ArgumentParser(); parser.add_argument("root",type=Path); parser.add_argument("manifest",type=Path); parser.add_argument("revision",type=int); args=parser.parse_args()
-    print(json.dumps(render(args.root.resolve(),args.manifest.resolve(),args.revision),ensure_ascii=False))
+    parser=argparse.ArgumentParser(); parser.add_argument("root",type=Path); parser.add_argument("manifest",type=Path); parser.add_argument("revision",type=int); parser.add_argument("--page-start",type=int); parser.add_argument("--page-end",type=int); args=parser.parse_args()
+    print(json.dumps(render(args.root.resolve(),args.manifest.resolve(),args.revision,args.page_start,args.page_end),ensure_ascii=False))

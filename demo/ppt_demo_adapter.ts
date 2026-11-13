@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 export const PPT_GOAL = 'PPT production';
-export const PPT_ACTIONS = ['render', 'look', 'deliver'] as const;
-export const OFFICE_ACTION_DESCRIPTION = 'Render the current presentation or prototype (HTML or scene JSON under artifacts/), look at rendered pages as images, or deliver. Rendering takes a screenshot of every slide; delivery copies the rendered revision and your harness.';
+export const PPT_ACTIONS = ['render', 'look', 'deliver', 'preview'] as const;
+export const OFFICE_ACTION_DESCRIPTION = 'Render the current presentation or prototype (HTML or scene JSON under artifacts/), preview one frozen unit, look at rendered pages as images, or deliver. Full rendering screenshots every page; delivery copies the rendered revision and harness.';
 
 export function canonicalPath(workspace: any): string | undefined {
   if (existsSync(workspace.path('artifacts/presentation.html'))) return 'artifacts/presentation.html';
