@@ -303,7 +303,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('reflect_component', 'Directly hot-reflect a capability into the active Agent object. The host supplies revision and evidence bookkeeping.' + (evo ? ' Activation is before the next request.' : ''),
     Type.Object({ op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.String(), kind: Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')]),
-      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), expected_effect: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }), async (a: any) => {
+      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }), async (a: any) => {
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
       try {
@@ -325,7 +325,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
     });
   if (!evo) register('reflect_orchestration', 'Directly revise the active Agent orchestration. Host revision and evidence bookkeeping are automatic.',
-    Type.Object({ orchestration: Type.Optional(Type.Record(Type.String(), Type.Any())), policy: Type.Optional(Type.Record(Type.String(), Type.Any())), components: Type.Optional(Type.Array(Type.Any())), restore: Type.Optional(Type.Integer({minimum:1})), carry: Type.Optional(Type.Record(Type.String(), Type.Any())), stepMap: Type.Optional(Type.Record(Type.String(), Type.Any())), expected_effect: Type.Optional(Type.String()) }), async (args: any) => {
+    Type.Object({ orchestration: Type.Optional(Type.Record(Type.String(), Type.Any())), policy: Type.Optional(Type.Record(Type.String(), Type.Any())), components: Type.Optional(Type.Array(Type.Any())), restore: Type.Optional(Type.Integer({minimum:1})), carry: Type.Optional(Type.Record(Type.String(), Type.Any())), stepMap: Type.Optional(Type.Record(Type.String(), Type.Any())), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()) }), async (args: any) => {
       const result = await agentSelf.reflectOrchestration({ ...args, baseRevision: evo?.pendingRevision ?? agentSelf.revision, authorized: true });
       return text({ ...result, active: agentSelf.mirror() });
     });
@@ -528,7 +528,9 @@ export default function pptDemo(pi: ExtensionAPI) {
       : Array.isArray(message.content) ? message.content.map((part: any) => part?.text ?? '').join('') : '';
     const start = freshBatch ? messages.findLastIndex((message: any) => message.role === 'user' && messageText(message) !== 'PPT_RESUME') : -1;
     const kept = start >= 0 ? messages.slice(start) : [...messages];
-    const tail: any[] = [{ role: 'user', content: [{ type: 'text', text: statusText() }], timestamp: Date.now(), contextSection: 'task_status' }];
+    const tail: any[] = [];
+    if (evo?.inEvolutionReview) tail.push({ role: 'user', content: [{ type: 'text', text: 'SELF REVIEW OPEN: inspect the booked process and quality facts first; change a harness strategy or orchestration, cite fact references, declare a success predicate, and use the changed orchestration to rework an existing artifact when needed.' }], timestamp: Date.now(), contextSection: 'review' });
+    tail.push({ role: 'user', content: [{ type: 'text', text: statusText() }], timestamp: Date.now(), contextSection: evo?.inEvolutionReview ? 'review_status' : 'task_status' });
     if (freshBatch && state.batchRequests === batchLimit - 1) tail.push({ role: 'custom', customType: 'ppt-batch-limit', display: false,
       timestamp: Date.now(), content: 'LAST REQUEST IN THIS BATCH. The next batch starts with a fresh conversation; only the workspace, your harness and a checkpoint note (max 400 chars) carry over.' });
     return { messages: [...kept, ...tail] };
@@ -637,10 +639,16 @@ export default function pptDemo(pi: ExtensionAPI) {
         const ctx = evo.policy.context;
         const selfView = [JSON.stringify(evo.mirror()), JSON.stringify(await evo.projection())];
         const selfTail = ctx.self_view?.placement === 'tail';
-        const coreLine = 'SELF ROOT: one agent, one task, one serial session. At work boundaries the host presents the full process and delivery-quality facts for your review. An evolution review ends after a harness change is active or pending. Your working context and its composition are part of your self view. The host records windows, later use and evidence; read_self exposes the current self and its evidence.';
+        const coreLine = 'SELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.';
+        const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine].filter(Boolean).join('\n\n');
+        const volatile = ctx.prompt_layout?.volatile_tail === 'self_view' ? [selfView[0]] : ctx.prompt_layout?.volatile_tail === 'projection' ? [selfView[1]] : selfView;
+        const stableLimit = ctx.prompt_layout?.stable_prefix_chars ?? prefix.length;
+        const stable = prefix.slice(0, stableLimit);
+        const volatileText = volatile.join('\n\n').slice(0, ctx.self_view?.max_chars ?? 12000);
+        const viewInSystem = !selfTail;
         const sections = [{ section: 'task_brief', text: taskInstructions }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
-          { section: 'self_view', text: selfView[0] }, { section: 'projection', text: selfView[1] }];
-        system.content = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine, ...(selfTail ? [] : selfView)].join('\n\n');
+          ...(viewInSystem ? [{ section: 'self_view', text: volatileText }] : []), { section: 'projection', text: ctx.prompt_layout?.volatile_tail === 'self_view' ? '' : volatile[1] ?? '' }];
+        system.content = [stable, ...(viewInSystem ? [volatileText] : [])].filter(Boolean).join('\n\n');
         messages[0] = system;
         // Runtime assembly from the active context policy (art. 6-4): items -> core plan -> applied request.
         const list = piContext.items(messages, sections, system.toolsAdded);
@@ -648,10 +656,9 @@ export default function pptDemo(pi: ExtensionAPI) {
         const assembled = piContext.apply(messages, list, plan.actions, plan.policyHash);
         if (selfTail) assembled.push({ role: 'custom', customType: 'self-view', display: false, timestamp: Date.now(), content: selfView.join('\n\n') });
         evo.recordContext(plan.composition, plan.receipt);
-        evo.fact('provider_input', { pin, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), context_policy: plan.receipt, reasoning_selection: ctx.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
+        evo.fact('provider_input', { pin, phase: state.phase ?? null, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), context_policy: plan.receipt, reasoning_selection: ctx.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
         persistLiveSelf();
-        return { messages: assembled };        persistLiveSelf();
-        return { messages };
+        return { messages: assembled };
       } catch (error) {
         evo.fact('request_paused', { error: String(error) }); persistLiveSelf();
         writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason: String(error), resources: evo.resources(), stop_kind: 'budget_stop' }));

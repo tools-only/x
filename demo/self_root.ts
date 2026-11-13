@@ -34,7 +34,8 @@ export type ContextPolicy = {
   history?: { recent_turns: number | null; older: 'drop' | 'stub' };
   tool_results?: { max_chars: number | null; images: ImagesRule; by_tool?: Record<string, { max_chars?: number | null; images?: ImagesRule }> };
   tool_args?: { max_chars: number | null };
-  self_view?: { placement: 'system' | 'tail'; ledger_rows: number };
+  self_view?: { placement: 'system' | 'tail'; ledger_rows: number; max_chars?: number };
+  prompt_layout?: { stable_prefix_chars: number; volatile_tail: 'self_view' | 'projection' | 'both' };
   select?: string;
 };
 export type Policy = {
@@ -43,6 +44,8 @@ export type Policy = {
   methods: Record<string, string>;
   memory: { names: string[] | '*'; order: 'name' | 'newest'; write: 'replace' | 'append' };
   context: ContextPolicy;
+  review: { trigger: string; evidence: string; tools: string[]; verification: { metric: string; direction: 'increase' | 'decrease'; segment: 'last' | 'mean' } };
+  memory_strategy: { retrieval: 'all' | 'recent'; recent_count: number; partition: 'component' | 'kind'; retention: 'all' | 'latest'; sources: string[] };
 };
 export type SelfContract = {
   source: 'user_contract'; authority: string; decisions: string; content_hash: string; readonly_reason: string;
@@ -59,16 +62,16 @@ type Row = { ref: string; kind: 'fact' | 'claim'; type: string; revision: number
 export type Metric = { name: string; value: number; unit: string };
 export type Window = { id: string; revision: number; parent: number; review: string | null; activation: string; baseline: string[]; baseline_segment: number | null;
   baseline_metrics: { last: Metric[]; mean: Metric[] }; scope: string[];
-  due: { settlement: number; after_use: true; rule: string }; expected_effect?: string; effect_status: 'specified' | 'effect_unspecified';
-  later_use_refs: string[]; status: string; delivered?: any; unknowns: string[] };
+  due: { settlement: number; after_use: true; rule: string }; expected_effect?: string; success_predicate?: { metric: string; direction: 'increase' | 'decrease'; segment: 'last' | 'mean' }; effect_status: 'specified' | 'effect_unspecified';
+  evidence_refs: string[]; baseline_phase: string | null; later_use_refs: string[]; status: string; delivered?: any; unknowns: string[] };
 /** Fixed mechanical rules published to the Agent; the host never selects "relevant" evidence. */
 export const WINDOW_RULES = {
   baseline: 'every metric of the last segment_summary at or before activation (baseline_last) and the per-metric mean over all segment_summaries at or before activation (baseline_mean); process and outcome metrics alike',
   segment: 'the work between two counted boundaries; each boundary follows the configured number of execute-mode requests containing a task action, and submit_unit with work since the previous counted boundary also counts',
-  due: 'the first counted unit boundary after activation whose segment contains later use of the activated revision; at task end an open window becomes due_unverified',
-  later_use: 'execute-mode provider requests pinned at or after the activated revision; for a changed tool, a recorded call of that tool',
+  due: 'the first counted boundary after activation with later use in a comparable work phase; at terminal task closure an open window becomes due_unverified',
+  later_use: 'a recorded use of a changed tool/component, or an execute request whose phase matches the declared comparable phase; a request alone is insufficient',
   observed: 'every metric of the segment_summary of the due boundary; differences against baseline_last and baseline_mean, no direction or verdict',
-  verification: 'comparable only with later use, an Agent expected_effect and at least one metric present before and after; otherwise unverified',
+  verification: 'predicate evaluation requires matching work phase, metric present in the declared comparison segment and a recorded later use; otherwise unresolved and retained as an open review obligation',
 };
 /** Fixed order of context sections in composition facts. Adapter sections are appended in declaration order. */
 export const CORE_CONTEXT_SECTIONS = ['prompts', 'memory', 'skills', 'instruction', 'self_view', 'projection', 'tool_schemas', 'history'];
@@ -80,12 +83,12 @@ export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
   if (kind === 'review') return { name: 'decide_exit', description: 'Finish the current review after the host-visible review work is complete. No field is required.',
     properties: { reason }, required: [] as string[] };
-  if (kind === 'validation') return { name: 'decide_validation', description: 'Your decision on a due validation window. window selects among several due windows; restore defaults to the recorded parent revision.',
-    properties: { window: { type: 'string' }, decision: { type: 'string', enum: ['adopt', 'restore'] }, reason: { type: 'string', description: 'Optional: how you interpret the delivered baseline/observed facts.' }, restore: { type: 'integer', minimum: 1 } }, required: ['decision'] };
-  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent. define/redefine need source; restore needs version. Revision bookkeeping and the validation window are host-made.',
-    properties: { op: { type: 'string', enum: ['define', 'redefine', 'restore'] }, kind: { type: 'string', enum: ['tool', 'prompt', 'skill', 'memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, expected_effect: { type: 'string', description: 'Optional: what you expect this change to do. Without it the window stays effect_unspecified.' } }, required: ['op', 'kind', 'name'] };
-  return { name: 'reflect_orchestration', description: 'Change this Agent orchestration/policy/components, or restore a revision. Include at least one change or restore. policy is a merge patch onto the current policy (null removes a field). Revision bookkeeping and the validation window are host-made.',
-    properties: { orchestration: { type: 'object' }, policy: { type: 'object' }, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, expected_effect: { type: 'string', description: 'Optional: what you expect this change to do.' } }, required: [] as string[] };
+  if (kind === 'validation') return { name: 'decide_validation', description: 'Read the due window. The host mechanically checks its Agent-declared predicate and retains or restores the change; no manual retention decision is requested.',
+    properties: { window: { type: 'string' } }, required: [] as string[] };
+  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent. define/redefine need source; restore needs version. During a review, include evidence_refs and success_predicate. Revision bookkeeping and the validation window are host-made.',
+    properties: { op: { type: 'string', enum: ['define', 'redefine', 'restore'] }, kind: { type: 'string', enum: ['tool', 'prompt', 'skill', 'memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: ['op', 'kind', 'name'] };
+  return { name: 'reflect_orchestration', description: 'Change this Agent orchestration/policy/components, or restore a revision. Include at least one change or restore. During a review, include evidence_refs and success_predicate. policy is a merge patch onto the current policy (null removes a field). Revision bookkeeping and the validation window are host-made.',
+    properties: { orchestration: { type: 'object' }, policy: { type: 'object' }, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: [] as string[] };
 }
 
 /** Provider-visible JSON schema generated from the one descriptor. The Agent's own mode exit schema
@@ -114,6 +117,8 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
   if (kind === 'component' && a.op !== 'restore' && typeof a.source !== 'string') throw Error('reflect_component: define/redefine needs source');
   if (kind === 'component' && a.op === 'restore' && a.version === undefined) throw Error('reflect_component: restore needs version');
   if (kind === 'orchestration' && !['orchestration', 'policy', 'components', 'restore'].some(k => a[k] !== undefined)) throw Error('reflect_orchestration: include orchestration, policy, components or restore');
+  if (['component','orchestration'].includes(kind) && (a.evidence_refs !== undefined && (!Array.isArray(a.evidence_refs) || a.evidence_refs.some((ref: any) => typeof ref !== 'string')))) throw Error('evidence_refs must be an array of booked fact references');
+  if (['component','orchestration'].includes(kind) && a.success_predicate !== undefined && (!a.success_predicate || typeof a.success_predicate.metric !== 'string' || !['increase','decrease'].includes(a.success_predicate.direction) || !['last','mean'].includes(a.success_predicate.segment))) throw Error('success_predicate needs metric, direction (increase|decrease), and segment (last|mean)');
   return Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
 }
 
@@ -202,7 +207,9 @@ export function seedPolicy(capabilities: string[], reviewTools: string[] = ['rea
     reflect: { tools: observe, instruction: 'Review the pinned self/evidence and choose your scope, method and changes. Finish with decide_exit when it is available.', exitSchema },
     consolidate: { tools: observe, instruction: 'Organize this task\'s evidence and bounded inheritance records if useful; no automatic cross-task defaults.', exitSchema },
   }, routes: [], methods: {}, memory: { names: '*', order: 'name', write: 'replace' },
-    context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest' } };
+    review: { trigger: 'booked_quality_or_process_facts', evidence: 'all_booked_facts', tools: [...observe], verification: { metric: 'process.output_cap_stops', direction: 'decrease', segment: 'last' } },
+    memory_strategy: { retrieval: 'all', recent_count: 12, partition: 'component', retention: 'latest', sources: ['agent'] },
+    context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest', tool_results: { max_chars: 4000, images: 'latest' }, history: { recent_turns: 16, older: 'stub' }, self_view: { placement: 'tail', ledger_rows: 12, max_chars: 12000 }, prompt_layout: { stable_prefix_chars: 4000, volatile_tail: 'both' } } };
 }
 
 export function validateContract(c: SelfContract) {
@@ -215,7 +222,7 @@ export function validateContract(c: SelfContract) {
 }
 
 function validatePolicy(p: Policy, c: SelfContract, outputLimit = Number.MAX_SAFE_INTEGER) {
-  if (!p || Object.keys(p).some(k => !['modes','routes','methods','memory','context','request'].includes(k))) throw Error('unknown policy field');
+  if (!p || Object.keys(p).some(k => !['modes','routes','methods','memory','memory_strategy','context','request','review'].includes(k))) throw Error(`unknown policy field; allowed: modes, routes, methods, memory, memory_strategy, context, request, review`);
   if (p.request && (!Number.isSafeInteger(p.request.maxOutputTokens) || p.request.maxOutputTokens < 1 || p.request.maxOutputTokens > outputLimit)) throw Error('invalid request envelope');
   if (!p.modes?.execute || !p.modes.reflect || !p.modes.consolidate || !Array.isArray(p.routes)) throw Error('three modes and routes required');
   for (const mode of Object.values(p.modes)) {
@@ -232,6 +239,8 @@ function validatePolicy(p: Policy, c: SelfContract, outputLimit = Number.MAX_SAF
     for (const name of [r.predicate, r.projection]) if (name && !p.methods[name]) throw Error('unresolved method');
   }
   for (const source of Object.values(p.methods)) validateLiveSelfSource(source);
+  if (!p.review || !['booked_quality_or_process_facts','disabled'].includes(p.review.trigger) || !['all_booked_facts','current_segment'].includes(p.review.evidence) || !Array.isArray(p.review.tools) || p.review.tools.some(t => typeof t !== 'string') || !p.review.verification || typeof p.review.verification.metric !== 'string' || !['increase','decrease'].includes(p.review.verification.direction) || !['last','mean'].includes(p.review.verification.segment)) throw Error('review policy needs trigger (booked_quality_or_process_facts|disabled), evidence (all_booked_facts|current_segment), tools[], and verification {metric, direction: increase|decrease, segment: last|mean}');
+  if (!p.memory_strategy || !['all','recent'].includes(p.memory_strategy.retrieval) || !Number.isSafeInteger(p.memory_strategy.recent_count) || p.memory_strategy.recent_count < 1 || !['component','kind'].includes(p.memory_strategy.partition) || !['all','latest'].includes(p.memory_strategy.retention) || !Array.isArray(p.memory_strategy.sources)) throw Error('memory_strategy needs retrieval (all|recent), recent_count >= 1, partition (component|kind), retention (all|latest), and sources[]');
   if (!p.memory || (p.memory.names !== '*' && (!Array.isArray(p.memory.names) || p.memory.names.some(n => typeof n !== 'string'))) || !['name','newest'].includes(p.memory.order) || !['replace','append'].includes(p.memory.write)) throw Error('invalid memory policy');
   if (!p.context || typeof p.context.instruction !== 'string' || !Array.isArray(p.context.order) || p.context.order.some(x => !['prompts','memory','skills'].includes(x)) || new Set(p.context.order).size !== p.context.order.length) throw Error('invalid context policy');
   if (p.context.reasoning !== undefined && !['all','latest','none'].includes(p.context.reasoning)) throw Error('invalid reasoning context policy');
@@ -241,7 +250,7 @@ const nullableInt = (v: any, min: number) => v === null || (Number.isSafeInteger
 const IMAGES = ['all', 'latest', 'none'];
 function validateContextKnobs(p: Policy) {
   const c: any = p.context;
-  const known = ['order', 'instruction', 'reasoning', 'history', 'tool_results', 'tool_args', 'self_view', 'select'];
+  const known = ['order', 'instruction', 'reasoning', 'history', 'tool_results', 'tool_args', 'self_view', 'prompt_layout', 'select'];
   const unknown = Object.keys(c).filter(k => !known.includes(k));
   if (unknown.length) throw Error(`unknown context policy field(s) ${unknown.join(', ')}; fields: ${known.join(', ')}`);
   if (c.history !== undefined && (!c.history || !nullableInt(c.history.recent_turns, 1) || !['drop', 'stub'].includes(c.history.older)))
@@ -254,8 +263,9 @@ function validateContextKnobs(p: Policy) {
       throw Error('context.tool_results.by_tool maps a tool name to {max_chars?, images?}');
   }
   if (c.tool_args !== undefined && (!c.tool_args || !nullableInt(c.tool_args.max_chars, 200))) throw Error('context.tool_args needs max_chars (integer >= 200 or null)');
-  if (c.self_view !== undefined && (!c.self_view || !['system', 'tail'].includes(c.self_view.placement) || !Number.isSafeInteger(c.self_view.ledger_rows) || c.self_view.ledger_rows < 0 || c.self_view.ledger_rows > 40))
-    throw Error('context.self_view needs placement (system|tail) and ledger_rows (0..40)');
+  if (c.self_view !== undefined && (!c.self_view || !['system', 'tail'].includes(c.self_view.placement) || !Number.isSafeInteger(c.self_view.ledger_rows) || c.self_view.ledger_rows < 0 || c.self_view.ledger_rows > 40 || (c.self_view.max_chars !== undefined && (!Number.isSafeInteger(c.self_view.max_chars) || c.self_view.max_chars < 1000))))
+    throw Error('context.self_view needs placement (system|tail), ledger_rows (0..40), and optional max_chars (integer >= 1000)');
+  if (c.prompt_layout !== undefined && (!c.prompt_layout || !Number.isSafeInteger(c.prompt_layout.stable_prefix_chars) || c.prompt_layout.stable_prefix_chars < 0 || !['self_view','projection','both'].includes(c.prompt_layout.volatile_tail))) throw Error('context.prompt_layout needs stable_prefix_chars (integer >= 0) and volatile_tail (self_view|projection|both)');
   if (c.select !== undefined && (typeof c.select !== 'string' || !p.methods[c.select])) throw Error('context.select must name a method in policy.methods');
 }
 
@@ -296,6 +306,7 @@ export class SelfRoot extends LiveAgentSelf {
   private reviewedQualityRefs = new Set<string>();
   private pendingDelivery?: { run: () => Promise<any> };
   private taskEndPending?: string;
+  private unresolvedReview = false;
   private conditionSet: any = copy(INITIAL_CONDITIONS);
   private settlementCount = 0;
   private lastSettlementReview?: string;
@@ -329,7 +340,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','unresolvedReview','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
       if (r.reviewedQualityRefs !== undefined) this.reviewedQualityRefs = new Set(r.reviewedQualityRefs);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
       if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
@@ -353,7 +364,7 @@ export class SelfRoot extends LiveAgentSelf {
   get dueWindows() { return this.windows.filter(w => ['due_unverified', 'due_comparable'].includes(w.status)).map(w => w.id); }
   get hasReview() { return Boolean(this.review || this.queue.length); }
   /** Whether the task still has host-owned work that a model stop cannot complete. */
-  get taskIncomplete() { return !(this.options.taskComplete?.() ?? false) || this.units < (this.options.requiredUnits?.() ?? 0) || this.windows.some(w => w.status === 'open') || this.hasReview || Boolean(this.taskEndPending); }
+  get taskIncomplete() { return !(this.options.taskComplete?.() ?? false) || this.units < (this.options.requiredUnits?.() ?? 0) || this.windows.some(w => w.status === 'open') || this.hasReview || this.unresolvedReview || Boolean(this.taskEndPending); }
   get pendingRevision() { return this.pending?.revision ?? this.serial; }
   get isPaused() { return this.paused; }
   get isResetting() { return Boolean(this.resetInProgress); }
@@ -367,7 +378,7 @@ export class SelfRoot extends LiveAgentSelf {
       paused: this.paused, previousMode: this.previousMode, providerCosts: [...this.providerCosts], policy: this.policy,
       workRequests: this.workRequests, reviewRequests: this.reviewRequests, reviewedQualityRefs: [...this.reviewedQualityRefs], daemonRecord: this.daemonRecord ?? null,
       conditionSet: this.conditionSet, settlementCount: this.settlementCount, lastSettlementReview: this.lastSettlementReview,
-      taskEnded: this.taskEnded ?? null, taskEndPending: this.taskEndPending ?? null, segmentStart: this.segmentStart, segmentRefs: this.segmentRefs, contextByRequest: this.contextByRequest,
+      taskEnded: this.taskEnded ?? null, taskEndPending: this.taskEndPending ?? null, unresolvedReview: this.unresolvedReview, segmentStart: this.segmentStart, segmentRefs: this.segmentRefs, contextByRequest: this.contextByRequest,
       activeReset: this.activeReset ?? null, resetInProgress: this.resetInProgress ?? null, pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses, status: 'intent', review: this.pendingReview ?? null } : null }) };
   }
   private add(kind: 'fact' | 'claim', type: string, value: unknown) {
@@ -423,7 +434,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** All reflection tools in one model response share this pending chain. */
-  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string }) {
+  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     const result = this.mutations.then(() => this.prepareTransaction(input));
     this.mutations = result.then(() => undefined, () => undefined);
     return result;
@@ -433,7 +444,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
     this.chainFailed = true;
   }
-  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string }) {
+  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     try {
       if (this.chainFailed) throw Error('transaction chain already failed');
       if (input.baseRevision !== undefined && input.baseRevision !== this.pendingRevision) throw Error(`stale revision; expected ${this.pendingRevision}`);
@@ -483,12 +494,22 @@ export class SelfRoot extends LiveAgentSelf {
         return this.fact('reflection_noop', { addresses, reason: 'candidate matches the active self' }).value;
       }
       const evolution = this.inEvolutionReview;
+      if (evolution && addresses.some(address => !/^(policy|orchestration|components\.(tool|prompt|skill))($|\.)/.test(address))) throw Error('a review change must address an orchestration or strategy family; memory and task-content writes do not qualify');
+      if (evolution) {
+        const refs = [...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? [])];
+        const facts = new Set(this.reviewView().all_facts.map((r: any) => r.ref));
+        if (!refs.length || refs.some((ref: string) => !facts.has(ref))) throw Error(`cite one or more booked review fact refs; available: ${[...facts].join(', ') || '(none)'}`);
+        const predicate = input.components?.find((c: any) => c.success_predicate)?.success_predicate ?? (input as any).success_predicate;
+        if (!(input.components?.some((c: any) => c.success_predicate) || (input as any).success_predicate)) throw Error('review change requires a success predicate declared with the change');
+      }
       if (this.chainFailed) throw Error('response chain failed while candidate was being validated');
       const revision = this.pendingRevision + 1;
       this.pendingReview = this.review?.id ?? this.pendingReview;
-      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length ? [{ addresses, expected_effect: input.expected_effect, review: this.review?.id ?? null }] : [])], source: input.restore,
+      const success_predicate = input.components?.find((c: any) => c.success_predicate)?.success_predicate ?? (input as any).success_predicate;
+      const evidence_refs = [...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? [])];
+      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length ? [{ addresses, success_predicate, evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
-      return this.fact('reflection_pending', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null }).value;
+      return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null }).value;
     } catch (e) {
       this.abortTransaction(e); throw e;
     }
@@ -513,7 +534,7 @@ export class SelfRoot extends LiveAgentSelf {
   surface() {
     // Evolution review observes evidence; task artifacts are not edited there (design §1).
     const tools = this.inEvolutionReview
-      ? (this.options.evolutionTools ?? ['read', 'ls', 'grep']) : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
+      ? [...new Set([...(this.options.evolutionTools ?? ['read', 'ls', 'grep']), ...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? []])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
     return [...new Set([...PROTOCOL, ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
       ...(tools.includes('agent_tools') && this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool').map(c => c.name) : [])])];
   }
@@ -555,7 +576,7 @@ export class SelfRoot extends LiveAgentSelf {
       applySurface(this.surface());
       this.pending = undefined;
       const activated = this.fact('reflection_activated', { parent: oldSerial, revision: this.serial, addresses: p.addresses, restore_source: p.source ?? null, review: this.review?.id ?? this.pendingReview ?? null });
-      for (const w of p.windows) if (w) this.createWindow(oldSerial, activated.ref, w.addresses ?? p.addresses, w.expected_effect, w.review ?? null);
+      for (const w of p.windows) if (w) this.createWindow(oldSerial, activated.ref, w.addresses ?? p.addresses, w.expected_effect, w.review ?? null, w.success_predicate, w.evidence_refs);
       this.definitions.push(this.definition());
       this.lineage.push(activated);
       this.applyConditionAddenda();
@@ -575,7 +596,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** Host-made window (art. 5-1): fixed segment baseline rule, no Agent bookkeeping fields. */
-  private createWindow(parent: number, activation: string, addresses: string[], expected_effect: string | undefined, review: string | null) {
+  private createWindow(parent: number, activation: string, addresses: string[], expected_effect: string | undefined, review: string | null, success_predicate?: any, evidence_refs: string[] = []) {
     const summaries = this.segmentRefs.map(ref => this.ledger.find(r => r.ref === ref)!).filter(Boolean);
     const last = summaries.at(-1);
     const lastMetrics: Metric[] = (last?.value?.metrics ?? []).filter(isMetric);
@@ -584,8 +605,8 @@ export class SelfRoot extends LiveAgentSelf {
     const window: Window = { id: `window:${this.windows.length}`, revision: this.serial, parent, review, activation, baseline: summaries.map(r => r.ref),
       baseline_segment: last ? Number(last.value.segment) : null, baseline_metrics: { last: lastMetrics, mean }, scope: [...addresses],
       due: { settlement: this.settlementCount + 1, after_use: true, rule: WINDOW_RULES.due }, ...(expected_effect ? { expected_effect } : {}),
-      effect_status: expected_effect ? 'specified' : 'effect_unspecified', later_use_refs: [], status: 'open',
-      unknowns: [...(last ? [] : ['settled_baseline']), ...(lastMetrics.length ? [] : ['repeatable_numeric_metric']), ...(expected_effect ? [] : ['expected_effect']), 'later_use'] };
+      success_predicate, evidence_refs, baseline_phase: (last?.value?.phase ?? null), effect_status: success_predicate ? 'specified' : expected_effect ? 'specified' : 'effect_unspecified', later_use_refs: [], status: 'open',
+      unknowns: [...(last ? [] : ['settled_baseline']), ...(lastMetrics.length ? [] : ['repeatable_numeric_metric']), ...(success_predicate ? [] : ['success_predicate']), 'comparable_phase', 'later_use'] };
     this.windows.push(window);
     this.fact('window_created', { window: window.id, revision: window.revision, parent, activation, baseline_rule: WINDOW_RULES.baseline, baseline_segment: window.baseline_segment,
       baseline_metrics: lastMetrics.length, due: window.due, effect_status: window.effect_status, unknowns: window.unknowns });
@@ -596,7 +617,7 @@ export class SelfRoot extends LiveAgentSelf {
     const start = this.ledger.findIndex(r => r.ref === w.activation);
     const tools = new Set(w.scope.filter(a => a.startsWith('components.tool.')).map(a => a.slice('components.tool.'.length)));
     return this.ledger.filter((r, i) => i > start && r.kind === 'fact' && (
-      (r.type === 'provider_input' && r.value?.pin?.mode === 'execute' && Number(r.value?.pin?.revision) >= w.revision) ||
+      (r.type === 'provider_input' && r.value?.pin?.mode === 'execute' && Number(r.value?.pin?.revision) >= w.revision && w.baseline_phase !== null && r.value?.phase === w.baseline_phase && !(w.evidence_refs ?? []).includes(r.ref)) ||
       (r.type === 'tool_result' && tools.has(r.value?.tool)) || (r.type === 'component_consumed' && r.revision >= w.revision))).map(r => r.ref);
   }
   /** Deliver a window against one observed segment summary (or none at task end). Differences only; no verdict. */
@@ -611,13 +632,20 @@ export class SelfRoot extends LiveAgentSelf {
     const key = (m: Metric) => `${m.name}|${m.unit}`;
     const missing_metrics = [...new Set([...w.baseline_metrics.last.map(key), ...observed.map(key)])]
       .filter(k => !w.baseline_metrics.last.some(m => key(m) === k) || !observed.some(m => key(m) === k));
+    const predicate = w.success_predicate;
+    const comparison = predicate ? comparisons.find(c => c.name === predicate.metric) : undefined;
+    const matchingPhase = w.baseline_phase !== null && observedRow?.value?.phase === w.baseline_phase;
     const missing = [...(w.later_use_refs.length ? [] : ['later_use']), ...(observedRow ? [] : ['observed_segment']),
-      ...(w.baseline.length ? [] : ['settled_baseline']), ...(w.expected_effect ? [] : ['expected_effect']), ...(comparisons.length ? [] : ['repeatable_numeric_metric'])];
-    const verification = missing.length ? 'unverified' : 'comparable';
+      ...(w.baseline.length ? [] : ['settled_baseline']), ...(comparisons.length ? [] : ['repeatable_numeric_metric']),
+      ...(predicate ? [] : ['success_predicate']), ...(comparison ? [] : ['predicate_metric']), ...(matchingPhase ? [] : ['comparable_phase'])];
+    const predicateMet = predicate && comparison && matchingPhase ? predicate.direction === 'increase'
+      ? comparison.observed > (predicate.segment === 'mean' ? comparison.baseline_mean : comparison.baseline_last)
+      : comparison.observed < (predicate.segment === 'mean' ? comparison.baseline_mean : comparison.baseline_last) : false;
+    const verification = missing.length || !predicate ? 'unverified' : 'comparable';
     w.status = verification === 'comparable' ? 'due_comparable' : 'due_unverified';
     w.delivered = { reason, baseline_segment: w.baseline_segment, observed_segment: observedRow?.value?.segment ?? null, observed_ref: observedRef ?? null,
       metric_comparisons: comparisons, missing_metrics, later_use: w.later_use_refs.length > 0,
-      later_use_refs: w.later_use_refs.slice(-20), missing, verification, restore_default: w.parent };
+      later_use_refs: w.later_use_refs.slice(-20), missing, verification, success_predicate: predicate ?? null, predicate_met: verification === 'comparable' ? Boolean(predicateMet) : null, restore_default: w.parent };
     return this.fact('validation_delivered', { window: w.id, ...w.delivered });
   }
   async boundary(applySurface: (tools: string[]) => void, persist: () => void) {
@@ -626,14 +654,19 @@ export class SelfRoot extends LiveAgentSelf {
     this.chainFailed = false;
     if (this.review && this.inEvolutionReview && !this.reviewChanged()) {
       this.reviewRequests++;
-      if (this.reviewRequests >= this.contract.review.max_requests_without_change) this.closeMechanically('review_unresolved');
+      if (this.reviewRequests >= this.contract.review.max_requests_without_change) {
+        const reviewId = this.review.id;
+        this.unresolvedReview = true;
+        this.closeMechanically('review_unresolved');
+        this.fact('review_loop_unresolved', { review: reviewId, disposition: 'unfinished_host_review' });
+      }
     } else if (!this.review) this.reviewRequests = 0;
     await this.event('request_boundary',`request:${this.request}`);
     if (!this.review && this.queue.length) this.enter(this.queue.shift());
     this.lastSurface = this.surface(); applySurface(this.lastSurface);
     if (!this.review && this.pendingDelivery) { const delivery = this.pendingDelivery; this.pendingDelivery = undefined; await delivery.run(); }
   }
-  /** End a response. Agent-opened reviews may close mechanically; host-opened evolution reviews remain active until decide_exit or the request cap. */
+  /** End a response. Host-opened reviews close only by Agent change or an explicit unresolved cap record. */
   endResponse(applySurface: (tools: string[]) => void, persist: () => void, reason: string) {
     if (!this.paused) this.activatePending(applySurface, persist);
     if (!this.review || !this.inEvolutionReview) this.closeMechanically(reason);
@@ -642,20 +675,14 @@ export class SelfRoot extends LiveAgentSelf {
   taskEnd(reason: string) {
     if (this.taskEnded) return { duplicate: true };
     const formalDelivery = reason === 'delivered';
-    if (formalDelivery && (this.review || this.queue.length || this.pendingDelivery)) {
+    if (formalDelivery && (this.review || this.queue.length || this.pendingDelivery || this.unresolvedReview || this.windows.some(w => ['open','due_unverified','due_comparable','restore_pending'].includes(w.status)))) {
       this.taskEndPending = reason;
       return { deferred: true };
-    }
-    if (!formalDelivery) {
-      if (this.review) this.closeMechanically(`terminal:${reason}`);
-      this.queue = [];
-      this.pendingDelivery = undefined;
     }
     this.taskEnded = reason;
     const delivered = this.windows.filter(w => w.status === 'open').map(w => {
       const observed = this.segmentRefs.map(ref => this.ledger.find(r => r.ref === ref)!).filter(r => r && Number(r.value.segment) > (w.baseline_segment ?? 0)).at(-1);
       return this.deliverWindow(w, `task end: ${reason}`, observed?.ref).ref; });
-    this.queue = [];
     this.taskEndPending = undefined;
     this.fact('task_ended', { reason, windows_delivered: delivered });
     return { delivered };
@@ -690,14 +717,15 @@ export class SelfRoot extends LiveAgentSelf {
     const boundaries = rows.filter(r => r.type === 'event' && ['unit_completed', 'work_quantum', 'settlement'].includes(r.value?.type))
       .map(r => ({ ref: r.ref, type: r.value.type, facts: copy(r.value.facts) }));
     const receipts = rows.filter(r => (this.options.processFactTypes ?? []).includes(r.type)).map(item);
-    const selfActivity = rows.filter(r => ['reflection_pending', 'reflection_activated', 'reflection_noop', 'review_closed'].includes(r.type)).map(item);
+    const selfActivity = rows.filter(r => ['reflection_activated', 'reflection_noop', 'review_closed'].includes(r.type)).map(item);
     const qualityFacts = rows.filter(r => r.type === 'task_outcome').map(r => ({ ref: r.ref, value: copy(r.value) }));
     const due = (facts.due_windows ?? []).map((id: string) => {
       const window = this.windows.find(w => w.id === id);
       return window ? { id, delivered: copy(window.delivered ?? null) } : { id, delivered: null };
     });
+    const allFacts = rows.filter(r => r.kind === 'fact').map(item);
     return { process_facts: processFacts, tool_events: toolEvents, boundaries, receipts_probes: receipts,
-      self_activity: selfActivity, quality_facts: qualityFacts, due_window_deliveries: due };
+      self_activity: selfActivity, quality_facts: qualityFacts, due_window_deliveries: due, all_facts: allFacts };
   }
   /** Host-made per-segment summary: counts, sums, max and last over recorded facts; no labels or ranking. */
   private summarizeSegment(boundaryRef: string, unit: string | null) {
@@ -724,7 +752,8 @@ export class SelfRoot extends LiveAgentSelf {
     const processMetrics: Metric[] = Object.entries(process).filter(([, v]) => typeof v === 'number').map(([k, v]) => ({ name: `process.${k}`, value: v as number, unit: k.includes('tokens') ? 'tokens' : k.includes('chars') ? 'chars' : k === 'latency_s' ? 's' : 'count' }));
     const workMetrics: Metric[] = [{ name: 'work.task_actions', value: work.length, unit: 'count' }];
     const metrics = [...processMetrics, ...workMetrics, ...outcome.values()];
-    const row = this.fact('segment_summary', { segment: this.settlementCount, boundary: boundaryRef, unit, ledger: [this.segmentStart, this.ledger.length - 1],
+    const phase = rows.find(r => r.type === 'provider_input')?.value?.phase ?? null;
+    const row = this.fact('segment_summary', { segment: this.settlementCount, boundary: boundaryRef, unit, phase, ledger: [this.segmentStart, this.ledger.length - 1],
       requests: allReqs.length ? [allReqs[0].value.request, allReqs.at(-1)!.value.request] : [], process, work: { task_actions: work.length, by_tool: [...byTool.values()].sort((a, b) => a.tool.localeCompare(b.tool)) },
       outcome_refs: outcomeRows.map(r => r.ref), metrics, composition_last: lastComp });
     this.segmentRefs.push(row.ref);
@@ -747,10 +776,11 @@ export class SelfRoot extends LiveAgentSelf {
       this.fact('boundary_coalesced', { event: event.ref, unit: (facts as any)?.unit ?? null, segment: this.segmentNumber, rule: WINDOW_RULES.segment });
       return { event: event.ref, triggers: [], coalesced: true };
     }
+    const segmentEvidence = this.ledger.slice(this.segmentStart);
     const summary = settles ? this.summarizeSegment(event.ref, (facts as any)?.unit ?? null) : undefined;
     const input = { event, revision: this.serial, state: super.snapshot(), ledger_offset: this.ledger.length, request: this.request, resources: this.resources() };
-    // After task end (or at the final settlement) nothing can use a change in this task: no review is queued.
-    const quiet = Boolean(this.taskEnded) || final;
+    // Final settlement remains a counted boundary so booked quality/process facts can open the next review.
+    const quiet = false;
     const routes = quiet ? [] : [...this.policy.routes].filter(r => r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
     const triggers: any[] = [];
     if (this.contract.boundaries.includes(type) && !quiet) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
@@ -759,7 +789,10 @@ export class SelfRoot extends LiveAgentSelf {
       const tags = Array.isArray((facts as any)?.coverage_tags) ? (facts as any).coverage_tags : [];
       const prior = this.conditionSet.floor;
       this.conditionSet.floor = { ...prior, event_classes: [...new Set([...prior.event_classes, ...classes])], coverage_tags: [...new Set([...prior.coverage_tags, ...tags])] };
-      triggers.push({ id: 'evolution_review', source: 'settlement_clock', mode: 'reflect', conclusion_sink: 'ledger' });
+    const eventFacts = (facts as any)?.evidenceRefs ?? [];
+      const segmentRows = segmentEvidence;
+      const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','tool_failed','reflection_validation_failed','acceptance_result','validation_delivered'].includes(r.type));
+      if (newFacts && this.policy.review.trigger !== 'disabled') triggers.push({ id: 'evolution_review', source: 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
     }
 
     for (const route of routes) {
@@ -776,10 +809,9 @@ export class SelfRoot extends LiveAgentSelf {
         this.deliverWindow(w, `settlement ${this.settlementCount}`, summary?.ref);
         if (!quiet) triggers.push({ id: w.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
       }
-      const comparisons = this.ledger.filter(r => r.type === 'validation_delivered' && r.value?.verification === 'comparable');
-      const hasLaterUse = this.windows.some(w => w.later_use_refs.length > 0);
+      const comparisons = this.ledger.filter(r => r.type === 'change_retained' && r.value?.delivered?.predicate_met === true);
       const prior = this.conditionSet.floor;
-      const step = Math.max(prior.step, comparisons.length ? 3 : hasLaterUse ? 2 : 1);
+      const step = Math.max(prior.step, comparisons.length ? 3 : prior.step > 0 ? 1 : 0);
       this.conditionSet.floor = { step, evidence: [...new Set([...prior.evidence, ...FLOOR_STEPS.slice(0, step).flatMap(s => s.evidence_scope)])],
         event_classes: [...this.conditionSet.floor.event_classes], coverage_tags: [...this.conditionSet.floor.coverage_tags] };
       const row = this.ledger.find(r => r.ref === event.ref)!;
@@ -795,9 +827,9 @@ export class SelfRoot extends LiveAgentSelf {
     }
     return { event: event.ref, triggers, ...(summary ? { segment_summary: summary.ref } : {}) };
   }
-  /** Final delivery: the last segment settles (due windows delivered), no review follows, the task ends. */
+  /** Final delivery settles facts but leaves an evolvable review loop open when quality facts or windows remain. */
   async finalSettlement(boundary: string, facts: any = {}) {
-    const result = await this.event('settlement', boundary, { ...facts, final: true });
+    const result = await this.event('settlement', boundary, { ...facts, final: false, force_review: true });
     return { ...result, task_end: { deferred: true, reason: 'formal delivery completion is recorded by the adapter after its delivery action returns' } };
   }
   private enter(ticket: any) {
@@ -811,12 +843,13 @@ export class SelfRoot extends LiveAgentSelf {
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
+      this.fact('review_message', { text: 'SELF REVIEW OPEN: examine the booked process and quality facts, identify a harness strategy address, cite the fact references, declare a measurable success predicate, and change this Agent. If the deliverable already exists, revise orchestration and rework it before the next review.' });
   }
   enterMode(mode: string) {
     if (!this.policy.modes[mode] || this.review) throw Error('mode unavailable or mode already active');
     const ref = this.claim('enter_mode', { mode });
     this.enter({ id: `review:${ref.ref}`, event: ref.ref, revision: this.serial, ledger_offset: this.ledger.length, triggers: [{ id: ref.ref, source: 'agent_active', mode, conclusion_sink: 'ledger' }] });
-    return { pending_mode: mode, activation: 'next request boundary' };
+    return { activation_intent: mode, activation: 'next request boundary' };
   }
   async requestReset() {
     if (!this.activeReset) {
@@ -855,7 +888,7 @@ export class SelfRoot extends LiveAgentSelf {
   private close(review: any, closedBy: string, extra: any = {}) {
     const evolution = this.inEvolutionReview;
     const unresolved = evolution && closedBy.startsWith('mechanical:') && !this.reviewChanged();
-    const outcome = unresolved || closedBy.includes('review_unresolved') ? 'review_unresolved' : review.changes.length > 0 ? 'changed' : this.pending ? 'changed_pending_activation' : 'closed';
+    const outcome = unresolved || closedBy.includes('review_unresolved') ? 'review_unresolved' : review.changes.length > 0 ? 'activated' : this.pending ? 'activation_intent' : 'closed';
     if (evolution && closedBy === 'agent' && !this.reviewChanged()) throw Error('host-opened evolution review requires a qualifying change');
     const undecided = (review.windows ?? []).filter((id: string) => this.windows.some(w => w.id === id && ['due_unverified', 'due_comparable'].includes(w.status)));
     for (const id of undecided) this.fact('validation_undecided', { window: id, review: review.id });
@@ -863,12 +896,13 @@ export class SelfRoot extends LiveAgentSelf {
     const evidenceRefs = [...new Set([review.event, ...(Array.isArray(pinned) ? pinned : [])].filter(Boolean))];
     const windows = this.windows.filter(w => w.review === review.id).map(w => ({ id: w.id, due: w.due, effect_status: w.effect_status, unknowns: w.unknowns }));
     const value = { review: review.id, occasion: evolution ? 'evolution_review' : null, outcome, closed_by: closedBy, ...extra,
-      evidenceRefs, changes: review.changes, windows, undecided_windows: undecided, mode_version: review.revision, pending: Boolean(this.pending) };
+      evidenceRefs, changes: review.changes, windows, undecided_windows: undecided, mode_version: review.revision, activation_intent: Boolean(this.pending) };
     const row = closedBy === 'agent' ? this.claim('review_closed', value) : this.fact('review_closed', value);
-    if (this.pending) this.fact('review_pending', { review: review.id, closure: row.ref, outcome: 'changed_pending_activation' });
+    if (this.pending) this.fact('review_activation_deferred', { review: review.id, closure: row.ref, outcome: 'activation_intent' });
     if (review.triggers.some((t: any) => t.conclusion_sink === 'lineage')) this.lineage.push(row);
+    if (evolution && this.reviewChanged()) this.unresolvedReview = false;
     this.review = undefined; this.currentMode = this.previousMode;
-    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, pending_activation: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode };
+    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode };
   }
   /** One mechanical closure (agent_end, crash, budget, second invalid exit). Never invents an Agent decision. */
   closeMechanically(reason: string, extra: any = {}) {
@@ -877,22 +911,24 @@ export class SelfRoot extends LiveAgentSelf {
     return this.close(this.review, `mechanical:${reason}`, extra);
   }
   closeIncomplete(reason: string) { return this.closeMechanically(reason); }
-  /** decide_validation. Only the Agent adopts or restores; unknown evidence stays unverified; incomplete calls are recorded, not rejected. */
-  async interpret(id: string | undefined, decision: 'adopt'|'restore', reason?: string, restore?: number) {
-    if (!['adopt','restore'].includes(decision)) throw Error('decision must be adopt or restore');
+  /** Host mechanically evaluates the Agent-declared predicate and retains or restores the changed definition. */
+  async interpret(id?: string) {
     const due = this.windows.filter(w => ['due_unverified', 'due_comparable'].includes(w.status));
     const w = id === undefined ? (due.length === 1 ? due[0] : undefined) : this.windows.find(x => x.id === id);
     if (!w || !due.includes(w)) {
       const cause = id === undefined && due.length > 1 ? `several windows are due: ${due.map(x => x.id).join(', ')}` : w ? `window is ${w.status}; it becomes due after later use at a counted unit boundary` : 'no such due window';
-      const row = this.claim('validation_incomplete', { window: id ?? null, decision, reason: reason ?? null, due: due.map(x => x.id), open: this.windows.filter(x => x.status === 'open').map(x => x.id), cause });
+      const row = this.fact('validation_pending', { window: id ?? null, due: due.map(x => x.id), open: this.windows.filter(x => x.status === 'open').map(x => x.id), cause });
       return { recorded: row.ref, status: 'incomplete', cause };
     }
-    const target = decision === 'restore' ? (restore ?? w.parent) : undefined;
-    if (decision === 'restore') await this.transaction({ baseRevision: this.pendingRevision, restore: target });
-    const verified = w.delivered?.verification === 'comparable';
-    const row = this.claim('validation_interpreted', { window: w.id, decision, reason: reason ?? null, interpretation: reason ? 'present' : 'absent', restore: target ?? null, verification: w.delivered?.verification ?? 'unverified', delivered: w.delivered });
-    w.status = decision === 'restore' ? 'restore_pending' : verified ? 'adopted' : 'adopted_unverified';
-    return { recorded: row.ref, window: w.id, status: w.status, restore: target ?? null };
+    const met = w.delivered?.predicate_met === true;
+    if (!met) {
+      await this.transaction({ baseRevision: this.pendingRevision, restore: w.parent });
+      w.status = 'restore_pending';
+      return { window: w.id, result: 'restore_scheduled', predicate_met: false, predicate: w.success_predicate };
+    }
+    w.status = 'retained';
+    this.fact('change_retained', { window: w.id, predicate: w.success_predicate, delivered: w.delivered });
+    return { window: w.id, result: 'retained', predicate_met: true, predicate: w.success_predicate };
   }
   async replay(ref: string, source?: string) {
     const capsule = this.ledger.find(r => r.ref === ref && r.type === 'capsule');
@@ -910,7 +946,7 @@ export class SelfRoot extends LiveAgentSelf {
     // Agent supplies applicability/counterexamples; snapshot, dependencies, evidence and lifecycle status are host facts.
     if (input?.applicability === undefined) throw Error('inheritance requires applicability');
     const value = { counterexamples: [], dependencies: [], evidence_refs: [], snapshot: this.serial, status: 'candidate', ...input };
-    if (!['candidate','task_adopted','inactive'].includes(value.status)) throw Error('cross-task default inheritance disabled');
+    if (!['candidate','retained_for_task','inactive'].includes(value.status)) throw Error('cross-task default inheritance disabled');
     if (!this.definitions.some(d => d.revision === value.snapshot)) throw Error('unknown inheritance snapshot');
     for (const ref of value.evidence_refs) if (!this.ledger.some(r => r.ref === ref)) throw Error('unknown inheritance evidence');
     const row = this.claim('inheritance', { ...value, auto_inherit: false, root_id: this.root_id }); this.lineage.push(row); return row;
@@ -1052,6 +1088,10 @@ export class SelfRoot extends LiveAgentSelf {
   memory() {
     let memories = this.active().filter(c => c.kind === 'memory' && (this.policy.memory.names === '*' || this.policy.memory.names.includes(c.name)));
     memories.sort(this.policy.memory.order === 'newest' ? (a,b) => b.version-a.version || a.name.localeCompare(b.name) : (a,b) => a.name.localeCompare(b.name));
+    if (this.policy.memory_strategy.partition === 'kind') memories.sort((a,b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+    if (this.policy.memory_strategy.sources.length && !this.policy.memory_strategy.sources.includes('agent')) return [];
+    if (this.policy.memory_strategy.retention === 'latest') memories = memories.filter(c => c.version === Math.max(...memories.filter(x => x.name === c.name).map(x => x.version)));
+    if (this.policy.memory_strategy.retrieval === 'recent') memories = memories.slice(-this.policy.memory_strategy.recent_count);
     return memories;
   }
   async projection() {
@@ -1070,7 +1110,7 @@ export class SelfRoot extends LiveAgentSelf {
     const rows = this.policy.context.self_view?.ledger_rows ?? 40;
     const lastRequest = this.ledger.findLast(r => r.type === 'request_record');
     const segments = this.segmentRefs.slice(-12).map(ref => { const v = this.ledger.find(r => r.ref === ref)!.value; return { ref, segment: v.segment, unit: v.unit, requests: v.requests, metrics: v.metrics }; });
-    return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, ledger: rows ? this.read(0, rows) : { rows: [], next: 0, total: this.ledger.length }, parts: {
+    return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, ledger: rows ? this.read(Math.max(0, this.ledger.length - rows), rows) : { rows: [], next: 0, total: this.ledger.length }, parts: {
       components: { relation: 'executes from this root', writable_kinds: this.contract.writable.filter(x => x.startsWith('components.')) },
       orchestration: { relation: 'controls active step and trusted receipts', writable: this.contract.writable.includes('orchestration') },
       policy: { relation: 'controls modes, META, memory retrieval/write, request envelope and actual context assembly', request: this.policy.request,
@@ -1087,7 +1127,7 @@ export class SelfRoot extends LiveAgentSelf {
           context_policy: lastRequest.value.context_policy, composition: lastRequest.value.composition } : null,
         current_segment: this.segmentNumber, segments, segments_total: this.segmentRefs.length, expand: 'read_self(section="segments"|"requests")' },
       instruction: this.review?.modeDefinition.instruction ?? this.policy.modes[this.currentMode].instruction,
-      request_pin: this.requestPin, resources: this.resources(), pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
+      request_pin: this.requestPin, resources: this.resources(), activation_intent: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
       queue: this.queue.map(t => t.id), windows: this.windows.filter(w => ['open','due_unverified','due_comparable','restore_pending'].includes(w.status)), window_rules: WINDOW_RULES, task_ended: this.taskEnded ?? null,
       evidence: { total: this.ledger.length, capsules: this.ledger.filter(r => r.type === 'capsule').map(r => r.ref), read: 'read_self' },
       lineage: { count: this.lineage.length, expand: 'read_self(section="lineage")' } } };

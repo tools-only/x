@@ -153,7 +153,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
   const validation = operationContract('validation');
   tool(validation.name, validation.description, open(Object.keys(validation.properties)), async (a: any) => {
     const v = normalizeOperation('validation', a);
-    return evo.interpret(v.window, v.decision, v.reason, v.restore);
+    return evo.interpret(v.window);
   });
   tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). Host supplies receipts, versions and evidence refs.',
     open(DECIDE_FIELDS), async (a: any, ctx: any) => {
@@ -181,7 +181,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       const decision = evo.decide({ decisionId: a.decisionId, actor: 'agent', evidenceRefs: [], result: a.result });
       return { decision, transition: evo.advance() };
     });
-  tool('acceptance', 'Observe the fixed acceptance checker on the latest rendered source. Returns literal coverage, source/renderer/checker hashes and unknowns; does not decide quality or adopt a self revision.',
+  tool('acceptance', 'Observe the fixed acceptance checker on the latest rendered source. Returns literal coverage, source/renderer/checker hashes and unknowns; it does not decide quality or retain a self revision.',
     Type.Object({ unit: Type.Optional(Type.String()) }), (a: any) => {
       const dirs = readdirSync(join(root,'exports')).filter(p => /^v\d+$/.test(p)).sort();
       const receiptPath = join(root,'exports',dirs.at(-1) ?? 'missing','receipt.json');
