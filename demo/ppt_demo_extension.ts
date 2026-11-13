@@ -659,7 +659,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const ctx = evo.policy.context;
         const selfView = evo.inEvolutionReview ? [JSON.stringify(evo.reviewSelfView()), JSON.stringify(await evo.projection())] : [JSON.stringify(evo.detail('pin'))];
         const selfTail = ctx.self_view?.placement === 'tail';
-        const coreLine = `${FIXED_REVIEW_STRATEGY}\nSELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.';
+        const coreLine = `${FIXED_REVIEW_STRATEGY}\nSELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.`;
         const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), ctx.instruction, coreLine].filter(Boolean).join('\n\n');
         const volatile = ctx.prompt_layout?.volatile_tail === 'self_view' ? [selfView[0]] : ctx.prompt_layout?.volatile_tail === 'projection' ? [selfView[1]] : selfView;
         const stableLimit = ctx.prompt_layout?.stable_prefix_chars ?? prefix.length;
