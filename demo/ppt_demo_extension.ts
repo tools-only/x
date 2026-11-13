@@ -75,7 +75,10 @@ export default function pptDemo(pi: ExtensionAPI) {
   const piContext = createPiContextAdapter();
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
     { ...PPT_SELF_ROOT_OPTIONS, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
-      contextItem: (ref: string) => piContext.resolve(ref) }) : undefined;
+      contextItem: (ref: string) => piContext.resolve(ref), canonicalSource: () => canonicalPath(workspace),
+      metricInfo: (metrics: any[]) => ({ primary: metrics.find(m => m.name === 'acceptance.required_found')?.name, better: 'higher' }),
+      acceptanceUnits: () => activeManifest()?.units.map((u: any) => u.id) ?? [],
+      observeCurrentArtifact: () => { const source = sourceFacts(workspace); const render = state.lastFeedback ? { ...state.lastFeedback, fresh: Boolean(source && state.lastFeedback.source_path === source.source && source.hash === state.lastFeedback.source_hash) } : { fresh: false, reason: 'no render recorded' }; return { source, render, acceptance: render.fresh ? 'latest recorded acceptance is attached to task outcomes' : null, fact_refs: evo?.reviewView().quality_facts.map((x: any) => x.ref) ?? [] }; } }) : undefined;
   const agentSelf = evo ?? new LiveAgentSelf(savedSelf, validatePythonComponent, workspace);
   let activatingEvo = false;
   let advanceEvoBoundary = async () => {};
@@ -654,7 +657,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const list = piContext.items(messages, sections, system.toolsAdded);
         const plan = await evo.planContext(list);
         const assembled = piContext.apply(messages, list, plan.actions, plan.policyHash);
-        if (selfTail) assembled.push({ role: 'custom', customType: 'self-view', display: false, timestamp: Date.now(), content: selfView.join('\n\n') });
+        if (selfTail) { const tail = { role: 'custom', customType: 'self-view', display: false, timestamp: Date.now(), content: selfView.join('\n\n') }; assembled.push(tail); plan.composition.sections.push({ section: 'self_view_tail', items: 1, chars: tail.content.length, images: 0 }); }
         evo.recordContext(plan.composition, plan.receipt);
         evo.fact('provider_input', { pin, phase: state.phase ?? null, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(system.content), context_policy: plan.receipt, reasoning_selection: ctx.reasoning ?? 'all', memory_versions: evo.memory().map(c => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
         persistLiveSelf();

@@ -23,6 +23,12 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   contextSections?: string[];
   /** Adapter resolver for read_self(section="context_item", ref). */
   contextItem?: (ref: string) => unknown;
+  /** Host observation supplied at review entry. It may refresh a task artifact, but returns facts only. */
+  observeCurrentArtifact?: () => unknown;
+  /** Adapter-declared metric meaning; the core only uses the returned polarity and primary metric. */
+  metricInfo?: (metrics: Metric[]) => { primary?: string; better?: 'higher' | 'lower' };
+  acceptanceUnits?: string[] | (() => string[]);
+  canonicalSource?: () => string | undefined;
   /** Adapter-specific probe request kinds excluded from settled task requests. */
   probeKinds?: string[] };
 type Mode = { tools: string[]; instruction: string; projection?: string; exitSchema: any };
@@ -68,7 +74,7 @@ const CONSERVATIVE_RATES = { input: 20, output: 80 };
 const REGISTERED_RATES = { input: 5, output: 30 };
 const ESTIMATE_NEVER_INVOICE = 'estimate, never the invoice';
 type Row = { ref: string; kind: 'fact' | 'claim'; type: string; revision: number; request: number; value: any };
-export type Metric = { name: string; value: number; unit: string; scope?: string };
+export type Metric = { name: string; value: number; unit: string; scope?: string; observation?: any };
 export type Window = { id: string; revision: number; parent: number; review: string | null; activation: string; baseline: string[]; baseline_segment: number | null;
   baseline_metrics: { last: Metric[]; mean: Metric[] }; scope: string[];
   due: { settlement: number; after_use: true; rule: string }; expected_effect?: string; success_predicate?: { metric: string; direction: 'increase' | 'decrease'; segment: 'last' | 'mean' }; effect_status: 'specified' | 'effect_unspecified';
@@ -96,8 +102,21 @@ export function operationContract(kind: OperationKind) {
     properties: { window: { type: 'string' } }, required: [] as string[] };
   if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent. define/redefine need source; restore needs version. Evidence and validation are inferred by the host when omitted.',
     properties: { op: { type: 'string', enum: ['define', 'redefine', 'restore'] }, kind: { type: 'string', enum: ['tool', 'prompt', 'skill', 'memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: ['op', 'kind', 'name'] };
+  const context = { type: 'object', properties: {
+    order: { type: 'array', items: { type: 'string' } }, instruction: { type: 'string' }, reasoning: { type: 'string', enum: ['all', 'latest', 'none'] },
+    history: { type: 'object', properties: { recent_turns: { type: 'integer', minimum: 1 }, older: { type: 'string', enum: ['drop', 'stub'] } } },
+    tool_results: { type: 'object', properties: { max_chars: { type: 'integer', minimum: 200 }, images: { type: 'string', enum: ['all', 'latest', 'none'] } } },
+    tool_args: { type: 'object', properties: { max_chars: { type: 'integer', minimum: 200 } } },
+    self_view: { type: 'object', properties: { placement: { type: 'string', enum: ['system', 'tail'] }, ledger_rows: { type: 'integer', minimum: 0 }, max_chars: { type: 'integer', minimum: 1000 } } },
+    prompt_layout: { type: 'object', properties: { stable_prefix_chars: { type: 'integer', minimum: 0 }, volatile_tail: { type: 'string', enum: ['self_view', 'projection', 'both'] } } },
+  } };
+  const policy = { type: 'object', properties: {
+    modes: { type: 'object' }, routes: { type: 'array' }, methods: { type: 'object' }, memory: { type: 'object' }, memory_strategy: { type: 'object' },
+    context, request: { type: 'object', properties: { maxOutputTokens: { type: 'integer', minimum: 1 } } }, review: { type: 'object' },
+    tool_results: context.properties.tool_results, history: context.properties.history, reasoning: context.properties.reasoning,
+  }, additionalProperties: false };
   return { name: 'reflect_orchestration', description: 'Change orchestration content, policy intent, components, or restore a revision. Evidence and validation are inferred by the host when omitted.',
-    properties: { orchestration: { type: 'object', description: 'Direct orchestration content: steps, transitions and decisions.' }, intent: { type: 'object', description: 'Named writable orchestration/content intent; the runtime supplies legal fields and maps values.' }, policy: { type: 'object', description: 'Policy merge patch, including context knobs.' }, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: [] as string[] };
+    properties: { orchestration: { type: 'object', description: 'Direct orchestration content: steps, transitions and decisions.' }, intent: { type: 'object', description: 'Named writable orchestration/content intent; the runtime supplies legal fields and maps values.' }, policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: [] as string[] };
 }
 
 /** Provider-visible JSON schema generated from the one descriptor. The Agent's own mode exit schema
@@ -128,7 +147,16 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
   if (kind === 'orchestration' && !['intent', 'policy', 'orchestration', 'components', 'restore'].some(k => a[k] !== undefined)) throw operationError('reflect_orchestration: include orchestration, intent, policy, components or restore', kind, a);
   if (['component','orchestration'].includes(kind) && a.evidence_refs !== undefined && (!Array.isArray(a.evidence_refs) || a.evidence_refs.some((ref: any) => typeof ref !== 'string'))) throw operationError('evidence_refs must be an array of strings when supplied', kind, a, { invalid: ['evidence_refs'] });
   if (['component','orchestration'].includes(kind) && a.success_predicate !== undefined && (!a.success_predicate || typeof a.success_predicate.metric !== 'string' || !['increase','decrease'].includes(a.success_predicate.direction) || !['last','mean'].includes(a.success_predicate.segment))) throw operationError('success_predicate needs metric, direction (increase|decrease), and segment (last|mean)', kind, a, { invalid: ['success_predicate'] });
-  return Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
+  const normalized = Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
+  if (kind === 'orchestration' && normalized.policy && typeof normalized.policy === 'object') {
+    const policy: any = { ...(normalized.policy as any) };
+    const context: any = { ...(policy.context ?? {}) };
+    for (const key of ['tool_results', 'history', 'reasoning', 'tool_args', 'self_view', 'prompt_layout']) {
+      if (policy[key] !== undefined) { context[key] = policy[key]; delete policy[key]; }
+    }
+    normalized.policy = { ...policy, context };
+  }
+  return normalized;
 }
 
 function operationError(message: string, kind: OperationKind, input: any, surface: any = {}) {
@@ -473,11 +501,11 @@ export class SelfRoot extends LiveAgentSelf {
     if (section === 'segments') return { rows: this.segmentRefs.slice(offset, offset + count).map(ref => ({ ref, ...copy(this.ledger.find(r => r.ref === ref)!.value) })), total: this.segmentRefs.length };
     if (section === 'requests') { const rows = this.ledger.filter(r => r.type === 'request_record'); return { rows: copy(rows.slice(offset, offset + Math.min(count, 10))), total: rows.length }; }
     if (section === 'context_item') throw Error('context_item needs ref: read_self(section="context_item", ref)');
+    if (section === 'ledger' && (offset as any) === undefined) return this.read(0, count);
     throw Error('unknown self section');
   }
   private pinView() {
-    return { root_id: this.root_id, revision: this.serial, mode: this.currentMode, in_review: Boolean(this.review), step: this.step,
-      writable: this.contract.writable, operations: PROTOCOL, read: 'read_self(section="self")' };
+    return this.review ? this.reviewSelfView() : { ...this.mirror(), writable: this.contract.writable, operations: PROTOCOL };
   }
   private assertWrite(address: string) {
     if (!this.contract.writable.includes(address)) throw Error(`protected or unsupported address ${address}`);
@@ -572,13 +600,18 @@ export class SelfRoot extends LiveAgentSelf {
       this.pendingReview = this.review?.id ?? this.pendingReview;
       const knownMetrics = this.reviewView().quality_facts.flatMap((row: any) => row.value?.metrics ?? []).filter(isMetric);
       const requestedPredicate = input.components?.find((c: any) => c.success_predicate)?.success_predicate ?? (input as any).success_predicate;
-      const metric = requestedPredicate?.metric ? knownMetrics.find(m => m.name === requestedPredicate.metric) ?? knownMetrics.find(m => m.name.includes(requestedPredicate.metric) || requestedPredicate.metric.includes(m.name)) : knownMetrics[0];
-      const success_predicate = metric ? { metric: metric.name, direction: requestedPredicate?.direction ?? 'decrease', segment: requestedPredicate?.segment ?? 'last' } : undefined;
+      const metric = requestedPredicate?.metric ? knownMetrics.find(m => m.name === requestedPredicate.metric) ?? knownMetrics.find(m => m.name.includes(requestedPredicate.metric) || requestedPredicate.metric.includes(m.name)) : knownMetrics.find(m => m.name === this.options.metricInfo?.(knownMetrics).primary) ?? knownMetrics[0];
+      const polarity = metric ? this.options.metricInfo?.(knownMetrics) : undefined;
+      const success_predicate = metric && (requestedPredicate?.direction || polarity?.better) ? { metric: metric.name, direction: requestedPredicate?.direction ?? (polarity?.better === 'higher' ? 'increase' : 'decrease'), segment: requestedPredicate?.segment ?? 'last' } : undefined;
       const reviewFacts = this.reviewView().all_facts.map((r: any) => r.ref);
-      const evidence_refs = [...new Set([...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? []), ...(evolution ? reviewFacts : [])].filter((ref: string) => reviewFacts.includes(ref)))];
+      const suppliedRefs = [...new Set([...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? [])])];
+      const retained = suppliedRefs.filter((ref: string) => reviewFacts.includes(ref));
+      const discarded = suppliedRefs.filter((ref: string) => !reviewFacts.includes(ref)).map(ref => ({ ref, reason: 'not a booked fact reference in this review' }));
+      const evidence_refs = [...new Set([...(evolution ? reviewFacts : []), ...retained])];
       this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length ? [{ addresses, success_predicate, evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
-      return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null }).value;
+      return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null,
+        evidence_refs: { retained, discarded, auto_attached: evolution ? reviewFacts : [] }, success_predicate }).value;
     } catch (e) {
       this.abortTransaction(e); throw e;
     }
@@ -801,21 +834,23 @@ export class SelfRoot extends LiveAgentSelf {
     for (const r of work) { const k = r.value.action ?? r.value.tool; const x = byTool.get(k) ?? { tool: k, calls: 0, errors: 0 }; x.calls++; byTool.set(k, x); }
     const errors = rows.filter(r => r.type === 'event' && r.value?.type === 'tool_failed');
     for (const r of errors) { const k = r.value?.facts?.tool ?? 'unknown'; const x = byTool.get(k) ?? { tool: k, calls: 0, errors: 0 }; x.errors++; byTool.set(k, x); }
-    const process = { requests: allReqs.length, execute_requests: reqs.length, input_tokens_sum: sum('input'), input_tokens_max: Math.max(0, ...allReqs.map(r => tok(r, 'input'))),
-      input_tokens_last: reqs.length ? tok(reqs.at(-1)!, 'input') : 0, output_tokens_sum: sum('output'), cache_read_sum: sum('cache_read'),
-      output_cap_stops: allReqs.filter(r => r.value?.stop === 'output_cap').length, provider_retries: allReqs.reduce((n, r) => n + Number(r.value?.provider_retries ?? 0), 0),
-      tool_errors: errors.length, latency_s: allReqs.reduce((n, r) => n + Number(r.value?.latency_ms ?? 0), 0) / 1000,
+    const reviewReqs = allReqs.filter(r => r.value?.pin?.mode === 'reflect');
+    const process = { requests: reqs.length, execute_requests: reqs.length, input_tokens_sum: reqs.reduce((n, r) => n + tok(r, 'input'), 0), input_tokens_max: Math.max(0, ...reqs.map(r => tok(r, 'input'))),
+      input_tokens_last: reqs.length ? tok(reqs.at(-1)!, 'input') : 0, output_tokens_sum: reqs.reduce((n, r) => n + tok(r, 'output'), 0), cache_read_sum: reqs.reduce((n, r) => n + tok(r, 'cache_read'), 0),
+      output_cap_stops: reqs.filter(r => r.value?.stop === 'output_cap').length, provider_retries: reqs.reduce((n, r) => n + Number(r.value?.provider_retries ?? 0), 0),
+      tool_errors: errors.length, latency_s: reqs.reduce((n, r) => n + Number(r.value?.latency_ms ?? 0), 0) / 1000,
       history_chars_last: Number(lastComp?.history?.chars_after ?? 0), images_in_context_last: Number(lastComp?.history?.images_after ?? 0),
-      context_policy_revisions: [...new Set(allReqs.map(r => r.value?.context_policy?.revision).filter((x: any) => x !== undefined))] };
+      context_policy_revisions: [...new Set(reqs.map(r => r.value?.context_policy?.revision).filter((x: any) => x !== undefined))] };
+    const review = { requests: reviewReqs.length, input_tokens_sum: reviewReqs.reduce((n, r) => n + tok(r, 'input'), 0), output_tokens_sum: reviewReqs.reduce((n, r) => n + tok(r, 'output'), 0), latency_s: reviewReqs.reduce((n, r) => n + Number(r.value?.latency_ms ?? 0), 0) / 1000 };
     const outcomeRows = rows.filter(r => r.kind === 'fact' && r.type === 'task_outcome' && Array.isArray(r.value?.metrics));
     const outcome = new Map<string, Metric>();
-    for (const r of outcomeRows) for (const m of r.value.metrics) if (isMetric(m)) outcome.set(`${m.name}|${m.unit}`, { name: m.name, value: m.value, unit: m.unit });
+    for (const r of outcomeRows) for (const m of r.value.metrics) if (isMetric(m)) outcome.set(`${m.name}|${m.unit}|${m.scope ?? ''}`, copy(m));
     const processMetrics: Metric[] = Object.entries(process).filter(([, v]) => typeof v === 'number').map(([k, v]) => ({ name: `process.${k}`, value: v as number, unit: k.includes('tokens') ? 'tokens' : k.includes('chars') ? 'chars' : k === 'latency_s' ? 's' : 'count' }));
     const workMetrics: Metric[] = [{ name: 'work.task_actions', value: work.length, unit: 'count' }];
     const metrics = [...processMetrics, ...workMetrics, ...outcome.values()];
     const phase = rows.find(r => r.type === 'provider_input')?.value?.phase ?? null;
     const row = this.fact('segment_summary', { segment: this.settlementCount, boundary: boundaryRef, unit, phase, ledger: [this.segmentStart, this.ledger.length - 1],
-      requests: allReqs.length ? [allReqs[0].value.request, allReqs.at(-1)!.value.request] : [], process, work: { task_actions: work.length, by_tool: [...byTool.values()].sort((a, b) => a.tool.localeCompare(b.tool)) },
+      requests: allReqs.length ? [allReqs[0].value.request, allReqs.at(-1)!.value.request] : [], process, review, work: { task_actions: work.length, by_tool: [...byTool.values()].sort((a, b) => a.tool.localeCompare(b.tool)) },
       outcome_refs: outcomeRows.map(r => r.ref), metrics, composition_last: lastComp });
     this.segmentRefs.push(row.ref);
     this.segmentStart = this.ledger.length;
@@ -867,6 +902,8 @@ export class SelfRoot extends LiveAgentSelf {
       for (const w of this.windows.filter(w => w.status === 'open' && this.settlementCount >= w.due.settlement)) {
         w.later_use_refs = this.laterUse(w);
         if (!w.later_use_refs.length) continue;
+        const quality = (summary?.ref && this.ledger.find(r => r.ref === summary.ref)?.value?.metrics ?? []).some((m: any) => m.name === w.success_predicate?.metric && m.observation);
+        if (w.success_predicate && !quality) { w.unknowns = [...new Set([...w.unknowns, 'awaiting_observation'])]; continue; }
         this.deliverWindow(w, `settlement ${this.settlementCount}`, summary?.ref);
         if (!quiet) triggers.push({ id: w.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
       }
@@ -905,18 +942,24 @@ export class SelfRoot extends LiveAgentSelf {
       this.fact('self_view', { review: ticket.id, view: this.reviewSelfView() });
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
-      this.fact('review_frame', { in_review: true, must_change_self: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', due_windows: this.dueWindows.map(w => w.id), result: 'runtime records activation, booked facts, retention or restore' });
+    let object_state: any = null;
+    try { object_state = this.options.observeCurrentArtifact?.() ?? null; } catch (error) { object_state = { refresh: { fresh: false, failed: true, error: String(error) } }; }
+    const due_windows = this.dueWindows.map(id => { const w = this.windows.find(x => x.id === id)!; return { id, predicate: w.success_predicate ?? null, baseline: w.baseline_metrics, delivered: w.delivered ?? null, status: w.status }; });
+    this.fact('review_frame', { in_review: true, must_change_self: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' });
   }
   reviewSelfView() {
     const active = this.active();
     const latest = this.segmentRefs.at(-1) ? this.ledger.find(r => r.ref === this.segmentRefs.at(-1))?.value : null;
-    const entry = (name: string, kind: string, controls: string, value: any, writable: boolean, change: any) => ({ name, kind, controls, value, writable, ops: writable ? change.ops : [], change: writable ? change : null, latest_facts: latest?.metrics ?? [] });
+    const entry = (name: string, kind: string, controls: string, value: any, writable: boolean, change: any, reason?: string) => ({ name, kind, controls, value, writable, ops: writable ? change.ops : [], change: writable ? change : null, reason: writable ? undefined : reason ?? 'protected by user contract' });
+    const components = ['prompt','skill','tool','memory'].flatMap(kind => {
+      const current = active.filter(c => c.kind === kind);
+      const names = [...new Set([...current.map(c => c.name), `${kind}.new`])];
+      return names.map(name => { const c = current.find(x => x.name === name); return entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], example: { op: c ? 'redefine' : 'define', kind, name, source: c?.source ?? 'concrete component content' } }); });
+    });
+    const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, copy((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: copy((this.policy as any)[name]) } } }));
     return { revision: this.serial, entries: [
-      ...['prompt','skill','tool','memory'].flatMap(kind => active.filter(c => c.kind === kind).map(c => entry(c.name, kind, `${kind} component`, `${c.name}@${c.version} ${hash(c.source).slice(0, 12)}`, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], example: { op: 'redefine', kind, name: c.name, source: 'replace with concrete content' } }))),
-      entry('orchestration', 'orchestration', 'steps, transitions and decisions', `revision ${this.current.revision}`, this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: this.current.orchestration } }),
-      entry('context', 'policy', 'working context assembly knobs', copy(this.policy.context), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { intent: { promptLayout: { volatileTail: 'self' } } } }),
-      entry('review', 'policy', 'review trigger, evidence and validation method', copy(this.policy.review), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { review: copy(this.policy.review) } } }),
-    ], full: 'read_self(section="self")' };
+      ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: copy(this.current.orchestration) } }), ...policyEntries
+    ], object_state: this.review ? this.ledger.find(r => r.type === 'review_frame' && r.value?.in_review)?.value?.object_state ?? null : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
   }
   enterMode(mode: string) {
     if (!this.policy.modes[mode] || this.review) throw Error('mode unavailable or mode already active');
@@ -993,6 +1036,7 @@ export class SelfRoot extends LiveAgentSelf {
       const row = this.fact('validation_pending', { window: id ?? null, due: due.map(x => x.id), open: this.windows.filter(x => x.status === 'open').map(x => x.id), cause });
       return { recorded: row.ref, status: 'incomplete', cause };
     }
+    if (w.delivered?.verification === 'unverified' || w.delivered?.predicate_met === null) return { window: w.id, result: 'unverified', predicate_met: null, predicate: w.success_predicate };
     const met = w.delivered?.predicate_met === true;
     if (!met) {
       await this.transaction({ baseRevision: this.pendingRevision, restore: w.parent });

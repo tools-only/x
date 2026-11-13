@@ -92,19 +92,19 @@ export function pptUnitMetrics(result: any, rows: any[]) {
   const normalized = units.filter((u: any) => u.normalized?.scope !== 'whole_document_unscoped').flatMap((u: any) => u.normalized?.matches ?? []);
   const cited = units.filter((u: any) => u.citation_literal?.found || u.normalized?.citation_found).length;
   return [
-    { name: 'acceptance.required_found', value: literal.filter((m: any) => m.found).length, unit: 'count', scope: 'unit' },
-    { name: 'acceptance.required_total', value: literal.length, unit: 'count' },
-    { name: 'acceptance.citations_found', value: cited, unit: 'count' },
+    { name: 'acceptance.required_found', value: literal.filter((m: any) => m.found).length, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}` },
+    { name: 'acceptance.required_total', value: literal.length, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}` },
+    { name: 'acceptance.citations_found', value: cited, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}` },
     ...(normalized.length ? [{ name: 'acceptance.normalized_found', value: normalized.filter((m: any) => m.found === true).length, unit: 'count' }] : []),
     { name: 'render.warnings_latest', value: (result.renderer?.receipt?.warnings ?? []).length, unit: 'count' },
     ...pptSegmentMetrics(rows),
-  ].map((metric: any) => ({ ...metric, scope: metric.scope ?? 'unit' }));
+  ].map((metric: any) => ({ ...metric, scope: metric.scope ?? 'segment', observation: { artifact_hash: result.artifact?.sha256 ?? null, render_source_hash: result.renderer?.receipt?.source_sha256 ?? null, render_revision: result.renderer?.receipt?.revision ?? null, checker: result.checker?.version ?? null } }));
 }
 
 /** Adapter-side, task-specific wiring passed to the task-neutral core (constitution art. 10-1). */
 export const PPT_SELF_ROOT_OPTIONS = {
-  reviewTools: ['read', 'ls', 'grep', 'office.look', 'acceptance'],
-  evolutionTools: ['read', 'ls', 'grep', 'office.look'],
+  reviewTools: ['read', 'ls', 'grep', 'office.look', 'office.render', 'acceptance'],
+  evolutionTools: ['read', 'ls', 'grep', 'office.look', 'office.render'],
   reservedToolNames: ['office'],
   actionOf: (name: string, args: any) => name === 'office' ? `office.${args?.op}` : name,
   boundaryTools: ['submit_unit', 'office.deliver'],
@@ -112,6 +112,7 @@ export const PPT_SELF_ROOT_OPTIONS = {
   finalDeliveryTools: ['office.deliver'],
   contextSections: ['task_brief', 'task_status'],
   probeKinds: ['renderer-preflight'],
+  acceptanceUnits: [],
 };
 
 /** Provider-visible schema for one registered tool name, generated from the core descriptor.
@@ -202,6 +203,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       const receipt = JSON.parse(readFileSync(join(root,'exports',dirs.at(-1) ?? 'missing','receipt.json'),'utf8'));
       if (fileHash(workspace.path(receipt.source_path)) !== receipt.source_sha256) throw Error('unit needs a current rendered artifact');
       // One call: acceptance facts, unit delivery and the unit boundary (D1/D2; no per-unit delivery review).
+      if (a.unit && !['whole_deck', ...active().units.map((u: any) => u.id)].includes(a.unit)) throw Error(`unknown frozen unit ${a.unit}; valid units: whole_deck, ${active().units.map((u: any) => u.id).join(', ')}`);
       const result = collectAcceptance(active(),root,workspace,receipt.source_path,receipt,0,a.unit);
       evo.outcome({ ...result, episode:episode(), metrics: pptUnitMetrics(result, evo.segmentRows()) },true); evo.fact('unit_delivered',{ unit: a.unit, episode:episode() }); submitted.add(key);
       const outcomeRefs = evo.export().root.ledger.filter((r: any) => r.type === 'task_outcome' && r.value?.unit === a.unit).map((r: any) => r.ref);

@@ -242,7 +242,8 @@ export class LiveOrchestrationSession {
   private advanceAction(receipt: ActionReceipt) {
     const matches = this.current.orchestration.transitions.filter(transition => transition.from === this.activeStep && transition.on.type === 'action'
       && transition.on.action === receipt.type && this.requiresMatched(transition.requires, [receipt.ref]));
-    if (matches.length !== 1) return { status: 'stalled' as const, step: this.activeStep, reason: matches.length ? 'ambiguous transition' : 'no action transition matches current receipt', receipt: clone(receipt), existing_transitions: this.current.orchestration.transitions.filter(t => t.from === this.activeStep), editable_content: {
+    if (matches.length !== 1 && !this.current.orchestration.transitions.some(t => t.from === this.activeStep && t.on.type === 'action' && t.on.action === receipt.type)) return { status: 'recorded' as const, step: this.activeStep, receipt: clone(receipt), existing_transitions: this.current.orchestration.transitions.filter(t => t.from === this.activeStep) };
+    if (matches.length !== 1) return { status: 'stalled' as const, step: this.activeStep, reason: 'ambiguous transition', receipt: clone(receipt), existing_transitions: this.current.orchestration.transitions.filter(t => t.from === this.activeStep), editable_content: {
       meaning: 'add or revise orchestration content for this action receipt',
       template: { from: this.activeStep, on: { type: 'action', action: receipt.type }, requires: [], to: 'next-step-id' },
     } };
