@@ -1,6 +1,6 @@
 # 自进化 Agent 设计宪法
 
-**版本：** 1.8（2026-11-13）
+**版本：** 1.9（2026-11-13）
 **性质：** 目标架构与工程验收约束；不是当前代码能力声明。  
 **适用范围：** Agent 自身视图、可修改性建模、运行时反射、自我审阅、自我进化及其在 ARC、coding、PPT、视频等任务中的实现。
 
@@ -207,3 +207,10 @@ ARC、coding、PPT、视频生成中的任务状态和可优化部分各不相�
 此前的《Autoresearch Pi Kernel — Minimal Mutation Design & Implementation Constitution》限定的是 **Pi 最小运行时修改能力**的局部里程碑，明确暂不设计自我进化。本文规定的是更上层的**完整 Agent 自我进化目标**。局部最小实现可作为本文的一块基础，但不能用“已证明 Pi 可修改”代替完整自身对象、自身审阅、直接反射和自主进化的验收。
 
 早期实验使用的 `evolution_loop` 指实验中的局部自我审阅工作流。它可被反射修改并实际执行新版，属于局部能力证据。项目对 Architecture、Workflow、Loop、Architect、Orchestration 和 Meta Harness 的用词，以本版术语定义为准。
+
+
+### 1.9 amendment - thin Agent-facing surface
+
+The Agent-facing meta-harness surface is thin. Runtime and base services own legal vocabularies, field matching, normalization, validation, request assembly, review and window bookkeeping, interpretation, defaults, and host floors. The Agent authors concrete component content and orchestration intent; it does not construct internal policy token lists or adjudicate host bookkeeping.
+
+A mechanism is complete only when its runtime surface states what the Agent may operate and gives the name, meaning, current value, and required resources for each writable item. Internal composition sections and bookkeeping fields are not writable knobs. Validation failures normalize at the boundary or return an actionable same-turn correction surface. This preserves 1.8 success predicates, mechanical host evaluation, and restore on failure.

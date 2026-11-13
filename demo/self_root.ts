@@ -38,6 +38,15 @@ export type ContextPolicy = {
   prompt_layout?: { stable_prefix_chars: number; volatile_tail: 'self_view' | 'projection' | 'both' };
   select?: string;
 };
+/** Agent-facing context intent. The runtime maps these names to its internal sections and rules. */
+export type ContextIntent = {
+  contentOrder?: string[];
+  history?: { recentTurns?: number | null; older?: 'drop' | 'stub' };
+  toolResults?: { maxChars?: number | null; images?: ImagesRule };
+  toolArgs?: { maxChars?: number | null };
+  selfView?: { placement?: 'system' | 'tail'; ledgerRows?: number; maxChars?: number };
+  promptLayout?: { stablePrefixChars?: number; volatileTail?: 'self' | 'projection' | 'both' };
+};
 export type Policy = {
   request?: { maxOutputTokens: number };
   modes: Record<string, Mode>; routes: Route[];
@@ -87,8 +96,8 @@ export function operationContract(kind: OperationKind) {
     properties: { window: { type: 'string' } }, required: [] as string[] };
   if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent. define/redefine need source; restore needs version. During a review, include evidence_refs and success_predicate. Revision bookkeeping and the validation window are host-made.',
     properties: { op: { type: 'string', enum: ['define', 'redefine', 'restore'] }, kind: { type: 'string', enum: ['tool', 'prompt', 'skill', 'memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: ['op', 'kind', 'name'] };
-  return { name: 'reflect_orchestration', description: 'Change this Agent orchestration/policy/components, or restore a revision. Include at least one change or restore. During a review, include evidence_refs and success_predicate. policy is a merge patch onto the current policy (null removes a field). Revision bookkeeping and the validation window are host-made.',
-    properties: { orchestration: { type: 'object' }, policy: { type: 'object' }, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: [] as string[] };
+  return { name: 'reflect_orchestration', description: 'Change Agent orchestration intent or concrete component content, or restore a revision. The runtime maps and validates intent, supplies defaults, and maintains revision/window bookkeeping.',
+    properties: { intent: { type: 'object', description: 'Named writable orchestration/content intent; the runtime supplies legal fields and maps values.' }, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object', properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase', 'decrease'] }, segment: { type: 'string', enum: ['last', 'mean'] } }, required: ['metric', 'direction', 'segment'] } }, required: [] as string[] };
 }
 
 /** Provider-visible JSON schema generated from the one descriptor. The Agent's own mode exit schema
@@ -116,10 +125,42 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
   }
   if (kind === 'component' && a.op !== 'restore' && typeof a.source !== 'string') throw Error('reflect_component: define/redefine needs source');
   if (kind === 'component' && a.op === 'restore' && a.version === undefined) throw Error('reflect_component: restore needs version');
-  if (kind === 'orchestration' && !['orchestration', 'policy', 'components', 'restore'].some(k => a[k] !== undefined)) throw Error('reflect_orchestration: include orchestration, policy, components or restore');
+  if (kind === 'orchestration' && !['intent', 'components', 'restore'].some(k => a[k] !== undefined)) throw operationError('reflect_orchestration: include intent, components or restore', kind, a);
   if (['component','orchestration'].includes(kind) && (a.evidence_refs !== undefined && (!Array.isArray(a.evidence_refs) || a.evidence_refs.some((ref: any) => typeof ref !== 'string')))) throw Error('evidence_refs must be an array of booked fact references');
   if (['component','orchestration'].includes(kind) && a.success_predicate !== undefined && (!a.success_predicate || typeof a.success_predicate.metric !== 'string' || !['increase','decrease'].includes(a.success_predicate.direction) || !['last','mean'].includes(a.success_predicate.segment))) throw Error('success_predicate needs metric, direction (increase|decrease), and segment (last|mean)');
   return Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
+}
+
+function operationError(message: string, kind: OperationKind, input: any, surface: any = {}) {
+  const error: any = new Error(message);
+  error.surface = { operation: operationContract(kind).name, received: input, writable: surface.writable ?? {
+    intent: { meaning: 'orchestration strategy and context intent', current: 'read_self(section="pin")', accepts: 'named intent fields; runtime maps and validates them' },
+    components: { meaning: 'concrete Agent component content', current: 'read_self(section="self")' },
+    restore: { meaning: 'restore a saved Agent revision', current: 'read_self(section="lineage")' },
+  }, invalid: surface.invalid ?? [], correction: surface.correction ?? 'Edit the named writable item and submit this operation again in the same turn.' };
+  return error;
+}
+
+const CONTEXT_ORDER_ALIASES: Record<string, string> = {
+  content: 'prompts', instructions: 'prompts', prompt: 'prompts', prompts: 'prompts',
+  memory: 'memory', memories: 'memory', learned: 'memory', skills: 'skills', methods: 'skills',
+};
+/** Maps Agent intent to the private policy vocabulary at one runtime boundary. */
+export function normalizeContextIntent(intent: ContextIntent): { context: Partial<ContextPolicy> } {
+  const result: any = {};
+  if (intent.contentOrder !== undefined) {
+    if (!Array.isArray(intent.contentOrder)) throw operationError('contentOrder must be a list of content categories', 'orchestration', intent, { invalid: ['contentOrder'], correction: 'Use named categories such as content, memory, or methods.' });
+    const order = intent.contentOrder.map(value => CONTEXT_ORDER_ALIASES[String(value).toLowerCase()]);
+    const invalid = intent.contentOrder.filter((_, i) => !order[i]);
+    if (invalid.length || new Set(order).size !== order.length) throw operationError('contentOrder contains an unsupported or repeated category', 'orchestration', intent, { invalid, correction: 'Use each content category once; internal section names are accepted by the runtime only through their meaning.' });
+    result.order = order;
+  }
+  if (intent.history) result.history = { recent_turns: intent.history.recentTurns, older: intent.history.older };
+  if (intent.toolResults) result.tool_results = { max_chars: intent.toolResults.maxChars, images: intent.toolResults.images };
+  if (intent.toolArgs) result.tool_args = { max_chars: intent.toolArgs.maxChars };
+  if (intent.selfView) result.self_view = { placement: intent.selfView.placement, ledger_rows: intent.selfView.ledgerRows, max_chars: intent.selfView.maxChars };
+  if (intent.promptLayout) result.prompt_layout = { stable_prefix_chars: intent.promptLayout.stablePrefixChars, volatile_tail: intent.promptLayout.volatileTail };
+  return { context: result };
 }
 
 const isMetric = (m: any): m is Metric => !!m && typeof m.name === 'string' && typeof m.unit === 'string' && Number.isFinite(m.value);
@@ -242,7 +283,9 @@ function validatePolicy(p: Policy, c: SelfContract, outputLimit = Number.MAX_SAF
   if (!p.review || !['booked_quality_or_process_facts','disabled'].includes(p.review.trigger) || !['all_booked_facts','current_segment'].includes(p.review.evidence) || !Array.isArray(p.review.tools) || p.review.tools.some(t => typeof t !== 'string') || !p.review.verification || typeof p.review.verification.metric !== 'string' || !['increase','decrease'].includes(p.review.verification.direction) || !['last','mean'].includes(p.review.verification.segment)) throw Error('review policy needs trigger (booked_quality_or_process_facts|disabled), evidence (all_booked_facts|current_segment), tools[], and verification {metric, direction: increase|decrease, segment: last|mean}');
   if (!p.memory_strategy || !['all','recent'].includes(p.memory_strategy.retrieval) || !Number.isSafeInteger(p.memory_strategy.recent_count) || p.memory_strategy.recent_count < 1 || !['component','kind'].includes(p.memory_strategy.partition) || !['all','latest'].includes(p.memory_strategy.retention) || !Array.isArray(p.memory_strategy.sources)) throw Error('memory_strategy needs retrieval (all|recent), recent_count >= 1, partition (component|kind), retention (all|latest), and sources[]');
   if (!p.memory || (p.memory.names !== '*' && (!Array.isArray(p.memory.names) || p.memory.names.some(n => typeof n !== 'string'))) || !['name','newest'].includes(p.memory.order) || !['replace','append'].includes(p.memory.write)) throw Error('invalid memory policy');
-  if (!p.context || typeof p.context.instruction !== 'string' || !Array.isArray(p.context.order) || p.context.order.some(x => !['prompts','memory','skills'].includes(x)) || new Set(p.context.order).size !== p.context.order.length) throw Error('invalid context policy');
+  if (!p.context || typeof p.context.instruction !== 'string' || !Array.isArray(p.context.order) || p.context.order.some(x => !['prompts','memory','skills'].includes(x)) || new Set(p.context.order).size !== p.context.order.length) {
+    throw operationError('invalid context policy', 'orchestration', p.context, { invalid: ['context'], correction: 'Submit intent.contentOrder using meanings such as content, memory, or methods; the runtime maps it to the internal policy.' });
+  }
   if (p.context.reasoning !== undefined && !['all','latest','none'].includes(p.context.reasoning)) throw Error('invalid reasoning context policy');
   validateContextKnobs(p);
 }
@@ -434,7 +477,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** All reflection tools in one model response share this pending chain. */
-  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  transaction(input: { baseRevision?: number; components?: any[]; intent?: ContextIntent & Record<string, any>; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     const result = this.mutations.then(() => this.prepareTransaction(input));
     this.mutations = result.then(() => undefined, () => undefined);
     return result;
@@ -444,7 +487,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
     this.chainFailed = true;
   }
-  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; intent?: ContextIntent & Record<string, any>; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     try {
       if (this.chainFailed) throw Error('transaction chain already failed');
       if (input.baseRevision !== undefined && input.baseRevision !== this.pendingRevision) throw Error(`stale revision; expected ${this.pendingRevision}`);
@@ -474,6 +517,12 @@ export class SelfRoot extends LiveAgentSelf {
         const value = { ...c, source: c.source, baseRevision: candidate.revision };
         if (c.kind === 'memory' && c.op === 'redefine' && policy.memory.write === 'append') value.source = `${candidate.active().find(x => x.kind === 'memory' && x.name === c.name)?.source ?? ''}\n${c.source}`;
         await candidate.reflectComponent(value); addresses.push(`components.${c.kind}.${c.name}`);
+      }
+      if (input.intent !== undefined) {
+        this.assertWrite('policy');
+        const context = normalizeContextIntent(input.intent).context;
+        policy = mergePatch(policy, { context });
+        validatePolicy(policy, this.contract, this.outputLimit); addresses.push('policy.context');
       }
       if (input.orchestration !== undefined || input.restore !== undefined) {
         this.assertWrite('orchestration');
@@ -534,7 +583,7 @@ export class SelfRoot extends LiveAgentSelf {
   surface() {
     // Evolution review observes evidence; task artifacts are not edited there (design §1).
     const tools = this.inEvolutionReview
-      ? [...new Set([...(this.options.evolutionTools ?? ['read', 'ls', 'grep']), ...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? []])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
+      ? [...new Set([...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? [], ...this.policy.modes[this.currentMode].tools])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
     return [...new Set([...PROTOCOL, ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
       ...(tools.includes('agent_tools') && this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool').map(c => c.name) : [])])];
   }
@@ -843,7 +892,7 @@ export class SelfRoot extends LiveAgentSelf {
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
-      this.fact('review_message', { text: 'SELF REVIEW OPEN: examine the booked process and quality facts, identify a harness strategy address, cite the fact references, declare a measurable success predicate, and change this Agent. If the deliverable already exists, revise orchestration and rework it before the next review.' });
+      this.fact('review_frame', { in_review: true, must_change_self: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', due_windows: this.dueWindows.map(w => w.id), result: 'runtime records activation, booked facts, retention or restore' });
   }
   enterMode(mode: string) {
     if (!this.policy.modes[mode] || this.review) throw Error('mode unavailable or mode already active');
@@ -1107,25 +1156,24 @@ export class SelfRoot extends LiveAgentSelf {
     for (const component of active.architecture.components) delete (component as any).body;
     const reviewEvent = this.review && this.ledger.find(r => r.ref === this.review.event && r.type === 'event')?.value.facts;
     const reviewEvidence = reviewEvent ? { ...reviewEvent, ...this.reviewView() } : undefined;
-    const rows = this.policy.context.self_view?.ledger_rows ?? 40;
+    const rows = Math.min(this.policy.context.self_view?.ledger_rows ?? 4, 8);
     const lastRequest = this.ledger.findLast(r => r.type === 'request_record');
     const segments = this.segmentRefs.slice(-12).map(ref => { const v = this.ledger.find(r => r.ref === ref)!.value; return { ref, segment: v.segment, unit: v.unit, requests: v.requests, metrics: v.metrics }; });
-    return { root_id: this.root_id, revision: this.serial, architecture: active.architecture, ledger: rows ? this.read(Math.max(0, this.ledger.length - rows), rows) : { rows: [], next: 0, total: this.ledger.length }, parts: {
+    return { root_id: this.root_id, revision: this.serial, pin: { mode: this.currentMode, in_review: Boolean(this.review), must_change_self: Boolean(this.review), writes_resume: this.review ? 'after decide_exit; reflection remains hot' : 'now', current_knobs: { request: this.policy.request, context_intent: { meaning: 'runtime-owned context strategy', current: 'read_self(section="policy")' } }, result: this.lastSettlementReview ? 'read_self(section="ledger") for booked facts and results' : null }, architecture: active.architecture, ledger: rows ? this.read(Math.max(0, this.ledger.length - rows), rows) : { rows: [], next: 0, total: this.ledger.length }, parts: {
       components: { relation: 'executes from this root', writable_kinds: this.contract.writable.filter(x => x.startsWith('components.')) },
       orchestration: { relation: 'controls active step and trusted receipts', writable: this.contract.writable.includes('orchestration') },
       policy: { relation: 'controls modes, META, memory retrieval/write, request envelope and actual context assembly', request: this.policy.request,
         version: hash(this.policy), writable: this.contract.writable.includes('policy'), expand: 'read_self(section="policy")' },
-      context: { relation: 'working-context assembly policy: which sections, history, tool results/arguments, reasoning and self view reach each provider request, and how omitted items stay retrievable; the runtime applies the active revision to every request from the next request boundary and records its composition',
-        policy: copy(this.policy.context), request: copy(this.policy.request ?? null), version: hash(this.policy.context), address: 'policy.context', writable: this.contract.writable.includes('policy'),
-        change: 'reflect_orchestration(policy={context:{...}}) merge patch', last_composition: lastRequest?.value?.composition ?? null, retrieve: 'read_self(section="context_item", ref)' },
+      context: { relation: 'runtime assembles working context from Agent intent; composition section names are read-only facts',
+        writable: this.contract.writable.includes('policy'), change: 'reflect_orchestration(intent={...})', last_composition: lastRequest?.value?.composition ?? null, retrieve: 'read_self(section="context_item", ref)' },
       protected: { reason: this.contract.readonly_reason, contract_hash: this.contract.content_hash, boundaries: this.contract.boundaries, budget: this.contract.budget, capabilities: this.contract.capabilities, acceptance: this.contract.acceptance },
       unsupported: ['provider replacement', 'task subagents', 'cross-task default promotion', 'interactive world replay'],
     }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, settlement_count: this.settlementCount, conditions: copy(this.conditionSet), review: this.review ? { id: this.review.id, kind: this.exitOperationKind, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_operation: this.exitOperationSchema, due_windows: this.dueWindows } : null,
       ...(reviewEvidence ? { review_evidence: copy(reviewEvidence) } : {}),
-      process: { last_request: lastRequest ? { request: lastRequest.value.request, mode: lastRequest.value.pin?.mode ?? null, tokens: lastRequest.value.tokens, stop: lastRequest.value.stop,
+       process: { last_request: lastRequest ? { request: lastRequest.value.request, mode: lastRequest.value.pin?.mode ?? null, tokens: lastRequest.value.tokens, stop: lastRequest.value.stop,
           output_cap: lastRequest.value.output_cap, cut_tool_calls: lastRequest.value.cut_tool_calls, latency_ms: lastRequest.value.latency_ms, cache_supported: lastRequest.value.cache_supported,
           context_policy: lastRequest.value.context_policy, composition: lastRequest.value.composition } : null,
-        current_segment: this.segmentNumber, segments, segments_total: this.segmentRefs.length, expand: 'read_self(section="segments"|"requests")' },
+         current_segment: this.segmentNumber, segments, segments_total: this.segmentRefs.length, expand: 'read_self(section="segments"|"requests")', writable_knob: lastRequest?.value?.stop === 'output_cap' ? { name: 'maxOutputTokens', current: this.policy.request?.maxOutputTokens, fact: 'output_cap' } : null },
       instruction: this.review?.modeDefinition.instruction ?? this.policy.modes[this.currentMode].instruction,
       request_pin: this.requestPin, resources: this.resources(), activation_intent: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
       queue: this.queue.map(t => t.id), windows: this.windows.filter(w => ['open','due_unverified','due_comparable','restore_pending'].includes(w.status)), window_rules: WINDOW_RULES, task_ended: this.taskEnded ?? null,
