@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { LiveAgentSelf, validateSchema, validateSchemaStructure } from './live_orchestration_core.ts';
 import { runLiveSelfMethod, validateLiveSelfSource } from './live_self_wasi.ts';
-import type { Validator } from './agent_component_model.ts';
+import { componentAddress, minimalComponentSource, type Validator } from './agent_component_model.ts';
 
 export const copy = <T>(x: T): T => structuredClone(x);
 export const hash = (x: unknown) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -222,7 +222,7 @@ export function mergePatch(target: any, patch: any): any {
 
 /** One context item of a provider request, described without content (task- and runtime-neutral). */
 export type ContextItem = { ref: string; section: string; role?: string; kind?: 'text' | 'reasoning' | 'tool_call_args' | 'tool_result_text' | 'tool_result_image';
-  source?: string; chars: number; images: number; turn_age: number; latest_assistant?: boolean; pair?: string; segment?: number };
+  source?: string; chars: number; image_bytes?: number; images: number; turn_age: number; latest_assistant?: boolean; pair?: string; segment?: number };
 export type ContextAction = 'include' | 'stub' | 'drop' | { truncate: number };
 const SINCE_CURRENT = (i: ContextItem) => i.turn_age >= 1;
 const STUB_CHARS = 220;
@@ -561,7 +561,7 @@ export class SelfRoot extends LiveAgentSelf {
         const wanted = new Set(old.base.snapshot.components.map((c: any) => c.path));
         // Restore a method, never roll learned memory back to an older text.
         for (const c of candidate.allComponents()) if (c.kind === 'memory') wanted.add(c.path);
-        for (const c of candidate.allComponents()) if (!wanted.has(c.path)) { this.assertWrite(`components.${c.kind}`); addresses.push(`components.${c.kind}.${c.name}`); }
+          for (const c of candidate.allComponents()) if (!wanted.has(c.path)) { this.assertWrite(`components.${c.kind}`); addresses.push(componentAddress(c.kind, c.name)); }
         const saved = { snapshot: candidate.snapshot(), history: candidate.history() };
         saved.snapshot.components = saved.snapshot.components.filter(c => wanted.has(c.path));
         candidate = new LiveAgentSelf(saved,this.rootValidator);
@@ -572,15 +572,15 @@ export class SelfRoot extends LiveAgentSelf {
         if (c.kind === 'tool' && (PROTOCOL.includes(c.name) || this.contract.capabilities.includes(c.name) || (this.options.reservedToolNames ?? []).includes(c.name))) throw Error('tool name collides with protected protocol or host capability');
         const value = { ...c, source: c.source, baseRevision: candidate.revision };
         if (c.kind === 'memory' && c.op === 'redefine' && policy.memory.write === 'append') value.source = `${candidate.active().find(x => x.kind === 'memory' && x.name === c.name)?.source ?? ''}\n${c.source}`;
-        await candidate.reflectComponent(value); addresses.push(`components.${c.kind}.${c.name}`);
+        await candidate.reflectComponent(value); addresses.push(componentAddress(c.kind, c.name));
       }
       if (input.orchestration !== undefined || input.orchestration_patch !== undefined || input.restore !== undefined) {
         this.assertWrite('orchestration');
-        if (input.restore !== undefined && input.orchestration === undefined) { await candidate.reflectOrchestration({ baseRevision:candidate.revision, restore:input.restore, authorized:true }); addresses.push('orchestration'); }
+        if (input.restore !== undefined && input.orchestration === undefined) { await candidate.reflectOrchestration({ baseRevision:candidate.revision, restore:input.restore, authorized:true }); addresses.push(componentAddress('orchestration', '')); }
         if (input.orchestration !== undefined || input.orchestration_patch !== undefined) {
           const definition = normalizeOrchestration(input.orchestration ?? mergeOrchestrationPatch(candidate.current.orchestration, input.orchestration_patch));
           if (definition.roles?.length !== 1 || definition.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
-          await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: definition, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push('orchestration');
+          await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: definition, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push(componentAddress('orchestration', ''));
         }
       }
       if (input.policy !== undefined) {
@@ -588,7 +588,7 @@ export class SelfRoot extends LiveAgentSelf {
         // A restore carries a whole definition; an Agent change is a merge patch onto the current (pending) policy.
         const next = input.restore !== undefined ? copy(input.policy) : mergePatch(policy, input.policy);
         validatePolicy(next, this.contract, this.outputLimit); policy = next;
-        for (const key of Object.keys(input.policy)) addresses.push(`policy.${key}`);
+        for (const key of Object.keys(input.policy)) addresses.push(componentAddress('policy', key));
       }
       if (!addresses.length) throw Error('empty transaction');
       if (input.restore === undefined && hash(candidate.snapshot()) === hash(base.snapshot) && hash(policy) === hash(this.policy)) {
@@ -1011,31 +1011,35 @@ export class SelfRoot extends LiveAgentSelf {
     const active = this.active();
     const latest = this.segmentRefs.at(-1) ? this.ledger.find(r => r.ref === this.segmentRefs.at(-1))?.value : null;
     const entry = (name: string, kind: string, controls: string, value: any, writable: boolean, change: any, reason?: string) => {
-      const address = `${kind}.${name}`;
+      const address = kind === 'policy' ? componentAddress('policy', name.replace(/^policy\./, '')) : componentAddress(kind, name);
       const related = this.ledger.filter(r => {
         const rawAddresses = r.value?.addresses ?? r.value?.address;
         const addresses = rawAddresses === undefined ? [] : [rawAddresses];
         const flat = addresses.flatMap((x: any) => Array.isArray(x) ? x : [x]);
-        return flat.includes(address) || (r.type === 'provider_input' && (r.value?.component_addresses ?? []).includes(address)) || (r.type === 'task_outcome' && (r.value?.component_addresses ?? []).includes(address));
+        return flat.map((x: any) => String(x)).map((x: string) => x.startsWith('components.') || x.startsWith('policy.') || x === 'orchestration' ? x : x.includes('.') ? componentAddress(...x.split('.', 2) as [string,string]) : x).includes(address) || (r.type === 'provider_input' && (r.value?.component_addresses ?? []).includes(address)) || (r.type === 'task_outcome' && (r.value?.component_addresses ?? []).includes(address));
       });
+      const exposure = related.filter(r => r.type === 'provider_input').map(r => r.ref);
+      const use = related.filter(r => r.type === 'component_consumed' || r.type === 'tool_result' || r.type === 'activation_activated' || r.type === 'reflection_activated' || r.type === 'policy_applied').map(r => r.ref);
+      const effect = related.filter(r => r.type === 'task_outcome' || r.type === 'unit_preview').map(r => r.ref);
       const tried = new Set(related.flatMap(r => r.type.includes('reflection') || r.type.includes('activation') ? ['redefine'] : r.type === 'component_read' ? ['read'] : []));
       const legal = writable ? (kind === 'component' ? ['define', 'redefine', 'restore', 'read'] : ['patch', 'replace', 'restore', 'read']) : ['read'];
       return { name, kind, controls, value, writable, ops: writable ? change.ops : [], change: writable ? change : null,
-        facts: { used: related.length > 0, changed: related.some(r => r.type === 'reflection_activated'), untried: legal.filter(op => !tried.has(op)), source_refs: related.filter(r => r.type.includes('reflection') || r.type === 'provider_input').map(r => r.ref).slice(-8), outcome_refs: related.filter(r => r.type === 'task_outcome' || r.type === 'unit_preview').map(r => r.ref).slice(-8), costs: related.map(r => r.value?.cost ?? r.value?.usage ?? null).filter(Boolean).slice(-8), unknowns: related.length ? [] : ['no same-root use receipt recorded'] }, reason: writable ? undefined : reason ?? 'protected by user contract' };
+        facts: { exposure: exposure.length > 0, use: use.length > 0, effect: effect.length > 0, used: use.length > 0, changed: related.some(r => r.type === 'reflection_activated'), untried: legal.filter(op => !tried.has(op)), source_refs: [...exposure, ...use].slice(-8), outcome_refs: effect.slice(-8), costs: related.map(r => r.value?.cost ?? r.value?.usage ?? null).filter(Boolean).slice(-8), unknowns: related.length ? [] : ['no same-root use receipt recorded'] }, reason: writable ? undefined : reason ?? 'protected by user contract' };
     };
     const components = ['prompt','skill','tool','memory'].flatMap(kind => {
       const current = active.filter(c => c.kind === kind);
       const names = [...new Set(current.map(c => c.name))];
       if (!names.length) names.push(`${kind}_candidate`);
-      return names.map(name => { const c = current.find(x => x.name === name); return entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], example: { op: c ? 'redefine' : 'define', kind, name, source: c?.source ?? 'concrete component content' } }); });
+        return names.map(name => { const c = current.find(x => x.name === name); return entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], source_requirements: kind === 'tool' ? ['first ten lines must contain # program: on'] : ['non-empty source'], example: { op: c ? 'redefine' : 'define', kind, name, source: c?.source ?? minimalComponentSource(kind, name) } }); });
     });
     const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, copy((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: copy((this.policy as any)[name]) } } }));
     const protectedEntries = ['fixed_review_strategy','user_contract','provider_boundary'].map(name => entry(name, 'protected', 'visible protected element', { active: true }, false, null, name === 'fixed_review_strategy' ? 'fixed strategy for this phase' : 'user or provider boundary'));
     const categories = { orchestration: 1, policy: Object.keys(this.policy).length, prompt: components.filter(x => x.kind === 'prompt').length, skill: components.filter(x => x.kind === 'skill').length, tool: components.filter(x => x.kind === 'tool').length, memory: components.filter(x => x.kind === 'memory').length, protected: protectedEntries.length };
     const facts = this.ledger.filter(r => r.kind === 'fact').slice(-80).map(r => ({ ref: r.ref, type: r.type, revision: r.revision, request: r.request, cost: { tokens: r.value?.tokens?.total ?? null, usd: r.value?.usd_estimate ?? null }, unknowns: [] }));
+    const memories = active.filter(c => c.kind === 'memory');
     return { revision: this.serial, strategy: FIXED_REVIEW_STRATEGY, categories, entries: [
       ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: copy(this.current.orchestration) } }), ...policyEntries, ...protectedEntries
-    ], facts, object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
+    ], facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
   }
   enterMode(mode: string) {
     if (!this.policy.modes[mode] || this.review) throw Error('mode unavailable or mode already active');

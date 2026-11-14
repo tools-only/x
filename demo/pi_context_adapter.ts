@@ -39,9 +39,9 @@ export function createPiContextAdapter() {
         const base = { ref: `${messageId}.${j}`, section, role: m.role, turn_age, ...(segment !== undefined ? { segment } : {}) };
         if (m.role === 'assistant' && p.type === 'thinking') out.push({ ...base, kind: 'reasoning', source: 'assistant', chars: size(p.thinking ?? p.text ?? ''), images: 0, latest_assistant: i === latest });
         else if (m.role === 'assistant' && p.type === 'toolCall') out.push({ ...base, kind: 'tool_call_args', source: p.name, pair: p.id, chars: size(p.arguments), images: 0 });
-        else if (m.role === 'toolResult' && p.type === 'image') out.push({ ...base, kind: 'tool_result_image', source: m.toolName, pair: m.toolCallId, chars: size(p.data), images: 1 });
+        else if (m.role === 'toolResult' && p.type === 'image') out.push({ ...base, kind: 'tool_result_image', source: m.toolName, pair: m.toolCallId, chars: 0, image_bytes: Buffer.byteLength(String(p.data ?? ''), 'utf8'), images: 1 });
         else if (m.role === 'toolResult') out.push({ ...base, kind: 'tool_result_text', source: m.toolName, pair: m.toolCallId, chars: size(p.text ?? p), images: 0 });
-        else out.push({ ...base, kind: 'text', source: m.customType ?? m.role, chars: p.type === 'image' ? size(p.data) : size(p.text ?? p), images: p.type === 'image' ? 1 : 0 });
+        else out.push({ ...base, kind: 'text', source: m.customType ?? m.role, chars: p.type === 'image' ? 0 : size(p.text ?? p), image_bytes: p.type === 'image' ? Buffer.byteLength(String(p.data ?? ''), 'utf8') : 0, images: p.type === 'image' ? 1 : 0 });
       });
     }
     return out;

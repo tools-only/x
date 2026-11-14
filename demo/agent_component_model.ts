@@ -6,6 +6,22 @@ export type ComponentSpec = { kind: string; name: string; description: string; e
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;
 
+/** Canonical address used by activation, exposure, use and outcome records. */
+export function componentAddress(kind: string, name: string): string {
+  return kind === 'policy' ? `policy.${name}` : kind === 'orchestration' ? 'orchestration' : `components.${kind}.${name}`;
+}
+
+export function minimalComponentSource(kind: string, name: string): string {
+  if (kind === 'tool') return `# program: on\n# name: ${name}\n# minimal legal tool source`;
+  if (kind === 'skill') return `---\nname: ${name}\ndescription: minimal legal skill\n---\nMinimal legal skill body.`;
+  if (kind === 'prompt') return 'Minimal legal prompt body.';
+  if (kind === 'memory') return 'Minimal legal memory note.';
+  if (kind === 'context') return 'Minimal legal context policy.';
+  if (kind === 'review') return 'Minimal legal review method.';
+  if (kind === 'orchestration') return '{"steps":[]}';
+  return 'Minimal legal component source.';
+}
+
 const requirePi = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'));
 const { parseDocument } = requirePi('yaml');
 
