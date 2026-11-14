@@ -92,10 +92,10 @@ export function pptUnitMetrics(result: any, rows: any[]) {
   const normalized = units.filter((u: any) => u.normalized?.scope !== 'whole_document_unscoped').flatMap((u: any) => u.normalized?.matches ?? []);
   const cited = units.filter((u: any) => u.citation_literal?.found || u.normalized?.citation_found).length;
   return [
-    { name: 'acceptance.required_found', value: literal.filter((m: any) => m.found).length, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}` },
-    { name: 'acceptance.required_total', value: literal.length, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}` },
+    { name: 'acceptance.required_found', value: literal.filter((m: any) => m.found).length, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}`, denominator: literal.length },
+    { name: 'acceptance.required_total', value: literal.length, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}`, denominator: literal.length },
     { name: 'acceptance.citations_found', value: cited, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}` },
-    ...(normalized.length ? [{ name: 'acceptance.normalized_found', value: normalized.filter((m: any) => m.found === true).length, unit: 'count' }] : []),
+    { name: 'acceptance.normalized_found', value: normalized.filter((m: any) => m.found === true).length, unit: 'count', denominator: normalized.length },
     { name: 'render.warnings_latest', value: (result.renderer?.receipt?.warnings ?? []).length, unit: 'count' },
     ...pptSegmentMetrics(rows),
   ].map((metric: any) => ({ ...metric, scope: metric.scope ?? 'segment', observation: { artifact_hash: result.artifact?.sha256 ?? null, render_source_hash: result.renderer?.receipt?.source_sha256 ?? null, render_revision: result.renderer?.receipt?.revision ?? null, checker: result.checker?.version ?? null }, observation_id: JSON.stringify({ artifact_hash: result.artifact?.sha256 ?? null, render_source_hash: result.renderer?.receipt?.source_sha256 ?? null, render_revision: result.renderer?.receipt?.revision ?? null, checker: result.checker?.version ?? null }) }));

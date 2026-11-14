@@ -60,7 +60,7 @@ export type Policy = {
   methods: Record<string, string>;
   memory: { names: string[] | '*'; order: 'name' | 'newest'; write: 'replace' | 'append' };
   context: ContextPolicy;
-  review: { trigger: string; evidence: string; tools: string[]; verification: { metric: string; direction: 'increase' | 'decrease'; segment: 'last' | 'mean' } };
+  review: { trigger: string; evidence: string; tools: string[]; verification: { metric?: string; direction?: 'increase' | 'decrease'; segment?: 'last' | 'mean' } };
   memory_strategy: { retrieval: 'all' | 'recent'; recent_count: number; partition: 'component' | 'kind'; retention: 'all' | 'latest'; sources: string[] };
 };
 export type SelfContract = {
@@ -285,7 +285,7 @@ export function contextComposition(items: ContextItem[], actions: Record<string,
       chars_before: h.reduce((n, i) => n + i.chars, 0), chars_after: h.reduce((n, i) => n + after(i).chars, 0),
       images_before: h.reduce((n, i) => n + i.images, 0), images_after: h.reduce((n, i) => n + after(i).images, 0),
       by_source: [...by.values()].sort((a, b) => a.source.localeCompare(b.source) || a.kind.localeCompare(b.kind)) },
-    removed_refs_sample: removed.slice(0, 20).map(i => i.ref) };
+    omitted_items: removed.map(i => ({ ref: i.ref, kind: i.kind ?? 'text', source: i.source ?? i.section, chars: i.chars, images: i.images, action: act(i) })) };
 }
 
 export function seedPolicy(capabilities: string[], reviewTools: string[] = ['read', 'ls', 'grep']): Policy {
@@ -296,7 +296,7 @@ export function seedPolicy(capabilities: string[], reviewTools: string[] = ['rea
     reflect: { tools: observe, instruction: 'Review the pinned self/evidence and choose your scope, method and changes. Finish with decide_exit when it is available.', exitSchema },
     consolidate: { tools: observe, instruction: 'Organize this task\'s evidence and bounded inheritance records if useful; no automatic cross-task defaults.', exitSchema },
   }, routes: [], methods: {}, memory: { names: '*', order: 'name', write: 'replace' },
-    review: { trigger: 'booked_quality_or_process_facts', evidence: 'all_booked_facts', tools: [...observe], verification: { metric: 'process.output_cap_stops', direction: 'decrease', segment: 'last' } },
+    review: { trigger: 'booked_quality_or_process_facts', evidence: 'all_booked_facts', tools: [...observe], verification: {} },
     memory_strategy: { retrieval: 'all', recent_count: 12, partition: 'component', retention: 'latest', sources: ['agent'] },
     context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest', tool_results: { max_chars: 4000, images: 'latest' }, history: { recent_turns: 16, older: 'stub' }, self_view: { placement: 'tail', ledger_rows: 12 }, prompt_layout: { volatile_tail: 'both' } } };
 }
@@ -328,7 +328,7 @@ function validatePolicy(p: Policy, c: SelfContract, outputLimit = Number.MAX_SAF
     for (const name of [r.predicate, r.projection]) if (name && !p.methods[name]) throw Error('unresolved method');
   }
   for (const source of Object.values(p.methods)) validateLiveSelfSource(source);
-  if (!p.review || p.review.trigger !== 'booked_quality_or_process_facts' || !['all_booked_facts','current_segment'].includes(p.review.evidence) || !Array.isArray(p.review.tools) || p.review.tools.some(t => typeof t !== 'string') || !p.review.verification || typeof p.review.verification.metric !== 'string' || !['increase','decrease'].includes(p.review.verification.direction) || !['last','mean'].includes(p.review.verification.segment)) throw Error('review policy needs trigger booked_quality_or_process_facts, evidence (all_booked_facts|current_segment), tools[], and verification {metric, direction: increase|decrease, segment: last|mean}');
+  if (!p.review || p.review.trigger !== 'booked_quality_or_process_facts' || !['all_booked_facts','current_segment'].includes(p.review.evidence) || !Array.isArray(p.review.tools) || p.review.tools.some(t => typeof t !== 'string') || !p.review.verification || (p.review.verification.metric !== undefined && typeof p.review.verification.metric !== 'string') || (p.review.verification.direction !== undefined && !['increase','decrease'].includes(p.review.verification.direction)) || (p.review.verification.segment !== undefined && !['last','mean'].includes(p.review.verification.segment))) throw Error('review policy needs trigger booked_quality_or_process_facts, evidence (all_booked_facts|current_segment), tools[], and optional verification {metric, direction: increase|decrease, segment: last|mean}');
   if (!p.memory_strategy || !['all','recent'].includes(p.memory_strategy.retrieval) || !Number.isSafeInteger(p.memory_strategy.recent_count) || p.memory_strategy.recent_count < 1 || !['component','kind'].includes(p.memory_strategy.partition) || !['all','latest'].includes(p.memory_strategy.retention) || !Array.isArray(p.memory_strategy.sources)) throw Error('memory_strategy needs retrieval (all|recent), recent_count >= 1, partition (component|kind), retention (all|latest), and sources[]');
   if (!p.memory || (p.memory.names !== '*' && (!Array.isArray(p.memory.names) || p.memory.names.some(n => typeof n !== 'string'))) || !['name','newest'].includes(p.memory.order) || !['replace','append'].includes(p.memory.write)) throw Error('invalid memory policy');
   if (!p.context || typeof p.context.instruction !== 'string' || !Array.isArray(p.context.order) || p.context.order.some(x => !['prompts','memory','skills'].includes(x)) || new Set(p.context.order).size !== p.context.order.length) {
@@ -606,9 +606,13 @@ export class SelfRoot extends LiveAgentSelf {
       const knownMetrics = this.ledger.filter(r => r.type === 'task_outcome' && r.revision <= this.serial)
         .flatMap((row: any) => row.value?.metrics ?? []).filter(isMetric);
       const requestedPredicate = input.components?.find((c: any) => c.success_predicate)?.success_predicate ?? (input as any).success_predicate;
-      const metric = requestedPredicate?.metric ? knownMetrics.find(m => m.name === requestedPredicate.metric) ?? knownMetrics.find(m => m.name.includes(requestedPredicate.metric) || requestedPredicate.metric.includes(m.name)) : knownMetrics.find(m => m.name === this.options.metricInfo?.(knownMetrics).primary) ?? knownMetrics[0];
-      const info = metric ? this.options.metricInfo?.(knownMetrics) : undefined; const polarity = info && info.primary === metric!.name ? info : undefined;
-      const success_predicate = metric && (requestedPredicate?.direction || polarity?.better) ? { metric: metric.name, direction: requestedPredicate?.direction ?? (polarity?.better === 'higher' ? 'increase' : 'decrease'), segment: requestedPredicate?.segment ?? 'last', scope: requestedPredicate?.scope ?? info?.scope ?? metric.scope ?? 'segment' } : undefined;
+      const metric = requestedPredicate?.metric ? knownMetrics.find(m => m.name === requestedPredicate.metric) : undefined;
+      const legalMetrics = [...new Map(knownMetrics.map(m => [`${m.name}|${m.scope ?? 'segment'}`, { name: m.name, scope: m.scope ?? 'segment' }])).values()];
+      if (requestedPredicate && (!metric || !requestedPredicate.direction || !requestedPredicate.segment)) {
+        throw operationError('success_predicate did not resolve at the owning boundary', 'orchestration', input, { invalid: ['success_predicate'], legal_metrics: legalMetrics, correction: 'Retry this same turn with one listed metric name, its scope, direction (increase|decrease), and segment (last|mean).' });
+      }
+      const baselineRef = this.segmentRefs.at(-1) ?? null;
+      const success_predicate = requestedPredicate && metric ? { metric: metric.name, direction: requestedPredicate.direction, segment: requestedPredicate.segment, scope: requestedPredicate.scope ?? metric.scope ?? 'segment', baseline: { value: metric.value, segment: this.segmentNumber - 1, ref: baselineRef } } : undefined;
       const reviewFacts = this.reviewView().all_facts.map((r: any) => r.ref);
       const suppliedRefs = [...new Set([...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? [])])];
       const retained = suppliedRefs.filter((ref: string) => reviewFacts.includes(ref));
@@ -719,10 +723,11 @@ export class SelfRoot extends LiveAgentSelf {
     }
     const mean: Metric[] = lastMetrics.map(m => { const xs = allMetrics.filter(x => key(x) === key(m)).map(x => x.value);
       return { ...m, value: xs.reduce((a: number, b: number) => a + b, 0) / xs.length }; });
+    const resolvedPredicate = predicate_source === 'agent' && success_predicate?.metric ? { ...success_predicate, baseline: lastMetrics.find(m => m.name === success_predicate.metric && (m.scope ?? 'segment') === (success_predicate.scope ?? 'segment')) ? { value: lastMetrics.find(m => m.name === success_predicate.metric && (m.scope ?? 'segment') === (success_predicate.scope ?? 'segment'))!.value, segment: last?.value?.segment ?? null, ref: last?.ref ?? null } : null } : success_predicate;
     const window: Window = { id: `window:${this.windows.length}`, revision: this.serial, parent, review, activation, baseline: summaries.map(r => r.ref),
       baseline_segment: last ? Number(last.value.segment) : null, baseline_metrics: { last: lastMetrics, mean }, scope: [...addresses],
       due: { settlement: this.settlementCount + 1, after_use: true, rule: WINDOW_RULES.due }, ...(expected_effect ? { expected_effect } : {}),
-      success_predicate, predicate_source, evidence_refs, baseline_phase: (last?.value?.phase ?? null), effect_status: success_predicate ? 'specified' : expected_effect ? 'specified' : 'effect_unspecified', later_use_refs: [], status: 'open',
+      success_predicate: resolvedPredicate, predicate_source, evidence_refs, baseline_phase: (last?.value?.phase ?? null), effect_status: success_predicate ? 'specified' : expected_effect ? 'specified' : 'effect_unspecified', later_use_refs: [], status: 'open',
       unknowns: [...(last ? [] : ['settled_baseline']), ...(lastMetrics.length ? [] : ['repeatable_numeric_metric']), ...(success_predicate ? [] : ['success_predicate']), 'comparable_phase', 'later_use'] };
     this.windows.push(window);
     this.fact('window_created', { window: window.id, revision: window.revision, parent, activation, baseline_rule: WINDOW_RULES.baseline, baseline_segment: window.baseline_segment,
@@ -838,6 +843,9 @@ export class SelfRoot extends LiveAgentSelf {
     const item = (r: Row) => ({ ref: r.ref, type: r.type, value: copy(r.value) });
     const processTypes = new Set(['request_record', ...PROCESS_FACT_TYPES]);
     const processFacts = rows.filter(r => processTypes.has(r.type)).map(item);
+    const summaryValue = summary?.value ?? { process: {}, metrics: [] };
+    const processMetrics = Object.entries(summaryValue.process ?? {}).map(([name, value]) => ({ name: `process.${name}`, value, ref: summary?.ref ?? null }));
+    const acceptance = (summaryValue.metrics ?? []).filter((m: any) => typeof m.name === 'string' && m.name.startsWith('acceptance.')).map((m: any) => ({ ...copy(m), denominator: m.name.endsWith('_found') ? (summaryValue.metrics ?? []).find((x: any) => x.name === m.name.replace('_found', '_total'))?.value ?? null : undefined, ref: summary?.ref ?? null }));
     const toolEvents = rows.filter(r => r.type === 'event' && ['tool_succeeded', 'tool_failed', 'tool_cancelled'].includes(r.value?.type))
       .map(r => ({ ref: r.ref, type: r.value.type, facts: copy(r.value.facts) }));
     const boundaries = rows.filter(r => r.type === 'event' && ['unit_completed', 'work_quantum', 'settlement'].includes(r.value?.type))
@@ -850,9 +858,13 @@ export class SelfRoot extends LiveAgentSelf {
       return window ? { id, delivered: copy(window.delivered ?? null) } : { id, delivered: null };
     });
     const allFacts = rows.filter(r => r.kind === 'fact').map(item);
+    const requests = rows.filter(r => r.type === 'request_record').map(r => ({ ref: r.ref, request: r.value.request, usage: copy(r.value.usage ?? null), usd: r.value.usd_estimate ?? null }));
+    const omitted_context = rows.flatMap(r => (r.value?.composition?.omitted_items ?? []).map((x: any) => ({ ...copy(x), request_ref: r.ref })));
+    const legalMetrics = [...new Map((summaryValue.metrics ?? []).filter(isMetric).map((m: Metric) => [`${m.name}|${m.scope ?? 'segment'}`, { name: m.name, scope: m.scope ?? 'segment' }])).values()];
     if (this.pendingDelivery || this.options.pendingDeliveryState?.()) allFacts.push({ ref: `pending-delivery:${this.request}`, type: 'pending_final_delivery', value: { state: 'pending', action: this.pendingDeliveryName ?? 'final delivery' } });
     return { process_facts: processFacts, tool_events: toolEvents, boundaries, receipts_probes: receipts,
-      self_activity: selfActivity, quality_facts: qualityFacts, due_window_deliveries: due, all_facts: allFacts };
+      quality_facts: qualityFacts, fact_table: { process_metrics: processMetrics, unit_acceptance: acceptance, request_costs: requests, omitted_context, pending_delivery: Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.()), legal_predicate_metrics: legalMetrics },
+      self_activity: selfActivity, due_window_deliveries: due, all_facts: allFacts };
   }
   /** Host-made per-segment summary: counts, sums, max and last over recorded facts; no labels or ranking. */
   private summarizeSegment(boundaryRef: string, unit: string | null) {
@@ -1020,7 +1032,7 @@ export class SelfRoot extends LiveAgentSelf {
     const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, copy((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: copy((this.policy as any)[name]) } } }));
     const protectedEntries = ['fixed_review_strategy','user_contract','provider_boundary'].map(name => entry(name, 'protected', 'visible protected element', { active: true }, false, null, name === 'fixed_review_strategy' ? 'fixed strategy for this phase' : 'user or provider boundary'));
     const categories = { orchestration: 1, policy: Object.keys(this.policy).length, prompt: components.filter(x => x.kind === 'prompt').length, skill: components.filter(x => x.kind === 'skill').length, tool: components.filter(x => x.kind === 'tool').length, memory: components.filter(x => x.kind === 'memory').length, protected: protectedEntries.length };
-    const facts = this.ledger.filter(r => r.kind === 'fact').slice(-80).map(r => ({ ref: r.ref, type: r.type, revision: r.revision, request: r.request, cost: { tokens: null, usd: null }, unknowns: [] }));
+    const facts = this.ledger.filter(r => r.kind === 'fact').slice(-80).map(r => ({ ref: r.ref, type: r.type, revision: r.revision, request: r.request, cost: { tokens: r.value?.tokens?.total ?? null, usd: r.value?.usd_estimate ?? null }, unknowns: [] }));
     return { revision: this.serial, strategy: FIXED_REVIEW_STRATEGY, categories, entries: [
       ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: copy(this.current.orchestration) } }), ...policyEntries, ...protectedEntries
     ], facts, object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
@@ -1314,7 +1326,7 @@ export class SelfRoot extends LiveAgentSelf {
        process: { last_request: lastRequest ? { request: lastRequest.value.request, mode: lastRequest.value.pin?.mode ?? null, tokens: lastRequest.value.tokens, stop: lastRequest.value.stop,
           output_cap: lastRequest.value.output_cap, cut_tool_calls: lastRequest.value.cut_tool_calls, latency_ms: lastRequest.value.latency_ms, cache_supported: lastRequest.value.cache_supported,
           context_policy: lastRequest.value.context_policy, composition: lastRequest.value.composition } : null,
-         current_segment: this.segmentNumber, segments, segments_total: this.segmentRefs.length, expand: 'read_self(section="segments"|"requests")', writable_knob: lastRequest?.value?.stop === 'output_cap' ? { name: 'maxOutputTokens', current: this.policy.request?.maxOutputTokens, fact: 'output_cap' } : null },
+         current_segment: this.segmentNumber, segments, segments_total: this.segmentRefs.length, expand: 'read_self(section="segments"|"requests")' },
       instruction: this.review?.modeDefinition.instruction ?? this.policy.modes[this.currentMode].instruction,
       request_pin: this.requestPin, resources: this.resources(), activation_intent: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
       queue: this.queue.map(t => t.id), windows: this.windows.filter(w => ['open','due_unverified','due_comparable','restore_pending'].includes(w.status)), window_rules: WINDOW_RULES, task_ended: this.taskEnded ?? null,
