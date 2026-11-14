@@ -136,5 +136,3 @@ test('mirror self view contains the same resource record, with missing usage res
   assert.equal(s.mirror().dynamic.resources.record.via, 'daemon');
   assert.deepEqual(s.mirror().dynamic.resources.record, s.resources().record);
 });
-
-\n

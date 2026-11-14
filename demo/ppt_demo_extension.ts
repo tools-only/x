@@ -6,7 +6,6 @@
  * facilities (Python, native resources, render/look/deliver) and the hard boundaries only: budget,
  * deadline, path confinement, provider authorization.
  */
-import { FIXED_REVIEW_STRATEGY } from './self_root.ts';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -74,8 +73,10 @@ export default function pptDemo(pi: ExtensionAPI) {
   const activeManifest = () => manifest?.episodes ? { ...manifest, ...manifest.episodes[0], contract: { ...manifest.contract, acceptance: manifest.episodes[0].acceptance } } : manifest;
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
   const piContext = createPiContextAdapter();
+  // Mechanism flags (default on; EVO_MA/MB/MC=0 turns one off, EVO_LEGACY_OBLIGATION=1 restores the pre-M-A framing).
+  const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1' };
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
-    { ...PPT_SELF_ROOT_OPTIONS, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
+    { ...PPT_SELF_ROOT_OPTIONS, mechanisms: EVO_MECH, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
       pendingDeliveryState: () => agentSelf?.hasPendingFinalDelivery?.() === true,
       deliveryTransitionReached: () => !agentSelf?.hasPendingFinalDelivery?.() || agentSelf?.pendingDeliveryTransitionReady?.() === true,
       runPendingDelivery: async () => agentSelf.hasPendingFinalDelivery() ? officeDeliver({ op: 'deliver' }, new AbortController().signal, {}, true) : undefined,
@@ -318,7 +319,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('reflect_component', 'Directly hot-reflect a capability into the active Agent object. The host supplies revision and evidence bookkeeping.' + (evo ? ' Activation is before the next request.' : ''),
     Type.Object({ op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.String(), kind: Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')]),
-      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }), async (a: any) => {
+      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), write: Type.Optional(Type.Union([Type.Literal('replace'), Type.Literal('append'), Type.Literal('patch')])), patch: Type.Optional(Type.Array(Type.Object({ find: Type.String(), replace: Type.String() }))), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }), async (a: any) => {
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
       try {
@@ -693,9 +694,12 @@ export default function pptDemo(pi: ExtensionAPI) {
           ? [JSON.stringify(evo.reviewSelfView()), JSON.stringify(await evo.projection())]
           : [JSON.stringify({ root_id: evo.root_id, revision: evo.revision, mode: evo.mode, step: evo.step,
             in_review: false, pending: evo.detail('pin').activation_intent ?? null, resources: evo.resources(),
+            ...(evo.mech.observation ? { observation: evo.observationDigest() } : {}),
             read_full: 'read_self(section="self")', read_policy: 'read_self(section="policy")' })];
         const selfTail = ctx.self_view?.placement === 'tail';
-        const coreLine = `${FIXED_REVIEW_STRATEGY}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`;
+        const coreLine = evo.mech.legacy_obligation
+          ? `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`
+          : `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is available at any point in a review; a judged no-change is a valid closure. Rework stays available through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition, or at the budget boundary.`;
         const bindingText = boundComponents.length ? `## ACTIVE STEP BINDINGS\n${boundComponents.join('\n')}` : '';
         const orchestrationText = `## ACTIVE ORCHESTRATION\n${JSON.stringify({ revision: evo.current.revision, step: evo.step, definition: currentStep })}`;
         const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), bindingText, orchestrationText, ctx.instruction, coreLine].filter(Boolean).join('\n\n');
@@ -703,7 +707,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const stable = prefix;
         const volatileText = volatile.join('\n\n');
         const viewInSystem = !selfTail;
-        const reviewStrategy = evo.inEvolutionReview ? FIXED_REVIEW_STRATEGY : '';
+        const reviewStrategy = evo.inEvolutionReview ? evo.reviewStrategy() : '';
         const sections = [{ section: 'task_brief', text: taskInstructions }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
           ...(viewInSystem ? [{ section: 'self_view', text: volatileText }] : []), { section: 'projection', text: ctx.prompt_layout?.volatile_tail === 'self_view' ? '' : volatile[1] ?? '' }];
         system.content = [reviewStrategy, stable, ...(viewInSystem ? [volatileText] : [])].filter(Boolean).join('\n\n');

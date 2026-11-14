@@ -160,9 +160,15 @@ test('mode schema and action entry change together; old review definition remain
 });
 
 test('plain text ends incomplete without invented agent decision or re-trigger loop', async () => {
+  // Legacy obligation arm: an agent exit without a qualifying change is refused.
+  const legacy = new SelfRoot(contract(), undefined, undefined, undefined, undefined, { mechanisms: { legacy_obligation: true } } as any);
+  await legacy.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[],force_review:true}); await start(legacy);
+  assert.throws(()=>legacy.exit({result:{reason:'fiction'}}),/qualifying change/);
+  legacy.closeIncomplete('plain text');
+  // Default (evidence framing): a judged no-change is a valid closure; no invented decision or re-trigger loop.
   const s = new SelfRoot(contract()); await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[],force_review:true}); await start(s);
-    assert.throws(()=>s.exit({result:{reason:'fiction'}}),/qualifying change/);
-  s.closeIncomplete('plain text'); await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[]}); await start(s);
+  assert.doesNotThrow(()=>s.exit({result:{reason:'fiction'}}));
+  await s.event('settlement','session',{event_classes:['task_outcome'],coverage_tags:[]}); await start(s);
   assert.equal(s.mode,'execute');
   assert.ok(all(s).some(r=>r.type==='review_closed'));
 });
@@ -318,5 +324,3 @@ test('host schema rejection also aborts an in-flight reflection validation', asy
   await assert.rejects(transaction,/chain failed/); await start(s);
   assert.equal(s.revision,1); assert.ok(!s.surface().includes('probe'));
 });
-
-\n

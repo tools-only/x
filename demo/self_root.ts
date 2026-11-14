@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { LiveAgentSelf, validateSchema, validateSchemaStructure } from './live_orchestration_core.ts';
 import { runLiveSelfMethod, validateLiveSelfSource } from './live_self_wasi.ts';
 import { componentAddress, minimalComponentSource, type Validator } from './agent_component_model.ts';
+import { observe, renderObservation, observationHeads, type Observation } from './self_observation.ts';
 
 export const copy = <T>(x: T): T => structuredClone(x);
 export const hash = (x: unknown) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -39,7 +40,10 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   acceptanceUnits?: string[] | (() => string[]);
   canonicalSource?: () => string | undefined;
   /** Adapter-specific probe request kinds excluded from settled task requests. */
-  probeKinds?: string[] };
+  probeKinds?: string[];
+  /** Mechanism switches for single-factor ablation; defaults are the current behavior (all on, legacy off). */
+  mechanisms?: SelfRootMechanisms };
+export type SelfRootMechanisms = { observation?: boolean; compiler?: boolean; effect_return?: boolean; legacy_obligation?: boolean };
 type Mode = { tools: string[]; instruction: string; projection?: string; exitSchema: any };
 type Route = { id: string; event: string; predicate?: string; projection?: string; mode: string; priority: number; conclusion_sink: 'ledger' | 'lineage' };
 export type ImagesRule = 'all' | 'latest' | 'none';
@@ -103,7 +107,9 @@ export const CORE_CONTEXT_SECTIONS = ['prompts', 'memory', 'skills', 'instructio
 /** The core owns semantic operation definitions; adapters turn these into provider schemas and
  * dispatch consumes the same definition through normalizeOperation. Required lists are exhaustive. */
 export type OperationKind = 'review' | 'validation' | 'component' | 'orchestration';
-export const FIXED_REVIEW_STRATEGY = 'At every self-evolution entrance, inspect the complete factual space of every writable and protected object: current definition, participation and use, legal operations not yet observed, linked evidence, unknowns and costs. An existing, rendered, submitted or delivered artifact never ends the obligation to examine and evolve orchestration and component classes; rework of produced artifacts is a normal route. Distinguish exposure from actual use and follow same-root version receipts. Then the Agent chooses any change that can alter the next task action and uses the same-task result before deciding again. The host presents facts without ranking, diagnosis, recommendation or forced order.';
+export const FIXED_REVIEW_STRATEGY = 'At a self-evolution entrance the runtime delivers recorded operating facts (repeats, costs, losses, rejections, trajectory, outcome paths) beside the current definition of every writable and protected object. Judgment stays with the Agent: act on the facts, or close with decide_exit - a judged no-change is a valid closure. Changes activate at the next request boundary and their recorded effects return to the same view. The host presents facts without ranking, diagnosis, recommendation or forced order.';
+/** Pre-M-A obligation framing; active only under mechanisms.legacy_obligation. */
+export const LEGACY_REVIEW_STRATEGY = 'At every self-evolution entrance, inspect the complete factual space of every writable and protected object: current definition, participation and use, legal operations not yet observed, linked evidence, unknowns and costs. An existing, rendered, submitted or delivered artifact never ends the obligation to examine and evolve orchestration and component classes; rework of produced artifacts is a normal route. Distinguish exposure from actual use and follow same-root version receipts. Then the Agent chooses any change that can alter the next task action and uses the same-task result before deciding again. The host presents facts without ranking, diagnosis, recommendation or forced order.';
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
@@ -116,14 +122,14 @@ export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
   if (kind === 'review') return { name: 'decide_exit', description: 'Finish the current review after the host-visible review work is complete.', properties: { reason }, required: [] as string[] };
   if (kind === 'validation') return { name: 'decide_validation', description: 'Read the due window; missing or provisional comparisons remain unresolved.', properties: { window: { type: 'string' } }, required: [] as string[] };
-  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' } }, required: ['op','kind','name'] };
+  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, write: { type: 'string', enum: ['replace','append','patch'], description: 'How source lands on the current value: replace (default), append, or patch.' }, patch: { type: 'array', items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find','replace'], additionalProperties: false }, description: 'Literal find/replace edits applied to the current source when write=patch.' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' }, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: ['op','kind','name'] };
   const context = { type: 'object', properties: { order: { type: 'array', items: { type: 'string' } }, instruction: { type: 'string' }, reasoning: { type: 'string', enum: ['all','latest','none'] }, history: { type: 'object' }, tool_results: { type: 'object' }, tool_args: { type: 'object' }, self_view: { type: 'object' }, prompt_layout: { type: 'object', properties: { volatile_tail: { type: 'string', enum: ['self_view','projection','both'] } }, additionalProperties: false } }, additionalProperties: false };
   const policy = { type: 'object', properties: { modes: { type: 'object' }, routes: { type: 'array' }, methods: { type: 'object' }, memory: { type: 'object' }, memory_strategy: { type: 'object' }, context, request: { type: 'object' }, review: { type: 'object' } }, additionalProperties: false };
   const orchestrationPatch = { type: 'object', properties: {
     roles: { type: 'array' }, slots: { type: 'array' }, steps: { type: 'array' }, decisions: { type: 'array' }, transitions: { type: 'array' },
     steps_by_id: { type: 'object', additionalProperties: { type: 'object' } },
   }, additionalProperties: false };
-  return { name: 'reflect_orchestration', description: 'Apply a current orchestration patch or replacement, an atomic typed policy merge patch, component changes, or restore. A legal change is pinned before the next request.', properties: { orchestration: orchestrationSchema(), orchestration_patch: orchestrationPatch, policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' } }, required: [] as string[] };
+  return { name: 'reflect_orchestration', description: 'Apply a current orchestration patch or replacement, an atomic typed policy merge patch, component changes, or restore. A legal change is pinned before the next request.', properties: { orchestration: orchestrationSchema(), orchestration_patch: orchestrationPatch, policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, restore_scope: { type: 'array', items: { type: 'string' }, description: 'Addresses the restore is intended to revert; the host reports every other address the restore would also change.' }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' }, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: [] as string[] };
 }
 
 /** Provider-visible JSON schema generated from the one descriptor. The Agent's own mode exit schema
@@ -150,7 +156,8 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
       : spec.type === 'array' ? Array.isArray(v) : spec.type === 'object' ? !!v && typeof v === 'object' && !Array.isArray(v) : true;
     if (!ok || (spec.enum && !spec.enum.includes(v))) throw Error(`${operationContract(kind).name}: invalid ${key}${spec.enum ? `; one of ${spec.enum.join(', ')}` : ''}`);
   }
-  if (kind === 'component' && a.op !== 'restore' && typeof a.source !== 'string') throw Error('reflect_component: define/redefine needs source');
+  if (kind === 'component' && a.op !== 'restore' && typeof a.source !== 'string' && !(a.write === 'patch' && Array.isArray(a.patch) && a.patch.length)) throw Error('reflect_component: define/redefine needs source (or write:patch with a patch array)');
+  if (kind === 'component' && a.patch !== undefined && (!Array.isArray(a.patch) || a.patch.some((p: any) => !p || typeof p.find !== 'string' || typeof p.replace !== 'string'))) throw operationError('patch must be an array of {find, replace} string pairs', kind, a, { invalid: ['patch'] });
   if (kind === 'component' && a.op === 'restore' && a.version === undefined) throw Error('reflect_component: restore needs version');
   if (kind === 'orchestration' && !['policy', 'orchestration', 'orchestration_patch', 'components', 'restore'].some(k => a[k] !== undefined)) throw operationError('reflect_orchestration: include orchestration, orchestration_patch, policy, components or restore', kind, a);
   if (['component','orchestration'].includes(kind) && a.evidence_refs !== undefined && (!Array.isArray(a.evidence_refs) || a.evidence_refs.some((ref: any) => typeof ref !== 'string'))) throw operationError('evidence_refs must be an array of strings when supplied', kind, a, { invalid: ['evidence_refs'] });
@@ -195,6 +202,62 @@ function mergeOrchestrationPatch(current: any, patch: any) {
     next.steps = next.steps.map((step: any) => patch.steps_by_id[step.id] ? { ...step, ...patch.steps_by_id[step.id] } : step);
   }
   return next;
+}
+
+/** Deterministic completion of mechanical orchestration intent. Omitted transition events and requires
+ * are filled from the declared structure; a decision step with no decision-typed exit gets one to the
+ * next step in array order. Semantic choices stay the agent's: ambiguity raises one concrete question
+ * instead of a format rejection. Runs before validation; the validator itself is untouched. */
+export function compileOrchestrationIntent(def: any): { definition: any; compiled: { transition?: string; step?: string; field: string; value: any }[] } {
+  if (!def || typeof def !== 'object' || Array.isArray(def)) return { definition: def, compiled: [] };
+  const d = copy(def);
+  const compiled: { transition?: string; step?: string; field: string; value: any }[] = [];
+  const steps: any[] = Array.isArray(d.steps) ? d.steps : [];
+  const decisions: any[] = Array.isArray(d.decisions) ? d.decisions : [];
+  const transitions: any[] = Array.isArray(d.transitions) ? d.transitions : [];
+  const ask = (q: string) => { throw operationError(q, 'orchestration', def, { invalid: ['transitions'], correction: q }); };
+  const decisionOf = (stepId: any) => { const s = steps.find(x => x?.id === stepId); return s?.decision ? decisions.find(x => x?.id === s.decision) : undefined; };
+  const actionsOf = (stepId: any) => { const a = steps.find(x => x?.id === stepId)?.actions; return Array.isArray(a) ? a : []; };
+  for (const t of transitions) {
+    if (!t || typeof t !== 'object') continue;
+    const dec = decisionOf(t.from);
+    const acts = actionsOf(t.from);
+    const onKeys = t.on && typeof t.on === 'object' && !Array.isArray(t.on) ? Object.keys(t.on) : null;
+    if (t.on === undefined || t.on === null || (onKeys && onKeys.length === 0)) {
+      if (dec) t.on = { type: 'decision', id: dec.id };
+      else if (acts.length === 1) t.on = { type: 'action', action: acts[0] };
+      else ask(`transition ${t.id ?? '?'} from step '${t.from}' has no 'on' event and the step declares ${acts.length ? `${acts.length} actions (${acts.join(', ')})` : 'no decision and no action'}; which event fires it? Resend with on:{type:"action",action:"<name>"} or on:{type:"decision",id:"<decision>"}.`);
+      compiled.push({ transition: t.id, field: 'on', value: copy(t.on) });
+    } else if (onKeys && onKeys.length === 1 && !('type' in t.on)) {
+      const key = onKeys[0];
+      const props = dec?.output?.properties ?? {};
+      if (dec && key in props) { t.on = { type: 'decision', id: dec.id, path: `/${key}`, equals: t.on[key] }; compiled.push({ transition: t.id, field: 'on', value: copy(t.on) }); }
+      else ask(`transition ${t.id ?? '?'}: on key '${key}' is ${dec ? `not a property of decision '${dec.id}' output (${Object.keys(props).join(', ') || 'no properties'})` : `not an event type and step '${t.from}' has no decision`}; resend with one of those properties or on:{type:"decision",id} / on:{type:"action",action}.`);
+    }
+    if (!Array.isArray(t.requires) || t.requires.length === 0) {
+      const onType = t.on?.type;
+      if (onType === 'decision') { const dd = decisions.find(x => x?.id === t.on.id); t.requires = copy(dd?.evidence ?? []); compiled.push({ transition: t.id, field: 'requires', value: copy(t.requires) }); }
+      else if (onType === 'action' && typeof t.on.action === 'string') { t.requires = [{ type: t.on.action }]; compiled.push({ transition: t.id, field: 'requires', value: copy(t.requires) }); }
+      else if (!Array.isArray(t.requires)) t.requires = [];
+    }
+  }
+  const ids = new Set(transitions.map((t: any) => t?.id));
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (!s?.decision) continue;
+    if (transitions.some((t: any) => t?.from === s.id && t?.on?.type === 'decision')) continue;
+    const next = steps[i + 1];
+    if (!next) ask(`decision step '${s.id}' is last in step order and has no decision-typed transition out; add a transition naming its target step.`);
+    const dec = decisions.find(x => x?.id === s.decision);
+    let id = `t_${s.id}_${next.id}`;
+    for (let n = 2; ids.has(id); n++) id = `t_${s.id}_${next.id}_${n}`;
+    ids.add(id);
+    const t = { id, from: s.id, on: { type: 'decision', id: s.decision }, requires: copy(dec?.evidence ?? []), to: next.id };
+    transitions.push(t);
+    compiled.push({ step: s.id, transition: id, field: 'synthesized', value: copy(t) });
+  }
+  d.transitions = transitions;
+  return { definition: d, compiled };
 }
 
 const CONTEXT_ORDER_ALIASES: Record<string, string> = {
@@ -515,6 +578,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (section === 'definition') return copy(this.definitions.find(d => d.revision === offset));
     if (section === 'lineage') return { rows: copy(this.lineage.slice(offset, offset + count)), total: this.lineage.length };
     if (section === 'windows') return copy(this.windows);
+    if (section === 'observation') return this.observation();
     if (section === 'continuity') return { current: super.snapshot(), review: copy(this.review ?? null), requestPin: copy(this.requestPin ?? null) };
     if (section === 'conditions') return { settlement_count: this.settlementCount, conditions: copy(this.conditionSet), published_steps: copy(FLOOR_STEPS) };
     if (section === 'segments') return { rows: this.segmentRefs.slice(offset, offset + count).map(ref => ({ ref, ...copy(this.ledger.find(r => r.ref === ref)!.value) })), total: this.segmentRefs.length };
@@ -523,6 +587,18 @@ export class SelfRoot extends LiveAgentSelf {
     if (section === 'ledger' && (offset as any) === undefined) return this.read(0, count);
     throw Error('unknown self section');
   }
+  /** Effective mechanism switches; the adapter may turn individual mechanisms off for ablation runs. */
+  get mech(): Required<SelfRootMechanisms> { return { observation: true, compiler: true, effect_return: true, legacy_obligation: false, ...(this.options.mechanisms ?? {}) }; }
+  /** The one fixed strategy line shown with the self view; evidence framing unless legacy obligation is on. */
+  reviewStrategy(): string { return this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY; }
+  /** Three-altitude recorded operating facts over this ledger - the dynamic facet of the one self view. */
+  observation(): Observation {
+    const decisions = ((this.current?.orchestration?.decisions ?? []) as any[]).map(d => `decide:${d.id}`);
+    const capabilities = [...new Set([...(this.lastSurface.length ? this.lastSurface : this.surface()), ...decisions])];
+    return observe({ ledger: this.ledger, capabilities, components: this.active().map(c => ({ kind: c.kind, name: c.name })) });
+  }
+  observationText(budget = 2800) { return renderObservation(this.observation(), budget); }
+  observationDigest() { return observationHeads(this.observation()); }
   private pinView() {
     return this.review ? this.reviewSelfView() : { ...this.mirror(), writable: this.contract.writable, operations: PROTOCOL };
   }
@@ -542,7 +618,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** All reflection tools in one model response share this pending chain. */
-  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     const result = this.mutations.then(() => this.prepareTransaction(input));
     this.mutations = result.then(() => undefined, () => undefined);
     return result;
@@ -552,7 +628,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
     this.chainFailed = true;
   }
-  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
     try {
       if (this.chainFailed) throw Error('transaction chain already failed');
       if (input.baseRevision !== undefined && input.baseRevision !== this.pendingRevision) throw Error(`stale revision; expected ${this.pendingRevision}`);
@@ -561,16 +637,36 @@ export class SelfRoot extends LiveAgentSelf {
       let candidate = new LiveAgentSelf(base, this.rootValidator);
       let policy = copy(this.pending?.policy ?? this.policy);
       const addresses: string[] = [];
+      const compiledEntries: { transition?: string; step?: string; field: string; value: any }[] = [];
+      const skippedUnchanged: string[] = [];
+      let restoreScope: Set<string> | null = null;
+      const restoreNotRestored: string[] = [];
       if (input.restore !== undefined) {
         const old = this.definitions.find(d => d.revision === input.restore);
         if (!old) throw Error('unknown same-root snapshot');
+        restoreScope = this.mech.compiler && Array.isArray(input.restore_scope) && input.restore_scope.length ? new Set(input.restore_scope.map(String)) : null;
+        const curPolicy = copy(this.pending?.policy ?? this.policy);
+        // Intent-scoped restore: only the named addresses revert; everything else stays current.
+        const restoreOrch = !restoreScope || restoreScope.has(componentAddress('orchestration', ''));
+        const scopedPolicyKeys = Object.keys(old.policy).filter(k => !restoreScope || restoreScope.has(componentAddress('policy', k)));
         // Definitions only. Current receipts, resources and slot continuity stay current.
-        input = { ...input, policy: old.policy, orchestration: old.base.snapshot.orchestration,
-          components: old.base.snapshot.components.filter((c: any) => c.kind !== 'memory').map((c: any) => ({ kind: c.kind, name: c.name, source: c.source, op: candidate.allComponents().some(x => x.path === c.path) ? 'redefine' : 'define' })) };
+        input = { ...input, policy: restoreScope ? (scopedPolicyKeys.length ? { ...curPolicy, ...Object.fromEntries(scopedPolicyKeys.map(k => [k, (old.policy as any)[k]])) } : undefined) : old.policy,
+          orchestration: restoreOrch ? old.base.snapshot.orchestration : undefined,
+          components: old.base.snapshot.components.filter((c: any) => c.kind !== 'memory' && (!restoreScope || restoreScope.has(componentAddress(c.kind, c.name)))).map((c: any) => ({ kind: c.kind, name: c.name, source: c.source, op: candidate.allComponents().some(x => x.path === c.path) ? 'redefine' : 'define' })) };
         const wanted = new Set(old.base.snapshot.components.map((c: any) => c.path));
         // Restore a method, never roll learned memory back to an older text.
         for (const c of candidate.allComponents()) if (c.kind === 'memory') wanted.add(c.path);
+        // A component outside the named scope stays current even when absent from the restored definition.
+        if (restoreScope) for (const c of candidate.allComponents()) if (!restoreScope.has(componentAddress(c.kind, c.name))) wanted.add(c.path);
           for (const c of candidate.allComponents()) if (!wanted.has(c.path)) { this.assertWrite(`components.${c.kind}`); addresses.push(componentAddress(c.kind, c.name)); }
+        // Address-diff pushback: record what differs from the restored definition but stayed current because it was out of scope.
+        if (restoreScope) {
+          const curComps = new Map(candidate.allComponents().filter((c: any) => c.kind !== 'memory').map((c: any) => [componentAddress(c.kind, c.name), c.source]));
+          const oldComps = new Map(old.base.snapshot.components.filter((c: any) => c.kind !== 'memory').map((c: any) => [componentAddress(c.kind, c.name), c.source]));
+          for (const addr of new Set([...curComps.keys(), ...oldComps.keys()])) if (curComps.get(addr) !== oldComps.get(addr) && !restoreScope.has(addr)) restoreNotRestored.push(addr);
+          for (const k of new Set([...Object.keys(curPolicy), ...Object.keys(old.policy)])) if (!restoreScope.has(componentAddress('policy', k)) && hash((curPolicy as any)[k] ?? null) !== hash((old.policy as any)[k] ?? null)) restoreNotRestored.push(componentAddress('policy', k));
+          if (!restoreOrch && hash(candidate.current.orchestration ?? null) !== hash(old.base.snapshot.orchestration ?? null)) restoreNotRestored.push(componentAddress('orchestration', ''));
+        }
         const saved = { snapshot: candidate.snapshot(), history: candidate.history() };
         saved.snapshot.components = saved.snapshot.components.filter(c => wanted.has(c.path));
         candidate = new LiveAgentSelf(saved,this.rootValidator);
@@ -580,14 +676,29 @@ export class SelfRoot extends LiveAgentSelf {
         if (c.kind === 'subagent') throw Error('v1 has one agent; task subagents are not authorized');
         if (c.kind === 'tool' && (PROTOCOL.includes(c.name) || this.contract.capabilities.includes(c.name) || (this.options.reservedToolNames ?? []).includes(c.name))) throw Error('tool name collides with protected protocol or host capability');
         const value = { ...c, source: c.source, baseRevision: candidate.revision };
-        if (c.kind === 'memory' && c.op === 'redefine' && policy.memory.write === 'append') value.source = `${candidate.active().find(x => x.kind === 'memory' && x.name === c.name)?.source ?? ''}\n${c.source}`;
+        const currentSource = () => candidate.active().find(x => x.kind === c.kind && x.name === c.name)?.source;
+        if (this.mech.compiler && c.op === 'redefine' && c.write === 'append') value.source = `${currentSource() ?? ''}\n${c.source ?? ''}`;
+        else if (this.mech.compiler && c.op === 'redefine' && c.write === 'patch') {
+          let src = currentSource();
+          if (typeof src !== 'string') throw operationError(`patch needs an existing ${c.kind} ${c.name}`, 'component', c, { invalid: ['write'], correction: `Component ${c.kind}/${c.name} has no current source; use op:define with full source instead of write:patch.` });
+          for (const p of c.patch ?? []) {
+            if (!p || typeof p.find !== 'string' || !src.includes(p.find)) throw operationError('patch find text is not present in the current source', 'component', c, { invalid: ['patch'], correction: `The find text ${JSON.stringify(String(p?.find ?? '')).slice(0, 80)} is not in ${c.kind}/${c.name}; read_self_component("${c.kind}","${c.name}") and resend the exact current text.` });
+            src = src.split(p.find).join(p.replace ?? '');
+          }
+          value.source = src;
+        }
+        else if (c.kind === 'memory' && c.op === 'redefine' && c.write === undefined && policy.memory.write === 'append') value.source = `${currentSource() ?? ''}\n${c.source}`;
+        // Hash gate: a source identical to the current version does not bump the version or open a window.
+        if (this.mech.compiler && c.op === 'redefine' && currentSource() === value.source) { skippedUnchanged.push(componentAddress(c.kind, c.name)); continue; }
         await candidate.reflectComponent(value); addresses.push(componentAddress(c.kind, c.name));
       }
-      if (input.orchestration !== undefined || input.orchestration_patch !== undefined || input.restore !== undefined) {
+      if (input.orchestration !== undefined || input.orchestration_patch !== undefined || (input.restore !== undefined && (!restoreScope || restoreScope.has(componentAddress('orchestration', ''))))) {
         this.assertWrite('orchestration');
-        if (input.restore !== undefined && input.orchestration === undefined) { await candidate.reflectOrchestration({ baseRevision:candidate.revision, restore:input.restore, authorized:true }); addresses.push(componentAddress('orchestration', '')); }
+        if (input.restore !== undefined && input.orchestration === undefined && input.orchestration_patch === undefined) { await candidate.reflectOrchestration({ baseRevision:candidate.revision, restore:input.restore, authorized:true }); addresses.push(componentAddress('orchestration', '')); }
         if (input.orchestration !== undefined || input.orchestration_patch !== undefined) {
-          const definition = normalizeOrchestration(input.orchestration ?? mergeOrchestrationPatch(candidate.current.orchestration, input.orchestration_patch));
+          let definition = normalizeOrchestration(input.orchestration ?? mergeOrchestrationPatch(candidate.current.orchestration, input.orchestration_patch));
+          // Intent compiler: deterministic completion of mechanical wiring; ambiguity asks one concrete question.
+          if (this.mech.compiler) { const completed = compileOrchestrationIntent(definition); definition = completed.definition; compiledEntries.push(...completed.compiled); }
           if (definition.roles?.length !== 1 || definition.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
           await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: definition, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push(componentAddress('orchestration', ''));
         }
@@ -597,8 +708,9 @@ export class SelfRoot extends LiveAgentSelf {
         // A restore carries a whole definition; an Agent change is a merge patch onto the current (pending) policy.
         const next = input.restore !== undefined ? copy(input.policy) : mergePatch(policy, input.policy);
         validatePolicy(next, this.contract, this.outputLimit); policy = next;
-        for (const key of Object.keys(input.policy)) addresses.push(componentAddress('policy', key));
+        for (const key of Object.keys(input.policy)) if (!restoreScope || restoreScope.has(componentAddress('policy', key))) addresses.push(componentAddress('policy', key));
       }
+      if (!addresses.length && skippedUnchanged.length) return { status: 'no_change', changed: false, reason: 'source identical to the current version; no version bump and no validation window', current: skippedUnchanged.map(address => ({ address, value: 'read_self_component(kind, name)' })) };
       if (!addresses.length) throw Error('empty transaction');
       if (input.restore === undefined && hash(candidate.snapshot()) === hash(base.snapshot) && hash(policy) === hash(this.policy)) {
         return { status: 'no_change', changed: false, reason: 'candidate matches the active self', current: addresses.map(address => ({ address, value: address === 'policy.context' ? copy(policy.context) : 'read_self(section="self")' })) };
@@ -626,11 +738,19 @@ export class SelfRoot extends LiveAgentSelf {
       const suppliedRefs = [...new Set([...(input.components?.flatMap((c: any) => c.evidence_refs ?? []) ?? []), ...(input.evidence_refs ?? [])])];
       const retained = suppliedRefs.filter((ref: string) => reviewFacts.includes(ref));
       const discarded = suppliedRefs.filter((ref: string) => !reviewFacts.includes(ref)).map(ref => ({ ref, reason: 'not a booked fact reference in this review' }));
-      const evidence_refs = [...new Set([...(evolution ? reviewFacts : []), ...retained])];
-      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length ? [{ addresses, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional', evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
+      // Effect return: evidence is what the agent cites; the full booked set is not auto-attached.
+      const evidence_refs = this.mech.effect_return ? retained : [...new Set([...(evolution ? reviewFacts : []), ...retained])];
+      // Effect return: a validation window opens only for a declared effect; an undeclared change activates without one.
+      const windowDue = !this.mech.effect_return || Boolean(requestedPredicate || input.expected_effect);
+      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length && windowDue ? [{ addresses, expected_effect: input.expected_effect, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional', evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
       return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null,
-        evidence_refs: { retained, discarded, auto_attached: evolution ? reviewFacts : [] }, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional' }).value;
+        ...(compiledEntries.length ? { compiled: compiledEntries } : {}),
+        ...(skippedUnchanged.length ? { unchanged_skipped: skippedUnchanged } : {}),
+        ...(restoreScope ? { restore_scope: [...restoreScope], differs_not_restored: restoreNotRestored } : {}),
+        evidence_refs: { retained, discarded, auto_attached: evolution && !this.mech.effect_return ? reviewFacts : [] }, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional',
+        ...(input.expected_effect ? { expected_effect: input.expected_effect } : {}),
+        ...(evolution && addresses.length ? { validation_window: windowDue ? 'opens at activation' : 'none; a window opens when the change declares expected_effect or success_predicate' } : {}) }).value;
     } catch (e) {
       this.abortTransaction(e); throw e;
     }
@@ -781,6 +901,7 @@ export class SelfRoot extends LiveAgentSelf {
     w.status = verification === 'comparable' ? 'due_comparable' : reason.startsWith('task end:') ? 'unverified_at_task_end' : 'due_unverified';
     w.delivered = { reason, baseline_segment: w.baseline_segment, observed_segment: observedRow?.value?.segment ?? null, observed_ref: observedRef ?? null,
       metric_comparisons: comparisons, missing_metrics, later_use: w.later_use_refs.length > 0,
+      ...(w.expected_effect ? { expected_effect: w.expected_effect } : {}),
       later_use_refs: w.later_use_refs.slice(-20), missing, verification, success_predicate: predicate ?? null, predicate_source: w.predicate_source ?? (predicate ? 'agent' : null), predicate_met: verification === 'comparable' ? Boolean(predicateMet) : null, restore_default: w.parent };
     return this.fact('validation_delivered', { window: w.id, ...w.delivered });
   }
@@ -954,7 +1075,7 @@ export class SelfRoot extends LiveAgentSelf {
       const checkpoint = segmentRows.some(r => checkpointTypes.has(r.type));
       const subtype = segmentRows.some(r => r.type === 'event' && ['tool_failed', 'tool_cancelled', 'request_paused', 'watch_stall'].includes(r.value?.type));
       const processFault = Number(process?.output_cap_stops ?? 0) > 0 || Number(process?.tool_errors ?? 0) > 0;
-      const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','reflection_validation_failed','acceptance_result','validation_delivered','tool_failed'].includes(r.type)) || subtype || processFault || checkpoint;
+      const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','reflection_validation_failed','acceptance_result',...(this.mech.effect_return ? [] : ['validation_delivered']),'tool_failed'].includes(r.type)) || subtype || processFault || checkpoint;
       if (newFacts || forcedReview) triggers.push({ id: 'evolution_review', source: forcedReview ? 'requested_review' : 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
     }
     if (type === 'heartbeat' && !quiet) triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
@@ -980,7 +1101,12 @@ export class SelfRoot extends LiveAgentSelf {
         });
         if (w.success_predicate && !quality) { w.unknowns = [...new Set([...w.unknowns, 'awaiting_observation'])]; continue; }
         this.deliverWindow(w, `settlement ${this.settlementCount}`, summary?.ref);
-        if (!quiet) triggers.push({ id: w.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
+        // Effect return: the host evaluates the agent-declared predicate mechanically at due; retain/restore lands as facts.
+        if (this.mech.effect_return && w.predicate_source === 'agent' && w.status === 'due_comparable') {
+          try { await this.interpret(w.id); } catch (e) { this.fact('validation_error', { window: w.id, error: String(e) }); }
+        }
+        // A delivered window lands as facts in the self view; it does not summon a review by itself.
+        if (!quiet && !this.mech.effect_return) triggers.push({ id: w.id, source: 'validation_due', mode: 'reflect', conclusion_sink: 'ledger' });
       }
       const comparisons = this.ledger.filter(r => r.type === 'change_retained' && r.value?.delivered?.predicate_met === true);
       const prior = this.conditionSet.floor;
@@ -994,9 +1120,15 @@ export class SelfRoot extends LiveAgentSelf {
     }
 
     if (triggers.length) {
+      const pendingDelivery = Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.());
+      if (pendingDelivery && !forcedReview) {
+        // No new reviews while final delivery is pending; the facts stay booked for the next entrance.
+        this.fact('review_suppressed', { boundary, event: event.ref, triggers: triggers.map((t: any) => t.id), reason: 'final delivery pending' });
+      } else {
       const existing = this.queue.find(t => t.boundary === boundary);
       if (existing) existing.triggers.push(...triggers);
       else this.queue.push({ id: `review:${event.ref}`, boundary, event: event.ref, triggers, revision: this.serial, ledger_offset: this.ledger.length });
+      }
     }
     return { event: event.ref, triggers, ...(summary ? { segment_summary: summary.ref } : {}) };
   }
@@ -1017,11 +1149,15 @@ export class SelfRoot extends LiveAgentSelf {
       const shown = this.reviewView().quality_facts.map((x: any) => x.ref);
       this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
-      this.fact('self_view', { review: ticket.id, view: this.reviewSelfView() });
+      this.fact('self_view', { review: ticket.id, view: { revision: this.serial, full: 'read_self(section="pin")' } });
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
     const due_windows = this.dueWindows.map(id => { const w = this.windows.find(x => x.id === id)!; return { id, predicate: w.success_predicate ?? null, baseline: w.baseline_metrics, delivered: w.delivered ?? null, status: w.status }; });
-    this.fact('review_frame', { in_review: true, must_change_self: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', artifact_does_not_end_evolution: true, rework_path: 'reflect orchestration; rewrite; render; resubmit or preview', pending_final_delivery: Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.()), due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' });
+    const frame: any = { in_review: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', pending_final_delivery: Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.()), due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' };
+    if (this.mech.legacy_obligation) Object.assign(frame, { must_change_self: true, artifact_does_not_end_evolution: true, rework_path: 'reflect orchestration; rewrite; render; resubmit or preview' });
+    else frame.exit = 'decide_exit is available at any point; a judged no-change is a valid closure';
+    if (this.mech.observation) frame.observation = this.observationText(2400);
+    this.fact('review_frame', frame);
   }
   reviewSelfView() {
     const active = this.active();
@@ -1046,16 +1182,20 @@ export class SelfRoot extends LiveAgentSelf {
       const current = active.filter(c => c.kind === kind);
       const names = [...new Set(current.map(c => c.name))];
       if (!names.length) names.push(`${kind}_candidate`);
-        return names.map(name => { const c = current.find(x => x.name === name); return entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], source_requirements: kind === 'tool' ? ['first ten lines must contain # program: on'] : ['non-empty source'], example: { op: c ? 'redefine' : 'define', kind, name, source: c?.source ?? minimalComponentSource(kind, name) } }); });
+        return names.map(name => { const c = current.find(x => x.name === name); return entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true, chars: c.source?.length ?? null, current_source: 'read_self_component(kind, name)' } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], source_requirements: kind === 'tool' ? ['first ten lines must contain # program: on'] : ['non-empty source'], example: c ? { op: 'redefine', kind, name } : { op: 'define', kind, name, source: minimalComponentSource(kind, name) } }); });
     });
-    const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, copy((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: copy((this.policy as any)[name]) } } }));
+    const policyValue = (v: any) => { const s = JSON.stringify(v); return s.length <= 400 ? copy(v) : { keys: Object.keys(v ?? {}), chars: s.length, full: 'read_self(section="policy")' }; };
+    const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, policyValue((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: '<merge patch onto the current value>' } } }));
     const protectedEntries = ['fixed_review_strategy','user_contract','provider_boundary'].map(name => entry(name, 'protected', 'visible protected element', { active: true }, false, null, name === 'fixed_review_strategy' ? 'fixed strategy for this phase' : 'user or provider boundary'));
     const categories = { orchestration: 1, policy: Object.keys(this.policy).length, prompt: components.filter(x => x.kind === 'prompt').length, skill: components.filter(x => x.kind === 'skill').length, tool: components.filter(x => x.kind === 'tool').length, memory: components.filter(x => x.kind === 'memory').length, protected: protectedEntries.length };
-    const facts = this.ledger.filter(r => r.kind === 'fact').slice(-80).map(r => ({ ref: r.ref, type: r.type, revision: r.revision, request: r.request, cost: { tokens: r.value?.tokens?.total ?? null, usd: r.value?.usd_estimate ?? null }, unknowns: [] }));
+    const factRows = this.ledger.filter(r => r.kind === 'fact');
+    const byType: Record<string, number> = {};
+    for (const r of factRows) byType[r.type] = (byType[r.type] ?? 0) + 1;
+    const facts = { total: factRows.length, by_type: byType, last: factRows.slice(-12).map(r => ({ ref: r.ref, type: r.type, revision: r.revision, request: r.request })), full: 'read_self(section="ledger", offset, count)' };
     const memories = active.filter(c => c.kind === 'memory');
-    return { revision: this.serial, strategy: FIXED_REVIEW_STRATEGY, categories, entries: [
-      ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: copy(this.current.orchestration) } }), ...policyEntries, ...protectedEntries
-    ], facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
+    return { revision: this.serial, strategy: this.reviewStrategy(), categories, entries: [
+      ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: 'full replacement or orchestration_patch; the current definition is this entry value' } }), ...policyEntries, ...protectedEntries
+    ], ...(this.mech.observation ? { observation: this.observationText(2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
   }
   enterMode(mode: string) {
     if (!this.policy.modes[mode] || this.review) throw Error('mode unavailable or mode already active');
@@ -1084,7 +1224,7 @@ export class SelfRoot extends LiveAgentSelf {
     const review = this.review;
     const reason = input.reason ?? input.result?.reason;
     const result = input.result ?? (reason !== undefined ? { reason } : {});
-    if (/already\s+(?:done|finished|delivered)|(?:artifact|delivery).{0,32}(?:risk|risky)|risk.{0,32}(?:artifact|delivered)/i.test(String(reason ?? ''))) {
+    if (this.mech.legacy_obligation && /already\s+(?:done|finished|delivered)|(?:artifact|delivery).{0,32}(?:risk|risky)|risk.{0,32}(?:artifact|delivered)/i.test(String(reason ?? ''))) {
       const correction = 'Continue self-evolution: an existing or delivered artifact does not close review. Rewrite the artifact through the active orchestration, then render and resubmit/preview as needed. Final delivery is pending and will complete after the scheduled work or at the authorized budget boundary.';
       this.fact('exit_correction', { review: review.id, rationale: reason, correction, pending_delivery: Boolean(this.pendingDelivery) });
       return { accepted: false, terminate: false, same_turn_correction: correction, pending_delivery: Boolean(this.pendingDelivery) };
@@ -1106,7 +1246,7 @@ export class SelfRoot extends LiveAgentSelf {
     const evolution = this.inEvolutionReview;
     const unresolved = evolution && closedBy.startsWith('mechanical:') && !this.reviewChanged();
     const outcome = unresolved || closedBy.includes('review_unresolved') ? 'review_unresolved' : review.changes.length > 0 ? 'activated' : this.pending ? 'activation_intent' : 'closed';
-    if (evolution && closedBy === 'agent' && !this.reviewChanged()) throw Error('host-opened evolution review requires a qualifying change');
+    if (this.mech.legacy_obligation && evolution && closedBy === 'agent' && !this.reviewChanged()) throw Error('host-opened evolution review requires a qualifying change');
     const undecided = (review.windows ?? []).filter((id: string) => this.windows.some(w => w.id === id && ['due_unverified', 'due_comparable'].includes(w.status)));
     for (const id of undecided) this.fact('validation_undecided', { window: id, review: review.id });
     const pinned = this.ledger.find(r => r.ref === review.event)?.value?.facts?.evidenceRefs;
@@ -1259,6 +1399,7 @@ export class SelfRoot extends LiveAgentSelf {
   }
   pin(kind = 'task') {
     this.guard(); this.request++;
+    if (this.review) this.reviewRequests++;
     this.requestPin = { request: this.request, revision: this.serial, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, context_policy_revision: this.serial, ledger_offset: this.ledger.length, step: this.step, kind };
     this.executionGrant = [...this.lastSurface];
     return copy(this.requestPin);
@@ -1320,11 +1461,17 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.policy.memory_strategy.retrieval === 'recent') memories = memories.slice(-this.policy.memory_strategy.recent_count);
     return memories;
   }
+  /** Cheap per-kind counts of the self catalog (same shape reviewSelfView reports). */
+  selfCategories() {
+    const active = this.active();
+    const count = (kind: string) => new Set(active.filter(c => c.kind === kind).map(c => c.name)).size || 1;
+    return { orchestration: 1, policy: Object.keys(this.policy).length, prompt: count('prompt'), skill: count('skill'), tool: count('tool'), memory: count('memory'), protected: 3 };
+  }
   async projection() {
     const p = this.review?.policy ?? this.policy;
     const name = this.review?.triggers.find((r: any) => r.projection)?.projection ?? this.review?.modeDefinition.projection ?? p.modes[this.currentMode].projection;
     if (!name) return { counts: { facts: this.ledger.filter(r => r.kind === 'fact').length, claims: this.ledger.filter(r => r.kind === 'claim').length,
-      outcomes: this.ledger.filter(r => r.type === 'task_outcome').length, requests: this.request, units: this.units }, strategy: FIXED_REVIEW_STRATEGY, factual_space: this.reviewSelfView().entries, evidence: { offset: 0, total: this.ledger.length, read: 'read_self(section="ledger",offset,count)' } };
+      outcomes: this.ledger.filter(r => r.type === 'task_outcome').length, requests: this.request, units: this.units }, strategy: this.reviewStrategy(), factual_space: { categories: this.selfCategories(), entries: 'read_self(section="pin")' }, evidence: { offset: 0, total: this.ledger.length, read: 'read_self(section="ledger",offset,count)' } };
     try { return { method: name, version: hash(p.methods[name]), value: (await this.evaluate(p.methods[name], { resources: this.resources(), evidence_index: this.ledger.map(r => ({ ref: r.ref, kind: r.kind, type: r.type, revision: r.revision })) }, { projection: name })).value }; }
     catch (e) { return { failed: String(e), fallback: { offset: 0, total: this.ledger.length }, structure_preserved: true }; }
   }
@@ -1336,7 +1483,7 @@ export class SelfRoot extends LiveAgentSelf {
     const rows = Math.min(this.policy.context.self_view?.ledger_rows ?? 4, 8);
     const lastRequest = this.ledger.findLast(r => r.type === 'request_record');
     const segments = this.segmentRefs.slice(-12).map(ref => { const v = this.ledger.find(r => r.ref === ref)!.value; return { ref, segment: v.segment, unit: v.unit, requests: v.requests, metrics: v.metrics }; });
-    return { root_id: this.root_id, revision: this.serial, strategy: FIXED_REVIEW_STRATEGY, factual_space: this.reviewSelfView().entries, pin: { mode: this.currentMode, in_review: Boolean(this.review), must_change_self: Boolean(this.review), writes_resume: this.review ? 'after decide_exit; reflection remains hot' : 'now', current_knobs: { request: this.policy.request, context_policy: { meaning: 'runtime-owned context strategy', current: 'read_self(section="policy")' } }, result: this.lastSettlementReview ? 'read_self(section="ledger") for booked facts and results' : null }, architecture: active.architecture, ledger: rows ? this.read(Math.max(0, this.ledger.length - rows), rows) : { rows: [], next: 0, total: this.ledger.length }, parts: {
+    return { root_id: this.root_id, revision: this.serial, strategy: this.reviewStrategy(), factual_space: { categories: this.selfCategories(), entries: 'read_self(section="pin")' }, pin: { mode: this.currentMode, in_review: Boolean(this.review), ...(this.mech.legacy_obligation ? { must_change_self: Boolean(this.review) } : {}), writes_resume: this.review ? 'after decide_exit; reflection remains hot' : 'now', current_knobs: { request: this.policy.request, context_policy: { meaning: 'runtime-owned context strategy', current: 'read_self(section="policy")' } }, result: this.lastSettlementReview ? 'read_self(section="ledger") for booked facts and results' : null }, architecture: active.architecture, ledger: rows ? this.read(Math.max(0, this.ledger.length - rows), rows) : { rows: [], next: 0, total: this.ledger.length }, parts: {
       components: { relation: 'executes from this root', writable_kinds: this.contract.writable.filter(x => x.startsWith('components.')) },
       orchestration: { relation: 'controls active step and trusted receipts', writable: this.contract.writable.includes('orchestration') },
       policy: { relation: 'controls modes, META, memory retrieval/write, request envelope and actual context assembly', request: this.policy.request,
@@ -1345,7 +1492,7 @@ export class SelfRoot extends LiveAgentSelf {
         writable: this.contract.writable.includes('policy'), change: 'reflect_orchestration({policy:{context:{...}}})', last_composition: lastRequest?.value?.composition ?? null, retrieve: 'read_self(section="context_item", ref)' },
       protected: { reason: this.contract.readonly_reason, contract_hash: this.contract.content_hash, boundaries: this.contract.boundaries, budget: this.contract.budget, capabilities: this.contract.capabilities, acceptance: this.contract.acceptance },
       unsupported: ['provider replacement', 'task subagents', 'cross-task default promotion', 'interactive world replay'],
-    }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, settlement_count: this.settlementCount, conditions: copy(this.conditionSet), review: this.review ? { id: this.review.id, kind: this.exitOperationKind, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_operation: this.exitOperationSchema, due_windows: this.dueWindows } : null,
+    }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, settlement_count: this.settlementCount, conditions: copy(this.conditionSet), ...(this.mech.observation ? { observation: this.observationDigest() } : {}), review: this.review ? { id: this.review.id, kind: this.exitOperationKind, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_operation: this.exitOperationSchema, due_windows: this.dueWindows } : null,
       ...(reviewEvidence ? { review_evidence: copy(reviewEvidence) } : {}),
        process: { last_request: lastRequest ? { request: lastRequest.value.request, mode: lastRequest.value.pin?.mode ?? null, tokens: lastRequest.value.tokens, stop: lastRequest.value.stop,
           output_cap: lastRequest.value.output_cap, cut_tool_calls: lastRequest.value.cut_tool_calls, latency_ms: lastRequest.value.latency_ms, cache_supported: lastRequest.value.cache_supported,
