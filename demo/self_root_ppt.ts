@@ -109,6 +109,7 @@ export const PPT_SELF_ROOT_OPTIONS = {
   actionOf: (name: string, args: any) => name === 'office' ? `office.${args?.op}` : name,
   boundaryTools: ['submit_unit', 'office.deliver'],
   processFactTypes: ['render_action_receipt','artifact_write'],
+  workCheckpointTypes: ['render_action_receipt'],
   finalDeliveryTools: ['office.deliver'],
   contextSections: ['task_brief', 'task_status'],
   probeKinds: ['renderer-preflight'],

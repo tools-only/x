@@ -150,7 +150,10 @@ export default function pptDemo(pi: ExtensionAPI) {
     try { if (evo) evo.allowTool(tool.name, args[1]); result = await tool.execute(...args); }
     catch (error) {
       if (evo && ['reflect_component','reflect_orchestration'].includes(tool.name)) evo.abortTransaction(error);
-      if (evo) await evo.event(args[2]?.aborted ? 'tool_cancelled' : 'tool_failed',`tool:${args[0]}`, { tool: tool.name, args: args[1], error: String(error), duration_ms: Date.now()-began });
+      if (evo) {
+        evo.fact('tool_failed', { tool: tool.name, args: args[1], error: String(error), duration_ms: Date.now()-began });
+        await evo.event(args[2]?.aborted ? 'tool_cancelled' : 'tool_failed',`tool:${args[0]}`, { tool: tool.name, args: args[1], error: String(error), duration_ms: Date.now()-began });
+      }
       persistLiveSelf(); throw error;
     }
     if (evo) {
@@ -411,6 +414,7 @@ export default function pptDemo(pi: ExtensionAPI) {
           artifactHash: receipt.source_sha256, sourcePath, evidencePath, slides: receipt.slides, renderer: receipt.renderer }, true);
         if (evo) evo.fact('render_action_receipt', { action_ref: orchestrationAction.receipt.ref,
           transition: orchestrationAction.transition });
+        if (evo) await evo.event('settlement', `render:${revision}`, { checkpoint: 'render_action_receipt', event_classes: ['task_outcome'] });
         persistLiveSelf('action_receipt', orchestrationAction);
         // Facts about the period that just ended (how the previous revision was checked), then the new period starts.
         const sincePrevious = evidenceLine();
@@ -626,6 +630,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       // turn receipts include those rejections and precede our commit boundary.
       for (const result of event.toolResults ?? []) if (result.isError) {
         if (['reflect_component','reflect_orchestration'].includes(result.toolName)) evo.abortTransaction(JSON.stringify(result.content));
+        evo.fact('tool_failed', { tool: result.toolName, content: result.content });
         await evo.event('tool_failed',`tool:${result.toolCallId}`,{tool:result.toolName,content:result.content});
       }
       await advanceEvoBoundary();

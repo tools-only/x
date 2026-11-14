@@ -19,6 +19,8 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   processFactTypes?: string[]; finalDeliveryTools?: string[]; taskComplete?: () => boolean; requiredUnits?: () => number;
   /** Adapter actions that mark a unit boundary; they never count as work between boundaries. */
   boundaryTools?: string[];
+  /** Adapter fact types whose completed work should open a review at its settlement. */
+  workCheckpointTypes?: string[];
   /** Adapter-declared context section names (opaque to the core). */
   contextSections?: string[];
   /** Adapter resolver for read_self(section="context_item", ref). */
@@ -782,9 +784,15 @@ export class SelfRoot extends LiveAgentSelf {
     const formalDelivery = reason === 'delivered';
     if (formalDelivery && (this.review || this.queue.length || this.pendingDelivery || this.unresolvedReview) && !this.taskEndPending) {
       this.taskEndPending = reason;
+      this.fact('review_unresolved', { reason: 'task end reached with review work still open', review: this.review?.id ?? null,
+        queued_reviews: this.queue.map(t => t.id), pending_delivery: Boolean(this.pendingDelivery) });
       return { deferred: true };
     }
     this.taskEnded = reason;
+    if (this.review || this.queue.length || this.pendingDelivery || this.unresolvedReview) {
+      this.fact('review_unresolved', { reason: 'task ended with review work still open', review: this.review?.id ?? null,
+        queued_reviews: this.queue.map(t => t.id), pending_delivery: Boolean(this.pendingDelivery) });
+    }
     const delivered = this.windows.filter(w => w.status === 'open').map(w => this.deliverWindow(w, `task end: ${reason}`).ref);
     this.taskEndPending = undefined;
     this.fact('task_ended', { reason, windows_delivered: delivered });
@@ -803,7 +811,8 @@ export class SelfRoot extends LiveAgentSelf {
   private segmentHasWork(rows: Row[]) {
     return rows.some(r => this.isWork(r) || (r.type === 'event' && ['tool_failed', 'tool_cancelled'].includes(r.value?.type)
       && !PROTOCOL.includes(r.value?.facts?.tool)
-      && !(this.options.boundaryTools ?? []).includes(this.actionName(r.value.facts.tool, r.value.facts.args))));
+      && !(this.options.boundaryTools ?? []).includes(this.actionName(r.value.facts.tool, r.value.facts.args)))
+      || (r.type === 'tool_failed' && !PROTOCOL.includes(r.value?.tool)));
   }
   /** Host-selected evidence for the review's counted segment, in a fixed order. */
   reviewView() {
@@ -873,7 +882,9 @@ export class SelfRoot extends LiveAgentSelf {
     let settles = ['unit_completed', 'settlement', 'work_quantum'].includes(type);
     // D2: a unit boundary counts only when task work ran since the previous counted boundary (final delivery always settles).
     const forcedReview = (facts as any)?.force_review === true;
-    const coalesced = settles && !final && !forcedReview && !this.segmentHasWork(this.ledger.slice(this.segmentStart));
+    const segmentBeforeBoundary = this.ledger.slice(this.segmentStart);
+    const hasUnreviewedOutcome = segmentBeforeBoundary.some(r => r.type === 'task_outcome' && !this.reviewedQualityRefs.has(r.ref));
+    const coalesced = settles && !final && !forcedReview && !hasUnreviewedOutcome && !this.segmentHasWork(segmentBeforeBoundary);
     if (coalesced) settles = false;
     if (settles) this.settlementCount++;
     const event = this.fact('event', { type, boundary, facts });
@@ -896,7 +907,12 @@ export class SelfRoot extends LiveAgentSelf {
       this.conditionSet.floor = { ...prior, event_classes: [...new Set([...prior.event_classes, ...classes])], coverage_tags: [...new Set([...prior.coverage_tags, ...tags])] };
     const eventFacts = (facts as any)?.evidenceRefs ?? [];
       const segmentRows = segmentEvidence;
-      const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','tool_failed','reflection_validation_failed','acceptance_result','validation_delivered'].includes(r.type));
+      const process = summary?.value?.process;
+      const checkpointTypes = new Set(this.options.workCheckpointTypes ?? []);
+      const checkpoint = segmentRows.some(r => checkpointTypes.has(r.type));
+      const subtype = segmentRows.some(r => r.type === 'event' && ['tool_failed', 'tool_cancelled', 'request_paused', 'watch_stall'].includes(r.value?.type));
+      const processFault = Number(process?.output_cap_stops ?? 0) > 0 || Number(process?.tool_errors ?? 0) > 0;
+      const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','reflection_validation_failed','acceptance_result','validation_delivered','tool_failed'].includes(r.type)) || subtype || processFault || checkpoint;
       if (newFacts) triggers.push({ id: 'evolution_review', source: 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
     }
 
