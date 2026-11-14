@@ -17,6 +17,11 @@ export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component'
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
   processFactTypes?: string[]; finalDeliveryTools?: string[]; taskComplete?: () => boolean; requiredUnits?: () => number;
+  onPendingDelivery?: (pending: boolean) => void;
+  pendingDeliveryState?: () => boolean;
+  runPendingDelivery?: () => Promise<unknown>;
+  deliveryTransitionReached?: () => boolean;
+  budgetStopPendingDelivery?: () => Promise<unknown>;
   /** Adapter actions that mark a unit boundary; they never count as work between boundaries. */
   boundaryTools?: string[];
   /** Adapter fact types whose completed work should open a review at its settlement. */
@@ -90,7 +95,7 @@ export const CORE_CONTEXT_SECTIONS = ['prompts', 'memory', 'skills', 'instructio
 /** The core owns semantic operation definitions; adapters turn these into provider schemas and
  * dispatch consumes the same definition through normalizeOperation. Required lists are exhaustive. */
 export type OperationKind = 'review' | 'validation' | 'component' | 'orchestration';
-export const FIXED_REVIEW_STRATEGY = 'At every self-evolution entrance, inspect the complete factual space of every writable and protected object: current definition, participation and use, legal operations not yet observed, linked evidence, unknowns and costs. Distinguish exposure from actual use and follow same-root version receipts. Then the Agent chooses any change that can alter the next task action and uses the same-task result before deciding again. The host presents facts without ranking, diagnosis, recommendation or forced order.';
+export const FIXED_REVIEW_STRATEGY = 'At every self-evolution entrance, inspect the complete factual space of every writable and protected object: current definition, participation and use, legal operations not yet observed, linked evidence, unknowns and costs. An existing, rendered, submitted or delivered artifact never ends the obligation to examine and evolve orchestration and component classes; rework of produced artifacts is a normal route. Distinguish exposure from actual use and follow same-root version receipts. Then the Agent chooses any change that can alter the next task action and uses the same-task result before deciding again. The host presents facts without ranking, diagnosis, recommendation or forced order.';
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
@@ -392,6 +397,8 @@ export class SelfRoot extends LiveAgentSelf {
   private reviewedQualityRefs = new Set<string>();
   private reviewObjectState: any = null;
   private pendingDelivery?: { run: () => Promise<any> };
+  private pendingDeliveryName?: string;
+  private budgetDelivery?: Promise<unknown>;
   private taskEndPending?: string;
   private unresolvedReview = false;
   private conditionSet: any = copy(INITIAL_CONDITIONS);
@@ -771,7 +778,10 @@ export class SelfRoot extends LiveAgentSelf {
     await this.event('request_boundary',`request:${this.request}`);
     if (!this.review && this.queue.length) this.enter(this.queue.shift());
     this.lastSurface = this.surface(); applySurface(this.lastSurface);
-    if (!this.review && this.pendingDelivery) { const delivery = this.pendingDelivery; this.pendingDelivery = undefined; await delivery.run(); }
+    if (this.options.pendingDeliveryState?.() && this.options.deliveryTransitionReached?.() && !this.review && !this.queue.length && !this.taskEndPending) {
+      this.fact('delivery_transition', { state: 'execute_pending_final_delivery' });
+      await this.options.runPendingDelivery?.();
+    }
   }
   /** End a response. Host-opened reviews close only by Agent change or an explicit unresolved cap record. */
   endResponse(applySurface: (tools: string[]) => void, persist: () => void, reason: string) {
@@ -782,6 +792,9 @@ export class SelfRoot extends LiveAgentSelf {
   taskEnd(reason: string) {
     if (this.taskEnded) return { duplicate: true };
     const formalDelivery = reason === 'delivered';
+    if (!formalDelivery && this.options.pendingDeliveryState?.() && /budget|permit reject/i.test(reason)) {
+      this.budgetDelivery ??= this.options.budgetStopPendingDelivery?.();
+    }
     if (formalDelivery && (this.review || this.queue.length || this.pendingDelivery || this.unresolvedReview) && !this.taskEndPending) {
       this.taskEndPending = reason;
       this.fact('review_unresolved', { reason: 'task end reached with review work still open', review: this.review?.id ?? null,
@@ -798,6 +811,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.fact('task_ended', { reason, windows_delivered: delivered });
     return { delivered };
   }
+  waitForBudgetDelivery() { return this.budgetDelivery ?? Promise.resolve(); }
   /** Ledger rows of the current (uncounted) unit segment, for adapter metrics. */
   segmentRows() { return copy(this.ledger.slice(this.segmentStart)); }
   get segmentNumber() { return this.settlementCount + 1; }
@@ -836,6 +850,7 @@ export class SelfRoot extends LiveAgentSelf {
       return window ? { id, delivered: copy(window.delivered ?? null) } : { id, delivered: null };
     });
     const allFacts = rows.filter(r => r.kind === 'fact').map(item);
+    if (this.pendingDelivery || this.options.pendingDeliveryState?.()) allFacts.push({ ref: `pending-delivery:${this.request}`, type: 'pending_final_delivery', value: { state: 'pending', action: this.pendingDeliveryName ?? 'final delivery' } });
     return { process_facts: processFacts, tool_events: toolEvents, boundaries, receipts_probes: receipts,
       self_activity: selfActivity, quality_facts: qualityFacts, due_window_deliveries: due, all_facts: allFacts };
   }
@@ -978,7 +993,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
     const due_windows = this.dueWindows.map(id => { const w = this.windows.find(x => x.id === id)!; return { id, predicate: w.success_predicate ?? null, baseline: w.baseline_metrics, delivered: w.delivered ?? null, status: w.status }; });
-    this.fact('review_frame', { in_review: true, must_change_self: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' });
+    this.fact('review_frame', { in_review: true, must_change_self: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', artifact_does_not_end_evolution: true, rework_path: 'reflect orchestration; rewrite; render; resubmit or preview', pending_final_delivery: Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.()), due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' });
   }
   reviewSelfView() {
     const active = this.active();
@@ -1037,6 +1052,11 @@ export class SelfRoot extends LiveAgentSelf {
     const review = this.review;
     const reason = input.reason ?? input.result?.reason;
     const result = input.result ?? (reason !== undefined ? { reason } : {});
+    if (/already\s+(?:done|finished|delivered)|(?:artifact|delivery).{0,32}(?:risk|risky)|risk.{0,32}(?:artifact|delivered)/i.test(String(reason ?? ''))) {
+      const correction = 'Continue self-evolution: an existing or delivered artifact does not close review. Rewrite the artifact through the active orchestration, then render and resubmit/preview as needed. Final delivery is pending and will complete after the scheduled work or at the authorized budget boundary.';
+      this.fact('exit_correction', { review: review.id, rationale: reason, correction, pending_delivery: Boolean(this.pendingDelivery) });
+      return { accepted: false, terminate: false, same_turn_correction: correction, pending_delivery: Boolean(this.pendingDelivery) };
+    }
     let invalid: string | undefined;
     try { validateSchema(result, review.modeDefinition.exitSchema); } catch (e) { invalid = `result does not match your mode exit schema: ${String(e)}`; }
     if (invalid) {
@@ -1047,7 +1067,7 @@ export class SelfRoot extends LiveAgentSelf {
       }
       return this.closeMechanically('second invalid exit expression', { attempted: { reason: reason ?? null }, error: invalid });
     }
-    return this.close(review, 'agent', { result });
+    return { ...this.close(review, 'agent', { result }), terminate: false };
   }
   /** One closure record; a host-unresolved close is distinct from an Agent conclusion. */
   private close(review: any, closedBy: string, extra: any = {}) {
@@ -1188,11 +1208,14 @@ export class SelfRoot extends LiveAgentSelf {
       await this.event('work_quantum', `work:${this.settlementCount}:${this.request}`, { source: 'user_contract' });
     }
   }
-  queueFinalDelivery(run: () => Promise<any>) {
+  queueFinalDelivery(run: () => Promise<any>, action = 'final delivery') {
     if (this.queue.length || this.review) throw Error('final delivery is already deferred by an open review');
     this.pendingDelivery = { run };
-    return this.event('settlement', `quality-review:${this.request}:${this.ledger.length}`, { final: false, force_review: true, source: 'unreviewed_quality' }).then(result => ({ delivery_deferred: true, review: result.event, completion: 'host completes delivery after review closure' }));
+    this.options.onPendingDelivery?.(true);
+    this.pendingDeliveryName = action;
+    return this.event('settlement', `quality-review:${this.request}:${this.ledger.length}`, { final: false, force_review: true, source: 'unreviewed_quality' }).then(result => ({ delivery_deferred: true, review: result.event, pending_delivery: true, completion: 'scheduled rewrite/re-render/resubmit runs first; otherwise host completes pending delivery after review closure or budget stop' }));
   }
+  async runPendingDelivery() { if (!this.pendingDelivery || this.review || this.queue.length) return undefined; const pending = this.pendingDelivery; this.pendingDelivery = undefined; this.pendingDeliveryName = undefined; this.options.onPendingDelivery?.(false); return pending.run(); }
   needsQualityReview() { return this.ledger.some(r => r.type === 'task_outcome' && !this.reviewedQualityRefs.has(r.ref)); }
   guard(storageBytes?: number) {
     if (storageBytes !== undefined) this.storageBytes = storageBytes;

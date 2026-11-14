@@ -105,6 +105,8 @@ export class LiveOrchestrationSession {
   private stepGeneration = 0;
   private consumedDecisions = new Set<string>();
   private complete = false;
+  private pendingFinalDelivery = false;
+  private pendingDeliveryRevision?: number;
   constructor(saved?: any) {
     if (saved?.snapshot?.orchestration && Array.isArray(saved.history) && saved.history.length) {
       this.revisions = clone(saved.history);
@@ -118,13 +120,15 @@ export class LiveOrchestrationSession {
       this.stepGeneration = saved.snapshot.stepGeneration ?? 0;
       this.consumedDecisions = new Set(saved.snapshot.consumedDecisions ?? []);
       this.complete = saved.snapshot.complete === true;
+      this.pendingFinalDelivery = saved.snapshot.pendingFinalDelivery === true;
+      this.pendingDeliveryRevision = saved.snapshot.pendingDeliveryRevision;
     } else this.revisions = [{ revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [], transitions: [] }];
   }
   get current() { return { revision: this.revisions.length, orchestration: this.revisions.at(-1)! }; }
   get step() { return this.activeStep; }
   snapshot() { return { revision: this.current.revision, orchestration: clone(this.current.orchestration), step: this.activeStep, complete: this.complete,
     actions: clone(this.actions), decisions: clone(this.decisions), selfReviews: clone(this.selfReviews), slotValues: clone(this.slotValues), latestArtifactVersion: this.latestArtifactVersion,
-    latestArtifactHash: this.latestArtifactHash, stepGeneration: this.stepGeneration, consumedDecisions: [...this.consumedDecisions] }; }
+    latestArtifactHash: this.latestArtifactHash, stepGeneration: this.stepGeneration, consumedDecisions: [...this.consumedDecisions], pendingFinalDelivery: this.pendingFinalDelivery, pendingDeliveryRevision: this.pendingDeliveryRevision }; }
   history() { return clone(this.revisions); }
   recordSelfReview(input: { revision: number; disposition: 'keep' | 'defer' | 'change'; rationale: string }) {
     if (input.revision !== this.current.revision) throw Error('self-review must cite the current orchestration revision');
@@ -159,6 +163,10 @@ export class LiveOrchestrationSession {
     return { revision: next.revision, receipt: digest({ from: input.baseRevision, orchestration: next, carry: input.carry ?? {} }), step: this.activeStep };
   }
   invalidateArtifact() { this.latestArtifactVersion = undefined; this.latestArtifactHash = undefined; }
+  markPendingFinalDelivery() { this.pendingFinalDelivery = true; this.pendingDeliveryRevision = this.current.revision; }
+  hasPendingFinalDelivery() { return this.pendingFinalDelivery; }
+  pendingDeliveryTransitionReady() { return this.pendingFinalDelivery && this.current.revision === this.pendingDeliveryRevision; }
+  completePendingFinalDelivery() { this.pendingFinalDelivery = false; this.pendingDeliveryRevision = undefined; }
   assertActionAllowed(type: string) {
     if (this.complete) throw Error('orchestration is complete');
     const step = this.current.orchestration.steps.find(row => row.id === this.activeStep);
@@ -249,9 +257,10 @@ export class LiveOrchestrationSession {
       template: { from: this.activeStep, on: { type: 'action', action: receipt.type }, requires: [], to: 'next-step-id' },
     } };
     const transition = matches[0];
-    if (transition.to === 'complete') { this.complete = true; return { status: 'complete' as const, step: this.activeStep, transition: transition.id, revision: this.current.revision, decision_revision: latest.revision }; }
+    const latest = this.decisions.at(-1);
+    if (transition.to === 'complete') { this.complete = true; return { status: 'complete' as const, step: this.activeStep, transition: transition.id, revision: this.current.revision, decision_revision: latest?.revision }; }
     this.activeStep = transition.to; this.stepGeneration++;
-    return { status: 'advanced' as const, step: this.activeStep, transition: transition.id, revision: this.current.revision, decision_revision: latest.revision };
+    return { status: 'advanced' as const, step: this.activeStep, transition: transition.id, revision: this.current.revision, decision_revision: latest?.revision };
   }
 }
 

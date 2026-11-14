@@ -76,6 +76,10 @@ export default function pptDemo(pi: ExtensionAPI) {
   const piContext = createPiContextAdapter();
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
     { ...PPT_SELF_ROOT_OPTIONS, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
+      pendingDeliveryState: () => agentSelf?.hasPendingFinalDelivery?.() === true,
+      deliveryTransitionReached: () => !agentSelf?.hasPendingFinalDelivery?.() || agentSelf?.pendingDeliveryTransitionReady?.() === true,
+      runPendingDelivery: async () => agentSelf.hasPendingFinalDelivery() ? officeDeliver({ op: 'deliver' }, new AbortController().signal, {}, true) : undefined,
+      budgetStopPendingDelivery: async () => agentSelf.hasPendingFinalDelivery() ? officeDeliver({ op: 'deliver' }, new AbortController().signal, {}, true) : undefined,
       contextItem: (ref: string) => piContext.resolve(ref), canonicalSource: () => canonicalPath(workspace),
       metricInfo: (metrics: any[]) => ({ primary: metrics.find(m => m.name === 'acceptance.required_found')?.name, better: 'higher', scope: 'whole_deck' }),
       acceptanceUnits: () => activeManifest()?.units.map((u: any) => u.id) ?? [],
@@ -149,7 +153,10 @@ export default function pptDemo(pi: ExtensionAPI) {
           chars: tool.name === 'edit' ? (args[1].edits ?? []).reduce((n: number, e: any) => n + String(e?.newText ?? '').length, 0) : String(args[1].content ?? '').length } : undefined;
     try { if (evo) evo.allowTool(tool.name, args[1]); result = await tool.execute(...args); }
     catch (error) {
-      if (evo && ['reflect_component','reflect_orchestration'].includes(tool.name)) evo.abortTransaction(error);
+      if (evo && ['reflect_component','reflect_orchestration'].includes(tool.name)) {
+        evo.abortTransaction(error);
+        return text({ is_error: true, error: String(error?.message ?? error), same_turn_correction: 'The reflection was rejected without ending this turn. Read the returned correction surface, repair the operation and retry; review remains open.', terminate: false, reason: { code: 'reflection_rejected', surface: error?.surface ?? { received: args[1], correction: 'Use the visible operation fields and current revision.' } } });
+      }
       if (evo) {
         evo.fact('tool_failed', { tool: tool.name, args: args[1], error: String(error), duration_ms: Date.now()-began });
         await evo.event(args[2]?.aborted ? 'tool_cancelled' : 'tool_failed',`tool:${args[0]}`, { tool: tool.name, args: args[1], error: String(error), duration_ms: Date.now()-began });
@@ -357,8 +364,14 @@ export default function pptDemo(pi: ExtensionAPI) {
     self_review: Type.Optional(Type.Object({ disposition: Type.Union([Type.Literal('keep'), Type.Literal('defer'), Type.Literal('change')]), rationale: Type.String() })) });
   register('office', OFFICE_ACTION_DESCRIPTION, officeParameters,
     async (a: any, signal: AbortSignal, ctx: any) => {
-      if (evo?.inEvolutionReview && evo.isFinalDelivery('office', a)) return evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true));
-      if (evo && evo.isFinalDelivery('office', a) && evo.needsQualityReview()) return evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true));
+      if (evo?.inEvolutionReview && evo.isFinalDelivery('office', a)) {
+        agentSelf.markPendingFinalDelivery();
+        return text(await evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true), 'office.deliver'));
+      }
+      if (evo && evo.isFinalDelivery('office', a) && evo.needsQualityReview()) {
+        agentSelf.markPendingFinalDelivery();
+        return text(await evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true), 'office.deliver'));
+      }
       return officeDeliver(a, signal, ctx);
     });
   const officeDeliver = async (a: any, signal: AbortSignal, ctx: any, hostDeferred = false) => {
@@ -483,6 +496,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       }
       const orchestrationAction = agentSelf.recordAction('office.deliver', { artifactVersion: Number(revision), artifactHash: currentHash, sourcePath: receipt.source_path }, false, hostDeferred);
       const taskEnd = evo?.taskEnd('delivered');
+      agentSelf.completePendingFinalDelivery();
       state.complete = true; state.deliveredRevision = revision; persist(); log('lifecycle.jsonl', { event: 'delivered', revision });
       persistLiveSelf('action_receipt', orchestrationAction);
       const liveTrace = join(root, 'harness', 'live_agent_self.jsonl');
@@ -681,7 +695,7 @@ export default function pptDemo(pi: ExtensionAPI) {
             in_review: false, pending: evo.detail('pin').activation_intent ?? null, resources: evo.resources(),
             read_full: 'read_self(section="self")', read_policy: 'read_self(section="policy")' })];
         const selfTail = ctx.self_view?.placement === 'tail';
-        const coreLine = `${FIXED_REVIEW_STRATEGY}\nSELF ROOT: one agent, one task, one serial session. At work boundaries the host presents booked process and quality facts. A review requires an activated harness strategy change. Working context composition, review policy, windows and evidence are visible through read_self.`;
+        const coreLine = `${FIXED_REVIEW_STRATEGY}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`;
         const bindingText = boundComponents.length ? `## ACTIVE STEP BINDINGS\n${boundComponents.join('\n')}` : '';
         const orchestrationText = `## ACTIVE ORCHESTRATION\n${JSON.stringify({ revision: evo.current.revision, step: evo.step, definition: currentStep })}`;
         const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), bindingText, orchestrationText, ctx.instruction, coreLine].filter(Boolean).join('\n\n');
@@ -741,7 +755,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     });
   }
   // Guard each actual provider request, including automatic tool continuations and length resumes.
-  pi.on('before_provider_request', (event: any) => {
+  pi.on('before_provider_request', async (event: any) => {
     let payload = event.payload as any;
     const system = typeof payload?.systemPrompt === 'string' ? { content: payload.systemPrompt }
       : payload?.messages?.find((message: any) => message.role === 'system');
@@ -754,7 +768,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const model = experimentManifest.settings.model;
       const output = evo?.policy.request?.maxOutputTokens ?? experimentManifest.settings.request_output_tokens ?? model.maxTokens;
       if (output > model.maxTokens) {
-        evo?.closeMechanically('output envelope exceeds registered model'); evo?.taskEnd('permit reject'); persistLiveSelf();
+      evo?.closeMechanically('output envelope exceeds registered model'); evo?.taskEnd('permit reject'); await evo?.waitForBudgetDelivery(); persistLiveSelf();
         writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason:'output envelope exceeds registered model', output, stop_kind: 'permit_reject' }));
         syncDaemonResources(root, evo);
         process.exit(0);
@@ -764,7 +778,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     }
     if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + requestReserve > cap ||
       (experimentLimits && (requests >= experimentLimits.requests || tokensSpent + unknownUsageReserveTokens > experimentLimits.tokens || directoryBytes(root) >= experimentLimits.storage_bytes))) {
-      evo?.closeMechanically('authorized budget boundary'); evo?.taskEnd('budget stop'); persistLiveSelf();
+      evo?.closeMechanically('authorized budget boundary'); evo?.taskEnd('budget stop'); await evo?.waitForBudgetDelivery(); persistLiveSelf();
       writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, permit: permit ? { ...permit, payload: undefined } : undefined, reason: 'authorized budget boundary', stop_kind: 'budget_stop' }));
       syncDaemonResources(root, evo);
       process.exit(0); // Pi event exceptions are fail-open: stop before HTTP.
