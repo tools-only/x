@@ -58,7 +58,7 @@ def test_unselected_automatic_probe_does_not_open_memory_management_schema(tmp_p
     ], extra_extensions=[project / "tests/pi_arc_action_capture_fixture.ts"],
        extra_env={"PI_ARC_CAPTURE_COMPACT_TOOLS": "enabled"})
     assert not [e for e in events if e.get("type") == "tool_execution_end" and e.get("isError")]
-    contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text().splitlines()]
+    contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
     for context in contexts[:5]:
         assert "task_memory_pool" not in {t["name"] for t in context["tools"]}
     assert "task_memory_pool" in {t["name"] for t in contexts[5]["tools"]}
@@ -78,7 +78,7 @@ def test_explicit_memory_management_enable_remains_available_without_pool_record
         {"name": "task_harness", "arguments": {"action": "inspect"}},
     ])
     assert not [e for e in events if e.get("type") == "tool_execution_end" and e.get("isError")]
-    contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text().splitlines()]
+    contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
     assert "task_memory_pool" not in {t["name"] for t in contexts[0]["tools"]}
     assert all("task_memory_pool" in {t["name"] for t in c["tools"]} for c in contexts[1:])
 

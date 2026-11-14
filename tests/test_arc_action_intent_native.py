@@ -54,7 +54,7 @@ def test_latest_action_intent_survives_reload_without_rebinding_old_prediction(t
         events = _run_arc_parent(tmp_path, [step], extra_env=env)
         assert not [e for e in events if e.get("isError")]
         _run_arc_parent(tmp_path, [], extra_env=env)  # Empty transcript, canonical checkpoint only.
-        context = json.loads((tmp_path / "provider-contexts.jsonl").read_text().splitlines()[-1])["context"]
+        context = json.loads((tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()[-1])["context"]
         texts = [p["text"] for m in context["messages"] for p in m.get("content", []) if p.get("type") == "text"]
         card = json.loads(next(t for t in texts if t.startswith("CURRENT TASK STATE")).split(": ", 1)[1])
         assert card["last_action"]["reasoning"] == reason
@@ -69,7 +69,7 @@ def test_latest_action_intent_survives_reload_without_rebinding_old_prediction(t
         assert "reasoning" not in checkpoint["recent_actions"][-1]
         _run_arc_parent(tmp_path, [{"name": "arc_action", "arguments": {"action": "RESET"}}], extra_env=env)
         _run_arc_parent(tmp_path, [], extra_env=env)
-        context = json.loads((tmp_path / "provider-contexts.jsonl").read_text().splitlines()[-1])["context"]
+        context = json.loads((tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()[-1])["context"]
         texts = [p["text"] for m in context["messages"] for p in m.get("content", []) if p.get("type") == "text"]
         card = json.loads(next(t for t in texts if t.startswith("CURRENT TASK STATE")).split(": ", 1)[1])
         assert "decision_capsule" not in card  # RESET preserves history, not current applicability.

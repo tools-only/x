@@ -54,7 +54,7 @@ def test_canonical_witnesses_reach_later_pi_input_despite_knowledge_replacement(
     finally:
         server.shutdown()
         server.server_close()
-    contexts = [json.loads(x)["context"] for x in (tmp_path / "provider-contexts.jsonl").read_text().splitlines()]
+    contexts = [json.loads(x)["context"] for x in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(contexts) == 4
     for context in contexts:
         current = [p["text"] for m in context["messages"] for p in m.get("content", [])

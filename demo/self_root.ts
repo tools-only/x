@@ -689,8 +689,8 @@ export class SelfRoot extends LiveAgentSelf {
       return;
     }
     const windowCount = this.windows.length, definitionCount = this.definitions.length, lineageCount = this.lineage.length;
-    this.fact('transaction_intent', { from: this.serial, to: p.revision, addresses: p.addresses }); persist();
     try {
+      this.fact('transaction_intent', { from: this.serial, to: p.revision, addresses: p.addresses }); persist();
       // Private base-class fields are own properties; preserve this root's identity and META state.
       Object.assign(this, p.candidate); this.onReflection = onReflection; this.policy = p.policy; this.serial = p.revision;
       this.onReflection?.({ kind: 'orchestration', revision: this.serial });
@@ -955,7 +955,7 @@ export class SelfRoot extends LiveAgentSelf {
       const subtype = segmentRows.some(r => r.type === 'event' && ['tool_failed', 'tool_cancelled', 'request_paused', 'watch_stall'].includes(r.value?.type));
       const processFault = Number(process?.output_cap_stops ?? 0) > 0 || Number(process?.tool_errors ?? 0) > 0;
       const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','reflection_validation_failed','acceptance_result','validation_delivered','tool_failed'].includes(r.type)) || subtype || processFault || checkpoint;
-      if (newFacts) triggers.push({ id: 'evolution_review', source: 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
+      if (newFacts || forcedReview) triggers.push({ id: 'evolution_review', source: forcedReview ? 'requested_review' : 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
     }
     if (type === 'heartbeat' && !quiet) triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
 

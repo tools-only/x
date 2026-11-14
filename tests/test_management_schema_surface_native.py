@@ -8,7 +8,7 @@ from test_pi_external_benchmark_native import _run_fixture
 
 
 def _contexts(root):
-    return [json.loads(line)["context"] for line in (root / "provider-contexts.jsonl").read_text().splitlines()]
+    return [json.loads(line)["context"] for line in (root / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
 def _schemas(context):
@@ -119,7 +119,7 @@ def test_real_pi_explicit_review_alias_loads_survives_bare_read_reload_and_core_
     assert explicit_body == bare_body and explicit_body["topic"] == "review"
     assert "complete structured candidate" in explicit_body["instructions"]
     profile_path = tmp_path / "management-schema-profiles.jsonl"
-    rows = [json.loads(line) for line in profile_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in profile_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 1 and rows[0]["profiles"] == ["review"]
 
     resumed = _run_fixture(tmp_path, "treatment", arc_compact=True, extra_extensions=[extension], steps=[
@@ -132,7 +132,7 @@ def test_real_pi_explicit_review_alias_loads_survives_bare_read_reload_and_core_
     assert _schemas(reloaded[0])["task_harness"] == schemas[2]
     for context in reloaded[1:]:
         assert _schemas(context)["task_harness"] == schemas[0]
-    rows = [json.loads(line) for line in profile_path.read_text().splitlines()]
+    rows = [json.loads(line) for line in profile_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 2 and rows[-1]["profiles"] == []
 
 

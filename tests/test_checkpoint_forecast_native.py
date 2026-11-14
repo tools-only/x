@@ -24,12 +24,12 @@ def test_recorded_prediction_update_commits_once_and_survives_later_context_and_
     assert checkpoint["decision_state"]["next_decision"] == {
         field: payload[field] for field in ("prediction", "falsifier")}
     assert "decision_capsule" not in checkpoint  # No fictitious executed action.
-    contexts = [json.loads(l)["context"] for l in (tmp_path / "provider-contexts.jsonl").read_text().splitlines()]
+    contexts = [json.loads(l)["context"] for l in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
     schema = next(t["parameters"] for t in contexts[0]["tools"] if t["name"] == "task_checkpoint")
     assert all(schema["properties"][f]["type"] == "string" for f in ("prediction", "falsifier"))
     assert all(payload[f] in json.dumps(contexts[-1]) for f in ("prediction", "falsifier"))
     _run_fixture(tmp_path, "treatment", arc_compact=True, steps=[])
-    restored = json.dumps(json.loads((tmp_path / "provider-contexts.jsonl").read_text().splitlines()[-1])["context"])
+    restored = json.dumps(json.loads((tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()[-1])["context"])
     assert all(payload[f] in restored for f in ("prediction", "falsifier"))
 
 
