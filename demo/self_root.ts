@@ -67,8 +67,16 @@ export type SelfContract = {
   source: 'user_contract'; authority: string; decisions: string; content_hash: string; readonly_reason: string;
   boundaries: string[]; capabilities: string[]; writable: string[];
   budget: { requests: number; tokens: number; seconds: number; usd: number; storage_bytes: number };
-  acceptance: unknown; inherit_defaults: false; segment: { work_requests: number }; review: { max_requests_without_change: number };
+  acceptance: unknown; inherit_defaults: false; segment?: { work_requests: number }; review?: { max_requests_without_change: number };
 };
+export type HeartbeatContract = false | { enabled: true; every_settled_task_requests: 3 };
+export function isValidHeartbeat(value: unknown): value is false | { enabled: true; every_settled_task_requests: number } {
+  if (value === false) return true;
+  if (!value || typeof value !== 'object') return false;
+  const heartbeat = value as Record<string, unknown>;
+  return heartbeat.enabled === true && heartbeat.every_settled_task_requests === 3
+    && Object.keys(heartbeat).length === 2;
+}
 const CORE_PROBE_KINDS = ['preflight','inference','inference_probe','inference-preflight','provider-preflight'];
 const PROCESS_FACT_TYPES = ['watch_stall','request_paused','exit_normalization','review_unresolved','reflection_noop'];
 const CONSERVATIVE_RATES = { input: 20, output: 80 };
@@ -305,7 +313,7 @@ export function validateContract(c: SelfContract) {
   if (!c || c.source !== 'user_contract' || !c.authority || !c.decisions || !c.readonly_reason) throw Error('explicit user contract not loaded');
   const { content_hash, ...body } = c;
   if (content_hash !== hash(body)) throw Error('user contract hash mismatch');
-  if (hash([...c.boundaries].sort()) !== hash([...FLOOR].sort()) || c.inherit_defaults !== false || !Number.isSafeInteger(c.segment?.work_requests) || c.segment.work_requests < 1) throw Error('v1 contract floor/segment/inheritance mismatch');
+  if (hash([...c.boundaries].sort()) !== hash([...FLOOR].sort()) || c.inherit_defaults !== false || (c.segment !== undefined && (!Number.isSafeInteger(c.segment.work_requests) || c.segment.work_requests < 1)) || (c.heartbeat !== undefined && !isValidHeartbeat(c.heartbeat))) throw Error('v1 contract floor/segment/heartbeat/inheritance mismatch');
   for (const key of ['requests', 'tokens', 'seconds', 'usd', 'storage_bytes']) if (!Number.isFinite(c.budget[key]) || c.budget[key] <= 0) throw Error(`missing numeric budget ${key}`);
   if (!Array.isArray(c.capabilities) || !Array.isArray(c.writable) || !c.acceptance) throw Error('contract capabilities/acceptance required');
 }
@@ -393,6 +401,7 @@ export class SelfRoot extends LiveAgentSelf {
   private resetInProgress?: string;
   private mutations: Promise<unknown> = Promise.resolve();
   private workRequests = 0;
+  private heartbeatDue: number[] = [];
   private reviewRequests = 0;
   private reviewedQualityRefs = new Set<string>();
   private reviewObjectState: any = null;
@@ -434,7 +443,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','unresolvedReview','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','heartbeatDue','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','unresolvedReview','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
       if (r.reviewedQualityRefs !== undefined) this.reviewedQualityRefs = new Set(r.reviewedQualityRefs);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
       if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
@@ -781,6 +790,12 @@ export class SelfRoot extends LiveAgentSelf {
     this.chainFailed = false;
     if (!this.review) this.reviewRequests = 0;
     await this.event('request_boundary',`request:${this.request}`);
+    const due = this.heartbeatDue.splice(0);
+    if (this.contract.heartbeat) for (const settled of due) {
+      const boundary = `heartbeat:settled:${settled}`;
+      if (this.request >= this.contract.budget.requests) this.fact('heartbeat_gap', { settled_task_requests: settled, reason: 'hard cap; heartbeat not dispatched', source: 'user_contract' });
+      else await this.event('heartbeat', boundary, { settled_task_requests: settled, source: 'user_contract' });
+    }
     if (!this.review && this.queue.length) this.enter(this.queue.shift());
     this.lastSurface = this.surface(); applySurface(this.lastSurface);
     if (this.options.pendingDeliveryState?.() && this.options.deliveryTransitionReached?.() && !this.review && !this.queue.length && !this.taskEndPending) {
@@ -942,6 +957,7 @@ export class SelfRoot extends LiveAgentSelf {
       const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','reflection_validation_failed','acceptance_result','validation_delivered','tool_failed'].includes(r.type)) || subtype || processFault || checkpoint;
       if (newFacts) triggers.push({ id: 'evolution_review', source: 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
     }
+    if (type === 'heartbeat' && !quiet) triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
 
     for (const route of routes) {
       try {
@@ -1180,7 +1196,7 @@ export class SelfRoot extends LiveAgentSelf {
       const parts = this.usageParts(row.value?.usage);
       if (!parts || row.value?.status === 'unknown_reserved') {
         usageUnknown += 1;
-        tokens.unknown_reserved += Number(row.value?.tokens ?? 0);
+        tokens.unknown_reserved += Number(row.value?.tokens?.total ?? row.value?.tokens ?? 0);
         const reserved = Number(row.value?.usd_estimate ?? 0);
         conservative += reserved;
         registered += reserved * ((REGISTERED_RATES.input + REGISTERED_RATES.output) / (CONSERVATIVE_RATES.input + CONSERVATIVE_RATES.output));
@@ -1208,6 +1224,7 @@ export class SelfRoot extends LiveAgentSelf {
         preflight_failure: { count: preflight.length, reasons: preflight },
         budget_stop: { count: budget.length, reasons: budget },
       },
+      heartbeat_gaps: this.ledger.filter(r => r.type === 'heartbeat_gap').map(r => copy(r.value)),
 
     };
   }
@@ -1219,7 +1236,7 @@ export class SelfRoot extends LiveAgentSelf {
     const sincePin = this.ledger.slice(this.requestPin?.ledger_offset ?? this.ledger.length);
     const worked = this.segmentHasWork(sincePin);
     if (this.requestPin?.mode === 'execute' && !this.isProbeKind(this.requestPin.kind) && worked) this.workRequests++;
-    if (this.workRequests >= this.contract.segment.work_requests) {
+    if (this.workRequests >= (this.contract.segment?.work_requests ?? 1)) {
       this.workRequests = 0;
       await this.event('work_quantum', `work:${this.settlementCount}:${this.request}`, { source: 'user_contract' });
     }
@@ -1263,6 +1280,9 @@ export class SelfRoot extends LiveAgentSelf {
       provider_retries: extra.provider_retries ?? null, cache_supported: extra.cache_supported ?? 'unknown', latency_ms: duration_ms, duration_ms,
       usd_estimate: usd, cost_source: 'provider usage + manifest rates; actual invoice unknown', status: known ? 'reported' : 'unknown_reserved',
       composition: context?.composition ?? null, context_policy: context?.receipt ?? null });
+    const interval = this.contract.heartbeat && this.contract.heartbeat.every_settled_task_requests;
+    const settled = this.settledTaskRequests();
+    if (interval && settled > 0 && settled % interval === 0 && !this.heartbeatDue.includes(settled)) this.heartbeatDue.push(settled);
     return row;
   }
   /** Runtime assembly plan for this request from the pinned context policy (declarative knobs, then the Agent's optional
