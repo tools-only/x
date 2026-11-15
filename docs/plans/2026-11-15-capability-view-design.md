@@ -1,6 +1,6 @@
 # 能力层运行视图设计稿：让"无摩擦的能力缺口"成为可见事实
 
-日期：2026-11-15（Asia/Shanghai）。状态：设计稿，待用户定稿；定稿前不实现、不发射。
+日期：2026-11-15（Asia/Shanghai）。状态：**已定稿（用户，2026-11-15）**；实现与发射按 §5 的预算声明执行。阅读版：`docs/plans/2026-11-15-capability-view-design.html`。
 分支：`evo-loop-implementation`（worktree `D:\agent\.codex\worktrees\evo-loop-impl\autoresearch_pi_project`），基线 f1efed79（v1.5 M-A/M-B/M-C + 义务收口）。
 失败材料：B2 运行（`runs/evo-daemon-b2-glm53f-v15-mabc-20261115`，分析见 `docs/plans/2026-11-15-evo-mechanisms-implementation.md` "B2 运行结果"）。
 

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>能力层运行视图 · 设计定稿 2026-11-15</title>
+<style>
+  :root {
+    --paper: #FAFAF7;
+    --ink: #1A2129;
+    --ink-soft: #4A525B;
+    --blue: #1E4E66;      /* 普鲁士蓝：结构与强调 */
+    --blue-wash: #EDF2F4;
+    --rust: #A4452E;      /* 铁锈红：仅用于"失真/缺陷"标记 */
+    --seal: #9E2B22;
+    --rule: #D8D9D4;
+    --term-bg: #10191F;
+    --term-ink: #D5DEE4;
+    --term-dim: #76828C;
+    --term-key: #8FB8CC;
+    --mono: "Cascadia Mono", Consolas, "Sarasa Mono SC", ui-monospace, "Courier New", monospace;
+    --sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #14191D; --ink: #D9DEE2; --ink-soft: #99A3AC;
+      --blue: #7FB0C6; --blue-wash: #1B262D; --rule: #333B41;
+      --rust: #D4785F; --seal: #CE6B5B;
+      --term-bg: #0C1318; --term-ink: #C8D2D8;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { font-size: 16px; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--sans); line-height: 1.85; font-size: 1rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  .sheet { max-width: 960px; margin: 0 auto; padding: 40px 28px 88px; }
+  .measure { max-width: 740px; }
+
+  /* ── 图签（工程图纸题栏） ─────────────────────── */
+  .titleblock {
+    border: 1.5px solid var(--ink); display: grid;
+    grid-template-columns: 1fr auto; font-family: var(--mono);
+    font-size: 0.74rem; line-height: 1.5; margin-bottom: 44px;
+  }
+  .titleblock .meta { padding: 10px 14px; display: grid; gap: 2px; }
+  .titleblock .meta b { font-weight: 600; color: var(--blue); }
+  .titleblock .seal {
+    border-left: 1.5px solid var(--ink); display: flex; align-items: center;
+    justify-content: center; padding: 10px 18px;
+  }
+  .seal-mark {
+    border: 2px solid var(--seal); color: var(--seal); padding: 6px 10px;
+    font-size: 1.05rem; letter-spacing: 0.35em; text-indent: 0.35em;
+    font-weight: 700; white-space: nowrap;
+  }
+
+  h1 { font-size: 2.1rem; line-height: 1.3; margin: 0 0 6px; letter-spacing: 0.01em; }
+  .subtitle { font-size: 1.06rem; color: var(--ink-soft); margin: 0 0 40px; }
+  .subtitle em { font-style: normal; color: var(--blue); font-weight: 600; }
+
+  h2 {
+    font-size: 1.3rem; margin: 64px 0 16px; line-height: 1.4;
+    padding-top: 18px; border-top: 1.5px solid var(--ink);
+  }
+  h2 .no { font-family: var(--mono); color: var(--blue); font-size: 0.95rem; margin-right: 10px; }
+  h3 { font-size: 1.02rem; margin: 30px 0 10px; }
+  h3 .no { font-family: var(--mono); color: var(--blue); font-size: 0.85rem; margin-right: 8px; }
+  p, ul, ol { margin: 0 0 14px; }
+  ul, ol { padding-left: 1.5em; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--blue); }
+
+  code {
+    font-family: var(--mono); font-size: 0.85em;
+    background: var(--blue-wash); padding: 1px 5px; border-radius: 2px;
+  }
+  .ref { font-family: var(--mono); font-size: 0.8em; color: var(--ink-soft); white-space: nowrap; }
+
+  /* ── 终端块：事实行的本来形态 ─────────────────── */
+  .term {
+    background: var(--term-bg); color: var(--term-ink); border-radius: 3px;
+    padding: 14px 16px; font-family: var(--mono); font-size: 0.8rem;
+    line-height: 1.75; overflow-x: auto; white-space: pre; margin: 0 0 14px;
+  }
+  .term .k { color: var(--term-key); }
+  .term .dim { color: var(--term-dim); }
+  .term .hit { color: #E8B04B; }
+
+  /* ── 首屏对照 ────────────────────────────────── */
+  .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 0 0 10px; }
+  .hero .pane { display: flex; flex-direction: column; }
+  .pane-label {
+    font-size: 0.82rem; color: var(--ink-soft); margin-bottom: 8px;
+    padding-left: 10px; border-left: 3px solid var(--rule);
+  }
+  .pane-label b { color: var(--ink); }
+  .pane.after .pane-label { border-left-color: var(--blue); }
+  .hero .term { flex: 1; margin: 0; }
+  .hero-caption { font-size: 0.86rem; color: var(--ink-soft); margin: 10px 0 0; }
+  @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
+
+  /* ── 引语 ────────────────────────────────────── */
+  blockquote {
+    margin: 18px 0; padding: 12px 18px; border-left: 3px solid var(--blue);
+    background: var(--blue-wash); font-size: 0.95rem;
+  }
+  blockquote .src { display: block; margin-top: 6px; }
+
+  /* ── 表格 ────────────────────────────────────── */
+  table { border-collapse: collapse; width: 100%; margin: 16px 0 22px; font-size: 0.88rem; line-height: 1.65; }
+  caption { text-align: left; font-size: 0.8rem; color: var(--ink-soft); padding-bottom: 6px; }
+  th { text-align: left; font-weight: 600; border-bottom: 1.5px solid var(--ink); padding: 7px 12px 7px 0; white-space: nowrap; }
+  td { border-bottom: 1px solid var(--rule); padding: 8px 12px 8px 0; vertical-align: top; }
+  td:last-child, th:last-child { padding-right: 0; }
+
+  .flaw { color: var(--rust); font-weight: 600; }
+  .flaw-tag {
+    display: inline-block; border: 1px solid var(--rust); color: var(--rust);
+    font-size: 0.72rem; font-family: var(--mono); padding: 0 6px; border-radius: 2px;
+    margin-right: 6px; vertical-align: 1px; white-space: nowrap;
+  }
+
+  /* ── 断裂过渡流程 ────────────────────────────── */
+  .flow { display: grid; gap: 10px; margin: 20px 0 8px; }
+  .flow-row { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .flow-tag {
+    font-family: var(--mono); font-size: 0.74rem; color: var(--ink-soft);
+    width: 86px; flex: none; display: flex; align-items: center;
+  }
+  .fbox {
+    border: 1.5px solid var(--ink); padding: 7px 12px; font-size: 0.82rem;
+    line-height: 1.5; display: flex; align-items: center; background: var(--paper);
+  }
+  .fbox.gain { border-color: var(--blue); color: var(--blue); font-weight: 600; }
+  .fbox.dead { border-style: dashed; color: var(--ink-soft); }
+  .farrow {
+    display: flex; align-items: center; padding: 0 8px;
+    color: var(--blue); font-family: var(--mono); font-size: 0.9rem; flex: none;
+  }
+  .flow-note { font-size: 0.82rem; color: var(--ink-soft); margin-top: 6px; }
+
+  .footer {
+    margin-top: 72px; padding-top: 14px; border-top: 1.5px solid var(--ink);
+    font-family: var(--mono); font-size: 0.74rem; color: var(--ink-soft); line-height: 1.7;
+  }
+
+  @media print {
+    body { background: #fff; color: #000; }
+    .sheet { padding: 0; max-width: none; }
+    .term { background: #fff; color: #000; border: 1px solid #000; white-space: pre-wrap; }
+    .term .k, .term .hit { color: #000; font-weight: 700; } .term .dim { color: #555; }
+    h2 { break-after: avoid; } .term, table, .flow { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div class="titleblock">
+    <div class="meta">
+      <span>文档 <b>docs/plans/2026-11-15-capability-view-design</b>（本页为阅读版，.md 为准）</span>
+      <span>分支 <b>evo-loop-implementation</b> · 基线 <b>f1efed79</b>（v1.5 M-A/M-B/M-C + 义务收口）</span>
+      <span>失败材料 <b>B2</b> runs/evo-daemon-b2-glm53f-v15-mabc-20261115 · 比较器 B2 · 开关 <b>EVO_A4</b></span>
+    </div>
+    <div class="seal"><span class="seal-mark">定 稿</span></div>
+  </div>
+
+  <h1 class="measure">能力层运行视图</h1>
+  <p class="subtitle measure">让<em>无摩擦的能力缺口</em>成为可见事实 —— 观测服务新增 A4 能力高度与真实零计数</p>
+
+  <div class="hero">
+    <div class="pane before">
+      <div class="pane-label"><b>现状：B2 的 agent 实际所见</b>（评审入口观测，词汇只有摩擦/资源/轨迹）</div>
+      <div class="term"><span class="k">[requests]</span> reflect 36 (…) | execute 32 (…); cache_read 95k
+<span class="k">[loss]</span> output_cut: request 13 … output cap 8192
+<span class="k">[trace]</span> decide receipts 10; self changes 2; reviews 15/14
+<span class="dim">（没有 [inventory]，没有 [recurrence]；
+ skill/tool/memory 的 0 不出现在任何一行）</span>
+
+<span class="dim">→ 13 次闭合判语（live-self.json:41446）：</span>
+<span class="hit">"Remaining candidates are unexposed/untried
+ with no recorded friction, so no evidence-
+ backed change is warranted."</span></div>
+    </div>
+    <div class="pane after">
+      <div class="pane-label"><b>设计后：同一次运行补上 A4 事实行</b>（示意，数值取 B2 轨迹）</div>
+      <div class="term"><span class="k">[inventory]</span> prompt 1 (head 每请求; in_path 0/10 跨度)
+ | skill 0 | tool 0 | memory 0
+ | subagent 0 (写入口拒绝: experiment authorizes one agent)
+ | orchestration 3 步: build 52, review_gate 9, deliver 1
+<span class="k">[recurrence]</span> 10 个结果跨度; 共同调用:
+ write 10/10 跨度 (计 86), edit 9/10 (41), office.render 10/10 (12);
+ agent 组件在径: <span class="hit">0/10 跨度</span>
+
+<span class="dim">→ 徒手重复与空库存成为可引用的 ref；
+ 判断仍然全部归 agent。</span></div>
+    </div>
+  </div>
+  <p class="hero-caption measure">B2 交付 10/10，但全程唯一自改是一个参数（maxOutputTokens）。不是判断坏了——是输入里从来没有把"十次同样的手工"与"组件库为空"连起来的那条事实。</p>
+
+  <h2 class="measure"><span class="no">§0</span>用户重定义（2026-11-15）</h2>
+  <div class="measure">
+    <p>8192→32768 只是参数调整，不是进化。要求的自进化范式：agent 在执行任务过程中，根据自身<strong>运行视图</strong>（agent 自身 harness 视图 = 已加载 components 与 orchestration、运行状态、任务轨迹、harness 产物/中间交付件——用户给的参考轴），审视自身 harness 短板（orchestration 与五类组件：prompt、skill、tools、memory、subagent），经反射接口做 Erlang 式热修改自我进化。方向有二：<strong>产生新的组件/orchestration</strong>，与<strong>优化已有的组件/orchestration</strong>。</p>
+  </div>
+
+  <h2 class="measure"><span class="no">§1</span>失败材料：B2 为何只产出参数级变更</h2>
+  <div class="measure">
+    <ul>
+      <li>B2 全程唯一自改 = <code>policy.request.maxOutputTokens</code>（参数）。组件清单从头到尾只有 host 播种的 1 个 prompt（<code>ppt_baseline_guidance@v1</code>）；<span class="ref">live_agent_self.jsonl</span> 13 条事件的 components 字段恒为该一项。skill/tool/memory/subagent 创建数 = 0，orchestration 结构变更 = 0。</li>
+      <li>10 个同构 unit（同一财报、同一产出形态）全部由裸 write/edit/office 徒手完成，每 unit ≈4–6 请求重复相似的 HTML 生产动作；无一次沉淀为可复用组件。</li>
+      <li>13 次 no-change 闭合是<strong>对的推理</strong>（见首屏引语）：agent 看到了候选占位（§2.2），用"曝光/使用/摩擦"词汇审它们，结论必然是"无证据"。</li>
+    </ul>
+    <p>结论：这不是判断失败，是<strong>输入失败</strong>。</p>
+  </div>
+
+  <h2><span class="no">§2</span>当前视图盘点（代码核实，f1efed79）</h2>
+
+  <h3 class="measure"><span class="no">2.1</span>agent 每请求实际看到什么</h3>
+  <table>
+    <tr><th>面</th><th>何时</th><th>内容</th><th>代码</th></tr>
+    <tr><td>非评审 self 视图</td><td>每个非评审请求</td><td><code>{root_id, revision, mode, step, resources, 观测摘要一行, read_self 指针}</code> —— <span class="flaw">无任何组件清单</span></td><td class="ref">ppt_demo_extension.ts:695-698；observationHeads</td></tr>
+    <tr><td>任务状态尾</td><td>每请求</td><td>statusFacts：源文件事实、预算、谱系</td><td class="ref">ppt_demo_extension.ts:574</td></tr>
+    <tr><td>评审 self 视图</td><td>评审期每请求</td><td>reviewSelfView + projection（JSON 全量）</td><td class="ref">self_root.ts:1162-1199</td></tr>
+    <tr><td>review_frame 事实</td><td>评审入口一次</td><td>due_windows、object_state、observation ≤2400 字符</td><td class="ref">self_root.ts:1156-1160</td></tr>
+    <tr><td>observation 渲染</td><td>评审帧 / 评审视图 / read_self</td><td><code>[requests] [repeat] [reject] [loss] [idle] [trace] [outcome]</code></td><td class="ref">self_observation.ts:217-246</td></tr>
+  </table>
+
+  <h3 class="measure"><span class="no">2.2</span>能力信息现状：有什么、缺什么</h3>
+  <div class="measure">
+    <ul>
+      <li><strong>词汇表全部是摩擦/资源/轨迹。</strong>A1 重复·成本·拒绝·损失·停止，A2 模式连程·调用·工件写入，A3 结果谱系（in_path / available_not_in_path）。能力缺口若不产生摩擦——任务靠徒手照样成功——在这套词汇里<strong>结构性不可见</strong>。</li>
+      <li><strong>候选占位存在但词汇错位。</strong>reviewSelfView 对空类补 <code>${kind}_candidate</code> 条目并带 define 示例（<span class="ref">self_root.ts:1181-1185</span>）——创建的操作入口一直在。但条目事实是回溯式使用谱系（exposure/use/effect/untried），对不存在的组件恒为 false，"无证据"永远成立。缺的是<strong>工作侧</strong>事实，不是候选侧入口。</li>
+      <li><span class="flaw-tag">失真①</span><strong>计数造假。</strong>selfCategories 的 <code>.size || 1</code>（<span class="ref">self_root.ts:1467</span>）与 categories 把候选占位计入（<span class="ref">:1190</span>）：空类<span class="flaw">永远显示 1，从不显示 0</span>。而系统提示承诺的是 "including zero-count categories"（<span class="ref">self_root_system.md:13</span>）——代码未兑现承诺。</li>
+      <li><span class="flaw-tag">失真②</span><strong>空节从 head 消失。</strong>context 组装 <code>.filter(Boolean)</code>（<span class="ref">ppt_demo_extension.ts:705</span>）使空的 memory/skills 节整段消失；B2 的 agent 从未见过一行"memory: (无)"。</li>
+      <li><span class="flaw-tag">失真③</span><strong>[idle] 只报已存在的工具。</strong>零个 tool 组件时整行不出现（<span class="ref">self_observation.ts:227</span>）。缺席不是可见事实。</li>
+      <li><strong>orchestration 无执行谱系。</strong>当前步定义与 bindings 进 head（<span class="ref">ppt_demo_extension.ts:703-704</span>），但没有每步执行计数——"某步从未走过/一切挤在一个步里"不可见，"优化已有 orchestration"缺证据基础。</li>
+      <li><strong>非评审期能力信息为零。</strong>组件清单只在评审 JSON 深处；任务进行中（恰是重复劳动发生时）agent 看不到自己库存。</li>
+    </ul>
+  </div>
+
+  <h3 class="measure"><span class="no">2.3</span>五类组件 + orchestration 的运行时消费路径（已核实）</h3>
+  <table>
+    <tr><th>类</th><th>写入口</th><th>消费路径</th><th>代码</th></tr>
+    <tr><td>prompt</td><td>reflect_component</td><td>所有 active prompt 全文进每个 head</td><td class="ref">ppt_demo_extension.ts:681</td></tr>
+    <tr><td>memory</td><td>reflect_component（append/patch 可用）</td><td>policy 过滤后全文进每个 head</td><td class="ref">:682；self_root.ts:1455-1462</td></tr>
+    <tr><td>skill</td><td>reflect_component</td><td>索引行进 head + read_self_component 拉取正文</td><td class="ref">:683</td></tr>
+    <tr><td>tool</td><td>reflect_component（<code># program: on</code>）</td><td>反射即注册为 Pi 工具 + schema 进请求，可直接调用</td><td class="ref">:253-268, :662-676</td></tr>
+    <tr><td>subagent</td><td>schema 接受，<span class="flaw">experimentLimits 下拒绝</span></td><td>无执行路径（§6 开放决定）</td><td class="ref">:326；self_root.ts:676</td></tr>
+    <tr><td>orchestration</td><td>reflect_orchestration（M-B 编译）</td><td>当前步定义 + bindings 进 head；surface() 按步控制工具面</td><td class="ref">:662-665, :703-704</td></tr>
+  </table>
+  <p class="measure">即：<strong>前四类组件一旦创建就有完整闭环消费路径</strong>（创建≠悬空物）；问题只在"创建的理由"从未成为可见事实。</p>
+
+  <h2 class="measure"><span class="no">§3</span>断裂过渡诊断（一个主因）</h2>
+  <div class="flow">
+    <div class="flow-row">
+      <span class="flow-tag">现状</span>
+      <div class="fbox">运行事实：摩擦 / 资源 / 轨迹</div><div class="farrow">→</div>
+      <div class="fbox">agent 评审判断（工作正常）</div><div class="farrow">→</div>
+      <div class="fbox dead">"无证据"闭合 ×13 ⇒ 进化止于参数层</div>
+    </div>
+    <div class="flow-row">
+      <span class="flow-tag">加 A4 后</span>
+      <div class="fbox gain">+ 能力事实：库存 / 重复 / 每步执行</div><div class="farrow">→</div>
+      <div class="fbox">同一条判断链，不新增机制</div><div class="farrow">→</div>
+      <div class="fbox">能力级变更可达（或有据的不变）</div>
+    </div>
+  </div>
+  <p class="flow-note measure">断裂在"评审入口的事实词汇 → agent 判断"。B2 已证明判断链本身是好的（引用事实 → 定向修改 → 声明效果 → 效果成立）。只改这一个主因：<strong>观测服务加能力高度（A4），库存计数真实化</strong>。不动触发器、不动判断归属、不加义务/配额/推荐。</p>
+
+  <h2 class="measure"><span class="no">§4</span>设计：能力事实（A4）与真实库存</h2>
+  <div class="measure">
+    <p>原则不变：服务只供事实——发生了什么、花了什么、路径里有什么/缺什么——不供原因、结论、建议；"你应该创建一个 skill"是禁句。判断与创建都归 agent。</p>
+  </div>
+
+  <h3 class="measure"><span class="no">4.1</span>新增事实行（self_observation.ts，与 A1–A3 同渲染管道）</h3>
+  <div class="measure">
+    <p><strong><code>[inventory]</code> —— harness 库存与消费绑定</strong>（用户轴 1：自身 harness 视图）</p>
+  </div>
+  <div class="term"><span class="k">[inventory]</span> prompt 1 (head 每请求; in_path 0/10 跨度) | skill 0 | tool 0 | memory 0 |
+  subagent 0 (写入口拒绝: experiment authorizes one agent) |
+  orchestration 3 步: build 执行 52, review_gate 9, deliver 1</div>
+  <div class="measure">
+    <ul>
+      <li>每类<strong>真实计数</strong>（0 就是 0）＋该类消费绑定的事实短语（进 head / 可调用 / 索引+拉取 / 拒绝——运行时属性，非建议）＋跨结果跨度的 in_path 使用计数与最近使用请求号。</li>
+      <li>orchestration：步数＋<strong>每步执行计数</strong>——由既有 <code>request_record.pin.step</code> 聚合（<span class="ref">self_root.ts:1403,1416</span>），无需新回执；"优化已有"方向的证据基础。</li>
+    </ul>
+    <p><strong><code>[recurrence]</code> —— 跨结果跨度的重复劳动</strong>（用户轴 3：任务轨迹）</p>
+  </div>
+  <div class="term"><span class="k">[recurrence]</span> 10 个结果跨度; 共同调用: write 10/10 跨度 (计 86), edit 9/10 (41),
+  office.render 10/10 (12); agent 组件在径: 0/10 跨度</div>
+  <div class="measure">
+    <ul>
+      <li>机械聚合 A3 既有的 per-span 序列与 in_path：各 span 共同出现的调用名及总量、含任一 agent 创建组件的 span 数。无相似度判断、无任务词汇——纯计数。</li>
+      <li>这是把 B2 不可见的核心事实——"十次同样的手工，零次复用"——变成一行可引用的 ref。</li>
+    </ul>
+  </div>
+
+  <h3 class="measure"><span class="no">4.2</span>真实计数与缺席可见</h3>
+  <div class="measure">
+    <ul>
+      <li>删除 selfCategories 的 <code>|| 1</code>；categories 只计 active 组件，候选占位保留但标 <code>candidate: true</code> 且不计入。系统提示 "zero-count categories" 的承诺由代码兑现（提示仅把 observation 节的枚举词补上 inventory/recurrence，约一行，不加义务句）。</li>
+      <li>非评审摘要行（observationHeads）追加库存段：<code>components prompt 1/skill 0/tool 0/memory 0/subagent 0</code>（≈45 字符/请求）——任务进行中即可见，不等评审。head 的空节 <code>.filter(Boolean)</code> 保持：不往任务 head 塞空段，缺席事实住在 self 视图行里，一处即可。</li>
+    </ul>
+  </div>
+
+  <h3 class="measure"><span class="no">4.3</span>与既有机制的衔接（零新机制）</h3>
+  <div class="measure">
+    <ul>
+      <li>能力级变更声明效果时，M-C 的 agent 谓词可直接绑 A4 可比指标（如"后续跨度 write 调用数下降"、"组件在径跨度数上升"）——效果回流复用现有窗口/回执，无新通道。</li>
+      <li>A4 的 ref 可进 evidence_refs；"修改是否引用观测"沿用 M-A 的既有记录。</li>
+    </ul>
+  </div>
+
+  <h3 class="measure"><span class="no">4.4</span>每条新事实的闭环契约（no dangling artifacts）</h3>
+  <table>
+    <tr><th>产物</th><th>入环点（未经请求）</th><th>替代的工作</th><th>下一步如何回馈</th><th>退役</th></tr>
+    <tr><td><code>[inventory]</code> 行</td><td>review_frame.observation、reviewSelfView.observation、非评审摘要行</td><td>agent 自翻 ledger/mirror 数库存与步执行</td><td>引用进 evidence_refs 被记录；创建后计数即变</td><td><code>EVO_A4=0</code></td></tr>
+    <tr><td><code>[recurrence]</code> 行</td><td>同上（评审两处；摘要行在跨度≥3 时带一段）</td><td>agent 回看全部 span 序列对比</td><td>组件入径后 "0/10" 即变；可作 M-C 谓词指标</td><td><code>EVO_A4=0</code></td></tr>
+    <tr><td>真实零计数</td><td>categories / 摘要行</td><td>无（纠正既有事实的失真）</td><td>创建即 0→1</td><td>随 A4</td></tr>
+  </table>
+  <p class="measure">新常驻负担：摘要行 +≈45–90 字符/请求；评审 observation 预算内 inventory+recurrence 约 200–400 字符（2400 预算不变，折叠规则沿用）。移除负担：无——B2 已把常驻义务清干净。</p>
+
+  <h3 class="measure"><span class="no">4.5</span>不做什么（负例设计）</h3>
+  <div class="measure">
+    <ul>
+      <li>不加评审触发器、创建配额、组件数奖励、"考虑创建 X"类文本；候选 define 示例维持现状。</li>
+      <li>不把组件计数当任务回报：诚实的 no-change 闭合（引用了 recurrence/inventory 后判定不值得）仍是合法闭合。</li>
+      <li>不做 [deposit]（工作区沉积未读事实）：ledger 今天不留读回执，机械推导不成立；列入开放项，避免本轮多因素。</li>
+      <li>不动 subagent 授权（§6）。</li>
+    </ul>
+  </div>
+
+  <h2 class="measure"><span class="no">§5</span>可证伪命题与有界评估（B3）</h2>
+  <table>
+    <tr><th style="width:7.5em">项</th><th>内容</th></tr>
+    <tr><td>窄命题</td><td>同任务同模型同 caps、A4 开启的运行中，agent 至少 1 次<strong>能力级自改</strong>——kind∈{prompt, skill, tool, memory} 的 define/redefine，或 orchestration steps/decisions/transitions 结构变更（纯 policy 参数不计）——满足：自主发起、运行内被行使（新组件此后 in_path/被调用/入 head；orchestration 变更后该步实际执行）、evidence_refs 引用 A4 事实。</td></tr>
+    <tr><td>负例<br>（不判失败）</td><td>agent 引用 A4 后诚实判定 no-change（记录"视图可达、判断不同"，读闭合文本定性）；任务无重复结构则 recurrence 自然空。</td></tr>
+    <tr><td>证伪条件</td><td>全程 0 次引用 A4 事实（事实未进判断 ⇒ 视图设计失败）；或能力级变更出现但从未被行使（悬空创建 ⇒ 消费路径或事实设计失败）；或成本相对 B2 显著恶化而任务结果不升。</td></tr>
+    <tr><td>比较器</td><td>B2：68+1 请求 / 1.75M tokens / 10/10 units。开关 <code>EVO_A4</code>（=0 回 B2 行为）预留逐因子 arm。</td></tr>
+    <tr><td>预算</td><td>发射前按惯例向用户声明（预计 B2 同量级；caps 镜像 600 请求 / 14400 s / 2 GiB；组件创建请求计入任务成本，不另设奖励）。</td></tr>
+    <tr><td>测量</td><td>全部来自既有工件：能力级变更数与种类、A4 引用数、新组件后续 in_path 跨度数/调用数、recurrence 行前后值、请求与 tokens、units/deliver。</td></tr>
+  </table>
+
+  <h2 class="measure"><span class="no">§6</span>开放决定（用户定夺）</h2>
+  <div class="measure">
+    <ol>
+      <li><strong>subagent</strong>：视图将如实显示"0（写入口拒绝）"。是否解除 experimentLimits 的 subagent 拒绝并给它执行路径（run_agent 式，自然语言执行器提案待决）是<strong>独立授权</strong>，本稿不包含；不解除则五类中四类可进化，subagent 保持可见的拒绝事实。</li>
+      <li><strong>[deposit]</strong>（写后未读的工作区沉积）：需要新增读回执才能机械成立；是否列入下一轮。</li>
+      <li><strong>摘要行常驻成本</strong>：+≈45–90 字符/请求是否接受（或仅评审期显示库存，非评审只在计数变化时显示）。</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    定稿 2026-11-15（用户）· 权威文本 docs/plans/2026-11-15-capability-view-design.md · 分支 evo-loop-implementation<br>
+    设计不变量：服务供事实，判断归 agent · 热修改语义不变（reflect → bind → 下一边界）· 不以组件数/调用频次为回报
+  </div>
+
+</div>
+</body>
+</html>
