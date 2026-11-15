@@ -137,8 +137,8 @@ export const PPT_SELF_ROOT_OPTIONS = {
 /** Provider-visible schema for one registered tool name, generated from the core descriptor.
  * Returns undefined when the tool is not advertised in the current state. */
 export function selfRootToolSchema(evo: SelfRoot, name: string): any {
-  if (name === 'reflect_component') return providerOperationSchema('component');
-  if (name === 'reflect_orchestration') return providerOperationSchema('orchestration', undefined, evo.current.orchestration);
+  if (name === 'reflect_component') return providerOperationSchema('component', undefined, undefined, { layer: evo.mech.l4 });
+  if (name === 'reflect_orchestration') return providerOperationSchema('orchestration', undefined, evo.current.orchestration, { layer: evo.mech.l4 });
   if (name === 'decide_exit') return evo.exitOperationSchema;
   if (name === 'decide_validation') return evo.dueWindows.length ? providerOperationSchema('validation') : undefined;
   if (name === 'decide') return DECIDE_SCHEMA;
@@ -171,8 +171,8 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       op: Type.Optional(Type.Literal('replay')), ref: Type.Optional(Type.String()), source: Type.Optional(Type.String()) }),
     async (a: any) => a.op === 'replay' ? evo.replay(a.ref,a.source) : a.section === 'context_item' && a.ref ? evo.contextItem(a.ref) : evo.detail(a.section ?? 'policy',a.offset ?? 0,a.count ?? 20));
   const orchestration = operationContract('orchestration');
-  tool(orchestration.name, orchestration.description, open(Object.keys(orchestration.properties)),
-    (a: any) => evo.transaction(normalizeOperation('orchestration', a)));
+  tool(orchestration.name, orchestration.description, open([...Object.keys(orchestration.properties), 'evolution_layer']),
+    (a: any) => evo.transaction(normalizeOperation('orchestration', a, undefined, { layer: evo.mech.l4 })));
   const exitContract = operationContract('review');
   tool(exitContract.name, exitContract.description, open([...Object.keys(exitContract.properties), 'result']), async (a: any) => {
     if (!evo.exitOperationKind) throw Error('no active review to close');

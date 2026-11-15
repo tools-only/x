@@ -225,3 +225,11 @@ self 视图 = 任务锚（statusFacts，既有）+ 四层子视图（§4.9-2 [la
 - **常驻 Evolution State 大对象**：task_state/self_view/candidates/evidence_ledger 已由 statusFacts/评审视图/§7/账本分布式实现；hypotheses 的家是 agent 自己的 memory 组件+闭合回流（§4.9-3），不建新存储。
 - **预定义挑战者/评审者角色**（agent-native：运行中创建、同模型）与**固定 plan-and-execute 流程**（用户两次否决）。
 - 已知缺口记录在案、不由本修订解决：可见≠采用（梯度来自任务结构与价格事实，债4 与 2026-11-04 结论）；跨运行沉淀（债4 迁移项）。
+
+## 9. 实现与离线验证记录（2026-11-16，本提交）
+
+- 落点：`demo/self_observation.ts`（A4 计数与 [inventory]/[recurrence] 渲染）、`demo/self_root.ts`（评审入口 A4/ASK 块、exit 三答闭合、L4 声明记录/回显/[layers]/闭合回流）、`demo/self_root_ppt.ts` 与 `demo/ppt_demo_extension.ts`（surface 接线；Typebox 的 `evolution_layer` 字段仅在 l4 开启时注入，关端字节级回到 B2 契约）、新测试 `tests/self_root_evo_capability.test.ts`。全部挂 `EVO_A4`/`EVO_ASK`/`EVO_L4` 三开关，默认关。
+- 功能正确性（离线，mock provider，fee-free）：`node --experimental-transform-types --test --test-concurrency=1 --test-force-exit` 跑 8 文件共 58 测试：48 过 / 10 败。其中能力视图 6/6、机制回归 8/8、`self_root.test.ts` 26/26、`self_root_v141` 2/2、`provider_permit` 2/2 全过。
+- 10 个失败全部在 `ppt_demo.test.ts`(8)/`ppt_demo_live_orchestration`(1)/`ppt_trials`(1)：将 4 个 demo 文件检出到基线 8f425f23 后重跑同 3 文件，失败集逐名一致（14 测试 4 过 10 败）——均为既有失败，断言的是 self-entity 收敛前的旧架构（process kind、工作区文件持久化、写路径门禁、Pi XML 技能索引、rootObject 投影键、trial 已存组件），与本修订无关，不在本次范围修复。
+- 层级声明：以上仅为功能正确性与接线证据；full-chain reachability、autonomous adoption、net benefit 未验证，待 B3 真跑（§5）按 可见→生效→行使→效果 归账。
+

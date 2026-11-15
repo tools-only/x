@@ -9,8 +9,14 @@ export interface ObservationSource {
   ledger: ObservationRow[];
   /** Callable capability names granted at observation time (surface tools, self ops, decide:{id}). */
   capabilities?: string[];
-  /** Active components, for zero-call listing. */
-  components?: { kind: string; name: string }[];
+  /** Active components, for zero-call listing; chars is the recorded text length when known. */
+  components?: { kind: string; name: string; chars?: number }[];
+  /** Current orchestration step ids, so zero-execution steps are listed. */
+  orchestration?: { steps: string[] };
+  /** Per-kind recorded consumption-binding fact and resident chars per request, supplied by the runtime. */
+  bindings?: Record<string, { binding: string; rent_chars: number }>;
+  /** Compute the inventory/recurrence block (pure counting over recorded rows; off by default). */
+  a4?: boolean;
 }
 
 export interface ObservationA1 {
@@ -34,7 +40,14 @@ export interface ObservationA2 {
 export interface ObservationA3 {
   entries: { ref: string; outcome: string; sequence: string; in_path: string[]; available_not_in_path: string[] }[];
 }
-export interface Observation { a1: ObservationA1; a2: ObservationA2; a3: ObservationA3; rows: number }
+/** Inventory/recurrence counts: true per-kind counts (0 is 0), recorded bindings, per-step executions,
+ * and per-span call coverage. Pure counting over recorded rows; no similarity judgment, no recommendation. */
+export interface ObservationA4 {
+  inventory: { kinds: { kind: string; count: number; rent_chars: number | null; in_path_spans: number; binding: string | null }[];
+    steps: { id: string; executions: number }[]; spans: number; residency_chars: number | null };
+  recurrence: { spans: number; calls: { name: string; spans: number; total: number }[]; component_path_spans: number };
+}
+export interface Observation { a1: ObservationA1; a2: ObservationA2; a3: ObservationA3; a4?: ObservationA4; rows: number }
 
 const NORMAL_STOPS = new Set(['end_turn', 'stop', 'stop_sequence', 'tool_use', 'tool_calls', 'completed']);
 const num = (x: any) => (Number.isFinite(Number(x)) ? Number(x) : 0);
@@ -186,6 +199,7 @@ export function observe(source: ObservationSource): Observation {
   // --- A3: one pedigree entry per environment-authority outcome ---
   const capabilities = [...new Set(source.capabilities ?? [])];
   const entries: ObservationA3['entries'] = [];
+  const spanData: { seq: string[]; inPath: Set<string> }[] = [];
   let spanStart = 0;
   for (let i = 0; i < ledger.length; i++) {
     if (ledger[i].type !== 'task_outcome') continue;
@@ -198,6 +212,7 @@ export function observe(source: ObservationSource): Observation {
       if (row.type === 'tool_result') { const n = String(v.action ?? v.tool ?? 'tool'); seq.push(n); inPath.add(String(v.tool ?? n)); if (String(v.tool) === 'decide') inPath.add('decide'); }
       else if (row.type === 'reflection_activated' && v.parent !== undefined) for (const a of v.addresses ?? []) inPath.add(a);
     }
+    spanData.push({ seq, inPath });
     const used = new Set([...seq, ...inPath]);
     entries.push({
       ref: ledger[i].ref ?? '',
@@ -208,7 +223,41 @@ export function observe(source: ObservationSource): Observation {
     });
   }
   const a3: ObservationA3 = { entries };
-  return { a1, a2, a3, rows: ledger.length };
+
+  // --- A4: inventory/recurrence counting (only when the source asks for it) ---
+  let a4: ObservationA4 | undefined;
+  if (source.a4) {
+    const comps = source.components ?? [];
+    const kindList = ['prompt', 'skill', 'tool', 'memory', 'subagent'];
+    const addrOf = (kind: string, name: string) => `components.${kind}.${name}`;
+    const spanHasKind = (s: { inPath: Set<string> }, kind: string) =>
+      comps.some(c => c.kind === kind && (s.inPath.has(c.name) || s.inPath.has(addrOf(kind, c.name))));
+    const stepRuns = new Map<string, number>();
+    for (const row of ledger) if (row.type === 'request_record' && row.value?.pin?.step !== undefined) {
+      const id = String(row.value.pin.step);
+      stepRuns.set(id, (stepRuns.get(id) ?? 0) + 1);
+    }
+    for (const id of source.orchestration?.steps ?? []) if (!stepRuns.has(id)) stepRuns.set(id, 0);
+    const kinds = kindList.map(kind => ({ kind,
+      count: new Set(comps.filter(c => c.kind === kind).map(c => c.name)).size,
+      rent_chars: source.bindings?.[kind]?.rent_chars ?? null,
+      in_path_spans: spanData.filter(s => spanHasKind(s, kind)).length,
+      binding: source.bindings?.[kind]?.binding ?? null }));
+    const callTotals = new Map<string, { spans: number; total: number }>();
+    for (const s of spanData) {
+      const counts = new Map<string, number>();
+      for (const n of s.seq) counts.set(n, (counts.get(n) ?? 0) + 1);
+      for (const [n, c] of counts) { const r = callTotals.get(n) ?? { spans: 0, total: 0 }; r.spans++; r.total += c; callTotals.set(n, r); }
+    }
+    a4 = {
+      inventory: { kinds, steps: [...stepRuns.entries()].map(([id, executions]) => ({ id, executions })), spans: spanData.length,
+        residency_chars: source.bindings ? Object.values(source.bindings).reduce((n, b) => n + (b.rent_chars ?? 0), 0) : null },
+      recurrence: { spans: spanData.length,
+        calls: topOf(callTotals, r => r.spans * 1000 + r.total, 4).map(([name, r]) => ({ name, ...r })),
+        component_path_spans: spanData.filter(s => comps.some(c => s.inPath.has(c.name) || s.inPath.has(addrOf(c.kind, c.name)))).length },
+    };
+  }
+  return { a1, a2, a3, ...(a4 ? { a4 } : {}), rows: ledger.length };
 }
 
 const fmtTokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
@@ -225,6 +274,12 @@ export function renderObservation(o: Observation, budget = 2800): string {
   for (const r of o.a1.rejections) lines.push(`[reject] x${r.count} "${r.head}" [last ${r.last}]`);
   for (const l of o.a1.losses) lines.push(`[loss] ${l.kind}: ${l.detail} [${l.ref}]`);
   if (o.a1.unused.tools_never_called.length) lines.push(`[idle] tool components with zero calls: ${o.a1.unused.tools_never_called.join(', ')}`);
+  if (o.a4) {
+    const inv = o.a4.inventory;
+    lines.push(`[inventory] ${inv.kinds.map(k => `${k.kind} ${k.count}${k.rent_chars !== null ? ` (${k.rent_chars} chars/request)` : ''}${inv.spans ? `, in path ${k.in_path_spans}/${inv.spans} spans` : ''}${k.binding ? `; ${k.binding}` : ''}`).join(' | ')}${inv.residency_chars !== null ? `; total residency ${inv.residency_chars} chars/request` : ''}${inv.steps.length ? `; step executions: ${inv.steps.map(s => `${s.id}x${s.executions}`).join(' ')}` : ''}`);
+    const rec = o.a4.recurrence;
+    lines.push(`[recurrence] ${rec.spans} outcome span(s)${rec.calls.length ? `; calls: ${rec.calls.map(c => `${c.name} in ${c.spans}/${rec.spans} spans x${c.total}`).join(', ')}` : ''}; agent components in path ${rec.component_path_spans}/${rec.spans || 0} spans`);
+  }
   lines.push(`[trace] modes: ${o.a2.modes || '-'}`);
   lines.push(`[trace] decide receipts ${o.a2.decide_receipts}; self changes ${o.a2.activations}; reviews ${o.a2.reviews.opened}/${o.a2.reviews.closed}; self reads ${o.a1.unused.self_reads}`);
   if (o.a2.actions.length) lines.push(`[trace] calls: ${o.a2.actions.map(a => `${a.name}x${a.count}${a.errors ? `(${a.errors} err)` : ''}`).join(' ')}`);

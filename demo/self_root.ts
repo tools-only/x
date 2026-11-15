@@ -43,7 +43,7 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   probeKinds?: string[];
   /** Mechanism switches for single-factor ablation; defaults are the current behavior (all on, legacy off). */
   mechanisms?: SelfRootMechanisms };
-export type SelfRootMechanisms = { observation?: boolean; compiler?: boolean; effect_return?: boolean; legacy_obligation?: boolean };
+export type SelfRootMechanisms = { observation?: boolean; compiler?: boolean; effect_return?: boolean; legacy_obligation?: boolean; a4?: boolean; ask?: boolean; l4?: boolean };
 type Mode = { tools: string[]; instruction: string; projection?: string; exitSchema: any };
 type Route = { id: string; event: string; predicate?: string; projection?: string; mode: string; priority: number; conclusion_sink: 'ledger' | 'lineage' };
 export type ImagesRule = 'all' | 'latest' | 'none';
@@ -110,6 +110,21 @@ export type OperationKind = 'review' | 'validation' | 'component' | 'orchestrati
 export const FIXED_REVIEW_STRATEGY = 'At a self-evolution entrance the runtime delivers recorded operating facts (repeats, costs, losses, rejections, trajectory, outcome paths) beside the current definition of every writable and protected object. Judgment stays with the Agent: act on the facts, or close with decide_exit - a judged no-change is a valid closure. Changes activate at the next request boundary and their recorded effects return to the same view. The host presents facts without ranking, diagnosis, recommendation or forced order.';
 /** Pre-M-A obligation framing; active only under mechanisms.legacy_obligation. */
 export const LEGACY_REVIEW_STRATEGY = 'At every self-evolution entrance, inspect the complete factual space of every writable and protected object: current definition, participation and use, legal operations not yet observed, linked evidence, unknowns and costs. An existing, rendered, submitted or delivered artifact never ends the obligation to examine and evolve orchestration and component classes; rework of produced artifacts is a normal route. Distinguish exposure from actual use and follow same-root version receipts. Then the Agent chooses any change that can alter the next task action and uses the same-task result before deciding again. The host presents facts without ranking, diagnosis, recommendation or forced order.';
+/** EVO_L4: the only legal values for a declared change layer; recorded and echoed, never inferred. */
+export const EVOLUTION_LAYERS = ['prompt', 'context', 'loop', 'harness'];
+/** EVO_ASK: entrance-only question block riding the review-strategy delivery; zero resident outside reviews.
+ * Open phrasing only: no component names, no causal assertions, no exit gate beyond the response field. */
+export const ENTRANCE_QUESTIONS = [
+  'Is the root cause of the recorded outcomes at the capability layer (a component or orchestration structure to create or restructure) or at the parameter layer (a value to tune)?',
+  'Given the recorded recurrence and inventory facts, is any recurring work not covered by an existing capability?',
+  'Which capabilities exist but appear in no recorded outcome path, and why?',
+];
+export function entranceAskBlock(layer: boolean): string {
+  return ['SELF-EVOLUTION ENTRANCE QUESTIONS: This harness is yours; evolution means creating or optimizing components and orchestration, not only adjusting parameters.',
+    ...(layer ? [`Four layers exist as coordinates for locating a change - ${EVOLUTION_LAYERS.join(', ')} - and a recorded change may declare its evolution_layer.`] : []),
+    ...ENTRANCE_QUESTIONS.map((q, i) => `${i + 1}. ${q}`),
+    'Close with decide_exit carrying result.entry_question_responses: exactly three strings, one per question; "none" is a valid response. "No gap" and "no change" are both valid closures.'].join('\n');
+}
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
@@ -134,18 +149,19 @@ export function operationContract(kind: OperationKind) {
 
 /** Provider-visible JSON schema generated from the one descriptor. The Agent's own mode exit schema
  * (part of its writable policy) is exposed as an optional result object when it declares more than reason. */
-export function providerOperationSchema(kind: OperationKind, modeExitSchema?: any, currentOrchestration?: any) {
+export function providerOperationSchema(kind: OperationKind, modeExitSchema?: any, currentOrchestration?: any, opts?: { layer?: boolean }) {
   const contract = operationContract(kind);
   const properties: any = structuredClone(contract.properties);
   if (kind === 'orchestration' && currentOrchestration) properties.orchestration = orchestrationSchema(currentOrchestration);
+  if (opts?.layer && (kind === 'component' || kind === 'orchestration')) properties.evolution_layer = { type: 'string', enum: [...EVOLUTION_LAYERS], description: 'Optional declared layer of this change; recorded and echoed, never inferred. Absent means undeclared.' };
   const own = modeExitSchema?.properties ? Object.keys(modeExitSchema.properties).filter(k => k !== 'reason') : [];
   if (kind === 'review' && own.length) properties.result = structuredClone(modeExitSchema);
   return { type: 'object', properties, required: [...contract.required], additionalProperties: false };
 }
 
 /** Dispatch-side check against exactly the provider-visible schema plus the stated conditional semantics. */
-export function normalizeOperation(kind: OperationKind, args: any, modeExitSchema?: any) {
-  const schema = providerOperationSchema(kind, modeExitSchema);
+export function normalizeOperation(kind: OperationKind, args: any, modeExitSchema?: any, opts?: { layer?: boolean }) {
+  const schema = providerOperationSchema(kind, modeExitSchema, undefined, opts);
   const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   const unknown = Object.keys(a).filter(k => a[k] !== undefined && !(k in schema.properties));
   if (unknown.length) throw operationError(`${operationContract(kind).name}: unknown field(s) ${unknown.join(', ')}`, kind, a, { invalid: unknown });
@@ -446,7 +462,7 @@ export class SelfRoot extends LiveAgentSelf {
   private consumed = new Set<string>();
   private currentMode = 'execute';
   private review?: any;
-  private pending?: { candidate: LiveAgentSelf; policy: Policy; revision: number; addresses: string[]; windows: any[]; source?: number; baseStateHash: string };
+  private pending?: { candidate: LiveAgentSelf; policy: Policy; revision: number; addresses: string[]; windows: any[]; source?: number; baseStateHash: string; declaredLayers?: Record<string, string> };
   private chainFailed = false;
   private paused = false;
   private requestPin?: any;
@@ -522,11 +538,20 @@ export class SelfRoot extends LiveAgentSelf {
   }
   override get revision() { return this.serial; }
   get mode() { return this.currentMode; }
-  get reviewExitSchema() { return this.review ? copy(this.review.modeDefinition.exitSchema) : undefined; }
+  get reviewExitSchema() {
+    if (!this.review) return undefined;
+    const schema = copy(this.review.modeDefinition.exitSchema);
+    // EVO_ASK closure protocol: the entrance questions close through one array field on the agent's own exit schema.
+    if (this.mech.ask && this.inEvolutionReview) {
+      schema.properties = { ...(schema.properties ?? {}), entry_question_responses: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'One response per entrance question, in order; "none" is a valid response.' } };
+      schema.required = [...new Set([...(schema.required ?? []), 'entry_question_responses'])];
+    }
+    return schema;
+  }
   /** The provider-visible exit operation for the current review, from the one descriptor. */
   get exitOperationKind(): 'review' | undefined { return this.review ? 'review' : undefined; }
   private reviewChanged() { return Boolean(this.review?.changes?.length || this.pending?.review === this.review?.id || this.pendingReview === this.review?.id); }
-  get exitOperationSchema() { const kind = this.exitOperationKind; return kind ? providerOperationSchema(kind, this.review.modeDefinition.exitSchema) : undefined; }
+  get exitOperationSchema() { const kind = this.exitOperationKind; return kind ? providerOperationSchema(kind, this.reviewExitSchema) : undefined; }
   get dueWindows() { return this.windows.filter(w => ['due_unverified', 'due_comparable'].includes(w.status)).map(w => w.id); }
   get hasReview() { return Boolean(this.review || this.queue.length); }
   /** Whether the task still has host-owned work that a model stop cannot complete. */
@@ -588,14 +613,33 @@ export class SelfRoot extends LiveAgentSelf {
     throw Error('unknown self section');
   }
   /** Effective mechanism switches; the adapter may turn individual mechanisms off for ablation runs. */
-  get mech(): Required<SelfRootMechanisms> { return { observation: true, compiler: true, effect_return: true, legacy_obligation: false, ...(this.options.mechanisms ?? {}) }; }
-  /** The one fixed strategy line shown with the self view; evidence framing unless legacy obligation is on. */
-  reviewStrategy(): string { return this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY; }
+  get mech(): Required<SelfRootMechanisms> { return { observation: true, compiler: true, effect_return: true, legacy_obligation: false, a4: false, ask: false, l4: false, ...(this.options.mechanisms ?? {}) }; }
+  /** The one fixed strategy line shown with the self view; evidence framing unless legacy obligation is on.
+   * entrance=true appends the EVO_ASK question block at evolution-review entrances only (zero resident elsewhere). */
+  reviewStrategy(entrance = false): string {
+    const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
+    return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
+  }
   /** Three-altitude recorded operating facts over this ledger - the dynamic facet of the one self view. */
   observation(): Observation {
     const decisions = ((this.current?.orchestration?.decisions ?? []) as any[]).map(d => `decide:${d.id}`);
     const capabilities = [...new Set([...(this.lastSurface.length ? this.lastSurface : this.surface()), ...decisions])];
-    return observe({ ledger: this.ledger, capabilities, components: this.active().map(c => ({ kind: c.kind, name: c.name })) });
+    const components = this.active().map(c => ({ kind: c.kind, name: c.name, chars: typeof c.source === 'string' ? c.source.length : undefined }));
+    return observe({ ledger: this.ledger, capabilities, components,
+      ...(this.mech.a4 ? { a4: true, orchestration: { steps: ((this.current?.orchestration?.steps ?? []) as any[]).map((s: any) => String(s.id)) }, bindings: this.consumptionBindings() } : {}) });
+  }
+  /** EVO_A4: recorded consumption-binding fact per kind - how that kind's text or callable reaches a request,
+   * and its resident chars per request under the active context policy. Facts only; judgment stays with the agent. */
+  private consumptionBindings(): Record<string, { binding: string; rent_chars: number }> {
+    const active = this.active();
+    const len = (c: any) => (typeof c.body === 'string' ? c.body : typeof c.source === 'string' ? c.source : '').length;
+    return {
+      prompt: { binding: 'full text into the context head each request', rent_chars: active.filter(c => c.kind === 'prompt').reduce((n, c) => n + len(c), 0) },
+      memory: { binding: 'policy-filtered full text into the context head', rent_chars: this.memory().reduce((n, c: any) => n + `${c.name}@${c.version}\n`.length + len(c), 0) },
+      skill: { binding: 'index line in the head; body on read_self_component', rent_chars: active.filter(c => c.kind === 'skill').reduce((n, c: any) => n + `${c.name}@${c.version}: ${c.description ?? ''}; read_self_component`.length, 0) },
+      tool: { binding: 'registered callable; schema in the tools block', rent_chars: 0 },
+      subagent: { binding: 'write rejected: v1 has one agent', rent_chars: 0 },
+    };
   }
   observationText(budget = 2800) { return renderObservation(this.observation(), budget); }
   observationDigest() { return observationHeads(this.observation()); }
@@ -618,7 +662,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** All reflection tools in one model response share this pending chain. */
-  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
     const result = this.mutations.then(() => this.prepareTransaction(input));
     this.mutations = result.then(() => undefined, () => undefined);
     return result;
@@ -628,10 +672,17 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
     this.chainFailed = true;
   }
-  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any }) {
+  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
     try {
       if (this.chainFailed) throw Error('transaction chain already failed');
       if (input.baseRevision !== undefined && input.baseRevision !== this.pendingRevision) throw Error(`stale revision; expected ${this.pendingRevision}`);
+      // EVO_L4: optional declared layer per changed address; recorded and echoed, never inferred.
+      const declaredLayers: Record<string, string> = {};
+      const declareLayer = (address: string, layer: any) => {
+        if (layer === undefined || !this.mech.l4) return;
+        if (!EVOLUTION_LAYERS.includes(layer)) throw Error(`evolution_layer must be one of ${EVOLUTION_LAYERS.join(', ')}`);
+        declaredLayers[address] = layer;
+      };
       const origin = this.pending?.candidate ?? this;
       const base = origin === this ? this.baseSaved() : { snapshot: origin.snapshot(), history: origin.history() };
       let candidate = new LiveAgentSelf(base, this.rootValidator);
@@ -676,6 +727,7 @@ export class SelfRoot extends LiveAgentSelf {
         if (c.kind === 'subagent') throw Error('v1 has one agent; task subagents are not authorized');
         if (c.kind === 'tool' && (PROTOCOL.includes(c.name) || this.contract.capabilities.includes(c.name) || (this.options.reservedToolNames ?? []).includes(c.name))) throw Error('tool name collides with protected protocol or host capability');
         const value = { ...c, source: c.source, baseRevision: candidate.revision };
+        delete (value as any).evolution_layer;
         const currentSource = () => candidate.active().find(x => x.kind === c.kind && x.name === c.name)?.source;
         if (this.mech.compiler && c.op === 'redefine' && c.write === 'append') value.source = `${currentSource() ?? ''}\n${c.source ?? ''}`;
         else if (this.mech.compiler && c.op === 'redefine' && c.write === 'patch') {
@@ -690,6 +742,7 @@ export class SelfRoot extends LiveAgentSelf {
         else if (c.kind === 'memory' && c.op === 'redefine' && c.write === undefined && policy.memory.write === 'append') value.source = `${currentSource() ?? ''}\n${c.source}`;
         // Hash gate: a source identical to the current version does not bump the version or open a window.
         if (this.mech.compiler && c.op === 'redefine' && currentSource() === value.source) { skippedUnchanged.push(componentAddress(c.kind, c.name)); continue; }
+        declareLayer(componentAddress(c.kind, c.name), c.evolution_layer);
         await candidate.reflectComponent(value); addresses.push(componentAddress(c.kind, c.name));
       }
       if (input.orchestration !== undefined || input.orchestration_patch !== undefined || (input.restore !== undefined && (!restoreScope || restoreScope.has(componentAddress('orchestration', ''))))) {
@@ -710,6 +763,8 @@ export class SelfRoot extends LiveAgentSelf {
         validatePolicy(next, this.contract, this.outputLimit); policy = next;
         for (const key of Object.keys(input.policy)) if (!restoreScope || restoreScope.has(componentAddress('policy', key))) addresses.push(componentAddress('policy', key));
       }
+      // EVO_L4: a top-level declaration covers the orchestration/policy addresses this transaction touched.
+      if (input.evolution_layer !== undefined) for (const address of addresses) if (address === componentAddress('orchestration', '') || address.startsWith('policy.')) declareLayer(address, input.evolution_layer);
       if (!addresses.length && skippedUnchanged.length) return { status: 'no_change', changed: false, reason: 'source identical to the current version; no version bump and no validation window', current: skippedUnchanged.map(address => ({ address, value: 'read_self_component(kind, name)' })) };
       if (!addresses.length) throw Error('empty transaction');
       if (input.restore === undefined && hash(candidate.snapshot()) === hash(base.snapshot) && hash(policy) === hash(this.policy)) {
@@ -743,11 +798,13 @@ export class SelfRoot extends LiveAgentSelf {
       // Effect return: a validation window opens only for a declared effect; an undeclared change activates without one.
       const windowDue = !this.mech.effect_return || Boolean(requestedPredicate || input.expected_effect);
       this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length && windowDue ? [{ addresses, expected_effect: input.expected_effect, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional', evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
+        declaredLayers: { ...(this.pending?.declaredLayers ?? {}), ...declaredLayers },
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
       return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null,
         ...(compiledEntries.length ? { compiled: compiledEntries } : {}),
         ...(skippedUnchanged.length ? { unchanged_skipped: skippedUnchanged } : {}),
         ...(restoreScope ? { restore_scope: [...restoreScope], differs_not_restored: restoreNotRestored } : {}),
+        ...(Object.keys(declaredLayers).length ? { declared_layers: declaredLayers } : {}),
         evidence_refs: { retained, discarded, auto_attached: evolution && !this.mech.effect_return ? reviewFacts : [] }, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional',
         ...(input.expected_effect ? { expected_effect: input.expected_effect } : {}),
         ...(evolution && addresses.length ? { validation_window: windowDue ? 'opens at activation' : 'none; a window opens when the change declares expected_effect or success_predicate' } : {}) }).value;
@@ -817,6 +874,7 @@ export class SelfRoot extends LiveAgentSelf {
       applySurface(this.surface());
       this.pending = undefined;
       const activated = this.fact('reflection_activated', { parent: oldSerial, revision: this.serial, addresses: p.addresses, restore_source: p.source ?? null, review: this.review?.id ?? this.pendingReview ?? null,
+        ...(p.declaredLayers && Object.keys(p.declaredLayers).length ? { declared_layers: p.declaredLayers } : {}),
         success_predicates: p.windows.filter(Boolean).map((w: any) => ({ predicate: w.success_predicate ?? null, predicate_source: w.predicate_source ?? null })) });
       for (const w of p.windows) if (w) this.createWindow(oldSerial, activated.ref, w.addresses ?? p.addresses, w.expected_effect, w.review ?? null, w.success_predicate, w.evidence_refs, w.predicate_source);
       this.definitions.push(this.definition());
@@ -1157,6 +1215,13 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.mech.legacy_obligation) Object.assign(frame, { must_change_self: true, artifact_does_not_end_evolution: true, rework_path: 'reflect orchestration; rewrite; render; resubmit or preview' });
     else frame.exit = 'decide_exit is available at any point; a judged no-change is a valid closure';
     if (this.mech.observation) frame.observation = this.observationText(2400);
+    // EVO_L4 closure backflow: the last recorded closures return to the next entrance (presentation only).
+    if (this.mech.l4) {
+      const recent = this.ledger.filter(r => r.type === 'review_closed').slice(-3).map(r => ({
+        ref: r.ref, outcome: r.value?.outcome ?? null, closed_by: r.value?.closed_by ?? null,
+        responses: (Array.isArray(r.value?.result?.entry_question_responses) ? r.value.result.entry_question_responses : []).map((x: any) => String(x).split('\n')[0].slice(0, 160)) }));
+      if (recent.length) frame.recent_closures = recent;
+    }
     this.fact('review_frame', frame);
   }
   reviewSelfView() {
@@ -1182,20 +1247,48 @@ export class SelfRoot extends LiveAgentSelf {
       const current = active.filter(c => c.kind === kind);
       const names = [...new Set(current.map(c => c.name))];
       if (!names.length) names.push(`${kind}_candidate`);
-        return names.map(name => { const c = current.find(x => x.name === name); return entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true, chars: c.source?.length ?? null, current_source: 'read_self_component(kind, name)' } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], source_requirements: kind === 'tool' ? ['first ten lines must contain # program: on'] : ['non-empty source'], example: c ? { op: 'redefine', kind, name } : { op: 'define', kind, name, source: minimalComponentSource(kind, name) } }); });
+        return names.map(name => { const c = current.find(x => x.name === name); const row: any = entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true, chars: c.source?.length ?? null, current_source: 'read_self_component(kind, name)' } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], source_requirements: kind === 'tool' ? ['first ten lines must contain # program: on'] : ['non-empty source'], example: c ? { op: 'redefine', kind, name } : { op: 'define', kind, name, source: minimalComponentSource(kind, name) } }); if (this.mech.a4 && !c) row.candidate = true; return row; });
     });
     const policyValue = (v: any) => { const s = JSON.stringify(v); return s.length <= 400 ? copy(v) : { keys: Object.keys(v ?? {}), chars: s.length, full: 'read_self(section="policy")' }; };
     const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, policyValue((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: '<merge patch onto the current value>' } } }));
     const protectedEntries = ['fixed_review_strategy','user_contract','provider_boundary'].map(name => entry(name, 'protected', 'visible protected element', { active: true }, false, null, name === 'fixed_review_strategy' ? 'fixed strategy for this phase' : 'user or provider boundary'));
-    const categories = { orchestration: 1, policy: Object.keys(this.policy).length, prompt: components.filter(x => x.kind === 'prompt').length, skill: components.filter(x => x.kind === 'skill').length, tool: components.filter(x => x.kind === 'tool').length, memory: components.filter(x => x.kind === 'memory').length, protected: protectedEntries.length };
+    const countKind = (kind: string) => components.filter((x: any) => x.kind === kind && !x.candidate).length;
+    const categories = { orchestration: 1, policy: Object.keys(this.policy).length, prompt: countKind('prompt'), skill: countKind('skill'), tool: countKind('tool'), memory: countKind('memory'), protected: protectedEntries.length };
     const factRows = this.ledger.filter(r => r.kind === 'fact');
     const byType: Record<string, number> = {};
     for (const r of factRows) byType[r.type] = (byType[r.type] ?? 0) + 1;
     const facts = { total: factRows.length, by_type: byType, last: factRows.slice(-12).map(r => ({ ref: r.ref, type: r.type, revision: r.revision, request: r.request })), full: 'read_self(section="ledger", offset, count)' };
     const memories = active.filter(c => c.kind === 'memory');
-    return { revision: this.serial, strategy: this.reviewStrategy(), categories, entries: [
+    const allEntries: any[] = [
       ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: 'full replacement or orchestration_patch; the current definition is this entry value' } }), ...policyEntries, ...protectedEntries
-    ], ...(this.mech.observation ? { observation: this.observationText(2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
+    ];
+    // EVO_L4: echo recorded layer declarations onto entries and regroup already-recorded facts by layer.
+    const declared: Record<string, string> = {};
+    if (this.mech.l4) {
+      for (const r of this.ledger) if (r.type === 'reflection_activated' && r.value?.declared_layers) Object.assign(declared, r.value.declared_layers);
+      for (const e of allEntries) {
+        if (e.kind === 'protected') continue;
+        const address = e.kind === 'policy' ? componentAddress('policy', e.name.replace(/^policy\./, '')) : e.kind === 'orchestration' ? componentAddress('orchestration', '') : componentAddress(e.kind, e.name);
+        e.evolution_layer = declared[address] ?? 'undeclared';
+      }
+    }
+    return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: allEntries, ...(this.mech.l4 ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
+  }
+  /** EVO_L4: the four layers as coordinates - a regrouping of facts already recorded elsewhere; no new counters. */
+  private layersView(declared: Record<string, string>) {
+    const active = this.active();
+    const chars = (kind: string) => active.filter(c => c.kind === kind).reduce((n, c: any) => n + (typeof c.source === 'string' ? c.source.length : typeof c.body === 'string' ? c.body.length : 0), 0);
+    const stepRuns: Record<string, number> = {};
+    for (const r of this.ledger) if (r.type === 'request_record' && r.value?.pin?.step !== undefined) { const id = String(r.value.pin.step); stepRuns[id] = (stepRuns[id] ?? 0) + 1; }
+    for (const s of (this.current?.orchestration?.steps ?? []) as any[]) { const id = String(s?.id ?? s); if (!(id in stepRuns)) stepRuns[id] = 0; }
+    const lastRequest = this.ledger.findLast(r => r.type === 'request_record');
+    return {
+      prompt: { prompts: active.filter(c => c.kind === 'prompt').map(c => c.name), chars: chars('prompt'), delivery: 'full text into the context head each request' },
+      context: { memory_chars: chars('memory'), policy: 'policy.context', last_composition: lastRequest?.value?.composition ?? null },
+      loop: { step_executions: stepRuns, reviews: { opened: this.ledger.filter(r => r.type === 'mode_entered').length, closed: this.ledger.filter(r => r.type === 'review_closed').length } },
+      harness: { tools: new Set(active.filter(c => c.kind === 'tool').map(c => c.name)).size, skills: new Set(active.filter(c => c.kind === 'skill').map(c => c.name)).size, subagents: 0, counts: 'see [inventory] and [recurrence] in observation' },
+      declared_layers: declared,
+    };
   }
   enterMode(mode: string) {
     if (!this.policy.modes[mode] || this.review) throw Error('mode unavailable or mode already active');
@@ -1230,7 +1323,13 @@ export class SelfRoot extends LiveAgentSelf {
       return { accepted: false, terminate: false, same_turn_correction: correction, pending_delivery: Boolean(this.pendingDelivery) };
     }
     let invalid: string | undefined;
-    try { validateSchema(result, review.modeDefinition.exitSchema); } catch (e) { invalid = `result does not match your mode exit schema: ${String(e)}`; }
+    const exitSchema = this.reviewExitSchema ?? review.modeDefinition.exitSchema;
+    try { validateSchema(result, exitSchema); } catch (e) { invalid = `result does not match your mode exit schema: ${String(e)}`; }
+    if (!invalid && this.mech.ask && this.inEvolutionReview) {
+      const responses = (result as any)?.entry_question_responses;
+      if (!Array.isArray(responses) || responses.length !== 3 || responses.some((x: any) => typeof x !== 'string'))
+        invalid = 'entry_question_responses must be exactly three strings, one per entrance question ("none" is a valid response)';
+    }
     if (invalid) {
       review.invalid_exits = (review.invalid_exits ?? 0) + 1;
       if (review.invalid_exits === 1) {
@@ -1464,7 +1563,7 @@ export class SelfRoot extends LiveAgentSelf {
   /** Cheap per-kind counts of the self catalog (same shape reviewSelfView reports). */
   selfCategories() {
     const active = this.active();
-    const count = (kind: string) => new Set(active.filter(c => c.kind === kind).map(c => c.name)).size || 1;
+    const count = (kind: string) => { const n = new Set(active.filter(c => c.kind === kind).map(c => c.name)).size; return this.mech.a4 ? n : n || 1; };
     return { orchestration: 1, policy: Object.keys(this.policy).length, prompt: count('prompt'), skill: count('skill'), tool: count('tool'), memory: count('memory'), protected: 3 };
   }
   async projection() {

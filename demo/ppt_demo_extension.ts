@@ -74,7 +74,8 @@ export default function pptDemo(pi: ExtensionAPI) {
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
   const piContext = createPiContextAdapter();
   // Mechanism flags (default on; EVO_MA/MB/MC=0 turns one off, EVO_LEGACY_OBLIGATION=1 restores the pre-M-A framing).
-  const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1' };
+  // EVO_A4/EVO_ASK/EVO_L4=1 turn on the capability-view items (default off for B2 comparability).
+  const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1', a4: process.env.EVO_A4 === '1', ask: process.env.EVO_ASK === '1', l4: process.env.EVO_L4 === '1' };
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
     { ...PPT_SELF_ROOT_OPTIONS, mechanisms: EVO_MECH, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
       pendingDeliveryState: () => agentSelf?.hasPendingFinalDelivery?.() === true,
@@ -319,12 +320,12 @@ export default function pptDemo(pi: ExtensionAPI) {
   register('reflect_component', 'Directly hot-reflect a capability into the active Agent object. The host supplies revision and evidence bookkeeping.' + (evo ? ' Activation is before the next request.' : ''),
     Type.Object({ op: Type.Union([Type.Literal('define'), Type.Literal('redefine'), Type.Literal('restore')]),
       name: Type.String(), kind: Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')]),
-      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), write: Type.Optional(Type.Union([Type.Literal('replace'), Type.Literal('append'), Type.Literal('patch')])), patch: Type.Optional(Type.Array(Type.Object({ find: Type.String(), replace: Type.String() }))), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }), async (a: any) => {
+      source: Type.Optional(Type.String()), version: Type.Optional(Type.Integer({ minimum: 1 })), write: Type.Optional(Type.Union([Type.Literal('replace'), Type.Literal('append'), Type.Literal('patch')])), patch: Type.Optional(Type.Array(Type.Object({ find: Type.String(), replace: Type.String() }))), evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Object({ metric: Type.String(), direction: Type.Union([Type.Literal('increase'), Type.Literal('decrease')]), segment: Type.Union([Type.Literal('last'), Type.Literal('mean')]) })), expected_effect: Type.Optional(Type.String()), ...(evo?.mech.l4 ? { evolution_layer: Type.Optional(Type.Union([Type.Literal('prompt'), Type.Literal('context'), Type.Literal('loop'), Type.Literal('harness')])) } : {}), note: Type.Optional(Type.String()) }), async (a: any) => {
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
       try {
         if (experimentLimits && a.kind === 'subagent') throw Error('experiment authorizes one agent; no task subagents');
-        const input = evo ? normalizeOperation('component', a) : a;
+        const input = evo ? normalizeOperation('component', a, undefined, { layer: evo.mech.l4 }) : a;
         assertNativeName(input.name, input.kind, path);
         const result = await agentSelf.reflectComponent({ ...input, baseRevision: evo?.pendingRevision ?? agentSelf.revision, level: 0, origin: { by: 'agent', decision: state.batch } });
         if (evo) return text(result);
@@ -707,7 +708,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const stable = prefix;
         const volatileText = volatile.join('\n\n');
         const viewInSystem = !selfTail;
-        const reviewStrategy = evo.inEvolutionReview ? evo.reviewStrategy() : '';
+        const reviewStrategy = evo.inEvolutionReview ? evo.reviewStrategy(true) : '';
         const sections = [{ section: 'task_brief', text: taskInstructions }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
           ...(viewInSystem ? [{ section: 'self_view', text: volatileText }] : []), { section: 'projection', text: ctx.prompt_layout?.volatile_tail === 'self_view' ? '' : volatile[1] ?? '' }];
         system.content = [reviewStrategy, stable, ...(viewInSystem ? [volatileText] : [])].filter(Boolean).join('\n\n');
