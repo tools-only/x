@@ -164,7 +164,7 @@
       <span>文档 <b>docs/plans/2026-11-15-capability-view-design</b>（本页为阅读版，.md 为准）</span>
       <span>分支 <b>evo-loop-implementation</b> · 基线 <b>f1efed79</b>（v1.5 M-A/M-B/M-C + 义务收口）</span>
       <span>失败材料 <b>B2</b> runs/evo-daemon-b2-glm53f-v15-mabc-20261115 · 比较器 B2 · 开关 <b>EVO_A4 / EVO_ASK</b></span>
-      <span>定稿后修订 2026-11-15：<b>§4.6</b> 问题式评审（EVO_ASK）· <b>§4.7</b> 自进化机制骨架 · <b>§7</b> 内容层缺口候选</span>
+      <span>定稿后修订 2026-11-15：<b>§4.6</b> 问题式评审（EVO_ASK）· <b>§4.7</b> 自进化机制骨架 · <b>§4.8</b> 建模债与摘要分层 · <b>§7</b> 内容层缺口候选</span>
     </div>
     <div class="seal"><span class="seal-mark">定 稿</span></div>
   </div>
@@ -360,6 +360,18 @@
     <p>基石升格：§3–§4 的论证核心是回执四边形（对象→视图→判断→对象'→行为，每边机械有据）；本节将其延长为<strong>回执生命周期</strong>——感知→审视（入口+协议）→决定→执行→行使→归账→保留/回滚（监督）/退役，每条边机械有据。agent 的判断是链上唯一不被机制填充、也唯一必须由 agent 填的格子。对 B3：监督器为安全件不参与归因（supervision 事件数入 §5 测量，预期 0）；闭合协议并入 EVO_ASK；节奏与回流本轮不动；常驻成本新增为零。</p>
   </div>
 
+  <h3 class="measure"><span class="no">4.8</span>对象建模的债项与摘要分层（定稿后修订，2026-11-15）</h3>
+  <div class="measure">
+    <p>用户指示（同日）：把对象建模讨论的结论记录在案。背景原则：对象建模是热修改自进化的基石（§3–§4 的回执链），known-incomplete 之处必须有账。债 1–4 来自四线讨论（分型、边界、使用、经济学），债5 来自用户同日指示——对象建模沿用 agent 自身的上下文管理设计做摘要式渐进压缩，不得靠全文列举。各债记内容、本轮立场、勾连；本轮实现范围不因此扩大，唯二新悬决入 §6。</p>
+    <ol>
+      <li><strong>债1 能力态/工作态分型</strong>：视图对 5 类组件同构计数，不分跨单元复用的能力组件与单元内一次性工作态。候选落点：事件级标签（判据即 §5 已写的 kind+结构规则，纯记录零行为影响，最便宜）；组件级按 kind（memory=状态、其余=能力）近似但会漏——memory 里的 lessons 是能力性知识；agent 自声明域（this-run/task-family/general，判断归 agent，但主观且只在跨运行语境有意义）。立场：取事件级，评估侧按 §5 判据判读即可、本轮零新字段；agent 声明域随债4 一并处理。</li>
+      <li><strong>债2 可改边界可见化</strong>：哪些对象 agent 可改、哪些 host 固定，目前靠拒绝才暴露（B1 的 12 地址恢复被拒）。取法：边界事实只随 mirror 标注视图已点名的对象，不另造边界清单（先例 mirror.unsupported；第一处落地 §4.7 监督器的“监督: host 固定, 阈值 N 次”）。边界迁移不加申请机制：引用边界事实的闭合本就进账本，开发环读账本——隐式迁移通道已存在，是否移界是用户在开发环的决定。</li>
+      <li><strong>债3 曝光≠使用</strong>：视图保证可见，不保证采纳；诚实不采纳是 §5 合法负例，不设采纳率指标（优化调用频次是被禁的任务奖励）。文本类组件使用归因的唯一诚实来源是 agent 自做实验：现有 deactivate/restore 关若干跨度 + M-C 窗口对比，今天即可走、零新机制；mirror 列“存在 deactivate 操作”是能力事实，不是建议。push/pull 分工：host 只推最小触发事实（A4），更深的自我分析（成本趋势、相似度等）归 agent 用 read_self 自建；components-push-not-pull 的证据定界——触发必须靠推，深挖才归自建，§7 候选照此挑选。</li>
+      <li><strong>债4 创建的经济学与跨运行迁移</strong>：视图显示缺口但不标价。B2 粗算：32 个 execute 请求做 10 个同构 unit；一个模板化组件造价约 2–5 请求、每 unit 省 1–2 个，量级上运行内就可能回本——而 agent 没有任何数字能做这笔算术。缺的价格事实三件：每跨度成本（§7-2）、每组件驻留租金（债5 的 rent）、摊销年限（运行边界是最短年限；跨运行迁移本身未设计）。预登记 B3 解读分支：<strong>“引用了 A4、诚实判定不值得”不等于视图失败</strong>，而指向价格事实缺位——那时该上 §7-2 与 rent，不是推翻 A4。</li>
+      <li><strong>债5 规模债：摘要式渐进压缩（用户指示）</strong>：压缩阶梯就是 kind 阶梯——skill 已是索引+拉取（<code>name@version: description; read_self_component</code>，与 MEMORY.md 同构）、orchestration 只投当前步、tool 按 surface() 逐步门控、历史经观测聚合+预算+折叠；裸露面是 prompt（active 全文每头注入，无预算、无阶梯、无降档——10 个 1–2k 字符的 prompt 即每请求 10–20k 固定租金）、memory（policy 过滤决定哪些进，选进的仍是全文；B1 长到 v75 的 memory 是活标本——v1.5 的 append/patch 解决了写成本，驻留成本原样）、reviewSelfView（线性枚举，n=30 时需定容：计数+top-k+read_self 指针）。补的件是 digest 层，分工定稿：<strong>host 语义自动摘要是禁手</strong>（判断移交服务、视图不再是纯函数→软性假收据）；digest 是组件自身的可选字段，agent 在 define/redefine 时自写、随对象版本化；host 兜底只给机械元数据；digest_revision &lt; body_revision 的陈旧性是机械事实。回执细化：component_addresses 记投递层级（full/digest），否则“X 在 head 里”变软回执、债3 再弱一级。降档归 agent：rent 事实进 [inventory]（每类后缀“字符/请求”）；<strong>预算越界是事实，不是动作</strong>——无自动压缩门；residency 规则入 policy（host 播种、agent 可改，与 memory_strategy 完全同构）。缓存对齐：digest 只随事务边界变，不随请求变。规模判断：B2 全程组件数=1，n≤5 不承重；触发条件——驻留事实越阈值，或首个大量写 memory 的运行形态。勾连：债1（长得快的是工作态，digest 层主要服务 memory 侧）；债4（运行边界把一整轮工作态压成携带摘要，即对话压缩在对象模型里的类比，属未来层）。</li>
+    </ol>
+  </div>
+
   <h2 class="measure"><span class="no">§5</span>可证伪命题与有界评估（B3）</h2>
   <table>
     <tr><th style="width:7.5em">项</th><th>内容</th></tr>
@@ -377,6 +389,8 @@
       <li><strong>subagent</strong>：视图将如实显示"0（写入口拒绝）"。是否解除 experimentLimits 的 subagent 拒绝并给它执行路径（run_agent 式，自然语言执行器提案待决）是<strong>独立授权</strong>，本稿不包含；不解除则五类中四类可进化，subagent 保持可见的拒绝事实。</li>
       <li><strong>[deposit]</strong>（写后未读的工作区沉积）：需要新增读回执才能机械成立；是否列入下一轮。</li>
       <li><strong>摘要行常驻成本</strong>：+≈45–90 字符/请求是否接受（或仅评审期显示库存，非评审只在计数变化时显示）。</li>
+      <li><strong>digest 字段算不算越出“零新机制”</strong>（债5）：分析立场为不算——组件 schema 一个可选字段 + 一条投递规则，无新通道；若接受，digest 随债5 触发条件实现，本轮不动。</li>
+      <li><strong>rent 事实是否这轮就随 A4 带</strong>（债4/债5）：[inventory] 每类后缀“字符/请求”+总驻留一行，head 组装时现成、近零成本，同时服务债4 的价格事实；或等债5 触发再上。</li>
     </ol>
   </div>
 
@@ -389,11 +403,11 @@
       <li><strong>自身历史比较器</strong>：首跨度 vs 最新跨度自比——运行内唯一诚实的比较器；条 2 的趋势行是其最小形式。</li>
       <li><strong>agent 语言回流</strong>：评审入口带近几次闭合的 ref（账本已有，仅不呈现）；thinking 记录为可审对象需新回执，与 §6 [deposit] 同族（新机制，另议）。</li>
     </ol>
-    <p>挑选判据：B3 证伪形态为"引用了 A4 仍零能力级变更"→ 优先 1/2；"创建了但未被行使"→ 优先 3；闭合显示"看见了但材料不足"→ 读闭合文本定哪条。</p>
+    <p>挑选判据：B3 证伪形态为"引用了 A4 仍零能力级变更"→ 优先 1/2；"创建了但未被行使"→ 优先 3；闭合显示"看见了但材料不足"→ 读闭合文本定哪条。闭合给出经济性理由（判定不值得造）→ 按 §4.8 债4 的预登记分支解读：指向价格事实缺位，优先 2 并连带 rent 事实（§6.5），不判视图失败。</p>
   </div>
 
   <div class="footer">
-    定稿 2026-11-15（用户）· 同日修订 §4.6/§4.7/§7 · 权威文本 docs/plans/2026-11-15-capability-view-design.md · 分支 evo-loop-implementation<br>
+    定稿 2026-11-15（用户）· 同日修订 §4.6–§4.8/§7 · 权威文本 docs/plans/2026-11-15-capability-view-design.md · 分支 evo-loop-implementation<br>
     设计不变量：服务供事实，判断归 agent · 热修改语义不变（reflect → bind → 下一边界）· 不以组件数/调用频次为回报
   </div>
 
