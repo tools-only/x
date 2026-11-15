@@ -17,7 +17,8 @@ def test_exact_local_registration_without_provider_or_model_fallback(tmp_path):
     assert settings['request_reserve']['usd']==pytest.approx(0.2228224)
     agent=settings['agent_settings']
     assert 0 < agent['httpIdleTimeoutMs'] < 300_000
-    assert agent['retry']['enabled'] and agent['retry']['maxRetries']==2
+    assert agent['retry']['enabled'] and agent['retry']['maxRetries']==6
+    assert agent['retry']['baseDelayMs']>=5000 and agent['retry']['maxAgentDelayMs']>=60_000
     assert agent['retry']['provider']['maxRetries']==0
     path.write_text(json.dumps({'providers':{}}),encoding='utf-8')
     with pytest.raises(ValueError,match='no substitution'):evo_ppt.local_settings(path)
@@ -137,13 +138,17 @@ def test_length_or_terminal_review_resumes_same_history_without_reopening_window
             if terminal_review:
                 evo_ppt.write(tmp_path/'.harness/ppt-loop.json',{'complete':True})
                 evo_ppt.write(tmp_path/'.harness/live-self.json',{'root':{'queue':['terminal-window'] if len(prompts)==1 else [],'ledger':[]}})
+            elif len(prompts)>=3:
+                evo_ppt.write(tmp_path/'.harness/ppt-loop.json',{'complete':True})
             return [{'type':'message_end','message':{'role':'assistant','stopReason':'length' if len(prompts)==1 and not terminal_review else 'stop'}}]
     monkeypatch.setattr(evo_ppt,'PiKernel',Kernel)
     result=evo_ppt.run(tmp_path)
-    assert result['stop']==('delivered' if terminal_review else 'plain_text_end')
-    assert len(prompts)==2
+    assert result['stop']=='delivered'
+    assert len(prompts)==(2 if terminal_review else 3)
     if not terminal_review:
         assert json.loads(prompts[1])['event']=='provider_response_incomplete'
+        # A plain text end never ends the run: it is nudged back to execute mode.
+        assert 'execute mode' in prompts[2] and result['empty_turns']==1
     else:
         assert 'queued boundary' in prompts[1]
 

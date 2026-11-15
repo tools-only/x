@@ -233,3 +233,11 @@ self 视图 = 任务锚（statusFacts，既有）+ 四层子视图（§4.9-2 [la
 - 10 个失败全部在 `ppt_demo.test.ts`(8)/`ppt_demo_live_orchestration`(1)/`ppt_trials`(1)：将 4 个 demo 文件检出到基线 8f425f23 后重跑同 3 文件，失败集逐名一致（14 测试 4 过 10 败）——均为既有失败，断言的是 self-entity 收敛前的旧架构（process kind、工作区文件持久化、写路径门禁、Pi XML 技能索引、rootObject 投影键、trial 已存组件），与本修订无关，不在本次范围修复。
 - 层级声明：以上仅为功能正确性与接线证据；full-chain reachability、autonomous adoption、net benefit 未验证，待 B3 真跑（§5）按 可见→生效→行使→效果 归账。
 
+### 9.1 B3-1 运行记录（2026-11-16，runs/evo-b3-glm53f-capview-20261116）
+
+- 条件：三因子 EVO_A4/ASK/L4=1（launcher 回显验证），提交 69b0176c，caps 镜像 B2（600 请求 / 14400 s / 2 GiB，token/USD 无上限），发射前已声明。
+- 终止：provider_error——az 共享网关 429（RPM 限流）间歇爆发：30 个计费请求中 10 个失败，末段三连发跨 35 秒耗尽 Pi 重试（maxRetries 2，退避 2–4 s）。非预算、非上下文问题：input 峰值 ~60K，上报实耗 ~724K tokens / ≈$0.09（低于 B2 的 1.75M / $0.26）；summary 的 8.6M / $1.33 中 ~7.9M 为失败请求按 contextWindow+maxOutputTokens 的保守预留入账（usage_status=unknown_reserved），是会计上限而非实际消耗——预留计费在高失败率下严重失真，列为已知局限。
+- 机制证据（三项全部行使）：三次进化评审闭合均带 3 条实质 entry_question_responses，且引用 A4 事实原文（如 "ppt_baseline_guidance (prompt, 5312 chars/request, exposure=false in 0/3 spans)"）；两次参数级自改带层声明（policy.request.maxOutputTokens=16384→harness、policy.context tool_results.max_chars=60000→context），激活后在轨迹中被行使且有效（26,046 字符写入与 54,719 字符读取完成，截断不再复现）；能力级自改 0——三问下引用 A4 的诚实负答，属 §5 认可的合法负例。闭合回流与 [layers] 的消费证据待 B3-2 轨迹核对。
+- 任务侧：终止前已达 render v2、15/15 slides、0 warnings、unit-01 accepted；仅 1/10 单元走完提交协议 → 交付不成立，归因外生 429 而非方案缺陷。
+- 修复（本提交）：retry maxRetries 2→6、baseDelayMs 2000→5000、maxAgentDelayMs 4000→60000（服务侧节奏/存活参数，判断权不动；tests/test_evo_ppt.py 同步）。另修一个陈旧测试：`plain_text_end` 出口在 nudge 机制引入后已不存在（纯文本收尾一律被推回 execute，直到 delivered 或预算收束），测试断言更新为现行契约，与 429 修复无关。B3-2 以新根重跑，caps 同预设，重跑计入同一授权。
+

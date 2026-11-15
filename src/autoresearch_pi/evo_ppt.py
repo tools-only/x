@@ -81,9 +81,12 @@ def local_settings(registration: Path):
             # Pi's HTTP dispatcher resets its headers/body idle clock on received
             # bytes. A silent call fails before the 300s turn watchdog; Pi then
             # retries that failed assistant request in the same serial session.
+            # B3-1 (2026-11-16): shared-gateway 429 bursts outlast 2 retries at
+            # 2-4s spacing (three consecutive failures across 35s killed the run);
+            # ride out minute-scale RPM windows with more, longer-spaced retries.
             "agent_settings": {"compaction": {"enabled": False}, "httpIdleTimeoutMs": 240_000,
-                               "retry": {"enabled": True, "maxRetries": 2, "baseDelayMs": 2000,
-                                         "maxAgentDelayMs": 4000, "provider": {"maxRetries": 0}}}}
+                               "retry": {"enabled": True, "maxRetries": 6, "baseDelayMs": 5000,
+                                         "maxAgentDelayMs": 60_000, "provider": {"maxRetries": 0}}}}
 
 
 def content_units(material: str):
