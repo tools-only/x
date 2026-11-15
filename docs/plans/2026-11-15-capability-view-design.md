@@ -1,0 +1,125 @@
+# 能力层运行视图设计稿：让"无摩擦的能力缺口"成为可见事实
+
+日期：2026-11-15（Asia/Shanghai）。状态：设计稿，待用户定稿；定稿前不实现、不发射。
+分支：`evo-loop-implementation`（worktree `D:\agent\.codex\worktrees\evo-loop-impl\autoresearch_pi_project`），基线 f1efed79（v1.5 M-A/M-B/M-C + 义务收口）。
+失败材料：B2 运行（`runs/evo-daemon-b2-glm53f-v15-mabc-20261115`，分析见 `docs/plans/2026-11-15-evo-mechanisms-implementation.md` "B2 运行结果"）。
+
+## 0. 用户重定义（2026-11-15，逐字要点）
+
+8192→32768 只是参数调整，不是进化。要求的自进化范式：agent 在执行任务过程中，根据自身**运行视图**（agent 自身 harness 视图=已加载 components 与 orchestration、运行状态、任务轨迹、harness 产物/中间交付件——用户给的参考轴），审视自身 harness 短板（orchestration 与五类组件：prompt、skill、tools、memory、subagent），经反射接口做 Erlang 式热修改自我进化，方向有二：**产生新的组件/orchestration** 与 **优化已有的组件/orchestration**。本稿任务：分析当前视图设计，给出能表达 harness 能力的视图设计。
+
+## 1. 失败材料：B2 为何只产出参数级变更
+
+- B2 全程唯一自改 = policy.request.maxOutputTokens（参数）。组件清单从头到尾只有 1 个 prompt（`ppt_baseline_guidance@v1`，host 播种），`harness/live_agent_self.jsonl` 13 条事件的 components 字段恒为该一项；skill/tool/memory/subagent 创建数 = 0，orchestration steps/decisions 结构变更 = 0。
+- 10 个同构 unit（同一财报、同一产出形态）全部由裸 write/edit/office 徒手完成，每 unit ≈4–6 请求重复相似的 HTML 生产动作；没有任何一次把重复动作沉淀为可复用组件。
+- 13 次 no-change 闭合的理由是**对的推理**：如 `.harness/live-self.json:41446`——"Remaining candidates are unexposed/untried with no recorded friction, so no evidence-backed change is warranted."（其余候选未曝光/未尝试且无记录摩擦，没有证据支持变更。）agent 看到了候选占位（见 §2.2），用"曝光/使用/摩擦"词汇审它们，结论必然是"无证据"。
+- 结论：这不是判断失败，是**输入失败**——视图没有任何一条事实把"10 个跨度的徒手重复劳动"与"组件库为空"连起来。
+
+## 2. 当前视图盘点（代码核实，f1efed79）
+
+### 2.1 agent 每请求实际看到什么
+
+| 面 | 何时 | 内容 | 代码 |
+| --- | --- | --- | --- |
+| 非评审 self 视图（volatile 尾） | 每个非评审请求 | `{root_id, revision, mode, step, in_review, pending, resources, observation 摘要一行, read_self 指针}`——**无任何组件清单** | ppt_demo_extension.ts:695-698；observationHeads（self_observation.ts:249-256）只有请求数/重复/拒绝/最近结果 |
+| 任务状态尾 | 每请求 | statusFacts：源文件事实、预算、谱系 | ppt_demo_extension.ts:574 |
+| 评审 self 视图 | 评审期每请求 | reviewSelfView + projection（JSON 全量） | ppt_demo_extension.ts:693-694；self_root.ts:1162-1199 |
+| review_frame 事实 | 评审入口一次 | in_review、due_windows、object_state、observation（≤2400 字符） | self_root.ts:1156-1160 |
+| observation 渲染 | 评审帧/评审视图/read_self | `[requests]/[repeat]/[reject]/[loss]/[idle]/[trace]/[outcome]` 事实行 | self_observation.ts:217-246 |
+
+### 2.2 能力信息现状：有什么、缺什么
+
+- **词汇表全部是摩擦/资源/轨迹**：A1 重复·成本·拒绝·损失·停止，A2 模式连程·调用·工件写入，A3 结果谱系（in_path / available_not_in_path）。能力缺口若不产生摩擦（任务靠徒手照样成功），在这套词汇里**结构性不可见**。
+- **候选占位存在但词汇错位**：reviewSelfView 对空类补 `${kind}_candidate` 条目（self_root.ts:1181-1185），带 define 示例——创建的**操作入口**一直在。但条目事实是回溯式使用谱系（exposure/use/effect/untried，self_root.ts:1173-1179）；对不存在的组件，这些事实恒为 false/空，于是"无证据"永远成立。缺的是**工作侧**事实（重复劳动量、零组件在径的跨度数），不是候选侧入口。
+- **计数造假（padding）**：selfCategories 的 `.size || 1`（self_root.ts:1467）与 reviewSelfView categories 把候选占位计入（self_root.ts:1190），**空类永远显示 1，从不显示 0**。而系统提示承诺的是 "including zero-count categories"（self_root_system.md:13）——代码没有兑现承诺。
+- **空节从 head 消失**：context 组装 `.filter(Boolean)`（ppt_demo_extension.ts:705）使空的 memory/skills 节整段消失；B2 的 agent 从未见过一行 "memory: (无)"。`[idle]` 行只列已存在 tool 组件的零调用（self_observation.ts:227）——零个 tool 组件时整行不出现。缺席不是可见事实。
+- **orchestration 无执行谱系**：当前步定义与 bindings 进 head（ppt_demo_extension.ts:703-704），reviewSelfView 有完整定义与改写示例，但**没有每步执行计数**——"某步从未走过/一切都挤在一个步里"不可见，"优化已有 orchestration"缺证据基础。
+- **非评审期能力信息为零**：组件清单只在评审 JSON 深处；任务进行中（恰是重复劳动发生时）agent 看不到自己库存。
+
+### 2.3 五类组件 + orchestration 的运行时消费路径（核实过，不是悬空物）
+
+| 类 | 写入口 | 消费路径（已核实） |
+| --- | --- | --- |
+| prompt | reflect_component | 所有 active prompt 全文进每个 head（ppt_demo_extension.ts:681） |
+| memory | reflect_component（append/patch 可用） | policy 过滤后全文进每个 head（:682；self_root.ts:1455-1462） |
+| skill | reflect_component | 索引行进 head + read_self_component 拉取正文（:683） |
+| tool | reflect_component（`# program: on`） | 反射即注册为 Pi 工具 + schema 进请求（:253-268, :662-676）——可直接调用 |
+| subagent | schema 接受，但 **experimentLimits 下拒绝**："experiment authorizes one agent; no task subagents"（:326；self_root.ts:676；mirror.unsupported） |（无执行路径；见 §6 开放决定） |
+| orchestration | reflect_orchestration（M-B 编译） | 当前步定义+bindings 进 head；surface() 按步控制工具面（:662-665, :703-704） |
+
+即：**前四类组件一旦创建就有完整闭环消费路径**（创建≠悬空物）；问题只在"创建的理由"从未成为可见事实。
+
+## 3. 断裂过渡诊断（一个主因）
+
+断裂过渡：**评审入口的事实词汇 → agent 判断**。词汇只有摩擦/资源/轨迹，能力缺口无摩擦 ⇒ 永不可见 ⇒ "no evidence-backed change" 的闭合既诚实又必然 ⇒ 进化停在参数层（唯一产生过摩擦事实的对象恰是 policy.request）。
+
+只改这一个主因：**给观测服务加一个能力高度（A4），并让库存计数真实**。不动触发器、不动判断归属、不加义务/配额/推荐——B2 已证明判断链路本身工作正常（引用事实→定向修改→声明效果→效果回流）。
+
+## 4. 设计：能力事实（A4）与真实库存
+
+原则不变：服务只供事实（发生了什么、花了什么、路径里有什么/缺什么），不供原因、结论、建议；"你应该创建一个 skill"是禁句。判断与创建都归 agent。
+
+### 4.1 新增事实行（self_observation.ts，A4；与 A1-A3 同渲染管道）
+
+**`[inventory]`——harness 库存与消费绑定（用户轴 1：自身 harness 视图）**
+
+```
+[inventory] prompt 1 (head 每请求; in_path 0/10 跨度) | skill 0 | tool 0 | memory 0 |
+  subagent 0 (写入口拒绝: experiment authorizes one agent) |
+  orchestration 3 步: build 执行 52, review_gate 9, deliver 1
+```
+
+- 每类**真实计数**（0 就是 0）+ 该类消费绑定的事实短语（进 head / 可调用 / 索引+拉取 / 拒绝——运行时属性，非建议）+ 跨结果跨度的 in_path 使用计数与最近使用请求号。
+- orchestration：步数 + **每步执行计数**（从 ledger 请求 pin 的 step 聚合）——"优化已有"方向的证据基础。
+
+**`[recurrence]`——跨结果跨度的重复劳动（用户轴 3：任务轨迹）**
+
+```
+[recurrence] 10 个结果跨度; 共同调用: write 10/10 跨度 (计 86), edit 9/10 (41), office.render 10/10 (12);
+  agent 组件在径: 0/10 跨度
+```
+
+- 机械聚合 A3 既有的 per-span 序列与 in_path：各 span 共同出现的调用名及总量、含任一 agent 创建组件的 span 数。无相似度判断、无任务词汇——纯计数。
+- 这是把 B2 不可见的核心事实（"十次同样的手工，零次复用"）变成一行可引用的 ref。
+
+### 4.2 真实计数与缺席可见
+
+- 删除 selfCategories 的 `|| 1`（self_root.ts:1467）；reviewSelfView categories 只计 active 组件，候选占位条目保留但标 `candidate: true` 且不计入 categories（self_root.ts:1190）。系统提示 "zero-count categories" 的承诺由代码兑现（提示仅把 observation 节的枚举词补上 inventory/recurrence，约 1 行，不加义务句）。
+- 非评审摘要行（observationHeads）追加库存段：`components prompt 1/skill 0/tool 0/memory 0/subagent 0`（≈45 字符/请求）——任务进行中即可见，不等评审。head 的空节 `.filter(Boolean)` 保持（不往任务 head 塞空段；缺席事实住在 self 视图行里，一处即可）。
+
+### 4.3 与既有机制的衔接（零新机制）
+
+- 能力级变更声明效果时，M-C 的 agent 谓词可直接绑 A4 可比指标（如"后续跨度 write 调用数下降"、"组件在径跨度数上升"）——效果回流复用现有窗口/回执，无新通道。
+- A4 的 ref 可进 evidence_refs；"修改是否引用观测"沿用 M-A 的既有记录。
+
+### 4.4 每条新事实的闭环契约（no dangling artifacts）
+
+| 产物 | 入环点（未经请求） | 替代的工作 | 下一步如何回馈 | 退役 |
+| --- | --- | --- | --- | --- |
+| [inventory] 行 | review_frame.observation、reviewSelfView.observation、非评审摘要行 | agent 自翻 ledger/mirror 数库存与步执行 | 引用进 evidence_refs 被记录；创建后计数即变 | EVO_A4=0 |
+| [recurrence] 行 | 同上（评审两处；摘要行在跨度≥3 时带一段） | agent 回看全部 span 序列对比 | 组件入径后 "0/10" 即变；可作 M-C 谓词指标 | EVO_A4=0 |
+| 真实零计数 | categories/摘要行 | 无（纠正既有事实的失真） | 创建即 0→1 | 随 A4 |
+
+新常驻负担：摘要行 +≈45–90 字符/请求；评审 observation 预算内 inventory+recurrence 约 200–400 字符（2400 预算不变，挤占折叠规则沿用）。移除负担：无（本轮不移除；B2 已把常驻义务清干净）。
+
+### 4.5 不做什么（负例设计）
+
+- 不加评审触发器、创建配额、组件数奖励、"考虑创建 X"类文本；候选 define 示例维持现状。
+- 不把组件计数当任务回报：诚实的 no-change 闭合（引用了 recurrence/inventory 后判定不值得）仍是合法闭合。
+- 不做 [deposit]（工作区沉积未读事实）：ledger 今天不留读回执，机械推导不成立；列入开放项，避免本轮多因素。
+- 不动 subagent 授权（§6）。
+
+## 5. 可证伪命题与有界评估（B3，定稿并授权预算后执行）
+
+- **窄命题**：同任务同模型同 caps、A4 开启的运行中，agent 至少 1 次**能力级自改**——kind∈{prompt,skill,tool,memory} 的 define/redefine，或 orchestration steps/decisions/transitions 的结构变更（纯 policy 参数不计）——满足：自主发起、运行内被行使（新组件此后 in_path/被调用/入 head；orchestration 变更后该步实际执行）、evidence_refs 引用 A4 事实。
+- **负例（不判机制失败）**：agent 引用 A4 后诚实判定 no-change（记录"视图可达、判断不同"，读闭合文本定性）；任务本身若无重复结构则 recurrence 自然空。
+- **证伪条件**：全程 0 次引用 A4 事实（事实未进判断 ⇒ 视图设计失败）；或能力级变更出现但从未被行使（悬空创建 ⇒ 消费路径或事实设计失败）；或成本相对 B2 显著恶化而任务结果不升。
+- **比较器**：B2（68+1 请求 / 1.75M tokens / 10/10 units）。开关 `EVO_A4`（=0 回 B2 行为）预留逐因子 arm。
+- **预算**：发射前按惯例向用户声明（预计 B2 同量级：caps 镜像 600 请求 / 14400 s / 2 GiB；组件创建请求计入任务成本，不另设奖励）。
+- **测量**（全部来自既有工件）：能力级变更数与种类、A4 引用数、新组件后续 in_path 跨度数/调用数、recurrence 行前后值、请求与 tokens、units/deliver。
+
+## 6. 开放决定（请用户定夺）
+
+1. **subagent**：视图将如实显示 "0（写入口拒绝）"。是否解除 `experimentLimits` 的 subagent 拒绝并给它执行路径（run_agent 式，`自然语言执行器`提案待决）是**独立授权**，本稿不包含；不解除则五类中四类可进化，subagent 保持可见的拒绝事实。
+2. **[deposit]（写后未读的工作区沉积）**：需要新增读回执才能机械成立；是否列入下一轮。
+3. **摘要行常驻成本**：+≈45–90 字符/请求是否接受（或仅评审期显示库存，非评审只在计数变化时显示）。
