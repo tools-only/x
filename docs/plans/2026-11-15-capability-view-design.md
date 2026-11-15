@@ -241,3 +241,20 @@ self 视图 = 任务锚（statusFacts，既有）+ 四层子视图（§4.9-2 [la
 - 任务侧：终止前已达 render v2、15/15 slides、0 warnings、unit-01 accepted；仅 1/10 单元走完提交协议 → 交付不成立，归因外生 429 而非方案缺陷。
 - 修复（本提交）：retry maxRetries 2→6、baseDelayMs 2000→5000、maxAgentDelayMs 4000→60000（服务侧节奏/存活参数，判断权不动；tests/test_evo_ppt.py 同步）。另修一个陈旧测试：`plain_text_end` 出口在 nudge 机制引入后已不存在（纯文本收尾一律被推回 execute，直到 delivered 或预算收束），测试断言更新为现行契约，与 429 修复无关。B3-2 以新根重跑，caps 同预设，重跑计入同一授权。
 
+### 9.2 B3-2 运行记录（2026-11-16，runs/evo-b3r2-glm53f-capview-20261116）
+
+- 条件：同 B3-1 三因子（launcher 回显 EVO_A4=1 EVO_ASK=1 EVO_L4=1），提交 eb804196（含 429 重试修复），新根，caps 同 B2 预设；重跑计入同一授权，发射前已声明。
+- 结果：stop=delivered，10/10 单元交付。56 计费请求 + 1 预检 / 2,162,079 tokens 全部实报（requests_with_missing_usage=0，保守=实报）/ $0.3236 / 1132 s；全程零 429——重试修复在 manifest 中生效但未被触发，骑过能力仍属未实战验证的保险。对比 B2（69 req / 1.75M / $0.26 / 1271 s）：tokens +23%、请求 −19%、墙钟 −11%——三因子常驻 + 15 次评审入口的代价约两成 token 开销，无交付损失；证伪条件"成本显著劣于 B2 且无任务收益"未触发。
+- 能力视图证据（三项全部行使，证据强于 B3-1）：
+  - A4 [inventory]/[recurrence]：15 个评审入口全部闭合（14 次 + 终评审在第 56 请求内走完交付），每次闭合 3 条 entry_question_responses 逐字引用 A4 事实（"ppt_baseline_guidance (prompt, 5312 chars/request, exposure:false, use:false, in path 0/15 spans)"；复发计数 decide_exit x15、submit_unit x10、office.render x5 等）——证伪条件"全程 0 引用"未触发。
+  - EVO_ASK：入口来源含 unit_completed 共振、booked_facts，及第 55 请求处 agent 自发的 requested_review 终评审；无机械闭合。
+  - EVO_L4：1 次激活（revision 2）单补丁合并两地址——policy.request.maxOutputTokens 8192→32768、policy.context.tool_results.max_chars 4000→提高，declared_layers 两处均 "loop"；evidence_refs.retained=["ledger:30"]（B3-1 为空，闭合回流引用本次出现）。
+  - 四级链（参数级）全链闭合：可见（ledger:30 截断事实）→ 生效（revision 2 激活）→ 行使（used=true）→ 效果（后续 50+ 请求零复发，agent 在闭合中自行跟踪）。能力级自改 0——各闭合给出引用 A4 的诚实负答（"组件零曝光、无缺口"），为 §5 合法负例；按 §7 挑选判据与 §4.8 债 4 的预登记解读：指向价格事实缺位（§7-2 每跨度成本 + §6.5 rent），而非视图失败。
+- 任务侧：render v5、15/15 slides、0 warnings；终检 30/30 literals + 10/10 citations 命中；agent 曾就 unit-08 "$1,621" 探针异常对照源材料核验后判为检查器归一化误报（忠实性行为良好）。人工抽查（contact sheet + slide-03/06/15 全尺寸）：品牌统一（BofA 藏青/红）、统计卡/表格/条图排版干净、口径注释与引用齐全，内容与版式达到对外展示主体水准；残留瑕疵：内容普遍顶置、信息量小的页（03、06）下半页留白偏大，页脚恒显 "1 / 15 · Title"（未随页变化的标签缺陷），slide-06 参考线标注 "Reg. minimum 9." 轻微裁切。判定：交付质量达标，瑕疵为打磨级非结构级。
+- 本质不足（跨 B3-1/B3-2，下一轮候选）：
+  1. 能力级变更的经济学输入缺位（债 4）：视图给出缺口与复发计数，但无价格事实，agent 的"不值得造"无从被挑战——下一个可证伪检查 = §7-2 价格事实 + §6.5 rent（新范围，待预算）。
+  2. L4 层声明分类学漂移：同类地址 B3-1 声明 harness/context，B3-2 声明 loop/loop——声明被行使但跨运行不可比；候选修法：把层定义作为事实并入 A4 清单（仍是事实供给，判断权不动）。
+  3. 评审节奏开销：交付尾段每单元 ~2 请求为评审共振，是 +23% token 的主因；入口合并/降频属机制侧参数，留待下一轮设计权衡。
+  4. 验证窗协议缺省：window:0 全程 provisional predicate、due_unverified——agent 拒绝编造谓词（符合协议），但效果结算从未升级为可判定；需要谓词来源设计（激活时要求一条可机检谓词或显式 declined）。
+- 判定：§5 窄声明的正例（能力级自改）未出现，三条证伪均未触发，预登记负例分支成立；参数级四级链完整闭合。B3 系列（含 429 重跑）以交付成功收束，能力级停在"诚实判定不值得"，与价格事实缺位一致。
+
