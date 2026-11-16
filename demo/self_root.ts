@@ -401,14 +401,14 @@ export function contextComposition(items: ContextItem[], actions: Record<string,
 export function seedPolicy(capabilities: string[], reviewTools: string[] = ['read', 'ls', 'grep']): Policy {
   const exitSchema = { type: 'object', properties: { reason: { type: 'string' } }, required: [] };
   const observe = reviewTools.filter(t => capabilities.includes(t));
-  return { request: { maxOutputTokens: 8192 }, modes: {
+  return { request: { maxOutputTokens: 32768 }, modes: {
     execute: { tools: capabilities, instruction: 'Continue the current task.', exitSchema },
     reflect: { tools: observe, instruction: 'Review the pinned self/evidence and choose your scope, method and changes. Finish with decide_exit when it is available.', exitSchema },
     consolidate: { tools: observe, instruction: 'Organize this task\'s evidence and bounded inheritance records if useful; no automatic cross-task defaults.', exitSchema },
   }, routes: [], methods: {}, memory: { names: '*', order: 'name', write: 'replace' },
     review: { trigger: 'booked_quality_or_process_facts', evidence: 'all_booked_facts', tools: [...observe], verification: {} },
     memory_strategy: { retrieval: 'all', recent_count: 12, partition: 'component', retention: 'latest', sources: ['agent'] },
-    context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest', tool_results: { max_chars: 4000, images: 'latest' }, history: { recent_turns: 16, older: 'stub' }, self_view: { placement: 'tail', ledger_rows: 12 }, prompt_layout: { volatile_tail: 'both' } } };
+    context: { order: ['prompts', 'memory', 'skills'], instruction: '', reasoning: 'latest', tool_results: { max_chars: 16000, images: 'latest' }, history: { recent_turns: 16, older: 'stub' }, self_view: { placement: 'tail', ledger_rows: 12 }, prompt_layout: { volatile_tail: 'both' } } };
 }
 
 export function validateContract(c: SelfContract) {

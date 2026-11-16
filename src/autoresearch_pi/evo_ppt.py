@@ -73,7 +73,7 @@ def local_settings(registration: Path):
     name, provider, model = found[0]
     return {"registration": str(registration), "original_provider_handle": name, "provider": "az", "baseUrl": BASE,
             "api": provider["api"], "compat": provider.get("compat", {}), "model": model, "thinking": "low",
-            "request_output_tokens": 8192,
+            "request_output_tokens": 32768,
             "request_reserve": {"tokens": model["contextWindow"] + model["maxTokens"],
                                 "usd": (model["contextWindow"]*INPUT_RATE + model["maxTokens"]*OUTPUT_RATE)/1e6,
                                 "basis": "registered maximum input/output; GLM-5.3-Flash rates 0.15/0.50 USD per million and zero cache rates; unknown invoice"},
