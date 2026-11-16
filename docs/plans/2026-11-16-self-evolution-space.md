@@ -423,3 +423,19 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 
 **上限**：M7 声明 **40 requests**（M6 25 + 修复余量）；系列 254/600，启动前余 346，启动后计相应消耗。
 
+**M7 运行记录**（`runs/evo-m7-glm53f-meta-20261117`，2026-11-17，az / glm-5.3-flash，arm B，工程提交 `b3771a02`，运行记录的 engineering_commit 同）：`stop: "delivered"`，10/10 单元，**25 requests**（另 1 次预检 ping 历史口径不计），1,030,326 tokens，777 s，registered estimate **$0.163**，`self_revision` 3，`empty_turns` 2（M6 为 5）。质量：**citation 10/10**（M6 8/10）、**literal 25/30**（M6 30/30；unit-03/04/05/06/09 各缺中间一个前期值）、15 slides、0 renderer warnings、仅 v001 一版交付。
+
+**因素在场**（provider-requests 逐条核实）：false 清点行出现在 15 个边界推送里——request 10 整桌行 `false 17/82: units[#].normalized.matches[#].found x12 at [0,2,3]; units[#].literal_matches[#].found x5 at [2,3,4]`，此后每条结算行自带残余 false 组。
+
+**命题判定：不成立——预登记负例 (b) 触发**。(1) 主判据字面成立（交付 citation 10/10），但 `citation_found` 全程 0 次 false（live-self 无一处记录），归因无效——M5 无此因素同为 10/10；对该组属负例 (a)（在场未行使）。(2) 推送→修复链 **0 次行使**：首渲（request 10）后的调用轨迹只有 `submit_unit` x1→x10 → `office.deliver`（全程 write 1 次、office.render 1 次、look 0、read_self 0、无第二版）；request 10 推送的 5 个 literal false（x5 at [2,3,4]）与 final_unit_probes 的 5 个 false 是同一组，原样保留到交付；agent 的话语里无一处提及这些 miss（grep missing/absent 只命中 O6 种子文本）。(3) 结论：**感知断点已闭合（功能正确 + 全链路可达都成立），瓶颈移到回报侧**——false 事实不进入 agent 的停机条件，"渲染无 warning 即交付"与 Codex PPT 期 "first warning-free render" 模式同形。下一因素（仅记录，未授权）：批 2 协议义务（O2 expected_effect / O3 look_when 边界决定）或任务结构（给质量信号一个消费者/成本），不预设宿主交付门（用户已否决预置工作流）。
+
+**次级观察**：(1) T0（request 2）设计即含 `to_deliver → to: "complete"` 边，连续第二次由 agent 的边收尾——M6 靠 request 23 的补丁，M7 在设计时就应用了 24/24 在场的 O9 规则行。(2) 唯一结构自变更（revision 3，request 13）回应的是推送的拒绝事实：agent 自己 T0 写的 verify 步 actions 清单挡了 `submit_unit`（拒绝 x2，拒绝文案自带 remedy 句），以 `reflect_orchestration` 放宽——M4b 的"解自己的锁"缩到 1 次，且锁是 agent 自写的（O1 已使清单可省略）。(3) `superseding_observation` 作为常假簿记叶在每条结算行清点中占一席（1/11），数据侧噪音，量级可容忍。
+
+| 运行 | requests | $ | 自修改 | 终点 | literal | citation |
+|---|---|---|---|---|---|---|
+| M5 | 21 | 0.109 | 0 | 宿主收尾（stalled） | 30/30 | 10/10 |
+| M6 | 25 | 0.119 | 2（T0+repair） | agent `finish` 边 | 30/30 | 8/10 |
+| M7 | 25 | 0.163 | 2（T0+widen） | agent `to_deliver` 边（T0 即有） | 25/30 | 10/10 |
+
+**预算**：本次 25，系列 254+25=**279**，余 **321**（600 cap）。
+
