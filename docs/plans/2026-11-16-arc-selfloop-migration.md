@@ -175,9 +175,9 @@
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
 | 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in）；pytest（本地） | 自环四文件 `selfview` 8、`selfloop` 5、`selfslots` 4、`selfsettle` 4 + 邻接 `binder`/`work_memory_loop`/`self_harness`/`level_review`/`native_context` 合计 57/57；`test_arc_thin_stall_review.py` 5/5；证明视图行、摘要文本、槽位校验/合并/库存、写入激活、读点消费、关卡结算三计数与三个信号、runner 的 stall 槽读取与默认等价（关臂字节相同、坏保存不改生效值）。另跑全部 `arc_thin_*` 时 `activation` 的 closed-loop 用例与 `receipts` 的 partial-line 用例失败，同一断言在基线 r04 上逐字复现，与本变更无关（未修） |
-| 全链路可达 | 部分验证（离线） | 同上；`arc-thin-smoke`（legacy 臂） | 摘要、槽位、结算均经 `context`/`before_agent_start` 进入决策；`slots/self.json` → binder → HARNESS 索引/收据 → 下一决策 digest，以及 `harness_changes.jsonl` + `component_runs.jsonl` → `selfOutcomes` → `data/self/settlements.jsonl` → digest 一行，均有测试串起；真实 Pi/provider 下的完整 run 未验证 |
-| 自主采用 | 未验证 | — | 需真实 provider run（看 `harness_changes.jsonl` 是否出现 `slots/self.json` 或组件写入） |
-| 净收益 | 未验证 | — | 需真实 provider run |
+| 全链路可达 | 已验证（离线 + 真实 run，一处缺口） | 同上；真实 run `su15-sl1q`：yibu（az.gptplus5.com）qwen3.8-27b | 摘要、槽位、结算均经 `context`/`before_agent_start` 进入决策；`slots/self.json` → binder → HARNESS 索引/收据 → 下一决策 digest，以及 `harness_changes.jsonl` + `component_runs.jsonl` → `selfOutcomes` → `data/self/settlements.jsonl` → digest 一行，均有测试串起；真实 run 证实 SELF 摘要进入全部 35 个决策（working_set `self` 节均值 915 字符）、两个关卡边界各写结算并回流 digest（含 `changed:0` 负例行）；缺口——python 会话内保存组件不写 `harness_changes.jsonl` 收据，L0 结算漏计（详见「真实 run 记录·结果」） |
+| 自主采用 | 已测（真实 run） | yibu（az.gptplus5.com）qwen3.8-27b，run `su15-sl1q` | 组件写入面被大量采用（11 行收据 + `tools/view.py` 保存后作 kit 挂进此后全部 python 调用）；处理臂特有的两个新面 0 采用：`data/self/` 整场 0 次文件读取、槽位 0 次写入（`self_slots` 终态 `values:{}`）——与「components: push, not pull」一致（详见「真实 run 记录·结果」） |
+| 净收益 | 已测（单 run，不可归因） | 同上 | 2 关 / 80 动作 / 预算口径 4.01M token / 5.3h，与 qwen 基座历史最好臂（2 关）持平；被采用的改动全是两臂共有的基座组件面，关卡不可归因于自环四段；run 终止于 compaction 缺陷而非预算或墙钟（详见「真实 run 记录·结果」） |
 
 ## 交付决定
 
@@ -210,3 +210,30 @@
   关卡判准改以 qwen 基座历史为比较器（su15-level2-loop qwen 臂 2/1/0 关、E1b q1-bp 0 关），gpt 对照臂仅作参照；三计数判准
   （`changes`/`activated`/`used_later` ≥ 1 及三零时的单因子定位）不变。起跑已确认：端点 yibu、qwen 首批请求带 reasoning
   完成、`data/self/` 已生成（slots.json、working_set、context_budget）。结果与结算分析待 run 结束。
+
+### 结果（su15-sl1q，2026-11-17 分析）
+
+- 终局：16:31Z–21:50:56Z（本地 00:31–05:50，5h20m，墙钟 44%），80/200 动作、35 个决策回合（31 个动作决策 + 4 次整理），
+  **完成 2 关**（L1 在 #11，L2 在 #72），第 3 关探索中止于 harness 缺陷（下）。预算口径 token 4,006,242 / 6M（67%）；
+  provider 报告总量 7.97M（含 cache 读）。请求 183 次（parent 111 / refiner 24 / consult 47 / compaction 1），3 次 parent
+  瞬时失败均重试恢复；0 idle 超时、0 重启、杀后 wmic 查无残留进程。预测纪律：80/80 动作带预测，字段命中 203/228
+  （cells 49/68）。关卡与 qwen 基座历史（2/1/0 关）持平于最好臂；与 gpt 对照臂（5 关）不可比，模型不同。
+- 三计数判准达成：L1 结算 `changed 8 / activated 8 / used_later 7`（另 L0 一行 `0/0/0` 负例）。8 项 = reviewer.md v1、
+  lessons.md v1、strategy.md v10、review.md v1–v5，全部经 write 工具或 review 回合写入；7 项 `used_later` 全部来自
+  `rules` 信号（保存之后 rules.md 又被绑定到更高版本），`cited`/`exercised` 均 0。rules.md 非空：4 条从 lessons/review
+  蒸馏的规则。按实现，`rules` 信号比较跨文件版本计数而非内容回溯，本场在时间上成立（rules.md 的后续写入确在这些保存
+  之后），但属三信号中最弱的一个。
+- 采用的不对称：agent 把基座自改面用满——view.py 决策 3 保存后作为 kit 挂进此后所有 python 调用，lessons 4 版、
+  review 5 版（stall review 回合内连写）、rules 4 条；而处理臂特有的两个新面整场未用：`data/self/` 下任何文件 0 次打开
+  （python 代码无一处引用该路径，仅 `os.listdir('data')` 扫过目录名），槽位 0 次写入。SELF digest 每决策在场（push 生效、
+  指针可见），agent 从未跟着指针 pull 文件，也从未动槽位。三零单因子路径不触发（判准已过），但「摘要在场 ≠ 引出拉取
+  或改写」是本 run 对处理机制最硬的观察。
+- 定位到的两个缺陷（各一个主因，不改设计）：① run 终止于 Pi compaction——`session_before_compact` 内
+  `generateSummaryWithUsage` 抛「Summarization failed: generation hit the token cap and the summary is incomplete」
+  （errors.jsonl 21:49:04Z，经 extension.ts:4118 冒泡为 `extension_error`），摘要生成被输出上限截断且无重试/降级，预算
+  与墙钟均未用尽；② python 会话内保存组件不写 `harness_changes.jsonl` 收据——view.py 仅在 `component_runs.jsonl` 有
+  `kind:"save"` 行，结算只读 harness_changes，L0 结算 `changed:0` 因此漏计一项真实自改（view.py v1 边界仍在绑定，入账
+  至少记 activated；kit 使用按现行 `exercised` 定义（kind tool/view/guard/hook 的运行行）不计，kit 行 kind 为 python）。
+- 下一可证伪检查（待授权，本轮不实施）：修 ①（compaction 失败重试或截断降级）与 ②（python 保存路径补一行收据）各为
+  单因子小改，修后同判准重跑处理臂；`data/self/`、槽位的零采用按「unused capabilities get call points」归用户决策——
+  是否加调用点先问用户。匹配前缀 fork 仅对已采用改动有意义，本 run 无槽位改动可 fork。
