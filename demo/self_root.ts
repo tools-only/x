@@ -210,6 +210,14 @@ function operationError(message: string, kind: OperationKind, input: any, surfac
 
 function normalizeOrchestration(value: any) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  // v1 fixes three collections: one role, no slots, no decisions unless the agent declares any. An agent that
+  // sends the workflow alone (the design turn names contract, steps and transitions) should not have to restate
+  // them; a declared value is never overridden, and roles other than agent still fail the check downstream.
+  // M4 run 2026-11-16: the design turn's first four writes were all rejected with 'v1 roles must be only agent'
+  // while every step it declared had role agent - the missing top-level array, not the agent's intent.
+  const roles = value.roles ?? [{ id: 'agent' }];
+  const slots = value.slots ?? [];
+  const decisions = value.decisions ?? [];
   const transitions = Array.isArray(value.transitions) ? value.transitions.map((row: any) => {
     const next = { ...row };
     const signal = next.on ?? next.trigger ?? next.after ?? next.after_action;
@@ -217,7 +225,7 @@ function normalizeOrchestration(value: any) {
     if (typeof next.on === 'string') next.on = { type: 'action', action: next.on };
     return next;
   }) : value.transitions;
-  return { ...value, ...(transitions ? { transitions } : {}) };
+  return { ...value, roles, slots, decisions, ...(transitions ? { transitions } : {}) };
 }
 function mergeOrchestrationPatch(current: any, patch: any) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw Error('orchestration_patch must be an object');
@@ -734,7 +742,7 @@ export class SelfRoot extends LiveAgentSelf {
     // The run plan's look triggers are the agent's own task-side text for this event; the boundary is where they apply.
     const look = (contract?.loop_policy?.look_when ?? []).filter((w: any) => w?.on === 'segment_boundary').map((w: any) => String(w.look));
     const flow = phase === 'design'
-      ? `DESIGN TURN - the mechanism and the acceptance standard above are given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is a permission scope over tool names, not over receipt types.` : ''}`
+      ? `DESIGN TURN - the mechanism and the acceptance standard above are given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is a permission scope over tool names, not over receipt types.` : ''}`
       : phase === 'boundary'
         ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
           `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
