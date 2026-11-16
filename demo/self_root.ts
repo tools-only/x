@@ -140,23 +140,30 @@ export const META_DESIGN_QUESTIONS = [
 ];
 export const META_T0_MATERIAL = [
   'META LOOP - DESIGN TURN. This block is delivered before your first task segment and stops once that segment opens. It is guidance, not a questionnaire: nothing here is answered as text; its product is your orchestration, and your orchestration is executable.',
-  'Guidance scope - what exists and is yours to evolve. Your runtime view has four layers: prompt, context, loop, harness. In them you own your components (prompts, skills, tools, memory), your policy (modes, routes, request limits, context assembly) and your orchestration (roles, slots, steps, decisions, transitions).',
+  'Guidance scope - what exists and is yours to evolve. Your runtime view has four layers, and each one gives you an object you can rewrite:',
+  '  prompt - components of kind prompt: resident text carried into every request. reflect_component({op:"define"|"redefine", kind:"prompt", name, source}).',
+  '  context - policy.context: section order and instruction, which reasoning and tool results are kept, how older history is stubbed, where the self view sits. reflect_orchestration({policy:{context:{...}}}). Memory, skill and tool components reach each request through this same assembly.',
+  '  loop - your orchestration: roles; slots; steps (each with a tool-name permission scope, an optional decision, and component bindings); decisions (judge, question, evidence receipts, output, slot writes); transitions (from, on, requires, to). reflect_orchestration({orchestration:{...}}).',
+  '  harness - all of the above as one revision space: components, policy and orchestration activate together at the next request boundary, and every activation books its addresses and revision.',
   'Interfaces, available at every request: reflect_component (create or rewrite a component), reflect_orchestration (rewrite your loop), and policy changes through the same reflection. Changes activate at the next request boundary; their recorded effects return to the same view.',
   'Materials you judge on: recorded facts - repeats, costs, losses, inventory, recurrence, action receipts, usage and validation windows - delivered in the self view. The host books facts without ranking, diagnosis or recommendation.',
+  'Self-change receipt: after your design, every activation of a change records one action receipt of type self.change in your loop, carrying the self-state facts the view shows - revision, addresses, requests since the previous change, refused self operations, validation windows. A transition you write with on:{type:"action",action:"self.change"} fires at that activation; a decision that requires {type:"self.change"} takes that receipt by its ref.',
   'Boundaries that stay in force and do not change with this mode: the frozen acceptance surface, budget, permissions and environment integrity.',
   'Design process - think freely; the output is a structure, not an answer:',
   ...META_DESIGN_QUESTIONS.map((q, i) => `${i + 1}. ${q}`),
-  'The first task segment opens after your first reflect_orchestration. A rewrite equivalent to the current seed is accepted and recorded as your design.',
+  'The first task segment opens after the reflect_orchestration that states your design. A design has at least one transition, and a write that leaves your self unchanged does not open the gate.',
 ].join('\n');
 /** EVO_META strategy line: replaces the fixed review-strategy line in the self view; no entrance, no closure protocol. */
-export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at any request; changes activate at the next request boundary and their recorded effects return to the same view. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own. Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
+export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at any request; changes activate at the next request boundary and their recorded effects return to the same view. Each activation after your design records one self.change action receipt carrying the self-state facts shown here; a transition bound to it fires at that activation. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own. Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
   const binding = { type: 'object', properties: { kind: { type: 'string', enum: ['prompt','skill','tool','memory','context'] }, name: { type: 'string' }, version: { type: 'integer', minimum: 1 } }, required: ['kind','name'], additionalProperties: false };
-  const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', bindings: [] }], decisions: [], transitions: [] };
+  // A minimal real loop, not an empty shell: a loop with no transition cannot turn, and the T0 gate requires one.
+  const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [],
+    transitions: [{ id: 'again', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'work' }] };
   const definition = current ?? example;
-  return { type: 'object', properties: { revision: { type: 'integer' }, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', description: 'Permission scope for this step: tool names (read, write, edit, office.render, ...) this step may call. Omit to allow every tool; protocol tools are never scoped by it.', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
+  return { type: 'object', properties: { revision: { type: 'integer' }, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', description: 'Permission scope for this step: tool names (read, write, edit, office.render, ...) this step may call. Omit to allow every tool; protocol tools are never scoped by it.', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', description: 'Each row: {id, from, on, requires, to}. on is {type:"action",action:"<an action receipt type this runtime records>"} or {type:"decision",id:"<decision id>"}; requires lists the receipts that must be cited for it to fire.', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
 }
 export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
@@ -248,8 +255,11 @@ function mergeOrchestrationPatch(current: any, patch: any) {
 /** Deterministic completion of mechanical orchestration intent. Omitted transition events and requires
  * are filled from the declared structure; a decision step with no decision-typed exit gets one to the
  * next step in array order. Semantic choices stay the agent's: ambiguity raises one concrete question
- * instead of a format rejection. Runs before validation; the validator itself is untouched. */
-export function compileOrchestrationIntent(def: any): { definition: any; compiled: { transition?: string; step?: string; field: string; value: any }[] } {
+ * instead of a format rejection. A name that is not a receipt type this runtime records is never completed
+ * into requires (that silently wrote the wrong word into a second field and produced a two-error rejection);
+ * it asks back once, naming the legal events and the recordable set. Runs before validation; the validator
+ * itself is untouched. */
+export function compileOrchestrationIntent(def: any, knownActions?: ReadonlySet<string>): { definition: any; compiled: { transition?: string; step?: string; field: string; value: any }[] } {
   if (!def || typeof def !== 'object' || Array.isArray(def)) return { definition: def, compiled: [] };
   const d = copy(def);
   const compiled: { transition?: string; step?: string; field: string; value: any }[] = [];
@@ -257,6 +267,7 @@ export function compileOrchestrationIntent(def: any): { definition: any; compile
   const decisions: any[] = Array.isArray(d.decisions) ? d.decisions : [];
   const transitions: any[] = Array.isArray(d.transitions) ? d.transitions : [];
   const ask = (q: string) => { throw operationError(q, 'orchestration', def, { invalid: ['transitions'], correction: q }); };
+  const recordable = knownActions?.size ? ` Action receipt types this runtime records: ${[...knownActions].sort().join(', ')}.` : '';
   const decisionOf = (stepId: any) => { const s = steps.find(x => x?.id === stepId); return s?.decision ? decisions.find(x => x?.id === s.decision) : undefined; };
   const actionsOf = (stepId: any) => { const a = steps.find(x => x?.id === stepId)?.actions; return Array.isArray(a) ? a : []; };
   for (const t of transitions) {
@@ -266,19 +277,23 @@ export function compileOrchestrationIntent(def: any): { definition: any; compile
     const onKeys = t.on && typeof t.on === 'object' && !Array.isArray(t.on) ? Object.keys(t.on) : null;
     if (t.on === undefined || t.on === null || (onKeys && onKeys.length === 0)) {
       if (dec) t.on = { type: 'decision', id: dec.id };
-      else if (acts.length === 1) t.on = { type: 'action', action: acts[0] };
-      else ask(`transition ${t.id ?? '?'} from step '${t.from}' has no 'on' event and the step declares ${acts.length ? `${acts.length} actions (${acts.join(', ')})` : 'no decision and no action'}; which event fires it? Resend with on:{type:"action",action:"<name>"} or on:{type:"decision",id:"<decision>"}.`);
+      else if (acts.length === 1 && (!knownActions?.size || knownActions.has(acts[0]))) t.on = { type: 'action', action: acts[0] };
+      else ask(`transition ${t.id ?? '?'} from step '${t.from}' has no 'on' event and the step declares ${acts.length ? `${acts.length} actions (${acts.join(', ')}; a tool-name permission scope, not receipt types)` : 'no decision and no action'}; which event fires it? Resend with on:{type:"action",action:"<a receipt type>"} or on:{type:"decision",id:"<decision>"}.${recordable}`);
       compiled.push({ transition: t.id, field: 'on', value: copy(t.on) });
     } else if (onKeys && onKeys.length === 1 && !('type' in t.on)) {
       const key = onKeys[0];
       const props = dec?.output?.properties ?? {};
       if (dec && key in props) { t.on = { type: 'decision', id: dec.id, path: `/${key}`, equals: t.on[key] }; compiled.push({ transition: t.id, field: 'on', value: copy(t.on) }); }
-      else ask(`transition ${t.id ?? '?'}: on key '${key}' is ${dec ? `not a property of decision '${dec.id}' output (${Object.keys(props).join(', ') || 'no properties'})` : `not an event type and step '${t.from}' has no decision`}; resend with one of those properties or on:{type:"decision",id} / on:{type:"action",action}.`);
+      else ask(`transition ${t.id ?? '?'} has on:{${JSON.stringify(key)}: ...}, and the legal events are on:{type:"action",action:"<a receipt type this runtime records>"}${acts.length ? ` (step '${t.from}' lists tools ${acts.join(', ')} in its permission scope; that scope says nothing about receipt types)` : ''} or on:{type:"decision",id:"<decision id>"}${dec ? `, whose output properties here are ${Object.keys(props).join(', ') || 'none'}` : ` (step '${t.from}' declares no decision)`}.${recordable}`);
     }
     if (!Array.isArray(t.requires) || t.requires.length === 0) {
       const onType = t.on?.type;
       if (onType === 'decision') { const dd = decisions.find(x => x?.id === t.on.id); t.requires = copy(dd?.evidence ?? []); compiled.push({ transition: t.id, field: 'requires', value: copy(t.requires) }); }
-      else if (onType === 'action' && typeof t.on.action === 'string') { t.requires = [{ type: t.on.action }]; compiled.push({ transition: t.id, field: 'requires', value: copy(t.requires) }); }
+      else if (onType === 'action' && typeof t.on.action === 'string') {
+        if (knownActions?.size && !knownActions.has(t.on.action))
+          ask(`transition ${t.id ?? '?'} names action '${t.on.action}' in on.action, and this runtime records no such receipt type, so the transition could never fire; requires was left as you wrote it instead of being filled with that name. Resend with on:{type:"action",action:"<one of those>"} and requires:[{type:"<the same>"}].${recordable}`);
+        t.requires = [{ type: t.on.action }]; compiled.push({ transition: t.id, field: 'requires', value: copy(t.requires) });
+      }
       else if (!Array.isArray(t.requires)) t.requires = [];
     }
   }
@@ -543,6 +558,10 @@ export class SelfRoot extends LiveAgentSelf {
     this.options = options;
     this.rootValidator = rootValidator;
     if (options.actionReceiptTypes?.length) this.declareActionTypes(options.actionReceiptTypes);
+    // EVO_META (2026-11-16): this runtime records one `self.change` receipt per activation after the T0 design.
+    // Declared as a receipt type so a loop bound to it validates at reflect time instead of binding silently,
+    // exactly like the adapter-declared task receipts.
+    if (this.mech.meta) this.declareActionTypes([...(this.knownActionTypes ?? []), 'self.change']);
     validateContract(contract); this.contract = copy(contract);
     this.root_id = saved?.root?.root_id ?? randomUUID();
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
@@ -688,10 +707,12 @@ export class SelfRoot extends LiveAgentSelf {
   observationText(budget = 2800) { return renderObservation(this.observation(), budget); }
   observationDigest() { return observationHeads(this.observation()); }
   /** META self-state push: facts about the agent's own harness since it last changed - the optimizable objects
-   * themselves, so the tail changes when the self changes. Facts only, no interpretation. */
-  selfChangeDigest() {
+   * themselves, so the tail changes when the self changes. Facts only, no interpretation. `anchor` selects the row
+   * the "since" half counts from: the T0/activation row for the pushed view, and the previous activation when the
+   * runtime books the same facts as a self.change receipt. */
+  selfChangeDigest(anchor?: any) {
     const changes = this.ledger.filter(r => r.type === 'reflection_activated' || r.type === 'meta_t0_design');
-    const last = changes.at(-1);
+    const last = anchor ?? changes.at(-1);
     const refused = new Map<string, { tool: string; count: number; last_error: string }>();
     for (const r of this.ledger.slice(last ? this.ledger.indexOf(last) + 1 : 0)) {
       if (r.type !== 'tool_failed') continue;
@@ -706,11 +727,16 @@ export class SelfRoot extends LiveAgentSelf {
       const entry = refused.get(tool) ?? { tool, count: 0, last_error: '' };
       refused.set(tool, { ...entry, count: entry.count + 1, last_error: message.slice(0, 400) });
     }
+    // The addressable half: the receipt this view was booked as, so a decision can cite it by ref. Null before the
+    // first activation after the T0 design, when no receipt exists yet.
+    const booked = [...this.ledger].reverse().find(r => r.type === 'reflection_activated' && r.value?.self_change);
     return {
       self_changes: changes.length,
       last_change: last ? { type: last.type, revision: last.value?.revision ?? last.revision, request: last.request,
         addresses: last.value?.addresses ?? null, expected_effect: last.value?.expected_effect ?? null,
         success_predicates: last.value?.success_predicates ?? null } : null,
+      last_self_change: booked ? { ref: booked.value.self_change.ref, revision: booked.value.revision,
+        transition: booked.value.self_change.transition ?? null } : null,
       requests_since_change: last ? this.request - Number(last.request ?? 0) : this.request,
       refused_self_operations: [...refused.values()],
       validation_windows: this.windows.map(w => ({ id: w.id, scope: w.scope, expected_effect: w.expected_effect ?? null,
@@ -744,9 +770,11 @@ export class SelfRoot extends LiveAgentSelf {
     if (input.orchestration === undefined && input.orchestration_patch === undefined && input.restore === undefined) return result;
     return result.then(value => { this.noteMetaDesign(value); return value; });
   }
-  /** EVO_META T0: the gate's only state is this ledger row; a failed write never opens it. */
+  /** EVO_META T0: the gate's only state is this ledger row; a failed write never opens it, and neither does a write
+   * that changed nothing (2026-11-16: a seed-equivalent rewrite opened the gate, so the design turn had no product). */
   private noteMetaDesign(result: any) {
     if (!this.mech.meta || this.ledger.some(r => r.type === 'meta_t0_design')) return;
+    if (result?.status === 'no_change') return;
     this.fact('meta_t0_design', { revision: this.pending?.revision ?? this.serial, status: result?.status ?? 'changed', addresses: result?.addresses ?? null, gate: 'open' });
   }
   abortTransaction(error: unknown, tool?: string) {
@@ -840,7 +868,13 @@ export class SelfRoot extends LiveAgentSelf {
         if (input.orchestration !== undefined || input.orchestration_patch !== undefined) {
           let definition = normalizeOrchestration(input.orchestration ?? mergeOrchestrationPatch(candidate.current.orchestration, input.orchestration_patch));
           // Intent compiler: deterministic completion of mechanical wiring; ambiguity asks one concrete question.
-          if (this.mech.compiler) { const completed = compileOrchestrationIntent(definition); definition = completed.definition; compiledEntries.push(...completed.compiled); }
+          if (this.mech.compiler) { const completed = compileOrchestrationIntent(definition, this.knownActionTypes); definition = completed.definition; compiledEntries.push(...completed.compiled); }
+          // EVO_META T0 gate (design bet f, 2026-11-16): the gate opens on a design, and a design has at least one
+          // transition. A rewrite equivalent to the seed used to pass, so T0 and T1 had no progression between them.
+          // Mechanical and stated in the material; what the transition binds to is the agent's choice.
+          if (this.metaT0Pending && !(Array.isArray(definition.transitions) && definition.transitions.length))
+            throw operationError('the T0 gate opens on a design, and a design has at least one transition', 'orchestration', input, { invalid: ['transitions'],
+              correction: `Add a transition - from the step your segment runs in, on:{type:"action",action:"<a receipt type>"} or on:{type:"decision",id:"<your decision>"} - then resend. A loop with no transition cannot turn, and a write equivalent to the seed does not open the gate.${this.knownActionTypes?.size ? ` Action receipt types this runtime records: ${[...this.knownActionTypes].sort().join(', ')}.` : ''}` });
           if (definition.roles?.length !== 1 || definition.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
           await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: definition, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push(componentAddress('orchestration', ''));
         }
@@ -952,6 +986,18 @@ export class SelfRoot extends LiveAgentSelf {
     const routes = this.policy.routes.map((route: any) => ({ id: route.id, event: route.event, mode: route.mode, priority: route.priority }));
     this.conditionSet.addenda = routes;
   }
+  /** EVO_META (2026-11-16, problems 2 and 3): the self view as an object the loop runs through. After the T0 design,
+   * every activation books one `self.change` action receipt carrying the pushed self-state facts, so a transition the
+   * agent wrote on it turns the agent's own loop at the activation, and a decision can cite the receipt's ref instead
+   * of the view being a switch-invariant wallpaper. The first activation is the T0 design itself - the loop's
+   * existence condition, not a cycle - and books none; the comparison arm records none at all. */
+  private metaSelfChange(addresses: string[]) {
+    if (!this.mech.meta || this.snapshot().complete) return undefined;
+    const prior = [...this.ledger].reverse().find(r => r.type === 'reflection_activated' && r.value?.parent !== undefined);
+    if (!prior) return undefined;
+    const receipt = this.recordAction('self.change', { revision: this.serial, addresses, ...this.selfChangeDigest(prior) }, false, true);
+    return { ref: receipt.receipt.ref, transition: receipt.transition };
+  }
   /** Activate the pending candidate (single place). Creates host windows for evolution-review reflections. */
   private activatePending(applySurface: (tools: string[]) => void, persist: () => void) {
     if (!this.pending) return;
@@ -969,10 +1015,14 @@ export class SelfRoot extends LiveAgentSelf {
       // Private base-class fields are own properties; preserve this root's identity and META state.
       Object.assign(this, p.candidate); this.onReflection = onReflection; this.policy = p.policy; this.serial = p.revision;
       this.onReflection?.({ kind: 'orchestration', revision: this.serial });
-      applySurface(this.surface());
       this.pending = undefined;
+      // META: the view as a receipt in the loop, recorded before the step surface is applied so a matching transition
+      // moves the step the very request this change activates.
+      const selfChange = this.metaSelfChange(p.addresses ?? []);
+      applySurface(this.surface());
       const activated = this.fact('reflection_activated', { parent: oldSerial, revision: this.serial, addresses: p.addresses, restore_source: p.source ?? null, review: this.review?.id ?? this.pendingReview ?? null,
         ...(p.declaredLayers && Object.keys(p.declaredLayers).length ? { declared_layers: p.declaredLayers } : {}),
+        ...(selfChange ? { self_change: selfChange } : {}),
         success_predicates: p.windows.filter(Boolean).map((w: any) => ({ predicate: w.success_predicate ?? null, predicate_source: w.predicate_source ?? null })) });
       for (const w of p.windows) if (w) this.createWindow(oldSerial, activated.ref, w.addresses ?? p.addresses, w.expected_effect, w.review ?? null, w.success_predicate, w.evidence_refs, w.predicate_source);
       this.definitions.push(this.definition());

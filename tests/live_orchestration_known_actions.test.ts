@@ -54,9 +54,12 @@ test('META with declared receipt types: T0 names them, a rejected design keeps t
   const s = make({ meta: true }, { actionReceiptTypes: types }); await tick(s);
   const material = s.metaT0();
   assert.ok(material.includes('Action receipt types this runtime records'));
-  assert.ok(material.includes('office.deliver, office.look, office.render, submit_unit'));
-  await assert.rejects(s.transaction({ baseRevision: 1, orchestration: loop('render_save', 'render_save') }),
-    /render_save.*office\.deliver, office\.look, office\.render, submit_unit/);
+  // META registers its own loop receipt beside the adapter's task receipts.
+  assert.ok(material.includes('office.deliver, office.look, office.render, self.change, submit_unit'));
+  // The intent compiler no longer copies a wrong name into requires: one question comes back naming the recordable set.
+  const bare = { ...loop('render_save', 'render_save'), transitions: [{ id: 'to_render', from: 'work', on: { type: 'action', action: 'render_save' }, requires: [], to: 'render' }] };
+  await assert.rejects(s.transaction({ baseRevision: 1, orchestration: bare }),
+    /names action 'render_save' in on\.action.*requires was left as you wrote it.*office\.deliver, office\.look, office\.render, self\.change, submit_unit/);
   assert.equal(s.metaT0Pending, true, 'a failed write never opens the gate');
   assert.equal(s.export().root.ledger.filter((r: any) => r.type === 'meta_t0_design').length, 0);
   // The rejection aborts that whole response chain; the next request starts clean, as in the live runtime.
@@ -68,8 +71,8 @@ test('META with declared receipt types: T0 names them, a rejected design keeps t
   assert.equal(s.metaT0(), '', 'the material stops once the design exists');
 });
 
-test('without declared receipt types the SelfRoot transaction path keeps the old acceptance', async () => {
-  const s = make({ meta: true }); await tick(s);
+test('outside META the SelfRoot transaction path keeps the old acceptance of undeclared receipt names', async () => {
+  const s = make(); await tick(s);
   const ok = await s.transaction({ baseRevision: 1, orchestration: loop('render_save', 'render_save') });
   assert.ok(ok.addresses.includes('orchestration'));
 });
