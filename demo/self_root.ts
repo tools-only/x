@@ -741,11 +741,23 @@ export class SelfRoot extends LiveAgentSelf {
     const numbers = (v: any) => v ? `requests ${v.process?.requests ?? 0}, task actions ${v.work?.task_actions ?? 0}, tool errors ${v.process?.tool_errors ?? 0}, elapsed ${Math.round(Number(v.process?.latency_s ?? 0))}s, phase ${v.phase ?? 'unknown'}` : 'none';
     // The run plan's look triggers are the agent's own task-side text for this event; the boundary is where they apply.
     const look = (contract?.loop_policy?.look_when ?? []).filter((w: any) => w?.on === 'segment_boundary').map((w: any) => String(w.look));
+    // What the run has produced, stated at the boundary so a task-output judgement has a fact to rest on: the artifact
+    // the runtime last registered and how much of it moved since the agent's own last change. Facts only, and cheap
+    // enough to compute only on the boundary request.
+    const boundaryDeliverable = (() => {
+      if (phase !== 'boundary') return [];
+      const snap: any = this.snapshot();
+      const since = [...this.ledger].map((r: any) => r.type).lastIndexOf('reflection_activated');
+      const written = this.ledger.slice(since + 1).filter((r: any) => r.type === 'artifact_write').length;
+      const version = snap.latestArtifactVersion ? `v${snap.latestArtifactVersion} (hash ${String(snap.latestArtifactHash ?? '').slice(0, 12)})` : 'not rendered yet';
+      return [`Deliverable: artifact at ${version}; ${written} artifact write(s) since the last change.`];
+    })();
     const flow = phase === 'design'
       ? `DESIGN TURN - the mechanism and the acceptance standard above are given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is a permission scope over tool names, not over receipt types.` : ''}`
       : phase === 'boundary'
         ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
           `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
+          ...boundaryDeliverable,
           'Unit verdicts are recorded per segment (read_self(section="segments")); the host never combines them into a task-level acceptance conclusion - that statement, if any, is the one in TASK ACCEPTANCE.',
           ...(look.length ? [`Your run plan for this event (segment_boundary): ${look.join(' | ')}`] : []),
           'Facts only; judgment stays with you.'].join('\n')
@@ -813,8 +825,11 @@ export class SelfRoot extends LiveAgentSelf {
       last_change: last ? { type: last.type, revision: last.value?.revision ?? last.revision, request: last.request,
         addresses: last.value?.addresses ?? null, expected_effect: last.value?.expected_effect ?? null,
         success_predicates: last.value?.success_predicates ?? null } : null,
+      // Status and step only: the full transition embeds the booked receipt, whose facts embed the previous digest -
+      // one more nesting level per revision (M4b: a render tool result reached ~160k tokens through this recursion).
       last_self_change: booked ? { ref: booked.value.self_change.ref, revision: booked.value.revision,
-        transition: booked.value.self_change.transition ?? null } : null,
+        transition: booked.value.self_change.transition ? { status: booked.value.self_change.transition.status ?? null,
+          step: booked.value.self_change.transition.step ?? null } : null } : null,
       requests_since_change: last ? this.request - Number(last.request ?? 0) : this.request,
       refused_self_operations: [...refused.values()],
       validation_windows: this.windows.map(w => ({ id: w.id, scope: w.scope, expected_effect: w.expected_effect ?? null,

@@ -264,6 +264,7 @@ test('META self.change: an activation after the design books the self state as a
   const digest = s.selfChangeDigest();
   assert.equal(digest.last_self_change.ref, booked[0].ref, 'the digest shows the receipt ref a decision can cite');
   assert.equal(digest.last_self_change.transition.status, 'advanced');
+  assert.deepEqual(Object.keys(digest.last_self_change.transition).sort(), ['status', 'step'], 'the transition is compacted to status and step, so the booked receipt does not nest the previous digest on every revision');
   const decided = s.decide({ decisionId: 'look', actor: 'agent', evidenceRefs: [booked[0].ref], result: { go: true } });
   assert.ok(decided.accepted, 'the pushed self state is citable evidence, not wallpaper');
   assert.equal(s.advance().status, 'advanced');

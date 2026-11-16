@@ -247,14 +247,14 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 
 ### 4.3 证据层级（模板口径）
 
+更新于 2026-11-16（M4 之后，细节见 §6）：
+
 | 层级 | 状态 |
 |---|---|
-| 功能正确 | **未验证**（待 §4.2） |
-| 全链路可达 | **未验证**（需 M4 的 `provider_input` 证明 T0 编排被应用） |
-| 自主采用 | **未验证**（需 K1/K2/K3 与 subagent 调用记录） |
-| 净收益 | **未验证**（需与 M3c 同任务同 provider 对比质量地板与成本） |
-
-四行都停在未验证：实现位置可查（§4.1），但没有任何一次运行产生过这些机制的记录。
+| 功能正确 | **已验证**：`tests/self_root_meta.test.ts` + `tests/self_root.test.ts` 39/39 通过（node --experimental-transform-types，本工作树），含 M4 后新增的压缩断言 |
+| 全链路可达 | **已验证**（M4b，az / glm-5.3-flash）：T0 编排写入被每个后续请求应用；`harness/provider-requests.jsonl` 里 SEGMENT BOUNDARY 板面推送 15 次；4 次热修改均在下一请求生效并解除同类拒绝 |
+| 自主采用 | **部分**：K1 成立（agent 自发 4 次编排修改，3 次晚于第一个任务段），K2/K3 不成立（交付物字节未因任何修改而变）；subagent 0 写 0 调 |
+| 净收益 | **未定**：对 M3c 同任务同 provider——requests 41→38、tokens 12.57M→1.59M、墙钟 961→1150 s、质量地板持平（literal 28/30、citation 10/10、15 slides、10/10 单元）；但全部自修改只在解自己编排造成的锁，对交付质量贡献 0 |
 
 ### 4.4 偏差
 
@@ -269,7 +269,7 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 
 ## 5. 交付决定
 
-- **已实现、已提交（`538ac815`）、未运行**：§2.1–2.6 的 A–F 全部落在工作树——A 设计轮写整条编排（`self_root.ts:737`）并在 T0 表面开只读工具（`:1040`）；B 声明效果即开窗并把窗口放进板面（`:998`、`:752`）；C 交付收据按编排的 `transition.status` 分派（`ppt_demo_extension.ts:515-527`）；D `TASK_EVENTS` 加 `self_change`（`live_orchestration_core.ts:8`）；E subagent 作为普通可写组件打开（`evo_ppt.py:171`）；F 无 review 时不再列出 `decide_exit`（`self_root.ts:1049-1051`）。没有 provider 调用、没有离线检查、没有占用 M4 预算；§4.3 的四行证据层级全部仍是**未验证**。
+- **已实现、已提交（`538ac815`）、未运行**（写于提交当天；同日稍后已运行，结果与证据见 §6）：§2.1–2.6 的 A–F 全部落在工作树——A 设计轮写整条编排（`self_root.ts:737`）并在 T0 表面开只读工具（`:1040`）；B 声明效果即开窗并把窗口放进板面（`:998`、`:752`）；C 交付收据按编排的 `transition.status` 分派（`ppt_demo_extension.ts:515-527`）；D `TASK_EVENTS` 加 `self_change`（`live_orchestration_core.ts:8`）；E subagent 作为普通可写组件打开（`evo_ppt.py:171`）；F 无 review 时不再列出 `decide_exit`（`self_root.ts:1049-1051`）。没有 provider 调用、没有离线检查、没有占用 M4 预算；§4.3 的四行证据层级全部仍是**未验证**。
 - 实现范围 = §2.1–2.6；**A–F 由一个提交承载**：六项交叉在同一批文件里（`self_root.ts` 同时被 A、B、E、F 修改，`ppt_demo_extension.ts` 被 C、E 修改），逐项拆分只会把同一函数切成半截。按 K 判据的归因以 §4.1 的逐项 `file:line` 表和运行日志为准，不依赖提交切分。
 - **明确不做**：
   - 不在循环之上再加一层：没有 planner、critic、质量模型、外部评价信号，也没有宿主评审中断；三个关节交还给编排，宿主只记账。
@@ -278,3 +278,71 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
   - subagent 只作为一种普通可写组件打开：`components.subagent` 进 `writable`，`agents/<name>.md` 经 `reflect_component` 定义，同名 Pi 工具调用即 `consult`；它跑本运行自己的模型（`modelResult.create`），一次调用计入同一 request 预算与 token 计量，在 `provider-requests.jsonl` 以 `kind:'consult'` 单独成行。没有专用工具、没有预定义角色、没有更强的外部模型。consult 是否只计一次、不翻倍仍未验证（§2.5、§4.2）。
 - M4 运行以 §3.1 的 70 requests 上限为准，运行前写进启动脚本并在 `summary.json` 可核。
 - 与 §15 的关系：§15 固定的是**机制**（七字段、激活语义、验收计数），本稿改的是**关节的作者**与**组件种类**；`self_root_meta_fields.md` 的用户逐字文本不动。
+
+---
+
+## 6. M4 运行记录（2026-11-16）
+
+预算按 §3.1 的 600 requests 系列授权：M1 40 + M2 25 + M3 45 + M3b 13 + M3c 41 = 164；**M4a 声明 70、用 6**；**M4b 声明 64、用 38** → 系列已用 **208**，余 392。两次都写进各自 `-caps.json` 与 `-run.cmd` 的授权文本，可在 `runs/*-launch.log` 复核。
+
+### 6.1 M4a（`runs/evo-m4-glm53f-meta-20261116`）：设计写入被宿主 schema 拒绝，启动即死
+
+6 次请求后以 provider 侧致命错误结束。归因明确在**宿主**：`normalizeOrchestration` 要求 v1 必填 `roles`，而 agent 按板面合同写的是单 agent 的运行，没有理由复述一条恒真的 `roles`。四次拒绝的报文都是 `v1 roles must be only agent`。
+
+修的是宿主，不是 agent：`roles`/`slots`/`decisions` 缺省时补 `[{id:'agent'}]`/`[]`/`[]`，**声明了就绝不覆盖**（`ce4178f4`）。DESIGN TURN 文本补一句"The gate opens at that write, and the write puts the run in your first declared step"，让 agent 知道写完之后自己在哪。这是 §3.4 F1 的反面：坏掉的是宿主侧的一道形状校验，不是设计轮的对象。
+
+### 6.2 M4b（`runs/evo-m4b-glm53f-meta-20261116`）：通关，但自进化只解自己的锁
+
+同一 freeze 源、同一 provider（az）、同一模型（glm-5.3-flash）、同一臂（B，`EVO_META=1 EVO_A4=1`），工程提交 `ce4178f4`。声明 64 requests（含 consult），实际 **38**（1 次预检 + 37 次真实请求），**1.59M tokens**，墙钟 **1150 s**，registered estimate **$0.26**，`stop: "delivered"`，10/10 单元交付，15 页、0 renderer warnings，`self_revision` 6。
+
+**过程（按请求顺序）**
+
+1. **T0 设计轮（req 1–5）**：8 次 `read`（素材与环境）+ 2 次被拒的 `reflect_orchestration` + 第 3 次成功（revision 2）。两次拒绝都由 agent 自纠，宿主未改：先是一个 decision 绑到了运行时从不记录的 action 类型 `fact`（拒绝报文列出了本运行真实记录的 receipt 类型），后是 `loop_policy` 发成了数组、`look_when` 缺失。写出的编排：`build → render → deliver → complete`，三个 transition 各由一种 receipt 触发，`look_when` 绑 `segment_boundary`。
+2. **交付物只写一次**：1 次 `write` 生成 `artifacts/presentation.html`（34,839 字节），此后从未被改。
+3. **两次渲染，字节相同**：v001（`action-2`）、v002（`action-4`）的 `source_sha256` 都是 `ad0e74fc1484…`。
+4. **四次自修改，全是权限修补**（每一条都由"自己的编排拒绝了自己的下一步"触发）：
+   - rev 3（req 16）：`build` 步调 `office.render` 被拒 → `steps_by_id.build.actions += office.render`
+   - rev 4（req 20）：`render` 步调 `submit_unit` 被拒 → 扩 `deliver` 的 actions
+   - rev 5（req 24）：`build += submit_unit, edit`，`render += submit_unit`
+   - rev 6（req 36）：`build` 步调 `office.deliver` 被拒 → `build.actions += office.deliver, office.look`；交付随即在 build 步成功
+   证据：`runs/…-launch.log` 的 `runtime_activations`（req 5/16/20/24/36 五行）；每次拒绝后同类拒绝不再出现。
+5. **边界推送 15 次，一次未被使用**：`harness/provider-requests.jsonl` 里 `SEGMENT BOUNDARY` 与 `Your run plan for this event` 各出现 15 次，`office.look` 调用 **0** 次。
+6. **结束方式不是 agent 写的**：`office.deliver` 在 `build` 步被记录，`to_deliver` 只有 `from: render`，所以 agent 的 `build → deliver` 这条边不存在；`build` 步又没有出口，deliver 的 receipt 以 `status:"recorded"`、`host_deferred:false` 返回。真正宣告结束的是宿主的 final-delivery 兜底（`finalDeliveryTools: ['office.deliver']`），`harness/lifecycle.jsonl` 只有两行：注册 + `delivered`。
+
+**K 判据**
+
+| 判据 | 结果 | 依据 |
+|---|---|---|
+| K1：首个任务段之后至少一次 agent 发起的结构变更 | **成立** | 11 次 `submit_unit` 中第一次在 rev 3 之后；rev 4/5/6 都晚于它；四次 activation 全部在下一请求生效 |
+| K2：变更之后的一次 render/write 产出不同 `artifactHash` | **不成立** | 交付物单次写入；v001/v002 字节一致；四次修改全部发生在渲染之后 |
+| K3：最终 `artifactVersion` 指向 K2 那次渲染 | **不成立** | 交付指向 v002，即与 v001 字节相同的版本 |
+
+结论：命题**部分成立**。"变更 → 激活 → 下一请求 → 拒绝消失"这条链路在真实运行里闭合四次，不是可用性幻觉；但自进化**没有被用于改进任务成果**，只被用于解除自己编排造成的锁。
+
+**§3.2 观察点**
+
+1. T0 编排形状：`steps 4 / transitions 4`，成立。
+2. 设计轮读到材料：成立，8 次 `read`（`harness/tools.jsonl` 只记 `office`，工具收据以 `session.jsonl` 为准）。
+3. 首个任务段之后的变更：成立（见 K1）。**修订**：这次运行的第一次渲染被推迟到 rev 3 之后（`office.render` 在 build 步被拒两次），所以"渲染在后"不构成 K2 的自证，K2 仍以 hash 为准。
+4. 窗口：`window_created` 1 个（T0 的 `expected_effect` 开了 `window:0`），`decide_validation` **0** 次，运行结束时随 `taskEnd` 收尾，记为未闭合。
+5. K2/K3：不成立。
+6. subagent：0 写、0 调（`runtime_activations` 的 `addresses` 只有 `orchestration`）。有 call point 未接，记录，不删。
+7. 质量地板：literal **28/30**、citation **10/10**、15 slides、10/10 单元——**持平 M3c，未提升**。三个未命中都在 unit-01/08/10 的 normalized 匹配上（`$3.0`、`$624`、`$1,621`、`$10.3`、`$10.2`）。
+8. 成本对 M3c：requests 41→38、tokens 12.57M→1.59M、墙钟 961→1150 s。token 大幅下降主要来自编排把行为收窄，不是来自自进化。
+
+**§3.3 负例对照**：`F3`（移动了但交付件没变）正是本次结果——"变更未进交付件"，按 §3.3 属于**结果**，不是 bug。`F4` 也命中（窗口开了没人关）。
+
+**三个真实缺陷**
+
+1. **receipt 递归嵌套（已修）**：`selfChangeDigest().last_self_change.transition` 内嵌整份 receipt，receipt 的 facts 又内嵌上一版 digest，每修一版多一层。后果：一次渲染的工具结果膨胀到约 160k tokens，`.harness/live-self.json` 3 MB，整次运行 55 MB。修法：`transition` 只留 `{status, step}`（`demo/self_root.ts`，测试 `tests/self_root_meta.test.ts` 断言其键集）。
+2. **provider `terminated` 一次（未修）**：`session.jsonl` 第 31 行的助手消息 `stopReason:"error"`、`errorMessage:"terminated"`、usage 0；宿主丢弃该轮、记为 context_edit、重新提示，运行继续。与 M4a 的致命 `provider_error` 同类；本次非致命。按"不重复昂贵运行"的既有结论，先记录，等出现可复现的第二次再动。
+3. **自视图里没有交付物（已修其一）**：`OPTIMIZABLE OBJECTS` 只列 prompt / context / loop / harness，边界板面只说"上一个段多少请求"，从不说交付物动没动。于是 agent 每次看自己都只能看见"我被自己的编排卡住了"，看不见"这份 PPT 自上次修改后一个字节没变"。修法（单因素）：`SEGMENT BOUNDARY` 增加一行事实 `Deliverable: artifact at v<n> (hash <12位>); <k> artifact write(s) since the last change.`，只读 `snapshot().latestArtifactVersion/latestArtifactHash` 与 ledger，不新增状态、不新增义务、不新增工具。
+
+### 6.3 M5 预注册（改一个因素）
+
+- 变的是**一个**：边界板面多一行交付物事实。其余全部不变——同 freeze 源、同 provider（az）、同模型（glm-5.3-flash）、同臂 B、同判据。
+- 声明上限：**64 requests**（与 M4b 同口径，便于直接比）。
+- 预期：K1 仍成立；**K2/K3 成立**当且仅当 agent 在某一版自修改之后重新写出交付物并重渲，且最终交付指向那一版。
+- 如果边界看到了交付物事实仍不重渲：按 §3.4 这是下一次归因的输入，但**下一个单因素不在本稿预先承诺**——要先看它在那 15 次边界上到底说了什么、做了什么，再决定是"质量信号不足"（往板面加评分会引入解释，须先问用户）还是"agent 没有把交付物当成对象"（那就动 `OPTIMIZABLE OBJECTS` 那一行的措辞）。
+- 证据边界不变：结论只对 az / glm-5.3-flash / 这一个任务成立。
+
