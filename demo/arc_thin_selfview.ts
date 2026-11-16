@@ -15,6 +15,9 @@ export const SELF_CONTEXT_PATH = "data/self/context_budget.jsonl";
 export const SELF_WORKING_PATH = "data/self/working_set.jsonl";
 export const SELF_OUTCOMES_PATH = "data/self/outcomes.jsonl";
 export const SELF_SLOTS_PATH = "data/self/slots.json";
+export const SELF_SETTLEMENTS_PATH = "data/self/settlements.jsonl";
+
+import { RULES_PATH } from "./arc_thin_claims.ts";
 
 /**
  * Stage 2: the four fields the host gives every decision, unchanged between decisions (evo's self_root_meta_fields,
@@ -41,7 +44,9 @@ export type SelfDigestInput = {
 	/** Slot values that differ from the host's current default (stage 3); absent when nothing was changed. */
 	slots?: Array<[string, number | boolean]>;
 	outcomes: Array<{ level?: number; won?: boolean; win_n?: number; win_action?: string }>;
-	rows: { budget: number; working: number; outcomes: number };
+	/** The most recent settlement (stage 4), shown as one line so acceptance returns with every decision. */
+	lastSettlement?: { level?: number; changed?: number; activated?: number; used_later?: number; changes?: Array<{ path: string; version: number; used_later?: boolean }> };
+	rows: { budget: number; working: number; outcomes: number; settlements?: number };
 };
 
 /**
@@ -60,11 +65,29 @@ export function selfDigest(input: SelfDigestInput): string {
 	const changes = `${plural(input.changes, "self change")}` +
 		(input.lastChange && input.changes ? ` (last ${input.lastChange.path} v${input.lastChange.version})` : "");
 	const slots = input.slots?.length ? `; slots set: ${input.slots.map(([key, value]) => `${key}=${value}`).join(", ")}` : "";
+	const settled = (input.rows.settlements ?? 0) > 0
+		? `, ${plural(input.rows.settlements!, "settlement")}${input.lastSettlement ? ` (level ${input.lastSettlement.level ?? "?"}: ${settlementText(input.lastSettlement)})` : ""}`
+		: "";
 	return `SELF: decision ${input.decision}, ${plural(input.actions, "action")} at level ${input.level}; predictions ${input.predictions.made} ` +
 		`(${input.predictions.hits} hit/${input.predictions.misses} miss); your components ${input.components.length}` +
 		`${shown.length ? ` (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})` : ""}; ${changes}${slots}; ` +
 		`last outcome ${outcome}; data/self/: ${input.rows.budget} budget, ${input.rows.working} working-set, ` +
-		`${plural(input.rows.outcomes, "outcome row")}.`;
+		`${plural(input.rows.outcomes, "outcome row")}${settled}.`;
+}
+
+type SettledChange = { path: string; version: number; used_later?: boolean };
+
+/**
+ * One line of a settlement row's counts, with up to three of the changes that were used later. Shown in the digest
+ * after each level and in nothing else.
+ */
+export function settlementText(settlement: { changed?: number; activated?: number; used_later?: number; changes?: SettledChange[] }): string {
+	if (!settlement.changed) return "no self change";
+	const used = (settlement.changes ?? []).filter((change) => change.used_later);
+	const shown = used.slice(0, 3).map((change) => `${change.path} v${change.version}`).join(", ");
+	const more = used.length - Math.min(used.length, 3);
+	return `${settlement.changed} changed, ${settlement.activated ?? 0} activated, ${settlement.used_later ?? 0} used later` +
+		(shown ? `: ${shown}${more > 0 ? `, +${more} more` : ""}` : "");
 }
 
 
@@ -171,5 +194,65 @@ export function outcomeRow(input: OutcomeInput): Row {
 		},
 		refinements: refinements.length,
 		self_changes: changes.map((row) => ({ path: row.path ?? null, version: row.version ?? null })),
+	};
+}
+
+export type SettlementInput = {
+	/** The level this row settles (levels completed before it). */
+	level: number;
+	/** Action count where the level's span starts (same span as the outcome row). */
+	from?: number;
+	/** Action count where the level's span ends (the winning action included). */
+	to: number;
+	/** The change receipts recorded during the level (harness_changes.jsonl rows). */
+	changes: Row[];
+	/** Component versions in effect at the boundary (binder.versionMap()). */
+	versions: Record<string, number>;
+	/** The slot values the boundary bound; a slot change whose key is not here no longer takes effect. */
+	slots?: Record<string, number | boolean>;
+	/** Actions recorded, each with its `n` and the words the decision sent with it (`idea`, `expect`, `note`). */
+	trajectory: Row[];
+	/** component_runs.jsonl: a saved tool that later ran answers one change. */
+	runs: Row[];
+};
+
+/**
+ * Stage 4: at each level boundary the host counts, from receipts it already wrote, what the level did with the changes
+ * saved during it. A change is `activated` when the boundary still runs that version (for a slot: the key it set is
+ * among the values in effect); it is `used later` by the brief's fixed definition (docs/plans/2026-11-16-arc-selfloop-
+ * migration.md): a later predict cites it (the path, the file's name or a slot key it set), it is promoted to a line of
+ * rules.md (a rules.md bound after the save), or, for a tool saved as a view, guard or hook, the component ran after
+ * the save. Nothing is judged: each signal is a row or a run the runtime recorded.
+ */
+export function settlementRow(input: SettlementInput): Row {
+	const changes = input.changes.filter((row) => row && typeof row.path === "string");
+	const runs = input.runs.filter((row) => row && (row.kind === "tool" || row.kind === "view" || row.kind === "observer"
+		|| row.kind === "guard" || row.kind === "hook") && Number.isFinite(Number(row.n)));
+	const cited = (from: number, tokens: string[]): boolean => input.trajectory.some((row) => {
+		const at = Number(row?.n);
+		if (!Number.isFinite(at) || at <= from) return false;
+		const words = [row.idea, row.expect, row.note].filter((word) => typeof word === "string").join("\n").toLowerCase();
+		return words.length > 0 && tokens.some((token) => words.includes(token));
+	});
+	const exercised = (from: number, path: string): boolean => runs.some((run) => String(run.path ?? "") === path && Number(run.n) > from);
+	const rows = changes.map((row) => {
+		const path = String(row.path), version = Number(row.version) || 0, at = Number(row.at) || 0;
+		const keys = Object.keys(row.parameters?.slots ?? {});
+		const tokens = [path.toLowerCase(), path.split("/").at(-1)!.replace(/\.\w+$/, "").toLowerCase(), ...keys.map((key) => key.toLowerCase())]
+			.filter((token) => token.length >= 4 && token !== "rules");
+		const activated = (input.versions[path] ?? 0) >= version && (keys.length === 0 || keys.every((key) => key in (input.slots ?? {})));
+		const signals = [!activated ? "" : cited(at, tokens) ? "cited" : "",
+			activated && path !== RULES_PATH && (input.versions[RULES_PATH] ?? 0) > version ? "rules" : "",
+			activated && exercised(at, path) ? "exercised" : ""].filter(Boolean) as string[];
+		return { path, version, activated, used_later: signals.length > 0, signals };
+	});
+	return {
+		level: input.level,
+		from_at: input.from ?? 0,
+		to_at: input.to,
+		changed: rows.length,
+		activated: rows.filter((row) => row.activated).length,
+		used_later: rows.filter((row) => row.used_later).length,
+		changes: rows,
 	};
 }

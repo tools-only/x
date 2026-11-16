@@ -37,7 +37,8 @@
   失败路径：写被 binder 拒绝 → 收据给出可修复的清单；期望超窗未满足 → 结算记为未满足，不静默。
 - 首次获益路径：一次决策里 agent 读到摘要 → 发现自己重复回读 → 改 `history.result_chars` 或 `refine.every` → 下一决策生效
   → 后续 predict 或 rules.md 行引用该收据。
-- 新增与移除：新增常量字段块（宿主固定，非模型临时写）、一行摘要、`slots/self.json`、`data/self/` 三个只读文件、
+- 新增与移除：新增常量字段块（宿主固定，非模型临时写）、一行摘要、`slots/self.json`、`data/self/` 五个只读文件
+  （段一：预算/工作集/关卡结果；段三：`slots.json` 库存；段四：`settlements.jsonl` 结算；后者见段四的协议偏离）、
   关卡结算行。不删任何现有段；字符开销记入 `working_set.jsonl` 的 `sections`（新增 `self` 段）。
 - 权限/版本/环境边界：视图渲染器、事实收集、验收/预算/权限/环境信号永不可写；槽位只能取宿主给定的默认值与范围；
   `--no-context-files` 不变；`ARC_THIN_SELFLOOP` 默认关。
@@ -55,6 +56,10 @@
   每臂一次，授权内不重启；首轮失败阈值见交付决定。
 - 主要指标与判定标准：`changes` / `activated` / `used_later` 三计数；uncached in+out；动作数；关卡数；父子总成本与延迟。
   接受：处理臂三项计数 ≥ 1 且关卡数不低于对照臂；推翻：三项全无，或关卡数下降且找不到单因子。
+- `used_later` 口径（run 前先定死，brief 原文）：**「改动后被后续 predict 引用，或晋升为 rules.md 一行，或其 view 输出被
+  后续决策引用」**。落成三个分别记录的信号，全部来自运行期已写的行：`cited`（该改动之后记录的 action 行，其 `idea`/`expect`/
+  `note` 任一含改动路径、文件名或该改动设置的槽键）、`rules`（该改动激活后 `prompts/rules.md` 有更晚版本）、`exercised`
+  （`component_runs.jsonl` 中该工具的 run 发生在改动之后）。任一成立即 `used_later=true`，`signals` 记下是哪几个。
 - 负例：不改槽（应记 0 且有理由）；改了没激活；激活但没被用；期望未满足；预算耗尽；恢复后复用旧值。
 - 遥测及材料：本轮用 pytest / node 测试 / scripted smoke 的退出结果与日志；真实 run 需 run 目录里的 `data/self/`、
   `harness_changes.jsonl`、`harness_expectations.jsonl`、`usage.jsonl`。
@@ -133,17 +138,55 @@
   固定以保前缀缓存（`yibu-cache-lifetime`），逐决策文本携带实时值；runner 在 selfloop 下向扩展多传一个环境变量
   `ARC_THIN_STALL_REVIEW`（只被库存默认值读取，不改变原解析逻辑）。
 
+### 段四：关卡边界结算（机械验收）
+
+- 改动入口及实际行为：
+  - `demo/arc_thin_selfview.ts`：新增 `settlementRow`（每个完成关卡一行：`level`、`from_at`/`to_at`（与 outcome 行同一
+    span）、`changed`/`activated`/`used_later` 三计数，`changes` 逐条给出 `{path, version, activated, used_later, signals}`）、
+    `settlementText`（一行计数，最多点名 3 个 used later 的改动）；digest 增 `lastSettlement` 与 `rows.settlements` 指针。
+  - `demo/arc_thin_extension.ts`：`selfOutcomes` 在同一 hook（关卡完成后的下一次决策前）对每个完成关卡追加结算行：取该关
+    `harness_changes.jsonl` 的行、边界时的 `binder.versionMap()`、`slotValuesNow()`、`trajectory` 与
+    `component_runs.jsonl`；写 `data/self/settlements.jsonl`（与 `outcomes.jsonl` 同一条发布通路）。`recordComponentWrite`
+    的 slot 行改从 `binder.candidates()`（含刚保存、尚未进入 `active()` 的版本）取 `parameters.slots`——用 `active()`
+    只能拿到上一次边界的绑定，刚存的槽键会丢，`cited` 就永远不成立（集成测试抓到的真实断点）。
+  - `used_later` 按「运行前实验协议」里逐字口径落地为 `cited` / `rules` / `exercised` 三个分别记录的信号；`activated` 为
+    `versionMap[path] ≥ 该改动版本`，slot 另要求它设置的每个键仍在生效值里。全部是运行期已写的行或 run，不做判断。
+- 默认等价：无自改的关卡也写一行 `changed: 0`（digest 显示 `N settlements (level X: no self change)`），使指针可对账；
+  关闭 `ARC_THIN_SELFLOOP` 时无任何新文件、新文本（段一测试把关臂 `parts.length === 2` 保留）。
+- 功能/相关回归检查：新增 `tests/arc_thin_selfsettle.test.ts` 4 项（槽改动被 cite → `activated`+`cited`；无引用/无晋升/无运行
+  → 计数 2、used_later 0；rules 晋升 + 工具运行 → `['rules','exercised']`；后续保存丢掉槽键 → 不激活）；`tests/arc_thin_selfview.test.ts`
+  增至 8 项（新增结算行在 digest 里的逐字一例）；`tests/arc_thin_selfloop.test.ts` 增至 5 项（新增结算全环：写 slot+rules →
+  关卡完成前无 `settlements.jsonl` → 下一决策出现 1 行（`from_at 0`、`to_at 3`、2 changed / 2 activated / 1 used later，
+  slot 记 `cited`、rules.md 记未用）→ digest 带该行 → 再下一决策不重复结算）。三个自环文件 17 项 + 邻接
+  `binder`/`work_memory_loop`/`self_harness`/`level_review`/`native_context` 36 项，合计 57/57；`tests/test_arc_thin_stall_review.py`
+  5/5。离线、mock bridge、node `--experimental-transform-types`。
+- 机会漏斗与断点：结算把段三的「写入 → 激活 → 消费」接上第三段：没被激活或没被用的改动会在关卡边界显式记 0，而不是
+  悬空。断点若存在，是真实 run 里 `activated` 有而 `used_later` 恒 0——那说明 agent 改了设置却不据此决策，由 run 的
+  `settlements.jsonl` 与 `trajectory.jsonl` 逐条对账；离线不可判。
+- 语义与连续性：结算只读关卡内的收据行；重启后 `loadSelfRows()` 从 `harness/` 的存储行种子恢复，不重复写同一关卡。
+  改动的 `version` 以收据行里记录的版本为准，不按当前绑定重算。
+- 成本与任务结果：首个结算前零字符；之后 digest 每个决策多出约 40–90 字符（一行计数 + 最多 3 个名字）。磁盘每关一行。
+  任务结果未测。
+- 协议偏离：① 新增第五个只读文件 `data/self/settlements.jsonl`，超出段一批准的三文件清单，需用户确认或否决；② 无自改的
+  关卡也写结算行（0 改动），因为 digest 的指针与「负例留证」都按行对账；③ 结算的 `from_at` 取关卡 span 起点（与 outcome 行
+  一致），不改 outcome 语义。
+
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
-| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in）；pytest（本地） | `selfview` 7、`selfloop` 4、`selfslots` 4 + 邻接 `binder`/`work_memory_loop`/`self_harness`/`level_review`/`native_context` 合计 51/51；`test_arc_thin_stall_review.py` 5/5；证明视图行、摘要文本、槽位校验/合并/库存、写入激活、读点消费、runner 的 stall 槽读取与默认等价（关臂字节相同、坏保存不改生效值） |
-| 全链路可达 | 部分验证（离线） | 同上；`arc-thin-smoke`（legacy 臂） | 摘要与槽位经 `context`/`before_agent_start` 进入每次决策；`slots/self.json` → binder → HARNESS 索引/收据 → 下一决策 digest，以及 `harness/self_slots.json` → runner 的 stall 间隔均有测试串起；真实 Pi/provider 下的完整 run 未验证 |
+| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in）；pytest（本地） | 自环四文件 `selfview` 8、`selfloop` 5、`selfslots` 4、`selfsettle` 4 + 邻接 `binder`/`work_memory_loop`/`self_harness`/`level_review`/`native_context` 合计 57/57；`test_arc_thin_stall_review.py` 5/5；证明视图行、摘要文本、槽位校验/合并/库存、写入激活、读点消费、关卡结算三计数与三个信号、runner 的 stall 槽读取与默认等价（关臂字节相同、坏保存不改生效值）。另跑全部 `arc_thin_*` 时 `activation` 的 closed-loop 用例与 `receipts` 的 partial-line 用例失败，同一断言在基线 r04 上逐字复现，与本变更无关（未修） |
+| 全链路可达 | 部分验证（离线） | 同上；`arc-thin-smoke`（legacy 臂） | 摘要、槽位、结算均经 `context`/`before_agent_start` 进入决策；`slots/self.json` → binder → HARNESS 索引/收据 → 下一决策 digest，以及 `harness_changes.jsonl` + `component_runs.jsonl` → `selfOutcomes` → `data/self/settlements.jsonl` → digest 一行，均有测试串起；真实 Pi/provider 下的完整 run 未验证 |
 | 自主采用 | 未验证 | — | 需真实 provider run（看 `harness_changes.jsonl` 是否出现 `slots/self.json` 或组件写入） |
 | 净收益 | 未验证 | — | 需真实 provider run |
 
 ## 交付决定
 
-- 已支持和未支持的声明：待填。
-- 决定与依据：待填。
-- 剩余验证与下一可证伪检查：待填。
+- 已支持和未支持的声明：支持——四段在离线 mock bridge 下功能正确（57/57 node、5/5 pytest），默认等价（`ARC_THIN_SELFLOOP`
+  未开时零新文件、决策正文逐字节不变），且「事实 → 摘要 → 槽位 → 结算」每段都有可对账的产物；不支持——agent 是否会自主采用
+  （写 `slots/self.json` 或在后继 predict 里引用）、净收益、真实 Pi/provider 链路、任何关卡结果，均为未验证。
+- 决定与依据：四段各自一个提交、可独立 revert；本轮不含付费 run（brief §6），故不宣称采用与净收益。段四新增的
+  `data/self/settlements.jsonl` 超出段一批准的三文件清单，标记为协议偏离，等用户确认或否决后再进入真实 run。
+- 剩余验证与下一可证伪检查：需用户申报预算的真实 run（每臂 6M token、200 动作、同局、先对照后处理）；首轮失败阈值——若
+  处理臂 `changes`/`activated`/`used_later` 三项全无，停下按单因子定位（摘要未进上下文 / agent 未读 `data/self/` / 槽位未
+  生效 / 结算未记录），不换设计；首轮通过则用匹配前缀 fork 比较改动前后的动作分布与关卡结果。
 - 关联 backlog：`docs/deferred-research-todos.md` D（上下文压缩/连续性）——段二触及决策尾部布局，本记录不改
   compaction/continuity 逻辑，D 的未决项仍留待后续。

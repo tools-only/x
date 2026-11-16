@@ -1,12 +1,13 @@
 /**
- * Stages 1-3 of docs/plans/2026-11-16-arc-selfloop-migration.md: the run's own facts under workspace/data/self/, the
- * host's fields plus one digest line on every decision, and the typed slots the agent may set.
+ * Stages 1-4 of docs/plans/2026-11-16-arc-selfloop-migration.md: the run's own facts under workspace/data/self/, the
+ * host's fields plus one digest line on every decision, the typed slots the agent may set, and the level-boundary
+ * settlement that counts, from the same receipts, what a level did with the changes saved during it.
  *
  * The facts are projections of logs the runtime already writes, so the decision's own body must not change; the files
- * exist only with ARC_THIN_SELFLOOP=1, carry no message bodies, and a finished level leaves one outcome row. The
- * stage-2 block sits in the tail ahead of the work-memory record, which stays last. A slot saved through the ordinary
- * write path binds at the next decision boundary, rides the digest and the inventory, and a bad save keeps the
- * previous version running.
+ * exist only with ARC_THIN_SELFLOOP=1, carry no message bodies, and a finished level leaves one outcome row and one
+ * settlement row. The stage-2 block sits in the tail ahead of the work-memory record, which stays last. A slot saved
+ * through the ordinary write path binds at the next decision boundary, rides the digest and the inventory, and a bad
+ * save keeps the previous version running.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -198,5 +199,32 @@ test('a saved slot binds at the next decision with its receipt, digest line, inv
       'the failed save changes nothing the digest or the bound values show');
     assert.deepEqual(JSON.parse(h.file('harness/self_slots.json')).values, { 'refine.every': 2, 'stall.after': 60 });
     assert.match(third, /REFINE POINT \(every 2 actions;/, 'a read site consumes the slot from the decision it bound at');
+  } finally { await h.close(); await w.server.close(); }
+});
+
+test('finishing a level settles the changes saved during it: what was bound, what a later predict cited, what rules.md took up', async () => {
+  const w = await world();
+  const h = await attach(w);
+  try {
+    await h.begin();
+    assert.match(await h.call('write', { path: 'slots/self.json', content: '{"refine.every": 3}' }), /slot self v1: saved/);
+    assert.match(await h.call('write', { path: 'prompts/rules.md', content: '---\nactive: true\n---\na click toggles its cell\n' }),
+      /prompts\/rules\.md → prompt rules v1: saved/);
+    await h.begin(); await h.act({ action: 'ACTION1' });
+    await h.begin(); await h.act({ action: 'ACTION6', x: 3, y: 3 });
+    w.win();
+    await h.begin();
+    assert.equal(existsSync(join(w.root, 'workspace/data/self/settlements.jsonl')), false, 'nothing settles before a level finishes');
+    await h.act({ action: 'ACTION1', note: 'this move follows the refine.every change' });
+    const fourth = await h.begin();
+    const rows = h.selfRows('settlements.jsonl');
+    assert.equal(rows.length, 1);
+    assert.deepEqual(rows[0], { level: 0, from_at: 0, to_at: 3, changed: 2, activated: 2, used_later: 1, changes: [
+      { path: 'slots/self.json', version: 1, activated: true, used_later: true, signals: ['cited'] },
+      { path: 'prompts/rules.md', version: 1, activated: true, used_later: false, signals: [] },
+    ] });
+    assert.match(fourth, /1 settlement \(level 0: 2 changed, 2 activated, 1 used later: slots\/self\.json v1\)/);
+    await h.begin();
+    assert.equal(h.selfRows('settlements.jsonl').length, 1, 'a settled level is not settled twice');
   } finally { await h.close(); await w.server.close(); }
 });
