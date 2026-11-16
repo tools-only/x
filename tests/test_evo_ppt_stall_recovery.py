@@ -18,8 +18,8 @@ PROJECT = Path(__file__).resolve().parents[1]
 ])
 def test_same_run_retries_only_transport_errors(tmp_path, monkeypatch, errors, expected):
     contract = {'source': 'user_contract', 'authority': 'scripted fixture', 'decisions': 'scripted',
-                'readonly_reason': 'test user boundary', 'boundaries': ['window_entry', 'before_delivery',
-                    'before_active_reset', 'before_batch_switch', 'before_session_end'],
+                'readonly_reason': 'test user boundary', 'boundaries': ['before_active_reset',
+                    'unit_completed', 'before_session_end'],
                 'capabilities': ['read', 'write', 'edit', 'ls', 'grep', 'python', 'office.render', 'office.look',
                                  'office.deliver', 'acceptance', 'submit_unit', 'agent_tools'],
                 'writable': ['components.tool', 'components.prompt', 'components.skill', 'components.memory', 'policy', 'orchestration'],

@@ -30,7 +30,7 @@ def digest(value):
 def fixture_manifest():
     body = {
         "source": "user_contract", "authority": "Round v1 no-provider integration fixture", "decisions": "FINAL G1", "readonly_reason": "protected user boundary",
-        "boundaries": ["before_delivery", "before_active_reset", "unit_completed", "before_session_end"],
+        "boundaries": ["before_active_reset", "unit_completed", "before_session_end"],
         "capabilities": ["read", "ls", "grep", "write", "edit", "python", "office.render", "office.look", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
         "writable": ["components.tool", "components.prompt", "components.memory", "components.skill", "policy", "orchestration"],
         "budget": {"requests": 50, "tokens": 100000, "seconds": 600, "usd": 1, "storage_bytes": 200000000},

@@ -109,11 +109,15 @@
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
 | 功能正确 | 离线通过（2026-11-16） | 本机 node 25.5.0，无 provider | `tests/self_root_meta.test.ts` 5/5：T0 门与一次性设计记录、META 无宿主评审入口、旧机制被替换而非叠加、T2 清单只记一次；`self_root_evo_capability` + `self_root` 32/32 无回归 |
-| 全链路可达 | 未验证 | — | 离线只证明对象层调用链；扩展与 runner 接线需 M1 实跑才可见 |
+| 全链路可达 | 部分（扩展装载探针通过；装载层 fixture 已修正，剩余失败为语义陈旧层） | 本机 node 25.5.0 + 脚本化 provider，无真实模型 | 与 `test_evo_ppt_pi` 相同的 Pi 命令行 + `demo/ppt_demo_extension.ts` + 当前 floor 契约的 manifest：`prompt` 返回 `success: true`，stderr 空 → META 改动后扩展可装载并应答。但任务段在扩展内真实流经 T0 设计这一层离线未覆盖，需 M1 实跑 |
 | 自主采用 | 未验证 | — | 待 M1（需新预算授权） |
 | 净收益 | 未验证 | — | 同上 |
 
-- 离线检查备注：`tests/ppt_demo.test.ts`(8) / `ppt_demo_live_orchestration`(1) / `ppt_trials`(1) 为既有失败，本改动前后计数一致，不在本次范围。
+- 离线检查备注（既有失败，非本改动引入，根因已分层定位）：
+  - 第 1 层，装载失败（本次已修）：`tests/test_evo_ppt_pi.py` 与 `tests/test_evo_ppt_stall_recovery.py` 的 fixture 契约仍带 `before_delivery` / `window_entry` / `before_batch_switch`，而 `demo/self_root.ts` 的 FLOOR 自 `59f4ad8f`（evo-loop v0.2，D1 "无 before_delivery，交付是一次调用"）起只接受 `before_active_reset` / `unit_completed` / `before_session_end`；扩展装载即抛 `v1 contract floor/segment/heartbeat/inheritance mismatch`，Pi 进程退出 → 报 `Pi RPC process exited before responding`。在父提交 `f34bd14e` 上计数一致（5 failed/2 passed、3 failed）；探针把同一 manifest 换为当前 floor 契约后同一命令行即成功。两处 fixture 的 boundaries 已改为当前 floor（纯修正，不改断言语义）。
+  - 第 2 层，runner 语义陈旧（未修，属独立范围）：修正 floor 后 `test_evo_ppt_stall_recovery` 为 2 failed / 1 passed，失败点都在 `result['stop']` 期望值——(a) `plain_text_end` 这个停止模式已在 `f77e88bf`（evo-loop-v0.4-task-continue，"Continue evo tasks until formal delivery"）移除，纯文本收尾现在改为重新提示"Continue the task in execute mode…"直到预算触顶，于是结果变成 `budget_or_integrity_stop`（`budget-stop.json` 记录 `authorized budget exhausted`，request 19/19）；(b) 重试策略在 eb804196（B3-1 修）后是 `maxRetries: 6, baseDelayMs: 5000`（`evo_ppt.py:84-89`），观测到的 `delayMs` 为 5000/10000/20000，故 `delayMs <= 4000` 与 `min(len(errors),2)` 两条断言也已过时；(c) `test_evo_ppt_pi.py` 在 `assert 'op' in decision_schema['required']` 失败，因为 `demo/self_root_ppt.ts:150` 的 `DECIDE_SCHEMA` 现在是 `required: []`（普通任务决策不必带 `op`）。
+  - 结论：这两套用例不是一次 fixture 修补能救回的，需要按当前 runner/decide 语义重新基线化断言（重试节奏、纯文本收尾的续跑语义、decide schema 形状），是一项有自己范围的改动，本次未做；因此本次只保留第 1 层的纯修正，把第 2 层如实记为未修。
+- node 侧既有失败 `tests/ppt_demo.test.ts`(8) / `ppt_demo_live_orchestration`(1) / `ppt_trials`(1) 同属既有，改动前后计数一致，不在本次范围。
 - 实现提交：`demo/self_root.ts`（EVO_META 门、T0 材料、T1 触发抑制、T2 清单）、`demo/ppt_demo_extension.ts`（META 文本入上下文与评审门旁路）、`src/autoresearch_pi/evo_ppt.py`（目标句任务半 + 臂守卫）、`tests/self_root_meta.test.ts`。
 
 - 开放决定（请用户定夺）：① T0 一次性门——硬门（本文选择；B2 已证纯许可 = 0，软提示重复已知负例）还是软提示；② 目标句最终措辞（§4 草案）；③ M1 预算授权。
