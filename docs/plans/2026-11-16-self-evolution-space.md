@@ -411,3 +411,15 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 
 **预算**：本次 25，系列 229+25=**254**，余 **346**（600 cap）。证据边界：az / glm-5.3-flash / 本任务。
 
+### 6.6 M7 预注册（单因素：outcome 假值叶清点行）
+
+**真实失败锚**：M6 citation 8/10（§6.5 残差 1）。事实链已核实：每次结算的 `task_outcome` 值里 `normalized.citation_found: false`（unit-05/06）**被完整记录**（`.harness/live-self.json`），但从未抵达模型——A3 `[outcome]` 回显 `compactJson(value, 200)` 按插入序走，checker/source_hashes 元数据（~230 chars）把 200 字符吃光（provider-requests 逐条核实：所有 `[outcome ledger:*]` 行断在 source_hashes 内；载荷里 grep "citation" 只命中 agent 自己的 T0 文案）；拉取侧 `read_self` 连续第三次 0 调用（"push, not pull" 的又一实例）。感知断点，非回报断点——本轮证伪这一点。
+
+**单因素**（工程提交 `67bc34df`）：`booleanLeaves`——对每条 `task_outcome` 的记录值做**布尔叶机械清点**：false 叶按数字归一化路径分组计数，每组带最外层数组下标示例（≤3），按次数降序 ≤6 组；渲染为 `[outcome]` 下一行 `false N/M: path xN at [i,j]`；`observationHeads` 摘要尾带 `(N false)`。200 回显本身不动。task-neutral 保持：按"记录值为 false"选择叶，不按键名含义；排序失败的根因是 units 数组压缩后本身 >2000 chars，任何回显扩容都装不下，清点是唯一机械出路。M6 载荷上该行形如 `false 14/68: units[#].citation_literal.found x10 at [0,1,2]; units[#].normalized.citation_found x2 at [4,5]`。其余一切不变：az / glm-5.3-flash / arm B（EVO_A4+EVO_META）/ 同冻结流程 / 同判据。
+
+**预注册命题**：若运行中出现记录为 false 的判定叶，边界推送板把它（分组+下标）送到模型面前，agent 在交付前对该事实采取修复动作；主判据：**交付时 `normalized.citation_found` 对应组 false 计数为 0（citation 10/10）**，且若中途该组出现过 false，修复动作可在轨迹中定位。
+
+**负例预登记**：(a) 全程无 false 叶（首版全对且 checker 不产生字面歧义）→ 因素在场未行使，记 unexercised，不计成败；(b) false 叶被推送（provider-requests 可核实）而 agent 到交付无动作 → 感知闭合、回报不足，下一因素是批 2（O2/O3 协议义务）或任务结构；(c) 字面/规范双轨分歧（M6 的 unit-01：`citation_literal.found` false 而 `normalized.citation_found` true，后者为准）→ 板只报两条事实，agent 的语义处置是观察点，不算因素失败。
+
+**上限**：M7 声明 **40 requests**（M6 25 + 修复余量）；系列 254/600，启动前余 346，启动后计相应消耗。
+
