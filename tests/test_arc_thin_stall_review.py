@@ -30,6 +30,25 @@ def test_a_stall_review_is_due_after_that_many_actions_on_the_level_or_since_the
     assert not runner._stall_review_due(rows(count=100), 0, 0), '0 turns it off'
 
 
+def test_a_stall_slot_the_agent_set_replaces_the_interval_and_anything_else_is_ignored(tmp_path):
+    """Self-loop stage 3 (docs/plans/2026-11-16-arc-selfloop-migration.md): the runner reads the slot values the
+    extension booked at the last decision boundary; a missing file, key, wrong type or out-of-range value changes
+    nothing."""
+    write = lambda text: (tmp_path / 'self_slots.json').write_text(text, encoding='utf-8')
+    assert runner._slot_stall_after(tmp_path, 40) == 40, 'no booked slots: the run keeps its interval'
+    write(json.dumps(dict(at=7, values={'stall.after': 15})))
+    assert runner._slot_stall_after(tmp_path, 40) == 15
+    write(json.dumps(dict(at=8, values={'stall.after': 0})))
+    assert runner._slot_stall_after(tmp_path, 40) == 0, '0 turns the review off'
+    write(json.dumps(dict(at=9, values={'refine.every': 5})))
+    assert runner._slot_stall_after(tmp_path, 40) == 40, 'a slot file without the key keeps the interval'
+    for bad in ('not json', '[]', json.dumps(dict(values={'stall.after': True})),
+                json.dumps(dict(values={'stall.after': 7.5})), json.dumps(dict(values={'stall.after': 501})),
+                json.dumps(dict(values={'stall.after': -1})), json.dumps(dict(values='x'))):
+        write(bad)
+        assert runner._slot_stall_after(tmp_path, 40) == 40, bad
+
+
 def test_the_prompt_names_the_level_and_what_the_count_runs_from_and_resumes_as_a_stall_review():
     prompt = runner._stall_review_prompt(rows(30, count=70), 0, 1)
     assert prompt.startswith('STALL REVIEW. Level 2 is still open after 40 actions (since it began at action 31); '

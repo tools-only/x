@@ -25,7 +25,9 @@ const runsByItself = (c: ComponentSpec) => c.kind === 'tool' && Boolean(c.view |
 /**
  * The five capability categories (Prompt, Memory, Tool, Skill, Subagent; Memory lives in the memory store), by
  * workspace place. lib/ holds code tools import (a dependency, not a capability); notes/, artifacts/ and other files
- * are plain workspace files. observers/ and roles/ are older places for view tools and subagents.
+ * are plain workspace files. observers/ and roles/ are older places for view tools and subagents. slots/ holds the
+ * host's typed settings the agent may change (stage 3 of the self-loop plan): a JSON object validated against a schema
+ * the host injects, versioned and receipted like every other component.
  */
 export function componentKind(path: string): string | undefined {
   if (path.split('/').includes('_off')) return;
@@ -34,6 +36,7 @@ export function componentKind(path: string): string | undefined {
   if (/^skills\/[^/]+\/SKILL\.md$/.test(path)) return 'skill';
   if (/^prompts\/[^/]+\.md$/.test(path)) return 'prompt';
   if (/^(agents|roles)\/[^/]+\.md$/.test(path)) return 'subagent';
+  if (/^slots\/[^/]+\.json$/.test(path)) return 'slot';
 }
 /** The file conventions require only scalar values and lists, not an SDK. */
 export function markdownSpec(path: string, source: string): ComponentSpec {
@@ -59,7 +62,7 @@ export class Binder {
   private level = 0;
   private saving: Promise<unknown> = Promise.resolve();
   private log: string; private versions: string;
-  constructor(readonly workspace: Workspace, private validate?: Validator) {
+  constructor(readonly workspace: Workspace, private validate?: Validator, private slotValidate?: Validator) {
     const store = join(workspace.root, '..', '.harness');
     this.versions = join(store, 'versions'); mkdirSync(this.versions, { recursive: true });
     this.log = join(store, 'components.jsonl');
@@ -106,8 +109,9 @@ export class Binder {
     try {
       const spec = kind === 'file' ? { kind, name: path, description: '', enabled: false }
         : kind === 'tool' || kind === 'library'
-          ? await this.validate?.(path, source) : markdownSpec(path, source);
-      if (!spec) throw Error('Python component binder not available');
+          ? await this.validate?.(path, source)
+          : kind === 'slot' ? await this.slotValidate?.(path, source) : markdownSpec(path, source);
+      if (!spec) throw Error(kind === 'slot' ? 'slot binder not available' : 'Python component binder not available');
       entry.good = { ...spec, source, path, hash, level, version: entry.version };
     } catch (error) { entry.error = error instanceof Error ? error.message : String(error); }
     this.record(entry); return kind === 'file' ? undefined : this.receipt(entry);
@@ -118,16 +122,16 @@ export class Binder {
    */
   private receipt(entry: Entry, unchanged = false) {
     const kind = componentKind(entry.path); const name = entry.good?.name ?? entry.path.split('/').at(-1);
-    // A prompt is shown with each decision as it stood when the decision began (the head is built once per decision, and
-    // in the system prompt a change mid-decision invalidated the provider's cached prefix on every later request of it,
-    // pr-01 2026-10-14); it applies from the next decision.
-    const from = kind === 'prompt' ? 'your next decision' : 'your next request';
+    // What a slot now holds, so the write's result says what took effect (a rejected save names the key at fault in
+    // entry.error). A prompt and a slot are read when a decision's head is built: both apply from the next decision.
+    const slots = kind === 'slot' && entry.good?.description ? ` · ${entry.good.description}` : '';
+    const from = kind === 'prompt' || kind === 'slot' ? 'your next decision' : 'your next request';
     const failed = entry.error
       ? `NOT loaded (${entry.error}) · ${entry.good ? `v${entry.good.version} still runs, its outputs are labelled` : 'no active version'}` : '';
     if (unchanged) return `${entry.path} → ${kind} ${name} v${entry.version}: unchanged, the same content as before · ` +
-      (failed || (entry.good?.enabled ? 'loaded' : 'off'));
+      (failed || (entry.good?.enabled ? `loaded${slots}` : 'off'));
     return `${entry.path} → ${kind} ${name} v${entry.version}: saved · ` + (failed
-      || (entry.good?.enabled ? `loaded · active from ${from}` : `off · not active from ${from}`));
+      || (entry.good?.enabled ? `loaded${slots} · active from ${from}` : `off${slots} · not active from ${from}`));
   }
   async scan(level: number) {
     const paths = new Set(this.workspace.files().filter(p => !/^(data|results)(\/|$)/.test(p)));
@@ -162,7 +166,7 @@ export class Binder {
    * that it no longer runs.
    */
   index(level: number, failedInputs: Set<string> = new Set(), usage: Map<string, string> = new Map()): string {
-    const order = ['prompt', 'tool', 'skill', 'subagent'];
+    const order = ['prompt', 'tool', 'skill', 'subagent', 'slot'];
     const listed = [...this.entries].filter(([path, e]) => !e.retired && order.includes(componentKind(path) ?? ''))
       .sort((a, b) => order.indexOf(componentKind(a[0])!) - order.indexOf(componentKind(b[0])!) || a[0].localeCompare(b[0]));
     const lines = listed.map(([path, e]) => {
@@ -172,13 +176,15 @@ export class Binder {
       const use = kind === 'tool' ? (path.startsWith('observers/') || c?.view ? 'view, shown after each new state'
           : c?.predictor ? 'predictor, run at each action' : c?.guard ? 'guard, asked before each action is sent'
           : c?.hook ? 'hook, run after each action (writes files and memory)' : `${c?.name ?? ''}(args)`)
-        : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active' : `read ${path}`;
+        : kind === 'subagent' ? `consult("${c?.name ?? ''}", …)` : kind === 'prompt' ? 'applied while active'
+        : kind === 'slot' ? 'read at each decision; a value you set applies from your next decision' : `read ${path}`;
       return `${kind} ${c?.name ?? path} v${c?.version ?? e.version} ${status}${e.error && c ? ` (v${e.version} failed)` : ''}: ${c?.description ?? e.error} · ${use}` +
         (usage.get(path) ? ` · ${usage.get(path)}` : '');
     });
     // No saved component: no section (an empty header was shown at every decision of the 2026-10-12 real run).
     if (!lines.length) return '';
-    const full = ['HARNESS (your prompts, tools, skills and subagents; memory is indexed above)', ...lines].join('\n');
+    const slots = listed.some(([path]) => componentKind(path) === 'slot') ? ' and slots' : '';
+    const full = [`HARNESS (your prompts, tools, skills and subagents${slots}; memory is indexed above)`, ...lines].join('\n');
     if (full.length <= 1200) return full;
     const groups = new Map<string, string[]>();
     for (const [path, e] of listed) { const kind = componentKind(path)!; groups.set(kind, [...(groups.get(kind) ?? []), e.good?.name ?? path]); }

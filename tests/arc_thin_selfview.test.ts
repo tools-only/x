@@ -87,3 +87,12 @@ test('the digest names at most three components and counts the rest', () => {
   assert.match(line, /your components 5 \(tools\/a\.py v1, tools\/b\.py v1, tools\/c\.py v1, \+2 more\)/);
   assert.match(line, /last outcome level 0 not won/);
 });
+
+test('the digest names the last self change and the slot values that differ from the host defaults', () => {
+  const line = selfDigest({ decision: 7, actions: 20, level: 1, predictions: { made: 2, hits: 1, misses: 1 },
+    components: [{ path: 'slots/self.json', version: 2 }], changes: 2, lastChange: { path: 'slots/self.json', version: 2 },
+    slots: [['refine.every', 5], ['review.consult', false]], outcomes: [], rows: { budget: 7, working: 7, outcomes: 0 } });
+  assert.equal(line, 'SELF: decision 7, 20 actions at level 1; predictions 2 (1 hit/1 miss); your components 1 ' +
+    '(slots/self.json v2); 2 self changes (last slots/self.json v2); slots set: refine.every=5, review.consult=false; ' +
+    'last outcome none; data/self/: 7 budget, 7 working-set, 0 outcome rows.');
+});

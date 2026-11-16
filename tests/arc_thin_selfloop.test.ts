@@ -1,10 +1,12 @@
 /**
- * Stages 1-2 of docs/plans/2026-11-16-arc-selfloop-migration.md: the run's own facts under workspace/data/self/, and
- * the host's fields plus one digest line on every decision.
+ * Stages 1-3 of docs/plans/2026-11-16-arc-selfloop-migration.md: the run's own facts under workspace/data/self/, the
+ * host's fields plus one digest line on every decision, and the typed slots the agent may set.
  *
  * The facts are projections of logs the runtime already writes, so the decision's own body must not change; the files
  * exist only with ARC_THIN_SELFLOOP=1, carry no message bodies, and a finished level leaves one outcome row. The
- * stage-2 block sits in the tail ahead of the work-memory record, which stays last.
+ * stage-2 block sits in the tail ahead of the work-memory record, which stays last. A slot saved through the ordinary
+ * write path binds at the next decision boundary, rides the digest and the inventory, and a bad save keeps the
+ * previous version running.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -65,6 +67,7 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
   const lines = (path: string) => existsSync(join(w.root, path))
     ? readFileSync(join(w.root, path), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
   return {
+    call,
     file: (path: string) => existsSync(join(w.root, path)) ? readFileSync(join(w.root, path), 'utf8') : '',
     rows: (name: string) => lines(`harness/${name}`),
     selfRows: (name: string) => lines(`workspace/data/self/${name}`),
@@ -162,5 +165,38 @@ test('a restarted run seeds the self files from the store instead of replacing t
     const rows = h.selfRows('context_budget.jsonl');
     assert.equal(rows.length, 3);
     assert.deepEqual(rows.map((row) => row.decision), [1, 2, 3]);
+  } finally { await h.close(); await w.server.close(); }
+});
+
+test('a saved slot binds at the next decision with its receipt, digest line, inventory and runner handoff; a bad save keeps the bound version', async () => {
+  const w = await world();
+  const h = await attach(w);
+  try {
+    await h.begin();
+    // The save goes through the same write path as any component: receipt, version, activation at the next boundary.
+    assert.match(await h.call('write', { path: 'slots/self.json', content: '{"refine.every": 2, "stall.after": 60}' }),
+      /slots\/self\.json → slot self v1: saved · loaded · refine\.every=2, stall\.after=60 · active from your next decision/);
+    await h.act({ action: 'ACTION1' });
+    const second = await h.begin();
+    assert.match(second, /; 1 self change \(last slots\/self\.json v1\); slots set: refine\.every=2, stall\.after=60; last outcome/);
+    assert.match(second, /HARNESS \(your prompts, tools, skills and subagents and slots; memory is indexed above\)/);
+    assert.match(second, /slot self v1 active: refine\.every=2, stall\.after=60 · read at each decision; a value you set applies from your next decision/);
+    const inventory = JSON.parse(h.file('workspace/data/self/slots.json'));
+    assert.equal(inventory['refine.every'].current, 2);
+    assert.equal(inventory['refine.every'].default, 1000, 'the default stays what the host resolved (ARC_REFINE_EVERY)');
+    assert.equal(inventory['stall.after'].current, 60);
+    assert.equal(inventory['history.result_chars'].current, inventory['history.result_chars'].default);
+    const booked = JSON.parse(h.file('harness/self_slots.json'));
+    assert.equal(booked.at, 2);
+    assert.deepEqual(booked.values, { 'refine.every': 2, 'stall.after': 60 }, 'the values the runner reads for its own knob');
+    // A bad value is refused whole: the receipt names the key and the legal form, and v1 keeps running.
+    assert.match(await h.call('write', { path: 'slots/self.json', content: '{"refine.every": 0}' }),
+      /slots\/self\.json → slot self v2: saved · NOT loaded \(refine\.every must be an integer 1-200 \(got 0\)\) · v1 still runs/);
+    await h.act({ action: 'ACTION1' });
+    const third = await h.begin();
+    assert.match(third, /; 1 self change \(last slots\/self\.json v1\); slots set: refine\.every=2, stall\.after=60; /,
+      'the failed save changes nothing the digest or the bound values show');
+    assert.deepEqual(JSON.parse(h.file('harness/self_slots.json')).values, { 'refine.every': 2, 'stall.after': 60 });
+    assert.match(third, /REFINE POINT \(every 2 actions;/, 'a read site consumes the slot from the decision it bound at');
   } finally { await h.close(); await w.server.close(); }
 });

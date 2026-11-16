@@ -917,6 +917,20 @@ def _stall_review_after(foundation: str, explicit: int | None, env: dict[str, st
     return value if foundation == "native" else 0
 
 
+def _slot_stall_after(harness: Path, current: int) -> int:
+    """The stall interval the last decision left active (self-loop stage 3, docs/plans/2026-11-16-arc-selfloop-migration.md):
+    the extension books the slot values it bound at each decision boundary in ``harness/self_slots.json``; a value of the
+    wrong type or outside the legal range is ignored. Without the file the run keeps the interval it started with."""
+    try:
+        values = json.loads((harness / "self_slots.json").read_text(encoding="utf-8")).get("values")
+    except (OSError, ValueError, AttributeError):
+        return current
+    value = values.get("stall.after") if isinstance(values, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 500:
+        return current
+    return value
+
+
 def _level_start(trajectory: list[dict[str, Any]]) -> int:
     """Actions played before the level on screen began: the number of the last action that changed the level, else 0."""
     return max((int(row.get("n") or index + 1) for index, row in enumerate(trajectory) if row.get("level_changed")), default=0)
@@ -1286,6 +1300,12 @@ def run_arc_thin_e2e(
             raise ValueError("ARC_THIN_OBSERVATION must be query, inline or ch")
         if foundation == "native":
             pi_env["ARC_THIN_OBSERVATION"] = observation_delivery
+        # The self-evolution loop (docs/plans/2026-11-16-arc-selfloop-migration.md): off unless set to 1. The slot
+        # inventory the extension shows names the host's defaults, so the stall interval this runner resolved is
+        # exported for the stage-3 stall.after slot to show as its default and replace.
+        selfloop = foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_SELFLOOP") == "1"
+        if selfloop:
+            pi_env["ARC_THIN_STALL_REVIEW"] = str(stall_review_after)
         # The harness turn and the guard place (docs/plans/2026-10-26-e1-harness-turn-protocol.md): off unless set to 1.
         harness_contract = _harness_contract(foundation, variant, pi_env)
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
@@ -1318,6 +1338,7 @@ def run_arc_thin_e2e(
             "harness_turn": harness_contract is not None,
             "guards": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_GUARDS") == "1",
             "hooks": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_HOOKS") == "1",
+            "selfloop": selfloop,
             # Where the active prompts are (docs/plans/2026-10-21-context-layout.md): "head" opens each decision's head
             # with them and ends it with the agent's own record on the board; "system" keeps them as system-prompt
             # sections (ARC_THIN_CONTEXT_LAYOUT=0, the legacy foundation and the control variant).
@@ -1614,9 +1635,11 @@ def run_arc_thin_e2e(
             miss_due = review_on_miss and action_count - consolidated_at >= REVIEW_ON_MISS_GAP and any(
                 (row.get("prediction") or {}).get("misses") or (row.get("skill_prediction") or {}).get("misses")
                 for row in _read_jsonl(harness / "trajectory.jsonl")[consolidated_at:])
-            # Many actions without a level completed make the agent's stall review due (stall_review_after).
+            # Many actions without a level completed make the agent's stall review due (stall_review_after); with the
+            # self-loop on, a stall.after slot the agent saved replaces the interval from the decision it bound at.
             trajectory_now = _read_jsonl(harness / "trajectory.jsonl")
-            stall_due = _stall_review_due(trajectory_now, stall_reviewed_at, stall_review_after)
+            stall_after_now = _slot_stall_after(harness, stall_review_after) if selfloop else stall_review_after
+            stall_due = _stall_review_due(trajectory_now, stall_reviewed_at, stall_after_now)
             # Work memory: so do decisions in a row that only replayed results the same board had already shown.
             spin = _spin_streak(trajectory_now) if spin_review_after else (0, [])
             if spin[0] == 0:

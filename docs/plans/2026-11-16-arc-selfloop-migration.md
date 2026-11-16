@@ -96,11 +96,48 @@
   记入 `sections.self` 供真实 run 对账。任务结果未测。
 - 协议偏离：无。
 
+### 段三：反思接口与首批槽位（可热改的宿主设置）
+
+- 改动入口及实际行为：
+  - 新增 `demo/arc_thin_selfslots.ts`：`SLOT_SPECS` 五个键及合法形式（`history.result_chars` 200–20000、`history.full_results`
+    0–10、`refine.every` 1–200、`review.consult` true/false、`stall.after` 0–500；默认值就是今天的硬编码值）；`slotComponent`
+    整文件校验（坏键拒绝保存，消息给出键名与合法形式）；`slotValues`（生效值合并，后文件覆盖先文件）；`changedSlots`（只报
+    与宿主当前默认不同的键）；`slotInventory`（`data/self/slots.json`：写入方式 + 每键 current/default/legal）。
+  - `demo/arc_thin_binder.ts`：新组件类 `slot`（`slots/*.json`），`Binder` 构造器注入 `slotValidate`；slot 收据形如
+    `slots/self.json → slot self v1: saved · loaded · refine.every=5 · active from your next decision`，失败时
+    `NOT loaded (…) · v1 still runs`；HARNESS 索引列出 slot 行与生效时机。版本、`sourceOf` 回退、EXPECT 尾注、写入收据全部
+    复用现有通路，未新建工具或日志。
+  - `demo/arc_thin_extension.ts`：`before_agent_start` 在 `binder.boundary`（重绑）之后、决策计数之后取
+    `run.slots = slotValuesNow()`（本决策内固定），写出 `data/self/slots.json`（库存）与 `harness/self_slots.json`
+    （运行期手交：`{at, values}`）；读点改读 `slot(key, 硬编码默认)`：`refine.every`（调度判定 2359、REFINE POINT 文本 3122、
+    refine 点判定 4300）、`review.consult`（4298）、`history.result_chars`/`history.full_results`（history 摘要 4485、
+    冻结 4518、原生投影 4535）。digest 在改动后追加 ` (last <path> vN)` 与 `; slots set: k=v`。
+  - `src/autoresearch_pi/arc_thin_e2e.py`：新增 `_slot_stall_after`（读 `harness/self_slots.json` 的 `values["stall.after"]`，
+    仅接受整数 0–500，否则忽略）；`selfloop` 门（native + treatment + `ARC_THIN_SELFLOOP=1`）下每决策前以该值替换本次
+    due 判断的间隔；selfloop 时把 runner 解析出的 `ARC_THIN_STALL_REVIEW` 交给扩展，使库存里的默认值等于 runner 实际值。
+- 默认等价：无 `slots/self.json` 时 `run.slots = {}`，`slot()` 返回硬编码默认；digest 在 changes=0 且无槽位时与段二逐字节
+  相同（段二测试原样保留并通过）；runner 侧读不到手交文件时 `_slot_stall_after` 返回原间隔。
+- 功能/相关回归检查：新增 `tests/arc_thin_selfslots.test.ts` 4 项（有效绑定与描述、整文件拒绝与消息、合并与差异、库存）；
+  `tests/arc_thin_selfview.test.ts` 增至 7 项（新增 lastChange/slots 逐字一例）；`tests/arc_thin_selfloop.test.ts` 增至 4 项
+  （新增槽位全环：写入收据 → 下一决策 digest/索引/库存/手交文件 → 读点消费（`REFINE POINT (every 2 actions`）→ 坏保存被拒且
+  v1 继续生效、手交值不变）；`tests/test_arc_thin_stall_review.py` 增至 5 项（新增 `_slot_stall_after`，含缺失文件/坏类型/
+  越界/0=关）。五个文件合计 51/51（selfview 7、selfloop 4、selfslots 4 + 邻接 binder 4 / work_memory_loop 3 / self_harness 12 /
+  level_review 7 / native_context 15），pytest 5/5。离线、mock bridge、node `--experimental-transform-types`。
+- 机会漏斗与断点：本段让 agent 第一次能改宿主行为；写入→激活（下一决策边界）→消费（读点）→结算（段四）全链有收据可对账。
+  断点若存在，是 agent 读了库存却始终不写 `slots/self.json`——离线不可判，由真实 run 的 `harness_changes.jsonl` 回答。
+- 语义与连续性：槽值唯一来源是 `slots/*.json` 组件（宿主默认与范围不可写）；非法值整体拒绝、不部分生效；本决策内取快照，
+  下一决策边界才换；库存每决策重写，agent 只读。
+- 成本与任务结果：无改动时零字符；有改动时 digest 每决策多出约 20–60 字符。库存是只读文件（约 1.2KB），只在 `data/self/:`
+  指针里被点名，不占决策上下文。任务结果未测。
+- 协议偏离：静态系统提示与工具描述里的周期数（`call_points` 行、refine 工具描述、EXPECT 视界）仍用启动值——系统提示整 run
+  固定以保前缀缓存（`yibu-cache-lifetime`），逐决策文本携带实时值；runner 在 selfloop 下向扩展多传一个环境变量
+  `ARC_THIN_STALL_REVIEW`（只被库存默认值读取，不改变原解析逻辑）。
+
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
-| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in） | `tests/arc_thin_selfview.test.ts` 6 项、`tests/arc_thin_selfloop.test.ts` 3 项 + 邻接 41/41；证明行构造、写入、摘要文本、落位与默认等价（关臂无块、字节相同） |
-| 全链路可达 | 部分验证（离线） | 同上；`arc-thin-smoke`（legacy 臂） | 摘要经 `context` 装配进入每次决策的尾部并被记账；真实 Pi/provider 下的完整 run 未验证 |
-| 自主采用 | 未验证 | — | 需真实 provider run |
+| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in）；pytest（本地） | `selfview` 7、`selfloop` 4、`selfslots` 4 + 邻接 `binder`/`work_memory_loop`/`self_harness`/`level_review`/`native_context` 合计 51/51；`test_arc_thin_stall_review.py` 5/5；证明视图行、摘要文本、槽位校验/合并/库存、写入激活、读点消费、runner 的 stall 槽读取与默认等价（关臂字节相同、坏保存不改生效值） |
+| 全链路可达 | 部分验证（离线） | 同上；`arc-thin-smoke`（legacy 臂） | 摘要与槽位经 `context`/`before_agent_start` 进入每次决策；`slots/self.json` → binder → HARNESS 索引/收据 → 下一决策 digest，以及 `harness/self_slots.json` → runner 的 stall 间隔均有测试串起；真实 Pi/provider 下的完整 run 未验证 |
+| 自主采用 | 未验证 | — | 需真实 provider run（看 `harness_changes.jsonl` 是否出现 `slots/self.json` 或组件写入） |
 | 净收益 | 未验证 | — | 需真实 provider run |
 
 ## 交付决定
