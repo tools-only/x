@@ -447,7 +447,7 @@ def run(root: Path, *, round_deadline: float | None = None):
     delivery = root / "delivery/presentation.html"
     if delivery.exists():
         visible = re.sub(r"<[^>]*>"," ",re.sub(r"<(script|style)\b[^>]*>[\s\S]*?</\1>"," ",delivery.read_text(encoding="utf-8"),flags=re.I))
-        result["final_unit_probes"]= [{"id":u["id"],"literal_matches":[{"text":x,"found":x.lower() in visible.lower()} for x in u["required"]],"citation_found":bool(re.search(rf"(?:Source\s+(?:page|segment)|(?<![\w.])p\.?)[ \t]*{u['source_page']}(?![\w.])", visible, re.I))} for u in manifest["units"]]
+        result["final_unit_probes"]= [{"id":u["id"],"literal_matches":[{"text":x,"found":x.lower() in visible.lower()} for x in u["required"]],"citation_found":bool(re.search(rf"(?:source\s+page\s+|(?<![\w.])p\.?\s*|(?<![\w.])page\s+){u['source_page']}(?![\w.])", visible, re.I))} for u in manifest["units"]]
         if manifest["arm"] == "A":
             result["units"]=[{"id":u["id"],"status":"whole_deck_delivered_unit_quality_unverified"} for u in manifest["units"]]
     persist_resource_daemon(root)
