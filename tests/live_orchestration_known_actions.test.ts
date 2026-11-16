@@ -49,10 +49,12 @@ test('undeclared sessions keep accepting arbitrary type strings', () => {
 const contract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:30,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
 const make = (mechanisms?: any, options: any = {}) => new SelfRoot(contract(), undefined, undefined, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
 const tick = async (s: any) => s.boundary(()=>{}, ()=>{});
+const taskSide = { task_goal: 'Deliver the artifact this run must produce', task_acceptance: 'judged by the recorded acceptance report; verified by a fresh render',
+  loop_policy: { look_when: [{ on: 'segment_boundary', look: 'the last segment numbers and the last change' }] } };
 
 test('META with declared receipt types: T0 names them, a rejected design keeps the gate closed, a corrected one opens it', async () => {
   const s = make({ meta: true }, { actionReceiptTypes: types }); await tick(s);
-  const material = s.metaT0();
+  const material = s.metaBoard();
   assert.ok(material.includes('Action receipt types this runtime records'));
   // META registers its own loop receipt beside the adapter's task receipts.
   assert.ok(material.includes('office.deliver, office.look, office.render, self.change, submit_unit'));
@@ -64,11 +66,11 @@ test('META with declared receipt types: T0 names them, a rejected design keeps t
   assert.equal(s.export().root.ledger.filter((r: any) => r.type === 'meta_t0_design').length, 0);
   // The rejection aborts that whole response chain; the next request starts clean, as in the live runtime.
   await tick(s);
-  const ok = await s.transaction({ baseRevision: s.revision, orchestration: loop('submit_unit', 'submit_unit') });
+  const ok = await s.transaction({ baseRevision: s.revision, orchestration: { ...loop('submit_unit', 'submit_unit'), contract: taskSide } });
   assert.ok(ok.addresses.includes('orchestration'));
   assert.equal(s.metaT0Pending, false);
   assert.equal(s.export().root.ledger.filter((r: any) => r.type === 'meta_t0_design').length, 1);
-  assert.equal(s.metaT0(), '', 'the material stops once the design exists');
+  assert.ok(!s.metaBoard().includes('DESIGN TURN'), 'the design block stops once the design exists');
 });
 
 test('outside META the SelfRoot transaction path keeps the old acceptance of undeclared receipt names', async () => {

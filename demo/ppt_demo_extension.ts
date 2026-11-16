@@ -97,6 +97,10 @@ export default function pptDemo(pi: ExtensionAPI) {
   // META runs seed the META variant of the resident prompt: same object contract, minus the host-opened review
   // entrance and the validation-window promise, which META turns off (self_root.ts:1199/:1201 and the window gate).
   const initialSystemPrompt = readFileSync(fileURLToPath(new URL(manifest ? (EVO_MECH.meta ? './prompts/self_root_meta_system.md' : './prompts/self_root_system.md') : './prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
+  // META (user decision 2026-11-16): the seven fixed self-evolution fields. The four fixed fields sit in this file
+  // and enter the stable prefix unchanged, so editing the agent's harness never rewrites them and never zeroes the
+  // provider prefix cache; the dynamic fields ride the self view instead.
+  const metaFieldsText = EVO_MECH.meta ? readFileSync(fileURLToPath(new URL('./prompts/self_root_meta_fields.md', import.meta.url)), 'utf8') : '';
   let forcedBaseline = initialSystemPrompt;
   let injectedSkillsSection = '';
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
@@ -702,14 +706,15 @@ export default function pptDemo(pi: ExtensionAPI) {
           : [JSON.stringify({ root_id: evo.root_id, revision: evo.revision, mode: evo.mode, step: evo.step,
             in_review: false, pending: evo.detail('pin').activation_intent ?? null, resources: evo.resources(),
             ...(evo.mech.observation ? { observation: evo.observationDigest() } : {}),
-            ...(evo.mech.meta ? { self_state: evo.selfChangeDigest() } : {}),
+            ...(evo.mech.meta ? { self_state: evo.selfChangeDigest(), self_evolution: evo.metaBoard() } : {}),
             read_full: 'read_self(section="self")', read_policy: 'read_self(section="policy")' })];
         const selfTail = ctx.self_view?.placement === 'tail';
         const coreLine = evo.mech.legacy_obligation
           ? `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`
           : `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is available at any point in a review; a judged no-change is a valid closure. Rework stays available through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition, or at the budget boundary.`;
-        // META (2026-11-16): the goal sentence's spine half plus the T0 design material; both disappear once the gate opens.
-        const metaText = [evo.metaGoal(), evo.metaT0()].filter(Boolean).join('\n\n');
+        // META (2026-11-16): the fixed self-evolution fields, unchanged in the stable prefix. The dynamic half
+        // (objects, contract, counters, phase) rides the self view so a change never rewrites this prefix.
+        const metaText = metaFieldsText;
         const bindingText = boundComponents.length ? `## ACTIVE STEP BINDINGS\n${boundComponents.join('\n')}` : '';
         // Full orchestration shape, not just the current step: an empty transitions/decisions list is then a visible
         // fact of the optimizable object instead of an absence the agent has to infer.

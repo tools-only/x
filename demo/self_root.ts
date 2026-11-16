@@ -1,6 +1,6 @@
 /** Same executing LiveAgentSelf; META contains no attribution or adoption policy. */
 import { createHash, randomUUID } from 'node:crypto';
-import { LiveAgentSelf, validateSchema, validateSchemaStructure } from './live_orchestration_core.ts';
+import { LiveAgentSelf, validateSchema, validateSchemaStructure, contractProblems, ORCHESTRATION_CONTRACT_FORM, TASK_EVENTS, type OrchestrationContract } from './live_orchestration_core.ts';
 import { runLiveSelfMethod, validateLiveSelfSource } from './live_self_wasi.ts';
 import { componentAddress, minimalComponentSource, type Validator } from './agent_component_model.ts';
 import { observe, renderObservation, observationHeads, type Observation } from './self_observation.ts';
@@ -127,43 +127,26 @@ export function entranceAskBlock(layer: boolean): string {
     ...ENTRANCE_QUESTIONS.map((q, i) => `${i + 1}. ${q}`),
     'Close with decide_exit carrying result.entry_question_responses: exactly three strings, one per question; "none" is a valid response. "No gap" and "no change" are both valid closures.'].join('\n');
 }
-/** EVO_META: the general meta loop - a fixed, task-free host spine that gives the agent the guidance scope and the
- * design-process assistance to produce its own evolution loop, and no host judgement (design 2026-11-16 §2-§4).
- * The material is delivered only while the T0 gate is closed; every string here names view objects, interfaces,
- * boundaries or design questions only. Task content reaches the agent through the runner's task prompt alone. */
-export const META_GOAL = 'Your deliverable is twofold: the task artifact itself, and the harness you sediment while delivering it - the final form of your components and orchestration is that harness.';
-export const META_DESIGN_QUESTIONS = [
-  'What does highest-quality delivery mean for this task, and what observable evidence would show it?',
-  'Which of your runtime-view objects bear on that quality, and which are worth evolving during this task?',
-  'What loop will you run while delivering: when, and on what evidence, will you look at your own harness? How do the task segments flow through the objects you change?',
-  'Write it as your orchestration with reflect_orchestration, with one sentence of intent; revise it whenever running teaches you something.',
-];
-export const META_T0_MATERIAL = [
-  'META LOOP - DESIGN TURN. This block is delivered before your first task segment and stops once that segment opens. It is guidance, not a questionnaire: nothing here is answered as text; its product is your orchestration, and your orchestration is executable.',
-  'Guidance scope - what exists and is yours to evolve. Your runtime view has four layers, and each one gives you an object you can rewrite:',
-  '  prompt - components of kind prompt: resident text carried into every request. reflect_component({op:"define"|"redefine", kind:"prompt", name, source}).',
-  '  context - policy.context: section order and instruction, which reasoning and tool results are kept, how older history is stubbed, where the self view sits. reflect_orchestration({policy:{context:{...}}}). Memory, skill and tool components reach each request through this same assembly.',
-  '  loop - your orchestration: roles; slots; steps (each with a tool-name permission scope, an optional decision, and component bindings); decisions (judge, question, evidence receipts, output, slot writes); transitions (from, on, requires, to). reflect_orchestration({orchestration:{...}}).',
-  '  harness - all of the above as one revision space: components, policy and orchestration activate together at the next request boundary, and every activation books its addresses and revision.',
-  'Interfaces, available at every request: reflect_component (create or rewrite a component), reflect_orchestration (rewrite your loop), and policy changes through the same reflection. Changes activate at the next request boundary; their recorded effects return to the same view.',
-  'Materials you judge on: recorded facts - repeats, costs, losses, inventory, recurrence, action receipts, usage and validation windows - delivered in the self view. The host books facts without ranking, diagnosis or recommendation.',
-  'Self-change receipt: after your design, every activation of a change records one action receipt of type self.change in your loop, carrying the self-state facts the view shows - revision, addresses, requests since the previous change, refused self operations, validation windows. A transition you write with on:{type:"action",action:"self.change"} fires at that activation; a decision that requires {type:"self.change"} takes that receipt by its ref.',
-  'Boundaries that stay in force and do not change with this mode: the frozen acceptance surface, budget, permissions and environment integrity.',
-  'Design process - think freely; the output is a structure, not an answer:',
-  ...META_DESIGN_QUESTIONS.map((q, i) => `${i + 1}. ${q}`),
-  'The first task segment opens after the reflect_orchestration that states your design. A design has at least one transition, and a write that leaves your self unchanged does not open the gate.',
-].join('\n');
-/** EVO_META strategy line: replaces the fixed review-strategy line in the self view; no entrance, no closure protocol. */
-export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at any request; changes activate at the next request boundary and their recorded effects return to the same view. Each activation after your design records one self.change action receipt carrying the self-state facts shown here; a transition bound to it fires at that activation. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own. Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
+/** EVO_META (user decision 2026-11-16): the self-evolution loop is a fixed host mechanism, not something the agent
+ * invents. The seven fixed fields live in demo/prompts/self_root_meta_fields.md (stable prefix); the dynamic half -
+ * optimizable objects, the orchestration contract and the acceptance counters - is rendered by metaBoard() in the
+ * self view. Every string here names mechanism, facts or boundaries only; task content reaches the agent through the
+ * runner's task prompt and through its own orchestration contract. */
+export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The self-evolution mechanism and the acceptance standard are host-given and are not redesigned here; the task side - task goal, task acceptance and this task\'s run plan - is yours and lives in your orchestration contract. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own. Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
   const binding = { type: 'object', properties: { kind: { type: 'string', enum: ['prompt','skill','tool','memory','context'] }, name: { type: 'string' }, version: { type: 'integer', minimum: 1 } }, required: ['kind','name'], additionalProperties: false };
-  // A minimal real loop, not an empty shell: a loop with no transition cannot turn, and the T0 gate requires one.
+  const contract = { type: 'object', description: `Task-side contract written at the T0 design turn and rendered in the self view: task_goal, task_acceptance, and loop_policy.look_when - each trigger on one task-side event (${TASK_EVENTS.join(' | ')}), never a counter or a clock.`,
+    properties: { task_goal: { type: 'string' }, task_acceptance: { type: 'string' }, loop_policy: { type: 'object' } }, required: ['task_goal','task_acceptance','loop_policy'], additionalProperties: false };
+  // A minimal real loop, not an empty shell: a transition turns when its receipt arrives, and the contract carries
+  // the task side the host does not supply.
   const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [],
+    contract: { task_goal: 'The task artifact this run must deliver', task_acceptance: 'How its delivery is judged and how you verify it',
+      loop_policy: { look_when: [{ on: 'segment_boundary', look: 'what the last segment recorded, with which task facts' }] } },
     transitions: [{ id: 'again', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'work' }] };
   const definition = current ?? example;
-  return { type: 'object', properties: { revision: { type: 'integer' }, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', description: 'Permission scope for this step: tool names (read, write, edit, office.render, ...) this step may call. Omit to allow every tool; protocol tools are never scoped by it.', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', description: 'Each row: {id, from, on, requires, to}. on is {type:"action",action:"<an action receipt type this runtime records>"} or {type:"decision",id:"<decision id>"}; requires lists the receipts that must be cited for it to fire.', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
+  return { type: 'object', properties: { revision: { type: 'integer' }, contract, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', description: 'Permission scope for this step: tool names (read, write, edit, office.render, ...) this step may call. Omit to allow every tool; protocol tools are never scoped by it.', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', description: 'Each row: {id, from, on, requires, to}. on is {type:"action",action:"<an action receipt type this runtime records>"} or {type:"decision",id:"<decision id>"}; requires lists the receipts that must be cited for it to fire.', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
 }
 export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
@@ -249,6 +232,8 @@ function mergeOrchestrationPatch(current: any, patch: any) {
     if (!patch.steps_by_id || typeof patch.steps_by_id !== 'object' || Array.isArray(patch.steps_by_id)) throw Error('orchestration_patch.steps_by_id must be an object');
     next.steps = next.steps.map((step: any) => patch.steps_by_id[step.id] ? { ...step, ...patch.steps_by_id[step.id] } : step);
   }
+  // The task-side contract is one object: a patch replaces it whole, like a definition field, never field-merges.
+  if (patch.contract !== undefined) next.contract = patch.contract;
   return next;
 }
 
@@ -671,17 +656,98 @@ export class SelfRoot extends LiveAgentSelf {
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
   }
-  /** EVO_META T0: the gate is open until the agent has written its orchestration once (any accepted rewrite counts). */
+  /** EVO_META T0: the gate is open until the agent has written its orchestration contract (the design turn). */
   get metaT0Pending() { return this.mech.meta && !this.ledger.some(r => r.type === 'meta_t0_design'); }
-  /** The goal sentence half carried by the spine; task content stays in the runner's prompt. */
-  metaGoal() { return this.mech.meta ? META_GOAL : ''; }
-  /** T0 material: delivered on every request while the gate is closed; the delivery is recorded once. */
-  metaT0() {
-    if (!this.metaT0Pending) return '';
-    if (!this.ledger.some(r => r.type === 'meta_t0_delivered')) this.fact('meta_t0_delivered', { request: this.request, material: 'guidance scope + design process', gate: 'one reflect_orchestration before the first task segment' });
-    return this.knownActionTypes?.size
-      ? `${META_T0_MATERIAL}\nAction receipt types this runtime records (the only types usable in transition on.action/requires and decision evidence): ${[...this.knownActionTypes].sort().join(', ')}. A step's actions list is a permission scope over tool names, not over receipt types: it may name any tool the surface advertises (read, write, edit, ls, grep, python, ...) as well as the receipt types; omitting it allows every tool in that step. Protocol tools (read_self, reflect_*, decide) are not restricted by it, so a narrow step can always be widened again.`
-      : META_T0_MATERIAL;
+  /** The task-side contract in force: the live orchestration's own, else the one recorded at the design turn. */
+  metaContract(): OrchestrationContract | null {
+    const row = this.ledger.find(r => r.type === 'meta_t0_design');
+    return ((this.current?.orchestration as any)?.contract ?? row?.value?.contract ?? null) as OrchestrationContract | null;
+  }
+  /** Mechanical acceptance bookkeeping (user decision 2026-11-16). changes: agent-initiated structural activations
+   * after the first task segment started. activated: a later provider request ran after the write. used_later: the
+   * changed object is visible in later task execution - a tool that ran, a text kind carried by the recorded live
+   * context injection, or an orchestration/policy applied to a later request. Existing receipts only; no new one. */
+  metaAcceptance() {
+    const start = this.ledger.findIndex(r => r.type === 'meta_t0_design');
+    if (start < 0) return { changes: 0, activated: 0, used_later: 0, last: null as { ref: string; revision: number | null; addresses: string[]; activated: boolean; used_later: boolean } | null };
+    const rows = this.ledger.slice(start + 1);
+    let changes = 0, activated = 0, usedLater = 0;
+    let last: { ref: string; revision: number | null; addresses: string[]; activated: boolean; used_later: boolean } | null = null;
+    rows.forEach((row, i) => {
+      // Each write books an intent row at reflect time and, at the boundary, an activation row carrying `parent`.
+      // The change is the intent row; counting the activation too would count one change twice, and the design's own
+      // activation - which lands after the design row - is the design, not a later change.
+      if (row.type !== 'reflection_activated' || row.value?.parent !== undefined) return;
+      changes++;
+      const after = rows.slice(i + 1);
+      const isActivated = after.some(r => r.type === 'provider_input');
+      const isUsed = this.changeUsed(row.value?.addresses ?? [], after);
+      if (isActivated) activated++;
+      if (isUsed) usedLater++;
+      last = { ref: row.ref, revision: row.value?.revision ?? null, addresses: row.value?.addresses ?? [], activated: isActivated, used_later: isUsed };
+    });
+    return { changes, activated, used_later: usedLater, last };
+  }
+  private changeUsed(addresses: string[], after: any[]) {
+    return addresses.some(address => {
+      const component = /^components\.(tool|prompt|skill|memory)\.(.+)$/.exec(address);
+      // Orchestration and policy are applied to every later request; that application is their use.
+      if (!component) return after.some(r => r.type === 'provider_input');
+      const [, kind, name] = component;
+      if (kind === 'tool') return after.some(r => r.type === 'event' && r.value?.type === 'tool_succeeded' && r.value?.facts?.tool === name);
+      return after.some(r => r.type === 'provider_input' && (r.value?.component_addresses ?? []).includes(`${kind}.${name}`));
+    });
+  }
+  private metaPhase(): 'design' | 'task' | 'boundary' | 'settled' {
+    if (this.metaT0Pending) return 'design';
+    if (this.ledger.some(r => r.type === 'meta_harness_inventory')) return 'settled';
+    const index = (type: string) => { for (let i = this.ledger.length - 1; i >= 0; i--) if (this.ledger[i].type === type) return i; return -1; };
+    return index('segment_summary') > index('request_record') ? 'boundary' : 'task';
+  }
+  /** EVO_META board: the dynamic half of the seven fixed fields. Fields 1-3 and 7 are the fixed prompt file; this
+   * block renders field 4 from live objects, fields 5-6 from the orchestration contract, the acceptance counters and
+   * the phase block. Flow adaptation: full at the design turn, one mechanism line during a task segment, expanded at
+   * a segment boundary, settled once at session end. Facts only; no ranking, diagnosis or advice. */
+  metaBoard() {
+    if (!this.mech.meta) return '';
+    const phase = this.metaPhase();
+    if (phase === 'design' && !this.ledger.some(r => r.type === 'meta_t0_delivered'))
+      this.fact('meta_t0_delivered', { request: this.request, material: 'seven fixed fields; task side filled by orchestration.contract', gate: 'contract before the first task segment' });
+    const contract = this.metaContract();
+    const acc = this.metaAcceptance();
+    const orchestration: any = this.current?.orchestration ?? {};
+    const components = this.active();
+    const named = (kind: string) => components.filter(c => c.kind === kind).map(c => `${c.name}@v${c.version}`).join(', ') || 'none';
+    const step = (orchestration.steps ?? []).find((s: any) => s.id === this.step);
+    const recordable = this.knownActionTypes?.size ? [...this.knownActionTypes].sort().join(', ') : '';
+    const objects = [
+      'OPTIMIZABLE OBJECTS',
+      `prompt - ${named('prompt')}; change with reflect_component(kind:"prompt"); read_self(section="self")`,
+      `context - policy.context (order: ${(this.policy.context?.order ?? []).join(', ')}; self view: ${this.policy.context?.prompt_layout?.volatile_tail ? 'tail' : 'system'}); change with reflect_orchestration({policy:{context}}); read_self(section="policy")`,
+      `loop - orchestration revision ${this.current?.revision ?? 1}, active step '${this.step}'${step?.actions ? ` (action scope: ${step.actions.join(', ')})` : ''}; a transition fires on on:{type:"action",action:"<${recordable || 'a recorded receipt type'}>"} or on:{type:"decision",id:"<decision>"}; change with reflect_orchestration({orchestration}); read_self(section="definition")`,
+      `harness - ${components.length} components at self revision ${this.revision} (${named('tool')} tools; ${named('skill')} skills; ${named('memory')} memory); any write above; read_self(section="self")`,
+    ];
+    const summary = this.ledger.filter(r => r.type === 'segment_summary').map(r => r.value);
+    const numbers = (v: any) => v ? `requests ${v.process?.requests ?? 0}, task actions ${v.work?.task_actions ?? 0}, tool errors ${v.process?.tool_errors ?? 0}, elapsed ${Math.round(Number(v.process?.latency_s ?? 0))}s, phase ${v.phase ?? 'unknown'}` : 'none';
+    // The run plan's look triggers are the agent's own task-side text for this event; the boundary is where they apply.
+    const look = (contract?.loop_policy?.look_when ?? []).filter((w: any) => w?.on === 'segment_boundary').map((w: any) => String(w.look));
+    const flow = phase === 'design'
+      ? `DESIGN TURN - the mechanism and the acceptance standard above are given; this turn does not design an evolution loop. Fill TASK GOAL and TASK ACCEPTANCE and write this task's run plan in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}. Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is a permission scope over tool names, not over receipt types.` : ''}`
+      : phase === 'boundary'
+        ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
+          `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
+          ...(look.length ? [`Your run plan for this event (segment_boundary): ${look.join(' | ')}`] : []),
+          'Facts only; judgment stays with you.'].join('\n')
+        : phase === 'settled'
+          ? `SESSION CLOSED - acceptance settled once: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`
+          : `MECHANISM: every write activates at the next request boundary and its receipt returns here; this block expands at the next task-segment boundary.`;
+    return [
+      `TASK GOAL: ${contract?.task_goal ?? '(empty - this design turn fills it)'}`,
+      `TASK ACCEPTANCE: ${contract?.task_acceptance ?? '(empty - this design turn fills it)'}`,
+      ...objects,
+      `SELF-EVOLUTION: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`,
+      flow,
+    ].join('\n');
   }
   /** Three-altitude recorded operating facts over this ledger - the dynamic facet of the one self view. */
   observation(): Observation {
@@ -771,11 +837,13 @@ export class SelfRoot extends LiveAgentSelf {
     return result.then(value => { this.noteMetaDesign(value); return value; });
   }
   /** EVO_META T0: the gate's only state is this ledger row; a failed write never opens it, and neither does a write
-   * that changed nothing (2026-11-16: a seed-equivalent rewrite opened the gate, so the design turn had no product). */
+   * that changed nothing or one that carries no contract (a restore, or an orchestration without the task side). */
   private noteMetaDesign(result: any) {
     if (!this.mech.meta || this.ledger.some(r => r.type === 'meta_t0_design')) return;
     if (result?.status === 'no_change') return;
-    this.fact('meta_t0_design', { revision: this.pending?.revision ?? this.serial, status: result?.status ?? 'changed', addresses: result?.addresses ?? null, gate: 'open' });
+    const contract = (this.pending as any)?.candidate?.current?.orchestration?.contract ?? null;
+    if (!contract) return;
+    this.fact('meta_t0_design', { revision: this.pending?.revision ?? this.serial, status: result?.status ?? 'changed', addresses: result?.addresses ?? null, gate: 'open', contract });
   }
   abortTransaction(error: unknown, tool?: string) {
     this.pending = undefined; this.pendingReview = undefined;
@@ -869,12 +937,15 @@ export class SelfRoot extends LiveAgentSelf {
           let definition = normalizeOrchestration(input.orchestration ?? mergeOrchestrationPatch(candidate.current.orchestration, input.orchestration_patch));
           // Intent compiler: deterministic completion of mechanical wiring; ambiguity asks one concrete question.
           if (this.mech.compiler) { const completed = compileOrchestrationIntent(definition, this.knownActionTypes); definition = completed.definition; compiledEntries.push(...completed.compiled); }
-          // EVO_META T0 gate (design bet f, 2026-11-16): the gate opens on a design, and a design has at least one
-          // transition. A rewrite equivalent to the seed used to pass, so T0 and T1 had no progression between them.
-          // Mechanical and stated in the material; what the transition binds to is the agent's choice.
-          if (this.metaT0Pending && !(Array.isArray(definition.transitions) && definition.transitions.length))
-            throw operationError('the T0 gate opens on a design, and a design has at least one transition', 'orchestration', input, { invalid: ['transitions'],
-              correction: `Add a transition - from the step your segment runs in, on:{type:"action",action:"<a receipt type>"} or on:{type:"decision",id:"<your decision>"} - then resend. A loop with no transition cannot turn, and a write equivalent to the seed does not open the gate.${this.knownActionTypes?.size ? ` Action receipt types this runtime records: ${[...this.knownActionTypes].sort().join(', ')}.` : ''}` });
+          // EVO_META T0 gate (user decision 2026-11-16): the gate checks the orchestration's fixed contract object,
+          // not the fact that something was submitted. TASK GOAL, TASK ACCEPTANCE and the run plan must be present;
+          // the run plan's triggers bind task-side events, so a counter or a clock cannot open it. Shape only - the
+          // host does not judge whether the plan is good.
+          if (this.metaT0Pending) {
+            const problems = contractProblems(definition.contract);
+            if (problems.length) throw operationError(`the T0 gate needs the task-side contract in your orchestration (${problems.join('; ')})`, 'orchestration', input, { invalid: ['contract'],
+              correction: `Add orchestration.contract in this form: ${ORCHESTRATION_CONTRACT_FORM} Then resend. The mechanism and the acceptance standard are given; this turn fills only the task side.` });
+          }
           if (definition.roles?.length !== 1 || definition.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
           await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: definition, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push(componentAddress('orchestration', ''));
         }
@@ -1345,16 +1416,19 @@ export class SelfRoot extends LiveAgentSelf {
     if (type === 'before_session_end') this.metaInventory();
     return { event: event.ref, triggers, ...(summary ? { segment_summary: summary.ref } : {}) };
   }
-  /** EVO_META T2: what the agent's own view holds at close. Facts only - the runtime counts, it does not rank or advise. */
+  /** EVO_META T2: what the agent's own view holds at close, and the acceptance counts settled once. Facts only. */
   private metaInventory() {
     if (!this.mech.meta || this.ledger.some(r => r.type === 'meta_harness_inventory')) return;
     const orchestration: any = this.current?.orchestration ?? {};
+    const acceptance = this.metaAcceptance();
     this.fact('meta_harness_inventory', {
       components: this.active().map(c => ({ kind: c.kind, name: c.name, chars: String(c.source ?? '').length })),
       orchestration: { revision: orchestration.revision ?? this.serial, slots: (orchestration.slots ?? []).length, steps: (orchestration.steps ?? []).length,
         decisions: (orchestration.decisions ?? []).length, transitions: (orchestration.transitions ?? []).length },
       revision_chain: this.ledger.filter(r => r.type === 'reflection_activated').map(r => ({ revision: r.value?.revision ?? null, addresses: r.value?.addresses ?? [], review: r.value?.review ?? null })),
       policy_keys: Object.keys(this.policy), design: this.ledger.find(r => r.type === 'meta_t0_design')?.ref ?? null,
+      acceptance: { changes: acceptance.changes, activated: acceptance.activated, used_later: acceptance.used_later,
+        last_change: acceptance.last?.ref ?? null, contract: this.metaContract() },
     });
   }
   /** Final delivery settles facts but leaves an evolvable review loop open when quality facts or windows remain. */

@@ -221,6 +221,8 @@ meta loop 的四处失真（矛盾常驻文案、一句话四层、空壳 exampl
 
 ### 14.4 修复方向（按决策权分列）
 
+> 2026-11-16 晚：f/g/h 三项已由用户定稿取代，见 §15。本节保留为当时的判断记录。
+
 实现缺陷（可直接修，仍按一次一个主因素）：
 
 - a. META 运行播种 META 版系统提示：改写/删除 self_root_system.md §11、§13 两段 B 系文案（ppt_demo_extension.ts:97 处按 manifest 分支）。
@@ -236,6 +238,8 @@ meta loop 的四处失真（矛盾常驻文案、一句话四层、空壳 exampl
 - h. T0 材料加厚上限：四层对象清单 + 每层一个无任务词的结构示例，厚到哪里算"指导范围"、哪里越界成"替 agent 设计"。
 
 ### 14.5 下一步
+
+> 2026-11-16 晚：本节的 M3b 计划以"T0 门 = 至少一条 transition、材料 + `self.change` 收据 + c'"为前提，已被用户定稿取代，见 §15。判据问题 4（kernel 主指标）与问题 5（负例可判读）继续有效，其余按 §15 的字段口径重述。
 
 - M2 已按 §13 判据结账：kernel 0/1，主指标未达；无晚期自发修订（T0 后 reflect_* 为 0）。副指标：30/30 literals，引用探针 0/10 为假阴性（产物 15 处 cite 文本存在），质量未见回退。系列预算已用 M1 40 + M2 25（含预检）= 65/600，余 535（429 槽计入请求口径，是否维持请用户确认）。
 - M3 建议：有效性修复 a（META 版系统提示，去除 ¶11/¶13 与 META_STRATEGY 的矛盾——这是 arm validity 修复，不算实验因素）+ 单主因素 **c'（自状态推送去壁纸化：完整编排形状 + 自上次修订以来差分 + 上一条 expected_effect 状态，兑现"运行视图对象可辨识"）**，直接对应用户点名的"运行视图对象未纳入 loop"；b/d 列为备选，f–h 设计内赌注留给用户决定。预算仍在同一 600 授权内，启动前按规则申报本次上限。
@@ -387,4 +391,72 @@ M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agen
 
 - M3c：在 HEAD（`332ddbeb`，含 M4）上原样重跑，cap 120 请求。理由：M4 的三个因素从未被任何真实运行测过，而 M3b 的结论只对 `b88e847f` 成立；判据不变（T1 之后 ≥1 次 agent 发起的结构变化并生效，后续段流经它）。
 - 若 M3c 仍 kernel 0，下一步只改**执行路径的事实密度**这一个因素：`tool_result` 记账补 `resource`（第一个路径类参数），`repeated_inputs` 按资源聚合并按字符计租，末次结果附判词计数——全部是已记账事实的呈现，不新增分析、不新增门、不新增常驻义务。
+
+### 15. 用户定稿：固定通用机制 + 七个固定字段 + 流程适配（2026-11-16 晚）
+
+本节记录用户本轮给出的最终设计，**取代 §14.4 的 f/g/h 三项设计赌注与 §14.5 的 M3b 前提**。M3b/M3c 的计划把自进化环当作 agent 在 T0 发明的产物，用"至少一条 transition"做门、把材料厚度与 `self.change` 收据当实验因素；定稿改变的是分工本身：**自进化环是宿主提供的通用机制，agent 只掌握任务侧**。实现在 `332ddbeb` 之上，零 provider 请求，运行面未测。
+
+**设计原则（用户原文要点）**
+
+自进化环是宿主提供的通用机制，不由 agent 现发明；meta 只构建与任务相关的内容与标准；固定内容每请求出现在固定字段；流程适配——按相位遮蔽或展开；任务是宿主，自进化在线发生并收敛到任务目标。
+
+**七个固定字段与落点**
+
+| # | 字段 | 落点 | 谁写 |
+|---|---|---|---|
+| 1 | TASK IS THE HOST | `demo/prompts/self_root_meta_fields.md`（逐字） | 宿主，固定文本 |
+| 2 | SELF-EVOLUTION GOAL | 同上 | 宿主，固定文本 |
+| 3 | SELF-EVOLUTION MECHANISM | 同上：`reflect_component` / `reflect_orchestration`、下一请求边界激活、激活收据回到同一 self view、被拒返回可修清单与合法形 | 宿主，固定文本 |
+| 4 | OPTIMIZABLE OBJECTS | `SelfRoot.metaBoard()` 每请求渲染：prompt / context / loop / harness 四层各一个当前实例（name@vN 或 policy.context 现状）、改它的工具与 read_self 段 | 宿主，事实 |
+| 5 | TASK GOAL | `orchestration.contract.task_goal`，agent 在 T0 填，宿主每请求回显 | agent |
+| 6 | TASK ACCEPTANCE | `contract.task_acceptance`；运行计划 `contract.loop_policy.look_when[{on,look}]` | agent |
+| 7 | SELF-EVOLUTION ACCEPTANCE | 固定文件，三项（见下） | 宿主，固定文本 |
+
+- 固定字段（1–3、7）放在独立提示文件里，未经修改地进入稳定前缀——改 harness 不重写这段文本，因而不会清零 provider 前缀缓存（yibu 2026-10-14 教训；`demo/ppt_demo_extension.ts` 在 `EVO_MECH.meta` 下读该文件）。动态字段（4–6、计数、相位流）渲染在每请求的易变尾部（`self_evolution` 键），复用 `selfChangeDigest()` 的 `self_state`。
+- 字段 3 复用既有 `PROTOCOL`（`read_self`、`read_self_component`、`reflect_component`、`reflect_orchestration`、`decide`、`decide_exit`、`decide_validation`）与既有 correction surface，**不新增工具、不新增审阅入口**。
+- 自进化验收三项（只记账，不评判）：①第一个任务段开始后，至少一次 agent 发起的结构变更；②它在更晚的请求边界激活，并在更晚的任务段被使用；③它追溯到本次任务执行观察到的事实（收据、失败、重复、耗时、交付反馈，含本任务产生的 self-view 记录）；与交付无关的整理不算。
+
+**验收计数的机械口径（新增唯一一段记账代码）**
+
+`SelfRoot.metaAcceptance()` 只读既有台账：`changes` = T0 设计记录之后每一笔写入（`reflection_activated` 中不带 `parent` 的那一行，一笔一行）；`activated` = 其后出现过 `provider_input`；`used_later` = 其后该对象真的被用——tool 由 `event.tool_succeeded` 的工具名证明，prompt/skill/memory 由后续 `provider_input.component_addresses` 证明，orchestration/policy 由其被应用到后续请求证明。边界激活行（带 `parent`）不计为变更：否则同一笔写会被数两次，且设计自身的激活会落在设计行之后被误数（本实现的第一次测试即抓到这两处）。T2（`taskEnd`）把同一组数字连同 contract 与设计记录写进一条 `meta_harness_inventory`，只记一次。
+
+**流程适配（同一 `metaBoard()`，四个相位）**
+
+- design（`metaT0Pending`）：七字段齐、任务侧为空；明说机制与标准已给定、本轮只填 TASK GOAL / TASK ACCEPTANCE 与运行计划，并列出合法 `on` 事件与 contract 合法形、本运行可记录的收据类型。
+- task：TASK GOAL + TASK ACCEPTANCE + OPTIMIZABLE OBJECTS + 计数，加一行机制行（"每笔写在下一边界激活，收据回到这里"）。
+- boundary（最新 `segment_summary` 晚于最新 `request_record`）：追加上一条变更的 activated/used_later、上一段与本段的数字（requests / task actions / tool errors / elapsed / phase），以及 contract 里绑定 `segment_boundary` 的运行计划原文。一个 `request_record` 之后回到单行。
+- settled（`meta_harness_inventory` 已记）：只留一行结算。
+
+**门（T0）**
+
+`contractProblems()` 检查 `orchestration.contract` 的固定形状：`task_goal`、`task_acceptance` 非空；`loop_policy.look_when` 非空，`on` 只接受 `segment_boundary | failure | repetition | delivery_feedback`——纯计数或纯时钟不能代替任务侧事件，`look` 说明查什么、用哪些任务事实。缺项时一次驳回列出全部缺项与 `ORCHESTRATION_CONTRACT_FORM` 合法形；门只验形状，**不评判设计质量**。合法的 contract 写入落 `meta_t0_design`（复用版本收据与既有 schema 校验），门即退役；之后编排写入省略 contract 时，设计记录里的任务侧仍然可见（`metaContract()` 回退）。
+
+**无悬挂工件：每个机制谁推送 / 替代什么 / 如何反馈 / 何时退役**
+
+| 机制 | 谁推送 | 替代了什么工作 | 反馈 | 退役 |
+|---|---|---|---|---|
+| 固定字段文件（1–3、7） | 宿主，稳定前缀，每请求同一文本 | 让 agent 自己发明进化环与验收标准 | 无动态（它是标准本身） | 不退役；改动需用户决定 |
+| OPTIMIZABLE OBJECTS（4） | 宿主，易变尾部，每请求 | `read_self` 全量重读（M1–M3 为 0 次） | 名称/版本随写入变化；`used_later` 计数消费它 | 若连续两轮零引用，记录"未接"（有 call point，不删） |
+| TASK GOAL / ACCEPTANCE（5–6） | 宿主回显 agent 自己的 contract | 目标与判据散落在历史里 | 门驳回带合法形；回显使目标每请求可见 | 门在首次合法写入后退役；contract 常驻定义 |
+| 运行计划 look_when | 宿主在对应事件回显原文（本实现：`segment_boundary`） | agent 自己记着"何时该看什么" | 事件到达即给原文；agent 据此决定是否 reflect | 与 contract 同生共死 |
+| 验收计数（`changes/activated/used_later`） | 宿主计数行，每请求 | 人工判读 kernel | 激活、后续请求、工具成功各自推动一项 | T2 结算后只在关闭行显示 |
+| T2 结算（`meta_harness_inventory`） | 宿主在 `taskEnd` 记一次 | 人工统计本轮改了什么 | 含 acceptance 与 contract，供下一轮开发读取 | 会话结束即止 |
+
+**相对 M4（§14.8）的保留与删除**
+
+- 删除：`META_GOAL`、`META_DESIGN_QUESTIONS`、`META_T0_MATERIAL`；T0 门的"至少一条 transition"要求（改由 contract 门承担"任务侧必须先成文"）；`metaGoal()` / `metaT0()`。
+- 保留（复用，未重做）：`PROTOCOL` 与 correction surface；`self.change` 激活收据（M4 问题 2/3 的落点，至今未被任何真实运行测到）；`selfChangeDigest()`；`compileOrchestrationIntent` 的 `requires` 修复与"不问 event type"的措辞修复（问题 4③）；`b88e847f` 的被拒口径。
+- 问题 4③ 的另一半"像工具一样广告步骤的 transition 事件"落在两处：`DESIGN TURN` 与 loop 行写明 transition 的两种合法 `on` 形与本运行记录的收据类型，并明说 `step.actions` 是**工具名权限范围**、不是收据类型清单；`assertActionAllowed` 的拒绝现在同时列出该步骤声明的动作名（`this step's declared actions: ...`），而不是只说 not allowed。
+
+**离线证据（本机 node，无 provider；基线 `332ddbeb`）**
+
+- `tests/self_root_meta.test.ts` 18/18：固定文件顺序、无任务词、无占位符、空板；contract 门（缺项一次列全、`on: every_5_requests` 被拒并列出合法事件、合法写入开门且只记一次、后续写入不重记、省略 contract 时回退）；工具变更的计数 0/0 → 激活 1 → 使用 1；四相位流转（单行 → 边界展开含运行计划原文 → 回到单行 → 关闭行 + inventory 内容）；机制互斥；T2 只记一次；self-lock 与拒绝计数；`self.change` 收据推进 step 与 decision 引用；常驻提示无宿主评审入口。
+- `tests/live_orchestration_known_actions.test.ts` 5/5：声明收据类型、可转的环、未声明会话保持旧接受、META 下被拒设计不开门而修正后开门、非 META 臂行为不变。
+- 相关套件：`live_orchestration_core` 5/5、`live_self_core` 1/1、`self_root_v141` / `self_root_evo_mechanisms` / `self_root_heartbeat` 全过。`ppt_demo.test.ts` 与 `ppt_demo_live_orchestration.test.ts` 有 9 条失败，均在改动前的同一套件上同样失败（见提交说明的对照），与本节改动无关。
+- 未验证（只有真实 provider 运行能测）：①agent 会不会在 T0 自发填 contract、一次通过还是反复被拒；②第一个任务段之后会不会自发做结构变更、变更会不会在后续段被真正使用；③三个计数是否被读、被用；④固定块与板面对稳定前缀缓存的实际影响。
+
+**尺寸事实与偏差**
+
+固定字段文件约 1,600 字符（含用户逐字给出的 TASK IS THE HOST 与四条验收）；任务段板面约 1,000 字符，设计轮约 1,500 字符，结算后一行。用户口径是"固定块约 400–600 字符"，本实现超出。原因是七字段里 1、2、3、7 的文本本身由用户给定且要逐字出现；没有为凑字数删减用户文本，此处如实登记为偏差，是否压缩由用户决定。
+
 

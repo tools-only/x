@@ -2,8 +2,37 @@ import { createHash } from 'node:crypto';
 import { componentKind, markdownSpec, type Component, type ComponentSpec, type Validator } from './agent_component_model.ts';
 
 export type ReceiptCondition = { type: string; currentArtifact?: boolean; freshness?: 'current' | 'any'; factPath?: string; equals?: unknown };
+// The T0 design turn fills the task side of the orchestration in one fixed object. Triggers bind task-side
+// events, never counters or clocks: a purely periodic look is not evidence this task produced.
+export const TASK_EVENTS = ['segment_boundary', 'failure', 'repetition', 'delivery_feedback'] as const;
+export const ORCHESTRATION_CONTRACT_FORM = 'contract:{task_goal:"<what this task must deliver>",task_acceptance:"<how its delivery is judged and how you verify it>",loop_policy:{look_when:[{on:"segment_boundary|failure|repetition|delivery_feedback",look:"<what to inspect, with which task facts>"}]}}';
+export type OrchestrationContract = {
+  task_goal: string;
+  task_acceptance: string;
+  loop_policy: { look_when: Array<{ on: (typeof TASK_EVENTS)[number]; look: string }> };
+};
+/** Every problem the fixed contract object has; empty means it is usable as the task-side design. */
+export function contractProblems(contract: any): string[] {
+  // A missing contract reports the same field-level list as an empty one: one refusal names everything to add.
+  if (!contract || typeof contract !== 'object' || Array.isArray(contract)) contract = {};
+  const problems: string[] = [];
+  const text = (key: string, value: unknown) => {
+    if (typeof value !== 'string' || !value.trim()) problems.push(`contract.${key} is missing; it is a non-empty string`);
+  };
+  text('task_goal', contract.task_goal);
+  text('task_acceptance', contract.task_acceptance);
+  const lookWhen = contract.loop_policy?.look_when;
+  if (!Array.isArray(lookWhen) || !lookWhen.length) { problems.push('contract.loop_policy.look_when is missing; it is a non-empty list of look triggers'); return problems; }
+  lookWhen.forEach((entry: any, i: number) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { problems.push(`contract.loop_policy.look_when[${i}] must be an object`); return; }
+    if (!TASK_EVENTS.includes(entry.on)) problems.push(`contract.loop_policy.look_when[${i}].on names ${JSON.stringify(entry.on)}; a look trigger binds one task-side event, and the legal events are ${TASK_EVENTS.join(', ')}`);
+    if (typeof entry.look !== 'string' || !entry.look.trim()) problems.push(`contract.loop_policy.look_when[${i}].look is missing; it says what to inspect and with which task facts`);
+  });
+  return problems;
+}
 export type LiveOrchestration = {
   revision: number;
+  contract?: OrchestrationContract;
   roles: Array<{ id: string }>;
   slots: Array<{ id: string; type: 'json' | 'text'; initial?: unknown; writers?: string[] }>;
   steps: Array<{ id: string; role: string; decision?: string; actions?: string[]; bindings?: Array<{ kind: 'prompt'|'skill'|'tool'|'memory'|'context'; name: string; version?: number }> }>;
@@ -90,7 +119,12 @@ export function validateDefinition(def: any, knownActions?: ReadonlySet<string>)
     for (const requirement of t.requires) assertKnownAction(requirement.type, `transition ${t.id}`);
   }
   for (const step of def.steps) if (step.decision && !def.transitions.some((transition: any) => transition.from === step.id && transition.on?.type === 'decision' && transition.on.id === step.decision)) throw Error(`decision step ${step.id} has no reachable transition`);
-  return clone({ roles: def.roles, slots: def.slots, steps: def.steps, decisions: def.decisions, transitions: def.transitions });
+  const contract = def.contract === undefined ? undefined : (() => {
+    const problems = contractProblems(def.contract);
+    if (problems.length) throw Error(`orchestration.contract: ${problems.join('; ')}. Legal form: ${ORCHESTRATION_CONTRACT_FORM}`);
+    return clone(def.contract);
+  })();
+  return clone({ ...(contract ? { contract } : {}), roles: def.roles, slots: def.slots, steps: def.steps, decisions: def.decisions, transitions: def.transitions });
 }
 function schemaProbe(schema: any): unknown {
   if (schema?.enum?.length) return schema.enum[0];
@@ -186,7 +220,7 @@ export class LiveOrchestrationSession {
     const step = this.current.orchestration.steps.find(row => row.id === this.activeStep);
     if (!step) throw Error('active orchestration step is unavailable');
     if (step.role !== 'agent') throw Error(`role ${step.role} has no active executor`);
-    if (step.actions && !step.actions.includes(type)) throw Error(`action ${type} is not allowed by active step ${step.id}`);
+    if (step.actions && !step.actions.includes(type)) throw Error(`action ${type} is not allowed by active step ${step.id}; this step's declared actions: ${step.actions.join(', ')}`);
   }
   /** Called only by host action adapters after a real action succeeds. */
   recordAction(type: string, facts: Record<string, unknown> = {}, updatesCurrentArtifact = false, hostDeferred = false) {

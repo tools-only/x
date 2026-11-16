@@ -1,59 +1,76 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SelfRoot, FLOOR, PROTOCOL, META_GOAL, META_STRATEGY, hash } from '../demo/self_root.ts';
+import { SelfRoot, FLOOR, PROTOCOL, META_STRATEGY, hash } from '../demo/self_root.ts';
 
-// EVO_META (design 2026-11-16 §4): the general meta loop is a task-free host spine. Offline checks cover the
-// T0 gate and its one-time design record, the absence of host review entrances, the T2 close inventory, and
-// that the replaced mechanisms (ASK, L4, legacy obligation) are off rather than stacked.
+// EVO_META (user decision 2026-11-16): the self-evolution loop is a fixed host mechanism plus seven fixed fields;
+// the T0 design turn fills only the task side (orchestration.contract). Offline checks cover the fixed prompt file,
+// the contract gate and its task-side trigger vocabulary, the phase-adapted board, the mechanical acceptance
+// counters, and the absence of a host review entrance.
 
-const contract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:30,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
-const make = (mechanisms?: any, options: any = {}) => new SelfRoot(contract(), undefined, undefined, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
+const userContract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:30,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
+const make = (mechanisms?: any, options: any = {}, validator?: any) => new SelfRoot(userContract(), undefined, validator, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
 const tick = async (s: any) => s.boundary(()=>{}, ()=>{});
 const all = (s: any) => s.export().root.ledger;
 const count = (s: any, type: string) => all(s).filter((r: any) => r.type === type).length;
 const seed = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [], transitions: [] };
-// A design that satisfies the T0 gate: one transition, bound to the receipt type META itself registers.
-const design = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }, { id: 'refine', role: 'agent' }], decisions: [],
-  transitions: [{ id: 'again', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'refine' }] };
+// The task side the design turn fills: goal, acceptance and a run plan whose trigger binds a task-side event.
+const taskSide = { task_goal: 'Deliver the artifact this run must produce', task_acceptance: 'judged by the recorded acceptance report; verified by a fresh render',
+  loop_policy: { look_when: [{ on: 'segment_boundary', look: 'the last segment numbers and the last change' }] } };
+const design = { ...seed, contract: taskSide };
+const fields = readFileSync(new URL('../demo/prompts/self_root_meta_fields.md', import.meta.url), 'utf8');
+const recordableTool = async (_path: string, _source: string) => ({ kind: 'tool', name: 'deck_check', description: 'fixture', enabled: true, program: true });
 
-test('META T0: only the protocol surface before the design; the material is delivered once and names the gate', async () => {
-  const s = make({ meta: true }); await tick(s); s.pin();
-  assert.deepEqual(s.surface(), [...PROTOCOL], 'no task tool before the first orchestration write');
+test('META fixed fields: the static prompt file is host-given, task-free and ordered; the board starts empty', async () => {
+  // The four fixed fields stay in a prompt file that enters the stable prefix unchanged: editing the agent's harness
+  // must never rewrite them (and never zero the provider prefix cache, the yibu lesson of 2026-10-14).
+  for (const name of ['TASK IS THE HOST', 'SELF-EVOLUTION GOAL', 'SELF-EVOLUTION MECHANISM', 'SELF-EVOLUTION ACCEPTANCE'])
+    assert.ok(fields.includes(name), `the fixed file names ${name}`);
+  assert.ok(fields.indexOf('TASK IS THE HOST') < fields.indexOf('SELF-EVOLUTION GOAL') && fields.indexOf('SELF-EVOLUTION GOAL') < fields.indexOf('SELF-EVOLUTION MECHANISM') && fields.indexOf('SELF-EVOLUTION MECHANISM') < fields.indexOf('SELF-EVOLUTION ACCEPTANCE'));
+  assert.ok(!/\{\{/.test(fields), 'no values and no placeholders: the file is the same text every request');
+  assert.ok(!fields.toLowerCase().includes('deck'), 'no task content in the host-given text');
+  const s = make({ meta: true }); await tick(s);
+  assert.deepEqual(s.surface(), [...PROTOCOL], 'no task tool before the contract write');
   assert.throws(() => s.assertActionAllowed('office.render'), /outside pinned mode\/user surface/);
   assert.doesNotThrow(() => s.assertActionAllowed('reflect_orchestration'), 'the design interface stays reachable');
-  assert.equal(s.metaGoal(), META_GOAL);
-  const t0 = s.metaT0();
-  assert.ok(t0.includes('DESIGN TURN') && t0.includes('reflect_orchestration') && t0.includes('four layers'));
-  for (const layer of ['prompt - components of kind prompt', 'context - policy.context', 'loop - your orchestration', 'harness - all of the above'])
-    assert.ok(t0.includes(layer), `the material names the ${layer.split(' ')[0]} layer and an object in it`);
-  assert.ok(t0.includes('self.change') && t0.includes('A design has at least one transition'), 'the gate and the loop receipt are stated');
-  assert.ok(t0.includes('The first task segment opens after the reflect_orchestration that states your design'));
-  assert.ok(!t0.toLowerCase().includes('deck'), 'the spine carries no task content');
+  const board = s.metaBoard();
+  assert.match(board, /TASK GOAL: \(empty/, 'field 5 is empty at the design turn');
+  assert.match(board, /TASK ACCEPTANCE: \(empty/, 'field 6 is empty at the design turn');
+  assert.match(board, /^OPTIMIZABLE OBJECTS$/m, 'field 4 is host-rendered from live state');
+  for (const layer of ['prompt -', 'context - policy.context', 'loop - orchestration revision', 'harness - '])
+    assert.ok(board.includes(layer), `the board names the ${layer.split(' ')[0]} layer and an object in it`);
+  assert.match(board, /DESIGN TURN/, 'the design turn states what this turn does');
+  assert.ok(board.includes('segment_boundary, failure, repetition, delivery_feedback'), 'the legal task-side events are named');
+  assert.ok(!board.toLowerCase().includes('deck'), 'the spine carries no task content');
   assert.equal(count(s, 'meta_t0_delivered'), 1, 'delivery is booked once');
-  s.metaT0();
+  s.metaBoard();
   assert.equal(count(s, 'meta_t0_delivered'), 1);
   const off = make(); await tick(off);
-  assert.equal(off.metaGoal(), '');
+  assert.equal(off.metaBoard(), '');
   assert.ok(off.surface().includes('office.render'), 'non-META arms keep the unforbidden surface');
   assert.equal(count(off, 'meta_t0_delivered'), 0);
 });
 
-test('META T0: a seed-equivalent write leaves the gate closed; a design with a transition opens it', async () => {
+test('META contract gate: missing fields and counter/clock triggers are refused with the legal form; a complete contract opens it', async () => {
+  // The old gate only asked whether something was submitted (and then whether it had a transition). The gate now
+  // checks the fixed contract object; a pure counter or clock cannot stand in for a task-side event.
   const s = make({ meta: true }); await tick(s);
-  // M2 (2026-11-16): a rewrite equivalent to the seed passed the gate, so the design turn had no product and T0->T1
-  // had no progression. The gate now requires a design with at least one transition.
-  await assert.rejects(s.transaction({ baseRevision: 1, orchestration: seed }), /T0 gate opens on a design, and a design has at least one transition/);
-  assert.equal(s.metaT0Pending, true, 'a no-op never opens the gate');
+  await assert.rejects(s.transaction({ baseRevision: 1, orchestration: seed }),
+    /T0 gate needs the task-side contract.*contract\.task_goal is missing.*contract\.task_acceptance is missing.*contract\.loop_policy\.look_when is missing/);
+  assert.equal(s.metaT0Pending, true, 'a failed write never opens the gate');
   assert.equal(count(s, 'meta_t0_design'), 0);
-  assert.ok(s.metaT0().includes('at least one transition'), 'the material stays and states the requirement');
   await tick(s);
-  const result = await s.transaction({ baseRevision: s.revision, orchestration: design });
-  assert.ok(result.addresses.includes('orchestration'));
-  assert.equal(count(s, 'meta_t0_design'), 1, 'the first accepted design is recorded once');
-  assert.equal(all(s).find((r: any) => r.type === 'meta_t0_design').value.gate, 'open');
+  const clock: any = { ...seed, contract: { ...taskSide, loop_policy: { look_when: [{ on: 'every_5_requests', look: 'look at the harness' }] } } };
+  await assert.rejects(s.transaction({ baseRevision: 1, orchestration: clock }),
+    /look_when\[0\]\.on names "every_5_requests".*legal events are segment_boundary, failure, repetition, delivery_feedback/);
+  await tick(s);
+  assert.equal(s.metaT0Pending, true);
+  const written = await s.transaction({ baseRevision: 1, orchestration: design });
+  assert.ok(written.addresses.includes('orchestration'));
+  assert.equal(count(s, 'meta_t0_design'), 1, 'the first accepted contract write is recorded once');
+  assert.deepEqual(all(s).find((r: any) => r.type === 'meta_t0_design').value.contract, taskSide, 'the design record carries the task side');
   assert.equal(s.metaT0Pending, false);
-  assert.equal(s.metaT0(), '', 'the material stops once the design exists');
+  assert.ok(!s.metaBoard().includes('DESIGN TURN'), 'the design block stops once the design exists');
   await tick(s);
   assert.ok(s.surface().includes('office.render'), 'the task surface opens after the design');
   s.pin();
@@ -62,22 +79,49 @@ test('META T0: a seed-equivalent write leaves the gate closed; a design with a t
   assert.equal(count(s, 'meta_t0_design'), 1, 'later writes never re-record the design');
 });
 
-test('META T1: booked facts, settlements and heartbeats open no host review; the old arm still opens them', async () => {
+test('META contract: the design record keeps the task side when a later orchestration write omits it', async () => {
   const s = make({ meta: true }); await tick(s);
   await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
-  const settled = await s.event('settlement', 'submitted', { event_classes: ['task_outcome'], coverage_tags: ['submitted'], force_review: true });
-  assert.deepEqual(settled.triggers, [], 'force_review does not summon a review');
-  const heartbeat = await s.event('heartbeat', 'hb:1', {});
-  assert.deepEqual(heartbeat.triggers, []);
-  await tick(s);
-  assert.equal(s.review, undefined);
-  assert.equal(s.queue.length, 0);
-  assert.equal(s.reviewStrategy(), META_STRATEGY);
-  const old = make(); await tick(old);
-  const oldSettled = await old.event('settlement', 'submitted', { event_classes: ['task_outcome'], coverage_tags: ['submitted'], force_review: true });
-  assert.ok(oldSettled.triggers.some((t: any) => t.id === 'evolution_review'), 'the comparison arm is unchanged');
-  const oldHeartbeat = await old.event('heartbeat', 'hb:1', {});
-  assert.ok(oldHeartbeat.triggers.some((t: any) => t.id === 'contract:hb:1'));
+  await s.transaction({ baseRevision: s.revision, orchestration: { ...seed, steps: [{ id: 'work', role: 'agent' }, { id: 'check', role: 'agent' }] } }); await tick(s);
+  assert.equal(s.current.orchestration.contract, undefined, 'the later definition carries no contract');
+  assert.match(s.metaBoard(), /TASK GOAL: Deliver the artifact/, 'the declared task side stays visible');
+});
+
+test('META board: a tool change activates with a later request and counts as used only when the tool runs', async () => {
+  const s = make({ meta: true }, {}, recordableTool); await tick(s);
+  await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
+  await s.transaction({ baseRevision: s.revision, components: [{ op: 'define', kind: 'tool', name: 'deck_check', source: '# program: on\n# fixture tool' }] }); await tick(s);
+  let acc = s.metaAcceptance();
+  assert.equal(acc.changes, 1, 'the post-design activation is one change');
+  assert.equal(acc.activated, 0, 'no later request has run yet');
+  assert.equal(acc.used_later, 0);
+  s.fact('provider_input', { component_addresses: ['tool.deck_check'] });
+  acc = s.metaAcceptance();
+  assert.equal(acc.activated, 1, 'a later provider request ran after the write');
+  assert.equal(acc.used_later, 0, 'being visible in the request is not running the tool');
+  s.fact('event', { type: 'tool_succeeded', facts: { tool: 'deck_check' } });
+  acc = s.metaAcceptance();
+  assert.equal(acc.used_later, 1, 'the tool ran in a later task action');
+  assert.match(s.metaBoard(), /changes 1 \/ activated 1 \/ used_later 1/);
+});
+
+test('META board flow: compact during the task, expanded at a segment boundary, settled once at task end', async () => {
+  const s = make({ meta: true }); await tick(s);
+  await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
+  assert.match(s.metaBoard(), /MECHANISM: every write activates at the next request boundary/);
+  assert.ok(!s.metaBoard().includes('SEGMENT BOUNDARY'));
+  await s.event('settlement', 'unit:1', { final: true }); await tick(s);
+  const boundary = s.metaBoard();
+  assert.ok(boundary.includes('SEGMENT BOUNDARY'), 'the boundary expands the block');
+  assert.match(boundary, /Last change: none/);
+  assert.match(boundary, /Last segment: requests 0, task actions 0, tool errors 0, elapsed 0s/);
+  assert.match(boundary, /run plan for this event \(segment_boundary\): the last segment numbers and the last change/, 'the contract reaches the loop unasked, at the event its trigger names');
+  s.fact('request_record', { request: s.request });
+  assert.ok(!s.metaBoard().includes('SEGMENT BOUNDARY'), 'one request later the compact line returns');
+  s.taskEnd('delivered');
+  assert.match(s.metaBoard(), /SESSION CLOSED - acceptance settled once: changes 0 \/ activated 0 \/ used_later 0/);
+  const inventory = all(s).filter((r: any) => r.type === 'meta_harness_inventory');
+  assert.deepEqual(inventory[0].value.acceptance, { changes: 0, activated: 0, used_later: 0, last_change: null, contract: taskSide });
 });
 
 test('META replaces the other mechanisms and leaves an agent-declared entrance schema untouched', async () => {
@@ -102,9 +146,11 @@ test('META T2: task end books the harness inventory once; before_session_end nev
   s.taskEnd('delivered');
   const inventory = all(s).filter((r: any) => r.type === 'meta_harness_inventory');
   assert.equal(inventory.length, 1);
-  assert.equal(inventory[0].value.orchestration.steps, 2);
+  assert.equal(inventory[0].value.orchestration.steps, 1);
   assert.equal(inventory[0].value.components.length, 1);
   assert.ok(inventory[0].value.design, 'the inventory cites the design record');
+  assert.equal(inventory[0].value.acceptance.changes, 1, 'the prompt change is counted, the design activation is not');
+  assert.equal(inventory[0].value.acceptance.activated, 0, 'no request ran after the change');
   await s.event('before_session_end', 'session:1', {});
   assert.equal(count(s, 'meta_harness_inventory'), 1);
   const off = make(); await tick(off); off.taskEnd('delivered');
@@ -142,7 +188,7 @@ test('META self-lock: a narrow step whitelist scopes task tools but never the pr
   // M3 run 2026-11-16: the agent's own revision 2 listed the four receipt types, and every read/read_self/reflect call
   // afterwards returned "not allowed by active step work" for 30 requests with no route back. Two causes: a step's
   // actions could only name receipt types, and the step gate covered the protocol tools themselves.
-  const narrow: any = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', actions: ['read'] }], decisions: [],
+  const narrow: any = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', actions: ['read'] }], decisions: [], contract: taskSide,
     transitions: [{ id: 'again', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'work' }] };
   const written = await s.transaction({ baseRevision: 1, orchestration: narrow });
   assert.ok(written.addresses.includes('orchestration'), 'a whitelist may name a tool this runtime never records as a receipt');
@@ -151,7 +197,7 @@ test('META self-lock: a narrow step whitelist scopes task tools but never the pr
   const granted = s.surface().filter((t: string) => !PROTOCOL.includes(t));
   assert.ok(granted.length > 1, 'the task surface has tools beyond the whitelist');
   for (const tool of granted.filter((t: string) => t !== 'read'))
-    assert.throws(() => s.assertActionAllowed(tool), /not allowed by active step work/, `${tool} stays scoped by the step`);
+    assert.throws(() => s.assertActionAllowed(tool), /not allowed by active step work; this step's declared actions: read/, `${tool} stays scoped by the step and the refusal names the legal set`);
   for (const op of PROTOCOL) assert.doesNotThrow(() => s.assertActionAllowed(op), `${op} stays reachable under a narrow step`);
 });
 
@@ -167,7 +213,7 @@ test('META self-state push: a reflection refused through abortTransaction is boo
 
 test('META self-state push: a task tool refused by the agent\'s own step whitelist is a refused self operation too', async () => {
   const s = make({ meta: true }); await tick(s);
-  const narrow: any = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', actions: ['read'] }], decisions: [],
+  const narrow: any = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', actions: ['read'] }], decisions: [], contract: taskSide,
     transitions: [{ id: 'again', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'work' }] };
   await s.transaction({ baseRevision: 1, orchestration: narrow }); await tick(s);
   s.abortTransaction('action python is not allowed by active step work', 'python');
@@ -181,11 +227,11 @@ test('META self-state push: a task tool refused by the agent\'s own step whiteli
 });
 
 test('META self.change: an activation after the design books the self state as a receipt the loop turns on', async () => {
-  // 2026-11-16, problems 2 and 3: the self view was pushed every request with full content but no step, transition
-  // or decision consumed it (read_self calls = 0 in three runs). The view is now also an action receipt: a transition
-  // the agent writes on self.change fires at the activation, and a decision can cite the receipt by the ref the
-  // digest shows. The T0 design itself is the loop's existence condition and books none.
-  const recap: any = { revision: 1, roles: [{ id: 'agent' }], slots: [],
+  // 2026-11-16: the self view was pushed every request with full content but no step, transition or decision consumed
+  // it (read_self calls = 0 in three runs). The view is now also an action receipt: a transition the agent writes on
+  // self.change fires at the activation, and a decision can cite the receipt by the ref the digest shows. The T0
+  // design itself is the loop's existence condition and books none.
+  const recap: any = { revision: 1, roles: [{ id: 'agent' }], slots: [], contract: taskSide,
     steps: [{ id: 'work', role: 'agent' }, { id: 'check', role: 'agent', decision: 'look' }, { id: 'refine', role: 'agent' }],
     decisions: [{ id: 'look', judge: 'agent', question: 'what did the change do', evidence: [{ type: 'self.change' }], output: { type: 'object', required: ['go'], properties: { go: { type: 'boolean' } } } }],
     transitions: [{ id: 'to_check', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'check' },
@@ -215,7 +261,7 @@ test('META self.change: an activation after the design books the self state as a
   assert.equal(off.snapshot().actions.filter((a: any) => a.type === 'self.change').length, 0, 'the comparison arm books none');
 });
 
-test('META resident prompt: no host-opened review entrance and no window promise; the B prompt is untouched', () => {
+test('META resident prompt: no host-opened review entrance and the fixed fields are named', () => {
   const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8');
   const meta = read('../demo/prompts/self_root_meta_system.md');
   const base = read('../demo/prompts/self_root_system.md');
@@ -223,6 +269,6 @@ test('META resident prompt: no host-opened review entrance and no window promise
   assert.ok(!meta.includes('FIXED REVIEW ENTRANCE'));
   assert.ok(!meta.includes('The host opens a validation window only for a declared effect'));
   assert.ok(meta.includes('No host-opened review entrance exists in this run'));
-  assert.ok(meta.includes('SELF-STATE MATERIAL'));
+  assert.ok(meta.includes('SELF-STATE MATERIAL') && meta.includes('TASK GOAL') && meta.includes('acceptance counters'));
   assert.ok(base.includes('FIXED REVIEW ENTRANCE'), 'the B-arm prompt still describes the entrance its own arm opens');
 });
