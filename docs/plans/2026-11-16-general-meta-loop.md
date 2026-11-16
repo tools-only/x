@@ -352,3 +352,39 @@ M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agen
 - 未发起任何 provider 请求；M 系列预算不变。
 - 不可离线证明的核心问题不变：**agent 会不会自发修订、会不会把这些对象接进它自己的环**。M3b 的判据问题见 §14.5。
 
+### 14.9 M3b 结果：自锁解除后 kernel 仍为 0，且本轮跑在 M4 之前（2026-11-16，`runs/evo-m3b-glm53f-meta-20261116`）
+
+**运行事实**
+
+- 冻结代码 `b88e847f`（`295abb23` 自锁修复 + `b88e847f` digest 加宽）。`08822735`（M4）在它**之后**：本轮没有测到 §14.8 的任何因素，T0 必转门、`self.change` 收据、`last_self_change` ref、四层材料全部仍是未测状态。
+- 300 请求上限写在冻结 `.cmd` 的 authority 文本里（M 系列 600：M1 40 + M2 25 + M3 45 已用）。实际 13 请求 / 332,125 tokens（input 218,499、output 15,769、cache_read 40,320、reasoning 487）/ $0.04735（注册价估算）/ 393 s / 存储 34,202,451 B / 缺失用量 0，`stop: delivered`。
+- 无自锁：13 请求里只有 1 次拒绝，仍是旧文案的形状错误 `on key 'action' is not an event type and step 'work' has no decision`（该措辞已由 `08822735` 删除，故本轮确为旧代码）。
+
+**轨迹**
+
+- 请求 2：`reflect_orchestration` 两次（第一次形状错误被拒，第二次接受为 revision 2）；编排 `steps[work, deliver]`、`transitions[t1 work→work on submit_unit, t2 work→deliver on office.deliver]`、`decisions: []`、`actions` 未设。
+- 请求 4：`ls data` + `read instructions.md/environment.md`。请求 6/8：`read material.txt` 共 4 次（16,112 / 11,964 / 14,209 / 16,111 字符，offset 0/434/30/150——一次全读后三次重叠切片，累计 ≈58 KB 进入历史）。
+- 请求 10：`write artifacts/presentation.html`；请求 11：`office render`（15 slides，`warnings: []`）；请求 10/11 各 5 次 `submit_unit`；请求 12：`office deliver` → `{"delivered":1}`。请求 12 的 `assistant_reasoning` 原文只有 "All 10 units submitted. Now deliver."
+
+**kernel = 0**
+
+- 唯一的 `reflection_activated` 在请求 2，即被排除的 T0 设计。T1 之后无任何结构变化；`read_self` 调用 0 次；`mode_entered` 0 条（META 不开审，agent 自己也没写审步）。
+- 末请求推送的 `self_state`：`self_changes 3`、`last_change revision 2 @request 2`、`requests_since_change 10`、`refused_self_operations []`、`validation_windows []`。字段齐全，全部为空。
+
+**交付质量（低于 B3-2）**
+
+- 受保护验收（`literal-normalized-render-v2`）逐单元：unit-01…09 各 3/3 literal；unit-10 **1/3**（缺 `$10.3`、`$10.2`），且其 normalized 三项全部 `found:false`。交付文件里确实没有 `10.3`/`10.2`——不是检查器伪影。
+- 离线探针：units 10、literals **28/30**、citations **0/10**；对照 B3-2 的 30/30、10/10。引用一项是两套检查器口径差：in-run normalized `citation_found` 10/10（deck 写 `page N`），离线严格式要 `Source page N`/`p.N` 故 0/10。literals 项两套一致。
+- 关键：unit-10 的失败判词在**交付之前**就在上下文里（10 条 `submit_unit` 结果各 ≈3.1 KB），agent 未读、未返工，直接 `office.deliver`。
+
+**本质问题（按因果权重）**
+
+1. **执行路径上没有"可优化对象的价格"。** execute 路径只推 `self_state` 的记账（变更数、拒绝、窗口），不含成本、重复、判词。`tool_result` 行只记 `tool/action/input_hash/result`，**不记参数**，所以"同一文件四次读取、≈58 KB 常驻"在 `repeated_inputs`（按 `tool|input_hash` 计数、阈值 ≥3）里根本不存在；A4 的 `[inventory]/[recurrence]+rent` 只在 review 入口渲染，而 META 不开 review——在删掉宿主评审的那个模式里，这份事实恰好没有消费者。命中无悬挂工件红线。
+2. **判词到了但不可聚合、不可见。** 末请求 `observation` 一行是 `facts: 11 requests (execute 11); rejections 1; last outcome ledger:121`——末次结果只有一个 ref，没有"哪一单元、差几项"。10 条 ≈3.1 KB 结果散落历史，agent 没读。
+3. **agent 自己的设计没有自然后果。** step 缺省放行全部工具、`deliver` 可从任意 `submit_unit` 直达，"不读判词就交付"不会被它自己的环挡住。这是合法的 agent 选择，但它说明当前范式没有任何路径让设计的盲点被感到；M4 的三条只补了"改了之后能不能用"，没补"为什么改"。
+
+**下一步（单因素，不叠加）**
+
+- M3c：在 HEAD（`332ddbeb`，含 M4）上原样重跑，cap 120 请求。理由：M4 的三个因素从未被任何真实运行测过，而 M3b 的结论只对 `b88e847f` 成立；判据不变（T1 之后 ≥1 次 agent 发起的结构变化并生效，后续段流经它）。
+- 若 M3c 仍 kernel 0，下一步只改**执行路径的事实密度**这一个因素：`tool_result` 记账补 `resource`（第一个路径类参数），`repeated_inputs` 按资源聚合并按字符计租，末次结果附判词计数——全部是已记账事实的呈现，不新增分析、不新增门、不新增常驻义务。
+
