@@ -215,16 +215,69 @@ def assert_live_sources_match(root: Path, manifest: dict) -> None:
         raise ValueError(f"live workspace sources differ from the active task manifest: {bad}")
 
 
-def freeze_task_family(root: Path, first: Path, registration: Path, caps: dict, authority: str):
-    """Freeze the one staged case directory itself; no case pool or switch path."""
-    first = first.resolve()
-    assets = first / "assets" if (first / "assets/material.txt").is_file() else first
+def stage_case_data(assets: Path, data: Path, template: Path) -> None:
+    """Stage one case's frozen task data exactly as prepare() lays out workspace/data."""
+    data.mkdir(parents=True)
+    shutil.copy2(assets / "material.txt", data / "material.txt")
+    shutil.copy2(assets / "production_brief.md", data / "instructions.md")
+    for name in ("environment.md", "available-fonts.json"):
+        shutil.copy2(template / name, data / name)
+
+
+def case_assets(case: Path) -> Path:
+    case = case.resolve()
+    assets = case / "assets" if (case / "assets/material.txt").is_file() else case
     if not (assets / "material.txt").is_file() or not (assets / "production_brief.md").is_file():
-        raise ValueError("selected task must be a case directory or its assets directory")
-    manifest = freeze(root, assets, registration, caps, authority, "B")
-    manifest["task_id"] = assets.parent.name
+        raise ValueError("each selected task must be a case directory or its assets directory")
+    return assets
+
+
+def freeze_task_family(root: Path, cases, registration: Path, caps: dict, authority: str):
+    """Freeze an ordered task family in one root. One case keeps the single-task manifest unchanged; more
+    cases add a frozen episodes list: episode 1 is the live workspace, and each later episode's staged
+    sources wait under cases/<id>/workspace/data until the agent's own transition to complete closes the
+    episode before it (the host then swaps workspace/data mechanically; same root, session and budget)."""
+    assets = [case_assets(c) for c in ([cases] if isinstance(cases, Path) else list(cases))]
+    if len({a.parent.name for a in assets}) != len(assets):
+        raise ValueError("task family requires distinct case ids")
+    manifest = freeze(root, assets[0], registration, caps, authority, "B")
+    root = root.resolve()
+    manifest["task_id"] = assets[0].parent.name
     manifest["comparison"] = "One authorized task; unit completion boundaries; no task pool or switching."
-    assert_live_sources_match(root.resolve(), manifest)
+    if len(assets) > 1:
+        accepted = manifest["contract"]["acceptance"]
+        episodes = []
+        for index, asset_dir in enumerate(assets, 1):
+            case_id = asset_dir.parent.name
+            data = root / "cases" / case_id / "workspace" / "data"
+            if index == 1:
+                data.mkdir(parents=True)
+                for p in sorted((root / "workspace/data").iterdir()):
+                    shutil.copy2(p, data / p.name)
+                units = manifest["units"]
+            else:
+                stage_case_data(asset_dir, data, root / "workspace/data")
+                units = content_units((data / "material.txt").read_text(encoding="utf-8"))
+                append_frozen_units(data / "instructions.md", units)
+            evaluation = root / "cases" / case_id / "evaluation"
+            evaluation.mkdir(parents=True)
+            for name, target in (("judge_prompt.json", "judge_prompt.json"), ("instructions.md", "presentbench_generation_instructions.md"), ("statistics.yaml", "statistics.yaml")):
+                if (asset_dir / name).is_file():
+                    shutil.copy2(asset_dir / name, evaluation / target)
+            if (asset_dir.parent / "case.json").is_file():
+                shutil.copy2(asset_dir.parent / "case.json", root / "cases" / case_id / "task-provenance.json")
+            write(root / "cases" / case_id / "units.json", units)
+            sources = {f"data/{p.name}": file_hash(p) for p in data.iterdir() if p.is_file()}
+            episodes.append({"id": case_id, "sources": sources, "units": units,
+                "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(asset_dir / "production_brief.md"),
+                               "units_sha256": digest(units), "checker_version": accepted["checker_version"], "expected_slides": accepted["expected_slides"]},
+                "scope": "complete presentation delivery for this episode's frozen brief"})
+        manifest["task_id"] = "->".join(e["id"] for e in episodes)
+        manifest["episodes"] = episodes
+        manifest["episodes_sha256"] = digest(episodes)
+        manifest["comparison"] = ("Ordered task family in one serial root: the agent's own transition to complete closes the active episode, "
+                                  "the host swaps workspace/data to the next episode's frozen sources, and the run ends when the last episode completes.")
+    assert_live_sources_match(root, manifest)
     write(root / "manifest.json", manifest)
     return manifest
 
@@ -383,8 +436,7 @@ def run(root: Path, *, round_deadline: float | None = None):
                     break
                 saved = json.loads((root / ".harness/live-self.json").read_text(encoding="utf-8"))
                 ledger = saved.get("root",{}).get("ledger",[])
-                episodes = manifest.get("episodes")
-                if state.get("complete") and (not episodes or not saved.get("root",{}).get("windows")) and not saved.get("root",{}).get("queue"):
+                if state.get("complete") and not saved.get("root",{}).get("queue"):
                     result["stop"] = "delivered"
                     break
                 resets = [r for r in ledger if r["type"] == "active_reset_authorized" and r["ref"] not in handled_resets]
@@ -421,10 +473,7 @@ def run(root: Path, *, round_deadline: float | None = None):
                     else:
                         message = "Continue the task in execute mode. The prior response made no task action; complete remaining work and formal delivery."
                     continue
-                message = ("Continue the next constructed task episode in this same root and serial session."
-                           if episodes and state.get("complete") and any(r["type"] == "review_closed" and r["value"].get("occasion") == "evolution_review" and
-                               r["value"].get("closed_by") == "agent" for r in ledger)
-                           else "Continue the queued boundary in this same root and serial session.")
+                message = "Continue the queued boundary in this same root and serial session."
             else:
                 result["stop"] = "time_budget"
     except Exception as error:
@@ -457,12 +506,18 @@ def run(root: Path, *, round_deadline: float | None = None):
     # "Source page N", "p.N" and "page N" alike. Requiring "Source page N" literally scored a deck that
     # cites "page N" as 0/10 citations while the in-run checker recorded citation_found for every unit
     # (M3b 2026-11-16: in-run 10/10, offline 0/10 from the same file).
-    delivery = root / "delivery/presentation.html"
-    if delivery.exists():
-        visible = re.sub(r"<[^>]*>"," ",re.sub(r"<(script|style)\b[^>]*>[\s\S]*?</\1>"," ",delivery.read_text(encoding="utf-8"),flags=re.I))
-        result["final_unit_probes"]= [{"id":u["id"],"literal_matches":[{"text":x,"found":x.lower() in visible.lower()} for x in u["required"]],"citation_found":bool(re.search(rf"(?:source\s+page\s+|(?<![\w.])p\.?\s*|(?<![\w.])page\s+){u['source_page']}(?![\w.])", visible, re.I))} for u in manifest["units"]]
+    def unit_probes(path, units):
+        if not path.exists():
+            return None
+        visible = re.sub(r"<[^>]*>"," ",re.sub(r"<(script|style)\b[^>]*>[\s\S]*?</\1>"," ",path.read_text(encoding="utf-8"),flags=re.I))
+        return [{"id":u["id"],"literal_matches":[{"text":x,"found":x.lower() in visible.lower()} for x in u["required"]],"citation_found":bool(re.search(rf"(?:source\s+page\s+|(?<![\w.])p\.?\s*|(?<![\w.])page\s+){u['source_page']}(?![\w.])", visible, re.I))} for u in units]
+    probes = unit_probes(root / "delivery/presentation.html", manifest["episodes"][-1]["units"] if manifest.get("episodes") else manifest["units"])
+    if probes is not None:
+        result["final_unit_probes"] = probes
         if manifest["arm"] == "A":
             result["units"]=[{"id":u["id"],"status":"whole_deck_delivered_unit_quality_unverified"} for u in manifest["units"]]
+    if manifest.get("episodes"):
+        result["episode_unit_probes"] = {e["id"]: unit_probes(root / "cases" / e["id"] / "delivery" / "presentation.html", e["units"]) for e in manifest["episodes"]}
     persist_resource_daemon(root)
     write(root / "summary.json",result)
     return result
@@ -525,6 +580,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root",required=True,type=Path)
     parser.add_argument("--source",type=Path,default=PROJECT / "demo/ppt-cases/bank-of-america-3q21/assets")
+    parser.add_argument("--sources",type=Path,nargs="+",help="ordered case directories for a multi-episode task family in one root (requires --task-family)")
     parser.add_argument("--registration",type=Path)
     parser.add_argument("--caps",type=Path,help="JSON with authorized requests/tokens/seconds/usd/storage_bytes")
     parser.add_argument("--authority",help="source of numeric resource authorization")
@@ -555,7 +611,9 @@ def main():
             parser.error("freeze requires --registration and --authority")
         if args.task_family and args.arm != "B":
             parser.error("task-family requires the self-root B arm")
-        manifest = (freeze_task_family(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority)
+        if args.sources and not args.task_family:
+            parser.error("--sources requires --task-family")
+        manifest = (freeze_task_family(root,[s.resolve() for s in (args.sources or [args.source])],args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority)
                     if args.task_family else freeze(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority,args.arm))
         print(json.dumps({"frozen":str(root),"units":len(manifest["units"])}))
     if args.run:

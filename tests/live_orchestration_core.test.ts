@@ -82,3 +82,20 @@ test('action receipt transitions are constrained by the current step', () => {
   assert.equal(action.transition.step, 'review');
   assert.equal(self.step, 'review');
 });
+
+test('reopen continues a completed orchestration at its step for the next frozen episode', () => {
+  const self = new LiveOrchestrationSession();
+  const definition: any = { roles: [{ id: 'agent' }], slots: [],
+    steps: [{ id: 'work', role: 'agent', actions: ['office.render', 'office.deliver'] }], decisions: [],
+    transitions: [{ id: 'done', from: 'work', on: { type: 'action', action: 'office.deliver' }, requires: [{ type: 'office.deliver', currentArtifact: true }], to: 'complete' }] };
+  self.reflect({ baseRevision: 1, orchestration: definition, authorized: true });
+  self.recordAction('office.render', { artifactVersion: 1, artifactHash: 'deck-v1' }, true);
+  assert.equal(self.recordAction('office.deliver', { artifactVersion: 1, artifactHash: 'deck-v1' }).transition.status, 'complete');
+  assert.throws(() => self.recordAction('office.render', { artifactVersion: 2, artifactHash: 'deck-v2' }, true), /complete/);
+  self.invalidateArtifact();
+  self.reopen();
+  assert.equal(self.step, 'work');
+  self.recordAction('office.render', { artifactVersion: 2, artifactHash: 'deck-v2' }, true);
+  assert.equal(self.recordAction('office.deliver', { artifactVersion: 2, artifactHash: 'deck-v2' }).transition.status, 'complete',
+    'the same agent-written closing transition can close the next episode too');
+});

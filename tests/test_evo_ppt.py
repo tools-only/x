@@ -224,3 +224,47 @@ def test_verify2_only_b1_full_independent_budget_environment_failure_no_retry(tm
     accounting=json.loads((root/'final-accounting.json').read_text(encoding='utf-8'))
     assert accounting['caps']['tokens'] is None and accounting['resources']['tokens']==4290
     assert accounting['phases']==['sample-B1'] and accounting['resources']['seconds']==3
+
+
+def test_task_family_freezes_ordered_episodes_with_staged_case_sources(tmp_path,monkeypatch):
+    material="\n".join(f"## Source page {i}\nRevenue ${i},100 and margin {i}.5 % for segment {i}.\n" for i in range(1,11))
+    cases=[]
+    for name in ("case-one","case-two"):
+        assets=tmp_path/name/"assets"
+        assets.mkdir(parents=True)
+        (assets/"material.txt").write_text(material,encoding="utf-8")
+        (assets/"production_brief.md").write_text(f"Brief for {name}.",encoding="utf-8")
+        (assets/"judge_prompt.json").write_text("{}",encoding="utf-8")
+        (tmp_path/name/"case.json").write_text("{}",encoding="utf-8")
+        cases.append(tmp_path/name)
+    def fake_freeze(r,source,_registration,_caps,_authority,arm):
+        data=r/"workspace/data"
+        data.mkdir(parents=True)
+        (data/"material.txt").write_bytes((source/"material.txt").read_bytes())
+        (data/"instructions.md").write_bytes((source/"production_brief.md").read_bytes())
+        (data/"environment.md").write_text("environment",encoding="utf-8")
+        (data/"available-fonts.json").write_text("[]",encoding="utf-8")
+        units=evo_ppt.content_units((data/"material.txt").read_text(encoding="utf-8"))
+        evo_ppt.append_frozen_units(data/"instructions.md",units)
+        return {"arm":arm,"units":units,"sources":{f"data/{p.name}":evo_ppt.file_hash(p) for p in data.iterdir() if p.is_file()},
+                "contract":{"acceptance":{"checker_version":"literal-normalized-render-v2","expected_slides":15}}}
+    monkeypatch.setattr(evo_ppt,"freeze",fake_freeze)
+    root=tmp_path/"family"
+    manifest=evo_ppt.freeze_task_family(root,list(cases),Path("unused"),{},"test authority")
+    assert [e["id"] for e in manifest["episodes"]]==["case-one","case-two"]
+    assert manifest["task_id"]=="case-one->case-two"
+    assert manifest["episodes_sha256"]==evo_ppt.digest(manifest["episodes"])
+    # Episode 1 is byte-identical to the live workspace the run validates on start.
+    assert manifest["episodes"][0]["sources"]==manifest["sources"]
+    for episode in manifest["episodes"]:
+        assert set(episode["sources"])=={"data/material.txt","data/instructions.md","data/environment.md","data/available-fonts.json"}
+        for relative,expected in episode["sources"].items():
+            assert evo_ppt.file_hash(root/"cases"/episode["id"]/"workspace"/relative)==expected
+        assert episode["acceptance"]["units_sha256"]==evo_ppt.digest(episode["units"])
+    assert "Frozen content units" in (root/"cases/case-two/workspace/data/instructions.md").read_text(encoding="utf-8")
+    assert (root/"cases/case-one/evaluation/judge_prompt.json").is_file()
+    assert (root/"cases/case-two/task-provenance.json").is_file()
+    assert not (root/"workspace/data/judge_prompt.json").exists()  # evaluation files never enter the agent workspace
+    assert json.loads((root/"manifest.json").read_text(encoding="utf-8"))["episodes_sha256"]==manifest["episodes_sha256"]
+    single=evo_ppt.freeze_task_family(tmp_path/"single",cases[0],Path("unused"),{},"test authority")
+    assert "episodes" not in single and single["task_id"]=="case-one"

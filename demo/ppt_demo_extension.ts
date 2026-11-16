@@ -6,7 +6,7 @@
  * facilities (Python, native resources, render/look/deliver) and the hard boundaries only: budget,
  * deadline, path confinement, provider authorization.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, renameSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -69,8 +69,9 @@ export default function pptDemo(pi: ExtensionAPI) {
   state.note ??= '';
   state.noteStale ??= false;
   state.episode ??= 1; state.usedCases ??= [];
-  if (manifest?.episodes && (manifest.episodes.length !== 1 || hash(manifest.episodes) !== manifest.episodes_sha256)) throw Error('v0.1 requires exactly one frozen task');
-  const activeManifest = () => manifest?.episodes ? { ...manifest, ...manifest.episodes[0], contract: { ...manifest.contract, acceptance: manifest.episodes[0].acceptance } } : manifest;
+  if (manifest?.episodes && (!manifest.episodes.length || hash(manifest.episodes) !== manifest.episodes_sha256)) throw Error('frozen episode list missing, empty or changed');
+  if (manifest?.episodes && !(state.episode >= 1 && state.episode <= manifest.episodes.length)) throw Error('active episode is outside the frozen episode list');
+  const activeManifest = () => { const episode = manifest?.episodes?.[state.episode - 1]; return episode ? { ...manifest, ...episode, contract: { ...manifest!.contract, acceptance: episode.acceptance } } : manifest; };
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
   const piContext = createPiContextAdapter();
   // Mechanism flags (default on; EVO_MA/MB/MC=0 turns one off, EVO_LEGACY_OBLIGATION=1 restores the pre-M-A framing).
@@ -79,6 +80,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1', a4: process.env.EVO_A4 === '1', ask: process.env.EVO_ASK === '1', l4: process.env.EVO_L4 === '1', meta: process.env.EVO_META === '1' };
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
     { ...PPT_SELF_ROOT_OPTIONS, mechanisms: EVO_MECH, taskComplete: () => state.complete || agentSelf?.snapshot?.().complete === true, requiredUnits: () => activeManifest()?.units.length ?? 0,
+      taskEpisodes: () => manifest?.episodes && manifest.episodes.length > 1 ? { active: state.episode, total: manifest.episodes.length } : null,
       pendingDeliveryState: () => agentSelf?.hasPendingFinalDelivery?.() === true,
       deliveryTransitionReached: () => !agentSelf?.hasPendingFinalDelivery?.() || agentSelf?.pendingDeliveryTransitionReady?.() === true,
       runPendingDelivery: async () => agentSelf.hasPendingFinalDelivery() ? officeDeliver({ op: 'deliver' }, new AbortController().signal, {}, true) : undefined,
@@ -505,7 +507,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const episode = activeManifest()!;
         const whole = collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0);
         evo.outcome({ ...whole, episode:state.episode, metrics: pptUnitMetrics(whole, evo.segmentRows()) });
-        const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered').map((r: any) => r.value.unit));
+        const delivered = new Set(evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered' && (r.value?.episode ?? 1) === state.episode).map((r: any) => r.value.unit));
         for (const unit of episode.units) if (!delivered.has(unit.id)) {
           const unitAcceptance = collectAcceptance(episode, root, workspace, receipt.source_path, receipt, 0, unit.id);
           evo.outcome({ ...unitAcceptance, episode:state.episode, metrics: pptUnitMetrics(unitAcceptance, evo.segmentRows()) }, true);
@@ -531,16 +533,49 @@ export default function pptDemo(pi: ExtensionAPI) {
       if (stalledOpen) evo?.fact('action_transition_stalled', { action: 'office.deliver', status: transition.status, step: transition.step ?? agentSelf.step,
         existing_transitions: transition.existing_transitions ?? null, editable_content: transition.editable_content ?? null,
         run: 'open - the run completes only at a transition whose to is "complete"; route office.deliver with reflect_orchestration, or end the run through such a transition' });
-      const taskEnd = ended ? evo?.taskEnd('delivered')
-        : { continuing: true, transition_status: transition.status, step: transition.step ?? agentSelf.step,
-            ...(stalledOpen
-              ? { stall: { existing_transitions: transition.existing_transitions ?? null, editable_content: transition.editable_content ?? null,
-                  repair: 'the run stays open; the delivered files stand, and the run completes only at a transition whose to is "complete"' } }
-              : { transition: transition.transition }) };
+      const episodes = evo && manifest?.episodes ? manifest.episodes : undefined;
+      const closingEpisode = state.episode;
+      const episodeSwitch = ended && !!episodes && closingEpisode < episodes.length;
+      if (ended && episodes) {
+        // Every closed episode keeps its own delivered files; root delivery/ holds the latest episode's.
+        const caseDelivery = join(root, 'cases', episodes[closingEpisode - 1].id, 'delivery');
+        rmSync(caseDelivery, { recursive: true, force: true });
+        mkdirSync(caseDelivery, { recursive: true });
+        cpSync(delivery, caseDelivery, { recursive: true });
+      }
+      let taskEnd: any;
+      if (episodeSwitch) {
+        // Mechanical host service between frozen episodes: archive above, swap the live task data below,
+        // reopen the same orchestration. Components, ledger, history, session and budget continue unchanged.
+        const closed = episodes![closingEpisode - 1], next = episodes![closingEpisode];
+        evo!.fact('task_episode_closed', { episode: closingEpisode, of: episodes!.length, id: closed.id, delivered_revision: Number(revision),
+          artifact_sha256: currentHash, delivery: `cases/${closed.id}/delivery` });
+        const liveData = join(workspace, 'data');
+        rmSync(liveData, { recursive: true, force: true });
+        cpSync(join(root, 'cases', next.id, 'workspace', 'data'), liveData, { recursive: true });
+        state.episode = closingEpisode + 1;
+        delete state.lastFeedback;
+        agentSelf.invalidateArtifact();
+        agentSelf.reopen();
+        evo!.fact('task_episode_started', { episode: state.episode, of: episodes!.length, id: next.id, sources: next.sources,
+          task_data: 'workspace data/ now holds this episode\'s frozen sources',
+          continuity: 'same root, serial session, components, ledger and budget; the orchestration is open again at its current step' });
+        log('lifecycle.jsonl', { event: 'task_episode_switched', closed: closed.id, active: next.id, episode: state.episode });
+        taskEnd = { continuing: true, transition_status: transition.status,
+          episode_closed: { episode: closingEpisode, id: closed.id, delivery: `cases/${closed.id}/delivery` },
+          episode_active: { episode: state.episode, of: episodes!.length, id: next.id } };
+      } else {
+        taskEnd = ended ? evo?.taskEnd('delivered')
+          : { continuing: true, transition_status: transition.status, step: transition.step ?? agentSelf.step,
+              ...(stalledOpen
+                ? { stall: { existing_transitions: transition.existing_transitions ?? null, editable_content: transition.editable_content ?? null,
+                    repair: 'the run stays open; the delivered files stand, and the run completes only at a transition whose to is "complete"' } }
+                : { transition: transition.transition }) };
+      }
       agentSelf.completePendingFinalDelivery();
       state.deliveredRevision = revision; state.deliveredHash = currentHash;
-      if (ended) state.complete = true;
-      persist(); log('lifecycle.jsonl', { event: 'delivered', revision, continues: !ended, transition: transition.status, step: agentSelf.step });
+      if (ended && !episodeSwitch) state.complete = true;
+      persist(); log('lifecycle.jsonl', { event: 'delivered', revision, episode: closingEpisode, continues: !ended || episodeSwitch, transition: transition.status, step: agentSelf.step });
       persistLiveSelf('action_receipt', orchestrationAction);
       const liveTrace = join(root, 'harness', 'live_agent_self.jsonl');
       if (existsSync(liveTrace)) {

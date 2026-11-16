@@ -216,6 +216,8 @@ export class LiveOrchestrationSession {
   hasPendingFinalDelivery() { return this.pendingFinalDelivery; }
   pendingDeliveryTransitionReady() { return this.pendingFinalDelivery && this.current.revision === this.pendingDeliveryRevision; }
   completePendingFinalDelivery() { this.pendingFinalDelivery = false; this.pendingDeliveryRevision = undefined; }
+  /** Called only by host episode adapters between frozen task episodes: the same orchestration continues at its current step with its history, receipts and revisions intact. */
+  reopen() { this.complete = false; }
   assertActionAllowed(type: string) {
     if (this.complete) throw Error('orchestration is complete');
     const step = this.current.orchestration.steps.find(row => row.id === this.activeStep);

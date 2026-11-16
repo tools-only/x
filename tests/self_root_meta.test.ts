@@ -291,3 +291,14 @@ test('META resident prompt: no host-opened review entrance and the fixed fields 
   assert.ok(meta.includes('SELF-STATE MATERIAL') && meta.includes('TASK GOAL') && meta.includes('acceptance counters'));
   assert.ok(base.includes('FIXED REVIEW ENTRANCE'), 'the B-arm prompt still describes the entrance its own arm opens');
 });
+
+test('META head: the frozen episode horizon is a fact line only when more than one episode exists', async () => {
+  const s = make({ meta: true }, { taskEpisodes: () => ({ active: 1, total: 2 }) }); await tick(s);
+  assert.match(s.metaBoard(), /TASK EPISODES: 1 of 2\./);
+  assert.match(s.metaBoard(), /closes the active episode/);
+  assert.match(s.metaBoard(), /run ends when the last episode completes/);
+  const single = make({ meta: true }, { taskEpisodes: () => null }); await tick(single);
+  assert.ok(!single.metaBoard().includes('TASK EPISODES'));
+  const one = make({ meta: true }, { taskEpisodes: () => ({ active: 1, total: 1 }) }); await tick(one);
+  assert.ok(!one.metaBoard().includes('TASK EPISODES'), 'a single-episode run reads exactly like before');
+});

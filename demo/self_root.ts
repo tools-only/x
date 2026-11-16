@@ -18,6 +18,8 @@ export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component'
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
   processFactTypes?: string[]; finalDeliveryTools?: string[]; taskComplete?: () => boolean; requiredUnits?: () => number;
+  /** Adapter-declared task episode horizon: the 1-based active episode and total count; null (or a total of 1) hides the fact line. */
+  taskEpisodes?: () => { active: number; total: number } | null;
   onPendingDelivery?: (pending: boolean) => void;
   pendingDeliveryState?: () => boolean;
   runPendingDelivery?: () => Promise<unknown>;
@@ -777,6 +779,8 @@ export class SelfRoot extends LiveAgentSelf {
     return [
       `TASK GOAL: ${contract?.task_goal ?? '(empty - this design turn fills it)'}`,
       `TASK ACCEPTANCE: ${contract?.task_acceptance ?? '(empty - this design turn fills it)'}`,
+      ...(() => { const horizon = this.options.taskEpisodes?.(); return horizon && horizon.total > 1 ? [
+        `TASK EPISODES: ${horizon.active} of ${horizon.total}. A transition to "complete" closes the active episode; the next episode's frozen task sources then replace data/ in this same root and serial session; the run ends when the last episode completes. Closed episodes do not reopen.`] : []; })(),
       ...objects,
       `SELF-EVOLUTION: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`,
       ...(live.length ? [`WINDOWS: ${live.map(w => `${w.id} on ${w.scope.join(', ')} - ${w.status}${w.expected_effect ? `; expected: ${w.expected_effect}` : '; expected effect not stated'}`).join(' | ')}`] : []),
