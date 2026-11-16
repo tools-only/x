@@ -25,7 +25,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
-import { outcomeRow, predictionCounts, selfDigest, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_WORKING_PATH, SELF_OUTCOMES_PATH } from "./arc_thin_selfview.ts";
+import { outcomeRow, predictionCounts, selfDigest, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_WORKING_PATH, SELF_OUTCOMES_PATH, SELF_SLOTS_PATH } from "./arc_thin_selfview.ts";
+import { changedSlots, slotComponent, slotInventory, slotValues, type SlotValues } from "./arc_thin_selfslots.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
@@ -408,7 +409,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     }
     return archivedResults.get(key)!;
   };
-  const binder = workspace ? new Binder(workspace, validatePythonComponent) : undefined;
+  const binder = workspace ? new Binder(workspace, validatePythonComponent, async (path, source) => slotComponent(path, source)) : undefined;
   let nativeRuntime: NativeRuntime | undefined;
 
 	// ---------------------------------------------------------------- stores
@@ -652,21 +653,52 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}
 	/**
 	 * Stage 2: the host's fixed fields plus one line of this run's own facts, shown with every decision near its end.
-	 * Every number is a count of rows the runtime already wrote; the pointer names the files those rows are in.
+	 * Every number is a count of rows the runtime already wrote; the pointer names the files those rows are in. Stage 3
+	 * adds the last self change and the slot values in effect, both only when there is something to say.
 	 */
 	function selfText(): string {
 		if (!selfLoop) return "";
 		try {
 			const active = binder?.active() ?? [];
+			const changes = readRows("harness_changes.jsonl");
+			const last = changes.at(-1);
 			return SELF_FIELDS + "\n" + selfDigest({
 				decision, actions: trajectory.length, level: currentLevel(),
 				predictions: predictionCounts(trajectory),
 				components: active.map((component) => ({ path: component.path, version: component.version })),
-				changes: readRows("harness_changes.jsonl").length,
+				changes: changes.length,
+				...(last ? { lastChange: { path: String(last.path ?? "?"), version: Number(last.version) || 0 } } : {}),
+				slots: changedSlots(run.slots ?? {}, slotDefaults()),
 				outcomes: selfOutcomeRows,
 				rows: { budget: selfBudgetRows.length, working: selfWorkingRows.length, outcomes: selfOutcomeRows.length },
 			});
 		} catch (error) { logError("self:digest", error); return ""; }
+	}
+	/**
+	 * Stage 3: the host's typed settings, as the binder bound them at this decision's boundary. What the host renders,
+	 * collects or accepts is not a slot; every default below is the value the harness already used.
+	 */
+	function slotDefaults(): SlotValues {
+		return { "history.result_chars": historyResultChars, "history.full_results": 2, "refine.every": REFINE_EVERY,
+			"review.consult": reviewConsult, "stall.after": Math.max(0, Math.floor(Number(process.env.ARC_THIN_STALL_REVIEW ?? 40))) };
+	}
+	function slotValuesNow(): SlotValues {
+		if (!selfLoop) return {};
+		try { return slotValues(binder?.active() ?? []); } catch (error) { logError("self:slot_values", error); return {}; }
+	}
+	/** A slot's value at this decision, else the host's own. */
+	const slot = <T extends number | boolean>(key: string, fallback: T): T =>
+		selfLoop && Object.prototype.hasOwnProperty.call(run.slots ?? {}, key) ? (run.slots[key] as T) : fallback;
+	/**
+	 * Stage 3: the A4 inventory (data/self/slots.json, read-only to the agent) and the values the current decision bound,
+	 * for the runner's own knobs (harness/self_slots.json). Both are projections of slots/self.json; nothing else reads them.
+	 */
+	function publishSelfSlots(): void {
+		if (!selfLoop || !workspace) return;
+		try {
+			workspace.runtimeWrite(SELF_SLOTS_PATH, slotInventory(run.slots ?? {}, slotDefaults()));
+			writeFileSync(join(storeDir, "self_slots.json"), JSON.stringify({ at: decision, values: run.slots ?? {} }) + "\n");
+		} catch (error) { logError("self:slots_publish", error); }
 	}
 	function recordComponentWrite(path: string, before: number | undefined, receipt: string | undefined,
 		split: ComponentExpectationSource): string {
@@ -951,6 +983,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		guardRefusals: Map<string, number>; suspendedGuards: Set<string>;
 		/** Work memory: the decisions before this one in a row that learned nothing new (spinStreak), when any. */
 		spin?: ReturnType<typeof spinStreak>;
+		/** The slot values the host bound at this decision's boundary (stage 3); empty without the flag. */
+		slots: SlotValues;
 	};
 	const freshRun = (): Run => ({
 		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
@@ -959,7 +993,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
 		refinePoint: false, refineCalled: false, consultPoint: false, consulted: false, reviewSaved: false,
-		guardRefusals: new Map(), suspendedGuards: new Set(),
+		guardRefusals: new Map(), suspendedGuards: new Set(), slots: {},
 	});
 	let run = freshRun();
 	let hookSystemHeader = '';
@@ -2554,7 +2588,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		triggers.push(...promotionEvents(refinerOverBudget()));
 		// With refine points the scheduled refinement is the agent's own refine(focus) (A5), not a runtime-picked one.
-		if (!refinePoints && !triggers.length && trajectory.length - lastRefineAt >= REFINE_EVERY) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
+		if (!refinePoints && !triggers.length && trajectory.length - lastRefineAt >= slot("refine.every", REFINE_EVERY)) triggers.push(`${trajectory.length - lastRefineAt} actions since the last refinement`);
 		refinedThrough = trajectory.length;
 		// Over the cost ceiling only a level change and a rule in dispute still start a refinement (the agent's own
 		// refine(focus) is not counted here: it starts one directly).
@@ -3338,7 +3372,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch (error) { logError("refine_point:ledger", error); }
 		const idle = artifactUsage().idle;
 		const repeated = (nativeRuntime?.repeatedWork(currentLevel()) ?? []).slice(0, 2).map((family) => `\`${family.gist}\` ×${family.calls}`);
-		return [`REFINE POINT (every ${REFINE_EVERY} actions; ${lastRefineCallAt ? `your last refine call was at #${lastRefineCallAt}` : "no refine call yet"}): ` +
+		return [`REFINE POINT (every ${slot("refine.every", REFINE_EVERY)} actions; ${lastRefineCallAt ? `your last refine call was at #${lastRefineCallAt}` : "no refine call yet"}): ` +
 			"before acting, call refine(focus) with what your harness should change now. arc_action and env.act wait for that call. The refinement " +
 			"makes one Agent-chosen process or component edit; the next decision says what changed.",
 			`- Last refinement: ${last ? last.slice(2) : "none yet"}`,
@@ -4823,16 +4857,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.endedAt = 0;
 			append('continuations.jsonl', {decision, n: trajectory.length, reason: 'provider length', tool_calls: run.toolCalls});
 		}
-		run.phaseTransport = phaseTransport;
-		if (selectedPhase) {
-			run.phaseName = selectedPhase.phase; run.phasePrompt = selectedPhase.prompt;
-			run.phaseEvidence = selectedPhase.evidence; run.phaseTurn = selectedPhase.turn;
-			run.adaptTurn = selectedPhase.phase === "adapt";
-		} else { run.phaseTransport = false; run.adaptTurn = false; }
-		run.hookTurn = run.adaptTurn || (!phaseTransport && /^(?:SELF_HARNESS_HOOK|RECOVER SELF_HARNESS_HOOK)\b/.test(prompt));
-		run.hookActionIds = run.hookTurn ? (prompt.match(/action_ids=([\d,]+)/)?.[1].split(',').map(Number) ?? []) : undefined;
-		run.hookActionId = run.hookTurn ? Number(prompt.match(/action_id=(\d+)/)?.[1] ?? run.hookActionIds?.[0]) : undefined;
-		run.hookBatchId = run.hookTurn ? prompt.match(/batch_id=([^\s]+)/)?.[1] : undefined;
+		// Stage 3: the slots bound at this decision's boundary (a save made in the last decision activates here), the
+		// inventory the agent can read, and the values the runner reads for its own knob.
+		if (selfLoop) { run.slots = slotValuesNow(); publishSelfSlots(); }
 		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…"; after a level change
 		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…"; after many actions without a level, "STALL REVIEW…" and
 		// "RECOVER STALL REVIEW…".
@@ -4852,9 +4879,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review attempts a consult before writing; every REFINE_EVERY actions since the agent's last refine
 		// call, a decision acts only after refine(focus).
-		run.consultPoint = reviewConsult && run.consolidating && !run.daemonResponse;
+		run.consultPoint = slot("review.consult", reviewConsult) && run.consolidating;
 		if (!continuing) run.refinePoint = refinePoints && !run.consolidating && refinerActive() && trajectory.length > 0
-			&& trajectory.length - lastRefineCallAt >= REFINE_EVERY;
+			&& trajectory.length - lastRefineCallAt >= slot("refine.every", REFINE_EVERY);
 		if (!continuing && (run.refinePoint || run.consultPoint))
 			append("call_points.jsonl", { kind: run.refinePoint ? "refine_point" : "consult_point", at: trajectory.length, decision });
 		// A tool-only decision is already complete from the runner's perspective.
@@ -5062,8 +5089,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// byte-identical and cacheable; ARC_THIN_NATIVE_HISTORY_CHARS > 0 puts a summary inside the head instead.
 		// A compaction summary Pi made stays in front either way.
 		const summarised = native && nativeHistoryChars > 0;
-		const summary = summarised ? summarizeHistory(earlier,
-			{ budget: nativeHistoryChars, resultChars: historyResultChars, ...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
+		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser),
+			{ budget: nativeHistoryChars, resultChars: slot("history.result_chars", historyResultChars), fullResults: slot("history.full_results", 2),
+				...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
 		// Native mode builds the head of a decision once and keeps it byte-identical until the decision ends: the
 		// provider reuses its cached prefix only while everything before the newest message is unchanged. Rebuilding it
 		// per request (run time left, last request size, refreshed memory) dropped the cache hit rate to ~1% on
@@ -5093,9 +5121,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.headKey = headKey;
 		}
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
-		const prefix = summarised ? earlier.filter((message) => message?.role === "compactionSummary").slice(-1) : [];
-		const history = run.hookTurn ? [] : native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(earlier, true)
-			: freezeHistory(earlier, { resultChars: historyResultChars, collapseRepeats, references: workMemory, ...(workspace ? { save: saveHistoryResult } : {}) }))
+		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
+		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
+			: freezeHistory(messages.slice(0, lastUser), { resultChars: slot("history.result_chars", historyResultChars), collapseRepeats, references: workMemory, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
 		// chain" until the next state change; Qwen's chat template renders reasoning only after the last user message).
@@ -5112,7 +5140,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
 			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
         reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'fields' | 'none' : 'none',
-        fullResults: 2, carryChars: carryFieldChars, ...(archiveResults && !run.daemonResponse ? { archive: archiveResult } : {}) })]
+        fullResults: slot("history.full_results", 2), carryChars: carryFieldChars, ...(archiveResults ? { archive: archiveResult } : {}) })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		if (run.hookTurn && !run.phaseTransport) {
 			const shownHead = `${hookSystemHeader}\n${messageText(head)}`;

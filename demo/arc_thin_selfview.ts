@@ -14,15 +14,17 @@
 export const SELF_CONTEXT_PATH = "data/self/context_budget.jsonl";
 export const SELF_WORKING_PATH = "data/self/working_set.jsonl";
 export const SELF_OUTCOMES_PATH = "data/self/outcomes.jsonl";
+export const SELF_SLOTS_PATH = "data/self/slots.json";
 
 /**
  * Stage 2: the four fields the host gives every decision, unchanged between decisions (evo's self_root_meta_fields,
  * adapted to this harness's own objects). They name the goal, the mechanism and the acceptance and nothing to build.
+ * Stage 3 adds the one line that names the typed surface and where its keys and ranges are listed.
  */
 export const SELF_FIELDS = [
 	"SELF-EVOLUTION FIELDS (given by the host, the same every decision)",
 	"- The task is the host: a change to yourself counts only when this run's own facts triggered it and it serves this task's delivery.",
-	"- You change yourself through the same workspace write path as any component; a saved change activates at the next decision boundary.",
+	"- You change yourself through the same workspace write path as any component; a saved change activates at the next decision boundary. The host's typed settings are slots/self.json: its keys, current values and legal forms are in data/self/slots.json.",
 	"- At each level boundary the runtime counts changes / activated / used later from its receipts; the rows are under data/self/.",
 ].join("\n");
 
@@ -34,13 +36,18 @@ export type SelfDigestInput = {
 	components: Array<{ path: string; version: number }>;
 	/** Rows the agent's own writes recorded in harness_changes.jsonl. */
 	changes: number;
+	/** The last of those rows, shown after the count so an activation receipt returns with every decision. */
+	lastChange?: { path: string; version: number };
+	/** Slot values that differ from the host's current default (stage 3); absent when nothing was changed. */
+	slots?: Array<[string, number | boolean]>;
 	outcomes: Array<{ level?: number; won?: boolean; win_n?: number; win_action?: string }>;
 	rows: { budget: number; working: number; outcomes: number };
 };
 
 /**
  * Stage 2: one line of the run's own facts, shown with every decision. Counts and names copied from the logs the
- * digest's pointer opens; no judgement, no suggestion.
+ * digest's pointer opens; no judgement, no suggestion. Stage 3 adds the last self change and the slot values the host
+ * has in effect, only when there is something to say.
  */
 export function selfDigest(input: SelfDigestInput): string {
 	const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -50,9 +57,12 @@ export function selfDigest(input: SelfDigestInput): string {
 	const outcome = last
 		? `level ${last.level ?? "?"} ${last.won ? `won at #${last.win_n ?? "?"} by ${last.win_action ?? "?"}` : "not won"}`
 		: "none";
+	const changes = `${plural(input.changes, "self change")}` +
+		(input.lastChange && input.changes ? ` (last ${input.lastChange.path} v${input.lastChange.version})` : "");
+	const slots = input.slots?.length ? `; slots set: ${input.slots.map(([key, value]) => `${key}=${value}`).join(", ")}` : "";
 	return `SELF: decision ${input.decision}, ${plural(input.actions, "action")} at level ${input.level}; predictions ${input.predictions.made} ` +
 		`(${input.predictions.hits} hit/${input.predictions.misses} miss); your components ${input.components.length}` +
-		`${shown.length ? ` (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})` : ""}; ${plural(input.changes, "self change")}; ` +
+		`${shown.length ? ` (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})` : ""}; ${changes}${slots}; ` +
 		`last outcome ${outcome}; data/self/: ${input.rows.budget} budget, ${input.rows.working} working-set, ` +
 		`${plural(input.rows.outcomes, "outcome row")}.`;
 }
