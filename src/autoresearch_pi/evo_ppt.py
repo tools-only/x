@@ -453,10 +453,14 @@ def run(root: Path, *, round_deadline: float | None = None):
         result["reviews"] = [row for row in r.get("ledger",[]) if row["type"] in ("mode_entered","review_closed","validation_interpreted","validation_enacted")]
     # Apply the identical narrow checker to the A arm's final file offline. It
     # has no submit_unit protocol; do not label this as in-run unit delivery.
+    # The citation form must be the one the protected in-run checker accepts (demo/self_root_ppt.ts:47):
+    # "Source page N", "p.N" and "page N" alike. Requiring "Source page N" literally scored a deck that
+    # cites "page N" as 0/10 citations while the in-run checker recorded citation_found for every unit
+    # (M3b 2026-11-16: in-run 10/10, offline 0/10 from the same file).
     delivery = root / "delivery/presentation.html"
     if delivery.exists():
         visible = re.sub(r"<[^>]*>"," ",re.sub(r"<(script|style)\b[^>]*>[\s\S]*?</\1>"," ",delivery.read_text(encoding="utf-8"),flags=re.I))
-        result["final_unit_probes"]= [{"id":u["id"],"literal_matches":[{"text":x,"found":x.lower() in visible.lower()} for x in u["required"]],"citation_found":bool(re.search(rf"(?:Source\s+(?:page|segment)|(?<![\w.])p\.?)[ \t]*{u['source_page']}(?![\w.])", visible, re.I))} for u in manifest["units"]]
+        result["final_unit_probes"]= [{"id":u["id"],"literal_matches":[{"text":x,"found":x.lower() in visible.lower()} for x in u["required"]],"citation_found":bool(re.search(rf"(?:source\s+page\s+|(?<![\w.])p\.?\s*|(?<![\w.])page\s+){u['source_page']}(?![\w.])", visible, re.I))} for u in manifest["units"]]
         if manifest["arm"] == "A":
             result["units"]=[{"id":u["id"],"status":"whole_deck_delivered_unit_quality_unverified"} for u in manifest["units"]]
     persist_resource_daemon(root)
