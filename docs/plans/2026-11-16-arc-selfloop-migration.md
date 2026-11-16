@@ -192,3 +192,21 @@
   生效 / 结算未记录），不换设计；首轮通过则用匹配前缀 fork 比较改动前后的动作分布与关卡结果。
 - 关联 backlog：`docs/deferred-research-todos.md` D（上下文压缩/连续性）——段二触及决策尾部布局，本记录不改
   compaction/continuity 逻辑，D 的未决项仍留待后续。
+
+## 真实 run 记录
+
+- 2026-11-16 用户授权真实 run（「启动真实 run」）：每臂 6M token（uncached_input+output）、200 动作、先对照后处理、同局
+  su15；模型留给助手，定为 gpt-6.1-sol thinking high（su15-level2-loop 同基座 4 关；qwen 历史 0-2 关会量到模型下限而非机制）。
+  两臂 observation 均 query（su15-chm-loop-200：CH 观察答 0/3 vs query 8/9），臂间唯一差异 `ARC_THIN_SELFLOOP`。代码冻结
+  `5b675aa9`，runs/arc-selfloop-20261116/，wmic 脱离启动。
+- 对照臂 `su15-sl0`（SELFLOOP=0，gpt-6.1-sol）：本地 11-16 23:50 起跑，29 分钟 95/200 动作、**完成 5 关**（同模型同类基座
+  历史最好为 4 关）。16:19:59Z（本地 11-17 00:19）一次失败请求后全部遥测停止写入，约 6 分钟后用户令杀进程（「关闭进程」），
+  进程树 10 个进程终止、无残留；是否会自行恢复不可知。网关瞬时失败全场频繁（agent/refiner/consult 均有 failed 行，此前皆
+  重试恢复）；pilot 既定关闭 decision/idle 超时，挂起请求无看门狗，12h 墙钟未到。遥测完整保留；对照臂未写 `data/self/`
+  （默认等价在真实链路成立）。更正：杀前曾口头误报「冻结 8 小时」，系 UTC 与本地（UTC+8）时差读错，实际约 6 分钟。
+- 处理臂 `su15-sl1`（gpt）未及启动即随进程树终止，零数据，标签弃用。
+- 2026-11-17 用户指示：处理臂运行，模型改为 qwen3.8-27b（「执行臂运行，但模型请修改为qwen 3.8-27B」），其余不变。标签
+  `su15-sl1q`：同冻结代码 `5b675aa9`、SELFLOOP=1、query、6M/200 动作/12h、thinking high、Responses 路由。臂间自此模型不同，
+  关卡判准改以 qwen 基座历史为比较器（su15-level2-loop qwen 臂 2/1/0 关、E1b q1-bp 0 关），gpt 对照臂仅作参照；三计数判准
+  （`changes`/`activated`/`used_later` ≥ 1 及三零时的单因子定位）不变。起跑已确认：端点 yibu、qwen 首批请求带 reasoning
+  完成、`data/self/` 已生成（slots.json、working_set、context_budget）。结果与结算分析待 run 结束。
