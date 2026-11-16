@@ -694,10 +694,17 @@ export class SelfRoot extends LiveAgentSelf {
     const last = changes.at(-1);
     const refused = new Map<string, { tool: string; count: number; last_error: string }>();
     for (const r of this.ledger.slice(last ? this.ledger.indexOf(last) + 1 : 0)) {
+      if (r.type !== 'tool_failed') continue;
       const tool = String(r.value?.tool ?? '');
-      if (r.type !== 'tool_failed' || !['reflect_component', 'reflect_orchestration'].includes(tool)) continue;
+      const raw = r.value?.error ?? r.value?.content ?? '';
+      const message = Array.isArray(raw) ? raw.map((c: any) => String(c?.text ?? '')).join(' ') : String(raw);
+      // Every operation the agent's own orchestration refused, not only reflection. A step's `actions` list is
+      // agent-written content, so a task tool refused by it is self-inflicted cost the agent must be able to see while
+      // paying it (M3 run 2026-11-16: 29 of the 39 "not allowed by active step" refusals were read/read_self/ls/
+      // python/write/decide, none of which this digest reported; only the 10 reflection refusals were counted).
+      if (!/not allowed by active step/.test(message) && !['reflect_component', 'reflect_orchestration'].includes(tool)) continue;
       const entry = refused.get(tool) ?? { tool, count: 0, last_error: '' };
-      refused.set(tool, { ...entry, count: entry.count + 1, last_error: String(r.value?.error ?? r.value?.content ?? '').slice(0, 400) });
+      refused.set(tool, { ...entry, count: entry.count + 1, last_error: message.slice(0, 400) });
     }
     return {
       self_changes: changes.length,

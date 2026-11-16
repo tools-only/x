@@ -274,12 +274,13 @@ M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agen
 
 **根因：两处机制矛盾叠成自锁**
 
-1. `validateDefinition()` 把 `step.actions` 限制为**已记录收据类型**（`office.look/render/deliver` 是，`read/write/ls/grep/python` 不是）——但同一个 `step.actions` 又是 `assertActionAllowed()` 对**每一次工具调用**的唯一白名单。于是一个合法的、意图正确的窄化编排，把读源码、写 python、改编排本来需要的工具全部关在门外。
-2. `reflect_orchestration` 自己也走同一道门。于是修订入口与工作入口同时被同一条规则关闭——**自锁不可恢复**，agent 在 39 次拒绝里反复重试同样的读取与反射，直到请求预算耗尽。这不是 agent 的失误：它在 T0 收到的 schema 明确说 `actions` 是"这一可用的动作列表"，而当时 runtime 实际记录的动作类型里确实只有那几类收据。
+0. 前置：请求 1–2 两次 `transaction_failed` 是形状错误，不是门禁——agent 写的是 `on: {"action": "office.look"}`（把属性名当成了事件类型键），驳回文案已列出合法形，第 3 次即以 `on:{type:"action",action:"office.render"}` 通过。两次被拒的载荷里 `steps[0].actions` 已经是那四个收据类型——窄化在成文之前就已存在，但**只有 revision 2 提交后白名单才生效**，所以它没有被当作错误暴露，而是一直躺在提交下来的合法定义里。
+1. `validateDefinition()` 把 `step.actions` 限制为**已记录收据类型**（`office.look/render/deliver` 是，`read/write/ls/grep/python` 不是）——但同一个 `step.actions` 又是 `assertActionAllowed()` 对**每一次工具调用**的唯一白名单。于是一个合法的、意图正确的窄化编排，把读源码、写 python、改编排本来需要的工具全部关在门外。逐条原文可见：`[4] {"tool":"read","args":{"path":"data/instructions.md"},"error":"Error: action read is not allowed by active step work"}`。
+2. `reflect_orchestration` 自己也走同一道门（`[6][8][10][13][20][21][33][36][40][42]` 十次 `"action reflect_orchestration is not allowed by active step work"`, `"status": "entire response chain aborted"`）。于是修订入口与工作入口同时被同一条规则关闭——**自锁不可恢复**，agent 在 39 次拒绝里反复重试同样的读取与反射，直到请求预算耗尽。这不是 agent 的失误：它在 T0 收到的 schema 明确说 `actions` 是"这一可用的动作列表"，而当时 runtime 实际记录的动作类型里确实只有那几类收据。
 
 **第二处矛盾（观测盲区）**：`abortTransaction` 只记 `transaction_failed`，反射被拒时**不携带工具名**；c' 新增的 `refused_self_operations` 看不到任何一条记录。也就是说 M3 想测的"自状态推送是否让 agent 看见被拒操作"，在自己的主失败模式上恰好是空的。
 
-**修复（提交见 §14.8）**
+**修复（提交 `295abb23`，连同本节一起落库）**
 
 - `SelfRoot.assertActionAllowed`：`PROTOCOL`（`read_self` / `read_self_component` / `reflect_component` / `reflect_orchestration` / `decide` / `decide_exit` / `decide_validation`）**永不被步骤白名单约束**——协议面是一个可被它自己修订的对象所不能门控的东西；`surface()` 每请求照常广告 PROTOCOL。
 - `step.actions` 语义改为**工具名权限范围**：可列 surface 广告的任何工具，缺省 = 放行全部；`assertKnownAction` 不再施加于它（保留于 transition `on.action`/`requires` 与 decision `evidence`——那里的错拼会静默永不触发）。`metaT0()` 的 schema 说明与系统提示同步改口径。

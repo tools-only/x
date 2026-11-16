@@ -117,7 +117,7 @@ test('META self-state push: the tail carries the optimizable object and a since-
   const after = s.selfChangeDigest();
   const lastRow = all(s).filter((r: any) => r.type === 'reflection_activated' || r.type === 'meta_t0_design').at(-1);
   assert.equal(after.requests_since_change, s.request - lastRow.request, 'requests since the last self change');
-  assert.equal(after.refused_self_operations.length, 1, 'only reflect operations are self operations');
+  assert.equal(after.refused_self_operations.length, 1, 'an ordinary tool failure that no self-written rule caused is not a refused self operation');
   assert.equal(after.refused_self_operations[0].count, 2);
   assert.equal(after.refused_self_operations[0].last_error, 'second refusal', 'the last refusal text is carried verbatim');
 });
@@ -148,6 +148,20 @@ test('META self-state push: a reflection refused through abortTransaction is boo
   assert.equal(digest.refused_self_operations.length, 1, 'the rejection is visible in the pushed self state');
   assert.equal(digest.refused_self_operations[0].tool, 'reflect_orchestration');
   assert.match(digest.refused_self_operations[0].last_error, /does not allow read/);
+});
+
+test('META self-state push: a task tool refused by the agent\'s own step whitelist is a refused self operation too', async () => {
+  const s = make({ meta: true }); await tick(s);
+  const narrow: any = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', actions: ['read'] }], decisions: [], transitions: [] };
+  await s.transaction({ baseRevision: 1, orchestration: narrow }); await tick(s);
+  s.abortTransaction('action python is not allowed by active step work', 'python');
+  s.abortTransaction('action python is not allowed by active step work', 'python');
+  s.abortTransaction('compile error in generated module', 'python');
+  const digest = s.selfChangeDigest();
+  const row = digest.refused_self_operations.find((r: any) => r.tool === 'python');
+  assert.ok(row, 'the whitelist refusal is visible in the pushed self state');
+  assert.equal(row.count, 2, 'an unrelated tool failure on the same tool is not counted');
+  assert.match(row.last_error, /not allowed by active step work/);
 });
 
 test('META resident prompt: no host-opened review entrance and no window promise; the B prompt is untouched', () => {
