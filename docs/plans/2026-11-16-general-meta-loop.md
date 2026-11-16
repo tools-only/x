@@ -379,6 +379,7 @@ M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agen
 
 - 受保护验收（`literal-normalized-render-v2`）逐单元：unit-01…09 各 3/3 literal；unit-10 **1/3**（缺 `$10.3`、`$10.2`），且其 normalized 三项全部 `found:false`。交付文件里确实没有 `10.3`/`10.2`——不是检查器伪影。
 - 离线探针：units 10、literals **28/30**、citations **0/10**；对照 B3-2 的 30/30、10/10。引用一项是两套检查器口径差：in-run normalized `citation_found` 10/10（deck 写 `page N`），离线严格式要 `Source page N`/`p.N` 故 0/10。literals 项两套一致。
+  - 勘误（2026-11-16，`4e41ab5b` 后）：0/10 是离线探针缺陷，不是口径合理差。探针正则不认运行内 checker（`demo/self_root_ppt.ts:47`）同样接受的 `page N` 形式；改用同一正则后在同一交付文件上重测，M3b 引用 **10/10**，B3-2 仍 10/10，两边 literals 不变（28/30、30/30）。引用维度上 M3b 实际不低于 B3-2；低于 B3-2 的只剩 unit-10 的 2 个字面量。
 - 关键：unit-10 的失败判词在**交付之前**就在上下文里（10 条 `submit_unit` 结果各 ≈3.1 KB），agent 未读、未返工，直接 `office.deliver`。
 
 **本质问题（按因果权重）**
