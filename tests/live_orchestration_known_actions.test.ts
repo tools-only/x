@@ -58,6 +58,10 @@ test('META with declared receipt types: T0 names them, a rejected design keeps t
   assert.ok(material.includes('Action receipt types this runtime records'));
   // META registers its own loop receipt beside the adapter's task receipts.
   assert.ok(material.includes('office.deliver, office.look, office.render, self.change, submit_unit'));
+  // 2026-11-16: omission is the default full surface, and the design material says so - a hand-written
+  // narrow whitelist was the dominant false attractor of M4b/M5.
+  assert.ok(material.includes('an optional permission scope over tool names'));
+  assert.ok(material.includes('a step with no actions list may call every granted tool'));
   // The intent compiler no longer copies a wrong name into requires: one question comes back naming the recordable set.
   const bare = { ...loop('render_save', 'render_save'), transitions: [{ id: 'to_render', from: 'work', on: { type: 'action', action: 'render_save' }, requires: [], to: 'render' }] };
   await assert.rejects(s.transaction({ baseRevision: 1, orchestration: bare }),

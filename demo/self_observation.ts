@@ -36,6 +36,8 @@ export interface ObservationA2 {
   activations: number;
   reviews: { opened: number; closed: number };
   segments: { segment: number | string; line: string }[];
+  /** Recorded reasoning: block count and digit-normalized opening heads that recur (mechanical grouping only). */
+  thoughts: { blocks: number; repeated: { head: string; count: number; last: string }[] };
 }
 export interface ObservationA3 {
   entries: { ref: string; outcome: string; sequence: string; in_path: string[]; available_not_in_path: string[] }[];
@@ -101,7 +103,8 @@ export function observe(source: ObservationSource): Observation {
   const touches = new Map<string, number>();
   const modeSeq: string[] = [];
   const segments: { segment: number | string; line: string }[] = [];
-  let decides = 0, activations = 0, opened = 0, closed = 0, selfReads = 0;
+  const thoughtHeads = new Map<string, { count: number; last: string }>();
+  let decides = 0, activations = 0, opened = 0, closed = 0, selfReads = 0, thoughtBlocks = 0;
 
   const addHead = (map: Map<string, { count: number; last: string }>, text: string, ref: string) => {
     const head = headOf(text);
@@ -167,6 +170,18 @@ export function observe(source: ObservationSource): Observation {
       }
       case 'mode_entered': opened++; break;
       case 'review_closed': closed++; break;
+      case 'assistant_reasoning': {
+        // Recorded thinking blocks: count them and group their opening heads so a restated
+        // self-instruction becomes a visible repetition fact. Heads only; content stays in the ledger.
+        for (const block of Array.isArray(v.blocks) ? v.blocks : []) {
+          thoughtBlocks++;
+          const head = headOf(textOf(typeof block === 'string' ? block : block?.thinking ?? block?.text ?? ''));
+          if (!head) continue;
+          const r = thoughtHeads.get(head) ?? { count: 0, last: ref };
+          r.count++; r.last = ref; thoughtHeads.set(head, r);
+        }
+        break;
+      }
       case 'segment_summary':
         segments.push({ segment: v.segment ?? segments.length, line: `segment ${v.segment ?? '?'}: phase ${v.phase ?? '-'} unit ${v.unit ?? '-'} rows ${Array.isArray(v.ledger) ? v.ledger.join('-') : '-'}` });
         break;
@@ -194,6 +209,8 @@ export function observe(source: ObservationSource): Observation {
     activations,
     reviews: { opened, closed },
     segments: segments.slice(-6),
+    thoughts: { blocks: thoughtBlocks,
+      repeated: topOf(thoughtHeads, r => r.count, 6).filter(([, r]) => r.count >= 2).map(([head, r]) => ({ head, ...r })) },
   };
 
   // --- A3: one pedigree entry per environment-authority outcome ---
@@ -281,7 +298,8 @@ export function renderObservation(o: Observation, budget = 2800): string {
     lines.push(`[recurrence] ${rec.spans} outcome span(s)${rec.calls.length ? `; calls: ${rec.calls.map(c => `${c.name} in ${c.spans}/${rec.spans} spans x${c.total}`).join(', ')}` : ''}; agent components in path ${rec.component_path_spans}/${rec.spans || 0} spans`);
   }
   lines.push(`[trace] modes: ${o.a2.modes || '-'}`);
-  lines.push(`[trace] decide receipts ${o.a2.decide_receipts}; self changes ${o.a2.activations}; reviews ${o.a2.reviews.opened}/${o.a2.reviews.closed}; self reads ${o.a1.unused.self_reads}`);
+  lines.push(`[trace] decide receipts ${o.a2.decide_receipts}; self changes ${o.a2.activations}; reviews ${o.a2.reviews.opened}/${o.a2.reviews.closed}; self reads ${o.a1.unused.self_reads}; reasoning blocks ${o.a2.thoughts.blocks}`);
+  for (const t of o.a2.thoughts.repeated) lines.push(`[thought] x${t.count} "${t.head}" [last ${t.last}]`);
   if (o.a2.actions.length) lines.push(`[trace] calls: ${o.a2.actions.map(a => `${a.name}x${a.count}${a.errors ? `(${a.errors} err)` : ''}`).join(' ')}`);
   if (o.a2.artifact_touches.length) lines.push(`[trace] artifact writes: ${o.a2.artifact_touches.map(t => `${t.path}x${t.writes}`).join(' ')}`);
   // Outcome pedigrees newest-first so a tight budget keeps the most recent ones.

@@ -221,7 +221,7 @@ export class LiveOrchestrationSession {
     const step = this.current.orchestration.steps.find(row => row.id === this.activeStep);
     if (!step) throw Error('active orchestration step is unavailable');
     if (step.role !== 'agent') throw Error(`role ${step.role} has no active executor`);
-    if (step.actions && !step.actions.includes(type)) throw Error(`action ${type} is not allowed by active step ${step.id}; this step's declared actions: ${step.actions.join(', ')}`);
+    if (step.actions && !step.actions.includes(type)) throw Error(`action ${type} is not allowed by active step ${step.id}; this step's declared actions: ${step.actions.join(', ')}; a step with no actions list allows every granted tool - widen or drop the list with reflect_orchestration`);
   }
   /** Called only by host action adapters after a real action succeeds. */
   recordAction(type: string, facts: Record<string, unknown> = {}, updatesCurrentArtifact = false, hostDeferred = false) {

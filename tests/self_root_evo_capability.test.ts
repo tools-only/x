@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SelfRoot, FLOOR, hash, normalizeOperation } from '../demo/self_root.ts';
+import { observe, renderObservation } from '../demo/self_observation.ts';
 
 // One positive and one flag-off case per capability-view item: A4 inventory/recurrence (true counts,
 // bindings, review-entrance-only placement), ASK entrance questions (one block, closure through the
@@ -11,6 +12,22 @@ const make = (mechanisms?: any, options: any = {}) => new SelfRoot(contract(), u
 const open = async (s: any, boundary = 'submitted') => { await s.event('settlement',boundary,{event_classes:['task_outcome'],coverage_tags:[boundary],force_review:true}); await s.boundary(()=>{},()=>{}); };
 const tick = async (s: any) => s.boundary(()=>{},()=>{});
 const all = (s: any) => s.export().root.ledger;
+
+test('observation: recorded reasoning blocks are counted and a restated head becomes a [thought] repetition line', () => {
+  const rows = [
+    { ref: 'L1', type: 'assistant_reasoning', value: { blocks: [{ type: 'thinking', thinking: 'I should re-run step 3 before the check.' }] } },
+    { ref: 'L2', type: 'assistant_reasoning', value: { blocks: [{ type: 'thinking', thinking: 'I should re-run step 7 before the check.' },
+      { type: 'thinking', thinking: 'A different consideration about the remaining budget.' }] } },
+  ];
+  const o = observe({ ledger: rows as any });
+  assert.equal(o.a2.thoughts.blocks, 3, 'every recorded block is counted');
+  assert.equal(o.a2.thoughts.repeated.length, 1, 'digit-normalized heads group the restated instruction');
+  assert.equal(o.a2.thoughts.repeated[0].count, 2);
+  assert.equal(o.a2.thoughts.repeated[0].last, 'L2');
+  const text = renderObservation(o, 2800);
+  assert.ok(text.includes('[thought] x2'), 'the repetition is a visible line');
+  assert.ok(text.includes('reasoning blocks 3'), 'the block count rides the trace line');
+});
 
 test('A4: observation carries true counts and recorded bindings; digest stays free; flag off removes the block', async () => {
   const s = make({ a4: true }); await tick(s);

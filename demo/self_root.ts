@@ -730,12 +730,18 @@ export class SelfRoot extends LiveAgentSelf {
     const named = (kind: string) => components.filter(c => c.kind === kind).map(c => `${c.name}@v${c.version}`).join(', ') || 'none';
     const step = (orchestration.steps ?? []).find((s: any) => s.id === this.step);
     const recordable = this.knownActionTypes?.size ? [...this.knownActionTypes].sort().join(', ') : '';
+    // Each optimizable object carries its live recorded signals (2026-11-16): counts from the same
+    // observation the ledger already holds, so the level whose facts moved is visible without a read_self
+    // round trip. Counts only - no ranking, no diagnosis, no recommendation.
+    const obs = this.observation();
+    const rejectedCalls = obs.a1.rejections.reduce((n, r) => n + r.count, 0);
+    const stalledTransitions = this.ledger.filter(r => r.type === 'action_transition_stalled').length;
     const objects = [
       'OPTIMIZABLE OBJECTS',
-      `prompt - ${named('prompt')}; change with reflect_component(kind:"prompt"); read_self(section="self")`,
-      `context - policy.context (order: ${(this.policy.context?.order ?? []).join(', ')}; self view: ${this.policy.context?.prompt_layout?.volatile_tail ? 'tail' : 'system'}); change with reflect_orchestration({policy:{context}}); read_self(section="policy")`,
-      `loop - orchestration revision ${this.current?.revision ?? 1}, active step '${this.step}'${step?.actions ? ` (action scope: ${step.actions.join(', ')})` : ''}; a transition fires on on:{type:"action",action:"<${recordable || 'a recorded receipt type'}>"} or on:{type:"decision",id:"<decision>"}; change with reflect_orchestration({orchestration}); read_self(section="definition")`,
-      `harness - ${components.length} components at self revision ${this.revision} (${named('tool')} tools; ${named('skill')} skills; ${named('memory')} memory; ${named('subagent')} subagents); any write above; read_self(section="self")`,
+      `prompt - ${named('prompt')}; change with reflect_component(kind:"prompt"); read_self(section="self"); signals: ${obs.a2.thoughts.repeated.length} repeated reasoning head(s) across ${obs.a2.thoughts.blocks} recorded block(s)`,
+      `context - policy.context (order: ${(this.policy.context?.order ?? []).join(', ')}; self view: ${this.policy.context?.prompt_layout?.volatile_tail ? 'tail' : 'system'}); change with reflect_orchestration({policy:{context}}); read_self(section="policy"); signals: ${obs.a1.unused.self_reads} read_self call(s)${obs.a4?.inventory.residency_chars != null ? `, residency ${obs.a4.inventory.residency_chars} chars/request` : ''}`,
+      `loop - orchestration revision ${this.current?.revision ?? 1}, active step '${this.step}'${step?.actions ? ` (action scope: ${step.actions.join(', ')})` : ` (action scope: every granted tool - no actions list)`}; a transition fires on on:{type:"action",action:"<${recordable || 'a recorded receipt type'}>"} or on:{type:"decision",id:"<decision>"}; change with reflect_orchestration({orchestration}); read_self(section="definition"); signals: ${rejectedCalls} refused call(s), ${stalledTransitions} stalled action transition(s)`,
+      `harness - ${components.length} components at self revision ${this.revision} (${named('tool')} tools; ${named('skill')} skills; ${named('memory')} memory; ${named('subagent')} subagents); any write above; read_self(section="self"); signals: ${obs.a1.repeated_inputs.length} identical-input call group(s), ${obs.a1.unused.tools_never_called.length} zero-call tool(s)`,
     ];
     const summary = this.ledger.filter(r => r.type === 'segment_summary').map(r => r.value);
     const numbers = (v: any) => v ? `requests ${v.process?.requests ?? 0}, task actions ${v.work?.task_actions ?? 0}, tool errors ${v.process?.tool_errors ?? 0}, elapsed ${Math.round(Number(v.process?.latency_s ?? 0))}s, phase ${v.phase ?? 'unknown'}` : 'none';
@@ -753,11 +759,15 @@ export class SelfRoot extends LiveAgentSelf {
       return [`Deliverable: artifact at ${version}; ${written} artifact write(s) since the last change.`];
     })();
     const flow = phase === 'design'
-      ? `DESIGN TURN - the mechanism and the acceptance standard above are given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is a permission scope over tool names, not over receipt types.` : ''}`
+      ? `DESIGN TURN - the mechanism and the acceptance standard above are given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is an optional permission scope over tool names, not over receipt types; a step with no actions list may call every granted tool.` : ''}`
       : phase === 'boundary'
         ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
           `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
           ...boundaryDeliverable,
+          // The full recorded-behavior block is pushed at the boundary (2026-11-16): repeats, rejections,
+          // losses, trajectory and outcome paths arrive without a read_self round trip, on the one request
+          // where the agent is already standing outside the task segment.
+          `OBSERVED OPERATING FACTS (recorded, mechanical):\n${renderObservation(obs, 1600)}`,
           'Unit verdicts are recorded per segment (read_self(section="segments")); the host never combines them into a task-level acceptance conclusion - that statement, if any, is the one in TASK ACCEPTANCE.',
           ...(look.length ? [`Your run plan for this event (segment_boundary): ${look.join(' | ')}`] : []),
           'Facts only; judgment stays with you.'].join('\n')

@@ -101,6 +101,9 @@ export default function pptDemo(pi: ExtensionAPI) {
   // and enter the stable prefix unchanged, so editing the agent's harness never rewrites them and never zeroes the
   // provider prefix cache; the dynamic fields ride the self view instead.
   const metaFieldsText = EVO_MECH.meta ? readFileSync(fileURLToPath(new URL('./prompts/self_root_meta_fields.md', import.meta.url)), 'utf8') : '';
+  // Seeded as an ordinary agent-editable prompt component in meta runs: always-on conversion/review rules
+  // with recorded-fact triggers. The agent revises or retires them with reflect_component like any prompt.
+  const evolutionPolicySeed = EVO_MECH.meta ? readFileSync(fileURLToPath(new URL('./prompts/evolution_policy_seed.md', import.meta.url)), 'utf8') : '';
   let forcedBaseline = initialSystemPrompt;
   let injectedSkillsSection = '';
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
@@ -513,17 +516,31 @@ export default function pptDemo(pi: ExtensionAPI) {
         persistLiveSelf();
       }
       const orchestrationAction = agentSelf.recordAction('office.deliver', { artifactVersion: Number(revision), artifactHash: currentHash, sourcePath: receipt.source_path }, false, hostDeferred);
-      // Delivery is an action like every other: the agent's own transition decides whether the run is over. A matching
-      // transition to "complete", no matching transition, or an ambiguous one ends the run as before; a transition to a
-      // next step keeps the run alive and this delivery becomes the receipt that step continues from.
+      // Delivery is an action like every other: the agent's own transition decides whether the run is over. In meta
+      // runs only a matching transition to "complete" ends the run; a stalled or merely recorded delivery keeps the
+      // run open and returns the stall facts, so repairing the orchestration stays the agent's move instead of the
+      // host closing the session (M5 2026-11-16: a work-step self-loop invalidated the render receipt and the host
+      // ended an otherwise live run). Outside meta the previous semantics hold: anything but a transition to a next
+      // step ends the run.
       const transition: any = orchestrationAction?.transition ?? { status: 'complete' };
-      if (transition.status === 'stalled') log('lifecycle.jsonl', { event: 'delivery_transition_stalled', step: transition.step, transitions: transition.existing_transitions });
-      const continues = transition.status === 'advanced';
-      const taskEnd = continues ? { continuing: true, step: transition.step, transition: transition.transition } : evo?.taskEnd('delivered');
+      const metaRun = !!evo && EVO_MECH.meta;
+      const ended = transition.status === 'complete' || (!metaRun && transition.status !== 'advanced');
+      const stalledOpen = !ended && transition.status !== 'advanced';
+      if (transition.status === 'stalled' || stalledOpen)
+        log('lifecycle.jsonl', { event: 'delivery_transition_stalled', status: transition.status, step: transition.step ?? agentSelf.step, run_open: stalledOpen, transitions: transition.existing_transitions });
+      if (stalledOpen) evo?.fact('action_transition_stalled', { action: 'office.deliver', status: transition.status, step: transition.step ?? agentSelf.step,
+        existing_transitions: transition.existing_transitions ?? null, editable_content: transition.editable_content ?? null,
+        run: 'open - the run completes only at a transition whose to is "complete"; route office.deliver with reflect_orchestration, or end the run through such a transition' });
+      const taskEnd = ended ? evo?.taskEnd('delivered')
+        : { continuing: true, transition_status: transition.status, step: transition.step ?? agentSelf.step,
+            ...(stalledOpen
+              ? { stall: { existing_transitions: transition.existing_transitions ?? null, editable_content: transition.editable_content ?? null,
+                  repair: 'the run stays open; the delivered files stand, and the run completes only at a transition whose to is "complete"' } }
+              : { transition: transition.transition }) };
       agentSelf.completePendingFinalDelivery();
       state.deliveredRevision = revision; state.deliveredHash = currentHash;
-      if (!continues) state.complete = true;
-      persist(); log('lifecycle.jsonl', { event: 'delivered', revision, continues, transition: transition.status, step: agentSelf.step });
+      if (ended) state.complete = true;
+      persist(); log('lifecycle.jsonl', { event: 'delivered', revision, continues: !ended, transition: transition.status, step: agentSelf.step });
       persistLiveSelf('action_receipt', orchestrationAction);
       const liveTrace = join(root, 'harness', 'live_agent_self.jsonl');
       if (existsSync(liveTrace)) {
@@ -537,6 +554,8 @@ export default function pptDemo(pi: ExtensionAPI) {
       // Initial capabilities are fields on the live Agent object, not workspace files.
       if (!agentSelf.active().some((component: any) => component.path === 'prompts/ppt_baseline_guidance.md'))
         await agentSelf.seedComponent('prompt', 'ppt_baseline_guidance', initialSystemPrompt);
+      if (evolutionPolicySeed && !agentSelf.active().some((component: any) => component.path === 'prompts/evolution_policy.md'))
+        await agentSelf.seedComponent('prompt', 'evolution_policy', evolutionPolicySeed);
       persistLiveSelf();
       log('lifecycle.jsonl', { event: 'initial_registry', components: agentSelf.active().map(c => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })) });
       const nativeComponents = agentSelf.active().filter(c => c.kind === 'tool' || c.kind === 'subagent');
@@ -726,7 +745,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         const coreLine = evo.mech.legacy_obligation
           ? `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`
           : evo.mech.meta
-            ? `${evo.reviewStrategy()}\nSELF ROOT: one serial session; no review entrance exists in this run. Every protocol tool the self view names is available at every step. Rework stays available through orchestration rewrite, render and resubmit/preview; office.deliver is an action receipt your own transition routes, and with no matching transition the delivery ends the run.`
+            ? `${evo.reviewStrategy()}\nSELF ROOT: one serial session; no review entrance exists in this run. Every protocol tool the self view names is available at every step. Rework stays available through orchestration rewrite, render and resubmit/preview; office.deliver is an action receipt your own transition routes, and the run completes only at a transition whose to is "complete" - a delivery whose transition stalls or only records leaves the run open with the stall facts returned.`
             : `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is available at any point in a review; a judged no-change is a valid closure. Rework stays available through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition, or at the budget boundary.`;
         // META (2026-11-16): the fixed self-evolution fields, unchanged in the stable prefix. The dynamic half
         // (objects, contract, counters, phase) rides the self view so a change never rewrites this prefix.

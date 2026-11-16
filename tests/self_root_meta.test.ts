@@ -39,6 +39,10 @@ test('META fixed fields: the static prompt file is host-given, task-free and ord
   assert.match(board, /^OPTIMIZABLE OBJECTS$/m, 'field 4 is host-rendered from live state');
   for (const layer of ['prompt -', 'context - policy.context', 'loop - orchestration revision', 'harness - '])
     assert.ok(board.includes(layer), `the board names the ${layer.split(' ')[0]} layer and an object in it`);
+  for (const line of board.split('\n').filter((l: string) => /^(prompt|context|loop|harness) - /.test(l)))
+    assert.ok(line.includes('signals:'), `live signal counts ride the ${line.split(' ')[0]} line`);
+  assert.match(board, /signals: \d+ refused call\(s\), \d+ stalled action transition\(s\)/, 'the loop line counts refusals and stalls');
+  assert.match(board, /signals: \d+ repeated reasoning head\(s\)/, 'the prompt line counts recorded reasoning repetition');
   assert.match(board, /DESIGN TURN/, 'the design turn states what this turn does');
   // 2026-11-16: the loop is self-evolving; a trigger may bind only events this run records itself.
   assert.ok(board.includes('segment_boundary, failure, repetition'), 'the legal task-side events are named');
@@ -125,6 +129,9 @@ test('META board flow: compact during the task, expanded at a segment boundary, 
   assert.ok(boundary.includes('SEGMENT BOUNDARY'), 'the boundary expands the block');
   assert.match(boundary, /Last change: none/);
   assert.match(boundary, /Last segment: requests 0, task actions 0, tool errors 0, elapsed 0s/);
+  assert.match(boundary, /OBSERVED OPERATING FACTS \(recorded, mechanical\):/, 'the full behavior block is pushed at the boundary');
+  assert.match(boundary, /\[requests\]/, 'the pushed block carries the recorded request facts');
+  assert.ok(!s.metaBoard().includes('SEGMENT BOUNDARY') || s.metaBoard().includes('OBSERVED OPERATING FACTS'), 'the push rides the boundary frame only');
   assert.match(boundary, /run plan for this event \(segment_boundary\): the last segment numbers and the last change/, 'the contract reaches the loop unasked, at the event its trigger names');
   assert.match(boundary, /never combines them into a task-level acceptance conclusion/, 'the boundary states that per-unit verdicts stay per-unit');
   s.fact('request_record', { request: s.request });
