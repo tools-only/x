@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SelfRoot, FLOOR, hash, normalizeOperation } from '../demo/self_root.ts';
-import { observe, renderObservation } from '../demo/self_observation.ts';
+import { observe, renderObservation, observationHeads } from '../demo/self_observation.ts';
 
 // One positive and one flag-off case per capability-view item: A4 inventory/recurrence (true counts,
 // bindings, review-entrance-only placement), ASK entrance questions (one block, closure through the
@@ -149,3 +149,33 @@ test('L4 closure backflow: the next entrance shows the last closures with their 
 
 // With both flags on, the entrance strategy carries the one-line four-layer coordinates extension.
 const rvHasAsk = (s: any) => { const t = s.reviewSelfView().strategy; return t.includes('Four layers') && t.includes('ENTRANCE QUESTIONS'); };
+
+test('A3: recorded false boolean leaves render as a grouped tally line the compact echo cut off', () => {
+  const item = (ok: boolean) => ({
+    probes: [{ text: 'alpha', found: true }, { text: 'beta', found: true }],
+    aux: { text: 'gamma', found: false },
+    summary: { accepted: ok, count: 2 },
+  });
+  const value = {
+    source: 'fixture_source',
+    meta: { version: 'long-metadata-version-string-v9', digest: 'd'.repeat(64) },
+    digests: Object.fromEntries(['a', 'b', 'c', 'e', 'f', 'g'].map(k => [`file-${k}`, k.repeat(64)])),
+    items: [item(true), item(true), item(true), item(true), item(false), item(false)],
+  };
+  const o = observe({ ledger: [{ ref: 'L7', type: 'task_outcome', value }] as any });
+  const e = o.a3.entries[0];
+  assert.ok(!e.outcome.includes('accepted'), 'capped echo never reaches the verdict fields');
+  assert.equal(e.booleans.total, 24);
+  assert.equal(e.booleans.false_count, 8);
+  assert.deepEqual(e.booleans.false_paths.find(g => g.path === 'items[#].summary.accepted'),
+    { path: 'items[#].summary.accepted', count: 2, at: [4, 5] });
+  const text = renderObservation(o, 2800);
+  assert.ok(text.includes('false 8/24:'), 'tally line rides the outcome');
+  assert.ok(text.includes('items[#].aux.found x6 at [0,1,2]'));
+  assert.ok(text.includes('items[#].summary.accepted x2 at [4,5]'));
+  assert.ok(observationHeads(o).includes('(8 false)'), 'the one-line digest carries the count');
+  const clean = observe({ ledger: [{ ref: 'L8', type: 'task_outcome', value: { done: true, steps: [{ ok: true }] } }] as any });
+  assert.equal(clean.a3.entries[0].booleans.false_count, 0);
+  assert.ok(!renderObservation(clean, 2800).includes('  false '), 'all-true outcome adds no tally line');
+  assert.ok(!observationHeads(clean).includes('false'));
+});

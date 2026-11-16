@@ -40,7 +40,10 @@ export interface ObservationA2 {
   thoughts: { blocks: number; repeated: { head: string; count: number; last: string }[] };
 }
 export interface ObservationA3 {
-  entries: { ref: string; outcome: string; sequence: string; in_path: string[]; available_not_in_path: string[] }[];
+  entries: { ref: string; outcome: string; sequence: string; in_path: string[]; available_not_in_path: string[];
+    /** Boolean-leaf tally of the recorded value, so a recorded `false` survives the compact echo's cap:
+     * false leaves grouped by digit-normalized path with outermost array indexes. Mechanical only. */
+    booleans: { total: number; false_count: number; false_paths: { path: string; count: number; at: number[] }[] } }[];
 }
 /** Inventory/recurrence counts: true per-kind counts (0 is 0), recorded bindings, per-step executions,
  * and per-span call coverage. Pure counting over recorded rows; no similarity judgment, no recommendation. */
@@ -75,6 +78,32 @@ const compactJson = (value: any, cap = 200): string => {
   };
   const s = JSON.stringify(walk(value, 0));
   return s.length > cap ? `${s.slice(0, cap)}~` : s;
+};
+/** Tally of boolean leaves in a recorded value: total count, false count, and the false leaves
+ * grouped by digit-normalized path with up to three outermost array indexes per group. Selection
+ * is by recorded value only - a leaf is listed because it is `false`, never for what its key means. */
+const booleanLeaves = (value: any, cap = 6): { total: number; false_count: number; false_paths: { path: string; count: number; at: number[] }[] } => {
+  let total = 0, falseCount = 0, visited = 0;
+  const groups = new Map<string, { count: number; at: number[] }>();
+  const walk = (v: any, path: string, outer: number | null, depth: number) => {
+    if (++visited > 4000 || depth > 8) return;
+    if (typeof v === 'boolean') {
+      total++;
+      if (v) return;
+      falseCount++;
+      const key = (path || '(value)').slice(0, 96);
+      const g = groups.get(key) ?? { count: 0, at: [] };
+      g.count++;
+      if (outer !== null && g.at.length < 3 && !g.at.includes(outer)) g.at.push(outer);
+      groups.set(key, g);
+      return;
+    }
+    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${path}[#]`, outer ?? i, depth + 1)); return; }
+    if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${k.replace(/\d+/g, '#')}` : k.replace(/\d+/g, '#'), outer, depth + 1);
+  };
+  walk(value, '', null, 0);
+  return { total, false_count: falseCount,
+    false_paths: [...groups.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, cap).map(([path, g]) => ({ path, ...g })) };
 };
 const runLength = (names: string[], cap = 28): string => {
   const runs: string[] = [];
@@ -234,6 +263,7 @@ export function observe(source: ObservationSource): Observation {
     entries.push({
       ref: ledger[i].ref ?? '',
       outcome: compactJson(ledger[i].value ?? null, 200),
+      booleans: booleanLeaves(ledger[i].value ?? null),
       sequence: runLength(seq, 20),
       in_path: [...inPath].slice(0, 12),
       available_not_in_path: capabilities.filter(c => !used.has(c) && !used.has(c.split(':')[0])).slice(0, 8),
@@ -305,6 +335,7 @@ export function renderObservation(o: Observation, budget = 2800): string {
   // Outcome pedigrees newest-first so a tight budget keeps the most recent ones.
   for (const e of [...o.a3.entries].reverse()) {
     lines.push(`[outcome ${e.ref}] ${e.outcome}`);
+    if (e.booleans.false_count) lines.push(`  false ${e.booleans.false_count}/${e.booleans.total}: ${e.booleans.false_paths.map(g => `${g.path} x${g.count}${g.at.length ? ` at [${g.at.join(',')}]` : ''}`).join('; ')}`);
     lines.push(`  path: ${e.sequence || '(no recorded calls in span)'}${e.available_not_in_path.length ? `; available, not in path: ${e.available_not_in_path.join(', ')}` : ''}`);
   }
   const out: string[] = [];
@@ -325,5 +356,5 @@ export function observationHeads(o: Observation): string {
   const top = o.a1.repeats[0];
   const rej = o.a1.rejections.reduce((n, r) => n + r.count, 0);
   const last = o.a3.entries.at(-1);
-  return `facts: ${total} requests (${mix || '-'})${top ? `; top repeat ${top.address}x${top.count}` : ''}${rej ? `; rejections ${rej}` : ''}${last ? `; last outcome ${last.ref}` : ''} - read_self(section="observation")`;
+  return `facts: ${total} requests (${mix || '-'})${top ? `; top repeat ${top.address}x${top.count}` : ''}${rej ? `; rejections ${rej}` : ''}${last ? `; last outcome ${last.ref}${last.booleans.false_count ? ` (${last.booleans.false_count} false)` : ''}` : ''} - read_self(section="observation")`;
 }
