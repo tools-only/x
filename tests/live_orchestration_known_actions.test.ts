@@ -49,7 +49,7 @@ test('undeclared sessions keep accepting arbitrary type strings', () => {
 const contract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:30,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
 const make = (mechanisms?: any, options: any = {}) => new SelfRoot(contract(), undefined, undefined, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
 const tick = async (s: any) => s.boundary(()=>{}, ()=>{});
-const taskSide = { task_goal: 'Deliver the artifact this run must produce', task_acceptance: 'judged by the recorded acceptance report; verified by a fresh render',
+const taskSide = { task_goal: 'Deliver the artifact this run must produce', task_acceptance: "verified from this run's own acceptance checks and a fresh render",
   loop_policy: { look_when: [{ on: 'segment_boundary', look: 'the last segment numbers and the last change' }] } };
 
 test('META with declared receipt types: T0 names them, a rejected design keeps the gate closed, a corrected one opens it', async () => {

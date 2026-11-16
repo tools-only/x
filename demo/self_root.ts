@@ -142,7 +142,7 @@ export function orchestrationSchema(current?: any) {
   // A minimal real loop, not an empty shell: a transition turns when its receipt arrives, and the contract carries
   // the task side the host does not supply.
   const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [],
-    contract: { task_goal: 'The task artifact this run must deliver', task_acceptance: 'How its delivery is judged and how you verify it',
+    contract: { task_goal: 'The task artifact this run must deliver', task_acceptance: 'How this run verifies its own delivery',
       loop_policy: { look_when: [{ on: 'segment_boundary', look: 'what the last segment recorded, with which task facts' }] } },
     transitions: [{ id: 'again', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'work' }] };
   const definition = current ?? example;
@@ -736,6 +736,7 @@ export class SelfRoot extends LiveAgentSelf {
       : phase === 'boundary'
         ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
           `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
+          'Unit verdicts are recorded per segment (read_self(section="segments")); the host never combines them into a task-level acceptance conclusion - that statement, if any, is the one in TASK ACCEPTANCE.',
           ...(look.length ? [`Your run plan for this event (segment_boundary): ${look.join(' | ')}`] : []),
           'Facts only; judgment stays with you.'].join('\n')
         : phase === 'settled'

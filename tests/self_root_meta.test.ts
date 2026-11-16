@@ -15,7 +15,7 @@ const all = (s: any) => s.export().root.ledger;
 const count = (s: any, type: string) => all(s).filter((r: any) => r.type === type).length;
 const seed = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [], transitions: [] };
 // The task side the design turn fills: goal, acceptance and a run plan whose trigger binds a task-side event.
-const taskSide = { task_goal: 'Deliver the artifact this run must produce', task_acceptance: 'judged by the recorded acceptance report; verified by a fresh render',
+const taskSide = { task_goal: 'Deliver the artifact this run must produce', task_acceptance: "verified from this run's own acceptance checks and a fresh render",
   loop_policy: { look_when: [{ on: 'segment_boundary', look: 'the last segment numbers and the last change' }] } };
 const design = { ...seed, contract: taskSide };
 const fields = readFileSync(new URL('../demo/prompts/self_root_meta_fields.md', import.meta.url), 'utf8');
@@ -40,7 +40,9 @@ test('META fixed fields: the static prompt file is host-given, task-free and ord
   for (const layer of ['prompt -', 'context - policy.context', 'loop - orchestration revision', 'harness - '])
     assert.ok(board.includes(layer), `the board names the ${layer.split(' ')[0]} layer and an object in it`);
   assert.match(board, /DESIGN TURN/, 'the design turn states what this turn does');
-  assert.ok(board.includes('segment_boundary, failure, repetition, delivery_feedback'), 'the legal task-side events are named');
+  // 2026-11-16: the loop is self-evolving; a trigger may bind only events this run records itself.
+  assert.ok(board.includes('segment_boundary, failure, repetition'), 'the legal task-side events are named');
+  assert.ok(!board.includes('delivery_feedback'), 'feedback from outside the run is not an event a trigger can bind');
   assert.ok(!board.toLowerCase().includes('deck'), 'the spine carries no task content');
   assert.equal(count(s, 'meta_t0_delivered'), 1, 'delivery is booked once');
   s.metaBoard();
@@ -62,9 +64,17 @@ test('META contract gate: missing fields and counter/clock triggers are refused 
   await tick(s);
   const clock: any = { ...seed, contract: { ...taskSide, loop_policy: { look_when: [{ on: 'every_5_requests', look: 'look at the harness' }] } } };
   await assert.rejects(s.transaction({ baseRevision: 1, orchestration: clock }),
-    /look_when\[0\]\.on names "every_5_requests".*legal events are segment_boundary, failure, repetition, delivery_feedback/);
+    /look_when\[0\]\.on names "every_5_requests".*legal events are segment_boundary, failure, repetition/);
   await tick(s);
   assert.equal(s.metaT0Pending, true);
+  const external: any = { ...seed, contract: { ...taskSide, loop_policy: { look_when: [{ on: 'delivery_feedback', look: 'what someone said about the delivery' }] } } };
+  await assert.rejects(s.transaction({ baseRevision: 1, orchestration: external }), (err: Error) => {
+    assert.match(err.message, /look_when\[0\]\.on names "delivery_feedback".*legal events are segment_boundary, failure, repetition\)/);
+    assert.ok(!err.message.includes('repetition, delivery_feedback'), 'the refusal no longer offers an external event');
+    return true;
+  });
+  await tick(s);
+  assert.equal(s.metaT0Pending, true, 'an external-feedback trigger never opens the gate');
   const written = await s.transaction({ baseRevision: 1, orchestration: design });
   assert.ok(written.addresses.includes('orchestration'));
   assert.equal(count(s, 'meta_t0_design'), 1, 'the first accepted contract write is recorded once');
@@ -116,6 +126,7 @@ test('META board flow: compact during the task, expanded at a segment boundary, 
   assert.match(boundary, /Last change: none/);
   assert.match(boundary, /Last segment: requests 0, task actions 0, tool errors 0, elapsed 0s/);
   assert.match(boundary, /run plan for this event \(segment_boundary\): the last segment numbers and the last change/, 'the contract reaches the loop unasked, at the event its trigger names');
+  assert.match(boundary, /never combines them into a task-level acceptance conclusion/, 'the boundary states that per-unit verdicts stay per-unit');
   s.fact('request_record', { request: s.request });
   assert.ok(!s.metaBoard().includes('SEGMENT BOUNDARY'), 'one request later the compact line returns');
   s.taskEnd('delivered');

@@ -415,7 +415,8 @@ M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agen
 
 - 固定字段（1–3、7）放在独立提示文件里，未经修改地进入稳定前缀——改 harness 不重写这段文本，因而不会清零 provider 前缀缓存（yibu 2026-10-14 教训；`demo/ppt_demo_extension.ts` 在 `EVO_MECH.meta` 下读该文件）。动态字段（4–6、计数、相位流）渲染在每请求的易变尾部（`self_evolution` 键），复用 `selfChangeDigest()` 的 `self_state`。
 - 字段 3 复用既有 `PROTOCOL`（`read_self`、`read_self_component`、`reflect_component`、`reflect_orchestration`、`decide`、`decide_exit`、`decide_validation`）与既有 correction surface，**不新增工具、不新增审阅入口**。
-- 自进化验收三项（只记账，不评判）：①第一个任务段开始后，至少一次 agent 发起的结构变更；②它在更晚的请求边界激活，并在更晚的任务段被使用；③它追溯到本次任务执行观察到的事实（收据、失败、重复、耗时、交付反馈，含本任务产生的 self-view 记录）；与交付无关的整理不算。
+- 自进化验收三项（只记账，不评判）：①第一个任务段开始后，至少一次 agent 发起的结构变更；②它在更晚的请求边界激活，并在更晚的任务段被使用；③它追溯到**本运行自己记录的事实**（收据、失败、重复、耗时、任务结果，含本次运行产生的 self-view 记录）；与交付无关的整理不算。
+- 用户补定（2026-11-16，同日稍后）：自进化 loop 是 self-evolving——所有触发、验收与阶段信号只能来自本次运行自己记录的事实，不能依赖外部评价者。因此 `TASK_EVENTS` 只有 `segment_boundary`、`failure`、`repetition` 三个本运行自记事件，`delivery_feedback` 已移除；`ORCHESTRATION_CONTRACT_FORM` 的 `on:` 列表改为由 `TASK_EVENTS.join('|')` 生成（原为手写字面量，会与常量漂移）；验收第 ③ 项与 contract 的 `task_acceptance` 措辞改为"本运行自验"。若将来要重新引入任何外部评价信号，须用户决定。
 
 **验收计数的机械口径（新增唯一一段记账代码）**
 
@@ -425,12 +426,12 @@ M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agen
 
 - design（`metaT0Pending`）：七字段齐、任务侧为空；明说机制与标准已给定、本轮只填 TASK GOAL / TASK ACCEPTANCE 与运行计划，并列出合法 `on` 事件与 contract 合法形、本运行可记录的收据类型。
 - task：TASK GOAL + TASK ACCEPTANCE + OPTIMIZABLE OBJECTS + 计数，加一行机制行（"每笔写在下一边界激活，收据回到这里"）。
-- boundary（最新 `segment_summary` 晚于最新 `request_record`）：追加上一条变更的 activated/used_later、上一段与本段的数字（requests / task actions / tool errors / elapsed / phase），以及 contract 里绑定 `segment_boundary` 的运行计划原文。一个 `request_record` 之后回到单行。
+- boundary（最新 `segment_summary` 晚于最新 `request_record`）：追加上一条变更的 activated/used_later、上一段与本段的数字（requests / task actions / tool errors / elapsed / phase）、一条事实行"单元判词按段分记、宿主从不合并成一个任务级验收结论（若有，就是 TASK ACCEPTANCE 那一句）"，以及 contract 里绑定 `segment_boundary` 的运行计划原文。一个 `request_record` 之后回到单行。该事实行的由来：M 系列运行中每段的判词从未被汇成总体验收结论，这里只陈述"汇总路径不存在"，不新增机制。
 - settled（`meta_harness_inventory` 已记）：只留一行结算。
 
 **门（T0）**
 
-`contractProblems()` 检查 `orchestration.contract` 的固定形状：`task_goal`、`task_acceptance` 非空；`loop_policy.look_when` 非空，`on` 只接受 `segment_boundary | failure | repetition | delivery_feedback`——纯计数或纯时钟不能代替任务侧事件，`look` 说明查什么、用哪些任务事实。缺项时一次驳回列出全部缺项与 `ORCHESTRATION_CONTRACT_FORM` 合法形；门只验形状，**不评判设计质量**。合法的 contract 写入落 `meta_t0_design`（复用版本收据与既有 schema 校验），门即退役；之后编排写入省略 contract 时，设计记录里的任务侧仍然可见（`metaContract()` 回退）。
+`contractProblems()` 检查 `orchestration.contract` 的固定形状：`task_goal`、`task_acceptance` 非空；`loop_policy.look_when` 非空，`on` 只接受 `segment_boundary | failure | repetition`（三个本运行自记事件；`delivery_feedback` 已按 2026-11-16 补定移除）——纯计数或纯时钟不能代替任务侧事件，`look` 说明查什么、用哪些任务事实。缺项时一次驳回列出全部缺项与 `ORCHESTRATION_CONTRACT_FORM` 合法形；门只验形状，**不评判设计质量**。合法的 contract 写入落 `meta_t0_design`（复用版本收据与既有 schema 校验），门即退役；之后编排写入省略 contract 时，设计记录里的任务侧仍然可见（`metaContract()` 回退）。
 
 **无悬挂工件：每个机制谁推送 / 替代什么 / 如何反馈 / 何时退役**
 

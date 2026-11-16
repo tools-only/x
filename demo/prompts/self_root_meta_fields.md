@@ -13,4 +13,4 @@ The mechanism is given, not designed: reflect_component and reflect_orchestratio
 ### SELF-EVOLUTION ACCEPTANCE
 1. After the first task segment starts, at least one agent-initiated structural change to a component, the policy or the orchestration.
 2. It activates at a later request boundary and is used in a later task segment.
-3. It traces to facts observed in this task's execution - receipts, failures, repetition, elapsed time, delivery feedback, including self-view records this task produced. Tidying unrelated to delivery does not count.
+3. It traces to facts this run recorded itself - receipts, failures, repetition, elapsed time, task outcomes, including self-view records this task produced. Nothing outside the run counts as the trigger or the verdict. Tidying unrelated to delivery does not count.
