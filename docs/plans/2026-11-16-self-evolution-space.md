@@ -338,7 +338,35 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 2. **provider `terminated` 一次（未修）**：`session.jsonl` 第 31 行的助手消息 `stopReason:"error"`、`errorMessage:"terminated"`、usage 0；宿主丢弃该轮、记为 context_edit、重新提示，运行继续。与 M4a 的致命 `provider_error` 同类；本次非致命。按"不重复昂贵运行"的既有结论，先记录，等出现可复现的第二次再动。
 3. **自视图里没有交付物（已修其一）**：`OPTIMIZABLE OBJECTS` 只列 prompt / context / loop / harness，边界板面只说"上一个段多少请求"，从不说交付物动没动。于是 agent 每次看自己都只能看见"我被自己的编排卡住了"，看不见"这份 PPT 自上次修改后一个字节没变"。修法（单因素）：`SEGMENT BOUNDARY` 增加一行事实 `Deliverable: artifact at v<n> (hash <12位>); <k> artifact write(s) since the last change.`，只读 `snapshot().latestArtifactVersion/latestArtifactHash` 与 ledger，不新增状态、不新增义务、不新增工具。
 
-### 6.3 M5 预注册（改一个因素）
+### 6.3 M5（`runs/evo-m5-glm53f-meta-20261116`）：一个因素改完，自进化反而一次没发生
+
+按 §6.3 预注册只改了一个因素：`SEGMENT BOUNDARY` 多一行交付物事实。工程提交 `6700bd94`。同 freeze 源、同 provider（az）、同模型（glm-5.3-flash）、同臂 B，声明上限 64。
+
+**结果**：`stop: "delivered"`，10/10 单元，**21 requests**（1 预检 + 20），**826,795 tokens**，488 s，registered estimate **$0.109**，`self_revision` **2**，`empty_turns` 2。质量**好于** M4b：literal **30/30**（M4b 28/30）、citation 10/10、15 slides、0 renderer warnings。
+
+**过程**：2 次 `read` → **1 次** `reflect_orchestration`（第一次就通过）→ 4 次 `read` → 1 次 `write` → 1 次 render（v1，`d83e3d12…`）→ 10 次 `submit_unit` → 1 次 `office.deliver`。**refusal 0 次，T0 之后自修改 0 次。**
+
+**它写出的编排**：只有一个 step `work`；两条 transition：`continue`（submit_unit → work）、`deliver`（office.deliver，requires office.render → **work**）。**没有任何通向 `complete` 的边。**
+
+**K 判据**：K1 **不成立**（T0 之后零变更）、K2 **不成立**、K3 **不成立**。
+
+**两个必须记下的事实**
+
+1. **交付物那一行确实到了模型面前，但没有落差可看**：`provider-requests.jsonl` 里 12 次边界推送都带着 `Deliverable: artifact at v1 (hash d83e3d12e211); 1 artifact write(s) since the last change.`。agent 一次没改，所以这一行从第一版到结束一个字没变。它不是在无视证据，而是证据显示"没有缺口"——首版就满足它自己写的 TASK ACCEPTANCE（15 页、10 单元、字面数字、引用）。
+2. **交付的出口仍然不是 agent 给的那个**：`deliver` 的 `requires` 要求当前 step 实例里有 `office.render` 收据，而 `work` 在 11 次 `submit_unit` 中反复重入、每次都是新的 step 生成，渲染收据已经不属于当前实例 → `status: "stalled"`。`harness/lifecycle.jsonl` 记了 `delivery_transition_stalled`，随后 `delivered / continues: false / transition: "stalled"`；宿主按 `state.complete = true` 收尾（`demo/ppt_demo_extension.ts:521-525`），agent 看到停滞收据，但那一轮结束就是运行结束，它没有下一次请求可以修。
+
+**归因**：一个因素改完了，结果不是"改进了但没起效"，而是**这次运行根本不需要自进化**——没有拒绝、首版达标。两次运行把机制的激活条件夹出来了：
+
+| 运行 | 有没有拒绝 | 自修改次数 | 质量 |
+|---|---|---|---|
+| M4b | 4 类工具被自己的编排拒绝 | 4（全是放宽 step 的 actions） | literal 28/30 |
+| M5 | 0 | 0 | literal 30/30 |
+
+**本质结论（两次运行共同指向）**：这个 meta loop 目前的驱动信号只有**拒绝**。板面给的是事实，事实没有缺口时 agent 正确地什么都不改；一旦没有拒绝，自进化就完全不发生。同时两次运行都不是由 agent 的编排结束的——M4b 的 deliver 落在 build 步（build 没有出口），M5 的 deliver 回到 work（没有 `complete`）。也就是说"运行何时结束"这个对象，agent 写了，但从来没被真正行使过。
+
+**§3.4 的下一个单因素**（本稿不预先承诺，先报给用户定）：候选 A——交付停滞不直接收尾，把停滞收据留给 agent 的下一次请求去修它自己的编排（`ppt_demo_extension.ts:519-525`），这只把宿主的一次终止判决换回"服务给事实、agent 决定"，也让被两次运行都绕开的"终点由 agent 写"真正进入链路；候选 B——承认 PPT 任务没有落差，改任务结构（第二个消费者/绑定成本）而不是再改 harness；候选 C——以此停手，把"修复型自进化"当作结论记录。
+
+### 6.4 M5 预注册（已执行，见 §6.3）
 
 - 变的是**一个**：边界板面多一行交付物事实。其余全部不变——同 freeze 源、同 provider（az）、同模型（glm-5.3-flash）、同臂 B、同判据。
 - 声明上限：**64 requests**（与 M4b 同口径，便于直接比）。
