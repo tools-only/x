@@ -300,8 +300,17 @@ export class LiveOrchestrationSession {
         (action.artifactVersion === this.latestArtifactVersion && !!this.latestArtifactHash && action.artifactHash === this.latestArtifactHash))));
   }
   private advanceAction(receipt: ActionReceipt) {
+    // A transition's requires name receipts the run must hold, not only the receipt that triggers it: a step declared
+    // "advance when the render and the delivery both exist" fires on the delivery and finds the render in history.
+    // Evaluating only against the trigger made every cross-receipt requirement unsatisfiable and pushed the agent to
+    // weaken its own transition to close a step (M8 2026-11-17: requires [office.render, office.deliver] stalled on
+    // office.deliver four times). Decision transitions keep their declared-evidence semantics above.
+    const held = [receipt, ...this.actions.slice(0, -1)];
     const matches = this.current.orchestration.transitions.filter(transition => transition.from === this.activeStep && transition.on.type === 'action'
-      && transition.on.action === receipt.type && this.requiresMatched(transition.requires, [receipt.ref]));
+      && transition.on.action === receipt.type && transition.requires.every(requirement => held.some(action => action.type === requirement.type &&
+        (requirement.factPath === undefined || same(pointer(action.facts, requirement.factPath), requirement.equals)) &&
+        (!(requirement.currentArtifact || requirement.freshness === 'current') ||
+          (action.artifactVersion === this.latestArtifactVersion && !!this.latestArtifactHash && action.artifactHash === this.latestArtifactHash)))));
     if (matches.length !== 1 && !this.current.orchestration.transitions.some(t => t.from === this.activeStep && t.on.type === 'action' && t.on.action === receipt.type)) return { status: 'recorded' as const, step: this.activeStep, receipt: clone(receipt), existing_transitions: this.current.orchestration.transitions.filter(t => t.from === this.activeStep) };
     if (matches.length !== 1) return { status: 'stalled' as const, step: this.activeStep, reason: 'ambiguous transition', receipt: clone(receipt), existing_transitions: this.current.orchestration.transitions.filter(t => t.from === this.activeStep), editable_content: {
       meaning: 'add or revise orchestration content for this action receipt',

@@ -157,7 +157,9 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (file === 'consult_runs.jsonl' && row?.role) lineageUse({ ...row, role: row.role, kind: 'subagent' });
     appendFileSync(join(root, 'harness', file), JSON.stringify({ time: new Date().toISOString(), session_id: sessionId, batch: state.batch, ...row })+'\n');
   };
-  const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], terminate,
+  // Every tool result carries text: a section that has nothing to return must say so, not hand the provider an empty
+  // content block (M8 2026-11-17: read_self("definition") returned undefined and the next provider request died on it).
+  const text = (value: any, terminate = false): any => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) ?? 'no content for this request' }], terminate,
     ...(value && typeof value === 'object' && value.is_error === true ? { isError: true } : {}) });
   const registerTool = pi.registerTool.bind(pi);
   (pi as any).registerTool = (tool: any) => registerTool({ ...tool, execute: async (...args: any[]) => {
@@ -544,26 +546,42 @@ export default function pptDemo(pi: ExtensionAPI) {
         cpSync(delivery, caseDelivery, { recursive: true });
       }
       let taskEnd: any;
+      let switchFailed: string | undefined;
       if (episodeSwitch) {
         // Mechanical host service between frozen episodes: archive above, swap the live task data below,
         // reopen the same orchestration. Components, ledger, history, session and budget continue unchanged.
+        // The closure is recorded once; the data swap and reopen rerun freely, so a failed switch never leaves the
+        // orchestration sealed with the next episode unreachable.
         const closed = episodes![closingEpisode - 1], next = episodes![closingEpisode];
-        evo!.fact('task_episode_closed', { episode: closingEpisode, of: episodes!.length, id: closed.id, delivered_revision: Number(revision),
-          artifact_sha256: currentHash, delivery: `cases/${closed.id}/delivery` });
-        const liveData = join(workspace, 'data');
-        rmSync(liveData, { recursive: true, force: true });
-        cpSync(join(root, 'cases', next.id, 'workspace', 'data'), liveData, { recursive: true });
-        state.episode = closingEpisode + 1;
-        delete state.lastFeedback;
-        agentSelf.invalidateArtifact();
-        agentSelf.reopen();
-        evo!.fact('task_episode_started', { episode: state.episode, of: episodes!.length, id: next.id, sources: next.sources,
-          task_data: 'workspace data/ now holds this episode\'s frozen sources',
-          continuity: 'same root, serial session, components, ledger and budget; the orchestration is open again at its current step' });
-        log('lifecycle.jsonl', { event: 'task_episode_switched', closed: closed.id, active: next.id, episode: state.episode });
-        taskEnd = { continuing: true, transition_status: transition.status,
-          episode_closed: { episode: closingEpisode, id: closed.id, delivery: `cases/${closed.id}/delivery` },
-          episode_active: { episode: state.episode, of: episodes!.length, id: next.id } };
+        const nextData = join(root, 'cases', next.id, 'workspace', 'data');
+        try {
+          if (!existsSync(nextData)) throw Error(`frozen task data missing at cases/${next.id}/workspace/data`);
+          if (!evo!.export().root.ledger.some((row: any) => row.type === 'task_episode_closed' && row.value?.episode === closingEpisode))
+            evo!.fact('task_episode_closed', { episode: closingEpisode, of: episodes!.length, id: closed.id, delivered_revision: Number(revision),
+              artifact_sha256: currentHash, delivery: `cases/${closed.id}/delivery` });
+          const liveData = join(workspace.root, 'data');
+          rmSync(liveData, { recursive: true, force: true });
+          cpSync(nextData, liveData, { recursive: true });
+          state.episode = closingEpisode + 1;
+          delete state.lastFeedback;
+          agentSelf.invalidateArtifact();
+          agentSelf.reopen();
+          evo!.fact('task_episode_started', { episode: state.episode, of: episodes!.length, id: next.id, sources: next.sources,
+            task_data: 'workspace data/ now holds this episode\'s frozen sources',
+            continuity: 'same root, serial session, components, ledger and budget; the orchestration is open again at its current step' });
+          log('lifecycle.jsonl', { event: 'task_episode_switched', closed: closed.id, active: next.id, episode: state.episode });
+          taskEnd = { continuing: true, transition_status: transition.status,
+            episode_closed: { episode: closingEpisode, id: closed.id, delivery: `cases/${closed.id}/delivery` },
+            episode_active: { episode: state.episode, of: episodes!.length, id: next.id } };
+        } catch (error: any) {
+          switchFailed = String(error?.message ?? error);
+          if (agentSelf.snapshot().complete === true) { agentSelf.invalidateArtifact(); agentSelf.reopen(); }
+          evo!.fact('task_episode_switch_failed', { episode: closingEpisode, next: next.id, error: switchFailed });
+          taskEnd = { continuing: true, transition_status: transition.status,
+            episode_closed: { episode: closingEpisode, id: closed.id, delivery: `cases/${closed.id}/delivery` },
+            episode_switch_failed: { active: state.episode, of: episodes!.length, id: next.id, error: switchFailed, orchestration: 'reopened',
+              repair: 'the orchestration is open again; make the same delivery once more to retry the episode switch' } };
+        }
       } else {
         taskEnd = ended ? evo?.taskEnd('delivered')
           : { continuing: true, transition_status: transition.status, step: transition.step ?? agentSelf.step,

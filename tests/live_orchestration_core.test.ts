@@ -83,6 +83,35 @@ test('action receipt transitions are constrained by the current step', () => {
   assert.equal(self.step, 'review');
 });
 
+test('an action transition matches requires against the trigger receipt and the run history', () => {
+  const self = new LiveOrchestrationSession();
+  const definition: any = { roles: [{ id: 'agent' }], slots: [],
+    steps: [{ id: 'work', role: 'agent', actions: ['office.render', 'office.deliver'] }], decisions: [],
+    transitions: [{ id: 'done', from: 'work', on: { type: 'action', action: 'office.deliver' }, requires: [{ type: 'office.render' }, { type: 'office.deliver' }], to: 'complete' }] };
+  self.reflect({ baseRevision: 1, orchestration: definition, authorized: true });
+  assert.equal(self.recordAction('office.render', { artifactVersion: 1, artifactHash: 'deck-v1' }, true).transition.status, 'recorded');
+  assert.equal(self.recordAction('office.deliver', { artifactVersion: 1, artifactHash: 'deck-v1' }).transition.status, 'complete',
+    'the render receipt already held elsewhere in the run satisfies the closing transition');
+});
+
+test('history evidence is still held to freshness and presence', () => {
+  const fresh: any = { roles: [{ id: 'agent' }], slots: [],
+    steps: [{ id: 'work', role: 'agent', actions: ['office.render', 'office.deliver'] }], decisions: [],
+    transitions: [{ id: 'done', from: 'work', on: { type: 'action', action: 'office.deliver' }, requires: [{ type: 'office.render', currentArtifact: true }, { type: 'office.deliver' }], to: 'complete' }] };
+  const stale = new LiveOrchestrationSession();
+  stale.reflect({ baseRevision: 1, orchestration: fresh, authorized: true });
+  stale.recordAction('office.render', { artifactVersion: 1, artifactHash: 'deck-v1' }, true);
+  stale.invalidateArtifact();
+  assert.equal(stale.recordAction('office.deliver', { artifactVersion: 1, artifactHash: 'deck-v1' }).transition.status, 'stalled',
+    'a render no longer current does not satisfy currentArtifact');
+  const missing: any = { ...fresh, transitions: [{ ...fresh.transitions[0], requires: [{ type: 'office.look' }, { type: 'office.deliver' }] }] };
+  const absent = new LiveOrchestrationSession();
+  absent.reflect({ baseRevision: 1, orchestration: missing, authorized: true });
+  absent.recordAction('office.render', { artifactVersion: 1, artifactHash: 'deck-v1' }, true);
+  assert.equal(absent.recordAction('office.deliver', { artifactVersion: 1, artifactHash: 'deck-v1' }).transition.status, 'stalled',
+    'a required receipt that never happened keeps the transition closed');
+});
+
 test('reopen continues a completed orchestration at its step for the next frozen episode', () => {
   const self = new LiveOrchestrationSession();
   const definition: any = { roles: [{ id: 'agent' }], slots: [],
