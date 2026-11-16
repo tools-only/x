@@ -24,9 +24,8 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
-import { compareMountExpectations, metaDecisionVersionError, metaTrialFacts, parseComponentExpect, parseMetaReviewLines, stripMetaReviewControlLines,
-	type MountExpectation } from "./arc_thin_meta_trial.ts";
-import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, taskHistory, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
+import { outcomeRow, withoutBodies, SELF_CONTEXT_PATH, SELF_WORKING_PATH, SELF_OUTCOMES_PATH } from "./arc_thin_selfview.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
@@ -338,6 +337,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// one harness change (the runner's prompts), show the LOOP AUDIT and the run's loop logs under data/loop/, and report what
 	// the agent's own components' EXPECT checks found. ARC_THIN_HARNESS_TURN=1 turns it on; off, the reviews are today's.
 	const harnessTurn = native && !control && process.env.ARC_THIN_HARNESS_TURN === "1";
+	// The self-evolution loop (docs/plans/2026-11-16-arc-selfloop-migration.md): the run's own facts, readable to the
+	// agent under data/self/ (stage 1), a digest of them on every decision (stage 2), typed slots it can change
+	// between decisions (stage 3) and a mechanical settlement at level boundaries (stage 4). ARC_THIN_SELFLOOP=1 turns
+	// it on; unset, the decision context and every existing section are byte-identical to before it.
+	const selfLoop = native && !control && process.env.ARC_THIN_SELFLOOP === "1";
 	// Guards (the same plan, arm B): saved code that defines admit(state, action) is asked before every action is sent, and a
 	// reason it returns refuses that action as the agent's own rule. ARC_THIN_GUARDS=1 turns them on.
 	const guardsOn = native && !control && process.env.ARC_THIN_GUARDS === "1";
@@ -588,6 +592,63 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (existsSync(source)) workspace.runtimeWrite(`data/loop/${name}`, readFileSync(source));
 		}
 		workspace.runtimeWrite("data/loop/audit.txt", loopAuditText() + "\n");
+	}
+	/**
+	 * The self-evolution loop's read-only files (stage 1): the run's own per-decision accounting and one lineage row
+	 * per finished level, under data/self/. Projections of logs the runtime already keeps plus the level row built
+	 * from them; nothing here is a new measurement. Seeded at start from the store, so a restarted run keeps one file.
+	 */
+	let selfBudgetRows: any[] = [];
+	let selfWorkingRows: any[] = [];
+	let selfOutcomeRows: any[] = [];
+	/** Where the current level's span starts: the last recorded action when the run began, else 0. */
+	let selfFrom = 0;
+	/** Levels completed at the last settlement; a later level writes its predecessor's row. */
+	let selfLevel = 0;
+	function publishSelf(path: string, rows: any[]): void {
+		if (!workspace || !selfLoop) return;
+		try { workspace.runtimeWrite(path, rows.length ? rows.map((row) => JSON.stringify(row)).join("\n") + "\n" : ""); }
+		catch (error) { logError("self:publish", error); }
+	}
+	function selfBudget(row: any): void {
+		if (!selfLoop) return;
+		selfBudgetRows.push(row); publishSelf(SELF_CONTEXT_PATH, selfBudgetRows);
+	}
+	function selfWorking(row: any): void {
+		if (!selfLoop) return;
+		selfWorkingRows.push(withoutBodies(row)); publishSelf(SELF_WORKING_PATH, selfWorkingRows);
+	}
+	function loadSelfRows(): void {
+		if (!selfLoop || !workspace) return;
+		selfBudgetRows = readRows("context_budget.jsonl");
+		selfWorkingRows = readRows("working_set.jsonl").map(withoutBodies);
+		try {
+			const path = join(workspace.root, SELF_OUTCOMES_PATH);
+			selfOutcomeRows = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+		} catch { selfOutcomeRows = []; }
+		selfFrom = trajectory.at(-1)?.n ?? 0;
+		selfLevel = trajectory.at(-1)?.levels_completed ?? 0;
+		publishSelf(SELF_CONTEXT_PATH, selfBudgetRows);
+		publishSelf(SELF_WORKING_PATH, selfWorkingRows);
+	}
+	/**
+	 * Stage 1: one row per finished level, from the recorded span, its component runs, checks, refinements and
+	 * harness changes. Written when a later level is first seen, so the span it covers is complete.
+	 */
+	function selfOutcomes(level: number): void {
+		if (!selfLoop || level <= selfLevel) return;
+		let from = selfFrom;
+		for (let done = selfLevel; done < level; done++) {
+			const win = trajectory.find((row) => row.n > from && (row.levels_completed ?? 0) >= done + 1);
+			const to = win ? win.n : trajectory.length;
+			selfOutcomeRows.push(outcomeRow({ level: done, from, to, rows: trajectory,
+				runs: readRows("component_runs.jsonl"), claims: readRows("claim_checks.jsonl"),
+				refinements: readRows("refiner.jsonl"), changes: readRows("harness_changes.jsonl") }));
+			from = to;
+		}
+		selfLevel = level;
+		selfFrom = from;
+		publishSelf(SELF_OUTCOMES_PATH, selfOutcomeRows);
 	}
 	function recordComponentWrite(path: string, before: number | undefined, receipt: string | undefined,
 		split: ComponentExpectationSource): string {
@@ -1301,7 +1362,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// The grid is in states.jsonl, so only its size and hash are logged here.
 		const body = sections.map(([, value]) => value).join("\n\n");
 		try {
-			append("working_set.jsonl", {
+			const row = {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.daemonResponse ? { daemon_response: true, daemon_notification: run.daemonState?.pending?.id } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
@@ -1312,11 +1373,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
 				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
 				...(seen ? { images: seen.images.length, rendered_grids: seen.labels } : {}),
-				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16),
-				text: body, observation_text: stateText, ...(board ? { board_text: board } : {}), ...(tail ? { tail } : {}),
-				// Persist the exact visual observations shown to Task so a later clean hook can replay them whole.
-				observation_images: seen?.images ?? (image ? [image] : []),
-			});
+				state_sha256: createHash("sha256").update(stateText).digest("hex").slice(0, 16), text: body, ...(tail ? { tail } : {}),
+			};
+			append("working_set.jsonl", row);
+			selfWorking(row);
 		} catch (error) { logError("context:working_set", error); }
 		return { text: `${body}\n\n${stateText}${board && !contextLayout ? `\n\n${board}` : ""}`, image,
 			...(seen ? { images: seen.images } : {}), ...(tail ? { tail } : {}) };
@@ -4670,6 +4730,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", guard("session_start", () => {
 		replay();
+		loadSelfRows();
 		if (ledgerOn) loadLedgerStores();
 		toolsReady = true;
 		refreshSkillSurface();
@@ -4716,6 +4777,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.
 		if (refinerActive()) { try { await restoreBrokenViews(); await retireBrokenPredictors(); } catch (error) { logError("view:restore", error); } }
     if (binder) { await binder.scan(currentLevel()); binder.boundary(currentLevel()); nativeRuntime?.register(); }
+		// Stage 1: a level finished since the last decision writes its lineage row, before this decision's facts.
+		if (selfLoop) selfOutcomes(currentLevel());
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
 		if (!continuing) {
 		carriedResults = run.batchResults;
@@ -5043,7 +5106,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const active = new Set(pi.getActiveTools());
 			const tools = pi.getAllTools?.().filter((tool) => active.has(tool.name))
 				.map(({ name, description, parameters }) => ({ name, description, parameters }));
-			append("context_budget.jsonl", {
+			const budgetRow = {
 				decision, system_chars: systemChars, foundation: native ? 'native' : 'legacy', observation_delivery: observationMode,
         capability_index_chars: binder?.index(currentLevel(), undefined, undefined, true).length ?? 0,
 				active_prompt_chars: binder?.active().filter(c => c.kind === 'prompt').reduce((n, c) => n + (c.body?.length ?? 0), 0) ?? 0,
@@ -5065,7 +5128,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 						&& (Array.isArray(message.content) ? message.content : []).some((block: any) => block.type === 'toolCall')).length } : {}),
 				images: projected.reduce((n, message) => n + (Array.isArray(message.content)
 					? message.content.filter((block: any) => block.type === "image").length : 0), 0),
-			});
+			};
+			append("context_budget.jsonl", budgetRow);
+			selfBudget(budgetRow);
 		} catch (error) { logError("context:budget", error); }
 		return { messages: projected };
 	}));
