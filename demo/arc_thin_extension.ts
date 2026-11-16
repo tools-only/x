@@ -25,7 +25,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
-import { outcomeRow, predictionCounts, selfDigest, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_WORKING_PATH, SELF_OUTCOMES_PATH, SELF_SLOTS_PATH } from "./arc_thin_selfview.ts";
+import { outcomeRow, predictionCounts, selfDigest, settlementRow, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_SETTLEMENTS_PATH, SELF_WORKING_PATH, SELF_OUTCOMES_PATH, SELF_SLOTS_PATH } from "./arc_thin_selfview.ts";
 import { changedSlots, slotComponent, slotInventory, slotValues, type SlotValues } from "./arc_thin_selfslots.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
@@ -602,6 +602,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let selfBudgetRows: any[] = [];
 	let selfWorkingRows: any[] = [];
 	let selfOutcomeRows: any[] = [];
+	/** Stage 4: one acceptance row per finished level (changes / activated / used later). */
+	let selfSettlementRows: any[] = [];
 	/** Where the current level's span starts: the last recorded action when the run began, else 0. */
 	let selfFrom = 0;
 	/** Levels completed at the last settlement; a later level writes its predecessor's row. */
@@ -627,6 +629,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const path = join(workspace.root, SELF_OUTCOMES_PATH);
 			selfOutcomeRows = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 		} catch { selfOutcomeRows = []; }
+		try {
+			const path = join(workspace.root, SELF_SETTLEMENTS_PATH);
+			selfSettlementRows = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+		} catch { selfSettlementRows = []; }
 		selfFrom = trajectory.at(-1)?.n ?? 0;
 		selfLevel = trajectory.at(-1)?.levels_completed ?? 0;
 		publishSelf(SELF_CONTEXT_PATH, selfBudgetRows);
@@ -642,14 +648,19 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (let done = selfLevel; done < level; done++) {
 			const win = trajectory.find((row) => row.n > from && (row.levels_completed ?? 0) >= done + 1);
 			const to = win ? win.n : trajectory.length;
+			const changes = readRows("harness_changes.jsonl").filter((row) => Number(row.level) === done);
 			selfOutcomeRows.push(outcomeRow({ level: done, from, to, rows: trajectory,
 				runs: readRows("component_runs.jsonl"), claims: readRows("claim_checks.jsonl"),
 				refinements: readRows("refiner.jsonl"), changes: readRows("harness_changes.jsonl") }));
+			// Stage 4: the level's mechanical acceptance, from the same receipts.
+			selfSettlementRows.push(settlementRow({ level: done, from, to, changes, versions: binder?.versionMap() ?? {},
+				slots: slotValuesNow(), trajectory, runs: readRows("component_runs.jsonl") }));
 			from = to;
 		}
 		selfLevel = level;
 		selfFrom = from;
 		publishSelf(SELF_OUTCOMES_PATH, selfOutcomeRows);
+		publishSelf(SELF_SETTLEMENTS_PATH, selfSettlementRows);
 	}
 	/**
 	 * Stage 2: the host's fixed fields plus one line of this run's own facts, shown with every decision near its end.
@@ -670,7 +681,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				...(last ? { lastChange: { path: String(last.path ?? "?"), version: Number(last.version) || 0 } } : {}),
 				slots: changedSlots(run.slots ?? {}, slotDefaults()),
 				outcomes: selfOutcomeRows,
-				rows: { budget: selfBudgetRows.length, working: selfWorkingRows.length, outcomes: selfOutcomeRows.length },
+				...(selfSettlementRows.at(-1) ? { lastSettlement: selfSettlementRows.at(-1)! } : {}),
+				rows: { budget: selfBudgetRows.length, working: selfWorkingRows.length, outcomes: selfOutcomeRows.length, settlements: selfSettlementRows.length },
 			});
 		} catch (error) { logError("self:digest", error); return ""; }
 	}
@@ -707,7 +719,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!component || version === undefined || /NOT loaded/.test(receipt ?? ""))
 			return split.error ? `EXPECT not recorded: ${split.error}` : "";
 		if (version !== before) append("harness_changes.jsonl", { decision, at: trajectory.length, level: currentLevel(), path,
-			component, version, review: run.levelReview ? "level" : run.stallReview ? "stall" : undefined });
+			component, version, ...(component === "slot" ? { parameters: { slots: binder?.candidates().find((c) => c.path === path && c.version === version)?.parameters?.slots ?? {} } } : {}),
+			review: run.levelReview ? "level" : run.stallReview ? "stall" : undefined });
 		if (split.expect && version !== before) {
 			const id = `${path}@v${version}:${decision}:${trajectory.length}`;
 			append("harness_expectations.jsonl", { kind: "candidate", id, path, version, level: currentLevel(), decision,
