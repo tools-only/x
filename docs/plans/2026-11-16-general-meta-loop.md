@@ -239,6 +239,12 @@ meta loop 的四处失真（矛盾常驻文案、一句话四层、空壳 exampl
 
 - M2 已按 §13 判据结账：kernel 0/1，主指标未达；无晚期自发修订（T0 后 reflect_* 为 0）。副指标：30/30 literals，引用探针 0/10 为假阴性（产物 15 处 cite 文本存在），质量未见回退。系列预算已用 M1 40 + M2 25（含预检）= 65/600，余 535（429 槽计入请求口径，是否维持请用户确认）。
 - M3 建议：有效性修复 a（META 版系统提示，去除 ¶11/¶13 与 META_STRATEGY 的矛盾——这是 arm validity 修复，不算实验因素）+ 单主因素 **c'（自状态推送去壁纸化：完整编排形状 + 自上次修订以来差分 + 上一条 expected_effect 状态，兑现"运行视图对象可辨识"）**，直接对应用户点名的"运行视图对象未纳入 loop"；b/d 列为备选，f–h 设计内赌注留给用户决定。预算仍在同一 600 授权内，启动前按规则申报本次上限。
+- **M3b 计划（2026-11-16 更新，冻结于 `08822735`）**：M4 之后运行面未再改动；M3b 从该提交起跑（§14.8 的记录另提交，只增文档，不改运行时）。预算口径更新：M1 40 + M2 25 + M3 46 = 111/600，余 489；本轮开发 0 请求。M3b 启动前仍需用户单独声明本次 token 上限（这不是开发侧能拍板的事）。M3b 必须回答的判据问题：
+  1. **T0 递进**：`meta_t0_design` 记录的编排是否含 ≥1 条 transition（门已强制），且该编排是否包含一个自观察结构（绑定 `self.change` 的 transition 或引用它的 decision），而不是纯工作排程？
+  2. **环是否转**：T1 是否出现 `self.change` 收据；agent 自己写的 transition 是否被该收据推进（`reflection_activated.self_change.transition.status`）？
+  3. **视图是否被消费**：是否有 decision 以 `self.change` 收据为 evidence（`evidenceRefs` 含该 ref）；若没有，agent 是否在收到首条收据后修订了结构（首条收据之后出现 `reflection_activated`）？
+  4. **kernel 主指标**：T0 之后的 agent 发起结构变更，是否在后续任务段生效并被使用（定义不变；T0 首版不计，修订计入）。
+  5. **负例可判读**：若 1–4 全为 0，记录必须能区分"call point 未出现"（agent 从未写绑定）与"有而不选"（写了但未用）——这是退役/重设计判据（§14.8 问题 2 的退役条件），不是任务分。
 
 ### 14.6 M3 实现（2026-11-16，提交 `e780fc55`）
 
@@ -292,4 +298,57 @@ M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agen
 - §4 T1 的原表述"执行器按 activeStep 校验动作白名单"在语义上是自指的：一个可修订对象如果同时门控修订动作本身，可修订性就不是真实属性。T1 的可执行结构现在要求**协议面在门之外**——已回写 §4。
 - 这不改变 M 系列的判据，但改变了 M3b 的解释框架：如果 M3b 仍然 kernel 0/1，失败不再能归因于"白名单锁死"，而是真正回到"agent 是否自发修订"这一待测问题上。
 - 关于 c'：M3 没有提供关于 c' 的证据（agent 从未到达能读 digest 的状态）。c' 是否改变动作仍未被测。
+
+### 14.8 M4 实现：四个点名问题的落点（2026-11-16，提交 `08822735`）
+
+用户授权为"解决这四个问题"，覆盖设计赌注 f（T0 门改成机械结构要求）与 h（四层材料的加厚尺度）；"宿主不评判"红线未越：所有新增内容只报事实、不排名、不诊断、不建议，agent 决定是否使用。本轮不发起付费运行：M 系列已用约 111/600（M1 40 + M2 25 + M3 46），本轮新增 provider 请求 0。问题 4①（常驻提示承诺宿主开审）已由 `e780fc55` 修复，本节不重做；下面按问题逐项登记，并对应 §14.4 的类别。
+
+**问题 1：T0 交接无递进（类别 f，用户已授权）**
+
+- 改了什么：`noteMetaDesign()` 对 `status === 'no_change'` 直接返回（`demo/self_root.ts:777`）——seed 等价重写不再落 `meta_t0_design`，门不打开；`prepareTransaction()` 在确定性编译之后要求 `transitions.length >= 1`（`:875-877`），否则 `operationError` 的 correction 写明合法形与本运行记录的收据类型，并明说"a loop with no transition cannot turn, and a write equivalent to the seed does not open the gate"；T0 材料末行同步（`META_T0_MATERIAL`，`:154`）。
+- 为什么选它：门只验"存在一次 reflect_orchestration"无法区分设计与种子重写，T0→T1 因而没有产物。"至少一条 transition"是纯结构、可由 runtime 机械验证、不涉内容评判；绑定对象仍由 agent 完全选择（可以是它自己的 decision）。没有选"必须含自观察步或 self.change 绑定"：那会把"进化环长什么样"替 agent 决定，越过服务/agent 边界；要求停在"能转"这一最小机械条件。
+- 如何进入 loop：门在 transaction 处由宿主机械检查；被拒时 correction 作为该响应的 tool result 回到 agent 同一响应链；材料在门关闭期间每请求推送、只记一次 `meta_t0_delivered`。
+- 替代了什么工作：此前 T0 可以零产物通过，T1 直接开始任务且没有可执行结构可看；现在 T0 必须交出一个能转的环，T1 的每次收据都可能推动它。
+- 下一真实运行如何反馈 / 何时退役：看 `meta_t0_design` 的编排形状（transition 数、`on` 绑定类型、是否引用 `self.change`）与首个 T1 段是否推进；首版设计成立后门即退役（`metaT0Pending` 转 false），不常驻。
+- 证据：`tests/self_root_meta.test.ts` "a seed-equivalent write leaves the gate closed; a design with a transition opens it"（离线功能与接线）。未验证：真实 provider 下 agent 是否写得出一条真 transition、会不会在 T0 反复被拒而耗尽预算（M3b 判据问题 1）。
+
+**问题 2：进化环缺失（新机制，属设计赌注，需用户确认）**
+
+- 改了什么：META 在构造器把 `self.change` 并入 runtime 记录的 action receipt 类型（`:560-564`，与 adapter 声明的任务收据并列）；每次 T0 设计之后的激活在 `metaSelfChange()`（`:989-1000`）里调用 `recordAction('self.change', {revision, addresses, ...selfChangeDigest(prior)}, false, hostDeferred=true)`，返回 `{ref, transition}` 写进 `reflection_activated` 的 `self_change` 字段（`:1021-1026`）。`hostDeferred=true` 只跳过步骤白名单检查——这条收据是宿主自己记的，不是 agent 的工具调用。
+- 为什么选它：这是 kernel 判据的结构载体——"agent 发起的结构变化在后续段生效并被使用"。收据由宿主在激活时机械产生（事实，不评判）；agent 是否把它接进自己的环，由 agent 写不写 `on:{type:"action",action:"self.change"}` 的 transition 决定。服务提供接口与执行，agent 持有决定权。首个激活（T0 设计本身）是环的存在条件、不是环的一周，不记收据；对照臂完全不记。
+- 如何进入 loop：收据进 `actions`，`advanceAction()` 在激活的同一请求内匹配 `from === activeStep && on.action === 'self.change'` 并推进 step；推进后的 step 出现在下一请求的完整编排推送里。若 agent 写 decision `requires:[{type:"self.change"}]`，它可按 digest 显示的 ref 引用该收据作为证据——`decide()` 接受即 kernel 意义上的"使用"。
+- 替代了什么工作：此前"自变更"只有内部的 `reflection_activated` 行，agent 无法在自己的编排里引用它；自状态推送是只读壁纸（M1–M3 `read_self` 调用 = 0）。
+- 退役条件（无悬挂工件）：它现在有 call point（T0 材料与系统提示明确说明，`self.change` 在可记录类型清单里）、有被替代的工作（重读 self 来比较）、有反馈（transition advanced / decision accepted 落 ledger）。若 M3b 全程无任何 transition 或 decision 消费该收据，运行记录必须能区分"未接"与"有而不选"；连续两轮零使用则移除或重设计，不叠新层。
+- 证据：`tests/self_root_meta.test.ts` "an activation after the design books the self state as a receipt the loop turns on"（T0 不记；第二次激活记 1 条、`facts.addresses` 正确、step 推进、decision 引用被接受、B 臂 0 条）。未验证：真实 agent 会不会自发写这条 transition/decision——离线不可证。
+
+**问题 3：视图对象无消费者（与问题 2 同一机制的另一半）**
+
+- 改了什么：`selfChangeDigest()` 增 `last_self_change {ref, revision, transition}`（`:730-739`），指向最近一次激活收据；系统提示 ¶13 与 T0 材料说明"decision 可引用视图里显示的 ref"。
+- 为什么选它：c' 只解决了"可见"；素材没有地址就没有消费者。给视图一个稳定 ref，使"读视图"退化为"引用一个收据"——agent 不必再调 `read_self` 重述自身状态；消费（`decide` 的 evidenceRefs 或 transition 推进）由 runtime 记账。
+- 如何进入 loop：每请求尾部 `self_state` 推送（既有 c' 路径，见 §14.6）→ digest 显示 ref → agent 写 transition/decision → 激活或 decide 的结果落 ledger。
+- 替代了什么工作：`read_self` 全量重读（连续三轮为 0，说明这条路径本来就没被用）。
+- 退役条件：与问题 2 同一判据（被引用次数、transition advanced 次数、decision accepted）。若 `last_self_change` 长期为 null（无激活）或 ref 零引用，机制降级为纯事实推送，按无悬挂工件标准记录并考虑移除。
+- 证据：同问题 2 的测试覆盖 ref 与 decision 引用。未验证：agent 是否愿意用 ref 而非重读——只有真实运行可测。
+
+**问题 4②：四层材料厚度（类别 h，用户授权了"加厚尺度"）**
+
+- 改了什么：`META_T0_MATERIAL`（`:141-155`）从"一句话四层"改为四层各给一个可写对象与接口（prompt / context / loop / harness）；`orchestrationSchema` 的 example 从空壳改为最小真环（一条绑定 `self.change` 的 transition），`transitions` 增 schema description（`:158-166`）。
+- 为什么选这个尺度：只列"存在什么、在哪写"，不给任务词、不给诊断、不给策略；示例是通用结构。它停在 §14.4 h 的"指导范围"一侧，不替 agent 设计。
+- 证据：`tests/self_root_meta.test.ts` 断言四层行、`self.change` 与 gate 语句；`tests/live_orchestration_known_actions.test.ts` 断言 META 材料把 `self.change` 列在可记录集合里。未验证：厚度是否足够让 T0 产物真的引用这些对象——只有真实运行看得到。
+
+**问题 4③：驳回文案与词表对齐（类别 e）**
+
+- 改了什么：`compileOrchestrationIntent(def, knownActions?)`（`:262` 起）——缺 `on` 的回复列出合法事件形（action/decision）与本运行记录的收据类型；单键 `on` 的回复给 decision 的 output 属性；`requires` 只在名字属于记录集合时自动补全，否则一问返回、原文保留，不再把 agent 的错误词放大成 `requires`；删除"not an event type"措辞。
+- 证据：`tests/live_orchestration_known_actions.test.ts`（`bare` fixture 触发一问并列出 recordable set；非 META 臂保持旧接受）。未验证：真实 provider 下首次即过率是否上升（M3 的 45 请求里前两次是形状错误）。
+
+**类别 d / g：未实现，明确留白**
+
+- d（META 下不依赖 `inEvolutionReview` 的开窗）：未动；系统提示仍写"本运行不开窗"。若 M3b 后要测"声明即开窗"，它是新实验因素，需用户另行授权并相应改告知。
+- g（宿主保底入口）：未动，与"宿主不开审"冲突，需用户决定，不在本轮擅自实现。
+
+**证据边界（总）**
+
+- 本轮全部为离线证据：`node --experimental-transform-types --test --test-concurrency=1`。受影响两文件 16/16；7 文件相关套件 30/33，3 个失败均为已登记预存失败（`rootObject` 投影键、`reflective_evolution` 两条 native compute；见 `docs/plans/2026-11-15-evo-mechanisms-implementation.md` 与 `docs/reports/ANALYSIS-v1.md:36`），且这三个测试文件不 import `demo/self_root.ts`，与本次改动无关。
+- 未发起任何 provider 请求；M 系列预算不变。
+- 不可离线证明的核心问题不变：**agent 会不会自发修订、会不会把这些对象接进它自己的环**。M3b 的判据问题见 §14.5。
 
