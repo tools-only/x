@@ -269,7 +269,7 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 
 ## 5. 交付决定
 
-- **已实现、未提交、未运行**：§2.1–2.6 的 A–F 全部落在工作树——A 设计轮写整条编排（`self_root.ts:737`）并在 T0 表面开只读工具（`:1040`）；B 声明效果即开窗并把窗口放进板面（`:998`、`:752`）；C 交付收据按编排的 `transition.status` 分派（`ppt_demo_extension.ts:515-527`）；D `TASK_EVENTS` 加 `self_change`（`live_orchestration_core.ts:8`）；E subagent 作为普通可写组件打开（`evo_ppt.py:171`）；F 无 review 时不再列出 `decide_exit`（`self_root.ts:1049-1051`）。没有 provider 调用、没有离线检查、没有占用 M4 预算；§4.3 的四行证据层级全部仍是**未验证**。
+- **已实现、已提交（`538ac815`）、未运行**：§2.1–2.6 的 A–F 全部落在工作树——A 设计轮写整条编排（`self_root.ts:737`）并在 T0 表面开只读工具（`:1040`）；B 声明效果即开窗并把窗口放进板面（`:998`、`:752`）；C 交付收据按编排的 `transition.status` 分派（`ppt_demo_extension.ts:515-527`）；D `TASK_EVENTS` 加 `self_change`（`live_orchestration_core.ts:8`）；E subagent 作为普通可写组件打开（`evo_ppt.py:171`）；F 无 review 时不再列出 `decide_exit`（`self_root.ts:1049-1051`）。没有 provider 调用、没有离线检查、没有占用 M4 预算；§4.3 的四行证据层级全部仍是**未验证**。
 - 实现范围 = §2.1–2.6；**A–F 由一个提交承载**：六项交叉在同一批文件里（`self_root.ts` 同时被 A、B、E、F 修改，`ppt_demo_extension.ts` 被 C、E 修改），逐项拆分只会把同一函数切成半截。按 K 判据的归因以 §4.1 的逐项 `file:line` 表和运行日志为准，不依赖提交切分。
 - **明确不做**：
   - 不在循环之上再加一层：没有 planner、critic、质量模型、外部评价信号，也没有宿主评审中断；三个关节交还给编排，宿主只记账。
