@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { SelfRoot, FLOOR, PROTOCOL, META_GOAL, META_STRATEGY, hash } from '../demo/self_root.ts';
 
 // EVO_META (design 2026-11-16 §4): the general meta loop is a task-free host spine. Offline checks cover the
@@ -95,4 +96,40 @@ test('META T2: task end books the harness inventory once; before_session_end nev
   assert.equal(count(s, 'meta_harness_inventory'), 1);
   const off = make(); await tick(off); off.taskEnd('delivered');
   assert.equal(count(off, 'meta_harness_inventory'), 0, 'no inventory outside META');
+});
+
+test('META self-state push: the tail carries the optimizable object and a since-last-change delta, facts only', async () => {
+  const s = make({ meta: true }); await tick(s);
+  const before = s.selfChangeDigest();
+  assert.equal(before.self_changes, 0);
+  assert.equal(before.last_change, null);
+  assert.equal(before.requests_since_change, s.request);
+  assert.deepEqual(before.validation_windows, [], 'an empty window list is a fact, not an absence');
+  await s.transaction({ baseRevision: 1, orchestration: seed }); await tick(s);
+  const first = s.selfChangeDigest();
+  assert.ok(first.self_changes >= 1, 'the write is a self change');
+  assert.deepEqual(first.last_change.addresses, ['orchestration']);
+  assert.equal(first.last_change.revision, s.revision);
+  s.fact('tool_failed', { tool: 'reflect_orchestration', content: 'steps[0].role is not a declared role' });
+  s.fact('tool_failed', { tool: 'reflect_orchestration', content: 'second refusal' });
+  s.fact('tool_failed', { tool: 'office.render', content: 'not a reflect operation' });
+  await tick(s);
+  const after = s.selfChangeDigest();
+  const lastRow = all(s).filter((r: any) => r.type === 'reflection_activated' || r.type === 'meta_t0_design').at(-1);
+  assert.equal(after.requests_since_change, s.request - lastRow.request, 'requests since the last self change');
+  assert.equal(after.refused_self_operations.length, 1, 'only reflect operations are self operations');
+  assert.equal(after.refused_self_operations[0].count, 2);
+  assert.equal(after.refused_self_operations[0].last_error, 'second refusal', 'the last refusal text is carried verbatim');
+});
+
+test('META resident prompt: no host-opened review entrance and no window promise; the B prompt is untouched', () => {
+  const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8');
+  const meta = read('../demo/prompts/self_root_meta_system.md');
+  const base = read('../demo/prompts/self_root_system.md');
+  assert.ok(!meta.includes('the host opens evolution reviews at work boundaries'));
+  assert.ok(!meta.includes('FIXED REVIEW ENTRANCE'));
+  assert.ok(!meta.includes('The host opens a validation window only for a declared effect'));
+  assert.ok(meta.includes('No host-opened review entrance exists in this run'));
+  assert.ok(meta.includes('SELF-STATE MATERIAL'));
+  assert.ok(base.includes('FIXED REVIEW ENTRANCE'), 'the B-arm prompt still describes the entrance its own arm opens');
 });

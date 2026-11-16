@@ -687,6 +687,29 @@ export class SelfRoot extends LiveAgentSelf {
   }
   observationText(budget = 2800) { return renderObservation(this.observation(), budget); }
   observationDigest() { return observationHeads(this.observation()); }
+  /** META self-state push: facts about the agent's own harness since it last changed - the optimizable objects
+   * themselves, so the tail changes when the self changes. Facts only, no interpretation. */
+  selfChangeDigest() {
+    const changes = this.ledger.filter(r => r.type === 'reflection_activated' || r.type === 'meta_t0_design');
+    const last = changes.at(-1);
+    const refused = new Map<string, { tool: string; count: number; last_error: string }>();
+    for (const r of this.ledger.slice(last ? this.ledger.indexOf(last) + 1 : 0)) {
+      const tool = String(r.value?.tool ?? '');
+      if (r.type !== 'tool_failed' || !['reflect_component', 'reflect_orchestration'].includes(tool)) continue;
+      const entry = refused.get(tool) ?? { tool, count: 0, last_error: '' };
+      refused.set(tool, { ...entry, count: entry.count + 1, last_error: String(r.value?.content ?? '').slice(0, 400) });
+    }
+    return {
+      self_changes: changes.length,
+      last_change: last ? { type: last.type, revision: last.value?.revision ?? last.revision, request: last.request,
+        addresses: last.value?.addresses ?? null, expected_effect: last.value?.expected_effect ?? null,
+        success_predicates: last.value?.success_predicates ?? null } : null,
+      requests_since_change: last ? this.request - Number(last.request ?? 0) : this.request,
+      refused_self_operations: [...refused.values()],
+      validation_windows: this.windows.map(w => ({ id: w.id, scope: w.scope, expected_effect: w.expected_effect ?? null,
+        effect_status: w.effect_status, status: w.status, due_settlement: w.due?.settlement ?? null, later_use_refs: w.later_use_refs.length })),
+    };
+  }
   private pinView() {
     return this.review ? this.reviewSelfView() : { ...this.mirror(), writable: this.contract.writable, operations: PROTOCOL };
   }
