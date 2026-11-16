@@ -78,7 +78,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   // EVO_META=1 runs the general meta loop (2026-11-16): T0 design turn plus the agent's own review rhythm; it forces ask/l4 off.
   const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1', a4: process.env.EVO_A4 === '1', ask: process.env.EVO_ASK === '1', l4: process.env.EVO_L4 === '1', meta: process.env.EVO_META === '1' };
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
-    { ...PPT_SELF_ROOT_OPTIONS, mechanisms: EVO_MECH, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
+    { ...PPT_SELF_ROOT_OPTIONS, mechanisms: EVO_MECH, taskComplete: () => state.complete || agentSelf?.snapshot?.().complete === true, requiredUnits: () => activeManifest()?.units.length ?? 0,
       pendingDeliveryState: () => agentSelf?.hasPendingFinalDelivery?.() === true,
       deliveryTransitionReached: () => !agentSelf?.hasPendingFinalDelivery?.() || agentSelf?.pendingDeliveryTransitionReady?.() === true,
       runPendingDelivery: async () => agentSelf.hasPendingFinalDelivery() ? officeDeliver({ op: 'deliver' }, new AbortController().signal, {}, true) : undefined,
@@ -95,7 +95,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   let resumed = false, initialized = false;
   const ownedNative = new Map<string, { kind: string; path: string }>();
   // META runs seed the META variant of the resident prompt: same object contract, minus the host-opened review
-  // entrance and the validation-window promise, which META turns off (self_root.ts:1199/:1201 and the window gate).
+  // entrance and its decide_exit, which META turns off (self_root.ts protocolSurface and the review-only exit schema).
   const initialSystemPrompt = readFileSync(fileURLToPath(new URL(manifest ? (EVO_MECH.meta ? './prompts/self_root_meta_system.md' : './prompts/self_root_system.md') : './prompts/ppt_demo_system.md', import.meta.url)), 'utf8');
   // META (user decision 2026-11-16): the seven fixed self-evolution fields. The four fixed fields sit in this file
   // and enter the stable prefix unchanged, so editing the agent's harness never rewrites them and never zeroes the
@@ -227,7 +227,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     hookTurn: () => false,
     consultReasoning: (process.env.PPT_DEMO_THINKING ?? 'high') as 'low' | 'medium' | 'high',
     modelResult: async create => {
-      if (experimentManifest) throw Error('this experiment authorizes one serial agent; child provider calls are disabled');
+      // Subagent calls are child model calls of this same run: they enter the same request counter and metering below,
+      // and they cannot pass the deadline or the authorized request budget.
       if (Date.now() > Number(process.env.PPT_DEMO_DEADLINE) || spent + reserve > cap) {
         writeFileSync(join(root, 'budget-stop.json'), JSON.stringify({ spent, requests, tokensSpent, reason: 'consult budget boundary', stop_kind: 'budget_stop' }));
         syncDaemonResources(root, evo);
@@ -262,11 +263,17 @@ export default function pptDemo(pi: ExtensionAPI) {
   // The Agent makes one reflection call; it does not perform a second publish/assembly operation.
   agentSelf.onReflection = change => {
     if (evo) {
-      for (const component of agentSelf.active().filter(c=>c.kind==='tool')) {
-        assertNativeName(component.name,component.kind,component.path);
-        ownedNative.set(component.name,{kind:component.kind,path:component.path});
+      // A reflected tool or subagent is registered and activated in the same object write; without activation Pi never
+      // advertises it, and the write would be a change the runtime could not consume (M3b/M3c: no created callable
+      // was ever in the active surface).
+      const callable = agentSelf.active().filter((c: any) => c.kind === 'tool' || c.kind === 'subagent');
+      for (const component of callable) {
+        assertNativeName(component.name, component.kind, component.path);
+        ownedNative.set(component.name, { kind: component.kind, path: component.path });
       }
-      runtime.register(); if (!activatingEvo) persistLiveSelf('request_boundary_reflected', { revision: agentSelf.revision }); return;
+      runtime.register();
+      pi.setActiveTools([...new Set([...pi.getActiveTools(), ...callable.map(c => c.name)])]);
+      if (!activatingEvo) persistLiveSelf('request_boundary_reflected', { revision: agentSelf.revision }); return;
     }
     const component = change.component;
     if (component) {
@@ -333,7 +340,6 @@ export default function pptDemo(pi: ExtensionAPI) {
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
       try {
-        if (experimentLimits && a.kind === 'subagent') throw Error('experiment authorizes one agent; no task subagents');
         const input = evo ? normalizeOperation('component', a, undefined, { layer: evo.mech.l4 }) : a;
         assertNativeName(input.name, input.kind, path);
         const result = await agentSelf.reflectComponent({ ...input, baseRevision: evo?.pendingRevision ?? agentSelf.revision, level: 0, origin: { by: 'agent', decision: state.batch } });
@@ -507,9 +513,17 @@ export default function pptDemo(pi: ExtensionAPI) {
         persistLiveSelf();
       }
       const orchestrationAction = agentSelf.recordAction('office.deliver', { artifactVersion: Number(revision), artifactHash: currentHash, sourcePath: receipt.source_path }, false, hostDeferred);
-      const taskEnd = evo?.taskEnd('delivered');
+      // Delivery is an action like every other: the agent's own transition decides whether the run is over. A matching
+      // transition to "complete", no matching transition, or an ambiguous one ends the run as before; a transition to a
+      // next step keeps the run alive and this delivery becomes the receipt that step continues from.
+      const transition: any = orchestrationAction?.transition ?? { status: 'complete' };
+      if (transition.status === 'stalled') log('lifecycle.jsonl', { event: 'delivery_transition_stalled', step: transition.step, transitions: transition.existing_transitions });
+      const continues = transition.status === 'advanced';
+      const taskEnd = continues ? { continuing: true, step: transition.step, transition: transition.transition } : evo?.taskEnd('delivered');
       agentSelf.completePendingFinalDelivery();
-      state.complete = true; state.deliveredRevision = revision; persist(); log('lifecycle.jsonl', { event: 'delivered', revision });
+      state.deliveredRevision = revision; state.deliveredHash = currentHash;
+      if (!continues) state.complete = true;
+      persist(); log('lifecycle.jsonl', { event: 'delivered', revision, continues, transition: transition.status, step: agentSelf.step });
       persistLiveSelf('action_receipt', orchestrationAction);
       const liveTrace = join(root, 'harness', 'live_agent_self.jsonl');
       if (existsSync(liveTrace)) {
@@ -711,7 +725,9 @@ export default function pptDemo(pi: ExtensionAPI) {
         const selfTail = ctx.self_view?.placement === 'tail';
         const coreLine = evo.mech.legacy_obligation
           ? `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`
-          : `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is available at any point in a review; a judged no-change is a valid closure. Rework stays available through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition, or at the budget boundary.`;
+          : evo.mech.meta
+            ? `${evo.reviewStrategy()}\nSELF ROOT: one serial session; no review entrance exists in this run. Every protocol tool the self view names is available at every step. Rework stays available through orchestration rewrite, render and resubmit/preview; office.deliver is an action receipt your own transition routes, and with no matching transition the delivery ends the run.`
+            : `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is available at any point in a review; a judged no-change is a valid closure. Rework stays available through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition, or at the budget boundary.`;
         // META (2026-11-16): the fixed self-evolution fields, unchanged in the stable prefix. The dynamic half
         // (objects, contract, counters, phase) rides the self view so a change never rewrites this prefix.
         const metaText = metaFieldsText;
@@ -754,8 +770,10 @@ export default function pptDemo(pi: ExtensionAPI) {
       // Pi order: tool results -> turn_end (activation) -> agent_end. A stopped model turn is not task/session completion.
       try { evo.endResponse(applySurface, persistLiveSelf, 'response ended without decide_exit'); }
       catch (error) { evo.fact('request_paused', { error: String(error) }); }
-      if (state.complete) {
-        evo.taskEnd('delivered');
+      // The run is over only when a recorded transition says so: the adapter's own flag after a delivery that ended the
+      // run, or the agent's orchestration flag when its workflow completes on some other receipt/decision.
+      if (state.complete || evo.snapshot().complete) {
+        evo.taskEnd(state.deliveredRevision ? 'delivered' : 'orchestration complete');
       } else if (!evo.isResetting && !evo.taskIncomplete) {
         await evo.event('before_session_end', 'formal-task-end');
       }

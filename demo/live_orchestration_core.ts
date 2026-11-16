@@ -5,7 +5,7 @@ export type ReceiptCondition = { type: string; currentArtifact?: boolean; freshn
 // The T0 design turn fills the task side of the orchestration in one fixed object. Triggers bind task-side
 // events, never counters or clocks: a purely periodic look is not evidence this task produced. Every event
 // here is recorded by this run itself; feedback from outside the run is not an event a trigger can bind.
-export const TASK_EVENTS = ['segment_boundary', 'failure', 'repetition'] as const;
+export const TASK_EVENTS = ['segment_boundary', 'failure', 'repetition', 'self_change'] as const;
 export const ORCHESTRATION_CONTRACT_FORM = `contract:{task_goal:"<what this task must deliver>",task_acceptance:"<how its delivery is verified from this run's own records>",loop_policy:{look_when:[{on:"${TASK_EVENTS.join('|')}",look:"<what to inspect, with which task facts>"}]}}`;
 export type OrchestrationContract = {
   task_goal: string;

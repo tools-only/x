@@ -152,7 +152,7 @@ export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
   if (kind === 'review') return { name: 'decide_exit', description: 'Finish the current review after the host-visible review work is complete.', properties: { reason }, required: [] as string[] };
   if (kind === 'validation') return { name: 'decide_validation', description: 'Read the due window; missing or provisional comparisons remain unresolved.', properties: { window: { type: 'string' } }, required: [] as string[] };
-  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, write: { type: 'string', enum: ['replace','append','patch'], description: 'How source lands on the current value: replace (default), append, or patch.' }, patch: { type: 'array', items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find','replace'], additionalProperties: false }, description: 'Literal find/replace edits applied to the current source when write=patch.' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' }, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: ['op','kind','name'] };
+  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','subagent','memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, write: { type: 'string', enum: ['replace','append','patch'], description: 'How source lands on the current value: replace (default), append, or patch.' }, patch: { type: 'array', items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find','replace'], additionalProperties: false }, description: 'Literal find/replace edits applied to the current source when write=patch.' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' }, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: ['op','kind','name'] };
   const context = { type: 'object', properties: { order: { type: 'array', items: { type: 'string' } }, instruction: { type: 'string' }, reasoning: { type: 'string', enum: ['all','latest','none'] }, history: { type: 'object' }, tool_results: { type: 'object' }, tool_args: { type: 'object' }, self_view: { type: 'object' }, prompt_layout: { type: 'object', properties: { volatile_tail: { type: 'string', enum: ['self_view','projection','both'] } }, additionalProperties: false } }, additionalProperties: false };
   const policy = { type: 'object', properties: { modes: { type: 'object' }, routes: { type: 'array' }, methods: { type: 'object' }, memory: { type: 'object' }, memory_strategy: { type: 'object' }, context, request: { type: 'object' }, review: { type: 'object' } }, additionalProperties: false };
   const orchestrationPatch = { type: 'object', properties: {
@@ -690,11 +690,12 @@ export class SelfRoot extends LiveAgentSelf {
   }
   private changeUsed(addresses: string[], after: any[]) {
     return addresses.some(address => {
-      const component = /^components\.(tool|prompt|skill|memory)\.(.+)$/.exec(address);
+      const component = /^components\.(tool|prompt|skill|memory|subagent)\.(.+)$/.exec(address);
       // Orchestration and policy are applied to every later request; that application is their use.
       if (!component) return after.some(r => r.type === 'provider_input');
       const [, kind, name] = component;
-      if (kind === 'tool') return after.some(r => r.type === 'event' && r.value?.type === 'tool_succeeded' && r.value?.facts?.tool === name);
+      // A tool or a subagent is used when a later request calls it by name.
+      if (kind === 'tool' || kind === 'subagent') return after.some(r => r.type === 'event' && r.value?.type === 'tool_succeeded' && r.value?.facts?.tool === name);
       return after.some(r => r.type === 'provider_input' && (r.value?.component_addresses ?? []).includes(`${kind}.${name}`));
     });
   }
@@ -715,6 +716,7 @@ export class SelfRoot extends LiveAgentSelf {
       this.fact('meta_t0_delivered', { request: this.request, material: 'seven fixed fields; task side filled by orchestration.contract', gate: 'contract before the first task segment' });
     const contract = this.metaContract();
     const acc = this.metaAcceptance();
+    const live = this.windows.filter(w => ['open', 'due_unverified', 'due_comparable', 'restore_pending'].includes(w.status));
     const orchestration: any = this.current?.orchestration ?? {};
     const components = this.active();
     const named = (kind: string) => components.filter(c => c.kind === kind).map(c => `${c.name}@v${c.version}`).join(', ') || 'none';
@@ -725,14 +727,14 @@ export class SelfRoot extends LiveAgentSelf {
       `prompt - ${named('prompt')}; change with reflect_component(kind:"prompt"); read_self(section="self")`,
       `context - policy.context (order: ${(this.policy.context?.order ?? []).join(', ')}; self view: ${this.policy.context?.prompt_layout?.volatile_tail ? 'tail' : 'system'}); change with reflect_orchestration({policy:{context}}); read_self(section="policy")`,
       `loop - orchestration revision ${this.current?.revision ?? 1}, active step '${this.step}'${step?.actions ? ` (action scope: ${step.actions.join(', ')})` : ''}; a transition fires on on:{type:"action",action:"<${recordable || 'a recorded receipt type'}>"} or on:{type:"decision",id:"<decision>"}; change with reflect_orchestration({orchestration}); read_self(section="definition")`,
-      `harness - ${components.length} components at self revision ${this.revision} (${named('tool')} tools; ${named('skill')} skills; ${named('memory')} memory); any write above; read_self(section="self")`,
+      `harness - ${components.length} components at self revision ${this.revision} (${named('tool')} tools; ${named('skill')} skills; ${named('memory')} memory; ${named('subagent')} subagents); any write above; read_self(section="self")`,
     ];
     const summary = this.ledger.filter(r => r.type === 'segment_summary').map(r => r.value);
     const numbers = (v: any) => v ? `requests ${v.process?.requests ?? 0}, task actions ${v.work?.task_actions ?? 0}, tool errors ${v.process?.tool_errors ?? 0}, elapsed ${Math.round(Number(v.process?.latency_s ?? 0))}s, phase ${v.phase ?? 'unknown'}` : 'none';
     // The run plan's look triggers are the agent's own task-side text for this event; the boundary is where they apply.
     const look = (contract?.loop_policy?.look_when ?? []).filter((w: any) => w?.on === 'segment_boundary').map((w: any) => String(w.look));
     const flow = phase === 'design'
-      ? `DESIGN TURN - the mechanism and the acceptance standard above are given; this turn does not design an evolution loop. Fill TASK GOAL and TASK ACCEPTANCE and write this task's run plan in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}. Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is a permission scope over tool names, not over receipt types.` : ''}`
+      ? `DESIGN TURN - the mechanism and the acceptance standard above are given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is a permission scope over tool names, not over receipt types.` : ''}`
       : phase === 'boundary'
         ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
           `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
@@ -747,6 +749,7 @@ export class SelfRoot extends LiveAgentSelf {
       `TASK ACCEPTANCE: ${contract?.task_acceptance ?? '(empty - this design turn fills it)'}`,
       ...objects,
       `SELF-EVOLUTION: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`,
+      ...(live.length ? [`WINDOWS: ${live.map(w => `${w.id} on ${w.scope.join(', ')} - ${w.status}${w.expected_effect ? `; expected: ${w.expected_effect}` : '; expected effect not stated'}`).join(' | ')}`] : []),
       flow,
     ].join('\n');
   }
@@ -768,7 +771,7 @@ export class SelfRoot extends LiveAgentSelf {
       memory: { binding: 'policy-filtered full text into the context head', rent_chars: this.memory().reduce((n, c: any) => n + `${c.name}@${c.version}\n`.length + len(c), 0) },
       skill: { binding: 'index line in the head; body on read_self_component', rent_chars: active.filter(c => c.kind === 'skill').reduce((n, c: any) => n + `${c.name}@${c.version}: ${c.description ?? ''}; read_self_component`.length, 0) },
       tool: { binding: 'registered callable; schema in the tools block', rent_chars: 0 },
-      subagent: { binding: 'write rejected: v1 has one agent', rent_chars: 0 },
+      subagent: { binding: 'registered callable; on call its body is the child session instruction, tools/refs from its frontmatter', rent_chars: 0 },
     };
   }
   observationText(budget = 2800) { return renderObservation(this.observation(), budget); }
@@ -811,7 +814,7 @@ export class SelfRoot extends LiveAgentSelf {
     };
   }
   private pinView() {
-    return this.review ? this.reviewSelfView() : { ...this.mirror(), writable: this.contract.writable, operations: PROTOCOL };
+    return this.review ? this.reviewSelfView() : { ...this.mirror(), writable: this.contract.writable, operations: this.protocolSurface() };
   }
   private assertWrite(address: string) {
     if (!this.contract.writable.includes(address)) throw Error(`protected or unsupported address ${address}`);
@@ -910,8 +913,8 @@ export class SelfRoot extends LiveAgentSelf {
       }
       for (const c of input.components ?? []) {
         this.assertWrite(`components.${c.kind}`);
-        if (c.kind === 'subagent') throw Error('v1 has one agent; task subagents are not authorized');
-        if (c.kind === 'tool' && (PROTOCOL.includes(c.name) || this.contract.capabilities.includes(c.name) || (this.options.reservedToolNames ?? []).includes(c.name))) throw Error('tool name collides with protected protocol or host capability');
+        // A subagent is a component like the others: its name becomes a callable tool, so it obeys the same name space.
+        if ((c.kind === 'tool' || c.kind === 'subagent') && (PROTOCOL.includes(c.name) || this.contract.capabilities.includes(c.name) || (this.options.reservedToolNames ?? []).includes(c.name))) throw Error(`${c.kind} name collides with protected protocol or host capability`);
         const value = { ...c, source: c.source, baseRevision: candidate.revision };
         delete (value as any).evolution_layer;
         const currentSource = () => candidate.active().find(x => x.kind === c.kind && x.name === c.name)?.source;
@@ -992,7 +995,7 @@ export class SelfRoot extends LiveAgentSelf {
       const evidence_refs = this.mech.effect_return ? retained : [...new Set([...(evolution ? reviewFacts : []), ...retained])];
       // Effect return: a validation window opens only for a declared effect; an undeclared change activates without one.
       const windowDue = !this.mech.effect_return || Boolean(requestedPredicate || input.expected_effect);
-      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(evolution && addresses.length && windowDue ? [{ addresses, expected_effect: input.expected_effect, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional', evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
+      this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(addresses.length && windowDue ? [{ addresses, expected_effect: input.expected_effect, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional', evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
         declaredLayers: { ...(this.pending?.declaredLayers ?? {}), ...declaredLayers },
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
       return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null,
@@ -1002,7 +1005,7 @@ export class SelfRoot extends LiveAgentSelf {
         ...(Object.keys(declaredLayers).length ? { declared_layers: declaredLayers } : {}),
         evidence_refs: { retained, discarded, auto_attached: evolution && !this.mech.effect_return ? reviewFacts : [] }, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional',
         ...(input.expected_effect ? { expected_effect: input.expected_effect } : {}),
-        ...(evolution && addresses.length ? { validation_window: windowDue ? 'opens at activation' : 'none; a window opens when the change declares expected_effect or success_predicate' } : {}) }).value;
+        ...(addresses.length ? { validation_window: windowDue ? 'opens at activation' : 'none; a window opens when the change declares expected_effect or success_predicate' } : {}) }).value;
     } catch (e) {
       this.abortTransaction(e); throw e;
     }
@@ -1031,14 +1034,20 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.requestPin?.mode === 'execute') super.assertActionAllowed(type);
   }
   surface() {
-    // EVO_META T0: until the agent has written its orchestration once, only the protocol surface exists. The task segment
-    // (and every tool it creates) opens on the other side of that gate; nothing is refused that is not named here.
-    if (this.metaT0Pending) return [...PROTOCOL];
+    // EVO_META T0: until the agent has written its orchestration once, the protocol surface plus read-only inspection
+    // exists. The task segment (and every tool it creates) opens on the other side of that gate; nothing is refused
+    // that is not named here. Read-only tools are named because designing the workflow needs the task material.
+    if (this.metaT0Pending) return [...this.protocolSurface(), ...['read', 'ls', 'grep'].filter((t: string) => this.contract.capabilities.includes(t))];
     // Evolution review observes evidence; task artifacts are not edited there (design §1).
     const tools = this.inEvolutionReview
       ? [...new Set([...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? [], ...this.policy.modes[this.currentMode].tools])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
-    return [...new Set([...PROTOCOL, ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
-      ...(this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool').map(c => c.name) : [])])];
+    return [...new Set([...this.protocolSurface(), ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
+      ...(this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool' || c.kind === 'subagent').map(c => c.name) : [])])];
+  }
+  /** The protocol surface, minus what has no object in this run: with no review entrance wired, decide_exit would be
+   * advertised with nothing to exit. Everything else in PROTOCOL stays reachable from every step. */
+  private protocolSurface(): string[] {
+    return this.mech.meta && !this.review ? PROTOCOL.filter(t => t !== 'decide_exit') : [...PROTOCOL];
   }
   allowTool(name: string, args: any) { this.assertActionAllowed(this.options.actionOf ? this.options.actionOf(name, args) : name); }
   get inEvolutionReview() { return Boolean(this.review?.triggers.some((t: any) => t.id === 'evolution_review')); }
@@ -1529,7 +1538,7 @@ export class SelfRoot extends LiveAgentSelf {
       prompt: { prompts: active.filter(c => c.kind === 'prompt').map(c => c.name), chars: chars('prompt'), delivery: 'full text into the context head each request' },
       context: { memory_chars: chars('memory'), policy: 'policy.context', last_composition: lastRequest?.value?.composition ?? null },
       loop: { step_executions: stepRuns, reviews: { opened: this.ledger.filter(r => r.type === 'mode_entered').length, closed: this.ledger.filter(r => r.type === 'review_closed').length } },
-      harness: { tools: new Set(active.filter(c => c.kind === 'tool').map(c => c.name)).size, skills: new Set(active.filter(c => c.kind === 'skill').map(c => c.name)).size, subagents: 0, counts: 'see [inventory] and [recurrence] in observation' },
+      harness: { tools: new Set(active.filter(c => c.kind === 'tool').map(c => c.name)).size, skills: new Set(active.filter(c => c.kind === 'skill').map(c => c.name)).size, subagents: new Set(active.filter(c => c.kind === 'subagent').map(c => c.name)).size, counts: 'see [inventory] and [recurrence] in observation' },
       declared_layers: declared,
     };
   }
@@ -1833,7 +1842,7 @@ export class SelfRoot extends LiveAgentSelf {
       context: { relation: 'runtime assembles working context from typed policy;  composition section names are read-only facts',
         writable: this.contract.writable.includes('policy'), change: 'reflect_orchestration({policy:{context:{...}}})', last_composition: lastRequest?.value?.composition ?? null, retrieve: 'read_self(section="context_item", ref)' },
       protected: { reason: this.contract.readonly_reason, contract_hash: this.contract.content_hash, boundaries: this.contract.boundaries, budget: this.contract.budget, capabilities: this.contract.capabilities, acceptance: this.contract.acceptance },
-      unsupported: ['provider replacement', 'task subagents', 'cross-task default promotion', 'interactive world replay'],
+      unsupported: ['provider replacement', 'step roles other than agent', 'cross-task default promotion', 'interactive world replay'],
     }, dynamic: { run: active.run, mode: this.currentMode, mode_version: this.review?.revision ?? this.serial, settlement_count: this.settlementCount, conditions: copy(this.conditionSet), ...(this.mech.observation ? { observation: this.observationDigest() } : {}), review: this.review ? { id: this.review.id, kind: this.exitOperationKind, triggers: this.review.triggers, pinned_ledger_offset: this.review.ledger_offset, suspended: this.review.suspended, exit_operation: this.exitOperationSchema, due_windows: this.dueWindows } : null,
       ...(reviewEvidence ? { review_evidence: copy(reviewEvidence) } : {}),
        process: { last_request: lastRequest ? { request: lastRequest.value.request, mode: lastRequest.value.pin?.mode ?? null, tokens: lastRequest.value.tokens, stop: lastRequest.value.stop,

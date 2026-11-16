@@ -30,7 +30,7 @@ test('META fixed fields: the static prompt file is host-given, task-free and ord
   assert.ok(!/\{\{/.test(fields), 'no values and no placeholders: the file is the same text every request');
   assert.ok(!fields.toLowerCase().includes('deck'), 'no task content in the host-given text');
   const s = make({ meta: true }); await tick(s);
-  assert.deepEqual(s.surface(), [...PROTOCOL], 'no task tool before the contract write');
+  assert.deepEqual(s.surface(), [...PROTOCOL.filter(t => t !== 'decide_exit'), 'read', 'ls', 'grep'], 'before the contract write: the protocol (no decide_exit without a review) plus read-only inspection');
   assert.throws(() => s.assertActionAllowed('office.render'), /outside pinned mode\/user surface/);
   assert.doesNotThrow(() => s.assertActionAllowed('reflect_orchestration'), 'the design interface stays reachable');
   const board = s.metaBoard();
@@ -69,7 +69,7 @@ test('META contract gate: missing fields and counter/clock triggers are refused 
   assert.equal(s.metaT0Pending, true);
   const external: any = { ...seed, contract: { ...taskSide, loop_policy: { look_when: [{ on: 'delivery_feedback', look: 'what someone said about the delivery' }] } } };
   await assert.rejects(s.transaction({ baseRevision: 1, orchestration: external }), (err: Error) => {
-    assert.match(err.message, /look_when\[0\]\.on names "delivery_feedback".*legal events are segment_boundary, failure, repetition\)/);
+    assert.match(err.message, /look_when\[0\]\.on names "delivery_feedback".*legal events are segment_boundary, failure, repetition, self_change\)/);
     assert.ok(!err.message.includes('repetition, delivery_feedback'), 'the refusal no longer offers an external event');
     return true;
   });

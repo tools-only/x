@@ -19,7 +19,7 @@ test('explicit floor/hash/numeric cap are required; protected facts stay visible
   assert.throws(() => new SelfRoot(undefined as any), /contract/);
   const c = contract(); c.boundaries.pop(); assert.throws(() => new SelfRoot(c), /hash/);
   const s = new SelfRoot(contract()); assert.equal(s.mirror().parts.protected.contract_hash,contract().content_hash);
-  assert.ok(s.mirror().parts.unsupported.includes('task subagents'));
+  assert.ok(s.mirror().parts.unsupported.includes('step roles other than agent'));
 });
 
 test('META merges a boundary, deduplicates consumption, no automatic failure diagnosis', async () => {
