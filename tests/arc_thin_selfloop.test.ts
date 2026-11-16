@@ -1,9 +1,10 @@
 /**
- * Stage 1 of docs/plans/2026-11-16-arc-selfloop-migration.md: the run's own facts under workspace/data/self/.
+ * Stages 1-2 of docs/plans/2026-11-16-arc-selfloop-migration.md: the run's own facts under workspace/data/self/, and
+ * the host's fields plus one digest line on every decision.
  *
- * These facts are projections of logs the runtime already writes, so the decision's own text must not change when the
- * flag is on; the files exist only with ARC_THIN_SELFLOOP=1, carry no message bodies, and a finished level leaves one
- * outcome row. The stage-1 claim is readability and zero behavior risk, not adoption.
+ * The facts are projections of logs the runtime already writes, so the decision's own body must not change; the files
+ * exist only with ARC_THIN_SELFLOOP=1, carry no message bodies, and a finished level leaves one outcome row. The
+ * stage-2 block sits in the tail ahead of the work-memory record, which stays last.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -68,6 +69,8 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
     rows: (name: string) => lines(`harness/${name}`),
     selfRows: (name: string) => lines(`workspace/data/self/${name}`),
     selfDir: () => existsSync(join(w.root, 'workspace/data/self')),
+    /** The text parts of the last head: the body (and state) first, the tail block last. */
+    parts: (): string[] => head.content.filter((b: any) => b.type === 'text').map((b: any) => b.text),
     async begin(prompt = 'Decide the next action.') {
       await handlers.get('before_agent_start')({ prompt, systemPromptOptions: { sections: {} } }, ctx);
       head = (await handlers.get('context')({ messages: [{ role: 'user', content: prompt }] }, ctx)).messages[0];
@@ -83,29 +86,47 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
   };
 }
 
-test('stage 1 facts appear only with the flag, keep no message bodies, and leave every decision text as it was', async () => {
-  const heads: string[] = [];
+test('facts and the digest appear only with the flag; the body differs only by the size the block adds; the work-memory record stays last', async () => {
+  const bodies: string[] = [], tails: string[] = [], carried: number[] = [], selfChars: number[] = [];
+  const sizeLine = /your last request carried [\d.]+k characters of context/;
   for (const flag of ['0', '1']) {
     const w = await world();
     const h = await attach(w, { ARC_THIN_SELFLOOP: flag });
     try {
       await h.begin(); await h.act({ action: 'ACTION1' });
-      await h.begin(); await h.act({ action: 'ACTION6', x: 3, y: 3 });
-      heads.push(await h.begin());
+      await h.begin(); await h.act({ action: 'ACTION1' });
+      await h.begin();
+      const parts = h.parts();
+      bodies.push(parts[0]);
+      tails.push(parts.at(-1)!);
+      carried.push(Number(/carried ([\d.]+)k characters/.exec(parts[0])![1]));
       if (flag === '0') {
         assert.equal(h.selfDir(), false, 'the control arm writes no self files');
+        assert.equal(parts.length, 2);
+        assert.match(parts[1], /^NO NEW INFORMATION:/);
       } else {
         const budget = h.selfRows('context_budget.jsonl'), working = h.selfRows('working_set.jsonl');
         assert.deepEqual(budget.map((row) => row.decision), [1, 2, 3]);
         assert.equal(working.length, 3);
         assert.ok(working.every((row) => row.sections && !('text' in row) && !('tail' in row)));
-        assert.deepEqual(working.map((row) => row.decision), h.rows('working_set.jsonl').map((row) => row.decision));
         assert.deepEqual(Object.keys(working[2].sections), Object.keys(h.rows('working_set.jsonl')[2].sections));
+        selfChars.push(working[2].sections.self);
+        assert.ok(working[2].sections.self > 0, 'the block is accounted for in the working set');
         assert.equal(h.selfRows('outcomes.jsonl').length, 0, 'no level finished yet');
+        assert.match(parts[1], /^SELF-EVOLUTION FIELDS \(given by the host, the same every decision\)\n- The task is the host: /);
+        assert.match(parts[1], /\nSELF: decision 3, 2 actions at level 0; predictions 0 \(0 hit\/0 miss\); your components \d+(?: \([^)]*\))?; 0 self changes; last outcome none; data\/self\/: 2 budget, 2 working-set, 0 outcome rows\.\n\nNO NEW INFORMATION:/);
+        assert.ok(parts[1].indexOf('SELF: decision 3') < parts[1].indexOf('THIS BOARD'));
+        assert.match(parts[1], /THIS BOARD [\s\S]*Never tried from it: [\s\S]*\.$/, 'the record on this board stays last');
+        assert.equal(parts[1].split('\n\nNO NEW INFORMATION:')[0].length, selfChars[0], 'the accounted size is the block the head shows');
       }
     } finally { await h.close(); await w.server.close(); }
   }
-  assert.equal(heads[1], heads[0], 'stage 1 adds no text to a decision');
+  assert.equal(bodies[1].replace(sizeLine, 'carried <size>'), bodies[0].replace(sizeLine, 'carried <size>'),
+    'the body of a decision is unchanged apart from the size it reports');
+  assert.notEqual(tails[1], tails[0], 'only the tail gains the self block');
+  // The body's own size report is the block plus the blank line that joins the tail; it rounds to 0.1k.
+  assert.ok(Math.abs((carried[1] - carried[0]) * 1000 - (selfChars[0] + 2)) <= 120,
+    `carried ${carried[0]}k -> ${carried[1]}k for a ${selfChars[0]}-char block`);
 });
 
 test('a finished level leaves one outcome row with its span, winner and own-component counts', async () => {

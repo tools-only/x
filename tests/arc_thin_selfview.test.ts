@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { outcomeRow, predictionCounts, spanFacts, withoutBodies } from '../demo/arc_thin_selfview.ts';
+import { outcomeRow, predictionCounts, selfDigest, spanFacts, withoutBodies } from '../demo/arc_thin_selfview.ts';
 
 test('a working-set row keeps its section sizes and drops the message bodies', () => {
   const row = { decision: 3, actions: 12, sections: { prompts: 120, memory: 40 }, text: 'x'.repeat(5000), tail: 'THIS BOARD' };
@@ -65,4 +65,25 @@ test('a span without a level change reports it as not won and counts game overs'
   assert.equal(row.refinements, 0);
   assert.deepEqual(row.self_changes, []);
   assert.deepEqual(spanFacts([{ n: 9, action: 'RESET', state: 'NOT_FINISHED' }]).resets, 1);
+});
+
+test('the digest is one line of counts and names, with the pointer to the rows it came from', () => {
+  const rows = { budget: 4, working: 4, outcomes: 0 };
+  assert.equal(selfDigest({ decision: 5, actions: 12, level: 0, predictions: { made: 3, hits: 2, misses: 1 },
+    components: [], changes: 0, outcomes: [], rows }),
+    'SELF: decision 5, 12 actions at level 0; predictions 3 (2 hit/1 miss); your components 0; 0 self changes; ' +
+    'last outcome none; data/self/: 4 budget, 4 working-set, 0 outcome rows.');
+  assert.equal(selfDigest({ decision: 9, actions: 30, level: 1, predictions: { made: 8, hits: 5, misses: 2 },
+    components: [{ path: 'prompts/rules.md', version: 2 }, { path: 'tools/scan.py', version: 1 }], changes: 1,
+    outcomes: [{ level: 0, won: true, win_n: 14, win_action: 'ACTION6' }], rows: { budget: 9, working: 9, outcomes: 1 } }),
+    'SELF: decision 9, 30 actions at level 1; predictions 8 (5 hit/2 miss); your components 2 (prompts/rules.md v2, ' +
+    'tools/scan.py v1); 1 self change; last outcome level 0 won at #14 by ACTION6; data/self/: 9 budget, 9 working-set, 1 outcome row.');
+});
+
+test('the digest names at most three components and counts the rest', () => {
+  const line = selfDigest({ decision: 2, actions: 2, level: 0, predictions: { made: 0, hits: 0, misses: 0 },
+    components: ['a', 'b', 'c', 'd', 'e'].map((name) => ({ path: `tools/${name}.py`, version: 1 })), changes: 0,
+    outcomes: [{ level: 0, won: false }], rows: { budget: 2, working: 2, outcomes: 1 } });
+  assert.match(line, /your components 5 \(tools\/a\.py v1, tools\/b\.py v1, tools\/c\.py v1, \+2 more\)/);
+  assert.match(line, /last outcome level 0 not won/);
 });

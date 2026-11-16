@@ -25,7 +25,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
-import { outcomeRow, withoutBodies, SELF_CONTEXT_PATH, SELF_WORKING_PATH, SELF_OUTCOMES_PATH } from "./arc_thin_selfview.ts";
+import { outcomeRow, predictionCounts, selfDigest, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_WORKING_PATH, SELF_OUTCOMES_PATH } from "./arc_thin_selfview.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
 	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
@@ -572,6 +572,24 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		selfLevel = level;
 		selfFrom = from;
 		publishSelf(SELF_OUTCOMES_PATH, selfOutcomeRows);
+	}
+	/**
+	 * Stage 2: the host's fixed fields plus one line of this run's own facts, shown with every decision near its end.
+	 * Every number is a count of rows the runtime already wrote; the pointer names the files those rows are in.
+	 */
+	function selfText(): string {
+		if (!selfLoop) return "";
+		try {
+			const active = binder?.active() ?? [];
+			return SELF_FIELDS + "\n" + selfDigest({
+				decision, actions: trajectory.length, level: currentLevel(),
+				predictions: predictionCounts(trajectory),
+				components: active.map((component) => ({ path: component.path, version: component.version })),
+				changes: readRows("harness_changes.jsonl").length,
+				outcomes: selfOutcomeRows,
+				rows: { budget: selfBudgetRows.length, working: selfWorkingRows.length, outcomes: selfOutcomeRows.length },
+			});
+		} catch (error) { logError("self:digest", error); return ""; }
 	}
 	function recordComponentWrite(path: string, before: number | undefined, receipt: string | undefined,
 		split: ComponentExpectationSource): string {
@@ -1134,10 +1152,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		// contextLayout: the views' output and the agent's own record on this board go after everything else, the images
 		// included, where the response starts (docs/plans/2026-10-26-e1-harness-turn-protocol.md: a delivered view in the
-		// head did not stop the action it warned about). ARC_THIN_CONTEXT_LAYOUT=0 keeps both where they were.
+		// head did not stop the action it warned about). ARC_THIN_CONTEXT_LAYOUT=0 keeps both where they were. The
+		// self-evolution fields and digest (stage 2) sit in the same place, ahead of the record that stays last.
+		const self = selfText();
+		if (self && !contextLayout) sections.push(["self", self]);
 		const spin = contextLayout && run.spin?.streak ? spinText(run.spin) : "";
 		const viewOutput = contextLayout ? [run.observerText ?? "", run.hookText ?? ""].filter(Boolean).join("\n") : "";
-		const tail = contextLayout ? [spin, viewOutput, board].filter(Boolean).join("\n\n") : "";
+		const tail = contextLayout ? [self, spin, viewOutput, board].filter(Boolean).join("\n\n") : "";
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
 		const body = sections.map(([, value]) => value).join("\n\n");
@@ -1146,6 +1167,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
+					...(contextLayout && self ? [["self", self] as [string, string]] : []),
 					...(viewOutput ? [["views", viewOutput] as [string, string]] : []),
 					...(board ? [["board", board] as [string, string]] : [])].map(([name, value]) => [name, value.length])),
 				...(run.spin?.streak ? { spin_streak: run.spin.streak } : {}),
