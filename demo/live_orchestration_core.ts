@@ -47,7 +47,7 @@ export function validateSchemaStructure(schema: any, path = '$'): void {
   if (schema.enum !== undefined && (!Array.isArray(schema.enum) || !schema.enum.length)) throw Error(`invalid enum at ${path}`);
 }
 
-export function validateDefinition(def: any): Omit<LiveOrchestration, 'revision'> {
+export function validateDefinition(def: any, knownActions?: ReadonlySet<string>): Omit<LiveOrchestration, 'revision'> {
   if (!def || typeof def !== 'object' || !Array.isArray(def.roles) || !Array.isArray(def.slots) || !Array.isArray(def.steps) || !Array.isArray(def.decisions) || !Array.isArray(def.transitions)) throw Error('orchestration must define roles, slots, steps, decisions and transitions');
   const unique = (rows: any[], label: string) => {
     if (rows.some(row => !row || typeof row.id !== 'string' || !row.id.trim()) || new Set(rows.map(row => row.id)).size !== rows.length) throw Error(`${label} must have unique non-empty ids`);
@@ -58,15 +58,20 @@ export function validateDefinition(def: any): Omit<LiveOrchestration, 'revision'
   const roles = new Set(def.roles.map((x: any) => x.id)), steps = new Set(def.steps.map((x: any) => x.id));
   const decisions = new Map(def.decisions.map((x: any) => [x.id, x]));
   if (!roles.has('agent')) throw Error('orchestration must retain the authorized agent role');
+  const assertKnownAction = (type: string, where: string) => {
+    if (knownActions?.size && !knownActions.has(type)) throw Error(`${where} binds to action type '${type}', which this runtime never records; action receipt types recorded here: ${[...knownActions].sort().join(', ')}`);
+  };
   for (const step of def.steps) {
     if (!roles.has(step.role)) throw Error(`step ${step.id} references unknown role`);
     if (step.actions !== undefined && (!Array.isArray(step.actions) || step.actions.some((action: unknown) => typeof action !== 'string') || new Set(step.actions).size !== step.actions.length)) throw Error(`invalid actions for step ${step.id}`);
+    if (step.actions) for (const action of step.actions) assertKnownAction(action, `step ${step.id}`);
     if (step.bindings !== undefined && (!Array.isArray(step.bindings) || step.bindings.some((binding: any) => !binding || !['prompt','skill','tool','memory','context'].includes(binding.kind) || typeof binding.name !== 'string' || (binding.version !== undefined && !Number.isSafeInteger(binding.version))))) throw Error(`invalid component bindings for step ${step.id}`);
     if (step.decision && !decisions.has(step.decision)) throw Error(`step ${step.id} references unknown decision`);
   }
   for (const d of def.decisions) {
     if (!roles.has(d.judge) || typeof d.question !== 'string' || !Array.isArray(d.evidence) || !d.evidence.length) throw Error(`invalid decision definition ${d.id}`);
     for (const requirement of d.evidence) if (typeof requirement.type !== 'string' || (requirement.factPath !== undefined && typeof requirement.factPath !== 'string')) throw Error(`invalid evidence condition in decision ${d.id}`);
+    for (const requirement of d.evidence) assertKnownAction(requirement.type, `decision ${d.id}`);
     if (d.writes && (!slots.has(d.writes.slot) || (d.writes.from !== undefined && typeof d.writes.from !== 'string'))) throw Error(`invalid slot write in decision ${d.id}`);
     validateSchemaStructure(d.output);
     validateSchema(schemaProbe(d.output), d.output);
@@ -75,8 +80,10 @@ export function validateDefinition(def: any): Omit<LiveOrchestration, 'revision'
     if (!steps.has(t.from) || (t.to !== 'complete' && !steps.has(t.to))) throw Error(`transition ${t.id} references an unknown step`);
     if (!['decision', 'action'].includes(t.on?.type) || (t.on.type === 'decision' && !decisions.has(t.on.id)) ||
       (t.on.type === 'action' && typeof t.on.action !== 'string') || !Array.isArray(t.requires)) throw Error(`invalid transition ${t.id}`);
+    if (t.on.type === 'action') assertKnownAction(t.on.action, `transition ${t.id}`);
     if (!t.requires.length) throw Error(`transition ${t.id} must require trusted evidence`);
     for (const requirement of t.requires) if (typeof requirement.type !== 'string' || (requirement.factPath !== undefined && typeof requirement.factPath !== 'string')) throw Error(`invalid evidence condition in transition ${t.id}`);
+    for (const requirement of t.requires) assertKnownAction(requirement.type, `transition ${t.id}`);
   }
   for (const step of def.steps) if (step.decision && !def.transitions.some((transition: any) => transition.from === step.id && transition.on?.type === 'decision' && transition.on.id === step.decision)) throw Error(`decision step ${step.id} has no reachable transition`);
   return clone({ roles: def.roles, slots: def.slots, steps: def.steps, decisions: def.decisions, transitions: def.transitions });
@@ -107,6 +114,7 @@ export class LiveOrchestrationSession {
   private complete = false;
   private pendingFinalDelivery = false;
   private pendingDeliveryRevision?: number;
+  protected knownActionTypes?: ReadonlySet<string>;
   constructor(saved?: any) {
     if (saved?.snapshot?.orchestration && Array.isArray(saved.history) && saved.history.length) {
       this.revisions = clone(saved.history);
@@ -130,6 +138,8 @@ export class LiveOrchestrationSession {
     actions: clone(this.actions), decisions: clone(this.decisions), selfReviews: clone(this.selfReviews), slotValues: clone(this.slotValues), latestArtifactVersion: this.latestArtifactVersion,
     latestArtifactHash: this.latestArtifactHash, stepGeneration: this.stepGeneration, consumedDecisions: [...this.consumedDecisions], pendingFinalDelivery: this.pendingFinalDelivery, pendingDeliveryRevision: this.pendingDeliveryRevision }; }
   history() { return clone(this.revisions); }
+  /** Host adapters declare the action receipt types this runtime records; once declared, reflect rejects definitions bound to other types. */
+  declareActionTypes(types: Iterable<string>) { this.knownActionTypes = new Set(types); }
   recordSelfReview(input: { revision: number; disposition: 'keep' | 'defer' | 'change'; rationale: string }) {
     if (input.revision !== this.current.revision) throw Error('self-review must cite the current orchestration revision');
     if (!['keep', 'defer', 'change'].includes(input.disposition) || typeof input.rationale !== 'string' || !input.rationale.trim()) throw Error('invalid self-review');
@@ -141,7 +151,7 @@ export class LiveOrchestrationSession {
   reflect(input: { baseRevision: number; orchestration: unknown; authorized: boolean; carry?: Record<string, unknown>; stepMap?: Record<string,string> }) {
     if (input.authorized !== true) throw Error('unauthorized orchestration reflection');
     if (input.baseRevision !== this.current.revision) throw Error('stale revision');
-    const candidate = validateDefinition(input.orchestration);
+    const candidate = validateDefinition(input.orchestration, this.knownActionTypes);
     const bootstrap = this.current.revision === 1 && this.activeStep === 'work' && this.current.orchestration.steps.length === 1;
     const nextStep = input.stepMap?.[this.activeStep] ?? this.activeStep;
     if (!bootstrap && !candidate.steps.some(step => step.id === nextStep)) throw Error('active step must remain reachable or have an explicit stepMap');

@@ -25,6 +25,8 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   budgetStopPendingDelivery?: () => Promise<unknown>;
   /** Adapter actions that mark a unit boundary; they never count as work between boundaries. */
   boundaryTools?: string[];
+  /** Adapter action receipt types recordAction can produce; once declared, orchestration reflection rejects bindings to any other type. */
+  actionReceiptTypes?: string[];
   /** Adapter fact types whose completed work should open a review at its settlement. */
   workCheckpointTypes?: string[];
   /** Adapter-declared context section names (opaque to the core). */
@@ -540,6 +542,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.outputLimit = outputLimit;
     this.options = options;
     this.rootValidator = rootValidator;
+    if (options.actionReceiptTypes?.length) this.declareActionTypes(options.actionReceiptTypes);
     validateContract(contract); this.contract = copy(contract);
     this.root_id = saved?.root?.root_id ?? randomUUID();
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
@@ -657,7 +660,9 @@ export class SelfRoot extends LiveAgentSelf {
   metaT0() {
     if (!this.metaT0Pending) return '';
     if (!this.ledger.some(r => r.type === 'meta_t0_delivered')) this.fact('meta_t0_delivered', { request: this.request, material: 'guidance scope + design process', gate: 'one reflect_orchestration before the first task segment' });
-    return META_T0_MATERIAL;
+    return this.knownActionTypes?.size
+      ? `${META_T0_MATERIAL}\nAction receipt types this runtime records (the only types usable in step actions, transition on.action/requires, and decision evidence): ${[...this.knownActionTypes].sort().join(', ')}.`
+      : META_T0_MATERIAL;
   }
   /** Three-altitude recorded operating facts over this ledger - the dynamic facet of the one self view. */
   observation(): Observation {
@@ -733,6 +738,7 @@ export class SelfRoot extends LiveAgentSelf {
       const origin = this.pending?.candidate ?? this;
       const base = origin === this ? this.baseSaved() : { snapshot: origin.snapshot(), history: origin.history() };
       let candidate = new LiveAgentSelf(base, this.rootValidator);
+      if (this.knownActionTypes) candidate.declareActionTypes(this.knownActionTypes);
       let policy = copy(this.pending?.policy ?? this.policy);
       const addresses: string[] = [];
       const compiledEntries: { transition?: string; step?: string; field: string; value: any }[] = [];
@@ -768,6 +774,7 @@ export class SelfRoot extends LiveAgentSelf {
         const saved = { snapshot: candidate.snapshot(), history: candidate.history() };
         saved.snapshot.components = saved.snapshot.components.filter(c => wanted.has(c.path));
         candidate = new LiveAgentSelf(saved,this.rootValidator);
+        if (this.knownActionTypes) candidate.declareActionTypes(this.knownActionTypes);
       }
       for (const c of input.components ?? []) {
         this.assertWrite(`components.${c.kind}`);
@@ -939,7 +946,9 @@ export class SelfRoot extends LiveAgentSelf {
     } catch (e) {
       this.pending = undefined; this.policy = oldPolicy; this.serial = oldSerial;
       this.windows.length = windowCount; this.definitions.length = definitionCount; this.lineage.length = lineageCount;
+      const knownActionTypes = this.knownActionTypes;
       Object.assign(this, new LiveAgentSelf(old, this.rootValidator)); this.onReflection = onReflection;
+      if (knownActionTypes) this.declareActionTypes(knownActionTypes);
       try { this.onReflection?.({ kind: 'orchestration', revision: this.serial }); applySurface(this.surface()); persist(); }
       catch (recovery) { this.paused = true; this.fact('inconsistent', { error: String(e), recovery: String(recovery) }); persist(); throw Error('tool/persistence compensation failed; paused'); }
       this.fact('activation_failed', { error: String(e), restored: this.serial }); persist(); throw e;

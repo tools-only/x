@@ -92,6 +92,7 @@
 - 目标证据层级：自主采用（内核循环）；功能/接线由离线检查先行，不动付费运行。
 - 主要变量与比较器：META 模式 vs B3-2（机制塔）；B2（纯许可）作第二对照。其余配置对齐 B3-2。
 - 模型/provider/任务：glm-5.3-flash via az；同一 PPT manifest 与初态；重试配置同 eb804196。
+- 2026-11-16 启动前用户指令（配置差，M1 与 B3-2 对照时须计入）：种子 `request.maxOutputTokens` 与 runner 回退 `request_output_tokens` 8192→32768，种子 `context.tool_results.max_chars` 4000→16000；提交 2aba1ebd（含 `self_root.test.ts` 断言同步），node 自检 45/45。B3-2 在 8192/4000 下运行。
 - 预算（待用户授权，启动前申明）：镜像 B3 上限——600 请求 / 14400 s / 2 GiB，无 token/USD 上限（B3-2 实际 $0.32）；重跑计入同一授权。
 - 主要指标：内核循环数（主）；交付质量不低于 B3-2（次：30/30 literals、10/10 citations、0 渲染警告、目检）；请求/token/墙钟与协议开销占比（对照 B3-2 的约 1/3 请求）。
 - 负例与读法：T0 写回种子等价单步且 kernel=0 → 证伪证据，不是 harness 故障；T0 产物反复校验失败 → 执行器 schema 校验 + nudge 兜底，计为摩擦记录；全程只有参数补丁 → kernel=0，同证伪。证伪后收敛 H3（换更强工作模型；agent-native 不变量允许）/ H4（任务结构：绑定成本 / 第二消费者）。
@@ -122,3 +123,43 @@
 
 - 开放决定（请用户定夺）：① T0 一次性门——硬门（本文选择；B2 已证纯许可 = 0，软提示重复已知负例）还是软提示；② 目标句最终措辞（§4 草案）；③ M1 预算授权。
 - 下一可证伪检查：M1（§9），授权后执行；实现与离线检查先行。
+
+## 12. M1 结果（2026-11-16）
+
+运行 `runs/evo-m1-glm53f-meta-20261116`：az / glm-5.3-flash，`EVO_A4=1 EVO_META=1`，commit `2aba1ebd`（含 §9 记录的 32768/16000 配置差），预算 600 请求授权内。
+
+| 证据层级 | 状态 | 读数 / 产物 |
+| --- | --- | --- |
+| 功能正确 | 通过 | T0 材料一次性注入；设计写回开启 `meta_t0_design` 门一次；META 下无宿主评审入口（`reviews: []`）；runtime_activations 仅 request 3 |
+| 全链路可达 | 通过 | T0 设计写入成功（`self_revision` 2），执行器后续每次收到 receipt 都回执 |
+| 自主采用（内核判据） | **0** | 见下 |
+| 交付质量 | 基本达标 | 30/30 字面量、0 渲染警告；citation 探针 0/10 为格式假阴性（deck 写 `Source: …, page 1`，探针要求邻接）；目检 10/10 单元有出处 |
+| 成本 | 40 请求（39 + 1 预检）、13,501,215 tokens、$2.2242 | 对照 B3-2：56 请求、2,162,079 tokens、$0.3236；6-7× 主因零缓存 + 32768/16000 配置差，不作机制结论 |
+
+内核为 0 的机理（一条断边，静默）：
+
+- agent 的 T0 设计把 transition 绑到 `submit_unit`（当时只是 boundaryTool，**不产生任何 orchestration receipt**）与 `render_save`（不存在的类型）。
+- 执行器对没有匹配 transition 的 receipt 一律返回 `status:"recorded"`（ledger:258 即 `office.deliver` 的原样回执），于是每次交付后 step 从未离开 `work`，环不转。
+- 全链无人告知"这个类型不可记录"：校验只查形状，不查可记录性；T0 材料也不列可绑定类型。失败模式 = 静默接受，而非报错。
+- 判读：不是 harness 崩溃、不是 agent 怠工（交付质量达标），是"写了环、环没转、无人察觉"。按 §9 负例读法，这是设计层诊断，不是证伪脊柱——绑定的可记录性是可修的过渡点。
+
+## 13. M2：一个主因素的修复（2026-11-16）
+
+主张（可证伪）：把"执行器会记录哪些 action receipt 类型"变成显式声明并在 reflect 时校验、在 T0 材料里推送，则 agent 的 T0 设计不会再绑到不可记录的类型；一旦绑定的是真实类型，`submit_unit` 的 receipt 会推进 step，环在真实运行中转起来（kernel ≥ 1）。
+
+改动（全部最小化，零新层）：
+
+- `demo/live_orchestration_core.ts`：`validateDefinition(def, knownActions?)` 对四类绑定（step.actions、decision evidence、transition on.action、transition requires）校验，错误信息列出可记录集合；`declareActionTypes()` 公开声明；未声明的会话行为完全不变（对照臂/旧测试不受影响）。
+- `demo/self_root.ts`：`SelfRootOptions.actionReceiptTypes`；事务候选构造与回滚（`Object.assign` 后）都重新声明；`metaT0()` 在已声明时追加一行"Action receipt types this runtime records（step actions / transition on.action / requires / decision evidence 唯一可用类型）：…"。仍是推入、非拉取，零任务词。
+- `demo/self_root_ppt.ts`：adapter 声明 `office.render / office.look / office.deliver / submit_unit`；`submit_unit` 处理器发真实 orchestration receipt（`unit`、`episode`、`artifactVersion: Number(receipt.revision)`、`artifactHash: receipt.source_sha256`），与 `office.render` 记录的 exports receipt.json 同源，`currentArtifact/freshness:'current'` 类要求可匹配。
+- `demo/ppt_demo_extension.ts`：非 evo 路径只声明三个 office 类型（submit_unit 是 self-root adapter 工具）。
+
+摩擦语义（保留，不改）：事务内任何失败→`abortTransaction`→`chainFailed`，整条响应链中止，下一请求边界复位。即 T0 设计被拒时，agent 在**下一个模型响应**里改正重发；被拒设计不开门（`noteMetaDesign` 只在 resolve 时记账）。
+
+离线证据（本机 node 25.5.0，无 provider）：
+
+- `tests/live_orchestration_known_actions.test.ts` 5/5：四类绑定被拒且错误列出集合、revision 不变；绑定真实类型时 `submit_unit` receipt 使 transition `advanced`、step 变 `render`；未声明会话保持旧接受；SelfRoot 事务路径下 T0 材料命名集合、被拒设计不开门、下一请求改正后开门且只记一次；无声明时事务路径保持旧接受。
+- 回归：`self_root_meta` 5/5、`self_root` + `self_root_evo_capability` 32/32；ppt 三套既有失败计数与改前一致（8/1/1）。
+
+M2 协议：同一任务/manifest/模型/臂守卫，commit 冻结后启动；**上限 560 请求**（M1 已用 40，记在同一 600 授权内），14400 s / 2 GiB 不变。主指标同 §9（kernel ≥1：T1 起 agent 自主结构变更 → 后续任务段流经它 → agent 对观察结果采取行动；T0 首版不计，修订计入，纯参数补丁不计）；交付质量不低于 B3-2。
+

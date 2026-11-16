@@ -88,6 +88,8 @@ export default function pptDemo(pi: ExtensionAPI) {
       acceptanceUnits: () => activeManifest()?.units.map((u: any) => u.id) ?? [],
       observeCurrentArtifact: () => { const source = sourceFacts(workspace); const render = state.lastFeedback ? { ...state.lastFeedback, fresh: Boolean(source && state.lastFeedback.source_path === source.source && source.hash === state.lastFeedback.source_hash) } : { fresh: false, reason: 'no render recorded' }; return { source, render, acceptance: render.fresh ? 'latest recorded acceptance is attached to task outcomes' : null, fact_refs: evo?.reviewView().quality_facts.map((x: any) => x.ref) ?? [] }; } }) : undefined;
   const agentSelf = evo ?? new LiveAgentSelf(savedSelf, validatePythonComponent, workspace);
+  // The plain path records office actions only; submit_unit is a self-root adapter tool.
+  if (!evo) agentSelf.declareActionTypes(['office.render', 'office.look', 'office.deliver']);
   let activatingEvo = false;
   let advanceEvoBoundary = async () => {};
   let resumed = false, initialized = false;

@@ -126,6 +126,7 @@ export const PPT_SELF_ROOT_OPTIONS = {
   reservedToolNames: ['office'],
   actionOf: (name: string, args: any) => name === 'office' ? `office.${args?.op}` : name,
   boundaryTools: ['submit_unit', 'office.deliver'],
+  actionReceiptTypes: ['office.render', 'office.look', 'office.deliver', 'submit_unit'],
   processFactTypes: ['render_action_receipt','artifact_write'],
   workCheckpointTypes: ['render_action_receipt'],
   finalDeliveryTools: ['office.deliver'],
@@ -222,6 +223,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
   for (const row of evo.export().root.ledger.filter((r: any) => r.type === 'unit_delivered')) submitted.set(`${row.value.episode ?? 1}:${row.value.unit}`, row.value.artifact_hash ?? '');
   tool('submit_unit', 'Deliver one frozen content unit from the current rendered artifact. Records its acceptance facts and settles the unit; counted boundaries follow recorded task work. A content unit may span several slides. No quality verdict is fabricated.',
     Type.Object({ unit: Type.String() }), async (a: any) => {
+      evo.assertActionAllowed('submit_unit');
       if (!active().units.some((u: any) => u.id === a.unit)) throw Error('unknown frozen unit');
       const key = `${episode()}:${a.unit}`;
       const dirs = readdirSync(join(root,'exports')).filter(p => /^v\d+$/.test(p)).sort();
@@ -234,9 +236,10 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       if (a.unit && !['whole_deck', ...active().units.map((u: any) => u.id)].includes(a.unit)) throw Error(`unknown frozen unit ${a.unit}; valid units: whole_deck, ${active().units.map((u: any) => u.id).join(', ')}`);
       const result = collectAcceptance(active(),root,workspace,receipt.source_path,receipt,0,a.unit);
       evo.outcome({ ...result, episode:episode(), superseding_observation: superseding, metrics: pptUnitMetrics(result, evo.segmentRows()) },true); evo.fact('unit_delivered',{ unit: a.unit, episode:episode(), artifact_hash: receipt.source_sha256, superseding_observation: superseding }); submitted.set(key, receipt.source_sha256);
+      const orchestrationAction = evo.recordAction('submit_unit', { unit: a.unit, episode: episode(), artifactVersion: Number(receipt.revision), artifactHash: receipt.source_sha256 }, false);
       const outcomeRefs = evo.export().root.ledger.filter((r: any) => r.type === 'task_outcome' && r.value?.unit === a.unit).map((r: any) => r.ref);
       const routed: any = await evo.event('unit_completed',`unit:${a.unit}`,{ event_classes:['task_outcome'], coverage_tags:[], unit: a.unit, evidenceRefs: outcomeRefs.slice(-4) });
-      return { ...result, unit_boundary: routed.coalesced ? { counted: false, rule: 'no task action since the previous counted unit boundary' } : { counted: true, segment_summary: routed.segment_summary ?? null },
+      return { ...result, orchestration_action: orchestrationAction, unit_boundary: routed.coalesced ? { counted: false, rule: 'no task action since the previous counted unit boundary' } : { counted: true, segment_summary: routed.segment_summary ?? null },
         review: evo.hasReview ? 'opens at the next request' : null };
     });
 }
