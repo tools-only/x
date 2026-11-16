@@ -15,6 +15,49 @@ export const SELF_CONTEXT_PATH = "data/self/context_budget.jsonl";
 export const SELF_WORKING_PATH = "data/self/working_set.jsonl";
 export const SELF_OUTCOMES_PATH = "data/self/outcomes.jsonl";
 
+/**
+ * Stage 2: the four fields the host gives every decision, unchanged between decisions (evo's self_root_meta_fields,
+ * adapted to this harness's own objects). They name the goal, the mechanism and the acceptance and nothing to build.
+ */
+export const SELF_FIELDS = [
+	"SELF-EVOLUTION FIELDS (given by the host, the same every decision)",
+	"- The task is the host: a change to yourself counts only when this run's own facts triggered it and it serves this task's delivery.",
+	"- You change yourself through the same workspace write path as any component; a saved change activates at the next decision boundary.",
+	"- At each level boundary the runtime counts changes / activated / used later from its receipts; the rows are under data/self/.",
+].join("\n");
+
+export type SelfDigestInput = {
+	decision: number;
+	actions: number;
+	level: number;
+	predictions: { made: number; hits: number; misses: number };
+	components: Array<{ path: string; version: number }>;
+	/** Rows the agent's own writes recorded in harness_changes.jsonl. */
+	changes: number;
+	outcomes: Array<{ level?: number; won?: boolean; win_n?: number; win_action?: string }>;
+	rows: { budget: number; working: number; outcomes: number };
+};
+
+/**
+ * Stage 2: one line of the run's own facts, shown with every decision. Counts and names copied from the logs the
+ * digest's pointer opens; no judgement, no suggestion.
+ */
+export function selfDigest(input: SelfDigestInput): string {
+	const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+	const shown = input.components.slice(0, 3).map((component) => `${component.path} v${component.version}`);
+	const more = input.components.length - shown.length;
+	const last = input.outcomes.at(-1);
+	const outcome = last
+		? `level ${last.level ?? "?"} ${last.won ? `won at #${last.win_n ?? "?"} by ${last.win_action ?? "?"}` : "not won"}`
+		: "none";
+	return `SELF: decision ${input.decision}, ${plural(input.actions, "action")} at level ${input.level}; predictions ${input.predictions.made} ` +
+		`(${input.predictions.hits} hit/${input.predictions.misses} miss); your components ${input.components.length}` +
+		`${shown.length ? ` (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})` : ""}; ${plural(input.changes, "self change")}; ` +
+		`last outcome ${outcome}; data/self/: ${input.rows.budget} budget, ${input.rows.working} working-set, ` +
+		`${plural(input.rows.outcomes, "outcome row")}.`;
+}
+
+
 type Row = Record<string, any>;
 
 /** A working-set row without the message bodies: the section sizes and flags stay, the text does not. */

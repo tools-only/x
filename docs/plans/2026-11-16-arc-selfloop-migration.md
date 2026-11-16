@@ -78,10 +78,28 @@
 - 成本与任务结果：上下文零字符（无新段）；磁盘为逐决策行 + 每关一行，尚未在真实 run 量出。
 - 协议偏离：无。
 
+### 段二：常量字段 + 一行摘要（进入每次决策）
+
+- 改动入口及实际行为：`demo/arc_thin_selfview.ts` 新增 `SELF_FIELDS`（宿主给的四行固定字段：任务即宿主、同一写路径与激活边界、
+  关卡边界结算）与 `selfDigest`（一行计数：决策序号/动作数/关卡、predictions made·hit·miss、自有组件清单（最多列三个）、
+  `harness_changes.jsonl` 行数、最近一次 outcome、`data/self/` 三个文件的行数指针）。`demo/arc_thin_extension.ts` 新增
+  `selfText()`，在 `buildWorkingSet` 把关卡状态与视图输出之后接上：tail 变为 `[self, spin, viewOutput, board]`，
+  THIS BOARD 仍在最后；`ARC_THIN_CONTEXT_LAYOUT=0` 时放进 `sections`。块的字数记入 `working_set.jsonl` 的
+  `sections.self` 并随段一投影进 `data/self/working_set.jsonl`。摘要每个数都由运行期已写的行算出，不新测任何量。
+- 功能/相关回归检查：`tests/arc_thin_selfview.test.ts` 增至 6 项（新增 `selfDigest` 两例，逐字断言）；`tests/arc_thin_selfloop.test.ts`
+  3 项（第一例扩展为：开/关两臂正文除资源尺寸行外逐字节相同、块长度等于 head 实际多出的前缀、字数记账等于块长、
+  所在段计入 carried 尺寸、THIS BOARD 仍最后）；两文件 9/9。邻接套件 `selfview / selfloop / work_memory_loop / self_harness /
+  level_review / native_context` 41/41 通过（离线、mock bridge）。
+- 机会漏斗与断点：本段首次让事实进入决策文本（断点若存在，是 agent 读了却不改自己——由段三/段的结算回答，离线不可判）。
+- 语义与连续性：块是宿主渲染的计数与拷贝，不含判断/建议，每决策都在同一位置；重启后由 store 行重建，不另存状态。
+- 成本与任务结果：离线测得每决策约 0.7k 字符（同一决策 carried 5.4k → 6.1k，测试断言差值 ≈ 块长 + 2，容差 120）；
+  记入 `sections.self` 供真实 run 对账。任务结果未测。
+- 协议偏离：无。
+
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
-| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in） | `tests/arc_thin_selfview.test.ts`、`tests/arc_thin_selfloop.test.ts` 7 项 + 邻接 36/36；只证明行构造、写入与默认等价 |
-| 全链路可达 | 部分验证（离线） | 同上；`arc-thin-smoke`（legacy 臂） | 扩展在 native 决策装配中的写入路径已驱动；真实 Pi/provider 下的完整 run 未验证 |
+| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in） | `tests/arc_thin_selfview.test.ts` 6 项、`tests/arc_thin_selfloop.test.ts` 3 项 + 邻接 41/41；证明行构造、写入、摘要文本、落位与默认等价（关臂无块、字节相同） |
+| 全链路可达 | 部分验证（离线） | 同上；`arc-thin-smoke`（legacy 臂） | 摘要经 `context` 装配进入每次决策的尾部并被记账；真实 Pi/provider 下的完整 run 未验证 |
 | 自主采用 | 未验证 | — | 需真实 provider run |
 | 净收益 | 未验证 | — | 需真实 provider run |
 
