@@ -108,10 +108,13 @@
 
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
-| 功能正确 | 未验证 | — | 设计稿，未实现 |
-| 全链路可达 | 未验证 | — | 同上 |
+| 功能正确 | 离线通过（2026-11-16） | 本机 node 25.5.0，无 provider | `tests/self_root_meta.test.ts` 5/5：T0 门与一次性设计记录、META 无宿主评审入口、旧机制被替换而非叠加、T2 清单只记一次；`self_root_evo_capability` + `self_root` 32/32 无回归 |
+| 全链路可达 | 未验证 | — | 离线只证明对象层调用链；扩展与 runner 接线需 M1 实跑才可见 |
 | 自主采用 | 未验证 | — | 待 M1（需新预算授权） |
 | 净收益 | 未验证 | — | 同上 |
+
+- 离线检查备注：`tests/ppt_demo.test.ts`(8) / `ppt_demo_live_orchestration`(1) / `ppt_trials`(1) 为既有失败，本改动前后计数一致，不在本次范围。
+- 实现提交：`demo/self_root.ts`（EVO_META 门、T0 材料、T1 触发抑制、T2 清单）、`demo/ppt_demo_extension.ts`（META 文本入上下文与评审门旁路）、`src/autoresearch_pi/evo_ppt.py`（目标句任务半 + 臂守卫）、`tests/self_root_meta.test.ts`。
 
 - 开放决定（请用户定夺）：① T0 一次性门——硬门（本文选择；B2 已证纯许可 = 0，软提示重复已知负例）还是软提示；② 目标句最终措辞（§4 草案）；③ M1 预算授权。
 - 下一可证伪检查：M1（§9），授权后执行；实现与离线检查先行。

@@ -75,7 +75,8 @@ export default function pptDemo(pi: ExtensionAPI) {
   const piContext = createPiContextAdapter();
   // Mechanism flags (default on; EVO_MA/MB/MC=0 turns one off, EVO_LEGACY_OBLIGATION=1 restores the pre-M-A framing).
   // EVO_A4/EVO_ASK/EVO_L4=1 turn on the capability-view items (default off for B2 comparability).
-  const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1', a4: process.env.EVO_A4 === '1', ask: process.env.EVO_ASK === '1', l4: process.env.EVO_L4 === '1' };
+  // EVO_META=1 runs the general meta loop (2026-11-16): T0 design turn plus the agent's own review rhythm; it forces ask/l4 off.
+  const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1', a4: process.env.EVO_A4 === '1', ask: process.env.EVO_ASK === '1', l4: process.env.EVO_L4 === '1', meta: process.env.EVO_META === '1' };
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
     { ...PPT_SELF_ROOT_OPTIONS, mechanisms: EVO_MECH, taskComplete: () => state.complete, requiredUnits: () => activeManifest()?.units.length ?? 0,
       pendingDeliveryState: () => agentSelf?.hasPendingFinalDelivery?.() === true,
@@ -366,11 +367,12 @@ export default function pptDemo(pi: ExtensionAPI) {
     self_review: Type.Optional(Type.Object({ disposition: Type.Union([Type.Literal('keep'), Type.Literal('defer'), Type.Literal('change')]), rationale: Type.String() })) });
   register('office', OFFICE_ACTION_DESCRIPTION, officeParameters,
     async (a: any, signal: AbortSignal, ctx: any) => {
-      if (evo?.inEvolutionReview && evo.isFinalDelivery('office', a)) {
+      // META: the host opens no review of its own, so nothing defers final delivery; the harness inventory books at task end.
+      if (!evo?.mech.meta && evo?.inEvolutionReview && evo.isFinalDelivery('office', a)) {
         agentSelf.markPendingFinalDelivery();
         return text(await evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true), 'office.deliver'));
       }
-      if (evo && evo.isFinalDelivery('office', a) && evo.needsQualityReview()) {
+      if (!evo?.mech.meta && evo && evo.isFinalDelivery('office', a) && evo.needsQualityReview()) {
         agentSelf.markPendingFinalDelivery();
         return text(await evo.queueFinalDelivery(async () => officeDeliver(a, signal, ctx, true), 'office.deliver'));
       }
@@ -701,15 +703,17 @@ export default function pptDemo(pi: ExtensionAPI) {
         const coreLine = evo.mech.legacy_obligation
           ? `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`
           : `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is available at any point in a review; a judged no-change is a valid closure. Rework stays available through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition, or at the budget boundary.`;
+        // META (2026-11-16): the goal sentence's spine half plus the T0 design material; both disappear once the gate opens.
+        const metaText = [evo.metaGoal(), evo.metaT0()].filter(Boolean).join('\n\n');
         const bindingText = boundComponents.length ? `## ACTIVE STEP BINDINGS\n${boundComponents.join('\n')}` : '';
         const orchestrationText = `## ACTIVE ORCHESTRATION\n${JSON.stringify({ revision: evo.current.revision, step: evo.step, definition: currentStep })}`;
-        const prefix = [taskInstructions, ...ctx.order.map(k => groups[k]), bindingText, orchestrationText, ctx.instruction, coreLine].filter(Boolean).join('\n\n');
+        const prefix = [taskInstructions, metaText, ...ctx.order.map(k => groups[k]), bindingText, orchestrationText, ctx.instruction, coreLine].filter(Boolean).join('\n\n');
         const volatile = ctx.prompt_layout?.volatile_tail === 'self_view' ? [selfView[0]] : ctx.prompt_layout?.volatile_tail === 'projection' ? [selfView[1]] : selfView;
         const stable = prefix;
         const volatileText = volatile.join('\n\n');
         const viewInSystem = !selfTail;
         const reviewStrategy = evo.inEvolutionReview ? evo.reviewStrategy(true) : '';
-        const sections = [{ section: 'task_brief', text: taskInstructions }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
+        const sections = [{ section: 'task_brief', text: taskInstructions }, { section: 'meta_loop', text: metaText }, ...ctx.order.map(k => ({ section: k, text: groups[k] })), { section: 'instruction', text: [ctx.instruction, coreLine].filter(Boolean).join('\n\n') },
           ...(viewInSystem ? [{ section: 'self_view', text: volatileText }] : []), { section: 'projection', text: ctx.prompt_layout?.volatile_tail === 'self_view' ? '' : volatile[1] ?? '' }];
         system.content = [reviewStrategy, stable, ...(viewInSystem ? [volatileText] : [])].filter(Boolean).join('\n\n');
         messages[0] = system;

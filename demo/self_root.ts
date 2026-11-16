@@ -43,7 +43,7 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   probeKinds?: string[];
   /** Mechanism switches for single-factor ablation; defaults are the current behavior (all on, legacy off). */
   mechanisms?: SelfRootMechanisms };
-export type SelfRootMechanisms = { observation?: boolean; compiler?: boolean; effect_return?: boolean; legacy_obligation?: boolean; a4?: boolean; ask?: boolean; l4?: boolean };
+export type SelfRootMechanisms = { observation?: boolean; compiler?: boolean; effect_return?: boolean; legacy_obligation?: boolean; a4?: boolean; ask?: boolean; l4?: boolean; meta?: boolean };
 type Mode = { tools: string[]; instruction: string; projection?: string; exitSchema: any };
 type Route = { id: string; event: string; predicate?: string; projection?: string; mode: string; priority: number; conclusion_sink: 'ledger' | 'lineage' };
 export type ImagesRule = 'all' | 'latest' | 'none';
@@ -125,6 +125,29 @@ export function entranceAskBlock(layer: boolean): string {
     ...ENTRANCE_QUESTIONS.map((q, i) => `${i + 1}. ${q}`),
     'Close with decide_exit carrying result.entry_question_responses: exactly three strings, one per question; "none" is a valid response. "No gap" and "no change" are both valid closures.'].join('\n');
 }
+/** EVO_META: the general meta loop - a fixed, task-free host spine that gives the agent the guidance scope and the
+ * design-process assistance to produce its own evolution loop, and no host judgement (design 2026-11-16 §2-§4).
+ * The material is delivered only while the T0 gate is closed; every string here names view objects, interfaces,
+ * boundaries or design questions only. Task content reaches the agent through the runner's task prompt alone. */
+export const META_GOAL = 'Your deliverable is twofold: the task artifact itself, and the harness you sediment while delivering it - the final form of your components and orchestration is that harness.';
+export const META_DESIGN_QUESTIONS = [
+  'What does highest-quality delivery mean for this task, and what observable evidence would show it?',
+  'Which of your runtime-view objects bear on that quality, and which are worth evolving during this task?',
+  'What loop will you run while delivering: when, and on what evidence, will you look at your own harness? How do the task segments flow through the objects you change?',
+  'Write it as your orchestration with reflect_orchestration, with one sentence of intent; revise it whenever running teaches you something.',
+];
+export const META_T0_MATERIAL = [
+  'META LOOP - DESIGN TURN. This block is delivered before your first task segment and stops once that segment opens. It is guidance, not a questionnaire: nothing here is answered as text; its product is your orchestration, and your orchestration is executable.',
+  'Guidance scope - what exists and is yours to evolve. Your runtime view has four layers: prompt, context, loop, harness. In them you own your components (prompts, skills, tools, memory), your policy (modes, routes, request limits, context assembly) and your orchestration (roles, slots, steps, decisions, transitions).',
+  'Interfaces, available at every request: reflect_component (create or rewrite a component), reflect_orchestration (rewrite your loop), and policy changes through the same reflection. Changes activate at the next request boundary; their recorded effects return to the same view.',
+  'Materials you judge on: recorded facts - repeats, costs, losses, inventory, recurrence, action receipts, usage and validation windows - delivered in the self view. The host books facts without ranking, diagnosis or recommendation.',
+  'Boundaries that stay in force and do not change with this mode: the frozen acceptance surface, budget, permissions and environment integrity.',
+  'Design process - think freely; the output is a structure, not an answer:',
+  ...META_DESIGN_QUESTIONS.map((q, i) => `${i + 1}. ${q}`),
+  'The first task segment opens after your first reflect_orchestration. A rewrite equivalent to the current seed is accepted and recorded as your design.',
+].join('\n');
+/** EVO_META strategy line: replaces the fixed review-strategy line in the self view; no entrance, no closure protocol. */
+export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at any request; changes activate at the next request boundary and their recorded effects return to the same view. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own. Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
@@ -613,12 +636,28 @@ export class SelfRoot extends LiveAgentSelf {
     throw Error('unknown self section');
   }
   /** Effective mechanism switches; the adapter may turn individual mechanisms off for ablation runs. */
-  get mech(): Required<SelfRootMechanisms> { return { observation: true, compiler: true, effect_return: true, legacy_obligation: false, a4: false, ask: false, l4: false, ...(this.options.mechanisms ?? {}) }; }
+  get mech(): Required<SelfRootMechanisms> {
+    const m: Required<SelfRootMechanisms> = { observation: true, compiler: true, effect_return: true, legacy_obligation: false, a4: false, ask: false, l4: false, meta: false, ...(this.options.mechanisms ?? {}) };
+    // META is mutually exclusive with the mechanisms it replaces: no questionnaire, no layer declarations, no obligation framing.
+    if (m.meta) { m.ask = false; m.l4 = false; m.legacy_obligation = false; }
+    return m;
+  }
   /** The one fixed strategy line shown with the self view; evidence framing unless legacy obligation is on.
    * entrance=true appends the EVO_ASK question block at evolution-review entrances only (zero resident elsewhere). */
   reviewStrategy(entrance = false): string {
+    if (this.mech.meta) return META_STRATEGY;
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
+  }
+  /** EVO_META T0: the gate is open until the agent has written its orchestration once (any accepted rewrite counts). */
+  get metaT0Pending() { return this.mech.meta && !this.ledger.some(r => r.type === 'meta_t0_design'); }
+  /** The goal sentence half carried by the spine; task content stays in the runner's prompt. */
+  metaGoal() { return this.mech.meta ? META_GOAL : ''; }
+  /** T0 material: delivered on every request while the gate is closed; the delivery is recorded once. */
+  metaT0() {
+    if (!this.metaT0Pending) return '';
+    if (!this.ledger.some(r => r.type === 'meta_t0_delivered')) this.fact('meta_t0_delivered', { request: this.request, material: 'guidance scope + design process', gate: 'one reflect_orchestration before the first task segment' });
+    return META_T0_MATERIAL;
   }
   /** Three-altitude recorded operating facts over this ledger - the dynamic facet of the one self view. */
   observation(): Observation {
@@ -665,7 +704,15 @@ export class SelfRoot extends LiveAgentSelf {
   transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
     const result = this.mutations.then(() => this.prepareTransaction(input));
     this.mutations = result.then(() => undefined, () => undefined);
-    return result;
+    // EVO_META T0 gate: the first orchestration write - whatever it produced, a seed-equivalent rewrite included - is the
+    // agent's design, and it opens the gate. Booked here so every adapter path (tool dispatch, restore) records it once.
+    if (input.orchestration === undefined && input.orchestration_patch === undefined && input.restore === undefined) return result;
+    return result.then(value => { this.noteMetaDesign(value); return value; });
+  }
+  /** EVO_META T0: the gate's only state is this ledger row; a failed write never opens it. */
+  private noteMetaDesign(result: any) {
+    if (!this.mech.meta || this.ledger.some(r => r.type === 'meta_t0_design')) return;
+    this.fact('meta_t0_design', { revision: this.pending?.revision ?? this.serial, status: result?.status ?? 'changed', addresses: result?.addresses ?? null, gate: 'open' });
   }
   abortTransaction(error: unknown) {
     this.pending = undefined; this.pendingReview = undefined;
@@ -830,6 +877,9 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.requestPin?.mode === 'execute') super.assertActionAllowed(type);
   }
   surface() {
+    // EVO_META T0: until the agent has written its orchestration once, only the protocol surface exists. The task segment
+    // (and every tool it creates) opens on the other side of that gate; nothing is refused that is not named here.
+    if (this.metaT0Pending) return [...PROTOCOL];
     // Evolution review observes evidence; task artifacts are not edited there (design §1).
     const tools = this.inEvolutionReview
       ? [...new Set([...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? [], ...this.policy.modes[this.currentMode].tools])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
@@ -1008,6 +1058,8 @@ export class SelfRoot extends LiveAgentSelf {
     const delivered = this.windows.filter(w => w.status === 'open').map(w => this.deliverWindow(w, `task end: ${reason}`).ref);
     this.taskEndPending = undefined;
     this.fact('task_ended', { reason, windows_delivered: delivered });
+    // META T2: a delivered run never reaches before_session_end, so the harness inventory is booked here too.
+    this.metaInventory();
     return { delivered };
   }
   waitForBudgetDelivery() { return this.budgetDelivery ?? Promise.resolve(); }
@@ -1120,7 +1172,7 @@ export class SelfRoot extends LiveAgentSelf {
     const quiet = false;
     const routes = quiet ? [] : [...this.policy.routes].filter(r => r.event === type).sort((a,b) => b.priority - a.priority || a.id.localeCompare(b.id));
     const triggers: any[] = [];
-    if (this.contract.boundaries.includes(type) && !quiet) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    if (this.contract.boundaries.includes(type) && !quiet && !this.mech.meta) triggers.push({ id: `contract:${type}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
     if (settles && !quiet) {
       const classes = Array.isArray((facts as any)?.event_classes) ? (facts as any).event_classes : [];
       const tags = Array.isArray((facts as any)?.coverage_tags) ? (facts as any).coverage_tags : [];
@@ -1134,9 +1186,10 @@ export class SelfRoot extends LiveAgentSelf {
       const subtype = segmentRows.some(r => r.type === 'event' && ['tool_failed', 'tool_cancelled', 'request_paused', 'watch_stall'].includes(r.value?.type));
       const processFault = Number(process?.output_cap_stops ?? 0) > 0 || Number(process?.tool_errors ?? 0) > 0;
       const newFacts = eventFacts.length > 0 || segmentRows.some(r => r.type === 'task_outcome' || ['watch_stall','request_paused','exit_normalization','reflection_validation_failed','acceptance_result',...(this.mech.effect_return ? [] : ['validation_delivered']),'tool_failed'].includes(r.type)) || subtype || processFault || checkpoint;
-      if (newFacts || forcedReview) triggers.push({ id: 'evolution_review', source: forcedReview ? 'requested_review' : 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
+      // META: facts are booked but no longer schedule a review - the loop's rhythm belongs to the agent's orchestration.
+      if ((newFacts || forcedReview) && !this.mech.meta) triggers.push({ id: 'evolution_review', source: forcedReview ? 'requested_review' : 'booked_facts', mode: 'reflect', conclusion_sink: 'ledger' });
     }
-    if (type === 'heartbeat' && !quiet) triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
+    if (type === 'heartbeat' && !quiet && !this.mech.meta) triggers.push({ id: `contract:${boundary}`, source: 'user_contract', mode: 'reflect', conclusion_sink: 'ledger' });
 
     for (const route of routes) {
       try {
@@ -1188,11 +1241,26 @@ export class SelfRoot extends LiveAgentSelf {
       else this.queue.push({ id: `review:${event.ref}`, boundary, event: event.ref, triggers, revision: this.serial, ledger_offset: this.ledger.length });
       }
     }
+    // META T2: the close of the session books the harness's final inventory once; the agent closes freely.
+    if (type === 'before_session_end') this.metaInventory();
     return { event: event.ref, triggers, ...(summary ? { segment_summary: summary.ref } : {}) };
+  }
+  /** EVO_META T2: what the agent's own view holds at close. Facts only - the runtime counts, it does not rank or advise. */
+  private metaInventory() {
+    if (!this.mech.meta || this.ledger.some(r => r.type === 'meta_harness_inventory')) return;
+    const orchestration: any = this.current?.orchestration ?? {};
+    this.fact('meta_harness_inventory', {
+      components: this.active().map(c => ({ kind: c.kind, name: c.name, chars: String(c.source ?? '').length })),
+      orchestration: { revision: orchestration.revision ?? this.serial, slots: (orchestration.slots ?? []).length, steps: (orchestration.steps ?? []).length,
+        decisions: (orchestration.decisions ?? []).length, transitions: (orchestration.transitions ?? []).length },
+      revision_chain: this.ledger.filter(r => r.type === 'reflection_activated').map(r => ({ revision: r.value?.revision ?? null, addresses: r.value?.addresses ?? [], review: r.value?.review ?? null })),
+      policy_keys: Object.keys(this.policy), design: this.ledger.find(r => r.type === 'meta_t0_design')?.ref ?? null,
+    });
   }
   /** Final delivery settles facts but leaves an evolvable review loop open when quality facts or windows remain. */
   async finalSettlement(boundary: string, facts: any = {}) {
-    const result = await this.event('settlement', boundary, { ...facts, final: false, force_review: true });
+    // META: the host opens no review at settlement; only the agent's own orchestration routes can.
+    const result = await this.event('settlement', boundary, { ...facts, final: false, force_review: !this.mech.meta });
     return { ...result, task_end: { deferred: true, reason: 'formal delivery completion is recorded by the adapter after its delivery action returns' } };
   }
   private enter(ticket: any) {
@@ -1485,7 +1553,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.pendingDelivery = { run };
     this.options.onPendingDelivery?.(true);
     this.pendingDeliveryName = action;
-    return this.event('settlement', `quality-review:${this.request}:${this.ledger.length}`, { final: false, force_review: true, source: 'unreviewed_quality' }).then(result => ({ delivery_deferred: true, review: result.event, pending_delivery: true, completion: 'scheduled rewrite/re-render/resubmit runs first; otherwise host completes pending delivery after review closure or budget stop' }));
+    return this.event('settlement', `quality-review:${this.request}:${this.ledger.length}`, { final: false, force_review: !this.mech.meta, source: 'unreviewed_quality' }).then(result => ({ delivery_deferred: true, review: result.event, pending_delivery: true, completion: 'scheduled rewrite/re-render/resubmit runs first; otherwise host completes pending delivery after review closure or budget stop' }));
   }
   async runPendingDelivery() { if (!this.pendingDelivery || this.review || this.queue.length) return undefined; const pending = this.pendingDelivery; this.pendingDelivery = undefined; this.pendingDeliveryName = undefined; this.options.onPendingDelivery?.(false); return pending.run(); }
   needsQualityReview() { return this.ledger.some(r => r.type === 'task_outcome' && !this.reviewedQualityRefs.has(r.ref)); }

@@ -275,6 +275,8 @@ def run(root: Path, *, round_deadline: float | None = None):
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     if manifest["provider"] != "az" or manifest["model"] != MODEL:
         raise ValueError("provider/model substitution refused")
+    if os.environ.get("EVO_META") == "1" and manifest["arm"] != "B":
+        raise ValueError("EVO_META requires arm B (the evo self_root); elsewhere the flag would only rename the task prompt")
     if (root / "session.jsonl").exists():
         raise ValueError("use a fresh independent root; automatic retries/resumes are not permitted")
     for relative, expected in manifest["seed_hashes"].items():
@@ -365,6 +367,10 @@ def run(root: Path, *, round_deadline: float | None = None):
     try:
         with PiKernel(command,cwd=str(root / "workspace"),env=env,timeout=90,deadline=deadline,event_sink=record) as kernel:
             message = "Complete the supplied presentation brief using data/instructions.md, data/material.txt and data/environment.md."
+            if os.environ.get("EVO_META") == "1":
+                # The goal sentence's task half: the spine half is general and lives in the harness; the artifact it
+                # names is the runner's business, so it is stated here and only for META runs (other arms stay identical).
+                message += " Your task artifact is the presentation deck that brief defines."
             while time.monotonic() < deadline:
                 reply = kernel.prompt(message)
                 if reply.get("success") is False:
