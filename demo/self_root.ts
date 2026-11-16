@@ -156,7 +156,7 @@ export function orchestrationSchema(current?: any) {
   const binding = { type: 'object', properties: { kind: { type: 'string', enum: ['prompt','skill','tool','memory','context'] }, name: { type: 'string' }, version: { type: 'integer', minimum: 1 } }, required: ['kind','name'], additionalProperties: false };
   const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', bindings: [] }], decisions: [], transitions: [] };
   const definition = current ?? example;
-  return { type: 'object', properties: { revision: { type: 'integer' }, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
+  return { type: 'object', properties: { revision: { type: 'integer' }, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', description: 'Permission scope for this step: tool names (read, write, edit, office.render, ...) this step may call. Omit to allow every tool; protocol tools are never scoped by it.', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
 }
 export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
@@ -661,7 +661,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.metaT0Pending) return '';
     if (!this.ledger.some(r => r.type === 'meta_t0_delivered')) this.fact('meta_t0_delivered', { request: this.request, material: 'guidance scope + design process', gate: 'one reflect_orchestration before the first task segment' });
     return this.knownActionTypes?.size
-      ? `${META_T0_MATERIAL}\nAction receipt types this runtime records (the only types usable in step actions, transition on.action/requires, and decision evidence): ${[...this.knownActionTypes].sort().join(', ')}.`
+      ? `${META_T0_MATERIAL}\nAction receipt types this runtime records (the only types usable in transition on.action/requires and decision evidence): ${[...this.knownActionTypes].sort().join(', ')}. A step's actions list is a permission scope over tool names, not over receipt types: it may name any tool the surface advertises (read, write, edit, ls, grep, python, ...) as well as the receipt types; omitting it allows every tool in that step. Protocol tools (read_self, reflect_*, decide) are not restricted by it, so a narrow step can always be widened again.`
       : META_T0_MATERIAL;
   }
   /** Three-altitude recorded operating facts over this ledger - the dynamic facet of the one self view. */
@@ -697,7 +697,7 @@ export class SelfRoot extends LiveAgentSelf {
       const tool = String(r.value?.tool ?? '');
       if (r.type !== 'tool_failed' || !['reflect_component', 'reflect_orchestration'].includes(tool)) continue;
       const entry = refused.get(tool) ?? { tool, count: 0, last_error: '' };
-      refused.set(tool, { ...entry, count: entry.count + 1, last_error: String(r.value?.content ?? '').slice(0, 400) });
+      refused.set(tool, { ...entry, count: entry.count + 1, last_error: String(r.value?.error ?? r.value?.content ?? '').slice(0, 400) });
     }
     return {
       self_changes: changes.length,
@@ -742,8 +742,13 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.mech.meta || this.ledger.some(r => r.type === 'meta_t0_design')) return;
     this.fact('meta_t0_design', { revision: this.pending?.revision ?? this.serial, status: result?.status ?? 'changed', addresses: result?.addresses ?? null, gate: 'open' });
   }
-  abortTransaction(error: unknown) {
+  abortTransaction(error: unknown, tool?: string) {
     this.pending = undefined; this.pendingReview = undefined;
+    // A rejected self-operation is the signal the agent named as missing. M3 (2026-11-16): seven refused read/reflect
+    // calls were answered with a same-turn correction and recorded nothing, so the self-state digest's
+    // refused_self_operations stayed empty while the agent was in fact being refused. Record the same tool_failed
+    // shape the other failure paths write, so one reader covers both.
+    if (tool) this.fact('tool_failed', { tool, error: String(error) });
     if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
     this.chainFailed = true;
   }
@@ -903,6 +908,12 @@ export class SelfRoot extends LiveAgentSelf {
   override async reflectOrchestration(input: any): Promise<any> { return this.transaction(input); }
   override assertActionAllowed(type: string) {
     if (!this.executionGrant.includes(type) && !PROTOCOL.includes(type)) throw Error(`action ${type} outside pinned mode/user surface`);
+    // The protocol surface is never gated by an object it can revise. A step's `actions` list is agent-written
+    // orchestration content; letting it refuse read_self/reflect_* would let the first narrow design switch off the
+    // tools that widen it again (M3 run 2026-11-16: step `work` listed four task actions and every read/reflect call
+    // returned "not allowed by active step work" for 30 requests, with no route back). surface() advertises PROTOCOL
+    // at every request, so gating it was also an advertisement the runtime then contradicted.
+    if (PROTOCOL.includes(type)) return;
     // Review suspends the work step; its observe tools are not constrained by a work whitelist.
     if (this.requestPin?.mode === 'execute') super.assertActionAllowed(type);
   }

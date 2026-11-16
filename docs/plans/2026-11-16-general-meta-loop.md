@@ -54,6 +54,7 @@
   > "Your deliverable is twofold: the task artifact itself, and the harness you sediment while delivering it — the final form of your components and orchestration is that harness."
   任务半（命名具体产物，如 deck）在 runner 的任务提示里——任务相关内容天然归 runner，不进脊柱。
 - **T1（执行中）**：无宿主触发的评审入口（booked_facts / unit_completed 强制入口关闭；事实照常记账）。节奏完全由 agent 的 orchestration 决定——这是可执行结构而非声明：live_orchestration_core.ts 的执行器按 activeStep 校验动作白名单、transition 要求 evidence receipts，agent 写的 loop 就是真实执行流。requested_review 自发门保留（无问卷、无闭合 schema）。
+  - 白名单语义（M3 后修订，见 §14.7）：`step.actions` 是**工具名权限范围**，可列 surface 广告的任何工具（read/write/edit/ls/grep/python/office.* 等）；省略 = 该步放行全部工具。协议面（read_self / read_self_component / reflect_* / decide*）**永不受步骤白名单约束**——否则一次窄化就能把改回它的唯一入口一起关掉，即自锁。收据类型限制只用于 transition `on.action`/`requires` 与 decision `evidence`（那里的错拼会静默永不触发）。
 - **T2（before_session_end，一次）**：runtime 发最终 harness 盘点事实（组件与 orchestration 终态、修订链）；agent 自由收口。无 schema。
 
 §4.7-3 遗留的"节奏转正（节奏参数入 policy）"在 META 模式下被取代：节奏不入 policy 参数，直接随 orchestration 归 agent。
@@ -258,4 +259,36 @@ meta loop 的四处失真（矛盾常驻文案、一句话四层、空壳 exampl
 - `tests/self_root_meta.test.ts` 8/8（新增 2 条：self-state 推送的形状/差分/被拒聚合/空窗口列表；META 提示不含宿主评审入口且 B 臂提示仍含）。self-root 面全套 33/33，无回归。
 - `test_evo_ppt_pi.py`(3) / `test_evo_ppt_stall_recovery.py`(3) 的失败为 §11 记载的第 2 层陈旧 runner 断言，改动前后计数一致；两处改动文件的 `node --experimental-transform-types --check` 干净。
 - 未覆盖：c' 的实际阅读率与是否改变 agent 动作，只有真实运行可测——这正是 M3 要测的。
+
+### 14.7 M3 终局：自锁与两处机制矛盾（2026-11-16，运行 `runs/evo-m3-glm53f-meta-20261116`，已 kill）
+
+M3 在请求 46 处停止（人为 kill，非自然结束）。结果不是"agent 未自发修订"的重复，而是**机制把 agent 关在了自己的编排里**：它在 T0 设计的编排，恰好把自己此后所有的工作与修订入口全部拒绝掉。
+
+**测量（全部取自运行产物）**
+
+- 45 条 provider 请求：input 264,074 / output 9,366 / cacheRead 77,312；provider 报告 $0.0443（`conservative_usd` 合计 6.46 是上界估计，非实际支出）；最后一条 `stopReason: error`。
+- ledger 266 行：`tool_failed` 49、`transaction_failed` 12、`reflection_activated` 2、`meta_t0_design` 1、`segment_summary` 6。
+- **39 条 tool result 携带 "not allowed by active step"**：`read` ~15、`reflect_orchestration` 7、`read_self` 2、`decide` 2、`ls` 1、`python` 1、`write` 1。
+- 6 条 `segment_summary`（覆盖请求 [1,12][13,22][23,26][27,30][31,41][42,44]）**全部 `work.task_actions: 0`，逐工具 `calls: 0` 且 errors ≥ 1**——整场没有执行过任何一个任务动作。
+- agent 在请求 [3] 经 T0 门写下 revision 2（`expected_effect: "Single-agent work loop; reading sources and composing the 15-slide deck, rendering, delivering."`），编排原文：`steps: [{ id: "work", role: "agent", actions: ["office.look","office.render","office.deliver","submit_unit"] }]`，`transitions: [{ id: "work-loop", on: {type: "action", action: "office.render"}, requires: [{type:"office.render"}], to: "work" }]`，`decisions: []`。
+
+**根因：两处机制矛盾叠成自锁**
+
+1. `validateDefinition()` 把 `step.actions` 限制为**已记录收据类型**（`office.look/render/deliver` 是，`read/write/ls/grep/python` 不是）——但同一个 `step.actions` 又是 `assertActionAllowed()` 对**每一次工具调用**的唯一白名单。于是一个合法的、意图正确的窄化编排，把读源码、写 python、改编排本来需要的工具全部关在门外。
+2. `reflect_orchestration` 自己也走同一道门。于是修订入口与工作入口同时被同一条规则关闭——**自锁不可恢复**，agent 在 39 次拒绝里反复重试同样的读取与反射，直到请求预算耗尽。这不是 agent 的失误：它在 T0 收到的 schema 明确说 `actions` 是"这一可用的动作列表"，而当时 runtime 实际记录的动作类型里确实只有那几类收据。
+
+**第二处矛盾（观测盲区）**：`abortTransaction` 只记 `transaction_failed`，反射被拒时**不携带工具名**；c' 新增的 `refused_self_operations` 看不到任何一条记录。也就是说 M3 想测的"自状态推送是否让 agent 看见被拒操作"，在自己的主失败模式上恰好是空的。
+
+**修复（提交见 §14.8）**
+
+- `SelfRoot.assertActionAllowed`：`PROTOCOL`（`read_self` / `read_self_component` / `reflect_component` / `reflect_orchestration` / `decide` / `decide_exit` / `decide_validation`）**永不被步骤白名单约束**——协议面是一个可被它自己修订的对象所不能门控的东西；`surface()` 每请求照常广告 PROTOCOL。
+- `step.actions` 语义改为**工具名权限范围**：可列 surface 广告的任何工具，缺省 = 放行全部；`assertKnownAction` 不再施加于它（保留于 transition `on.action`/`requires` 与 decision `evidence`——那里的错拼会静默永不触发）。`metaT0()` 的 schema 说明与系统提示同步改口径。
+- 反射被拒分支调 `abortTransaction(error, tool.name)`，记一条携带工具名的 `tool_failed` 事实；digest 的 `last_error` 读 `error ?? content`。`refused_self_operations` 从此在真实失败路径上有内容。
+- 测试：`tests/self_root_meta.test.ts` 新增 2 条（窄白名单不锁协议面；被拒反射计入 refused 并带工具名与错误原文），10/10；`tests/live_orchestration_known_actions.test.ts` 删除已不成立的 stepBound 断言，保留 transition/decision 断言与"无部分提交"断言。受影响 node 套件 45/45。
+
+**对方案的含义**
+
+- §4 T1 的原表述"执行器按 activeStep 校验动作白名单"在语义上是自指的：一个可修订对象如果同时门控修订动作本身，可修订性就不是真实属性。T1 的可执行结构现在要求**协议面在门之外**——已回写 §4。
+- 这不改变 M 系列的判据，但改变了 M3b 的解释框架：如果 M3b 仍然 kernel 0/1，失败不再能归因于"白名单锁死"，而是真正回到"agent 是否自发修订"这一待测问题上。
+- 关于 c'：M3 没有提供关于 c' 的证据（agent 从未到达能读 digest 的状态）。c' 是否改变动作仍未被测。
 

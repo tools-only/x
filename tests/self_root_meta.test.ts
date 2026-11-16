@@ -122,6 +122,34 @@ test('META self-state push: the tail carries the optimizable object and a since-
   assert.equal(after.refused_self_operations[0].last_error, 'second refusal', 'the last refusal text is carried verbatim');
 });
 
+test('META self-lock: a narrow step whitelist scopes task tools but never the protocol that widens it again', async () => {
+  const receiptTypes = ['office.render', 'office.look', 'office.deliver', 'submit_unit'];
+  const s = make({ meta: true }, { actionReceiptTypes: receiptTypes }); await tick(s);
+  // M3 run 2026-11-16: the agent's own revision 2 listed the four receipt types, and every read/read_self/reflect call
+  // afterwards returned "not allowed by active step work" for 30 requests with no route back. Two causes: a step's
+  // actions could only name receipt types, and the step gate covered the protocol tools themselves.
+  const narrow: any = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', actions: ['read'] }], decisions: [], transitions: [] };
+  const written = await s.transaction({ baseRevision: 1, orchestration: narrow });
+  assert.ok(written.addresses.includes('orchestration'), 'a whitelist may name a tool this runtime never records as a receipt');
+  await tick(s); s.pin();
+  assert.doesNotThrow(() => s.assertActionAllowed('read'), 'a tool on the whitelist runs');
+  const granted = s.surface().filter((t: string) => !PROTOCOL.includes(t));
+  assert.ok(granted.length > 1, 'the task surface has tools beyond the whitelist');
+  for (const tool of granted.filter((t: string) => t !== 'read'))
+    assert.throws(() => s.assertActionAllowed(tool), /not allowed by active step work/, `${tool} stays scoped by the step`);
+  for (const op of PROTOCOL) assert.doesNotThrow(() => s.assertActionAllowed(op), `${op} stays reachable under a narrow step`);
+});
+
+test('META self-state push: a reflection refused through abortTransaction is booked as a refused self operation', async () => {
+  const s = make({ meta: true }); await tick(s);
+  await s.transaction({ baseRevision: 1, orchestration: seed }); await tick(s);
+  s.abortTransaction('orchestration rejected: step work does not allow read', 'reflect_orchestration');
+  const digest = s.selfChangeDigest();
+  assert.equal(digest.refused_self_operations.length, 1, 'the rejection is visible in the pushed self state');
+  assert.equal(digest.refused_self_operations[0].tool, 'reflect_orchestration');
+  assert.match(digest.refused_self_operations[0].last_error, /does not allow read/);
+});
+
 test('META resident prompt: no host-opened review entrance and no window promise; the B prompt is untouched', () => {
   const read = (p: string) => readFileSync(new URL(p, import.meta.url), 'utf8');
   const meta = read('../demo/prompts/self_root_meta_system.md');

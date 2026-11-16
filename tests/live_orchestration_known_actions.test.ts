@@ -22,10 +22,6 @@ test('declared action types reject bindings no runtime action produces, naming t
     /transition to_render binds to action type 'render_save'.*office\.deliver, office\.look, office\.render, submit_unit/);
   assert.throws(() => s.reflect({ baseRevision: 1, orchestration: loop('submit_unit', 'render_save'), authorized: true }),
     /transition to_render binds to action type 'render_save'/);
-  const stepBound: any = loop('submit_unit', 'submit_unit');
-  stepBound.steps[0].actions = ['render_save'];
-  assert.throws(() => s.reflect({ baseRevision: 1, orchestration: stepBound, authorized: true }),
-    /step work binds to action type 'render_save'/);
   const decisionBound: any = loop('submit_unit', 'submit_unit');
   decisionBound.steps[0].decision = 'check';
   decisionBound.decisions = [{ id: 'check', judge: 'agent', question: 'agent question', evidence: [{ type: 'render_save' }], output: { type: 'object', required: [], properties: {} } }];

@@ -161,8 +161,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     try { if (evo) evo.allowTool(tool.name, args[1]); result = await tool.execute(...args); }
     catch (error) {
       if (evo && ['reflect_component','reflect_orchestration'].includes(tool.name)) {
-        evo.abortTransaction(error);
-        return text({ is_error: true, error: String(error?.message ?? error), same_turn_correction: 'The reflection was rejected without ending this turn. Read the returned correction surface, repair the operation and retry; review remains open.', terminate: false, reason: { code: 'reflection_rejected', surface: error?.surface ?? { received: args[1], correction: 'Use the visible operation fields and current revision.' } } });
+        evo.abortTransaction(error, tool.name);
+        return text({ is_error: true, error: String(error?.message ?? error), same_turn_correction: 'The reflection was rejected and this turn continues. The rejection is recorded; read the returned correction surface, repair the operation and retry whenever you decide to.', terminate: false, reason: { code: 'reflection_rejected', surface: error?.surface ?? { received: args[1], correction: 'Use the visible operation fields and current revision.' } } });
       }
       if (evo) {
         evo.fact('tool_failed', { tool: tool.name, args: args[1], error: String(error), duration_ms: Date.now()-began });

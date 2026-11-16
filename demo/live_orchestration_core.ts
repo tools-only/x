@@ -64,7 +64,11 @@ export function validateDefinition(def: any, knownActions?: ReadonlySet<string>)
   for (const step of def.steps) {
     if (!roles.has(step.role)) throw Error(`step ${step.id} references unknown role`);
     if (step.actions !== undefined && (!Array.isArray(step.actions) || step.actions.some((action: unknown) => typeof action !== 'string') || new Set(step.actions).size !== step.actions.length)) throw Error(`invalid actions for step ${step.id}`);
-    if (step.actions) for (const action of step.actions) assertKnownAction(action, `step ${step.id}`);
+    // step.actions is a permission scope (which tools this step may call), not an evidence binding: it names tools,
+    // and tool names are a wider set than the receipt types this runtime records. Checking it against knownActions
+    // made a step whitelist unable to admit read/write/edit/python at all (M3 run 2026-11-16: the agent's own
+    // revision 2 listed four receipt types and thereby locked out every source tool). A typo here is not silent -
+    // the gate names the active step's list when it refuses - so only evidence/transition bindings are checked.
     if (step.bindings !== undefined && (!Array.isArray(step.bindings) || step.bindings.some((binding: any) => !binding || !['prompt','skill','tool','memory','context'].includes(binding.kind) || typeof binding.name !== 'string' || (binding.version !== undefined && !Number.isSafeInteger(binding.version))))) throw Error(`invalid component bindings for step ${step.id}`);
     if (step.decision && !decisions.has(step.decision)) throw Error(`step ${step.id} references unknown decision`);
   }
