@@ -374,3 +374,40 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 - 如果边界看到了交付物事实仍不重渲：按 §3.4 这是下一次归因的输入，但**下一个单因素不在本稿预先承诺**——要先看它在那 15 次边界上到底说了什么、做了什么，再决定是"质量信号不足"（往板面加评分会引入解释，须先问用户）还是"agent 没有把交付物当成对象"（那就动 `OPTIMIZABLE OBJECTS` 那一行的措辞）。
 - 证据边界不变：结论只对 az / glm-5.3-flash / 这一个任务成立。
 
+### 6.5 批1 + M6（`runs/evo-m6-glm53f-meta-20261116`）：第一次非权限自修复，运行第一次由 agent 的编排收尾
+
+批1 是对 §6.3 归因的成组回应（候选 A 即其中的 O9），工程提交 `88685953`，九项一次落地：O1 把 step 的 `actions` 白名单改为"可省略的权限范围"（拆 M4b/M5 的假吸引子）、O4+O8 每个边界把 `renderObservation` 全文（含 A4 inventory/recurrence）推进上下文、O5 计数 `assistant_reasoning` 并把重复思考头变成可寻址的 `[thought]` 行、O6 给 meta 运行种一个 agent 可编辑的 `evolution_policy` prompt 组件（转化/循环/上下文/评审四组规则）、O7 四条 OPTIMIZABLE OBJECTS 行带上实时信号计数、O9（仅 meta）运行只在 `to: "complete"` 的 transition 上结束，停滞交付不再由宿主收尾。
+
+**预注册命题**：感知到位+规则在场+假吸引子拆除 ⇒ 出现 ≥1 次非权限类转化（引用某条推送事实）且 ≥1 次自发 review 行为（声明 expected_effect 或回应 verdict）。负例预登记：若事实被引用但仍 0 转化 → 瓶颈是回报而非感知 → 进批 2（O2/O3 协议义务）或改任务结构。
+
+**结果**：`stop: "delivered"`，10/10 单元，**25 requests**（另 1 次 freeze 预检 ping，历史口径未计入系列数），855,801 tokens，777 s，registered estimate **$0.119**，`self_revision` **3**，`empty_turns` 5。
+
+**过程**：T0 一次通过（revision 2，自带 `look_when`"边界核对 render 收据与 15 页简报、引用页，再交下一单元"与 `expected_effect`）→ 按自己的 look_when 在接触表上抓出 slide 5 版式坏 → `edit` 修 markup → 重渲 v2 → 10×`submit_unit` 全结算 → agent 原话 **"All 10 units are settled. I'll patch the orchestration so the delivery transition completes the run, then deliver formally."** → `reflect_orchestration` 以 `orchestration_patch` 加 `finish`（work→complete，on `office.deliver`，requires 同型收据；revision 3，`expected_effect`"Delivery receipt now routes the run to the complete step"）→ `office.deliver` → transition **advanced** → `complete`。M4b/M5 都由宿主收尾；**M6 是三次 meta 运行里第一次由 agent 写的边把运行走到终点**。
+
+**命题判定：成立**。(1) 非权限类转化 ✓——revision 3 是循环结构修复，不是权限变更；全程 **0 次 actions 白名单自改**（M4b 为 6/6）。"引用推送事实"的形态是**应用而非转写**：patch 理由句直接对应系统行 "the run completes only at a transition whose to is \"complete\""（24/24 请求在场），没有逐字引用某条 OBSERVED 行。(2) 自发 review ✓——两次 reflect 均自带 `expected_effect`（O2 协议义务在批 2、未实现，故属自发），验证窗口随激活开启。负例未触发，批 2 暂不进。
+
+**机制使用账**（挂钩判据：进入循环、被行动兑现）：
+
+| 机制 | 在场 | 被行动兑现 |
+|---|---|---|
+| O9 终点规则行 | 24/24 请求 | ✓ patch+deliver 走 complete 主分支；**stall 分支 0 次触发，仍未在真实运行验证** |
+| O4/O8 边界观察推送 | 15 次（provider-requests 逐条核实） | 间接（无逐字引用；repair 时机在全部结算后的第一个边界） |
+| O1 白名单拆除 | 门禁文案+设计句 | ✓ 以负空间呈现：0 次权限自改 |
+| O6 政策种子 | 24/24 常驻（8199 chars/request 的 prompt 之一） | ✗ 未编辑；转化规则零触发（25 请求内无 ≥3x 重复达标） |
+| O5 思考头 | 观察渲染含 reasoning 计数 | ✗ 空转：`reasoning_chars` 全程 0（thinking low 下该模型无 reasoning 块），`[thought]` 行 0 次 |
+| read_self | 可调用 | ✗ 0 次（连续第三次运行） |
+
+**K 判据**：K1 **成立**（T0 后 1 次结构自变更，非权限类）；K2/K3 按 §6.4 的字面定义（自修改之后重新写出交付物并重渲、最终交付指向那一版）**不成立**——revision 3 是循环级而非制品级修改，v002 在它之前已定稿，之后没有重写或重渲。单独记两件确实发生的事：expected_effect 两次自发声明、验证窗口随激活开启（但 revision 3 激活即交付即终局，verdict 没有下一请求可回看）；终点第一次由 agent 的 `finish` 边行使（§3.4 候选 A 的目标，不等于 K3）。
+
+**质量**：literal **30/30**，15 slides，0 renderer warnings，citation **8/10**——unit-05/06（Global Banking / Global Markets）无 "Source page 5/6" 主源行，页上只有 endnote（page 10）次级引用；比 M5（10/10）退、比 M4b（28/30 literal）进。交付物两版（v001 初渲、v002 修复后交付）。
+
+| 运行 | requests | $ | 自修改 | 其中权限类 | 终点 | literal | citation |
+|---|---|---|---|---|---|---|---|
+| M4b | 38 | 0.257 | 6 | 6 | 宿主收尾 | 28/30 | — |
+| M5 | 21 | 0.109 | 0 | 0 | 宿主收尾（stalled） | 30/30 | 10/10 |
+| M6 | 25 | 0.119 | 2（T0+repair） | **0** | **agent 的 `finish` 边** | 30/30 | 8/10 |
+
+**残差**（下一步的输入，不在本记录内承诺）：(1) citation 8/10 的质量缺口，agent 自己的 look_when 写了"核对引用页"却没抓到；(2) O9 stall 分支无真实运行证据（agent 先修后交，这是好事，但分支保持 unverified）；(3) O5 对 thinking low + 无 reasoning 块的模型空转，感知覆盖的"~97% 语言输出"在该配置下为 0；(4) 政策种子的转化规则在 25 请求的短运行里没有达标重复可转化——回报侧（批 2 / 任务结构）仍是开问题；(5) `empty_turns` 5。
+
+**预算**：本次 25，系列 229+25=**254**，余 **346**（600 cap）。证据边界：az / glm-5.3-flash / 本任务。
+
