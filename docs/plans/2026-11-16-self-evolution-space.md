@@ -543,5 +543,27 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 
 **上限**：M9 声明 **75 requests**（M8b 38 + 至多 4 个 pass × 8 + 余量；单次超限即停）。系列 347/600，启动前余 **253**，启动后按实耗计。**时间上限 3600 s，2 GiB 存储**（沿用 M 系列授权）。model：az / glm-5.3-flash。
 
+### 6.11 M9 中止记录（预检缺陷 S0）、pass 事实包与 M9b 预注册
+
+**M9 两次启动均未进入任务**（`runs/evo-m9-glm53f-meta-20261117`，2026-11-17，az / glm-5.3-flash，工程提交 `dc049570`）：第一次 preflight ping 遇 az 断连（`az_inference_unavailable`，1 request、4,267 tokens 保守计）；第二次 ping 正常（1 request、18 tokens）后扩展拒绝加载，`stop: "runtime_or_provider_error"`、`error: "Pi RPC process exited before responding"`。根因（S0）：预检把已耗墙钟秒作浮点扣入时间预算（3600 − 4.0 = 3596.0），Python json 写出 `"3596.0"` 而扩展端 `JSON.stringify` 写 `"3596"`，声明合同哈希分歧，扩展按完整性检查拒载——完整性检查按设计工作，缺的是输入侧规范化。修复 `9e7abbc6`：`_canonicalize_budget` 在 <=0 检查、哈希重算与运行清单写出前把整值浮点规范为整数；`tests/test_evo_ppt.py` 19/19（新增单元与清单集成两测）。两次启动共 2 requests 计入系列：347 + 2 = **349/600**，余 **251**。
+
+**pass 事实包**（用户 2026-11-17 决定 P1、P4–P7、S1/S3/S5/S6；工程提交 `7a8bb87b`；§6.9 的机制边界不变，以下是 pass 自带事实的补全）：
+
+- P1：两份 meta prompt 中宿主给定的 SELF-EVOLUTION ACCEPTANCE 段删除；计数器保留为纯记录事实（SELF-CHANGE COUNTERS 看板行、`self_changes` inventory 键）。强制交卷不是进化证据。
+- P4/S1：pass 以一个机械入口块打开（TASK/TRIGGER/WINDOW/ARTIFACT/SELF/CARRIED，每行命名其展开 ref），入场时计算一次、记 `meta_pass_entry` 事实、渲染进 pass 视图；≤1400 字符；只有事实，无排序/建议语言（测试断言）。
+- P6：pass 内 `decide_exit` 接受可选 `result.carry`；原样存入 `review_closed`，下一 pass 入口裁剪渲染（200 字符，一条 `carry_truncated` 事实）；pass 外的 exit 操作不变。
+- P7：`read_self(section="evidence", ref="request:N"|"artifact:vK")` 经 adapter 展开一条已记录 ref（provider-requests 16k 分页、renders.jsonl 行）；缺失 ref 返回 `state:"missing"` 值、adapter 异常返回 `state:"error"` 值，绝不向 agent 抛错；adapter 声明的运行位置上 TASK 行。
+- P5/S3：`deliveredImageRefs` 把应用后的上下文计划实际送达的图像部件（action include）记入 request_record；pass 窗口计数之，evidence 可展开其请求。
+- 修正：reviewView 读 `facts.pass_window` 而 pass 记的是 `facts.window`，加回退使 pass 窗口行进入评审视图。
+
+免费检查（本 checkout）：meta 套件 27/27（`self_root_meta` / `self_root_meta_pass` / `self_root_meta_entry` / `pi_context_adapter_images`）；回归 61 测试 11 失败全部在干净 HEAD `dc049570` 原样复现（冻结 reflective/free-hands 臂既有，与本改动无关）。provider 行为未验证，由 M9b 承担在线检查。
+
+**M9b 预注册**（单因素不变：无种子 + 外部演化 pass；M9 声明顺延，叠加 S0 修复与 pass 事实包）：
+
+- 主命题、保底判据、负例 (a)–(d)：同 §6.10。
+- 增补读数（预登记，均机械可判）：连续两个 pass 以 cap 机械闭合且零写入 → 归入负例 (c)；pass 内连续 >6 次反射拒绝 → 写入通道缺陷（授权/证据校验侧）；pass 请求单独计数，总和 >24（3×cap）→ 成本主发现，无论主命题成立与否。
+- 四层读数（Prompt/Context/Loop/Harness 自变更计数，沿 §6.8 (c) 口径）为分析项，不构成通过线。
+- **上限**：M9b 声明 **75 requests / 3600 s / 2 GiB**（含预检 ping；单次超限即停）。系列 **349/600**，启动后至多 **424/600**。model：az / glm-5.3-flash；arm B；同一冻结双集任务族；root `runs/evo-m9b-glm53f-meta-20261117`。
+
 
 
