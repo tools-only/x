@@ -16,6 +16,12 @@ export function normalizeStop(stopReason: unknown): string | null {
 export function cacheSupported(model: any): boolean | 'unknown' {
   return Number(model?.cost?.cacheRead) > 0 ? true : 'unknown';
 }
+/** Image parts the applied plan delivered to the provider (action include), named by stable ref. Pure facts for the
+ * request record: the native view reports what was sent, not what it means. */
+export function deliveredImageRefs(list: ContextItem[], actions: Record<string, ContextAction>): { ref: string; source?: string; section?: string; image_bytes?: number }[] {
+  return list.filter(i => (i.images ?? 0) > 0 && (actions[i.ref] ?? 'include') === 'include')
+    .map(i => ({ ref: i.ref, ...(i.source ? { source: i.source } : {}), ...(i.section ? { section: i.section } : {}), ...(i.image_bytes ? { image_bytes: i.image_bytes } : {}) }));
+}
 
 export function createPiContextAdapter() {
   let transcript: any[] = [];

@@ -21,7 +21,7 @@ import { LiveAgentSelf } from './live_orchestration_core.ts';
 import { SelfRoot, hash, normalizeOperation } from './self_root.ts';
 import { providerPermit } from './provider_permit.ts';
 import { installSelfRootTools, type SelfRootManifest, collectAcceptance, directoryBytes, PPT_SELF_ROOT_OPTIONS, selfRootToolSchema, pptUnitMetrics } from './self_root_ppt.ts';
-import { createPiContextAdapter, normalizeStop, cacheSupported } from './pi_context_adapter.ts';
+import { createPiContextAdapter, deliveredImageRefs, normalizeStop, cacheSupported } from './pi_context_adapter.ts';
 
 function refreshResourceDaemon(root: string) {
   if (!root) return;
@@ -86,6 +86,29 @@ export default function pptDemo(pi: ExtensionAPI) {
       runPendingDelivery: async () => agentSelf.hasPendingFinalDelivery() ? officeDeliver({ op: 'deliver' }, new AbortController().signal, {}, true) : undefined,
       budgetStopPendingDelivery: async () => agentSelf.hasPendingFinalDelivery() ? officeDeliver({ op: 'deliver' }, new AbortController().signal, {}, true) : undefined,
       contextItem: (ref: string) => piContext.resolve(ref), canonicalSource: () => canonicalPath(workspace),
+      // META pass surfaces (user decision 2026-11-17): adapter-declared run position and recorded-evidence expansion.
+      runPosition: () => ({ episode: manifest?.episodes && manifest.episodes.length > 1 ? { active: state.episode, total: manifest.episodes.length } : null,
+        artifact_revision: state.revision ?? null, delivered_revision: state.deliveredRevision ?? null,
+        last_render: state.lastFeedback ? { revision: state.lastFeedback.revision, warnings: Array.isArray(state.lastFeedback.warnings) ? state.lastFeedback.warnings.length : state.lastFeedback.warnings ?? null } : null }),
+      adapterEvidence: (ref: string, offset = 0) => {
+        const page = 16000;
+        const rowsOf = (name: string) => existsSync(join(root, name)) ? readFileSync(join(root, name), 'utf8').trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) : [];
+        const req = /^request:(\d+)$/.exec(ref);
+        if (req) {
+          const row: any = rowsOf('harness/provider-requests.jsonl').find((r: any) => Number(r.request) === Number(req[1]));
+          if (!row) return { ref, state: 'missing', recorded_in: 'harness/provider-requests.jsonl' };
+          const payload = typeof row.payload === 'string' ? row.payload : JSON.stringify(row.payload ?? null);
+          return { ref, state: 'recorded', request: row.request, kind: row.kind ?? 'provider', composition: row.composition ?? null,
+            permit: row.permit ?? null, payload_chars: payload.length, offset, payload: payload.slice(offset, offset + page),
+            next_offset: offset + page < payload.length ? offset + page : null };
+        }
+        const art = /^artifact:v(\d+)$/.exec(ref);
+        if (art) {
+          const row: any = rowsOf('harness/renders.jsonl').find((r: any) => Number(r.revision) === Number(art[1]));
+          return row ? { ref, state: 'recorded', render: row } : { ref, state: 'missing', recorded_in: 'harness/renders.jsonl' };
+        }
+        return { ref, state: 'missing', known_prefixes: ['request:', 'artifact:v'] };
+      },
       metricInfo: (metrics: any[]) => ({ primary: metrics.find(m => m.name === 'acceptance.required_found')?.name, better: 'higher', scope: 'whole_deck' }),
       acceptanceUnits: () => activeManifest()?.units.map((u: any) => u.id) ?? [],
       observeCurrentArtifact: () => { const source = sourceFacts(workspace); const render = state.lastFeedback ? { ...state.lastFeedback, fresh: Boolean(source && state.lastFeedback.source_path === source.source && source.hash === state.lastFeedback.source_hash) } : { fresh: false, reason: 'no render recorded' }; return { source, render, acceptance: render.fresh ? 'latest recorded acceptance is attached to task outcomes' : null, fact_refs: evo?.reviewView().quality_facts.map((x: any) => x.ref) ?? [] }; } }) : undefined;
@@ -821,6 +844,8 @@ export default function pptDemo(pi: ExtensionAPI) {
         const list = piContext.items(messages, sections, system.toolsAdded);
         const plan = await evo.planContext(list);
         const assembled = piContext.apply(messages, list, plan.actions, plan.policyHash);
+        // Delivered image parts by stable ref: a request-record fact the pass window can count and expand.
+        plan.composition.images_refs = deliveredImageRefs(list, plan.actions);
         if (selfTail) { const tail = { role: 'custom', customType: 'self-view', display: false, timestamp: Date.now(), content: selfView.join('\n\n') }; assembled.push(tail); plan.composition.sections.push({ section: 'self_view_tail', items: 1, chars: tail.content.length, images: 0 }); }
         const deliveredText = assembled.map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).join('\n');
         const delivered = { text: deliveredText, tools: system.toolsAdded, messages: assembled.map((m: any) => ({ role: m.role, content: m.content })) };

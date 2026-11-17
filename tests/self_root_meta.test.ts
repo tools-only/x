@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SelfRoot, FLOOR, PROTOCOL, META_STRATEGY, hash } from '../demo/self_root.ts';
 
-// EVO_META (user decision 2026-11-16): the self-evolution loop is a fixed host mechanism plus seven fixed fields;
-// the T0 design turn fills only the task side (orchestration.contract). Offline checks cover the fixed prompt file,
-// the contract gate and its task-side trigger vocabulary, the phase-adapted board, the mechanical acceptance
-// counters, and the absence of a host review entrance.
+// EVO_META (user decision 2026-11-16): the self-evolution loop is a fixed host mechanism plus fixed host-given
+// fields; the T0 design turn fills only the task side (orchestration.contract). Offline checks cover the fixed
+// prompt file, the contract gate and its task-side trigger vocabulary, the phase-adapted board, the mechanical
+// self-change counters (the host-given acceptance standard was removed 2026-11-17), and the absence of a host
+// review entrance.
 
 const userContract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:30,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
 const make = (mechanisms?: any, options: any = {}, validator?: any) => new SelfRoot(userContract(), undefined, validator, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
@@ -22,11 +23,12 @@ const fields = readFileSync(new URL('../demo/prompts/self_root_meta_fields.md', 
 const recordableTool = async (_path: string, _source: string) => ({ kind: 'tool', name: 'deck_check', description: 'fixture', enabled: true, program: true });
 
 test('META fixed fields: the static prompt file is host-given, task-free and ordered; the board starts empty', async () => {
-  // The four fixed fields stay in a prompt file that enters the stable prefix unchanged: editing the agent's harness
+  // The fixed fields stay in a prompt file that enters the stable prefix unchanged: editing the agent's harness
   // must never rewrite them (and never zero the provider prefix cache, the yibu lesson of 2026-10-14).
-  for (const name of ['TASK IS THE HOST', 'SELF-EVOLUTION GOAL', 'SELF-EVOLUTION MECHANISM', 'SELF-EVOLUTION ACCEPTANCE'])
+  for (const name of ['TASK IS THE HOST', 'SELF-EVOLUTION GOAL', 'SELF-EVOLUTION MECHANISM'])
     assert.ok(fields.includes(name), `the fixed file names ${name}`);
-  assert.ok(fields.indexOf('TASK IS THE HOST') < fields.indexOf('SELF-EVOLUTION GOAL') && fields.indexOf('SELF-EVOLUTION GOAL') < fields.indexOf('SELF-EVOLUTION MECHANISM') && fields.indexOf('SELF-EVOLUTION MECHANISM') < fields.indexOf('SELF-EVOLUTION ACCEPTANCE'));
+  assert.ok(fields.indexOf('TASK IS THE HOST') < fields.indexOf('SELF-EVOLUTION GOAL') && fields.indexOf('SELF-EVOLUTION GOAL') < fields.indexOf('SELF-EVOLUTION MECHANISM'));
+  assert.ok(!fields.includes('SELF-EVOLUTION ACCEPTANCE'), 'the host-given acceptance standard is gone (user decision 2026-11-17): a mandatory write is not evidence of evolution');
   assert.ok(!/\{\{/.test(fields), 'no values and no placeholders: the file is the same text every request');
   assert.ok(!fields.toLowerCase().includes('deck'), 'no task content in the host-given text');
   const s = make({ meta: true }); await tick(s);
@@ -137,9 +139,9 @@ test('META board flow: compact during the task, expanded at a segment boundary, 
   s.fact('request_record', { request: s.request });
   assert.ok(!s.metaBoard().includes('SEGMENT BOUNDARY'), 'one request later the compact line returns');
   s.taskEnd('delivered');
-  assert.match(s.metaBoard(), /SESSION CLOSED - acceptance settled once: changes 0 \/ activated 0 \/ used_later 0/);
+  assert.match(s.metaBoard(), /SESSION CLOSED - self-change counters settled once: changes 0 \/ activated 0 \/ used_later 0/);
   const inventory = all(s).filter((r: any) => r.type === 'meta_harness_inventory');
-  assert.deepEqual(inventory[0].value.acceptance, { changes: 0, activated: 0, used_later: 0, last_change: null, contract: taskSide });
+  assert.deepEqual(inventory[0].value.self_changes, { changes: 0, activated: 0, used_later: 0, last_change: null, contract: taskSide });
 });
 
 test('META replaces the other mechanisms and leaves an agent-declared entrance schema untouched', async () => {
@@ -167,8 +169,8 @@ test('META T2: task end books the harness inventory once; before_session_end nev
   assert.equal(inventory[0].value.orchestration.steps, 1);
   assert.equal(inventory[0].value.components.length, 1);
   assert.ok(inventory[0].value.design, 'the inventory cites the design record');
-  assert.equal(inventory[0].value.acceptance.changes, 1, 'the prompt change is counted, the design activation is not');
-  assert.equal(inventory[0].value.acceptance.activated, 0, 'no request ran after the change');
+  assert.equal(inventory[0].value.self_changes.changes, 1, 'the prompt change is counted, the design activation is not');
+  assert.equal(inventory[0].value.self_changes.activated, 0, 'no request ran after the change');
   await s.event('before_session_end', 'session:1', {});
   assert.equal(count(s, 'meta_harness_inventory'), 1);
   const off = make(); await tick(off); off.taskEnd('delivered');
@@ -288,7 +290,7 @@ test('META resident prompt: no host-opened review entrance and the fixed fields 
   assert.ok(!meta.includes('FIXED REVIEW ENTRANCE'));
   assert.ok(!meta.includes('The host opens a validation window only for a declared effect'));
   assert.ok(meta.includes('No host-opened review entrance exists in this run'));
-  assert.ok(meta.includes('SELF-STATE MATERIAL') && meta.includes('TASK GOAL') && meta.includes('acceptance counters'));
+  assert.ok(meta.includes('SELF-STATE MATERIAL') && meta.includes('TASK GOAL') && meta.includes('self-change counters'));
   assert.ok(base.includes('FIXED REVIEW ENTRANCE'), 'the B-arm prompt still describes the entrance its own arm opens');
 });
 

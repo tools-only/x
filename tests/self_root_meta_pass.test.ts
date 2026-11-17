@@ -107,3 +107,54 @@ test('META pass: non-META arms open no pass at the same boundaries', async () =>
   assert.equal(off.review, undefined);
   assert.equal(off.metaPassDue(), null);
 });
+
+test('META pass: no pass opens before the T0 design exists, whatever the ledger records', async () => {
+  const s = make({ meta: true });
+  await tick(s);
+  s.fact('task_episode_closed', { episode: 1 });
+  await tick(s); await tick(s); await tick(s);
+  assert.equal(s.review, undefined, 'the design gate blocks the pass');
+  assert.equal(s.metaPassDue(), null, 'metaT0Pending blocks the trigger check itself');
+  assert.ok(!all(s).some((r: any) => r.type === 'meta_pass_opened'), 'no pass is recorded as opened');
+});
+
+test('META pass: reflect-mode requests do not count toward the stagnation threshold', async () => {
+  const s = await designed();
+  for (let i = 0; i < 12; i++) s.fact('request_record', { request: i, pin: { mode: 'reflect' } });
+  for (let i = 0; i < 11; i++) s.fact('request_record', { request: 12 + i, pin: { mode: 'execute' } });
+  await tick(s);
+  assert.equal(s.review, undefined, 'twelve reflect-mode plus eleven execute-mode requests stay below the threshold');
+  assert.equal(s.metaPassDue(), null);
+  s.fact('request_record', { request: 23, pin: { mode: 'execute' } });
+  await tick(s);
+  assert.ok(s.review, 'the twelfth execute-mode request reaches the threshold');
+  const pass = s.reviewSelfView().evolution_pass;
+  assert.equal(pass.trigger, 'stagnation');
+  assert.equal(pass.execute_requests_without_artifact_write, 12, 'only execute-mode requests are counted');
+});
+
+test('META pass: a second pass needs a new trigger row recorded after the previous close', async () => {
+  const s = await designed();
+  s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-a' });
+  await tick(s);
+  assert.ok(s.review, 'the episode row opens the first pass');
+  const closed = s.exit({ reason: 'no change: the recorded facts show one delivery path' });
+  assert.ok(closed.recorded);
+  assert.equal(s.mode, 'execute', 'decide_exit resumes the task step');
+  // A task request lands after the close: the pass event keys on the request counter (`pass:${request}`),
+  // and in a real run a provider request always sits between two boundaries.
+  s.pin();
+  await tick(s);
+  assert.equal(s.review, undefined, 'the old episode row is behind the review_closed anchor: no new pass');
+  assert.equal(s.metaPassDue(), null);
+  s.fact('action_transition_stalled', { action: 'office.deliver', status: 'stalled', step: 'work' });
+  await tick(s);
+  assert.ok(s.review, 'a trigger row recorded after the close opens the next pass');
+  assert.equal(s.reviewSelfView().evolution_pass.trigger, 'delivery_stall');
+  const rows = all(s);
+  const closedIdx = rows.findLastIndex((r: any) => r.type === 'review_closed');
+  assert.ok(closedIdx >= 0);
+  const opened = rows.filter((r: any) => r.type === 'meta_pass_opened').at(-1);
+  assert.equal(opened.value.trigger, 'delivery_stall');
+  assert.ok(opened.value.window[0] > closedIdx, 'the new pass window starts after the recorded close');
+});

@@ -35,6 +35,11 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   contextSections?: string[];
   /** Adapter resolver for read_self(section="context_item", ref). */
   contextItem?: (ref: string) => unknown;
+  /** Adapter-declared run position facts for the pass entry (episode, step, delivered revision ...). Facts only. */
+  runPosition?: () => unknown;
+  /** Adapter resolver for read_self(section="evidence", ref, offset?): expands one recorded ref (request:N, artifact:vK).
+   * A missing ref returns a value with state "missing"; the resolver never throws into the agent. */
+  adapterEvidence?: (ref: string, offset?: number) => unknown;
   /** Host observation supplied at review entry. It may refresh a task artifact, but returns facts only. */
   observeCurrentArtifact?: () => unknown;
   /** Adapter-declared metric meaning; the core only uses the returned polarity and primary metric. */
@@ -130,14 +135,15 @@ export function entranceAskBlock(layer: boolean): string {
     'Close with decide_exit carrying result.entry_question_responses: exactly three strings, one per question; "none" is a valid response. "No gap" and "no change" are both valid closures.'].join('\n');
 }
 /** EVO_META (user decision 2026-11-16): the self-evolution loop is a fixed host mechanism, not something the agent
- * invents. The seven fixed fields live in demo/prompts/self_root_meta_fields.md (stable prefix); the dynamic half -
- * optimizable objects, the orchestration contract and the acceptance counters - is rendered by metaBoard() in the
+ * invents. The fixed fields live in demo/prompts/self_root_meta_fields.md (stable prefix; the acceptance section was
+ * removed as a 2026-11-17 user decision - the counters remain recorded facts only); the dynamic half - optimizable
+ * objects, the orchestration contract and the self-change counters - is rendered by metaBoard() in the
  * self view. Every string here names mechanism, facts or boundaries only; task content reaches the agent through the
  * runner's task prompt and through its own orchestration contract. */
-export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The self-evolution mechanism and the acceptance standard are host-given and are not redesigned here; the task side - task goal, task acceptance and this task\'s run plan - is yours and lives in your orchestration contract. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own: at three recorded run boundaries - an episode closes, a delivery transition stalls, or long execution adds no artifact - it opens one evolution pass outside the task turn (user decision 2026-11-17). Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
+export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The self-evolution mechanism is host-given and is not redesigned here; the task side - task goal, task acceptance and this task\'s run plan - is yours and lives in your orchestration contract. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own: at three recorded run boundaries - an episode closes, a delivery transition stalls, or long execution adds no artifact - it opens one evolution pass outside the task turn (user decision 2026-11-17). Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
 /** META pass (user decision 2026-11-17): the evolution judgment runs in one host-opened pass at a recorded run
  * boundary, not as a resident rule inside the task turn. The pass says what exists; what it changes is the agent's. */
-export const META_PASS_STRATEGY = 'EVOLUTION PASS. This request runs outside the task turn: the task step is suspended and the view carries the run\'s recorded facts from the window named in the pass facts. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self_component(kind, name, version?) reads any component\'s source and its retained revisions; reflect_component and reflect_orchestration write components, policy and orchestration, and each write activates at the next request boundary, before the next provider request, with no separate assembly step. Judgment stays with you: act on the recorded facts, or close the pass with decide_exit - a judged no-change is a valid closure. The host presents facts without ranking, diagnosis, recommendation or forced order. The pass closes after a bounded number of requests; the task then resumes at its current step.';
+export const META_PASS_STRATEGY = 'EVOLUTION PASS. This request runs outside the task turn: the task step is suspended and the view carries the run\'s recorded facts from the window named in the pass facts. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads any component\'s source and its retained revisions; reflect_component and reflect_orchestration write components, policy and orchestration, and each write activates at the next request boundary, before the next provider request, with no separate assembly step. Judgment stays with you: act on the recorded facts, or close the pass with decide_exit - a judged no-change is a valid closure; decide_exit may carry result.carry, a list of free-text notes (open questions, unfinished investigations, retained understanding) stored and rendered verbatim at the next pass entry. The host presents facts without ranking, diagnosis, recommendation or forced order. The pass closes after a bounded number of requests; the task then resumes at its current step.';
 export const META_PASS_REQUEST_CAP = 8;
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
@@ -591,6 +597,11 @@ export class SelfRoot extends LiveAgentSelf {
       schema.properties = { ...(schema.properties ?? {}), entry_question_responses: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'One response per entrance question, in order; "none" is a valid response.' } };
       schema.required = [...new Set([...(schema.required ?? []), 'entry_question_responses'])];
     }
+    // META pass carry (user decision 2026-11-17): an optional field, never required - the pass may close with
+    // nothing to carry. Stored verbatim on the close; the next pass entry renders it (clipped at render only).
+    if (this.mech.meta && this.metaPassTrigger && this.inEvolutionReview) {
+      schema.properties = { ...(schema.properties ?? {}), carry: { type: 'array', items: { type: 'string' }, description: 'Optional free-text notes for the next evolution pass, rendered verbatim at its entry: open questions, unfinished investigations, retained understanding.' } };
+    }
     return schema;
   }
   /** The provider-visible exit operation for the current review, from the one descriptor. */
@@ -654,6 +665,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (section === 'segments') return { rows: this.segmentRefs.slice(offset, offset + count).map(ref => ({ ref, ...copy(this.ledger.find(r => r.ref === ref)!.value) })), total: this.segmentRefs.length };
     if (section === 'requests') { const rows = this.ledger.filter(r => r.type === 'request_record'); return { rows: copy(rows.slice(offset, offset + Math.min(count, 10))), total: rows.length }; }
     if (section === 'context_item') throw Error('context_item needs ref: read_self(section="context_item", ref)');
+    if (section === 'evidence') throw Error('evidence needs ref: read_self(section="evidence", ref="request:N" | "artifact:vK")');
     if (section === 'ledger' && (offset as any) === undefined) return this.read(0, count);
     throw Error('unknown self section');
   }
@@ -678,10 +690,11 @@ export class SelfRoot extends LiveAgentSelf {
     const row = this.ledger.find(r => r.type === 'meta_t0_design');
     return ((this.current?.orchestration as any)?.contract ?? row?.value?.contract ?? null) as OrchestrationContract | null;
   }
-  /** Mechanical acceptance bookkeeping (user decision 2026-11-16). changes: agent-initiated structural activations
-   * after the first task segment started. activated: a later provider request ran after the write. used_later: the
-   * changed object is visible in later task execution - a tool that ran, a text kind carried by the recorded live
-   * context injection, or an orchestration/policy applied to a later request. Existing receipts only; no new one. */
+  /** Mechanical self-change bookkeeping - facts only, no acceptance semantics (user decision 2026-11-17 removed the
+   * host-given acceptance standard; the counters stay as recorded facts). changes: agent-initiated structural
+   * activations after the first task segment started. activated: a later provider request ran after the write.
+   * used_later: the changed object is visible in later task execution - a tool that ran, a text kind carried by the
+   * recorded live context injection, or an orchestration/policy applied to a later request. Existing receipts only. */
   metaAcceptance() {
     const start = this.ledger.findIndex(r => r.type === 'meta_t0_design');
     if (start < 0) return { changes: 0, activated: 0, used_later: 0, last: null as { ref: string; revision: number | null; addresses: string[]; activated: boolean; used_later: boolean } | null };
@@ -742,15 +755,60 @@ export class SelfRoot extends LiveAgentSelf {
     if (stuck >= 12) return { reason: 'stagnation', window, facts: { trigger: 'stagnation', execute_requests_without_artifact_write: stuck, window } };
     return null;
   }
-  /** EVO_META board: the dynamic half of the seven fixed fields. Fields 1-3 and 7 are the fixed prompt file; this
-   * block renders field 4 from live objects, fields 5-6 from the orchestration contract, the acceptance counters and
-   * the phase block. Flow adaptation: full at the design turn, one mechanism line during a task segment, expanded at
-   * a segment boundary, settled once at session end. Facts only; no ranking, diagnosis or advice. */
+  /** META pass evidence expansion (user decision 2026-11-17): one recorded ref resolved through the adapter.
+   * The core knows no file layout; a missing ref is a value with state "missing", never a throw into the agent. */
+  evidence(ref?: string, offset = 0): any {
+    const usage = { state: 'missing', known_prefixes: ['request:', 'artifact:v'], usage: 'read_self(section="evidence", ref="request:N" | "artifact:vK", offset?)' };
+    if (!ref) return usage;
+    try { return this.options.adapterEvidence?.(ref, offset) ?? { ref, ...usage }; }
+    catch (e) { return { ref, state: 'error', error: String(e) }; }
+  }
+  /** META pass entry (user decision 2026-11-17): one mechanical block computed once at pass entry - run position,
+   * trigger, window counts, artifact head, self head, carried notes - every item expandable by the ref it names.
+   * Facts only; no ranking, diagnosis or recommendation; resident during the pass only (~1.2k chars). */
+  passEntry(book = false): string | null {
+    const pass = this.metaPassTrigger;
+    if (!pass) return null;
+    const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+    const [start, end] = pass.window;
+    const rows = this.ledger.slice(start, end + 1);
+    const n = (type: string) => rows.filter(r => r.type === type).length;
+    let position: unknown = null;
+    try { position = this.options.runPosition?.() ?? null; } catch (e) { position = { error: String(e) }; }
+    const contract = this.metaContract();
+    const snap: any = this.snapshot();
+    const components = this.active();
+    const carryRow = [...this.ledger].reverse().find(r => r.type === 'review_closed' && Array.isArray(r.value?.result?.carry) && r.value.result.carry.length);
+    const carryRaw = carryRow ? (carryRow.value.result.carry as unknown[]).map(x => String(x)) : null;
+    if (book && carryRaw?.some(x => x.length > 200)) this.fact('carry_truncated', { review_closed: carryRow!.ref, limit: 200 });
+    const carry = carryRaw?.map(x => clip(x, 200));
+    const images = rows.reduce((acc, r) => acc + (Array.isArray(r.value?.composition?.images_refs) ? r.value.composition.images_refs.length : 0), 0);
+    const work = rows.filter(r => this.isWork(r)).length;
+    const artifact = snap.latestArtifactVersion
+      ? `v${snap.latestArtifactVersion} hash ${String(snap.latestArtifactHash ?? '').slice(0, 12)}; expand: read_self(section="evidence", ref="artifact:v${snap.latestArtifactVersion}")`
+      : 'none rendered';
+    const names = components.slice(0, 8).map(c => `${c.kind}.${c.name}@v${c.version}`).join(', ') || 'none';
+    const more = components.length > 8 ? ` +${components.length - 8} more` : '';
+    const lines = [
+      `TASK: ${clip(String(contract?.task_goal ?? 'not declared').split('\n')[0], 140)}; position: ${position ? clip(JSON.stringify(position), 180) : 'not provided'}`,
+      `TRIGGER: ${pass.facts?.trigger}; window ledger:${start}..ledger:${end} (expand: read_self(section="ledger", offset=${start}))`,
+      `WINDOW: ${n('request_record')} request(s), ${work} task action(s), ${n('tool_failed')} failed call(s), ${n('artifact_write')} artifact write(s), ${n('reflection_activated')} activation(s), ${images} image part(s) delivered; expand one request: read_self(section="evidence", ref="request:N")`,
+      `ARTIFACT: ${artifact}`,
+      `SELF: revision ${this.revision}; components: ${clip(names, 220)}${more}; orchestration revision ${(this.current?.orchestration as any)?.revision ?? 1}; context order ${(this.policy.context?.order ?? []).join(',')}`,
+      `CARRIED: ${carry ? clip(carry.join(' | '), 600) : 'none recorded'}`,
+    ];
+    return clip(lines.join('\n'), 1400);
+  }
+  /** EVO_META board: the dynamic half of the fixed fields. The fixed prompt file carries the host-given half; this
+   * block renders the optimizable objects from live state, the task side from the orchestration contract, the
+   * self-change counters and the phase block. Flow adaptation: full at the design turn, one mechanism line during a
+   * task segment, expanded at a segment boundary, settled once at session end. Facts only; no ranking, diagnosis or
+   * advice. */
   metaBoard() {
     if (!this.mech.meta) return '';
     const phase = this.metaPhase();
     if (phase === 'design' && !this.ledger.some(r => r.type === 'meta_t0_delivered'))
-      this.fact('meta_t0_delivered', { request: this.request, material: 'seven fixed fields; task side filled by orchestration.contract', gate: 'contract before the first task segment' });
+      this.fact('meta_t0_delivered', { request: this.request, material: 'host-given fixed fields; task side filled by orchestration.contract', gate: 'contract before the first task segment' });
     const contract = this.metaContract();
     const acc = this.metaAcceptance();
     const live = this.windows.filter(w => ['open', 'due_unverified', 'due_comparable', 'restore_pending'].includes(w.status));
@@ -788,7 +846,7 @@ export class SelfRoot extends LiveAgentSelf {
       return [`Deliverable: artifact at ${version}; ${written} artifact write(s) since the last change.`];
     })();
     const flow = phase === 'design'
-      ? `DESIGN TURN - the mechanism and the acceptance standard above are given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is an optional permission scope over tool names, not over receipt types; a step with no actions list may call every granted tool.` : ''}`
+      ? `DESIGN TURN - the mechanism above is given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is an optional permission scope over tool names, not over receipt types; a step with no actions list may call every granted tool.` : ''}`
       : phase === 'boundary'
         ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
           `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
@@ -801,7 +859,7 @@ export class SelfRoot extends LiveAgentSelf {
           ...(look.length ? [`Your run plan for this event (segment_boundary): ${look.join(' | ')}`] : []),
           'Facts only; judgment stays with you.'].join('\n')
         : phase === 'settled'
-          ? `SESSION CLOSED - acceptance settled once: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`
+          ? `SESSION CLOSED - self-change counters settled once: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`
           : `MECHANISM: every write activates at the next request boundary and its receipt returns here; this block expands at the next task-segment boundary.`;
     return [
       `TASK GOAL: ${contract?.task_goal ?? '(empty - this design turn fills it)'}`,
@@ -809,7 +867,7 @@ export class SelfRoot extends LiveAgentSelf {
       ...(() => { const horizon = this.options.taskEpisodes?.(); return horizon && horizon.total > 1 ? [
         `TASK EPISODES: ${horizon.active} of ${horizon.total}. A transition to "complete" closes the active episode; the next episode's frozen task sources then replace data/ in this same root and serial session; the run ends when the last episode completes. Closed episodes do not reopen.`] : []; })(),
       ...objects,
-      `SELF-EVOLUTION: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`,
+      `SELF-CHANGE COUNTERS: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`,
       ...(live.length ? [`WINDOWS: ${live.map(w => `${w.id} on ${w.scope.join(', ')} - ${w.status}${w.expected_effect ? `; expected: ${w.expected_effect}` : '; expected effect not stated'}`).join(' | ')}`] : []),
       flow,
     ].join('\n');
@@ -1012,7 +1070,7 @@ export class SelfRoot extends LiveAgentSelf {
           if (this.metaT0Pending) {
             const problems = contractProblems(definition.contract);
             if (problems.length) throw operationError(`the T0 gate needs the task-side contract in your orchestration (${problems.join('; ')})`, 'orchestration', input, { invalid: ['contract'],
-              correction: `Add orchestration.contract in this form: ${ORCHESTRATION_CONTRACT_FORM} Then resend. The mechanism and the acceptance standard are given; this turn fills only the task side.` });
+              correction: `Add orchestration.contract in this form: ${ORCHESTRATION_CONTRACT_FORM} Then resend. The mechanism is given; this turn fills only the task side.` });
           }
           if (definition.roles?.length !== 1 || definition.roles[0].id !== 'agent') throw Error('v1 roles must be only agent');
           await candidate.reflectOrchestration({ baseRevision: candidate.revision, orchestration: definition, authorized: true, carry: input.carry, stepMap: input.stepMap }); addresses.push(componentAddress('orchestration', ''));
@@ -1349,8 +1407,9 @@ export class SelfRoot extends LiveAgentSelf {
     const facts = eventRow?.value?.facts ?? {};
     const summary = facts.segment_summary ? this.ledger.find(r => r.ref === facts.segment_summary) : undefined;
     // A META pass carries its own window (every row since the previous pass closed), so the pass reads the run's
-    // recorded facts even when no segment settled in between.
-    const range = summary?.value?.ledger ?? (Array.isArray(facts.pass_window) ? facts.pass_window : undefined);
+    // recorded facts even when no segment settled in between. The pass facts name the range as `window`.
+    const passWindow = Array.isArray(facts.pass_window) ? facts.pass_window : Array.isArray(facts.window) ? facts.window : undefined;
+    const range = summary?.value?.ledger ?? passWindow;
     const rows = Array.isArray(range) ? this.ledger.slice(range[0], range[1] + 1) : [];
     const item = (r: Row) => ({ ref: r.ref, type: r.type, value: copy(r.value) });
     const processTypes = new Set(['request_record', ...PROCESS_FACT_TYPES]);
@@ -1511,7 +1570,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (type === 'before_session_end') this.metaInventory();
     return { event: event.ref, triggers, ...(summary ? { segment_summary: summary.ref } : {}) };
   }
-  /** EVO_META T2: what the agent's own view holds at close, and the acceptance counts settled once. Facts only. */
+  /** EVO_META T2: what the agent's own view holds at close, and the self-change counters settled once. Facts only. */
   private metaInventory() {
     if (!this.mech.meta || this.ledger.some(r => r.type === 'meta_harness_inventory')) return;
     const orchestration: any = this.current?.orchestration ?? {};
@@ -1522,7 +1581,7 @@ export class SelfRoot extends LiveAgentSelf {
         decisions: (orchestration.decisions ?? []).length, transitions: (orchestration.transitions ?? []).length },
       revision_chain: this.ledger.filter(r => r.type === 'reflection_activated').map(r => ({ revision: r.value?.revision ?? null, addresses: r.value?.addresses ?? [], review: r.value?.review ?? null })),
       policy_keys: Object.keys(this.policy), design: this.ledger.find(r => r.type === 'meta_t0_design')?.ref ?? null,
-      acceptance: { changes: acceptance.changes, activated: acceptance.activated, used_later: acceptance.used_later,
+      self_changes: { changes: acceptance.changes, activated: acceptance.activated, used_later: acceptance.used_later,
         last_change: acceptance.last?.ref ?? null, contract: this.metaContract() },
     });
   }
@@ -1545,6 +1604,11 @@ export class SelfRoot extends LiveAgentSelf {
       this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
       this.fact('self_view', { review: ticket.id, view: { revision: this.serial, full: 'read_self(section="pin")' } });
+      // META pass entry (user decision 2026-11-17): computed once at entry, stored on the review, booked as a fact.
+      if (this.mech.meta && this.metaPassTrigger) {
+        const entryText = this.passEntry(true);
+        if (entryText) { this.review.pass_entry = entryText; this.fact('meta_pass_entry', { chars: entryText.length, text: entryText }); }
+      }
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
     const due_windows = this.dueWindows.map(id => { const w = this.windows.find(x => x.id === id)!; return { id, predicate: w.success_predicate ?? null, baseline: w.baseline_metrics, delivered: w.delivered ?? null, status: w.status }; });
@@ -1610,7 +1674,7 @@ export class SelfRoot extends LiveAgentSelf {
       }
     }
     return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: allEntries, ...(this.mech.l4 ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")',
-      ...(this.inEvolutionReview && this.mech.meta && this.metaPassTrigger ? { evolution_pass: this.metaPassTrigger.facts } : {}) };
+      ...(this.inEvolutionReview && this.mech.meta && this.metaPassTrigger ? { evolution_pass: { ...this.metaPassTrigger.facts, ...(this.review?.pass_entry ? { entry: this.review.pass_entry } : {}) } } : {}) };
   }
   /** EVO_L4: the four layers as coordinates - a regrouping of facts already recorded elsewhere; no new counters. */
   private layersView(declared: Record<string, string>) {
