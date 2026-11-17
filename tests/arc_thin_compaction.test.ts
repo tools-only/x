@@ -49,6 +49,17 @@ test("Pi native compaction preserves decisive evidence through the next ARC requ
 		assert.equal(result.stored, undefined);
 	}
 	assert.equal(results.find((entry: any) => entry.variant === "V6").failed.aborted, true);
-	assert.match(results.find((entry: any) => entry.variant === "V7").compact.error, /token cap/);
+	// V7: the cap-hit summary is degraded (cancel), never thrown — the session survives to compactions the runner may
+	// retry, instead of an extension error ending the run (su15-sl1q); the cause is in context_budget.jsonl. The probe
+	// session's thinking level is off, so there is one attempt; the retry-after-thinking path is in
+	// arc_thin_compaction_degrade.test.ts.
+	const v7 = results.find((entry: any) => entry.variant === "V7");
+	assert.match(v7.compact.error, /cancelled/);
+	assert.equal(v7.failed.aborted, true);
+	assert.equal(v7.compact.success, false);
+	const degraded = rows(join(root, "V7", "harness", "context_budget.jsonl")).filter((entry: any) => entry.degraded);
+	assert.ok(degraded.length >= 1, JSON.stringify(degraded));
+	for (const row of degraded) assert.match(row.error, /token cap/);
+	assert.deepEqual(degraded.map((row: any) => row.degraded), ["summary_failed"]);
 	assert.equal(results.find((entry: any) => entry.variant === "V8").summaryRequests, 0);
 });

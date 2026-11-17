@@ -274,3 +274,41 @@
 | 自主采用 | 未验证 | — | 需修 ① 后按同判准重跑处理臂（新预算，未授权）；本修复不新增 agent 可见面 |
 | 净收益 | 未验证 | — | 同上；预期收益是结算计数不再漏项，不改变任务结果 |
 
+### 修 ①：compaction 摘要截断的重试与降级（不终止 run）
+
+- 真实失败及材料：`su15-sl1q` 的 21:49:04Z 整理请求里，`session_before_compact` 内的摘要生成被输出上限截断
+  （"Summarization failed: generation hit the token cap and the summary is incomplete"）；异常穿出 hook，Pi 记
+  `session_compact_failed`，run 以 `extension_error` 终止于 80/200 动作，预算 67%、墙钟 44% 均未用尽。摘要在 agent 的
+  thinking level 下生成，其 reasoning 与摘要正文共用同一个输出上限（`createSummarizationOptions`）。
+- 窄命题：若 hook 捕获摘要失败、先在同一 preparation 上以 `thinking=off` 重试一次、仍失败则返回 `{cancel:true}` 让上下文本轮
+  不压缩，则一次截断只让该轮压缩降级（`context_budget.jsonl` 留 `degraded` 行），不会终止 run。
+- 减少的负担：父决策不再因一次摘要截断整场作废；降级事实写进运行日志，评审与用户可对账；无需人工重启续跑。
+- 适用范围与推翻：适用于 native（`session` continuity）压缩分支；`thinking=off` 仍截断、或 signal 已 abort 时直接降级。
+  推翻：任一摘要失败仍以 extension error 结束 run，或降级后会话无法继续给出决策。
+- 改动入口及实际行为：`demo/arc_thin_extension.ts` 的 native compaction 分支——抽出 `summarizer`/`summarize(thinking)`；
+  一次截断后 `summaryWithoutThinking` 让此后摘要都不带 thinking；失败先记 `summary_failed`，`thinking==='off'` 或已 abort
+  时直接 `{cancel:true}`，否则重试一次（再失败记 `summary_failed_twice`）后 `{cancel:true}`。Pi 侧取消以
+  `session_compact_failed {aborted:true}` / RPC `Compaction cancelled` 呈现，会话带未压缩历史继续。
+- 功能/相关回归检查：新增 `tests/arc_thin_compaction_degrade.test.ts` 2 项（真实 `piCompact` + scripted `streamSimple`：
+  重试请求不带 reasoning、cap 预算 1600 = min(0.8×2000, 4096)、降级行、粘滞 no-thinking；连续两次截断 → `{cancel:true}`
+  且不抛）。`tools/arc_thin_compaction_probe.ts` 的 V7 改在 native foundation 上运行（其余变体保持 legacy、原断言不变），
+  改后断言：RPC 失败信息含 cancelled、`failed.aborted===true`、`context_budget.jsonl` 有 `summary_failed` 且 error 含
+  token cap。`arc_thin_compaction` 1 项、`arc_thin_compaction_degrade` 2 项全过（离线）。
+- 机会漏斗与断点：离线已证明「截断 → 重试/降级 → 会话继续」。真实 run 中下一次压缩能否再成功（重试不带 thinking 是否
+  足够）未验证；本修复不改变摘要在无截断时的行为。
+- 语义与连续性：降级只作用于压缩动作本身，不改会话历史与决策文本；`summaryWithoutThinking` 是进程内记忆，重启后按 agent
+  当时的 thinking level 重新尝试。
+- 成本与任务结果：一次截断多一次摘要请求（输出仍受同一 cap）；降级轮的上下文不再压缩，可能更快触及 Pi 的上下文上限——
+  本轮未在真实 provider 上量。
+- 协议偏离：探针按变体设 `ARC_THIN_FOUNDATION=native`（仅 V7）——① 只在 native 分支，旧 V7 从未覆盖该分支。
+
+| 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`；mock bridge；Pi 0.87.0 CLI RPC 探针（offline scripted provider） | `arc_thin_compaction_degrade` 2/2、`arc_thin_compaction` 1/1（V1–V8）；重试参数、cap 预算、降级行、粘滞与双失败取消均有断言；不覆盖真实 provider |
+| 全链路可达 | 已验证（离线真实 Pi 进程） | Pi 0.87.0 + `demo/arc_thin_extension.ts`，scripted provider，`runs/probe-v7-degrade2/` | 截断 → hook 取消 → RPC `Compaction cancelled` / `aborted:true` → 下一决策照常发出（`foundation:"native"`）；真实 run 的后续压缩未验证 |
+| 自主采用 | 未验证 | — | compaction 是宿主路径；采用表现为 run 不再因截断终止，需真实 run 观察 |
+| 净收益 | 未验证 | — | 需修 ①/② 后按同判准重跑处理臂（新预算，未授权） |
+
+本轮未启动任何 ARC run；两处修复后重跑处理臂需要用户新授权预算（每次 6M token 口径、200 动作、先对照后处理）。
+
+
