@@ -637,5 +637,15 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 - M10 单因素重述：vs M9c = "轮 2 实现：agent 驱动入口问题评审 → 固定七专家连扫（宿主代落地）"。主命题（观察侧）：≥1 个专家信封 change 落地且在下一普通任务请求活跃版本可见并被消费；四层读数照旧（七专家天然覆盖四层坐标）。负例预声明：(a) 全程全 no_change（占位有了、证据不被读出）；(b) change 落地但次请求不可见/未消费（消费断点）；(c) 信封结构拒绝占多数（schema 断点）；(d) `budget_skip` 占多数（预算形态不支撑连扫）。
 - 顺序不变：M9c 冻结照旧先跑——它是两轮 agent 驱动形态的在线检验，也是 M10 连扫臂的对照臂（自主形态 vs 强制场合形态正是本系列要比的）；实现窗口仍为 M9c 运行结束后在本工作树；M10 真实运行启动前在可见文本声明 cap。
 
+**§6.13 第二修订（用户 2026-11-17 第四决定："无信封、pass 内直接热修"；并就"是否上下文爆炸"之问定稿瞬态渲染约束。替代上一修订的信封与宿主代落地条目，其余不动）**：
+
+- 决定：决策信封退场。信封是 codex `streamSimple` 无状态单发调用的通道代价——没有工具通道，文本是唯一返回路径，决策只能装 JSON 由宿主解析。我们的 pass 是任务 agent 的真实回合，直接写路径已在（`reflect_component`，self_root.ts:880 "change with reflect_component(kind:...)"；orchestration 写口，M6 finish 边自收尾即走它）。连扫落地为**七个固定小回合**：每回合 = 专家框架句 + 按 focus 渲染的材料，self 工具在场；响应含工具调用即经既有通道校验、执行、记回执（一响应多调用允许），pass 即关；纯文本即 no_change。每 pass 1 请求封顶，不设 pass 内重试；跨 pass 可见性靠下一 pass 刷新的视图（替代 `previous_pass_changes` 字段与逐专家清单重发）。
+- kind 拆分：留宿主侧三职——按 focus 选材料（七 pass 差异化本身）、专家框架句（F3 原文照迁、实现评审时用户可令删）、日志归因 pass/layer（M10 四层读数用）。去两样：focus 兼容墙（任一 pass 的结构合法自变更均被接受；墙只是信封语义可检查的需要，连扫已保证每维度被看一遍，去墙合"判断归 agent"——这是与 codex 形态唯一的实质语义差）；强制 reason/evidence 字段（模型照常在调用前写文字，从文本读，不进工具 schema——与 arc_action 不加侧信道字段同一原则）。
+- 落地权表述更新：上一修订"宿主结构校验后代为落地"的实质保留于工具通道（结构校验、执行、权限/预算/版本边界本在 reflect_* 通道内，origin 照记）；专为信封写的平行落地代码不迁（JSON 提取、`normalizeOperation` 复刻、focus 兼容表、`invalid_response`/`rejected_change` 状态机）。
+- 上下文驻留约束（本次定稿）：（i）专家帧+材料走 `reviewStrategy()`/self-view 的逐请求替换面（self_root.ts:691-700 "zero resident elsewhere / Resident during the bounded round only"），pass N+1 整面替换 pass N，场合结束零驻留；历史只留 agent 响应与工具回执，受既有 `recent_turns: 16`/`older: 'stub'`/`tool_results` 16000 封顶。（ii）放置进**易变尾**（self_view tail 每请求重组的那条消息同车），不进 system 头——七个互不相同的帧放头部会每 pass 令全上下文前缀缓存失效。（iii）体量按 focus 用现有 per-layer signals/digest 行（self_root.ts:880-883）+ 地址渲染，大源码 agent 按需 `read_self` 拉取，clip 沿 M9c 预算规则。（iv）实现禁区：把全量 layer_state 以消息形式追加进历史。
+- 采用口径（回执表述）：pass 内经工具回执落地的自变更 + 被后续任务请求消费。负例 (a) 重述为"七 pass 零工具调用"，(c) 重述为"工具结构拒绝占多数"；(b)(d) 不变。预算不变：轮 1 ≤3 + 连扫 7 = ≤10/场合；pass 请求沿 optional 语义，预算不足记 `budget_skip` 跳过不停机。
+- F 清单影响：F5 整体不迁；F4 缩为按 focus 的 digest/地址渲染；F3 框架句原文迁移不变；F7 检测串保留（pass 头仍写 "Specialist evolution context:"），脚本步从信封改走现有 fixture 的工具调用脚本；F8 重写为工具脚本版（七 pass 顺序/回执/清单刷新断言保留，轮 1 脚本化 decide_exit 步照加）。
+- M10 单因素重述不变（轮 2 实现：agent 驱动入口问题评审 → 固定七专家连扫），形态注记改为"无信封、pass 内直接热修、宿主只开场合与渲染材料"。
+
 
 
