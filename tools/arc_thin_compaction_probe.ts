@@ -127,8 +127,11 @@ async function variantRun(root: string, variant: string, cli: string) {
 	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 	const address = server.address();
 	if (!address || typeof address === "string") throw new Error("probe bridge did not bind");
+	// V7 exercises the hook's native branch, where a cap-hit summary is degraded to a cancelled compaction (su15-sl1q)
+	// instead of thrown; the other variants keep the legacy arrangement their assertions were written for.
 	const env = { ...process.env, PI_CODING_AGENT_DIR: join(root, ".pi-agent"), ARC_RUN_ROOT: root,
-		ARC_GAME: "ls20", ARC_THIN_VARIANT: "treatment", ARC_THIN_CONTINUITY: "session",
+		ARC_GAME: "ls20", ...(variant === "V7" ? { ARC_THIN_FOUNDATION: "native" } : {}),
+		ARC_THIN_VARIANT: "treatment", ARC_THIN_CONTINUITY: "session",
 		ARC_THIN_CONTINUITY_DECISIONS: "8", ARC_HARNESS_LEDGER: "disabled", ARC_HARNESS_CRITIC: "disabled",
 		PI_ARC_BRIDGE_URL: `http://127.0.0.1:${address.port}`, PI_ARC_ACTION_TOKEN: "scripted-probe",
 		ARC_THIN_COMPACTION_PROBE: variant };
@@ -150,7 +153,9 @@ async function variantRun(root: string, variant: string, cli: string) {
 		} else compact = await rpc.send("compact");
 		const wallMs = Date.now() - started;
 		const before = rpc.events.length;
-		if (compact.success) {
+		// V7: the summary hit the cap, the hook cancelled the compaction (degraded, not thrown) — the session must go on
+		// with its history uncompacted, which is what the decision after it reads.
+		if (compact.success || variant === "V7") {
 			await rpc.send("prompt", { message: "Decision after native compaction: use retained evidence." });
 			await rpc.wait((event) => event.type === "agent_end", before);
 		}

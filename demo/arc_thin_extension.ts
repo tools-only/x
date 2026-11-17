@@ -4099,6 +4099,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		};
 	}
 	let compactStarted = 0;
+	/** A summary that hit the output cap once runs without thinking from then on (its reasoning is what spends the cap). */
+	let summaryWithoutThinking = false;
 	if (continuity === "session") {
 		pi.on("session_before_compact", guard("session_before_compact", async (event: any, ctx: ExtensionContext) => {
 			compactStarted = Date.now();
@@ -4122,14 +4124,33 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         if (!auth.ok) throw Error(auth.error);
         // Pi 0.87.0 consumes {compaction}, not {customInstructions}, from this hook.
         // Use Pi's native engine; Pi still schedules, persists and restores the checkpoint.
-        return { compaction: await piCompact(event.preparation, ctx.model, auth.apiKey, auth.headers,
-          instructions, event.signal, pi.getThinkingLevel(),
-          (model, context, options) => {
-            return {result:() => requestTrace.run('compaction', decision, onResponse =>
-              ctx.modelRegistry.streamSimple(model, context, {...options,onResponse:async(response,m)=>{
-                onResponse(response);await options?.onResponse?.(response,m);
-              }}))} as any;
-          }, auth.env) };
+        const summarizer = (model: any, context: any, options: any) => {
+          return {result:() => requestTrace.run('compaction', decision, onResponse =>
+            ctx.modelRegistry.streamSimple(model, context, {...options,onResponse:async(response,m)=>{
+              onResponse(response);await options?.onResponse?.(response,m);
+            }}))} as any;
+        };
+        const summarize = (thinking: any) => piCompact(event.preparation, ctx.model, auth.apiKey, auth.headers,
+          instructions, event.signal, thinking, summarizer, auth.env);
+        // The summary runs at the agent's thinking level and its reasoning spends the summary's own output cap, so a
+        // truncated summary must degrade instead of ending the run (su15-sl1q, 2026-11-17: one cap-hit summary ended it
+        // at 80/200 actions). Retry once without thinking; if that fails too, leave the context uncompacted this round.
+        const thinking = summaryWithoutThinking ? 'off' : pi.getThinkingLevel();
+        try {
+          return { compaction: await summarize(thinking) };
+        } catch (error) {
+          append('context_budget.jsonl', { compaction_event: true, reason: event.reason, degraded: 'summary_failed',
+            thinking, error: errorText(error) });
+          if (thinking === 'off' || event.signal?.aborted) return { cancel: true };
+          summaryWithoutThinking = true;
+          try {
+            return { compaction: await summarize('off') };
+          } catch (retry) {
+            append('context_budget.jsonl', { compaction_event: true, reason: event.reason, degraded: 'summary_failed_twice',
+              thinking, error: errorText(retry) });
+            return { cancel: true };
+          }
+        }
       }
 			const receiptsDir = join(storeDir, "compaction-receipts");
 			for (const message of event.preparation.messagesToSummarize) {
