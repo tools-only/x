@@ -545,7 +545,7 @@ export class NativeRuntime {
       this.calls.push({ id, key, comments, code, n: this.host.actionCount(), session: session?.version ?? 0, workspace: this.host.workspace.version,
         pure, ok: result.ok, result: shown(result) });
       this.host.log('python_calls.jsonl', { id, ...(earlier ? { same: earlier.id } : {}), ...(Object.keys(cells).length ? { cells: Object.keys(cells).map(Number) } : {}),
-        ...(blocks.length ? { blocks } : {}), n: this.host.actionCount(), decision, ok: result.ok, acted, code });
+        ...(blocks.length ? { blocks } : {}), n: this.host.actionCount(), decision, ok: result.ok, acted, code, result: shown(result).slice(0, 400) });
     }
     return out;
   }

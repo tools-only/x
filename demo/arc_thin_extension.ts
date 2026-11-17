@@ -29,7 +29,7 @@ import { outcomeRow, predictionCounts, selfDigest, settlementRow, withoutBodies,
 import { changedSlots, slotComponent, slotInventory, slotValues, type SlotValues } from "./arc_thin_selfslots.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
-	withNextItem, withoutNextItem, type LedgerEntry } from "./arc_thin_refiner.ts";
+	withNextItem, withoutNextItem, type LedgerEntry, renderDecisionWindow, type WindowBlock, type WindowPython } from "./arc_thin_refiner.ts";
 import { splitHarnessExpectation, type ComponentExpectationSource } from './arc_thin_expectation.ts';
 import { Workspace } from "./arc_thin_workspace.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
@@ -731,6 +731,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		for (const [key, h] of memory.hypotheses) if (h.status === "contested" && currentContest(key, h)) contestedByCheck.add(contestId(key, h));
 		overlay = readRows("prompt.jsonl").at(-1)?.text ?? "";
 		trajectory = readRows("trajectory.jsonl");
+		decisionTrace = readRows("decision_trace.jsonl");
+		traceFrom = trajectory.length;
 		// Hooks resume after the last action each version ran on (a restart or a fork must not run them twice on one action).
 		hookDone.clear();
 		for (const row of readRows("hook_runs.jsonl"))
@@ -1975,6 +1977,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const REFINE_LEDGER = process.env.ARC_REFINE_LEDGER !== "0";
 	const LEDGER_EDITS = envNumber("ARC_REFINE_LEDGER_EDITS", 5);
 	/**
+	 * ARC_REFINE_WINDOW (2026-11-17): each refinement's input carries the decisions since the last refinement — what the
+	 * agent said in each (its reasoning, or its text without reasoning), its python calls with results (P<id>), and its
+	 * moves' fact rows — oldest decisions dropped to fit this many characters (Continual Harness gives its evolver the
+	 * same window; ours is smaller because the refiner shares the agent's budget). 0 restores the LAST ACTIONS list.
+	 * ARC_REFINE_IMAGE=0 drops the current-board image attached when the model takes images.
+	 */
+	const REFINE_WINDOW = envNumber("ARC_REFINE_WINDOW", 14000);
+	const REFINE_IMAGE = process.env.ARC_REFINE_IMAGE !== "0";
+	/**
 	 * P1-P3 (docs/plans/2026-10-19-coverage-attempts-delivery.md): rival, contest and repeated-failure events carry the kinds
 	 * of moves the level has seen and ask for their test move as a move; a rival's must be of a kind the level has not
 	 * seen. The move becomes the first item of the strategy's next experiment until it is played, and the comparison of
@@ -2013,6 +2024,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let goalTestAskedAt = -1;
 	let viewAskedLevel = -1;
 	let refinerInFlight: Promise<void> | undefined;
+	/** The decisions of this run (ARC_REFINE_WINDOW): each one's action range and what the agent said in it. */
+	let decisionTrace: Array<{ decision: number; from: number; to: number; reasoning?: string; review?: boolean }> = [];
+	/** trajectory.length when the decision now open started. */
+	let traceFrom = 0;
 	/** Refinement outcomes not yet shown, with the id of the edit each reports (the ledger follows it from there). */
 	let refinerNotices: Array<{ text: string; editId?: string }> = [];
 	/** Edits made so far in this run (and the source run of a fork): the next edit's id is e<count + 1>. */
@@ -2733,7 +2748,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		return renderEditLedger(entries);
 	}
 
-	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[]): Promise<void> {
+	async function runRefiner(ctx: ExtensionContext, triggers: string[], samples: string[], window: WindowBlock[] = [], windowFrom = 0): Promise<void> {
 		const promotionId = pendingPromotion;
 		pendingPromotion = undefined;
 		// The ledger first: its checks run in the sandbox, and the record below is read after them.
@@ -2748,6 +2763,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const sourceBefore = new Map(workspace!.files().filter(path => /^(prompts|tools|lib|skills)\//.test(path)).map(path => [path, workspace!.read(path)]));
 		const strategy = readStrategy();
 		const saved = binder!.active().filter((c) => /^(tools|observers|lib)\/[^/]+\.py$/.test(c.path));
+		// ARC_REFINE_WINDOW: the current board goes with the record when the model takes images (CH gives its evolver the frame).
+		let frame: { type: "image"; data: string; mimeType: string } | undefined;
+		if (REFINE_WINDOW && REFINE_IMAGE && observation && ctx.model?.input?.includes("image")) {
+			try { frame = renderArcFrameImage(observation).content; } catch (error) { logError("refiner:image", error); }
+		}
 		const input = [
 			`WHY NOW: ${triggers.join("; ")}`,
 			// The checks of the hypotheses the triggers name (a contested one, a disputed rule's), to narrow or fix them.
@@ -2762,17 +2782,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			`AGENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 4000)}`,
 			`SAVED TOOLS:\n${saved.map((c) => `--- ${c.path} v${c.version}${c.view ? " (view)" : ""} ${refinedPaths.has(c.path) ? "REFINED" : "AGENT'S"}: ${c.description || "(no description)"}\n${c.source.slice(0, 1200)}`).join("\n") || "(none)"}`,
 			...(samples.length ? [`REPEATED PYTHON (latest calls):\n${samples.map((code) => `---\n${code.slice(0, 1500)}`).join("\n")}`] : []),
-			`LAST ACTIONS (with how their predictions scored):\n${trajectory.slice(-20).map(recentLine).join("\n") || "(none yet)"}`,
+			window.length
+				? `DECISIONS SINCE THE LAST REFINEMENT (after action #${windowFrom}; per decision: what the agent said, its python calls (P<n>), and its moves with how their predictions scored):\n${renderDecisionWindow(window, REFINE_WINDOW)}`
+				: `LAST ACTIONS (with how their predictions scored):\n${trajectory.slice(-20).map(recentLine).join("\n") || "(none yet)"}`,
 			`CURRENT STATE:\n${observation ? queryObservation ? observationReference(observation, trajectory.length) : renderState(observation) : "(unavailable)"}`,
-      ...(queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
+      ...(frame ? ["The current board is attached as an image (the state after the last action)."]
+      	: queryObservation ? ['Raw frames are not included in this refinement. Use the supplied memory and action reports; references alone are not pixel evidence.'] : []),
 		].join("\n\n");
 		const guide = refineGuide();
 		const system = REFINER_SYSTEM + (REFINE_LEDGER ? REFINER_LEDGER_SYSTEM : "") + (guide ? `\n\nTHE AGENT'S GUIDANCE FOR REFINEMENTS (${REFINE_GUIDE_PATH}):\n${guide}` : "");
 		// Each refinement's input and reply as they were, so refinements can be read and replayed afterwards (L0's and L1's
 		// could not: the r03b line did not keep them).
-		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null, system, input });
+		append("refiner_inputs.jsonl", { at: evidenceAt, decision, triggers, model: ctx.model?.id ?? null,
+			...(window.length ? { window: window.length, window_from: windowFrom } : {}), ...(frame ? { image: true } : {}), system, input });
 		const ask = async (text: string, returned = false) => {
-			const reply: any = await sideCall(ctx, system, [{ type: "text", text }], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
+			const reply: any = await sideCall(ctx, system, [{ type: "text", text }, ...(frame ? [frame] : [])], { signal: AbortSignal.timeout(180_000), maxTokens: 6000 });
 			appendUsage("refiner", reply);
 			const answer: string = (reply.content ?? []).filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
 			append("refiner_replies.jsonl", { at: evidenceAt, decision, model: ctx.model?.id ?? null, stop_reason: reply.stopReason ?? null,
@@ -2926,6 +2950,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 	}
 
+	/** The decisions after action `from` as window blocks (ARC_REFINE_WINDOW): reasoning, python calls, move rows. */
+	function windowBlocksSince(from: number): WindowBlock[] {
+		const pythonRows = readRows("python_calls.jsonl");
+		const pythonFor = (d: number): WindowPython[] => pythonRows.filter((row) => row.decision === d && typeof row.id === "number")
+			.map((row) => ({ id: row.id, ok: row.ok !== false, ...(row.acted ? { acted: true } : {}), ...(typeof row.same === "number" ? { same: row.same } : {}),
+				...(typeof row.code === "string" ? { code: row.code } : {}), ...(typeof row.result === "string" ? { result: row.result } : {}) }));
+		const rows = (a: number, b: number) => trajectory.slice(Math.max(a, from), b).map(recentLine);
+		const blocks: WindowBlock[] = decisionTrace.filter((r) => r.to > from)
+			.map((r) => ({ ...r, rows: rows(r.from, r.to), python: pythonFor(r.decision) }));
+		// The decision now open: the agent's own refine(focus) arrives in the middle of one.
+		const said = run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+		if (said || trajectory.length > traceFrom) blocks.push({ decision, from: traceFrom, to: trajectory.length, ongoing: true,
+			...(said ? { reasoning: said.length > 2000 ? `…${said.slice(-2000)}` : said } : {}), ...(run.consolidating ? { review: true } : {}),
+			rows: rows(traceFrom, trajectory.length), python: pythonFor(decision) });
+		return blocks;
+	}
+
 	/** Start one refinement unless one is running; true when it was started. */
 	/** The agent's own request made while a refinement ran: it runs next, so asking is never lost. */
 	let queuedFocus: string[] | undefined;
@@ -2936,10 +2977,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			append("refiner.jsonl", { kind: asked ? "queued" : "suppressed", at: trajectory.length, reason: "refiner busy", triggers });
 			return false;
 		}
+		// The window spans the actions since the previous refinement, captured before this one moves the mark.
+		const windowFrom = lastRefineAt;
+		const window = REFINE_WINDOW ? windowBlocksSince(windowFrom) : [];
 		refineNotes.push({ at: trajectory.length, level: currentLevel(), triggers, lines: [], dropped: [] });
 		lastRefineAt = trajectory.length;
 		append("refiner.jsonl", { kind: "start", at: trajectory.length, decision, triggers, model: ctx.model.id ?? null });
-		refinerInFlight = runRefiner(ctx, triggers, samples)
+		refinerInFlight = runRefiner(ctx, triggers, samples, window, windowFrom)
 			.catch((error) => { logError("refiner", error); append("refiner.jsonl", { kind: "failed", at: trajectory.length, triggers, error: errorText(error).slice(0, 300) }); })
 			.finally(() => {
 				refinerInFlight = undefined;
@@ -4310,8 +4354,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			decisionObservations = [];
 		}
 		// Keep the end of the reasoning: conclusions come last.
-		const reasoning = carryChars ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
-		carriedReasoning = reasoning.length > carryChars ? `…${reasoning.slice(-carryChars)}` : reasoning;
+		const reasoning = carryChars || REFINE_WINDOW ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+		carriedReasoning = !carryChars ? "" : reasoning.length > carryChars ? `…${reasoning.slice(-carryChars)}` : reasoning;
+		// The decision window (ARC_REFINE_WINDOW): the decision that just ended, for the next refinement's input.
+		if (REFINE_WINDOW && (run.assistantMessages || trajectory.length > traceFrom)) {
+			const record = { decision, from: traceFrom, to: trajectory.length,
+				...(reasoning ? { reasoning: reasoning.length > 2000 ? `…${reasoning.slice(-2000)}` : reasoning } : {}),
+				...(run.consolidating ? { review: true } : {}) };
+			decisionTrace.push(record);
+			append("decision_trace.jsonl", record);
+		}
+		traceFrom = trajectory.length;
 		if (run.assistantMessages) lastDecisionCost = { ms: (run.endedAt || Date.now()) - run.startedAt, output: run.output, reasoning: run.reasoningTokens,
 			coordinateShare: run.reasoningSentences ? run.coordinateSentences / run.reasoningSentences : 0 };
 		run = freshRun();
@@ -4687,7 +4740,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		if (blocks.some((block) => block?.type === "toolCall" && block.name === "arc_action"))
 			run.endBatchAt = run.assistantMessages;
-		if (carryChars) {
+		if (carryChars || REFINE_WINDOW) {
 			const pick = (type: string, field: string) => blocks.filter((block) => block?.type === type && typeof block[field] === "string")
 				.map((block) => block[field]).join("\n").trim();
 			const said = pick("thinking", "thinking") || pick("text", "text");
