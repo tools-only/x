@@ -480,3 +480,32 @@ test('ARC_REFINE_LEDGER=0 gives the earlier input and charter; the edits are sti
     assert.deepEqual(h.rows('refiner.jsonl').filter((row) => row.kind === 'edit').map((row) => row.id), ['e1']);
   } finally { await h.close(); }
 });
+
+test("a refinement's component save lands a harness_changes receipt (su15-sl1q: tools/view.py v1 had none)", async () => {
+  const h = await fixture({});
+  try {
+    await h.decide();
+    await h.decide();
+    await h.decide();
+    await h.calls(1);
+    await h.settle(reply('FILE tools/view.py\n"""Where the 9 is."""\ndef run(args, env):\n    return 7\nEND\nWHY the position was retyped'));
+    const fourth = await h.decide('ACTION2');
+    assert.match(fourth, /HARNESS UPDATE by a refinement after #3 [^\n]*tools\/view\.py v1/);
+    await h.begin();
+    await h.calls(2);
+    await h.settle(reply('FILE prompts/strategy.md\nNext experiment\n- ACTION1 once\nEND\nWHY vary the probe'));
+    await h.decide();
+    const changes = h.rows('harness_changes.jsonl');
+    const tool = changes.find((row) => row.path === 'tools/view.py');
+    assert.ok(tool, JSON.stringify(changes));
+    assert.equal(tool.component, 'tool');
+    assert.equal(tool.version, 1);
+    assert.equal(tool.at, 3);
+    const strategy = changes.find((row) => row.path === 'prompts/strategy.md');
+    assert.equal(strategy?.component, 'prompt');
+    assert.equal(strategy?.version, 1);
+    // The settlement's changed count reads only harness_changes.jsonl: every loaded save must leave a receipt there.
+    for (const saved of h.rows('component_runs.jsonl').filter((row) => row.kind === 'save' && row.ok))
+      assert.ok(changes.some((row) => row.path === saved.path), `save of ${saved.path} left no receipt`);
+  } finally { await h.close(); }
+});

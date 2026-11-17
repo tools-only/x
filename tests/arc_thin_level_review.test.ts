@@ -184,7 +184,9 @@ test('a harness turn (ARC_THIN_HARNESS_TURN=1) records either a component or exp
 		assert.match(nextReview, /HARNESS EXPECT RESULTS[^]*check\(t\) returned true at #4/);
 		// The two reviews at #3 are one review and its retry (a review takes no action).
 		assert.match(nextReview, /\nEarlier reviews: 1; followed by a component change in the same turn: 1; explicit no-change: 1\.\n/);
-		assert.match(nextReview, /\nYour components: prompts\/loop-focus\.md v1: in every decision while active\.\n/);
+		// The prompt it saved, and the strategy the runtime wrote from a pinned line: both saves carry a harness_changes
+		// receipt now (su15-sl1q: saves bypassing recordComponentWrite were invisible here and in settlement).
+		assert.match(nextReview, /\nYour components: prompts\/loop-focus\.md v1: in every decision while active; prompts\/strategy\.md v1: in every decision while active\.\n/);
 	} finally { await h.close(); await new Promise<void>((r) => w.server.close(() => r())); }
 });
 
