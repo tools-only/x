@@ -165,6 +165,48 @@ def test_round_deadline_stops_before_any_charged_preflight(tmp_path,monkeypatch)
     assert result['resources']=={'requests':0,'tokens':0,'usd':0}
 
 
+def test_integer_valued_float_deductions_canonicalize_to_typescript_number_text():
+    budget={'requests':74,'tokens':2**53-1,'seconds':3596.0,'usd':2**53-1,'storage_bytes':2147483648}
+    result=evo_ppt._canonicalize_budget(budget)
+    assert result is budget  # In place: the runtime_manifest reference stays valid.
+    assert '.0' not in json.dumps(result)
+    assert result['seconds']==3596 and type(result['seconds']) is int
+    assert result['tokens']==2**53-1 and type(result['tokens']) is int  # Unlimited sentinel survives exactly.
+    assert result['usd']==2**53-1 and type(result['usd']) is int
+    assert result['requests']==74 and type(result['requests']) is int
+    fractional=evo_ppt._canonicalize_budget({'seconds':3595.781})
+    assert fractional['seconds']==3595.781 and type(fractional['seconds']) is float
+
+
+def test_runtime_manifest_budget_after_float_preflight_deduction_hashes_like_typescript(tmp_path,monkeypatch):
+    contract={'budget':{'requests':10,'tokens':100000,'seconds':3600,'usd':2**53-1,'storage_bytes':1000000}}
+    contract['content_hash']=evo_ppt.digest(contract)
+    settings={'api':'openai-completions','compat':{},'model':{'id':evo_ppt.MODEL},'thinking':'low',
+              'agent_settings':{},'request_reserve':{'usd':1,'tokens':1000}}
+    evo_ppt.write(tmp_path/'manifest.json',{'provider':'az','model':evo_ppt.MODEL,'arm':'B','contract':contract,
+        'settings':settings,'seed_hashes':{},'sources':{},'units':[], 'engineering_commit':'test','renderer_preflight':{'status':'passed'}})
+    (tmp_path/'.harness').mkdir()
+    evo_ppt.write(tmp_path/'.harness/live-self.json',{'root':{'queue':[],'ledger':[]}})
+    monkeypatch.setattr(evo_ppt,'load_project_dotenv',lambda _p:{'OPENAI_API_KEY':'test'})
+    monkeypatch.setattr(evo_ppt,'model_preflight',lambda *_a,**_kw:{'status':'available','returned_model':evo_ppt.MODEL,
+        'elapsed_seconds':4.0,'accounting':{'tokens':1,'usd':.001}})
+    class Kernel:
+        def __init__(self,*_a,**_kw): pass
+        def __enter__(self): return self
+        def __exit__(self,*_a): pass
+        def prompt(self,_message):
+            evo_ppt.write(tmp_path/'.harness/ppt-loop.json',{'complete':True})
+            return {'success':True}
+        def wait_for_agent_events(self,**_kw):
+            return [{'type':'message_end','message':{'role':'assistant','stopReason':'stop'}}]
+    monkeypatch.setattr(evo_ppt,'PiKernel',Kernel)
+    assert evo_ppt.run(tmp_path)['stop']=='delivered'
+    budget=json.loads((tmp_path/'runtime-manifest.json').read_text(encoding='utf-8'))['contract']['budget']
+    assert budget['seconds']==3596 and type(budget['seconds']) is int  # 3600 - 4.0 written as "3596", not "3596.0".
+    assert budget['usd']==2**53-1 and type(budget['usd']) is int
+    assert not any(type(v) is float and v.is_integer() for v in budget.values())
+
+
 @pytest.mark.parametrize('token_cap',[None,600000])
 def test_explicit_no_token_cap_uses_nonbinding_runtime_value_and_keeps_metering(tmp_path,monkeypatch,token_cap):
     monkeypatch.setattr(evo_ppt,'PROJECT',tmp_path)

@@ -34,6 +34,15 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
+def _canonicalize_budget(budget: dict) -> dict:
+    """JSON.stringify writes integer-valued floats without the trailing .0; json.dumps keeps it.
+    Canonicalize to int, in place, so both languages hash the same contract text."""
+    for key, value in list(budget.items()):
+        if isinstance(value, float) and value.is_integer():
+            budget[key] = int(value)
+    return budget
+
+
 def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -373,6 +382,9 @@ def run(root: Path, *, round_deadline: float | None = None):
     # Keep runtime JSON numeric semantics aligned with the TypeScript checker:
     # JSON round-trips large integers unchanged, while float arithmetic turns
     # the no-USD sentinel into a non-integer and changes its canonical hash.
+    # Deductions landing on an integer-valued float (3600 - 4.0 = 3596.0) are
+    # canonicalized to int because json.dumps writes "3596.0" where
+    # JSON.stringify writes "3596", so the two contract hashes would diverge.
     caps.update(requests=caps["requests"]-1,
                 tokens=caps["tokens"]-int(probe_tokens),
                 usd=caps["usd"]-probe_usd if caps["usd"] < 1e15 else caps["usd"],
@@ -380,6 +392,7 @@ def run(root: Path, *, round_deadline: float | None = None):
     if round_deadline is not None:
         caps["seconds"] = min(caps["seconds"],round_deadline-time.time())
         runtime_manifest["round_deadline_epoch"] = round_deadline
+    _canonicalize_budget(caps)
     if any(v <= 0 for v in caps.values()):
         result={"stop":"preflight_exhausted_budget","preflight":probe,"units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); persist_resource_daemon(root); return result
