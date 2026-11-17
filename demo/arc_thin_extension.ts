@@ -25,7 +25,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
 import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
-import { outcomeRow, predictionCounts, selfDigest, settlementRow, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_SETTLEMENTS_PATH, SELF_WORKING_PATH, SELF_OUTCOMES_PATH, SELF_SLOTS_PATH } from "./arc_thin_selfview.ts";
+import { outcomeRow, predictionCounts, selfDigest, settlementRow, settlementText, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_PASS_LINE, SELF_SETTLEMENTS_PATH, SELF_WORKING_PATH, SELF_OUTCOMES_PATH, SELF_SLOTS_PATH } from "./arc_thin_selfview.ts";
 import { changedSlots, slotComponent, slotInventory, slotValues, type SlotValues } from "./arc_thin_selfslots.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
 import { REFINE_GUIDE_PATH, REFINER_LEDGER_SYSTEM, REFINER_SYSTEM, STRATEGY_PATH, memoryEditNow, nextExperimentText, parseRefinerReply, renderEditLedger,
@@ -331,6 +331,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// between decisions (stage 3) and a mechanical settlement at level boundaries (stage 4). ARC_THIN_SELFLOOP=1 turns
 	// it on; unset, the decision context and every existing section are byte-identical to before it.
 	const selfLoop = native && !control && process.env.ARC_THIN_SELFLOOP === "1";
+	// The evolution pass (adapted from the evo line's external pass, user decision 2026-11-17; the runner opens it with an
+	// "EVOLUTION PASS" prompt at recorded boundaries — a level settled, or many actions without a self change). The pass is
+	// a review-shaped turn: no action, the consolidation toolset, the review tool-call cap; its record carries the window's
+	// counts, the decisions' own trajectory, the slot inventory, the settlements and the previous pass's closing words.
+	// ARC_THIN_EVO_PASS=0 turns it off with the self-loop on; the resident surface then stays stage 2's.
+	const evoPassOn = selfLoop && process.env.ARC_THIN_EVO_PASS !== "0";
 	// Guards (the same plan, arm B): saved code that defines admit(state, action) is asked before every action is sent, and a
 	// reason it returns refuses that action as the agent's own rule. ARC_THIN_GUARDS=1 turns them on.
 	const guardsOn = native && !control && process.env.ARC_THIN_GUARDS === "1";
@@ -594,9 +600,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (!selfLoop) return "";
 		try {
 			const active = binder?.active() ?? [];
-			const changes = readRows("harness_changes.jsonl");
+			// The digest counts the agent's own saves (SelfDigestInput.changes); runtime and refiner receipts carry `by`.
+			const changes = readRows("harness_changes.jsonl").filter((row) => !row.by);
 			const last = changes.at(-1);
-			return SELF_FIELDS + "\n" + selfDigest({
+			return SELF_FIELDS + (evoPassOn ? "\n" + SELF_PASS_LINE : "") + "\n" + selfDigest({
 				decision, actions: trajectory.length, level: currentLevel(),
 				predictions: predictionCounts(trajectory),
 				components: active.map((component) => ({ path: component.path, version: component.version })),
@@ -635,15 +642,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			writeFileSync(join(storeDir, "self_slots.json"), JSON.stringify({ at: decision, values: run.slots ?? {} }) + "\n");
 		} catch (error) { logError("self:slots_publish", error); }
 	}
+	/** `by` marks a receipt the runtime or the refiner wrote; rows without it are the agent's own saves. */
 	function recordComponentWrite(path: string, before: number | undefined, receipt: string | undefined,
-		split: ComponentExpectationSource): string {
+		split: ComponentExpectationSource, by?: "runtime" | "refiner"): string {
 		const component = componentKind(path);
 		const version = binder?.versionMap()[path];
 		if (!component || version === undefined || /NOT loaded/.test(receipt ?? ""))
 			return split.error ? `EXPECT not recorded: ${split.error}` : "";
 		if (version !== before) append("harness_changes.jsonl", { decision, at: trajectory.length, level: currentLevel(), path,
-			component, version, ...(component === "slot" ? { parameters: { slots: binder?.candidates().find((c) => c.path === path && c.version === version)?.parameters?.slots ?? {} } } : {}),
-			review: run.levelReview ? "level" : run.stallReview ? "stall" : undefined });
+			component, version, ...(by ? { by } : {}),
+			...(component === "slot" ? { parameters: { slots: binder?.candidates().find((c) => c.path === path && c.version === version)?.parameters?.slots ?? {} } } : {}),
+			review: run.levelReview ? "level" : run.stallReview ? "stall" : run.evoPass ? "evo" : undefined });
 		if (split.expect && version !== before) {
 			const id = `${path}@v${version}:${decision}:${trajectory.length}`;
 			append("harness_expectations.jsonl", { kind: "candidate", id, path, version, level: currentLevel(), decision,
@@ -860,6 +869,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		levelReview: boolean;
 		/** A review after many actions without a level completed (the runner's "STALL REVIEW" prompt): the level so far. */
 		stallReview: boolean;
+		/** The evolution pass (the runner's "EVOLUTION PASS" prompt, self-loop only): the pass record, the same call cap. */
+		evoPass: boolean;
 		/** Native decisions: calls that look things up or compute, and calls that record (see gate). */
 		budgetNote?: string;
 		endBatchAt: number; actionDone: boolean;
@@ -908,7 +919,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		slots: SlotValues;
 	};
 	const freshRun = (): Run => ({
-		consolidating: false, levelReview: false, stallReview: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
+		consolidating: false, levelReview: false, stallReview: false, evoPass: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
@@ -991,6 +1002,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// A consolidation turn reviews every action since the previous one, not only the last few; a level review, the level;
 		// a stall review, the level being played.
 		if (run.consolidating) {
+			if (run.evoPass) return evoPassText();
 			if (run.levelReview) return levelReviewText();
 			if (run.stallReview) return stallReviewText();
 			const rows = trajectory.slice(run.reviewFrom).slice(-REVIEW_ACTIONS);
@@ -1030,6 +1042,55 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch (error) { logError("review:repeats", error); }
 		return levelRecord({ rows: trajectory, completed: currentLevel() + 1, ongoing: true, memoryRows: readRows("memory.jsonl"),
 			checks: claimRows, repeated, python: readRows("component_runs.jsonl"), artifacts: reviewArtifactLines(currentLevel()) });
+	}
+
+	/**
+	 * What the evolution pass starts from (adapted from the evo line's pass entry, user decision 2026-11-17): one
+	 * mechanical record computed at pass entry — the window since the last pass (anchored at the last pass_close row,
+	 * so a restarted run keeps its place), that window's recorded trajectory, the self surface pushed inline, and the
+	 * end of the previous pass's reply. Counts and copies only: no ranking, diagnosis, recommendation or forced order.
+	 */
+	function evoPassText(): string {
+		const decisions = readRows("harness_decisions.jsonl");
+		const lastPass = decisions.filter((row) => row.kind === "pass_close").at(-1);
+		const from = Math.max(0, Number(lastPass?.at) || 0);
+		const span = trajectory.slice(from);
+		const changes = readRows("harness_changes.jsonl").filter((row) => Number(row.at) > from && !row.by);
+		const predictions = predictionCounts(span);
+		let blocks: WindowBlock[] = [];
+		try { blocks = windowBlocksSince(from); } catch (error) { logError("pass:window", error); }
+		const python = blocks.flatMap((block) => block.python);
+		let trajectoryText = `(window off: ARC_THIN_EVO_WINDOW=0; the rows stay in ${SELF_WORKING_PATH} and data/self/)`;
+		if (EVO_WINDOW > 0) {
+			try { trajectoryText = blocks.length ? renderDecisionWindow(blocks, EVO_WINDOW) : "(no decisions recorded in this window)"; }
+			catch (error) { logError("pass:trajectory", error); trajectoryText = `(unavailable: ${clipText(errorText(error), 120)})`; }
+		}
+		const selfLines: string[] = [];
+		try { selfLines.push(slotInventory(run.slots ?? {}, slotDefaults())); } catch (error) { logError("pass:slots", error); }
+		try {
+			const active = binder?.active() ?? [];
+			const shown = active.slice(0, 8).map((component) => `${component.path} v${component.version}`);
+			selfLines.push(`- your components: ${active.length ? `${shown.join(", ")}${active.length > shown.length ? `, +${active.length - shown.length} more` : ""}` : "none"}`);
+			const { usage, idle } = artifactUsage();
+			for (const [path, use] of [...usage].slice(0, 8)) selfLines.push(`- ${path}: ${use}`);
+			if (idle.length) selfLines.push(`- ran without helping: ${idle.slice(0, 5).join(", ")}`);
+			for (const row of selfSettlementRows.slice(-3)) selfLines.push(`- settlement level ${row.level}: ${settlementText(row)}`);
+		} catch (error) { logError("pass:self", error); }
+		const refinements = readRows("refiner.jsonl").filter((row) => row.kind === "edit" && Number(row.at) > from).length;
+		const carry = typeof lastPass?.carry === "string" && lastPass.carry.trim() ? lastPass.carry : "none recorded";
+		return [
+			`EVOLUTION PASS RECORD (actions #${from + 1}–#${trajectory.length}, counted and copied from this run's logs):`,
+			`WINDOW: ${span.length} action(s), ${blocks.length} decision(s), ${python.length} python call(s)` +
+				`${python.some((call) => call.ok === false) ? ` (${python.filter((call) => call.ok === false).length} failed)` : ""}, ` +
+				`predictions ${predictions.made} (${predictions.hits} hit/${predictions.misses} miss), ` +
+				`${changes.length} self change(s), ${refinements} refinement(s) since the last pass.`,
+			EVO_WINDOW > 0 ? `TRAJECTORY (the window's decisions, newest kept under ${EVO_WINDOW} chars):` : "TRAJECTORY:",
+			trajectoryText,
+			`SELF:`,
+			...selfLines,
+			`CARRIED (the end of your previous pass's reply):`,
+			carry,
+		].join("\n");
 	}
 
 	/**
@@ -1214,7 +1275,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try {
 			const row = {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
-				...(run.stallReview ? { stall_review: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
+				...(run.stallReview ? { stall_review: true } : {}), ...(run.evoPass ? { evo_pass: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
 					...(contextLayout && self ? [["self", self] as [string, string]] : []),
 					...(viewOutput ? [["views", viewOutput] as [string, string]] : []),
@@ -1986,6 +2047,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const REFINE_WINDOW = envNumber("ARC_REFINE_WINDOW", 14000);
 	const REFINE_IMAGE = process.env.ARC_REFINE_IMAGE !== "0";
 	/**
+	 * The evolution pass record's trajectory budget (the decisions since the last pass, rendered as the refiner's decision
+	 * window; the evo line gives its pass entry the same 6000 characters). 0 leaves the trajectory out of the pass record.
+	 */
+	const EVO_WINDOW = envNumber("ARC_THIN_EVO_WINDOW", 6000);
+	/**
 	 * P1-P3 (docs/plans/2026-10-19-coverage-attempts-delivery.md): rival, contest and repeated-failure events carry the kinds
 	 * of moves the level has seen and ask for their test move as a move; a rival's must be of a kind the level has not
 	 * seen. The move becomes the first item of the strategy's next experiment until it is played, and the comparison of
@@ -2098,7 +2164,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		refinedPaths.add(STRATEGY_PATH);
 		const receipt = await binder!.save(STRATEGY_PATH, currentLevel());
 		nativeRuntime!.noteSave(STRATEGY_PATH, receipt);
-		recordComponentWrite(STRATEGY_PATH, before, receipt, { source: content });
+		recordComponentWrite(STRATEGY_PATH, before, receipt, { source: content }, "runtime");
 	}
 
 	/**
@@ -2515,7 +2581,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const before = binder.versionMap()[broken.path];
 				const receipt = await binder.save(broken.path, currentLevel());
 				nativeRuntime.noteSave(broken.path, receipt);
-				recordComponentWrite(broken.path, before, receipt, { source });
+				recordComponentWrite(broken.path, before, receipt, { source }, "runtime");
 				const version = binder.versionMap()[broken.path];
 				if (version !== undefined && refinedVersions.has(key)) refinedVersions.add(`${broken.path}@${version}`);
 				append("refiner.jsonl", { kind: "view_restored", at: trajectory.length, decision, path: broken.path, from: broken.version, to: back, version,
@@ -2936,7 +3002,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			refinedPaths.add(edit.path);
 			const receipt = await binder!.save(edit.path, currentLevel());
 			nativeRuntime!.noteSave(edit.path, receipt);
-			recordComponentWrite(edit.path, before, receipt, { source: content });
+			recordComponentWrite(edit.path, before, receipt, { source: content }, "refiner");
 			nativeRuntime!.register();
 			const loaded = !/NOT loaded/.test(receipt ?? "");
 			const version = binder!.versionMap()[edit.path];
@@ -3203,14 +3269,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Today's review (no harness turn) that has not saved its own file may still write it with one more call: in
 		// su15-lb-cb-q38 the consult and seven python calls used the ten, and the write of prompts/lessons.md, its test lines
 		// and all, was refused. A harness turn has no file it must write.
-		if (native && (run.levelReview || run.stallReview)) {
+		if (native && (run.levelReview || run.stallReview || run.evoPass)) {
 			const file = run.levelReview ? LESSONS_PATH : REVIEW_PATH;
 			if (run.toolCalls > LEVEL_REVIEW_CALLS) {
-				if (!harnessTurn && (name === "write" || name === "edit") && !run.reviewSaved && !run.reviewWrite) { run.reviewWrite = file; return undefined; }
-				return { reason: `this review used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
+				if (!run.evoPass && !harnessTurn && (name === "write" || name === "edit") && !run.reviewSaved && !run.reviewWrite) { run.reviewWrite = file; return undefined; }
+				return { reason: `this ${run.evoPass ? "pass" : "review"} used its ${LEVEL_REVIEW_CALLS} tool calls; it ends here`, terminate: true };
 			}
-			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = `(This was tool call ${LEVEL_REVIEW_CALLS} of ${LEVEL_REVIEW_CALLS} for this review: ` +
-				(harnessTurn ? `finish now; make a component change or state why none is justified.)`
+			if (run.toolCalls === LEVEL_REVIEW_CALLS) run.budgetNote = `(This was tool call ${LEVEL_REVIEW_CALLS} of ${LEVEL_REVIEW_CALLS} for this ${run.evoPass ? "pass" : "review"}: ` +
+				(run.evoPass ? `finish now; save a change or end with NO HARNESS CHANGE: <reason>.)`
+					: harnessTurn ? `finish now; make a component change or state why none is justified.)`
 					: `finish now${run.reviewSaved ? "" : `; one more call is accepted, the write of ${file}`}.)`);
 		}
 		const nativeCap = native && !run.consolidating && !diagnosticBudget;
@@ -4329,7 +4396,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", guard("before_agent_start", async (event: any, ctx: ExtensionContext) => {
 		const prompt = String(event.prompt ?? "").trimStart();
-		const reviewing = /^(CONSOLIDATE|RECOVER CONSOLIDATION|LEVEL REVIEW|RECOVER LEVEL REVIEW|STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
+		const reviewing = /^(CONSOLIDATE|RECOVER CONSOLIDATION|LEVEL REVIEW|RECOVER LEVEL REVIEW|STALL REVIEW|RECOVER STALL REVIEW|EVOLUTION PASS|RECOVER EVOLUTION PASS)\b/.test(prompt);
 		// A pinned next experiment that was played, or whose level or time ended, leaves the strategy before it is bound (P3);
 		// a review file's new tests are pinned (A3), and so is an action the predictor tools disagree on (B1). The components
 		// saved since the last request are bound first, so a predictor saved in the last decision takes part.
@@ -4343,7 +4410,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     if (binder) { await binder.scan(currentLevel()); binder.boundary(currentLevel()); nativeRuntime?.register(); }
 		// Stage 1: a level finished since the last decision writes its lineage row, before this decision's facts.
 		if (selfLoop) selfOutcomes(currentLevel());
-		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW)\b/.test(prompt);
+		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW|EVOLUTION PASS)\b/.test(prompt);
+		// The pass that just ended leaves its close row: the window anchor for the next pass, and the end of what the
+		// agent said as the next pass's CARRIED line (the evo line's carry, recorded instead of declared).
+		if (run.evoPass && !continuing) {
+			const said = run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+			append("harness_decisions.jsonl", { kind: "pass_close", decision, at: trajectory.length, level: currentLevel(),
+				...(said ? { carry: said.length > 600 ? `…${said.slice(-600)}` : said } : {}) });
+		}
 		if (!continuing) {
 		carriedResults = run.batchResults;
 		noteConsultUse(run);
@@ -4354,10 +4428,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			decisionObservations = [];
 		}
 		// Keep the end of the reasoning: conclusions come last.
-		const reasoning = carryChars || REFINE_WINDOW ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+		const reasoning = carryChars || REFINE_WINDOW || evoPassOn ? run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
 		carriedReasoning = !carryChars ? "" : reasoning.length > carryChars ? `…${reasoning.slice(-carryChars)}` : reasoning;
-		// The decision window (ARC_REFINE_WINDOW): the decision that just ended, for the next refinement's input.
-		if (REFINE_WINDOW && (run.assistantMessages || trajectory.length > traceFrom)) {
+		// The decision window (ARC_REFINE_WINDOW): the decision that just ended, for the next refinement's input; the
+		// evolution pass reads the same records, so the pass flag keeps them when the refiner window is off.
+		if ((REFINE_WINDOW || evoPassOn) && (run.assistantMessages || trajectory.length > traceFrom)) {
 			const record = { decision, from: traceFrom, to: trajectory.length,
 				...(reasoning ? { reasoning: reasoning.length > 2000 ? `…${reasoning.slice(-2000)}` : reasoning } : {}),
 				...(run.consolidating ? { review: true } : {}) };
@@ -4379,17 +4454,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (selfLoop) { run.slots = slotValuesNow(); publishSelfSlots(); }
 		// The runner's review prompts: "CONSOLIDATE…" and, after a length stop, "RECOVER CONSOLIDATION…"; after a level change
 		// (native), "LEVEL REVIEW…" and "RECOVER LEVEL REVIEW…"; after many actions without a level, "STALL REVIEW…" and
-		// "RECOVER STALL REVIEW…".
-		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b)/.test(prompt);
+		// "RECOVER STALL REVIEW…"; at the self-loop's recorded boundaries, "EVOLUTION PASS…" and "RECOVER EVOLUTION PASS…".
+		run.consolidating = !control && /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b|LEVEL REVIEW\b|RECOVER LEVEL REVIEW\b|STALL REVIEW\b|RECOVER STALL REVIEW\b|EVOLUTION PASS\b|RECOVER EVOLUTION PASS\b)/.test(prompt);
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
-		if (run.levelReview || run.stallReview) append("harness_decisions.jsonl", { kind: "review_start", decision,
-			type: run.levelReview ? "level" : "stall", at: trajectory.length, level: currentLevel() });
+		run.evoPass = evoPassOn && run.consolidating && /^(EVOLUTION PASS|RECOVER EVOLUTION PASS)\b/.test(prompt);
+		if (run.levelReview || run.stallReview || run.evoPass) append("harness_decisions.jsonl", { kind: "review_start", decision,
+			type: run.levelReview ? "level" : run.stallReview ? "stall" : "evo", at: trajectory.length, level: currentLevel() });
 		// Work memory: a decision after one that learned nothing new opens by saying so.
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review consults before it writes; every REFINE_EVERY actions since the agent's last refine
 		// call, a decision acts only after refine(focus).
-		run.consultPoint = slot("review.consult", reviewConsult) && run.consolidating;
+		run.consultPoint = slot("review.consult", reviewConsult) && run.consolidating && !run.evoPass;
 		if (!continuing) run.refinePoint = refinePoints && !run.consolidating && refinerActive() && trajectory.length > 0
 			&& trajectory.length - lastRefineCallAt >= slot("refine.every", REFINE_EVERY);
 		if (!continuing && (run.refinePoint || run.consultPoint))
@@ -4399,7 +4475,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// invites the model to repeat the same measurement and consumes another full
 		// provider request before it can reach the native action boundary.
 		run.forceAction = !run.consolidating && /previous decision ended without arc_action|^RECOVER ACTION\b/.test(prompt);
-		if (run.consolidating) {
+		// The pass keeps its own anchor (the last pass_close row): it does not consume the review span, so the next
+		// CONSOLIDATE still reviews every action since the previous review.
+		if (run.consolidating && !run.evoPass) {
 			run.reviewFrom = reviewedThrough;
 			reviewedThrough = trajectory.length;
 		}
@@ -4731,16 +4809,16 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.endedAt = Date.now();
 		if (message.stopReason !== "error" && message.stopReason !== "aborted") run.answered = true;
 		const blocks: any[] = Array.isArray(message.content) ? message.content : [];
-		if ((run.levelReview || run.stallReview) && blocks.filter((block) => block?.type === "text")
+		if ((run.levelReview || run.stallReview || run.evoPass) && blocks.filter((block) => block?.type === "text")
 			.some((block) => /(?:^|\n)NO HARNESS CHANGE:\s*\S/i.test(String(block.text ?? "")))) {
 			const reason = blocks.filter((block) => block?.type === "text").map((block) => String(block.text ?? ""))
 				.join("\n").match(/(?:^|\n)NO HARNESS CHANGE:\s*([^\n]+)/i)?.[1]?.trim();
 			append("harness_decisions.jsonl", { kind: "no_change", decision, at: trajectory.length,
-				type: run.levelReview ? "level" : "stall", reason: String(reason ?? "").slice(0, 300) });
+				type: run.levelReview ? "level" : run.stallReview ? "stall" : "evo", reason: String(reason ?? "").slice(0, 300) });
 		}
 		if (blocks.some((block) => block?.type === "toolCall" && block.name === "arc_action"))
 			run.endBatchAt = run.assistantMessages;
-		if (carryChars || REFINE_WINDOW) {
+		if (carryChars || REFINE_WINDOW || evoPassOn) {
 			const pick = (type: string, field: string) => blocks.filter((block) => block?.type === type && typeof block[field] === "string")
 				.map((block) => block[field]).join("\n").trim();
 			const said = pick("thinking", "thinking") || pick("text", "text");

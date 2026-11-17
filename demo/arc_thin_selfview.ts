@@ -31,6 +31,14 @@ export const SELF_FIELDS = [
 	"- At each level boundary the runtime counts changes / activated / used later from its receipts; the rows are under data/self/.",
 ].join("\n");
 
+/**
+ * The one resident line the evolution pass adds (adapted from the evo line's external pass, user decision 2026-11-17:
+ * the resident text only names the mechanism; the obligations live in the pass turn itself). It states when the host
+ * opens a pass and nothing else — no counting duty, no write duty.
+ */
+export const SELF_PASS_LINE =
+	"- At recorded boundaries — a level settles, or many actions pass without a self change — the host opens one evolution pass outside the game turn; its record carries the window's facts.";
+
 export type SelfDigestInput = {
 	decision: number;
 	actions: number;
