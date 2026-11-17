@@ -237,3 +237,40 @@
 - 下一可证伪检查（待授权，本轮不实施）：修 ①（compaction 失败重试或截断降级）与 ②（python 保存路径补一行收据）各为
   单因子小改，修后同判准重跑处理臂；`data/self/`、槽位的零采用按「unused capabilities get call points」归用户决策——
   是否加调用点先问用户。匹配前缀 fork 仅对已采用改动有意义，本 run 无槽位改动可 fork。
+
+## 修复记录（2026-11-17）
+
+修 ① 与 ② 各自一个提交、各自单因子；本轮无付费 run，真实 provider 层均未验证。
+
+### 修 ②：组件保存路径补齐 `harness_changes.jsonl` 收据
+
+- 真实失败及材料：`su15-sl1q` 的 L0 结算为 `changed:0`，但 `tools/view.py` v1 由 refinement 编辑 e1 保存、关卡边界时仍在
+  绑定并作为 kit 进入此后所有 python 调用；`component_runs.jsonl` 有该次 `kind:"save"` 行，`harness_changes.jsonl` 没有对应
+  行，结算（段四）只读后者。同类缺口覆盖三条绕开 `recordComponentWrite` 的保存路径：refinement 编辑落盘、运行时
+  `writeStrategy`、`restoreBrokenViews`。
+- 窄命题：若这三条路径在 `binder.save` 前记下旧版本、保存后调用 `recordComponentWrite(path, before, receipt, { source })`，
+  则每个新版本恰有一行 `harness_changes.jsonl`，关卡结算的 `changed/activated/used_later` 与实际保存对账。
+- 减少的负担：结算不再漏计真实自改；`harness_changes.jsonl` 与 `component_runs.jsonl` 的 `save` 行一一对应，评审与用户可
+  机械对账，不需要再从两份日志手工比对。
+- 适用范围与推翻：适用于任何经 binder 保存的组件版本；`recordComponentWrite` 仍只在版本变化时写行，`split` 只带 `source`，
+  不产生 EXPECT candidate（行为不变）。推翻：任一 `ok` 的 save 行仍无收据行，或收据行版本与实际绑定不一致。
+- 改动入口及实际行为：`demo/arc_thin_extension.ts` 三处——`writeStrategy`、`restoreBrokenViews`、refinement 编辑应用；
+  每处在写入前取 `binder.versionMap()[path]`，保存后 `recordComponentWrite`。
+- 功能/相关回归检查：`tests/arc_thin_refine_ledger.test.ts` 新增一例，走真实 refinement 应用链：`FILE tools/view.py` 保存后
+  收据 `{component:'tool', version:1, at:3}`，strategy 保存收据 `version:1`，并断言每个 `ok` 的 save 行都有收据行
+  （该文件 23/23）；`tests/arc_thin_level_review.test.ts` 的 LOOP AUDIT 期望随之更新（`prompts/strategy.md` 现在也出现在
+  "Your components"），7/7；邻接 `arc_thin_loop_bound`、`arc_thin_native_runtime`、`arc_thin_self_harness` 通过。离线、mock
+  bridge、node `--experimental-transform-types`。
+- 机会漏斗与断点：离线证明「保存 → 收据 → 结算读取」；真实 run 里结算计数是否因此补齐未测（无付费 run）。
+- 语义与连续性：收据行只记事实（路径、组件类、版本、动作位置、review 标记），不含判断；重启后结算照旧从
+  `harness_changes.jsonl` 恢复，历史行不被改写。
+- 成本与任务结果：每个新保存版本一行 JSONL，零上下文开销。任务结果未测。
+- 协议偏离：无。
+
+| 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 已验证（离线） | node 24 `--experimental-transform-types`，mock bridge（HTTP stand-in） | `arc_thin_refine_ledger` 23/23（含新增一例，走真实 refinement 应用链与 binder 保存）、`arc_thin_level_review` 7/7；不覆盖真实 provider |
+| 全链路可达 | 已验证（离线；真实保存链） | 同上 | 收据经真实扩展路径写入并与结算同源读取；真实 run 的结算补计未验证 |
+| 自主采用 | 未验证 | — | 需修 ① 后按同判准重跑处理臂（新预算，未授权）；本修复不新增 agent 可见面 |
+| 净收益 | 未验证 | — | 同上；预期收益是结算计数不再漏项，不改变任务结果 |
+

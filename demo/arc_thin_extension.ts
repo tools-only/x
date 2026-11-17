@@ -2312,9 +2312,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	/** The strategy written by the runtime (the pinned line added or taken out), versioned like a refinement's edit. */
 	async function writeStrategy(content: string): Promise<void> {
+		const before = binder!.versionMap()[STRATEGY_PATH];
 		workspace!.mutate({ op: "write", path: STRATEGY_PATH, content: content.endsWith("\n") ? content : content + "\n" });
 		refinedPaths.add(STRATEGY_PATH);
-		nativeRuntime!.noteSave(STRATEGY_PATH, await binder!.save(STRATEGY_PATH, currentLevel(), { by: "runtime", decision }));
+		const receipt = await binder!.save(STRATEGY_PATH, currentLevel());
+		nativeRuntime!.noteSave(STRATEGY_PATH, receipt);
+		recordComponentWrite(STRATEGY_PATH, before, receipt, { source: content });
 	}
 
 	/**
@@ -2726,8 +2729,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				// The same content failing again is not the view's doing (the sandbox, say): nothing to restore.
 				if (workspace.read(broken.path) === source) continue;
 				workspace.mutate({ op: "write", path: broken.path, content: source });
-				const receipt = await binder.save(broken.path, currentLevel(), { by: "runtime", decision });
+				const before = binder.versionMap()[broken.path];
+				const receipt = await binder.save(broken.path, currentLevel());
 				nativeRuntime.noteSave(broken.path, receipt);
+				recordComponentWrite(broken.path, before, receipt, { source });
 				const version = binder.versionMap()[broken.path];
 				if (version !== undefined && refinedVersions.has(key)) refinedVersions.add(`${broken.path}@${version}`);
 				append("refiner.jsonl", { kind: "view_restored", at: trajectory.length, decision, path: broken.path, from: broken.version, to: back, version,
@@ -3140,10 +3145,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				clause = from.clause;
 				content = pinned(content, from.old);
 			}
+			const before = binder!.versionMap()[edit.path];
 			workspace!.mutate({ op: "write", path: edit.path, content });
 			refinedPaths.add(edit.path);
 			const receipt = await binder!.save(edit.path, currentLevel(), { by: "refiner", decision });
 			nativeRuntime!.noteSave(edit.path, receipt);
+			recordComponentWrite(edit.path, before, receipt, { source: content });
 			nativeRuntime!.register();
 			const loaded = !/NOT loaded/.test(receipt ?? "");
 			const version = binder!.versionMap()[edit.path];
