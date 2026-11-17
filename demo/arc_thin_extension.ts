@@ -829,7 +829,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		moveFacts.clear();
 		for (const row of readRows("states.jsonl")) if (Array.isArray(row.grid)) grids.set(Number(row.n), row.grid);
 		const workingSets = readRows("working_set.jsonl");
-		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating && !row.daemon_response).map((row) => Number(row.actions) || 0));
+		reviewedThrough = Math.max(0, ...workingSets.filter((row) => row.consolidating && !row.evo_pass)
+			.map((row) => Number(row.actions) || 0));
 		const decisions = [...trajectory, ...readRows("usage.jsonl"), ...workingSets].map((row) => Number(row.decision) || 0);
 		decision = Math.max(0, ...decisions);
 		spentTokens.clear();
@@ -965,6 +966,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		stallReview: boolean;
 		/** The evolution pass (the runner's "EVOLUTION PASS" prompt, self-loop only): the pass record, the same call cap. */
 		evoPass: boolean;
+		evoFocus?: string; evoFocusIndex?: number;
 		/** Native decisions: calls that look things up or compute, and calls that record (see gate). */
 		budgetNote?: string;
 		endBatchAt: number; actionDone: boolean;
@@ -1013,7 +1015,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		slots: SlotValues;
 	};
 	const freshRun = (): Run => ({
-		consolidating: false, levelReview: false, stallReview: false, evoPass: false, forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
+		consolidating: false, levelReview: false, stallReview: false, evoPass: false, evoFocus: undefined, evoFocusIndex: undefined,
+		forceAction: false, assistantMessages: 0, toolCalls: 0, arcSeenInMessage: -1,
 		endBatchAt: -1, actionDone: false,
 		memoryCommitted: false, skillCalls: 0, skillSignatures: new Set(), batchResults: [], reviewFrom: 0, reasoning: [],
 		startedAt: Date.now(), endedAt: 0, output: 0, reasoningTokens: 0, reasoningSentences: 0, coordinateSentences: 0, answered: false,
@@ -1215,6 +1218,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const decisions = readRows("harness_decisions.jsonl");
 		const lastPass = decisions.filter((row) => row.kind === "pass_close").at(-1);
 		const from = Math.max(0, Number(lastPass?.at) || 0);
+		const priorFocus = decisions.filter((row) => row.kind === "pass_focus_close" && Number(row.at) >= from).at(-1);
+		const completedFoci = decisions.filter((row) => row.kind === "pass_focus_close" && Number(row.at) >= from)
+			.map((row) => ({ focus: row.focus, index: row.index, changes: row.changed_objects ?? [], carry: row.carry ?? "" }));
 		const span = trajectory.slice(from);
 		const changes = readRows("harness_changes.jsonl").filter((row) => Number(row.at) > from && !row.by);
 		const predictions = predictionCounts(span);
@@ -1238,8 +1244,33 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			for (const row of selfSettlementRows.slice(-3)) selfLines.push(`- settlement level ${row.level}: ${settlementText(row)}`);
 		} catch (error) { logError("pass:self", error); }
 		const refinements = readRows("refiner.jsonl").filter((row) => row.kind === "edit" && Number(row.at) > from).length;
-		const carry = typeof lastPass?.carry === "string" && lastPass.carry.trim() ? lastPass.carry : "none recorded";
+		const carry = typeof priorFocus?.carry === "string" && priorFocus.carry.trim() ? priorFocus.carry
+			: typeof lastPass?.carry === "string" && lastPass.carry.trim() ? lastPass.carry : "none recorded";
+		const focus = run.evoFocus ?? "Prompt";
+		const focusedPaths: Record<string, string[]> = {
+			Prompt: ["prompts/strategy.md", "prompts/rules.md"], Skill: workspace?.files("skills") ?? [],
+			Tool: (workspace?.files("tools") ?? []).filter((path) => path.endsWith(".py")),
+			Subagent: workspace?.files("agents") ?? [], Memory: [], Context: ["slots/self.json"], Loop: ["slots/self.json"],
+		};
+		const material = focus === "Memory" ? renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 5000)
+			: focus === "Context" ? `${slotInventory(run.slots ?? {}, slotDefaults())}\nCURRENT MEMORY:\n${renderMemory(memory, trajectory.length, trajectory.map(actionLabel), components()).slice(0, 3000)}\nRECENT REQUEST SHAPE: native context rebuilds history, current state, memory, skills and active prompt at before_agent_start.`
+			: focus === "Loop" ? `${slotInventory(run.slots ?? {}, slotDefaults())}\nRECENT CALL POINTS:\n${JSON.stringify(readRows("call_points.jsonl").slice(-12))}\nRUNNER CONSUMER: arc_thin_e2e.py reads stall.after; extension reads refine.every and review.consult at decision boundaries.`
+			: (focusedPaths[focus] ?? []).filter((path) => workspace?.files().includes(path)).map((path) =>
+				`--- ${path} v${binder?.versionMap()[path] ?? "?"}\n${workspace?.read(path).slice(0, 4000)}`).join("\n") || "(none yet)";
+		const specialist: Record<string, string> = {
+			Prompt: "Improve instructions that shape a needed judgment. Use a concrete decision from the trajectory and current prompt source; write or revise the prompt directly. Include an important one-off or anticipated need when justified. Do not only summarize.",
+			Skill: "Construct or improve an on-demand method with applicability, invocation cue, steps and expected result. Use current skill sources and representative inputs/outputs; do not merely restate the trace.",
+			Tool: "Construct or improve executable task code for a concrete repeated or important operation. Respect run(state,args), the Python stdlib sandbox, meaningful output and existing consumer; inspect execution receipts and code.",
+			Subagent: "Define or improve a reusable independent responsibility: goal, evidence input, permitted tools, return contract and where the parent consumes the result. Inspect current agents and consult receipts; do not write a summary as a role.",
+			Memory: "Preserve scoped facts, conditions, counterevidence, recovery detail or unresolved leads that must affect later decisions. Use exact action evidence and reconsideration cues; avoid repeating existing memory.",
+			Context: "Improve which existing facts enter which request. Executable slots history.result_chars and history.full_results govern history composition; review.consult governs review input. Inspect current slot inventory and request composition before changing slots/self.json.",
+			Loop: "Improve when capabilities run and how work advances. Executable slots refine.every, stall.after and review.consult affect current trigger/call points; inspect receipts, runner bindings and live values before changing slots/self.json.",
+		};
+		const taskState = { state: observation?.state ?? "unknown", level: currentLevel(), actions: trajectory.length,
+			episode: currentLevel(), available_actions: availableActions(observation), action_budget: observation?.action_budget ?? null };
 		return [
+			`SPECIALIST ${focus} (${run.evoFocusIndex ?? 1}/7): ${specialist[focus] ?? "Inspect the evidence and make a direct change, or explain no change."}`,
+			`TASK GOAL: make progress toward the current ARC task's completion. TASK ACCEPTANCE: the environment's reported terminal success; do not infer hidden state. CURRENT STEP / EPISODE / RESOURCES: ${JSON.stringify(taskState)}`,
 			`EVOLUTION PASS RECORD (actions #${from + 1}–#${trajectory.length}, counted and copied from this run's logs):`,
 			`WINDOW: ${span.length} action(s), ${blocks.length} decision(s), ${python.length} python call(s)` +
 				`${python.some((call) => call.ok === false) ? ` (${python.filter((call) => call.ok === false).length} failed)` : ""}, ` +
@@ -1249,6 +1280,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			trajectoryText,
 			`SELF:`,
 			...selfLines,
+			`CURRENT ${focus} MATERIAL / API / CONSUMER:\n${material}`,
+			`PREVIOUS SPECIALISTS IN THIS OUTCOME: ${completedFoci.length ? JSON.stringify(completedFoci) : "none"}`,
+			`SUPPORTED WRITE / CONSUMER CONTRACT: Prompt → prompts/*.md enters applicable requests; Skill → skills/*/SKILL.md is read through run_skill; Tool → tools/*.py is registered and called through Python; Subagent → agents/*.md is called through consult; Memory → native scoped memory update API; Context → slots/self.json history-composition keys are read on each decision; Loop → slots/self.json trigger/call-point keys are read at the next decision boundary. Slot keys and ranges are in data/self/slots.json. Use normal write tools. This pass owns ${focus} only; if no change is justified, end with NO HARNESS CHANGE and a concrete reason.`,
 			`CARRIED (the end of your previous pass's reply):`,
 			carry,
 		].join("\n");
@@ -1494,7 +1528,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try {
 			const row = {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
-				...(run.stallReview ? { stall_review: true } : {}), ...(run.evoPass ? { evo_pass: true } : {}), actions: trajectory.length, observation_delivery: observationMode,
+				...(run.stallReview ? { stall_review: true } : {}), ...(run.evoPass ? { evo_pass: true, evo_focus: run.evoFocus, evo_focus_index: run.evoFocusIndex } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
 					...(contextLayout && self ? [["self", self] as [string, string]] : []),
 					...(viewOutput ? [["views", viewOutput] as [string, string]] : []),
@@ -2655,7 +2689,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const triggers: string[] = [];
 		let samples: string[] = [];
 		triggers.push(...criticTriggers(state, refineNotes, refinedThrough, memory.hypotheses.size, criticConfig, touchedKeys).triggers);
-		for (const row of trajectory.slice(refinedThrough)) if (row.level_changed) triggers.push(`level ${row.levels_completed} reached at #${row.n}`);
+		// The seven-scope pass takes ownership of the same recorded level boundary; do not spend the old one-shot
+		// refinement on that duplicate trigger. Other concrete refiner events remain active.
+		if (!(evoPassOn && (run.levelReview || run.evoPass)))
+			for (const row of trajectory.slice(refinedThrough)) if (row.level_changed) triggers.push(`level ${row.levels_completed} reached at #${row.n}`);
 		for (const family of nativeRuntime?.repeatedWork(currentLevel()) ?? []) {
 			if (refinedFamilies.has(family.key)) continue;
 			refinedFamilies.add(family.key);
@@ -4962,8 +4999,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// agent said as the next pass's CARRIED line (the evo line's carry, recorded instead of declared).
 		if (run.evoPass && !continuing) {
 			const said = run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-			append("harness_decisions.jsonl", { kind: "pass_close", decision, at: trajectory.length, level: currentLevel(),
-				...(said ? { carry: said.length > 600 ? `…${said.slice(-600)}` : said } : {}) });
+			const carry = said ? (said.length > 600 ? `…${said.slice(-600)}` : said) : undefined;
+			append("harness_decisions.jsonl", { kind: "pass_focus_close", decision, at: trajectory.length, level: currentLevel(),
+				focus: run.evoFocus, index: run.evoFocusIndex,
+				changed_objects: readRows("harness_changes.jsonl").filter((row) => !row.by && Number(row.at) > Math.max(0,
+					Number(readRows("harness_decisions.jsonl").filter((item) => item.kind === "pass_close").at(-1)?.at) || 0))
+					.map((row) => ({ path: row.path, version: row.version })), ...(carry ? { carry } : {}) });
+			if (run.evoFocusIndex === 7) append("harness_decisions.jsonl", { kind: "pass_close", decision, at: trajectory.length,
+				level: currentLevel(), ...(carry ? { carry } : {}) });
 		}
 		if (!continuing) {
 		carriedResults = run.batchResults;
@@ -5006,8 +5049,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		run.levelReview = native && run.consolidating && /^(LEVEL REVIEW|RECOVER LEVEL REVIEW)\b/.test(prompt);
 		run.stallReview = native && run.consolidating && /^(STALL REVIEW|RECOVER STALL REVIEW)\b/.test(prompt);
 		run.evoPass = evoPassOn && run.consolidating && /^(EVOLUTION PASS|RECOVER EVOLUTION PASS)\b/.test(prompt);
+		const evoFocus = /(?:RECOVER )?EVOLUTION PASS \[([A-Za-z]+) (\d+)\/7\]/.exec(prompt);
+		run.evoFocus = run.evoPass ? evoFocus?.[1] ?? "Prompt" : undefined;
+		run.evoFocusIndex = run.evoPass ? Number(evoFocus?.[2] ?? 1) : undefined;
+		const evoReason = run.evoPass ? /\]\. ([^;]+); this turn/.exec(prompt)?.[1]
+			?? readRows("harness_decisions.jsonl").filter((row) => row.kind === "review_start" && row.type === "evo").at(-1)?.reason : undefined;
 		if (run.levelReview || run.stallReview || run.evoPass) append("harness_decisions.jsonl", { kind: "review_start", decision,
-			type: run.levelReview ? "level" : run.stallReview ? "stall" : "evo", at: trajectory.length, level: currentLevel() });
+			type: run.levelReview ? "level" : run.stallReview ? "stall" : "evo", at: trajectory.length, level: currentLevel(),
+			...(run.evoPass ? { focus: run.evoFocus, index: run.evoFocusIndex, ...(evoReason ? { reason: evoReason } : {}) } : {}) });
 		// Work memory: a decision after one that learned nothing new opens by saying so.
 		if (!continuing) run.spin = workMemory && !run.consolidating ? spinStreak(trajectory) : undefined;
 		// Call points (A5): every review attempts a consult before writing; every REFINE_EVERY actions since the agent's last refine
@@ -5433,7 +5482,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const reason = blocks.filter((block) => block?.type === "text").map((block) => String(block.text ?? ""))
 				.join("\n").match(/(?:^|\n)NO HARNESS CHANGE:\s*([^\n]+)/i)?.[1]?.trim();
 			append("harness_decisions.jsonl", { kind: "no_change", decision, at: trajectory.length,
-				type: run.levelReview ? "level" : run.stallReview ? "stall" : "evo", reason: String(reason ?? "").slice(0, 300) });
+				type: run.levelReview ? "level" : run.stallReview ? "stall" : "evo", ...(run.evoPass ? { focus: run.evoFocus } : {}),
+				reason: String(reason ?? "").slice(0, 300) });
 		}
 		if (blocks.some((block) => block?.type === "toolCall" && block.name === "arc_action"))
 			run.endBatchAt = run.assistantMessages;
