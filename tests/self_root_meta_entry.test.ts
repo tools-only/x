@@ -4,10 +4,11 @@ import { SelfRoot, FLOOR, hash } from '../demo/self_root.ts';
 
 // User decisions 2026-11-17: the evolution pass opens on a mechanical entry block - run position, trigger, window
 // counts, the window's recorded trajectory lines, artifact head, self head, carried notes - every item expandable
-// by the ref it names; decide_exit may carry result.carry to the next pass entry; read_self(section="evidence")
-// expands one recorded ref through the adapter. Offline checks cover the block's content and bounds, the trajectory
-// window filter and budget, the carry roundtrip and its clip fact, the evidence envelopes (present / missing /
-// error, never a throw), and that the pass window rows reach reviewView.
+// by the ref it names; decide_exit may carry result.carry; the pass runs as two rounds, and the induction round's
+// closure (reason and carry) is rendered verbatim at the capability round's entry while cross-occasion carry stays
+// clipped; read_self(section="evidence") expands one recorded ref through the adapter. Offline checks cover the
+// block's content and bounds, the per-round trajectory budgets, the carry roundtrips and the clip fact, the
+// evidence envelopes (present / missing / error, never a throw), and that the pass window rows reach reviewView.
 
 const userContract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:60,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
 const make = (mechanisms?: any, options: any = {}) => new SelfRoot(userContract(), undefined, undefined, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
@@ -33,7 +34,7 @@ test('META pass entry: one mechanical block at entry - position, trigger, window
   assert.ok(entry.length <= 1500, 'the block is bounded while no trajectory adapter is wired');
   assert.match(entry, /^TASK: Deliver the artifact/, 'the task goal heads the block');
   assert.ok(entry.includes('"artifact_revision":3'), 'the adapter-declared run position rides the first line as a fact');
-  assert.match(entry, /TRIGGER: episode_boundary; window ledger:\d+\.\.ledger:\d+ \(expand: read_self\(section="ledger", offset=\d+\)\)/);
+  assert.match(entry, /TRIGGER: episode_boundary; round 1 of 2 \(induction\); window ledger:\d+\.\.ledger:\d+ \(expand: read_self\(section="ledger", offset=\d+\)\)/);
   assert.match(entry, /WINDOW: 2 request\(s\)/);
   assert.match(entry, /1 failed call\(s\)/);
   assert.match(entry, /1 artifact write\(s\)/);
@@ -56,7 +57,7 @@ test('META pass entry: one mechanical block at entry - position, trigger, window
 });
 const s2open = (s: any) => s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-b' });
 
-test('META pass carry: decide_exit result.carry is stored verbatim, rendered clipped at the next entry, clip booked', async () => {
+test('META pass carry: round-1 findings ride the round-2 entry verbatim; cross-pass carry is clipped and booked', async () => {
   const s = await designed();
   s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-a' });
   await tick(s);
@@ -67,17 +68,24 @@ test('META pass carry: decide_exit result.carry is stored verbatim, rendered cli
   assert.ok(!(op.properties.result.required ?? []).includes('carry'), 'carry is never required: a no-carry close stays legal');
   const long = 'retained understanding: ' + 'x'.repeat(230);
   const closed = s.exit({ result: { reason: 'pass 1 done', carry: ['open question: does the renderer cache fonts', long] } });
-  assert.ok(closed.recorded, 'the exit with carry closes the pass');
+  assert.ok(closed.recorded, 'the exit with carry closes the round');
   const closedRow = all(s).filter((r: any) => r.type === 'review_closed').at(-1);
   assert.equal(closedRow.value.result.carry.length, 2);
   assert.equal(closedRow.value.result.carry[1], long, 'storage is verbatim; clipping happens at render only');
+  await tick(s);
+  assert.ok(s.review, 'the capability round opens with the induction closure at its entry');
+  const r2entry = s.review.pass_entry;
+  assert.match(r2entry, /round 2 of 2 \(capability\)/);
+  assert.ok(r2entry.includes(`ROUND 1: closed ${closedRow.ref} (closed); reason: pass 1 done; carry: open question: does the renderer cache fonts | ${long}`), 'the round-1 findings ride the round-2 entry verbatim under the section budget');
+  assert.match(r2entry, /CARRIED: none recorded/, 'the round-1 closure is not double-rendered as cross-occasion carry');
+  s.exit({ result: { reason: 'no gap', entry_question_responses: ['none', 'none', 'none'], carry: [long] } });
   s.pin();
   await tick(s);
   s.fact('action_transition_stalled', { action: 'office.deliver', status: 'stalled', step: 'work' });
   await tick(s);
   assert.ok(s.review, 'the next pass opens on the new trigger row');
   const entry = s.review.pass_entry;
-  assert.match(entry, /CARRIED: open question: does the renderer cache fonts \| retained understanding: x+…/);
+  assert.match(entry, /CARRIED: retained understanding: x+…/, 'the final round\'s carry reaches the next occasion');
   assert.ok(!entry.includes('x'.repeat(210)), 'a long note is clipped to 200 chars in the entry');
   assert.equal(all(s).filter((r: any) => r.type === 'carry_truncated').length, 1, 'the clip is recorded once as a fact');
   const route = await designed();
@@ -151,6 +159,13 @@ test('META pass trajectory: adapter lines ride the entry - window-filtered by re
   assert.ok(be.includes('line 79'), 'the newest line survives the budget');
   assert.ok(!be.includes(' line 0\n'), 'the oldest line is omitted under the budget');
   assert.match(be, /CARRIED: none recorded/, 'the sections after the trajectory survive');
+  const om = (t: string) => Number(/oldest (\d+) omitted/.exec(t)?.[1] ?? 0);
+  b.exit({ reason: 'window read' });
+  await tick(b);
+  const b2 = b.review.pass_entry;
+  assert.match(b2, /round 2 of 2 \(capability\)/, 'the capability round renders its own entry');
+  assert.ok(b2.length <= 8000, 'the round-2 entry keeps the overall bound');
+  assert.ok(om(b2) > om(be), 'the round-2 trajectory budget yields room to the round-1 findings section');
   const boom = await designed({ adapterTrajectory: () => { throw Error('adapter exploded'); } });
   s2open(boom);
   await tick(boom);

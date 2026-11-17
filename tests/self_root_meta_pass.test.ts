@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SelfRoot, FLOOR, META_STRATEGY, META_PASS_STRATEGY, META_PASS_REQUEST_CAP, hash } from '../demo/self_root.ts';
+import { SelfRoot, FLOOR, META_STRATEGY, META_PASS_STRATEGY, META_PASS_REQUEST_CAP, META_PASS_ROUND_CAPS, META_PASS_ROUND1_LINE, META_PASS_ROUND2_LINE, ENTRANCE_QUESTIONS, hash } from '../demo/self_root.ts';
 
 // User decision 2026-11-17: the seeded evolution_policy prompt is gone. Evolution judgment runs in one
 // host-opened evolution pass at a recorded run boundary, outside the task turn; the pass writes through the
-// ordinary reflection interface and the runtime assembles nothing further. Offline checks cover: the trigger set
-// (episode closed, delivery stalled, recorded stagnation), the pass prompt and pass facts, closure by decide_exit,
-// the mechanical request cap, and that non-META arms keep their rhythm.
+// ordinary reflection interface and the runtime assembles nothing further. Same date, second decision: induction
+// and capability inference never share a round - the pass runs as two bounded rounds, round 1 closing with the
+// agent's own reading and round 2 opening at the next request boundary with that closure at its entry and the
+// entrance questions as its frame. Offline checks cover: the trigger set (episode closed, delivery stalled,
+// recorded stagnation), the per-round prompts and facts, closure by decide_exit, the per-round mechanical caps,
+// and that non-META arms keep their rhythm.
 
 const userContract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:60,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
 const make = (mechanisms?: any, options: any = {}, validator?: any) => new SelfRoot(userContract(), undefined, validator, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
@@ -17,6 +20,7 @@ const taskSide = { task_goal: 'Deliver the artifact this run must produce', task
   loop_policy: { look_when: [{ on: 'segment_boundary', look: 'the last segment numbers and the last change' }] } };
 const design = { ...seed, contract: taskSide };
 const designed = async (mechanisms: any = { meta: true }) => { const s = make(mechanisms); await tick(s); await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s); return s; };
+const RESPONSES = ['parameter layer, not a capability gap', 'none', 'none'];
 
 test('META pass: an episode close opens one pass outside the task turn, with its own strategy and facts', async () => {
   const s = await designed();
@@ -26,21 +30,35 @@ test('META pass: an episode close opens one pass outside the task turn, with its
   assert.ok(s.review, 'the episode boundary opens the pass');
   assert.equal(s.review.triggers[0].source, 'meta_pass');
   assert.equal(s.mode, 'reflect', 'the task step is suspended for the pass');
-  assert.equal(s.reviewStrategy(), META_PASS_STRATEGY, 'the pass request carries the pass strategy, not the resident one');
+  assert.ok(s.reviewStrategy().startsWith(META_PASS_STRATEGY), 'the pass request carries the pass strategy, not the resident one');
+  assert.ok(s.reviewStrategy().includes(META_PASS_ROUND1_LINE), 'round 1 carries the induction frame');
+  assert.ok(!s.reviewStrategy().includes(ENTRANCE_QUESTIONS[0]), 'the entrance questions belong to round 2, not round 1');
   assert.notEqual(s.reviewStrategy(), META_STRATEGY);
   const view = s.reviewSelfView();
   assert.equal(view.evolution_pass.trigger, 'episode_boundary', 'the pass says which recorded boundary opened it');
   assert.equal(view.evolution_pass.episode, 1);
   assert.ok(s.surface().includes('decide_exit'), 'the pass closes through the agent\'s own exit');
-  assert.ok(all(s).some((r: any) => r.type === 'meta_pass_opened' && r.value.trigger === 'episode_boundary'));
+  assert.ok(all(s).some((r: any) => r.type === 'meta_pass_opened' && r.value.trigger === 'episode_boundary' && r.value.round === 1));
   const closed = s.exit({ reason: 'no change: the recorded facts show one delivery path' });
   assert.ok(closed.recorded);
+  assert.deepEqual(closed.next_round, { round: 2, of: 2, opens: 'next request boundary' }, 'the induction closure announces the capability round');
   assert.equal(s.review, undefined);
-  assert.equal(s.mode, 'execute', 'decide_exit resumes the task step');
+  assert.equal(s.mode, 'execute', 'decide_exit suspends the pass until the next boundary');
+  await tick(s);
+  assert.ok(s.review, 'the capability round opens at the next request boundary');
+  assert.equal(s.mode, 'reflect');
+  assert.ok(s.reviewStrategy().includes(META_PASS_ROUND2_LINE), 'round 2 carries the capability frame');
+  assert.ok(s.reviewStrategy().includes(ENTRANCE_QUESTIONS[0]), 'the entrance questions ride the round-2 strategy');
+  assert.ok(all(s).some((r: any) => r.type === 'meta_pass_round' && r.value.from === 1 && r.value.to === 2));
+  const done = s.exit({ result: { reason: 'no capability gap read from this window', entry_question_responses: RESPONSES } });
+  assert.ok(done.recorded);
+  assert.equal(done.next_round, undefined, 'the capability round is the final round');
+  assert.equal(s.review, undefined);
+  assert.equal(s.mode, 'execute', 'the final round\'s decide_exit resumes the task step');
   await tick(s);
   assert.equal(s.metaPassDue(), null, 'the closed pass does not reopen without a new boundary fact');
   await tick(s);
-  assert.equal(s.review, undefined, 'and no second pass is queued');
+  assert.equal(s.review, undefined, 'and no third round or second pass is queued');
 });
 
 test('META pass: a stalled delivery transition and recorded stagnation each open one bounded pass', async () => {
@@ -50,6 +68,9 @@ test('META pass: a stalled delivery transition and recorded stagnation each open
   assert.ok(s.review, 'a stalled delivery opens the pass');
   assert.equal(s.reviewSelfView().evolution_pass.trigger, 'delivery_stall');
   s.exit({ reason: 'no change' }); await tick(s);
+  assert.ok(s.review, 'the capability round follows the induction close');
+  s.exit({ result: { reason: 'no gap', entry_question_responses: RESPONSES } }); await tick(s);
+  assert.equal(s.review, undefined);
 
   const t = await designed();
   for (let i = 0; i < 12; i++) t.fact('request_record', { request: i, pin: { mode: 'execute' } });
@@ -65,20 +86,27 @@ test('META pass: a stalled delivery transition and recorded stagnation each open
   assert.equal(capped.review, undefined, 'a few requests are not stagnation');
 });
 
-test('META pass: the pass is bounded; at the request cap it closes mechanically and the task resumes', async () => {
+test('META pass: each round is bounded; the induction cap opens round 2, the capability cap closes the pass', async () => {
   const s = await designed();
   s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-a' });
   await tick(s);
   assert.ok(s.review);
-  for (let i = 0; i < META_PASS_REQUEST_CAP; i++) s.pin();
+  for (let i = 0; i < META_PASS_ROUND_CAPS[0]; i++) s.pin();
   await tick(s);
-  assert.equal(s.review, undefined, 'the cap closes the pass');
+  assert.ok(s.review, 'the induction cap does not end the occasion: the capability round opens at the same boundary');
+  assert.ok(s.reviewStrategy().includes(META_PASS_ROUND2_LINE));
+  assert.ok(all(s).some((r: any) => r.type === 'meta_pass_capped' && r.value.round === 1 && r.value.cap === META_PASS_ROUND_CAPS[0]));
+  assert.ok(all(s).some((r: any) => r.type === 'meta_pass_round' && r.value.to === 2), 'the mechanical close still advances the round');
+  for (let i = 0; i < META_PASS_ROUND_CAPS[1]; i++) s.pin();
+  await tick(s);
+  assert.equal(s.review, undefined, 'the capability cap closes the pass');
   assert.equal(s.mode, 'execute');
-  assert.ok(all(s).some((r: any) => r.type === 'meta_pass_capped' && r.value.requests === META_PASS_REQUEST_CAP));
+  assert.ok(all(s).some((r: any) => r.type === 'meta_pass_capped' && r.value.round === 2 && r.value.cap === META_PASS_ROUND_CAPS[1]));
   const closed = all(s).filter((r: any) => r.type === 'review_closed').at(-1);
   assert.equal(closed.value.closed_by, 'mechanical:evolution pass request cap', 'the cap close is mechanical, never an agent judgement');
   assert.equal(closed.value.occasion, 'evolution_review');
   assert.equal(closed.value.outcome, 'review_unresolved', 'an unresolved pass is recorded as such');
+  assert.equal(META_PASS_REQUEST_CAP, META_PASS_ROUND_CAPS[0] + META_PASS_ROUND_CAPS[1], 'the occasion total is the sum of the round caps');
   await tick(s);
   assert.equal(s.review, undefined, 'the episode fact does not reopen a pass that the cap just closed');
 });
@@ -91,6 +119,10 @@ test('META pass: a write inside the pass activates at the next boundary and the 
   await tick(s);
   assert.ok(s.active().some((c: any) => c.kind === 'prompt' && c.name === 'house_style'), 'the pass change is part of the live self');
   s.exit({ reason: 'one prompt added' });
+  await tick(s);
+  assert.ok(s.review, 'the capability round opens with the induction round\'s change in force');
+  assert.ok(s.active().some((c: any) => c.name === 'house_style'));
+  s.exit({ result: { reason: 'the added prompt covers the read gap', entry_question_responses: RESPONSES } });
   await tick(s);
   assert.equal(s.mode, 'execute');
   assert.ok(s.active().some((c: any) => c.name === 'house_style'), 'the task step resumes with the pass change in force');
@@ -140,7 +172,10 @@ test('META pass: a second pass needs a new trigger row recorded after the previo
   assert.ok(s.review, 'the episode row opens the first pass');
   const closed = s.exit({ reason: 'no change: the recorded facts show one delivery path' });
   assert.ok(closed.recorded);
-  assert.equal(s.mode, 'execute', 'decide_exit resumes the task step');
+  await tick(s);
+  assert.ok(s.review, 'the capability round follows');
+  s.exit({ result: { reason: 'no gap', entry_question_responses: RESPONSES } });
+  assert.equal(s.mode, 'execute', 'the final round\'s decide_exit resumes the task step');
   // A task request lands after the close: the pass event keys on the request counter (`pass:${request}`),
   // and in a real run a provider request always sits between two boundaries.
   s.pin();
@@ -157,4 +192,21 @@ test('META pass: a second pass needs a new trigger row recorded after the previo
   const opened = rows.filter((r: any) => r.type === 'meta_pass_opened').at(-1);
   assert.equal(opened.value.trigger, 'delivery_stall');
   assert.ok(opened.value.window[0] > closedIdx, 'the new pass window starts after the recorded close');
+});
+
+test('META pass rounds: the capability round alone closes through the entrance-question responses', async () => {
+  const s = await designed();
+  s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-a' });
+  await tick(s);
+  const r1 = s.reviewExitSchema;
+  assert.ok(!r1.required?.includes('entry_question_responses'), 'the induction round closes on the agent\'s own schema');
+  assert.ok(r1.properties.carry, 'carry stays available in every round');
+  s.exit({ reason: 'facts read' });
+  await tick(s);
+  const r2 = s.reviewExitSchema;
+  assert.ok(r2.required.includes('entry_question_responses'), 'the capability round requires one response per entrance question');
+  assert.throws(() => s.exit({ reason: 'missing responses' }), /entry_question_responses/, 'a round-2 exit without responses is invalid');
+  const closed = s.exit({ result: { reason: 'no gap', entry_question_responses: RESPONSES } });
+  assert.ok(closed.recorded);
+  assert.equal(s.review, undefined);
 });

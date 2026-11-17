@@ -146,8 +146,14 @@ export function entranceAskBlock(layer: boolean): string {
 export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The self-evolution mechanism is host-given and is not redesigned here; the task side - task goal, task acceptance and this task\'s run plan - is yours and lives in your orchestration contract. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own: at three recorded run boundaries - an episode closes, a delivery transition stalls, or long execution adds no artifact - it opens one evolution pass outside the task turn (user decision 2026-11-17). Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
 /** META pass (user decision 2026-11-17): the evolution judgment runs in one host-opened pass at a recorded run
  * boundary, not as a resident rule inside the task turn. The pass says what exists; what it changes is the agent's. */
-export const META_PASS_STRATEGY = 'EVOLUTION PASS. This request runs outside the task turn: the task step is suspended and the view carries the run\'s recorded facts from the window named in the pass facts. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads any component\'s source and its retained revisions; reflect_component and reflect_orchestration write components, policy and orchestration, and each write activates at the next request boundary, before the next provider request, with no separate assembly step. Judgment stays with you: act on the recorded facts, or close the pass with decide_exit - a judged no-change is a valid closure; decide_exit may carry result.carry, a list of free-text notes (open questions, unfinished investigations, retained understanding) stored and rendered verbatim at the next pass entry. The host presents facts without ranking, diagnosis, recommendation or forced order. The pass closes after a bounded number of requests; the task then resumes at its current step.';
-export const META_PASS_REQUEST_CAP = 8;
+export const META_PASS_STRATEGY = 'EVOLUTION PASS. This request runs outside the task turn: the task step is suspended and the view carries the run\'s recorded facts from the window named in the pass facts. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads any component\'s source and its retained revisions; reflect_component and reflect_orchestration write components, policy and orchestration, and each write activates at the next request boundary, before the next provider request, with no separate assembly step. Judgment stays with you: act on the recorded facts, or close the pass with decide_exit - a judged no-change is a valid closure; decide_exit may carry result.carry, a list of free-text notes (open questions, unfinished investigations, retained understanding) stored and rendered verbatim at the next pass entry. The host presents facts without ranking, diagnosis, recommendation or forced order. The pass runs as two bounded rounds - induction, then capability - each closing through decide_exit or at its request cap; the task resumes when the final round closes.';
+/** Two rounds (user decision 2026-11-17): induction and capability inference never share a round. Round 1 closes
+ * with the agent's own reading of the window; round 2 opens at the next request boundary with that closure rendered
+ * at its entry and the entrance questions as its frame. Per-round request caps; the occasion total stays 8. */
+export const META_PASS_ROUND_CAPS = [3, 5] as const;
+export const META_PASS_REQUEST_CAP = META_PASS_ROUND_CAPS[0] + META_PASS_ROUND_CAPS[1];
+export const META_PASS_ROUND1_LINE = 'ROUND 1 OF 2 - INDUCTION: this round closes through decide_exit with your own reading of the window\'s recorded facts - recurrences, costs, losses, outcome paths; result.reason and result.carry are rendered verbatim at the round-2 entry. Round 2 opens at the next request boundary and asks a different question. Writes stay legal in every round.';
+export const META_PASS_ROUND2_LINE = 'ROUND 2 OF 2 - CAPABILITY: round 1 is closed; its reason and carry are rendered in this entry and its closure is readable at the named ledger ref. The entrance questions below are this round\'s frame; the task resumes when this round closes.';
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
@@ -596,7 +602,10 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.review) return undefined;
     const schema = copy(this.review.modeDefinition.exitSchema);
     // EVO_ASK closure protocol: the entrance questions close through one array field on the agent's own exit schema.
-    if (this.mech.ask && this.inEvolutionReview) {
+    // Two rounds (user decision 2026-11-17): under META the questions belong to the capability round alone - the
+    // induction round closes on the agent's own schema. Non-META arms keep the EVO_ASK gating unchanged.
+    const metaRound = this.mech.meta && this.metaPassTrigger ? ((this.metaPassTrigger as any).round ?? 1) : null;
+    if (this.inEvolutionReview && (metaRound !== null ? metaRound === 2 : this.mech.ask)) {
       schema.properties = { ...(schema.properties ?? {}), entry_question_responses: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'One response per entrance question, in order; "none" is a valid response.' } };
       schema.required = [...new Set([...(schema.required ?? []), 'entry_question_responses'])];
     }
@@ -682,7 +691,14 @@ export class SelfRoot extends LiveAgentSelf {
   /** The one fixed strategy line shown with the self view; evidence framing unless legacy obligation is on.
    * entrance=true appends the EVO_ASK question block at evolution-review entrances only (zero resident elsewhere). */
   reviewStrategy(entrance = false): string {
-    if (this.mech.meta) return this.inEvolutionReview ? META_PASS_STRATEGY : META_STRATEGY;
+    if (this.mech.meta) {
+      if (!this.inEvolutionReview) return META_STRATEGY;
+      // Two rounds (user decision 2026-11-17): round 1 carries the induction frame alone; round 2 carries the
+      // capability frame and the entrance questions. Resident during the bounded round only.
+      return ((this.metaPassTrigger as any)?.round ?? 1) === 2
+        ? `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${entranceAskBlock(this.mech.l4)}`
+        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
+    }
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
   }
@@ -769,12 +785,15 @@ export class SelfRoot extends LiveAgentSelf {
   /** META pass entry (user decisions 2026-11-17): one mechanical block computed once at pass entry - run position,
    * trigger, window counts, the window's recorded trajectory lines, artifact head, self head, carried notes - every
    * item expandable by the ref it names. Facts only; no ranking, diagnosis or recommendation; resident during the
-   * pass only (~1.3k chars + up to 6k trajectory). */
+   * pass only (~1.3k chars + bounded trajectory: 6k in round 1, 4k in round 2, where the round-1 findings section
+   * takes the difference). */
   passEntry(book = false): string | null {
     const pass = this.metaPassTrigger;
     if (!pass) return null;
     const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
     const [start, end] = pass.window;
+    const round = (pass as any).round ?? 1;
+    const prior = (pass as any).prior as { closed?: string; outcome?: string; reason?: string | null; carry?: string[] | null } | undefined;
     const rows = this.ledger.slice(start, end + 1);
     const n = (type: string) => rows.filter(r => r.type === type).length;
     let position: unknown = null;
@@ -782,7 +801,8 @@ export class SelfRoot extends LiveAgentSelf {
     const contract = this.metaContract();
     const snap: any = this.snapshot();
     const components = this.active();
-    const carryRow = [...this.ledger].reverse().find(r => r.type === 'review_closed' && Array.isArray(r.value?.result?.carry) && r.value.result.carry.length);
+    // Cross-occasion carry only: the current occasion's round-1 closure renders in the ROUND 1 section, not here.
+    const carryRow = [...this.ledger].reverse().find(r => r.type === 'review_closed' && r.ref !== prior?.closed && Array.isArray(r.value?.result?.carry) && r.value.result.carry.length);
     const carryRaw = carryRow ? (carryRow.value.result.carry as unknown[]).map(x => String(x)) : null;
     if (book && carryRaw?.some(x => x.length > 200)) this.fact('carry_truncated', { review_closed: carryRow!.ref, limit: 200 });
     const carry = carryRaw?.map(x => clip(x, 200));
@@ -807,9 +827,10 @@ export class SelfRoot extends LiveAgentSelf {
         const tagOf = (s: string) => { const m = /^R(\d+)\b/.exec(s); return m ? Number(m[1]) : null; };
         const inWindow = recorded.filter(s => { const t = tagOf(s); return t === null || lo === null || (t >= lo && t <= hi!); });
         let used = 0, from = inWindow.length;
+        const trajBudget = round === 2 ? 4000 : 6000;
         for (let i = inWindow.length - 1; i >= 0; i--) {
           const line = clip(inWindow[i], 400);
-          if (used + line.length + 1 > 6000) break;
+          if (used + line.length + 1 > trajBudget) break;
           used += line.length + 1; from = i;
         }
         trajectory = inWindow.slice(from).map(s => clip(s, 400));
@@ -818,7 +839,10 @@ export class SelfRoot extends LiveAgentSelf {
     } catch (e) { trajNote = `unavailable (${clip(String(e), 120)})`; }
     const lines = [
       `TASK: ${clip(String(contract?.task_goal ?? 'not declared').split('\n')[0], 140)}; position: ${position ? clip(JSON.stringify(position), 180) : 'not provided'}`,
-      `TRIGGER: ${pass.facts?.trigger}; window ledger:${start}..ledger:${end} (expand: read_self(section="ledger", offset=${start}))`,
+      `TRIGGER: ${pass.facts?.trigger}; round ${round} of 2 (${round === 1 ? 'induction' : 'capability'}); window ledger:${start}..ledger:${end} (expand: read_self(section="ledger", offset=${start}))`,
+      // Two rounds (user decision 2026-11-17): the induction round's findings ride the capability round's entry
+      // verbatim under the section budget; the mechanical transcription never selects by content.
+      ...(round === 2 && prior ? [`ROUND 1: closed ${prior.closed} (${prior.outcome})${prior.reason ? `; reason: ${clip(String(prior.reason), 400)}` : ''}; carry: ${prior.carry?.length ? clip(prior.carry.join(' | '), 1200) : 'none'}`] : []),
       `WINDOW: ${n('request_record')} request(s), ${work} task action(s), ${n('tool_failed')} failed call(s), ${n('artifact_write')} artifact write(s), ${n('reflection_activated')} activation(s), ${images} image part(s) delivered; expand one request: read_self(section="evidence", ref="request:N")`,
       `TRAJECTORY: ${trajNote}${trajectory.length ? `\n${trajectory.join('\n')}` : ''}`,
       `ARTIFACT: ${artifact}`,
@@ -1350,9 +1374,14 @@ export class SelfRoot extends LiveAgentSelf {
     this.chainFailed = false;
     // META pass cap (2026-11-17): a host-opened pass is bounded; at the cap it closes mechanically as recorded
     // facts and the task resumes. The pass never owns the run, and the closure never invents an agent judgment.
-    if (this.review && this.mech.meta && this.inEvolutionReview && this.reviewRequests >= META_PASS_REQUEST_CAP) {
-      this.fact('meta_pass_capped', { review: this.review.id, requests: this.reviewRequests, cap: META_PASS_REQUEST_CAP });
-      this.closeMechanically('evolution pass request cap');
+    // Two rounds (user decision 2026-11-17): each round carries its own cap; the occasion total stays their sum.
+    if (this.review && this.mech.meta && this.inEvolutionReview) {
+      const capRound = (this.metaPassTrigger as any)?.round ?? 1;
+      const cap = META_PASS_ROUND_CAPS[capRound - 1] ?? META_PASS_ROUND_CAPS[0];
+      if (this.reviewRequests >= cap) {
+        this.fact('meta_pass_capped', { review: this.review.id, requests: this.reviewRequests, cap, round: capRound });
+        this.closeMechanically('evolution pass request cap');
+      }
     }
     if (!this.review) this.reviewRequests = 0;
     await this.event('request_boundary',`request:${this.request}`);
@@ -1367,10 +1396,10 @@ export class SelfRoot extends LiveAgentSelf {
     // pass's writes go through the ordinary reflection interface and activate at the following request boundary.
     const pass = this.metaPassDue();
     if (pass) {
-      this.metaPassTrigger = pass;
+      this.metaPassTrigger = { ...pass, round: 1 } as any;
       const opened: any = await this.event('meta_pass_due', `pass:${this.request}`, pass.facts);
       if (!opened.duplicate) {
-        this.fact('meta_pass_opened', { trigger: pass.reason, event: opened.event ?? null, window: pass.window, cap: META_PASS_REQUEST_CAP });
+        this.fact('meta_pass_opened', { trigger: pass.reason, event: opened.event ?? null, window: pass.window, cap: META_PASS_REQUEST_CAP, round: 1, round_caps: [...META_PASS_ROUND_CAPS] });
         this.queue.push({ id: `review:${opened.event}`, boundary: `pass:${this.request}`, event: opened.event,
           triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
       }
@@ -1755,7 +1784,8 @@ export class SelfRoot extends LiveAgentSelf {
     let invalid: string | undefined;
     const exitSchema = this.reviewExitSchema ?? review.modeDefinition.exitSchema;
     try { validateSchema(result, exitSchema); } catch (e) { invalid = `result does not match your mode exit schema: ${String(e)}`; }
-    if (!invalid && this.mech.ask && this.inEvolutionReview) {
+    const exitRound = this.mech.meta && this.metaPassTrigger ? ((this.metaPassTrigger as any).round ?? 1) : null;
+    if (!invalid && this.inEvolutionReview && (exitRound !== null ? exitRound === 2 : this.mech.ask)) {
       const responses = (result as any)?.entry_question_responses;
       if (!Array.isArray(responses) || responses.length !== 3 || responses.some((x: any) => typeof x !== 'string'))
         invalid = 'entry_question_responses must be exactly three strings, one per entrance question ("none" is a valid response)';
@@ -1787,8 +1817,21 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.pending) this.fact('review_activation_deferred', { review: review.id, closure: row.ref, outcome: 'activation_intent' });
     if (review.triggers.some((t: any) => t.conclusion_sink === 'lineage')) this.lineage.push(row);
     if (evolution && this.reviewChanged()) this.unresolvedReview = false;
-    this.review = undefined; this.currentMode = this.previousMode; this.metaPassTrigger = undefined;
-    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode };
+    // Two rounds (user decision 2026-11-17): the induction round's closure opens the capability round at the next
+    // request boundary - same occasion, same window; the closure's reason and carry are rendered at its entry.
+    const passTrigger: any = this.metaPassTrigger;
+    const advance = evolution && this.mech.meta && passTrigger && (passTrigger.round ?? 1) === 1
+      && (closedBy === 'agent' || closedBy === 'mechanical:evolution pass request cap');
+    if (advance) {
+      const result = (extra as any)?.result ?? null;
+      this.metaPassTrigger = { ...passTrigger, round: 2, prior: { closed: row.ref, outcome, reason: result?.reason ?? null,
+        carry: Array.isArray(result?.carry) ? result.carry.map((x: any) => String(x)) : null } };
+      this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary' });
+      this.queue.push({ id: `${review.id}:capability`, boundary: `pass:${this.request}`, event: review.event,
+        triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
+    }
+    this.review = undefined; this.currentMode = this.previousMode; if (!advance) this.metaPassTrigger = undefined;
+    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode, ...(advance ? { next_round: { round: 2, of: 2, opens: 'next request boundary' } } : {}) };
   }
   /** One mechanical closure (agent_end, crash, budget, second invalid exit). Never invents an Agent decision. */
   closeMechanically(reason: string, extra: any = {}) {
