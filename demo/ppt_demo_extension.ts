@@ -74,6 +74,13 @@ export default function pptDemo(pi: ExtensionAPI) {
   const activeManifest = () => { const episode = manifest?.episodes?.[state.episode - 1]; return episode ? { ...manifest, ...episode, contract: { ...manifest!.contract, acceptance: episode.acceptance } } : manifest; };
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, 'utf8')) : undefined;
   const piContext = createPiContextAdapter();
+  // Trajectory transcript (user decision 2026-11-17: the run view carries the trajectory itself, not only its
+  // counts): one line per recorded message event, tagged with the request it belongs to. Mechanical transcription
+  // only - heads clipped, whitespace collapsed, data URLs scrubbed, no selection by content; the core renders the
+  // pass-window slice into the evolution pass entry, and the full text stays in harness/provider-requests.jsonl.
+  const trajectoryLines: string[] = [];
+  const trajHead = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 200);
+  const trajArgs = (args: any) => trajHead(JSON.stringify(args ?? {}, (k, v) => typeof v === 'string' && v.startsWith('data:') ? '(image)' : v) ?? '');
   // Mechanism flags (default on; EVO_MA/MB/MC=0 turns one off, EVO_LEGACY_OBLIGATION=1 restores the pre-M-A framing).
   // EVO_A4/EVO_ASK/EVO_L4=1 turn on the capability-view items (default off for B2 comparability).
   // EVO_META=1 runs the general meta loop (2026-11-16): T0 design turn plus the agent's own review rhythm; it forces ask/l4 off.
@@ -109,6 +116,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         }
         return { ref, state: 'missing', known_prefixes: ['request:', 'artifact:v'] };
       },
+      adapterTrajectory: () => trajectoryLines,
       metricInfo: (metrics: any[]) => ({ primary: metrics.find(m => m.name === 'acceptance.required_found')?.name, better: 'higher', scope: 'whole_deck' }),
       acceptanceUnits: () => activeManifest()?.units.map((u: any) => u.id) ?? [],
       observeCurrentArtifact: () => { const source = sourceFacts(workspace); const render = state.lastFeedback ? { ...state.lastFeedback, fresh: Boolean(source && state.lastFeedback.source_path === source.source && source.hash === state.lastFeedback.source_hash) } : { fresh: false, reason: 'no render recorded' }; return { source, render, acceptance: render.fresh ? 'latest recorded acceptance is attached to task outcomes' : null, fact_refs: evo?.reviewView().quality_facts.map((x: any) => x.ref) ?? [] }; } }) : undefined;
@@ -937,11 +945,23 @@ export default function pptDemo(pi: ExtensionAPI) {
   let settledRequest = lastUsage?.request ?? 0;
   pi.on('message_end', (event: any) => {
     const m = event.message;
+    if (m.role === 'toolResult') {
+      const text = (Array.isArray(m.content) ? m.content : []).map((p: any) => p?.type === 'text' ? p.text : '(image)').join(' ');
+      trajectoryLines.push(`R${requests} result ${m.toolName ?? 'tool'}${m.isError ? ' error' : ''}: ${trajHead(text)}`);
+      return;
+    }
     if (m.role === 'assistant') {
       // Pi can synthesize an aborted assistant while compacting without sending
       // a request. Only an actually dispatched request owns usage/cost.
       if (requests <= settledRequest) return;
       settledRequest = requests;
+      for (const part of Array.isArray(m.content) ? m.content : []) {
+        const line = part?.type === 'toolCall' ? `call ${part.name} ${trajArgs(part.arguments)}`
+          : part?.type === 'thinking' ? (trajHead(part.thinking ?? '') && `thinking: ${trajHead(part.thinking ?? '')}`)
+          : (trajHead(part?.text ?? '') && `${part?.type ?? 'text'}: ${trajHead(part?.text ?? '')}`);
+        if (line) trajectoryLines.push(`R${requests} ${line}`);
+      }
+      if (m.stopReason === 'error') trajectoryLines.push(`R${requests} provider_error: ${trajHead(String(m.errorMessage ?? 'error'))}`);
       const u = m.usage ?? {};
       const known = Number.isFinite(u.input) && Number.isFinite(u.output) && (u.input+u.output)>0;
       const usedTokens = known ? reportedTokens(u) : unknownUsageReserveTokens;

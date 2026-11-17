@@ -40,6 +40,9 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   /** Adapter resolver for read_self(section="evidence", ref, offset?): expands one recorded ref (request:N, artifact:vK).
    * A missing ref returns a value with state "missing"; the resolver never throws into the agent. */
   adapterEvidence?: (ref: string, offset?: number) => unknown;
+  /** Adapter-recorded trajectory lines, one per recorded message event, each tagged with the request it belongs
+   * to ("R<n> ..."). The core transcribes the pass-window slice into the pass entry; it never parses or selects. */
+  adapterTrajectory?: () => string[] | null;
   /** Host observation supplied at review entry. It may refresh a task artifact, but returns facts only. */
   observeCurrentArtifact?: () => unknown;
   /** Adapter-declared metric meaning; the core only uses the returned polarity and primary metric. */
@@ -763,9 +766,10 @@ export class SelfRoot extends LiveAgentSelf {
     try { return this.options.adapterEvidence?.(ref, offset) ?? { ref, ...usage }; }
     catch (e) { return { ref, state: 'error', error: String(e) }; }
   }
-  /** META pass entry (user decision 2026-11-17): one mechanical block computed once at pass entry - run position,
-   * trigger, window counts, artifact head, self head, carried notes - every item expandable by the ref it names.
-   * Facts only; no ranking, diagnosis or recommendation; resident during the pass only (~1.2k chars). */
+  /** META pass entry (user decisions 2026-11-17): one mechanical block computed once at pass entry - run position,
+   * trigger, window counts, the window's recorded trajectory lines, artifact head, self head, carried notes - every
+   * item expandable by the ref it names. Facts only; no ranking, diagnosis or recommendation; resident during the
+   * pass only (~1.3k chars + up to 6k trajectory). */
   passEntry(book = false): string | null {
     const pass = this.metaPassTrigger;
     if (!pass) return null;
@@ -789,15 +793,39 @@ export class SelfRoot extends LiveAgentSelf {
       : 'none rendered';
     const names = components.slice(0, 8).map(c => `${c.kind}.${c.name}@v${c.version}`).join(', ') || 'none';
     const more = components.length > 8 ? ` +${components.length - 8} more` : '';
+    // Trajectory (user decision 2026-11-17: the view carries the trajectory, not only its counts): the adapter's
+    // recorded event lines whose request tag falls in this window, transcribed oldest-first - newest kept under the
+    // budget, each line clipped, omissions counted. Mechanical transcription only; the core never selects by content.
+    const reqNums = rows.filter(r => r.type === 'request_record').map(r => Number(r.value?.request)).filter(x => Number.isFinite(x));
+    let trajectory: string[] = [];
+    let trajNote = 'not provided';
+    try {
+      const recorded = this.options.adapterTrajectory?.() ?? null;
+      if (recorded) {
+        const lo = reqNums.length ? Math.min(...reqNums) : null;
+        const hi = reqNums.length ? Math.max(...reqNums) : null;
+        const tagOf = (s: string) => { const m = /^R(\d+)\b/.exec(s); return m ? Number(m[1]) : null; };
+        const inWindow = recorded.filter(s => { const t = tagOf(s); return t === null || lo === null || (t >= lo && t <= hi!); });
+        let used = 0, from = inWindow.length;
+        for (let i = inWindow.length - 1; i >= 0; i--) {
+          const line = clip(inWindow[i], 400);
+          if (used + line.length + 1 > 6000) break;
+          used += line.length + 1; from = i;
+        }
+        trajectory = inWindow.slice(from).map(s => clip(s, 400));
+        trajNote = `${inWindow.length} recorded event line(s)${from > 0 ? `; oldest ${from} omitted (full text: read_self(section="evidence", ref="request:N"))` : ''}`;
+      }
+    } catch (e) { trajNote = `unavailable (${clip(String(e), 120)})`; }
     const lines = [
       `TASK: ${clip(String(contract?.task_goal ?? 'not declared').split('\n')[0], 140)}; position: ${position ? clip(JSON.stringify(position), 180) : 'not provided'}`,
       `TRIGGER: ${pass.facts?.trigger}; window ledger:${start}..ledger:${end} (expand: read_self(section="ledger", offset=${start}))`,
       `WINDOW: ${n('request_record')} request(s), ${work} task action(s), ${n('tool_failed')} failed call(s), ${n('artifact_write')} artifact write(s), ${n('reflection_activated')} activation(s), ${images} image part(s) delivered; expand one request: read_self(section="evidence", ref="request:N")`,
+      `TRAJECTORY: ${trajNote}${trajectory.length ? `\n${trajectory.join('\n')}` : ''}`,
       `ARTIFACT: ${artifact}`,
       `SELF: revision ${this.revision}; components: ${clip(names, 220)}${more}; orchestration revision ${(this.current?.orchestration as any)?.revision ?? 1}; context order ${(this.policy.context?.order ?? []).join(',')}`,
       `CARRIED: ${carry ? clip(carry.join(' | '), 600) : 'none recorded'}`,
     ];
-    return clip(lines.join('\n'), 1400);
+    return clip(lines.join('\n'), 8000);
   }
   /** EVO_META board: the dynamic half of the fixed fields. The fixed prompt file carries the host-given half; this
    * block renders the optimizable objects from live state, the task side from the orchestration contract, the

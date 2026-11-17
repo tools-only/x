@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SelfRoot, FLOOR, hash } from '../demo/self_root.ts';
 
-// User decision 2026-11-17: the evolution pass opens on a mechanical entry block - run position, trigger, window
-// counts, artifact head, self head, carried notes - every item expandable by the ref it names; decide_exit may
-// carry result.carry to the next pass entry; read_self(section="evidence") expands one recorded ref through the
-// adapter. Offline checks cover the block's content and bounds, the carry roundtrip and its clip fact, the
-// evidence envelopes (present / missing / error, never a throw), and that the pass window rows reach reviewView.
+// User decisions 2026-11-17: the evolution pass opens on a mechanical entry block - run position, trigger, window
+// counts, the window's recorded trajectory lines, artifact head, self head, carried notes - every item expandable
+// by the ref it names; decide_exit may carry result.carry to the next pass entry; read_self(section="evidence")
+// expands one recorded ref through the adapter. Offline checks cover the block's content and bounds, the trajectory
+// window filter and budget, the carry roundtrip and its clip fact, the evidence envelopes (present / missing /
+// error, never a throw), and that the pass window rows reach reviewView.
 
 const userContract = () => { const b:any={source:'user_contract',authority:'fixture',decisions:'fixture',readonly_reason:'fixture',boundaries:[...FLOOR],capabilities:['read','ls','grep','office.render','office.preview','acceptance'],writable:['components.tool','components.prompt','components.skill','components.memory','orchestration','policy'],budget:{requests:60,tokens:100000,seconds:600,usd:1,storage_bytes:10000000},acceptance:{checker:'fixture'},inherit_defaults:false,heartbeat:false}; return {...b,content_hash:hash(b)}; };
 const make = (mechanisms?: any, options: any = {}) => new SelfRoot(userContract(), undefined, undefined, undefined, undefined, { ...options, ...(mechanisms ? { mechanisms } : {}) } as any) as any;
@@ -29,7 +30,7 @@ test('META pass entry: one mechanical block at entry - position, trigger, window
   assert.ok(s.review, 'the episode boundary opens the pass');
   const entry = s.review.pass_entry;
   assert.equal(typeof entry, 'string');
-  assert.ok(entry.length <= 1400, 'the block is bounded');
+  assert.ok(entry.length <= 1500, 'the block is bounded while no trajectory adapter is wired');
   assert.match(entry, /^TASK: Deliver the artifact/, 'the task goal heads the block');
   assert.ok(entry.includes('"artifact_revision":3'), 'the adapter-declared run position rides the first line as a fact');
   assert.match(entry, /TRIGGER: episode_boundary; window ledger:\d+\.\.ledger:\d+ \(expand: read_self\(section="ledger", offset=\d+\)\)/);
@@ -38,6 +39,7 @@ test('META pass entry: one mechanical block at entry - position, trigger, window
   assert.match(entry, /1 artifact write\(s\)/);
   assert.match(entry, /2 image part\(s\) delivered/, 'delivered image parts are counted from the request records');
   assert.match(entry, /read_self\(section="evidence", ref="request:N"\)/, 'the window line names its expansion');
+  assert.match(entry, /TRAJECTORY: not provided/, 'no trajectory adapter stays a stated absence');
   assert.match(entry, /ARTIFACT: none rendered/);
   assert.match(entry, /SELF: revision \d+; components: /);
   assert.match(entry, /CARRIED: none recorded/);
@@ -114,4 +116,43 @@ test('META pass view: the pass window rows are visible in reviewView (facts.wind
   assert.ok(view.all_facts.length >= 2, 'the pass window facts are visible, not an empty view');
   assert.ok(view.all_facts.some((r: any) => r.type === 'task_episode_closed'), 'the trigger row itself is in the window');
   assert.equal(view.fact_table.request_costs.length, 1, 'the request cost rows ride the same window');
+});
+
+test('META pass trajectory: adapter lines ride the entry - window-filtered by request tag, newest kept, bounded', async () => {
+  const lines: string[] = [];
+  const s = await designed({ adapterTrajectory: () => lines });
+  s.fact('request_record', { request: 4, pin: { mode: 'execute' } });
+  s.fact('request_record', { request: 5, pin: { mode: 'execute' } });
+  lines.push('R3 call office.render {"op":"preview"}');
+  lines.push('R4 thinking: the outline covers twelve sections');
+  lines.push('R4 call read {"path":"data/material.txt"}');
+  lines.push('R4 result read: Source page 1 content');
+  lines.push('R5 provider_error: terminated');
+  lines.push('untagged adapter note');
+  s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-a' });
+  await tick(s);
+  assert.ok(s.review, 'the episode boundary opens the pass');
+  const entry = s.review.pass_entry;
+  assert.match(entry, /TRAJECTORY: 5 recorded event line\(s\)/, 'the section counts the window lines');
+  assert.ok(entry.includes('R4 thinking: the outline covers twelve sections'), 'recorded agent language rides the entry verbatim');
+  assert.ok(entry.includes('R5 provider_error: terminated'), 'a failed request is visible in the trajectory');
+  assert.ok(entry.includes('untagged adapter note'), 'an untagged line is transcribed, not judged');
+  assert.ok(!entry.includes('R3 call office.render'), 'lines tagged before the window stay out');
+  assert.equal(all(s).filter((r: any) => r.type === 'meta_pass_entry').at(-1).value.text, entry, 'the booked fact carries the same block');
+  const burst: string[] = [];
+  const b = await designed({ adapterTrajectory: () => burst });
+  b.fact('request_record', { request: 1, pin: { mode: 'execute' } });
+  for (let i = 0; i < 80; i++) burst.push(`R1 result read: ${'y'.repeat(180)} line ${i}`);
+  b.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-b' });
+  await tick(b);
+  const be = b.review.pass_entry;
+  assert.ok(be.length <= 8000, 'the entry keeps its overall bound');
+  assert.match(be, /TRAJECTORY: 80 recorded event line\(s\); oldest \d+ omitted \(full text: read_self\(section="evidence", ref="request:N"\)\)/);
+  assert.ok(be.includes('line 79'), 'the newest line survives the budget');
+  assert.ok(!be.includes(' line 0\n'), 'the oldest line is omitted under the budget');
+  assert.match(be, /CARRIED: none recorded/, 'the sections after the trajectory survive');
+  const boom = await designed({ adapterTrajectory: () => { throw Error('adapter exploded'); } });
+  s2open(boom);
+  await tick(boom);
+  assert.match(boom.review.pass_entry, /TRAJECTORY: unavailable \(Error: adapter exploded\)/, 'an adapter throw becomes a stated absence, never a crash into the agent');
 });
