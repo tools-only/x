@@ -585,5 +585,14 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 - 启动门槛（探针优先）：唤醒后先以 1 次直连长流探针验证网关（计入系列）；探针再零字节断连则不启动、继续顺延，不烧运行预算。
 - **上限**：M9c 声明 **59 requests / 3600 s / 2 GiB**（含预检 ping；单次超限即停）。系列 **364/600**，唤醒探针后 **365/600**，启动后至多 **424/600**（兑现 §6.11 "至多 424/600" 的声明）。model：az / glm-5.3-flash；arm B；同一冻结双集任务族；root `runs/evo-m9c-glm53f-meta-20261117`。
 
+**M9c 预注册修订（用户 2026-11-17 第二决定：归纳与能力推断分轮；工程提交 `6d1e8934`，启动前修订、该名下零支出）**：
+
+- 用户指令：pass 应分成两部分——第一部分归纳，第二部分能力推断，二者不得放在同一轮次。实现为同一 pass 场合内两个顺序 evolution review：轮 1（归纳，cap 3）以 agent 自己的 decide_exit 收束，其 `result.reason`/`result.carry` 原文进入轮 2 入口的 ROUND 1 段（render 时 400/1200 裁剪）；轮 2（能力，cap 5）在下一请求边界开启，策略携带三条入口问题（ENTRANCE_QUESTIONS 经 META 并入轮 2，无需 EVO_ASK 旗标；非 META 臂行为不变），退出 schema 要求 `entry_question_responses` 恰三条字符串；轮 2 收束后任务复位。场合总上限仍 8（[3,5] 之和）；跨场合 CARRIED 排除本场合轮 1 收束（避免双渲染）；轮 2 trajectory 预算 4000（给 ROUND 1 段让位，入口整体仍 ≤8000）。机械封顶同样推进轮次：轮 1 封顶即开轮 2，轮 2 封顶关场合；crash/预算/二次非法退出关整个场合。新事实：`meta_pass_opened.round/round_caps`、`meta_pass_round`、`meta_pass_capped.round`。
+- 约束对齐：宿主只提供轮次结构与机械转写（原文、全量、统一裁剪），两轮的判断内容均归 agent；问题不点名组件类型或数量；不设运行时配额。
+- 免费检查（2026-11-17）：meta 三套件 **28/28**（轮次贯穿、两段封顶、轮 2 schema、ROUND 1 段原文、CARRIED 排除、轮 2 预算）；self_root 其余套件 **49/49**。`ppt_demo.test.ts`+`ppt_trials.test.ts` 现测 **9/14 失败**，与干净 HEAD 基线逐项相同（`tmp/ppt_base.txt` vs `tmp/ppt_mine.txt`），系分支既有（free-hands/trials 层）；与本日早前"仅 3 失败"记录不符，疑时序/环境依赖，未深究，已证与本改动无关。
+- 单因素注记更新：M9c vs M8b 捆绑现为"无种子 + 外部两轮 pass + pass 视图完备性（事实包 + trajectory）+ 轮 2 入口问题"；分轮与入口问题系用户指令新增，不单独拆臂。
+- 增补读数（在 §6.10/§6.11 读数之上）：每轮 requests 与写入数、轮 1 reason/carry 条数与字节、轮 2 `entry_question_responses` 内容、`meta_pass_round`/`meta_pass_capped(round)` 事实序列；主命题、保底判据、负例 (a)–(d) 逐字沿用。
+- 探针台账与上限修订：探针 2–4（13:55/14:41/15:14）均 ~60 s 零字节 `RemoteDisconnected`（`tmp/az_probe_20261117_*.out.json`），系列 **367/600**，探针 5 定 16:05。声明上限修订为 **56**（替代上行的 59；探针 2–4 已计入系列）：启动时 cap = 424 − 启动时系列数（探针 5 通过即启动则 368/600、cap 56，与 `runs/evo-m9c-glm53f-meta-20261117-caps.json` 现值一致）；每多一次失败探针 cap −1，启动时重写 caps.json 与 freeze 授权数字。
+
 
 
