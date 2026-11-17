@@ -655,9 +655,13 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			const adoption = systemPrompt.startsWith("You review why an agent keeps rebuilding");
 			const refiner = systemPrompt.startsWith("You maintain the harness of an agent");
 			const critic = systemPrompt.includes("You review an agent") || adoption || refiner;
-			const head = textOf(messages.find((message) => message?.role === "user") ?? messages[0]);
+			// Native session continuity retains earlier user turns. The current runner prompt is the latest user message.
+			const currentUserIndex = messages.findLastIndex((message) => message?.role === 'user');
+			const currentMessages = currentUserIndex >= 0 ? messages.slice(currentUserIndex) : messages;
+			const head = textOf(currentMessages.find((message) => message?.role === "user") ?? currentMessages[0]);
 			// The runner's review prompts start with "CONSOLIDATE" (ordinary) or "RECOVER CONSOLIDATION" (after a length stop).
-			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(head.trimStart());
+			const evoFocus = /^EVOLUTION PASS \[([A-Za-z]+) (\d+)\/7\]/.exec(head.trimStart());
+			const consolidating = /^(CONSOLIDATE\b|RECOVER CONSOLIDATION\b)/.test(head.trimStart()) || Boolean(evoFocus);
 			let planned: Step | undefined;
       if (consult) {
         const result = messages.find((m: any) => m.role === 'toolResult' && m.toolName === 'compare');
@@ -690,6 +694,20 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 					: why.includes("the agent asked") ? "FILE tools/probe.py\n# view: on\ngrid[0]\nEND\nWHY replace the probe with a view"
 					: "FILE prompts/strategy.md\nRules\n- ACTION1 changes the grid (conf 2, #1)\nOpen questions\n- what ends a level\nNext experiment\n- REFINED_NEXT_EXPERIMENT\nFailure modes\n- none yet\nEND\nWHY first refinement after #6" };
 			}
+			else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'evo') {
+				const memoryResult = currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'memory');
+				const actionResult = currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'arc_action');
+				if (evoFocus?.[1] === 'Memory' && !memoryResult) {
+					planned = { kind: 'decide', calls: [['memory', { op: 'set', key: 'evo_specialist_fact',
+						text: 'EVO_MEMORY_REACHED_NEXT_PARENT', confidence: 4 }]] };
+				} else if (evoFocus) {
+					planned = { kind: 'decide', text: `NO HARNESS CHANGE: no separate ${evoFocus[1]} edit is justified in this diagnostic window` };
+				} else if (actionResult) {
+					planned = { kind: 'decide', text: 'The action result is received.' };
+				} else {
+					planned = { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'diagnostic task action' }]] };
+				}
+			}
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
 			else if (['recovery','death','length'].includes(process.env.ARC_THIN_SMOKE_SCRIPT!)) planned={kind:'decide',calls:[['arc_action',{action:'ACTION1'}]]};
 			else {
@@ -707,9 +725,9 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
       if (planned?.calls) planned = { ...planned, calls: planned.calls.map(([name, args]) => [name,
         args.path === '$last_result' ? { ...args, path: messages.map(textOf).join('\n').match(/results\/(?:r\d+|[a-f0-9]{64})\.txt/)?.[0] ?? 'missing' } : args]) };
 			appendFileSync(log, JSON.stringify({
-				t: new Date().toISOString(), analyst, critic, consolidating, step,
+				t: new Date().toISOString(), analyst, critic, consolidating, step, evo_focus: evoFocus?.[1] ?? null,
 				// With retained history the first user message is an old decision; the current one is the last.
-				current: textOf([...messages].reverse().find((message) => message?.role === "user") ?? messages[0]),
+				current: head,
 				// message_count excludes Pi's leading system message so the runner's checks keep the 0.80.6 meaning
 				// (1 = the first request of a decision).
 				message_count: messages.filter((message) => message?.role !== "system").length, roles: messages.map((message) => message?.role),

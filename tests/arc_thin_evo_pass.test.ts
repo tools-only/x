@@ -89,44 +89,35 @@ async function attach(w: { url: string; root: string }, env: Record<string, stri
 /** Rows as written, without the timestamp append() adds: the fields the asserts pin. */
 const bare = (rows: Array<Record<string, unknown>>) => rows.map(({ t, ...row }) => row);
 
-test('a pass turn swaps in the record and refuses the action; the reply tail is carried; the review span survives', async () => {
+test('one outcome opens the seven ordered specialist turns; later focus reads earlier memory and the task turn resumes', async () => {
   const w = await world();
   const h = await attach(w);
   try {
     await h.begin(); await h.act({ action: 'ACTION1' });
     await h.begin(); await h.act({ action: 'ACTION6', x: 3, y: 3 });
-    const record = await h.begin('EVOLUTION PASS. 2 actions have passed without a self change or an evolution pass; this turn takes no action.');
-    assert.ok(record.includes("EVOLUTION PASS RECORD (actions #1–#2, counted and copied from this run's logs):"));
-    assert.ok(record.includes('WINDOW: 2 action(s), 2 decision(s), 0 python call(s), predictions 0 (0 hit/0 miss), ' +
-      '0 self change(s), 0 refinement(s) since the last pass.'));
-    assert.ok(record.includes("TRAJECTORY (the window's decisions, newest kept under 6000 chars):"));
-    assert.ok(record.includes('[decision 1 | moves #1–#1]'));
-    assert.match(record, /\[decision 2 \| moves #2–#2\][\s\S]*ACTION6/, 'the window carries the decisions themselves');
-    assert.ok(record.includes('"write": "slots/self.json: one JSON object;'), 'the slot inventory is pushed into the record');
-    assert.match(record, /\n- your components: /);
-    assert.ok(record.includes("CARRIED (the end of your previous pass's reply):\nnone recorded"));
-    assert.match(await h.act({ action: 'ACTION1' }), /no action during consolidation/);
-    assert.deepEqual(bare(h.rows('harness_decisions.jsonl').filter((row) => row.kind === 'review_start')),
-      [{ kind: 'review_start', decision: 3, type: 'evo', at: 2, level: 0 }]);
-    const set = h.rows('working_set.jsonl').at(-1);
-    assert.equal(set.decision, 3);
-    assert.equal(set.consolidating, true);
-    assert.equal(set.evo_pass, true);
-    await h.say('The toggle rule holds; most of the window went to re-checking it.\nNO HARNESS CHANGE: nothing in the window repeats a cost');
+    const focuses = ['Prompt', 'Skill', 'Tool', 'Subagent', 'Memory', 'Context', 'Loop'];
+    let last = '';
+    for (let i = 0; i < focuses.length; i++) {
+      last = await h.begin(`EVOLUTION PASS [${focuses[i]} ${i + 1}/7]. Level 0 is settled and reviewed; this turn takes no action.`);
+      assert.ok(last.includes(`SPECIALIST ${focuses[i]} (${i + 1}/7):`), `${focuses[i]} gets its own task instructions`);
+      assert.match(last, /CURRENT (?:Prompt|Skill|Tool|Subagent|Memory|Context|Loop) MATERIAL \/ API \/ CONSUMER:/);
+      assert.match(last, /TASK GOAL:[\s\S]*CURRENT STEP \/ EPISODE \/ RESOURCES:/);
+      assert.match(await h.act({ action: 'ACTION1' }), /no action during consolidation/);
+      if (focuses[i] === 'Memory') {
+        assert.match(await h.call('memory', { op: 'set', key: 'evo_specialist_fact', text: 'EVO_MEMORY_REACHED_CONTEXT', confidence: 4 }), /saved|memory/i);
+        await h.say('Saved scoped evidence.');
+      } else await h.say(`NO HARNESS CHANGE: no justified ${focuses[i]} edit in this evidence window`);
+      if (focuses[i] === 'Context') assert.ok(last.includes('EVO_MEMORY_REACHED_CONTEXT'), 'Context re-reads memory changed by the earlier pass');
+    }
     const decide = await h.begin();
-    assert.ok(decide.includes('the host opens one evolution pass outside the game turn'), 'the one resident line names the mechanism');
-    assert.deepEqual(bare(h.rows('harness_decisions.jsonl').filter((row) => row.kind === 'no_change')),
-      [{ kind: 'no_change', decision: 3, at: 2, type: 'evo', reason: 'nothing in the window repeats a cost' }]);
-    assert.deepEqual(bare(h.rows('harness_decisions.jsonl').filter((row) => row.kind === 'pass_close')),
-      [{ kind: 'pass_close', decision: 3, at: 2, level: 0,
-        carry: 'The toggle rule holds; most of the window went to re-checking it.\nNO HARNESS CHANGE: nothing in the window repeats a cost' }]);
-    await h.act({ action: 'ACTION1' });
-    const second = await h.begin('EVOLUTION PASS. Level 0 is settled and reviewed; this turn takes no action.');
-    assert.ok(second.includes('EVOLUTION PASS RECORD (actions #3–#3'), 'the next window is anchored at the last pass_close');
-    assert.ok(second.includes('WINDOW: 1 action(s), 1 decision(s),'));
-    assert.match(second, /CARRIED \(the end of your previous pass's reply\):\nThe toggle rule holds;[\s\S]*repeats a cost/);
+    assert.ok(decide.includes('the host opens one evolution pass outside the game turn'), 'the resident line names the mechanism');
+    assert.ok(decide.includes('EVO_MEMORY_REACHED_CONTEXT'), 'the later ordinary parent request receives the memory');
+    assert.deepEqual(h.rows('harness_decisions.jsonl').filter((row) => row.kind === 'review_start' && row.type === 'evo').map(row => row.focus), focuses);
+    assert.deepEqual(h.rows('harness_decisions.jsonl').filter((row) => row.kind === 'pass_focus_close').map(row => row.focus), focuses);
+    assert.equal(h.rows('harness_decisions.jsonl').filter((row) => row.kind === 'pass_close').length, 1, 'only the final focus closes the batch window');
+    assert.ok(last.includes('PROMPT') === false, 'the Loop input is its own focused material');
     const review = await h.begin('CONSOLIDATE. Review what the recent actions showed.');
-    assert.ok(review.includes('ACTIONS SINCE YOUR LAST REVIEW (#1–#3, 3 of 3):'), 'the passes consumed none of the review span');
+    assert.ok(review.includes('ACTIONS SINCE YOUR LAST REVIEW (#1–#2, 2 of 2):'), `the passes consumed none of the two-action review span: ${review.slice(0, 1200)}`);
   } finally { await h.close(); await w.server.close(); }
 });
 

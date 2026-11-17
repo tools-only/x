@@ -106,7 +106,7 @@ STALL_REVIEW_RECOVERY_PROMPT = (
 #: turn takes no action and has the review tool-call cap. Judgment stays with the agent: a saved change and an explicit
 #: `NO HARNESS CHANGE: <reason>` are both valid closures.
 EVO_PASS_PROMPT = (
-    "EVOLUTION PASS. {why}; this turn takes no action: the game is paused and the record below carries this run's "
+    "EVOLUTION PASS [{focus} {index}/7]. {why}; this turn takes no action: the game is paused and the record below carries this run's "
     "facts since the last pass. What exists: the read-only rows under data/self/ (outcomes, settlements, slots, "
     "context budget, working set); your components under prompts/, skills/ and tools/; memory; the host's typed "
     "settings in slots/self.json — a saved write activates at your next decision; python and the decision tools stay "
@@ -116,12 +116,13 @@ EVO_PASS_PROMPT = (
     "resumes next turn."
 )
 EVO_PASS_RECOVERY_PROMPT = (
-    "RECOVER EVOLUTION PASS. The previous pass reached the output limit. Do not reason aloud: make at most one saved "
+    "RECOVER EVOLUTION PASS [{focus} {index}/7]. The previous pass reached the output limit. Do not reason aloud: make at most one saved "
     "change, or end with exactly `NO HARNESS CHANGE: <reason>`, then stop. This turn takes no action."
 )
 #: Actions since the later of the last self change (harness_changes.jsonl) and the last pass, after which the next
 #: turn is an evolution pass; ARC_THIN_EVO_STAGNATION overrides (0: only the level boundary opens passes).
 EVO_STAGNATION_AFTER = 30
+EVO_PASS_FOCI = ("Prompt", "Skill", "Tool", "Subagent", "Memory", "Context", "Loop")
 #: The harness turn (ARC_THIN_HARNESS_TURN=1, native treatment only; docs/plans/2026-10-26-e1-harness-turn-protocol.md,
 #: folded from codex/meta-devloop-20261026): a level or stall review is a development turn inside the run. In place of the
 #: file the reviews above ask for, the agent judges its loop from the LOOP AUDIT and the read-only data/loop/ logs and makes
@@ -415,8 +416,11 @@ def _evo_pass_stats(harness: Path) -> dict[str, Any] | None:
     usage = [row for row in _read_jsonl(harness / "usage.jsonl") if row.get("kind") == "agent"]
     decisions = _read_jsonl(harness / "harness_decisions.jsonl")
     changes = [row for row in _read_jsonl(harness / "harness_changes.jsonl") if not row.get("by")]
+    starts = {int(row["decision"]): row for row in decisions if row.get("kind") == "review_start" and row.get("type") == "evo"
+              and row.get("decision") is not None}
     return {
-        "turns": [{"decision": decision,
+        "turns": [{"decision": decision, **({"focus": starts[decision].get("focus"), "index": starts[decision].get("index")}
+                                                     if decision in starts else {}),
                    "requests": sum(1 for row in usage if row.get("decision") == decision),
                    "budget_tokens": sum(int(row.get("input") or 0) + int(row.get("output") or 0)
                                         for row in usage if row.get("decision") == decision),
@@ -426,8 +430,32 @@ def _evo_pass_stats(harness: Path) -> dict[str, Any] | None:
                                       if row.get("kind") == "no_change" and row.get("type") == "evo"
                                       and row.get("decision") == decision), None)}
                   for decision in passes],
-        "carried": sum(1 for row in decisions if row.get("kind") == "pass_close" and row.get("carry")),
+        "carried": sum(1 for row in decisions if row.get("kind") == "pass_focus_close" and row.get("carry")),
+        "not_executed": next((row.get("not_executed", []) for row in reversed(decisions) if row.get("kind") == "budget_skip"), []),
     }
+
+
+def _evo_pass_resume(harness: Path) -> tuple[int, str] | None:
+    """Resume the first unfinished specialist after the last completed batch, or None."""
+    rows = _read_jsonl(harness / "harness_decisions.jsonl")
+    last_batch_close = max((index for index, row in enumerate(rows) if row.get("kind") == "pass_close"), default=-1)
+    starts = [(index, row) for index, row in enumerate(rows[last_batch_close + 1:], last_batch_close + 1)
+              if row.get("kind") == "review_start" and row.get("type") == "evo"]
+    if not starts:
+        return None
+    start_index, start = starts[-1]
+    focus_index = int(start.get("index") or 1) - 1
+    closed = any(row.get("kind") == "pass_focus_close" and row.get("decision") == start.get("decision")
+                 for row in rows[start_index + 1:])
+    if closed:
+        focus_index += 1
+    stop = next((row for row in reversed(rows[start_index + 1:])
+                 if row.get("kind") in {"budget_skip", "batch_interrupted"}), None)
+    completed = stop.get("completed") if stop else None
+    if isinstance(completed, list) and completed == list(EVO_PASS_FOCI[:len(completed)]):
+        focus_index = max(focus_index, len(completed))
+    return (focus_index, str(start.get("reason") or "resuming the recorded evolution pass")) \
+        if focus_index < len(EVO_PASS_FOCI) else None
 
 
 def _loop_bound_stats(harness: Path) -> dict[str, Any]:
@@ -1067,7 +1095,9 @@ def _review_recovery(message: str, contract: str | None = None) -> str | None:
     if message.startswith(("STALL REVIEW", "RECOVER STALL REVIEW")):
         return HARNESS_STALL_REVIEW_RECOVERY_PROMPT + contract if contract else STALL_REVIEW_RECOVERY_PROMPT
     if message.startswith(("EVOLUTION PASS", "RECOVER EVOLUTION PASS")):
-        return EVO_PASS_RECOVERY_PROMPT
+        match = re.match(r"(?:RECOVER )?EVOLUTION PASS \[([A-Za-z]+) (\d+)/7\]", message)
+        focus, index = match.groups() if match else ("Prompt", "1")
+        return EVO_PASS_RECOVERY_PROMPT.format(focus=focus, index=index)
     if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT}:
         return CONSOLIDATE_RECOVERY_PROMPT
     return None
@@ -1490,7 +1520,10 @@ def run_arc_thin_e2e(
                                  if row.get("stall_review")), default=0)
         # The evolution pass: due the turn after a level review (evo_pending), or on stagnation counted from the last
         # pass (a fork keeps its source's, from the same log).
-        evo_pending = False
+        evo_resume = _evo_pass_resume(harness) if evo_pass_on else None
+        evo_pending = evo_resume is not None
+        evo_batch_why = evo_resume[1] if evo_resume else ""
+        evo_focus_index = evo_resume[0] if evo_resume else 0
         evo_passed_at = max((int(row.get("actions") or 0) for row in _read_jsonl(harness / "working_set.jsonl")
                              if row.get("evo_pass")), default=0)
         # Work memory: decisions in a row that learn nothing new before the next stall review; doubles after each such
@@ -1735,7 +1768,7 @@ def run_arc_thin_e2e(
             # wins the turn; the pass takes the next one.
             evo_since = _evo_stagnation(harness, action_count, evo_passed_at, evo_stagnation)
             evo_why = "" if not evo_pass_on or consolidate else (
-                f"Level {int(state.get('levels_completed') or 0)} is settled and reviewed" if evo_pending
+                (evo_batch_why or f"Level {int(state.get('levels_completed') or 0)} is settled and reviewed") if evo_pending
                 else f"{evo_since} actions have passed without a self change or an evolution pass" if evo_since else "")
             fatal_before = _fatal_errors(harness)
             environment_before = _environment_errors(harness)
@@ -1765,13 +1798,22 @@ def run_arc_thin_e2e(
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
                 elif evo_why:
-                    # The evolution pass: one review-shaped turn, no action; the extension swaps in the pass record and
-                    # holds the review tool-call cap. It consumes no review span and advances no review counter.
-                    pass_prompt = EVO_PASS_PROMPT.format(why=evo_why)
+                    # Each recorded boundary opens seven independent, ordered review-shaped turns. The batch holds its
+                    # action-window anchor until Loop closes; every turn remains under the existing review cap.
+                    if not evo_pending:
+                        evo_pending = True
+                        evo_batch_why = evo_why
+                        evo_focus_index = 0
+                    focus = EVO_PASS_FOCI[evo_focus_index]
+                    pass_prompt = EVO_PASS_PROMPT.format(why=evo_batch_why, focus=focus, index=evo_focus_index + 1)
                     events = recover_length(pass_prompt, safe_turn(pass_prompt))
                     summary["evo_passes"] += 1
-                    evo_pending = False
-                    evo_passed_at = action_count
+                    evo_focus_index += 1
+                    if evo_focus_index == len(EVO_PASS_FOCI):
+                        evo_pending = False
+                        evo_batch_why = ""
+                        evo_focus_index = 0
+                        evo_passed_at = action_count
                 else:
                     prompt = (NO_ACTION_PROMPT if no_action_streak else DECIDE_PROMPT) + (f" {restart_note}" if restart_note else "")
                     restart_note = ""
@@ -1844,6 +1886,16 @@ def run_arc_thin_e2e(
                 summary.setdefault("snapshots", []).append(str(_snapshot_run(root, summary["decisions"], game, fork)))
             if summary["decisions"] and summary["decisions"] % PARTIAL_SUMMARY_EVERY == 0 and not consolidate:
                 _write_summary(root, summary, final_state, started, partial=True)
+        if evo_pending and evo_focus_index < len(EVO_PASS_FOCI):
+            remaining = list(EVO_PASS_FOCI[evo_focus_index:])
+            reason = str(summary.get("stop_reason") or "runner stopped")
+            row = {"kind": "budget_skip" if reason in {"token_cap", "deadline", "budget_exhausted"} else "batch_interrupted",
+                   "at": len(_read_jsonl(harness / "trajectory.jsonl")), "reason": reason,
+                   "not_executed": remaining, "completed": list(EVO_PASS_FOCI[:evo_focus_index])}
+            path = harness / "harness_decisions.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(row, ensure_ascii=False) + "\n")
         latest = _bridge_state(bridge_url, attempts=1)
         if latest is not None:
             final_state = latest
