@@ -565,5 +565,25 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 - 四层读数（Prompt/Context/Loop/Harness 自变更计数，沿 §6.8 (c) 口径）为分析项，不构成通过线。
 - **上限**：M9b 声明 **75 requests / 3600 s / 2 GiB**（含预检 ping；单次超限即停）。系列 **349/600**，启动后至多 **424/600**。model：az / glm-5.3-flash；arm B；同一冻结双集任务族；root `runs/evo-m9b-glm53f-meta-20261117`。
 
+### 6.12 M9b 中止记录（az 网关流终止）、trajectory 进入视图与 M9c 预注册
+
+**M9b 未进入交付**（`runs/evo-m9b-glm53f-meta-20261117`，2026-11-17，az / glm-5.3-flash，arm B，工程提交 `e7b20900`）：`stop: "provider_error"`、`error: "terminated"`，1215.9 s，14 requests（含预检 ping 1 request / 18 tokens），两集 20 单元全部 not_delivered；保守计 1,225,615 tokens / $0.2758（终止流返回 usage 0，按满额保留计；`billing: "conservative estimate; actual invoice unknown"`）。根因在网关侧：每个长生成流在 ~60 s 处被切断（`stopReason:"error"`、`errorMessage:"terminated"`、usage 0），小输出（41/431/13/47/48 tok）全部存活；Pi 自动重试 6/6 失败（5→60 s 退避）后 `auto_retry_end success:false`，runner 按设计停机。独立探针复现：直连 az 同模型 4000-token 流式请求 61.6 s 零字节 `RemoteDisconnected`（`tmp/az_probe.out.json`；+1 request 计入系列）。机制侧死亡前有活信号：T0 设计回合（request 2）产生 `reflection_activated`（orchestration，revision 1→2）；pass 从未开（死于 ep1 中途，未达任何记录边界），不触发负例 (a)–(d)。用户指示：半小时后同 provider 重试；重试前先把 trajectory 放入视图。系列 349 + 14 + 1 = **364/600**。
+
+**trajectory 进入视图**（用户 2026-11-17 决定；工程提交 `19dada3b`）：
+
+- 现状：视图中的"trajectory"只有 A2 聚合（模式游程、调用计数、工件触达、去重 thought heads）——序列本身不在场，pass 决策点看不到窗口的事件顺序。
+- 核心（`demo/self_root.ts`）：`passEntry` 在 WINDOW 与 ARTIFACT 之间加 TRAJECTORY 段——`adapterTrajectory` 选项给出逐事件行，按 `R<n>` 请求标签对 pass 窗口（request_record 的 min..max）机械过滤（未标注行保留，窗口无 request_record 时全保留）；段自带 6000 字符最新优先预算，省略计数行命名展开 ref（`read_self(section="evidence", ref="request:N")`）；单行 400 字符裁剪；无 adapter 为 "not provided"，adapter 异常成 "unavailable (…)" 值，绝不抛向 agent；入口块整体上限 1400 → 8000（仅随 pass 请求出场）。
+- 扩展（`demo/ppt_demo_extension.ts`）：`message_end` 逐事件机械转写——assistant 文本/思考头（200 字符、空白折叠）、toolCall 名+参数头（`data:` URL 置 `(image)`）、toolResult ok/error+头、`stopReason === 'error'` 时一条 `provider_error` 行；R 标签与 provider-requests.jsonl 请求号对齐（重试各占号）；宿主只按长度裁剪，绝不按内容选择；全文仍在 `harness/provider-requests.jsonl`，视图行命名其展开。
+- 价值与边界：pass 入口一眼可见窗口事件轮廓，pass 写入可按 `request:N` 引用证据；只进 pass 视图，不进常驻上下文（逐请求常驻为 O(n²) 成本，弃）；行在扩展进程内存中，进程重启不续（M9c 全新启动，不受影响）。
+- 单因素注记：M9c 相对 M8b 的差异为"无种子 + 外部 pass + pass 视图完备性（事实包 + trajectory）"的单方向捆绑；trajectory 系用户指令新增，不单独拆臂。
+
+免费检查：meta 套件 **27/27**（`self_root_meta_entry` 新增 trajectory 测试：窗口过滤、最新保留预算与省略标记、untagged 保留、booked 事实一致、adapter 异常成值）；`ppt_demo.test.ts` 仅既有 3 失败（冻结 reflective/free-hands 臂，干净 HEAD 原样复现）。provider 行为未验证，由 M9c 承担在线检查。
+
+**M9c 预注册**（M9b 声明顺延，叠加 trajectory 视图；其余与 §6.10/§6.11 全同）：
+
+- 主命题、保底判据、负例 (a)–(d)、增补读数、四层读数：同 §6.10/§6.11，逐字沿用。
+- 启动门槛（探针优先）：唤醒后先以 1 次直连长流探针验证网关（计入系列）；探针再零字节断连则不启动、继续顺延，不烧运行预算。
+- **上限**：M9c 声明 **59 requests / 3600 s / 2 GiB**（含预检 ping；单次超限即停）。系列 **364/600**，唤醒探针后 **365/600**，启动后至多 **424/600**（兑现 §6.11 "至多 424/600" 的声明）。model：az / glm-5.3-flash；arm B；同一冻结双集任务族；root `runs/evo-m9c-glm53f-meta-20261117`。
+
 
 
