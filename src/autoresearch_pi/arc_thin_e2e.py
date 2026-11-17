@@ -154,6 +154,29 @@ STALL_REVIEW_RECOVERY_PROMPT = (
     "once (the frontmatter, then the four parts in a few short lines; include the shown meta-trial DECISION line if one "
     "is pending), then stop. This turn takes no action."
 )
+#: The evolution pass (ARC_THIN_EVO_PASS, self-loop only; docs/plans/2026-11-17-arc-evolution-pass.md, adapted from the
+#: evo line's external pass): at recorded boundaries — the turn after a level review, or EVO_STAGNATION_AFTER actions
+#: without a self change or a pass — the runner opens one review-shaped turn. The extension swaps in the pass record
+#: (the window's counts and trajectory, the slot inventory, the settlements, the previous pass's closing words); the
+#: turn takes no action and has the review tool-call cap. Judgment stays with the agent: a saved change and an explicit
+#: `NO HARNESS CHANGE: <reason>` are both valid closures.
+EVO_PASS_PROMPT = (
+    "EVOLUTION PASS. {why}; this turn takes no action: the game is paused and the record below carries this run's "
+    "facts since the last pass. What exists: the read-only rows under data/self/ (outcomes, settlements, slots, "
+    "context budget, working set); your components under prompts/, skills/ and tools/; memory; the host's typed "
+    "settings in slots/self.json — a saved write activates at your next decision; python and the decision tools stay "
+    "available. Act on the recorded facts, or close with no change: if no change is justified, end with exactly "
+    "`NO HARNESS CHANGE: <reason>`; that is a valid closure. The host presents facts without ranking, diagnosis, "
+    "recommendation or order. The end of your reply is carried into the next pass's CARRIED line. Then stop; the game "
+    "resumes next turn."
+)
+EVO_PASS_RECOVERY_PROMPT = (
+    "RECOVER EVOLUTION PASS. The previous pass reached the output limit. Do not reason aloud: make at most one saved "
+    "change, or end with exactly `NO HARNESS CHANGE: <reason>`, then stop. This turn takes no action."
+)
+#: Actions since the later of the last self change (harness_changes.jsonl) and the last pass, after which the next
+#: turn is an evolution pass; ARC_THIN_EVO_STAGNATION overrides (0: only the level boundary opens passes).
+EVO_STAGNATION_AFTER = 30
 #: The harness turn (ARC_THIN_HARNESS_TURN=1, native treatment only; docs/plans/2026-10-26-e1-harness-turn-protocol.md,
 #: folded from codex/meta-devloop-20261026): a level or stall review is a development turn inside the run. In place of the
 #: file the reviews above ask for, the agent judges its loop from the LOOP AUDIT and the read-only data/loop/ logs and makes
@@ -989,6 +1012,7 @@ def _harness_stats(harness: Path) -> dict[str, Any]:
         "working_set": _working_set_stats(_read_jsonl(harness / "working_set.jsonl")),
         "level_reviews": _level_review_stats(harness),
         "stall_reviews": _review_stats(harness, "stall_review", "review"),
+        "evo_passes": _evo_pass_stats(harness),
         "loop_bound": _loop_bound_stats(harness),
         "work_memory": _work_memory_stats(harness),
         "ledger": _ledger_stats(harness),
@@ -1036,6 +1060,32 @@ def _level_review_stats(harness: Path) -> dict[str, Any] | None:
     """What each level review cost (the agent's requests and budget tokens in that turn) and what became of
     prompts/lessons.md (versions saved, versions that failed to load, its size now); None when no review ran."""
     return _review_stats(harness, "level_review", "lessons")
+
+
+def _evo_pass_stats(harness: Path) -> dict[str, Any] | None:
+    """What each evolution pass cost and how it closed — the change receipts its decision recorded, or its explicit
+    `NO HARNESS CHANGE` reason — plus how many passes left a carried tail; None when no pass ran. Every value is a
+    row the extension already wrote (working_set, usage, harness_changes, harness_decisions)."""
+    passes = sorted({int(row["decision"]) for row in _read_jsonl(harness / "working_set.jsonl")
+                     if row.get("evo_pass") and row.get("decision") is not None})
+    if not passes:
+        return None
+    usage = [row for row in _read_jsonl(harness / "usage.jsonl") if row.get("kind") == "agent"]
+    decisions = _read_jsonl(harness / "harness_decisions.jsonl")
+    changes = [row for row in _read_jsonl(harness / "harness_changes.jsonl") if not row.get("by")]
+    return {
+        "turns": [{"decision": decision,
+                   "requests": sum(1 for row in usage if row.get("decision") == decision),
+                   "budget_tokens": sum(int(row.get("input") or 0) + int(row.get("output") or 0)
+                                        for row in usage if row.get("decision") == decision),
+                   "changes": [{"path": row.get("path"), "version": row.get("version")}
+                               for row in changes if row.get("decision") == decision],
+                   "no_change": next((str(row.get("reason") or "") for row in decisions
+                                      if row.get("kind") == "no_change" and row.get("type") == "evo"
+                                      and row.get("decision") == decision), None)}
+                  for decision in passes],
+        "carried": sum(1 for row in decisions if row.get("kind") == "pass_close" and row.get("carry")),
+    }
 
 
 def _loop_bound_stats(harness: Path) -> dict[str, Any]:
@@ -1596,6 +1646,19 @@ def _stall_review_due(trajectory: list[dict[str, Any]], reviewed_at: int, after:
     return after > 0 and len(trajectory) - max(_level_start(trajectory), reviewed_at) >= after
 
 
+def _evo_stagnation(harness: Path, action_count: int, passed_at: int, after: int) -> int:
+    """Actions since the later of the last self change (harness_changes.jsonl `at`, the agent's own rows — receipts
+    marked `by` are the runtime's or the refiner's) and the last evolution pass (`passed_at`, an action count): the
+    count when it reached `after`, else 0. Mechanical: it counts rows the extension already wrote; a change or a
+    pass restarts the count."""
+    if after <= 0:
+        return 0
+    last_change = max((int(row.get("at") or 0) for row in _read_jsonl(harness / "harness_changes.jsonl")
+                       if not row.get("by")), default=0)
+    since = action_count - max(last_change, passed_at)
+    return since if since >= after else 0
+
+
 def _stall_review_prompt(trajectory: list[dict[str, Any]], reviewed_at: int, levels_completed: int,
                          spin: tuple[int, list[str]] | None = None, contract: str | None = None) -> str:
     """The stall review's prompt. `spin` (decisions in a row that learned nothing new, and their moves) says why it came
@@ -1657,6 +1720,8 @@ def _review_recovery(message: str, contract: str | None = None) -> str | None:
         return HARNESS_LEVEL_REVIEW_RECOVERY_PROMPT + contract if contract else LEVEL_REVIEW_RECOVERY_PROMPT
     if message.startswith(("STALL REVIEW", "RECOVER STALL REVIEW")):
         return HARNESS_STALL_REVIEW_RECOVERY_PROMPT + contract if contract else STALL_REVIEW_RECOVERY_PROMPT
+    if message.startswith(("EVOLUTION PASS", "RECOVER EVOLUTION PASS")):
+        return EVO_PASS_RECOVERY_PROMPT
     if message in {CONSOLIDATE_PROMPT, CONSOLIDATE_RECOVERY_PROMPT}:
         return CONSOLIDATE_RECOVERY_PROMPT
     return None
@@ -1907,7 +1972,7 @@ def run_arc_thin_e2e(
         "provider": pi_provider, "model": model, "thinking": thinking or "provider-default",
         "thinking_format": settings.get("thinking_format"), "thinking_reaches_provider": thinking_sent,
         "passed": False, "stop_reason": None,
-        "decisions": 0, "adapt_turns": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "spin_reviews": 0, "no_action_decisions": 0,
+        "decisions": 0, "consolidations": 0, "level_reviews": 0, "stall_reviews": 0, "spin_reviews": 0, "evo_passes": 0, "no_action_decisions": 0,
         "length_stops": 0, "length_recoveries": 0, "length_recovery_failures": 0,
         "idle_timeouts": 0, "idle_recoveries": 0, "idle_recovery_failures": 0,
         "decision_timeouts": 0, "decision_recoveries": 0, "environment_restarts": [],
@@ -2050,6 +2115,12 @@ def run_arc_thin_e2e(
         selfloop = foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_SELFLOOP") == "1"
         if selfloop:
             pi_env["ARC_THIN_STALL_REVIEW"] = str(stall_review_after)
+        # The evolution pass (docs/plans/2026-11-17-arc-evolution-pass.md): on with the self-loop unless
+        # ARC_THIN_EVO_PASS=0. The runner opens the pass turns; the extension recognizes them by prompt.
+        evo_pass_on = selfloop and pi_env.get("ARC_THIN_EVO_PASS") != "0"
+        evo_stagnation = int(pi_env.get("ARC_THIN_EVO_STAGNATION") or EVO_STAGNATION_AFTER) if evo_pass_on else 0
+        if evo_stagnation < 0:
+            raise ValueError("evolution pass stagnation threshold must be nonnegative")
         # The harness turn and the guard place (docs/plans/2026-10-26-e1-harness-turn-protocol.md): off unless set to 1.
         harness_contract = _harness_contract(foundation, variant, pi_env)
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
@@ -2096,6 +2167,7 @@ def run_arc_thin_e2e(
             "guards": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_GUARDS") == "1",
             "hooks": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_HOOKS") == "1",
             "selfloop": selfloop,
+            "evo_pass": evo_pass_on, "evo_stagnation_after": evo_stagnation,
             # Where the active prompts are (docs/plans/2026-10-21-context-layout.md): "head" opens each decision's head
             # with them and ends it with the agent's own record on the board; "system" keeps them as system-prompt
             # sections (ARC_THIN_CONTEXT_LAYOUT=0, the legacy foundation and the control variant).
@@ -2177,6 +2249,11 @@ def run_arc_thin_e2e(
         # The action count at the last stall review (a fork keeps its source's, from the copied working-set log).
         stall_reviewed_at = max((int(row.get("actions") or 0) for row in _read_jsonl(harness / "working_set.jsonl")
                                  if row.get("stall_review")), default=0)
+        # The evolution pass: due the turn after a level review (evo_pending), or on stagnation counted from the last
+        # pass (a fork keeps its source's, from the same log).
+        evo_pending = False
+        evo_passed_at = max((int(row.get("actions") or 0) for row in _read_jsonl(harness / "working_set.jsonl")
+                             if row.get("evo_pass")), default=0)
         # Work memory: decisions in a row that learn nothing new before the next stall review; doubles after each such
         # review, back to spin_review_after once a decision learns something new.
         spin_threshold = spin_review_after
@@ -2529,11 +2606,13 @@ def run_arc_thin_e2e(
                 or spin_due
                 or (consolidate_after_actions > 0 and action_count - consolidated_at >= consolidate_after_actions)
             )
-            notification = daemon.refresh() if daemon and not typescript_phase_owner else None
-            if os.environ.get("ARC_THIN_DAEMON_RESPONSE_COMPAT") != "1":
-                notification = None
-            response_turn = notification is not None and not typescript_phase_owner
-            task_turn = not consolidate and not response_turn
+            # The evolution pass's recorded boundaries (docs/plans/2026-11-17-arc-evolution-pass.md): the turn after a
+            # level review (evo_pending), or stagnation — many actions without a self change or a pass. A due review
+            # wins the turn; the pass takes the next one.
+            evo_since = _evo_stagnation(harness, action_count, evo_passed_at, evo_stagnation)
+            evo_why = "" if not evo_pass_on or consolidate else (
+                f"Level {int(state.get('levels_completed') or 0)} is settled and reviewed" if evo_pending
+                else f"{evo_since} actions have passed without a self change or an evolution pass" if evo_since else "")
             fatal_before = _fatal_errors(harness)
             environment_before = _environment_errors(harness)
             error_rows_before = len(_read_jsonl(harness / "errors.jsonl"))
@@ -2576,6 +2655,7 @@ def run_arc_thin_e2e(
                     summary["consolidations"] += 1
                     if level_review:
                         summary["level_reviews"] += 1
+                        evo_pending = evo_pass_on
                     elif stall_review:
                         summary["stall_reviews"] += 1
                         stall_reviewed_at = action_count
@@ -2584,6 +2664,14 @@ def run_arc_thin_e2e(
                             spin_threshold *= 2
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
+                elif evo_why:
+                    # The evolution pass: one review-shaped turn, no action; the extension swaps in the pass record and
+                    # holds the review tool-call cap. It consumes no review span and advances no review counter.
+                    pass_prompt = EVO_PASS_PROMPT.format(why=evo_why)
+                    events = recover_length(pass_prompt, safe_turn(pass_prompt))
+                    summary["evo_passes"] += 1
+                    evo_pending = False
+                    evo_passed_at = action_count
                 else:
                     base_prompt = ('Continue the task using the current method and canonical results.' if reflective_path else
                                    NO_ACTION_PROMPT if no_action_streak else
