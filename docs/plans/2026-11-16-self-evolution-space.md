@@ -594,5 +594,37 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 - 增补读数（在 §6.10/§6.11 读数之上）：每轮 requests 与写入数、轮 1 reason/carry 条数与字节、轮 2 `entry_question_responses` 内容、`meta_pass_round`/`meta_pass_capped(round)` 事实序列；主命题、保底判据、负例 (a)–(d) 逐字沿用。
 - 探针台账与上限修订：探针 2–4（13:55/14:41/15:14）均 ~60 s 零字节 `RemoteDisconnected`（`tmp/az_probe_20261117_*.out.json`），系列 **367/600**，探针 5 定 16:05。声明上限修订为 **56**（替代上行的 59；探针 2–4 已计入系列）：启动时 cap = 424 − 启动时系列数（探针 5 通过即启动则 368/600、cap 56，与 `runs/evo-m9c-glm53f-meta-20261117-caps.json` 现值一致）；每多一次失败探针 cap −1，启动时重写 caps.json 与 freeze 授权数字。
 
+### 6.13 M10 迁移方案（2026-11-17 草案，未实现、未授权付费）：codex 外部进化实现折入——轮 2 构造子调用与 kind 契约推送
+
+**来源与快照**：codex 工作树 `D:\agent\.codex\worktrees\external-evolution-pass`（分支 `codex/external-evolution-pass`，ref 停在共同祖先 `2aca6e44` = M8b，全部新特性为未提交工作树改动）：4 文件 +261/−30——`demo/ppt_demo_extension.ts` 178 行变更、`demo/prompts/evolution_policy_seed.md` 删除（−22，与我们 `dc049570` 同向）、`tests/pi_external_benchmark_provider.ts` +27、`tests/test_evo_ppt_pi.py` +64；另有未跟踪 `docs/plans/2026-11-17-online-capability-evolution.md`。快照存 `tmp/codex_feature_diff.txt` / `tmp/codex_plan_doc.md`（不入库；建议 codex 侧自行提交留档）。其随行文档滞后于代码（仍写"单 pass、不点名 kind"）；代码实为：`task_outcome` 边界触发 `runExternalEvolutionPass`，**七个固定串行专家单发调用**（Prompt/Context/Skill/Tool/Subagent/Memory/Loop），每个携 kind 专属材料包，返回 `{decision:"no_change"|"change", target, operation, reason, evidence_refs}` 信封，宿主校验（`normalizeOperation` + kind 相容 + `assertNativeName`）后代为落地（`reflectComponent`/`transaction`），逐 pass 记 `evolution-inputs.jsonl`/`evolution-passes.jsonl`。按其自报证据表：功能正确性 "Pending"，全链路/采用/净收益未验证；其确定性诊断曾死于 fixture 非法 `note` 字段、修复后未重跑（罗盘 §9.1）。
+
+**断点与机会**：我方 B3-2/M7/E0/sl1q 的一贯负证据是"诊断→构造"支架缺失——kind 映射方法、对象契约、独立构造上下文全在拉取侧（components-push-not-pull）。codex 实现恰好补齐推送侧材料：七类对象契约（`objectContracts` + consumer 绑定 `runtime_binding`/`contract_source`）、kind 专属构造语境（`specialistContexts`）、宿主机械组装的材料包（现役组件含 source、上下文组装、policy、编排态、`selfRootToolSchema` 精确 schema、authoring contract、前序变更）、预算安全的宿主侧单发调用计量。迁移目标：把这些折入我们的两轮 META pass（`6d1e8934`），不移动判断与落地权。
+
+**取舍表**（源符号 → 处置 → 落点）：
+
+| # | codex 特性 | 处置 | 落点（我们臂） |
+|---|---|---|---|
+| F1 | `modelResult(create, kind, optional)` 扩签 + `runtimeModelResult`（optional 预算不足返回 `undefined` 不停机；`experimentLimits` 请求/token/存储检查） | 迁移 | `demo/ppt_demo_extension.ts:267` 计量块 |
+| F2 | `objectContracts` 七类契约 + consumer 绑定 | 迁移 | 轮 2 入口 kind 一览（≤1200 字符段）+ 子调用 payload |
+| F3 | `specialistContexts` kind 构造语境 | 迁移（原文；边界句见宪法对照） | 子调用 system 语境 |
+| F4 | 宿主机械材料包 `layer_state`/`operation_schemas`/`authoring_contract`/`previous_pass_changes`/双 trajectory | 迁移 | 子调用 payload 组装（self_root） |
+| F5 | 决策信封 + 校验 + 宿主代落地 | 改造：信封**原文返回 agent**，由 agent 以 `reflect_component`/`reflect_orchestration` 自行落地；宿主只做格式校验与渲染 | 子调用结果渲染 |
+| F6 | `evolution-inputs/-passes.jsonl` 全量日志 | 迁移 | 子调用日志（机械、全量） |
+| F7 | fixture 进化分支（`PI_EXTERNAL_EVOLUTION_STEPS`，+27） | 迁移，检测串对齐我们子调用头 | `tests/pi_external_benchmark_provider.ts` |
+| F8 | 七专家 pytest（+64） | 改写：脚本化 agent 在轮 2 主动调用子调用×2 kind → 信封返回 → agent 落地 → 库存刷新；payload 组装断言原样保留 | `tests/test_evo_ppt_pi.py` |
+| — | `runExternalEvolutionPass` 触发/去重/七连扫骨架、`turn_end` 第二触发点、宿主 auto-apply、固定次序断言 | **不迁移**（一个边界一个场合；见下） | — |
+
+**机制落点（新操作，建议名 `consult_construction`，定名实现时再审）**：轮 2 期间 self_root 协议面加一个操作——入参 `kind`（prompt/context/skill/tool/subagent/memory/orchestration 七枚举）+ 可选 `focus` 一句；宿主按 F4 机械组装材料包，以 F3 语境经 `modelResult(create, 'evolution:<kind>', optional=true)` 发一次有界单发调用，信封原文渲染回 agent 轮次；**计入轮 2 cap 5 之内，场合总 8 不变**；预算不足时 optional 跳过并渲染明确的 budget 行。入口可见性：轮 2 `entranceAskBlock`（`self_root.ts:134`，渲染点 `:699`）加 F2 kind 契约一览与该操作的一行接口语义。不设配额、不强制调用、空收束合法；判断（调不调、调哪类、落不落地）全在 agent。
+
+**去重与罗盘 §1.6 张力**：我们臂 `dc049570` 已持有边界触发的 META pass（`ppt_demo_extension.ts:138` 注释、`turn_end:769`）；codex 的 `turn_end` 触发骨架若并行迁入即同一边界双 pass，破坏单因素归因与 meta 测试的任务复位假设——不迁移。罗盘 §1.6 记录用户确认"共享分析、按需拆分"、否决固定串行连扫；codex 现码为固定七串行扫（文档未更）。本方案折入形态（agent 按需发起单 kind 子调用）与 §1.6 一致；若用户现在意图改为 CH 式每边界强制连扫，属对 §1.6 决定的翻转，需另行明示并另立单因素臂，本方案默认不翻转。
+
+**宪法对照**：F1–F8 均不设数量要求、不设完成门槛（信封 no_change 与 agent 不落地皆合法）；材料组装全程机械（kind 过滤、定长裁剪、全量日志），宿主不按内容挑选证据；F2/F3 文本已查无任务专指内容（通用措辞）；kind 契约与操作语义属接口语义（允许的推送）。边界句待裁：F3 各语境含 "Include a justified important one-off or anticipated need; do not merely summarize"——接近覆盖面引导；默认原文迁移（codex 侧用户已见），实现评审时用户可令删。F5 改造保证"只有 agent 自己创建或调用的才算采用"的归因口径。
+
+**验证阶梯**：(i) node：新增子调用测试（payload 组装、信封渲染、optional 跳过、轮 2 cap 计数、kind 枚举）+ meta 三套件 28 与 self_root 49 回归；(ii) pytest：F8 改写测试 + `test_evo_ppt_pi` 回归，`ppt_demo/ppt_trials` 按基线对照法（失败集与干净 HEAD 逐项一致才算过，参照 §6.12 的 9/14 基线）；(iii) 在线：M10 单因素真实运行（见下）。实现完成仅主张功能正确性；全链路/采用/净收益到 M10 真实运行再报。
+
+**M10 实验定位（草案，预注册到时另立小节）**：单因素 vs M9c = "轮 2 构造子调用 + 入口 kind 契约推送"（一个机制及其可见性）。主命题（观察侧，不进 agent 上下文）：出现 ≥1 次 agent 发起的子调用，且其信封中 ≥1 个 change 由 agent 以 reflect_* 落地并在下一普通请求活跃版本可见。保底：子调用零 schema 拒绝/崩溃、预算跳过正确。负例预声明：(a) 0 次调用（推送仍不敌拉取阻力，断点维持）；(b) 全 no_change（服务到位、证据不支持——合法）；(c) 信封 change 不落地（装配断点）；(d) 落地后次请求不可见/无使用（消费断点）——四段恰覆盖诊断→构造→装配→消费链。读数全部来自 `evolution-inputs/-passes.jsonl`、`meta_pass_*` 事实与 provider-requests 计量行。
+
+**顺序与预算**：方案与实现零付费。M9c 冻结捆绑不变、仍候探针门禁；实现窗口=**M9c 运行结束后在本工作树**（运行期间检出被占用，不动）；如需并行则从 `ded90054` 开侧工作树实现、按 one-branch 惯例折回（不推荐，多一套 junction 管理）。M10 真实运行需用户授权：启动前在可见文本声明 cap（从系列 600 余量内划拨，规则同 M9c），成本与延迟读数并入 §3.4 归因口径。本草案撰写时系列 369/600（探针 1–6 已计）。
+
 
 
