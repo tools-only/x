@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import pptDemo from '../demo/ppt_demo_extension.ts';
@@ -25,11 +25,10 @@ test('opt-in Pi surface projects and directly revises the live Agent orchestrati
     const event = { payload: { systemPrompt: 'PPT baseline', messages: [] } };
     hooks.get('before_provider_request')(event);
     assert.match(event.payload.systemPrompt, /LIVE AGENT SELF/);
-    assert.match(event.payload.systemPrompt, /"rootObject": "complete running Agent"/);
+    assert.match(event.payload.systemPrompt, /"object": "complete running Agent"/);
     assert.match(event.payload.systemPrompt, /"revision": 2/);
-    const rows = (await import('node:fs')).readFileSync(join(root, 'harness/live_orchestration.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    assert.ok(rows.some(row => row.event === 'reflection_committed'));
-    assert.ok(rows.some(row => row.event === 'self_view_injected'));
+    const rows = readFileSync(join(root, 'harness/live_agent_self.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(rows.some(row => row.event === 'self_view_injected' && row.orchestration_revision === 2));
   } finally {
     for (const [name, value] of Object.entries(old)) if (value === undefined) delete process.env[name]; else process.env[name] = value!;
   }

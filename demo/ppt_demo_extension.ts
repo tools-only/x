@@ -103,9 +103,9 @@ export default function pptDemo(pi: ExtensionAPI) {
   // and enter the stable prefix unchanged, so editing the agent's harness never rewrites them and never zeroes the
   // provider prefix cache; the dynamic fields ride the self view instead.
   const metaFieldsText = EVO_MECH.meta ? readFileSync(fileURLToPath(new URL('./prompts/self_root_meta_fields.md', import.meta.url)), 'utf8') : '';
-  // Seeded as an ordinary agent-editable prompt component in meta runs: always-on conversion/review rules
-  // with recorded-fact triggers. The agent revises or retires them with reflect_component like any prompt.
-  const evolutionPolicySeed = EVO_MECH.meta ? readFileSync(fileURLToPath(new URL('./prompts/evolution_policy_seed.md', import.meta.url)), 'utf8') : '';
+  // User decision 2026-11-17: no seeded evolution policy. Evolution judgment runs in the host-opened evolution
+  // pass (self_root.ts metaPassDue / META_PASS_STRATEGY), outside the task turn; its writes activate through the
+  // ordinary reflection interface, so the runtime assembles nothing further.
   let forcedBaseline = initialSystemPrompt;
   let injectedSkillsSection = '';
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
@@ -607,8 +607,6 @@ export default function pptDemo(pi: ExtensionAPI) {
       // Initial capabilities are fields on the live Agent object, not workspace files.
       if (!agentSelf.active().some((component: any) => component.path === 'prompts/ppt_baseline_guidance.md'))
         await agentSelf.seedComponent('prompt', 'ppt_baseline_guidance', initialSystemPrompt);
-      if (evolutionPolicySeed && !agentSelf.active().some((component: any) => component.path === 'prompts/evolution_policy.md'))
-        await agentSelf.seedComponent('prompt', 'evolution_policy', evolutionPolicySeed);
       persistLiveSelf();
       log('lifecycle.jsonl', { event: 'initial_registry', components: agentSelf.active().map(c => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })) });
       const nativeComponents = agentSelf.active().filter(c => c.kind === 'tool' || c.kind === 'subagent');
@@ -798,7 +796,9 @@ export default function pptDemo(pi: ExtensionAPI) {
         const coreLine = evo.mech.legacy_obligation
           ? `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is visible at review entry. An existing or delivered artifact does not end examination and evolution of orchestration or component classes. Rework runs through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition after scheduled rework, or at the budget boundary.`
           : evo.mech.meta
-            ? `${evo.reviewStrategy()}\nSELF ROOT: one serial session; no review entrance exists in this run. Every protocol tool the self view names is available at every step. Rework stays available through orchestration rewrite, render and resubmit/preview; office.deliver is an action receipt your own transition routes, and the run completes only at a transition whose to is "complete" - a delivery whose transition stalls or only records leaves the run open with the stall facts returned.`
+            ? `${evo.reviewStrategy()}\n${evo.inEvolutionReview
+              ? `SELF ROOT: evolution pass - the task step is suspended and resumes after decide_exit; the pass is bounded and its writes activate at the next request boundary. Task artifacts are not edited here unless a write above says so.`
+              : `SELF ROOT: one serial session; no review entrance exists in this run. At a recorded run boundary the host opens one evolution pass outside the task turn, and the task resumes at its current step when the pass closes. Every protocol tool the self view names is available at every step. Rework stays available through orchestration rewrite, render and resubmit/preview; office.deliver is an action receipt your own transition routes, and the run completes only at a transition whose to is "complete" - a delivery whose transition stalls or only records leaves the run open with the stall facts returned.`}`
             : `${evo.reviewStrategy()}\nSELF ROOT: one agent, one task, one serial session. decide_exit is available at any point in a review; a judged no-change is a valid closure. Rework stays available through orchestration rewrite, render and resubmit/preview; pending final delivery completes at the delivery transition, or at the budget boundary.`;
         // META (2026-11-16): the fixed self-evolution fields, unchanged in the stable prefix. The dynamic half
         // (objects, contract, counters, phase) rides the self view so a change never rewrites this prefix.

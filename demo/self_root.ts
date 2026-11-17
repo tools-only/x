@@ -134,7 +134,11 @@ export function entranceAskBlock(layer: boolean): string {
  * optimizable objects, the orchestration contract and the acceptance counters - is rendered by metaBoard() in the
  * self view. Every string here names mechanism, facts or boundaries only; task content reaches the agent through the
  * runner's task prompt and through its own orchestration contract. */
-export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The self-evolution mechanism and the acceptance standard are host-given and are not redesigned here; the task side - task goal, task acceptance and this task\'s run plan - is yours and lives in your orchestration contract. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own. Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
+export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The self-evolution mechanism and the acceptance standard are host-given and are not redesigned here; the task side - task goal, task acceptance and this task\'s run plan - is yours and lives in your orchestration contract. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own: at three recorded run boundaries - an episode closes, a delivery transition stalls, or long execution adds no artifact - it opens one evolution pass outside the task turn (user decision 2026-11-17). Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
+/** META pass (user decision 2026-11-17): the evolution judgment runs in one host-opened pass at a recorded run
+ * boundary, not as a resident rule inside the task turn. The pass says what exists; what it changes is the agent's. */
+export const META_PASS_STRATEGY = 'EVOLUTION PASS. This request runs outside the task turn: the task step is suspended and the view carries the run\'s recorded facts from the window named in the pass facts. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self_component(kind, name, version?) reads any component\'s source and its retained revisions; reflect_component and reflect_orchestration write components, policy and orchestration, and each write activates at the next request boundary, before the next provider request, with no separate assembly step. Judgment stays with you: act on the recorded facts, or close the pass with decide_exit - a judged no-change is a valid closure. The host presents facts without ranking, diagnosis, recommendation or forced order. The pass closes after a bounded number of requests; the task then resumes at its current step.';
+export const META_PASS_REQUEST_CAP = 8;
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
@@ -517,6 +521,7 @@ export class SelfRoot extends LiveAgentSelf {
   private workRequests = 0;
   private heartbeatDue: number[] = [];
   private reviewRequests = 0;
+  private metaPassTrigger?: { reason: string; facts: any; window: [number, number] };
   private reviewedQualityRefs = new Set<string>();
   private reviewObjectState: any = null;
   private pendingDelivery?: { run: () => Promise<any> };
@@ -562,7 +567,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','heartbeatDue','reviewRequests','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','unresolvedReview','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','heartbeatDue','reviewRequests','metaPassTrigger','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','unresolvedReview','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
       if (r.reviewedQualityRefs !== undefined) this.reviewedQualityRefs = new Set(r.reviewedQualityRefs);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
       if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
@@ -607,7 +612,7 @@ export class SelfRoot extends LiveAgentSelf {
       windows: this.windows, queue: this.queue, currentMode: this.currentMode, review: this.review,
       consumed: [...this.consumed], started: this.started, units: this.units, tokens: this.tokens, usd: this.usd,
       paused: this.paused, previousMode: this.previousMode, providerCosts: [...this.providerCosts], policy: this.policy,
-      workRequests: this.workRequests, reviewRequests: this.reviewRequests, reviewedQualityRefs: [...this.reviewedQualityRefs], daemonRecord: this.daemonRecord ?? null,
+      workRequests: this.workRequests, reviewRequests: this.reviewRequests, metaPassTrigger: this.metaPassTrigger ?? null, reviewedQualityRefs: [...this.reviewedQualityRefs], daemonRecord: this.daemonRecord ?? null,
       conditionSet: this.conditionSet, settlementCount: this.settlementCount, lastSettlementReview: this.lastSettlementReview,
       taskEnded: this.taskEnded ?? null, taskEndPending: this.taskEndPending ?? null, unresolvedReview: this.unresolvedReview, segmentStart: this.segmentStart, segmentRefs: this.segmentRefs, contextByRequest: this.contextByRequest,
       activeReset: this.activeReset ?? null, resetInProgress: this.resetInProgress ?? null, pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses, status: 'intent', review: this.pendingReview ?? null } : null }) };
@@ -662,7 +667,7 @@ export class SelfRoot extends LiveAgentSelf {
   /** The one fixed strategy line shown with the self view; evidence framing unless legacy obligation is on.
    * entrance=true appends the EVO_ASK question block at evolution-review entrances only (zero resident elsewhere). */
   reviewStrategy(entrance = false): string {
-    if (this.mech.meta) return META_STRATEGY;
+    if (this.mech.meta) return this.inEvolutionReview ? META_PASS_STRATEGY : META_STRATEGY;
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
   }
@@ -714,6 +719,28 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.ledger.some(r => r.type === 'meta_harness_inventory')) return 'settled';
     const index = (type: string) => { for (let i = this.ledger.length - 1; i >= 0; i--) if (this.ledger[i].type === type) return i; return -1; };
     return index('segment_summary') > index('request_record') ? 'boundary' : 'task';
+  }
+  /** META pass trigger (user decision 2026-11-17): recorded run boundaries only, never a resident rule.
+   * An episode closed (the run's own level boundary), a delivery transition stalled, or this many execute requests
+   * landed since the last artifact write or activation. The pass window is every ledger row since the previous
+   * pass or review closed, so the pass reads what the run recorded, not the task conversation. */
+  metaPassDue() {
+    if (!this.mech.meta || this.review || this.queue.length || this.metaT0Pending) return null;
+    const index = (type: string) => { for (let i = this.ledger.length - 1; i >= 0; i--) if (this.ledger[i].type === type) return i; return -1; };
+    const anchor = Math.max(index('review_closed'), index('meta_t0_design'));
+    if (anchor < 0) return null;
+    const window: [number, number] = [anchor + 1, this.ledger.length - 1];
+    const after = this.ledger.slice(window[0]);
+    const episode = after.findIndex(r => r.type === 'task_episode_closed');
+    if (episode >= 0) { const row = after[episode]; return { reason: 'episode_boundary', window,
+      facts: { trigger: 'episode_boundary', episode: row.value?.episode ?? null, id: row.value?.id ?? null, delivered_revision: row.value?.delivered_revision ?? null, window } }; }
+    const stall = after.findIndex(r => r.type === 'action_transition_stalled');
+    if (stall >= 0) { const row = after[stall]; return { reason: 'delivery_stall', window,
+      facts: { trigger: 'delivery_stall', action: row.value?.action ?? null, status: row.value?.status ?? null, window } }; }
+    const progress = Math.max(index('artifact_write'), index('reflection_activated'), window[0] - 1);
+    const stuck = this.ledger.slice(progress + 1).filter(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute').length;
+    if (stuck >= 12) return { reason: 'stagnation', window, facts: { trigger: 'stagnation', execute_requests_without_artifact_write: stuck, window } };
+    return null;
   }
   /** EVO_META board: the dynamic half of the seven fixed fields. Fields 1-3 and 7 are the fixed prompt file; this
    * block renders field 4 from live objects, fields 5-6 from the orchestration contract, the acceptance counters and
@@ -1235,6 +1262,12 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.paused) throw Error('inconsistent/paused');
     this.activatePending(applySurface, persist);
     this.chainFailed = false;
+    // META pass cap (2026-11-17): a host-opened pass is bounded; at the cap it closes mechanically as recorded
+    // facts and the task resumes. The pass never owns the run, and the closure never invents an agent judgment.
+    if (this.review && this.mech.meta && this.inEvolutionReview && this.reviewRequests >= META_PASS_REQUEST_CAP) {
+      this.fact('meta_pass_capped', { review: this.review.id, requests: this.reviewRequests, cap: META_PASS_REQUEST_CAP });
+      this.closeMechanically('evolution pass request cap');
+    }
     if (!this.review) this.reviewRequests = 0;
     await this.event('request_boundary',`request:${this.request}`);
     const due = this.heartbeatDue.splice(0);
@@ -1242,6 +1275,19 @@ export class SelfRoot extends LiveAgentSelf {
       const boundary = `heartbeat:settled:${settled}`;
       if (this.request >= this.contract.budget.requests) this.fact('heartbeat_gap', { settled_task_requests: settled, reason: 'hard cap; heartbeat not dispatched', source: 'user_contract' });
       else await this.event('heartbeat', boundary, { settled_task_requests: settled, source: 'user_contract' });
+    }
+    // META pass (user decision 2026-11-17): evolution judgment runs in one host-opened pass at a recorded run
+    // boundary, outside the task turn. Opening it books the trigger as facts and queues a reflect-mode ticket; the
+    // pass's writes go through the ordinary reflection interface and activate at the following request boundary.
+    const pass = this.metaPassDue();
+    if (pass) {
+      this.metaPassTrigger = pass;
+      const opened: any = await this.event('meta_pass_due', `pass:${this.request}`, pass.facts);
+      if (!opened.duplicate) {
+        this.fact('meta_pass_opened', { trigger: pass.reason, event: opened.event ?? null, window: pass.window, cap: META_PASS_REQUEST_CAP });
+        this.queue.push({ id: `review:${opened.event}`, boundary: `pass:${this.request}`, event: opened.event,
+          triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
+      }
     }
     if (!this.review && this.queue.length) this.enter(this.queue.shift());
     this.lastSurface = this.surface(); applySurface(this.lastSurface);
@@ -1302,7 +1348,9 @@ export class SelfRoot extends LiveAgentSelf {
     const eventRow = this.review ? this.ledger.find(r => r.ref === this.review.event && r.type === 'event') : undefined;
     const facts = eventRow?.value?.facts ?? {};
     const summary = facts.segment_summary ? this.ledger.find(r => r.ref === facts.segment_summary) : undefined;
-    const range = summary?.value?.ledger;
+    // A META pass carries its own window (every row since the previous pass closed), so the pass reads the run's
+    // recorded facts even when no segment settled in between.
+    const range = summary?.value?.ledger ?? (Array.isArray(facts.pass_window) ? facts.pass_window : undefined);
     const rows = Array.isArray(range) ? this.ledger.slice(range[0], range[1] + 1) : [];
     const item = (r: Row) => ({ ref: r.ref, type: r.type, value: copy(r.value) });
     const processTypes = new Set(['request_record', ...PROCESS_FACT_TYPES]);
@@ -1561,7 +1609,8 @@ export class SelfRoot extends LiveAgentSelf {
         e.evolution_layer = declared[address] ?? 'undeclared';
       }
     }
-    return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: allEntries, ...(this.mech.l4 ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")' };
+    return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: allEntries, ...(this.mech.l4 ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")',
+      ...(this.inEvolutionReview && this.mech.meta && this.metaPassTrigger ? { evolution_pass: this.metaPassTrigger.facts } : {}) };
   }
   /** EVO_L4: the four layers as coordinates - a regrouping of facts already recorded elsewhere; no new counters. */
   private layersView(declared: Record<string, string>) {
@@ -1646,7 +1695,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.pending) this.fact('review_activation_deferred', { review: review.id, closure: row.ref, outcome: 'activation_intent' });
     if (review.triggers.some((t: any) => t.conclusion_sink === 'lineage')) this.lineage.push(row);
     if (evolution && this.reviewChanged()) this.unresolvedReview = false;
-    this.review = undefined; this.currentMode = this.previousMode;
+    this.review = undefined; this.currentMode = this.previousMode; this.metaPassTrigger = undefined;
     return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode };
   }
   /** One mechanical closure (agent_end, crash, budget, second invalid exit). Never invents an Agent decision. */

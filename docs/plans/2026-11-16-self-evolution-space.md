@@ -452,3 +452,96 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 **预先声明的负例**：(a) ep1 建了组件、ep2 不用 → 复用断点在呈现/绑定侧，下一因素移去那里；(b) ep2 零跨集引用、从零重做 → 连续性未转化为沉淀，本因素不足；(c) 切换后 agent 陷入拒绝循环（连续 6 次以上动作被拒）→ 机制断层，修复后重跑，该次不计命题。
 **上限**：M8 声明 **60 requests**（M6/M7 各约 25，加切换适应余量）；系列 279/600，启动前余 321。
 
+### 6.8 M8 运行记录：缺陷轮 M8a 与修正轮 M8b
+
+**M8a**（`runs/evo-m8-glm53f-meta-20261117`，2026-11-17，az / glm-5.3-flash，arm B，工程提交 `c94aa297`）：`stop: "provider_error"`，**30 requests**（另 1 次预检 ping），1,267,384 tokens，1,174 s，registered estimate **$0.214**，`empty_turns` 8，`self_revision` 5。ep1（bank-of-america）交付 10/10：literal 30/30、citation 4/10，并**创建了系列第一个非种子能力组件**——skill `bac_segment_slide` v1（request 12，`expected_effect` 声明"后续 build 段复用同一版式方法"，验证窗口 `later_use_refs` 2）；另有三次编排反射（rev 2 设计、rev 4、rev 5）。ep2 未开始：episode 切换处三重缺陷（已由 `2aca6e44` 修复并附测试）：
+
+1. **跨 receipt 的 requires 不匹配**：`advanceAction` 只用触发 receipt 匹配 requires，自然的"render+deliver"收尾边在 `office.deliver` 上 stall 四次（ledger:123、142），agent 自己把 requires 收窄成单一 receipt 才关闭 ep1。修复：requires 对照触发 receipt 加历史动作记录，freshness 照旧。
+2. **切换把 Workspace 当路径**（`join(workspace,'data')`，ledger:167 `ERR_INVALID_ARG_TYPE`）：ep1 记为 closed 而数据换入与重开从未执行，编排保持 complete，其后所有工具被拒 "orchestration is complete"，直到 provider 返回空响应、运行崩溃（`Cannot read properties of undefined (reading 'length')`）。修复：用 `workspace.root`、先验证冻结源、只记一次 closure，失败则重开并记 `episode_switch_failed`，重试是 agent 的同一次交付。
+3. **空工具结果**：无内容的 read_self 段落返回空 content block，最终请求死于此。修复：返回一句事实说明。
+
+**M8b**（`runs/evo-m8b-glm53f-meta-20261117`，2026-11-17，az / glm-5.3-flash，arm B，工程提交 `2aca6e44`）：`stop: "delivered"`，**38 agent requests**（另 1 次预检 ping；resources 记 39），5,577,900 tokens，2,074 s，registered estimate **$0.883**，`empty_turns` 7，`self_revision` 3。两集均交付、各 15 页、5 次渲染全为 `chrome.exe headless HTML`：
+
+- ep1（bank-of-america）：request 17 / 02:02:16Z 交付 rev 3（`action-14`，`self_review` 后触发 `complete_on_deliver`）；literal **30/30**、citation **10/10**。
+- 切换干净：同一时间戳 `task_episode_switched`（closed ep1 → active ep2，episode 2）与 `delivered continues:true`，无 stall、无拒绝循环，agent 在同一步 `work` 内继续。
+- ep2（jpmorgan-chase）：request 38 / 02:27:25Z 交付 rev 5（`action-28`，`continues:false`）；literal **30/30**、citation **0/10**。
+
+**自变更**（`harness/live_agent_self.jsonl` 全行核实）：ep1、ep2 的每一行组件列表都只有两个种子 prompt（`evolution_policy`、`ppt_baseline_guidance`），**两集非种子组件创建数 = 0**；非编排激活 0 次；仅两次编排反射——rev 2（request 2，T0 设计即含 `complete_on_deliver.requires=[office.deliver]`）与 rev 3（request 22，compiled 值与 rev 2 相同）。4 个请求（21/26/28/36）`unknown_reserved`、stopReason "error"、无 usage，成本为保守估计。
+
+**命题判定：不成立——预登记负例 (b) 触发**。ep2 零跨集引用，因为 ep1 没有留下可引用的非种子组件，"连续性未转化为沉淀"。更严格的读法：整个 M 系列只有 M8a 一轮在双集视界下真正发生了能力组件投资（skill），而它死在切换缺陷、没走到第二集；M8b（修复后同设计）两集零投资。**跨集复用命题至今没有一次端到端行使**——一是从未有 run 同时具备"ep1 建组件 + ep2 可用"。
+
+**次级观察**：(a) 切换处置合格：重开、同环再入、无卡死，修复后的切换边首次实跑通过。(b) 质量跨集不守恒：ep1 citation 10/10 → ep2 0/10，而 literal 两集都是 30/30——ep2 的 10 个单元全部缺引用；ep1 学到的东西（如果算学到）没有被任何机制带到 ep2，也没人要求它带。(c) 四层自变更计数：Prompt 0、Context 0（无 memory 写入）、Loop 2（两次编排反射，第二次无实质差异）、Harness 0（M8a 为 1）；ep2 期间 0 次。(d) 成本：ep2 用了 21 个请求 vs ep1 的 17，质量反而下降。另记一条读法：M8a 的顶层 `final_unit_probes` 用 ep2 单元定义探测 ep1 交付物（崩溃后遗留），读数不代表任何一集，按 `episode_unit_probes` 读。
+
+| 运行 | requests | $ | 非种子组件 | 自修改 | 终点 | ep1 literal/citation | ep2 literal/citation |
+|---|---|---|---|---|---|---|---|
+| M8a | 30 | 0.214 | 1（skill，未跨集行使） | 4（1 skill + 3 编排） | provider 崩溃 | 30/30, 4/10 | 未开始 |
+| M8b | 38 | 0.883 | 0 | 2（编排） | 两集交付 | 30/30, 10/10 | 30/30, 0/10 |
+
+**预算**：M8a 30 + M8b 38 = 68；系列 279+68=**347**，余 **253**（600 cap）。
+
+### 6.9 变更记录（2026-11-17）：删除 `evolution_policy` 种子，进化判断移入外部演化 pass
+
+按 `docs/templates/meta-harness-change.md` 的节次。
+
+**问题与命题**
+
+- 真实失败/机会：M4b–M8b 五轮里，预置的 `evolution_policy` prompt（批1 O6，`88685953`）没有带来任何非种子能力组件（除 M8a 一次 skill，且与种子无因果证据）；它是一份常驻义务文本，与 META_STRATEGY 的职责重叠，且其"何时看自己"的时机判断交给了入模文本而非运行事实。用户 2026-11-17 指令：删除该种子，改为外部演化 pass（Continual Harness `HarnessEvolver` 模式），并明确**不需要运行时装配**——反射接口热修改，下一请求边界即生效。
+- 窄命题：当运行记录出现机械边界（一集关闭 / 交付转移 stall / 连续 12 个 execute 请求无 artifact 写入）时，宿主在任务回合之外开一个**有界**的演化 pass；agent 在 pass 中读运行视图、可经 `reflect_component`/`reflect_orchestration` 写入，写入在下一请求边界生效；一次真跑中至少产生一个能力组件变更，且该变更在其后的任务段被行使。
+- 减少的负担：删除一段常驻提示与"总是要想着进化"的常驻义务；时机从入模规则改为运行事实；无需新的装配步骤（反射激活已有）。
+- 适用条件、合理不使用条件与推翻条件：适用于 META 臂；非 META 臂 `metaPassDue()` 恒 null（无 pass、无成本）；合理不使用 = pass 打开后以 `decide_exit` 关闭且不改任何东西（记为有效判断）；推翻 = pass 从未打开（边界事实缺失/去重错误）、或 pass 吃满上限（机制占有运行）、或创建后无任何后续行使（绑定侧断点）。
+- 范围及非目标：不改非 META 臂；不新增工具（`read_self`/`read_self_component`/`reflect_*`/`decide_exit` 在各步已可用）；不预置评审入口说明、不要求组件数量；不改预算、权限、版本、环境边界。
+
+**设计与成本**
+
+- 选择与取舍：复用既有 review 机制（`enter()` 置 reflect、`reviewSelfView()`/`reviewView()` 供视图、`decide_exit` 关闭），不造新 worker、不造装配器；触发只认**已记录事实**（`task_episode_closed`、`action_transition_stalled`、execute `request_record` 计数），无时钟、无宿主语义判断。相比 Continual Harness 的四 pass 整库重写（2026-09-11 已否），保持"一 pass 一窗口、judged no-change 合法"的 refiner 先例。
+- 生命周期：边界事实 → `meta_pass_due` 事件（`pass:<request>` 去重）→ 入队 → `enter()`（任务步挂起）→ pass 请求携带 `META_PASS_STRATEGY` 与窗口事实（`evolution_pass`）→ 写入在下一边界 `activatePending` 生效 → `decide_exit` 恢复任务步。失败/超时：cap 8 个请求时 `boundary()` 记 `meta_pass_capped` 并 `closeMechanically`（`outcome: review_unresolved`，机械闭合，绝不是 agent 判断）。
+- 首次获益路径：任务边界事实直接到达 agent 的 pass 请求，中间无父决策步；agent 的唯一判断是"改或不改"。
+- 新增与移除：移除种子文件 `demo/prompts/evolution_policy_seed.md` 与其注入；新增仅：`META_PASS_STRATEGY`（只在 pass 内出现）、`META_PASS_REQUEST_CAP=8`、`metaPassDue()`、事实 `meta_pass_due/meta_pass_opened/meta_pass_capped`、pass 视图的 `evolution_pass` 字段、`metaPassTrigger` 的持久化。无新 schema 字段、无门禁、无管理轮。
+- 权限/版本/环境边界：反射仍走同一授权与证据校验；budget/version/permission 检查不动；非 META 臂行为逐字节不变。
+- 放弃与恢复：pass 连续多轮无改 == 机制对任务结构无感 → 下一因素移向回报侧；机制本身可整段移除（回退即恢复种子注入，历史不可回退）。
+
+**运行前实验协议**
+
+- 目标证据层级：自主采用 + 净收益（真 provider 运行）。
+- 主要变量与比较器：唯一差异 = 种子删除 + 外部 pass；比较器 = M8b（同任务族、同 arm、同 provider/model、种子在场）与 M7（单集）。
+- 模型/provider/任务：az / glm-5.3-flash；arm B（EVO_A4+EVO_META）；同一冻结双集任务族；同冻结流程。
+- 总预算与停止规则：见 §6.10 声明；超过即停，pass 内请求计入同一预算。
+- 主要指标与判定标准：主判据 = ≥1 个非种子能力组件在某次 pass 内创建/修改，且其后任务段有行使记录（component_runs / lineage / read_self_component / memory 进入 head 后被引用 / 工具被调用）；保底判据 = 两集均交付且每集 literal ≥ 25/30（M8b 为 30/30）。
+- 负例：(a) pass 从未打开 → 触发/去重缺陷；(b) pass 打开、judged no-change 关闭 → 有效负例，边界机制不是缺失因素，下一因素回报侧；(c) 达到 cap → 机制占有运行，缺陷；(d) 创建但无后续行使 → 绑定侧断点。
+- 遥测及材料：ledger 的 `meta_pass_*` 行、`live_agent_self.jsonl`（组件列表逐行）、`episode_unit_probes`、provider-requests。
+
+**实现与验证**
+
+- 改动入口：`demo/self_root.ts`（`metaPassDue`、`META_PASS_STRATEGY`、`META_PASS_REQUEST_CAP`、boundary cap+入队、`reviewSelfView.evolution_pass`、export/restore/close）；`demo/ppt_demo_extension.ts`（删除种子读取与注入；META 核心行改写为"任务回合内无评审入口，边界处宿主开演化 pass"）；`demo/prompts/evolution_policy_seed.md` 删除。
+- 功能/相关回归检查（fee-free）：`tests/self_root_meta_pass.test.ts` 5/5（episode 关闭开 pass、stall、12 请求 stagnation、5 不触发、cap 机械关闭、pass 内写入激活并计数、非 META 不开）；self-root + orchestration node 套件 **82/82**（其中 `tests/ppt_demo_live_orchestration.test.ts` 的两处陈旧断言按现surface修正：`"object"` 字段、`live_agent_self.jsonl` 的 `self_view_injected`）；`python -m pytest tests/test_evo_ppt.py` **18/18**。`tests/test_evo_ppt_pi.py` / `test_evo_ppt_stall_recovery.py` 的 6 个失败在 HEAD 原样复现（本 checkout 缺本地 Pi 包 `@earendil-works/pi-coding-agent`，脚本内核提前退出），与本次改动无关，标为环境未验证。
+- 机会漏斗与断点：本轮只有离线证据——pass 的打开、策略、事实、写入、闭合全部由离线测试覆盖；真实运行中的打开率/使用率未测。
+
+| 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 已验证（离线） | node 测试、pytest 18/18、HEAD 对照 | `tests/self_root_meta_pass.test.ts` 等；不证明真跑 |
+| 全链路可达 | 未验证 | 待声明运行 | 需要真 provider 运行 |
+| 自主采用 | 未验证 | 待声明运行 | 需要真 provider 运行 |
+| 净收益 | 未验证 | 待声明运行 | 需要真 provider 运行 |
+
+**交付决定**
+
+- 已支持和未支持的声明：支持"种子已删除、外部 pass 功能上存在且写入热生效"（离线）；不支持"该机制促成能力级自进化"（未测）。
+- 决定与依据：保留，进入下一轮声明运行；不预置任何"要建几个组件"的指令。
+- 剩余验证与下一可证伪检查：见 §6.10 的预注册。
+- 关联 backlog：无新增。
+
+### 6.10 M9 预注册（单因素：无种子 + 外部演化 pass）
+
+**真实失败锚**：M8b 两集零非种子组件（§6.8）；M8a 唯一一次组件投资死在切换缺陷。旧机制的共性是"进化指导是常驻文本、时机由 agent 自己想起来"——M4b–M8b 五轮从未在任务中途主动打开评审；用户 2026-11-17 指令改为外部 pass。
+
+**单因素**（工程提交见运行记录）：删除 `evolution_policy` 种子；META 臂在记录的运行边界处由宿主开一个有界演化 pass（§6.9）。其余一切不变：az / glm-5.3-flash / arm B / 同一冻结双集任务族 / 同判据。
+
+**主命题**（机械可判）：ep1 关闭（或 stall/stagnation）后，宿主的 pass 打开，**agent 在 pass 内创建或修改 ≥1 个非种子能力组件，且该组件在其后的任务段有行使记录**（component_runs / lineage / read_self_component / memory 进 head 后引用 / 工具被调用）。
+**保底判据**：两集均交付，每集 literal ≥ 25/30（M8b 为 30/30、30/30）。pass 的请求计入同一预算，pass 内请求不计入"任务请求"质量比较。
+
+**负例预登记**：(a) pass 从未打开（ledger 无 `meta_pass_due`）→ 触发/去重缺陷，修复后重跑；(b) pass 打开、`decide_exit` judged no-change 关闭 → 有效负例，边界机制不是缺失因素，下一因素移到回报侧（任务结构/成本消费者）；(c) pass 达到 cap 8 → 机制占有运行，缺陷；(d) 创建后无后续行使 → 绑定侧断点。
+
+**上限**：M9 声明 **75 requests**（M8b 38 + 至多 4 个 pass × 8 + 余量；单次超限即停）。系列 347/600，启动前余 **253**，启动后按实耗计。**时间上限 3600 s，2 GiB 存储**（沿用 M 系列授权）。model：az / glm-5.3-flash。
+
+
+
