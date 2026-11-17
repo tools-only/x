@@ -130,6 +130,58 @@ export function renderEditLedger(entries: LedgerEntry[], maxChars = 1800): strin
 	return lines.join("\n");
 }
 
+/**
+ * The decision window (ARC_REFINE_WINDOW, 2026-11-17): a refinement's input carries the decisions since the last
+ * refinement as Continual Harness's evolver carries its trajectory — per decision the agent's own reasoning (or text),
+ * its python calls with their results, and the moves' fact rows — rather than only the last rows. The extension
+ * assembles the blocks; this module only renders them, oldest dropped first to fit the budget.
+ */
+/** One python call of a decision, as python_calls.jsonl recorded it. */
+export type WindowPython = { id: number; ok?: boolean; acted?: boolean; same?: number; code?: string; result?: string };
+/** One decision: its action range (moves #from+1..#to), what the agent said, its python calls, its moves' fact rows. */
+export type WindowBlock = { decision: number; from: number; to: number; reasoning?: string; review?: boolean; ongoing?: boolean;
+	rows: string[]; python: WindowPython[] };
+
+export const WINDOW_REASONING_CHARS = 1500;
+export const WINDOW_CODE_CHARS = 700;
+export const WINDOW_RESULT_CHARS = 300;
+/** The end of `text` (conclusions come last), newlines kept. */
+const tailOf = (text: string, chars: number) => { const t = text.trim(); return t.length > chars ? `…${t.slice(-chars)}` : t; };
+/** The start of `text` (code and results lead with what matters), newlines kept. */
+const headOf = (text: string, chars: number) => { const t = text.trim(); return t.length > chars ? `${t.slice(0, chars - 1)}…` : t; };
+
+function blockText(block: WindowBlock): string {
+	const lines: string[] = [];
+	const moves = block.to > block.from ? `moves #${block.from + 1}–#${block.to}` : "no move";
+	lines.push(`[decision ${block.decision} | ${moves}${block.review ? " | review" : ""}${block.ongoing ? " | not finished yet" : ""}]`);
+	if (block.reasoning) lines.push(`reasoning: ${tailOf(block.reasoning, WINDOW_REASONING_CHARS)}`);
+	for (const p of block.python) {
+		if (p.same !== undefined) { lines.push(`P${p.id} = P${p.same}: same code on the same state, not run again`); continue; }
+		lines.push(`P${p.id}${p.ok === false ? " (failed)" : ""}${p.acted ? " (acted)" : ""}:`, headOf(p.code ?? "", WINDOW_CODE_CHARS));
+		if (p.result) lines.push(`→ ${headOf(p.result, WINDOW_RESULT_CHARS)}`);
+	}
+	lines.push(...block.rows);
+	return lines.join("\n");
+}
+
+/** The window within `maxChars`: latest decisions whole, oldest dropped first, the newest always kept. */
+export function renderDecisionWindow(blocks: WindowBlock[], maxChars: number): string {
+	if (!blocks.length) return "(none yet)";
+	const texts = blocks.map(blockText);
+	const kept: string[] = [];
+	let used = 0;
+	let first = blocks.length;
+	for (let i = blocks.length - 1; i >= 0; i--) {
+		const cost = texts[i].length + 2;
+		if (kept.length && used + cost > maxChars) break;
+		kept.unshift(texts[i]);
+		used += cost;
+		first = i;
+	}
+	const note = first > 0 ? [`(${first} earlier decision(s), moves up to #${blocks[first].from}, not shown)`] : [];
+	return [...note, ...kept].join("\n\n");
+}
+
 const EDITABLE = /^(prompts\/[a-z0-9_-]+\.md|(tools|lib)\/[a-z_][a-z0-9_]*\.py|skills\/[a-z0-9_-]+\/SKILL\.md)$/;
 
 /**
