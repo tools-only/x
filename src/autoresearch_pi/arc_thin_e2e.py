@@ -2062,6 +2062,9 @@ def run_arc_thin_e2e(
             pi_env["PI_PROVIDER_CONTEXT_ADMISSION"] = "enabled"
             pi_env["PI_PROVIDER_REPORTED_ADMISSION"] = "enabled"
             pi_env["PI_PROVIDER_TOKEN_BUDGET_ROOT"] = str((root / "harness").resolve())
+            # ARC native requests can contain one rendered board image; use the same explicit
+            # conservative per-image reserve as the other real ARC runner.
+            pi_env.setdefault("PI_PROVIDER_IMAGE_TOKEN_RESERVE", "4096")
         if pi_provider_extension is None:
             if not settings["base_url"] or not settings["api_key"]:
                 raise RuntimeError("define ARC_OPENAI_API_BASE/ARC_OPENAI_API_KEY or OPENAI_API_BASE/OPENAI_API_KEY")
@@ -2080,8 +2083,8 @@ def run_arc_thin_e2e(
             pi_env['ARC_RUN_DEADLINE_MS'] = str(int((time.time() + max(0.0, deadline - time.monotonic())) * 1000))
         else:
             pi_env.pop('ARC_RUN_DEADLINE_MS', None)
-        # Services to the agent's self-harness, on by default in the treatment variant; the critic needs the ledger.
-        # Both are always stated explicitly, because the extension also defaults to enabled.
+        # Provisional treatment defaults; after extension_env is merged, SelfRoot/legacy selection below
+        # makes the effective setting explicit for both the extension and run-config.json.
         ledger_enabled = (ledger or critic) and variant == "treatment"
         critic_enabled = critic and variant == "treatment"
         pi_env["ARC_HARNESS_LEDGER"] = "enabled" if ledger_enabled else "disabled"
@@ -2112,6 +2115,14 @@ def run_arc_thin_e2e(
             pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
         pi_env.update(extension_env or {})
         pi_env["ARC_THIN_IMAGE_INPUT"] = "1" if "image" in settings["input_modalities"] else "0"
+        self_root_enabled = foundation == "native" and variant != "control" and pi_env.get("ARC_THIN_SELFROOT") != "0"
+        legacy_harness_enabled = not self_root_enabled or pi_env.get("ARC_THIN_LEGACY_HARNESS") == "1"
+        pi_env["ARC_THIN_SELFROOT"] = "1" if self_root_enabled else "0"
+        pi_env["ARC_THIN_LEGACY_HARNESS"] = "1" if legacy_harness_enabled else "0"
+        ledger_enabled = legacy_harness_enabled and (ledger or critic) and variant == "treatment"
+        critic_enabled = legacy_harness_enabled and critic and variant == "treatment"
+        pi_env["ARC_HARNESS_LEDGER"] = "enabled" if ledger_enabled else "disabled"
+        pi_env["ARC_HARNESS_CRITIC"] = "enabled" if critic_enabled else "disabled"
         if typescript_phase_owner:
             # The opt-in agent-native program slice excludes the old Python-cell, Refiner and context-prompt loop.
             ledger_enabled = critic_enabled = False
@@ -2124,9 +2135,9 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_SELF_BASELINE"] = "1" if self_baseline else "0"
         pi_env["ARC_THIN_SELF_CONVERT"] = "1" if self_convert else "0"
         native_treatment = foundation == "native" and variant == "treatment"
-        daemon_enabled = native_treatment and not reflective_path and not self_baseline and pi_env.get("ARC_THIN_DAEMON", "1") != "0"
+        daemon_enabled = native_treatment and legacy_harness_enabled and not reflective_path and not self_baseline and pi_env.get("ARC_THIN_DAEMON", "1") != "0"
         pi_env["ARC_THIN_DAEMON"] = "1" if daemon_enabled else "0"
-        pi_env["ARC_THIN_PROCESS"] = "1" if native_treatment and not self_baseline and pi_env.get("ARC_THIN_PROCESS", "1") != "0" else "0"
+        pi_env["ARC_THIN_PROCESS"] = "1" if native_treatment and legacy_harness_enabled and not self_baseline and pi_env.get("ARC_THIN_PROCESS", "1") != "0" else "0"
         daemon = DaemonService(root) if daemon_enabled else None
         if daemon:
             attach_arc_monitors(daemon)
@@ -2176,8 +2187,10 @@ def run_arc_thin_e2e(
             "experiment_timeout_seconds": experiment_timeout_seconds,
             "consolidate_after_actions": consolidate_after_actions, "review_on_miss": review_on_miss, "input_modalities": settings["input_modalities"],
             "max_output_tokens": settings.get("max_tokens"), "command": command,
+            "image_token_reserve_per_image": int(pi_env["PI_PROVIDER_IMAGE_TOKEN_RESERVE"]),
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
             "ledger": ledger_enabled, "critic": critic_enabled,
+            "self_root": self_root_enabled, "legacy_harness": legacy_harness_enabled,
             "daemon": daemon_enabled, "process_evidence": pi_env["ARC_THIN_PROCESS"] == "1",
             "reflective_auto_compute_ms": float(pi_env.get("REFLECTIVE_AUTO_COMPUTE_MS", "0")) if reflective_path else None,
             "self_baseline": self_baseline,
@@ -2650,6 +2663,10 @@ def run_arc_thin_e2e(
             environment_before = _environment_errors(harness)
             error_rows_before = len(_read_jsonl(harness / "errors.jsonl"))
             errors_before = len(extension_errors)
+            # A daemon notification is a separate response turn. Refresh it before selecting a turn,
+            # and initialize both flags on every path (including ordinary native task turns).
+            response_turn = bool(daemon and daemon.refresh())
+            task_turn = False
             try:
                 if typescript_phase_owner:
                     transport = "ARC_THIN_PHASE_NEXT"
@@ -2715,6 +2732,7 @@ def run_arc_thin_e2e(
                         evo_focus_index = 0
                         evo_passed_at = action_count
                 else:
+                    task_turn = True
                     base_prompt = ('Continue the task using the current method and canonical results.' if reflective_path else
                                    NO_ACTION_PROMPT if no_action_streak else
                                    WINDOW_DECIDE_PROMPT if foundation == "native" and variant == "treatment" else

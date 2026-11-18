@@ -22,6 +22,16 @@ test('explicit floor/hash/numeric cap are required; protected facts stay visible
   assert.ok(s.mirror().parts.unsupported.includes('step roles other than agent'));
 });
 
+test('initial execute grant permits the first action before a response boundary', () => {
+  const c = contract();
+  c.capabilities.push('arc_action');
+  const { content_hash: _oldHash, ...body } = c;
+  c.content_hash = hash(body);
+  const s = new SelfRoot(c);
+  s.pin();
+  assert.doesNotThrow(() => s.assertActionAllowed('arc_action'));
+});
+
 test('META merges a boundary, deduplicates consumption, no automatic failure diagnosis', async () => {
   const s = new SelfRoot(contract());
   await s.event('tool_failed','a',{ error:'x' }); assert.equal(s.export().root.queue.length,0);

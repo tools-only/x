@@ -78,6 +78,48 @@ def test_arc_frame_serialization_preserves_native_state_and_available_actions():
     }
 
 
+def test_arc_bridge_recovers_missing_initial_observation_with_reset(tmp_path):
+    from autoresearch_pi.arc_agi_3_bridge import ArcBridge
+
+    raw = SimpleNamespace(
+        game_id="ls20-test",
+        frame=[[[1, 2], [3, 4]]],
+        state=SimpleNamespace(name="PLAYING"),
+        levels_completed=0,
+        win_levels=1,
+        guid="guid-1",
+        full_reset=True,
+        available_actions=[1],
+    )
+    environment = SimpleNamespace(observation_space=None)
+    def reset():
+        environment.observation_space = raw
+        return raw
+    environment.reset = reset
+
+    bridge = object.__new__(ArcBridge)
+    bridge.environment = environment
+    bridge.actions = 0
+    bridge.level_action_counts = [0]
+    bridge.forced_actions = 0
+    recorded_actions = []
+    bridge.adapter = SimpleNamespace(record_action=recorded_actions.append)
+    events = []
+    bridge._append = events.append
+    bridge._sdk = lambda operation, fn, *, timeout: fn()
+    bridge._frame = lambda: {"state": "PLAYING", "frames": [[[1, 2], [3, 4]]]}
+
+    bridge._normalize_initial_state()
+
+    assert bridge.actions == 1
+    assert bridge.level_action_counts == [1]
+    assert bridge.forced_actions == 1
+    assert recorded_actions == ["RESET"]
+    assert events[0]["operation"] == "reset"
+    assert events[1] == {"event": "forced_action", "reason": "initial_observation_missing", "action": "RESET",
+                         "frame": {"state": "PLAYING", "frames": [[[1, 2], [3, 4]]]}}
+
+
 def test_arc_public_state_fingerprint_uses_environment_state_not_runtime_counters():
     first = {
         "frames": [[[1, 2], [3, 4]]], "state": "PLAYING", "levels_completed": 1,

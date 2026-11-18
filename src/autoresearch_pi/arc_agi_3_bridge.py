@@ -537,6 +537,46 @@ class ArcBridge:
         )
 
     def _normalize_initial_state(self) -> None:
+        if self.environment.observation_space is None:
+            self._append({
+                "event": "environment_call_started", "operation": "reset",
+                "attempted_index": self.actions + 1, "action": "RESET", "level_before": 0,
+                "state_before": None, "reason": "initial_observation_missing",
+            })
+            try:
+                raw = self._sdk("reset", self.environment.reset,
+                                timeout=getattr(self, "sdk_timeout_seconds", 90.0))
+            except Exception as exc:
+                details = exception_details(exc)
+                self._append({
+                    "event": "environment_error", "operation": "reset",
+                    "attempted_index": self.actions + 1, "action": "RESET", "level_before": 0,
+                    "state_before": None, "reason": "initial_observation_missing",
+                    "retryable": False, "error": details,
+                })
+                raise ArcEnvironmentError("reset", details) from exc
+            if raw is None:
+                details = {
+                    "type": "EnvironmentReturnedNoFrame",
+                    "message": "ARC SDK environment.reset returned no frame after game creation",
+                    "repr": "None",
+                    "traceback": "",
+                }
+                self._append({
+                    "event": "environment_error", "operation": "reset",
+                    "attempted_index": self.actions + 1, "action": "RESET", "level_before": 0,
+                    "state_before": None, "reason": "initial_observation_missing",
+                    "retryable": False, "error": details,
+                })
+                raise ArcEnvironmentError("reset", details)
+            self.actions += 1
+            self.level_action_counts[0] += 1
+            self.forced_actions += 1
+            self.adapter.record_action("RESET")
+            after = self._frame()
+            self._append({"event": "forced_action", "reason": "initial_observation_missing", "action": "RESET", "frame": after})
+            return
+
         frame = self._frame()
         if frame["state"] != "NOT_PLAYED":
             return
