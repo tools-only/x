@@ -32,6 +32,19 @@ test('initial execute grant permits the first action before a response boundary'
   assert.doesNotThrow(() => s.assertActionAllowed('arc_action'));
 });
 
+test('execution view is compact and keeps the full SelfRoot view readable on demand', () => {
+  const s = new SelfRoot(contract());
+  const taskObservation = 'Current state and recent action facts';
+  const view = s.executionView({ taskObservation });
+  assert.equal(view.task_observation, taskObservation);
+  assert.deepEqual(view.execution.recent_actions, []);
+  assert.equal(view.read.full_self, 'read_self(section="self")');
+  assert.ok(!('architecture' in view));
+  assert.ok(!('ledger' in view));
+  assert.ok(JSON.stringify(view).length < JSON.stringify(s.mirror()).length);
+  assert.ok(s.mirror().architecture);
+});
+
 test('META merges a boundary, deduplicates consumption, no automatic failure diagnosis', async () => {
   const s = new SelfRoot(contract());
   await s.event('tool_failed','a',{ error:'x' }); assert.equal(s.export().root.queue.length,0);

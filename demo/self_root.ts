@@ -2152,6 +2152,33 @@ export class SelfRoot extends LiveAgentSelf {
     const count = (kind: string) => { const n = new Set(active.filter(c => c.kind === kind).map(c => c.name)).size; return this.mech.a4 ? n : n || 1; };
     return { orchestration: 1, policy: Object.keys(this.policy).length, prompt: count('prompt'), skill: count('skill'), tool: count('tool'), memory: count('memory'), protected: 3 };
   }
+  /** Compact task-facing view. Full canonical state remains available through read_self. */
+  executionView(input: { taskObservation?: unknown } = {}) {
+    const run = super.mirror().run;
+    const contract = (this.current?.orchestration as any)?.contract ?? null;
+    return {
+      root_id: this.root_id,
+      revision: this.serial,
+      task: contract ? { goal: contract.task_goal, acceptance: contract.task_acceptance } : null,
+      task_observation: input.taskObservation ?? this.options.taskRuntimeView?.() ?? null,
+      execution: {
+        mode: this.currentMode,
+        step: run.step,
+        complete: run.complete,
+        in_review: Boolean(this.review),
+        recent_actions: run.actions.slice(-2),
+        recent_decisions: run.decisions.slice(-2),
+      },
+      active_components: this.active().map(({ kind, name, version, description }) => ({ kind, name, version, description })),
+      pending_activation: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
+      read: {
+        full_self: 'read_self(section="self")',
+        ledger: 'read_self(section="ledger", offset, count)',
+        policy: 'read_self(section="policy")',
+        component: 'read_self_component(kind, name, version?)',
+      },
+    };
+  }
   async projection() {
     const p = this.review?.policy ?? this.policy;
     const name = this.review?.triggers.find((r: any) => r.projection)?.projection ?? this.review?.modeDefinition.projection ?? p.modes[this.currentMode].projection;
