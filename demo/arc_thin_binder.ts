@@ -1,5 +1,6 @@
 /** One file -> one versioned component. Binding is a request-boundary operation. */
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { Workspace } from './arc_thin_workspace.ts';

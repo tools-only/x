@@ -334,6 +334,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// response starts. ARC_THIN_CONTEXT_LAYOUT=0 restores the earlier placement: prompts as system-prompt sections, NO NEW
 	// INFORMATION opening the head, THIS BOARD after the state.
 	const contextLayout = native && !control && process.env.ARC_THIN_CONTEXT_LAYOUT !== "0";
+	const daemonOn = native && !agentNativeProgramLoop && !control && !selfBaseline && process.env.ARC_THIN_DAEMON === "1";
 	// The harness turn (docs/plans/2026-10-26-e1-harness-turn-protocol.md, arm B): the stall, spin and level reviews ask for
 	// one harness change (the runner's prompts), show the LOOP AUDIT and the run's loop logs under data/loop/, and report what
 	// the agent's own components' EXPECT checks found. ARC_THIN_HARNESS_TURN=1 turns it on; off, the reviews are today's.
@@ -5522,3 +5523,4 @@ export default function arcThinExtension(pi: ExtensionAPI) {
     return { content };
   });
 }
+
