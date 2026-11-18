@@ -141,10 +141,6 @@ export const PPT_SELF_ROOT_OPTIONS = {
 export function selfRootToolSchema(evo: SelfRoot, name: string): any {
   if (name === 'reflect_component' || name === 'reflect_orchestration') {
     const schema = providerOperationSchema(name === 'reflect_component' ? 'component' : 'orchestration', undefined, evo.current.orchestration, { layer: evo.mech.l4 });
-    if (name === 'reflect_component') {
-      schema.properties.session_ref = { type: 'string', description: 'Export a self-contained function from the task Python session for tool define/redefine. Use a function accepting (args, env). Omit source and patch.' };
-      schema.properties.description = { type: 'string', description: 'For session_ref, provide a one-line summary (1–300 characters) of what the tool does and when to use it.' };
-    }
     schema.properties.expected_effect.description = 'Optional qualitative intent, recorded with the change. Does not open a numeric validation window or delay activation. Omit success_predicate unless you want an explicit comparison of an existing recorded metric.';
     return schema;
   }
