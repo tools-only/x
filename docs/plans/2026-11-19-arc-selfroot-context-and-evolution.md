@@ -84,6 +84,9 @@
 - 全链路验证：`python tools/run_foundation_smoke.py runs/arc-selfroot-foundation-20261119h foundation uncapped` 通过；Pi 0.87、生产 bridge、mock ARC SDK、scripted provider 完成 3 个 action、8 个 provider 请求，无 provider error。该 smoke 只证明接线和低成本功能，不证明真实模型自主采用或关卡收益。
 - 留存的边界：`tests/arc_thin_coverage_events.test.ts` 属于旧 harness 接口检查；目前它仍使用与现行 action-list schema 不一致的 scalar action fixture，未纳入上述当前 SelfRoot 定向验收。此兼容测试问题单独记录，不能将它算作通过。
 - 尚未完成：真实 provider payload 是否减少了重复观测、真实任务中的 Python 探测频次是否下降、Agent 是否自主利用记忆/自进化修订、相对 CH 的效率和任务净收益。不得从投影大小或脚本 smoke 推断这些效果。
+- 真实运行诊断（`runs/su15-selfroot-optimized-20261119-completions`）：AZ `qwen3.8-27b`，native SelfRoot，61 个 bridge 动作、0 个已完成关卡；session 记录 219 次 provider 请求、约 3.45M input / 483k output tokens。SelfRoot ledger 记录两次已关闭 evolution review，最近一次关闭后又有 21 个动作。运行在第 61 个动作后被开发 Agent 手动中断；`summary.json` 是中断前快照，不能作为自然终态或任务效果证据。中断缘由是误读了旧 self-loop 的 `evo_pass=false` 统计字段；随后核查确认它不代表 SelfRoot review 关闭。
+- 这次核查修复了 SelfRoot interval fallback 的生命周期边界：闭合的旧 review 不应永久阻止后续 30-action review。`queueActionIntervalReview` 现在从最近一次已关闭 pass 之后计数；活动 review 或未关闭的 pass 仍阻止重复入队。`tests/self_root_arc.test.ts` 覆盖跨请求恢复、pass 后重新计数。真实 run 在手动中断时尚未到最近一次 pass 后 30 个动作，因此没有观察到该 fallback 的真实触发；该行为仍需新 run 验证。
+- 修复后验证：`node --experimental-transform-types --test --test-concurrency=1 tests/self_root_arc.test.ts` 通过（2 项）；`git diff --check` 通过；新目录 `runs/arc-selfroot-foundation-20261119j` 的生产 Pi/bridge/mock ARC SDK/scripted provider smoke 通过（3 动作、8 provider 请求、0 provider error）。Smoke 未触达 30-action fallback，也不证明真实模型行为或 ARC 关卡效果。
 
 ## 7. 实验协议与交付边界
 

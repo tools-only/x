@@ -1303,13 +1303,22 @@ export class SelfRoot extends LiveAgentSelf {
   allowTool(name: string, args: any) { this.assertActionAllowed(this.options.actionOf ? this.options.actionOf(name, args) : name); }
   /** Use persisted receipts and review entrances so resuming a run preserves its cadence. */
   async queueActionIntervalReview(interval: number, actionNumber: number) {
-    if (actionNumber < interval || this.inEvolutionReview || this.queue.some(ticket =>
+    if (actionNumber < interval || this.review || this.queue.some(ticket =>
       ticket.triggers.some((trigger: any) => trigger.id === 'evolution_review'))) return;
     let actions = 0;
+    const closedReviews = new Set<string>();
     for (let i = this.ledger.length - 1; i >= 0; i--) {
       const row = this.ledger[i];
-      if (row.type === 'mode_entered' && row.value.triggers.some((trigger: any) =>
-        trigger.id === 'evolution_review' || (trigger.source === 'agent_active' && trigger.mode === 'reflect'))) return;
+      if (row.type === 'review_closed' && row.value?.review) closedReviews.add(String(row.value.review));
+      if (row.type === 'mode_entered') {
+        const triggers = Array.isArray(row.value?.triggers) ? row.value.triggers : [];
+        const isPass = triggers.some((trigger: any) =>
+          trigger.id === 'evolution_review' || (trigger.source === 'agent_active' && trigger.mode === 'reflect'));
+        if (isPass) {
+          if (closedReviews.has(String(row.value.id))) break;
+          return;
+        }
+      }
       if (row.kind !== 'fact' || !this.options.actionReceiptTypes?.includes(row.type)) continue;
       if (++actions === interval) {
         await this.event('work_quantum', `action-interval:${actionNumber}`, {
